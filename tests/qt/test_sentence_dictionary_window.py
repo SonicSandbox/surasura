@@ -315,6 +315,7 @@ def test_the_success_rule_wants_exit_0_and_a_file_written_since_the_start(tmp_pa
     assert sentence_corpus.export_result(path, started, 0) == (True, "1,024 words")
     assert sentence_corpus.export_result(path, started, 1) == (False, "")            # exit 1, fresh file
     assert sentence_corpus.export_result(path, started, None) == (False, "")         # never started
+    assert sentence_corpus.export_result(path, started, -15) == (False, "")          # ended by a signal
     stale = started - sentence_corpus.FRESH_SLACK - 1
     os.utime(path, (stale, stale))
     assert sentence_corpus.export_result(path, started, 0) == (False, "")
@@ -465,3 +466,25 @@ def test_the_yomitan_note_is_one_short_line_with_the_file_in_its_tooltip(main, s
     assert wait_until(lambda: w.note.isVisibleTo(w))
     assert w.note.text() == strings.DICT_NOTE and "Delete" in w.note.text()
     assert QDir.toNativeSeparators(save_to.path) in w.note.toolTip()
+
+
+def test_a_switch_while_the_library_is_looked_at_asks_nothing_and_runs_nothing(main, save_to, monkeypatch):
+    # The look was for ja; the window moved to zh meanwhile: no Save-as for a dictionary of the other language.
+    import threading
+    looked, go_on = threading.Event(), threading.Event()
+
+    def slow(language):
+        looked.set()
+        go_on.wait(10)
+        return True
+    monkeypatch.setattr(sdw, "library_has_content", slow)
+    runs = FakeRun(monkeypatch)
+    w = _open(main)
+    _export(w)
+    assert looked.wait(10)
+    main.services.settings.set({"target_language": "zh"})
+    assert wait_until(lambda: w._language_waiting == "zh")
+    go_on.set()
+    assert wait_until(lambda: w.language == "zh")
+    QApplication.processEvents()
+    assert save_to.asked == [] and runs.calls == [] and w.export_button.isEnabled()

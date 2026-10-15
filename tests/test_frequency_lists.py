@@ -111,6 +111,7 @@ def test_a_list_whose_old_copy_cant_be_made_is_not_added_and_the_old_one_stays(j
         frequency_lists.add(str(newer), "ja")
     assert open(dest, "rb").read() == before
     assert sorted(os.listdir(_user_files("ja"))) == ["frequency_list_ja_novels.csv"]   # no half-copy left behind
+    assert newer.read_text(encoding="utf-8") == "Word,Rank\n冒険,1\n"                   # the user's own file untouched
 
 
 def test_a_source_that_cant_be_read_adds_nothing(tmp_path):

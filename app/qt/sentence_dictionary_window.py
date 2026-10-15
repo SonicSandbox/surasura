@@ -103,8 +103,9 @@ class SentenceDictionaryWindow(SecondaryWindow):
     def _looked(self, asked, language, has_content):
         if asked != self._asked or self.gone:
             return
-        if language != self.language or not has_content:
-            self._exporting(False)
+        moved = self._language_waiting not in (None, language)     # the main window switched while it looked
+        if language != self.language or moved or not has_content:
+            self._exporting(False)                        # (a switch that waited happens now)
             if language == self.language:
                 self.say(strings.DICT_EMPTY)
             return

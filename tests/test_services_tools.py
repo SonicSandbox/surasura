@@ -444,3 +444,14 @@ def test_run_returns_at_once(tmp_path):
     assert time.perf_counter() - t0 < 0.2
     job.cancel()
     assert job.wait(20)
+
+
+def test_each_run_writes_its_log_fresh(tmp_path):
+    # The log is one run's lines: Open the log never shows an older run's success under a new failure.
+    first = _script(tmp_path, "print('first run: Saved')\n", "first.py")
+    second = _script(tmp_path, "import sys\nprint('second run')\nsys.exit(1)\n", "second.py")
+    registry = jobs_module.JobRegistry()
+    assert tools.run(registry, "sentence-corpus", "x", [first], frozen=False).wait(30)
+    assert tools.run(registry, "sentence-corpus", "x", [second], frozen=False).wait(30)
+    log = open(tools.log_path("sentence-corpus"), encoding="utf-8").read()
+    assert "second run" in log and "first run" not in log

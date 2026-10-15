@@ -105,6 +105,9 @@ DEFAULT_SETTINGS = {
     # session starts (its window opens), so your phone's reviews come in and your cards get ordered — never after
     # mining, never from Connect, hato or the command line. Off by default. Never in a signature.
     "connect_open_anki": False,
+    # Show covers (the setup wizard's *Your shows* page, G1.2-19 / C1): on only by the user's own yes there — each show's
+    # name is sent to AniList or TMDB for its cover. Off by default (and *Skip* writes nothing). Never in a signature.
+    "covers_download": False,
     # Connect's backlog (P2.4, Sonic 2026-10-07: "keep up to N Surasura cards waiting"; one per language, 2026-10-08:
     # a number is each language's, {"ja": n, "zh": m} each its own): Connect makes cards while fewer
     # than this many of its own new, unsuspended cards of that language wait in Anki, and tops up as you study; at the cap the least

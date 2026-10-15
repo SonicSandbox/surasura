@@ -26,6 +26,7 @@ PLACED = {
     "connect_enabled": "neither", "placing_rules": "neither", "connect_mine_words": "neither",
     "connect_send_grammar": "neither", "connect_anki_miner_path": "neither", "connect_anki_miner_profile": "neither",
     "connect_open_anki": "neither",          # Open Anki for me (P2.3): when Anki is started, never a run
+    "covers_download": "neither",            # Show covers (the setup wizard, G1.2-19): a cover's fetch, never a run
     "connect_backlog_cap": "neither",        # P2.4: how many of Connect's cards wait in Anki, never a run
     "known_from_anki": "neither",            # P2.4: its words reach KnownWord.json (known_sig), never as a key
     "connect_video_folders": "neither",      # P2.5: where Connect looks for a moved video, never a run

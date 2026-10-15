@@ -11,7 +11,7 @@ import re
 import pytest
 
 pytest.importorskip("PyQt6")
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QRectF, Qt
 from PyQt6.QtGui import QPalette
 from PyQt6.QtWidgets import (QCheckBox, QComboBox, QFrame, QLabel, QRadioButton, QScrollBar, QStyle,
                              QStyleFactory)
@@ -35,16 +35,16 @@ def test_every_theme_and_text_size_generates_its_own_stylesheet(qapp):
         for size in theme.TEXT_SIZES:
             sheets[(t, size)] = style.stylesheet(t, size)
             assert theme.colours(t)["line"] in sheets[(t, size)]
-    assert len(set(sheets.values())) == 9
+    assert len(set(sheets.values())) == len(theme.THEMES) * len(theme.TEXT_SIZES) == 3
     # the text size reaches the type: a tab at Large is 1.3 / 1.15 of Medium's points
-    m = float(re.search(r"QToolButton#tab \{[^}]*font-size: ([\d.]+)pt", sheets[("hb", "M")]).group(1))
-    l_ = float(re.search(r"QToolButton#tab \{[^}]*font-size: ([\d.]+)pt", sheets[("hb", "L")]).group(1))
+    m = float(re.search(r"QToolButton#tab \{[^}]*font-size: ([\d.]+)pt", sheets[("night", "M")]).group(1))
+    l_ = float(re.search(r"QToolButton#tab \{[^}]*font-size: ([\d.]+)pt", sheets[("night", "L")]).group(1))
     assert l_ / m == pytest.approx(1.3 / 1.15, rel=0.01)
 
 
 def test_generating_a_stylesheet_is_quick(qapp):
     style.stylesheet.cache_clear()
-    style.stylesheet("sapphire", "L")
+    style.stylesheet("night", "L")
     assert style._state["generated_ms"] is not None and style._state["generated_ms"] <= 5.0
 
 
@@ -107,7 +107,7 @@ def test_a_checked_check_box_is_painted_in_the_themes_colours(qapp, theme_name):
 
 
 def test_an_unchecked_check_box_and_a_radio_are_the_themes_too(qapp):
-    c = theme.colours("hb")
+    c = theme.colours("night")
     box = QCheckBox()
     arr = _grab(box, 40, 30)
     assert count(arr, c["surface"], 2) >= 60 and count(arr, c["accent"], 3) == 0
@@ -128,11 +128,11 @@ def test_the_indicators_are_ours_not_fusions(qapp):
     fusion.setParent(box)                           # a widget never owns its style: this one lives exactly as long
     box.setStyle(fusion)
     arr = _grab(box, 40, 30)
-    assert count(arr, theme.colours("hb")["accent"], 3) < 60
+    assert count(arr, theme.colours("night")["accent"], 3) < 60
 
 
 def test_a_scroll_bar_and_a_combo_are_themed(qapp):
-    c = theme.colours("hb")
+    c = theme.colours("night")
     bar = QScrollBar(Qt.Orientation.Vertical)
     bar.setRange(0, 100)
     bar.setPageStep(20)
@@ -150,17 +150,17 @@ def test_a_link_takes_the_palettes_accent(qapp):
     label = QLabel('<a href="https://example.org">AniList</a>')
     label.setTextFormat(Qt.TextFormat.RichText)
     arr = _grab(label, 120, 24)
-    assert count(arr, theme.colours("hb")["accent"], 3) >= 10      # offscreen draws a glyph box in the link's colour
+    assert count(arr, theme.colours("night")["accent"], 3) >= 10      # offscreen draws a glyph box in the link's colour
     for purple in ("#0000ff", "#ff00ff", "#800080"):               # Qt's default link and visited colours
         assert count(arr, purple, 10) == 0
 
 
-def test_a_separator_is_a_plain_frame_in_the_line_colour(qapp):
+def test_a_separator_is_a_plain_frame_in_the_frames_edge_colour(qapp):
     sep = style.separator()
     assert sep.frameShape() == QFrame.Shape.NoFrame
     assert sep.height() == 1 or sep.maximumHeight() == 1
     arr = _grab(sep, 200, 1)
-    assert count(arr, theme.colours("hb")["line"], 2) >= 190
+    assert count(arr, theme.colours("night")["frame-edge"], 2) >= 190      # where the frame meets the list
 
 
 def test_qt_itself_never_waits_before_a_tooltip(qapp):
@@ -177,8 +177,8 @@ def test_every_apply_asks_for_the_dark_scheme_even_on_a_dark_system(qapp, monkey
     asked = []
     monkeypatch.setattr(style, "ask_dark", lambda hints: asked.append(hints))
     monkeypatch.setattr(QStyleHints, "colorScheme", lambda self: Qt.ColorScheme.Dark)   # a system already dark
-    style.apply(qapp, "sky", "M", "ja")
-    style.apply(qapp, "sky", "M", "ja")
+    style.apply(qapp, "night", "L", "ja")
+    style.apply(qapp, "night", "L", "ja")
     assert len(asked) == 2 and asked[0] is qapp.styleHints()
     style._ask_dark(qapp.styleHints())                  # the real call runs on this Qt without error
 
@@ -187,7 +187,7 @@ def test_an_item_views_check_and_a_menus_check_are_ours(qapp):
     # Fusion would draw both in its own colours (review A10: S12): the accent fill / mark is SurasuraStyle's.
     from PyQt6.QtCore import Qt as _Qt
     from PyQt6.QtWidgets import QListWidget, QListWidgetItem, QMenu
-    c = theme.colours("hb")
+    c = theme.colours("night")
     view = QListWidget()
     item = QListWidgetItem("Clips")
     item.setFlags(item.flags() | _Qt.ItemFlag.ItemIsUserCheckable)
@@ -205,7 +205,7 @@ def test_an_item_views_check_and_a_menus_check_are_ours(qapp):
 def test_the_focus_ring_of_a_toggle_is_the_accent(qapp):
     # PE_FrameFocusRect is SurasuraStyle's 2 px accent ring (review A10: S13), not Fusion's.
     from PyQt6.QtCore import Qt as _Qt
-    c = theme.colours("hb")
+    c = theme.colours("night")
     box = QCheckBox("Clips")
     before = count(_grab(box, 120, 30), c["accent"], 3)
     box.setFocus(_Qt.FocusReason.TabFocusReason)
@@ -216,7 +216,7 @@ def test_the_focus_ring_of_a_toggle_is_the_accent(qapp):
 
 def test_a_combos_open_list_is_themed(qapp):
     # The list a combo opens is a separate top-level window: themed through the application, never Windows' white.
-    c = theme.colours("hb")
+    c = theme.colours("night")
     combo = QComboBox()
     combo.addItems(["Blue", "Lighter blue", "Sapphire"])
     _grab(combo, 160, 30)
@@ -224,6 +224,32 @@ def test_a_combos_open_list_is_themed(qapp):
     qapp.processEvents()
     view = combo.view()
     arr = rgb_array(view.grab())
-    assert count(arr, c["surface"], 2) + count(arr, c["raised"], 2) >= 0.5 * arr.shape[0] * arr.shape[1]
+    # an overlay: slate navy, its item under the hand a step lighter (brief §4, layer 2)
+    assert count(arr, c["overlay"], 2) + count(arr, c["overlay-hover"], 2) >= 0.5 * arr.shape[0] * arr.shape[1]
     assert count(arr, "#ffffff", 4) < 0.01 * arr.shape[0] * arr.shape[1]
     combo.hidePopup()
+
+
+@pytest.mark.parametrize("dpr", [1.0, 1.25, 1.5, 1.75, 2.0])
+@pytest.mark.parametrize("height", [40, 41, 43])
+def test_an_overlays_edges_are_whole_device_rows_at_every_scale(qapp, dpr, height):
+    # Why: at 125 / 150 / 175 % a 1 px logical edge blends over two device rows, or never reaches its colour (review
+    # L1-1): the lit top and the dark bottom must each be a solid device row, and no side edge (brief §4, rule 3).
+    from PyQt6.QtGui import QImage, QPainter
+    c = theme.colours()
+    w = 120
+    img = QImage(round(w * dpr), round(height * dpr), QImage.Format.Format_ARGB32_Premultiplied)
+    img.setDevicePixelRatio(dpr)
+    img.fill(0)
+    p = QPainter(img)
+    style.paint_overlay(p, QRectF(0, 0, w, height), theme.RADII["toast"])
+    p.end()
+
+    def near(x, y, name):
+        got, want = img.pixelColor(x, y), theme.parse(c[name])
+        return max(abs(got.red() - want[0]), abs(got.green() - want[1]), abs(got.blue() - want[2])) <= 2
+    mid_x, last = img.width() // 2, img.height() - 1
+    assert near(mid_x, 0, "overlay-edge-top")
+    assert near(mid_x, last, "overlay-edge-bottom")
+    assert near(mid_x, round(dpr), "overlay") and near(mid_x, last - round(dpr), "overlay")
+    assert near(0, img.height() // 2, "overlay")                      # the face runs to the side: no side edge

@@ -556,7 +556,7 @@ def test_the_dashboards_save_drops_nothing_from_the_file(library):
     ("logic.context.search_range", 40),
     ("logic.context.max_extra", 5),
     ("logic.context.min_words", 6),
-    ("app_theme", "hb"),                     # the 3.0 window's look (W2.1; Sapphire the default since G2.3): no run
+    ("app_theme", "hb"),                     # the 3.0 window's look (W2.1; one theme since RS-1, "night"): no run
     ("text_size", "L"),
     ("app_motion", "reduced"),               # the 3.0 window's motion (M2.1): no run, no report
     ("journey_settle_s", 10),                # when the background Generate starts (E3.2): no run, no report

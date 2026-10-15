@@ -86,9 +86,9 @@ def run_scale(scale, out_dir):
     results = []
     cases = [(t, "M", (1280, 800)) for t in theme.THEMES]
     if scale == 200:
-        cases.append(("hb", "L", (1024, 720)))                      # E16: Large text, the narrow window, 200 %
+        cases.append(("night", "L", (1024, 720)))                      # E16: Large text, the narrow window, 200 %
     for theme_name, size, (w, h) in cases:
-        win.set_look(theme_name, size)
+        win.set_look(size)
         win.resize(w, h)
         win.show()
         app.processEvents()
@@ -104,11 +104,9 @@ def run_scale(scale, out_dir):
         seps = sorted(win.centralWidget().findChildren(QFrame, "separator"), key=lambda f: f.mapTo(win, QPoint(0, 0)).y())
         lines = [f.mapTo(win, QPoint(0, 0)).y() * dpr for f in seps]       # device rows where each 1 px line starts
 
-        y1, y2, y3 = (int(v) for v in lines[:3])
-        regions = {"header": arr[: y1 - 1], "tabs": arr[y1 + 3: y2 - 1], "page": arr[y2 + 3: y3 - 1],
-                   "footer": arr[y3 + 3:]}
-        tokens = {"header": (c["header-top-opaque"], c["surface"]), "tabs": (c["tab-bar"],), "page": (c["bg"],),
-                  "footer": (c["surface"],)}
+        y2, y3 = (int(v) for v in lines[:2])          # header and tabs are one frame band: no line between them
+        regions = {"frame": arr[: y2 - 1], "page": arr[y2 + 3: y3 - 1], "footer": arr[y3 + 3:]}
+        tokens = {"frame": (c["frame"],), "page": (c["bg"],), "footer": (c["frame"],)}
         problems = []
         if (arr.shape[1], arr.shape[0]) != (round(w * scale / 100), round(h * scale / 100)):
             problems.append(f"size {arr.shape[1]}x{arr.shape[0]} is not {w}x{h} at {scale} %")
@@ -118,13 +116,13 @@ def run_scale(scale, out_dir):
             if n < 0.3 * part.shape[0] * part.shape[1]:
                 problems.append(f"{region}: {n} pixels of its tokens")
             for o in others:
-                key = "surface" if region in ("footer", "header") else ("bg" if region == "page" else "tab-bar")
+                key = "bg" if region == "page" else "frame"
                 # (a stray antialiased glyph pixel may land on any colour: a theme left behind fills far more)
                 stray = count(part, o[key], 1) > 0.005 * part.shape[0] * part.shape[1]
-                if o[key] not in [c[k] for k in ("surface", "bg", "tab-bar", "raised")] and stray:
+                if o[key] not in [c[k] for k in ("surface", "bg", "frame", "raised")] and stray:
                     problems.append(f"{region}: another theme's {key}")
-        seams = {where: _seam_rows(arr, y - 2, y + 4, c["line"])
-                 for where, y in zip(("under the header", "under the tabs", "above the bar"), (y1, y2, y3))}
+        seams = {where: _seam_rows(arr, y - 2, y + 4, c["frame-edge"])
+                 for where, y in zip(("under the tabs", "above the bar"), (y2, y3))}
         for where, rows in seams.items():
             if not rows:
                 problems.append(f"the line {where} is missing")
@@ -188,7 +186,7 @@ def run_screens(scale, out_dir):
     soon = next(i for i, e in enumerate(lst.model().entries) if any(ln.kind == "soon" for ln in e[2]))
     from PyQt6.QtCore import QEvent
     for theme_name in theme.THEMES:
-        win.set_look(theme_name, "M")
+        win.set_look("M")
         c = theme.colours(theme_name)
         others = [theme.colours(t)["bg"] for t in theme.THEMES if t != theme_name]
         for screen in ("current", "current-open", "current-soon", "finished", "needs"):
@@ -259,15 +257,15 @@ def run_screens(scale, out_dir):
         else:
             seed2 = window_seed.build(root=os.environ["SURASURA_TEST_ROOT"], mode=mode, reason=reason)
         win, services = open_seeded(seed2)
-        win.set_look("hb", "M")
+        win.set_look("M")
         settle()
         pix = win.grab()
-        name = f"w22-{label}-hb-{scale}.png"
+        name = f"w22-{label}-night-{scale}.png"
         pix.save(os.path.join(out_dir, name))
         page = win.page_widgets["current"]
         problems = []
         sub = rgb_array(page.grab())
-        if count(sub, theme.colours("hb")["bg"], TOL) < 0.3 * sub.shape[0] * sub.shape[1]:
+        if count(sub, theme.colours()["bg"], TOL) < 0.3 * sub.shape[0] * sub.shape[1]:
             problems.append(f"{label}: the page's ground is under 30 %")
         if count(sub, "#000000", 0) > 0.01 * sub.shape[0] * sub.shape[1]:
             problems.append(f"{label}: black (unpainted) areas")
@@ -275,7 +273,7 @@ def run_screens(scale, out_dir):
             problems.append("read-only: no bar saying why")
         if label == "empty" and page.list.model().entries[0][0] != rows.EMPTY:
             problems.append("empty: no empty line")
-        results.append({"scale": scale, "theme": "hb", "screen": label, "file": name, "problems": problems})
+        results.append({"scale": scale, "theme": "night", "screen": label, "file": name, "problems": problems})
         win.close()
         services.shutdown(1.0)
     return results

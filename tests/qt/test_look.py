@@ -36,49 +36,46 @@ def _regions(win):
     return header, footer
 
 
-@pytest.mark.parametrize("theme_name, text_size", [("sky", "L"), ("sapphire", "S"), ("hb", "M")])
-def test_a_switch_repaints_the_window_in_the_new_theme_and_size(opened, theme_name, text_size):
+@pytest.mark.parametrize("text_size", ["L", "S", "M"])
+def test_a_switch_repaints_the_window_in_the_new_size_on_the_one_theme(opened, text_size):
+    """One theme in 3.0 (RS-1): the frame is the night's frame colour at every size; the size reaches the bar."""
     win, _services = opened
-    other = "sapphire" if theme_name != "sapphire" else "sky"
-    win.set_look(other, "M")
-    ms = win.set_look(theme_name, text_size)
+    win.set_look("S" if text_size != "S" else "L")
+    ms = win.set_look(text_size)
     assert ms is not None and ms < 300                         # P-text's bar for a live switch (G1.2-21)
-    assert style.current()[:2] == (theme_name, text_size)
+    assert style.current()[:2] == ("night", text_size)
     QApplication.processEvents()
     header, footer = _regions(win)
-    c, o = theme.colours(theme_name), theme.colours(other)
-    assert count(footer, c["surface"], 2) >= footer.shape[0] * footer.shape[1] // 2
-    assert count(footer, o["surface"], 2) == 0
-    assert count(header, c["surface"], 3) + count(header, c["header-top-opaque"], 3) >= 1000
-    assert count(header, o["surface"], 2) == 0
+    c = theme.colours()
+    assert count(footer, c["frame"], 2) >= footer.shape[0] * footer.shape[1] // 2
+    assert count(header, c["frame"], 2) >= header.shape[0] * header.shape[1] // 3
     assert win.footer.height() == round(theme.size("footer", text_size))
     expected_pt = theme.font("body", text_size)[0] * style.PT_PER_PX
     assert QApplication.font().pointSizeF() == pytest.approx(expected_pt, abs=0.01)
 
 
-def test_a_switch_writes_its_two_keys_and_nothing_else(opened):
+def test_a_switch_writes_its_one_key_and_nothing_else(opened):
     win, services = opened
     path = path_utils.get_user_file("settings.json")
     with open(path, "w", encoding="utf-8") as f:
         json.dump({"target_language": "ja", "a_key_another_program_wrote": 7}, f)
-    win.set_look("sapphire", "L")
+    win.set_look("L")
     assert services.settings.flush(5)
     written = json.load(open(path, encoding="utf-8"))
-    assert written == {"target_language": "ja", "a_key_another_program_wrote": 7, "app_theme": "sapphire",
-                       "text_size": "L"}
+    assert written == {"target_language": "ja", "a_key_another_program_wrote": 7, "text_size": "L"}
 
 
-def test_an_unknown_theme_or_size_keeps_the_current_one(opened):
+def test_an_unknown_size_keeps_the_current_one(opened):
     win, _services = opened
-    win.set_look("sapphire", "L")
-    win.set_look("amethyst", "XL")
-    assert style.current()[:2] == ("sapphire", "L")
+    win.set_look("L")
+    win.set_look("XL")
+    assert style.current()[:2] == ("night", "L")
 
 
 def test_without_a_live_switch_it_asks_for_a_restart(opened, monkeypatch):
     win, services = opened
     monkeypatch.setattr(shell, "LIVE_LOOK", False)
-    assert win.set_look("sky", "L") is None
-    assert style.current()[:2] == (theme.DEFAULT_THEME, "M")  # unchanged until the next start (no theme saved: the default)
+    assert win.set_look("L") is None
+    assert style.current()[:2] == (theme.DEFAULT_THEME, "M")  # unchanged until the next start
     assert win.bar_line.full() == strings.RESTART_TO_APPLY
-    assert services.settings.get()["app_theme"] == "sky"     # saved for that start
+    assert services.settings.get()["text_size"] == "L"       # saved for that start

@@ -528,7 +528,7 @@ class Wordmark(QWidget):
         x = fm.horizontalAdvance(first)
         w = fm.horizontalAdvance(second)
         grad = QLinearGradient(QPointF(x, 0), QPointF(x + w, 0))
-        for pos, colour in theme.IRIS.get(style.current()[0], theme.IRIS["hb"]):
+        for pos, colour in theme.IRIS.get(style.current()[0], theme.IRIS[theme.DEFAULT_THEME]):
             grad.setColorAt(pos, style.qcolor(colour))
         pen = p.pen()
         pen.setBrush(grad)
@@ -774,8 +774,7 @@ class ShellWindow(QMainWindow):
         root = QVBoxLayout(central)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
-        root.addWidget(self._build_header())
-        root.addWidget(style.separator(central))
+        root.addWidget(self._build_header())                  # header and tabs: one frame band, no line between
         root.addWidget(self._build_tabs())
         root.addWidget(style.separator(central))
         self.pages = QStackedWidget(central)
@@ -1475,13 +1474,13 @@ class ShellWindow(QMainWindow):
     # --- end W3.5 ------------------------------------------------------------------------------------------------ #
 
     # --- the look ------------------------------------------------------------------------------------------- #
-    def set_look(self, theme_name=None, text_size=None):
-        """Settings › App › Theme / Text size (W3.3 calls it): saved through the settings service, and applied at
-        once (LIVE_LOOK) — else *Restart to apply* in the bar. -> the milliseconds the switch took, or None."""
-        current_theme, current_size, language = style.current()
-        theme_name = theme_name if theme_name in theme.THEMES else current_theme
+    def set_look(self, text_size=None):
+        """Settings › App › Text size (W3.3 calls it): saved through the settings service, and applied at once
+        (LIVE_LOOK) — else *Restart to apply* in the bar. One theme in 3.0 (RS-1): no theme to pick (themes, 3.1).
+        -> the milliseconds the switch took, or None."""
+        theme_name, current_size, language = style.current()
         text_size = text_size if text_size in theme.TEXT_SIZES else current_size
-        self.services.settings.set({"app_theme": theme_name, "text_size": text_size})
+        self.services.settings.set({"text_size": text_size})
         if not LIVE_LOOK:
             self.bar_line.set_full(strings.RESTART_TO_APPLY)
             return None

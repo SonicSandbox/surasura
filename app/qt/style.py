@@ -44,7 +44,8 @@ def qcolor(value):
 
 
 def iris_gradient(theme_name, vertical=False):
-    stops = ", ".join(f"stop:{pos} {colour}" for pos, colour in theme.IRIS.get(theme_name, theme.IRIS["hb"]))
+    iris = theme.IRIS.get(theme_name, theme.IRIS[theme.DEFAULT_THEME])
+    stops = ", ".join(f"stop:{pos} {colour}" for pos, colour in iris)
     end = "x2:0, y2:1" if vertical else "x2:1, y2:0"
     return f"qlineargradient(x1:0, y1:0, {end}, {stops})"
 
@@ -74,23 +75,23 @@ def stylesheet(theme_name=theme.DEFAULT_THEME, text_size=theme.DEFAULT_TEXT_SIZE
     rules = f"""
 /* the window's own parts (shell.py names them). Their dividing lines are separators, never borders: a border lands
    between device pixels at 125 / 175 % and smears over two rows; a separator's fill stays one crisp row */
-QWidget#header {{ background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {c['header-top-opaque']}, stop:1 {c['surface']}); }}
-QLabel#wordsub {{ color: {c['ink-faint']}; {font('status-pill')} font-weight: 400; }}
-QWidget#tabbar {{ background: {c['tab-bar']}; }}
+QWidget#header {{ background: {c['frame']}; }}
+QLabel#wordsub {{ color: {c['ink-dim']}; {font('status-pill')} font-weight: 400; }}
+QWidget#tabbar {{ background: {c['frame']}; }}
 QToolButton#tab {{ background: transparent; border: 0; border-bottom: 2px solid transparent; color: {c['ink-dim']};
   padding: 10px 14px 9px 14px; {font('tab')} }}
 QToolButton#tab:hover {{ color: {c['ink']}; }}
 QToolButton#tab:checked {{ color: {c['ink']}; border-bottom: 2px solid {iris}; }}
 QToolButton#tab:focus {{ color: {c['ink']}; border: 2px solid {c['accent']}; border-radius: 6px;
   padding: 8px 12px 9px 12px; }}
-QWidget#footer {{ background: {c['surface']}; }}
+QWidget#footer {{ background: {c['frame']}; }}
 QLabel#barline {{ color: {c['ink-dim']}; {font('footer')} font-weight: 400; }}
 QLabel#barfailure {{ color: {c['warn']}; {font('footer')} font-weight: 400; }}
 QLabel#barmark {{ color: {c['ink-dim']}; {font('footer')} font-weight: 400; }}
 QLabel#journeydot {{ color: {c['accent']}; {font('badge')} }}
-QLabel#pagewaiting {{ color: {c['ink-faint']}; {font('body')} font-weight: 400; }}
+QLabel#pagewaiting {{ color: {c['ink-dim']}; {font('body')} font-weight: 400; }}
 QLabel#pagetitle {{ color: {c['ink']}; {font('page-heading')} }}
-QFrame#separator {{ background: {c['line']}; border: 0; }}
+QFrame#separator {{ background: {c['frame-edge']}; border: 0; }}
 
 /* buttons: .btn, .btn.primary, .btn.sm, .ib, the bar's chips */
 QPushButton {{ background: {c['raised']}; color: {c['ink']}; border: 1px solid {c['line-hi']}; border-radius: 9px;
@@ -111,7 +112,7 @@ QToolButton:focus {{ border: 2px solid {c['accent']}; }}
 QToolButton::menu-indicator {{ image: none; width: 0; }}
 
 /* fields */
-QLineEdit, QSpinBox, QDoubleSpinBox, QPlainTextEdit, QTextEdit {{ background: {c['bg']}; color: {c['ink']};
+QLineEdit, QSpinBox, QDoubleSpinBox, QPlainTextEdit, QTextEdit {{ background: {c['cut']}; color: {c['ink']};
   border: 1px solid {c['line']}; border-radius: 9px; padding: {px(4)} {px(8)}; {font('input')}
   selection-background-color: {c['accent-deep']}; selection-color: {c['ink']}; }}
 QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QPlainTextEdit:focus, QTextEdit:focus {{ border-color: {c['accent']}; }}
@@ -120,8 +121,9 @@ QComboBox {{ background: {c['raised']}; color: {c['ink']}; border: 1px solid {c[
   padding: {px(3)} {px(8)}; {font('select')} }}
 QComboBox:hover, QComboBox:focus {{ border-color: {c['accent']}; }}
 QComboBox::drop-down {{ border: 0; width: {px(22)}; }}
-QComboBox QAbstractItemView {{ background: {c['surface']}; color: {c['ink']}; border: 1px solid {c['line-hi']};
-  selection-background-color: {c['raised']}; selection-color: {c['ink']}; outline: 0; }}
+QComboBox QAbstractItemView {{ background: {c['overlay']}; color: {c['ink']}; border: 0;
+  border-top: 1px solid {c['overlay-edge-top']}; border-bottom: 1px solid {c['overlay-edge-bottom']};
+  selection-background-color: {c['overlay-hover']}; selection-color: {c['ink']}; outline: 0; }}
 
 /* toggles: the indicators themselves are SurasuraStyle's (painted in the theme's colours) */
 QCheckBox, QRadioButton {{ color: {c['ink']}; spacing: {px(8)}; {font('body')} font-weight: 400; }}
@@ -167,17 +169,20 @@ QListView#rows:focus {{ border: 0; }}
 /* --- end W2.2 --- */
 
 /* menus, tabs a later screen may use, Qt's own tooltip (the shell shows its own bubble: tooltip.py) */
-QMenu {{ background: {c['surface']}; color: {c['ink']}; border: 1px solid {c['line-hi']}; padding: 6px; {font('menu-item')} }}
+QMenu {{ background: {c['overlay']}; color: {c['ink']}; border: 0; border-top: 1px solid {c['overlay-edge-top']};
+  border-bottom: 1px solid {c['overlay-edge-bottom']}; padding: 6px; {font('menu-item')} }}
 QMenu::item {{ padding: {px(7)} {px(12)}; border-radius: 7px; }}
-QMenu::item:selected {{ background: {c['raised']}; }}
-QMenu::item:disabled {{ color: {c['ink-faint']}; }}
-QMenu::separator {{ height: 1px; background: {c['line']}; margin: 4px 8px; }}
+QMenu::item:selected {{ background: {c['overlay-hover']}; }}
+QMenu::item:disabled {{ color: {c['overlay-ink-faint']}; }}
+QMenu::separator {{ height: 2px; margin: 4px 8px; background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+  stop:0 {c['groove']}, stop:0.5 {c['groove']}, stop:0.51 {c['groove-lip']}, stop:1 {c['groove-lip']}); }}
 QMenu::indicator {{ width: {px(14)}; height: {px(14)}; }}
 QTabWidget::pane {{ border: 0; }}
 QTabBar::tab {{ background: transparent; color: {c['ink-dim']}; border: 0; border-bottom: 2px solid transparent;
   padding: {px(10)} {px(14)} {px(9)} {px(14)}; {font('tab')} }}
 QTabBar::tab:selected {{ color: {c['ink']}; border-bottom: 2px solid {iris}; }}
-QToolTip {{ background: {tip}; color: {c['ink']}; border: 1px solid {c['line-hi']}; border-radius: 8px;
+QToolTip {{ background: {tip}; color: {c['ink']}; border: 0; border-top: 1px solid {c['overlay-edge-top']};
+  border-bottom: 1px solid {c['overlay-edge-bottom']}; border-radius: 8px;
   padding: 7px 10px; {font('tooltip')} }}
 """
     # --- M2.1: the toast's text and the small button (`.btn.sm`); the toast card paints itself (toast.py)
@@ -193,7 +198,8 @@ QPushButton#generate[look="failed"] {{ border: 1px solid {c['warn']}; }}
 QPushButton#generate:focus {{ border: 2px solid {c['accent']}; }}
 QLabel#sheetheading {{ color: {c['ink']}; {font('sheet-heading')} }}
 QLabel#sheetline {{ color: {c['ink-dim']}; {font('body')} font-weight: 400; }}
-QWidget#needscard {{ background: {c['surface']}; border: 1px solid {c['line']}; border-radius: {theme.RADII['r']}px; }}
+QWidget#needscard {{ background: {c['slab']}; border: 0; border-top: 1px solid {c['line-hi']};
+  border-bottom: 1px solid {c['groove']}; border-radius: {theme.RADII['r']}px; }}
 QLabel#needstitle {{ color: {c['ink']}; {font('needs-title')} }}
 """
     # --- W3.4: the ported windows (windows.py, confirm.py, row 1's windows; looks to re-skin with W3.3's surfaces)
@@ -398,9 +404,33 @@ def colours():
     return theme.colours(_state["theme"])
 
 
+def paint_overlay(p, rect, radius):
+    """An overlay's card, flat (brief §4, layer 2): the slate-navy face, its top edge lit and its bottom edge darkest,
+    never a side (rule 3). The stone's veins and light come in 3.1."""
+    c = theme.colours(_state["theme"])
+    r = QRectF(rect)
+    path = QPainterPath()
+    path.addRoundedRect(r, radius, radius)
+    p.save()
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(qcolor(c["overlay"]))
+    p.drawPath(path)
+    # The two edges on whole device rows, never antialiased: at 125 / 150 / 175 % a 1 px logical edge would blend over
+    # two rows (or never reach its colour), the smear the separators avoid (review L1-1).
+    dpr = p.device().devicePixelRatioF() if p.device() is not None else 1.0
+    edge = max(1, round(dpr)) / dpr
+    bottom = round((r.top() + r.height()) * dpr) / dpr - edge
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+    p.setClipPath(path)
+    p.fillRect(QRectF(r.left(), r.top(), r.width(), edge), qcolor(c["overlay-edge-top"]))
+    p.fillRect(QRectF(r.left(), bottom, r.width(), edge), qcolor(c["overlay-edge-bottom"]))
+    p.restore()
+
+
 def separator(parent=None, vertical=False):
     """A plain separator (the stack pack: a QFrame with a frameShape paints its own palette frame over the stylesheet's
-    background): no frameShape, a fixed 1 px, the `line` colour from the stylesheet."""
+    background): no frameShape, a fixed 1 px, the frame's edge colour (`frame-edge`) from the stylesheet."""
     sep = QFrame(parent)
     sep.setObjectName("separator")
     if vertical:

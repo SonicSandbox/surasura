@@ -183,6 +183,11 @@ def test_its_fill_and_border_are_the_tokens(clock, stage):
     fill = img.pixelColor(img.width() - 6, img.height() // 2)
     want = theme.parse(theme.FIXED["toast"])
     assert abs(fill.red() - want[0]) <= 3 and abs(fill.green() - want[1]) <= 3 and abs(fill.blue() - want[2]) <= 3
-    edge = img.pixelColor(img.width() // 2, 0)
-    line = theme.parse(theme.colours("hb")["line-hi"])
-    assert abs(edge.red() - line[0]) <= 12 and abs(edge.green() - line[1]) <= 12
+    # an overlay's card (brief §4): the top edge lit, the bottom darkest, no side edges
+    c = theme.colours("night")
+    for y, name in ((0, "overlay-edge-top"), (img.height() - 1, "overlay-edge-bottom")):
+        got, want_edge = img.pixelColor(img.width() // 2, y), theme.parse(c[name])
+        assert (abs(got.red() - want_edge[0]), abs(got.green() - want_edge[1]), abs(got.blue() - want_edge[2])) \
+            <= (3, 3, 3), name
+    side = img.pixelColor(0, img.height() // 2)
+    assert abs(side.red() - want[0]) <= 3 and abs(side.blue() - want[2]) <= 3     # the face runs to the side: no edge

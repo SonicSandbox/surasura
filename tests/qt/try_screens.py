@@ -25,8 +25,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="Try the 3.0 window's first screens on an invented library")
     ap.add_argument("--files", type=int, default=0, help="0: the small seed (about 40 rows); else 2000, 20000…")
     ap.add_argument("--language", default="ja", choices=("ja", "zh"))
-    ap.add_argument("--theme", default="sapphire", choices=("sapphire", "hb", "sky"),
-                    help="sapphire (the default since G2.3) · hb: Blue · sky: Lighter blue")
+    ap.add_argument("--theme", default="night", choices=("night",), help="one theme in 3.0: the night (RS-1)")
     ap.add_argument("--size", default="M", choices=("S", "M", "L"))
     ap.add_argument("--mode", default="store", choices=("store", "json", "read-only"))
     ap.add_argument("--keep", action="store_true", help="keep the temp folder afterwards")

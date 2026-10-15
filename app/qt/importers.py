@@ -245,8 +245,8 @@ class DeckWindow(ToolWindow):
 
     def start(self, path, field, language):
         """The import as a child (`apkg_known_import`), in the language it was asked in."""
-        return self._run(strings.APKG_NAME, ["anki_db_import.py", "--language", language, "--file", path,
-                                             "--field", field], self._done, parse=anki_db_import.parse_result)
+        return self._run(strings.APKG_NAME, ["anki_db_import.py", "--language", language, f"--file={path}",
+                                             f"--field={field}"], self._done, parse=anki_db_import.parse_result)
 
     def _done(self, code):
         key, values = importers_view.deck_outcome(code, self._result, self._why())
@@ -633,42 +633,58 @@ class ExtractWindow(ToolWindow):
         method = "length" if self.by_length.isChecked() else "delimiter"
         return method, self.value.text(), (self.parts.value() if self.group.isChecked() else 0)
 
+    def job(self):
+        """What Extract runs, as the window holds it now (taken at the click: an edit during the name's check never
+        changes it)."""
+        method, value, parts = self.options()
+        return {"path": self.path.text().strip(), "method": method, "value": value, "parts": parts,
+                "section": self.section.currentData(), "field": self.field.currentText(), "language": self.language}
+
     def check(self):
         """Extract: the options checked here, the name on a worker (a taken one refused, its free name proposed),
-        then the child."""
+        then the child. The window counts as writing from the click (one Extract at a time)."""
         if not self.go.isEnabled():
             return
-        path = self.path.text().strip()
-        method, value, parts = self.options()
-        if not importers_view.is_deck(path):
-            fault = extract.check_options(method, value, bool(parts), parts or None)
+        job = self.job()
+        if not importers_view.is_deck(job["path"]):
+            fault = extract.check_options(job["method"], job["value"], bool(job["parts"]), job["parts"] or None)
             if fault:
                 self.say(strings.EXTRACT_FAULTS[fault])
                 return
+        self.begin_write()
+        self.refresh()
         self.say(strings.EXTRACT_CHECKING)
-        name = self.name.text()
-        bridge.run_in_worker(extract.check_name, name, self.language, then=self.alive(self._named),
-                             failed=self.alive(lambda info: self.say(self._failed_line(info[0]))))
+        bridge.run_in_worker(extract.check_name, self.name.text(), job["language"],
+                             then=self.alive(lambda answer: self._named(answer, job)),
+                             failed=self.alive(lambda info: self._checked(self._failed_line(info[0]))))
 
-    def _named(self, answer):
+    def _checked(self, line):
+        """The check ended without a child: said, and the window idle again."""
+        self.say(line)
+        self.end_write(line)
+        self.refresh()
+
+    def _named(self, answer, job):
         if answer.name is None:
-            self.say(strings.EXTRACT_BAD_NAME)
+            self._checked(strings.EXTRACT_BAD_NAME)
             return
         if answer.taken:
             self.name.setText(answer.proposal)
-            self.say(strings.EXTRACT_TAKEN.format(name=answer.name, proposal=answer.proposal))
+            self._checked(strings.EXTRACT_TAKEN.format(name=answer.name, proposal=answer.proposal))
             return
-        self.start(answer.name)
+        self.start(answer.name, job)
+        self.end_write()                                  # the check's; the child's write goes on
 
-    def start(self, name):
-        path = self.path.text().strip()
-        method, value, parts = self.options()
-        argv = ["extract.py", "--language", self.language, "--file", path, "--name", name,
-                "--section", self.section.currentData()]
-        if importers_view.is_deck(path):
-            argv += ["--field", self.field.currentText()]
+    def start(self, name, job=None):
+        """The child, every value glued to its option (a --- delimiter or a -draft name is a value, never an
+        option)."""
+        job = job or self.job()
+        argv = ["extract.py", "--language", job["language"], f"--file={job['path']}", f"--name={name}",
+                "--section", job["section"]]
+        if importers_view.is_deck(job["path"]):
+            argv += [f"--field={job['field']}"]
         else:
-            argv += ["--split", method, "--value", value, "--parts", str(parts)]
+            argv += ["--split", job["method"], f"--value={job['value']}", "--parts", str(job["parts"])]
         return self._run(strings.EXTRACT_NAME, argv, self._done, parse=extract.parse_result)
 
     def _done(self, code):

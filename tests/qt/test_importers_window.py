@@ -137,7 +137,7 @@ def test_the_deck_import_runs_only_after_a_yes_that_names_what_it_adds(main, run
     _card(w).yes.click()
     [call] = runs.calls
     assert call.kind == "known-import"
-    assert call.argv == ["anki_db_import.py", "--language", "ja", "--file", DECK, "--field", w.deck.default]
+    assert call.argv == ["anki_db_import.py", "--language", "ja", f"--file={DECK}", f"--field={w.deck.default}"]
     assert not w.go.isEnabled()                               # one at a time
     runs.end(0, "Found 40 words in 'Sentence'", anki_db_import.result_line(anki_db_import.Merge(12, 3, 52, None,
                                                                                                   None, False)))
@@ -495,8 +495,8 @@ def test_extract_checks_the_name_and_starts_the_child_with_the_section_chosen(ma
     assert wait_until(lambda: runs.calls)
     [call] = runs.calls
     assert call.kind == "extract"
-    assert call.argv == ["extract.py", "--language", "ja", "--file", src, "--name", "旅の記録", "--section", "soon",
-                         "--split", "length", "--value", w.value.text(), "--parts", "3"]
+    assert call.argv == ["extract.py", "--language", "ja", f"--file={src}", "--name=旅の記録", "--section", "soon",
+                         "--split", "length", f"--value={w.value.text()}", "--parts", "3"]
     runs.end(0, "Saving 4 parts", extract.result_line(extract.Result(0, 4, "旅の記録", "soon", True, None)))
     assert w.status.text() == strings.EXTRACT_DONE.format(parts=4, section="Soon", name="旅の記録")
 
@@ -540,7 +540,7 @@ def test_a_deck_needs_its_field_and_the_tick_and_never_groups(main, runs):
     assert w.go.isEnabled()
     w.go.click()
     assert wait_until(lambda: runs.calls)
-    assert runs.calls[0].argv[-2:] == ["--field", w.field.currentText()] and "--parts" not in runs.calls[0].argv
+    assert runs.calls[0].argv[-1] == f"--field={w.field.currentText()}" and "--parts" not in runs.calls[0].argv
 
 
 @pytest.mark.parametrize("result, line", [
@@ -554,6 +554,44 @@ def test_extracts_other_ends_are_said(main, runs, tmp_path, result, line):
     w.start("旅")
     runs.end(result.code, extract.result_line(result))
     assert w.status.text() == line
+
+
+def test_extract_is_off_while_its_name_is_checked_and_runs_what_was_clicked(main, runs, tmp_path, monkeypatch):
+    """AD2-6: a second click while the name is checked started a second child; an edit during the check ran the new
+    file under the name checked for the old one. Now the button is off until the answer, and the answer runs the
+    file, split, section and language of the click."""
+    checks = []
+    monkeypatch.setattr(importers.bridge, "run_in_worker",
+                        lambda fn, *a, then=None, failed=None: checks.append((fn(*a), then)))
+    w = importers.open_extract(main)
+    src = _text(tmp_path)
+    w.path.setText(src)
+    w.choose(src)
+    w.section.setCurrentIndex(1)
+    w.go.click()
+    assert not w.go.isEnabled() and w.busy()
+    w.go.click()
+    assert len(checks) == 1
+    w.path.setText(_text(tmp_path, "別の本.txt"))
+    w.section.setCurrentIndex(2)
+    [(answer, then)] = checks
+    then(answer)
+    [call] = runs.calls
+    assert f"--file={src}" in call.argv and call.argv[call.argv.index("--section") + 1] == "soon"
+
+
+def test_extract_glues_every_value_to_its_option(main, runs, tmp_path):
+    """AD2-7: a value starting with a dash (a --- chapter rule, a -draft name) reaches the child as a value."""
+    w = importers.open_extract(main)
+    src = _text(tmp_path)
+    w.path.setText(src)
+    w.choose(src)
+    w.by_pattern.setChecked(True)
+    w.value.setText("---")
+    w.name.setText("-draft")
+    w.start("-draft")
+    argv = runs.calls[-1].argv
+    assert "--value=---" in argv and "--name=-draft" in argv and f"--file={src}" in argv
 
 
 def test_the_real_extract_child_adds_its_parts_to_the_library(main, tmp_path):

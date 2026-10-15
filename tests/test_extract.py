@@ -370,3 +370,17 @@ def test_a_name_only_the_stores_trash_holds_is_taken(tmp_path):
         store.close()
     os.rmdir(os.path.join(data_dir, "HighPriority", name))
     assert extract.check_name(name, "ja").taken
+
+
+# --- a value that starts with a dash (the window glues every value to its option) ---------------------------------- #
+def test_the_child_takes_a_dash_delimiter_and_a_dash_name_glued_to_their_options(tmp_path, capsys):
+    """A chapter rule such as --- in a .txt, a name such as -draft: argparse read them as options (exit 2, no result
+    line). Glued (`--value=---`), the child takes them as the Tk window did."""
+    with open(os.path.join(RES, "ja", "context_test.txt"), encoding="utf-8") as f:
+        text = f.read()
+    src = tmp_path / "章.txt"
+    src.write_text(f"{text}\n---\n{text}\n---\n{text}", encoding="utf-8")
+    code = extract.main(["--language", "ja", f"--file={src}", "--name=-draft", "--split", "delimiter",
+                         "--value=---"])
+    result = extract.parse_result(capsys.readouterr().out.strip().splitlines()[-1])
+    assert code == extract.EXIT_DONE and result.parts == 3 and result.folder == "-draft"

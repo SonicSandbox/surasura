@@ -213,6 +213,18 @@ QPushButton[kind="danger"] {{ background: {c['bad']}; color: {c['bad-type']}; bo
 QPushButton[kind="danger"]:focus {{ border: 2px solid {c['ink']}; }}
 QListWidget#windowlist {{ background: {c['bg']}; border-radius: {theme.RADII['button']}px; padding: {px(4)}; }}
 """
+    # --- W3.3 (Settings): the fields inside the controls (settings_controls.py paints the rest): a cut — the floor
+    # darker than the slab, the top wall dark, the lower wall lit, no side edges — right-aligned figures in a number
+    rules += f"""
+QLineEdit#settingsfield {{ background: {c['cut']}; color: {c['ink']}; border: 0; border-top: 1px solid {c['cut-wall-top']};
+  border-bottom: 1px solid {c['cut-wall-low']}; border-radius: {theme.RADII['r-sm']}px; padding: 0 {px(8)};
+  min-height: {px(theme.SIZES['settings-num-h'])}; max-height: {px(theme.SIZES['settings-num-h'])}; {font('number-field')} }}
+QLineEdit#settingsfield:focus {{ border: 2px solid {c['accent']}; padding: 0 {round(8 * f) - 2}px; }}
+QLineEdit#settingsfield:disabled {{ color: {c['settings-ink-greyed']}; }}
+QLabel#settingsaffix {{ color: {c['ink-dim']}; {font('number-field')} }}
+QLabel#settingsaffix:disabled {{ color: {c['settings-ink-greyed']}; }}
+"""
+    # --- end W3.3
     _state["generated_ms"] = (time.perf_counter() - t0) * 1000
     return rules
 

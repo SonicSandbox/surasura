@@ -435,3 +435,81 @@ def tokens(theme=DEFAULT_THEME, text_size=DEFAULT_TEXT_SIZE):
         "sizes": {name: size(name, text_size) for name in SIZES}, "radii": dict(RADII), "shadows": dict(SHADOWS),
         "ease": EASE, "fast": FAST, "slow": SLOW, "motion": MOTION,
     })
+
+
+# --- W3.3 (Settings) ------------------------------------------------------------------------------------------------ #
+# The Settings page's controls (W3.3 P2; the foundation brief §7 *Controls*, §8 *Marks*; the old mock's CSS
+# mock-g16 :585–645): the slab tint, the channel's rib and vein, the toggle's tablet and gem, the level slider's well,
+# chambers and gem, the tablets, the status mark — flat (RS-1: no stone texture, no painted light; the shapes and their
+# movement only). **Invented here:** every value below but the tint is Mado's flat stand-in for what the brief says in
+# words; one line each to change once Sonic names a value. Contrast (Sonic: "Readability is critical here"): every text
+# a control shows is ≥ 4.5:1 unchosen and ≥ 7:1 chosen on the slab, the tinted slab and the cut floors
+# (tests/qt/test_settings_controls.py works it out from these values).
+_W33_TINT = ("mix", "slab", 93, "accent", 7)
+MIXES.update({
+    # every other section, a breath toward the accent (mock.html :613, there over `surface`; here over the slab)
+    "settings-slab-tint": ("mock.html :613; RUNBOOK W3.3", _W33_TINT),
+    # a tablet (adding; brief §7): its face nearer than either slab (rule 1), lit when on
+    "settings-tablet": ("brief §7 adding", ("mix", "line", 60, _W33_TINT, None)),
+    "settings-tablet-on": ("brief §7 adding, lit", ("mix", "accent-wash", 60, "line", None)),
+    # grey text that still says something: a greyed row (≥ 4.5:1 on both slabs) and a chosen card's line (≥ 7:1)
+    "settings-ink-greyed": ("brief §7 contrast ≥ 4.5", ("mix", "ink-dim", 85, "ink-faint", None)),
+    "settings-ink-chosen-line": ("brief §7 contrast ≥ 7", ("mix", "ink", 60, "ink-dim", None)),
+    # the toggle (brief §7): a hewn channel in a slate tablet, a rough gem — dark off, the sapphire's light on
+    "toggle-lit": ("brief §7 the toggle, lit", ("mix", GEM["sapphire"][1], 30, "cut", None)),
+    "toggle-lip": ("brief §7 the toggle's hewn channel: its lower lip lit", ("mix", "line-hi", 70, "ink-faint", None)),
+    "toggle-gem-off": ("brief §7 the toggle, dark", "ink-faint"),
+    "toggle-gem-off-shade": ("brief §7 the toggle, dark", ("mix", "ink-faint", 55, "cut", None)),
+    "toggle-gem-off-facet": ("brief §7 the toggle, dark", ("mix", "ink-dim", 70, "ink-faint", None)),
+    "gem-sapphire-shade": ("gem-kit.js GEM sapphire base", GEM["sapphire"][0]),
+    "gem-sapphire": ("gem-kit.js GEM sapphire light", GEM["sapphire"][1]),
+    "gem-sapphire-facet": ("gem-kit.js GEM sapphire edge", ("mix", GEM["sapphire"][2], 60, GEM["sapphire"][1], None)),
+    # the level slider's gem (brief §7): lifted, nearer and lit toward the aqua; at rest a faint light on the well
+    "slider-gem-lifted": ("brief §7 the slider's gem, lifted", ("mix", GEM["sapphire"][1], 65, IRIS["night"][0][1], None)),
+    "slider-glow": ("brief §7 the slider's gem at rest", ("mix", GEM["sapphire"][1], 16, "cut", None)),
+    "slider-chamber": ("brief §7 a chamber at each level", ("mix", "cut", 40, "#000000", None)),
+    # the emerald (brief §8 *connected*): a round cut stone, lit or dark
+    "emerald": ("gem-kit.js GEM emerald light", GEM["emerald"][1]),
+    "emerald-shade": ("gem-kit.js GEM emerald base", GEM["emerald"][0]),
+    "emerald-facet": ("gem-kit.js GEM emerald edge", ("mix", GEM["emerald"][2], 60, GEM["emerald"][1], None)),
+    "emerald-dark": ("brief §8 the emerald, dark", ("mix", GEM["emerald"][0], 45, "cut", None)),
+    "emerald-dark-facet": ("brief §8 the emerald, dark", ("mix", GEM["emerald"][0], 70, "ink-faint", None)),
+})
+_COLOURS = {theme_: _build(theme_) for theme_ in THEMES}
+
+# The light the painters lay over a floor (alpha 0–1): the vein is the iris at 0.75 of its light (brief §7); the level
+# slider's channel runs the iris's blue → purple a little quieter, so the gem and the chosen chamber stay the brightest.
+SETTINGS_LIGHT = MappingProxyType({"vein": 0.75, "channel": 0.6})
+# The two slabs every other section alternates (RUNBOOK W3.3: "every other section tinted") and the floors a control
+# cuts into them: what every text role is proven against.
+SETTINGS_GROUNDS = ("slab", "settings-slab-tint")
+SETTINGS_FLOORS = ("cut",)
+# The page's text roles (S5: P3 proves every one on both slabs) and the controls' own (proven with the controls): role ->
+# a colour name of `colours()`. Unchosen text ≥ 4.5:1, chosen ≥ 7:1.
+SETTINGS_TEXT = MappingProxyType({
+    "label": "ink", "help": "ink-dim", "group": "ink-dim", "nav-lit": "ink", "nav-unlit": "ink-dim", "hint": "ink-dim",
+    "search": "ink", "placeholder": "ink-dim", "greyed": "settings-ink-greyed",
+    "chosen": "ink", "unchosen": "ink-dim", "chosen-line": "settings-ink-chosen-line", "value": "ink",
+    "status": "ink", "status-off": "ink-dim",
+})
+SETTINGS_CHOSEN_ROLES = frozenset({"label", "nav-lit", "search", "chosen", "chosen-line", "value", "status"})
+# Compact density (05 §5.12; the mock's `.segc` 5 × 11 px padding, `.num` 64 × 30, `.pill` 26 high, `.choice` 8 × 11),
+# each × the text size (the toggle too: the fixed `switch-w` / `switch-h` read too small, the lead's 2026-10-15 round).
+SIZES.update({
+    "settings-seg-pad-y": 5, "settings-seg-pad-x": 11, "settings-num-w": 64, "settings-num-h": 30,
+    "settings-pill-h": 26, "settings-pill-pad-x": 10, "settings-card-pad-y": 8, "settings-card-pad-x": 11,
+    "settings-card-gap": 5, "settings-card-w": 560, "settings-text-w": 220, "settings-select-w": 180,
+    "settings-slider-w": 360, "settings-slider-well": 26, "settings-gem": 15, "settings-emerald": 10,
+    # the toggle's tablet: the mock's 36 × 20 at Small, × the text size (41 × 23 at Medium: the lead's ≥ 40 × 22)
+    "settings-toggle-w": 36, "settings-toggle-h": 20,
+})
+# The controls' motion (brief §6–7; the reference's springs as the clock's durations): the vein travels as the tab's
+# (its leading end there first, the trailing end catching up); the toggle's gem slides (the switch's knob, 260 ms), its
+# light comes up quickly and leaves a little slower; the slider's gem lifts (ω 34, ζ 0.9: settled in about 130 ms),
+# glides after the hand, then falls in (85 ms) and stops hard. Reduced motion and the freeze switch: each jumps.
+SETTINGS_MOTION = MappingProxyType({
+    "vein-travel": SLOW, "vein-lead": 0.6, "toggle-slide": MOTION["switch-knob"], "toggle-light-up": FAST,
+    "toggle-light-down": SLOW, "slider-lift": 130, "slider-lift-omega": 34.0, "slider-lift-zeta": 0.9,
+    "slider-glide": FAST, "slider-fall": 85, "slider-follow": 18.0, "slider-hold-px": 16, "slider-hold": 0.2,
+})
+# --- end W3.3 ------------------------------------------------------------------------------------------------------ #

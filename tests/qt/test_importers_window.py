@@ -208,7 +208,8 @@ def test_a_migaku_file_is_read_first_then_one_confirmation_with_both_numbers_can
     assert wait_until(lambda: _card(w) is not None)
     _card(w).yes.click()
     [call] = runs.calls
-    assert call.kind == "known-import" and call.argv == ["migaku_converter.py", MIGAKU, "--language", "ja"]
+    assert call.kind == "known-import" and call.argv == ["migaku_converter.py", MIGAKU, "--language", "ja",
+                                                         "--expect", importers_view.expect_arg(plan)]
     runs.end(0, "Found 10 words", "Conversion complete!")
     assert w.status.text() == strings.MIGAKU_DONE
 
@@ -316,6 +317,32 @@ def test_a_language_switch_drops_jitens_question_and_its_fetched_cards(main, run
     assert card.answer is False and len(runs.calls) == 1 and not os.path.exists(folder)
 
 
+def test_a_replace_whose_numbers_moved_reads_again_and_asks_again(main, runs):
+    """IK-56: the child found the known words changed since the yes (a sync appended words) and wrote nothing; the
+    window says so, reads again and asks with the numbers as they are now."""
+    _known(CURRENT)
+    from app import anki_sync
+    w = importers.open_migaku(main)
+    w.read(MIGAKU)
+    assert wait_until(lambda: _card(w) is not None)
+    _card(w).yes.click()
+    runs.end(anki_sync.EXIT_CHANGED, "Error: Your known words changed since you confirmed, so nothing was replaced.")
+    assert wait_until(lambda: _card(w) is not None)
+    assert len(runs.calls) == 1 and strings.KNOWN_CHANGED == w.status.text()
+    j = importers.open_jiten(main)
+    j.key.setText(SECRET)
+    j.go.click()
+    folder = os.path.dirname(runs.calls[-1].argv[-1])
+    _fetched(runs, [{"wordText": "猫", "state": 5}])
+    assert wait_until(lambda: _card(j) is not None)
+    _card(j).yes.click()
+    runs.end(anki_sync.EXIT_CHANGED, "Error: Your known words changed since you confirmed, so nothing was replaced.")
+    assert wait_until(lambda: _card(j) is not None)             # asked again from the same fetched cards
+    assert os.path.exists(folder) and len(runs.calls) == 3
+    _card(j).no.click()
+    assert not os.path.exists(folder)
+
+
 def test_choose_a_file_asks_too(main, runs, monkeypatch):
     """The Tk window's *Select File Manually…* replaced the known words with no question at all (inv §3.9)."""
     _known(CURRENT)
@@ -388,7 +415,8 @@ def test_jiten_fetches_first_with_the_key_in_the_environment_only_then_asks_with
     assert card.default is card.no and len(runs.calls) == 1   # nothing replaced before the yes
     card.yes.click()
     replace = runs.calls[-1]
-    assert replace.argv == ["jiten_converter.py", "--language", "ja", "--cards", os.path.join(folder, "cards.json")]
+    assert replace.argv == ["jiten_converter.py", "--language", "ja", "--cards", os.path.join(folder, "cards.json"),
+                            "--expect", "2,2,1,1"]
     assert replace.env == {}                                  # step 2 needs no key
     runs.end(0, "Conversion complete!")
     assert w.status.text() == strings.JITEN_DONE

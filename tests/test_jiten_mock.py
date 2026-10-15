@@ -315,3 +315,28 @@ def test_an_error_page_is_cut_short_to_one_line(monkeypatch):
     monkeypatch.setattr("requests.get", lambda *a, **k: page)
     cards, error = jiten_converter.fetch_cards("key")
     assert cards is None and "\n" not in error and len(error) < 200 and "502" in error
+
+
+# --- IK-56: the replace writes only the numbers its confirmation stated ------------------------------------------ #
+def test_a_replace_whose_numbers_moved_since_the_confirmation_writes_nothing_and_exits_changed(tmp_path, monkeypatch):
+    """A sync appended words while the question stood: the replace re-counts under the lock and refuses (exit 4), so
+    the window reads again and asks again; with the numbers as confirmed it writes."""
+    from app import anki_sync, jiten_converter
+    from app.path_utils import get_user_files_path
+    os.makedirs(get_user_files_path("ja"), exist_ok=True)
+    known = os.path.join(get_user_files_path("ja"), "KnownWord.json")
+    with open(known, "w", encoding="utf-8") as f:
+        json.dump({"words": [{"dictForm": "冒険", "knownStatus": "KNOWN", "hasCard": 1},
+                             {"dictForm": "えっと", "knownStatus": "IGNORED"}]}, f, ensure_ascii=False)
+    cards = tmp_path / "cards.json"
+    cards.write_text(json.dumps([{"wordText": "猫", "state": 5}], ensure_ascii=False), encoding="utf-8")
+    numbers = anki_sync.replace_numbers("ja", jiten_converter.words_from_cards(json.loads(cards.read_text("utf-8"))))
+    before = open(known, "rb").read()
+    stale = ",".join(str(n) for n in (numbers[0] + 1,) + tuple(numbers[1:]))
+    with pytest.raises(SystemExit) as done:
+        jiten_converter.main(["--language", "ja", "--cards", str(cards), "--expect", stale])
+    assert done.value.code == anki_sync.EXIT_CHANGED
+    assert open(known, "rb").read() == before and not os.path.exists(os.path.join(os.path.dirname(known), ".trash"))
+    with pytest.raises(SystemExit) as done:
+        jiten_converter.main(["--language", "ja", "--cards", str(cards), "--expect", ",".join(map(str, numbers))])
+    assert done.value.code == 0 and anki_sync.count_known("ja") == numbers[1]

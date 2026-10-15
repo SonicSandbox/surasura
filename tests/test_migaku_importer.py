@@ -234,3 +234,26 @@ def test_an_unreadable_known_words_file_refuses_migakus_replace_and_writes_nothi
     assert convert_db_to_json(str(db), str(known), language="ja") is False
     assert known.read_bytes() == content.encode("utf-8")
     assert not (known.parent / ".trash").exists()
+
+
+# --- IK-56: the replace writes only the numbers its confirmation stated ------------------------------------------ #
+def test_migakus_replace_refuses_when_the_numbers_moved_since_the_confirmation(ja_resources_dir, monkeypatch):
+    from app import anki_sync, migaku_converter
+    from app.path_utils import get_user_files_path
+    os.makedirs(get_user_files_path("ja"), exist_ok=True)
+    known = os.path.join(get_user_files_path("ja"), "KnownWord.json")
+    with open(known, "w", encoding="utf-8") as f:
+        json.dump(_PREVIOUS, f, ensure_ascii=False)
+    db = os.path.join(ja_resources_dir, "MigakuDb.db")
+    numbers = anki_sync.replace_numbers("ja", migaku_converter.read_words(db, "ja"))
+    before = open(known, "rb").read()
+    stale = ",".join(map(str, (numbers[0], numbers[1] - 1, numbers[2], numbers[3])))
+    monkeypatch.setattr(sys, "argv", ["migaku_converter.py", db, "--language", "ja", "--expect", stale])
+    with pytest.raises(SystemExit) as done:
+        migaku_converter.main()
+    assert done.value.code == anki_sync.EXIT_CHANGED and open(known, "rb").read() == before
+    monkeypatch.setattr(sys, "argv", ["migaku_converter.py", db, "--language", "ja", "--expect",
+                                      ",".join(map(str, numbers))])
+    with pytest.raises(SystemExit) as done:
+        migaku_converter.main()
+    assert done.value.code == 0 and anki_sync.count_known("ja") == numbers[1]

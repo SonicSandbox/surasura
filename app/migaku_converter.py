@@ -9,6 +9,7 @@ import sys
 if __name__ == "__main__" and __package__ is None:
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from app.anki_sync import EXIT_CHANGED, NumbersChanged, parse_expect
 from app.path_utils import get_user_file, get_user_files_path, backup_to_trash
 
 # The browser console line that downloads Migaku's database (the importer's step 1: without it there is no .db).
@@ -101,7 +102,10 @@ def read_words(db_path, language=None):
         conn.close()
 
 
-def convert_db_to_json(db_path, output_json=None, language=None):
+def convert_db_to_json(db_path, output_json=None, language=None, expect=None):
+    """Replace KnownWord.json with the export's words, holding its lock: refused when the file can't be read, a dated
+    backup first, past Graduates' and dismissed words kept, written atomically. -> True when written. `expect`: the
+    numbers the user confirmed; moved by now, nothing is written and `anki_sync.NumbersChanged` is raised."""
     if not output_json:
         # Save to User Files/<lang>/KnownWord.json
         user_files_dir = get_user_files_path(language)
@@ -162,6 +166,8 @@ def convert_db_to_json(db_path, output_json=None, language=None):
             if unreadable:
                 print(f"Error: {unreadable}")
                 return False
+            from app.anki_sync import check_numbers
+            check_numbers(lock_language, words, output_json, expect)
             # This import REPLACES the file. Keep a dated copy of what it replaces first
             # (User Files/<lang>/.trash/KnownWord.<YYYYmmdd-HHMMSS>.json); no copy, no overwrite.
             try:
@@ -205,6 +211,8 @@ def convert_db_to_json(db_path, output_json=None, language=None):
     except sqlite3.Error as e:
         print(f"SQLite error: {e}")
         return False
+    except NumbersChanged:
+        raise
     except Exception as e:
         print(f"Error: {e}")
         import traceback
@@ -217,9 +225,16 @@ def main():
     parser.add_argument("db_file", help="Path to Migaku .db file")
     parser.add_argument("out_file", nargs='?', help="Optional output JSON path")
     parser.add_argument("--language", help="Optional language filter (e.g., ja, zh)")
+    parser.add_argument("--expect", default=None,
+                        help="The numbers the user confirmed (now,after,graduated,ignored); moved by then, nothing is "
+                             "replaced and the exit code is 4")
 
     args = parser.parse_args()
-    ok = convert_db_to_json(args.db_file, args.out_file, args.language)
+    try:
+        ok = convert_db_to_json(args.db_file, args.out_file, args.language, parse_expect(args.expect))
+    except NumbersChanged as e:
+        print(f"Error: {e}")
+        sys.exit(EXIT_CHANGED)
     # The importer window reads the exit code to choose between "Success" and "Error"; returning
     # normally on a failure made it announce success for an import that wrote nothing.
     sys.exit(0 if ok else 1)

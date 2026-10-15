@@ -330,14 +330,23 @@ class MigakuWindow(ToolWindow):
         body = strings.MIGAKU_ASK_BODY.format(file=os.path.basename(plan.path), time=saved, now=plan.now,
                                               after=plan.after, kept=_kept(plan))
         self.ask(strings.MIGAKU_ASK_TITLE, body, strings.MIGAKU_ASK_YES, strings.MIGAKU_ASK_YES_TIP,
-                 default_no=True, danger=True, on_answer=lambda yes: yes and self.start(plan.path, language))
+                 default_no=True, danger=True,
+                 on_answer=lambda yes: yes and self.start(plan.path, language, importers_view.expect_arg(plan)))
 
-    def start(self, path, language):
-        """The replace as a child, in the language its numbers were read for."""
-        return self._run(strings.MIGAKU_NAME, ["migaku_converter.py", path, "--language", language], self._done)
+    def start(self, path, language, expect=None):
+        """The replace as a child, in the language its numbers were read for; `expect`: those numbers (moved by the
+        time it holds the lock, it writes nothing and the window asks again)."""
+        argv = ["migaku_converter.py", path, "--language", language] + (["--expect", expect] if expect else [])
+        return self._run(strings.MIGAKU_NAME, argv, lambda code: self._done(code, path, language))
 
-    def _done(self, code):
+    def _done(self, code, path=None, language=None):
         key, values = importers_view.replace_outcome(code, self._why())
+        if key == "changed":
+            self.say(strings.KNOWN_CHANGED)
+            self.end_write()
+            if path and language == self.language:
+                self.read(path)                           # the numbers as they are now, asked again
+            return
         line = strings.MIGAKU_DONE if key == "done" else self._failed_line(values["why"])
         if key == "done":
             self._wrote()
@@ -450,21 +459,36 @@ class JitenWindow(ToolWindow):
 
         def answered(yes):
             if yes:
-                self.replace(plan.path)
+                self.replace(plan.path, importers_view.expect_arg(plan))
             else:
                 self._drop_folder()
         self.ask(strings.JITEN_ASK_TITLE, body, strings.JITEN_ASK_YES, strings.JITEN_ASK_YES_TIP,
                  default_no=True, danger=True, on_answer=answered)
 
-    def replace(self, cards):
-        """Step 2: the replace from the cards step 1 kept (no key, no fetch)."""
+    def replace(self, cards, expect=None):
+        """Step 2: the replace from the cards step 1 kept (no key, no fetch); `expect`: the numbers confirmed."""
+        from app import anki_sync
         folder = self._folder
         self._folder = None                               # the child's now: removed when it ends
-        return self._run(strings.JITEN_NAME, ["jiten_converter.py", "--language", "ja", "--cards", cards],
-                         self._done, after=lambda _code: shutil.rmtree(folder, ignore_errors=True) if folder else None)
 
-    def _done(self, code):
+        def after(code):
+            # On the tool's thread: the numbers moved — the cards stay for the window to ask again, if it is open
+            if code == anki_sync.EXIT_CHANGED and not self.gone:
+                self._folder = folder
+            elif folder:
+                shutil.rmtree(folder, ignore_errors=True)
+        argv = ["jiten_converter.py", "--language", "ja", "--cards", cards] + (["--expect", expect] if expect else [])
+        return self._run(strings.JITEN_NAME, argv, lambda code: self._done(code, cards, folder), after=after)
+
+    def _done(self, code, cards=None, folder=None):
         key, values = importers_view.replace_outcome(code, self._why())
+        if key == "changed":
+            self.say(strings.KNOWN_CHANGED)
+            self.end_write()
+            self._folder = folder or self._folder         # kept by `after`, whichever of the two comes first
+            if cards and self._folder:
+                self._fetched(0, cards)                   # the same cards, the numbers as they are now
+            return
         line = strings.JITEN_DONE if key == "done" else self._failed_line(values["why"])
         if key == "done":
             self._wrote()

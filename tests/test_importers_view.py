@@ -228,3 +228,8 @@ def test_both_plans_refuse_a_known_words_file_that_cant_be_read(ja_resources_dir
 def test_a_missing_known_words_file_is_no_refusal(ja_resources_dir):
     # A first import has no file at all: nothing to keep, nothing refused.
     assert importers_view.migaku_plan(os.path.join(ja_resources_dir, "MigakuDb.db"), "ja").now == 0
+
+
+def test_a_replace_that_found_its_numbers_moved_is_its_own_end():
+    assert importers_view.replace_outcome(anki_sync.EXIT_CHANGED, None)[0] == "changed"
+    assert importers_view.expect_arg(importers_view.Plan("p", 3, 2, 5, 1, 0, None)) == "2,5,1,0"

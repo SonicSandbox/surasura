@@ -105,8 +105,17 @@ def deck_outcome(code, result, why):
 
 
 def replace_outcome(code, why):
-    """Migaku's or Jiten's replace -> ('done' | 'failed', values): the exit code decides."""
+    """Migaku's or Jiten's replace -> ('done' | 'changed' | 'failed', values): the exit code decides ('changed': the
+    known words moved since the confirmation, nothing written — read again and ask again)."""
+    from app import anki_sync
+    if code == anki_sync.EXIT_CHANGED:
+        return "changed", {}
     return ("done", {}) if code == 0 else ("failed", {"why": why})
+
+
+def expect_arg(plan):
+    """The numbers a confirmation stated, as the replace's `--expect` takes them."""
+    return f"{plan.now},{plan.after},{plan.graduated},{plan.ignored}"
 
 
 def extract_outcome(code, result, why):

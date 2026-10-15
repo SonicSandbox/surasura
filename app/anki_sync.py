@@ -216,11 +216,11 @@ def _known_keys(words):
     return {key for key in (_norm(w.get("dictForm")) for w in words if _is_known(w)) if key}
 
 
-def count_known(language):
-    """Distinct known dictForms in KnownWord.json (all sources), NFKC-normalised. 0 when the file is
-    missing or unreadable. A JSON count — known ENTRIES, not the analyzer's expanded lemma set."""
+def count_known(language, path=None):
+    """Distinct known dictForms in KnownWord.json (all sources; or the one at `path`), NFKC-normalised. 0 when the file
+    is missing or unreadable. A JSON count — known ENTRIES, not the analyzer's expanded lemma set."""
     try:
-        _data, words = _read_known_file(language)
+        _data, words = _read_known_file(language, path)
     except _KnownFileError:
         return 0
     return len(_known_keys(words or []))
@@ -892,14 +892,39 @@ def replaced_words(path, language, words):
     return words + graduated + ignored, len(graduated), len(ignored)
 
 
-def replace_numbers(language, words):
+def replace_numbers(language, words, path=None):
     """What a replacing import's confirmation states, before it runs (IK-18): (known words now, known words after,
-    past Graduates' words kept, dismissed words kept) — `replaced_words` over the language's KnownWord.json, on a
-    copy. Reads only; `words` is left as it is."""
+    past Graduates' words kept, dismissed words kept) — `replaced_words` over the language's KnownWord.json (or the
+    one at `path`), on a copy. Reads only; `words` is left as it is."""
     import copy
+    path = path or _known_path(language)
     trial = copy.deepcopy([w for w in words if isinstance(w, dict)])
-    final, graduated, ignored = replaced_words(_known_path(language), language, trial)
-    return count_known(language), len(_known_keys(final)), graduated, ignored
+    final, graduated, ignored = replaced_words(path, language, trial)
+    return count_known(language, path), len(_known_keys(final)), graduated, ignored
+
+
+# A replacing import's child (Migaku's, Jiten's) given the numbers its confirmation stated (`--expect now,after,
+# graduated,ignored`) counts them again holding the lock; moved meanwhile (a sync appended words), it writes nothing and
+# exits EXIT_CHANGED, and the window reads again and asks again — the rule Anki's Replace follows (`expect=`).
+EXIT_CHANGED = 4
+
+
+class NumbersChanged(Exception):
+    """The known words changed since the user confirmed the replace: nothing was written."""
+
+
+def parse_expect(text):
+    """`--expect`'s "now,after,graduated,ignored" -> the four numbers (a tuple), or None when not given."""
+    if not text:
+        return None
+    return tuple(int(n) for n in str(text).split(","))
+
+
+def check_numbers(language, words, path, expect):
+    """Raises NumbersChanged when `replace_numbers` for `words` over the file at `path` is no longer `expect` (the
+    numbers the user confirmed). The caller holds KnownWord.json's lock. `expect` None: nothing checked."""
+    if expect is not None and tuple(replace_numbers(language, words, path)) != tuple(expect):
+        raise NumbersChanged("Your known words changed since you confirmed, so nothing was replaced.")
 
 
 def restore_previous(language):

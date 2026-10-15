@@ -299,6 +299,7 @@ IMPORTERS_BUSY = "Working… (it carries on if you close this window)"
 IMPORTERS_FAILED = "That didn't work: {why}"
 IMPORTERS_FAILED_PLAIN = "That didn't work. Open the log to see why"
 IMPORTERS_READ_FAILED = "That file couldn't be read: {why}"
+KNOWN_CHANGED = "Your known words changed since you said yes, so nothing was replaced: here are the numbers now"
 KNOWN_UNREADABLE = ("Your known words file can't be read, so nothing is replaced: fix it, or put a backup from its "
                     "trash folder back first")
 

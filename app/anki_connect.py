@@ -40,6 +40,10 @@ phone arrive before a position is written over them) and once about a minute aft
 Anki's own sync to the user's own AnkiWeb account, asked over the same loopback AnkiConnect, holding the Anki-write
 lock — `invoke` still refuses `sync` from anywhere else, `multi` included.
 
+**The second, named: `save_deck_config()`** (G1.2-5; K84). Deck options are the user's: `invoke` refuses every
+deck-options write (`DECK_OPTION_ACTIONS`), `multi` included. Settings' *New cards a day* writes the one value the user
+confirmed — `new.perDay`, the rest of the group as Anki sent it — through this door, holding the Anki-write lock.
+
 **One writer at a time (E1.4).** Every function that writes Anki takes the Anki-write lock first
 (`writer` / `take_writer`; `app/locks.py`, shared by every install of one Windows user), and an action
 off `READ_ACTIONS` is sent only by a thread holding it — refused here, before a socket opens, like the
@@ -63,6 +67,12 @@ API_VERSION = 6
 # `setDueDate` turns a new card into a review card, silently discarding a schedule. Blocking them
 # here means no later work package can reach them by accident.
 FORBIDDEN_ACTIONS = frozenset({"sync", "setDueDate"})
+
+# Deck options are the user's (`modules/junban/reposition.py` never calls `saveDeckConfig`). `invoke` refuses these
+# from everywhere, `multi` included; the one exception, named: G1.2-5 (K84) — Settings' *New cards a day*,
+# `app/anki_deck_options.write_new_per_day`, on the user's click after a confirmation naming the deck — sends
+# `saveDeckConfig` through `save_deck_config`, holding the Anki-write lock. The other three are never sent.
+DECK_OPTION_ACTIONS = frozenset({"saveDeckConfig", "setDeckConfigId", "cloneDeckConfigId", "removeDeckConfigId"})
 
 # The only hosts this client will talk to. Anything else is refused before a socket is opened.
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
@@ -137,7 +147,7 @@ def address(settings):
 def _forbidden_in(action, params):
     """The first forbidden action name in `action` or, for a `multi`, in any of its sub-actions
     (nested `multi`s included). Returns None when the request is clean."""
-    if action in FORBIDDEN_ACTIONS:
+    if action in FORBIDDEN_ACTIONS or action in DECK_OPTION_ACTIONS:
         return action
     if action == "multi" and isinstance(params, dict):
         for sub in params.get("actions") or []:
@@ -315,6 +325,15 @@ def sync(url, timeout=120):
             raise
         return f"failed: {text}"
     return "synced"
+
+
+def save_deck_config(url, config, timeout=30):
+    """Write one options group (`saveDeckConfig`): the one door for it (`DECK_OPTION_ACTIONS`; G1.2-5's one caller,
+    `app/anki_deck_options.write_new_per_day`). Sent only while holding the Anki-write lock -> True when Anki says it
+    saved; False when it answered anything else (a bare `false`: no group with that id). Raises AnkiError."""
+    _loopback_only(url)
+    _writer_held("saveDeckConfig")
+    return _send("saveDeckConfig", url, timeout, {"config": config}) is True
 
 
 def _send(action, url, timeout, params):

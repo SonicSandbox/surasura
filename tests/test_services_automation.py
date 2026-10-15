@@ -1114,3 +1114,30 @@ def test_junbans_reorder_reads_the_deck_juns_own_window_recorded_behind_the_wind
     _settle(auto, registry)
     assert len(seen) == 2 and seen[-1]["junban_auto_reorder"] is True and seen[-1]["junban_replan_deck"] == "Mining"
     auto.close()
+
+
+# --- the importers (W3.4 row 2) ---------------------------------------------------------------------------------- #
+@pytest.mark.parametrize("kind", ["known-import", "extract"])
+def test_the_automatic_generate_waits_for_an_import_or_an_extract(live, kind):
+    """IK-54: the Tk tooltip's "never while … an import … is running" — a known-words import or an Extract is a child
+    process the automatic Generate waits for, and asks again once it ends."""
+    auto, registry, controller, launches = _make(_settings())
+    child = registry.record(kind, "Known words from Migaku")
+    auto.worker.put(auto.generate.known_words_changed, "ja")
+    assert auto.worker.idle(5)
+    assert launches.count() == 0 and not registry.live("generate")     # its launch is a worker's: the job tells
+    child.finish(ok=True)
+    assert h.until(lambda: launches.count() == 1, seconds=5), "the child's end asks again"
+    for run in launches.runs:
+        run.ended(0)
+    auto.close()
+
+
+def test_an_import_that_ended_reads_the_known_words_count_again(live):
+    """IK-54: a replace took the list from many words to few; the bar's count follows at once, not at the next sync."""
+    h.seed_library("ja")
+    auto, _registry, _c, _l = _make(_settings(anki_auto_generate=False))
+    auto.known_changed()
+    assert h.until(lambda: auto.worker.idle(0.05) and auto.state().known == anki_sync.count_known("ja"), seconds=5)
+    assert auto.state().known > 0
+    auto.close()

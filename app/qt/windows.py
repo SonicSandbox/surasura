@@ -209,6 +209,105 @@ OPENERS = [
 from app.qt import word_lists_strings as _wls  # noqa: E402  (W3.3 P10, n16: Words to leave out)
 OPENERS += [Opener("word-lists", _wls.WORD_LISTS_NAME, _wls.WORD_LISTS_TIP, always,
                    lambda shell: importlib.import_module("app.qt.word_lists_window").open_window(shell))]
+# row 2: the known-word importers and Extract (app/qt/importers.py, imported when a door opens)
+def _importers(opener_name):
+    def open_it(shell):
+        from app.qt import importers
+        return getattr(importers, opener_name)(shell)
+    return open_it
+
+
+OPENERS += [
+    Opener("apkg_known", strings.IMPORTERS_LAUNCH_APKG, strings.IMPORTERS_LAUNCH_APKG_TIP, always,
+           _importers("open_deck")),
+    Opener("migaku", strings.IMPORTERS_LAUNCH_MIGAKU, strings.IMPORTERS_LAUNCH_MIGAKU_TIP, always,
+           _importers("open_migaku")),
+    Opener("jiten", strings.IMPORTERS_LAUNCH_JITEN, strings.IMPORTERS_LAUNCH_JITEN_TIP,
+           lambda _settings, language: language == "ja", _importers("open_jiten")),
+    Opener("extract", strings.IMPORTERS_LAUNCH_EXTRACT, strings.IMPORTERS_LAUNCH_EXTRACT_TIP, always,
+           _importers("open_extract")),
+]
+
+# row 4: Koe and YouTube — each module's own window, imported only when its door is pressed; shown as the Tk dashboard
+# showed them: the downloader with `enable_youtube_transcripts`, the preview with `enable_youtube_preview`, Speech
+# whenever revealed (the reveal line in settings.json, `modules.koe`, true or false).
+
+
+def _koe_door(settings, _language):
+    from modules.koe import koe_view
+    return koe_view.door_open(settings)
+
+
+def _open_koe(shell):
+    from modules.koe import open_koe_settings
+    return open_koe_settings(shell)
+
+
+def _open_downloader(shell):
+    from modules.youtube_downloader import open_downloader
+    return open_downloader(shell)                         # no on_complete until W3.2's arrivals: files stay in Processed
+
+
+def _open_preview(shell):
+    from modules.youtube_downloader import open_preview
+    return open_preview(shell)
+
+
+OPENERS += [
+    Opener("youtube-downloader", strings.DOOR_TRANSCRIPTS, strings.DOOR_TRANSCRIPTS_TIP,
+           lambda s, _l: bool(s.get("enable_youtube_transcripts")), _open_downloader, module="youtube_downloader"),
+    Opener("youtube-preview", strings.DOOR_PREVIEW, strings.DOOR_PREVIEW_TIP,
+           lambda s, _l: bool(s.get("enable_youtube_preview")), _open_preview, module="youtube_downloader"),
+    Opener("koe", strings.DOOR_SPEECH, strings.DOOR_SPEECH_TIP, _koe_door, _open_koe, module="koe"),
+]
+
+
+# row 3: the Anki window
+def _open_anki(shell):
+    from app.qt import anki_window
+    return anki_window.open_anki(shell)
+
+
+OPENERS += [Opener("anki", strings.ANKI_DOOR, strings.ANKI_DOOR_TIP, always, _open_anki)]
+
+# row 6: 順 Junban (+ Put Anki back) — the 順 button's rule (`enable_junban`, as the Tk dashboard shows it); Put back
+# shows whenever Junban is installed (the way back stays, switched on or not: Settings → Data & System's rule).
+
+
+def _junban_on(settings, _language):
+    return bool(settings.get("enable_junban", False))
+
+
+def _open_junban(shell):
+    from modules.junban import open_junban_qt
+    return open_junban_qt(shell)
+
+
+def _open_put_back(shell):
+    from modules.junban import open_put_back_qt
+    return open_put_back_qt(shell)
+
+
+OPENERS += [
+    Opener("junban", strings.JUNBAN_DOOR, strings.JUNBAN_DOOR_TIP, _junban_on, _open_junban, module="junban"),
+    Opener("put-back", strings.PUT_BACK_DOOR, strings.PUT_BACK_DOOR_TIP, always, _open_put_back, module="junban"),
+]
+
+# row 5: Backfill (+ Fields, パターン data) — Junban's window: shown while 順 is switched on and Junban imports (the Tk
+# dashboard's `backfill_available`), opened lazily through the module's `open_backfill_qt`.
+
+
+def _backfill_available(settings, _language):
+    return settings.get("enable_junban", True) is not False
+
+
+def _open_backfill(shell):
+    from modules.junban import open_backfill_qt
+    return open_backfill_qt(shell)
+
+
+OPENERS += [Opener("backfill", strings.BACKFILL_DOOR, strings.BACKFILL_DOOR_TIP, _backfill_available, _open_backfill,
+                   "junban")]
 
 
 # The optional modules the doors name, looked for once per process (a module can't appear mid-session), on a worker
@@ -255,6 +354,22 @@ def _moves_doors(keys):
     return any(k == "target_language" or k.startswith("enable_") for k in keys)
 
 
+def _look():
+    """The optional modules no one has looked for yet, looked for on a worker (once per process)."""
+    wanted = sorted({op.module for op in OPENERS if op.module} - set(_FOUND) - _LOOKING)
+    if wanted:
+        _LOOKING.update(wanted)
+        bridge.run_in_worker(_look_for, wanted, then=_found,
+                             failed=lambda info: applog.log("windows", f"looking for the modules: {info[1]}"))
+
+
+def follow_doors(widget):
+    """(Row 3.) A window with doors of its own: `widget.refresh()` is called when the modules were looked for — the
+    look started now if no one asked yet (the Settings tab's row may not exist)."""
+    _ROWS.add(widget)
+    _look()
+
+
 class _Doors(QWidget):
     """The Settings tab's row of doors. Asked again when the page shows, when a settings write can move a door, and
     when the modules were looked for; repaints only the buttons whose answer changed (S19)."""
@@ -285,11 +400,7 @@ class _Doors(QWidget):
         heard = getattr(self.shell, "bridge", None)
         if heard is not None:
             heard.settings_written.connect(self._written)
-        wanted = sorted({op.module for op in OPENERS if op.module} - set(_FOUND) - _LOOKING)
-        if wanted:
-            _LOOKING.update(wanted)
-            bridge.run_in_worker(_look_for, wanted, then=_found,
-                                 failed=lambda info: applog.log("windows", f"looking for the modules: {info[1]}"))
+        _look()
 
     def _written(self, keys):
         if _moves_doors(keys):

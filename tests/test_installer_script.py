@@ -118,7 +118,7 @@ def test_uninstall_deletes_exactly_what_an_update_may_add_and_never_a_wildcard()
     deletes = [(e["Type"], e["Name"]) for e in _entries("uninstalldelete")]
     assert deletes == [("filesandordirs", r"{app}\_internal"), ("files", r"{app}\Surasura.exe"),
                        ("files", r"{app}\surasura-cli.exe"), ("files", r"{app}\updater.exe"),
-                       ("files", r"{app}\RELEASE_NOTES.md")]
+                       ("files", r"{app}\RELEASE_NOTES.md"), ("files", r"{app}\LICENSE")]
     assert not any("*" in name or "?" in name for _t, name in deletes)
     assert "uninstallrun" not in _sections() and "dirs" not in _sections()
 

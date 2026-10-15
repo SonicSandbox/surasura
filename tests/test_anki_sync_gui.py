@@ -9,6 +9,7 @@ Deck names and note types below are the real ones from the collection this was b
 (TheBank / The Accelerator / Migaku Reference; Lapis / Migaku Japanese).
 """
 
+import gc
 import os
 import sys
 import unittest
@@ -56,6 +57,12 @@ class TestAnkiSyncWindow(unittest.TestCase):
             self.win.destroy()
         except tk.TclError:
             pass
+        # The window, its MagicMock host and the host's Tk variables sit in reference cycles: freed here, on Tk's own
+        # thread. Left to the cycle collector, a Variable's __del__ ran on whichever thread allocated next — once the
+        # settings service's writer, which then hung on a Tk call while holding the settings lock (every later save
+        # waited, and finished after its test, outside the test root).
+        self.win = self.host = None
+        gc.collect()
 
     def _connect(self, decks=("TheBank", "The Accelerator", "Migaku Reference"),
                  preselected=None, counts=None, models=None):

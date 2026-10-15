@@ -88,6 +88,41 @@ def dictionary_title(language):
     return f"Surasura Corpus ({language})"
 
 
+# The export as a window starts it (W3.4 row 1; the Tk dashboard's `_export_sentence_dictionary`, moved here): its
+# child's command line, and whether the run made the dictionary. The child writes `<path>.tmp` and renames it whole
+# only when complete, and exits 1 with nothing written on an error or no words (`main`), so a run made it when it
+# **exited 0 and** the file is fresh — written since the run started (FRESH_SLACK for a coarse file clock). The Tk
+# dashboard judged by the file's time alone: a crash after the rename, or an exit 1 beside a file written just before,
+# read as "ready".
+FRESH_SLACK = 2.0
+
+
+def export_command(language, path, show_source):
+    """The export's command line, as the window's child runner takes it (`app/services/tools.py`). Pure."""
+    argv = ["sentence_corpus.py", "--language", language, "--output", path]
+    if show_source:
+        argv.append("--show-source")
+    return argv
+
+
+def export_result(path, started, returncode):
+    """(made, summary) of a run started at `started` (time.time()) that ended with `returncode`: made only on exit 0
+    with a fresh file at `path`; `summary` is the dictionary's own description (its index.json), "" when unreadable."""
+    if returncode != 0:
+        return False, ""
+    try:
+        if os.path.getmtime(path) < started - FRESH_SLACK:
+            return False, ""
+    except OSError:
+        return False, ""
+    try:
+        with zipfile.ZipFile(path) as zf:
+            summary = json.loads(zf.read("index.json")).get("description", "")
+    except Exception:
+        summary = ""
+    return True, summary if isinstance(summary, str) else ""
+
+
 def length_range(settings):
     """(lo, hi, own_lo, own_hi) in characters: the user's own `logic.context` range — read from THEIR
     settings on every export, since they may change it — widened by LENGTH_LEEWAY on each side. Never

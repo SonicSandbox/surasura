@@ -179,6 +179,10 @@ class Confirm(motion.Overlay):
         if alive and callback is not None:                # never once its window closed or was hidden
             callback(self.answer)
 
+    def drop(self):
+        """The question no longer stands (its window moved on): closed, answered No, and no callback."""
+        self._answer(False, drop=True)
+
     def closeEvent(self, event):
         super().closeEvent(event)
         self._answer(False)                               # Esc, Back, a click outside: No

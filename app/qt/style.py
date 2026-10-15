@@ -211,7 +211,7 @@ QLabel#confirmtitle {{ color: {c['ink']}; {font('dialog-title')} }}
 QLabel#confirmline {{ color: {c['ink-dim']}; {font('body')} font-weight: 400; }}
 QPushButton[kind="danger"] {{ background: {c['bad']}; color: {c['bad-type']}; border: 0; }}
 QPushButton[kind="danger"]:focus {{ border: 2px solid {c['ink']}; }}
-QListWidget#windowlist {{ background: {c['bg']}; border-radius: 9px; padding: {px(4)}; }}
+QListWidget#windowlist {{ background: {c['bg']}; border-radius: {theme.RADII['button']}px; padding: {px(4)}; }}
 QLabel#ankistate {{ color: {c['ink-dim']}; {font('body')} font-weight: 600; }}
 QLabel#ankiresolved {{ color: {c['accent']}; {font('footer')} font-weight: 600; }}
 QLabel#ankiskipped {{ color: {c['bad']}; {font('footer')} font-weight: 600; }}

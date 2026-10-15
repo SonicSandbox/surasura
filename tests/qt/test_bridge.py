@@ -12,6 +12,7 @@ import pytest
 
 pytest.importorskip("PyQt6")
 from PyQt6.QtCore import QThread
+from PyQt6.QtWidgets import QApplication
 
 from app.qt import bridge
 from app.services import jobs as jobs_module
@@ -170,3 +171,31 @@ def test_the_string_scan_reads_the_module_windows_too(tmp_path):
     (tmp_path / "app" / "qt").mkdir(parents=True)
     files = sorted(os.path.basename(p) for p in _window_files(str(tmp_path)))
     assert files == ["qt_window.py"]
+
+
+# --- W3.4: the quit waits for the workers (row 6's find: a worker running Python as the process ended crashed it) -- #
+def test_waiting_for_the_workers_lets_a_running_task_end_and_drops_its_answer(qapp):
+    import time
+    answers, ended = [], []
+
+    def slow():
+        time.sleep(0.3)
+        ended.append(True)
+        return "late"
+    bridge.run_in_worker(slow, then=answers.append)
+    t0 = time.monotonic()
+    assert bridge.wait_for_workers(5000) is True
+    assert ended == [True] and time.monotonic() - t0 >= 0.25
+    QApplication.processEvents()
+    assert answers == []                                  # the window is going: its answer is dropped
+
+
+def test_waiting_for_the_workers_gives_up_at_its_limit(qapp):
+    import threading
+    gate = threading.Event()
+    bridge.run_in_worker(lambda: gate.wait(10))
+    try:
+        assert bridge.wait_for_workers(50) is False
+    finally:
+        gate.set()
+        assert bridge.wait_for_workers(5000) is True

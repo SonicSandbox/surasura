@@ -123,6 +123,19 @@ def export_result(path, started, returncode):
     return True, summary if isinstance(summary, str) else ""
 
 
+def export_outcome(path, started, returncode, cancelled):
+    """(A worker's: it reads the file.) ("made" | "stopped" | "failed", summary) of a run. Not made, the child's own
+    `<path>.tmp` is removed (a run stopped part-way leaves it); the user's file at `path` is never touched here."""
+    made, summary = export_result(path, started, returncode)
+    if made:
+        return "made", summary
+    try:
+        os.remove(path + ".tmp")
+    except OSError:
+        pass
+    return ("stopped" if cancelled else "failed"), ""
+
+
 def length_range(settings):
     """(lo, hi, own_lo, own_hi) in characters: the user's own `logic.context` range — read from THEIR
     settings on every export, since they may change it — widened by LENGTH_LEEWAY on each side. Never

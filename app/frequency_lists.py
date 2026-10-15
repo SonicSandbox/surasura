@@ -33,11 +33,21 @@ def dest_name(base, language):
     """The name a list `base` takes for `language`: the language's prefix added (`Novel.csv` →
     `frequency_list_ja_Novel.csv`), a bare `frequency_list_` prefix made the language's, a right one kept. Pure."""
     prefix = _prefix(language)
+    if base.lower().endswith(EXTENSION):                  # `.CSV` too (Windows' picker matches either): the analyzer
+        base = base[:-len(EXTENSION)] + EXTENSION         # and the list read `.csv` only
     if base.startswith(prefix):
         return base
     if base.startswith(PREFIX):
         return prefix + base[len(PREFIX):]
     return prefix + base
+
+
+def display_name(name, language):
+    """The list's own name, as the report's column names it (`frequency_list_ja_Novels.csv` → `Novels`). Pure."""
+    prefix = _prefix(language)
+    if name.startswith(prefix):
+        name = name[len(prefix):]
+    return name[:-len(EXTENSION)] if name.endswith(EXTENSION) else name
 
 
 def listed(language):

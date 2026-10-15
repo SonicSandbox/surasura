@@ -145,3 +145,15 @@ def run_in_worker(fn, *args, then=None, failed=None, pool=None):
     _pending.add(relay)
     (pool or QThreadPool.globalInstance()).start(_Job(fn, args, relay))
     return relay
+
+
+def wait_for_workers(timeout_ms):
+    """At the app's quit (W3.4; row 6's find): every answer still to come is dropped (the window is going), then the
+    global pool is waited for, up to `timeout_ms` — a worker still running Python as the process ends can crash it.
+    Called after the window closed, never while it shows. -> True when every worker ended in time."""
+    for relay in list(_pending):
+        try:
+            relay.blockSignals(True)
+        except RuntimeError:
+            pass
+    return QThreadPool.globalInstance().waitForDone(int(timeout_ms))

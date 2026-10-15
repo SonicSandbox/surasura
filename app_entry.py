@@ -127,6 +127,20 @@ def main():
                     log_error(f"library_maintain failed:\n{traceback.format_exc()}")
                 sys.exit(code)
 
+            elif command == 'apkg_known_import' or command == 'extract':
+                # The 3.0 window's tools (W3.4 row 2): the .apkg known-words import (app/anki_db_import.py) and Extract
+                # (app/extract.py), each a child of the window. Dialog-free; it ends with its exit code.
+                code = 1
+                try:
+                    if command == 'extract':
+                        from app import extract as tool
+                    else:
+                        from app import anki_db_import as tool
+                    code = tool.main(sys.argv[2:])
+                except Exception:
+                    log_error(f"{command} failed:\n{traceback.format_exc()}")
+                sys.exit(code)
+
             elif command == 'replan_helper':
                 # The fast re-plan's helper (E3.1-B1, app/replan_preview.py): one window's re-order jobs in a process
                 # of its own, talking to that window over a local pipe. Dialog-free; it ends when its window goes.
@@ -228,6 +242,15 @@ def main():
                     sys.exit(1)
                 sys.argv = [sys.argv[0]] + sys.argv[2:]
                 sys.exit(patterns_build.main())
+            elif command == 'youtube_preview':
+                # The YouTube preview's scoring child (W3.4 row 4): the transcript scored against the library in a
+                # process of its own, never the window's. Guarded — the module may be absent.
+                try:
+                    from modules.youtube_downloader import preview
+                except ImportError:
+                    log_error("youtube_preview: the YouTube module is not installed")
+                    sys.exit(1)
+                sys.exit(preview.child_main(sys.argv[2:]))
             elif command == 'dashboard':
                 # The 2.x Tk dashboard, kept reachable on the 3.0 line until nothing opens a Tk window (W3.4's last row
                 # retires it; W2.1 RUNBOOK G-1, IK-14). Falls through to the default start below, in Tk.

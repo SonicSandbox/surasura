@@ -421,9 +421,25 @@ def test_anki_replace_keeps_the_merged_words(ja_known, ja_words):
         result = anki_sync.replace("ja", URL, ["TheBank"], [])
     assert result.error is None
     words = _words("ja")
-    assert [w["dictForm"] for w in words if w["source"] == "AnkiConnect"] == ["危険", "素晴らしい"]
-    assert [w["dictForm"] for w in words if w["source"] == "GraduatedList"] == [w for w in ja_words if w != "危険"]
-    assert not any(w.get("source") not in ("AnkiConnect", "GraduatedList") for w in words)   # Migaku's gone
+    assert [w["dictForm"] for w in words if w.get("source") == "AnkiConnect"] == ["危険", "素晴らしい"]
+    assert [w["dictForm"] for w in words if w.get("source") == "GraduatedList"] == [w for w in ja_words if w != "危険"]
+    # Migaku's known / learning / unknown entries are gone; the words dismissed there (IGNORED) stay (W3.4-1)
+    assert not any(w.get("source") not in ("AnkiConnect", "GraduatedList") and w["knownStatus"] != "IGNORED"
+                   for w in words)
+    assert result.kept_ignored == 3 and result.kept_graduated == 5
+
+
+def test_the_replace_confirmations_total_after_counts_the_graduates_words_kept(ja_known, ja_words):
+    # The dry run's "after" is the known total the write makes: Anki's words AND the past Graduates' words it keeps
+    # (the Tk confirmation said "go from X to <Anki's count>", short by every kept word: its defect 2).
+    from tests.test_anki_sync import URL, FakeCollection
+    _write_list("ja", HEADER + _graduated("冒険.txt", ja_words))
+    graduated_merge.merge("ja")
+    with mock.patch("urllib.request.urlopen", FakeCollection([{"word": "危険"}, {"word": "素晴らしい"}])):
+        dry = anki_sync.replace("ja", URL, ["TheBank"], [], dry_run=True)
+        assert (dry.added, dry.kept_graduated, dry.total_after) == (2, 5, 7)
+        result = anki_sync.replace("ja", URL, ["TheBank"], [], expect=anki_sync.confirmed(dry))
+    assert not result.changed and result.total_known == result.total_after == dry.total_after
     assert result.total_known == 2 + 5
 
 

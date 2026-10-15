@@ -213,3 +213,12 @@ LAUNCHERS_NAME = "Windows that open from here until their Settings rows arrive"
 OPEN_FAILED = "{name} couldn't open: {why}"
 CONFIRM_NO = "Cancel"
 CONFIRM_NO_TIP = "Leave everything as it is (Esc does the same)"
+
+# --- W3.4 row 4: Koe and YouTube — their doors on the Settings tab's list (the windows' own words are each module's
+# qt_strings.py)
+DOOR_TRANSCRIPTS = "Video transcripts"
+DOOR_TRANSCRIPTS_TIP = "Download YouTube and bilibili.tv transcripts into your Processed folder"
+DOOR_PREVIEW = "Preview a video"
+DOOR_PREVIEW_TIP = "See a video's vocab journey against your library before adding it"
+DOOR_SPEECH = "Speech"
+DOOR_SPEECH_TIP = "Speech (声): the Gemini key, the voice and the daily limit for spoken sentences"

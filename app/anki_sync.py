@@ -117,6 +117,12 @@ class SyncResult:
     error: "str | None" = None     # human-readable, shown in the UI verbatim; None on success
     busy: bool = False             # refused: another program held KnownWord.json (`held_by` is its record)
     held_by: "dict | None" = None
+    # replace (and its dry run): what the new file keeps beside Anki's words, and its known total
+    kept_graduated: int = 0        # the old GraduatedList.txt's words (past Graduates), kept known
+    kept_ignored: int = 0          # the words dismissed in Migaku (IGNORED entries), kept ignored (W3.4-1)
+    total_after: int = 0           # the known total the replace writes (`total_known`: the file now, for a dry run)
+    changed: bool = False          # replace / restore with `expect`: the numbers moved since they were confirmed;
+                                   # nothing was written (the numbers now are in this result)
 
 
 class _KnownFileError(Exception):
@@ -736,11 +742,20 @@ def _backup_current(language):
     return name
 
 
-def replace(language, url, decks, fields, include_suspended=False, dry_run=False):
-    """Rebuild KnownWord.json from Anki only — and the words the old GraduatedList.txt gave it (`kept_graduated`).
+def replace_numbers(result):
+    """The numbers a Replace confirmation shows (from its dry run): what Anki brings, the past Graduates' and the
+    dismissed words kept, the known total now and after. `replace(..., expect=)` writes only while they still hold."""
+    return (result.added, result.kept_graduated, result.kept_ignored, result.total_known, result.total_after)
+
+
+def replace(language, url, decks, fields, include_suspended=False, dry_run=False, expect=None):
+    """Rebuild KnownWord.json from Anki only — keeping the words the old GraduatedList.txt gave it (`kept_graduated`)
+    and the words dismissed in Migaku (`kept_ignored`: IGNORED entries are no known words; W3.4-1).
     Backs up the current file first and verifies it.
     Offline, an empty result, or a failed backup => nothing written. `dry_run` writes nothing and
-    returns the numbers the confirmation dialog shows."""
+    returns the numbers the confirmation dialog shows. `expect` (`replace_numbers` of the confirmed dry run): when
+    the numbers differ by the time the write would start (Anki or the file changed meanwhile), nothing is written and
+    the result says `changed`, with the numbers now — the window asks again."""
     with _LOCK:
         mode = "dry-run" if dry_run else "replace"
         url = url or anki_connect.DEFAULT_URL
@@ -771,31 +786,53 @@ def replace(language, url, decks, fields, include_suspended=False, dry_run=False
                             "changed.")
             result.total_known = count_known(language)
             return result
+        known_path = _known_path(language)
         if dry_run:
-            result.total_known = count_known(language)
+            _count_replacement(result, known_path, language, words)
             return result
 
-        known_path = _known_path(language)
         held, refused = _hold_known(language, mode)
         if refused is not None:
             return refused
         try:
             return _replace_held(language, result, known_path, words, url, decks, fields, include_suspended,
-                                 note_ids, now)
+                                 note_ids, now, expect)
         finally:
             if held is not None:
                 held.release()
 
 
-def _replace_held(language, result, known_path, words, url, decks, fields, include_suspended, note_ids, now):
-    """`replace`'s write, holding KnownWord.json's lock."""
+def _replacement(path, language, words):
+    """The words Replace writes: Anki's, then the past Graduates' kept known, then the dismissed words kept. -> (the
+    words, how many Graduates' kept, how many dismissed kept)."""
+    graduated = kept_graduated(path, language, words)
+    ignored = kept_ignored(path, language)
+    return words + graduated + ignored, len(graduated), len(ignored)
+
+
+def _count_replacement(result, path, language, words):
+    """`result`'s numbers for a replace of `path` with `words`: the totals now and after, the words kept. -> the words
+    to write."""
+    final, result.kept_graduated, result.kept_ignored = _replacement(path, language, words)
+    result.total_known = count_known(language)
+    result.total_after = len(_known_keys(final))
+    return final
+
+
+def _replace_held(language, result, known_path, words, url, decks, fields, include_suspended, note_ids, now,
+                  expect=None):
+    """`replace`'s write, holding KnownWord.json's lock: the numbers checked against the confirmed ones, the backup,
+    then the write."""
+    words = _count_replacement(result, known_path, language, words)
+    if expect is not None and tuple(replace_numbers(result)) != tuple(expect):
+        result.mode, result.changed = "dry-run", True       # nothing written: the window asks again
+        return result
     try:
         result.backup = _backup_current(language)
     except OSError as e:
         result.error = f"Nothing was replaced: your current list could not be backed up ({e})."
         result.total_known = count_known(language)
         return result
-    words = words + kept_graduated(known_path, language, words)
     try:
         _atomic_write_json(known_path, _fresh_file(words))
         state = load_state(language)
@@ -809,6 +846,21 @@ def _replace_held(language, result, known_path, words, url, decks, fields, inclu
         result.error = f"Replace failed: {e}"
     result.total_known = count_known(language)
     return result
+
+
+def kept_ignored(path, language):
+    """The words dismissed in Migaku — KnownWord.json's IGNORED entries, which `token_index.ignored_entries` keeps off
+    the list — in the file at `path`, kept as they are, in their order, by Anki's Replace (W3.4-1: a Replace is
+    "known words from Anki only", never "your dismissals undone"). A file that is missing or can't be read keeps none
+    (the replacer's backup holds them)."""
+    try:
+        data = json.loads(read_text(path, language, errors="strict"))
+    except (OSError, ValueError, UnicodeDecodeError):
+        return []
+    current = data.get("words") if isinstance(data, dict) else data
+    if not isinstance(current, list):
+        return []
+    return [entry for entry in current if isinstance(entry, dict) and entry.get("knownStatus") == "IGNORED"]
 
 
 def kept_graduated(path, language, words):
@@ -847,25 +899,31 @@ def kept_graduated(path, language, words):
     return kept
 
 
-def restore_previous(language):
+def restore_previous(language, expect=None):
     """Undo the last replace: back up the CURRENT file the same way (so this is undoable too), copy
-    the backup back atomically, and clear the seen note ids so the next sync re-evaluates cleanly."""
+    the backup back atomically, and clear the seen note ids so the next sync re-evaluates cleanly.
+    `expect`: the backup the user confirmed putting back; another one by now (a Replace meanwhile) restores nothing
+    and the result says `changed`."""
     with _LOCK:
         held, refused = _hold_known(language, "restore")
         if refused is not None:
             return refused
         try:
-            return _restore_held(language)
+            return _restore_held(language, expect)
         finally:
             if held is not None:
                 held.release()
 
 
-def _restore_held(language):
+def _restore_held(language, expect=None):
     """`restore_previous`, holding KnownWord.json's lock."""
     result = SyncResult(mode="restore")
     state = load_state(language)
     name = state.get("last_backup")
+    if expect is not None and name != expect:
+        result.changed = True
+        result.total_known = count_known(language)
+        return result
     backup_path = os.path.join(get_user_files_path(language), ".trash", str(name or ""))
     if not name or not os.path.isfile(backup_path):
         result.error = "There is no previous list to restore."

@@ -768,7 +768,9 @@ def test_replace_builds_an_anki_only_file_and_backs_up_the_old_one_byte_identica
     result = _replace(fake)
 
     assert result.error is None and result.mode == "replace"
-    assert _anki_forms() == ja_words[:3] and len(_words()) == 3, "Migaku entries are gone"
+    # Migaku's known / learning / unknown entries are gone; the words dismissed there (IGNORED) are kept (W3.4-1)
+    assert _anki_forms() == ja_words[:3]
+    assert [w["knownStatus"] for w in _words() if w.get("source") != "AnkiConnect"] == ["IGNORED"] * 3
     assert result.added == 3 and result.total_known == 3
     assert re.fullmatch(r"KnownWord\.\d{8}-\d{6}\.json", result.backup)
     assert _trash_files() == [result.backup]
@@ -833,6 +835,56 @@ def test_restore_backs_up_the_current_file_restores_byte_identical_and_clears_no
     fake.requests.clear()
     resync = _sync(fake)
     assert resync.mode == "full" and resync.scanned == 3, "the next sync re-evaluates cleanly"
+
+
+def test_replace_keeps_the_words_dismissed_in_migaku_and_the_dry_run_counts_them(ja_words, migaku_file):
+    """W3.4-1 (the lean, asked through the lead): the IGNORED entries are words the user dismissed, not known words —
+    Replace rebuilds the KNOWN words from Anki and keeps the dismissals, so they never come back on the list as new
+    words. The dry run says how many it keeps and what the total becomes, the numbers the confirmation shows."""
+    ignored = [w for w in _words() if w["knownStatus"] == "IGNORED"]
+    assert len(ignored) == 3
+    fake = FakeCollection([{"word": w} for w in ja_words[:3]])
+    dry = _replace(fake, dry_run=True)
+    assert (dry.added, dry.kept_graduated, dry.kept_ignored) == (3, 0, 3)
+    assert dry.total_known == anki_sync.count_known("ja") and dry.total_after == 3
+
+    result = _replace(fake)
+
+    assert result.error is None and result.kept_ignored == 3 and result.total_after == result.total_known == 3
+    assert [w for w in _words() if w["knownStatus"] == "IGNORED"] == ignored, "byte for byte, in their order"
+    from app import token_index
+    assert set(token_index.ignored_entries(get_user_files_path("ja"), "ja")) >= {w["dictForm"] for w in ignored}
+
+
+def test_replace_whose_numbers_changed_since_the_confirmation_writes_nothing_and_says_the_new_ones(ja_words,
+                                                                                                   migaku_file):
+    """The confirmation's numbers are the ones written: a card studied in Anki between the dry run and the yes makes
+    the real replace stop before its backup, with the new numbers, so the window asks again."""
+    before = _read_bytes(migaku_file)
+    fake = FakeCollection([{"word": w} for w in ja_words[:3]])
+    dry = _replace(fake, dry_run=True)
+    fake.add(ja_words[3])                                     # studied meanwhile
+
+    changed = _replace(fake, expect=anki_sync.replace_numbers(dry))
+
+    assert changed.changed and changed.error is None and changed.mode == "dry-run"
+    assert (changed.added, changed.total_after) == (4, 4)
+    assert _read_bytes(migaku_file) == before and _trash_files() == [] and not os.path.exists(_state_path())
+
+    result = _replace(fake, expect=anki_sync.replace_numbers(changed))
+    assert result.error is None and not result.changed and result.mode == "replace" and result.total_known == 4
+
+
+def test_restore_of_another_backup_than_the_one_confirmed_writes_nothing(ja_words, migaku_file):
+    """Restore names the list it puts back (its backup); if the state points at another one by the time it runs (a
+    second Replace meanwhile), nothing is restored and the window asks again."""
+    first = _replace(FakeCollection([{"word": w} for w in ja_words[:3]]))
+    second = _replace(FakeCollection([{"word": w} for w in ja_words[3:6]]))
+    before = _read_bytes(migaku_file)
+    result = anki_sync.restore_previous("ja", expect=first.backup)
+    assert result.changed and result.error is None and _read_bytes(migaku_file) == before
+    assert anki_sync.load_state("ja")["last_backup"] == second.backup
+    assert anki_sync.restore_previous("ja", expect=second.backup).error is None
 
 
 def test_restore_without_a_previous_replace_is_an_error():

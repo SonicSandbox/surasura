@@ -326,6 +326,25 @@ def test_asks_that_cant_be_read_change_nothing_never_read_as_every_ask_undone(mo
         assert inbox.pending(s) is False, "an unreadable read is nothing unread, never an error"
 
 
+def test_an_ask_undone_once_its_mining_started_leaves_the_job_to_finish():
+    # why (mutant M04): an asked job waiting mid-mining (its resume step past the pick) finishes (02 §2) — the undo
+    # neither drops it nor counts it dropped
+    ids, kinds = _library()
+    below = _srt(ids, kinds)[-1]
+    with c.store() as s:
+        asked = s.ask_mining([below])
+    _look()
+    job = _jobs(below)[0]
+    with Ledger() as ledger:
+        ledger.set_state(job["id"], "waiting", resume="mining")
+    with c.store() as s:
+        s.undo(asked)
+    got = _look()
+    assert got["dropped"] == []
+    after = _jobs(below)[0]
+    assert (after["state"], after["resume"], after["asked_at"]) == ("waiting", "mining", job["asked_at"])
+
+
 def test_a_mined_ask_is_answered_by_its_receipt_and_a_second_look_queues_nothing(tmp_path):
     ids, kinds = _library()
     below = _srt(ids, kinds)[-1]

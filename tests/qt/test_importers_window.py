@@ -550,6 +550,21 @@ def test_an_import_that_wrote_tells_the_known_words_count_and_one_that_failed_do
     assert told == [1, 1, 1]
 
 
+def test_an_import_waiting_its_turn_says_so_until_it_runs(main, tmp_path):
+    """IK-58: a known-words import waits behind a sync (one known-words writer at a time); its line said "Working…"
+    while it only waited. Now it says what runs first, then that it works once it runs (the real registry)."""
+    registry = main.services.registry
+    sync = registry.submit("anki-sync", "Updating known words from Anki", start=lambda job: None)
+    w = importers.open_migaku(main)
+    job = w.start(str(tmp_path / "無い.db"), "ja")
+    assert wait_until(lambda: w.status.text() == strings.IMPORTERS_WAITING_FOR.format(
+        what="Updating known words from Anki"))
+    sync.finish(ok=True)
+    assert wait_until(lambda: w.status.text() != strings.IMPORTERS_WAITING_FOR.format(
+        what="Updating known words from Anki"))
+    assert job.wait(60) and wait_until(lambda: not w.busy(), timeout=30)
+
+
 def test_jiten_is_off_for_chinese_and_follows_the_main_windows_language(main, runs):
     w = importers.open_jiten(main)
     w.key.setText(SECRET)

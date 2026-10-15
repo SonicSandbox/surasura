@@ -20,9 +20,12 @@ from PyQt6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QComboBox, Q
 
 from app import anki_db_import, extract, importers_view
 from app.qt import bridge, confirm, strings, windows
-from app.services import tools
+from app.services import jobs as jobs_module, tools
 
 PREVIEW_LINES = 4
+
+
+WAITS_FOR = "waits for "                                 # the registry's reason for a job held back by another
 
 
 def _pick_file(parent, title, filters):
@@ -84,6 +87,11 @@ class ToolWindow(windows.SecondaryWindow):
         self._lines = []
         self._result = None
         self.question = None                              # the open confirmation, dropped by a language switch
+        self.child = None                                 # the child's job, followed while it waits (IK-58)
+        self._job_state = None
+        heard = getattr(shell, "bridge", None)
+        if heard is not None:
+            heard.jobs_changed.connect(self._follow)
         self.log_button = _button(self, strings.IMPORTERS_LOG, strings.IMPORTERS_LOG_TIP, self._open_log, "chip")
         self.log_button.setVisible(False)
         self.layout().addWidget(self.log_button, 0, Qt.AlignmentFlag.AlignRight)
@@ -124,8 +132,28 @@ class ToolWindow(windows.SecondaryWindow):
         self.begin_write()
         self.refresh()
         self.say(strings.IMPORTERS_BUSY)
-        return tools.run(self.shell.services.registry, self.kind, label, argv, env=env, on_line=lines.call,
-                         on_end=on_end, on_quit=on_quit)
+        self.child = tools.run(self.shell.services.registry, self.kind, label, argv, env=env, on_line=lines.call,
+                               on_end=on_end, on_quit=on_quit)
+        self._job_state = None
+        self._follow(self.shell.services.registry.snapshot())
+        return self.child
+
+    def _follow(self, views):
+        """The registry's newest snapshot: while the child's job waits its turn (a sync holds the known words), the
+        line says what runs first; once it runs, that it works. Repainted only when its state changed."""
+        job = self.child
+        if job is None or self.gone or not hasattr(job, "id"):
+            return
+        view = next((v for v in views if v.id == job.id), None)
+        if view is None or (view.state, view.reason) == self._job_state:
+            return
+        self._job_state = (view.state, view.reason)
+        if view.state == jobs_module.WAITING:
+            reason = view.reason or ""
+            self.say(strings.IMPORTERS_WAITING_FOR.format(what=reason[len(WAITS_FOR):]) if reason.startswith(WAITS_FOR)
+                     else strings.IMPORTERS_WAITING.format(reason=reason))
+        elif view.state == jobs_module.RUNNING:
+            self.say(strings.IMPORTERS_BUSY)
 
     def ask(self, title, body, yes, yes_tip, on_answer, **how):
         """`confirm.ask` in this window, kept as `question` until it is answered or dropped."""

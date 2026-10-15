@@ -472,3 +472,19 @@ def test_the_real_extract_child_adds_its_parts_to_the_library(main, tmp_path):
         assert any(e["physical_path"].startswith("GoalContent/旅の記録/") for _i, e, _a in store.ordered("goal"))
     finally:
         store.close()
+
+
+def test_a_disabled_primary_button_looks_disabled(main):
+    """The capture showed Extract looking live with the "I understand" tick off: the primary rule outranked the plain
+    `:disabled` one. A disabled primary now paints on the raised ground, not the iris."""
+    w = importers.open_extract(main)
+    w.resize(640, 320)
+    QApplication.processEvents()
+
+    def middle(b):
+        img = b.grab().toImage()
+        return img.pixelColor(img.width() // 2, 3).name()
+    w.go.setEnabled(True)
+    live = middle(w.go)
+    w.go.setEnabled(False)
+    assert middle(w.go) != live

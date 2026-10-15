@@ -223,6 +223,26 @@ def test_every_visible_control_writes_exactly_its_keys_and_a_per_language_one_ke
     assert page.language == other
 
 
+def test_a_row_its_owner_takes_is_never_written_by_the_page_too(qapp):
+    """`takes` (the live rows' owner, P4): a change its owner handled is written once, by the owner — the page writes
+    nothing beside it; one the owner declines the page writes as any row."""
+    page, store = make_page(ALL_ON)
+    open_all_folds(page)
+    view = page.rows["app_motion"]
+    control = view.controls[0]
+    taken = []
+    page.takes["app_motion"] = lambda value: taken.append(value) or True
+    new, _payload = other_value(page, view, control, page._settings())
+    store.calls.clear()
+    change(control, new)
+    assert taken == [new] and store.calls == []
+    page.takes["app_motion"] = lambda value: False
+    held = catalog.value(view.row, page._settings(), "ja")
+    newer = next(v for v in ("follow", "full", "reduced") if v not in (new, held))
+    change(control, newer)
+    assert store.calls == [({"app_motion": newer}, None)]
+
+
 def test_a_per_language_value_never_flips_back_while_its_write_is_on_its_way(qapp):
     page, store = make_page(ALL_ON, "ja")
     cap = page.rows["connect_backlog_cap"].controls[0]

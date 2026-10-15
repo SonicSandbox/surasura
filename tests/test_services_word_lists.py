@@ -179,6 +179,14 @@ def test_remove_takes_every_line_naming_the_word():
     assert _bytes(path) == "毎日\n".encode("utf-8")
 
 
+def test_remove_takes_only_the_whole_word_never_a_longer_word_it_begins():
+    # 気 removed: 気持ち and 気分 stay — a line is one word, compared whole, never by its first characters
+    path = _put("気\n気持ち\n気分\n".encode("utf-8"))
+    change = word_lists.remove("ignore", "ja", ["気"])
+    assert change.done == ["気"]
+    assert _bytes(path) == "気持ち\n気分\n".encode("utf-8")
+
+
 def test_remove_from_a_cp932_list_keeps_it_cp932():
     old = "冒険\r\n毎日\r\n準備\r\n".encode("cp932")
     path = _put(old)

@@ -641,6 +641,32 @@ def test_a_number_anki_took_while_other_options_moved_is_said_and_the_pace_follo
     assert row.field.value() == 30
 
 
+def test_a_confirmed_number_equal_to_the_saved_pace_saves_nothing(world):
+    # Anki read 20, the pace already 5: a confirmed 5 changes Anki only — `words_per_day_after` finds the pace already
+    # there, so nothing is written to settings.json (S19)
+    page, store, rows, _fake = make(world)
+    row = rows.new_cards
+    row.field.set_value(5)
+    QTest.mouseClick(row.change, Qt.MouseButton.LeftButton)
+    world.asked[0].answer(True)
+    assert wait_until(lambda: world.writes and not row.busy, 5)
+    QApplication.processEvents()
+    assert world.writes[0]["value"] == 5
+    assert store.calls == []
+    assert row.field.value() == 5
+
+
+def test_a_switch_that_was_off_turns_off_without_reading_the_shelf(world, monkeypatch):
+    # cards still on the shelf from an earlier run: an off switch saved off again asks nothing and puts nothing back
+    store = Store({"target_language": "ja"}, events=world.events)
+    fake = FakeSwitch(store)
+    fake.shelf = {"ja": (3, ["run-2026-10-14"])}
+    monkeypatch.setattr(scn, "_switch", lambda: fake)
+    assert scn._switch_off_start(False, store, lambda line: None) == ("off", True, None)
+    assert names(world.events) == ["turn_off", "reload"]
+    assert world.events[0][3] == {"was_on": False}
+
+
 def test_the_same_number_asks_nothing_and_writes_nothing(world):
     page, store, rows, _fake = make(world)
     QTest.mouseClick(rows.new_cards.change, Qt.MouseButton.LeftButton)

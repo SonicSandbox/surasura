@@ -353,6 +353,29 @@ def test_per_language_video_folders_keep_the_other_language():
     assert catalog.value(row, {"connect_video_folders": {"zh": [zh_folder]}}, "zh") == [zh_folder]
 
 
+def test_blank_folder_lines_are_never_written_and_a_list_only_blank_lines_longer_writes_nothing():
+    """A folder line left empty (or spaces) is no folder: it is dropped before the compare, so the list shown with one
+    blank line more is the same list and nothing is written (S19)."""
+    row = catalog.ROW["connect_video_folders"]
+    ja_folder = r"D:\Anime\ぼっち・ざ・ろっく！"
+    changes, _update = catalog.change(row, {}, "ja", [ja_folder, "", "   "])
+    assert changes["connect_video_folders"]["ja"] == [ja_folder]
+    held = {"connect_video_folders": {"ja": [ja_folder], "zh": []}}
+    assert catalog.change(row, held, "ja", [ja_folder, " "]) == ({}, None)
+
+
+def test_a_change_never_writes_a_key_outside_its_own_row():
+    """A mapping handed in (the level's {auto}, several switches' {key: bool}) that carries a key the row doesn't
+    draw: only the row's own keys are written — a stray key would put back what another window saved (D31)."""
+    level = catalog.ROW["level"]
+    manual = {"logic": {"selection": {"band": "rare", "auto": False}}, "words_per_day": 12}
+    assert catalog.change(level, manual, "ja", {"logic.selection.auto": True, "words_per_day": 40})[0] == \
+        {"logic.selection.auto": True}
+    later = catalog.ROW["junban_later"]
+    assert catalog.change(later, {}, "ja", {"junban_later_flag": True, "connect_enabled": True})[0] == \
+        {"junban_later_flag": True}
+
+
 def test_values_read_dotted_paths_per_language_entries_and_defaults_from_a_frozen_copy():
     """What the page reads is the settings service's frozen copy: mappings and tuples."""
     settings = freeze({"logic": {"selection": {"band": "rare"}}, "anki_sync_decks": {"ja": ["日本語::Mining"]},

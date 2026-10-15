@@ -180,6 +180,29 @@ def always(_settings, _language):
 # Each row adds its doors here (W3.4 rows 1–6), in the order the list shows them.
 OPENERS = []
 
+# row 6: 順 Junban (+ Put Anki back) — the 順 button's rule (`enable_junban`, as the Tk dashboard shows it); Put back
+# shows whenever Junban is installed (the way back stays, switched on or not: Settings → Data & System's rule).
+
+
+def _junban_on(settings, _language):
+    return bool(settings.get("enable_junban", False))
+
+
+def _open_junban(shell):
+    from modules.junban import open_junban_qt
+    return open_junban_qt(shell)
+
+
+def _open_put_back(shell):
+    from modules.junban import open_put_back_qt
+    return open_put_back_qt(shell)
+
+
+OPENERS += [
+    Opener("junban", strings.JUNBAN_DOOR, strings.JUNBAN_DOOR_TIP, _junban_on, _open_junban, module="junban"),
+    Opener("put-back", strings.PUT_BACK_DOOR, strings.PUT_BACK_DOOR_TIP, always, _open_put_back, module="junban"),
+]
+
 
 def module_present(name):
     """Whether `modules/<name>` can be imported (found, not run: nothing of it is loaded here)."""

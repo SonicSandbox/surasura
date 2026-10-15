@@ -213,6 +213,12 @@ QPushButton[kind="danger"] {{ background: {c['bad']}; color: {c['bad-type']}; bo
 QPushButton[kind="danger"]:focus {{ border: 2px solid {c['ink']}; }}
 QListWidget#windowlist {{ background: {c['bg']}; border-radius: 9px; padding: {px(4)}; }}
 """
+    # W3.4 row 6 (順, Put Anki back): a window line's tone — a problem, a heads-up, a good answer — by token.
+    rules += f"""
+QLabel#windowline[tone="problem"] {{ color: {c['bad']}; }}
+QLabel#windowline[tone="warning"] {{ color: {c['warn']}; }}
+QLabel#windowline[tone="good"] {{ color: {c['ok']}; }}
+"""
     _state["generated_ms"] = (time.perf_counter() - t0) * 1000
     return rules
 

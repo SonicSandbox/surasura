@@ -213,3 +213,10 @@ LAUNCHERS_NAME = "Windows that open from here until their Settings rows arrive"
 OPEN_FAILED = "{name} couldn't open: {why}"
 CONFIRM_NO = "Cancel"
 CONFIRM_NO_TIP = "Leave everything as it is (Esc does the same)"
+
+# --- W3.4 row 6: 順 Junban (+ Put Anki back) — the doors on the Settings tab's list (until W3.3 gives them rows)
+JUNBAN_DOOR = "順 Junban"
+JUNBAN_DOOR_TIP = "Reorder Anki's new cards to Surasura's learn order: preview first, then Reorder. Needs Anki open."
+PUT_BACK_DOOR = "Put Anki back…"
+PUT_BACK_DOOR_TIP = ("Put Anki's new cards back the way they were before Surasura changed them. Asks first, with the "
+                     "counts. Needs Anki open.")

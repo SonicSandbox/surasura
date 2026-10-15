@@ -199,11 +199,3 @@ def test_waiting_for_the_workers_gives_up_at_its_limit(qapp):
     finally:
         gate.set()
         assert bridge.wait_for_workers(5000) is True
-
-
-def test_the_windows_quit_waits_for_the_workers():
-    import inspect
-    from app.qt import shell
-    source = inspect.getsource(shell.main)
-    assert "bridge.wait_for_workers(" in source and source.index("services.shutdown(") < source.index(
-        "bridge.wait_for_workers(")

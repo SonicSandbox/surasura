@@ -1,7 +1,7 @@
 """The setup wizard over the window (W3.5 part 3; the window's spec 05 §5.8; the contract `w35wiz/contract.md`).
 
 `host(shell)`: after the window's first frame, when `setup_wizard.should_open(settings)` says so (a clean profile: no
-`onboarding_completed`), the wizard covers the window's central area — below Windows' own title bar, following every
+`onboarding_completed`; or, once, a profile set up in 2.x that never saw these pages), the wizard covers the window's central area — below Windows' own title bar, following every
 resize — and the header, tabs, pages and bottom bar under it take no focus while it is up. `open_again(shell)`:
 Settings' *Set up again* — the same wizard, preselected from the settings as they are now.
 

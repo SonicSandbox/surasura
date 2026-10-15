@@ -1154,3 +1154,79 @@ def test_card_order_says_when_automatic_actions_are_off(make):
     go_to(other, "order")
     assert wait_until(lambda: not other.page.controls.isHidden())
     assert other.page.automation_line.isHidden()
+
+
+# --- upgrading from 2.x (WZ-8 / P4.1-3, Sonic 2026-10-15) ------------------------------------------------------------- #
+class UpgradeApi(FakeApi):
+    """The real rules for who is upgrading and where each page starts; the pages-seen write recorded."""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.real = pytest.importorskip("app.services.setup_wizard")
+
+    def upgrading(self, settings):
+        return self.real.upgrading(settings)
+
+    def preselect(self, settings, language):
+        return self.real.preselect(settings, language)
+
+    def seen(self, settings_service):
+        self.calls.append(("seen",))
+        return self.real.seen(settings_service)
+
+
+# Surasura 2.5's settings as the import brings them over: set up there, Chinese, its own decks and later choice.
+FROM_2X = {"onboarding_completed": True, "target_language": "zh", "anki_sync_decks": {"zh": ["中文::新词"]},
+           "junban_deck": "中文::新词", "junban_later_tag": True, "junban_later_suspend": True,
+           "logic": {"selection": {"auto": False, "band": "rare"}}}
+
+
+def test_a_2x_profile_sees_every_page_with_its_choices_and_what_came_over_in_one_line(make):
+    wiz, _shell, _api, _settings, _m = make(api=UpgradeApi(), data=FROM_2X)
+    assert wiz.upgrading and wiz.language == "zh"
+    assert wiz.pages[0].line.text() == S.UPGRADE_LINE and not wiz.pages[0].line.isHidden()
+    assert wiz.pages[0].answers() == {"language": "zh"}
+    known = wiz.pages[1]
+    assert known.line.text() == S.UPGRADE_KNOWN_LINE
+    assert known.channel.choice("fresh").title == S.KEEP_CAME_OVER, "nothing to start fresh from: the words came over"
+    assert wiz.pages[2].line.text() == S.UPGRADE_SHOWS_LINE and not wiz.pages[2].line.isHidden()
+    assert wiz.pages[3].answers()["later"] == "aside" and wiz.pages[3].answers()["keep_in_order"] is True
+    assert wiz.pages[5].answers()["automatic"] is False
+
+
+def test_a_new_profile_keeps_the_new_users_words(make):
+    wiz, *_ = make(api=UpgradeApi(), data={})
+    assert not wiz.upgrading
+    assert wiz.pages[0].line.text() == S.LANGUAGE_LINE and wiz.pages[1].line.text() == S.KNOWN_LINE
+    assert wiz.pages[1].channel.choice("fresh").title == S.START_FRESH
+    assert wiz.pages[2].line.isHidden()
+
+
+def test_finish_later_on_an_upgrade_records_the_pages_seen_and_nothing_else(make):
+    # Why: shown once — closing keeps 2.x's settings as they are, and the wizard never comes back by itself
+    wiz, _shell, api, settings, _m = make(api=UpgradeApi(), data=FROM_2X)
+    QTest.mouseClick(wiz.btn_later, Qt.MouseButton.LeftButton)
+    assert settings.calls == [{"setup_seen": "3.0"}]
+    assert api.calls.count(("seen",)) == 1 and ("finish",) not in api.calls
+
+
+def test_the_window_quitting_under_an_upgrades_wizard_records_the_pages_seen_once(make):
+    wiz, shell, api, settings, _m = make(api=UpgradeApi(), data=FROM_2X)
+    shell.closing.emit()
+    shell.closing.emit()
+    assert settings.calls == [{"setup_seen": "3.0"}]
+    wiz.finish_later()
+    assert api.calls.count(("seen",)) == 1
+
+
+def test_finishing_an_upgrade_writes_finish_not_a_second_seen(make):
+    wiz, _shell, api, settings, _m = make(api=UpgradeApi(numbers=NUMBERS), data=FROM_2X)
+    go_to(wiz, "level")
+    wiz.skip()                                                     # *Skip* on the last page finishes setup
+    assert ("finish",) in api.calls and ("seen",) not in api.calls
+
+
+def test_finish_later_on_a_new_profile_records_nothing(make):
+    wiz, _shell, api, settings, _m = make(api=UpgradeApi(), data={})
+    wiz.finish_later()
+    assert settings.calls == [] and ("seen",) not in api.calls

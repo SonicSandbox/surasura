@@ -4153,6 +4153,7 @@ def settings_signature(settings, language):
         "connect_mine_words", "connect_send_grammar", "connect_anki_miner_path", "connect_anki_miner_profile",
         "connect_open_anki",            # when Surasura starts Anki for you (P2.3): never what a run counts
         "covers_download",              # Show covers (the setup wizard, G1.2-19): a cover's fetch, never a run
+        "setup_seen",                   # the setup pages seen (the setup wizard, WZ-8): never a run
         "connect_backlog_cap",          # how many cards Connect keeps waiting (P2.4): never what a run counts
         "known_from_anki",              # P2.4: what it adds lands in KnownWord.json (known_sig), not as a key
         "connect_video_folders",        # P2.5: where Connect looks for a moved video, never what a run counts

@@ -63,7 +63,7 @@ def _changed(before, after):
 def test_the_wizard_opens_until_setup_was_finished():
     assert SW.should_open({}) and SW.should_open({"onboarding_completed": False})
     assert SW.should_open({"onboarding_completed": "true"}), "only a real yes closes it (a hand edit is no answer)"
-    assert not SW.should_open({"onboarding_completed": True})
+    assert not SW.should_open({"onboarding_completed": True, "setup_seen": "3.0"})
     assert SW.PAGES == ("language", "known", "shows", "order", "cards", "level")
     assert SW.LATER == ("leave", "mark", "aside")
 
@@ -143,13 +143,14 @@ def test_card_order_without_the_consent_clears_the_recorded_pair(language):
     assert writes[replan_preview.DECK] == "" and "junban_deck" not in writes
 
 
-def test_finish_writes_only_onboarding_completed():
+def test_finish_writes_only_onboarding_completed_and_the_pages_seen():
     h.write_settings(BEFORE)
     service = SettingsService()
-    assert SW.finish(service) == {"onboarding_completed": True}
+    assert SW.finish(service) == {"onboarding_completed": True, "setup_seen": SW.SETUP_VERSION}
     assert service.flush(10)
     after = h.read_settings()
-    assert _changed(BEFORE, after) == {"onboarding_completed"} and after["onboarding_completed"] is True
+    assert _changed(BEFORE, after) == {"onboarding_completed", "setup_seen"} and after["onboarding_completed"] is True
+    assert not SW.should_open(after)
 
 
 @pytest.mark.parametrize("page, answers", [
@@ -237,7 +238,8 @@ def test_a_mix_of_later_actions_is_shown_as_its_nearest_choice():
 
 
 def test_the_consent_reads_back_off_when_the_pair_is_recorded_for_the_other_language():
-    settings = {"onboarding_completed": True, "junban_auto_actions": True, "junban_deck": "日本語::Mining",
+    settings = {"onboarding_completed": True, "setup_seen": "3.0", "junban_auto_actions": True,
+                "junban_deck": "日本語::Mining",
                 replan_preview.DECK: "日本語::Mining", replan_preview.LANGUAGE: "ja"}
     assert SW.preselect(settings, "ja")["order"]["keep_in_order"] is True
     assert SW.preselect(settings, "zh")["order"]["keep_in_order"] is False
@@ -404,7 +406,7 @@ def test_the_level_is_none_on_an_empty_library_and_the_sliders_numbers_on_real_s
         (chosen["words"], chosen["coverage"], chosen["every_hours"])
     assert numbers["words"] > 0 and 0 < numbers["coverage"] <= 100
 
-    again = dict(settings, onboarding_completed=True)
+    again = dict(settings, onboarding_completed=True, setup_seen="3.0")
     again["logic"] = dict(settings["logic"], selection=dict(sel, auto=False, band="rare"))
     manual = SW.level_numbers(again, language)
     assert manual["automatic"] is False and manual["chosen"] == "rare" and manual["words"] == previews["rare"][
@@ -443,7 +445,8 @@ def test_generate_asks_the_windows_generate_and_says_whether_it_was_taken():
 
 
 # --- the review's rows (W3.5-wiz-SM adversary): Set up again changes only what the user changed ------------------ #
-JA_KEPT = {"onboarding_completed": True, "junban_auto_actions": True, "junban_deck": "日本語::Mining",
+JA_KEPT = {"onboarding_completed": True, "setup_seen": "3.0", "junban_auto_actions": True,
+           "junban_deck": "日本語::Mining",
            replan_preview.DECK: "日本語::Mining", replan_preview.LANGUAGE: "ja",
            "junban_later_tag": True, "junban_later_flag": False, "junban_later_suspend": True}
 ORDER_KEYS = ("junban_auto_actions", replan_preview.DECK, replan_preview.LANGUAGE, "junban_deck", "junban_later_tag",
@@ -485,7 +488,7 @@ def test_set_up_again_never_rewrites_a_mixed_later_choice_it_only_shows(mix):
     """AD-3: a mix set in 順 (a flag alone, suspend without the tag) is shown as its nearest choice; *Next* untouched
     leaves it as 順 holds it. Another choice picked is written as the three-way choice says."""
     later = {"junban_later_tag": False, "junban_later_flag": False, "junban_later_suspend": False}
-    before = dict(BEFORE, onboarding_completed=True, **dict(later, **mix))
+    before = dict(BEFORE, onboarding_completed=True, setup_seen="3.0", **dict(later, **mix))
     order = SW.preselect(before, "ja")["order"]
     _r, _b, after = _saved_through_service("order", order, "ja", before)
     assert {k: after.get(k) for k in later} == {k: before.get(k) for k in later}
@@ -581,3 +584,74 @@ def test_the_first_sync_keeps_a_dated_copy_of_the_known_words_before_it_writes(j
     assert os.environ.get("SURASURA_TEST_ROOT") and get_user_files_path("zh").startswith(os.environ["SURASURA_TEST_ROOT"])
     run("zh", "中文::挖掘", [_zh_note(w) for w in _words("zh")[:2]])
     assert not os.path.exists(os.path.join(get_user_files_path("zh"), ".trash")), "no known words yet: nothing to keep"
+
+
+# --- upgrading from 2.x (WZ-8 / P4.1-3, Sonic 2026-10-15) ----------------------------------------------------------- #
+# A settings file as Surasura 2.5 leaves it: setup finished there, its own choices made, none of 3.0's keys.
+def _from_2x(language):
+    deck = "日本語::Mining" if language == "ja" else "中文::新词"
+    return {"target_language": language, "onboarding_completed": True, "theme": "Dark Flow",
+            "anki_sync_decks": {language: [deck]}, "junban_deck": deck, "junban_tag": "Surasura",
+            "junban_later_tag": True, "junban_later_flag": False, "junban_later_suspend": True,
+            "logic": {"selection": {"auto": False, "band": "rare"}}}
+
+
+def test_a_profile_set_up_in_2x_opens_the_wizard_once():
+    """Why: the import brings 2.x's `onboarding_completed` over, so without the pages-seen mark an upgrader would never
+    be asked 3.0's questions (card order's consent, cards made for you) — and with it shown forever, setup never ends."""
+    two = {"onboarding_completed": True}
+    assert SW.upgrading(two) and SW.should_open(two)
+    assert not SW.upgrading({}) and not SW.upgrading({"onboarding_completed": False}), "a new profile isn't upgrading"
+    assert not SW.should_open(dict(two, setup_seen=SW.SETUP_VERSION))
+    assert SW.upgrading(dict(two, setup_seen="  ")), "a blank mark is no mark"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_2x_profile_starts_on_its_own_choices_and_the_recommended_ones_where_2x_never_asked(language):
+    before = _from_2x(language)
+    deck = before["junban_deck"]
+    pre = SW.preselect(before, language)
+    assert pre == {"language": {"language": language}, "known": {"how": "anki", "decks": [deck]},
+                   "shows": {"covers": True},                                 # 2.x never had covers: recommended
+                   "order": {"keep_in_order": True, "deck": deck, "later": "aside", "open_anki": False},
+                   "cards": {"make_cards": True},                             # Connect is 3.0's: recommended
+                   "level": {"automatic": False, "band": "rare"}}             # 2.x's own level
+    # No decks saved in 2.x: *What you know* keeps what came over (the import already brought the known words)
+    bare = dict(before, anki_sync_decks={})
+    assert SW.preselect(bare, language)["known"] == {"how": "fresh", "decks": []}
+    assert SW.writes("known", SW.preselect(bare, language)["known"], bare, language) == {}
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_next_straight_through_on_an_upgrade_keeps_2x_choices_and_writes_3_0s_new_ones(language):
+    """Next on every page as preselected, then Generate's finish: 2.x's own choices stay byte-equal in the file; only
+    the choices 2.x never had are written — the consent with its recorded pair, covers, cards made — plus the sync
+    that the From Anki page promises, and the pages seen."""
+    before = _from_2x(language)
+    h.write_settings(before)
+    service = SettingsService()
+    for page in SW.PAGES:
+        SW.save(service, page, SW.preselect(service.get(), language)[page], language)
+    SW.finish(service)
+    assert service.flush(10)
+    after = h.read_settings()
+    for key in ("target_language", "anki_sync_decks", "junban_deck", "junban_later_tag", "junban_later_flag",
+                "junban_later_suspend", "theme", "junban_tag"):
+        assert after[key] == before[key], key
+    assert after["logic"]["selection"] == {"auto": False, "band": "rare"}
+    assert after["covers_download"] is True and after["connect_enabled"] is True and after["anki_sync_auto"] is True
+    assert after["junban_auto_actions"] is True
+    assert replan_preview.recorded_deck(after, language) == before["junban_deck"]
+    assert after["setup_seen"] == SW.SETUP_VERSION and not SW.should_open(after)
+    assert "connect_open_anki" not in after, "2.x never had it and the page left it as it is: not written"
+
+
+def test_closing_an_upgrades_wizard_records_only_the_pages_seen():
+    """Skip and *Finish later* keep 2.x's settings as they are: the close writes the pages-seen mark alone."""
+    before = _from_2x("ja")
+    h.write_settings(before)
+    service = SettingsService()
+    assert SW.seen(service) == {"setup_seen": SW.SETUP_VERSION}
+    assert service.flush(10)
+    after = h.read_settings()
+    assert _changed(before, after) == {"setup_seen"} and not SW.should_open(after)

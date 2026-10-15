@@ -1090,7 +1090,7 @@ class LanguagePage(_Page):
     id = "language"
 
     def __init__(self, wiz):
-        super().__init__(wiz, S.LANGUAGE_TITLE, S.LANGUAGE_LINE)
+        super().__init__(wiz, S.LANGUAGE_TITLE, S.UPGRADE_LINE if wiz.upgrading else S.LANGUAGE_LINE)
         self.channel = Channel(S.LANGUAGE_CHOICE_NAME, self, gap=0)
         for key in ("ja", "zh"):
             self.channel.add(GlyphChoice(key, self.channel))
@@ -1117,7 +1117,7 @@ class KnownPage(_Page):
         super().__init__(wiz, S.KNOWN_TITLE)
         self.sentence = FadedSentence(wiz.language, self)
         self.box.insertWidget(1, self.sentence)
-        self.line.setText(S.KNOWN_LINE)
+        self.line.setText(S.UPGRADE_KNOWN_LINE if wiz.upgrading else S.KNOWN_LINE)
         self.line.setObjectName("wizsub")
         self.line.setVisible(True)
         self.box.addSpacing(_px(10))
@@ -1125,7 +1125,11 @@ class KnownPage(_Page):
         self.anki = self.channel.add(Choice("anki", S.FROM_ANKI, S.FROM_ANKI_TIP, self.channel, line=S.CHECKING,
                                             dot="off"))
         self.channel.add(Choice("import", S.IMPORT_LIST, S.IMPORT_LIST_TIP, self.channel, line=S.IMPORT_LIST_LINE))
-        self.channel.add(Choice("fresh", S.START_FRESH, S.START_FRESH_TIP, self.channel, line=S.START_FRESH_LINE))
+        if wiz.upgrading:                                 # known words came over: nothing more is the third way
+            self.channel.add(Choice("fresh", S.KEEP_CAME_OVER, S.KEEP_CAME_OVER_TIP, self.channel,
+                                    line=S.KEEP_CAME_OVER_LINE))
+        else:
+            self.channel.add(Choice("fresh", S.START_FRESH, S.START_FRESH_TIP, self.channel, line=S.START_FRESH_LINE))
         self.channel.changed.connect(self._picked)
         self.box.addWidget(self.channel)
         self.box.addSpacing(_px(8))
@@ -1269,7 +1273,7 @@ class ShowsPage(_Page):
     id = "shows"
 
     def __init__(self, wiz):
-        super().__init__(wiz, S.SHOWS_TITLE)
+        super().__init__(wiz, S.SHOWS_TITLE, S.UPGRADE_SHOWS_LINE if wiz.upgrading else "")
         adds = QHBoxLayout()
         adds.setSpacing(_px(10))
         self.btn_add = _button(S.ADD_CONTENT, S.ADD_CONTENT_TIP, self.wiz.open_content, self)
@@ -1824,6 +1828,8 @@ class SetupWizard(QWidget):
         self._count_wait = COUNT_AGAIN_MS   # page 6's next ask while it counts (twice as long each time)
         self._junban_found = None           # modules/junban looked for on a worker (None: not known yet)
         self.saves = []                     # (page, answers) as each *Next* saved them (what the wizard asked)
+        self._finished = False              # `finish` written (Generate, or *Skip* on the last page)
+        self.upgrading = self._upgrading(settings)      # brought over from 2.x: shown once, its choices picked (WZ-8)
         answers = self._preselect(self.language)
         self._build()
         for page in self.pages:
@@ -1853,6 +1859,23 @@ class SetupWizard(QWidget):
     def _junban_looked(self, found):
         self._junban_found = bool(found)
         self.pages[3]._show()
+
+    def _upgrading(self, settings):
+        try:
+            return bool(getattr(self.api, "upgrading", lambda _s: False)(thaw(settings)))
+        except Exception as e:
+            applog.log("wizard", f"upgrading: {e}")
+            return False
+
+    def _seen(self):
+        """A 2.x profile's wizard closing unfinished: its pages seen, so it opens once (*Skip* / close keep the rest)."""
+        if not self.upgrading or self._finished:
+            return
+        self._finished = True
+        try:
+            self.api.seen(self.services.settings)
+        except Exception as e:
+            applog.log("wizard", f"seen: {e}")
 
     def _preselect(self, language):
         try:
@@ -2059,6 +2082,7 @@ class SetupWizard(QWidget):
             self.say(str(e))                              # the bar is under the wizard (AD-11)
 
     def _finish(self):
+        self._finished = True
         try:
             self.api.finish(self.services.settings)
         except Exception as e:
@@ -2068,6 +2092,7 @@ class SetupWizard(QWidget):
         if self._gone:
             return
         self._gone = True
+        self._seen()
         self._stop_workers()
         heard = getattr(self.shell, "bridge", None)
         for signal, slot in ((getattr(heard, "generate_changed", None), self._generate_state),
@@ -2092,6 +2117,7 @@ class SetupWizard(QWidget):
     def _shell_closing(self):
         """(`shell.closing`) The window's quit began — ✕, or the update's hand-over — with the wizard up (AD-4)."""
         if not self._gone and not sip.isdeleted(self):
+            self._seen()
             self._stop_workers()
 
     def alive(self, fn):

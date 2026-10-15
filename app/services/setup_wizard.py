@@ -10,6 +10,11 @@ each of the six pages starts with, what it writes on *Next*, and the reads and j
   its default is on).
 - **Where a page starts** (`preselect`): a profile that never finished setup gets the draft's preselects (the
   recommended choices); *Set up again* (`onboarding_completed` True) gets what the settings say now.
+- **Upgrading from 2.x** (`upgrading`; Sonic's WZ-8 / P4.1-3 answer, 2026-10-15): set up in 2.x (`onboarding_completed`
+  True) but never shown 3.0's pages (`setup_seen` empty), the whole wizard opens once. Each page shows what the 2.x
+  settings hold; a choice 2.x never had (covers, keeping cards in order, cards made for you) starts at the recommended
+  one, as for a new user. Any close records the pages seen (`seen`), *Skip* and *Finish later* writing nothing else.
+  `setup_seen` holds the version whose pages were seen (`SETUP_VERSION`), so a later version can show its new ones.
 - **The reads** (`anki_look`, `library_rows`, `level_numbers`) are a worker's: Anki through the Anki window's own reads
   (`app/anki_window.py`), the library through a read-only handle of the store, the level through the Rarity slider's
   recipe (`token_index.preview_frequencies`, `word_selection.band_previews`, D13's `auto_band`).
@@ -32,12 +37,27 @@ LATER_FLAGS = {"leave": (False, False, False), "mark": (True, True, False), "asi
 CONTENT_MANAGER_KIND = "child"          # the Tk dashboard's kind for its children: the automatic Generate waits for it
 CONTENT_MANAGER_LABEL = "Content Manager"
 LISTED_TIERS = ("now", "soon", "goal", "arrivals")    # page 3's rows: what is in the library (never the graduated)
+SEEN = "setup_seen"             # the version whose setup pages the learner has seen ("" never: a 2.x profile)
+SETUP_VERSION = "3.0"           # this version's pages (3.1 may show only the pages added since: the follow-up list)
 
 
 # --- opening ---------------------------------------------------------------------------------------------------- #
 def should_open(settings):
-    """The wizard opens while setup was never finished (`onboarding_completed` not True)."""
+    """The wizard opens while setup was never finished (`onboarding_completed` not True), and once for a profile set
+    up in 2.x that never saw these pages (`upgrading`)."""
+    return (settings or {}).get("onboarding_completed") is not True or upgrading(settings)
+
+
+def _new(settings):
+    """A profile that never finished setup: every page's preselect is the recommended one, and *Next* writes it all."""
     return (settings or {}).get("onboarding_completed") is not True
+
+
+def upgrading(settings):
+    """Set up in 2.x (`onboarding_completed` True: 2.x's first run, brought over by the import) and never shown this
+    version's pages (`setup_seen` empty)."""
+    settings = settings or {}
+    return settings.get("onboarding_completed") is True and not str(settings.get(SEEN) or "").strip()
 
 
 def _language(language):
@@ -68,23 +88,41 @@ def _pair(settings):
 def preselect(settings, language):
     """Every page's starting answers -> {page: answers} (the answers' shapes are `writes`'). A profile that never
     finished setup: the draft's preselects (From Anki, covers on, kept in order, *Leave them*, cards made, Automatic);
-    *Set up again*: what the settings say now. The language, the saved decks and 順's deck are always the settings' —
-    never 順's deck while it is the one recorded for the other language (one `junban_deck` for both: AD-1)."""
-    from app import anki_window, replan_preview
+    *Set up again*: what the settings say now; a profile brought over from 2.x (`upgrading`): what its settings say,
+    and the recommended choice where 2.x never asked (covers on, kept in order, cards made) — without saved decks,
+    *What you know* keeps what came over (`fresh`: nothing more brought in). The language, the saved decks and 順's deck
+    are always the settings' — never 順's deck while it is the one recorded for the other language (one `junban_deck`
+    for both: AD-1)."""
     settings = settings or {}
     language = language if language in LANGUAGES else "ja"
-    decks = anki_window.saved(settings, language)[0]
-    deck = str(settings.get("junban_deck") or "").strip() or None
-    if _pair(settings) not in ("", language) and deck == str(settings.get(replan_preview.DECK) or "").strip():
-        deck = None
-    band = ((settings.get("logic") or {}).get("selection") or {}).get("band")
-    if should_open(settings):
+    decks, deck, band = _reads(settings, language)
+    if _new(settings):
         return {"language": {"language": language},
                 "known": {"how": "anki", "decks": decks},
                 "shows": {"covers": True},
                 "order": {"keep_in_order": True, "deck": deck, "later": "leave", "open_anki": False},
                 "cards": {"make_cards": True},
                 "level": {"automatic": True, "band": band}}
+    out = _current(settings, language, decks, deck, band)
+    if upgrading(settings):         # brought over from 2.x: what 2.x never asked starts at the recommended choice
+        out["shows"]["covers"] = True
+        out["order"]["keep_in_order"] = True
+        out["cards"]["make_cards"] = True
+    return out
+
+
+def _reads(settings, language):
+    """(this language's saved decks, 順's deck — None while it is the other language's recorded one —, the band)."""
+    from app import anki_window, replan_preview
+    decks = anki_window.saved(settings, language)[0]
+    deck = str(settings.get("junban_deck") or "").strip() or None
+    if _pair(settings) not in ("", language) and deck == str(settings.get(replan_preview.DECK) or "").strip():
+        deck = None
+    return decks, deck, ((settings.get("logic") or {}).get("selection") or {}).get("band")
+
+
+def _current(settings, language, decks, deck, band):
+    """What the settings say now, as every page's answers (*Set up again*; what *Card order*'s *Next* compares with)."""
     # The consent reads back on while it is given for this language — though 順's deck moved since (AD-2: the host
     # stands aside until the pair is recorded again; a *Next* never revokes the yes).
     kept = settings.get("junban_auto_actions") is True and _pair(settings) == language
@@ -134,7 +172,7 @@ def writes(page, answers, settings, language):
         open_anki = bool(answers.get("open_anki"))
         # *Set up again* writes only what the user changed on the page (AD-1…3): a choice shown as it was — a mix of
         # later actions shown as its nearest, a consent given for the other language — is never written over.
-        was = None if should_open(settings) else preselect(settings, language)["order"]
+        was = None if _new(settings) else _was_order(settings, language)
         out = {}
         if was is None or keep != was["keep_in_order"] or deck != (was["deck"] or ""):
             if kept:
@@ -161,6 +199,11 @@ def writes(page, answers, settings, language):
             out["logic.selection.band"] = str(answers["band"])
         return out
     raise ValueError(f"not a page: {page!r}")
+
+
+def _was_order(settings, language):
+    """*Card order* as the settings say now (never the upgrade's recommended consent: it is written once chosen)."""
+    return _current(settings, language, *_reads(settings, language))["order"]
 
 
 def _decks_update(language, decks):
@@ -192,8 +235,17 @@ def save(settings_service, page, answers, language):
 
 
 def finish(settings_service):
-    """Setup done (Generate pressed, or *Skip* on the last page): `onboarding_completed` -> the dict written."""
-    changes = {"onboarding_completed": True}
+    """Setup done (Generate pressed, or *Skip* on the last page): `onboarding_completed`, and this version's pages seen
+    -> the dict written."""
+    changes = {"onboarding_completed": True, SEEN: SETUP_VERSION}
+    settings_service.set(changes)
+    return changes
+
+
+def seen(settings_service):
+    """A 2.x profile's wizard closed (*Finish later*, or the window's quit): this version's pages seen, so it opens
+    once — nothing else written (`onboarding_completed` is already True) -> the dict written."""
+    changes = {SEEN: SETUP_VERSION}
     settings_service.set(changes)
     return changes
 

@@ -30,6 +30,8 @@ ANKI_CLOSED = "Anki isn't open"
 CHECK_AGAIN = "Check again"
 CHECK_AGAIN_TIP = "Look for Anki again, once it's open."
 CHECKING = "Looking for Anki…"
+# Brought over from Surasura 2 (WZ-8): the whole setup once, each page showing the choices already made there
+UPGRADE_LINE = "Welcome to Surasura 3. Your choices from Surasura 2 are already picked: Next keeps each one."
 
 # --- 1 · your language ------------------------------------------------------------------------------------------------ #
 LANGUAGE_TITLE = "What are you learning?"
@@ -71,6 +73,10 @@ IMPORT_JITEN_TIP = "Open the Jiten import: the words you know, from your Jiten a
 IMPORT_FILE = "An Anki deck file…"
 IMPORT_FILE_TIP = "Open the deck-file import: the words you know, from an .apkg file."
 SYNC_STARTED = "Reading the words you know from Anki…"
+UPGRADE_KNOWN_LINE = "The words you know came over from Surasura 2."
+KEEP_CAME_OVER = "Keep what came over"
+KEEP_CAME_OVER_LINE = "Nothing more to bring in"
+KEEP_CAME_OVER_TIP = "Keep the words you know from Surasura 2, as they are. Surasura adds more as you go."
 
 # --- 3 · your shows --------------------------------------------------------------------------------------------------- #
 SHOWS_TITLE = "Bring in what you'll watch and read"
@@ -92,6 +98,7 @@ COVERS_TIP = ("Covers for your shows, looked up by each show's name.\n"
               "• Turn it off any time: Settings")
 COVERS_PICTURE_NAME = "A plain tile becomes the show's cover"
 CONTENT_OPEN = "The Content Manager is open: what you add shows here when you close it."
+UPGRADE_SHOWS_LINE = "Your library came over from Surasura 2."
 
 # --- 4 · card order --------------------------------------------------------------------------------------------------- #
 ORDER_TITLE = "Your cards, in the order you'll meet the words"

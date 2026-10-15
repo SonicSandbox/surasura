@@ -213,6 +213,11 @@ QPushButton[kind="danger"] {{ background: {c['bad']}; color: {c['bad-type']}; bo
 QPushButton[kind="danger"]:focus {{ border: 2px solid {c['ink']}; }}
 QListWidget#windowlist {{ background: {c['bg']}; border-radius: {theme.RADII['button']}px; padding: {px(4)}; }}
 """
+    # --- W3.4 row 5: Backfill's connection mark: its words carry the state, the colour repeats it (Tk: teal / red)
+    rules += f"""
+QLabel#backfillconnection[state="ok"] {{ color: {c['ok']}; }}
+QLabel#backfillconnection[state="bad"] {{ color: {c['bad']}; }}
+"""
     _state["generated_ms"] = (time.perf_counter() - t0) * 1000
     return rules
 

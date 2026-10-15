@@ -40,7 +40,8 @@ GETTING_READY = "Getting your library ready…"
 STARTING = "Starting…"
 STOPPING = "Stopping after this file…"
 STAGES = {"files": "Copying your shows and books", "settings": "Bringing your settings",
-          "store": "Keeping your order", "roaming": "Bringing your extras", "graduated": "Adding your finished words"}
+          "store": "Keeping your order", "roaming": "Bringing your extras",
+          "graduated": "Adding the words you'd marked known"}      # D23: Finished never marks known (IK-16)
 STAGE_COUNT = "{stage} · {done:,} of {total:,}"
 MISSING_HEADING = "Your library isn't there"
 MISSING_LINE = "Surasura can't find {folder}. Connect its drive or go online, then try again."

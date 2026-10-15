@@ -2,7 +2,8 @@
 Preview a video — shown by the Tk dashboard's rules, each opening its module's window lazily.
 
 What a wrong answer would cost: Speech advertised to every user before they revealed it (the reveal gate: the line in
-settings.json), or a dead door when its switch is off; the downloader or the preview shown with its switch off, or
+settings.json), or hidden once revealed (the documented reveal line is `"enable_koe": false`, and Tk showed *Speech
+settingsâ€¦* for it: the key and the voice would be out of reach); the downloader or the preview shown with its switch off, or
 hidden with it on; a door shown for a module the build doesn't have (a dead button); a door that reads a file on the
 window's thread to decide.
 """
@@ -23,6 +24,13 @@ def _door(name):
     return next(op for op in windows.OPENERS if op.name == name)
 
 
+@pytest.fixture(autouse=True)
+def _modules_looked_for(monkeypatch):
+    # The window looks for the modules once, on a worker, after it opened (`windows._FOUND`); these tests ask the rules
+    # directly, so the look's answer is what this checkout holds.
+    monkeypatch.setattr(windows, "_FOUND", {m: windows.module_present(m) for m in ("koe", "youtube_downloader")})
+
+
 def test_row_4s_doors_are_registered_with_their_modules():
     assert [op.name for op in windows.OPENERS if op.name in ROW4] == list(ROW4)
     assert {_door(n).module for n in ROW4} == {"youtube_downloader", "koe"}
@@ -32,10 +40,10 @@ def test_row_4s_doors_are_registered_with_their_modules():
 @needs["koe"]
 @pytest.mark.parametrize("settings, shown", [
     ({}, False),                                     # not revealed: no door, whatever else is set
-    ({"enable_koe": False}, False),                  # revealed, switched off
+    ({"enable_koe": False}, True),                   # revealed (the documented reveal line): Tk showed Speech settingsâ€¦
     ({"enable_koe": True}, True),
 ])
-def test_speech_shows_only_once_revealed_and_switched_on(settings, shown):
+def test_speech_shows_whenever_revealed(settings, shown):
     assert windows.available(_door("koe"), settings, "ja") is shown
 
 
@@ -50,7 +58,7 @@ def test_the_youtube_doors_follow_their_switches(name, key):
 
 @pytest.mark.parametrize("name", ROW4)
 def test_a_door_hides_when_its_module_is_absent(name, monkeypatch):
-    monkeypatch.setattr(windows, "module_present", lambda module: False)
+    monkeypatch.setattr(windows, "_FOUND", {"koe": False, "youtube_downloader": False})
     everything = {"enable_koe": True, "enable_youtube_transcripts": True, "enable_youtube_preview": True}
     assert windows.available(_door(name), everything, "ja") is False
 

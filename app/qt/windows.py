@@ -208,8 +208,8 @@ OPENERS = [
 ]
 
 # row 4: Koe and YouTube — each module's own window, imported only when its door is pressed; shown as the Tk dashboard
-# showed them: the downloader with `enable_youtube_transcripts`, the preview with `enable_youtube_preview`, Speech only
-# once revealed (the reveal line in settings.json, `modules.koe`) and switched on.
+# showed them: the downloader with `enable_youtube_transcripts`, the preview with `enable_youtube_preview`, Speech
+# whenever revealed (the reveal line in settings.json, `modules.koe`, true or false).
 
 
 def _koe_door(settings, _language):

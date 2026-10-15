@@ -49,6 +49,7 @@ def _open(main):
 
 
 def _items(w):
+    """The list's rows as shown (each list's own name)."""
     return [w.list.item(i).text() for i in range(w.list.count())]
 
 
@@ -92,7 +93,8 @@ def test_it_shows_this_languages_lists_only(main, ja_list, zh_list):
     frequency_lists.add(ja_list, "ja")
     frequency_lists.add(zh_list, "zh")
     w = _open(main)
-    assert _items(w) == ["frequency_list_ja_novels.csv"]
+    assert _items(w) == ["novels"]                        # its own name, as the report names it (IK-21)
+    assert w.list.item(0).toolTip() == "frequency_list_ja_novels.csv"
 
 
 def test_get_lists_and_the_credit_open_in_the_browser(main, monkeypatch):
@@ -113,7 +115,7 @@ def test_add_picks_several_files_and_lists_them(main, ja_list, tmp_path, monkeyp
                         staticmethod(lambda *a, **k: ([ja_list, str(other)], strings.FREQ_PICK_FILTER)))
     w = _open(main)
     w.add_button.click()
-    assert wait_until(lambda: _items(w) == ["frequency_list_ja_Anime.csv", "frequency_list_ja_novels.csv"])
+    assert wait_until(lambda: _items(w) == ["Anime", "novels"])
     assert wait_until(lambda: w.status.text() == strings.FREQ_ADDED.format(n=2))
 
 
@@ -131,7 +133,7 @@ def test_a_list_added_over_a_same_named_one_says_the_old_one_is_kept(main, ja_li
     newer.write_text("Word,Rank\n冒険,1499\n", encoding="utf-8")
     w = _open(main)
     w.add([str(newer)])
-    line = strings.FREQ_ADDED.format(n=1) + " · " + strings.FREQ_KEPT.format(name="frequency_list_ja_novels.csv")
+    line = strings.FREQ_ADDED.format(n=1) + " · " + strings.FREQ_KEPT.format(name="novels")
     assert wait_until(lambda: w.status.text() == line)
     assert len(_trash("ja")) == 1
 
@@ -144,43 +146,64 @@ def test_a_list_that_cant_be_added_says_why(main, tmp_path):
 
 
 # --- removing: asked first, Cancel by default, into the trash ---------------------------------------------------- #
-def test_remove_asks_first_and_enter_is_cancel(main, ja_list):
+@pytest.fixture
+def removes(monkeypatch):
+    """Every remove the window hands its worker (AD1-2: the answer is proved, not raced against the disk)."""
+    from app.qt import frequency_lists_window as flw
+    calls = []
+    real = flw._remove_all
+
+    def record(names, language):
+        calls.append((list(names), language))
+        return real(names, language)
+    monkeypatch.setattr(flw, "_remove_all", record)
+    return calls
+
+
+def test_remove_asks_first_and_enter_is_cancel(main, ja_list, removes):
     frequency_lists.add(ja_list, "ja")
     w = _open(main)
-    _select(w, "frequency_list_ja_novels.csv")
+    _select(w, "novels")
     assert w.remove_button.isEnabled()
     w.remove_button.click()
     card = _card(w)
-    assert card is not None and card.title.text() == strings.FREQ_REMOVE_ONE.format(name="frequency_list_ja_novels.csv")
+    assert card is not None and card.title.text() == strings.FREQ_REMOVE_ONE.format(name="novels")
+    assert card.body.text() == strings.FREQ_REMOVE_BODY_ONE
     assert card.yes.property("kind") == "danger"
+    assert QApplication.focusWidget() is card.no          # the default on a remove
     QTest.keyClick(QApplication.focusWidget(), Qt.Key.Key_Return)
-    QApplication.processEvents()
+    assert card.answer is False and removes == [] and not w.busy()
+    QTest.qWait(100)
     assert frequency_lists.listed("ja") == ["frequency_list_ja_novels.csv"] and _trash("ja") == []
 
 
-def test_esc_on_the_question_removes_nothing_and_keeps_the_window(main, ja_list):
+def test_esc_on_the_question_removes_nothing_and_keeps_the_window(main, ja_list, removes):
     frequency_lists.add(ja_list, "ja")
     w = _open(main)
-    _select(w, "frequency_list_ja_novels.csv")
+    _select(w, "novels")
     w.remove_button.click()
+    card = _card(w)
     QTest.keyClick(QApplication.focusWidget(), Qt.Key.Key_Escape)
-    QApplication.processEvents()
-    assert w.isVisible() and frequency_lists.listed("ja") == ["frequency_list_ja_novels.csv"]
+    assert card.answer is False and removes == [] and w.isVisible()
+    QTest.qWait(100)
+    assert frequency_lists.listed("ja") == ["frequency_list_ja_novels.csv"]
 
 
-def test_remove_confirmed_moves_the_lists_to_the_trash(main, ja_list, tmp_path):
+def test_remove_confirmed_moves_the_lists_to_the_trash(main, ja_list, tmp_path, removes):
     other = tmp_path / "Anime.csv"
     other.write_text("Word,Rank\n仲間,640\n", encoding="utf-8")
     frequency_lists.add(ja_list, "ja")
     frequency_lists.add(str(other), "ja")
     w = _open(main)
     assert wait_until(lambda: len(_items(w)) == 2)
-    _select(w, "frequency_list_ja_novels.csv", "frequency_list_ja_Anime.csv")
+    _select(w, "novels", "Anime")
     w.remove_button.click()
     card = _card(w)
     assert card.title.text() == strings.FREQ_REMOVE_MANY.format(n=2)
+    assert card.body.text() == strings.FREQ_REMOVE_BODY_MANY
     card.yes.click()
     assert wait_until(lambda: _items(w) == [] and w.status.text() == strings.FREQ_REMOVED.format(n=2))
+    assert removes == [(["frequency_list_ja_Anime.csv", "frequency_list_ja_novels.csv"], "ja")]
     assert len(_trash("ja")) == 2 and frequency_lists.listed("ja") == []
 
 
@@ -191,13 +214,71 @@ def test_remove_needs_a_selection(main, ja_list):
     assert w.ask_remove() is None
 
 
-def test_a_remove_answered_after_a_language_switch_moves_nothing(main, ja_list, zh_list):
+def test_a_switch_with_the_question_open_drops_it_and_removes_nothing(main, ja_list, zh_list, removes):
+    # IK-24 / AD1-12: the question named a ja list; once the window shows zh lists it is dropped, never answered.
     frequency_lists.add(ja_list, "ja")
     frequency_lists.add(zh_list, "zh")
     w = _open(main)
-    w.remove(["frequency_list_ja_novels.csv"], "zh")     # asked for ja, the window now on zh: refused
-    QApplication.processEvents()
+    _select(w, "novels")
+    w.remove_button.click()
+    card = _card(w)
+    yes = card.yes
+    main.services.settings.set({"target_language": "zh"})
+    assert wait_until(lambda: _items(w) == ["subtitles"])
+    assert _card(w) is None
+    try:
+        yes.click()
+    except RuntimeError:
+        pass
+    QTest.qWait(100)
+    assert removes == [] and frequency_lists.listed("ja") == ["frequency_list_ja_novels.csv"]
+
+
+def test_the_windows_guard_refuses_a_remove_for_a_language_it_left(main, ja_list, zh_list, removes):
+    frequency_lists.add(ja_list, "ja")
+    frequency_lists.add(zh_list, "zh")
+    w = _open(main)
+    main.services.settings.set({"target_language": "zh"})
+    assert wait_until(lambda: w.language == "zh")
+    w.remove(["frequency_list_ja_novels.csv"], "ja")      # asked while on ja; the window is on zh now
+    assert removes == []
     assert frequency_lists.listed("ja") == ["frequency_list_ja_novels.csv"] and _trash("ja") == []
+
+
+def test_reading_the_same_lists_again_repaints_nothing(main, ja_list):
+    # IK-25 (S19): a re-read that finds the same lists leaves the list alone.
+    frequency_lists.add(ja_list, "ja")
+    w = _open(main)
+    before = w.list_paints
+    w.read()
+    QTest.qWait(200)
+    assert w.list_paints == before
+
+
+def test_a_write_answered_after_the_main_window_is_gone_raises_nothing(qapp, ja_list, monkeypatch, qt_errors):
+    # AD1-3: an add finishing after the app's main window was deleted once wrote to its deleted bar.
+    import threading
+    from PyQt6.QtCore import QCoreApplication, QEvent
+    from app.qt import frequency_lists_window as flw
+    go_on = threading.Event()
+    real = flw._add_all
+
+    def slow(paths, language):
+        go_on.wait(10)
+        return real(paths, language)
+    monkeypatch.setattr(flw, "_add_all", slow)
+    services = shell.Services()
+    win = shell.open_window(qapp, services)
+    win.show()
+    w = windows.show(win, "frequency-lists", FrequencyListsWindow)
+    w.add([ja_list])
+    win.close()
+    win.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    go_on.set()
+    QTest.qWait(300)
+    assert qt_errors == []
+    services.shutdown(0.5)
 
 
 # --- the language switch ------------------------------------------------------------------------------------------ #
@@ -206,7 +287,7 @@ def test_the_window_follows_the_main_windows_language(main, ja_list, zh_list):
     frequency_lists.add(zh_list, "zh")
     w = _open(main)
     main.services.settings.set({"target_language": "zh"})
-    assert wait_until(lambda: _items(w) == ["frequency_list_zh_subtitles.csv"])
+    assert wait_until(lambda: _items(w) == ["subtitles"])
     assert w.language == "zh"
 
 

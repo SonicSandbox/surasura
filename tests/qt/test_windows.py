@@ -127,8 +127,14 @@ def test_a_closed_window_hears_no_switch(main):
 
 
 # --- the openers and the Settings tab's list (IK-16) ---------------------------------------------------------------- #
+def _settings_row(main):
+    # The Settings tab's list of doors. Until the shell's own hook lands (its owner's step), the test builds the row on
+    # the tab's page itself, as `ShellWindow._page("settings")` will.
+    return windows.launchers(main, main.page_widgets["settings"])
+
+
 def test_the_settings_tab_lists_every_door_wired_tipped_and_named(main):
-    row = main.launchers
+    row = _settings_row(main)
     assert set(row.buttons) == {op.name for op in windows.OPENERS}
     assert row.parentWidget() is main.page_widgets["settings"]
     for op in windows.OPENERS:
@@ -139,12 +145,13 @@ def test_the_settings_tab_lists_every_door_wired_tipped_and_named(main):
 
 
 def test_row_ones_doors_open_their_windows_once(main):
+    row = _settings_row(main)
     main.show_tab("settings")
     for name in ("frequency-lists", "sentence-dictionary"):
-        main.launchers.buttons[name].click()
+        row.buttons[name].click()
         first = windows.opened(main, name)
         assert first is not None and first.isVisible()
-        main.launchers.buttons[name].click()
+        row.buttons[name].click()
         assert windows.opened(main, name) is first
 
 
@@ -159,11 +166,95 @@ def test_a_door_shows_only_while_its_rule_and_its_module_say_so(main, monkeypatc
     page = main.page_widgets["settings"]
     row = windows.launchers(main, page)
     assert row.buttons["probe"].isHidden() and row.buttons["ghost"].isHidden()
-    assert not row.buttons["koe"].isHidden() or not windows.module_present("junban")
+    assert wait_until(lambda: {"no_such_module_w34", "junban"} <= set(windows._FOUND))
+    assert row.buttons["ghost"].isHidden()
+    assert row.buttons["koe"].isHidden() != windows.module_present("junban")
     switch["on"] = True
     main.show_tab("current")
     main.show_tab("settings")                              # asked again each time the page shows
     assert not row.buttons["probe"].isHidden() and row.buttons["ghost"].isHidden()
+
+
+# --- the fix round: the doors follow the settings (IK-20, IK-25), a refused close (AD1-11), the bar (AD1-3) -------- #
+def _doors(monkeypatch, main, extra):
+    monkeypatch.setattr(windows, "OPENERS", windows.OPENERS + extra)
+    return windows.launchers(main, main.page_widgets["settings"])
+
+
+def test_with_the_settings_tab_open_a_door_follows_the_language_and_a_switch(main, monkeypatch):
+    jiten = windows.Opener("jiten", "Jiten", "Japanese only", lambda s, lang: lang == "ja", lambda s: None)
+    koe = windows.Opener("koe", "Koe", "Only when revealed", lambda s, lang: "enable_koe" in s, lambda s: None)
+    main.show_tab("settings")
+    row = _doors(monkeypatch, main, [jiten, koe])
+    assert not row.buttons["jiten"].isHidden() and row.buttons["koe"].isHidden()
+    main.services.settings.set({"target_language": "zh"})
+    assert wait_until(lambda: row.buttons["jiten"].isHidden())          # no tab switch needed
+    main.services.settings.set({"enable_koe": True})
+    assert wait_until(lambda: not row.buttons["koe"].isHidden())
+
+
+def test_a_settings_write_that_changes_no_door_repaints_none(main, monkeypatch):
+    jiten = windows.Opener("jiten", "Jiten", "Japanese only", lambda s, lang: lang == "ja", lambda s: None)
+    main.show_tab("settings")
+    row = _doors(monkeypatch, main, [jiten])
+    before = row.paints
+    main.services.settings.set({"enable_youtube_preview": True})       # an enable_ key no door changes with
+    QTest.qWait(400)
+    main.show_tab("current")
+    main.show_tab("settings")                                          # the page shown again: nothing changed
+    assert row.paints == before
+
+
+def test_the_modules_are_looked_for_once_and_never_on_the_windows_thread(main, monkeypatch):
+    import threading
+    gui = threading.current_thread()
+    looks = []
+    real = windows.module_present
+
+    def present(name):
+        looks.append((name, threading.current_thread() is gui))
+        return real(name)
+    monkeypatch.setattr(windows, "module_present", present)
+    monkeypatch.setattr(windows, "_FOUND", {})
+    monkeypatch.setattr(windows, "_LOOKING", set())
+    ghost = windows.Opener("ghost", "Ghost", "x", lambda s, lang: True, lambda s: None, "no_such_module_w34")
+    row = _doors(monkeypatch, main, [ghost])
+    assert row.buttons["ghost"].isHidden()                             # hidden until the look says it's there
+    assert wait_until(lambda: "no_such_module_w34" in windows._FOUND)
+    for _ in range(3):
+        main.show_tab("current")
+        main.show_tab("settings")
+    assert looks == [("no_such_module_w34", False)]
+    assert row.buttons["ghost"].isHidden()
+    again = windows.launchers(main, main.page_widgets["settings"])     # a row made after the look ended: no new look
+    assert not wait_until(lambda: len(looks) > 1, timeout=1.0)          # (a second look would run on a worker)
+    assert again.buttons["ghost"].isHidden()
+
+
+def test_a_close_the_window_refuses_leaves_it_open_and_the_only_one_of_its_kind(main):
+    class Busy(Probe):
+        def closeEvent(self, event):
+            event.ignore()                                             # refused before super(): the documented way
+            super().closeEvent(event)
+    w = windows.show(main, "busy", Busy)
+    w.close()
+    assert w.isVisible() and not w.gone
+    assert windows.show(main, "busy", Busy) is w
+
+
+def test_a_window_whose_main_window_is_gone_counts_as_gone(qapp):
+    services = shell.Services()
+    win = shell.open_window(qapp, services)
+    win.show()
+    w = windows.show(win, "probe", Probe)
+    win.close()
+    win.deleteLater()
+    from PyQt6.QtCore import QCoreApplication, QEvent
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert w.gone
+    w.end_write("Added: 1")                                            # a worker's late answer: no error
+    windows.say_in_bar(win, "Added: 1")
+    services.shutdown(0.5)
 
 
 def test_a_door_whose_rule_fails_stays_hidden(main, monkeypatch):

@@ -459,7 +459,7 @@ def test_the_3_0_tools_run_as_their_subcommands_when_frozen():
     for script, word in (("anki_db_import.py", "apkg_known_import"), ("extract.py", "extract"),
                          ("jiten_converter.py", "convert_jiten")):
         assert tools.command([script, "--language", "ja"], frozen=True, executable="S.exe") == \
-            ["S.exe", word, "--language", "ja"]
+            ["S.exe", word, "--headless", "--language", "ja"]
 
 
 def test_each_run_writes_its_log_fresh(tmp_path):

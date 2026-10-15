@@ -69,6 +69,8 @@ def test_the_map_is_the_tk_dashboards_map_as_it_is():
     from app.main import MasterDashboardApp
     source = inspect.getsource(MasterDashboardApp.run_command_async)
     for script, word in tools.SCRIPT_MAP.items():
+        if script in tools.QT_SCRIPTS:                     # the 3.0 window's own tools (W3.4 row 2)
+            continue
         assert f"'{script}': '{word}'" in source
 
 

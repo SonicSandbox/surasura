@@ -847,6 +847,40 @@ def kept_graduated(path, language, words):
     return kept
 
 
+def kept_ignored(path, language, words):
+    """The IGNORED entries of the KnownWord.json at `path` — words the user dismissed (in Migaku, or on the list) —
+    that `words` doesn't name: a replacing import that keeps them (Jiten's, W3.4-1) adds them, so a dismissed word
+    doesn't come back as a new one. -> those entries, first per word. A file missing or unreadable keeps none (the
+    replacer's backup holds them)."""
+    try:
+        data = json.loads(read_text(path, language, errors="strict"))
+    except (OSError, ValueError, UnicodeDecodeError):
+        return []
+    current = data.get("words") if isinstance(data, dict) else data
+    if not isinstance(current, list):
+        return []
+    taken = {_norm(w.get("dictForm")) for w in words if isinstance(w, dict)}
+    kept = []
+    for entry in current:
+        if isinstance(entry, dict) and entry.get("knownStatus") == "IGNORED":
+            key = _norm(entry.get("dictForm"))
+            if key and key not in taken:
+                taken.add(key)
+                kept.append(entry)
+    return kept
+
+
+def replace_numbers(language, words, keep_ignored=False):
+    """What a replacing import's confirmation states, before it runs (W3.4 row 2, IK-18): (known words now, known
+    words after, past Graduates' words kept, ignored words kept). Reads only; `words` is left as it is."""
+    import copy
+    path = _known_path(language)
+    trial = copy.deepcopy([w for w in words if isinstance(w, dict)])
+    graduated = kept_graduated(path, language, trial)
+    ignored = kept_ignored(path, language, trial + graduated) if keep_ignored else []
+    return count_known(language), len(_known_keys(trial + graduated + ignored)), len(graduated), len(ignored)
+
+
 def restore_previous(language):
     """Undo the last replace: back up the CURRENT file the same way (so this is undoable too), copy
     the backup back atomically, and clear the seen note ids so the next sync re-evaluates cleanly."""

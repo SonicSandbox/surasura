@@ -35,6 +35,13 @@ SCRIPT_MAP = {
     'indexer.py': 'index',
     'sentence_corpus.py': 'sentence_corpus',
 }
+# The 3.0 window's own tools (W3.4 row 2): the Tk dashboard never starts them, so its map doesn't hold them.
+QT_SCRIPTS = {
+    'anki_db_import.py': 'apkg_known_import',
+    'extract.py': 'extract',
+    'jiten_converter.py': 'convert_jiten',
+}
+SCRIPT_MAP.update(QT_SCRIPTS)
 CREATE_NO_WINDOW = 0x08000000           # Windows: a console child opens no console window
 
 

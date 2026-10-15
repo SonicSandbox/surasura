@@ -811,7 +811,9 @@ def build(zip_output=False, skip_tests=False, release=False, full_update=False, 
         (os.path.join("docs", "UPDATE_INSTRUCTIONS.md"), "UPDATE_INSTRUCTIONS.md"),
         # Packaged under a STABLE name so it isn't version-stamped (and so an update refreshes it in place).
         # Content keeps its version header.
-        (os.path.join("docs", "releases", f"RELEASE_v{version}.md"), "RELEASE_NOTES.md")
+        (os.path.join("docs", "releases", f"RELEASE_v{version}.md"), "RELEASE_NOTES.md"),
+        # Settings › App reads its licence line from it (app/credits.py).
+        ("LICENSE", "LICENSE")
     ]
     for src, dst_name in docs_to_copy:
         if os.path.exists(src):

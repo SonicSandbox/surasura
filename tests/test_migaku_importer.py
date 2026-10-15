@@ -176,3 +176,101 @@ def test_the_exit_code_tells_the_import_window_whether_it_worked(tmp_path, monke
     with pytest.raises(SystemExit) as failed:
         migaku_converter.main()
     assert failed.value.code == 1
+
+
+# --- W3.4 row 2: the window's reads, moved out of the Tk class --------------------------------------------------- #
+def test_finding_the_export_looks_at_the_newest_db_files_only(tmp_path):
+    from app import migaku_converter
+    old = tmp_path / "migaku_old.db"
+    _make_wordlist_db(old, _FULL_COLS, [("日本語", "にほんご", "n", "ja", "KNOWN", 1, 0, 0, 0, 1)])
+    others = []
+    for n in range(3):
+        p = tmp_path / f"other_{n}.db"
+        sqlite3.connect(p).close()
+        others.append(p)
+    now = os.path.getmtime(old)
+    os.utime(old, (now - 100, now - 100))
+    for n, p in enumerate(others):
+        os.utime(p, (now + n, now + n))
+    assert migaku_converter.find_export(str(tmp_path)) == (None, 4)   # the export is the 4th newest: not looked at
+    os.utime(old, (now + 10, now + 10))
+    assert migaku_converter.find_export(str(tmp_path)) == (str(old), 4)
+    assert migaku_converter.find_export(str(tmp_path / "empty")) == (None, 0)
+
+
+def test_reading_the_words_closes_its_database_even_when_it_is_not_migaku(tmp_path):
+    from app import migaku_converter
+    no_table = tmp_path / "not_migaku.db"
+    sqlite3.connect(no_table).close()
+    with pytest.raises(migaku_converter.NotMigaku):
+        migaku_converter.read_words(str(no_table), "ja")
+    os.remove(no_table)                                    # Windows refuses while a connection is left open
+    plain = tmp_path / "plain.db"
+    sqlite3.connect(plain).close()
+    assert not migaku_converter.is_migaku_db(str(plain))
+    good = tmp_path / "good.db"
+    _make_wordlist_db(good, _FULL_COLS, [("日本語", "にほんご", "n", "ja", "KNOWN", 1, 0, 0, 0, 1)])
+    assert migaku_converter.is_migaku_db(str(good))
+
+
+def test_the_words_read_for_the_confirmation_are_the_words_the_import_writes(ja_resources_dir, tmp_path):
+    from app import migaku_converter
+    db = os.path.join(ja_resources_dir, "MigakuDb.db")
+    words = migaku_converter.read_words(db, "ja")
+    out = tmp_path / "KnownWord.json"
+    assert convert_db_to_json(db, str(out), language="ja") is True
+    assert len(json.loads(out.read_text(encoding="utf-8"))["words"]) == len(words)
+
+
+# --- AD2-1: a known-words file that exists but can't be read is never replaced #
+@pytest.mark.parametrize("content", ['{"words": [{"dictForm": "冒険"', '"冒険"', '{"words": "冒険"}'])
+def test_an_unreadable_known_words_file_refuses_migakus_replace_and_writes_nothing(tmp_path, content):
+    """Its past Graduates' and dismissed words can't be kept from a file no one can read: refused, nothing written,
+    no backup (the .apkg merge's rule)."""
+    db = tmp_path / "migaku.db"
+    _make_wordlist_db(db, _FULL_COLS, [("日本語", "にほんご", "n", "ja", "KNOWN", 1, 0, 0, 0, 1)])
+    known = _known_words_file(tmp_path)
+    known.write_text(content, encoding="utf-8")
+    assert convert_db_to_json(str(db), str(known), language="ja") is False
+    assert known.read_bytes() == content.encode("utf-8")
+    assert not (known.parent / ".trash").exists()
+
+
+# --- IK-56: the replace writes only the numbers its confirmation stated ------------------------------------------ #
+def test_migakus_replace_refuses_when_the_numbers_moved_since_the_confirmation(ja_resources_dir, monkeypatch):
+    from app import anki_sync, migaku_converter
+    from app.path_utils import get_user_files_path
+    os.makedirs(get_user_files_path("ja"), exist_ok=True)
+    known = os.path.join(get_user_files_path("ja"), "KnownWord.json")
+    with open(known, "w", encoding="utf-8") as f:
+        json.dump(_PREVIOUS, f, ensure_ascii=False)
+    db = os.path.join(ja_resources_dir, "MigakuDb.db")
+    numbers = anki_sync.replace_numbers("ja", migaku_converter.read_words(db, "ja"))
+    before = open(known, "rb").read()
+    stale = ",".join(map(str, (numbers[0], numbers[1] - 1, numbers[2], numbers[3])))
+    monkeypatch.setattr(sys, "argv", ["migaku_converter.py", db, "--language", "ja", "--expect", stale])
+    with pytest.raises(SystemExit) as done:
+        migaku_converter.main()
+    assert done.value.code == anki_sync.EXIT_CHANGED and open(known, "rb").read() == before
+    monkeypatch.setattr(sys, "argv", ["migaku_converter.py", db, "--language", "ja", "--expect",
+                                      ",".join(map(str, numbers))])
+    with pytest.raises(SystemExit) as done:
+        migaku_converter.main()
+    assert done.value.code == 0 and anki_sync.count_known("ja") == numbers[1]
+
+
+# --- the round-2 mutant pass's survivors ------------------------------------------------------------------------ #
+def test_a_failed_write_leaves_the_known_words_as_they_were_and_no_temp_file(tmp_path, monkeypatch):
+    """The swap of the new file fails (a reader holds it): the old file stays whole, no temp file is left."""
+    db = tmp_path / "migaku.db"
+    _make_wordlist_db(db, _FULL_COLS, [("日本語", "にほんご", "n", "ja", "KNOWN", 1, 0, 0, 0, 1)])
+    known = _known_words_file(tmp_path)
+    before = known.read_bytes()
+
+    def refuse(*_a, **_k):
+        raise PermissionError("the file is held open")
+    monkeypatch.setattr(os, "replace", refuse)
+    monkeypatch.setattr("app.anki_sync.time.sleep", lambda _s: None)
+    assert convert_db_to_json(str(db), str(known), language="ja") is False
+    assert known.read_bytes() == before
+    assert not [n for n in os.listdir(known.parent) if n.endswith(".tmp")]

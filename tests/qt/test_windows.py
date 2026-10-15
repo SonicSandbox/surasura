@@ -26,6 +26,9 @@ def main(qapp):
     yield win
     win.close()
     services.shutdown(0.5)
+    # Every settings write lands while the test root is still set: a writer finishing after the test would take the
+    # settings lock in the REAL local data folder (it made %LOCALAPPDATA%\Houseki\Surasura\<key> once).
+    assert services.settings.flush(10)
 
 
 class Probe(windows.SecondaryWindow):
@@ -198,7 +201,7 @@ def test_a_settings_write_that_changes_no_door_repaints_none(main, monkeypatch):
     main.show_tab("settings")
     row = _doors(monkeypatch, main, [jiten])
     before = row.paints
-    main.services.settings.set({"enable_youtube_preview": True})       # an enable_ key no door changes with
+    main.services.settings.set({"enable_no_door_w34": True})           # an enable_ key no door changes with
     QTest.qWait(400)
     main.show_tab("current")
     main.show_tab("settings")                                          # the page shown again: nothing changed
@@ -224,10 +227,12 @@ def test_the_modules_are_looked_for_once_and_never_on_the_windows_thread(main, m
     for _ in range(3):
         main.show_tab("current")
         main.show_tab("settings")
-    assert looks == [("no_such_module_w34", False)]
+    # each module a door names looked for once, on a worker (the rows' own doors name modules too)
+    assert sorted(looks) == sorted({(op.module, False) for op in windows.OPENERS if op.module})
     assert row.buttons["ghost"].isHidden()
+    seen = len(looks)
     again = windows.launchers(main, main.page_widgets["settings"])     # a row made after the look ended: no new look
-    assert not wait_until(lambda: len(looks) > 1, timeout=1.0)          # (a second look would run on a worker)
+    assert not wait_until(lambda: len(looks) > seen, timeout=1.0)          # (a second look would run on a worker)
     assert again.buttons["ghost"].isHidden()
 
 
@@ -255,6 +260,9 @@ def test_a_window_whose_main_window_is_gone_counts_as_gone(qapp):
     w.end_write("Added: 1")                                            # a worker's late answer: no error
     windows.say_in_bar(win, "Added: 1")
     services.shutdown(0.5)
+    # Every settings write lands while the test root is still set: a writer finishing after the test would take the
+    # settings lock in the REAL local data folder (it made %LOCALAPPDATA%\Houseki\Surasura\<key> once).
+    assert services.settings.flush(10)
 
 
 def test_a_door_whose_rule_fails_stays_hidden(main, monkeypatch):

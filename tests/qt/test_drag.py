@@ -796,17 +796,33 @@ def test_reduced_motion_jumps_the_parting_and_the_ghost_never_glides(world):
         mode.set_setting(was)
 
 
+def _full_motion():
+    """Motion on whatever Windows says (GitHub's runners turn Windows' animations off: *Follow* reads as reduced)."""
+    mode = motion.clock().mode
+    was = mode.setting
+    mode.set_setting("full")
+    return lambda: mode.set_setting(was)
+
+
 def test_with_motion_the_ghost_glides_onto_the_rows_place_and_its_slot_shows_meanwhile(world):
     seed, win, writer = world()
     freeze.set_frozen(False)
-    lst = lst_of(win)
-    moved = rows_of(win)[6]
-    lift(win, 6)
-    target = row_point(win, 2)
-    move_global(win, target)
-    release_global(win, target)
-    assert lst.landing == moved.key and win.moves.ghost.isVisible()
-    assert wait_until(lambda: lst.landing is None and not win.moves.ghost.isVisible(), 3)
+    restore = _full_motion()
+    clock = motion.clock()
+    try:
+        lst = lst_of(win)
+        moved = rows_of(win)[6]
+        lift(win, 6)
+        target = row_point(win, 2)
+        move_global(win, target)
+        clock.use_test_time()                     # the glide moves only when the test says so (a slow runner's
+        release_global(win, target)               # event waits can outlast its 160 ms)
+        assert lst.landing == moved.key and win.moves.ghost.isVisible()
+        clock.advance(theme.MOTION["ghost-glide"] + 50)
+        assert lst.landing is None and not win.moves.ghost.isVisible()
+    finally:
+        clock.use_real_time()
+        restore()
 
 
 def test_a_lift_during_the_last_drops_glide_keeps_its_ghost_shown_for_the_whole_drag(world):
@@ -814,16 +830,23 @@ def test_a_lift_during_the_last_drops_glide_keeps_its_ghost_shown_for_the_whole_
     before it ended must not lose its ghost mid-drag."""
     seed, win, writer = world()
     freeze.set_frozen(False)
-    lift(win, 6)
-    target = row_point(win, 2)
-    move_global(win, target)
-    release_global(win, target)
-    QTest.qWait(theme.MOTION["click-swallow-after-drag"] + 20)       # past the click swallowed after a drag,
-    assert win.moves.ghost.isVisible()                                # still inside the glide
-    lift(win, 4)
-    QTest.qWait(theme.MOTION["ghost-glide"] + 150)                    # the old glide's end has passed
-    assert win.moves.running is not None and win.moves.ghost.isVisible()
-    win.moves.cancel()
+    restore = _full_motion()
+    clock = motion.clock()
+    try:
+        lift(win, 6)
+        target = row_point(win, 2)
+        move_global(win, target)
+        clock.use_test_time()                                         # the glide moves only when the test says so
+        release_global(win, target)
+        QTest.qWait(theme.MOTION["click-swallow-after-drag"] + 20)   # past the click swallowed after a drag,
+        assert win.moves.ghost.isVisible()                            # still inside the glide
+        lift(win, 4)
+        clock.advance(theme.MOTION["ghost-glide"] + 100)              # the old glide's end has passed
+        assert win.moves.running is not None and win.moves.ghost.isVisible()
+        win.moves.cancel()
+    finally:
+        clock.use_real_time()
+        restore()
 
 
 # --- speed: a drop repaints the rows it moved; S3 at 2,000 files -------------------------------------------------- #

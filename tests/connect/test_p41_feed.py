@@ -192,3 +192,12 @@ def test_a_read_that_raises_is_said_and_read_again_next_look():
 def test_the_untimed_warning_names_the_risk():
     # row 4.1.9: *Mine anyway* on hato's name-only pairing carries a warning (09-hato-layer v2 §1.2)
     assert "another episode" in feed.UNTIMED_WARNING or "episode's" in feed.UNTIMED_WARNING
+
+
+def test_settings_that_cant_be_read_are_the_unreadable_line_never_a_raise():
+    # why (Haiku review, failures): the settings service raising (settings.json caught mid-save) reached the window's
+    # worker as an exception instead of the feed's own line
+    def settings_get():
+        raise OSError("settings.json is being written")
+    got = feed.Provider("ja", settings_get, stamp=lambda **k: 1, read=lambda **k: {}).feed()
+    assert got.line == feed.UNREADABLE and got.on is True

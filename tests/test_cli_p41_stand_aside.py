@@ -170,11 +170,13 @@ def test_the_run_summary_carries_no_stand_aside_line_when_none_happened():
 from tests.test_cli_backfill import TAG, anki  # noqa: E402,F401  (the job's three new Lapis notes, real fields)
 
 
-def _put_back_line(deck=("TheBank",), fields=True):
-    """The journal's `put_back` line as `first_touch.put_back` writes it (the profile open, the order files' decks)."""
+def _put_back_line(deck=("TheBank",), fields=True, field_decks=None):
+    """The journal's `put_back` line as `first_touch.put_back` writes it (the profile open, the order files' decks;
+    `field_decks`, the decks whose fields came back, on a line written since AD-3 — None: a line from before it)."""
     from modules.junban import first_touch
     put = {str(1789712000000): {"Patterns": {"before": "", "after": "<div>Surasura's</div>"}}} if fields else {}
-    first_touch.note("ja", "put_back", "DevTest", list(deck), landed=True, fields=put,
+    more = {} if field_decks is None else {"field_decks": list(field_decks)}
+    first_touch.note("ja", "put_back", "DevTest", list(deck), landed=True, fields=put, **more,
                      done={"cards": 0, "added_after": 0, "made_after": 0, "unsuspended": 0, "tags_off": 0, "flags": 0,
                            "fields": 1 if fields else 0})
 
@@ -230,6 +232,22 @@ def test_otherwise_connects_fill_fills_as_ever(anki, case):
     with anki.patched(anki.fake):
         code, line = h.call("backfill", "--tag", TAG)
     assert code == 0 and line["filled"] == 3 and isinstance(line["skipped"], dict), (case, line)
+
+
+@pytest.mark.parametrize("scope, field_decks, aside", [
+    (("Japanese::Mining",), ("TheBank",), True),        # 順 re-orders one deck, Backfill fills another: its fields
+    (("TheBank",), ("Kaishi 1.5k",), False),            # the re-order's deck, but another deck's fields came back
+])
+def test_the_fill_reads_the_decks_whose_fields_came_back_not_the_reorders_scope(anki, scope, field_decks, aside):
+    # why (adversary AD-3): the line's `deck` is the order files' scope; FT-1's Backfill-off compares Backfill's deck
+    # with the decks whose fields came back (`_aside`'s `field_decks`), and so must Connect's fill
+    _put_back_line(deck=scope, field_decks=field_decks)
+    with anki.patched(anki.fake):
+        code, line = h.call("backfill", "--tag", TAG)
+    if aside:
+        assert code == 0 and line["skipped"] == _fill_said() and anki.fake.note_writes == [], line
+    else:
+        assert code == 0 and line["filled"] == 3, line
 
 
 def test_connects_fill_step_names_the_line_and_goes_on(anki):

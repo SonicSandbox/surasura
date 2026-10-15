@@ -121,7 +121,10 @@ def consume(store, language, ledger=None):
 
 def _asks(store, language, ledger, found, queued, dropped, asked):
     """The store's asks into the ledger (inside the caller's transaction): a new ask → a job (`queued`, and `asked`)
-    or the open job moved first (`asked`); an ask undone before mining → its job dropped (`dropped`) or put back."""
+    or the open job moved first (`asked`); an ask undone before mining → its job dropped (`dropped`) or put back.
+    `found` None (the asks couldn't be read): nothing changes this look (AD-6)."""
+    if found is None:
+        return
     watermark = ledger.asks_from(language)
     if watermark is None:                   # the first look that reads asks: nothing asked before it is mined
         watermark = stamp()

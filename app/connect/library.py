@@ -102,12 +102,14 @@ def asks(store):
 
 
 def asks_in(conn):
-    """`asks` on any connection to the store (the window's look opens it read-only); a store before the column: {}."""
+    """`asks` on any connection to the store (the window's look opens it read-only), or None when it can't be read
+    (locked, damaged, a store before the column): unknown, never "no asks" — read as none, every asked job would be
+    dropped as undone (adversary AD-6)."""
     import sqlite3
     try:
         rows = conn.execute("SELECT id, mine_asked, mined_at FROM items WHERE mine_asked IS NOT NULL").fetchall()
     except sqlite3.Error:
-        return {}
+        return None
     return {item_id: (asked_at, mined) for item_id, asked_at, mined in rows}
 
 
@@ -115,7 +117,7 @@ def unanswered(found):
     """[(item_id, asked_at)] of `asks` no receipt answers (the item's `mined_at` older than the ask, or none: C3 —
     a receipt at or after the ask answers it), the newest ask first."""
     from app.connect.ledger import stamp_key
-    out = [(i, a) for i, (a, mined) in found.items() if mined is None or stamp_key(mined) < stamp_key(a)]
+    out = [(i, a) for i, (a, mined) in (found or {}).items() if mined is None or stamp_key(mined) < stamp_key(a)]
     return sorted(out, key=lambda p: (stamp_key(p[1]), p[0]), reverse=True)
 
 

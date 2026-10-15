@@ -301,6 +301,31 @@ def test_an_ask_undone_before_mining_drops_its_job_and_mine_now_undone_puts_it_b
     assert _mined(steps) == [a], "nothing mined for the undone ask"
 
 
+class _Unreadable:
+    """A store connection whose read fails (locked, damaged): what `asks_in` meets on a bad moment."""
+
+    def execute(self, *args):
+        import sqlite3
+        raise sqlite3.OperationalError("database is locked")
+
+
+def test_asks_that_cant_be_read_change_nothing_never_read_as_every_ask_undone(monkeypatch):
+    # why (adversary AD-6): an unreadable asks read once read as "no asks" -> every asked job dropped as undone, and
+    # the ask, held by that dropped job, never mined again; now it reads as unknown and the look leaves the jobs be
+    assert library.asks_in(_Unreadable()) is None
+    ids, kinds = _library()
+    below = _srt(ids, kinds)[-1]
+    _ask([below])
+    assert _look()["asked"] == [below]
+    monkeypatch.setattr(library, "asks", lambda store: library.asks_in(_Unreadable()))
+    got = _look()
+    assert got["dropped"] == [] and got["asked"] == []
+    job = _jobs(below)[0]
+    assert (job["state"], job["kind"]) == ("queued", ASKED) and job["asked_at"]
+    with c.store() as s:
+        assert inbox.pending(s) is False, "an unreadable read is nothing unread, never an error"
+
+
 def test_a_mined_ask_is_answered_by_its_receipt_and_a_second_look_queues_nothing(tmp_path):
     ids, kinds = _library()
     below = _srt(ids, kinds)[-1]

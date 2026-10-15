@@ -112,7 +112,12 @@ class Provider:
         """The Feed now: off → the off Feed, nothing read; the stamp unchanged → the same Feed object (S19); a record
         that can't be read → its own line (Connect's record says why), never a raise."""
         from app import settings_manager
-        settings = self.settings_get() or {}
+        try:
+            settings = self.settings_get() or {}
+        except Exception as e:                  # settings caught mid-save: the unreadable line, never a raise
+            print(f"Connect's feed couldn't read the settings: {e}")
+            return Feed(on=True, mining=frozenset(), items={}, line=UNREADABLE, state="waiting", unseen=0,
+                        updating=False)
         if not settings_manager.connect_on(settings):
             self._on, self._last = False, None      # turned on again: its first look reads
             return _off(settings)

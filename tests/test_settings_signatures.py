@@ -585,6 +585,27 @@ def test_the_automation_switch_never_moves_a_signature(library):
         assert _signatures(lang) == absent, f"{lang}: automation off is no new analysis and no new report"
 
 
+def test_the_settings_part_is_settings_signature_over_the_settings_as_the_run_reads_them(library):
+    """P3.3: Connect tells a level raise by signing settings.json with each other band put back
+    (`analyzer.settings_signature`) — so that function over `load_settings()` must be the run signature's `settings`
+    part exactly, in both languages, defaults, saved values and the other language's keys alike; and it never changes
+    the dict it signs."""
+    for written in ({"target_language": "ja"},
+                    _with("logic.selection.band", "rare", _with("zh_script", "simplified",
+                                                              _with("logic.phrase_rows", False)))):
+        _write(written)
+        for lang in LANGUAGES:
+            args = analyzer.parse_analysis_args(_argv(lang)[1:])
+            parts = analyzer.run_signature_parts(lang, analyzer.resolve_found_files(lang, verbose=False), args)
+            loaded = settings_manager.load_settings()
+            kept = copy.deepcopy(loaded)
+            assert analyzer.settings_signature(loaded, lang) == parts["settings"] != "", (lang, written)
+            assert loaded == kept, "the settings handed in are left as they were"
+    banded = _with("logic.selection.band", "common", settings_manager.load_settings())
+    assert analyzer.settings_signature(banded, "ja") != analyzer.settings_signature(settings_manager.load_settings(),
+                                                                                    "ja"), "the band is signed"
+
+
 def test_comments_never_change_the_run_signature(library):
     """settings.json's "_comment" strings are notes to whoever edits it by hand, at any depth: no code reads them."""
     comments = [path for path in _paths(settings_manager.DEFAULT_SETTINGS) if path.endswith("._comment")]

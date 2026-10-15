@@ -917,10 +917,10 @@ def _three_jobs(root, store, fake_of, **settings):
 @pytest.mark.parametrize("over,acted", [
     (dict(junban_auto_actions=True, junban_later_tag=True, junban_later_flag=True, junban_later_suspend=True),
      ("addTags", "flag", "suspend")),
-    # Connect's preview on: unattended, as 順's automatic step decides it — the positions, and from 3.0 the suspend
-    # setting's say (a suspend tags too); no flag, no touch-up.
+    # Connect's preview on — HY-6 (P3.3, `connect.UNATTENDED_ACTIONS` on the 3.0 line): Connect being on strips
+    # nothing any more; your actions apply as with it off (2.x-dev keeps the positions and the suspend's say only).
     (dict(junban_auto_actions=True, connect_enabled=True, junban_later_tag=True, junban_later_flag=True,
-          junban_later_suspend=True), ("addTags", "suspend")),
+          junban_later_suspend=True), ("addTags", "flag", "suspend")),
 ], ids=["actions-on", "connect-unattended-suspend"])
 def test_on_3_0_the_hosts_job_applies_your_actions_after_its_positions_suspend_last(lib, monkeypatch, over, acted):
     """2.x-dev keeps the host's job positions only; 3.0 (Sonic, 2026-10-13: "it just works"): the window's re-order
@@ -947,7 +947,8 @@ def test_on_3_0_the_hosts_job_applies_your_actions_after_its_positions_suspend_l
     later = [sorted(notes) for _action, notes, tag in fake.tag_calls if tag == "Surasura::later"]
     assert later == [sorted(fake.cards[card_id]["note"] for card_id in off_ids)]
     assert sorted(card_id for card_id, _flag in fake.flag_writes) == (sorted(off_ids) if "flag" in acted else [])
-    assert ("Surasura" in {tag for _action, _notes, tag in fake.tag_calls}) is (not over.get("connect_enabled"))
+    # HY-6 (P3.3): the touch-ups' Surasura tag too, Connect on or off
+    assert "Surasura" in {tag for _action, _notes, tag in fake.tag_calls}
     saved = undo.load("ja")
     assert saved and saved["complete"] is True and saved["suspended"] == sorted(off_ids), "the window's snapshot"
     baseline = undo.load("ja", "baseline")
@@ -957,8 +958,9 @@ def test_on_3_0_the_hosts_job_applies_your_actions_after_its_positions_suspend_l
 @pytest.mark.parametrize("deck_of,over", [
     # The actions switched off (`junban_auto_actions` False, no Connect: no unattended suspend), cards off the list.
     (_acting_deck, dict(junban_later_tag=True, junban_later_flag=True, junban_later_suspend=True)),
-    # Connect's preview on with the suspend setting off: unattended, nothing to suspend — positions only.
-    (_acting_deck, dict(junban_auto_actions=True, connect_enabled=True, junban_later_tag=True,
+    # Connect's preview on with the actions and the suspend setting off — HY-6 (P3.3): with the actions on, Connect
+    # on now tags and flags as with it off (test_on_3_0_the_hosts_job_applies_your_actions_…); off: positions only.
+    (_acting_deck, dict(junban_auto_actions=False, connect_enabled=True, junban_later_tag=True,
                         junban_later_flag=True)),
     # The actions on, every card on the list and no Surasura tag: nothing to act on.
     (_listed_deck, dict(junban_auto_actions=True, junban_tag="", junban_later_tag=True, junban_later_flag=True,

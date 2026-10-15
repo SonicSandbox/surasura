@@ -41,8 +41,10 @@ def command():
 
 
 def kick(settings):
-    """Start Connect if it should run -> the started process (a `subprocess.Popen`), or None."""
-    if not settings.get("connect_enabled"):
+    """Start Connect if it should run -> the started process (a `subprocess.Popen`), or None. 3.0 (P3.3 C1): D29's
+    switch (`logic.automation`) off starts nothing, as Connect's own switch off doesn't."""
+    from app import settings_manager
+    if not settings.get("connect_enabled") or not settings_manager.automation(settings):
         return None
     if os.environ.get("SURASURA_TEST_ROOT") and os.environ.get("SURASURA_CONNECT_KICK") != "1":
         return None

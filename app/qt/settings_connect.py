@@ -350,7 +350,7 @@ class MinerCard(QWidget):
         self.state = None
         self.path = ""
         self.update_url = None
-        self.checking = False
+        self.checking = self.again = False
         self.setMaximumWidth(round(CARD_W * _f()))
         box = QVBoxLayout(self)
         box.setContentsMargins(0, 0, 0, 0)
@@ -417,10 +417,14 @@ class MinerCard(QWidget):
         return steps
 
     def check(self):
-        """`setup.checks` (and the star's answer, the whitelist path, the update notice) on a worker; then drawn."""
-        if self.checking or not self.rows.alive():
+        """`setup.checks` (and the star's answer, the whitelist path, the update notice) on a worker; then drawn. Asked
+        while one runs (a Browse, a language switch): once more when it ends, so the card never shows an older path."""
+        if not self.rows.alive():
             return
-        self.checking = True
+        if self.checking:
+            self.again = True
+            return
+        self.checking, self.again = True, False
         self.words.setText(S.MINER_CHECKING)
         self.check_again.setEnabled(False)
         bridge.run_in_worker(_miner_look, self.rows.settings(), self.page.language, then=self._show,
@@ -431,6 +435,8 @@ class MinerCard(QWidget):
             return
         self.checking = False
         self.check_again.setEnabled(True)
+        if self.again:
+            return self.check()
         result, answered, path, update = answer
         state = settings_values.card_state(result)
         self.state, self.path = state, path or ""
@@ -448,6 +454,8 @@ class MinerCard(QWidget):
             return
         self.checking = False
         self.check_again.setEnabled(True)
+        if self.again:
+            return self.check()
         self.state = None
         self.words.setText(S.MINER_NOT_CHECKED.format(info[0]))
         self._missing([])
@@ -583,6 +591,8 @@ class NewCardsRow(QWidget):
             self.reading, self.unread = None, True
             tip = S.NEW_CARDS_UNREAD_TIP.format(why=why or "")
             self.field.maximum = PACE_MAX
+            if number is None:                                            # a read that broke: the pace as saved
+                number = catalog.value_of(self.rows.store.get(), "words_per_day")
             self.field.set_value(number or 0)
             self.field.setToolTip(tip)
             self.field.edit.setToolTip(tip)

@@ -494,6 +494,28 @@ def test_browse_writes_only_the_programs_path_through_the_service_and_checks_aga
     assert world.checked[1][1]["connect_anki_miner_path"] == os.path.normpath(world.file)
 
 
+def test_a_browse_while_a_check_runs_checks_once_more_with_the_new_path(world, monkeypatch):
+    # The first check is still running when the user picks the program: the card must not end on the old path's state.
+    page, store, rows, _fake = make(world)
+    assert wait_until(lambda: not rows.miner.checking, 5)
+    gate = threading.Event()
+    seen = []
+
+    def slow(settings, language):
+        seen.append(settings.get("connect_anki_miner_path"))
+        if len(seen) == 1:
+            gate.wait(5)
+        return world.miner
+    monkeypatch.setattr(setup, "checks", slow)
+    rows.miner.check()
+    assert wait_until(lambda: seen, 5)
+    world.file = "C:/Program Files/Anki Miner/AnkiMiner.exe"
+    QTest.mouseClick(rows.miner.browse, Qt.MouseButton.LeftButton)
+    gate.set()
+    assert wait_until(lambda: len(seen) == 2 and not rows.miner.checking, 5)
+    assert seen[1] == os.path.normpath(world.file)
+
+
 def test_browse_cancelled_writes_nothing(world):
     page, store, rows, _fake = make(world)
     world.file = ""
@@ -656,6 +678,19 @@ def test_anki_unreadable_shows_the_pace_as_an_editable_number_with_why_on_hover(
     row.field.changed.emit(15)
     assert store.calls == [({"words_per_day": 15}, None)]
     assert world.writes == []
+
+
+def test_a_read_that_breaks_shows_the_saved_pace_never_zero(world, monkeypatch):
+    # The read itself raises (not Anki's own "unreadable" answer): the field still shows the pace as saved, so an
+    # Enter on it can never write 0 over the user's 12.
+    def broke(settings, deck):
+        raise RuntimeError("AnkiConnect answered something unexpected")
+    monkeypatch.setattr(ado, "read_new_per_day", broke)
+    page, store, rows, _fake = make(world, {"words_per_day": 12})
+    row = rows.new_cards
+    assert wait_until(lambda: row.unread and row.field.isEnabled(), 5)
+    assert row.field.value() == 12
+    assert store.calls == []
 
 
 def test_a_change_of_junbans_deck_reads_anki_again(world):

@@ -179,6 +179,24 @@ def always(_settings, _language):
 
 # Each row adds its doors here (W3.4 rows 1–6), in the order the list shows them.
 OPENERS = []
+# row 2: the known-word importers and Extract (app/qt/importers.py, imported when a door opens)
+def _importers(opener_name):
+    def open_it(shell):
+        from app.qt import importers
+        return getattr(importers, opener_name)(shell)
+    return open_it
+
+
+OPENERS += [
+    Opener("apkg_known", strings.IMPORTERS_LAUNCH_APKG, strings.IMPORTERS_LAUNCH_APKG_TIP, always,
+           _importers("open_deck")),
+    Opener("migaku", strings.IMPORTERS_LAUNCH_MIGAKU, strings.IMPORTERS_LAUNCH_MIGAKU_TIP, always,
+           _importers("open_migaku")),
+    Opener("jiten", strings.IMPORTERS_LAUNCH_JITEN, strings.IMPORTERS_LAUNCH_JITEN_TIP,
+           lambda _settings, language: language == "ja", _importers("open_jiten")),
+    Opener("extract", strings.IMPORTERS_LAUNCH_EXTRACT, strings.IMPORTERS_LAUNCH_EXTRACT_TIP, always,
+           _importers("open_extract")),
+]
 
 
 def module_present(name):

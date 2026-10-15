@@ -675,7 +675,7 @@ def test_the_pulse_dims_to_a_third_at_its_half(clock, stage):
     assert 70 <= c.alpha() <= 130
     spin.set_running(False)
     still = _alone(spin).pixelColor(spin.width() // 2, spin.height() // 2)
-    assert still.alpha() == 255 and still.name() == theme.colours("hb")["ink-faint"]
+    assert still.alpha() == 255 and still.name() == theme.colours("night")["ink-faint"]
 
 
 def _alone(widget):

@@ -167,7 +167,8 @@ class _FirstPaint(QObject):
         return False
 
 
-def test_with_sapphire_saved_the_first_paint_is_sapphire(qapp):
+def test_with_a_retired_theme_saved_the_first_paint_is_the_night_at_the_saved_size(qapp):
+    # 2.x-era 3.0 builds saved Sapphire (the default since G2.3); one theme now (RS-1): the night, never a failure
     services = shell.Services()
     services.settings.set({"app_theme": "sapphire", "text_size": "L"}, now=True)
     services = shell.Services()                                    # a fresh start reads it
@@ -176,8 +177,8 @@ def test_with_sapphire_saved_the_first_paint_is_sapphire(qapp):
     win.installEventFilter(spy)
     win.show()
     assert wait_until(lambda: spy.window_colour is not None)
-    assert spy.window_colour == theme.colours("sapphire")["bg"]
-    assert style.current()[:2] == ("sapphire", "L")
+    assert spy.window_colour == theme.colours("night")["bg"]
+    assert style.current()[:2] == ("night", "L")
     win.close()
     services.shutdown(0.5)
 

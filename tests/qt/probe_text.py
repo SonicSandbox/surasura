@@ -47,21 +47,18 @@ def main():
     win.grab()
     widgets = len(win.findChildren(QWidget))
 
-    def timed(theme_name, size):
+    def timed(size):
         t0 = time.perf_counter()
-        win.set_look(theme_name, size)
+        win.set_look(size)
         app.processEvents()
         win.grab()
         return (time.perf_counter() - t0) * 1000
 
-    themes = ["sky", "sapphire", "hb"] * args.runs
-    sizes = ["L", "S", "M"] * args.runs
-    theme_ms = [timed(t, "M") for t in themes]
-    size_ms = [timed("hb", s) for s in sizes]
-    out = {"platform": app.platformName(), "widgets": widgets, "runs": len(themes),
-           "theme_median_ms": round(statistics.median(theme_ms), 1), "theme_max_ms": round(max(theme_ms), 1),
+    sizes = ["L", "S", "M"] * args.runs                       # one theme in 3.0 (RS-1): the size is the switch
+    size_ms = [timed(s) for s in sizes]
+    out = {"platform": app.platformName(), "widgets": widgets, "runs": len(sizes),
            "size_median_ms": round(statistics.median(size_ms), 1), "size_max_ms": round(max(size_ms), 1),
-           "live": max(theme_ms + size_ms) < 300}
+           "live": max(size_ms) < 300}
     print(json.dumps(out))
     win.close()
     services.shutdown(1.0)

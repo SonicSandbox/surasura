@@ -161,7 +161,7 @@ class GoalStrip(QWidget):
                 p.fillPath(path, rows.c("surface"))
                 p.drawPixmap(r.topLeft(), rows.cover(title, round(cw), round(ch), dpr))
             x += len(self.goal.covers) * (cw - 7) + 7 + 12
-        rows.TEXT.draw(p, x, mid, self.goal.line, "row-sub", box.right() - x - 14, rows.c("ink-faint"), dpr=dpr)
+        rows.TEXT.draw(p, x, mid, self.goal.line, "row-sub", box.right() - x - 14, rows.c("ink-dim"), dpr=dpr)
 
 
 # --- the pages ------------------------------------------------------------------------------------------------------ #

@@ -55,7 +55,7 @@ def qapp():
     from app.qt import style
     app = QApplication.instance() or QApplication(["surasura-tests"])
     sys.excepthook = _record
-    style.apply(app, "hb", "M", "ja")
+    style.apply(app, "night", "M", "ja")
     yield app
 
 
@@ -92,8 +92,8 @@ def _per_test_window_state(request, monkeypatch):
         except RuntimeError:
             pass
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
-    if style.current()[:2] != ("hb", "M"):
-        style.apply(app, "hb", "M", "ja")
+    if style.current()[:2] != ("night", "M"):
+        style.apply(app, "night", "M", "ja")
     freeze.set_frozen(None)
     errors = list(_errors)
     _errors.clear()

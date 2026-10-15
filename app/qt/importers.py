@@ -91,9 +91,11 @@ class ToolWindow(windows.SecondaryWindow):
     def _open_log(self):
         windows.open_url(tools.log_path(self.kind))
 
-    def _run(self, label, argv, done, env=None, parse=None, after=None):
+    def _run(self, label, argv, done, env=None, parse=None, after=None, on_quit="wait"):
         """`argv` as a child job of this window's kind. `parse(line)` -> a result or None (its RESULT line);
-        `after(code)` runs on the tool's thread when it ends, the window open or not (a temporary file's cleanup)."""
+        `after(code)` runs on the tool's thread when it ends, the window open or not (a temporary file's cleanup).
+        `on_quit`: a writer finishes before the app quits (`wait`: never cut between its backup or copy and its
+        write); a child that only reads is cancelled."""
         self._lines, self._result = [], None
         lines, end = bridge.Relay(self), bridge.Relay(self)
 
@@ -123,7 +125,7 @@ class ToolWindow(windows.SecondaryWindow):
         self.refresh()
         self.say(strings.IMPORTERS_BUSY)
         return tools.run(self.shell.services.registry, self.kind, label, argv, env=env, on_line=lines.call,
-                         on_end=on_end)
+                         on_end=on_end, on_quit=on_quit)
 
     def ask(self, title, body, yes, yes_tip, on_answer, **how):
         """`confirm.ask` in this window, kept as `question` until it is answered or dropped."""
@@ -403,7 +405,8 @@ class JitenWindow(ToolWindow):
             if code != 0 or self.gone:
                 shutil.rmtree(folder, ignore_errors=True)
         job = self._run(strings.JITEN_NAME, ["jiten_converter.py", "--language", "ja", "--save-cards", cards],
-                        lambda code: self._fetched(code, cards), env={jiten_converter.API_KEY_ENV: key}, after=after)
+                        lambda code: self._fetched(code, cards), env={jiten_converter.API_KEY_ENV: key}, after=after,
+                        on_quit="cancel")
         self.say(strings.JITEN_FETCHING)
         return job
 

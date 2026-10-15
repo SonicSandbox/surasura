@@ -50,9 +50,9 @@ class Runs:
     def __init__(self):
         self.calls = []
 
-    def __call__(self, registry, kind, label, argv, env=None, on_line=None, on_end=None, **_kw):
+    def __call__(self, registry, kind, label, argv, env=None, on_line=None, on_end=None, on_quit="cancel", **_kw):
         call = SimpleNamespace(kind=kind, label=label, argv=list(argv), env=dict(env or {}), on_line=on_line,
-                               on_end=on_end)
+                               on_end=on_end, on_quit=on_quit)
         self.calls.append(call)
         return call
 
@@ -456,6 +456,24 @@ def test_a_failed_fetch_removes_its_folder(main, runs):
     folder = os.path.dirname(runs.calls[-1].argv[-1])
     runs.end(1, "Error: Invalid API key.")
     assert not os.path.exists(folder)
+
+
+def test_every_writing_child_is_waited_for_at_quit_and_the_fetch_is_not(main, runs, tmp_path):
+    """AD2-9: quitting cut a child wherever it was — Extract between its copy and the store's insert, a replace after
+    its backup. The writers now finish (the window waits, as for an Anki write); Jiten's fetch only reads: cancelled."""
+    _known(CURRENT)
+    importers.open_deck(main).start(DECK, "Sentence", "ja")
+    importers.open_migaku(main).start(MIGAKU, "ja")
+    j = importers.open_jiten(main)
+    j.key.setText(SECRET)
+    j.fetch()
+    fetch = runs.calls[-1]
+    j._folder = os.path.dirname(fetch.argv[-1])
+    j.replace(fetch.argv[-1])
+    e = importers.open_extract(main)
+    e.path.setText(_text(tmp_path))
+    e.start("旅")
+    assert [c.on_quit for c in runs.calls] == ["wait", "wait", "cancel", "wait", "wait"]
 
 
 def test_jiten_is_off_for_chinese_and_follows_the_main_windows_language(main, runs):

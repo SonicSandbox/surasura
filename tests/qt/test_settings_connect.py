@@ -51,6 +51,10 @@ class Store(Recorder):
         self.events.append(("reload", on_gui(), threading.get_ident(), {}))
         return self.get()
 
+    def fresh(self):
+        """The file read now (the switch-on's first look: Connect already on there?)."""
+        return scn.settings_service.thaw(self.get())
+
 
 class Bar:
     def __init__(self):

@@ -33,6 +33,7 @@ GUI_Design_Guidelines_Qt: the page's own controls and label styles (no new rules
 """
 import os
 import threading
+from contextlib import contextmanager
 
 from PyQt6 import sip
 from PyQt6.QtCore import QObject, Qt
@@ -71,8 +72,13 @@ def _switch():
 
 
 def _switch_on(store, log):
-    """(A worker.) `turn_on`, then — ok — hato's back-fill and the service's reload -> (ok, why)."""
+    """(A worker.) `turn_on`, then — ok — hato's back-fill and the service's reload -> (ok, why). The file read first:
+    Connect already on there (another window switched it) → no `turn_on` (no watermark moved), only the reload."""
     switch = _switch()
+    if store.fresh().get("connect_enabled"):
+        store.reload()
+        log(S.SWITCH_ALREADY_ON)
+        return True, None
     ok, saved, why = switch.turn_on(switch.CONNECT_LANGUAGES, log=log)
     if not ok:
         return False, why
@@ -107,6 +113,11 @@ def _turn_off(switch, was_on, store, log):
     if ok:
         store.reload()
     return ("off", ok, why)
+
+
+def _saved_off(answer):
+    """An off step's answer: the switch saved the file off."""
+    return answer[0] == "off" and answer[1]
 
 
 def _miner_look(settings, language):
@@ -200,9 +211,20 @@ class ConnectRows(QObject):
             applog.log("settings", text)
             windows.say_in_bar(self.page.shell, text)
 
+    @contextmanager
+    def holding(self):
+        """A late answer that resizes a row (the card's state, the deck's help line, the field shown) keeps the
+        reader's place (`SettingsPage.hold`: the control last changed, else the first row in view, keeps its y). The
+        layouts settled once more inside: a re-wrapped help line re-flows deeper than the hold's own settle reaches."""
+        with self.page.hold(self.page._last):
+            yield
+            if self.alive():
+                self.page._settle()
+
     def _ready(self):
         if not self.alive():
             return
+        self.page._tab_order()                    # the three rows' widgets are made after the build: Tab in place
         self.miner.check()
         self.new_cards.read()
 
@@ -256,9 +278,24 @@ class SwitchRow(QWidget):
         self.toggle.setEnabled(False)
         store, log = self.rows.store, self.rows.lines.call
         if on:
-            bridge.run_in_worker(_switch_on, store, log, then=self._on_done, failed=self._broke)
+            bridge.run_in_worker(_switch_on, store, log, then=self._later(self._on_done, lambda a: a[0]),
+                                 failed=self._broke)
         else:
-            bridge.run_in_worker(_switch_off_start, was_on, store, log, then=self._off_step, failed=self._broke)
+            bridge.run_in_worker(_switch_off_start, was_on, store, log, then=self._later(self._off_step, _saved_off),
+                                 failed=self._broke)
+
+    def _later(self, step, saved):
+        """A worker's answer -> `step` while the page is there; the page gone, only the write still told on the
+        shell's bridge when `saved(answer)` (the switch saved the file: the shell's Connect line follows). A plain
+        function, not this row's method: Qt drops a dead widget's slots, and the tell needs no page."""
+        rows, heard = self.rows, self.page.bridge
+
+        def then(answer):
+            if rows.alive():
+                step(answer)
+            elif saved(answer) and _alive(heard):
+                heard.settings_written.emit(("connect_enabled",))
+        return then
 
     def _on_done(self, answer):
         ok, why = answer
@@ -316,7 +353,8 @@ class SwitchRow(QWidget):
     def _off(self, put_back):
         store, log = self.rows.store, self.rows.lines.call
         waiting = lambda: log(self._waiting_line())          # noqa: E731
-        bridge.run_in_worker(_switch_off, put_back, store, log, waiting, then=self._off_step, failed=self._broke)
+        bridge.run_in_worker(_switch_off, put_back, store, log, waiting, then=self._later(self._off_step, _saved_off),
+                             failed=self._broke)
 
     @staticmethod
     def _waiting_line():
@@ -425,7 +463,8 @@ class MinerCard(QWidget):
             self.again = True
             return
         self.checking, self.again = True, False
-        self.words.setText(S.MINER_CHECKING)
+        with self.rows.holding():
+            self.words.setText(S.MINER_CHECKING)
         self.check_again.setEnabled(False)
         bridge.run_in_worker(_miner_look, self.rows.settings(), self.page.language, then=self._show,
                              failed=self._broke)
@@ -440,14 +479,15 @@ class MinerCard(QWidget):
         result, answered, path, update = answer
         state = settings_values.card_state(result)
         self.state, self.path = state, path or ""
-        self.words.setText(state["say"])
-        self._missing(state["missing"])
-        self.path_field.setText(self.path)
-        self.steps.setVisible(bool(state["steps"]))
-        self.update_url = update.get("url") if update else None
-        self.update_note.setText(S.MINER_UPDATE.format(version=update["version"]) if update else "")
-        self.update_note.setVisible(bool(update))
-        self._buttons(state["state"], answered)
+        with self.rows.holding():
+            self.words.setText(state["say"])
+            self._missing(state["missing"])
+            self.path_field.setText(self.path)
+            self.steps.setVisible(bool(state["steps"]))
+            self.update_url = update.get("url") if update else None
+            self.update_note.setText(S.MINER_UPDATE.format(version=update["version"]) if update else "")
+            self.update_note.setVisible(bool(update))
+            self._buttons(state["state"], answered)
 
     def _broke(self, info):
         if not self.rows.alive():
@@ -457,19 +497,23 @@ class MinerCard(QWidget):
         if self.again:
             return self.check()
         self.state = None
-        self.words.setText(S.MINER_NOT_CHECKED.format(info[0]))
-        self._missing([])
-        self.steps.hide()
-        self.update_note.hide()
-        self._buttons(None, answered=True)
+        with self.rows.holding():
+            self.words.setText(S.MINER_NOT_CHECKED.format(info[0]))
+            self._missing([])
+            self.steps.hide()
+            self.update_note.hide()
+            self._buttons(None, answered=True)
 
     def _missing(self, lines):
         while self.missing.count():
             w = self.missing.takeAt(0).widget()
             if w is not None:
+                w.hide()                          # gone from the layout now, not when the loop deletes it
                 w.deleteLater()
         for line in lines:
-            self.missing.addWidget(_label(line, "settingshelp", self))
+            w = _label(line, "settingshelp", self)
+            self.missing.addWidget(w)
+            w.show()                              # shown now (the layout would show it a turn later: the page moves)
 
     def _buttons(self, state, answered):
         """Not installed (or not checked): Install with the star line beside it, Browse…; installed: Open Anki Miner,
@@ -543,6 +587,7 @@ class NewCardsRow(QWidget):
         self.reading = None
         self.unread = False                       # Anki answered it can't be read: the field is words_per_day
         self.busy = False                         # a confirmed write on its way
+        self.stale = False                        # a read asked (or dropped) while it went: read once it ends
         self.reads = 0                            # the read the answer belongs to (a later read wins)
         line = QHBoxLayout(self)
         line.setContentsMargins(0, 0, 0, 0)
@@ -562,8 +607,12 @@ class NewCardsRow(QWidget):
         self.waits.said.connect(self._waiting)
 
     def read(self):
-        """Anki's value for the deck, on a worker (no lock: one read)."""
-        if self.busy or not self.rows.alive():
+        """Anki's value for the deck, on a worker (no lock: one read). Asked while a write goes (a deck or address
+        changed meanwhile): read when it ends."""
+        if not self.rows.alive():
+            return
+        if self.busy:
+            self.stale = True
             return
         self.reads += 1
         n = self.reads
@@ -571,9 +620,15 @@ class NewCardsRow(QWidget):
                              failed=lambda info: self._shown(n, ("", None, str(info[0]), None)))
 
     def _shown(self, n, answer):
-        if not self.rows.alive() or n != self.reads or self.busy:
+        if not self.rows.alive() or n != self.reads:
             return
-        deck, reading, why, number = answer
+        if self.busy:                             # the newest read, landed while a write goes: read again after it
+            self.stale = True
+            return
+        with self.rows.holding():
+            self._show(*answer)
+
+    def _show(self, deck, reading, why, number):
         view = self.page.row(self.row.id)
         if view is not None:
             view.set_words(self.row.label, self.row.help.format(
@@ -629,16 +684,29 @@ class NewCardsRow(QWidget):
                     on_answer=lambda yes: self._answered(yes, reading, value))
 
     def _answered(self, yes, reading, value):
-        if not self.rows.alive():
+        """The question's answer. Anki read again while it was open: a Yes goes on only when the deck and the number
+        are still the ones asked about; else refused, and the bar says why."""
+        if not self.rows.alive() or self.busy:
             return
-        if not yes or reading is not self.reading:
-            self.field.set_value(self.reading.value if self.reading is not None else reading.value)
+        now = self.reading
+        same = now is not None and (now.deck, now.value) == (reading.deck, reading.value)
+        if not yes or not same:
+            if now is not None:
+                self.field.set_value(now.value)
+            if yes:
+                self.rows.say(_reread_line(reading, now))
             return
         self.busy = True
         self.field.setEnabled(False)
         self.change.setEnabled(False)
+        rows, store = self.rows, self.rows.store
+
+        def written(outcome):                     # a plain function: the pace saved though the page went (S1)
+            if rows.alive():
+                self._written(outcome)
+            _save_pace(store, outcome)
         bridge.run_in_worker(_write_new_cards, self.rows.settings(), reading.deck, value, reading.value,
-                             self.rows.cancel, self.waits.call, then=self._written, failed=self._broke)
+                             self.rows.cancel, self.waits.call, then=written, failed=self._broke)
 
     def _waiting(self, line):
         if self.rows.alive() and self.busy:
@@ -646,18 +714,12 @@ class NewCardsRow(QWidget):
             self.rows.say(line)
 
     def _written(self, outcome):
-        if not self.rows.alive():
-            return
-        from app import anki_deck_options as ado
-        self._done()
+        """The write's end painted (the pace is saved beside it, page or not: `_save_pace`)."""
         self.rows.say(outcome.message)
         if outcome.value is not None and self.reading is not None:
             self.reading = self.reading._replace(value=outcome.value)     # Anki's number now (a moved one too)
         self.field.set_value(self.reading.value)
-        if outcome.ok or outcome.took:                                    # the pace follows the number Anki holds
-            changes = ado.words_per_day_after(self.rows.settings(), outcome)
-            if changes:
-                self.rows.store.set(changes)
+        self._done()
 
     def _broke(self, info):
         if not self.rows.alive():
@@ -672,3 +734,26 @@ class NewCardsRow(QWidget):
         self.field.setEnabled(True)
         self.change.setEnabled(True)
         self.change.setText(S.CHANGE_IN_ANKI)
+        if self.stale:                            # a deck or address changed while the write went: read it now
+            self.stale = False
+            self.read()
+
+
+def _save_pace(store, outcome):
+    """A confirmed write's end: `words_per_day` saved as `words_per_day_after` says — Anki took the number (`ok`, or
+    `took` with other options of the group back different) — through the service, whether or not the page is there."""
+    if not (outcome.ok or outcome.took):
+        return
+    from app import anki_deck_options as ado
+    changes = ado.words_per_day_after(settings_service.thaw(store.get()), outcome)
+    if changes:
+        store.set(changes)
+
+
+def _reread_line(asked, now):
+    """Why a Yes wrote nothing: Anki was read again while the question was open (`now`: the new reading, or None)."""
+    if now is None:
+        return S.NEW_CARDS_UNREAD_NOW
+    if now.deck != asked.deck:
+        return S.NEW_CARDS_DECK_MOVED.format(asked=asked.deck, deck=now.deck)
+    return S.NEW_CARDS_VALUE_MOVED.format(deck=now.deck, n=now.value)

@@ -62,6 +62,53 @@ def test_every_installed_placed_setting_is_in_exactly_one_row_or_not_shown():
     twice = {key: where for key, where in places.items() if len(where) > 1}
     assert not twice, f"settings in more than one place: {twice}"
     assert all(reason.strip() for reason in catalog.NOT_SHOWN.values()), "every NOT_SHOWN key says why"
+    unfilled = _unfilled_slots()
+    assert not unfilled, f"rows the page leaves an empty slot for that nothing fills: {unfilled}"
+
+
+SLOT_KINDS = ("summary", "status", "custom", "action")      # the page's PLACEHOLDER_KINDS: an empty slot each
+
+
+def _unfilled_slots():
+    """The intent keeper's B2: a summary / status / custom / action row is an empty slot on the page until its package
+    fills it, and `reachable()` counts its keys either way — so each names its filler in `catalog.FILLED_BY`: a module
+    whose source names the row (it asks `custom_row` / its tables for it), or "pending: <who>". -> {row id: why}."""
+    found = {}
+    for row in catalog.ROWS:
+        if row.kind not in SLOT_KINDS:
+            continue
+        filler = catalog.FILLED_BY.get(row.id)
+        if not filler:
+            found[row.id] = "no filler named"
+        elif filler.startswith("pending: "):
+            if not filler[len("pending: "):].strip():
+                found[row.id] = "pending with nobody named"
+        else:
+            path = os.path.join(ROOT, *filler.split(".")) + ".py"
+            if not os.path.exists(path):
+                found[row.id] = f"{filler} isn't there"
+            else:
+                with open(path, encoding="utf-8") as f:
+                    if f'"{row.id}"' not in f.read():
+                        found[row.id] = f"{filler} never names it"
+    stray = set(catalog.FILLED_BY) - {row.id for row in catalog.ROWS if row.kind in SLOT_KINDS}
+    found.update({row_id: "named as filled, but it is no slot row" for row_id in stray})
+    return found
+
+
+def test_an_empty_slot_row_with_no_filler_fails_the_placement_proof(monkeypatch):
+    """The proof can fail: the placing rules' filler taken out, or pointed at a module that never names the row."""
+    assert "placing_rules" not in _unfilled_slots()
+    monkeypatch.delitem(catalog.FILLED_BY, "placing_rules")
+    assert _unfilled_slots() == {"placing_rules": "no filler named"}
+    monkeypatch.setitem(catalog.FILLED_BY, "placing_rules", "app.qt.settings_connect")
+    assert _unfilled_slots() == {"placing_rules": "app.qt.settings_connect never names it"}
+    monkeypatch.setitem(catalog.FILLED_BY, "placing_rules", "pending: ")
+    assert _unfilled_slots() == {"placing_rules": "pending with nobody named"}
+    with open(os.path.join(ROOT, "app", "qt", "settings_page.py"), encoding="utf-8") as f:      # Qt-free: its text
+        kinds = next(node.value for node in ast.parse(f.read()).body if isinstance(node, ast.Assign)
+                     and getattr(node.targets[0], "id", None) == "PLACEHOLDER_KINDS")
+    assert ast.literal_eval(kinds) == SLOT_KINDS, "the proof walks the kinds the page leaves a slot for"
 
 
 def test_every_row_key_and_every_not_shown_key_is_a_placed_setting():
@@ -257,6 +304,20 @@ def test_placing_rules_wait_removes_the_source_and_keeps_the_others():
     assert catalog.change(row, {}, "ja", ("hato", "wait")) == ({}, None)
     with pytest.raises(ValueError):
         catalog.change(row, settings, "ja", ("hato", "graduated"))
+
+
+def test_placing_rules_a_hand_edited_value_never_blocks_a_pick_and_another_lines_target_stays_as_written():
+    """A target no place names on one line (hand-edited; `rules.py` skips it) doesn't refuse a pick on another line,
+    and stays; a `placing_rules` that isn't a dict is started afresh by the pick; a source that is no text is refused."""
+    row = catalog.ROW["placing_rules"]
+    edited = {"placing_rules": {"youtube:UCgx8nPpXp9c0Kv4bUk1D3ng": "graduated"}}
+    assert catalog.change(row, edited, "ja", ("hato", "finished"))[0] == \
+        {"placing_rules": {"youtube:UCgx8nPpXp9c0Kv4bUk1D3ng": "graduated", "hato": "finished"}}
+    assert catalog.change(row, {"placing_rules": ["hato", "top"]}, "ja", ("hato", "top"))[0] == \
+        {"placing_rules": {"hato": "top"}}
+    for source in ("", "  ", None, 3):
+        with pytest.raises(ValueError):
+            catalog.change(row, {}, "ja", (source, "top"))
 
 
 def test_a_per_language_cap_keeps_the_other_language_and_merges_onto_the_file_at_write_time():

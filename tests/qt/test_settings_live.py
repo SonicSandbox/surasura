@@ -396,6 +396,7 @@ def test_the_credits_card_holds_the_credits_and_the_licence_and_closes_on_esc_ba
     card = opened()
     QTest.mousePress(card, Qt.MouseButton.BackButton)
     assert wait_until(lambda: page.live.card is None)                       # the mouse's Back
+    QTest.mouseRelease(page, Qt.MouseButton.BackButton)                     # QTest's pressed state never outlives the test
     card = opened()
     card.done.click()
     assert wait_until(lambda: page.live.card is None)
@@ -421,6 +422,7 @@ def test_no_licence_file_leaves_the_row_saying_nothing(qapp, fakes):
 
 # --- text size, motion --------------------------------------------------------------------------------------------- #
 def test_text_size_goes_through_the_shell_once_then_the_page_restyles(qapp, fakes, monkeypatch):
+    monkeypatch.setattr(live, "LIVE_TEXT_SIZE", True)     # the live path, kept for M4.1 (off by the ruling: FXP S5)
     page, store, shell = make(fakes)
     restyled = []
     monkeypatch.setattr(page, "restyle", lambda: restyled.append(True))
@@ -430,6 +432,7 @@ def test_text_size_goes_through_the_shell_once_then_the_page_restyles(qapp, fake
 
 
 def test_a_shell_with_set_look_is_called_with_the_size(qapp, fakes, monkeypatch):
+    monkeypatch.setattr(live, "LIVE_TEXT_SIZE", True)
     page, store, shell = make(fakes, text_size=False)
     looks = []
     shell.set_look = lambda text_size=None: looks.append(text_size)

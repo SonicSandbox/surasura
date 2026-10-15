@@ -519,6 +519,9 @@ MIXES.update({
     "settings-nav": ("mock.html :586 .set-nav", ("mix", "surface", 45, "bg", None)),
     "settings-nav-lit": ("mock.html :594 .navi.on", "accent-wash"),
     "settings-row-wash": ("RUNBOOK W3.3 reveal: the row washed once", ("mix", "accent", 8, "transparent", None)),
+    # the tile behind Anki Miner's black logo (PL; LOGOS.md: "a 1 px #2d2d2d ring or a SURFACE tile behind it, never a
+    # change to its colours"): the card's own grey — 3.0's `surface` is too near black to show the tile's edge
+    "logo-tile": ("LOGOS.md: Anki Miner's tile behind its logo", "#2d2d2d"),
 })
 _COLOURS = {theme_: _build(theme_) for theme_ in THEMES}
 SETTINGS_TEXT = MappingProxyType({**SETTINGS_TEXT, "sub-label": "ink-dim", "more": "accent", "kbd": "ink-dim"})
@@ -536,6 +539,8 @@ TYPE.update({
 LETTER_SPACING_EM.update({"settings-head": 0.1})
 SIZES.update({
     "settings-nav-icon": 15, "settings-head-icon": 16, "settings-search-icon": 14, "settings-more-icon": 12,
+    # a row's words never narrower than this beside its control; narrower, they stand above it (FX-page B4 / S7)
+    "settings-words-min": 200,
 })
 SPACING.update({
     "settings-nav": (18, 10, 20, 16), "settings-main": (18, 26, 60), "settings-head": (13, 16, 11),

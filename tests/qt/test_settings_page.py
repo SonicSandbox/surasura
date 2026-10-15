@@ -564,7 +564,10 @@ def test_a_write_from_elsewhere_repaints_only_its_row(qapp):
     assert store.calls == []
 
 
-def test_a_write_that_turns_a_switch_shows_and_hides_its_rows(qapp):
+def test_a_write_that_turns_a_switch_shows_and_hides_its_rows(qapp, monkeypatch):
+    # Put Anki back's door registered (a door row shows only with its door: FX-page S1)
+    monkeypatch.setattr(windows, "OPENERS", windows.OPENERS + [
+        windows.Opener("put-back", "Put Anki back", "tip", windows.always, lambda shell: None)])
     page, store = make_page(ALL_ON, "ja")
     assert page.rows["connect_mine_words"].isVisibleTo(page)
     store.outside({"connect_enabled": False})
@@ -586,7 +589,10 @@ def test_a_language_switch_asks_every_row_again_without_rebuilding(qapp):
     assert {row_id: id(view) for row_id, view in page.rows.items()} == built
 
 
-def test_the_known_words_road_starts_on_the_side_the_decks_say_and_shows_only_its_rows(qapp):
+def test_the_known_words_road_starts_on_the_side_the_decks_say_and_shows_only_its_rows(qapp, monkeypatch):
+    # an import door registered (a door row shows only with its door: FX-page S1)
+    monkeypatch.setattr(windows, "OPENERS", windows.OPENERS + [
+        windows.Opener("migaku", "Migaku", "tip", windows.always, lambda shell: None)])
     page, store = make_page(dict(ALL_ON, anki_sync_decks={"ja": [], "zh": ["中文::HSK"]}), "ja")
     road = page.rows["known_road"].controls[0]
     assert road.value() == "import"
@@ -615,11 +621,12 @@ def test_a_door_shows_only_while_its_opener_is_registered_and_available(qapp, mo
     ok[0] = False
     page.refresh()
     assert not anki.isVisibleTo(page)
-    # a door no opener holds yet (PENDING_OPENERS: W3.4's rows) doesn't show; its row still lays out its words
+    # a door no opener holds yet (PENDING_OPENERS: W3.4's rows) doesn't show, nor does a door row with none of its
+    # doors there (FX-page S1: never a bare label)
     assert "migaku" in catalog.PENDING_OPENERS
     change(page.rows["known_road"].controls[0], "import")
     view = page.rows["known_import"]
-    assert view.isVisibleTo(page) and view.label.isVisibleTo(page)
+    assert not view.isVisibleTo(page)
     assert not any(d.isVisibleTo(page) for d in view.doors.values())
 
 

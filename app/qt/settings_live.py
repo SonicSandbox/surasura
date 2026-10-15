@@ -46,6 +46,9 @@ EXPORTS = {"export_frequency_list": "frequency_list", "export_reading_words": "r
            "export_sentence_list": "sentence_list"}
 COMING = {"jimaku": S.COMING_WITH_HATO, "anilist": S.COMING_LATER, "more_from_houseki": S.COMING_LATER}
 PROBE_TIMEOUT = 3                    # s: *Check*'s look at AnkiConnect (a worker's)
+# *Text size* applied live with the page alive took a median 813 ms (max 1056) on this desktop (P4, 2026-10-15): over
+# G1.2-21's ~300 ms, so the row saves the size and says *Restart to apply* (the lead's ruling; M4.1 may bring it back)
+LIVE_TEXT_SIZE = False
 
 
 # --- the reads (each a worker's call; Qt-free) ----------------------------------------------------------------------- #
@@ -755,8 +758,12 @@ class Live(QObject):
 
     # --- App ------------------------------------------------------------------------------------------------------- #
     def _text_size(self, size):
-        """*Text size*: the shell's own (it saves through the service and applies it), then the page restyled -> True;
-        no such method: False — the page saves, and *Restart to apply* is said."""
+        """*Text size*: while `LIVE_TEXT_SIZE` is off (the signed ruling: a live switch with the page alive took ~0.8 s,
+        over G1.2-21's ~300 ms) the page saves it and *Restart to apply* is said -> False. On: the shell's own (it saves
+        through the service and applies it), then the page restyled -> True; no such method: as off."""
+        if not LIVE_TEXT_SIZE:
+            self.say(strings.RESTART_TO_APPLY)
+            return False
         apply = getattr(self.shell, "set_text_size", None)
         if apply is not None:
             apply(size)

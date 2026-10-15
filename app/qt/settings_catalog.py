@@ -55,6 +55,21 @@ PENDING_OPENERS = {
     "backfill": "W3.4 row 5", "junban": "W3.4 row 6", "put-back": "W3.4 row 6",
 }
 
+# Who fills each empty slot the page leaves (a summary, status, custom or action row: `SettingsPage.custom_row`): the
+# module that draws it, or "pending: <who>" for a row still to come (the intent keeper's B2: a slot nobody fills is a
+# row with nothing to click — the test fails on one missing here). PL's logos sit beside the words, never in a slot.
+_LIVE, _CONNECT_ROWS, _RULES = "app.qt.settings_live", "app.qt.settings_connect", "app.qt.settings_rules"
+FILLED_BY = {
+    "setup_known": _LIVE, "setup_anki": _LIVE, "setup_mining": _LIVE, "setup_level": _LIVE, "setup_cards": _LIVE,
+    "anki_connection": _LIVE, "hato": _LIVE, "jimaku": _LIVE, "anilist": _LIVE, "more_from_houseki": _LIVE,
+    "export_frequency_list": _LIVE, "export_reading_words": _LIVE, "export_sentence_list": _LIVE,
+    "logs": _LIVE, "data_credits": _LIVE, "version": _LIVE,
+    "new_cards_a_day": _CONNECT_ROWS, "connect_enabled": _CONNECT_ROWS, "anki_miner": _CONNECT_ROWS,
+    "placing_rules": _RULES,
+    "mine_line": "pending: P6", "soon_line": "pending: P6",
+    "set_up_again": "pending: W3.5 part 3", "covers_download": "pending: the covers owner (G1.2-19)",
+}
+
 
 # --- when a row shows ---------------------------------------------------------------------------------------------- #
 def _get(settings, key, default=None):
@@ -567,14 +582,18 @@ def _wanted(row, settings, language, new):
             return {key: settings_values.known_value(picked)}
         return {key: [v for v in row.options if v in picked]}
     if row.id == "placing_rules":
-        rules = plain(value_of(settings, key)) or {}
+        held = plain(value_of(settings, key))
+        rules = dict(held) if isinstance(held, Mapping) else {}       # a hand-edited non-dict: the pick starts afresh
         if isinstance(new, Mapping):
             rules = {source: target for source, target in new.items()}
+            picked = list(rules.values())
         else:
             source, target = new
-            rules = dict(rules)
+            if not isinstance(source, str) or not source.strip():
+                raise ValueError(f"not a source: {source!r}")
             rules[source] = target
-        unknown = [t for t in rules.values() if t not in row.options]
+            picked = [target]           # another line's hand-edited target stays as written (rules.py skips it)
+        unknown = [t for t in picked if t not in row.options]
         if unknown:
             raise ValueError(f"not a place: {unknown[0]!r}")
         return {key: {source: target for source, target in rules.items() if target != "wait"}}

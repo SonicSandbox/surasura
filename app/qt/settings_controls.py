@@ -42,7 +42,7 @@ from PyQt6.QtWidgets import QApplication, QHBoxLayout, QLabel, QLineEdit, QMenu,
 
 from app import theme
 from app.qt import freeze, motion, style
-from app.qt.settings_strings import ADD, CROSS, RANGE_TO, REMOVE_NAME, STATUS_NAME
+from app.qt.settings_strings import ADD, CROSS, PICKED_NONE, RANGE_TO, REMOVE_NAME, STATUS_NAME
 
 
 M = theme.SETTINGS_MOTION
@@ -198,6 +198,14 @@ def paint_gem(p, centre, w, h, body, shade, facet, cut="toggle"):
     p.restore()
 
 
+def spoken(label, tip):
+    """An option's name in words: a tip that names it ("High leverage: …") gives its name, else the label (✦ ⚖ 📖
+    say what they are, S8)."""
+    if tip and ":" in tip:
+        return tip.split(":", 1)[0].strip()
+    return label
+
+
 def _options(options):
     """(value, label[, tip]) → [(value, label, tip or None)]."""
     out = []
@@ -214,11 +222,39 @@ class _Control(QWidget):
     def __init__(self, tooltip=None, name=None, parent=None, focus=Qt.FocusPolicy.TabFocus):
         super().__init__(parent)
         self.setFocusPolicy(focus)
+        self._own_tip = tooltip or ""
         if tooltip:
             self.setToolTip(tooltip)
         if name:
             self.setAccessibleName(name)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    # --- a part's own tip (S8): the bubble shows the option under the pointer's tip, else the control's ------- #
+    def _part_tip(self, pos):
+        """The own tip of the part under `pos`, or None (the control's tip)."""
+        return None
+
+    def _tip_for(self, text):
+        """The tooltip set to `text` (else the control's own); a bubble already showing for this control is asked
+        again, so it says the new part's words."""
+        want = text or self._own_tip
+        if want == self.toolTip():
+            return
+        self.setToolTip(want)
+        tips = getattr(self.window(), "tooltips", None)
+        if tips is not None and getattr(tips, "_target", None) is self:
+            tips.hide()
+            tips.request(self)
+
+    def mouseMoveEvent(self, event):
+        if self.hasMouseTracking():
+            self._tip_for(self._part_tip(event.position()))
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event):
+        if self.hasMouseTracking():
+            self._tip_for(None)
+        super().leaveEvent(event)
 
     def _ink(self, chosen):
         if not self.isEnabled():
@@ -290,6 +326,7 @@ class Choice(_Control):
         self._pressed = None
         self._vein = _Vein(self, self._repaint_vein)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self.setMouseTracking(any(t for _v, _l, t in self._options))     # an option's own tip under the pointer
         self._describe()
 
     # --- value ---------------------------------------------------------------------------------------------- #
@@ -317,7 +354,12 @@ class Choice(_Control):
         return self._vein.span or self._rest(self._index)
 
     def _describe(self):
-        self.setAccessibleDescription(self._options[self._index][1])
+        _v, label, tip = self._options[self._index]
+        self.setAccessibleDescription(spoken(label, tip))
+
+    def _part_tip(self, pos):
+        i = self._at(pos)
+        return self._options[i][2] if i is not None else None
 
     def _choose(self, i):
         if i == self._index or not self.isEnabled():
@@ -650,10 +692,26 @@ class Tablets(_Control):
         self._cursor = 0
         self._pressed = None
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+        self.setMouseTracking(any(t for _v, _l, t in self._options or ()))   # a tablet's own tip under the pointer
         if value is not None:
             self._load(value)
         elif self._options is not None and not self.multi:
             self._picked = {self._options[0][0]}
+        self._describe()
+
+    def _describe(self):
+        """The accessible description: the tablets picked (by name: ✦ is *High leverage*), or the list's items."""
+        if self.is_list:
+            names = list(self._items)
+        else:
+            names = [spoken(label, tip) for v, label, tip in self._options if v in self._picked]
+        self.setAccessibleDescription(", ".join(names) if names else PICKED_NONE)
+
+    def _part_tip(self, pos):
+        _i, part, _cross = self._at(pos)
+        if part is None or part[0] != "option":
+            return None
+        return next((t for v, _l, t in self._options if v == part[1]), None)
 
     @property
     def is_list(self):
@@ -680,6 +738,7 @@ class Tablets(_Control):
     def set_value(self, value):
         """Show `value` (a list of picked values, one value, or a list's items) — no signal."""
         self._load(value)
+        self._describe()
         self._cursor = min(self._cursor, max(0, len(self._parts()) - 1))
         self.updateGeometry()
         self.update()
@@ -690,6 +749,7 @@ class Tablets(_Control):
         if not self.is_list or not item or item in self._items:
             return False
         self._items.append(item)
+        self._describe()
         self.updateGeometry()
         self.update()
         self.changed.emit(self.value())
@@ -699,6 +759,7 @@ class Tablets(_Control):
         if not self.is_list or item not in self._items:
             return False
         self._items.remove(item)
+        self._describe()
         self._cursor = min(self._cursor, max(0, len(self._parts()) - 1))
         self.updateGeometry()
         self.update()
@@ -714,6 +775,7 @@ class Tablets(_Control):
             return
         else:
             self._picked = {value}
+        self._describe()
         self.update()
         self.changed.emit(self.value())
 
@@ -819,7 +881,7 @@ class Tablets(_Control):
             self._cursor = len(parts) - 1
         elif k in (Qt.Key.Key_Space, Qt.Key.Key_Return, Qt.Key.Key_Enter):
             self._activate(parts[min(self._cursor, len(parts) - 1)])
-        elif k in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace) and self.is_list:
+        elif k == Qt.Key.Key_Delete and self.is_list:           # Delete alone: Backspace never removes (N2)
             part = parts[min(self._cursor, len(parts) - 1)]
             if part[0] == "item" and self.isEnabled():
                 self.remove_item(part[1])
@@ -899,7 +961,9 @@ class LevelSlider(_Control):
         self._hand = self._t
         self._anims = {}
         self._last = None
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        policy = QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        policy.setHeightForWidth(True)
+        self.setSizePolicy(policy)
         self._describe()
 
     # --- value ---------------------------------------------------------------------------------------------- #
@@ -961,19 +1025,46 @@ class LevelSlider(_Control):
         left, width, _cy = self._channel()
         return min(1.0, max(0.0, (x - left) / width))
 
-    def sizeHint(self):
-        """Wide enough that no two band names meet: the chambers spaced by the widest neighbouring pair."""
+    def _names_w(self, step):
+        """The width at which no two band names `step` chambers apart meet (1: on one line; 2: every other name on
+        a second line)."""
         fm = QFontMetricsF(_font("row-sub"))
         widths = [fm.horizontalAdvance(n) for _k, n in self._bands]
         gap = 12 * _f()
-        spacing = max(((a + b) / 2 + gap for a, b in zip(widths, widths[1:])), default=0)
+        pairs = list(zip(widths, widths[step:]))
+        spacing = max(((a + b) / 2 + gap) / step for a, b in pairs) if pairs else 0
         margin = self._gem_size() * 0.75 + 4
-        names = (len(widths) - 1) * spacing + 2 * margin + (widths[0] + widths[-1]) / 2
-        w = max(_px("settings-slider-w"), names)
-        return QSize(math.ceil(w), math.ceil(self._well_h() + 4 * _f() + fm.height()))
+        return (len(widths) - 1) * spacing + 2 * margin + (widths[0] + widths[-1]) / 2
+
+    def staggered(self, width=None):
+        """Whether the band names stand on two lines (every other one lower): the slider narrower than one line of
+        them needs, so no two names ever touch (FX-page B4)."""
+        width = self.width() if width is None else width
+        return width + 0.5 < self._names_w(1)
+
+    def _height(self, lines):
+        fm = QFontMetricsF(_font("row-sub"))
+        return math.ceil(self._well_h() + 4 * _f() + lines * fm.height())
+
+    def sizeHint(self):
+        """Wide enough that no two band names meet on one line: the chambers spaced by the widest neighbouring
+        pair."""
+        return QSize(math.ceil(max(_px("settings-slider-w"), self._names_w(1))), self._height(1))
 
     def minimumSizeHint(self):
-        return self.sizeHint()
+        """Narrower, every other name goes a line lower: still no two names meet."""
+        return QSize(math.ceil(self._names_w(2)), self._height(2))
+
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, width):
+        return self._height(2 if self.staggered(width) else 1)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self.staggered(event.oldSize().width()) != self.staggered(event.size().width()):
+            self.updateGeometry()                    # a line of names more or less: the row's height again
 
     # --- the gem's motions --------------------------------------------------------------------------------- #
     def _press(self, x):
@@ -1182,12 +1273,14 @@ class LevelSlider(_Control):
         p.setFont(fm_font)
         fm = QFontMetricsF(fm_font)
         top = self._well_h() + 4 * _f()
+        two = self.staggered()
         for i, (_k, name) in enumerate(self._bands):
             cx = left + self._at_t(i) * width
             w = fm.horizontalAdvance(name)
             nx = min(max(0.0, cx - w / 2), self.width() - w)
             p.setPen(self._ink(i == self._index))
-            p.drawText(QRectF(nx, top, w + 1, fm.height()), Qt.AlignmentFlag.AlignLeft, name)
+            y = top + (fm.height() if two and i % 2 else 0)
+            p.drawText(QRectF(nx, y, w + 1, fm.height()), Qt.AlignmentFlag.AlignLeft, name)
         if self.hasFocus():
             paint_ring(p, well, radius)
         p.end()
@@ -1290,6 +1383,10 @@ class NumberField(_Field):
         self.edit.setFixedWidth(round(_px("settings-num-w")))
 
     def _clamp(self, n):
+        if isinstance(n, str):                       # a number hand-written as text ("500"): shown as it is held
+            n = float(n.strip().replace(",", ""))    # (ValueError when it isn't one: the page shows the default)
+            if not math.isfinite(n):
+                raise ValueError(f"not a number: {n!r}")
         n = min(self.maximum, max(self.minimum, n))
         return round(n, self.decimals) if self.decimals else int(round(n))
 
@@ -1543,7 +1640,7 @@ class Door(QPushButton):
     leaves no ring)."""
 
     def __init__(self, label, tooltip=None, name=None, parent=None):
-        super().__init__(label, parent)
+        super().__init__(label.replace("&", "&&"), parent)       # an "&" is shown, never a mnemonic (S2)
         if tooltip:
             self.setToolTip(tooltip)
         self.setAccessibleName(name or label)

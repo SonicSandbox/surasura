@@ -61,6 +61,7 @@ FOLDER_PICK_TITLE = "Where videos are looked for"
 ADD = "Add"                                      # an empty bed's words when the page names none
 REMOVE_NAME = "Remove {item}"                    # a list tablet's ✕, for screen readers (the accessible description)
 CROSS = "✕"
+PICKED_NONE = "None picked"                       # a set of tablets with none picked, for screen readers
 STATUS_NAME = "{name}: {words}"                  # the status mark, for screen readers
 
 # --- the sections (the mock's order, with Language & Parsing after Level: 05 §5.7) --------------------------------- #
@@ -413,7 +414,8 @@ ROWS = {
                         "add frequency list"),
 
     # App
-    "text_size": ("Text size", "", "The window's text size", "text size font bigger smaller read zoom"),
+    "text_size": ("Text size", "Applied the next time Surasura starts", "The window's text size",
+                  "text size font bigger smaller read zoom restart"),
     "app_motion": ("Motion",
                    "Follow Windows: as Windows’ Show animations is set. Reduced: nothing slides, rows jump into place, "
                    "short fades stay", "How much the window moves", "motion animation reduced slide fade"),
@@ -529,8 +531,10 @@ EXPORT_BUSY = "Another export is running: one at a time"
 SWITCH_NOT_ON = "Connect wasn't switched on: {}. Nothing changed; try again."
 SWITCH_NOT_OFF = "Connect wasn't switched off: {}. It stays on; try again."
 SWITCH_BROKE = "Connect's switch didn't finish: {}. It shows what is saved."
+SWITCH_ALREADY_ON = "Connect was already on (switched on in another window): nothing else changed."
 PUT_BACK_ASK = "Put the {n} shelved {cards} back into your new cards?"
-PUT_BACK_BODY = "Connect turns off either way. Left on the shelf, they stay suspended until you put them back."
+PUT_BACK_BODY = ("Connect turns off either way, on Leave them or Esc too: the cards then stay on the shelf, suspended "
+                 "until you put them back.")
 PUT_BACK_YES = "Put them back"
 PUT_BACK_YES_TIP = "Your shelved cards go back into your new cards, then Connect turns off"
 PUT_BACK_NO = "Leave them"
@@ -588,3 +592,21 @@ NEW_CARDS_YES_TIP = "Writes the new number into the deck's options group in Anki
 NEW_CARDS_SAME = "Anki's New cards a day for “{deck}” is already {n}."
 NEW_CARDS_WAITING = "Waiting for Anki…"
 NEW_CARDS_BROKE = "New cards a day wasn't changed: {}"
+NEW_CARDS_DECK_MOVED = ("New cards a day wasn't changed: Junban's deck is “{deck}” now, not “{asked}”. Nothing was "
+                        "written; look at it again.")
+NEW_CARDS_VALUE_MOVED = ("New cards a day for “{deck}” is now {n} in Anki — it changed while you were asked. Nothing "
+                         "was written; look at it again.")
+NEW_CARDS_UNREAD_NOW = "New cards a day wasn't changed: Anki can't be read now. Nothing was written."
+
+# --- PR: *Where new arrivals go* — the placing rules' lines (settings_rules.py; RULE_FROM, RULE_ADD, its tip above) -- #
+RULE_LINE_TIP = "Where arrivals from {source} go. Wait here: they wait in New arrivals for you"
+RULE_LINE_NAME = "Where arrivals from {source} go"
+RULE_LINE_WORDS = "From {source}"
+RULE_CHANNEL = "{producer} · channel {channel}"
+RULE_HELD = "“{value}” · waits"
+RULE_SEEN_NONE = "No other source seen yet"
+RULE_TYPE = "Another source…"
+RULE_TYPE_TIP = "Type a program's name (hato), or a program and a channel (youtube:<channel id>)"
+RULE_TYPE_PLACEHOLDER = "youtube:<channel id>"
+RULE_TYPE_NAME = "A source for a new rule"
+RULE_NEW_TIP = "A new rule for {source}: pick where its arrivals go. Nothing is saved while it says Wait here"

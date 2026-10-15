@@ -19,8 +19,8 @@ from PyQt6.QtCore import QRectF, Qt
 from PyQt6.QtGui import QColor, QGuiApplication, QImage, QImageReader, QPainter, QPixmap
 from PyQt6.QtSvg import QSvgRenderer
 
-from app import path_utils
-from app.qt import bridge
+from app import path_utils, theme
+from app.qt import bridge, style
 
 # Which service has a cleared logo, and its file(s) in `app/assets/logos/` (a PNG set smallest first). Anki's classic
 # icon stands for AnkiWeb too: LOGOS.md's safe choice (the Anki logo licence names AnkiWeb).
@@ -33,9 +33,9 @@ CLEARED = {
     "tmdb": ("tmdb_blue_short.svg",),
 }
 # A tile drawn behind the logo (never over it): Anki Miner's black tile would vanish into the dark ground (LOGOS.md:
-# "a 1 px #2d2d2d ring or a SURFACE tile behind it, never a change to its colours"). The colour is the card's own
-# #2d2d2d: 3.0's `surface` (#0a0e14) is too near black to show the tile's edge.
-BEHIND = {"anki_miner": "#2d2d2d"}
+# a 1 px ring or a tile behind it, never a change to its colours). Its colour is the theme's `logo-tile` (the card's
+# own grey: 3.0's `surface` is too near black to show the tile's edge).
+BEHIND = {"anki_miner": "logo-tile"}
 RING_PX = 1                     # logical pixels the tile behind shows around the logo
 TILE_ROUND = 0.19               # the tile's corner radius by its side (the logo's own: 40 + 8 of 256)
 
@@ -83,7 +83,7 @@ def _decode(name, px, dpr):
         if name in BEHIND:
             ring = max(1, round(RING_PX * dpr))
             p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QColor(BEHIND[name]))
+            p.setBrush(QColor(theme.colours(style.current()[0])[BEHIND[name]]))   # a read-only table: safe here
             p.drawRoundedRect(target, wide * TILE_ROUND, tall * TILE_ROUND)
             target = target.adjusted(ring, ring, -ring, -ring)
         renderer.render(p, target)
@@ -153,8 +153,6 @@ ROW_PX = 20                     # a row's logo, logical px at text size M: below
 
 def row_px():
     """ROW_PX at the current text size."""
-    from app import theme
-    from app.qt import style
     return max(1, round(ROW_PX * theme.text_factor(style.current()[1])))
 
 

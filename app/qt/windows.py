@@ -177,8 +177,21 @@ def always(_settings, _language):
     return True
 
 
+def _open_frequency_lists(shell):
+    from app.qt import frequency_lists_window
+    return show(shell, "frequency-lists", frequency_lists_window.FrequencyListsWindow)
+
+
+def _open_sentence_dictionary(shell):
+    from app.qt import sentence_dictionary_window
+    return show(shell, "sentence-dictionary", sentence_dictionary_window.SentenceDictionaryWindow)
+
+
 # Each row adds its doors here (W3.4 rows 1–6), in the order the list shows them.
-OPENERS = []
+OPENERS = [
+    Opener("frequency-lists", strings.FREQ_NAME, strings.FREQ_TIP, always, _open_frequency_lists),
+    Opener("sentence-dictionary", strings.DICT_NAME, strings.DICT_TIP, always, _open_sentence_dictionary),
+]
 
 
 # row 3: the Anki window

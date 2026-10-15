@@ -115,9 +115,27 @@ def test_closing_the_window_with_a_question_open_answers_nothing(second):
 
 def test_a_question_dropped_with_its_window_never_answers_later(second):
     card, answers = _ask(second)
+    yes = card.yes
     second.hide()                                         # hidden (not through ✕): an answer now would be too late
-    card.yes.click()
+    try:
+        yes.click()
+    except RuntimeError:                                  # already gone with its question
+        pass
     assert answers == []
+
+
+def test_a_window_shown_again_after_a_dropped_question_has_no_dimmed_room_left(second):
+    second.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
+    card, answers = _ask(second)
+    second.close()
+    second.show()
+    QApplication.processEvents()
+    assert answers == []
+    assert not [s for s in second.findChildren(confirm.Scrim) if s.isVisible()]
+    assert not [c for c in second.findChildren(confirm.Confirm) if c.isVisible()]
+    _click_window_at(second, second.behind)               # the window is usable again
+    assert second.clicks == ["behind"]
+    second.close()
 
 
 # --- Enter and the default button ------------------------------------------------------------------------------- #

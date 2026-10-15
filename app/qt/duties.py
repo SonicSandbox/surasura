@@ -9,8 +9,8 @@ a `motion.Overlay` with its `sheet` shadow. Nothing decides here: the states and
 """
 import os
 
-from PyQt6.QtCore import QEvent, QRectF, Qt, pyqtSignal
-from PyQt6.QtGui import QPainter, QPen
+from PyQt6.QtCore import QEvent, Qt, pyqtSignal
+from PyQt6.QtGui import QPainter
 from PyQt6.QtWidgets import QHBoxLayout, QLabel, QProgressBar, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
 from app import theme
@@ -351,13 +351,8 @@ class UpdateSheet(motion.Overlay):
         self.dismissed.emit()
 
     def paintEvent(self, _event):
-        c = style.colours()
         p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        p.setPen(QPen(style.qcolor(c["line-hi"]), 1))
-        p.setBrush(style.qcolor(c["surface"]))
-        radius = theme.RADII["sheet"]
-        p.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
+        style.paint_overlay(p, self.rect(), theme.RADII["sheet"])     # an overlay: slate navy, no sides (brief §4)
         p.end()
 
 

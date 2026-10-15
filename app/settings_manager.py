@@ -46,10 +46,11 @@ DEFAULT_SETTINGS = {
     # process, N = N worker processes. Speed only: every file's tokens are the same either way (W1.3). Never in the run
     # signature (analyzer._NON_ANALYSIS_SETTINGS).
     "index_pool_workers": None,
-    # The 3.0 window's look (Settings > App; W2.1, the window's spec 02 §2.1): its theme (app/theme.py THEMES: "hb" Blue,
-    # "sky" Lighter blue, "sapphire" Sapphire; Sapphire by default since G2.3) and text size ("S" / "M" / "L"). Set on the
-    # window before its first paint. Never in the run signature (analyzer._NON_ANALYSIS_SETTINGS): no run or report reads them.
-    "app_theme": "sapphire",
+    # The 3.0 window's look (Settings > App; W2.1, the window's spec 02 §2.1): its theme (app/theme.py THEMES: one in 3.0,
+    # "night", the redesign's palette — RS-1, 2026-10-14; Blue, Lighter blue and Sapphire retired, any other name paints
+    # the night; themes return in 3.1) and text size ("S" / "M" / "L"). Set on the window before its first paint. Never
+    # in the run signature (analyzer._NON_ANALYSIS_SETTINGS): no run or report reads them.
+    "app_theme": "night",
     "text_size": "M",
     # The window's motion (Settings > App > Motion; M2.1, the window's spec 05 §5.10): "follow" Windows' own *Show
     # animations* switch, "full" or "reduced" (no slides, short fades). No run or report reads it.

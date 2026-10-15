@@ -903,7 +903,7 @@ class RowDelegate(QStyledItemDelegate):
             self._paint_open_row(p, kind, payload, body, hovered, focused, dpr, lines)
         elif kind == MONTH:
             TEXT.draw(p, rect.left() + 4, rect.bottom() - round(11.5 * fz() * 0.9) - 4, payload.upper(), "month",
-                      rect.width() - 8, c("ink-faint"), dpr=dpr)
+                      rect.width() - 8, c("ink-dim"), dpr=dpr)
         elif kind == NEED:
             self._paint_need(p, payload, rect, dpr)
         elif kind == FAILURE:
@@ -1089,7 +1089,7 @@ class RowDelegate(QStyledItemDelegate):
     def _iris(self, r, vertical=False):
         grad = QLinearGradient(QPointF(r.left(), r.top()), QPointF(r.left(), r.bottom()) if vertical else
                                QPointF(r.right(), r.top()))
-        for pos, colour in theme.IRIS.get(style.current()[0], theme.IRIS["hb"]):
+        for pos, colour in theme.IRIS.get(style.current()[0], theme.IRIS[theme.DEFAULT_THEME]):
             grad.setColorAt(pos, style.qcolor(colour))
         return QBrush(grad)
 
@@ -1135,7 +1135,7 @@ class RowDelegate(QStyledItemDelegate):
             paint_diff(p, row.pct, row.pct_tone, row.n_new, cols["diff"].right(), line.center().y(), dpr)
         else:
             TEXT.draw(p, cols["date"].left(), line.center().y(), row.date, "date", cols["date"].width(),
-                      c("ink-faint"), dpr=dpr)
+                      c("ink-dim"), dpr=dpr)
         st_rect, mk_rect = self._status_rects(row, cols["stat"])
         if kind == FINISHED and row.status is not None and row.status.kind not in ("in_anki", "mining"):
             st_rect = None                                  # Finished shows only Mining… / ✓ N (words in its tip)
@@ -1368,7 +1368,7 @@ class RowDelegate(QStyledItemDelegate):
             p.setPen(pen)
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawRoundedRect(rr, theme.RADII["button"], theme.RADII["button"])
-            ink = c("ink-faint")
+            ink = c("ink-dim")
             label = self._watch_label(row)
         fm = TEXT.metrics("button", dpr=dpr)
         total = 12 + 6 + fm.horizontalAdvance(label)

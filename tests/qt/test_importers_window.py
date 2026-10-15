@@ -502,3 +502,23 @@ def test_an_export_with_no_words_for_this_language_asks_nothing(main, runs, tmp_
     w.read(str(db))
     assert wait_until(lambda: w.status.text() == strings.MIGAKU_EMPTY)
     assert _card(w) is None and runs.calls == []
+
+
+def test_an_empty_jiten_account_asks_nothing_and_removes_the_fetched_cards(main, runs):
+    w = importers.open_jiten(main)
+    w.key.setText(SECRET)
+    w.fetch()
+    folder = os.path.dirname(runs.calls[-1].argv[-1])
+    _fetched(runs, [])
+    assert wait_until(lambda: w.status.text() == strings.JITEN_EMPTY)
+    assert _card(w) is None and not os.path.exists(folder) and len(runs.calls) == 1
+
+
+def test_a_deck_read_that_lands_after_another_choice_is_dropped(main, runs, tmp_path):
+    w = importers.open_deck(main)
+    w.choose(DECK)
+    text = tmp_path / "本文.txt"
+    text.write_text("吾輩は猫である。", encoding="utf-8")
+    w.choose(str(text))                                         # chosen before the deck's read came back
+    QTest.qWait(1500)
+    assert w.deck is None and not w.go.isEnabled() and w.status.text() == strings.APKG_NOT_A_DECK

@@ -333,3 +333,40 @@ def test_a_good_insert_asks_the_helper_to_write_the_librarys_copy(tmp_path, monk
     monkeypatch.setattr(ls, "spawn_maintain", lambda language, *a: asked.append(language))
     result = extract.extract(_text_file(tmp_path, "ja"), "旅の本", "ja", section="soon", value="400")
     assert result.in_library and asked == ["ja"]
+
+
+def _show_rows(store, data_dir):
+    """The first show in NOW: its folder name and its items (id, rel)."""
+    rows = [(i, e["physical_path"]) for i, e, _a in store.ordered("now")]
+    folder = rows[0][1].rsplit("/", 1)[0]
+    return folder.split("/")[-1], [(i, r) for i, r in rows if r.startswith(folder + "/")]
+
+
+def test_a_name_the_store_still_lists_is_taken_though_its_folder_is_gone(tmp_path):
+    """Its files gone from disk (the rows stay, marked missing): a new split must not reattach them."""
+    data_dir, _uf = _store_library("ja")
+    store = _open("ja")
+    try:
+        name, rows = _show_rows(store, data_dir)
+    finally:
+        store.close()
+    for _i, rel in rows:
+        ls.trash_file(data_dir, rel)
+    os.rmdir(os.path.join(data_dir, "HighPriority", name))
+    assert extract.check_name(name, "ja").taken
+
+
+def test_a_name_only_the_stores_trash_holds_is_taken(tmp_path):
+    """Every episode removed (Put back can restore them): the name stays taken while the trash keeps them."""
+    data_dir, _uf = _store_library("ja")
+    store = _open("ja")
+    try:
+        name, rows = _show_rows(store, data_dir)
+        trashed = {i: ls.trash_file(data_dir, rel) for i, rel in rows}
+        store.remove([i for i, _r in rows], trashed)
+        assert not any(r.startswith(f"HighPriority/{name}/") for _i, e, _a in store.ordered("now")
+                       for r in [e["physical_path"]])
+    finally:
+        store.close()
+    os.rmdir(os.path.join(data_dir, "HighPriority", name))
+    assert extract.check_name(name, "ja").taken

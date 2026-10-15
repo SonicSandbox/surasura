@@ -711,8 +711,11 @@ class SettingsPage(QWidget):
             self._clamp = False
 
     def _let_go(self, *_args):
-        """The user scrolled, went to a section or changed a setting: a reveal stops aiming at its row."""
+        """The user scrolled, went to a section or changed a setting: a reveal stops aiming at its row, and its wash
+        ends (a washed row is what the build's slices keep in place: it would pull the page back to it)."""
         self._revealed = None
+        if getattr(self, "_washed", None) is not None:
+            self._end_wash()
 
     def _anchor_for_build(self):
         """What a slice keeps in place: a revealed row (its wash may be over: held until the build ends), else the

@@ -35,6 +35,7 @@ from app.qt import settings_page as sp
 from app.qt import settings_strings as S
 from app.services import settings as settings_service
 from tests.qt.conftest import wait_until
+from tests.test_settings_catalog import WITH_MODULES
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 EVERYTHING = frozenset(catalog.MODULES) | {"koe_revealed"}
@@ -100,6 +101,17 @@ class Recorder:
             settings_service.put(self.file, key, value)
         for callback in self._subscribers:
             callback(sorted(changes))
+
+
+@pytest.fixture(autouse=True)
+def _full_motion():
+    """*Full* motion, whatever Windows' own switch says (*Follow* reads it: off on GitHub's runner, which is reduced
+    motion there): the page's tests run frozen on one mode; a reduced-motion test sets its own."""
+    mode = motion.clock().mode
+    was = mode.setting
+    mode.set_setting("full")
+    yield
+    mode.set_setting(was)
 
 
 @pytest.fixture(autouse=True)
@@ -268,6 +280,7 @@ def test_a_per_language_change_back_before_it_lands_is_still_written(qapp):
     assert store.file["connect_backlog_cap"]["ja"] == 40
 
 
+@WITH_MODULES
 def test_nothing_is_written_at_build_search_fold_reveal_or_for_the_same_value(qapp):
     page, store = make_page(ALL_ON, "ja")
     page.search.edit.setText("kanji")
@@ -710,8 +723,11 @@ def test_a_reveal_before_the_build_ends_has_its_slab_built_first(qapp):
     assert _at_third(page, page.rows["max_contexts"])     # kept in place while the slabs above it were built
 
 
-def test_a_user_scroll_during_the_build_lets_the_reveal_go(qapp):
-    # the reveal aims at its row after each slice until the build ends: a wheel / drag / key is the user's, and wins
+@pytest.mark.parametrize("setting", ["full", "reduced"])
+def test_a_user_scroll_during_the_build_lets_the_reveal_go(qapp, setting):
+    # the reveal aims at its row after each slice until the build ends: a wheel / drag / key is the user's, and wins —
+    # its wash ends too (reduced motion holds the wash steady for a second, and the slices kept the washed row in place)
+    motion.clock().mode.set_setting(setting)
     store = Recorder(ALL_ON)
     page = sp.SettingsPage(SimpleNamespace(settings=store), "ja", found=EVERYTHING)
     page.resize(1100, 700)

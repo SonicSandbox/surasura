@@ -9,6 +9,7 @@ licences ask for wherever the data goes.
 The catalog reads no library: the values here are settings as a user's file holds them (real deck names, real folders).
 """
 import ast
+import importlib.util
 import os
 import subprocess
 import sys
@@ -26,6 +27,19 @@ from app.settings_placement import OWNERS, PLACED
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 EVERYTHING = frozenset(catalog.MODULES) | {"koe_revealed"}
 NOTHING = frozenset()
+
+
+def _found(name):
+    try:
+        return importlib.util.find_spec(name) is not None
+    except ImportError:
+        return False
+
+
+# rows that read a module's own data (its options, its defaults) are checked where the modules are: the local --all;
+# GitHub's checkout has none of them (the page then never shows those rows: `found` leaves them out)
+WITH_MODULES = pytest.mark.skipif(not all(_found(m) for m in catalog.MODULES),
+                                  reason="the optional modules aren't in this checkout (the local --all runs this)")
 
 
 def _placed(key):
@@ -200,6 +214,7 @@ def _other(row, settings, language):
     return next(v for v in choices if v != shown)
 
 
+@WITH_MODULES
 @pytest.mark.parametrize("language", ["ja", "zh"])
 def test_each_rows_change_writes_its_own_keys_and_nothing_else(language):
     """Every row with a setting, each kind: a new value writes only that row's key(s) — the dotted `logic.` path, never
@@ -219,6 +234,7 @@ def test_each_rows_change_writes_its_own_keys_and_nothing_else(language):
             assert not key.startswith("logic.") or key.count(".") >= 1 and key != "logic"
 
 
+@WITH_MODULES
 @pytest.mark.parametrize("language", ["ja", "zh"])
 def test_a_value_set_to_what_is_already_there_writes_nothing(language):
     """Picking the value shown, retyping the same number, re-picking the same tablets: nothing to write (S19)."""
@@ -423,6 +439,7 @@ def test_japanese_rows_hide_for_chinese_and_the_script_shows_only_for_chinese():
             assert row.id not in _shown({}, "ja"), row.id
 
 
+@WITH_MODULES
 def test_module_rows_hide_without_their_module():
     without = {row for row in _shown({"enable_koe": True}, "ja", frozenset({"koe_revealed"}))}
     for row_id in ("enable_junban", "junban_scope", "put_back", "junban_backfill_fills", "enable_youtube_transcripts",
@@ -437,6 +454,7 @@ def test_speech_shows_only_once_revealed_in_settings_json():
     assert {"enable_koe", "koe_door"} <= _shown({"enable_koe": False}, "ja", EVERYTHING)
 
 
+@WITH_MODULES
 def test_junban_rows_follow_its_switch_but_put_anki_back_stays_and_backfill_leaves_with_it():
     """N3: the way back from what Surasura did to Anki stays shown with Junban off; Backfill hides with it (2.4)."""
     off = _shown({"enable_junban": False}, "ja")
@@ -490,6 +508,7 @@ def test_find_matches_labels_help_search_words_and_choice_labels():
     assert "theme" not in catalog.find("sapphire", {}, "ja", EVERYTHING)                    # no theme picker
 
 
+@WITH_MODULES
 def test_find_reads_japanese_and_full_width_letters():
     assert "junban_backfill_fills" in catalog.find("パターン", {}, "ja", EVERYTHING)
     assert "junban_backfill_fills" in catalog.find("例文", {}, "ja", EVERYTHING)

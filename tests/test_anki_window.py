@@ -306,6 +306,36 @@ def test_a_window_job_waits_behind_a_running_sync_and_the_automatic_sync_never_s
     assert order == ["first", "second"]
 
 
+def test_a_write_may_be_waited_for_at_quit_and_every_other_job_is_detached():
+    """AD3-1: Replace and Restore write two files (the list, then the state naming its backup) and ask `wait`; a sync
+    or a dry run stays `detach` (it only appends or reads)."""
+    registry = JobRegistry()
+    done = threading.Event()
+    job = AW.submit(registry, "Replacing", lambda: anki_sync.SyncResult(mode="replace"), lambda _r: done.set(),
+                    on_quit="wait")
+    _wait(done)
+    assert job.on_quit == "wait"
+    done.clear()
+    assert AW.submit(registry, "Syncing", lambda: anki_sync.SyncResult(), lambda _r: done.set()).on_quit == "detach"
+    _wait(done)
+
+
+def test_the_automation_service_is_found_when_the_job_ends_not_when_it_was_asked(ja_words):
+    """AD3-9: the duties (and their automation service) are made on a worker after the window opens: a job asked
+    before they exist still tells them its result."""
+    registry, automation, holder = JobRegistry(), _Automation(), {}
+    gate, done = threading.Event(), threading.Event()
+
+    def work():
+        gate.wait(10)
+        return anki_sync.SyncResult(mode="delta", added=2)
+    AW.submit(registry, "Syncing", work, lambda _r: done.set(), lambda: holder.get("automation"), "ja")
+    holder["automation"] = automation                      # made meanwhile
+    gate.set()
+    _wait(done)
+    assert automation.heard == [("delta", "ja")]
+
+
 # --- the Chinese side ------------------------------------------------------------------------------------------------ #
 def test_a_chinese_sync_reads_its_own_decks_and_writes_only_chinese_known_words(zh_resources_dir):
     with open(os.path.join(zh_resources_dir, "context_test.txt"), encoding="utf-8") as f:

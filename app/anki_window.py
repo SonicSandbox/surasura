@@ -272,12 +272,15 @@ def tells(result):
     return result is not None and result.mode != "dry-run" and not result.changed
 
 
-def submit(registry, label, work, on_end, automation=None, language=None):
+def submit(registry, label, work, on_end, automation=None, language=None, on_quit="detach"):
     """`work()` (-> a SyncResult) as an `anki-sync` job labelled `label` (the user's words, for the bar); `on_end(result)`
-    on the job's thread when it ended, after the result was told to `automation` (`anki_synced`, when `tells`). The job
-    waits behind an automatic sync already running (the registry's table) and is never cut at quit (`detach`: the
-    engine's writes are atomic, under the known-words lock). -> the Job, or None when an update holds the children
-    (nothing submitted)."""
+    on the job's thread when it ended, after the result was told to the automation service (`anki_synced`, when
+    `tells`) — `automation` is the service or a callable that returns it, asked when the job ends (the duties are made
+    on a worker after the window opens: AD3-9). The job waits behind an automatic sync already running (the registry's
+    table). At quit: a sync or a dry run is `detach` (it appends atomically under the known-words lock, or only reads);
+    Replace and Restore pass `wait` — they write two files, the list and then the state naming its backup, and a quit
+    between them would leave *Restore previous* naming the wrong backup (AD3-1). -> the Job, or None when an update
+    holds the children (nothing submitted)."""
     if update_holds():
         return None
 
@@ -287,13 +290,14 @@ def submit(registry, label, work, on_end, automation=None, language=None):
         except Exception as e:                    # a window must never lose a result to a traceback
             result = anki_sync.SyncResult(error=f"Unexpected error: {e}")
         job.finish(ok=not result.error, message=result.error)
-        if automation is not None and tells(result):
+        service = automation() if callable(automation) else automation
+        if service is not None and tells(result):
             try:
-                automation.anki_synced(result, language)
+                service.anki_synced(result, language)
             except Exception as e:
                 print(f"Anki window: the automation service didn't hear the result ({e})")
         on_end(result)
 
     def start(job):
         threading.Thread(target=run, args=(job,), name="anki-window-job", daemon=True).start()
-    return registry.submit(KIND, label, start, on_quit="detach")
+    return registry.submit(KIND, label, start, on_quit=on_quit)

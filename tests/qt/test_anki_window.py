@@ -119,24 +119,47 @@ def _say_no_with(key):
 
 
 class _Gate:
-    """Holds `anki_sync.sync` mid-way, as a slow Anki would."""
+    """Holds `anki_sync.sync` mid-way, as a slow Anki would. The real sync runs only once the test opened the gate: a
+    test that fails first leaves a thread that raises when its test ended (`close`), never one that later syncs with the
+    real `urlopen` outside the test root (AD3-4)."""
+    made = []
 
     def __init__(self, monkeypatch):
-        self.event, self.modes = threading.Event(), []
+        self.event, self.modes, self.ended, self.inside = threading.Event(), [], False, []
         real = anki_sync.sync
 
         def held(*args, **kw):
             self.modes.append("full" if kw.get("full") else "delta")
-            self.event.wait(10)
-            return real(*args, **kw)
+            self.inside.append(1)
+            try:
+                if not self.event.wait(10) or self.ended:
+                    raise RuntimeError("the gate was never opened by its test")
+                return real(*args, **kw)
+            finally:
+                self.inside.pop()
         monkeypatch.setattr(anki_sync, "sync", held)
+        _Gate.made.append(self)
+
+    def close(self):
+        """The test ended: a held sync gives up, and is waited for (it never outlives its test)."""
+        self.ended = True
+        self.event.set()
+        assert wait_until(lambda: not self.inside, 10), "a held sync outlived its test"
+
+
+@pytest.fixture(autouse=True)
+def _gates_closed(monkeypatch):
+    # Asks for monkeypatch first, so the fakes are undone only after every gate of the test was closed (after `main`).
+    yield
+    while _Gate.made:
+        _Gate.made.pop().close()
 
 
 # --- every control, wired (inv §1) ------------------------------------------------------------------------------ #
 def test_every_control_is_wired_tipped_and_named_with_both_doors(main, anki, monkeypatch):
     opened = []
     doors = [windows.Opener("backfill", "Backfill", "x", windows.always, lambda s: opened.append("backfill")),
-             windows.Opener("apkg", "Import .apkg", "x", windows.always, lambda s: opened.append("apkg"))]
+             windows.Opener("apkg_known", "Import .apkg", "x", windows.always, lambda s: opened.append("apkg"))]
     monkeypatch.setattr(windows, "OPENERS", windows.OPENERS + doors)
     _choose(main)
     w = _open(main)
@@ -320,7 +343,11 @@ def test_replace_asks_with_the_true_numbers_and_esc_and_enter_are_no(main, anki,
         assert wait_until(lambda: getattr(w, "question", None) is not None and w.question.isVisible())
         card = w.question
         assert card.title.text() == strings.ANKI_REPLACE_TITLE
-        assert card.body.text() == strings.ANKI_REPLACE_BODY.format(now=now, after=3, anki=3, graduated=0, ignored=3)
+        assert card.body.text() == "\n".join([strings.ANKI_REPLACE_HEAD.format(now=now, after=3),
+                                              strings.ANKI_REPLACE_ANKI.format(n=3),
+                                              strings.ANKI_REPLACE_IGNORED[0].format(n=3), strings.ANKI_REPLACE_TAIL])
+        assert "Graduates" not in card.body.text(), "no Graduates' words to keep: no line saying 0 are (IK-44)"
+        assert "KnownWord.<date>.json" in card.yes.toolTip(), "the backup's name pattern is in Replace's tooltip"
         assert "Finished" not in card.body.text() and "earlier imports will be removed" not in card.body.text()
         assert card.default is card.no and card.yes.text() == strings.ANKI_REPLACE_YES
         assert wait_until(lambda: QApplication.focusWidget() is card.no)
@@ -343,8 +370,9 @@ def test_replace_after_yes_backs_up_first_keeps_the_ignored_words_and_says_so(ma
     assert [x["dictForm"] for x in _words() if x.get("source") == "AnkiConnect"] == WORDS[:3]
     assert [x for x in _words() if x["knownStatus"] == "IGNORED"] == ignored
     assert len(_trash()) == 1 and _bytes(os.path.join(get_user_files_path("ja"), ".trash", _trash()[0])) == before
-    assert w.status.text() == (strings.ANKI_REPLACED.format(total=3, added=3, graduated=0)
-                               + strings.ANKI_REPLACED_IGNORED.format(ignored=3))
+    assert w.status.text() == (strings.ANKI_REPLACED.format(total=3, added=3)
+                               + strings.ANKI_REPLACED_IGNORED[0].format(ignored=3))
+    assert "Graduates" not in w.status.text()
     assert wait_until(lambda: not w.btn_restore.isHidden()), "a backup to put back: Restore previous shows"
 
 
@@ -448,7 +476,7 @@ def test_idle_it_follows_the_main_windows_language(main, anki):
     main.services.settings.set({"target_language": "zh"})
     assert wait_until(lambda: w.language == "zh" and w.decks == ["中文"])
     assert wait_until(lambda: not w._probing)
-    assert w.heading.toolTip().startswith("Adds the words from Chinese cards")
+    assert w.heading.toolTip().startswith("Sync adds the words from Chinese cards")
 
 
 def test_a_switch_during_a_sync_waits_for_it_its_result_goes_to_the_bar_and_only_its_language_is_written(
@@ -476,13 +504,13 @@ def test_without_their_openers_the_doors_are_hidden(main, anki):
     w = _open(main, connect=False)
     names = {o.name for o in windows.OPENERS}
     assert w.btn_backfill.isHidden() == ("backfill" not in names)
-    assert w.btn_apkg.isHidden() == ("apkg" not in names)
+    assert w.btn_apkg.isHidden() == ("apkg_known" not in names)          # row 2's opener (IK-41)
 
 
 def test_the_apkg_door_never_closes_this_window_even_mid_job(main, anki, monkeypatch):
     opened = []
     monkeypatch.setattr(windows, "OPENERS", windows.OPENERS + [
-        windows.Opener("apkg", "Import .apkg", "x", windows.always, lambda s: opened.append("apkg")),
+        windows.Opener("apkg_known", "Import .apkg", "x", windows.always, lambda s: opened.append("apkg")),
         windows.Opener("backfill", "Backfill", "x", lambda s, lang: lang == "ja", lambda s: opened.append("bf"))])
     _choose(main)
     w = _open(main)
@@ -507,3 +535,217 @@ def test_the_switches_save_their_own_key_and_the_first_pick_with_them(main, anki
     assert saved["anki_sync_decks"]["ja"] == ["TheBank"], "a first action saves the pick shown"
     w.chk_suspended.click()
     assert _saved(main)["anki_sync_include_suspended"] is True
+
+
+# --- the fix round (2026-10-14/15: IK-41…46, AD3-1…9) ------------------------------------------------------------ #
+def test_a_gate_its_test_never_opened_gives_up_and_never_runs_the_real_sync(monkeypatch):
+    """AD3-4: a held sync left by a failing test raises when its test ends; it never syncs later, unguarded."""
+    ran = []
+    monkeypatch.setattr(anki_sync, "sync", lambda *a, **k: ran.append(1))
+    gate = _Gate(monkeypatch)
+    _Gate.made.remove(gate)
+    errors = []
+
+    def call():
+        try:
+            anki_sync.sync("ja", "http://127.0.0.1:8765", ["TheBank"], [])
+        except RuntimeError as e:
+            errors.append(e)
+    t = threading.Thread(target=call)
+    t.start()
+    assert wait_until(lambda: gate.modes)
+    gate.close()
+    t.join(5)
+    assert not t.is_alive() and ran == [] and len(errors) == 1
+
+
+def test_the_state_mark_takes_the_states_colour(main, anki, monkeypatch):
+    """IK-42: the dot is teal / red in Tk; here the state's token (ok when connected, bad when not), by a property."""
+    from PyQt6.QtGui import QPalette
+    from app.qt import style
+    _choose(main)
+    w = _open(main)
+    c = style.colours()
+
+    def ink():
+        return w.state.palette().color(QPalette.ColorRole.WindowText).name().lower()
+    assert w.state.property("state") == "connected" and ink() == c["ok"].lower()
+    monkeypatch.setattr("urllib.request.urlopen", FakeAnki(offline=True))
+    w.refresh_connection()
+    assert wait_until(lambda: not w._probing)
+    assert w.state.property("state") == "closed" and ink() == c["bad"].lower()
+
+
+def test_an_answer_that_changes_nothing_rebuilds_no_deck_row_no_field_box_and_no_offer(main, anki):
+    """IK-43 (S19): the deck list, the add box and the field boxes are rebuilt only when what they show changed."""
+    from PyQt6.QtWidgets import QLabel
+    _choose(main, decks=("TheBank", "Grammar"))
+    w = _open(main)
+    before = (w.deck_paints, w.add_paints, w.field_paints)
+    w.refresh_connection()
+    assert wait_until(lambda: not w._probing)
+    w._paint_controls()
+    assert (w.deck_paints, w.add_paints, w.field_paints) == before, "the same answer: nothing rebuilt"
+    anki.add(WORDS[3], deck="TheBank")                    # one more studied card: only the deck rows change
+    w.refresh_connection()
+    assert wait_until(lambda: not w._probing)
+    assert w.deck_paints == before[0] + 1 and (w.add_paints, w.field_paints) == before[1:]
+    assert strings.ANKI_STUDIED.format(n=4) in [lab.text() for lab in w.deck_list.findChildren(QLabel)]
+
+
+def test_the_doors_are_asked_again_only_by_a_write_that_can_move_them_and_by_the_modules_look(main, anki,
+                                                                                               monkeypatch):
+    """IK-45: the base's door rule (IK-20) — asked on the language or a module's switch, and when the modules were
+    looked for (Backfill's door names Junban); the window starts that look itself when no one has."""
+    monkeypatch.setattr(windows, "_FOUND", {})
+    monkeypatch.setattr(windows, "_LOOKING", set())
+    monkeypatch.setattr(windows, "OPENERS", windows.OPENERS + [
+        windows.Opener("backfill", "Backfill", "x", lambda s, lang: s.get("enable_junban") is not False,
+                       lambda s: None, module="junban")])
+    asked = []
+    real = windows.available
+    monkeypatch.setattr(windows, "available", lambda op, s, lang: (asked.append(op.name), real(op, s, lang))[1])
+    w = _open(main, connect=False)
+    assert wait_until(lambda: "junban" in windows._FOUND), "the window looked for the modules (on a worker)"
+    assert wait_until(lambda: not w.btn_backfill.isHidden())
+    asked.clear()
+    main.services.settings.set({"anki_sync_auto": True})
+    assert main.services.settings.flush(5)
+    QTest.qWait(50)
+    assert asked == [], "a write that moves no door asks none"
+    main.services.settings.set({"enable_junban": False})
+    assert main.services.settings.flush(5)
+    assert wait_until(lambda: "backfill" in asked and w.btn_backfill.isHidden())
+
+
+def test_replace_and_restore_writes_are_waited_for_at_quit_and_the_dry_run_and_sync_are_not(main, anki, monkeypatch,
+                                                                                            ja_resources_dir):
+    """AD3-1: Replace and Restore write two files (the list, then the state naming its backup): a quit waits for them;
+    a sync or a dry run only appends or reads, and is never waited for."""
+    _migaku(ja_resources_dir)
+    _choose(main)
+    w = _open(main)
+    kinds = []
+    real_submit = QAW.AW.submit
+
+    def spy(registry, label, work, on_end, automation=None, language=None, on_quit="detach"):
+        job = real_submit(registry, label, work, on_end, automation, language, on_quit=on_quit)
+        kinds.append((label, job.on_quit))
+        return job
+    monkeypatch.setattr(QAW.AW, "submit", spy)
+    w.btn_sync.click()
+    _idle(main, w)
+    w.btn_replace.click()
+    assert wait_until(lambda: getattr(w, "question", None) is not None and w.question.isVisible())
+    w.question.yes.click()
+    _idle(main, w)
+    w.question = None
+    w.btn_restore.click()
+    assert wait_until(lambda: getattr(w, "question", None) is not None and w.question.isVisible())
+    w.question.yes.click()
+    _idle(main, w)
+    assert kinds == [(strings.ANKI_JOB_SYNC, "detach"), (strings.ANKI_JOB_DRY, "detach"),
+                     (strings.ANKI_JOB_REPLACE, "wait"), (strings.ANKI_JOB_RESTORE, "wait")]
+
+
+def test_closed_after_yes_a_replace_whose_numbers_moved_says_so_in_the_bar(main, anki, monkeypatch, ja_resources_dir):
+    """IK-46: the window can't ask again once closed: nothing was written, and the bar says so."""
+    _migaku(ja_resources_dir)
+    original = _bytes(_file())
+    _choose(main)
+    w = _open(main)
+    w.btn_replace.click()
+    assert wait_until(lambda: getattr(w, "question", None) is not None and w.question.isVisible())
+    held, real = threading.Event(), QAW.AW.run_replace
+    monkeypatch.setattr(QAW.AW, "run_replace", lambda *a: (held.wait(10), real(*a))[1])
+    w.question.yes.click()
+    anki.add(WORDS[3], deck="TheBank")                    # Anki changes before the write reads it
+    w.close()
+    held.set()
+    assert wait_until(lambda: main.bar_line.full() == strings.ANKI_REPLACE_MOVED_CLOSED, 10)
+    assert wait_until(lambda: not main.services.registry.live("anki-sync"))
+    assert _bytes(_file()) == original
+
+
+def test_a_jobs_answer_after_the_window_closed_paints_nothing_and_each_relay_is_freed(main, anki, monkeypatch):
+    """AD3-6: a dry run that ends after the window closed never builds its question; a job's relay goes with its job."""
+    from app.qt import bridge
+    _choose(main)
+    w = _open(main)
+    w.btn_sync.click()
+    _idle(main, w)
+    assert wait_until(lambda: not w.findChildren(bridge.Relay)), "the sync's relay was freed"
+    held, real = threading.Event(), QAW.AW.run_dry
+    monkeypatch.setattr(QAW.AW, "run_dry", lambda *a: (held.wait(10), real(*a))[1])
+    asked = []
+    monkeypatch.setattr(QAW.AnkiWindow, "_ask_replace", lambda self, *a, **k: asked.append(a))
+    w.btn_replace.click()
+    w.close()
+    held.set()
+    assert wait_until(lambda: not main.services.registry.live("anki-sync"))
+    QTest.qWait(50)
+    assert asked == []
+
+
+def test_restore_saves_no_first_open_pick(main, anki, ja_resources_dir):
+    """IK-46: Restore reads no deck: the first open's pick stays unsaved."""
+    _migaku(ja_resources_dir)
+    anki_sync.replace("ja", "http://127.0.0.1:8765", ["TheBank"], [])        # a previous list to put back
+    w = _open(main)
+    assert w._unsaved_pick
+    w.btn_restore.click()
+    assert wait_until(lambda: getattr(w, "question", None) is not None and w.question.isVisible())
+    w.question.no.click()
+    assert wait_until(lambda: not w.busy())
+    assert (_saved(main).get("anki_sync_decks") or {}).get("ja") is None and w._unsaved_pick
+
+
+def test_picking_the_same_field_again_writes_nothing(main, anki, monkeypatch):
+    """IK-46: a choice that changed nothing is no write (and no scope read)."""
+    _choose(main, **{"anki_sync_fields": {"ja": ["Expression"]}})
+    w = _open(main)
+    writes = []
+    real = main.services.settings.set
+    monkeypatch.setattr(main.services.settings, "set", lambda *a, **k: (writes.append(a), real(*a, **k))[1])
+    w.box_field1.activated.emit(w.box_field1.findData("Expression"))
+    w.box_field2.activated.emit(0)                         # "—", as it was
+    assert writes == []
+    w.box_field1.activated.emit(0)                         # Auto: a change
+    assert len(writes) == 1
+
+
+def test_the_heading_tip_never_promises_that_nothing_is_removed_beside_replace(main):
+    """AD3-11 / IK-46: Sync adds and never removes; Replace rebuilds (backed up first)."""
+    w = _open(main, connect=False)
+    tip = w.heading.toolTip()
+    assert "Replace" in tip and "backed up" in tip
+
+
+def test_a_scope_changed_while_the_first_probe_runs_is_the_scope_shown(main, anki, monkeypatch):
+    """AD3-3: Include suspended (or a deck) changed while the opening probe runs: its answer, read for the old scope,
+    is dropped and Anki read again for the new one."""
+    _choose(main, decks=("TheBank", "Grammar"))
+    w = _open(main, connect=False)
+    gate, real, calls = threading.Event(), QAW.AW.read_probe, []
+    monkeypatch.setattr(QAW.AW, "read_probe", lambda url, decks, sus: (calls.append((list(decks), sus)),
+                                                                       gate.wait(10), real(url, decks, sus))[2])
+    w.refresh_connection()
+    assert wait_until(lambda: calls)
+    w.chk_suspended.click()
+    w.remove_deck("Grammar")
+    gate.set()
+    assert wait_until(lambda: w._connected and not w._probing, 10)
+    assert calls[-1] == (["TheBank"], True), "the answer shown was read for the new scope"
+    assert set(w._counts) == {"TheBank"}
+
+
+def test_the_two_switches_follow_a_write_made_elsewhere_and_write_nothing_back(main, anki, monkeypatch):
+    """AD3-5: the Settings page (or anything) writes `anki_sync_auto` / `anki_auto_generate`: the window shows it."""
+    w = _open(main, connect=False)
+    assert not w.chk_auto.isChecked()
+    writes = []
+    real = main.services.settings.set
+    main.services.settings.set({"anki_sync_auto": True, "anki_auto_generate": True})
+    monkeypatch.setattr(main.services.settings, "set", lambda *a, **k: (writes.append(a), real(*a, **k))[1])
+    assert wait_until(lambda: w.chk_auto.isChecked() and w.chk_generate.isChecked())
+    assert writes == []

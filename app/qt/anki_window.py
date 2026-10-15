@@ -17,14 +17,17 @@ nothing:** the rules are `app/anki_window.py`'s and the engine's (`app/anki_sync
   puts back (its backup's time, both totals), default Cancel, and puts back only that backup.
 - **The language:** the window follows the main window's language when idle; a job in flight finishes first (its
   result goes to the bottom bar too), then the window reads again (`SecondaryWindow`, 🧭 IK-12). Its doors —
-  *Backfill cards…* and *Import an .apkg instead…* — are the openers named `backfill` and `apkg` when they are there,
-  and opening one never closes this window.
+  *Backfill cards…* and *Import an .apkg instead…* — are the openers named `backfill` (row 5) and `apkg_known` (row 2)
+  when they are there, asked again by the base's rule (a module's switch, the modules' look: IK-20 / IK-45), and
+  opening one never closes this window.
+- **Each part repaints only what changed** (S19): the deck rows, the deck offer and the field boxes are rebuilt only
+  when what they show changed (`deck_paints`, `add_paints`, `field_paints` count the rebuilds: IK-43).
 """
 import os
 
 from PyQt6.QtCore import QEvent, QObject, Qt, QTimer
 from PyQt6.QtWidgets import (QCheckBox, QComboBox, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QPushButton,
-                             QToolButton, QVBoxLayout, QWidget)
+                             QToolButton, QWidget)
 
 from app import anki_connect, anki_sync, theme
 from app import anki_window as AW
@@ -32,6 +35,8 @@ from app.qt import applog, bridge, confirm, strings, style, windows
 
 NAME = "anki"
 FLASH_MS = 5000                         # the "+N" beside the total, after a sync that added words
+DOORS = (("btn_backfill", "backfill"), ("btn_apkg", "apkg_known"))      # row 5's opener, row 2's (IK-41)
+SWITCHES = (("chk_auto", "anki_sync_auto"), ("chk_generate", "anki_auto_generate"))
 
 
 class _Keys(QObject):
@@ -67,6 +72,8 @@ class AnkiWindow(windows.SecondaryWindow):
         self._shift = False
         self._known = None
         self._automation_seq = None
+        self._deck_key = self._add_key = self._field_key = None       # what each part shows now (S19)
+        self.deck_paints = self.add_paints = self.field_paints = 0
         self._load_choices()
         self._build()
         self._keys = _Keys(self)
@@ -79,8 +86,9 @@ class AnkiWindow(windows.SecondaryWindow):
         self.refresh_known()
         b = getattr(shell, "bridge", None)
         if b is not None:
-            b.settings_written.connect(self._doors_again)
+            b.settings_written.connect(self._settings_heard)
             b.automation_changed.connect(self._automation_state)
+        windows.follow_doors(self)                        # told when the modules were looked for (a door names one)
         if not os.environ.get("SURASURA_NO_UI_TIMERS"):     # never reach Anki from a test's window (testing.md §5.4)
             QTimer.singleShot(0, self.alive(self.refresh_connection))
 
@@ -152,6 +160,7 @@ class AnkiWindow(windows.SecondaryWindow):
                                          lambda: self._open_door("backfill"))
         head.addWidget(self.btn_backfill)
         self.state = self._label("ankistate", strings.ANKI_STATE_UNCHECKED)
+        self.state.setProperty("state", "unchecked")
         self.state.setAccessibleName(strings.ANKI_STATE_NAME)
         head.addWidget(self.state)
         self.btn_recheck = self._button(strings.ANKI_RECHECK, strings.ANKI_RECHECK_TIP, self.refresh_connection,
@@ -228,7 +237,7 @@ class AnkiWindow(windows.SecondaryWindow):
         # the actions
         self.body.addWidget(style.separator(self))
         actions = QHBoxLayout()
-        self.btn_apkg = self._button(strings.ANKI_APKG, strings.ANKI_APKG_TIP, lambda: self._open_door("apkg"),
+        self.btn_apkg = self._button(strings.ANKI_APKG, strings.ANKI_APKG_TIP, lambda: self._open_door("apkg_known"),
                                      kind="chip")
         actions.addWidget(self.btn_apkg)
         self.btn_restore = self._button(strings.ANKI_RESTORE, strings.ANKI_RESTORE_TIP, self.on_restore, kind="chip")
@@ -250,6 +259,14 @@ class AnkiWindow(windows.SecondaryWindow):
         if label.isHidden() == bool(text):
             label.setVisible(bool(text))
 
+    def _paint_state(self, kind, text):
+        """Anki's state: its words, and its colour by the state's token (`#ankistate[state=…]`: ok / bad; IK-42)."""
+        self._set_label(self.state, text)
+        if self.state.property("state") != kind:
+            self.state.setProperty("state", kind)
+            self.state.style().unpolish(self.state)
+            self.state.style().polish(self.state)
+
     @staticmethod
     def _enable(widget, on):
         if widget.isEnabled() != bool(on):
@@ -262,6 +279,11 @@ class AnkiWindow(windows.SecondaryWindow):
         self._paint_controls()
 
     def _render_decks(self):
+        key = tuple((deck, self._counts.get(deck)) for deck in self.decks)
+        if key == self._deck_key:
+            return
+        self._deck_key = key
+        self.deck_paints += 1
         self.deck_list.clear()
         for deck in self.decks:
             item = QListWidgetItem(self.deck_list)
@@ -288,26 +310,42 @@ class AnkiWindow(windows.SecondaryWindow):
 
     def _render_add(self):
         offer = [d for d in self._all_decks if d not in self.decks]
+        # offline, Anki's decks aren't known yet: "No other decks" would be a false claim
+        key = (tuple(offer), strings.ANKI_ADD if offer or not self._connected else strings.ANKI_ADD_NONE)
+        if key == self._add_key:
+            if self.add_box.currentIndex() != -1:         # a pick that added nothing: back to the placeholder
+                self.add_box.blockSignals(True)
+                self.add_box.setCurrentIndex(-1)
+                self.add_box.blockSignals(False)
+            return
+        self._add_key = key
+        self.add_paints += 1
         self.add_box.blockSignals(True)
         self.add_box.clear()
         self.add_box.addItems(offer)
         self.add_box.setCurrentIndex(-1)
-        # offline, Anki's decks aren't known yet: "No other decks" would be a false claim
-        self.add_box.setPlaceholderText(strings.ANKI_ADD if offer or not self._connected else strings.ANKI_ADD_NONE)
+        self.add_box.setPlaceholderText(key[1])
         self.add_box.blockSignals(False)
 
     def _render_fields(self):
         firsts, seconds = AW.field_choices(self._models, self.first)
         if self.second == self.first:
             self.second = None
+        rebuild = (tuple(firsts), tuple(seconds)) != self._field_key
+        if rebuild:
+            self._field_key = (tuple(firsts), tuple(seconds))
+            self.field_paints += 1
         for box, auto, names, now in ((self.box_field1, strings.ANKI_FIELD_AUTO, firsts, self.first),
                                       (self.box_field2, strings.ANKI_ALSO_NONE, seconds, self.second)):
             box.blockSignals(True)
-            box.clear()
-            box.addItem(auto, None)
-            for n in names:
-                box.addItem(n, n)
-            box.setCurrentIndex(max(0, box.findData(now)) if now else 0)
+            if rebuild:
+                box.clear()
+                box.addItem(auto, None)
+                for n in names:
+                    box.addItem(n, n)
+            index = max(0, box.findData(now)) if now else 0
+            if box.currentIndex() != index:
+                box.setCurrentIndex(index)
             box.blockSignals(False)
         resolved, skipped = AW.field_lines(self._models, self.chosen())
         self._set_label(self.resolved, strings.ANKI_RESOLVED_JOIN.join(
@@ -325,9 +363,34 @@ class AnkiWindow(windows.SecondaryWindow):
         for remove in self.deck_list.findChildren(QToolButton):
             self._enable(remove, on["remove"])
 
-    def _doors_again(self, _keys=None):
-        """The two doors show while their openers are there and available (row 5's `backfill`, row 2's `apkg`)."""
-        for button, name in ((self.btn_backfill, "backfill"), (self.btn_apkg, "apkg")):
+    def _settings_heard(self, keys):
+        """A settings write (this window's own, the Settings page's, another window's): the two automation switches
+        follow theirs (AD3-5, signals blocked: nothing written back); the doors are asked again only when a module's
+        switch moved (the base's rule, IK-20 / IK-45; the language is `language_changed`'s, once the window follows)."""
+        if self.gone:
+            return
+        keys = keys or ()
+        settings = None
+        for attr, key in SWITCHES:
+            if key in keys:
+                settings = settings if settings is not None else self._settings()
+                box = getattr(self, attr)
+                if box.isChecked() != bool(settings.get(key)):
+                    box.blockSignals(True)
+                    box.setChecked(bool(settings.get(key)))
+                    box.blockSignals(False)
+        if any(str(k).startswith("enable_") for k in keys):
+            self._doors_again()
+
+    def refresh(self):
+        """(`windows.follow_doors`) The modules were looked for: the doors asked again."""
+        if not self.gone:
+            self._doors_again()
+
+    def _doors_again(self):
+        """The two doors show while their openers are there and available (row 5's `backfill`, row 2's `apkg_known`)."""
+        for attr, name in DOORS:
+            button = getattr(self, attr)
             shown = self._door(name) is not None
             if button.isHidden() == shown:
                 button.setVisible(shown)
@@ -350,7 +413,7 @@ class AnkiWindow(windows.SecondaryWindow):
         self._probe_seq += 1
         seq, snap = self._probe_seq, self._snapshot()
         self._probing = seq                               # the probe under way (a newer read may outdate its answer)
-        self._set_label(self.state, strings.ANKI_STATE_CHECKING)
+        self._paint_state("checking", strings.ANKI_STATE_CHECKING)
         self._paint_controls()
         bridge.run_in_worker(AW.read_probe, snap["url"], snap["decks"], snap["suspended"],
                              then=self.alive(lambda probe: self._probed(probe, seq, snap["language"])),
@@ -363,14 +426,19 @@ class AnkiWindow(windows.SecondaryWindow):
             self._probing = False                         # it ended, whether or not its answer is still the newest
         if seq != self._probe_seq or language != self.language:
             if not self._probing:                         # outdated: the state as it was known before it
-                self._set_label(self.state, strings.ANKI_STATE_CONNECTED if self._connected
-                                else strings.ANKI_STATE_UNCHECKED)
+                if self._connected:
+                    self._paint_state("connected", strings.ANKI_STATE_CONNECTED)
+                else:                                     # the first probe, outdated by a scope or language change
+                    self._paint_state("unchecked", strings.ANKI_STATE_UNCHECKED)
+                    self._paint_controls()
+                    self.refresh_connection()             # asked again for the scope shown now (AD3-3)
+                    return
             self._paint_controls()
             return
         kind, detail = AW.connection(probe.report)
         self._connected = kind == "connected"
         if self._connected:
-            self._set_label(self.state, strings.ANKI_STATE_CONNECTED)
+            self._paint_state("connected", strings.ANKI_STATE_CONNECTED)
             self.state.setToolTip(strings.ANKI_STATE_TIP_VERSION.format(version=detail) if detail
                                   else strings.ANKI_STATE_TIP)
             self._all_decks = list(probe.decks)
@@ -381,7 +449,7 @@ class AnkiWindow(windows.SecondaryWindow):
                     self.say(strings.ANKI_PICKED)
             self._counts, self._models = dict(probe.counts), dict(probe.models)
         else:
-            self._set_label(self.state, strings.ANKI_STATE_CLOSED)
+            self._paint_state("closed", strings.ANKI_STATE_CLOSED)
             self.state.setToolTip(detail or strings.ANKI_CLOSED_LINE)
             self.say(detail if kind == "problem" else strings.ANKI_CLOSED_LINE)
         self._render()
@@ -390,9 +458,9 @@ class AnkiWindow(windows.SecondaryWindow):
         """A deck added or removed, a field or *Include suspended* changed: saved, then Anki read for the new scope."""
         self._save_choices()
         self._render()
+        self._probe_seq += 1                              # a probe under way was read for the old scope (AD3-3)
         if not self._connected or self.busy():
             return
-        self._probe_seq += 1
         seq, snap = self._probe_seq, self._snapshot()
         bridge.run_in_worker(AW.read_scope, snap["url"], snap["decks"], snap["suspended"],
                              then=self.alive(lambda answer: self._scoped(answer, seq, snap["language"])),
@@ -423,10 +491,14 @@ class AnkiWindow(windows.SecondaryWindow):
             self._render_add()
 
     def _field1_chosen(self, index):
+        if self.box_field1.itemData(index) == self.first:
+            return                                        # the same choice: nothing to write or read (IK-46)
         self.first = self.box_field1.itemData(index)
         self._scope_changed()
 
     def _field2_chosen(self, index):
+        if self.box_field2.itemData(index) == self.second:
+            return
         self.second = self.box_field2.itemData(index)
         self._scope_changed()
 
@@ -468,13 +540,25 @@ class AnkiWindow(windows.SecondaryWindow):
             self.refresh_known()
 
     # --- the jobs ----------------------------------------------------------------------------------------------- #
-    def _submit(self, label, work, then):
-        """`work` as the window's `anki-sync` job; `then(result)` on this thread when it ended. False when an update
-        holds the children (nothing submitted: the line says so)."""
-        relay = bridge.Relay(self)
-        relay.said.connect(then)
-        job = AW.submit(self.services.registry, label, work, relay.call, getattr(self.services, "automation", None),
-                        self.language)
+    def _submit(self, label, work, then, on_quit="detach"):
+        """`work` as the window's `anki-sync` job; `then(result)` on this thread when it ended — or, the window closed
+        meanwhile, its line in the bottom bar (`_closed_line`): nothing is painted on a closed window (AD3-6). The relay
+        lives on the main window and is freed after its one call; the automation service is found when the job ends
+        (AD3-9). False when an update holds the children (nothing submitted: the line says so)."""
+        relay = bridge.Relay(self.shell)
+        services, shell = self.services, self.shell
+
+        def ended(result):
+            relay.deleteLater()
+            if self.gone:
+                line = self._closed_line(label, result)
+                if line:
+                    windows.say_in_bar(shell, line)
+                return
+            then(result)
+        relay.said.connect(ended)
+        job = AW.submit(services.registry, label, work, relay.call, lambda: getattr(services, "automation", None),
+                        self.language, on_quit=on_quit)
         if job is None:
             relay.deleteLater()
             self.say(strings.ANKI_UPDATE_WAITS)
@@ -497,13 +581,25 @@ class AnkiWindow(windows.SecondaryWindow):
         if kind == "error":
             return n["text"]
         if kind == "replaced":
-            return strings.ANKI_REPLACED.format(**n) + (strings.ANKI_REPLACED_IGNORED.format(**n) if n["ignored"]
-                                                        else "")
+            return (strings.ANKI_REPLACED.format(**n)
+                    + (strings.ANKI_REPLACED_GRADUATED.format(**n) if n["graduated"] else "")
+                    + (strings.ANKI_REPLACED_IGNORED[1 if n["ignored"] == 1 else 0].format(**n) if n["ignored"]
+                       else ""))
         if kind == "restored":
             return strings.ANKI_RESTORED.format(**n)
         if kind == "synced":
             return strings.ANKI_SYNCED.format(**n)
         return ""
+
+    def _closed_line(self, label, result):
+        """What the bottom bar says of a job that ended after the window closed: a write's outcome, a write that moved
+        nothing because its numbers changed (the window can't ask again: IK-46); a dry run says nothing."""
+        if label == strings.ANKI_JOB_DRY or result is None:
+            return None
+        if result.changed:
+            return strings.ANKI_RESTORE_MOVED_CLOSED if label == strings.ANKI_JOB_RESTORE \
+                else strings.ANKI_REPLACE_MOVED_CLOSED
+        return self._result_line(result) or None
 
     def _ended(self, result, line=None):
         line = line if line is not None else self._result_line(result)
@@ -548,10 +644,8 @@ class AnkiWindow(windows.SecondaryWindow):
             self._ended(dry)
             return
         self.say("")
-        body = strings.ANKI_REPLACE_BODY.format(now=dry.total_known, after=dry.total_after, anki=dry.added,
-                                                graduated=dry.kept_graduated, ignored=dry.kept_ignored)
         self.question = confirm.ask(
-            self, strings.ANKI_REPLACE_AGAIN_TITLE if again else strings.ANKI_REPLACE_TITLE, body,
+            self, strings.ANKI_REPLACE_AGAIN_TITLE if again else strings.ANKI_REPLACE_TITLE, replace_body(dry),
             strings.ANKI_REPLACE_YES, strings.ANKI_REPLACE_YES_TIP, no_tip=strings.ANKI_KEEP_TIP, default_no=True,
             danger=True, on_answer=lambda yes: self._replace_answer(yes, dry, snap))
 
@@ -563,7 +657,8 @@ class AnkiWindow(windows.SecondaryWindow):
         expect = anki_sync.replace_numbers(dry)
         work = lambda: AW.run_replace(snap["language"], snap["url"], snap["decks"], snap["fields"], snap["suspended"],
                                       expect)
-        if not self._submit(strings.ANKI_JOB_REPLACE, work, lambda result: self._replaced(result, snap)):
+        if not self._submit(strings.ANKI_JOB_REPLACE, work, lambda result: self._replaced(result, snap),
+                            on_quit="wait"):
             self._done()
 
     def _replaced(self, result, snap):
@@ -575,8 +670,7 @@ class AnkiWindow(windows.SecondaryWindow):
     def on_restore(self):
         if self.busy():
             return
-        self._first_action()
-        self._begin(strings.ANKI_READING_BACKUP)
+        self._begin(strings.ANKI_READING_BACKUP)          # reads no deck: the first open's pick stays unsaved (IK-46)
         self._read_restore_point(self.language)
 
     def _read_restore_point(self, language):
@@ -603,7 +697,7 @@ class AnkiWindow(windows.SecondaryWindow):
             return
         self.say(strings.ANKI_RESTORING)
         if not self._submit(strings.ANKI_JOB_RESTORE, lambda: AW.run_restore(language, point.name),
-                            lambda result: self._restored(result, language)):
+                            lambda result: self._restored(result, language), on_quit="wait"):
             self._done()
 
     def _restored(self, result, language):
@@ -634,6 +728,18 @@ class AnkiWindow(windows.SecondaryWindow):
         self.refresh_known()
         if self._connected:
             self.refresh_connection()                     # Anki's scope for this language (its first-open pick too)
+
+
+def replace_body(dry):
+    """The Replace confirmation's body: now → after, what Anki brings, a "kept" line only for what is kept (IK-44)."""
+    lines = [strings.ANKI_REPLACE_HEAD.format(now=dry.total_known, after=dry.total_after),
+             strings.ANKI_REPLACE_ANKI.format(n=dry.added)]
+    for n, words in ((dry.kept_graduated, strings.ANKI_REPLACE_GRADUATED),
+                     (dry.kept_ignored, strings.ANKI_REPLACE_IGNORED)):
+        if n:
+            lines.append(words[1 if n == 1 else 0].format(n=n))
+    lines.append(strings.ANKI_REPLACE_TAIL)
+    return "\n".join(lines)
 
 
 def open_anki(shell):

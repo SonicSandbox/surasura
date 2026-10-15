@@ -288,8 +288,9 @@ ANKI_NAME = "Anki known words"
 ANKI_DOOR = "Anki known words"
 ANKI_DOOR_TIP = "Read your known words from the cards you've studied in Anki: decks, fields, Sync now and Replace"
 ANKI_LANGUAGES = {"ja": "Japanese", "zh": "Chinese"}
-ANKI_HEADING_TIP = ("Adds the words from {language} cards you've studied to your known words. New cards are left "
-                    "alone, and nothing is ever removed")
+ANKI_HEADING_TIP = ("Sync adds the words from {language} cards you've studied to your known words: new cards are left "
+                    "alone, and nothing is removed\n• Replace rebuilds your known words from Anki instead (your list "
+                    "is backed up first)")
 ANKI_STATE_UNCHECKED = "● not checked yet"
 ANKI_STATE_CHECKING = "● checking…"
 ANKI_STATE_CONNECTED = "● connected"
@@ -361,8 +362,9 @@ ANKI_READING_BACKUP = "Reading your previous list…"
 ANKI_SCOPE_FAILED = "Couldn't read your decks from Anki: {error}"
 ANKI_UPDATE_WAITS = "An update is waiting to install, so Anki isn't read now: try again once it's installed or cancelled."
 ANKI_SYNCED = "Synced just now · +{added:,} words · {scanned:,} cards checked"
-ANKI_REPLACED = "Replaced: {total:,} known words now — {added:,} from Anki, {graduated:,} from past Graduates"
-ANKI_REPLACED_IGNORED = " · {ignored:,} ignored words kept"
+ANKI_REPLACED = "Replaced: {total:,} known words now — {added:,} from Anki"
+ANKI_REPLACED_GRADUATED = " · {graduated:,} from past Graduates"
+ANKI_REPLACED_IGNORED = {1: " · 1 ignored word kept", 0: " · {ignored:,} ignored words kept"}
 ANKI_RESTORED = "Restored your previous known words: {total:,} known"
 ANKI_NOTHING_TO_RESTORE = "There is no previous list to restore."
 ANKI_JOB_SYNC = "Syncing known words from Anki"
@@ -371,15 +373,19 @@ ANKI_JOB_REPLACE = "Replacing your known words with Anki's"
 ANKI_JOB_RESTORE = "Restoring your previous known words"
 ANKI_REPLACE_TITLE = "Replace your known words with Anki's?"
 ANKI_REPLACE_AGAIN_TITLE = "Anki changed since you looked: replace with these numbers?"
-ANKI_REPLACE_BODY = ("Known words: {now:,} → {after:,}\n"
-                     "• {anki:,} from Anki\n"
-                     "• {graduated:,} words from past Graduates kept\n"
-                     "• {ignored:,} ignored words kept\n"
-                     "Known words from Migaku, Jiten or other imports that Anki doesn't have are removed. Your current "
-                     "list is backed up first, as a dated copy (KnownWord.<date>.json) in your known words' .trash "
-                     "folder; Restore previous puts it back.")
+# The Replace confirmation's body, a line each; a "kept" line only when something is kept (IK-44, Sonic's W3.4-1).
+ANKI_REPLACE_HEAD = "Known words: {now:,} → {after:,}"
+ANKI_REPLACE_ANKI = "• {n:,} from Anki"
+ANKI_REPLACE_GRADUATED = {1: "• 1 word from past Graduates kept", 0: "• {n:,} words from past Graduates kept"}
+ANKI_REPLACE_IGNORED = {1: "• 1 ignored word kept", 0: "• {n:,} ignored words kept"}
+ANKI_REPLACE_TAIL = ("Known words from Migaku, Jiten or other imports that Anki doesn't have are removed. Your current "
+                     "list is backed up first; Restore previous puts it back.")
 ANKI_REPLACE_YES = "Replace"
-ANKI_REPLACE_YES_TIP = "Go ahead. Your current list is backed up first"
+ANKI_REPLACE_YES_TIP = ("Go ahead. Your current list is backed up first, as a dated copy (KnownWord.<date>.json) in "
+                        "your known words' .trash folder")
+ANKI_REPLACE_MOVED_CLOSED = ("Nothing replaced: Anki changed after you said yes. Open Anki known words to see the new "
+                             "numbers.")
+ANKI_RESTORE_MOVED_CLOSED = "Nothing restored: your previous known words changed after you said yes."
 ANKI_KEEP_TIP = "Stop here. Your known words are not changed (Esc and Enter do the same)"
 ANKI_RESTORE_TITLE = "Put back your known words from {when}?"
 ANKI_RESTORE_TITLE_UNDATED = "Put back your previous known words?"

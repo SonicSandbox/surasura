@@ -435,6 +435,29 @@ def test_the_key_is_never_saved_and_never_in_the_log(main, monkeypatch, tmp_path
     assert w.key.text() == ""
 
 
+@pytest.mark.parametrize("code", [0, 1])
+def test_jitens_fetched_cards_never_outlive_a_window_closed_during_the_fetch(main, runs, code):
+    """AD2-8: the window closed while the child fetched — its folder (the user's whole Jiten vocabulary) is removed
+    when the child ends, whatever its end."""
+    j = importers.open_jiten(main)
+    j.key.setText(SECRET)
+    j.go.click()
+    cards = runs.calls[-1].argv[-1]
+    j.close()
+    os.makedirs(os.path.dirname(cards), exist_ok=True)       # the child writes its cards after the close
+    _fetched(runs, [{"wordText": "猫", "state": 5}]) if code == 0 else runs.end(1, "Error: Invalid API key.")
+    assert not os.path.exists(os.path.dirname(cards))
+
+
+def test_a_failed_fetch_removes_its_folder(main, runs):
+    j = importers.open_jiten(main)
+    j.key.setText(SECRET)
+    j.go.click()
+    folder = os.path.dirname(runs.calls[-1].argv[-1])
+    runs.end(1, "Error: Invalid API key.")
+    assert not os.path.exists(folder)
+
+
 def test_jiten_is_off_for_chinese_and_follows_the_main_windows_language(main, runs):
     w = importers.open_jiten(main)
     w.key.setText(SECRET)

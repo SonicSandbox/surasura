@@ -396,13 +396,20 @@ class JitenWindow(ToolWindow):
         self._drop_folder()
         self._folder = tempfile.mkdtemp(prefix="surasura-jiten-")
         cards = os.path.join(self._folder, "cards.json")
+        folder = self._folder
+
+        def after(code):
+            # On the tool's thread: the cards are kept only for a window still open to ask about them
+            if code != 0 or self.gone:
+                shutil.rmtree(folder, ignore_errors=True)
         job = self._run(strings.JITEN_NAME, ["jiten_converter.py", "--language", "ja", "--save-cards", cards],
-                        lambda code: self._fetched(code, cards), env={jiten_converter.API_KEY_ENV: key})
+                        lambda code: self._fetched(code, cards), env={jiten_converter.API_KEY_ENV: key}, after=after)
         self.say(strings.JITEN_FETCHING)
         return job
 
     def _fetched(self, code, cards):
         if code != 0:
+            self._folder = None                           # removed by the fetch's `after`
             line = self._failed_line(self._why())
             self.say(line)
             self.end_write(line)
@@ -449,14 +456,16 @@ class JitenWindow(ToolWindow):
         self.say(line)
         self.end_write(line)
 
-    def _drop_folder(self):
-        if self._folder and not self.busy():
+    def _drop_folder(self, closing=False):
+        """The fetched cards' folder removed — never under a fetch still writing it, unless the window is closing (the
+        fetch's `after` removes what it writes then)."""
+        if self._folder and (closing or not self.busy()):
             shutil.rmtree(self._folder, ignore_errors=True)
             self._folder = None
 
     def closeEvent(self, event):
         self.key.clear()
-        self._drop_folder()
+        self._drop_folder(closing=True)
         super().closeEvent(event)
 
 

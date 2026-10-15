@@ -39,6 +39,7 @@ CONTENT_MANAGER_LABEL = "Content Manager"
 LISTED_TIERS = ("now", "soon", "goal", "arrivals")    # page 3's rows: what is in the library (never the graduated)
 SEEN = "setup_seen"             # the version whose setup pages the learner has seen ("" never: a 2.x profile)
 SETUP_VERSION = "3.0"           # this version's pages (3.1 may show only the pages added since: the follow-up list)
+PASSED = "setup_passed"         # the pages a profile that never finished saved with *Next* (shown as saved next time)
 
 
 # --- opening ---------------------------------------------------------------------------------------------------- #
@@ -97,12 +98,17 @@ def preselect(settings, language):
     language = language if language in LANGUAGES else "ja"
     decks, deck, band = _reads(settings, language)
     if _new(settings):
-        return {"language": {"language": language},
-                "known": {"how": "anki", "decks": decks},
-                "shows": {"covers": True},
-                "order": {"keep_in_order": True, "deck": deck, "later": "leave", "open_anki": False},
-                "cards": {"make_cards": True},
-                "level": {"automatic": True, "band": band}}
+        draft = {"language": {"language": language},
+                 "known": {"how": "anki", "decks": decks},
+                 "shows": {"covers": True},
+                 "order": {"keep_in_order": True, "deck": deck, "later": "leave", "open_anki": False},
+                 "cards": {"make_cards": True},
+                 "level": {"automatic": True, "band": band}}
+        passed = [p for p in PAGES if p in (settings.get(PASSED) or [])]
+        if passed:                  # *Finish later*, then back: a page already saved shows what it saved (IK2-2)
+            now = _current(settings, language, decks, deck, band)
+            draft.update({p: now[p] for p in passed})
+        return draft
     out = _current(settings, language, decks, deck, band)
     if upgrading(settings):         # brought over from 2.x: what 2.x never asked starts at the recommended choice
         out["shows"]["covers"] = True
@@ -230,14 +236,25 @@ def save(settings_service, page, answers, language):
     The known page's decks go as an `update=` (AD-4): merged onto the file as it is when written, never the window's
     copy. Safe on a window's thread (`set` queues)."""
     from app.services.settings import thaw
-    changes = writes(page, answers, thaw(settings_service.get()), language)
+    settings = thaw(settings_service.get())
+    changes = writes(page, answers, settings, language)
+    mark = _passed(settings, page) if changes else {}
     if page == "known" and changes:
         language = _language(language)
-        settings_service.set({k: v for k, v in changes.items() if k != "anki_sync_decks"},
+        settings_service.set(dict({k: v for k, v in changes.items() if k != "anki_sync_decks"}, **mark),
                              update=_decks_update(language, changes["anki_sync_decks"][language]))
     elif changes:
-        settings_service.set(changes)
+        settings_service.set(dict(changes, **mark))
     return changes
+
+
+def _passed(settings, page):
+    """A profile that never finished setup: `page` among the pages saved with *Next* (`PASSED`, in page order), so
+    *Finish later* and back shows what was saved, never the recommended choice over it -> {} once setup finished."""
+    if not _new(settings):
+        return {}
+    had = settings.get(PASSED) or []
+    return {PASSED: [p for p in PAGES if p in had or p == page]}
 
 
 def finish(settings_service):

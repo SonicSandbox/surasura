@@ -1267,3 +1267,13 @@ def test_saved_decks_the_open_anki_lacks_are_kept_by_next(make):
     assert wiz.page.answers()["decks"] == ["日本語::Mining", "旧デッキ::文"]
     go_to(wiz, "order")
     assert wiz.page.answers()["deck"] == "旧デッキ::文"
+
+
+def test_an_upgrader_with_anki_closed_is_offered_to_keep_what_came_over(make):
+    # IK2-3: the import already brought the words; with Anki closed the stand-in is never an importer
+    api = UpgradeApi(anki={"open": False, "say": None, "decks": [], "preselected": []})
+    wiz, *_ = make(api=api, data=FROM_2X)
+    go_to(wiz, "known")
+    wiz.page.entered()
+    assert wait_until(lambda: not wiz._anki_looking, 2.0)
+    assert wiz.page.answers() == {"how": "fresh", "decks": []}

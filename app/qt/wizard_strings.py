@@ -77,7 +77,7 @@ SYNC_STARTED = "Reading the words you know from Anki…"
 UPGRADE_KNOWN_LINE = "The words you know came over from Surasura 2."
 KEEP_CAME_OVER = "Keep what came over"
 KEEP_CAME_OVER_LINE = "Nothing more to bring in"
-KEEP_CAME_OVER_TIP = "Keep the words you know from Surasura 2, as they are. Surasura adds more as you go."
+KEEP_CAME_OVER_TIP = "Keep the words you know from Surasura 2, as they are.\n• Add more any time: Settings"
 
 # --- 3 · your shows --------------------------------------------------------------------------------------------------- #
 SHOWS_TITLE = "Bring in what you'll watch and read"

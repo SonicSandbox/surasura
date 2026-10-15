@@ -56,7 +56,8 @@ def _saved_through_service(page, answers, language, before=BEFORE):
 
 
 def _changed(before, after):
-    return {k for k in set(before) | set(after) if before.get(k, object()) != after.get(k, object())}
+    """The keys that moved, the unfinished profile's page mark (`setup_passed`, its own test) left out."""
+    return {k for k in set(before) | set(after) if before.get(k, object()) != after.get(k, object())} - {SW.PASSED}
 
 
 # --- opening ------------------------------------------------------------------------------------------------------ #
@@ -81,7 +82,8 @@ def test_the_wizard_opens_until_setup_was_finished():
 ])
 def test_each_page_writes_its_own_keys_on_a_real_settings_file(language, page, answers, expected):
     returned, before, after = _saved_through_service(page, answers, language)
-    assert _changed(before, after) == set(expected), "only the page's keys move; every other key is as it was"
+    assert _changed(before, after) == set(expected), "only the page's keys (and its mark) move"
+    assert after["setup_passed"] == [page], "an unfinished profile remembers the page saved (IK2-2)"
     for key, value in expected.items():
         assert after[key] == value
     assert "automation" not in (after.get("logic") or {}), "never D29's switch"
@@ -666,3 +668,23 @@ def test_an_untouched_from_anki_keeps_a_2x_keep_in_sync_off_and_a_changed_one_tu
     changed = dict(known, decks=known["decks"] + ["Core 2k"])
     assert SW.writes("known", changed, before, "ja")["anki_sync_auto"] is True
     assert SW.writes("known", known, dict(before, onboarding_completed=False), "ja")["anki_sync_auto"] is True
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_finish_later_then_back_shows_what_was_saved_not_the_recommended_choice(language):
+    """IK2-2: covers turned off with Next, then *Finish later*: the wizard coming back shows covers off (an Enter-through
+    never turns the learner's no back into a yes); the pages not passed yet still start at the recommended choice."""
+    h.write_settings(BEFORE)
+    service = SettingsService()
+    SW.save(service, "language", {"language": language}, language)
+    SW.save(service, "shows", {"covers": False}, language)
+    assert service.flush(10)
+    settings = settings_manager.load_settings()
+    assert settings["setup_passed"] == ["language", "shows"] and SW.should_open(settings)
+    pre = SW.preselect(settings, language)
+    assert pre["shows"] == {"covers": False}
+    assert pre["cards"] == {"make_cards": True} and pre["order"]["keep_in_order"] is True
+    SW.finish(service)
+    SW.save(service, "shows", {"covers": True}, language)          # Set up again: no more marks
+    assert service.flush(10)
+    assert h.read_settings()["setup_passed"] == ["language", "shows"]

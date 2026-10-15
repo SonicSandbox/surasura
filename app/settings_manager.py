@@ -111,6 +111,8 @@ DEFAULT_SETTINGS = {
     # The version whose setup pages the learner has seen (the setup wizard, WZ-8): "" never — a profile set up in 2.x
     # sees 3.0's wizard once. Never in a signature.
     "setup_seen": "",
+    # The pages a profile that never finished setup saved with Next (the wizard shows them as saved when it comes back).
+    "setup_passed": [],
     # Connect's backlog (P2.4, Sonic 2026-10-07: "keep up to N Surasura cards waiting"; one per language, 2026-10-08:
     # a number is each language's, {"ja": n, "zh": m} each its own): Connect makes cards while fewer
     # than this many of its own new, unsuspended cards of that language wait in Anki, and tops up as you study; at the cap the least

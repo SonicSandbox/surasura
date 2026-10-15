@@ -1192,7 +1192,8 @@ class KnownPage(_Page):
         how = self._how
         look = self.wiz.anki
         if not self._touched and how == "anki" and (look is None or not look.get("open")):
-            return "import" if look is not None else "anki"
+            # an upgrader's stand-in is *Keep what came over*: the import already brought the words (IK2-3)
+            return ("fresh" if self.wiz.upgrading else "import") if look is not None else "anki"
         return how
 
     def _picked(self, key):

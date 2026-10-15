@@ -18,6 +18,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import namedtuple
 
 from app import path_utils
 
@@ -46,14 +47,15 @@ CREATE_NO_WINDOW = 0x08000000           # Windows: a console child opens no cons
 
 
 def command(argv, frozen=None, executable=None):
-    """The command line that starts `argv` (`[script, *arguments]`): frozen, `[Surasura.exe, subcommand, *arguments]`;
-    from source, `[python, app/<script>, *arguments]`. Pure."""
+    """The command line that starts `argv` (`[script, *arguments]`): frozen, `[Surasura.exe, subcommand, --headless,
+    *arguments]` (app_entry strips the flag: a crash exits 1, never a Critical Error box from an unseen child, and an
+    unknown word exits 2, never a second window); from source, `[python, app/<script>, *arguments]`. Pure."""
     if frozen is None:
         frozen = path_utils.is_frozen()
     executable = executable or sys.executable
     script, rest = argv[0], list(argv[1:])
     if frozen:
-        return [executable, SCRIPT_MAP.get(script, script)] + rest
+        return [executable, SCRIPT_MAP.get(script, script), "--headless"] + rest
     app_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     return [executable, os.path.join(app_dir, script)] + rest
 
@@ -64,27 +66,38 @@ def log_path(kind):
     return os.path.join(contract.log_folder(), f"{kind}.log")
 
 
+Result = namedtuple("Result", "code cancelled why log")
+
+
 def run(registry, kind, label, argv, env=None, on_line=None, on_end=None, before=None, on_quit="cancel",
-        automatic=False, frozen=None):
+        automatic=False, frozen=None, on_result=None):
     """`argv` as a child, a gated job of `kind` labelled `label` (the user's words). `env`: variables for this child
-    only, over `build_subprocess_env` (a secret goes here, never in `argv`). `before()`: run on the tool's thread just
-    before the child starts (the settings written first: every child reads settings.json). -> the Job, at once."""
+    only, over `build_subprocess_env` (a secret goes here, never in `argv`) — the environment is taken here, on the
+    asker's thread, so a job that waits starts with the environment it was asked with. `before()`: run on the tool's
+    thread just before the child starts (the settings written first: every child reads settings.json). The end is told
+    once, on the tool's thread: `on_end(returncode)` (None when it never started) and `on_result(Result(code,
+    cancelled, why, log))` — whether it was stopped, why it couldn't start or ended early, its log (None: no log).
+    -> the Job, at once."""
     state = {"process": None, "cancelled": False, "started": False, "told": False}
     lock = threading.Lock()
+    child_env = path_utils.build_subprocess_env(frozen)
+    child_env.update(env or {})
+    asked_root = os.environ.get("SURASURA_TEST_ROOT")
 
-    def ended(code):
+    def ended(result):
         with lock:                                            # told once, whichever side gets there first
             if state["told"]:
                 return
             state["told"] = True
-        _told(on_end, code, label)
+        _told(on_end, result.code, label)
+        _told(on_result, result, label)
 
     def cancel(_job):
         with lock:
             state["cancelled"] = True
             process, started = state["process"], state["started"]
         if not started:                                       # ended before it started: its owner still hears the end
-            ended(None)
+            ended(Result(None, True, None, None))
         elif process is not None and process.poll() is None:
             try:
                 process.terminate()
@@ -94,12 +107,20 @@ def run(registry, kind, label, argv, env=None, on_line=None, on_end=None, before
     def start(job):
         with lock:
             state["started"] = True
-        threading.Thread(target=_body, args=(job,), name=f"tool-{kind}", daemon=True).start()
+        try:
+            threading.Thread(target=_body, args=(job,), name=f"tool-{kind}", daemon=True).start()
+        except BaseException as e:                            # the registry fails the job; its owner still hears
+            ended(Result(None, False, str(e), None))
+            raise
 
     def _body(job):
-        code, why = None, None
-        path = log_path(kind)
+        code, why, path, log, process = None, None, None, None, None
         try:
+            if os.environ.get("SURASURA_TEST_ROOT") == asked_root:      # (a root changed under the job: no log)
+                try:
+                    path = log_path(kind)
+                except Exception:                             # no log folder: the child runs without a log
+                    path = None
             if before is not None:
                 try:
                     before()
@@ -108,49 +129,56 @@ def run(registry, kind, label, argv, env=None, on_line=None, on_end=None, before
             with lock:
                 if state["cancelled"]:
                     raise _Cancelled()
-            child_env = path_utils.build_subprocess_env(frozen)
-            child_env.update(env or {})
             args = command(argv, frozen)
-            log = _open_log(path)
-            try:
-                _write(log, f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {label}\n")
-                process = subprocess.Popen(
-                    args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, text=True,
-                    encoding="utf-8", errors="replace", bufsize=1, env=child_env,
-                    creationflags=CREATE_NO_WINDOW if sys.platform == "win32" else 0)
-                with lock:
-                    state["process"] = process
-                    stop = state["cancelled"]
-                job.started_process(process.pid)
-                if stop:
-                    process.terminate()
-                for line in process.stdout:
-                    line = line.rstrip("\r\n")
-                    _write(log, line + "\n")
-                    if on_line is not None:
-                        try:
-                            on_line(line)
-                        except Exception as e:                # a listener's fault never stops the child's pipe
-                            print(f"Tools: a line listener failed: {e}")
-                code = process.wait()
-                _write(log, f"[exit {code}]\n")
-            finally:
-                if log is not None:
-                    log.close()
+            log = _open_log(path) if path else None
+            _write(log, f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {label}\n")
+            process = subprocess.Popen(
+                args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, text=True,
+                encoding="utf-8", errors="replace", bufsize=1, env=child_env,
+                creationflags=CREATE_NO_WINDOW if sys.platform == "win32" else 0)
+            with lock:
+                state["process"] = process
+                stop = state["cancelled"]
+            job.started_process(process.pid)
+            if stop:
+                process.terminate()
+            for line in process.stdout:
+                line = line.rstrip("\r\n")
+                _write(log, line + "\n")
+                if on_line is not None:
+                    try:
+                        on_line(line)
+                    except Exception as e:                    # a listener's fault never stops the child's pipe
+                        print(f"Tools: a line listener failed: {e}")
+            code = process.wait()
+            _write(log, f"[exit {code}]\n")
         except _Cancelled:
             pass
         except Exception as e:
-            why = str(e)
+            why = str(e) or type(e).__name__
+            _write(log, f"[{why}]\n")
+            if process is not None and process.poll() is None:    # never a child left running untracked
+                try:
+                    process.terminate()
+                    process.wait(5)
+                except Exception:
+                    pass
+        finally:
+            if log is not None:
+                log.close()
         cancelled = state["cancelled"]
         if code == 0:
-            job.finish(ok=True)
+            job.finish(ok=True, completed=cancelled)          # a cancel that came as it exited 0: done, not cancelled
+            cancelled = False
         elif cancelled:
             job.finish(ok=True, cancelled=True)
-        elif why is not None:
+        elif why is not None and process is None:
             job.finish(ok=False, message=f"{label}: couldn't start ({why})")
+        elif why is not None:
+            job.finish(ok=False, message=f"{label}: ended ({why})" + (f" — {path}" if path else ""))
         else:
-            job.finish(ok=False, message=f"{label}: ended with code {code} — {path}")
-        ended(code)
+            job.finish(ok=False, message=f"{label}: ended with code {code}" + (f" — {path}" if path else ""))
+        ended(Result(code, cancelled, why, path))
 
     return registry.submit(kind, label, start, cancel=cancel, automatic=automatic, on_quit=on_quit)
 

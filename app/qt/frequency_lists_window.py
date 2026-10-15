@@ -9,17 +9,19 @@ import os
 import shutil
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QAbstractItemView, QFileDialog, QHBoxLayout, QListWidget, QPushButton
+from PyQt6.QtWidgets import QAbstractItemView, QFileDialog, QHBoxLayout, QListWidget, QListWidgetItem, QPushButton
 
 from app import frequency_lists
 from app.qt import bridge, confirm, strings
-from app.qt.windows import SecondaryWindow, open_url
+from app.qt.windows import SecondaryWindow, open_url, say_in_bar
 
 
 class FrequencyListsWindow(SecondaryWindow):
     def __init__(self, shell, language=None):
         super().__init__(shell, strings.FREQ_NAME, language)
         self.names = None                                 # the lists as last read (None: not read yet)
+        self.list_paints = 0                              # how many times the list was rebuilt (S19)
+        self.question = None                              # the Remove question while it is open
         self.list = QListWidget(self)
         self.list.setObjectName("windowlist")
         self.list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -64,11 +66,19 @@ class FrequencyListsWindow(SecondaryWindow):
         if names != self.names:                           # repainted only when the lists changed (S19)
             self.names = names
             self.list.clear()
-            self.list.addItems(names)
+            for name in names:                            # each by its own name (the report's), the file behind it
+                item = QListWidgetItem(frequency_lists.display_name(name, language))
+                item.setData(Qt.ItemDataRole.UserRole, name)
+                item.setToolTip(name)
+                self.list.addItem(item)
+            self.list_paints += 1
         self._selection_changed()
         self.say(line if line is not None else ("" if names else strings.FREQ_EMPTY))
 
     def language_changed(self, language):
+        if self.question is not None:                     # it named the other language's lists: dropped, unanswered
+            self.question.drop()
+            self.question = None
         self.names = None
         self.list.clear()
         self.read()
@@ -80,7 +90,9 @@ class FrequencyListsWindow(SecondaryWindow):
             self.remove_button.setToolTip(strings.FREQ_REMOVE_TIP if on else strings.FREQ_REMOVE_NONE_TIP)
 
     def selected(self):
-        return [item.text() for item in self.list.selectedItems()]
+        """The selected lists' file names, in the list's order."""
+        rows = sorted(self.list.row(item) for item in self.list.selectedItems())
+        return [self.list.item(r).data(Qt.ItemDataRole.UserRole) for r in rows]
 
     # --- adding ----------------------------------------------------------------------------------------------- #
     def pick(self):
@@ -100,12 +112,19 @@ class FrequencyListsWindow(SecondaryWindow):
         names = self.selected()
         if not names or self.busy():
             return None
-        title = (strings.FREQ_REMOVE_ONE.format(name=names[0]) if len(names) == 1
-                 else strings.FREQ_REMOVE_MANY.format(n=len(names)))
         language = self.language
-        return confirm.ask(self, title, strings.FREQ_REMOVE_BODY, strings.FREQ_REMOVE_YES, strings.FREQ_REMOVE_YES_TIP,
-                           default_no=True, danger=True,
-                           on_answer=lambda yes: yes and self.remove(names, language))
+        one = len(names) == 1
+        title = (strings.FREQ_REMOVE_ONE.format(name=frequency_lists.display_name(names[0], language)) if one
+                 else strings.FREQ_REMOVE_MANY.format(n=len(names)))
+        body = strings.FREQ_REMOVE_BODY_ONE if one else strings.FREQ_REMOVE_BODY_MANY
+
+        def answered(yes):
+            self.question = None
+            if yes:
+                self.remove(names, language)
+        self.question = confirm.ask(self, title, body, strings.FREQ_REMOVE_YES, strings.FREQ_REMOVE_YES_TIP,
+                                    default_no=True, danger=True, on_answer=answered)
+        return self.question
 
     def remove(self, names, language):
         if language != self.language or self.busy():
@@ -124,9 +143,8 @@ class FrequencyListsWindow(SecondaryWindow):
     def _written(self, language, lines):
         line = " · ".join(lines)
         if self.gone:                                     # the window closed meanwhile: the bar says what was done
-            bar = getattr(self.shell, "bar_line", None)
-            if bar is not None and line:
-                bar.set_full(line)
+            if line:
+                say_in_bar(self.shell, line)              # (nothing once the main window is gone too)
             return
         self._writing(False)
         self.end_write(line)
@@ -143,7 +161,7 @@ def _add_all(paths, language):
             name, kept = frequency_lists.add(src, language)
             added += 1
             if kept:
-                lines.append(strings.FREQ_KEPT.format(name=name))
+                lines.append(strings.FREQ_KEPT.format(name=frequency_lists.display_name(name, language)))
         except shutil.SameFileError:
             lines.append(strings.FREQ_SAME.format(name=name))
         except OSError as e:

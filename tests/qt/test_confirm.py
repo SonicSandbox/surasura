@@ -138,7 +138,30 @@ def test_a_window_shown_again_after_a_dropped_question_has_no_dimmed_room_left(s
     second.close()
 
 
-# --- Enter and the default button ------------------------------------------------------------------------------- #
+def test_a_dropped_question_closes_and_calls_nothing_though_its_window_still_shows(second):
+    # drop(): the window moved on (a language switch) and is still open — the box goes, nothing is answered.
+    card, answers = _ask(second)
+    card.drop()
+    QApplication.processEvents()
+    assert answers == [] and _gone(card) and second.isVisible()
+    assert not [s for s in second.findChildren(confirm.Scrim) if s.isVisible()]
+
+
+def test_minimising_the_window_keeps_its_question_open(second):
+    # Minimising is the system's hide (a spontaneous one), not a close: the question still stands when the window
+    # comes back, and its answer still counts. (Offscreen, showMinimized sends that spontaneous hide too.)
+    card, answers = _ask(second)
+    second.showMinimized()
+    QApplication.processEvents()
+    assert card.answer is None and answers == []
+    second.showNormal()
+    QApplication.processEvents()
+    assert not _gone(card)
+    card.yes.click()
+    assert answers == [True]
+
+
+# --- Enter and the default button------------------------------------------------------------------------------- #
 def test_enter_is_cancel_on_a_remove(second):
     card, answers = _ask(second, default_no=True)
     assert QApplication.focusWidget() is card.no

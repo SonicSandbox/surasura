@@ -47,14 +47,18 @@ class Ends:
 def test_a_frozen_build_runs_the_subcommand_and_source_runs_the_script():
     argv = ["sentence_corpus.py", "--language", "ja", "--output", "C:/out/Surasura Corpus (ja).zip"]
     frozen = tools.command(argv, frozen=True, executable="Surasura.exe")
-    assert frozen == ["Surasura.exe", "sentence_corpus", "--language", "ja", "--output",
+    # --headless (AD1-5): a crash is logged and exits 1, never a Critical Error box from an invisible child; an
+    # unknown word exits 2, never opens a second window (app_entry strips the flag before it dispatches)
+    assert frozen == ["Surasura.exe", "sentence_corpus", "--headless", "--language", "ja", "--output",
                       "C:/out/Surasura Corpus (ja).zip"]
     source = tools.command(argv, frozen=False, executable="python")
     assert source[0] == "python" and source[2:] == argv[1:]
     assert os.path.normcase(source[1]) == os.path.normcase(
         os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(tools.__file__))), "sentence_corpus.py"))
     # a script the map doesn't know runs as itself (the Tk map's `get(cmd[0], cmd[0])`)
-    assert tools.command(["unknown.py", "-x"], frozen=True, executable="S.exe") == ["S.exe", "unknown.py", "-x"]
+    assert tools.command(["unknown.py", "-x"], frozen=True, executable="S.exe") == ["S.exe", "unknown.py", "--headless",
+                                                                                   "-x"]
+    assert "--headless" not in source                    # source mode runs the script itself: no app_entry to strip it
 
 
 def test_every_subcommand_in_the_map_is_one_the_frozen_build_dispatches():
@@ -165,9 +169,12 @@ def test_a_child_that_cant_start_is_a_failed_job_and_its_owner_hears_the_end(tmp
 def test_a_second_tool_of_its_kind_waits_for_the_first_and_shows_in_the_bar(tmp_path):
     from app.services import status as status_service
     gate = tmp_path / "go"
+    # The child gives up by itself after 2 minutes, and the gate opens whatever the asserts say: a failed assert (or a
+    # planted bug in a mutant run) never leaves the child running after the test.
     slow = _script(tmp_path, f"""
         import os, time
-        while not os.path.exists({str(gate)!r}):
+        deadline = time.monotonic() + 120
+        while not os.path.exists({str(gate)!r}) and time.monotonic() < deadline:
             time.sleep(0.01)
         print("first done")
     """, "slow.py")
@@ -176,10 +183,12 @@ def test_a_second_tool_of_its_kind_waits_for_the_first_and_shows_in_the_bar(tmp_
     status = status_service.StatusService(registry)
     first = tools.run(registry, "sentence-corpus", "Building the sentence dictionary", [slow], frozen=False)
     second = tools.run(registry, "sentence-corpus", "Building the sentence dictionary", [quick], frozen=False)
-    assert _wait(lambda: first.view().pid is not None)
-    assert first.view().state == jobs_module.RUNNING and second.view().state == jobs_module.WAITING
-    assert any("Building the sentence dictionary" in line for line in status.snapshot().lines)
-    gate.write_text("1")
+    try:
+        assert _wait(lambda: first.view().pid is not None)
+        assert first.view().state == jobs_module.RUNNING and second.view().state == jobs_module.WAITING
+        assert any("Building the sentence dictionary" in line for line in status.snapshot().lines)
+    finally:
+        gate.write_text("1")
     assert first.wait(60) and second.wait(60)
     assert first.view().ended_at <= second.view().started_at
     assert second.view().state == jobs_module.DONE
@@ -297,6 +306,145 @@ def test_a_cancel_racing_the_start_tells_the_owner_once(tmp_path):
     assert ends.codes == [None] and job.pid is None
 
 
+# --- the fix round (the adversary's AD1-1, -7, -13, -14, -15; the intent keeper's IK-22) ---------------------------- #
+def test_a_log_folder_that_cant_be_made_never_leaves_a_stuck_job(tmp_path, monkeypatch):
+    # AD1-1: the log's folder raising (a profile folder it can't write) once killed the tool's thread before its try:
+    # the job stayed running for the session and held the token store — every Generate waited for ever.
+    def no_folder(kind):
+        raise PermissionError("the local data folder can't be written")
+    monkeypatch.setattr(tools, "log_path", no_folder)
+    script = _script(tmp_path, "print('ran')\n")
+    registry, ends, results = jobs_module.JobRegistry(), Ends(), []
+    job = tools.run(registry, "sentence-corpus", "x", [script], on_end=ends, on_result=results.append, frozen=False)
+    assert job.wait(30) and job.view().state == jobs_module.DONE
+    assert _wait(lambda: ends.codes == [0]) and results[0].log is None
+    generate = registry.submit("generate", "Generating", start=lambda j: None)
+    assert generate.view().state == jobs_module.RUNNING        # nothing holds the token store any more
+
+
+def test_a_tool_thread_that_cant_start_fails_its_job_and_tells_its_owner(tmp_path, monkeypatch):
+    import threading
+    script = _script(tmp_path, "print('ran')\n")
+
+    def refuse(self):
+        raise RuntimeError("can't start new thread")
+    monkeypatch.setattr(threading.Thread, "start", refuse)
+    registry, ends = jobs_module.JobRegistry(), Ends()
+    job = tools.run(registry, "sentence-corpus", "x", [script], on_end=ends, frozen=False)
+    monkeypatch.undo()
+    assert job.view().state == jobs_module.FAILED
+    assert ends.codes == [None]
+
+
+def test_a_child_that_cant_start_says_why_in_its_log(tmp_path, monkeypatch):
+    # AD1-7: the reason was only in the bar; *Open the log* opened a log with no word of it.
+    monkeypatch.setattr(tools, "command", lambda argv, frozen=None: [str(tmp_path / "no-such-program.exe")])
+    registry, results = jobs_module.JobRegistry(), []
+    job = tools.run(registry, "sentence-corpus", "Building", ["sentence_corpus.py"], on_result=results.append)
+    assert job.wait(30) and _wait(lambda: results)
+    assert results[0].code is None and not results[0].cancelled and results[0].why
+    log = open(tools.log_path("sentence-corpus"), encoding="utf-8").read()
+    assert results[0].why in log
+
+
+def test_the_result_says_whether_the_run_was_stopped(tmp_path):
+    # IK-22 / AD1-7: a stop is not a failure — the owner hears which it was.
+    slow = _script(tmp_path, "import time\nprint('started', flush=True)\ntime.sleep(60)\n", "slow.py")
+    failing = _script(tmp_path, "import sys\nsys.exit(3)\n", "failing.py")
+    registry, lines, stopped, failed = jobs_module.JobRegistry(), [], [], []
+    job = tools.run(registry, "sentence-corpus", "x", [slow], on_line=lines.append, on_result=stopped.append,
+                    frozen=False)
+    assert _wait(lambda: lines == ["started"])
+    job.cancel()
+    assert job.wait(20) and _wait(lambda: stopped)
+    assert stopped[0].cancelled and stopped[0].code not in (0, None)
+    other = tools.run(registry, "sentence-corpus", "x", [failing], on_result=failed.append, frozen=False)
+    assert other.wait(30) and _wait(lambda: failed)
+    assert failed[0] == tools.Result(3, False, None, tools.log_path("sentence-corpus"))
+
+
+def test_an_error_after_the_child_started_ends_the_child(tmp_path, monkeypatch):
+    # AD1-13: a broken pipe after Popen once left the child running, untracked, writing the user's file.
+    import subprocess
+    slow = _script(tmp_path, "import time\nprint('started', flush=True)\ntime.sleep(60)\n")
+    real = subprocess.Popen
+    made = []
+
+    class Broken:
+        def __init__(self, process):
+            self.process = process
+            self.pid = process.pid
+
+        @property
+        def stdout(self):
+            raise OSError("the pipe broke")
+
+        def __getattr__(self, name):
+            return getattr(self.process, name)
+
+    def popen(*a, **k):
+        process = real(*a, **k)
+        made.append(process)
+        return Broken(process)
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    registry, results = jobs_module.JobRegistry(), []
+    job = tools.run(registry, "sentence-corpus", "x", [slow], on_result=results.append, frozen=False)
+    assert job.wait(30)
+    assert made and made[0].poll() is not None                # ended, not left running
+    assert job.view().state == jobs_module.FAILED and "couldn't start" not in job.view().message
+    assert "the pipe broke" in job.view().message
+
+
+def test_a_cancel_landing_as_the_child_exits_0_reads_as_done(tmp_path, monkeypatch):
+    # AD1-15: the child finished; a cancel arriving just then must not make the bar say "cancelled".
+    import subprocess
+    quick = _script(tmp_path, "print('done')\n")
+    real = subprocess.Popen
+    holder = {}
+
+    class LateCancel:
+        def __init__(self, process):
+            self.process = process
+
+        def wait(self, *a, **k):
+            code = self.process.wait(*a, **k)
+            holder["job"].cancel()
+            return code
+
+        def __getattr__(self, name):
+            return getattr(self.process, name)
+    import threading
+    ready = threading.Event()
+
+    def popen(*a, **k):
+        ready.wait(10)
+        return LateCancel(real(*a, **k))
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    registry, results = jobs_module.JobRegistry(), []
+    holder["job"] = tools.run(registry, "sentence-corpus", "x", [quick], on_result=results.append, frozen=False)
+    ready.set()
+    assert holder["job"].wait(30)
+    view = holder["job"].view()
+    assert view.state == jobs_module.DONE and not view.cancelled
+    assert _wait(lambda: results) and results[0].code == 0
+    assert not results[0].cancelled                        # the owner hears "done" too, never "stopped"
+
+
+def test_a_queued_tool_keeps_the_environment_it_was_asked_with(tmp_path, monkeypatch):
+    # AD1-14: a job that starts after its asker's test root changed (a test's teardown) must not reach the real one.
+    script = _script(tmp_path, "import os\nprint(os.environ.get('SURASURA_TEST_ROOT'))\n")
+    asked_root = os.environ["SURASURA_TEST_ROOT"]
+    registry, lines = jobs_module.JobRegistry(), []
+    generate = registry.submit("generate", "Generating", start=lambda j: None)
+    job = tools.run(registry, "sentence-corpus", "x", [script], on_line=lines.append, frozen=False)
+    other = tmp_path / "another-root"
+    other.mkdir()
+    monkeypatch.setenv("SURASURA_TEST_ROOT", str(other))
+    generate.finish()
+    assert job.wait(30) and lines == [asked_root]
+    assert not os.path.exists(os.path.join(str(other), "local"))   # no log written under a root it wasn't asked in
+
+
 def test_run_returns_at_once(tmp_path):
     slow = _script(tmp_path, "import time; time.sleep(2)\n")
     registry = jobs_module.JobRegistry()
@@ -312,3 +460,14 @@ def test_the_3_0_tools_run_as_their_subcommands_when_frozen():
                          ("jiten_converter.py", "convert_jiten")):
         assert tools.command([script, "--language", "ja"], frozen=True, executable="S.exe") == \
             ["S.exe", word, "--language", "ja"]
+
+
+def test_each_run_writes_its_log_fresh(tmp_path):
+    # The log is one run's lines: Open the log never shows an older run's success under a new failure.
+    first = _script(tmp_path, "print('first run: Saved')\n", "first.py")
+    second = _script(tmp_path, "import sys\nprint('second run')\nsys.exit(1)\n", "second.py")
+    registry = jobs_module.JobRegistry()
+    assert tools.run(registry, "sentence-corpus", "x", [first], frozen=False).wait(30)
+    assert tools.run(registry, "sentence-corpus", "x", [second], frozen=False).wait(30)
+    log = open(tools.log_path("sentence-corpus"), encoding="utf-8").read()
+    assert "second run" in log and "first run" not in log

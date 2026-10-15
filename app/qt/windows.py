@@ -15,14 +15,15 @@ W3.2 attach the same openers to their rows and **retire the list** (IK-16: it ne
 `show(shell, name, make)`: one window of a kind per main window, kept and raised if open.
 """
 import importlib.util
+import weakref
 from collections import namedtuple
 
-from PyQt6.QtCore import QEvent, QObject, QUrl, Qt, pyqtSignal
+from PyQt6.QtCore import QEvent, QTimer, QUrl, Qt, pyqtSignal
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from app import theme
-from app.qt import applog, strings, style
+from app.qt import applog, bridge, strings, style
 
 Opener = namedtuple("Opener", "name label tip available open module", defaults=(None,))
 
@@ -52,7 +53,9 @@ class SecondaryWindow(QWidget):
         self.setWindowTitle(strings.SECONDARY_TITLE.format(name=name))
         self.setObjectName("secondary")
         self.language = language or language_of(shell)
-        self.gone = False
+        self._closed = False                              # closed (a close that went through)
+        alive = self._alive = [True]                      # False once Qt destroyed it (its main window gone too)
+        self.destroyed.connect(lambda *_a: alive.__setitem__(0, False))
         self._writes = 0
         self._language_waiting = None
         f = theme.text_factor(style.current()[1])
@@ -72,9 +75,14 @@ class SecondaryWindow(QWidget):
         root.addWidget(self.status)
         self.status_paints = 0
         self.setMinimumWidth(round(theme.size("pop", style.current()[1])))
-        bridge = getattr(shell, "bridge", None)
-        if bridge is not None:
-            bridge.settings_written.connect(self._settings_written)
+        heard = getattr(shell, "bridge", None)
+        if heard is not None:
+            heard.settings_written.connect(self._settings_written)
+
+    @property
+    def gone(self):
+        """Closed, or destroyed with its main window: nothing paints it any more."""
+        return self._closed or not self._alive[0]
 
     # --- what it says ------------------------------------------------------------------------------------------- #
     def say(self, text):
@@ -115,9 +123,7 @@ class SecondaryWindow(QWidget):
             return
         language, self._language_waiting = self._language_waiting, None
         if result:
-            bar = getattr(self.shell, "bar_line", None)
-            if bar is not None:
-                bar.set_full(result)
+            say_in_bar(self.shell, result)
         if language != self.language:
             self._switch(language)
 
@@ -140,10 +146,18 @@ class SecondaryWindow(QWidget):
         """A subclass re-reads for `language` (the window is idle)."""
 
     def closeEvent(self, event):
-        self.gone = True
-        super().closeEvent(event)
+        """A subclass that refuses a close calls `event.ignore()` before this (QWidget's own would accept it again)."""
         if event.isAccepted():
+            self._closed = True
             self.closed.emit()
+
+
+def say_in_bar(shell, text):
+    """`text` in the main window's bottom bar — nothing when that window is gone (a worker's late answer at quit)."""
+    try:
+        shell.bar_line.set_full(text)
+    except (AttributeError, RuntimeError):
+        pass
 
 
 # --- one window of a kind per main window ---------------------------------------------------------------------- #
@@ -212,6 +226,18 @@ OPENERS += [
 ]
 
 
+# The optional modules the doors name, looked for once per process (a module can't appear mid-session), on a worker
+# after the window opened: name -> bool. A door that names a module stays hidden until its module was found.
+_FOUND = {}
+_LOOKING = set()                                          # being looked for now (asked once, whichever row asks)
+_ROWS = weakref.WeakSet()                                 # the rows told when the look ends
+
+
+def _look_for(names):
+    """(A worker.) -> {name: whether modules/<name> imports}."""
+    return {name: module_present(name) for name in names}
+
+
 def module_present(name):
     """Whether `modules/<name>` can be imported (found, not run: nothing of it is loaded here)."""
     try:
@@ -222,7 +248,7 @@ def module_present(name):
 
 def available(opener, settings, language):
     """Whether `opener`'s door shows: its module imports (when it names one) and its own rule says so."""
-    if opener.module is not None and not module_present(opener.module):
+    if opener.module is not None and not _FOUND.get(opener.module, False):
         return False
     try:
         return bool(opener.available(settings, language))
@@ -232,28 +258,73 @@ def available(opener, settings, language):
 
 
 # --- the Settings tab's list, until W3.3 / W3.2 (IK-16) --------------------------------------------------------- #
-class _Shown(QObject):
-    def __init__(self, page, refresh):
+def _found(found):
+    _FOUND.update(found)
+    _LOOKING.difference_update(found)
+    for row in list(_ROWS):
+        row.refresh()
+
+
+def _moves_doors(keys):
+    """Whether a settings write can move a door: the language, or a module's switch (`enable_*`)."""
+    return any(k == "target_language" or k.startswith("enable_") for k in keys)
+
+
+class _Doors(QWidget):
+    """The Settings tab's row of doors. Asked again when the page shows, when a settings write can move a door, and
+    when the modules were looked for; repaints only the buttons whose answer changed (S19)."""
+
+    def __init__(self, shell, page):
         super().__init__(page)
-        self.refresh = refresh
+        self.shell, self.page = shell, page
+        self.buttons = {}
+        self.paints = 0
         page.installEventFilter(self)
+        _ROWS.add(self)
+
+    def refresh(self):
+        try:
+            settings = self.shell.services.settings.get()
+            language = settings.get("target_language") or "ja"
+            for op in OPENERS:
+                b = self.buttons.get(op.name)
+                show_it = available(op, settings, language)
+                if b is not None and b.isHidden() == show_it:
+                    b.setVisible(show_it)
+                    self.paints += 1
+        except RuntimeError:                              # gone with its window
+            pass
+
+    def attach(self):
+        """After the window's first pass: the settings' writes heard, the modules looked for on a worker."""
+        heard = getattr(self.shell, "bridge", None)
+        if heard is not None:
+            heard.settings_written.connect(self._written)
+        wanted = sorted({op.module for op in OPENERS if op.module} - set(_FOUND) - _LOOKING)
+        if wanted:
+            _LOOKING.update(wanted)
+            bridge.run_in_worker(_look_for, wanted, then=_found,
+                                 failed=lambda info: applog.log("windows", f"looking for the modules: {info[1]}"))
+
+    def _written(self, keys):
+        if _moves_doors(keys):
+            self.refresh()
 
     def eventFilter(self, obj, event):
-        if event.type() == QEvent.Type.Show:
+        if obj is self.page and event.type() == QEvent.Type.Show:
             self.refresh()
         return False
 
 
 def launchers(shell, page):
     """The ported windows' doors on `page` (the Settings tab's waiting page): one button each, shown while its door is
-    available — asked again each time the page shows. -> the row (its `buttons`: name -> button)."""
-    row = QWidget(page)
+    available. -> the row (its `buttons`: name -> button)."""
+    row = _Doors(shell, page)
     row.setObjectName("launchers")
     row.setAccessibleName(strings.LAUNCHERS_NAME)
     line = QHBoxLayout(row)
     line.setContentsMargins(0, 0, 0, 0)
     line.addStretch(1)
-    row.buttons = {}
     for op in OPENERS:
         b = QPushButton(op.label, row)
         b.setToolTip(op.tip)
@@ -263,18 +334,8 @@ def launchers(shell, page):
         line.addWidget(b)
         row.buttons[op.name] = b
     line.addStretch(1)
-
-    def refresh():
-        settings = shell.services.settings.get()
-        language = settings.get("target_language") or "ja"
-        for op in OPENERS:
-            b = row.buttons.get(op.name)
-            show_it = available(op, settings, language)
-            if b is not None and b.isHidden() == show_it:
-                b.setVisible(show_it)
-    row.refresh = refresh
-    refresh()
-    _Shown(page, refresh)
+    row.refresh()
+    QTimer.singleShot(0, row.attach)
     box = page.layout()
     box.insertWidget(max(0, box.count() - 1), row)        # under the page's line, above its closing stretch
     return row
@@ -285,7 +346,5 @@ def launch(shell, opener):
         return opener.open(shell)
     except Exception as e:                                # a door that can't open says so in the bar, never a box
         applog.log("windows", f"{opener.name} didn't open: {e}")
-        bar = getattr(shell, "bar_line", None)
-        if bar is not None:
-            bar.set_full(strings.OPEN_FAILED.format(name=opener.label, why=e))
+        say_in_bar(shell, strings.OPEN_FAILED.format(name=opener.label, why=e))
         return None

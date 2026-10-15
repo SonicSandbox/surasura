@@ -277,3 +277,31 @@ def test_every_level_job_is_queued_with_the_stores_identity():
     assert sid, "the store has an identity to carry"
     jobs = _level_jobs()
     assert len(jobs) == 2 and all(j["store_id"] == sid for j in jobs)
+
+
+def test_with_the_word_mode_never_saved_the_look_mines_in_the_list_mode(monkeypatch):
+    """`connect_mine_words` unset (a settings.json from before the setting) is the `list` mode, the default: the raise
+    is mined. Read as any other mode, a learner who never touched the setting would get no card for a raised level."""
+    from app.cli import connect_verbs
+    seen = []
+    monkeypatch.setattr(connect_verbs, "_read_list", lambda lang: ("run-2", RAISED, {}))
+    monkeypatch.setattr(level, "check", lambda store, lang, listed, signature, file_words, mode="?": seen.append(mode))
+    connect_verbs._level(None, "ja", {})
+    connect_verbs._level(None, "ja", {"connect_mine_words": None})
+    connect_verbs._level(None, "ja", {"connect_mine_words": "unknown"})
+    assert seen == ["list", "list", "unknown"]
+
+
+def test_a_results_folder_without_its_list_is_no_look():
+    """The run stamp and the language say a Japanese list, but the list file itself is gone (a Generate that wrote
+    nothing yet, a file removed by hand): no look, nothing recorded. Recorded as an empty list, the next Generate
+    would make every word on it "newly listed" and queue cards for all of them."""
+    from app.cli import verbs
+    (a, fa), _b, _d = _line()
+    _mine(a)
+    _last_generate(BEFORE, "run-1", {fa: ["眼鏡"]})
+    os.remove(os.path.join(h.root(), "results", verbs.PRIORITY_CSV))
+    code, line = h.call("connect", "--consume-only")
+    assert code == 0 and line["languages"]["ja"]["level"] is None, line
+    with Ledger() as ledger:
+        assert ledger.recorded_list("ja") == (None, None)

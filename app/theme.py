@@ -408,6 +408,25 @@ MOTION = MappingProxyType({
     # distances (px) the overlays travel as they open (M2.1; the mock's `pop` −4 px, `dlgin` +10 px)
     "pop-shift": 4, "dialog-rise": 10, "toast-bottom": 48,
 })
+# Springs on the one clock (W3.1a §3; the reference's touches, ref-extract §8): a preset is (ω rad/s, ζ). ζ 1 is
+# critically damped (home without passing it), under 1 overshoots and settles. Distances in px.
+SPRINGS = MappingProxyType({
+    "hover-lift": (13.5, 1.0),           # a row on the ground lifts under the hand (97 % at ≈ .4 s)
+    "hover-release": (13.5, 0.5),        # ... and falls with ζ .5 until it passes rest, then critically home from below
+    "hover-neighbour": (13.5, 1.0),      # its neighbours ease apart after it
+    "inset": (24.0, 1.0),                # fall into place (r5Inset): down to `inset-px` at 1/ω ≈ 42 ms, then home
+    "drag-part": (22.0, 1.0),            # neighbours parting under a drag: the reference's own parting (an arrival's
+                                         # covers, crit ω 22) — 92 % by the old tween's 190 ms, and never past the slot
+    "slot": (28.3, 0.5),                 # a well's slot opening under the hand (2π·4.5)
+    "vein-lead": (34.0, 1.0),            # the tab vein's leading end
+    "vein-tail": (22.0, 1.0),            # ... and its trailing end
+    "press": (36.0, 1.0),                # a press going down
+    "release": (26.0, 1.0),              # ... and coming back
+    "lift-px": 2, "neighbour-px": 1.5, "inset-px": 1.5,
+    "sub-step-ms": 6,                    # the physics' step: never longer, whatever the frame interval
+    "catch-up-ms": 1000,                 # a stalled clock (a sleep, a long step) catches up at most this much
+    "rest-x": 0.005, "rest-v": 0.05,     # at rest: |x − target| and |v| (per s) under these, then it snaps home
+})
 
 
 # --- W2.2: the generated cover (the fallback and the offline look, 05 §5.6; mock.html `pieceCover`) --------------- #

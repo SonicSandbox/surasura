@@ -16,7 +16,7 @@ from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication
 
 from app import path_utils
-from app.qt import confirm, shell, windows
+from app.qt import bridge, confirm, shell, windows
 from app.qt import word_lists_strings as s
 from app.qt.word_lists_window import SOURCE, WORD, WordListsWindow
 from app.services import word_lists
@@ -32,6 +32,9 @@ def main(qapp):
     yield win
     win.close()
     services.shutdown(0.5)
+    # A list read or write still on the pool resolves its path when it runs, so left running it would land in the
+    # next test's root (the PermissionError on IgnoreList.txt seen under load): every worker ends here.
+    assert bridge.wait_for_workers(10000)
 
 
 @pytest.fixture(autouse=True)

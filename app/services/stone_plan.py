@@ -19,7 +19,8 @@ of room the watched loose stones step closer (28 → 14), then consecutive cut g
 stones step closer still (14 → 8); stones never shrink, and what still doesn't fit comes back as a shortfall, which
 `title_width` takes off the one title column every row shares (`r11Title` :7463).
 
-Every user-facing word is in `WORDS` (Mado moves them to `app/qt/strings.py`); nothing here imports Qt, Tk or pandas.
+Its user-facing words live in `app/qt/strings.py` (`STRING_WORDS`), handed to `words`; nothing here imports Qt, Tk or
+pandas.
 """
 import math
 from collections import namedtuple
@@ -46,11 +47,6 @@ _KIND = {"anime": "shows", "drama": "shows", "movie": "shows", None: "shows",
          "book": "reading", "lightnovel": "reading", "manga": "reading", "text": "reading", "audiobook": "reading",
          "game": "reading"}
 
-WORDS = {
-    "of_watched": "{k} of {n} watched", "in_anki": "{n} in Anki",
-    "one_watched": "Watched", "one_not": "Not watched yet", "one_in_anki": "in Anki",
-    "join": ", ",
-}
 
 
 class Tier(namedtuple("Tier", "start n variant")):
@@ -249,16 +245,17 @@ def title_width(plans, list_width, fz=1.0, fixed_columns=0, string_fz=None):
 
 
 # --- words -------------------------------------------------------------------------------------------------------- #
-def words(plan_):
-    """What a screen reader says for the string, over the whole piece: "8 of 12 watched, 3 in Anki"."""
+def words(plan_, table):
+    """What a screen reader says for the string, over the whole piece: "8 of 12 watched, 3 in Anki" (`table`: the
+    window's `strings.STRING_WORDS`)."""
     if not plan_.n:
         return ""
     if plan_.single:
-        parts = [WORDS["one_watched"] if plan_.watched else WORDS["one_not"]]
+        parts = [table["one_watched"] if plan_.watched else table["one_not"]]
         if plan_.in_anki:
-            parts.append(WORDS["one_in_anki"])
+            parts.append(table["one_in_anki"])
     else:
-        parts = [WORDS["of_watched"].format(k=plan_.watched, n=plan_.n)]
+        parts = [table["of_watched"].format(k=plan_.watched, n=plan_.n)]
         if plan_.in_anki:
-            parts.append(WORDS["in_anki"].format(n=plan_.in_anki))
-    return WORDS["join"].join(parts)
+            parts.append(table["in_anki"].format(n=plan_.in_anki))
+    return table["join"].join(parts)

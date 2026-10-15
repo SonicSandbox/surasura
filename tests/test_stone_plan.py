@@ -13,6 +13,7 @@ import sys
 
 import pytest
 
+from app.qt.strings import STRING_WORDS
 from app.services import stone_plan as sp
 from app.services import view_rows as vr
 
@@ -209,7 +210,7 @@ def test_the_next_index_the_row_gives_is_the_one_drawn_big():
 
 def test_an_empty_piece_plans_nothing_and_says_nothing():
     p = sp.plan((), None, "anime", "p0")
-    assert p.items == () and p.n == 0 and sp.words(p) == "" and sp.layout(p, 300, 1.0).end == 0
+    assert p.items == () and p.n == 0 and sp.words(p, STRING_WORDS) == "" and sp.layout(p, 300, 1.0).end == 0
 
 
 @pytest.mark.parametrize("media, mix, gem", [
@@ -426,10 +427,10 @@ def test_the_title_width_reads_the_same_for_a_list_or_a_tuple_of_plans():
 # --- words -------------------------------------------------------------------------------------------------------- #
 def test_the_screen_reader_counts_over_the_whole_piece_not_just_the_twelve():
     eps = piece(26, next_at=14, extra={14: {"cards": 4}, 15: {"cards": 2}, 25: {"cards": 1}})
-    assert sp.words(sp.plan(eps, 14, "anime", "p")) == "14 of 26 watched, 3 in Anki"
-    assert sp.words(sp.plan(piece(12, next_at=8), 8, "anime", "p")) == "8 of 12 watched"
+    assert sp.words(sp.plan(eps, 14, "anime", "p"), STRING_WORDS) == "14 of 26 watched, 3 in Anki"
+    assert sp.words(sp.plan(piece(12, next_at=8), 8, "anime", "p"), STRING_WORDS) == "8 of 12 watched"
 
 
 def test_a_one_file_row_reads_as_watched_or_not():
-    assert sp.words(sp.plan(piece(1), 0, "movie", "p")) == "Not watched yet"
-    assert sp.words(sp.plan(piece(1, next_at=1, extra={0: {"cards": 3}}), 0, "movie", "p")) == "Watched, in Anki"
+    assert sp.words(sp.plan(piece(1), 0, "movie", "p"), STRING_WORDS) == "Not watched yet"
+    assert sp.words(sp.plan(piece(1, next_at=1, extra={0: {"cards": 3}}), 0, "movie", "p"), STRING_WORDS) == "Watched, in Anki"

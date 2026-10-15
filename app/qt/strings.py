@@ -72,6 +72,12 @@ ROWS_TICK_WATCHED = "Watched"
 ROWS_TICK_NOT = "Not watched yet"
 ROWS_MORE_CHIPS = "{n} more"
 ROWS_FAILURE_LINE = "Its details are in the logs folder (the bar's Open the logs folder)"
+# The string of stones, read out for a screen reader (W3.1a; `stone_plan.words`): "8 of 12 watched, 3 in Anki".
+STRING_WORDS = {
+    "of_watched": "{k} of {n} watched", "in_anki": "{n} in Anki",
+    "one_watched": "Watched", "one_not": "Not watched yet", "one_in_anki": "in Anki",
+    "join": ", ",
+}
 # --- end W2.2 ---------------------------------------------------------------------------------------------------------- #
 
 # The bottom bar.

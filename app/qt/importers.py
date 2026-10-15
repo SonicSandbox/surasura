@@ -146,6 +146,12 @@ class ToolWindow(windows.SecondaryWindow):
                 return why
         return None
 
+    def _wrote(self):
+        """Known words written: the bar's count and the journey asked again (the automation, once it is made)."""
+        automation = getattr(self.shell.services, "automation", None)
+        if automation is not None:
+            automation.known_changed()
+
     def _failed_line(self, why):
         return strings.IMPORTERS_FAILED.format(why=why) if why else strings.IMPORTERS_FAILED_PLAIN
 
@@ -254,6 +260,8 @@ class DeckWindow(ToolWindow):
         key, values = importers_view.deck_outcome(code, self._result, self._why())
         line = {"done": lambda: strings.APKG_DONE.format(**values), "nothing": lambda: strings.APKG_NOTHING,
                 "failed": lambda: self._failed_line(values["why"])}[key]()
+        if key == "done":
+            self._wrote()
         self.say(line)
         self.end_write(line)
 
@@ -331,6 +339,8 @@ class MigakuWindow(ToolWindow):
     def _done(self, code):
         key, values = importers_view.replace_outcome(code, self._why())
         line = strings.MIGAKU_DONE if key == "done" else self._failed_line(values["why"])
+        if key == "done":
+            self._wrote()
         self.say(line)
         self.end_write(line)
 
@@ -456,6 +466,8 @@ class JitenWindow(ToolWindow):
     def _done(self, code):
         key, values = importers_view.replace_outcome(code, self._why())
         line = strings.JITEN_DONE if key == "done" else self._failed_line(values["why"])
+        if key == "done":
+            self._wrote()
         self.say(line)
         self.end_write(line)
 

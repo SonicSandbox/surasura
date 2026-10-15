@@ -43,7 +43,9 @@ GENERATE_EVERY = 600.0      # _maybe_auto_generate: at most every 10 minutes
 JUNBAN_EVERY = 300.0        # _maybe_junban_auto: like the sync
 START_DELAY = 2.0           # the Tk `root.after(2000, lambda: self._maybe_anki_sync(force=True))`
 CHECK_SETTLE = 0.6          # _schedule_journey_state: one journey check for a burst of triggers
-CHILD_KINDS = ("generate", "indexer", "sentence-corpus", "child")      # the Tk window's child processes
+# The child processes the automatic Generate waits for: the Tk window's, and the 3.0 importers' (a known-words import,
+# Extract: the Tk tooltip's "never while … an import … is running")
+CHILD_KINDS = ("generate", "indexer", "sentence-corpus", "child", "known-import", "extract")
 
 IDLE, SYNCING, SYNCED, CLOSED, FAILED = "idle", "syncing", "synced", "anki-closed", "failed"
 SYNC_LABEL = "Updating known words from Anki"
@@ -554,6 +556,14 @@ class Automation:
         self.worker.put(self._read_known)
         self.worker.put(self.sync.maybe, True)
         self.worker.put(self.generate.maybe)
+
+    def known_changed(self):
+        """A known-words import ended having written (W3.4 row 2: the deck, Migaku, Jiten): the bar's count read again
+        and the journey asked again. Any thread; returns at once. Nothing once closed."""
+        if self.closed:
+            return
+        self.worker.put(self._read_known)
+        self.recheck()
 
     def recheck(self):
         """Is the journey still current? (`_schedule_journey_state`) — the Generate button's mark: one

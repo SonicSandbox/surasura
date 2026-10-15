@@ -476,6 +476,28 @@ def test_every_writing_child_is_waited_for_at_quit_and_the_fetch_is_not(main, ru
     assert [c.on_quit for c in runs.calls] == ["wait", "wait", "cancel", "wait", "wait"]
 
 
+def test_an_import_that_wrote_tells_the_known_words_count_and_one_that_failed_does_not(main, runs, monkeypatch):
+    """IK-54: after a replace the bar's known-words count went stale until the next sync."""
+    told = []
+    monkeypatch.setattr(main.services, "automation", SimpleNamespace(known_changed=lambda: told.append(1)))
+    _known(CURRENT)
+    m = importers.open_migaku(main)
+    m.start(MIGAKU, "ja")
+    runs.end(1, "Error: the database could not be read.")
+    assert told == []
+    m.start(MIGAKU, "ja")
+    runs.end(0, "Conversion complete!")
+    d = importers.open_deck(main)
+    d.start(DECK, "Sentence", "ja")
+    runs.end(0, anki_db_import.result_line(anki_db_import.Merge(0, 0, 52, None, None, False)))   # nothing new
+    d.start(DECK, "Sentence", "ja")
+    runs.end(0, anki_db_import.result_line(anki_db_import.Merge(12, 3, 52, None, None, False)))
+    j = importers.open_jiten(main)
+    j.replace(os.path.join(str(get_user_files_path("ja")), "cards.json"))
+    runs.end(0, "Conversion complete!")
+    assert told == [1, 1, 1]
+
+
 def test_jiten_is_off_for_chinese_and_follows_the_main_windows_language(main, runs):
     w = importers.open_jiten(main)
     w.key.setText(SECRET)

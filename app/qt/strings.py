@@ -213,3 +213,7 @@ LAUNCHERS_NAME = "Windows that open from here until their Settings rows arrive"
 OPEN_FAILED = "{name} couldn't open: {why}"
 CONFIRM_NO = "Cancel"
 CONFIRM_NO_TIP = "Leave everything as it is (Esc does the same)"
+
+# --- W3.4 row 5: Backfill (its door; the window's own words are Junban's: modules/junban/qt_strings.py)
+BACKFILL_DOOR = "Anki Backfill"
+BACKFILL_DOOR_TIP = "Fill fields on your Anki cards from Surasura: パターン and 例文"

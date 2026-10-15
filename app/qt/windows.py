@@ -180,6 +180,22 @@ def always(_settings, _language):
 # Each row adds its doors here (W3.4 rows 1–6), in the order the list shows them.
 OPENERS = []
 
+# row 5: Backfill (+ Fields, パターン data) — Junban's window: shown while 順 is switched on and Junban imports (the Tk
+# dashboard's `backfill_available`), opened lazily through the module's `open_backfill_qt`.
+
+
+def _backfill_available(settings, _language):
+    return settings.get("enable_junban", True) is not False
+
+
+def _open_backfill(shell):
+    from modules.junban import open_backfill_qt
+    return open_backfill_qt(shell)
+
+
+OPENERS += [Opener("backfill", strings.BACKFILL_DOOR, strings.BACKFILL_DOOR_TIP, _backfill_available, _open_backfill,
+                   "junban")]
+
 
 def module_present(name):
     """Whether `modules/<name>` can be imported (found, not run: nothing of it is loaded here)."""

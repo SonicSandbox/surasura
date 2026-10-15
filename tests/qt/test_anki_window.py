@@ -247,6 +247,7 @@ def test_sync_is_an_anki_sync_job_and_a_second_press_while_it_runs_starts_nothin
     assert w.busy() and w.status.text() == strings.ANKI_SYNCING
     assert not w.chk_suspended.isEnabled(), "the scope never changes under a job (inv defect 4)"
     w.on_sync()
+    w.on_replace()                                         # the gates themselves, not only the buttons' state
     w.btn_sync.click()
     live = main.services.registry.live("anki-sync")
     assert len(live) == 1 and live[0].label == strings.ANKI_JOB_SYNC
@@ -410,6 +411,33 @@ def test_restore_names_what_it_puts_back_enter_is_no_and_yes_backs_up_first(main
     assert _bytes(_file()) == original
     assert len(_trash()) == 2, "the replaced list was backed up before the restore"
     assert w.status.text() == strings.ANKI_RESTORED.format(total=anki_sync.count_known("ja"))
+
+
+def test_restore_puts_back_only_the_list_it_named_and_asks_again_when_that_changed(main, anki, ja_resources_dir):
+    """A Replace made elsewhere (another program) while the Restore question is open changes what "previous" is: the
+    yes restores nothing and the window asks again, naming the new one."""
+    _migaku(ja_resources_dir)
+    _choose(main)
+    w = _open(main)
+    w.btn_replace.click()
+    assert wait_until(lambda: getattr(w, "question", None) is not None and w.question.isVisible())
+    w.question.yes.click()
+    _idle(main, w)
+    w.question = None
+    w.btn_restore.click()
+    assert wait_until(lambda: getattr(w, "question", None) is not None and w.question.isVisible())
+    first = w.question
+    anki.add(WORDS[3], deck="TheBank")
+    anki_sync.replace("ja", "http://127.0.0.1:8765", ["TheBank"], [])     # elsewhere, meanwhile
+    meanwhile = _bytes(_file())
+    first.yes.click()
+    assert wait_until(lambda: w.question is not first and w.question.isVisible(), 10)
+    assert w.status.text() == strings.ANKI_RESTORE_CHANGED and w.busy()
+    assert _bytes(_file()) == meanwhile, "nothing restored on the stale yes"
+    assert "→ 3" in w.question.body.text()                 # the newest previous list: Anki's three words
+    w.question.yes.click()
+    _idle(main, w)
+    assert [x["dictForm"] for x in _words() if x.get("source") == "AnkiConnect"] == WORDS[:3]
 
 
 # --- the language (🧭 IK-12; inv defect 3) ---------------------------------------------------------------------- #

@@ -313,3 +313,23 @@ def test_the_child_refuses_bad_options_before_reading_anything(tmp_path, capsys)
     code = extract.main(["--language", "ja", "--file", str(tmp_path / "無い.txt"), "--name", "x", "--value", "0"])
     assert code == extract.EXIT_FAILED
     assert extract.parse_result(capsys.readouterr().out.strip().splitlines()[-1]).note == "length"
+
+
+# --- the mutant pass's survivors --------------------------------------------------------------------------------- #
+def test_the_section_folder_is_checked_again_just_before_the_copy(tmp_path):
+    data_dir, _uf = _store_library("ja")
+    source = tmp_path / "旅の本"
+    source.mkdir()
+    (source / "旅の本_01.txt").write_text("朝早く駅に着いた。", encoding="utf-8")
+    os.makedirs(os.path.join(data_dir, "LowPriority", "旅の本"))          # taken meanwhile (another program)
+    added, why = extract.add_to_library(str(source), "旅の本", ["旅の本_01.txt"], "ja", "soon", spawn=False)
+    assert (added, why) == (False, "taken")
+    assert os.listdir(os.path.join(data_dir, "LowPriority", "旅の本")) == []
+
+
+def test_a_good_insert_asks_the_helper_to_write_the_librarys_copy(tmp_path, monkeypatch):
+    _store_library("ja")
+    asked = []
+    monkeypatch.setattr(ls, "spawn_maintain", lambda language, *a: asked.append(language))
+    result = extract.extract(_text_file(tmp_path, "ja"), "旅の本", "ja", section="soon", value="400")
+    assert result.in_library and asked == ["ja"]

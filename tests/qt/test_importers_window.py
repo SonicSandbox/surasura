@@ -488,3 +488,17 @@ def test_a_disabled_primary_button_looks_disabled(main):
     live = middle(w.go)
     w.go.setEnabled(False)
     assert middle(w.go) != live
+
+
+def test_an_export_with_no_words_for_this_language_asks_nothing(main, runs, tmp_path):
+    import sqlite3
+    db = tmp_path / "migaku.db"
+    c = sqlite3.connect(db)
+    c.execute("CREATE TABLE WordList (dictForm, language, knownStatus)")
+    c.execute("INSERT INTO WordList VALUES ('学习', 'zh', 'KNOWN')")
+    c.commit()
+    c.close()
+    w = importers.open_migaku(main)
+    w.read(str(db))
+    assert wait_until(lambda: w.status.text() == strings.MIGAKU_EMPTY)
+    assert _card(w) is None and runs.calls == []

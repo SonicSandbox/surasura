@@ -4,6 +4,7 @@ import json
 import os
 import re
 import sys
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 from app.jiten_converter import fetch_jiten_vocabulary
 
@@ -247,6 +248,30 @@ def test_a_held_known_words_lock_refuses_the_replace_and_writes_nothing(tmp_path
     known.write_text('{"words": [{"dictForm": "冒険", "knownStatus": "KNOWN"}]}', encoding="utf-8")
     before = known.read_bytes()
     with Holder("known-words-ja", "Anki known-words sync"):
+        assert jiten_converter.replace_known(jiten_converter.words_from_cards(mock_jiten_response), "ja",
+                                             str(known)) is False
+    assert known.read_bytes() == before
+
+
+def test_the_command_lines_step_two_needs_no_key_and_never_fetches(tmp_path, mock_jiten_response, monkeypatch):
+    from app import jiten_converter
+    monkeypatch.delenv(jiten_converter.API_KEY_ENV, raising=False)
+    from app.path_utils import get_user_files_path
+    known = Path(get_user_files_path("ja")) / "KnownWord.json"           # the command line's own default
+    cards = tmp_path / "cards.json"
+    cards.write_text(json.dumps(mock_jiten_response, ensure_ascii=False), encoding="utf-8")
+    with patch("requests.get") as get, pytest.raises(SystemExit) as done:
+        jiten_converter.main(["--language", "ja", "--cards", str(cards)])
+    assert done.value.code == 0
+    get.assert_not_called()
+    assert {w["dictForm"] for w in json.loads(known.read_text(encoding="utf-8"))["words"]} == {"猫", "犬"}
+
+
+def test_a_failed_backup_leaves_the_known_words_untouched_by_jiten(tmp_path, mock_jiten_response):
+    from app import jiten_converter
+    known = _known_words_file(tmp_path)
+    before = known.read_bytes()
+    with patch("app.jiten_converter.backup_to_trash", side_effect=OSError("disk full")):
         assert jiten_converter.replace_known(jiten_converter.words_from_cards(mock_jiten_response), "ja",
                                              str(known)) is False
     assert known.read_bytes() == before

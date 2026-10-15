@@ -223,3 +223,31 @@ def test_a_result_line_round_trips_and_other_lines_are_not_results():
                                                  "backup": "KnownWord.20261014-120000.json"}
     assert anki_db_import.parse_result("Found 12 words in 'Sentence'") is None
     assert anki_db_import.parse_result("RESULT {not json") is None
+
+
+# --- the mutant pass's survivors, each a gap closed ---------------------------------------------------------------- #
+def test_the_known_words_lock_is_let_go_of_after_the_merge(migaku_file):
+    from app import locks
+    anki_db_import.merge_known("ja", {("冒険", "ボウケン")})
+    assert locks.held_in_process("known-words-ja") is None   # a lock kept would refuse the next sync for its whole life
+
+
+def test_with_a_word_listed_twice_the_first_entry_is_the_one_raised(migaku_file):
+    data = dict(migaku_file)
+    learning = next(w for w in data["words"] if w["knownStatus"] == "LEARNING")
+    twin = dict(learning, knownStatus="UNKNOWN", note="the second copy")
+    data["words"] = data["words"] + [twin]
+    with open(_known(), "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+    anki_db_import.merge_known("ja", {_key(learning)})
+    words = _load()["words"]
+    assert words[1]["knownStatus"] == "KNOWN" and words[-1]["knownStatus"] == "UNKNOWN"   # first wins, as Tk
+
+
+def test_a_chinese_deck_is_tokenized_as_chinese(monkeypatch, tmp_path):
+    from app import anki_utils
+    notes = [(1, "我们喜欢学习中文\x1f"), (1, "今天天气很好\x1f")]
+    monkeypatch.setattr(anki_utils, "load_anki_data",
+                        lambda path: (["Sentence", "Back"], notes, {1: ["Sentence", "Back"]}, str(tmp_path / "x")))
+    lemmas = {lemma for lemma, _r in anki_db_import.words_of("deck.apkg", "Sentence", "zh")}
+    assert {"我们", "喜欢", "学习", "中文"} <= lemmas

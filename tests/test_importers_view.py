@@ -151,3 +151,21 @@ def test_a_replaces_end_is_decided_by_its_exit_code():
 ])
 def test_extracts_end_names_what_happened(result, key):
     assert importers_view.extract_outcome(result.code if result else 1, result, "why")[0] == key
+
+
+# --- the mutant pass's survivors --------------------------------------------------------------------------------- #
+def test_the_numbers_never_change_the_words_they_count():
+    _known(CURRENT)
+    words = [{"dictForm": "旅", "knownStatus": "UNKNOWN"}, {"dictForm": "猫", "knownStatus": "KNOWN"}]
+    anki_sync.replace_numbers("ja", words, keep_ignored=True)
+    assert words[0] == {"dictForm": "旅", "knownStatus": "UNKNOWN"}   # kept_graduated raises in place: on a copy
+
+
+def test_a_failed_child_is_never_done_even_with_a_result_line():
+    assert importers_view.deck_outcome(1, {"added": 3, "raised": 0, "total": 9}, "why")[0] == "failed"
+
+
+def test_a_known_words_import_never_runs_beside_a_sync_and_extract_beside_generate():
+    from app.services import jobs
+    assert jobs.conflicts("known-import", "anki-sync") and jobs.conflicts("known-import", "known-import")
+    assert not jobs.conflicts("extract", "generate") and jobs.conflicts("extract", "extract")

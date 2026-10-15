@@ -152,7 +152,9 @@ def status(args):
         "update_staged": bool(library_store.update_staged(looks=library_store.PROBE_LOOKS)),
         "logs": contract.log_folder(),          # cli.log, cli-events.jsonl, generate.log: where to look when one fails
     }
-    if loaded.get("connect_enabled"):           # P2.5: Connect's record (read-only; no ledger → Up to date)
+    # P2.5: Connect's record (read-only; no ledger → Up to date). `connect_enabled` alone (P4.1 row 4.1.1): `connect`
+    # describes your set-up, shown with the automation off too
+    if loaded.get("connect_enabled"):
         from app.connect import status as connect_status
         record = connect_status.read([lang], words=getattr(args, "words", False))
         out["connect"] = dict(connect_status.language_record(record, lang), running=record["running"])
@@ -431,10 +433,12 @@ def known(args):
 # Connect's Anki session, for the verbs that read or write Anki (P2.3 row 2.3.5)
 # --------------------------------------------------------------------------- #
 def _session(loaded):
-    """`app/connect/anki_session` while Connect's preview is on (✅ Q4-1, Q4-4: the session's one sync before Connect
-    reads what you studied or writes Anki), else None — off, nothing of Connect's is imported and every request is as
-    before; never under `SURASURA_NO_ANKI_SYNC` (the test suites, a developer's run)."""
-    if not (loaded or {}).get("connect_enabled") or os.environ.get("SURASURA_NO_ANKI_SYNC"):
+    """`app/connect/anki_session` while Connect is on (✅ Q4-1, Q4-4: the session's one sync before Connect reads what
+    you studied or writes Anki; its switch and, 3.0, D29's automation — `settings_manager.connect_on`, P4.1 row
+    4.1.1), else None — off, nothing of Connect's is imported and every request is as before; never under
+    `SURASURA_NO_ANKI_SYNC` (the test suites, a developer's run)."""
+    from app import settings_manager
+    if not settings_manager.connect_on(loaded) or os.environ.get("SURASURA_NO_ANKI_SYNC"):
         return None
     from app.connect import anki_session
     return anki_session

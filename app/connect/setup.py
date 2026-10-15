@@ -338,7 +338,10 @@ def _modules():
 
 
 def _open_anki(settings):
-    if not ((settings or {}).get("connect_enabled") and settings.get("connect_open_anki")):
+    # P4.1 row 4.1.1: *Open Anki for me* opens Anki only while Connect is on (`connect_on`: its switch and D29's
+    # automation, `anki_session.at_window`), so the check names it only then
+    from app import settings_manager
+    if not (settings_manager.connect_on(settings) and settings.get("connect_open_anki")):
         return []
     from app.connect import open_anki
     command = open_anki.find()
@@ -356,13 +359,15 @@ def checks(settings, language, keep=None, use_open_profile=False):
     """Every check, in order -> {"ready", "checks", "anki_profile", "anki_miner", "recorded"}. `keep` (default:
     Connect's preview is on): write the setup record; off, nothing is written. `use_open_profile`: Connect works in
     the Anki profile open now (`surasura-cli setup --use-anki-profile`). Never raises for a missing piece."""
-    from app import anki_connect
+    from app import anki_connect, settings_manager
     settings = settings or {}
+    # `connect_enabled` alone, never `connect_on` (P4.1 row 4.1.1): the record describes your set-up, kept with the
+    # automation off too
     keep = bool(settings.get("connect_enabled")) if keep is None else bool(keep)
     record = read_record()
     before = record.get("anki_profile")
     url = anki_connect.address(settings)
-    anki, answered = _anki(url, bool(settings.get("connect_enabled") and settings.get("connect_open_anki")))
+    anki, answered = _anki(url, bool(settings_manager.connect_on(settings) and settings.get("connect_open_anki")))
     profile, open_now = _anki_profile(url, answered, record, keep, use_open_profile)
     out = [anki, profile, _ankiweb(record), _first_known_sync(settings, language)]
     miner, found = _anki_miner(settings, language, answered)

@@ -49,6 +49,9 @@ STATES = OPEN + FINISHED
 BEFORE_MINING = (None, "picking", "fit-check")
 # A job's kinds (P2.2): an item's first cards, or the newly listed words of one already mined.
 MINE, LEVEL = "mine", "level"
+# P4.1 (IK B2): meta's `asks_from:<lang>` — when Connect last went from off to on (`resume.turned_on`); an ask
+# (`mine_asked`) older than it was made while Connect was off and is never mined
+ASKS_FROM = "asks_from:"
 
 _SCHEMA_SQL = (
     "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",

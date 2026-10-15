@@ -552,6 +552,9 @@ def _pick(steps, ledger, lang, job, record=True):
     picked = {"words": words, "file": got.get("file"), "subtitle": got.get("subtitle"),
               "video": video, "pairing": fit_check.version(pairing), "profile": got.get("profile"),
               "anki_miner": got.get("anki_miner")}
+    before = ledger.picked(jid) or {}
+    if before.get("forced") and before.get("pairing") == picked["pairing"]:
+        picked["forced"] = True     # *Mine anyway* (row 4.1.9) holds for the pairing you said it for; a new one clears it
     if got.get("absent"):
         _record_made(steps, ledger, lang, job, record)
         ledger.set_state(jid, "skipped", reason=MINER_ABSENT, picked=picked, skipped={"mining": MINER_ABSENT})
@@ -585,6 +588,13 @@ def _fit(steps, ledger, lang, job):
     pairing = steps.pairing(lang, job)
     if fit_check.version(pairing) != picked.get("pairing"):
         raise Repick()                      # E17: hato re-timed it, or a new subtitle
+    if picked.get("forced"):
+        # *Mine anyway* (G1.3-6, E16; P4.1 row 4.1.9): you chose to mine it not timed — tsubasa isn't asked, and the
+        # lines are cut where the subtitle puts them (no shift)
+        log.info("Connect: job %s mined anyway: not timed", jid)
+        picked["offset"] = 0.0
+        ledger.set_state(jid, "mining", picked=picked)
+        return
     verdict, _who, why, offset = steps.fit(lang, job, pairing, picked.get("video"), picked.get("file"))
     if verdict == fit_check.RETRY:
         raise Wait(why)                     # tsubasa couldn't answer this time: asked again at the next look
@@ -923,12 +933,11 @@ class Steps:
     def enabled(self):
         """Connect's switch as settings.json holds it now (read again at every look and before each job): off, or
         a file that can't be read, stops the run. 3.0 (P3.3 C1): D29's switch (`logic.automation`) off stops it too —
-        no automatic mining with the automation off."""
+        no automatic mining with the automation off (the one gate, `settings_manager.connect_on`: P4.1 row 4.1.1)."""
         from app import settings_manager
         from app.cli import verbs
         try:
-            loaded = verbs.settings()
-            return bool(loaded.get("connect_enabled")) and settings_manager.automation(loaded)
+            return settings_manager.connect_on(verbs.settings())
         except Exception:
             return False
 

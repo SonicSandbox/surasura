@@ -455,3 +455,51 @@ def test_open_anki_for_me_is_read_only_with_connects_preview_on(monkeypatch, rea
     StandInAnki(monkeypatch, open_=False)
     checks = _by_id(setup.checks(_settings(ready_37, connect_enabled=False, connect_open_anki=True), "ja"))
     assert "open_anki" not in checks and "Surasura opens it" not in checks["anki"]["say"]
+
+
+# --------------------------------------------------------------------------- #
+# The mutant round's gaps (P2.3)
+# --------------------------------------------------------------------------- #
+def test_anki_busy_leaves_the_profile_check_waiting_to_be_asked(monkeypatch, ready_37):
+    """Anki open but too busy to answer in time: it hasn't answered, so the profile check waits to be checked and
+    Anki is asked nothing more — never a second question to a busy Anki, never a profile read as missing."""
+    anki = StandInAnki(monkeypatch, open_=False, timed_out=True)
+    checks = _by_id(setup.checks(_settings(ready_37), "ja"))
+    assert checks["anki_profile"]["state"] == "not-checked"
+    assert [a for a, _p in anki.asked if a == "getActiveProfile"] == []
+
+
+def test_with_the_preview_off_use_the_open_profile_moves_nothing(monkeypatch, ready_37):
+    """Connect was set up with 日本語; Anki is open on DevTest. With Connect's preview off nothing is kept, so "use the
+    open profile" can't move Connect to DevTest: the check still says Connect waits for 日本語, never that cards
+    will land in DevTest."""
+    setup.write_record({"anki_profile": "日本語"})
+    StandInAnki(monkeypatch, profile="DevTest")
+    result = setup.checks(_settings(ready_37, connect_enabled=False), "ja", use_open_profile=True)
+    assert _by_id(result)["anki_profile"]["state"] == "waiting"
+    assert result["anki_profile"] == "日本語" and setup.read_record()["anki_profile"] == "日本語"
+
+
+def test_a_chinese_known_words_check_reads_the_chinese_decks(monkeypatch, fake_miner):
+    """Decks chosen for Chinese only, and a Chinese known-words sync done: the Chinese check is ok. Read through the
+    Japanese decks, it would say no decks are chosen."""
+    StandInAnki(monkeypatch)
+    anki_sync._save_state("zh", {"last_sync": "2026-10-07T08:15:00", "decks": ["中文::挖掘"]})
+    check = _by_id(setup.checks(_settings(fake_miner, anki_sync_decks={"zh": ["中文::挖掘"]}), "zh"))["first_known_sync"]
+    assert check["state"] == "ok", check
+
+
+def test_anki_miner_waiting_for_the_anki_writer_is_a_wait_never_needs_you():
+    """Another Surasura program holds the Anki writer while Anki Miner is asked (`writer-busy`): a wait with the busy
+    text, as plain `busy` is."""
+    for kind in ("busy", "writer-busy"):
+        check = setup._miner_error("anki_miner_version", anki_miner.AnkiMinerError(kind, "Anki Miner is busy."))
+        assert check["state"] == "waiting" and "busy" in check["say"], (kind, check)
+
+
+def test_junban_without_backfill_names_backfill_as_skipped(monkeypatch):
+    """Junban installed but not its Backfill: the Backfill check is skipped, never ok — Connect would otherwise promise
+    the パターン and 例文 fields with nothing there to fill them."""
+    monkeypatch.setattr(setup, "_present", lambda module: module == "modules.junban.reposition")
+    checks = {c["id"]: c for c in setup._modules()}
+    assert checks["junban"]["state"] == "ok" and checks["backfill"]["state"] == "skipped"

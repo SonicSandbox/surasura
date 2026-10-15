@@ -167,3 +167,17 @@ def test_the_environment_keeps_everything_else(monkeypatch):
     env = open_anki.environment()
     assert "_MEIPASS2" not in env and env["APPDATA"].endswith("Roaming") and "PATH" in env
     assert env["QT_QPA_PLATFORM"] == "wayland" and env["QT_SCALE_FACTOR"] == "1.5"
+
+
+@pytest.mark.parametrize("found, expected", [
+    (["open", "/Applications/Anki.app"], ["open", "/Applications/Anki.app", "--args", "-p", "日本語"]),
+    (["/usr/bin/anki"], ["/usr/bin/anki", "-p", "日本語"])], ids=["mac-open", "linux"])
+def test_the_profile_goes_after_args_when_anki_is_started_through_open(monkeypatch, found, expected):
+    """macOS starts Anki through `open`, which takes the program's own arguments only after `--args`; elsewhere the
+    profile follows the program. Before `--args`, `open` would read `-p` as its own option and Anki would open on its
+    last profile."""
+    started = []
+    monkeypatch.setattr(open_anki, "find", lambda: list(found))
+    monkeypatch.setattr(open_anki.subprocess, "Popen", lambda command, **options: started.append(command) or object())
+    assert open_anki.start("日本語") is not None
+    assert started == [expected]

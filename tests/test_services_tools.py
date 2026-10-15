@@ -223,6 +223,78 @@ def test_a_tool_cancelled_before_it_started_never_starts_and_its_owner_hears_onc
     assert not marker.exists() and ends.codes == [None]
 
 
+def test_a_tool_cancelled_while_its_settings_are_written_never_starts_its_child(tmp_path):
+    # Cancelled during `before` (the settings flush): the child is never started at all — no pid, no process.
+    import threading
+    script = _script(tmp_path, "print('ran')\n")
+    registry, ends, lines = jobs_module.JobRegistry(), Ends(), []
+    flushing, go_on = threading.Event(), threading.Event()
+
+    def before():
+        flushing.set()
+        go_on.wait(10)
+    job = tools.run(registry, "sentence-corpus", "x", [script], on_line=lines.append, on_end=ends, before=before,
+                    frozen=False)
+    assert flushing.wait(10)
+    job.cancel()
+    go_on.set()
+    assert job.wait(20) and job.view().cancelled
+    assert job.view().pid is None and lines == []
+    assert _wait(lambda: ends.codes == [None])
+
+
+def test_a_cancel_while_the_child_is_starting_still_ends_it(tmp_path, monkeypatch):
+    # The cancel lands after the child was made but before the runner holds it (the cancel can't reach it then):
+    # the runner sees the ask and ends the child itself.
+    import subprocess
+    import threading
+    slow = _script(tmp_path, "import time; time.sleep(60)\n")
+    registry, holder, ready = jobs_module.JobRegistry(), {}, threading.Event()
+    real = subprocess.Popen
+
+    def popen(*a, **k):
+        process = real(*a, **k)
+        ready.wait(10)
+        holder["job"].cancel()
+        return process
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    holder["job"] = tools.run(registry, "sentence-corpus", "x", [slow], frozen=False)
+    ready.set()
+    assert holder["job"].wait(20)
+    assert holder["job"].view().cancelled
+
+
+class _Racing:
+    """A registry that hands the tool a cancel in the moment between starting it and its `start` call (the real
+    registry's window between marking a job running and calling `start`, outside its lock)."""
+
+    class Job:
+        def __init__(self):
+            self.ended = []
+            self.pid = None
+
+        def finish(self, **kw):
+            self.ended.append(kw)
+
+        def started_process(self, pid):
+            self.pid = pid
+
+    def submit(self, kind, label, start, cancel=None, **kw):
+        job = self.Job()
+        cancel(job)
+        start(job)
+        return job
+
+
+def test_a_cancel_racing_the_start_tells_the_owner_once(tmp_path):
+    script = _script(tmp_path, "print('ran')\n")
+    ends = Ends()
+    job = tools.run(_Racing(), "sentence-corpus", "x", [script], on_end=ends, frozen=False)
+    assert _wait(lambda: job.ended)
+    time.sleep(0.2)
+    assert ends.codes == [None] and job.pid is None
+
+
 def test_run_returns_at_once(tmp_path):
     slow = _script(tmp_path, "import time; time.sleep(2)\n")
     registry = jobs_module.JobRegistry()

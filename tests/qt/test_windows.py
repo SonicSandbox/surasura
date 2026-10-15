@@ -101,9 +101,7 @@ def test_a_switch_during_a_write_waits_for_it_and_its_result_goes_to_the_bar(mai
     w = windows.show(main, "probe", Probe)
     w.begin_write()
     _switch(main, "zh")
-    QTest.qWait(300)                                       # the write lands on the writer's worker
-    assert wait_until(lambda: main.services.settings.get().get("target_language") == "zh")
-    QTest.qWait(100)
+    assert wait_until(lambda: w._language_waiting == "zh")    # the write landed (the writer's worker) and was heard
     assert w.reads == [] and w.language == "ja"            # never cut: still the language it writes for
     w.end_write("Removed: 1, kept in the trash folder")
     assert w.reads == ["zh"] and w.language == "zh"
@@ -138,6 +136,16 @@ def test_the_settings_tab_lists_every_door_wired_tipped_and_named(main):
         assert b.text() == op.label and b.toolTip() == op.tip
     found, _walked = problems(main)
     assert found == []
+
+
+def test_row_ones_doors_open_their_windows_once(main):
+    main.show_tab("settings")
+    for name in ("frequency-lists", "sentence-dictionary"):
+        main.launchers.buttons[name].click()
+        first = windows.opened(main, name)
+        assert first is not None and first.isVisible()
+        main.launchers.buttons[name].click()
+        assert windows.opened(main, name) is first
 
 
 def test_a_door_shows_only_while_its_rule_and_its_module_say_so(main, monkeypatch):

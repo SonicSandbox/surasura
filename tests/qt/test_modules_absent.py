@@ -71,12 +71,13 @@ def test_with_every_module_removed_their_doors_hide_and_the_core_windows_open_wi
         assert shown == (module is None), (name, module)    # a module's door hides; a core door stays
         if module is None:
             assert result["opened"][name], name
+    assert {"frequency-lists", "sentence-dictionary"} <= set(result["opened"])
     assert result["tk"] == [] and result["bar"] == ""
     assert result["junban_found"] is False                  # the witness: the child's build really has no modules
 
 
 def test_opening_every_window_whose_door_shows_imports_no_tkinter(tmp_path):
     result = _run(tmp_path, block_modules=False)
-    assert all(result["opened"].values())
+    assert result["opened"] and all(result["opened"].values())
     assert result["tk"] == []
     assert result["junban_found"] is os.path.isdir(os.path.join(ROOT, "modules", "junban"))

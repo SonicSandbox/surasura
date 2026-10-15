@@ -436,6 +436,13 @@ class MinerCard(QWidget):
         self._buttons(None, answered=True)
         slot.layout().addWidget(self)
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # the wrapped steps' height at this width: a stacked row at L gave the card less, and the lines ran into the path
+        need = self.layout().heightForWidth(event.size().width())
+        if need > 0 and need != self.minimumHeight():
+            self.setMinimumHeight(need)
+
     def _build_steps(self):
         steps = QWidget(self)
         box = QVBoxLayout(steps)

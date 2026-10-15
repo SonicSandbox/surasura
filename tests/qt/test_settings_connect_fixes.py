@@ -379,3 +379,21 @@ def test_a_painting_that_breaks_after_a_confirmed_write_still_saves_the_pace(wor
     assert wait_until(lambda: store.calls, 5)
     assert store.calls == [({"words_per_day": 30}, None)]
     qt_errors.clear()
+
+
+# --- the shots (W3.3 S8): the Anki Miner card's wrapped steps at a narrow width -------------------------------------- #
+def test_the_anki_miner_cards_wrapped_steps_keep_their_height_when_the_row_narrows(world):
+    # text size L in the window's minimum width: the steps wrap to more lines; the card asks for their height, so no
+    # line runs into the path field (the shots' 100 % L, 1000 wide)
+    page, store, rows, _fake = make(world)
+    world.miner = miner_result("setup")
+    rows.miner.check()
+    assert wait_until(lambda: not rows.miner.checking, 5)
+    card = rows.miner
+    heights = []
+    for width in (card.maximumWidth(), 300):
+        card.resize(width, card.height())             # a visible widget's resize is told at once
+        need = card.layout().heightForWidth(card.width())
+        assert card.minimumHeight() == need > 0, width
+        heights.append(need)
+    assert heights[1] > heights[0], "the narrower card wraps to more lines: this test proves nothing"

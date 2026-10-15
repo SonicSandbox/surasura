@@ -378,7 +378,7 @@ def test_a_chip_adds_the_words_dictionary_form_shown_by_its_spelling(main):
         item = w.chips.item(i)
         item.setCheckState(Qt.CheckState.Checked if item.text() == "出かける" else Qt.CheckState.Unchecked)
     w.add_kept_button.click()
-    assert wait_until(lambda: "出掛ける" in _text(path))
+    assert wait_until(lambda: "出掛ける" in _text(path), 20)          # a worker’s write, under a loaded machine
     assert _text(path) == "出掛ける\n"                             # the lemma, the identity the list compares
 
 

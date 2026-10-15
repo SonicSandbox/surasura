@@ -93,8 +93,9 @@ def action(menu, text):
 def test_one_line_per_rule_hato_first_then_each_source_in_order(qapp):
     page, store, rows = rules_page({"placing_rules": RULES})
     assert shown(rows) == [("hato", "top"), ("bilibili", "finished"), (CHANNEL, "soon")]
-    words = rows.lines[CHANNEL].words.text()
-    assert words.startswith("From ") and "youtube · channel UCgx8nPpXp9c0Kv4bUk1D3ng" in words
+    words = rows.lines[CHANNEL].words                  # cut in the middle when the line is short of room: whole on hover
+    assert words.text().startswith("From ") and words.text().endswith("v4bUk1D3ng")
+    assert words.toolTip() == words.accessibleName() == "From youtube · channel UCgx8nPpXp9c0Kv4bUk1D3ng"
     labels = [label for _v, label in sr.RuleLine.options("top")]
     assert "Top of Current" in labels and "Goal" in labels and not any("HighPriority" in w for w in labels)
     assert store.calls == [], "showing the rules writes nothing"

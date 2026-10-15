@@ -171,7 +171,7 @@ def show(row_view, name=None, px=None):
         label.setObjectName("settingslogo")
         label.setAccessibleName(name)
         label.hide()
-        row_view.layout().insertWidget(0, label, 0, Qt.AlignmentFlag.AlignVCenter)
+        row_view.layout().insertWidget(0, label, 0, Qt.AlignmentFlag.AlignTop)        # beside the name, not mid-row
     px = px or row_px()
 
     def paint(pix):

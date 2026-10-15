@@ -24,7 +24,7 @@ GUI_Design_Guidelines_Qt: the page's controls and label styles (no new rules), a
 from collections.abc import Mapping
 
 from PyQt6 import sip
-from PyQt6.QtCore import QEvent, QObject, QPoint, Qt, QTimer
+from PyQt6.QtCore import QEvent, QObject, QPoint, QSize, Qt, QTimer
 from PyQt6.QtWidgets import QHBoxLayout, QLabel, QMenu, QVBoxLayout, QWidget
 
 from app import theme
@@ -116,6 +116,31 @@ def source_words(source):
 
 
 # --- the row ----------------------------------------------------------------------------------------------------- #
+class _SourceWords(QLabel):
+    """*From <source>*: its whole width while there is room, cut in the middle with … when there isn't (a channel id
+    never wraps, so it would hold the page wider than the window: the shots' L at 1000 wide); the whole text on hover."""
+
+    def __init__(self, text, parent):
+        super().__init__(parent)
+        self._full = text
+        self.setTextFormat(Qt.TextFormat.PlainText)
+        self.setToolTip(text)
+        self.setAccessibleName(text)
+        self.setText(text)
+
+    def sizeHint(self):
+        return QSize(self.fontMetrics().horizontalAdvance(self._full) + 2, super().sizeHint().height())
+
+    def minimumSizeHint(self):
+        return QSize(self.fontMetrics().horizontalAdvance("M" * 8), super().minimumSizeHint().height())
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        shown = self.fontMetrics().elidedText(self._full, Qt.TextElideMode.ElideMiddle, max(0, self.width()))
+        if shown != self.text():
+            self.setText(shown)
+
+
 class RuleLine(QWidget):
     """One source's line: *From <source>* and its place (`select`); a pick calls `on_pick(source, target)`."""
 
@@ -128,9 +153,8 @@ class RuleLine(QWidget):
         line = QHBoxLayout(self)
         line.setContentsMargins(0, 0, 0, 0)
         line.setSpacing(round(8 * _f()))
-        self.words = QLabel(self)
+        self.words = _SourceWords(S.RULE_LINE_WORDS.format(source=source_words(source)), self)
         self.words.setObjectName("settingsaffix")
-        self.words.setText(S.RULE_LINE_WORDS.format(source=source_words(source)))
         line.addWidget(self.words)
         line.addStretch(1)
         self.select = None
@@ -202,6 +226,7 @@ class RulesRow(QObject):
         foot.addWidget(self.add)
         column.addLayout(foot)
         slot.layout().addWidget(self.box)
+        slot.slot_needs = lambda: self.box.sizeHint().width()    # beside the words: every source whole (else stacked)
         self._sync(keep=False)
         page.bridge.settings_written.connect(self._written)
         if page.built:
@@ -269,6 +294,9 @@ class RulesRow(QObject):
         layouts deep, more than the hold's own settling reaches in one turn (the page would grow a turn late, a
         wrapped row above squeezed for a frame)."""
         widget, top = self.box, self.page.scroll.viewport()
+        view = self.page.row(ROW_ID)
+        if view is not None:
+            view.arrange()                              # a longer source may no longer fit beside the words
         while widget is not None and widget is not top:
             if widget.layout() is not None:
                 widget.layout().activate()

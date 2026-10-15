@@ -331,6 +331,7 @@ class RowView(QWidget):
             self.words.addWidget(self.label)
             self.words.addWidget(self.help)
             line.addLayout(self.words, 1)
+            self.words.setAlignment(Qt.AlignmentFlag.AlignTop)    # the words together at the top beside a tall control
             # a list grows downward from the row's top (a folder added never moves the control the click was on)
             line.addWidget(self.slot, 0, self._slot_align(False))
         line.setSizeConstraint(QBoxLayout.SizeConstraint.SetNoConstraint)
@@ -349,8 +350,10 @@ class RowView(QWidget):
         """The width the words and the control need beside each other (the words never squeezed below their
         minimum: S7's `known_from_anki`)."""
         m = self.layout().contentsMargins()
-        return (m.left() + m.right() + self._words_min() + self.layout().spacing()
-                + self.slot.minimumSizeHint().width())
+        # a custom slot that narrows further once stacked says what it needs beside the words (`slot_needs`)
+        needs = next((w.slot_needs for w in self.slot.children() if getattr(w, "slot_needs", None)), None)
+        slot = needs() if needs is not None else self.slot.minimumSizeHint().width()
+        return m.left() + m.right() + self._words_min() + self.layout().spacing() + slot
 
     def minimumSizeHint(self):
         """As narrow as the stacked row: the page never cuts a control at its right edge, it stacks the row (B4)."""

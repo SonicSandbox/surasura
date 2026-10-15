@@ -146,3 +146,15 @@ def test_a_record_naming_no_producer_follows_hatos_line_on_the_cli_path_as_in_th
         ("hato", "finished")
     assert rules.rule_for({"producer": "youtube"}, {"placing_rules": {"hato": "top"}}) is None, \
         "a named program has only its own lines"
+
+
+def test_a_channel_set_to_wait_waits_though_its_program_has_a_place_and_a_place_no_rule_names_is_never_used():
+    # a hand-edited settings.json: the channel's own "wait" outranks youtube's line (the channel is asked first), and
+    # a target that names no place ("graduated", 2.x's folder word) places nothing — the arrival waits for the user
+    from app.connect import rules
+    channel = "UCgx8nPpXp9c0Kv4bUk1D3ng"
+    record = {"producer": "youtube", "channel_id": channel}
+    assert rules.rule_for(record, {"placing_rules": {"youtube": "top", f"youtube:{channel}": "wait"}}) is None
+    assert rules.rule_for(record, {"placing_rules": {"youtube": "soon", f"youtube:{channel}": "goal"}}) == \
+        (f"youtube:{channel}", "goal")
+    assert rules.rule_for({"producer": "hato"}, {"placing_rules": {"hato": "graduated"}}) is None

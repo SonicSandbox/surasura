@@ -127,8 +127,14 @@ def test_a_closed_window_hears_no_switch(main):
 
 
 # --- the openers and the Settings tab's list (IK-16) ---------------------------------------------------------------- #
+def _settings_row(main):
+    # The Settings tab's list of doors. Until the shell's own hook lands (its owner's step), the test builds the row on
+    # the tab's page itself, as `ShellWindow._page("settings")` will.
+    return windows.launchers(main, main.page_widgets["settings"])
+
+
 def test_the_settings_tab_lists_every_door_wired_tipped_and_named(main):
-    row = main.launchers
+    row = _settings_row(main)
     assert set(row.buttons) == {op.name for op in windows.OPENERS}
     assert row.parentWidget() is main.page_widgets["settings"]
     for op in windows.OPENERS:
@@ -139,12 +145,13 @@ def test_the_settings_tab_lists_every_door_wired_tipped_and_named(main):
 
 
 def test_row_ones_doors_open_their_windows_once(main):
+    row = _settings_row(main)
     main.show_tab("settings")
     for name in ("frequency-lists", "sentence-dictionary"):
-        main.launchers.buttons[name].click()
+        row.buttons[name].click()
         first = windows.opened(main, name)
         assert first is not None and first.isVisible()
-        main.launchers.buttons[name].click()
+        row.buttons[name].click()
         assert windows.opened(main, name) is first
 
 

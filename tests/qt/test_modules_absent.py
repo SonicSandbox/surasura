@@ -36,6 +36,7 @@ app = QApplication(["w34-modules-absent"])
 services = shell.Services()
 win = shell.open_window(app, services)
 win.show()
+row = windows.launchers(win, win.page_widgets["settings"])   # the Settings tab's doors (the shell's hook: its owner's step)
 win.show_tab("settings")
 import time
 app.processEvents()
@@ -47,7 +48,7 @@ while looking() and time.monotonic() < deadline:
     time.sleep(0.01)
 doors, opened = {}, {}
 for op in windows.OPENERS:
-    shown = not win.launchers.buttons[op.name].isHidden()
+    shown = not row.buttons[op.name].isHidden()
     doors[op.name] = [shown, op.module]
     if shown:
         w = windows.launch(win, op)
@@ -58,6 +59,8 @@ result = {"doors": doors, "opened": opened, "tk": sorted(m for m in sys.modules 
 for w in app.topLevelWidgets():
     w.close()
 services.shutdown(0.5)
+from app.qt import bridge
+bridge.wait_for_workers(5000)                        # no pool worker still running Python as the process ends
 sys.stdout.write("\\n" + json.dumps(result) + "\\n")
 """
 

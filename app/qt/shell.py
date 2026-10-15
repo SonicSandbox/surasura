@@ -64,9 +64,6 @@ REPLAN_MARGIN = 0.25
 # P-text (W2.1 row 9): a theme or text-size switch with the shell's widgets alive measured well under ~300 ms, so a
 # change applies at once (G1.2-21). W3.3 measures it again with its Settings page alive; False = *Restart to apply*.
 LIVE_LOOK = True
-# W3.4: at exit, how long the quit waits for the thread pool's workers (`bridge.wait_for_workers`) after the window
-# closed and the duties stopped: a worker still running Python as the process ends can crash it.
-QUIT_WORKERS_MS = 3000
 
 
 # --- the services the window calls ------------------------------------------------------------------------------- #
@@ -898,11 +895,7 @@ class ShellWindow(QMainWindow):
     # --- W2.2: the pages a library fills ----------------------------------------------------------------------- #
     def _page(self, name):
         if self.services.library is None or name not in screens.PAGES:
-            page = self._waiting_page(name)
-            if name == "settings":                         # W3.4: the ported windows' doors until W3.3 / W3.2 (IK-16)
-                from app.qt import windows
-                self.launchers = windows.launchers(self, page)
-            return page
+            return self._waiting_page(name)
         return screens.make_page(name, language=self.language)
 
     def show_library(self, view):
@@ -1707,7 +1700,6 @@ def main(argv=None):
             services.shutdown(release=instance.release)   # the claim goes before the store's close trigger
         finally:
             instance.release()                            # (once: done already unless the quit failed before it)
-            bridge.wait_for_workers(QUIT_WORKERS_MS)      # W3.4: no pool worker still running Python at the exit
     return code
 
 

@@ -267,6 +267,45 @@ def _open_anki(shell):
 
 OPENERS += [Opener("anki", strings.ANKI_DOOR, strings.ANKI_DOOR_TIP, always, _open_anki)]
 
+# row 6: 順 Junban (+ Put Anki back) — the 順 button's rule (`enable_junban`, as the Tk dashboard shows it); Put back
+# shows whenever Junban is installed (the way back stays, switched on or not: Settings → Data & System's rule).
+
+
+def _junban_on(settings, _language):
+    return bool(settings.get("enable_junban", False))
+
+
+def _open_junban(shell):
+    from modules.junban import open_junban_qt
+    return open_junban_qt(shell)
+
+
+def _open_put_back(shell):
+    from modules.junban import open_put_back_qt
+    return open_put_back_qt(shell)
+
+
+OPENERS += [
+    Opener("junban", strings.JUNBAN_DOOR, strings.JUNBAN_DOOR_TIP, _junban_on, _open_junban, module="junban"),
+    Opener("put-back", strings.PUT_BACK_DOOR, strings.PUT_BACK_DOOR_TIP, always, _open_put_back, module="junban"),
+]
+
+# row 5: Backfill (+ Fields, パターン data) — Junban's window: shown while 順 is switched on and Junban imports (the Tk
+# dashboard's `backfill_available`), opened lazily through the module's `open_backfill_qt`.
+
+
+def _backfill_available(settings, _language):
+    return settings.get("enable_junban", True) is not False
+
+
+def _open_backfill(shell):
+    from modules.junban import open_backfill_qt
+    return open_backfill_qt(shell)
+
+
+OPENERS += [Opener("backfill", strings.BACKFILL_DOOR, strings.BACKFILL_DOOR_TIP, _backfill_available, _open_backfill,
+                   "junban")]
+
 
 # The optional modules the doors name, looked for once per process (a module can't appear mid-session), on a worker
 # after the window opened: name -> bool. A door that names a module stays hidden until its module was found.

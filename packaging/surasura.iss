@@ -77,6 +77,7 @@ Type: files; Name: "{app}\Surasura.exe"
 Type: files; Name: "{app}\surasura-cli.exe"
 Type: files; Name: "{app}\updater.exe"
 Type: files; Name: "{app}\RELEASE_NOTES.md"
+Type: files; Name: "{app}\LICENSE"
 
 [Code]
 const

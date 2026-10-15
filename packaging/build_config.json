@@ -20,9 +20,9 @@
   },
   "parts": [
     {"name": "app", "paths": ["Surasura.exe", "surasura-cli.exe", "updater.exe", "README.md", "RELEASE_NOTES.md",
-                              "UPDATE_INSTRUCTIONS.md", "_internal/base_library.zip", "_internal/build_stamp.json",
-                              "_internal/.env", "_internal/templates/", "_internal/app/", "_internal/scripts/",
-                              "_internal/samples/"]},
+                              "UPDATE_INSTRUCTIONS.md", "LICENSE", "_internal/base_library.zip",
+                              "_internal/build_stamp.json", "_internal/.env", "_internal/templates/", "_internal/app/",
+                              "_internal/scripts/", "_internal/samples/"]},
     {"name": "qt", "paths": ["_internal/PyQt6/", "_internal/licenses/"]},
     {"name": "dict", "paths": ["_internal/unidic_lite/", "_internal/jieba/", "_internal/defaults/"]},
     {"name": "runtime", "paths": [""]}

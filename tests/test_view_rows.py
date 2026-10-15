@@ -678,3 +678,85 @@ def test_goal_and_finished_are_given_back_unbuilt_when_only_a_current_file_chang
     assert view2.counts == view1.counts
     fresh = vr.build(items, WORKS, {}, numbers=(1, {}), cards=cards)
     assert view2.goal == fresh.goal and view2.finished == fresh.finished
+
+
+# --- W3.1a: the string planned here (B2), the numbers' partial rebuild (on a drop) ---------------------------------- #
+def _three_shows():
+    return items_of([("now", 1, 1, eps("星降る街の小さな工房", 1, 30), {k: {"watched": 1} for k in range(14)}),
+                     ("now", 2, 2, eps("雲の上の郵便屋さん", 1, 3), {}),
+                     ("soon", 3, 3, eps("白銀の書庫番", 1, 5), {}),
+                     ("graduated", 1, 9, eps("星降る街の小さな工房", 31, 32), {})])
+
+
+def test_each_current_rows_string_is_planned_when_the_row_is_built_not_by_the_window():
+    """B2: the plan and its need ride on the row, worked out on the reader's thread; Finished's rows carry none."""
+    view = vr.build(_three_shows(), WORKS, {"mine_line": 20})
+    from app.services import stone_plan as sp
+    for r in view.rows:
+        plan = sp.plan_of(r)
+        assert r.string == (plan, max(sp.tightest(plan), sp.ahead(plan)))
+    assert all(r.string is None for m in view.finished for r in m.rows)
+
+
+def test_the_view_names_the_most_needing_string_per_kind_of_anki_count_below_up_next():
+    """The window's one title width reads these few numbers (its font adds each kind's width), never every row; Up
+    Next (the first row) isn't one of Current's one-line rows."""
+    view = vr.build(_three_shows(), WORKS, {"mine_line": 20})
+    below = view.rows[1:]
+    assert set(view.worst) == {vr.stat_kind(r.status) for r in below}
+    for kind, (need, plan) in view.worst.items():
+        same = [r for r in below if vr.stat_kind(r.status) == kind]
+        assert need == max(r.string[1] for r in same) and plan in [r.string[0] for r in same]
+    assert vr.stat_kind(vr.Status("in_anki", "12", "", "ok")) == ("in_anki", "12")
+    assert vr.stat_kind(vr.Status("mining", "Mining…", "", "accent")) == "mining"
+    assert vr.stat_kind(vr.Status("waiting", "Waiting", "", "dim")) is None and vr.stat_kind(None) is None
+    assert vr.worst_needs([]) == {}
+
+
+def test_the_views_answer_stays_one_object_while_it_is_the_same():
+    """A refresh that changes no row's need hands the window the very same answer: it works nothing out again."""
+    items = _three_shows()
+    cache = vr.RowCache()
+    first = vr.build(items, WORKS, {}, numbers=(1, {}), cache=cache)
+    again = vr.build(items, WORKS, {}, numbers=(2, {}), cache=cache)
+    assert again.worst is first.worst
+    items[32] = dict(items[32], watched=1)                     # a file of a row below Up Next watched: its need moves
+    third = vr.build(items, WORKS, {}, numbers=(2, {}), cache=cache, changed=[32])
+    assert third.worst == vr.worst_needs(third.rows[1:])
+
+
+def test_a_numbers_version_that_says_what_it_changed_rebuilds_only_those_rows():
+    """A drop moves *N new* on a few rows; the rest stay the same objects (nothing repainted for them)."""
+    items = _three_shows()
+    cache = vr.RowCache()
+    numbers = {i: (5, 10, 1) for i in items}
+    first = vr.build(items, WORKS, {}, numbers=(1, numbers), cache=cache)
+    moved = {**numbers, 34: (5, 10, 7)}                  # one file of the third show
+    second = vr.build(items, WORKS, {}, numbers=(2, moved), cache=cache, numbers_changed={34})
+    assert second.rows[0] is first.rows[0] and second.rows[1] is first.rows[1]
+    assert second.rows[2] is not first.rows[2] and second.rows[2].n_new == first.rows[2].n_new + 6
+    third = vr.build(items, WORKS, {}, numbers=(3, moved), cache=cache, numbers_changed=None)
+    assert all(a is not b for a, b in zip(third.rows, second.rows))        # unknown: every row again
+    same = vr.build(items, WORKS, {}, numbers=(3, moved), cache=cache, numbers_changed=set())
+    assert all(a is b for a, b in zip(same.rows, third.rows))
+
+
+def test_the_first_screens_rows_are_planned_again_as_they_are_read():
+    view = vr.build(_three_shows(), WORKS, {"mine_line": 20})
+    import json
+    data = json.loads(json.dumps(vr.to_cache(view)))
+    assert all(r[-1] is None for r in data["rows"])           # the plans aren't written: planned again when read
+    back = vr.from_cache(data)
+    assert back.rows == view.rows[:vr.CACHE_ROWS] and back.worst == view.worst
+
+
+def test_hatos_mix_is_planned_as_the_mix_not_by_its_videos_kind():
+    """(V06) hato's drop folder is one mix: its string is sapphire whatever its videos are, as `plan_of` reads it."""
+    items = items_of([("now", 1, 1, eps("星降る街の小さな工房", 1, 3), {}),
+                      ("now", 4, 4, ["料理の基本 [abcdefghijk].srt", "包丁の使い方 [bcdefghijkl].srt"],
+                       {k: {"rel_path": f"HighPriority/Hato/v{k}.srt", "source_type": "youtube"} for k in (0, 1)})])
+    view = vr.build(items, WORKS, {"mine_line": 20})
+    from app.services import stone_plan as sp
+    mix = view.rows[1]
+    assert mix.source == "hato" and mix.string[0] == sp.plan_of(mix)
+    assert mix.string[0].gem == sp.gem_of(mix.media, mix=True) != sp.gem_of(mix.media)

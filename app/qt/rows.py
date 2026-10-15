@@ -510,9 +510,10 @@ class RowsModel(QAbstractListModel):
             if kind == EMPTY:
                 return payload[0]
         if role == Qt.ItemDataRole.AccessibleDescriptionRole:
-            if kind in (HERO, ROW):                 # its line, and its string read as words (Q6)
+            if kind in (HERO, ROW):                 # its line, and its string read as words (Q6): the reader's plan
+                plan = payload.string[0] if payload.string is not None else stone_plan.plan_of(payload)
                 return strings.ROWS_ACCESSIBLE_STRING.format(line=payload.description, string=stone_plan.words(
-                    stone_plan.plan_of(payload), strings.STRING_WORDS))
+                    plan, strings.STRING_WORDS))
             if kind == FINISHED:
                 return payload.description
             if kind == NEED:
@@ -554,8 +555,9 @@ class RowsModel(QAbstractListModel):
                     getattr(new[1], "key", None) != self.open_key and _same_face(old[1], new[1], new[0]))
 
     def set_entries(self, entries):
-        """-> "same" (payloads swapped in place: the changed rows repaint, `self.changed`), "relayout" (same keys,
-        another height somewhere) or "reset"."""
+        """-> "same" (payloads swapped in place: the changed rows repaint, `self.changed`), "moved" (the same rows in
+        another order, every place as tall as before: swapped in place too, `self.changed` the span the move touched —
+        no reset, no relayout: W3.1a S3, a drop), "relayout" (same keys, another height somewhere) or "reset"."""
         keys = [self.key_of(e) for e in entries]
         if keys == self.keys and entries:
             old = self.entries
@@ -564,6 +566,11 @@ class RowsModel(QAbstractListModel):
             self.before = old                       # what `looks_different` compares with
             self.entries = list(entries)
             return "same" if shapes else "relayout"
+        moved = self._moved_span(keys, entries)
+        if moved is not None:
+            self.changed, self.before = moved, self.entries
+            self.entries, self.keys = list(entries), keys
+            return "moved"
         # S19's written skip: a reset (a row added or gone, even below the screen) repaints the screen's rows — Qt's
         # QListView relays out and repaints its viewport on any reset or insert — but from their kept pixmaps (no row
         # drawn afresh: `_same_face`); an insert that repaints nothing on screen waits for W3.1's uniform rows (IK-38)
@@ -575,6 +582,26 @@ class RowsModel(QAbstractListModel):
             self.open_key = None
         self.endResetModel()
         return "reset"
+
+    def _moved_span(self, keys, entries):
+        """A reorder that keeps every place's height: the same rows (by their own key — Up Next's row coming down is
+        the same row), each place the same shape as before (`shape_of`: kind, lines, open) — then the places whose row
+        changed, first to last (what a drop moved: the rows between its two ends shift by one), and any other place
+        whose entry changed as a "same" refresh would list it. Else None."""
+        old = self.keys
+        if len(keys) != len(old) or not keys:
+            return None
+        lo = next((i for i, (a, b) in enumerate(zip(old, keys)) if a != b), None)
+        if lo is None:
+            return None
+        hi = next(i for i in range(len(keys) - 1, -1, -1) if old[i] != keys[i])
+        if sorted(k[1] for k in old[lo:hi + 1]) != sorted(k[1] for k in keys[lo:hi + 1]):
+            return None                             # a row came or went: not a move
+        before = self.entries
+        if any(self.shape_of(before[i]) != self.shape_of(entries[i]) for i in range(len(entries))):
+            return None
+        return [i for i, (a, b) in enumerate(zip(before, entries))
+                if lo <= i <= hi or a[1] is not b[1] or a[2] != b[2]]
 
 
 # --- the delegate: geometry, painting, hit-testing ----------------------------------------------------------------- #
@@ -631,7 +658,9 @@ class RowDelegate(QStyledItemDelegate):
         self._heights, self._h_entries, self._h_open, self._h_look = [], None, None, None
         self._bytes = {"row": 0, "ep": 0}
         self._infos, self._infos_look = {}, None     # a Current row's key -> its string's plan and needs (`_info`)
-        self._tw = None                              # (entries, width, look, the one title width) (`title_w`)
+        self._stat_ws = {}                           # what shows right of a string -> its width, this look (`_info`)
+        self._tw = None                              # (the reader's needs or the entries, width, look, the one title
+        #                                              width) (`title_w`)
 
     def _sprite(self, kind, payload, size, dpr, hovered, draw, ident=None, ground="bg", to=None, spare=False,
                 extra=None):
@@ -839,44 +868,81 @@ class RowDelegate(QStyledItemDelegate):
             return round(rl("icon-w") * fz())
         return 0
 
-    def _info(self, row):
-        """A Current row's string: (its plan, its need at its tightest now or after its next fuse — px at the string's
-        own scale —, the width of its Anki count). Planned once per row content (`stone_plan.plan_of`) and kept by its
-        key while its files, next file, media, source and status are the same."""
+    def _stat_w_of(self, kind):
+        """`_stat_w` by what decides it (`view_rows.stat_kind`: the Anki count's label, mining, nothing), kept per look:
+        the font is asked once per label, never once per row."""
         look = style.current()
         if look != self._infos_look:
             self._infos.clear()
+            self._stat_ws.clear()
             self._infos_look = look
+        w = self._stat_ws.get(kind)
+        if w is None:
+            status = None if kind is None else view_rows.Status("mining", "", "", "") if kind == "mining" else \
+                view_rows.Status("in_anki", kind[1], "", "")
+            w = self._stat_ws[kind] = self._stat_w(status)
+        return w
+
+    def _info(self, row):
+        """A Current row's string: (its plan, its need at its tightest now or after its next fuse — px at the string's
+        own scale —, the width of its Anki count). The plan and the need are the reader's (`Row.string`, planned off
+        this thread once per row content: W3.1a B2); a row without them (a test's own) is planned here, kept by its key
+        while its files, next file, media and source are the same."""
+        stat_w = self._stat_w_of(view_rows.stat_kind(row.status))
+        if row.string is not None:
+            return row.string[0], row.string[1], stat_w
         hit = self._infos.get(row.key)
-        if hit is not None and hit[0] is row.episodes and hit[1] == (row.next_index, row.media, row.source, row.status):
-            return hit[2]
+        if hit is not None and hit[0] is row.episodes and hit[1] == (row.next_index, row.media, row.source):
+            return hit[2][0], hit[2][1], stat_w
         plan = stone_plan.plan_of(row)
-        out = (plan, max(stone_plan.tightest(plan), stone_plan.ahead(plan)), self._stat_w(row.status))
+        out = (plan, max(stone_plan.tightest(plan), stone_plan.ahead(plan)))
         if len(self._infos) > 50000:
             self._infos.clear()
-        self._infos[row.key] = (row.episodes, (row.next_index, row.media, row.source, row.status), out)
-        return out
+        self._infos[row.key] = (row.episodes, (row.next_index, row.media, row.source), out)
+        return out[0], out[1], stat_w
+
+    def _worst(self):
+        """The reader's answer for the one title width (`View.worst`, `view_rows.worst_needs`): read from the view the
+        list's page shows (`Page.view_model`, set before its entries) when these entries are that view's rows — else
+        None, and `title_w` walks the rows itself."""
+        view = getattr(self.view.parent(), "view_model", None)
+        table = getattr(view, "worst", None)
+        entries = self._model.entries
+        if table is None or not entries or len(view.rows) != len(entries) or entries[0][1] is not view.rows[0] or \
+                entries[-1][1] is not view.rows[-1]:
+            return None
+        return table
 
     def title_w(self, width):
         """The one title width every Current row shares at this list width (`stone_plan.title_width`): round(187 × the
         text size), narrowed by the row whose string is shortest of room at its tightest (now or after its next fuse),
         never under round(80 × the text size). The string keeps the reference's own px (`stones.FOLLOWS_TEXT_SIZE` is
-        False: `string_fz` 1.0). Worked out once per (the list's rows, its width, the look)."""
+        False: `string_fz` 1.0). The rows' needs come worked out by the reader, per kind of Anki count (`View.worst`):
+        this thread adds each kind's width and takes the largest — a few numbers, never every row (W3.1a B2). Worked out
+        once per (that answer, or the list's rows when there is none; its width; the look)."""
         model = self._model
         look = style.current()
+        table = self._worst()
+        key = model.entries if table is None else table
         hit = self._tw
-        if hit is not None and hit[0] is model.entries and hit[1] == width and hit[2] == look:
+        if hit is not None and hit[0] is key and hit[1] == width and hit[2] == look:
             return hit[3]
         worst, worst_w, worst_stat = None, -1.0, 0
-        for kind, row, _lines in model.entries:
-            if kind != ROW:
-                continue
-            plan, need, stat_w = self._info(row)
-            if need + stat_w > worst_w:              # the row shortest of room: its need and its own Anki count
-                worst, worst_w, worst_stat = plan, need + stat_w, stat_w
+        if table is not None:
+            for kind, (need, plan) in table.items():
+                stat_w = self._stat_w_of(kind)
+                if need + stat_w > worst_w:          # the row shortest of room: its need and its own Anki count
+                    worst, worst_w, worst_stat = plan, need + stat_w, stat_w
+        else:
+            for kind, row, _lines in model.entries:
+                if kind != ROW:
+                    continue
+                plan, need, stat_w = self._info(row)
+                if need + stat_w > worst_w:
+                    worst, worst_w, worst_stat = plan, need + stat_w, stat_w
         tw = stone_plan.title_width((worst,) if worst is not None else (), width, fz(),
                                     self._fixed_w(width, worst_stat), string_fz=1.0)
-        self._tw = (model.entries, width, look, tw)
+        self._tw = (key, width, look, tw)
         return tw
 
     def _hover_items(self, row):
@@ -2067,7 +2133,7 @@ class RowsView(QListView):
         anchor = self._anchor()
         before = model.entries
         how = model.set_entries(entries)
-        if how == "same":
+        if how in ("same", "moved"):                 # a move keeps every place's height: no relayout (W3.1a S3)
             self.delegate.same_heights(before, model.entries)     # equal shapes: equal heights (review D-2)
             lo, hi = self._near()
             changed = model.changed

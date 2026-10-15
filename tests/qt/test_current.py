@@ -1502,7 +1502,7 @@ def test_a_closed_rows_picture_never_shows_its_number_or_its_descriptions_but_sh
         if e[0] == rows.ROW and len(e[1].episodes) >= 2 and len(e[1].title) <= 12 and e[1].key != lst.model().open_key)
     row = row._replace(title="霧の町")      # short: a title one character longer must still fit, not be cut the same
     other = row._replace(accessible="別の説明", description="別の説明", index=row.index + 7)
-    fewer = row._replace(episodes=row.episodes[:1], next_index=0)
+    fewer = row._replace(episodes=row.episodes[:1], next_index=0, string=None)   # its plan isn't the reader's now
     assert other != row
     slab = lst.delegate.slab_of(lst.visualRect(lst.model().index(i, 0)))
     size = slab.size()

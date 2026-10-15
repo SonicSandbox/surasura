@@ -2,8 +2,11 @@
 / E21): every store command the window gives runs here, on a plain thread of its own — never the window's thread.
 
 - **`Writer`**, one per language: its own store handle (opened on its thread through an opener of
-  `library_store.StoreOpener`'s shape, role "window"), commands queued in the order given — `move`, `nudge`, `set_tier`
-  (Finished is the store's `graduated`), `set_watched`, `undo`. Each returns at once (the window has already painted its
+  `library_store.StoreOpener`'s shape, role "window"), commands queued in the order given — `move` (a Goal-well drop:
+  `end=True`, Goal's end as it stands when the write lands), `nudge`, `set_tier` (Finished is the store's `graduated`),
+  `set_finished` (the store's `finish`: the Finished toast's *Keep* / *Take its new cards out*), `set_watched`,
+  `insert_at` (an Explorer drop: the files copied into the tier's folder on this thread, then placed), `undo`. Each
+  returns at once (the window has already painted its
   own copy of the order); what happened comes back through callbacks, called on the writer's thread (the window's bridge
   queues them):
   - saved → the `Change` pushed on the Undo stack (`UNDO_DEPTH`, the oldest let go) and `on_saved(change, label)`;
@@ -29,6 +32,10 @@
   `after_move` (the touched rows within RP-6's 50 ms) and `resync()` for everything else. With no plan, a plan that
   stands aside or one that no longer describes the library, `why()` says so and the moves answer nothing.
 
+- **`plan_check(language, settings)`**: `Numbers`' full staleness verdict (the replan host's `plan_engine.check`);
+  **`open_library(language)`**: the reader and the numbers on one opener (the writer takes the same opener).
+
+Its user-facing words are the window's (`app/qt/strings.py`'s `MOVE_WORDS`, handed to `words`): nothing here holds one.
 Qt-free (the import guard): no Qt, Tk or pandas; the store, the plan engine and the paths are imported where used.
 """
 import itertools
@@ -47,21 +54,15 @@ WAIT_S = 0.5                    # the thread looks at its queue at least this of
 MODE_RECHECK_S = 2.0            # idle, the thread asks the store's mode this often (`can_write` reads the answer)
 JOURNAL_VERSION = 1
 JOURNAL_TRIES = 10              # a journal write Windows refuses (the file held a moment) is tried this many times
-JOURNALLED = ("move", "nudge", "set_tier", "set_watched")   # an undo needs its Change: never journalled
+JOURNALLED = ("move", "nudge", "set_tier", "finish", "set_watched")
+#   an undo needs its Change: never journalled; nor an Explorer drop (`insert_at`: no ids yet, and its copied files are
+#   in the tier's folder, where the next disk sync finds them anyway)
 ANALYSED = ("now", "soon", "goal")                          # the plan engine's tiers, in a Generate's order
 PLAN_FILE = "plan.json.gz"      # `analyzer.PLAN_FILE` (not imported: the analyzer is heavy; a test holds them equal)
 CHANGED_KEPT = 64               # `Numbers.changed` remembers this many versions back
 
-STRINGS = {
-    "saving": "Saving your moves…",
-    "cant_undo": "Can't undo — that item changed since",
-    "nearest": "That spot changed meanwhile — placed next to the nearest item instead",
-    "top": "That spot changed meanwhile — placed at the top instead",
-    "crash_one": "1 move from before the crash couldn't be applied",
-    "crash_many": "{n} moves from before the crash couldn't be applied",
-    "read_only": "Your library can't be saved right now: {reason}",
-    "failed": "That change couldn't be saved: {error}",
-}
+WORDS = ("saving", "cant_undo", "nearest", "top", "crash_one", "crash_many", "read_only", "failed")
+#   the keys `words` must hold (`strings.MOVE_WORDS`)
 
 
 def journal_path(language):
@@ -77,6 +78,41 @@ def store_opener(language):
     return library_store.StoreOpener(language, get_data_path(language), get_user_files_path(language), role="window")
 
 
+def plan_check(language, settings):
+    """`Numbers`' full staleness verdict (`check=`), built as the replan host's (`replan_preview.Host._parts` /
+    `_verdict`): the run signature's parts for the library as it stands — every file stat'd, a missing item keeping its
+    place — checked by `plan_engine.check`. `settings`: settings.json's values, or a function giving them (read at each
+    check: a setting changed since is a Generate first). -> `check(plan, store)` (it runs on the numbers' worker): the
+    reason when a Generate must come first, else None — current, re-plan now (only the known words or the lists moved:
+    *N new* still follows the order), or stands aside (`Numbers` says so itself)."""
+    def check(plan, store):
+        from app import analyzer, plan_engine, run_args
+        from app.path_utils import get_user_file
+        values = settings() if callable(settings) else settings
+        found = analyzer.resolve_found_files(language, verbose=False, schedule=store.schedule(), missing=True)
+        args = analyzer.parse_analysis_args(run_args.analyzer_args(values, language)[1:])
+        parts = analyzer.run_signature_parts(language, found, args)
+        stamp = analyzer.read_run_stamp(get_user_file("results"))
+        verdict = plan_engine.check(plan, language, analyzer.engine_id(), stamp, parts, store.versions().get("epoch"))
+        return verdict[1] if verdict is not None and verdict[0] == "generate-first" else None
+    return check
+
+
+def open_library(language, check=None, **reader_kw):
+    """The window's library on one opener: the reader, and the numbers it shows — told of every move of
+    the order (another program's, hato's drop, an undo elsewhere) and refreshing the reader when they change. Nothing
+    started: the caller calls `numbers.load()` and `reader.start()`, and hands the same opener to the `Writer`.
+    `check`: `Numbers`' verdict (`plan_check`). -> (opener, numbers, reader)."""
+    from app.services.library_reader import LibraryReader
+    opener = store_opener(language)
+    held = []
+    numbers = Numbers(opener, language, check=check, on_change=lambda: held and held[0].refresh())
+    reader = LibraryReader(opener, language, numbers=numbers, **reader_kw)
+    held.append(reader)
+    reader.subscribe_moves(lambda _language, _versions: numbers.resync())
+    return opener, numbers, reader
+
+
 def _nothing(*_args):
     pass
 
@@ -89,7 +125,11 @@ def _ls():
 class Writer:
     def __init__(self, opener, language="ja", journal_file=None, numbers=None, on_saved=None, on_saving=None,
                  on_reread=None, on_note=None, on_undone=None, depth=UNDO_DEPTH, retry=RETRY_S,
-                 saving_after=SAVING_AFTER_S):
+                 saving_after=SAVING_AFTER_S, words=None):
+        missing = [k for k in WORDS if k not in (words or {})]
+        if missing:                                 # the window's words (`strings.MOVE_WORDS`): never a key shown
+            raise ValueError(f"the writer's words lack {missing}")
+        self.words = words
         self.opener = opener
         self.language = language
         self.journal_file = journal_file
@@ -144,12 +184,17 @@ class Writer:
         """The store's reason when it can't be written (the read-only bar's words), else None."""
         return None if self._writable() else (getattr(self.opener, "reason", None) or self.opener.mode)
 
-    def move(self, ids, tier, before_id=None, after_id=None, near=(), label=None):
+    def move(self, ids, tier, before_id=None, after_id=None, near=(), label=None, end=False):
         """`Store.move`. `near`: [(item_id, "before" | "after"), …], the nearest first — where the window would place the
-        block if its anchor is gone when the write lands (its neighbours as painted). -> the command's number, or None
-        when refused (read-only)."""
-        return self._put({"op": "move", "ids": list(ids), "tier": tier, "before_id": before_id, "after_id": after_id,
-                          "near": [list(n) for n in near or ()], "label": label})
+        block if its anchor is gone when the write lands (its neighbours as painted). `end`: the tier's end as it stands
+        when the write lands (a drop on the Goal well: read from the store on this thread, again at a replay — never an
+        id from the window's copy, which a queued write can outlive). -> the command's number, or None when refused
+        (read-only)."""
+        cmd = {"op": "move", "ids": list(ids), "tier": tier, "before_id": before_id, "after_id": after_id,
+               "near": [list(n) for n in near or ()], "label": label}
+        if end:
+            cmd.update(before_id=None, after_id=None, end=True)
+        return self._put(cmd)
 
     def nudge(self, ids, direction, label=None):
         return self._put({"op": "nudge", "ids": list(ids), "direction": direction, "label": label})
@@ -157,6 +202,23 @@ class Writer:
     def set_tier(self, ids, tier, label=None):
         """`Store.set_tier` — "graduated" is Finished."""
         return self._put({"op": "set_tier", "ids": list(ids), "tier": tier, "label": label})
+
+    def set_finished(self, ids, keep_cards=True, label=None):
+        """`Store.finish`: to Finished, dated now; `keep_cards=False` (the Finished toast's *Take its new cards out*)
+        also takes the items' cards out of the learning order and ends their pin. An item already in Finished keeps its
+        place and date (only its cards' choice is written)."""
+        return self._put({"op": "finish", "ids": list(ids), "keep_cards": bool(keep_cards), "label": label})
+
+    def insert_at(self, paths, tier, before_id=None, after_id=None, near=(), label=None):
+        """An Explorer drop: `paths` (files from anywhere) copied, on this thread, into `tier`'s folder of the data
+        folder (never over a file: an identical one is already there, another comes in under a new name; a file already
+        in the data folder stays where it is), then placed by `Store.insert_at` before `before_id` / after `after_id`,
+        or at the top of `tier` with neither. The anchor gone or out of the tier when the write lands → beside the
+        nearest surviving `near` neighbour, else the top of the tier, with a note. Not journalled: a crash leaves the
+        copies in the folder, where the next disk sync places them. Its Undo sends the files it added to the trash."""
+        return self._put({"op": "insert_at", "ids": [], "files": [os.fspath(p) for p in paths], "tier": tier,
+                          "before_id": before_id, "after_id": after_id, "near": [list(n) for n in near or ()],
+                          "label": label})
 
     def set_watched(self, ids, on=True, label=None):
         """`Store.set_watched` on files (an episode is one file, one item)."""
@@ -218,7 +280,7 @@ class Writer:
             waiting = bool(self._pending)
             self._cond.notify_all()
         if waiting:
-            self._call(self.on_note, STRINGS["saving"])
+            self._call(self.on_note, self.words["saving"])
         with self._cond:
             while self._pending and time.monotonic() < deadline:
                 self._cond.wait(min(0.05, max(0.0, deadline - time.monotonic())))
@@ -281,7 +343,7 @@ class Writer:
                     print(f"Window writer: {e!r}")
                     if cmd is not None:
                         self._landed(cmd)
-                        self._call(self.on_note, STRINGS["failed"].format(error=e))
+                        self._call(self.on_note, self.words["failed"].format(error=e))
                         self._call(self.on_reread)
         finally:
             try:
@@ -334,7 +396,7 @@ class Writer:
         if store is None and not busy:
             reason = getattr(self.opener, "reason", None) or self.opener.mode
             self._landed(cmd)
-            self._call(self.on_note, STRINGS["read_only"].format(reason=reason))
+            self._call(self.on_note, self.words["read_only"].format(reason=reason))
             self._call(self.on_reread)
             self._numbers_resync()
             return
@@ -346,20 +408,24 @@ class Writer:
             if store is None:
                 raise lib.StoreBusy("the library is busy")
             self._fill_seen(store)
+            if cmd.get("end"):                      # the tier's end as it stands now (each attempt, a replay's too)
+                cmd["after_id"] = self._tier_end(store, cmd)
             if cmd.get("replay"):
                 if self._changed_since(store, cmd):
                     self._replay_failed += 1
                     self._landed(cmd)
                     return
             elif cmd["op"] == "move" and not cmd.get("numbered"):
-                cmd["numbered"] = True              # the numbers follow the drop once, before its first write
-                self._numbers_move(cmd)
+                cmd["numbered"] = (cmd["before_id"], cmd["after_id"])   # the numbers follow the drop once, before its
+                self._numbers_move(cmd)                                 # first write
+            elif cmd["op"] == "insert_at" and "copied" not in cmd:
+                self._copy_in(store, cmd)           # once: a busy store's retries place the same copies
             self._apply(store, cmd)
         except lib.StoreBusy:
             self._busy(cmd)
         except lib.StoreReadOnly as e:
             self._landed(cmd)
-            self._call(self.on_note, STRINGS["read_only"].format(reason=e))
+            self._call(self.on_note, self.words["read_only"].format(reason=e))
             self._call(self.on_reread)
             self._numbers_resync()
             try:
@@ -383,14 +449,22 @@ class Writer:
                 change = store.nudge(cmd["ids"], cmd["direction"])
             elif op == "set_tier":
                 change = store.set_tier(cmd["ids"], cmd["tier"])
+            elif op == "finish":
+                change = store.finish(cmd["ids"], keep_cards=cmd["keep_cards"])
             elif op == "set_watched":
                 change = store.set_watched(cmd["ids"], cmd["on"])
+            elif op == "insert_at":
+                change, note = self._insert(store, cmd)
             else:
                 raise ValueError(f"unknown command {op!r}")
         except ValueError:
             if op != "move":
                 raise
             change, note = self._nearest(store, cmd)
+        if op == "insert_at":
+            cmd["saved"] = True                     # its copies are the library's now (never sent to the trash)
+            if change is not None:                  # what its Undo may send to the trash: the copies it made only
+                change.copied = [_ls().library_rel(cmd["data_dir"], p) for p in cmd["copied"]]
         self._refresh_seen(store, cmd["ids"])
         self._landed(cmd)
         if cmd.get("replay"):
@@ -401,16 +475,23 @@ class Writer:
                 self._undo.append(change)
             self._call(self.on_saved, change, cmd.get("label"))
         if note is not None:
-            self._call(self.on_note, STRINGS[note])
+            self._call(self.on_note, self.words[note])
         if change is None or note is not None:
             self._call(self.on_reread)
-        if op != "set_watched" and (op != "move" or change is None or note is not None):
-            self._numbers_resync()
+        if op != "set_watched" and (op != "move" or change is None or note is not None or
+                                    cmd.get("numbered") not in (None, (cmd["before_id"], cmd["after_id"]))):
+            self._numbers_resync()                  # (a tier's end that moved between the numbers and the write too)
 
     def _nearest(self, store, cmd):
         """The anchor is gone or left the tier: the nearest neighbour the window named that is still in the tier, else
         the top of the tier. -> (change, the note's key)."""
         ids, tier = set(cmd["ids"]), cmd["tier"]
+        if cmd.get("end"):                          # the end moved since it was read: its end again, no note
+            cmd["after_id"] = self._tier_end(store, cmd)
+            try:
+                return store.move(cmd["ids"], tier, after_id=cmd["after_id"]), None
+            except ValueError:
+                pass
         for anchor, side in cmd.get("near") or ():
             if anchor in ids:
                 continue
@@ -422,6 +503,106 @@ class Writer:
                 continue
         return store.move(cmd["ids"], tier), "top"
 
+    def _tier_end(self, store, cmd):
+        """The last item of the command's tier that it doesn't move (`Store.ids`: one indexed read), or None — the top
+        of an empty tier is its end."""
+        moving = set(cmd["ids"])
+        rest = [i for i in store.ids(cmd["tier"]) if i not in moving]
+        return rest[-1] if rest else None
+
+    # --- an Explorer drop ----------------------------------------------------------------------------------------- #
+    def _copy_in(self, store, cmd):
+        """The dropped files into the tier's folder, once, before the first write: never over a file (an identical one
+        is the file already there; another comes in as `name (2).ext`), one already in the data folder left where it
+        is, a folder skipped (the importer's Add Folder). `copied`: the files made here (the trash's, if the command
+        is let go)."""
+        import filecmp
+        import shutil
+        lib = _ls()
+        folder = lib.FOLDER_OF_TIER.get(cmd["tier"])
+        if folder is None:
+            raise ValueError(f"files can't be dropped into {cmd['tier']!r}")
+        data_dir = cmd["data_dir"] = store.data_dir
+        cmd["started_at"] = lib._now()              # a sync that meets a copy half-made: the command takes the row over
+        out, made = [], []
+        try:
+            for path in cmd["files"]:
+                if lib.library_rel(data_dir, path) is not None:
+                    out.append(path)
+                    continue
+                if not os.path.isfile(path):
+                    continue
+                dest = os.path.join(data_dir, folder, os.path.basename(path))
+                if os.path.exists(dest) and filecmp.cmp(path, dest, shallow=False):
+                    out.append(dest)
+                    continue
+                dest = _free_name(dest)
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                shutil.copy2(path, dest)
+                made.append(dest)
+                out.append(dest)
+        finally:
+            cmd["copied"] = made
+        cmd["files"] = out
+
+    def _insert(self, store, cmd):
+        """`Store.insert_at` beside the anchor; gone or out of the tier → beside the nearest surviving `near`
+        neighbour, else the top of the tier (with neither anchor: the top, as asked). -> (change, the note's key)."""
+        lib = _ls()
+        if not cmd["files"]:
+            return None, None
+        anchor = cmd["before_id"] if cmd["before_id"] is not None else cmd["after_id"]
+        if anchor is not None:
+            tries = [(anchor, cmd["before_id"] is not None, None)]
+            tries += [(a, side == "before", "nearest") for a, side in cmd.get("near") or () if a != anchor]
+            for a, before, note in tries:
+                item = store.item(a)
+                if item is None or item["tier"] != cmd["tier"]:
+                    continue
+                try:
+                    return store.insert_at(cmd["files"], a, before=before, started_at=cmd["started_at"]), note
+                except lib.StoreConflict:           # gone between the look and the write
+                    continue
+        change = store.insert(cmd["files"], cmd["tier"], "top", started_at=cmd["started_at"])
+        return change, None if anchor is None else "top"
+
+    def _trash_copies(self, cmd):
+        """A drop let go (read-only, an error): the copies it made go to the trash, never left for a sync to place."""
+        lib = _ls()
+        for path in cmd.get("copied") or ():
+            try:
+                lib.trash_file(cmd["data_dir"], lib.library_rel(cmd["data_dir"], path))
+            except OSError as e:
+                print(f"Window writer: a dropped file's copy couldn't go to the trash: {e!r}")
+
+    def _undo_added(self, store, change, ok):
+        """Undo an Explorer drop: the copies it made to the trash first (the importer's Undo-Add; a file that was in the
+        data folder already stays where it is), then the rows; the files put back if the store refuses."""
+        lib = _ls()
+        copied = {lib.path_key(r) for r in getattr(change, "copied", ()) if r}
+        trashed, moved = {}, []
+        try:
+            for item_id in ok:
+                row = store.item(item_id)
+                if row is None or lib.path_key(row["rel_path"]) not in copied:
+                    continue
+                to = lib.trash_file(store.data_dir, row["rel_path"])
+                if to:
+                    trashed[item_id] = to
+                    moved.append((os.path.join(store.data_dir, *to.split("/")),
+                                  os.path.join(store.data_dir, *row["rel_path"].split("/"))))
+            out = store.undo(change, trashed_paths=trashed)
+            if out is None:
+                raise lib.UndoRefused("nothing was undone")
+            return out
+        except BaseException:
+            for src, dst in reversed(moved):
+                try:
+                    os.rename(src, dst)
+                except OSError as e:
+                    print(f"Window writer: a file couldn't come back from the trash: {e!r}")
+            raise
+
     def _apply_undo(self, store, cmd, lib):
         change = cmd.get("change")
         if change is None:
@@ -432,12 +613,15 @@ class Writer:
             return
         refused = False
         try:
-            _ok, changed = store.undo_check(change)
+            ok, changed = store.undo_check(change)
             if changed:
                 refused = True
+            elif change.kind in ("insert", "insert_at"):
+                refused = _refused(change, self._undo_added(store, change, ok))
+            elif change.kind == "finish" and not change.items and not _still_set(store, change.status):
+                refused = True                      # only its cards' choice, and every value changed since: nothing
             else:
-                out = store.undo(change)
-                refused = out is None or bool(change.status and not out.status)
+                refused = _refused(change, store.undo(change))
         except (lib.StoreConflict, lib.UndoRefused):
             refused = True
         with self._cond:
@@ -447,7 +631,7 @@ class Writer:
                 pass
         self._landed(cmd)
         if refused:
-            self._call(self.on_note, STRINGS["cant_undo"])
+            self._call(self.on_note, self.words["cant_undo"])
         else:
             self._call(self.on_undone, change, cmd.get("label"))
             self._numbers_resync()
@@ -489,6 +673,8 @@ class Writer:
                 self._saving = False
                 self._call(self.on_saving, False)
             self._cond.notify_all()
+        if cmd["op"] == "insert_at" and not cmd.get("saved"):
+            self._trash_copies(cmd)
         if journalled:
             self._sync_journal(everything=False)
         if replay_done:
@@ -554,8 +740,8 @@ class Writer:
         failed, applied = self._replay_failed, self._replay_applied
         self._replay_failed = self._replay_applied = 0
         if failed:
-            self._call(self.on_note, STRINGS["crash_one"] if failed == 1 else
-                       STRINGS["crash_many"].format(n=failed))
+            self._call(self.on_note, self.words["crash_one"] if failed == 1 else
+                       self.words["crash_many"].format(n=failed))
         if failed or applied:
             self._call(self.on_reread)
             self._numbers_resync()
@@ -619,9 +805,40 @@ class Writer:
             print(f"Window writer: a listener failed: {e!r}")
 
 
+def _refused(change, out):
+    """An undo that wrote nothing: no answer, or a status undo that restored nothing. A finish's rows are put back
+    whenever its check passed (`undo_check` saw them unchanged), and one that only took cards out was looked at before
+    (the store doesn't hand its restored values back for a finish)."""
+    if out is None:
+        return True
+    if change.kind == "finish":
+        return False
+    return bool(change.status and not out.status)
+
+
+def _still_set(store, status):
+    """Whether any of a change's status values still holds what the change set (the store's value check, §6.11)."""
+    for item_id, column, _old, new in status:
+        row = store.item(item_id)
+        if row is not None and row[column] == new:
+            return True
+    return False
+
+
+def _free_name(path):
+    """`path`, or `name (2).ext`, `name (3).ext`, … — the first free (the importer's `_unique_path`)."""
+    if not os.path.exists(path):
+        return path
+    base, ext = os.path.splitext(path)
+    n = 2
+    while os.path.exists(f"{base} ({n}){ext}"):
+        n += 1
+    return f"{base} ({n}){ext}"
+
+
 def _entry(cmd):
     out = {k: cmd[k] for k in ("op", "ids") if k in cmd}
-    for k in ("tier", "before_id", "after_id", "near", "direction", "on", "seen"):
+    for k in ("tier", "before_id", "after_id", "near", "direction", "on", "keep_cards", "end", "seen"):
         if k in cmd:
             out[k] = cmd[k]
     return out

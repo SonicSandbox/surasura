@@ -64,6 +64,9 @@ REPLAN_MARGIN = 0.25
 # P-text (W2.1 row 9): a theme or text-size switch with the shell's widgets alive measured well under ~300 ms, so a
 # change applies at once (G1.2-21). W3.3 measures it again with its Settings page alive; False = *Restart to apply*.
 LIVE_LOOK = True
+# W3.4: at exit, how long the quit waits for the thread pool's workers (`bridge.wait_for_workers`) after the window
+# closed and the duties stopped: a worker still running Python as the process ends can crash it.
+QUIT_WORKERS_MS = 3000
 
 
 # --- the services the window calls ------------------------------------------------------------------------------- #
@@ -1704,6 +1707,7 @@ def main(argv=None):
             services.shutdown(release=instance.release)   # the claim goes before the store's close trigger
         finally:
             instance.release()                            # (once: done already unless the quit failed before it)
+            bridge.wait_for_workers(QUIT_WORKERS_MS)      # W3.4: no pool worker still running Python at the exit
     return code
 
 

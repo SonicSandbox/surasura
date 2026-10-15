@@ -192,3 +192,32 @@ def test_removing_two_lists_of_one_name_twice_keeps_both_copies(ja_list, tmp_pat
     frequency_lists.add(ja_list, "ja")
     frequency_lists.remove(name, "ja")
     assert len(_trash("ja")) == 2
+
+
+# --- the fix round (AD1-4, IK-21) ---------------------------------------------------------------------------------- #
+@pytest.mark.parametrize("base, name", [("Novels.CSV", "frequency_list_ja_Novels.csv"),
+                                        ("Novels.Csv", "frequency_list_ja_Novels.csv"),
+                                        ("frequency_list_ja_Novels.CSV", "frequency_list_ja_Novels.csv")])
+def test_a_list_named_csv_in_capitals_is_one_the_analyzer_and_the_window_see(base, name):
+    assert frequency_lists.dest_name(base, "ja") == name
+
+
+def test_an_added_capital_csv_list_is_listed_read_and_removable(tmp_path):
+    src = tmp_path / "Novels.CSV"
+    src.write_text("Word,Rank\n冒険,1500\n", encoding="utf-8")
+    name, _ = frequency_lists.add(str(src), "ja")
+    assert frequency_lists.listed("ja") == [name] == ["frequency_list_ja_Novels.csv"]
+    assert set(analyzer.discover_yomitan_frequency_lists(_user_files("ja"), "ja")) == {"Novels"}
+    frequency_lists.remove(name, "ja")
+    assert frequency_lists.listed("ja") == []
+
+
+@pytest.mark.parametrize("name, language, shown", [
+    ("frequency_list_ja_Anime subtitles.csv", "ja", "Anime subtitles"),
+    ("frequency_list_zh_夜市.csv", "zh", "夜市"),
+    ("frequency_list_zh_ja_x.csv", "zh", "ja_x"),
+])
+def test_a_list_is_shown_by_its_own_name_as_the_report_names_it(name, language, shown):
+    assert frequency_lists.display_name(name, language) == shown
+    prefix = f"frequency_list_{language}_"
+    assert name.replace(prefix, "").replace(".csv", "") == shown      # the analyzer's own rule (its report's column)

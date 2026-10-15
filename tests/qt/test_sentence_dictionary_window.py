@@ -62,16 +62,28 @@ class FakeRun:
         self.calls = []
         monkeypatch.setattr(tools, "run", self)
 
-    def __call__(self, registry, kind, label, argv, on_end=None, before=None, **kw):
+    def __call__(self, registry, kind, label, argv, on_end=None, before=None, on_result=None, **kw):
         job = registry.submit(kind, label, start=lambda j: None)
         self.calls.append({"kind": kind, "label": label, "argv": argv, "on_end": on_end, "job": job,
-                           "before": before})
+                           "before": before, "on_result": on_result})
         return job
 
-    def end(self, code, i=-1):
+    def end(self, code, i=-1, cancelled=False, before=True):
+        """As the real runner ends a job: on its own thread, `before` first (when it got that far), then the end."""
+        import threading
         call = self.calls[i]
-        call["job"].finish(ok=code == 0)
-        call["on_end"](code)
+
+        def tool():
+            if before and call["before"] is not None:
+                call["before"]()
+            call["job"].finish(ok=code == 0 or cancelled, cancelled=cancelled)
+            if call["on_end"] is not None:
+                call["on_end"](code)
+            if call["on_result"] is not None:
+                call["on_result"](tools.Result(code, cancelled, None, tools.log_path("sentence-corpus")))
+        t = threading.Thread(target=tool)
+        t.start()
+        t.join(10)
 
 
 @pytest.fixture
@@ -185,7 +197,7 @@ def test_exit_0_and_a_fresh_file_is_ready_with_the_yomitan_note_and_open_folder(
     runs.end(0)
     assert wait_until(lambda: w.export_button.isEnabled())
     assert w.status.text() == "Surasura Corpus (ja) is ready. 2,345 words · 8 sentences each"
-    assert "Delete it in Yomitan first" in w.note.text() and save_to.path in w.note.text()
+    assert w.note.text() == strings.DICT_NOTE and "older one" in w.note.text()      # the warning kept, one line
     assert w.folder_button.isVisibleTo(w) and not w.log_button.isVisibleTo(w)
     w.folder_button.click()
     assert opened and opened[0].isLocalFile()
@@ -321,3 +333,135 @@ def test_the_command_line_names_the_language_the_file_and_the_choice():
     assert sentence_corpus.export_command("zh", "D:/x/y.zip", False) == [
         "sentence_corpus.py", "--language", "zh", "--output", "D:/x/y.zip"]
     assert sentence_corpus.export_command("ja", "D:/x/y.zip", True)[-1] == "--show-source"
+
+
+# --- the fix round (AD1-6…10, IK-21, IK-22) ------------------------------------------------------------------------- #
+def test_the_result_is_judged_off_the_windows_thread(main, save_to, content, monkeypatch):
+    # AD1-6: the zip's time and index were read on the window's thread (a sleeping USB disk froze it).
+    import threading
+    gui = threading.current_thread()
+    seen = []
+    real = sentence_corpus.export_result
+
+    def judged(*a):
+        seen.append(threading.current_thread() is gui)
+        return real(*a)
+    monkeypatch.setattr(sentence_corpus, "export_result", judged)
+    runs = FakeRun(monkeypatch)
+    w = _open(main)
+    _export(w)
+    assert wait_until(lambda: runs.calls)
+    _zip(save_to.path)
+    runs.end(0)
+    assert wait_until(lambda: w.export_button.isEnabled())
+    assert seen == [False]
+    assert w.status.text().startswith("Surasura Corpus (ja) is ready.")
+
+
+def test_a_stopped_export_says_so_offers_no_log_and_leaves_no_temporary(main, save_to, content, monkeypatch):
+    # IK-22 / AD1-7 / AD1-10: a stop is not "the log says why"; the child's half-built .tmp doesn't stay behind.
+    runs = FakeRun(monkeypatch)
+    w = _open(main)
+    _export(w)
+    assert wait_until(lambda: runs.calls)
+    with open(save_to.path + ".tmp", "wb") as f:
+        f.write(b"half a dictionary")
+    runs.end(1, cancelled=True)
+    assert wait_until(lambda: w.status.text() == strings.DICT_STOPPED)
+    assert not w.log_button.isVisibleTo(w) and not w.folder_button.isVisibleTo(w)
+    assert not os.path.exists(save_to.path + ".tmp")
+
+
+def test_a_failed_export_leaves_no_temporary_and_never_touches_the_users_file(main, save_to, content, monkeypatch):
+    runs = FakeRun(monkeypatch)
+    _zip(save_to.path)
+    old = time.time() - 600
+    os.utime(save_to.path, (old, old))                    # an earlier dictionary at that name
+    w = _open(main)
+    _export(w)
+    assert wait_until(lambda: runs.calls)
+    with open(save_to.path + ".tmp", "wb") as f:
+        f.write(b"half")
+    runs.end(1)
+    assert wait_until(lambda: w.status.text() == strings.DICT_FAILED)
+    assert not os.path.exists(save_to.path + ".tmp") and os.path.exists(save_to.path)
+
+
+def test_an_export_waiting_behind_generate_says_so(main, save_to, content, monkeypatch):
+    # IK-22: "Building…" while it waits was untrue; the window says what it waits for.
+    runs = FakeRun(monkeypatch)
+    registry = main.services.registry
+    generate = registry.submit("generate", "Generate", start=lambda j: None)
+    w = _open(main)
+    _export(w)
+    assert wait_until(lambda: runs.calls)
+    assert wait_until(lambda: w.status.text() == strings.DICT_WAITING_FOR.format(what="Generate"))
+    generate.finish()
+    assert wait_until(lambda: w.status.text() == strings.DICT_RUNNING.format(title="Surasura Corpus (ja)"))
+    runs.end(1, cancelled=True)
+
+
+def test_freshness_counts_from_the_childs_start_not_the_click(main, save_to, content, monkeypatch):
+    # AD1-8: a gated export may wait minutes; a file written while it waited is no proof of this run.
+    clock = {"now": 1_000_000.0}
+    import types
+    monkeypatch.setattr(sdw, "time", types.SimpleNamespace(time=lambda: clock["now"]))     # the window's clock only
+    runs = FakeRun(monkeypatch)
+    w = _open(main)
+    _export(w)                                            # asked at 1,000,000
+    assert wait_until(lambda: runs.calls)
+    _zip(save_to.path)
+    os.utime(save_to.path, (1_000_500.0, 1_000_500.0))    # written while it waited
+    clock["now"] = 1_001_000.0                            # the child starts here
+    runs.end(0)
+    assert wait_until(lambda: w.status.text() == strings.DICT_FAILED)
+
+
+def test_a_typed_name_that_gets_zip_added_and_exists_asks_first(main, save_to, content, monkeypatch, tmp_path):
+    # AD1-9: the OS asked about the name typed; with ".zip" added after it, an existing file needs its own question.
+    from app.qt import confirm
+    runs = FakeRun(monkeypatch)
+    typed = str(tmp_path / "My corpus")
+    _zip(typed + ".zip")
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (typed, strings.DICT_SAVE_FILTER)))
+    w = _open(main)
+
+    def card():
+        cards = [c for c in w.findChildren(confirm.Confirm) if c.isVisible()]
+        return cards[0] if cards else None
+    _export(w)
+    assert wait_until(lambda: card() is not None)
+    assert card().title.text() == strings.DICT_REPLACE_ONE.format(name="My corpus.zip")
+    assert QApplication.focusWidget() is card().no        # replacing: Cancel by default
+    card().no.click()
+    QApplication.processEvents()
+    assert runs.calls == [] and w.export_button.isEnabled() and not w.busy()
+    _export(w)
+    assert wait_until(lambda: card() is not None)
+    card().yes.click()
+    assert wait_until(lambda: runs.calls)
+    assert runs.calls[0]["argv"][4] == typed + ".zip"
+
+
+def test_a_typed_name_with_zip_added_that_is_free_runs_without_asking(main, save_to, content, monkeypatch, tmp_path):
+    runs = FakeRun(monkeypatch)
+    typed = str(tmp_path / "New corpus")
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (typed, strings.DICT_SAVE_FILTER)))
+    w = _open(main)
+    _export(w)
+    assert wait_until(lambda: runs.calls)
+    assert runs.calls[0]["argv"][4] == typed + ".zip"
+
+
+def test_the_yomitan_note_is_one_short_line_with_the_file_in_its_tooltip(main, save_to, content, monkeypatch):
+    # IK-21: less text — the path lives behind Open folder and in the tooltip, in Windows' own form.
+    from PyQt6.QtCore import QDir
+    runs = FakeRun(monkeypatch)
+    w = _open(main)
+    _export(w)
+    assert wait_until(lambda: runs.calls)
+    _zip(save_to.path)
+    runs.end(0)
+    assert wait_until(lambda: w.note.isVisibleTo(w))
+    assert w.note.text() == strings.DICT_NOTE and "Delete" in w.note.text()
+    assert QDir.toNativeSeparators(save_to.path) in w.note.toolTip()

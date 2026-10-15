@@ -17,8 +17,9 @@ writes, never a GUI thread) from its first read to its read-back: it reads the o
 group goes back as Anki sent it — through `anki_connect.save_deck_config` (the one door for `saveDeckConfig`), then
 reads it back, the whole group compared (`_moved`): an option Anki's save dropped or changed is named, never reported
 as done. A deck's own *This deck* / *Today only* limit wins over the group's number and can't be read: the
-confirmation and the success line say it still applies (`OWN_LIMIT`). A shared options group changes for every deck using it; AnkiConnect's `getDeckConfig` doesn't say how
-many do, so the confirmation says it conditionally (`shared_with` is None).
+confirmation and the success line say it still applies (`OWN_LIMIT`). A shared options group changes for every deck
+using it; AnkiConnect's `getDeckConfig` doesn't say how many do, so the confirmation says it conditionally
+(`shared_with` is None).
 
 Qt-free and Tk-free; never raises past a plain-words answer.
 """

@@ -809,6 +809,23 @@ def test_with_motion_the_ghost_glides_onto_the_rows_place_and_its_slot_shows_mea
     assert wait_until(lambda: lst.landing is None and not win.moves.ghost.isVisible(), 3)
 
 
+def test_a_lift_during_the_last_drops_glide_keeps_its_ghost_shown_for_the_whole_drag(world):
+    """Round 2 (the Haiku time lens): the last drop's glide (or a well's fade) ends by hiding the ghost — a row lifted
+    before it ended must not lose its ghost mid-drag."""
+    seed, win, writer = world()
+    freeze.set_frozen(False)
+    lift(win, 6)
+    target = row_point(win, 2)
+    move_global(win, target)
+    release_global(win, target)
+    QTest.qWait(theme.MOTION["click-swallow-after-drag"] + 20)       # past the click swallowed after a drag,
+    assert win.moves.ghost.isVisible()                                # still inside the glide
+    lift(win, 4)
+    QTest.qWait(theme.MOTION["ghost-glide"] + 150)                    # the old glide's end has passed
+    assert win.moves.running is not None and win.moves.ghost.isVisible()
+    win.moves.cancel()
+
+
 # --- speed: a drop repaints the rows it moved; S3 at 2,000 files -------------------------------------------------- #
 def _paint_spy(lst, monkeypatch):
     painted = []
@@ -1291,3 +1308,137 @@ def test_real_store_the_quit_waits_for_a_queued_move(real, short_lock_wait):
     assert wait_until(lambda: not win.isVisible(), 10)
     ids_now = store.ids(moved.tier)
     assert ids_now[ids_now.index(moved.episodes[0].id) - 1] == rs[0].episodes[-1].id
+
+
+# --- round 2 (the adversary, the intent keeper, the mutants) ------------------------------------------------------- #
+def test_AD2_1_letting_go_outside_the_window_gives_the_drag_up_and_writes_nothing(world):
+    seed, win, writer = world()
+    lst = lst_of(win)
+    before = [e[1].key for e in lst.model().entries]
+    lift(win, 3)
+    move_global(win, row_point(win, 6))
+    below = win.mapToGlobal(QPoint(win.width() // 2, win.height() + 120))       # off the window's bottom edge
+    move_global(win, below)
+    release_global(win, below)
+    assert win.moves.running is None and calls(writer) == [] and writer.held == 0
+    assert [e[1].key for e in lst.model().entries] == before
+
+
+def test_AD2_2_a_view_landing_between_the_press_and_the_lift_lifts_nothing(world):
+    seed, win, writer = world()
+    lst = lst_of(win)
+    at = title_point(lst, 4)
+    press(lst, at)
+    view = win.page_widgets["current"].view_model
+    keys = [r.key for r in view.rows]
+    keys[3], keys[4] = keys[4], keys[3]                                         # another row now stands there
+    win.moves._show(drag.reordered(view, keys))
+    move(lst, at + QPoint(0, theme.MOTION["drag-start-px"]))
+    assert win.moves.running is None and writer.held == 0
+    release(lst, at)
+    assert calls(writer) == []
+
+
+@pytest.mark.parametrize("which", ["split", "mix"])
+def test_the_finished_tab_never_finishes_a_splits_first_part_or_hatos_mix(world, which):
+    """(Mutants D09 / D10) The tab keeps the well's rule: a split's first part and hato's mix go back, with its tip."""
+    seed, win, writer = world()
+    rs = rows_of(win)
+    i = next(n for n, r in enumerate(rs) if drag.split_first(rs, r)) if which == "split" else 0
+    if which == "mix":
+        assert drag.is_mix(rs[0])
+    lift(win, i)
+    tab = win.tab_buttons["finished"]
+    at = tab.mapToGlobal(tab.rect().center())
+    move_global(win, at)
+    release_global(win, at)
+    assert calls(writer) == [] and [r.key for r in rows_of(win)] == [r.key for r in rs]
+    assert win.bar_line.full() == (strings.WELL_UNLIT_SPLIT if which == "split" else strings.WELL_UNLIT_MIX)
+
+
+def test_a_release_on_another_rows_stone_marks_nothing(world):
+    """(Mutant B02) A press on one stone let go on another row's stone: no click at all."""
+    seed, win, writer = world()
+    lst = lst_of(win)
+    with_stone = [n for n, e in enumerate(lst.model().entries) if e[0] == rows.ROW and part_rect(lst, n, "stone")]
+    i, j = with_stone[0], with_stone[1]
+    press(lst, part_rect(lst, i, "stone")[1].center())
+    release(lst, part_rect(lst, j, "stone")[1].center())
+    assert calls(writer) == []
+
+
+def test_a_press_on_a_button_never_starts_a_drag(world):
+    """(Mutant B03) ✓ Done on Up Next pressed and moved 6 px: no lift, and no Done on a release elsewhere."""
+    seed, win, writer = world()
+    lst = lst_of(win)
+    at = part_rect(lst, 0, "done")[1].center()
+    press(lst, at)
+    move(lst, at + QPoint(0, theme.MOTION["drag-start-px"] + 4))
+    assert win.moves.running is None and writer.held == 0
+    release(lst, at + QPoint(0, 200))
+    assert calls(writer) == []
+
+
+def test_E4_files_dropped_on_a_read_only_store_are_refused_with_the_reason(world, tmp_path):
+    """(Mutant E02) The window refuses before the writer is asked, and says why."""
+    seed, win, writer = world(apply=False)
+    writer.writable, writer.why = False, "damaged"
+    lst = lst_of(win)
+    path = tmp_path / "海辺の図書室 - 01.srt"
+    path.write_text("1\n00:00:01,000 --> 00:00:02,000\nこんにちは\n", encoding="utf-8")
+    rect = lst.visualRect(lst.model().index(3, 0))
+    _drop_files(lst, [str(path)], QPoint(rect.center().x(), rect.top() + 3))
+    assert calls(writer) == []
+    assert win.bar_line.full() == strings.DRAG_REFUSED.format(reason=strings.READ_ONLY_REASONS["damaged"])
+
+
+def test_AD2_5_ctrl_z_while_a_finished_choice_waits_takes_the_choice_back_never_given(world):
+    seed, win, writer = world()
+    writer.stuck = True
+    lift(win, 5)
+    at = well_point(win, "finished")
+    move_global(win, at)
+    release_global(win, at)
+    settle()
+    win.toasts.card.buttons[2].click()                                # *Take its new cards out*, waiting on the drop
+    QTest.keyClick(win, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+    writer.free()
+    settle(150)
+    assert calls(writer, "finish") == []                              # the newest — the choice — never given
+    assert calls(writer, "set_tier") and None not in writer.undone    # the drop stands; nothing older undone
+
+
+def test_AD2_6_ctrl_z_while_a_drop_waits_undoes_that_drop_as_it_lands_never_the_one_before(world):
+    seed, win, writer = world()
+    lift(win, 6)
+    target = row_point(win, 2)
+    move_global(win, target)
+    release_global(win, target)
+    assert wait_until(lambda: writer.saved, 3)
+    settle(80)
+    writer.stuck = True                                               # a busy store (or an Explorer copy running)
+    lift(win, 5)
+    target = row_point(win, 1)
+    move_global(win, target)
+    release_global(win, target)
+    settle(80)
+    QTest.keyClick(win, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+    assert writer.undone == []                                        # asked: undone as it lands
+    writer.free()
+    assert wait_until(lambda: writer.undone, 3)
+    assert writer.undone == [writer.saved[-1]] and writer.undone[0] is not writer.saved[0]
+
+
+def test_R3_S2_a_lift_that_fails_lets_the_drag_go_and_holds_nothing(world, monkeypatch):
+    seed, win, writer = world()
+    lst = lst_of(win)
+
+    def broken(*_a, **_k):
+        raise RuntimeError("no picture")
+    monkeypatch.setattr(drag.Ghost, "set_picture", broken)
+    at = title_point(lst, 4)
+    press(lst, at)
+    move(lst, at + QPoint(0, theme.MOTION["drag-start-px"]))
+    assert win.moves.running is None and writer.held == 0 and lst.parting is None
+    seed.library.commit(items=[{"id": rows_of(win)[3].episodes[0].id, "watched": 1}])   # views still come in
+    assert wait_until(lambda: rows_of(win)[3].episodes[0].watched, 3)

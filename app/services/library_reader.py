@@ -135,6 +135,12 @@ class LibraryReader:
         with self._lock:
             return self._view
 
+    def republish(self):
+        """The window let go of its own order once every write landed: the next look builds and publishes the store's
+        view, changed or not (where the store placed a row otherwise than the window drew it, round 2 AD2-4)."""
+        self._held_dirty = True
+        self._wake.set()
+
     def start(self):
         if self._thread is None:
             self._thread = threading.Thread(target=self._run, name="library-reader", daemon=True)

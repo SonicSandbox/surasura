@@ -1775,6 +1775,31 @@ def test_AD3_a_copy_that_fails_part_way_leaves_no_file_and_no_part(lib, make_wri
     assert lib.ids("now") == now
 
 
+def test_a_drop_whose_second_copy_fails_sends_its_first_copy_to_the_trash(lib, make_writer, tmp_path, monkeypatch):
+    """(Mutant Q17) Two files dropped; the second can't be copied: the drop is let go whole — the first file's copy goes
+    to the trash, never left in the tier's folder for a sync to place where nobody dropped it."""
+    real = M._copy_whole
+    made = []
+
+    def second_fails(src, dest):
+        if made:
+            raise OSError(28, "No space left on device")
+        made.append(real(src, dest))
+        return made[-1]
+    monkeypatch.setattr(M, "_copy_whole", second_fails)
+    w, heard = make_writer()
+    first = _outside_file(tmp_path / "Explorer", lib.language)
+    second = os.path.join(str(tmp_path / "Explorer2"), "第2話.txt")
+    os.makedirs(os.path.dirname(second))
+    with open(second, "w", encoding="utf-8") as f:
+        f.write("二つ目のファイル。\n")
+    now = lib.ids("now")
+    w.insert_at([first, second], "now", before_id=now[0])
+    assert h.until(lambda: heard.notes)
+    assert heard.saved == [] and len(made) == 1 and not os.path.exists(made[0])
+    assert _in_folder(lib, "HighPriority") == [] and lib.ids("now") == now
+
+
 def test_AD3_a_whole_copy_carries_the_files_bytes_and_leaves_no_part(lib, make_writer, tmp_path):
     w, heard = make_writer()
     src = _outside_file(tmp_path / "Explorer", lib.language)
@@ -1815,7 +1840,8 @@ def test_AD12_a_file_another_program_writes_under_the_same_name_meanwhile_is_nev
 def test_AD4_only_content_files_are_taken_and_the_rest_are_named_in_a_note(lib, make_writer, tmp_path, named):
     """Explorer hands over whatever was dragged: a shortcut, a video, a picture, a Word file, a folder. Only what the
     disk sync and Add Files take (text and subtitles) comes in; the rest is named, never silently dropped."""
-    words = dict(WORDS, not_content="Left out (not text or subtitles): {names}") if named else WORDS
+    # the window's own word (strings.MOVE_WORDS has it), and a writer given words without it (the key is optional)
+    words = dict(WORDS) if named else {k: v for k, v in WORDS.items() if k != "not_content"}
     w, heard = make_writer(words=words)
     src = tmp_path / "Explorer"
     keep = _outside_file(src, lib.language)
@@ -1842,7 +1868,7 @@ def test_AD4_a_drop_of_nothing_but_other_files_places_nothing_and_says_so(lib, m
     now = lib.ids("now")
     w.insert_at([str(tmp_path / "Explorer" / "第1話.mkv")], "now")
     assert h.until(lambda: heard.notes and heard.rereads)
-    assert heard.notes == [WORDS["failed"].format(error="第1話.mkv")] and heard.saved == []
+    assert heard.notes == [WORDS["not_content"].format(names="第1話.mkv")] and heard.saved == []
     assert lib.ids("now") == now and not os.path.exists(os.path.join(lib.data_dir, "HighPriority", "第1話.mkv"))
 
 
@@ -1916,6 +1942,29 @@ def test_AD6_the_drops_undo_after_the_cards_were_put_back_meanwhile_still_undoes
     assert h.until(lambda: heard.undone)
     assert heard.notes == [] and lib.store.place_of(now[1])[0] in ("now", "soon")
     assert _learning(lib, now[1])[0] == 1
+
+
+def test_AD6_a_drop_whose_undo_is_refused_leaves_its_cards_choice_on_the_undo_stack(lib, make_writer):
+    """Round 2 (the Haiku lenses): the drop moved on in another program, so its Undo is refused — the cards' choice made
+    after it was never undone, so it stays on the stack and Ctrl+Z can still put the cards back."""
+    w, heard = make_writer()
+    now = lib.ids("now")
+    lib.store.pin([now[1]])
+    pinned = _learning(lib, now[1])[1]
+    w.set_tier([now[1]], "graduated")
+    assert h.until(lambda: heard.saved)
+    drop = heard.saved[0][0]
+    w.set_finished([now[1]], keep_cards=False, follows=drop)
+    assert h.until(lambda: len(heard.saved) == 2)
+    lib.store.set_tier([now[1]], "goal")                            # another program moves it on
+    w.undo(drop)                                                    # the toast's Undo: refused
+    assert h.until(lambda: heard.notes)
+    assert heard.notes == [WORDS["cant_undo"]] and heard.undone == []
+    assert _learning(lib, now[1]) == (0, None)                      # the choice was left as it was
+    assert w.can_undo()                                             # and is still there to take back
+    w.undo()
+    assert h.until(lambda: heard.undone)
+    assert _learning(lib, now[1]) == (1, pinned)
 
 
 # AD-15: a finish undo that restored nothing says so ------------------------------------------------------------- #

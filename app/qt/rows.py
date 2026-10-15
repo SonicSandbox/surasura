@@ -2664,11 +2664,13 @@ class RowsView(QListView):
     def drag_from(self, press):
         """Whether a press may become a drag (W3.1a §2): on Current's rows (Up Next's card, a row's one line — never an
         opened row's episodes, a line, or a button: ▶, ⋯, ↑ ↓, ✓ Done, Mine now, ↗)."""
-        row, name, _payload, pos, _key = press
+        row, name, _payload, pos, key = press
         entries = self.model().entries
         if self.drag is None or not 0 <= row < len(entries) or name in NO_DRAG or name.endswith("-line"):
             return False
         kind, payload, lines = entries[row]
+        if getattr(payload, "key", None) != key:     # the list changed under the press (a view landed): not this row
+            return False
         if kind not in (HERO, ROW):
             return False
         rect = self.visualRect(self.model().index(row, 0))

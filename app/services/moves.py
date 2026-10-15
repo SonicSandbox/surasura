@@ -682,13 +682,15 @@ class Writer:
             return
         refused = False
         then = getattr(change, "follow_up", None)   # the cards' choice made after this drop (AD-6): undone first
+        tried = False                               # the choice's undo asked: it leaves the stack (else it stays there)
         try:
             ok, changed = store.undo_check(change)
             if changed:
                 refused = True
             else:
                 if then is not None:                # nothing left of it to undo (its cards put back meanwhile) is no
-                    self._undo_one(store, then)     # reason to leave the drop
+                    tried = True                    # reason to leave the drop
+                    self._undo_one(store, then)
                 if change.kind in ("insert", "insert_at"):
                     refused = _refused(change, self._undo_added(store, change, ok))
                 else:
@@ -696,7 +698,7 @@ class Writer:
         except (lib.StoreConflict, lib.UndoRefused):
             refused = True
         with self._cond:
-            for done in (change, then):
+            for done in (change, then if tried else None):     # a drop refused first: its choice stays undoable
                 try:
                     self._undo.remove(done)
                 except ValueError:

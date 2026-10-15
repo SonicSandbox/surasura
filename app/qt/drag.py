@@ -503,7 +503,8 @@ class Ticket:
 
 class _Drag:
     """One drag in progress."""
-    __slots__ = ("src", "key", "row", "ids", "title", "source", "grab", "target", "parting", "at", "external")
+    __slots__ = ("src", "key", "row", "ids", "title", "source", "grab", "target", "parting", "at", "external",
+                 "holding")
 
     def __init__(self):
         self.src = self.key = self.row = self.title = self.source = None
@@ -513,6 +514,7 @@ class _Drag:
         self.parting = None
         self.at = QPoint()
         self.external = False
+        self.holding = False                         # the writer and the reader held (released once, at its end)
 
 
 class DragController(QObject):
@@ -529,6 +531,7 @@ class DragController(QObject):
         self.lst.setAcceptDrops(True)
         self.running = None                          # the drag in progress (`_Drag`)
         self.ghost = None
+        self._ghost_anim = None                      # the last drop's glide or fade (stopped by the next lift)
         self.expect = None                           # the key order the window shows ahead of the store
         self.expect_tiers = {}
         self.expect_gone = {}                        # key -> where it went (a well), until the reader says so
@@ -638,6 +641,9 @@ class DragController(QObject):
             self._settle.start()
             return
         self._let_go()
+        republish = getattr(self.reader, "republish", None)
+        if republish is not None:                    # every write landed: the store's own view once more, changed or
+            republish()                              # not — where it placed a row otherwise than drawn (AD2-4)
 
     def _let_go(self):
         """The expectation ends: the reader's newest view stands (held, or the next one)."""
@@ -699,8 +705,7 @@ class DragController(QObject):
             unlit = strings.WELL_UNLIT_MIX
         elif split_first(self.page.view_model.rows if self.page.view_model is not None else (), row):
             unlit = strings.WELL_UNLIT_SPLIT
-        self._lift(d, pix, slot.size(), height, global_pos, unlit)
-        return True
+        return self._lift_safely(d, pix, slot.size(), height, global_pos, unlit)
 
     def begin_by_id(self, item_ids, source, title, global_pos, size=None):
         """A drag of items the list doesn't show (W3.2's tray, the Goal sheet: `source` its tier, "goal" leaves the
@@ -713,9 +718,8 @@ class DragController(QObject):
         h = size.height() if size is not None else rows.RowDelegate._line_h()
         dpr = self.lst.viewport().devicePixelRatioF() or 1.0
         d.grab = QPointF(min(w / 2, 40), h / 2)
-        self._lift(d, title_card(title, w, h, dpr), QRect(0, 0, w, h).size(),
-                   h + theme.ROW_LINE["gap"], global_pos, None)
-        return True
+        return self._lift_safely(d, title_card(title, w, h, dpr), QRect(0, 0, w, h).size(),
+                                 h + theme.ROW_LINE["gap"], global_pos, None)
 
     def _row_picture(self, kind, row, lines, rect, slot):
         """The row's cached picture (its hover look, as the hand lifts it), else the list's own pixels there."""
@@ -734,6 +738,24 @@ class DragController(QObject):
             pix = self.lst.viewport().grab(slot)
         return pix
 
+    def _lift_safely(self, *args):
+        """`_lift`, and on any error on the way the drag let go at once (the writer's and the reader's holds ended): a
+        half-made drag never leaves the window holding every view and refusing every move (round 2, R3-S2)."""
+        try:
+            self._lift(*args)
+            return True
+        except Exception as e:                       # (raised out of a Qt event handler it would end the program)
+            print(f"Window drag: the lift failed: {e!r}")
+            d = self.running
+            if d is not None:
+                try:
+                    self._end(d)
+                except Exception as e2:
+                    print(f"Window drag: letting go after a failed lift failed too: {e2!r}")
+            if self.ghost is not None:
+                self.ghost.hide()
+            return False
+
     def _lift(self, d, pix, size, height, global_pos, unlit):
         lst = self.lst
         dpr = lst.viewport().devicePixelRatioF() or 1.0
@@ -743,6 +765,9 @@ class DragController(QObject):
         lst._retouch()                               # the hover look goes: nothing under the hand lifts now
         if self.ghost is None:
             self.ghost = Ghost(self.win)
+        anim, self._ghost_anim = self._ghost_anim, None
+        if anim is not None and anim.alive:          # a lift within the last drop's glide / fade: that one ends now
+            anim.stop()                              # (never hides this drag's ghost when it would have finished)
         picture, anchor = ghost_picture(pix, size.width(), size.height(), dpr)
         self.ghost.set_picture(picture, anchor)
         self.ghost.set_alpha(D["ghost-alpha"])
@@ -759,6 +784,7 @@ class DragController(QObject):
         tips = getattr(self.win, "tooltips", None)
         if tips is not None:
             tips.hide()
+        d.holding = True
         self.writer.hold()
         if self.reader is not None and hasattr(self.reader, "hold"):
             self.reader.hold()
@@ -919,9 +945,11 @@ class DragController(QObject):
         if dock is not None:
             dock.end_drag()
         self.win.toasts.set_dragging(False)
-        if self.reader is not None and hasattr(self.reader, "release"):
-            self.reader.release()
-        self.writer.release()
+        if d.holding:                                # (a lift that failed before its holds holds nothing)
+            d.holding = False
+            if self.reader is not None and hasattr(self.reader, "release"):
+                self.reader.release()
+            self.writer.release()
 
     def _unfilter(self):
         if self.running is None and time.monotonic() >= self._swallow_until:
@@ -960,6 +988,10 @@ class DragController(QObject):
                 return
             self._to_well(d, "finished")
         else:
+            vp = self.lst.viewport()
+            if not vp.rect().contains(vp.mapFromGlobal(global_pos)):
+                self.cancel()                        # let go outside the list (off the window): given up, nothing written
+                return
             slot = name
             if d.src is not None and slot == d.src:
                 self.cancel()                        # back where it was: nothing to write
@@ -1101,9 +1133,9 @@ class DragController(QObject):
         start = ghost.box_at()
         ghost.set_alpha(D["ghost-alpha"])
         self.lst.update(model.index(at, 0))
-        motion.clock().animate(theme.MOTION["ghost-glide"], lambda k: ghost.place(start + (to - start) * k),
-                               on_done=lambda: self._landed(key), kind="move", owner=ghost,
-                               on_end=lambda: self._landed(key))
+        self._ghost_anim = motion.clock().animate(
+            theme.MOTION["ghost-glide"], lambda k: ghost.place(start + (to - start) * k),
+            on_done=lambda: self._landed(key), kind="move", owner=ghost, on_end=lambda: self._landed(key))
 
     def _landed(self, key):
         if self.ghost is not None:
@@ -1121,8 +1153,9 @@ class DragController(QObject):
         if ghost is None:
             return
         start = ghost.alpha
-        motion.clock().animate(theme.MOTION["ghost-removed"], lambda k: ghost.set_alpha(start * (1 - k)),
-                               on_done=ghost.hide, kind="fade", owner=ghost, on_end=ghost.hide)
+        self._ghost_anim = motion.clock().animate(
+            theme.MOTION["ghost-removed"], lambda k: ghost.set_alpha(start * (1 - k)),
+            on_done=ghost.hide, kind="fade", owner=ghost, on_end=ghost.hide)
 
     # --- commands, toasts, Undo ------------------------------------------------------------------------------------ #
     def _give(self, ticket, command, toast=True):
@@ -1153,8 +1186,14 @@ class DragController(QObject):
             ticket.undo_asked = True
 
     def undo_last(self):
-        """Ctrl+Z: the newest change, as the writer reaches it."""
+        """Ctrl+Z: the newest change, as the writer reaches it — the newest command the window gave if it isn't saved yet
+        (a busy store, an Explorer drop still copying, a Finished choice waiting on its drop): that one, as it lands, as
+        its toast's Undo does (never the change before it; round 2, AD2-5 / AD2-6)."""
         if self.running is not None:
+            return
+        waiting = [t for t in self.tickets if t.change is None and not t.undo_asked]
+        if waiting:
+            self.undo(waiting[-1])
             return
         if self.writer.can_undo() or self.writer.pending():
             self.writer.undo()

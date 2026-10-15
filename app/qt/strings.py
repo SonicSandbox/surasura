@@ -270,7 +270,7 @@ FOOT_CONNECT_MARK = "⇄"
 FOOT_CONNECT_NAME = "Surasura Connect"
 FOOT_CONNECT_TIP = "{line}\n\n" + BAR_CONNECT_TIP
 FOOT_ANKI_WAITING = "Anki · {n:,} waiting"
-FOOT_ANKI_WAITING_TIP = "{n:,} new cards wait in Anki, in the decks the sync reads"
+FOOT_ANKI_WAITING_TIP = "{n:,} new notes wait in Anki, in the decks the sync reads"   # backlog notes, not cards (AD-8)
 
 # --- W3.1a drag: the window's writer (app/services/moves.py `Writer(words=MOVE_WORDS)`, its notes: moves.WORDS's keys)
 MOVE_WORDS = {
@@ -282,6 +282,7 @@ MOVE_WORDS = {
     "crash_many": "{n} moves from before the crash couldn't be applied",
     "read_only": "Your library can't be saved right now: {reason}",
     "failed": "That change couldn't be saved: {error}",
+    "not_content": "Only text and subtitle files can be added — left out: {names}",
 }
 # the drag in the window (app/qt/drag.py): its toasts (A2's toast list), the ⋯ menu, the bar's lines
 DRAG_UP_NEXT = "{title} is up next"

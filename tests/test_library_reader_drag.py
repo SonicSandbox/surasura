@@ -260,3 +260,21 @@ def test_a_provider_whose_changed_fails_rebuilds_every_row():
 
 
 assert library_reader.LibraryReader.hold and library_reader.LibraryReader.subscribe_gone     # the hooks the drag wires
+
+
+def test_AD2_4_republish_shows_the_stores_view_again_though_nothing_changed(tmp_path):
+    """Round 2 (AD2-4): once every write landed, the window asks the reader for the store's own view again — where the
+    store placed a row otherwise than the window drew it, the window's guess never outlives the settle."""
+    seed = window_seed.build()
+    reader, views = _started(seed)
+    try:
+        quiet, _ = _quiet(reader, views)
+        assert quiet
+        before = len(views)
+        reader.republish()
+        assert _wait(lambda: len(views) == before + 1)                               # built and shown once more
+        assert [r.key for r in views[-1][1].rows] == [r.key for r in views[-2][1].rows]
+        quiet, _ = _quiet(reader, views)
+        assert quiet and len(views) == before + 1
+    finally:
+        reader.stop()

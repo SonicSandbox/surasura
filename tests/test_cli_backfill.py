@@ -210,3 +210,41 @@ def test_with_the_preview_off_it_asks_anki_nothing(anki):
 def test_note_ids_that_are_not_numbers_are_a_usage_error(anki):
     code, line = h.call("backfill", "--notes", "12,abc")
     assert code == 2 and line["code"] == "usage"
+
+
+def test_while_you_review_not_one_note_is_read(anki):
+    """You're reviewing when the verb starts: it answers `anki-busy` before it looks for the job's notes — no note is
+    found, read or planned while a review is on screen (the fill asks again inside the writer's hold only for a
+    review that starts while it plans)."""
+    anki.fake.reviewing = True
+    with anki.patched(anki.fake):
+        code, line = h.call("backfill", "--tag", TAG)
+    assert code == 3 and line["code"] == "anki-busy", line
+    assert not {"findNotes", "notesInfo", "cardsInfo"} & set(anki.fake.action_names), anki.fake.action_names
+
+
+def test_a_tag_with_a_quote_or_backslash_is_escaped_in_the_search(anki, monkeypatch):
+    """A job's tag goes into Anki's search inside quotes: a quote or backslash in it is escaped, so the search finds
+    exactly that tag, never a search the raw text would break or widen."""
+    from app import anki_connect
+    asked = []
+    monkeypatch.setattr(anki_connect, "find_notes", lambda url, query: asked.append(query) or [])
+    tag = r'surasura::connect::job"x\y'
+    with anki.patched(anki.fake):
+        code, line = h.call("backfill", "--tag", tag)
+    assert code == 0 and line["notes"] == 0, line
+    assert asked == [f'"tag:{anki_connect.escape_query(tag)}"'] and asked[0] != f'"tag:{tag}"'
+
+
+def test_a_note_with_one_card_studied_is_not_new_and_is_left_alone(anki):
+    """A note whose cards aren't all new (one of two studied) is not a new note: the fill leaves its empty fields
+    empty — only a note never studied is filled."""
+    n = anki.note + 2                                           # 囲む, its パターン empty
+    studied = max(anki.fake.cards) + 1
+    anki.fake.cards[studied] = dict(anki.fake.cards[min(c for c in anki.fake.cards if anki.fake.cards[c]["note"] == n)],
+                                    cardId=studied, type=2, queue=2)
+    anki.fake.notes[n]["cards"].append(studied)
+    with anki.patched(anki.fake):
+        code, line = h.call("backfill", "--notes", str(n))
+    assert code == 0 and line["filled"] == 0, line
+    assert _field(anki.fake, n, "Patterns") == ""

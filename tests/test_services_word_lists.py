@@ -371,6 +371,68 @@ def test_a_lock_held_by_another_program_changes_nothing(monkeypatch):
     assert _bytes(path) == old and _trash() == []
 
 
+def test_a_known_words_remove_holds_the_lock_and_is_refused_when_another_program_holds_it(known_file, monkeypatch):
+    # KnownWord.json is the sync's file too: taking an IGNORED entry out is a read-modify-write that must hold
+    # known-words-<lang>, and change nothing while another program (the Anki sync, Junban) holds it.
+    from app import locks
+    held = []
+    real = anki_sync._atomic_write_json
+
+    def write(p, data):
+        held.append(locks.held_here(anki_sync.known_lock_name("ja")))
+        return real(p, data)
+    monkeypatch.setattr(anki_sync, "_atomic_write_json", write)
+    assert word_lists.remove("ignore", "ja", ["良い"], source="known").done == ["良い"]
+    assert held == [True] and not locks.held_here(anki_sync.known_lock_name("ja"))
+
+    old, trash = _bytes(known_file), _trash()
+    monkeypatch.setattr(anki_sync, "hold_known_words",
+                        lambda language, verb, wait=None: (None, ("Your known words are being updated by Sync.", {})))
+    change = word_lists.remove("ignore", "ja", ["を"], source="known")
+    assert change.busy and change.done == [] and "being updated" in change.error
+    assert _bytes(known_file) == old and _trash() == trash and held == [True]
+
+
+def test_a_known_words_remove_whose_copy_fails_leaves_knownword_json_byte_identical(known_file, monkeypatch):
+    old = _bytes(known_file)
+
+    def fail(_path, move=False):
+        raise OSError("the disk is full")
+    monkeypatch.setattr(path_utils, "backup_to_trash", fail)
+    change = word_lists.remove("ignore", "ja", ["良い"], source="known")
+    assert change.done == [] and "could not be backed up" in change.error and "the disk is full" in change.error
+    assert _bytes(known_file) == old and _trash() == []
+
+
+def test_after_a_copy_that_failed_the_next_write_makes_one_before_it_writes(monkeypatch):
+    # A copy refused once (antivirus, a cloud folder's lock) must not count as made: the next write in the session
+    # copies the list first, and only then writes.
+    old = LF_LIST.encode("utf-8")
+    path = _put(old)
+    real_backup = path_utils.backup_to_trash
+    refused = []
+
+    def flaky(p, move=False):
+        if not refused:
+            refused.append(p)
+            raise OSError("held by another program")
+        return real_backup(p, move=move)
+    monkeypatch.setattr(path_utils, "backup_to_trash", flaky)
+    seen = []
+    real_write = anki_sync._atomic_write_bytes
+
+    def write(p, data):
+        seen.append((_trash(), _bytes(p)))                        # on disk as the write starts
+        return real_write(p, data)
+    monkeypatch.setattr(anki_sync, "_atomic_write_bytes", write)
+    first = word_lists.add("ignore", "ja", ["準備"])
+    assert first.done == [] and "could not be backed up" in first.error and seen == []
+    second = word_lists.add("ignore", "ja", ["準備"])
+    assert second.done == ["準備"] and second.backup is not None
+    assert len(seen) == 1 and seen[0] == ([os.path.basename(second.backup)], old)
+    assert _bytes(second.backup) == old
+
+
 def test_the_list_is_read_again_under_the_lock(monkeypatch):
     # Edited by hand after the window read it: the write works on the file as it is when the lock is held.
     path = _put("冒険\n".encode("utf-8"))

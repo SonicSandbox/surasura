@@ -4,6 +4,7 @@ What a wrong answer would cost: the window's thread reading or writing a list (a
 or more than one; a dropped chip added anyway, or a word already on the list added again; the other language's list
 changed from this one; a name taken off (it is the Ignore names setting's); a control with no tooltip or name.
 """
+import json
 import os
 import threading
 
@@ -15,9 +16,9 @@ from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication
 
 from app import path_utils
-from app.qt import shell, windows
+from app.qt import confirm, shell, windows
 from app.qt import word_lists_strings as s
-from app.qt.word_lists_window import WordListsWindow
+from app.qt.word_lists_window import SOURCE, WORD, WordListsWindow
 from app.services import word_lists
 from tests.qt.conftest import wait_until
 from tests.qt.test_wiring import problems
@@ -197,6 +198,105 @@ def test_delete_takes_off_the_current_word(main):
     QTest.keyClick(w.list, Qt.Key.Key_Delete)
     assert wait_until(lambda: _rows(w) == ["毎日"])
     assert _text(path) == "毎日\n"
+
+
+def test_backspace_takes_nothing_off(main, calls):
+    # Backspace corrects a mistyped keyboard search in the list: it must never remove the current word.
+    path = _put("冒険\n毎日\n")
+    w = _open(main)
+    w.list.setCurrentIndex(w.shown.index(0, 0))
+    QTest.keyClick(w.list, Qt.Key.Key_Backspace)
+    QTest.qWait(100)
+    assert [c for c in calls if c[0] == "remove"] == [] and _text(path) == "冒険\n毎日\n"
+    assert _card(w) is None
+
+
+def test_a_list_line_is_taken_off_with_no_question(main, calls):
+    # A list line comes back by adding it again: no confirmation in its way.
+    _put("冒険\n毎日\n")
+    w = _open(main)
+    _click_mark(w, 0)
+    assert _card(w) is None
+    assert wait_until(lambda: _rows(w) == ["毎日"])
+
+
+def _card(w):
+    cards = [c for c in w.findChildren(confirm.Confirm) if c.isVisible()]
+    return cards[0] if cards else None
+
+
+@pytest.fixture
+def known_file(ja_resources_dir):
+    """The real Migaku export (46 IGNORED entries) as this language's KnownWord.json."""
+    import shutil
+    dst = os.path.join(path_utils.get_user_files_path("ja"), "KnownWord.json")
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    shutil.copyfile(os.path.join(ja_resources_dir, "KnownWord.json"), dst)
+    return dst
+
+
+def _known_row(w, word):
+    """Search for `word`; -> the shown row of its known-words entry."""
+    w.search.setText(word)
+    for i in range(w.shown.rowCount()):
+        index = w.shown.index(i, 0)
+        if index.data(WORD) == word and index.data(SOURCE) == "known":
+            return i
+    raise AssertionError(f"no known-words row for {word}")
+
+
+def _ignored(path, word):
+    with open(path, "rb") as f:
+        return any(e.get("dictForm") == word and e.get("knownStatus") == "IGNORED"
+                   for e in json.loads(f.read().decode("utf-8"))["words"])
+
+
+def test_a_known_words_row_is_taken_off_only_after_the_question(main, calls, known_file):
+    # KnownWord.json's entry can't come back from here (adding puts the word on the Ignore list): Delete asks first,
+    # in the window, Cancel the default; only Yes removes it, on a worker.
+    w = _open(main)
+    w.list.setCurrentIndex(w.shown.index(_known_row(w, "良い"), 0))
+    QTest.keyClick(w.list, Qt.Key.Key_Delete)
+    card = _card(w)
+    assert card is not None and "良い" in card.title.text() and card.default is card.no
+    QTest.qWait(100)
+    assert [c for c in calls if c[0] == "remove"] == [] and _ignored(known_file, "良い")
+    card.yes.click()
+    # Waited on through the window (its read after the write), never by opening the file while it is replaced.
+    assert wait_until(lambda: not w.busy() and w.entries is not None and ("良い", "known") not in w.entries)
+    assert [c for c in calls if c[0] == "remove"] == [("remove", ("ignore", "ja", ["良い"], "known"), False)]
+    assert not _ignored(known_file, "良い")
+
+
+def test_no_on_the_known_words_question_changes_nothing(main, calls, known_file):
+    with open(known_file, "rb") as f:
+        old = f.read()
+    w = _open(main)
+    _click_mark(w, _known_row(w, "良い"))
+    card = _card(w)
+    assert card is not None
+    QTest.keyClick(QApplication.focusWidget(), Qt.Key.Key_Escape)
+    assert card.answer is False and w.isVisible()
+    QTest.qWait(100)
+    assert [c for c in calls if c[0] == "remove"] == []
+    with open(known_file, "rb") as f:
+        assert f.read() == old
+
+
+def test_a_switch_with_the_known_words_question_open_drops_it(main, calls, known_file):
+    # The question named a ja entry: once the window shows the Blacklist it is dropped, never answered.
+    w = _open(main)
+    _click_mark(w, _known_row(w, "良い"))
+    card = _card(w)
+    yes = card.yes
+    w.show_kind("blacklist")
+    assert _card(w) is None and w.question is None
+    try:
+        yes.click()
+    except RuntimeError:
+        pass
+    QTest.qWait(100)
+    assert [c for c in calls if c[0] == "remove"] == [] and _ignored(known_file, "良い")
 
 
 def test_the_mark_on_a_searched_list_takes_off_the_word_shown(main):

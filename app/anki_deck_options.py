@@ -15,7 +15,9 @@ one deck, and the row says so.
 writes, never a GUI thread) from its first read to its read-back: it reads the options group again, refuses when
 *New cards a day* is no longer what the user saw (`expect`), changes `new.perDay` alone — every other key of the
 group goes back as Anki sent it — through `anki_connect.save_deck_config` (the one door for `saveDeckConfig`), then
-reads it back. A shared options group changes for every deck using it; AnkiConnect's `getDeckConfig` doesn't say how
+reads it back, the whole group compared (`_moved`): an option Anki's save dropped or changed is named, never reported
+as done. A deck's own *This deck* / *Today only* limit wins over the group's number and can't be read: the
+confirmation and the success line say it still applies (`OWN_LIMIT`). A shared options group changes for every deck using it; AnkiConnect's `getDeckConfig` doesn't say how
 many do, so the confirmation says it conditionally (`shared_with` is None).
 
 Qt-free and Tk-free; never raises past a plain-words answer.
@@ -34,6 +36,15 @@ VERB = "New cards a day"
 
 # How long one read or write waits for Anki (anki_session.per_day's figure).
 TIMEOUT = 10
+
+# Anki's own per-deck limit (its deck options' "This deck" / "Today only", Anki 2.1.55+) wins over the options group's
+# number, and AnkiConnect can't read it: the question and the answer both say so.
+OWN_LIMIT = ("If the deck has its own “This deck” or “Today only” limit in Anki's options, that limit still "
+             "applies.")
+
+# What a save changes by itself in the options group it reads back (Anki's stamps), beside the write's own key.
+_SAVE_STAMPS = ("mod", "usn", "new.perDay")
+_MISSING = object()
 
 # A read: Anki's value, the deck, its options group's name, and how many decks share that group (None: not told).
 Reading = collections.namedtuple("Reading", "value deck config_name shared_with")
@@ -106,6 +117,7 @@ def confirmation(reading, value):
         lines.append(f"It is set in the options group “{group}”: every deck using that group changes too.")
     elif shared > 1:
         lines.append(f"{shared} decks use the options group “{group}”: all of them change.")
+    lines.append(OWN_LIMIT)
     return "\n".join(lines)
 
 
@@ -144,7 +156,7 @@ def _write(url, deck, value, expect):
         return Outcome(False, f"New cards a day for “{deck}” is now {current} in Anki — it changed since it was "
                               "read. Nothing was changed; look at it again.", current, False)
     if current == value:
-        return Outcome(True, f"New cards a day for “{deck}” is already {value} in Anki.", value, False)
+        return Outcome(True, f"New cards a day for “{deck}” is already {value} in Anki. {OWN_LIMIT}", value, False)
     changed = copy.deepcopy(config)
     changed["new"]["perDay"] = value
     try:
@@ -163,7 +175,32 @@ def _write(url, deck, value, expect):
     if now != value:
         return Outcome(False, f"Anki was asked for {value} New cards a day for “{deck}”, but now says {now}.",
                        now, False)
-    return Outcome(True, f"New cards a day for “{deck}” is now {value} in Anki.", value, False)
+    moved = _moved(changed, back)
+    if moved:
+        group = str(config.get("name") or "") or deck
+        return Outcome(False, f"Anki took {value} New cards a day for “{deck}”, but other options of “{group}” came "
+                              f"back different: {', '.join(moved)}. Check the options group “{group}” in Anki.",
+                       now, False)
+    return Outcome(True, f"New cards a day for “{deck}” is now {value} in Anki. {OWN_LIMIT}", value, False)
+
+
+def _moved(sent, back, path=""):
+    """The options of the group Anki read back different from what was sent -> their names, dotted ("new.delays"),
+    in the group's order: a key dropped, added or changed. A save's own stamps (`mod`, `usn`), the write's
+    `new.perDay` and `id` read back as a str (AnkiConnect's) are not moves."""
+    out = []
+    for key in list(sent) + [k for k in back if k not in sent]:
+        name = f"{path}.{key}" if path else str(key)
+        if name in _SAVE_STAMPS:
+            continue
+        a, b = sent.get(key, _MISSING), back.get(key, _MISSING)
+        if name == "id" and a is not _MISSING and b is not _MISSING and str(a) == str(b):
+            continue
+        if isinstance(a, dict) and isinstance(b, dict):
+            out += _moved(a, b, name)
+        elif a is _MISSING or b is _MISSING or a != b:
+            out.append(name)
+    return out
 
 
 def _words_per_day(settings):

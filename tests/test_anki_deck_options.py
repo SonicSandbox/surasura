@@ -57,6 +57,7 @@ class FakeAnki:
         self.offline_on = None
         self.ignore_save = False
         self.save_reply = None
+        self.on_save = None             # Anki's own round trip: changes the group as it is stored (a key dropped…)
 
     def __call__(self, request, timeout=None):
         payload = json.loads(request.data.decode("utf-8"))
@@ -72,6 +73,8 @@ class FakeAnki:
                 for deck, group in self.groups.items():
                     if group["id"] == params["config"]["id"]:
                         self.groups[deck] = copy.deepcopy(params["config"])
+                        if self.on_save:
+                            self.on_save(self.groups[deck])
         elif action == "guiReviewActive":
             result = False
         else:
@@ -174,6 +177,19 @@ def test_the_confirmation_names_the_deck_the_change_and_that_the_group_changes_f
     assert "group" not in options.confirmation(Reading(20, DECK, "Default", 1), 30), "its own group: nothing to say"
 
 
+def test_the_confirmation_and_the_success_line_say_a_decks_own_limit_still_applies(anki):
+    # S1: Anki's per-deck "This deck" / "Today only" limit wins over the options group getDeckConfig reads and the
+    # write changes: neither the question nor the answer may promise the deck itself now takes the new number.
+    for shared in (None, 1, 3):
+        assert options.OWN_LIMIT in options.confirmation(Reading(20, DECK, "Default", shared), 30)
+    assert "“This deck”" in options.OWN_LIMIT and "“Today only”" in options.OWN_LIMIT
+    assert "still applies" in options.OWN_LIMIT
+    done = options.write_new_per_day({}, DECK, 30, 20)
+    assert done.ok and done.message.endswith(options.OWN_LIMIT)
+    already = options.write_new_per_day({}, DECK, 30, 30)
+    assert already.ok and already.message.endswith(options.OWN_LIMIT)
+
+
 def test_the_row_shows_ankis_number_when_read_else_words_per_day():
     assert options.row_number({"words_per_day": 12}, Reading(25, DECK, "Default", None)) == 25
     assert options.row_number({"words_per_day": 12}, "Anki isn't open") == 12
@@ -194,7 +210,7 @@ def test_words_per_day_follows_only_a_confirmed_change_to_a_number_the_report_ca
 # --- the write ---------------------------------------------------------------------------------------- #
 def test_the_write_holds_the_lock_from_its_read_to_its_read_back_and_lets_go_after(anki):
     outcome = options.write_new_per_day({}, DECK, 30, 20)
-    assert outcome == Outcome(True, f"New cards a day for “{DECK}” is now 30 in Anki.", 30, False)
+    assert outcome == Outcome(True, f"New cards a day for “{DECK}” is now 30 in Anki. {options.OWN_LIMIT}", 30, False)
     assert anki.actions == ["getDeckConfig", "saveDeckConfig", "getDeckConfig"]
     assert all(held for _action, _params, held in anki.requests), "every request sent holding the lock"
     assert locks.held_in_process(anki_connect.WRITER_LOCK) is None, "let go after"
@@ -261,6 +277,55 @@ def test_a_read_back_that_disagrees_is_not_reported_as_done(anki):
     outcome = options.write_new_per_day({}, DECK, 30, 20)
     assert not outcome.ok and outcome.value == 20 and "now says 20" in outcome.message
     assert anki.actions == ["getDeckConfig", "saveDeckConfig", "getDeckConfig"]
+
+
+def _drop_fsrs(group):
+    del group["fsrsWeights"]
+
+
+def _change_steps_and_leech(group):
+    group["new"]["delays"] = [1.0]
+    group["lapse"]["leechAction"] = 0
+
+
+def _add_a_key(group):
+    group["easyDaysPercentages"] = [1.0] * 7
+
+
+@pytest.mark.parametrize("round_trip, moved", [
+    (_drop_fsrs, ["fsrsWeights"]),
+    (_change_steps_and_leech, ["new.delays", "lapse.leechAction"]),
+    (_add_a_key, ["easyDaysPercentages"]),
+])
+def test_a_read_back_where_another_option_moved_is_not_reported_as_done(anki, round_trip, moved):
+    # S2: the payload only changed new.perDay, but a lossy round trip in Anki (a key its legacy save drops) would
+    # reset the user's scheduling options silently. The read-back compares the whole group and names what moved.
+    anki.on_save = round_trip
+    outcome = options.write_new_per_day({}, DECK, 30, 20)
+    assert not outcome.ok and outcome.value == 30 and not outcome.busy
+    for key in moved:
+        assert key in outcome.message
+    assert "“Default”" in outcome.message and "Anki" in outcome.message and "check" in outcome.message.lower()
+    assert "perDay" not in outcome.message, "the one key the write changed is not a moved option"
+    assert options.words_per_day_after({"words_per_day": 5}, outcome) == {}, "a failed write moves no pace"
+    assert locks.held_in_process(anki_connect.WRITER_LOCK) is None
+
+
+def test_what_a_save_changes_itself_is_not_a_moved_option(anki):
+    # Anki stamps mod and usn on every save, and AnkiConnect reads id back as a str: none of it is the user's.
+    def stamp(group):
+        group["mod"], group["usn"], group["id"] = group["mod"] + 1, 7, str(group["id"])
+    anki.on_save = stamp
+    outcome = options.write_new_per_day({}, DECK, 30, 20)
+    assert outcome.ok and outcome.value == 30, outcome.message
+
+
+def test_an_id_that_reads_back_as_another_number_is_a_moved_option(anki):
+    def other_id(group):
+        group["id"] = "2"
+    anki.on_save = other_id
+    outcome = options.write_new_per_day({}, DECK, 30, 20)
+    assert not outcome.ok and "id" in outcome.message
 
 
 def test_anki_closing_mid_write_says_to_look_and_lets_go_of_the_lock(anki):

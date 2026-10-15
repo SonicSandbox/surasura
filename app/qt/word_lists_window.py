@@ -1,9 +1,9 @@
 """*Words to leave out* (W3.3 P10; the window's spec 01 §1.2 n16): the Ignore list and the Blacklist, one language at a
 time — the main window's, followed when idle.
 
-A tab per list; the list's words with a search and their count, ✕ on each (Delete on the current row too); an *Add*
-field (Enter commits; several words separated by spaces); *Paste text…*: the text read by the library's own tokenizer
-(`word_lists.words_in`), each word found a chip to keep or drop — a new word kept, one already known or left out
+A tab per list; the list's words with a search and their count, ✕ on each (Delete on the current row too; a
+KnownWord.json entry only after the in-window question, `confirm.ask`); an *Add* field (Enter commits; several words
+separated by spaces); *Paste text…*: the text read by the library's own tokenizer (`word_lists.words_in`), each word found a chip to keep or drop — a new word kept, one already known or left out
 dropped, one already on the list shown and fixed — then *Add N words*. A chip adds the word's `Word` (the lemma),
 shown by its spelling. Every read and write is `app/services/word_lists.py`'s, on a worker; the window decides nothing.
 """
@@ -14,7 +14,7 @@ from PyQt6.QtGui import QPalette, QStandardItem, QStandardItemModel
 from PyQt6.QtWidgets import (QAbstractItemView, QButtonGroup, QHBoxLayout, QLabel, QLineEdit, QListView, QListWidget,
                              QListWidgetItem, QPlainTextEdit, QPushButton, QStyledItemDelegate, QWidget)
 
-from app.qt import bridge
+from app.qt import bridge, confirm
 from app.qt import word_lists_strings as s
 from app.qt.windows import SecondaryWindow, say_in_bar, show
 from app.services import word_lists
@@ -53,14 +53,14 @@ class _RemoveDelegate(QStyledItemDelegate):
 
 
 class _WordsView(QListView):
-    """The list; Delete takes the current word off."""
+    """The list; Delete takes the current word off (never Backspace: it corrects the list's keyboard search)."""
 
     def __init__(self, parent, on_delete):
         super().__init__(parent)
         self.on_delete = on_delete
 
     def keyPressEvent(self, event):
-        if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace) and self.currentIndex().isValid():
+        if event.key() == Qt.Key.Key_Delete and self.currentIndex().isValid():
             self.on_delete(self.currentIndex())
             return
         super().keyPressEvent(event)
@@ -75,6 +75,7 @@ class WordListsWindow(SecondaryWindow):
         self.candidates = None                            # the chips as last found (None: none asked)
         self._asked = 0                                   # the newest read: an older answer is dropped
         self._finds = 0                                   # the newest find: an older answer is dropped
+        self.question = None                              # the open question (a known-words entry's removal)
 
         self.kinds = QWidget(self)                        # one of the two lists, as the main window's tabs are
         self.kinds.setAccessibleName(s.WORD_LISTS_KINDS_NAME)
@@ -231,6 +232,7 @@ class WordListsWindow(SecondaryWindow):
             self.kind_buttons[kind].setChecked(True)
         if kind == self.kind:
             return
+        self._drop_question()
         self.kind = kind
         self.entries = None
         self.model.clear()
@@ -240,6 +242,7 @@ class WordListsWindow(SecondaryWindow):
             self.find()
 
     def language_changed(self, language):
+        self._drop_question()
         self.entries = None
         self.model.clear()
         self._clear_chips()
@@ -247,11 +250,32 @@ class WordListsWindow(SecondaryWindow):
 
     # --- writing ---------------------------------------------------------------------------------------------- #
     def _remove_index(self, index):
-        if self.busy():
+        if self.busy() or self.question is not None:
             return
         word, source = index.data(WORD), index.data(SOURCE)
-        if word and source in ("list", "known"):
+        if word and source == "list":
             self.remove(word, source)
+        elif word and source == "known":
+            self.ask_remove_known(word)
+
+    def ask_remove_known(self, word):
+        """A KnownWord.json entry can't come back from here (an add goes on the list): asked first, in the window."""
+        kind, language = self.kind, self.language
+
+        def answered(yes):
+            self.question = None
+            if yes and (kind, language) == (self.kind, self.language):
+                self.remove(word, "known")
+        self.question = confirm.ask(self, s.WORD_LISTS_KNOWN_REMOVE.format(word=word), s.WORD_LISTS_KNOWN_REMOVE_BODY,
+                                    s.WORD_LISTS_KNOWN_REMOVE_YES, s.WORD_LISTS_KNOWN_REMOVE_YES_TIP,
+                                    default_no=True, danger=True, on_answer=answered)
+        return self.question
+
+    def _drop_question(self):
+        """The question no longer stands (the window shows another list or language): dropped, never answered."""
+        if self.question is not None:
+            self.question.drop()
+            self.question = None
 
     def remove(self, word, source="list"):
         self._write(False, [word], source)

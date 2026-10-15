@@ -19,7 +19,12 @@ WORD_LISTS_LIST_TIP = ("Every word here is left out of your list and never count
                        "• ✕ or Delete takes a word off")
 WORD_LISTS_ROW_LIST = "{word}\n• ✕ takes it off the list"
 WORD_LISTS_ROW_KNOWN = ("{word}: ignored in your known words file (KnownWord.json)\n"
-                        "• ✕ takes it off there")
+                        "• ✕ takes it off there, after asking")
+WORD_LISTS_KNOWN_REMOVE = "Take {word} off your known words file?"
+WORD_LISTS_KNOWN_REMOVE_BODY = ("Its ignored entry leaves KnownWord.json. Adding the word back puts it on the Ignore "
+                                "list, not back in KnownWord.json.")
+WORD_LISTS_KNOWN_REMOVE_YES = "Take it off"
+WORD_LISTS_KNOWN_REMOVE_YES_TIP = "Remove the word's ignored entry from KnownWord.json"
 WORD_LISTS_ROW_NAMES = "{word}: a name, left out while Ignore names is on\n• Turn Ignore names off to count names again"
 WORD_LISTS_MARK_KNOWN = "{word}   · known words file"
 WORD_LISTS_MARK_NAMES = "{word}   · name"

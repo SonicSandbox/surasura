@@ -79,6 +79,17 @@ GEM = MappingProxyType({
     "ruby": ("#98203a", "#e2546f", "#ffdbe3"),
 })
 KIND_GEM = MappingProxyType({"shows": "sapphire", "reading": "emerald", "videos": "ruby"})
+# The stones' fixed colours (gem-kit.js, flat: rockFaces, rawFaces, GRAPHITE, crystalStops, the unlinked trillion):
+# what a stone is made of whatever its kind (W3.1a, `app/qt/stones.py`).
+STONE = MappingProxyType({
+    "black": "#000000", "white": "#ffffff",
+    "rock-dark": "#22262c", "rock-lit": "#6a717c", "rock-rim": "#181b20",
+    "raw-pale": "#8a94a3", "raw-shade": "#2a2f37",
+    "graphite-0": "#14171b", "graphite-1": "#262a31", "graphite-2": "#434a54", "graphite-3": "#6d7581",
+    "ore-rim": "#0c0f13",
+    "crystal-0": "#0a0e14", "crystal-1": "#1e2530", "crystal-2": "#3e4858",
+    "unlinked-base": "#2a313c", "unlinked-light": "#56627a", "unlinked-edge": "#9aa6b8",
+})
 # Hard-coded, not tokens: the same whatever the theme. Tooltips and toasts are overlays: slate navy, solid (brief §4).
 FIXED = MappingProxyType({
     "tooltip": ROOM["overlay"], "toast": ROOM["overlay"], "scrim": ROOM["dim"], "on-accent": "#0b1018",

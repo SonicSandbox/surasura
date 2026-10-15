@@ -221,6 +221,11 @@ QLabel#ankitotal {{ color: {c['ink']}; {font('dialog-title')} }}
 QLabel#ankidelta {{ color: {c['ok']}; {font('body')} font-weight: 600; }}
 QPushButton[kind="primary"]:disabled {{ background: {c['raised']}; color: {c['ink-faint']}; }}
 """
+    # --- W3.4 row 5: Backfill's connection mark: its words carry the state, the colour repeats it (Tk: teal / red)
+    rules += f"""
+QLabel#backfillconnection[state="ok"] {{ color: {c['ok']}; }}
+QLabel#backfillconnection[state="bad"] {{ color: {c['bad']}; }}
+"""
     _state["generated_ms"] = (time.perf_counter() - t0) * 1000
     return rules
 

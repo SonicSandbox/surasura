@@ -282,6 +282,10 @@ DICT_OPEN_FOLDER = "Open folder"
 DICT_OPEN_FOLDER_TIP = "Open the folder the dictionary was saved in"
 DICT_OPEN_LOG = "Open the log"
 DICT_OPEN_LOG_TIP = "Open the export's log: it says why it stopped"
+
+# --- W3.4 row 5: Backfill (its door; the window's own words are Junban's: modules/junban/qt_strings.py)
+BACKFILL_DOOR = "Anki Backfill"
+BACKFILL_DOOR_TIP = "Fill fields on your Anki cards from Surasura: パターン and 例文"
 # --- W3.4 row 2: the known-word importers (.apkg, Migaku, Jiten) and Extract (app/qt/importers.py) ---------------- #
 IMPORTERS_LAUNCH_APKG = "Known words from a deck…"
 IMPORTERS_LAUNCH_APKG_TIP = ("Every word in one field of an exported Anki deck (.apkg) becomes a known word\n"

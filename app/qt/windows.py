@@ -267,6 +267,22 @@ def _open_anki(shell):
 
 OPENERS += [Opener("anki", strings.ANKI_DOOR, strings.ANKI_DOOR_TIP, always, _open_anki)]
 
+# row 5: Backfill (+ Fields, パターン data) — Junban's window: shown while 順 is switched on and Junban imports (the Tk
+# dashboard's `backfill_available`), opened lazily through the module's `open_backfill_qt`.
+
+
+def _backfill_available(settings, _language):
+    return settings.get("enable_junban", True) is not False
+
+
+def _open_backfill(shell):
+    from modules.junban import open_backfill_qt
+    return open_backfill_qt(shell)
+
+
+OPENERS += [Opener("backfill", strings.BACKFILL_DOOR, strings.BACKFILL_DOOR_TIP, _backfill_available, _open_backfill,
+                   "junban")]
+
 
 # The optional modules the doors name, looked for once per process (a module can't appear mid-session), on a worker
 # after the window opened: name -> bool. A door that names a module stays hidden until its module was found.

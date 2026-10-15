@@ -501,6 +501,22 @@ def test_jitens_fetched_cards_never_outlive_a_window_closed_during_the_fetch(mai
     assert not os.path.exists(os.path.dirname(cards))
 
 
+def test_jitens_fetched_cards_go_with_a_window_destroyed_without_a_close(main, runs):
+    """The app quitting with the question open destroys the window with its main window (no closeEvent): the cards
+    (the user's whole Jiten vocabulary) go with it, never left in the temp folder."""
+    from PyQt6.QtCore import QCoreApplication, QEvent
+    j = importers.open_jiten(main)
+    j.key.setText(SECRET)
+    j.go.click()
+    folder = os.path.dirname(runs.calls[-1].argv[-1])
+    _fetched(runs, [{"wordText": "猫", "state": 5}])
+    assert wait_until(lambda: _card(j) is not None) and os.path.exists(folder)
+    j.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
+    QApplication.processEvents()
+    assert not os.path.exists(folder)
+
+
 def test_a_failed_fetch_removes_its_folder(main, runs):
     j = importers.open_jiten(main)
     j.key.setText(SECRET)
@@ -526,6 +542,10 @@ def test_every_writing_child_is_waited_for_at_quit_and_the_fetch_is_not(main, ru
     e.path.setText(_text(tmp_path))
     e.start("旅")
     assert [c.on_quit for c in runs.calls] == ["wait", "wait", "cancel", "wait", "wait"]
+    for call in runs.calls:                                   # every child ends: nothing left in the temp folder
+        call.on_end(1)
+    QApplication.processEvents()
+    assert not os.path.exists(j._folder or os.path.dirname(fetch.argv[-1]))
 
 
 def test_an_import_that_wrote_tells_the_known_words_count_and_one_that_failed_does_not(main, runs, monkeypatch):

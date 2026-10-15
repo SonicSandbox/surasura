@@ -60,6 +60,14 @@ def _kept(plan):
                                                                      (strings.KEPT_IGNORED, plan.ignored)) if n)
 
 
+def _remove(kept):
+    """A destroyed Jiten window's fetched cards (`kept[0]`, its folder): removed — the app quitting with the question
+    open destroys the window with its main window, with no closeEvent."""
+    folder, kept[0] = kept[0], None
+    if folder:
+        shutil.rmtree(folder, ignore_errors=True)
+
+
 def _row(*widgets, stretch_at=None):
     box = QHBoxLayout()
     box.setContentsMargins(0, 0, 0, 0)
@@ -396,7 +404,8 @@ class JitenWindow(ToolWindow):
 
     def __init__(self, shell, language=None):
         super().__init__(shell, strings.JITEN_NAME, language)
-        self._folder = None
+        self._kept = [None]                               # the fetched cards' folder (`_folder`), in a box the
+        self.destroyed.connect(lambda *_a, kept=self._kept: _remove(kept))   # window's end empties, close or not
         self.key = QLineEdit(self)
         self.key.setEchoMode(QLineEdit.EchoMode.Password)
         self.key.setPlaceholderText(strings.JITEN_KEY_HINT)
@@ -420,6 +429,14 @@ class JitenWindow(ToolWindow):
         self.body.addLayout(line)
         self.refresh()
         self.language_changed(self.language)
+
+    @property
+    def _folder(self):
+        return self._kept[0]
+
+    @_folder.setter
+    def _folder(self, folder):
+        self._kept[0] = folder
 
     def _show(self, on):
         self.key.setEchoMode(QLineEdit.EchoMode.Normal if on else QLineEdit.EchoMode.Password)

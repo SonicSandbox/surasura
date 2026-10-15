@@ -577,7 +577,9 @@ def backlog_query(decks, connect=False):
 
 def _connect_on():
     """Connect's preview, as settings.json holds it now (one place for every caller of `sync_backlog`, so the
-    window's and the command line's reads never disagree about the scope). Off when it can't be read."""
+    window's and the command line's reads never disagree about the scope). Off when it can't be read. `connect_enabled`
+    alone, never `connect_on` (P4.1 row 4.1.1): it describes your set-up — the cards Connect made are in Anki with the
+    automation off too, and the report's *In Anki* mark still sees them."""
     try:
         from app import settings_manager
         return bool(settings_manager.load_settings().get("connect_enabled"))
@@ -646,9 +648,11 @@ def _backlog_entry(note, fields, language):
 
 def read_known_signal(language, url, decks, fields, settings):
     """Known from Anki (P2.4 row 2.4.15), beside this sync, in the same decks: cards you suspended (or the signal you
-    chose, `known_from_anki`) mark their words known — `app/connect/known_signal.py`. Only while Connect's preview is
-    on: off, nothing is imported or asked (None). Never raises: a read that fails is tried at the next sync."""
-    if not (settings or {}).get("connect_enabled"):
+    chose, `known_from_anki`) mark their words known — `app/connect/known_signal.py`. Only while Connect is on (its
+    switch and, 3.0, D29's automation: `settings_manager.connect_on`, P4.1 row 4.1.1): off, nothing is imported or
+    asked (None). Never raises: a read that fails is tried at the next sync."""
+    from app import settings_manager
+    if not settings_manager.connect_on(settings):
         return None
     try:
         from app.connect import known_signal

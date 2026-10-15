@@ -51,9 +51,11 @@ def _now():
 
 
 def signal(settings):
-    """The terms picked (a clean list in the setting's order), or [] when off — and [] with Connect's preview off
-    (2.x: nothing of this runs)."""
-    if not (settings or {}).get("connect_enabled"):
+    """The terms picked (a clean list in the setting's order), or [] when off — and [] with Connect off (2.x: nothing
+    of this runs; 3.0: D29's automation off too — `settings_manager.connect_on`, P4.1 row 4.1.1: no word marked
+    known by itself while nothing automatic runs)."""
+    from app import settings_manager
+    if not settings_manager.connect_on(settings):
         return []
     value = (settings or {}).get("known_from_anki", ["suspended"])
     if isinstance(value, str):

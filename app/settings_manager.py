@@ -631,6 +631,17 @@ def automation(settings) -> bool:
     return not (hasattr(logic, "get") and logic.get("automation") is False)
 
 
+def connect_on(settings) -> bool:
+    """P4.1 C1 (row 4.1.1; WZ-4, D29): may Connect's unattended work start — Connect's own switch (`connect_enabled`,
+    *Make cards for me*) on **and** D29's switch (`automation`) on. Read by every place that *starts* Connect's work by
+    itself (`kick`, the runner's look, the Anki session, Anki Miner's daily check, *Open Anki for me*, Known from Anki,
+    the verbs' session sync); the places that describe your set-up (hato's `register` / back-fill, `status`'s `connect`
+    flag, *Undo this batch*) keep `connect_enabled` alone. Takes a settings dict, a window's frozen copy, or None
+    (off)."""
+    on = settings.get("connect_enabled") if hasattr(settings, "get") else False
+    return bool(on) and automation(settings)
+
+
 def get_default_settings() -> Dict[str, Any]:
     """Returns a fresh copy of default settings."""
     return copy.deepcopy(DEFAULT_SETTINGS)

@@ -31,7 +31,8 @@ CHECK_AGAIN = "Check again"
 CHECK_AGAIN_TIP = "Look for Anki again, once it's open."
 CHECKING = "Looking for Anki…"
 # Brought over from Surasura 2 (WZ-8): the whole setup once, each page showing the choices already made there
-UPGRADE_LINE = "Welcome to Surasura 3. Your choices from Surasura 2 are already picked: Next keeps each one."
+UPGRADE_LINE = ("Welcome to Surasura 3. Your choices from Surasura 2 are already picked; "
+                "what's new starts at the recommended choice.")
 
 # --- 1 · your language ------------------------------------------------------------------------------------------------ #
 LANGUAGE_TITLE = "What are you learning?"

@@ -1230,3 +1230,40 @@ def test_finish_later_on_a_new_profile_records_nothing(make):
     wiz, _shell, api, settings, _m = make(api=UpgradeApi(), data={})
     wiz.finish_later()
     assert settings.calls == [] and ("seen",) not in api.calls
+
+
+# --- review round 2 (R2-1, R2-3) ------------------------------------------------------------------------------------------ #
+OPEN_LOOK = {"open": True, "say": None, "decks": list(DECKS), "preselected": ["日本語::Mining"]}
+
+
+def test_card_order_coming_up_when_anki_answers_takes_no_press_aimed_before_it(make):
+    # Why: the consent switch appears with Anki's late answer; a press landing then would save it unseen (R2-1)
+    api = FakeApi(anki={"open": False, "say": None, "decks": [], "preselected": []})
+    wiz, _shell, api, settings, _m = make(api=api)
+    go_to(wiz, "order")
+    settle(wiz)
+    assert wiz.btn_next.isHidden()
+    settings.calls.clear()
+    wiz._anki_looked(dict(OPEN_LOOK), wiz._anki_seq, wiz.language)       # Anki answers: the controls come up
+    assert not wiz.btn_next.isHidden()
+    QTest.mouseClick(wiz.btn_next, Qt.MouseButton.LeftButton)
+    QTest.keyClick(wiz, Qt.Key.Key_Return)
+    assert W.PAGES[wiz.index] == "order" and settings.calls == [], "nothing saved before the page was seen"
+    settle(wiz)
+    QTest.mouseClick(wiz.btn_next, Qt.MouseButton.LeftButton)
+    assert W.PAGES[wiz.index] == "cards" and "junban_auto_actions" in settings.calls[-1]
+
+
+def test_saved_decks_the_open_anki_lacks_are_kept_by_next(make):
+    # Why: another Anki profile open (or a deck renamed) must not rewrite the saved decks or 順's deck (R2-3)
+    pre = {"language": {"language": "ja"}, "known": {"how": "anki", "decks": ["日本語::Mining", "旧デッキ::文"]},
+           "shows": {"covers": True},
+           "order": {"keep_in_order": False, "deck": "旧デッキ::文", "later": "leave", "open_anki": False},
+           "cards": {"make_cards": True}, "level": {"automatic": True, "band": None}}
+    wiz, *_ = make(api=FakeApi(anki=dict(OPEN_LOOK), preselect=pre))
+    go_to(wiz, "known")
+    wiz.page.entered()
+    assert wait_until(lambda: not wiz._anki_looking, 2.0)
+    assert wiz.page.answers()["decks"] == ["日本語::Mining", "旧デッキ::文"]
+    go_to(wiz, "order")
+    assert wiz.page.answers()["deck"] == "旧デッキ::文"

@@ -1244,7 +1244,10 @@ class KnownPage(_Page):
         _show(self.no_decks, not decks)
 
     def chosen_decks(self):
-        return [name for name, chip in self.chips.items() if chip.isChecked()]
+        """The ticked decks, and each saved deck the open Anki doesn't hold (another profile open, a deck renamed: R2-3)
+        kept as it was — never dropped by a *Next*."""
+        absent = [d for d in (self._wanted or []) if d not in self.chips] if self.chips else []
+        return [name for name, chip in self.chips.items() if chip.isChecked()] + absent
 
     def answers(self):
         how = self._effective()
@@ -1468,6 +1471,8 @@ class OrderPage(_Page):
         _show(self.automation_line, is_open and not settings_manager.automation(self.wiz._settings()))
         self.picture.set_language(self.wiz.language)
         decks = self._decks()
+        if self._deck and self._deck not in decks:
+            decks.append(self._deck)                      # the saved deck stays chosen though this Anki lacks it (R2-3)
         if is_open and tuple(decks) != self._deck_key:
             self._deck_key = tuple(decks)
             self.deck_box.blockSignals(True)
@@ -1824,6 +1829,7 @@ class SetupWizard(QWidget):
         self._stopped = False               # the window's quit began: no question is asked from here on
         self._shown_at, self._painted = 0.0, False      # the page shown: when it came up, whether it was painted
         self._fresh = {}                    # Next / Skip: was its press taken on a settled page (`settled`)
+        self._offered = None                # *Next* offered on the page shown (None: not painted yet)
         self._synced = None                 # (language, decks) of the first sync started (one per change, AD-10)
         self._count_wait = COUNT_AGAIN_MS   # page 6's next ask while it counts (twice as long each time)
         self._junban_found = None           # modules/junban looked for on a worker (None: not known yet)
@@ -1962,6 +1968,11 @@ class SetupWizard(QWidget):
         the second click of a double click, or a quick second Enter, never lands on a page the learner hasn't seen."""
         return self._painted and (time.monotonic() - self._shown_at) * 1000 >= QApplication.doubleClickInterval()
 
+    def _rearm(self):
+        """The page shown changed under the learner (Anki's look came back, *Next* came up): a press waits again."""
+        self._shown_at = time.monotonic()
+        self._fresh.clear()
+
     def page_painted(self, page):
         if page is self.stack.currentWidget():
             self._painted = True
@@ -1983,7 +1994,11 @@ class SetupWizard(QWidget):
         last = self.index == len(PAGES) - 1
         _show(self.btn_back, self.index > 0)
         _show(self.btn_skip, self.index > 0)
-        _show(self.btn_next, self.page.next_offered() or self.generating)
+        offered = self.page.next_offered() or self.generating
+        if offered and self._offered is False:
+            self._rearm()                                 # *Next* just came up: its first press waits (R2-1)
+        self._offered = offered
+        _show(self.btn_next, offered)
         text, tip = (S.GENERATE, S.GENERATE_TIP) if last else (S.NEXT, S.NEXT_TIP)
         if self.btn_next.text() != text:
             self.btn_next.setText(text)
@@ -2003,6 +2018,7 @@ class SetupWizard(QWidget):
     def _go(self, index):
         self.index = max(0, min(len(PAGES) - 1, index))
         self._shown_at, self._painted = time.monotonic(), False        # a press waits until it was seen (`settled`)
+        self._offered = None
         self._fresh.clear()
         if self.say_line.text() == S.CONTENT_OPEN:
             self.say("")                                  # the Content Manager's line is page 3's (AD-12)
@@ -2165,6 +2181,8 @@ class SetupWizard(QWidget):
             return
         self._anki_looking = False
         self.anki = dict(look or {})
+        if self.page.id in ("known", "order"):
+            self._rearm()                                 # its controls change now: never a press aimed before (R2-1)
         for page in self.pages:
             if hasattr(page, "anki_changed"):
                 page.anki_changed()

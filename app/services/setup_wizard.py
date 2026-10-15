@@ -157,8 +157,14 @@ def writes(page, answers, settings, language):
             return {}
         per_language = {k: list(v) for k, v in dict(settings.get("anki_sync_decks") or {}).items()}
         per_language[language] = decks          # this language's entry; another language's kept (`anki_window.merge`)
-        # The page's "stays in sync" (IK): the automatic known-words sync is gated on `anki_sync_auto`, off by default.
-        return {"anki_sync_decks": per_language, "anki_sync_auto": True}
+        out = {"anki_sync_decks": per_language}
+        # The page's "stays in sync" (IK): the automatic known-words sync is gated on `anki_sync_auto`, off by default —
+        # turned on by a new profile's From Anki, or by a way or decks the learner changed; an untouched page on *Set up
+        # again* or an upgrade keeps the setting as it is (R2-2: 2.x's own *Keep in sync*).
+        was = None if _new(settings) else _current(settings, language, *_reads(settings, language))["known"]
+        if was is None or was["how"] != "anki" or list(was["decks"]) != decks:
+            out["anki_sync_auto"] = True
+        return out
     if page == "shows":
         return {"covers_download": bool(answers.get("covers"))}
     if page == "order":

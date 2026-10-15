@@ -639,7 +639,8 @@ def test_next_straight_through_on_an_upgrade_keeps_2x_choices_and_writes_3_0s_ne
                 "junban_later_suspend", "theme", "junban_tag"):
         assert after[key] == before[key], key
     assert after["logic"]["selection"] == {"auto": False, "band": "rare"}
-    assert after["covers_download"] is True and after["connect_enabled"] is True and after["anki_sync_auto"] is True
+    assert after["covers_download"] is True and after["connect_enabled"] is True
+    assert "anki_sync_auto" not in after, "2.x's own Keep in sync is kept on an untouched page (R2-2)"
     assert after["junban_auto_actions"] is True
     assert replan_preview.recorded_deck(after, language) == before["junban_deck"]
     assert after["setup_seen"] == SW.SETUP_VERSION and not SW.should_open(after)
@@ -655,3 +656,13 @@ def test_closing_an_upgrades_wizard_records_only_the_pages_seen():
     assert service.flush(10)
     after = h.read_settings()
     assert _changed(before, after) == {"setup_seen"} and not SW.should_open(after)
+
+
+def test_an_untouched_from_anki_keeps_a_2x_keep_in_sync_off_and_a_changed_one_turns_it_on():
+    # R2-2: page 2 shows no switch for it, so only a way or decks the learner changed turn the automatic sync on
+    before = dict(_from_2x("ja"), anki_sync_auto=False)
+    known = SW.preselect(before, "ja")["known"]
+    assert SW.writes("known", known, before, "ja") == {"anki_sync_decks": before["anki_sync_decks"]}
+    changed = dict(known, decks=known["decks"] + ["Core 2k"])
+    assert SW.writes("known", changed, before, "ja")["anki_sync_auto"] is True
+    assert SW.writes("known", known, dict(before, onboarding_completed=False), "ja")["anki_sync_auto"] is True

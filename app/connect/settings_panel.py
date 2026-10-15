@@ -23,23 +23,17 @@ import tkinter as tk
 import webbrowser
 from tkinter import filedialog, ttk
 
+# The values written (pure: the tests read them) — in app/connect/settings_values.py since W3.3 P1, Tk-free, where
+# the 3.0 window's Settings reads them too.
+from app.connect.settings_values import (FLAG_COLOURS, KNOWN, LANGUAGES, SYNC, WORDS, cap_of,  # noqa: F401
+                                         cap_value, folders_value, known_value, sync_choices, sync_label)
+
 BG, SURFACE, TEXT, ACCENT, SECONDARY, ERROR = "#1e1e1e", "#2d2d2d", "#e0e0e0", "#bb86fc", "#03dac6", "#cf6679"
 DIM = "#aaaaaa"
-LANGUAGES = ("ja", "zh")
 WRAP = 300
 STAR_URL = "https://github.com/0xzerolight/anki_miner"
 STAR_FILE = "star.json"
 
-# connect_mine_words: (value, label, the line under it)
-WORDS = (("list", "Your list", "Words on your list that you don't know and have no card yet."),
-         ("unknown", "Every unknown word", "Every word of the episode you don't know yet."),
-         ("i1", "Only i+1", "Only words with a line whose other words you know."))
-# anki_sync_delay_min (E1.1 04 §3)
-SYNC = (("About a minute after", 1), ("Right away", 0), ("Only at session start and Anki close", "off"))
-# known_from_anki's terms, in the setting's order (known_signal.TERMS) with Anki's flag colours
-FLAG_COLOURS = ("Red", "Orange", "Green", "Blue", "Pink", "Turquoise", "Purple")
-KNOWN = (("suspended", "Suspended"), ("marked", "Marked")) + tuple(
-    (f"flag:{n}", f"Flag {n} ({colour})") for n, colour in enumerate(FLAG_COLOURS, 1))
 # The keys the panel shows: another window writing one (順's sync minute, its two switches) makes the panel stale
 SHOWN = ("connect_mine_words", "connect_send_grammar", "anki_sync_delay_min", "connect_open_anki",
          "connect_backlog_cap", "known_from_anki", "connect_video_folders", "junban_auto_reorder",
@@ -55,61 +49,6 @@ def save(key, value=None, merge=None):
         return settings_manager.save_keys({key: value}, strict=True)
     return settings_manager.save_keys(update=lambda on_disk: on_disk.__setitem__(key, merge(on_disk.get(key))),
                                       strict=True)
-
-
-# --------------------------------------------------------------------------- #
-# The values written (pure: the tests read them)
-# --------------------------------------------------------------------------- #
-def cap_value(current, language, n):
-    """`connect_backlog_cap` with `language`'s cap set to `n`: a number is every language's cap, so it becomes
-    `{lang: …}` keeping each other language's; a dict keeps its other languages as they are."""
-    if isinstance(current, dict):
-        return dict(current, **{language: n})
-    try:
-        every = max(0, int(current))
-    except (TypeError, ValueError):
-        every = 300
-    return {lang: (n if lang == language else every) for lang in LANGUAGES}
-
-
-def cap_of(current, language):
-    value = current.get(language, 300) if isinstance(current, dict) else current
-    try:
-        return max(0, int(value))
-    except (TypeError, ValueError):
-        return 300
-
-
-def folders_value(current, language, folders):
-    """`connect_video_folders` with `language`'s folders set: a plain list (or one folder) is every language's, so it
-    becomes `{lang: […]}` keeping it for each other language; a dict keeps its other languages as they are."""
-    if isinstance(current, dict):
-        return dict(current, **{language: list(folders)})
-    from app.connect import videos
-    every = videos.configured({"connect_video_folders": current}, language)
-    return {lang: (list(folders) if lang == language else list(every)) for lang in LANGUAGES}
-
-
-def sync_choices(held):
-    """The sync combo's (label, value)s: Settings' three, and the file's own value as itself when it is none of them
-    (順's "5 minutes after": 5), kept until the user picks another."""
-    if any(str(v) == str(held) for _label, v in SYNC):
-        return SYNC
-    try:
-        minutes = int(held)
-        label = f"{minutes} minute{'s' if minutes != 1 else ''} after"
-    except (TypeError, ValueError):
-        label = str(held)
-    return SYNC + ((label, held),)
-
-
-def sync_label(choices, held):
-    return next((label for label, v in choices if str(v) == str(held)), choices[0][0])
-
-
-def known_value(picked):
-    """`known_from_anki`: the picked terms in the setting's order ("and": every one must hold); none → [] (off)."""
-    return [term for term, _label in KNOWN if term in picked]
 
 
 # --------------------------------------------------------------------------- #

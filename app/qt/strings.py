@@ -348,9 +348,12 @@ MIGAKU_NOT_A_DB = "That file isn't a Migaku export (no word list in it)"
 MIGAKU_EMPTY = "That export has no words for this language: nothing to import"
 MIGAKU_ASK_TITLE = "Replace your known words with Migaku's?"
 MIGAKU_ASK_BODY = ("{file} · saved {time}\n"
-                   "Known words: {now:,} → {after:,}. {graduated:,} words from past Graduates kept.\n"
+                   "Known words: {now:,} → {after:,}.{kept}\n"
                    "Words from Anki, Jiten or earlier imports that Migaku doesn't have are removed. Your current "
                    "list is backed up first.")
+# A replace's kept lines (one, many), each said only when it keeps any (W3.4-1: every replace keeps the dismissed words)
+KEPT_GRADUATED = ("{n:,} word from past Graduates kept", "{n:,} words from past Graduates kept")
+KEPT_IGNORED = ("{n:,} ignored word kept", "{n:,} ignored words kept")
 MIGAKU_ASK_YES = "Replace known words"
 MIGAKU_ASK_YES_TIP = "Replace your known words with Migaku's: the current list is kept as a dated backup"
 MIGAKU_DONE = "Known words replaced with Migaku's · the old list is backed up in the trash folder"
@@ -373,8 +376,7 @@ JITEN_NO_KEY = "Paste your API key first"
 JITEN_JAPANESE_ONLY = "Jiten holds Japanese words only: switch to Japanese to import"
 JITEN_FETCHING = "Fetching your Jiten words…"
 JITEN_ASK_TITLE = "Replace your known words with Jiten's?"
-JITEN_ASK_BODY = ("Known words: {now:,} → {after:,}. {graduated:,} words from past Graduates and {ignored:,} ignored "
-                  "words kept.\n"
+JITEN_ASK_BODY = ("Known words: {now:,} → {after:,}.{kept}\n"
                   "Words from Anki, Migaku or earlier imports that Jiten doesn't have are removed. Your current list "
                   "is backed up first.")
 JITEN_ASK_YES = "Replace known words"

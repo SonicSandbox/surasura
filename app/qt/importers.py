@@ -50,6 +50,13 @@ def _line(parent, text, name="windowline"):
     return label
 
 
+def _kept(plan):
+    """A replace's kept lines for its confirmation: past Graduates' and dismissed words, each only when there are any
+    (never "0 … kept")."""
+    return "".join(f"\n{lines[n != 1].format(n=n)}." for lines, n in ((strings.KEPT_GRADUATED, plan.graduated),
+                                                                     (strings.KEPT_IGNORED, plan.ignored)) if n)
+
+
 def _row(*widgets, stretch_at=None):
     box = QHBoxLayout()
     box.setContentsMargins(0, 0, 0, 0)
@@ -295,7 +302,7 @@ class MigakuWindow(ToolWindow):
             return
         saved = plan.saved.strftime("%Y-%m-%d %H:%M") if plan.saved else "?"
         body = strings.MIGAKU_ASK_BODY.format(file=os.path.basename(plan.path), time=saved, now=plan.now,
-                                              after=plan.after, graduated=plan.graduated)
+                                              after=plan.after, kept=_kept(plan))
         confirm.ask(self, strings.MIGAKU_ASK_TITLE, body, strings.MIGAKU_ASK_YES, strings.MIGAKU_ASK_YES_TIP,
                     default_no=True, danger=True, on_answer=lambda yes: yes and self.start(plan.path))
 
@@ -389,8 +396,7 @@ class JitenWindow(ToolWindow):
             self.say(strings.JITEN_EMPTY)
             self._drop_folder()
             return
-        body = strings.JITEN_ASK_BODY.format(now=plan.now, after=plan.after, graduated=plan.graduated,
-                                             ignored=plan.ignored)
+        body = strings.JITEN_ASK_BODY.format(now=plan.now, after=plan.after, kept=_kept(plan))
 
         def answered(yes):
             if yes:

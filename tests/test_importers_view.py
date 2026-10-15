@@ -1,5 +1,6 @@
 """The importers' and Extract's window rules, Qt-free (W3.4 row 2; `app/importers_view.py`), and the numbers a
-replacing import states before it runs (`anki_sync.kept_ignored` / `replace_numbers`, IK-18, W3.4-1).
+replacing import states before it runs (`anki_sync.kept_ignored` / `replaced_words` / `replace_numbers`, IK-18, W3.4-1:
+one rule for Anki's Replace, Migaku's and Jiten's — the dismissed words are kept, unless the new words name them).
 
 What a wrong answer would cost: a confirmation whose numbers aren't what the write does (the user agrees to one thing
 and gets another); a dismissed word that comes back as new after Jiten's replace; an Import or Extract button live
@@ -15,8 +16,8 @@ from app import anki_db_import, anki_sync, extract, importers_view
 from app.path_utils import get_user_files_path
 
 
-def _known(words):
-    folder = get_user_files_path("ja")
+def _known(words, language="ja"):
+    folder = get_user_files_path(language)
     os.makedirs(folder, exist_ok=True)
     path = os.path.join(folder, "KnownWord.json")
     with open(path, "w", encoding="utf-8") as f:
@@ -52,7 +53,7 @@ def test_the_confirmation_numbers_are_what_the_replace_writes(tmp_path):
     from app import jiten_converter
     path = _known(CURRENT)
     words = [dict(w) for w in INCOMING]
-    now, after, graduated, ignored = anki_sync.replace_numbers("ja", words, keep_ignored=True)
+    now, after, graduated, ignored = anki_sync.replace_numbers("ja", words)
     assert words == INCOMING                                # read only: the caller's words are left as they are
     assert (now, graduated, ignored) == (2, 1, 1)
     cards = [{"wordText": "猫", "state": 5}, {"wordText": "犬", "state": 2}, {"wordText": "あの", "state": 5}]
@@ -60,13 +61,36 @@ def test_the_confirmation_numbers_are_what_the_replace_writes(tmp_path):
     assert anki_sync.count_known("ja") == after == 3       # 猫, あの, 旅
 
 
-def test_without_keeping_ignored_words_the_numbers_say_none_kept():
+def test_one_rule_for_every_replace_keeps_the_dismissed_words_the_new_words_dont_name():
+    """W3.4-1 + IK-40 / IK-50: Anki's Replace, Migaku's and Jiten's all write `replaced_words` — the new words, then
+    past Graduates' kept known, then every IGNORED entry the new words don't name (one they name: the new entry wins)."""
+    path = _known(CURRENT)
+    words = [dict(w) for w in INCOMING]
+    final, graduated, ignored = anki_sync.replaced_words(path, "ja", words)
+    assert [w["dictForm"] for w in final] == ["猫", "犬", "あの", "旅", "えっと"]
+    assert (graduated, ignored) == (1, 1)
+    assert [w["knownStatus"] for w in final if w["dictForm"] == "あの"] == ["KNOWN"]   # never twice, the new one
+
+
+def test_the_numbers_count_the_dismissed_words_kept_with_no_switch():
     _known(CURRENT)
-    assert anki_sync.replace_numbers("ja", INCOMING)[3] == 0
+    assert anki_sync.replace_numbers("ja", INCOMING)[3] == 1        # every replace keeps them: nothing to ask for
+
+
+def test_the_rule_reads_chinese_words_the_same_way():
+    # A Chinese list: 嗯 / 那个 dismissed, 那个 now known from the import; 学习 a past Graduate's word.
+    path = _known([{"dictForm": "朋友", "knownStatus": "KNOWN", "hasCard": 1},
+                   {"dictForm": "学习", "knownStatus": "KNOWN", "source": "GraduatedList"},
+                   {"dictForm": "嗯", "knownStatus": "IGNORED", "hasCard": 0},
+                   {"dictForm": "那个", "knownStatus": "IGNORED", "hasCard": 0}], "zh")
+    incoming = [{"dictForm": "那个", "knownStatus": "KNOWN"}, {"dictForm": "喜欢", "knownStatus": "KNOWN"}]
+    final, graduated, ignored = anki_sync.replaced_words(path, "zh", [dict(w) for w in incoming])
+    assert [w["dictForm"] for w in final] == ["那个", "喜欢", "学习", "嗯"] and (graduated, ignored) == (1, 1)
+    assert anki_sync.replace_numbers("zh", incoming) == (2, 3, 1, 1)
 
 
 def test_the_numbers_with_no_known_words_file_start_at_zero():
-    now, after, graduated, ignored = anki_sync.replace_numbers("ja", INCOMING, keep_ignored=True)
+    now, after, graduated, ignored = anki_sync.replace_numbers("ja", INCOMING)
     assert (now, after, graduated, ignored) == (0, 2, 0, 0)
 
 
@@ -76,8 +100,24 @@ def test_migakus_plan_reads_its_export_and_states_both_numbers(ja_resources_dir)
     db = os.path.join(ja_resources_dir, "MigakuDb.db")
     plan = importers_view.migaku_plan(db, "ja")
     assert plan.words == len(migaku_converter.read_words(db, "ja")) > 0
-    assert plan.now == 2 and plan.after > 0 and plan.graduated in (0, 1) and plan.ignored == 0
+    assert plan.now == 2 and plan.after > 0 and plan.graduated in (0, 1)
+    assert plan.ignored == 1            # えっと kept; あの is in the export, so Migaku's own entry wins (IK-50)
     assert plan.saved is not None
+
+
+def test_a_migaku_replace_keeps_the_dismissed_words_migaku_doesnt_have_and_writes_what_it_stated(ja_resources_dir):
+    """Sonic's W3.4-1 answer + IK-50: Migaku's replace dropped every IGNORED entry not from Migaku; now it keeps them
+    like Jiten's and Anki's, and the confirmation's numbers are the write's."""
+    from app import migaku_converter
+    _known(CURRENT)
+    db = os.path.join(ja_resources_dir, "MigakuDb.db")
+    plan = importers_view.migaku_plan(db, "ja")
+    assert migaku_converter.convert_db_to_json(db, language="ja") is True
+    with open(os.path.join(get_user_files_path("ja"), "KnownWord.json"), encoding="utf-8") as f:
+        written = json.load(f)["words"]
+    assert [w["knownStatus"] for w in written if w["dictForm"] == "えっと"] == ["IGNORED"]
+    assert len([w for w in written if w["dictForm"] == "あの"]) == 1       # Migaku's own entry, once
+    assert anki_sync.count_known("ja") == plan.after
 
 
 def test_jitens_plan_reads_the_kept_cards_and_none_when_unreadable(tmp_path):
@@ -157,7 +197,7 @@ def test_extracts_end_names_what_happened(result, key):
 def test_the_numbers_never_change_the_words_they_count():
     _known(CURRENT)
     words = [{"dictForm": "旅", "knownStatus": "UNKNOWN"}, {"dictForm": "猫", "knownStatus": "KNOWN"}]
-    anki_sync.replace_numbers("ja", words, keep_ignored=True)
+    anki_sync.replace_numbers("ja", words)
     assert words[0] == {"dictForm": "旅", "knownStatus": "UNKNOWN"}   # kept_graduated raises in place: on a copy
 
 

@@ -849,9 +849,10 @@ def kept_graduated(path, language, words):
 
 def kept_ignored(path, language, words):
     """The IGNORED entries of the KnownWord.json at `path` — words the user dismissed (in Migaku, or on the list) —
-    that `words` doesn't name: a replacing import that keeps them (Jiten's, W3.4-1) adds them, so a dismissed word
-    doesn't come back as a new one. -> those entries, first per word. A file missing or unreadable keeps none (the
-    replacer's backup holds them)."""
+    that `words` doesn't name: every replacing import keeps them (Anki's Replace, Migaku's, Jiten's: W3.4-1), so a
+    dismissed word doesn't come back as a new one; one `words` names is dropped (the new entry wins). -> those
+    entries, first per word, in the file's order. A file missing or unreadable keeps none (the replacer's backup
+    holds them)."""
     try:
         data = json.loads(read_text(path, language, errors="strict"))
     except (OSError, ValueError, UnicodeDecodeError):
@@ -870,15 +871,24 @@ def kept_ignored(path, language, words):
     return kept
 
 
-def replace_numbers(language, words, keep_ignored=False):
-    """What a replacing import's confirmation states, before it runs (W3.4 row 2, IK-18): (known words now, known
-    words after, past Graduates' words kept, ignored words kept). Reads only; `words` is left as it is."""
+def replaced_words(path, language, words):
+    """What a replacing import writes over the KnownWord.json at `path` — one rule for Anki's Replace, Migaku's and
+    Jiten's (W3.4-1, IK-40): `words`, then the past Graduates' words kept known (`kept_graduated`, which may raise an
+    entry of `words` in place), then the dismissed words kept (`kept_ignored`). -> (those words, how many Graduates'
+    kept, how many dismissed kept)."""
+    graduated = kept_graduated(path, language, words)
+    ignored = kept_ignored(path, language, words + graduated)
+    return words + graduated + ignored, len(graduated), len(ignored)
+
+
+def replace_numbers(language, words):
+    """What a replacing import's confirmation states, before it runs (IK-18): (known words now, known words after,
+    past Graduates' words kept, dismissed words kept) — `replaced_words` over the language's KnownWord.json, on a
+    copy. Reads only; `words` is left as it is."""
     import copy
-    path = _known_path(language)
     trial = copy.deepcopy([w for w in words if isinstance(w, dict)])
-    graduated = kept_graduated(path, language, trial)
-    ignored = kept_ignored(path, language, trial + graduated) if keep_ignored else []
-    return count_known(language), len(_known_keys(trial + graduated + ignored)), len(graduated), len(ignored)
+    final, graduated, ignored = replaced_words(_known_path(language), language, trial)
+    return count_known(language), len(_known_keys(final)), graduated, ignored
 
 
 def restore_previous(language):

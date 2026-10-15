@@ -113,8 +113,8 @@ def words_from_cards(cards):
 
 def replace_known(words, language=LANGUAGE, output_json=None):
     """Replace KnownWord.json with Jiten's `words`, holding its lock: a dated backup first (none made: nothing
-    written), then the words of past Graduates (`kept_graduated`) and the words the user ignored (`kept_ignored`,
-    W3.4-1) kept, written atomically. -> True when written. Prints each step."""
+    written), then the words of past Graduates and the words the user dismissed kept (`anki_sync.replaced_words`,
+    W3.4-1), written atomically. -> True when written. Prints each step."""
     refused_language = refuse_language(language)
     if refused_language:
         print(refused_language)
@@ -163,15 +163,11 @@ def replace_known(words, language=LANGUAGE, output_json=None):
 
         # The words the old GraduatedList.txt gave the file stay known words (S3.1 D13), and the words the user
         # dismissed stay ignored (W3.4-1: a replace means "known words from Jiten", not a clean slate).
-        from app.anki_sync import kept_graduated, kept_ignored
-        kept = kept_graduated(output_json, language, words)
-        words = words + kept
-        stats['totalWords'] += len(kept)
-        stats['knownWords'] += len(kept)
-        ignored = kept_ignored(output_json, language, words)
-        words = words + ignored
-        stats['totalWords'] += len(ignored)
-        stats['ignoredWords'] += len(ignored)
+        from app.anki_sync import replaced_words
+        words, graduated, ignored = replaced_words(output_json, language, words)
+        stats['totalWords'] += graduated + ignored
+        stats['knownWords'] += graduated
+        stats['ignoredWords'] += ignored
 
         print(f"\nWriting JSON to: {output_json}")
 

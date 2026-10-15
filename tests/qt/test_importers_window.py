@@ -197,7 +197,8 @@ def test_a_migaku_file_is_read_first_then_one_confirmation_with_both_numbers_can
     from app import importers_view
     plan = importers_view.migaku_plan(MIGAKU, "ja")           # the numbers stated are the plan's (read first)
     assert f"{plan.now:,} → {plan.after:,}" in card.body.text() and plan.now == 2 and plan.after > 2
-    assert f"{plan.graduated:,} words from past Graduates kept" in card.body.text()
+    assert plan.graduated == 0 and "Graduates" not in card.body.text()   # 旅 is in the export: no "0 … kept" line
+    assert plan.ignored == 1 and strings.KEPT_IGNORED[0].format(n=1) in card.body.text()   # えっと (IK-50)
     assert card.yes.text() == strings.MIGAKU_ASK_YES and card.yes.property("kind") == "danger"
     assert card.default is card.no
     QTest.keyClick(card, Qt.Key.Key_Return)                    # Enter = Cancel on a replace
@@ -210,6 +211,24 @@ def test_a_migaku_file_is_read_first_then_one_confirmation_with_both_numbers_can
     assert call.kind == "known-import" and call.argv == ["migaku_converter.py", MIGAKU, "--language", "ja"]
     runs.end(0, "Found 10 words", "Conversion complete!")
     assert w.status.text() == strings.MIGAKU_DONE
+
+
+def test_a_replace_with_no_dismissed_words_says_no_ignored_line(main, runs):
+    """IK-44 / W3.4-1: the "N ignored words kept" line only when there are some — never "0 ignored words kept"."""
+    _known([w for w in CURRENT if w["knownStatus"] != "IGNORED"])
+    w = importers.open_migaku(main)
+    w.read(MIGAKU)
+    assert wait_until(lambda: _card(w) is not None)
+    assert "ignored" not in _card(w).body.text()
+    _card(w).no.click()
+    j = importers.open_jiten(main)
+    j.key.setText(SECRET)
+    j.go.click()
+    _fetched(runs, [{"wordText": "猫", "state": 5}])
+    assert wait_until(lambda: _card(j) is not None)
+    body = _card(j).body.text()
+    assert "ignored" not in body and "1 word from past Graduates kept" in body
+    _card(j).no.click()
 
 
 def test_choose_a_file_asks_too(main, runs, monkeypatch):
@@ -279,7 +298,8 @@ def test_jiten_fetches_first_with_the_key_in_the_environment_only_then_asks_with
     _fetched(runs, [{"wordText": "猫", "state": 5}, {"wordText": "犬", "state": 2}])
     assert wait_until(lambda: _card(w) is not None)
     card = _card(w)
-    assert "2 → 2" in card.body.text() and "1 words from past Graduates and 1 ignored words kept" in card.body.text()
+    assert "2 → 2" in card.body.text()
+    assert "1 word from past Graduates kept" in card.body.text() and "1 ignored word kept" in card.body.text()
     assert card.default is card.no and len(runs.calls) == 1   # nothing replaced before the yes
     card.yes.click()
     replace = runs.calls[-1]

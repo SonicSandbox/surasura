@@ -49,16 +49,17 @@ def error_of(line):
 
 # --- the replacing imports' numbers (read first, then one confirmation: IK-18) --------------------------------------- #
 def migaku_plan(db_path, language):
-    """Migaku's export at `db_path` read for `language` -> Plan. Raises `migaku_converter.NotMigaku` when it holds no
+    """Migaku's export at `db_path` read for `language` -> Plan (its replace keeps the dismissed words Migaku doesn't
+    name, as every replace: W3.4-1). Raises `migaku_converter.NotMigaku` when it holds no
     word list, sqlite3.Error when it can't be read. A worker's call."""
     from app import anki_sync, migaku_converter
     words = migaku_converter.read_words(db_path, language)
-    now, after, graduated, _ignored = anki_sync.replace_numbers(language, words)
+    now, after, graduated, ignored = anki_sync.replace_numbers(language, words)
     try:
         saved = datetime.fromtimestamp(os.path.getmtime(db_path))
     except OSError:
         saved = None
-    return Plan(db_path, len(words), now, after, graduated, 0, saved)
+    return Plan(db_path, len(words), now, after, graduated, ignored, saved)
 
 
 def find_migaku(folder=None):
@@ -68,14 +69,14 @@ def find_migaku(folder=None):
 
 
 def jiten_plan(cards_path, language):
-    """The cards Jiten's first step kept at `cards_path` -> Plan (None when they can't be read). Jiten's replace keeps
-    the words the user ignored (W3.4-1). A worker's call."""
+    """The cards Jiten's first step kept at `cards_path` -> Plan (None when they can't be read). A worker's
+    call."""
     from app import anki_sync, jiten_converter
     cards = jiten_converter.load_cards(cards_path)
     if cards is None:
         return None
     words = jiten_converter.words_from_cards(cards)
-    now, after, graduated, ignored = anki_sync.replace_numbers(language, words, keep_ignored=True)
+    now, after, graduated, ignored = anki_sync.replace_numbers(language, words)
     return Plan(cards_path, len(words), now, after, graduated, ignored, None)
 
 

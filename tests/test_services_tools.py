@@ -413,12 +413,14 @@ def test_a_cancel_landing_as_the_child_exits_0_reads_as_done(tmp_path, monkeypat
         ready.wait(10)
         return LateCancel(real(*a, **k))
     monkeypatch.setattr(subprocess, "Popen", popen)
-    registry = jobs_module.JobRegistry()
-    holder["job"] = tools.run(registry, "sentence-corpus", "x", [quick], frozen=False)
+    registry, results = jobs_module.JobRegistry(), []
+    holder["job"] = tools.run(registry, "sentence-corpus", "x", [quick], on_result=results.append, frozen=False)
     ready.set()
     assert holder["job"].wait(30)
     view = holder["job"].view()
     assert view.state == jobs_module.DONE and not view.cancelled
+    assert _wait(lambda: results) and results[0].code == 0
+    assert not results[0].cancelled                        # the owner hears "done" too, never "stopped"
 
 
 def test_a_queued_tool_keeps_the_environment_it_was_asked_with(tmp_path, monkeypatch):

@@ -219,6 +219,9 @@ def test_the_modules_are_looked_for_once_and_never_on_the_windows_thread(main, m
         main.show_tab("settings")
     assert looks == [("no_such_module_w34", False)]
     assert row.buttons["ghost"].isHidden()
+    again = windows.launchers(main, main.page_widgets["settings"])     # a row made after the look ended: no new look
+    assert not wait_until(lambda: len(looks) > 1, timeout=1.0)          # (a second look would run on a worker)
+    assert again.buttons["ghost"].isHidden()
 
 
 def test_a_close_the_window_refuses_leaves_it_open_and_the_only_one_of_its_kind(main):

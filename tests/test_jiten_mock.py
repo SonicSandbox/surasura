@@ -340,3 +340,22 @@ def test_a_replace_whose_numbers_moved_since_the_confirmation_writes_nothing_and
     with pytest.raises(SystemExit) as done:
         jiten_converter.main(["--language", "ja", "--cards", str(cards), "--expect", ",".join(map(str, numbers))])
     assert done.value.code == 0 and anki_sync.count_known("ja") == numbers[1]
+
+
+# --- the round-2 mutant pass's survivors ------------------------------------------------------------------------ #
+def test_a_failed_write_leaves_the_known_words_as_they_were_and_no_temp_file(tmp_path, monkeypatch):
+    """The replace writes a temp file, flushes it, then swaps it in: a swap that fails leaves the old file whole (an
+    in-place write would leave it half-written or replaced)."""
+    from app import jiten_converter
+    known = _known_words_file(tmp_path)
+    before = known.read_bytes()
+
+    def refuse(*_a, **_k):
+        raise PermissionError("the file is held open")
+    monkeypatch.setattr(os, "replace", refuse)
+    monkeypatch.setattr("app.anki_sync.time.sleep", lambda _s: None)
+    words = jiten_converter.words_from_cards([{"wordText": "猫", "state": 5}])
+    with pytest.raises(PermissionError):
+        jiten_converter.replace_known(words, "ja", str(known))
+    assert known.read_bytes() == before
+    assert not [n for n in os.listdir(known.parent) if n.endswith(".tmp")]

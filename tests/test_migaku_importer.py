@@ -257,3 +257,20 @@ def test_migakus_replace_refuses_when_the_numbers_moved_since_the_confirmation(j
     with pytest.raises(SystemExit) as done:
         migaku_converter.main()
     assert done.value.code == 0 and anki_sync.count_known("ja") == numbers[1]
+
+
+# --- the round-2 mutant pass's survivors ------------------------------------------------------------------------ #
+def test_a_failed_write_leaves_the_known_words_as_they_were_and_no_temp_file(tmp_path, monkeypatch):
+    """The swap of the new file fails (a reader holds it): the old file stays whole, no temp file is left."""
+    db = tmp_path / "migaku.db"
+    _make_wordlist_db(db, _FULL_COLS, [("日本語", "にほんご", "n", "ja", "KNOWN", 1, 0, 0, 0, 1)])
+    known = _known_words_file(tmp_path)
+    before = known.read_bytes()
+
+    def refuse(*_a, **_k):
+        raise PermissionError("the file is held open")
+    monkeypatch.setattr(os, "replace", refuse)
+    monkeypatch.setattr("app.anki_sync.time.sleep", lambda _s: None)
+    assert convert_db_to_json(str(db), str(known), language="ja") is False
+    assert known.read_bytes() == before
+    assert not [n for n in os.listdir(known.parent) if n.endswith(".tmp")]

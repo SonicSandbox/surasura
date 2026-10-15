@@ -438,3 +438,23 @@ def test_an_epub_extracted_into_a_section_enters_the_library_as_a_book(tmp_path)
     finally:
         store.close()
     assert len(rows) == result.parts and {e.get("source_type") for e in rows} == {"epub"}
+
+
+# --- the round-2 mutant pass's survivors ------------------------------------------------------------------------ #
+def test_a_copy_that_cant_go_to_the_trash_never_stops_the_others_or_the_answer(tmp_path, monkeypatch):
+    """One copy held open by another program can't be moved: the rest still go to the trash, and the run still says
+    the parts stay in Processed (never an error from the clean-up)."""
+    data_dir, _uf = _store_library("ja")
+    monkeypatch.setattr(ls.Store, "insert", lambda self, *a, **k: None)
+    real, held = ls.trash_file, []
+
+    def trash(data, rel):
+        if not held:
+            held.append(rel)
+            raise PermissionError("held open by another program")
+        return real(data, rel)
+    monkeypatch.setattr(ls, "trash_file", trash)
+    result = extract.extract(_text_file(tmp_path, "ja"), "旅の本", "ja", section="soon", value="300", spawn=False)
+    assert result.code == extract.EXIT_PROCESSED_ONLY and result.note == "insert"
+    trashed = [n for n in os.listdir(os.path.join(data_dir, ".trash")) if n.startswith("旅の本_")]
+    assert len(trashed) == result.parts - 1 and held

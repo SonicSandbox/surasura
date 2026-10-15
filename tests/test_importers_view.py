@@ -249,3 +249,14 @@ def test_extract_picks_a_decks_sentence_or_expression_field_only():
     assert importers_view.extract_field(["Expression", "Sentence", "Meaning"]) == "Sentence"
     assert importers_view.extract_field(["Expression", "Meaning"]) == "Expression"
     assert importers_view.extract_field(["Front", "Back"]) is None             # the Tk window chose these two only
+
+
+# --- the round-2 mutant pass's survivors ------------------------------------------------------------------------ #
+def test_the_numbers_count_the_file_asked_for_not_the_languages_default(tmp_path):
+    """A replace into another file (the command line's out_file) checks its --expect against that file's count."""
+    _known(CURRENT)                                          # the default file: 2 known
+    other = tmp_path / "KnownWord.json"
+    other.write_text(json.dumps({"words": [{"dictForm": "冒険", "knownStatus": "KNOWN", "hasCard": 1}]},
+                                ensure_ascii=False), encoding="utf-8")
+    assert anki_sync.replace_numbers("ja", INCOMING, str(other))[0] == 1
+    assert anki_sync.replace_numbers("ja", INCOMING)[0] == 2

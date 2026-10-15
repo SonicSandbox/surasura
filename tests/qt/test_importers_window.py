@@ -834,3 +834,13 @@ def test_a_deck_read_that_lands_after_another_choice_is_dropped(main, runs, tmp_
     w.choose(str(text))                                         # chosen before the deck's read came back
     QTest.qWait(1500)
     assert w.deck is None and not w.go.isEnabled() and w.status.text() == strings.APKG_NOT_A_DECK
+
+
+# --- the round-2 mutant pass's survivors ------------------------------------------------------------------------ #
+def test_migakus_replace_runs_in_the_language_it_was_asked_in(main, runs):
+    """`start` takes the language the question was read for, never the window's current one."""
+    m = importers.open_migaku(main)
+    main.services.settings.set({"target_language": "zh"})
+    assert wait_until(lambda: m.language == "zh")
+    m.start(MIGAKU, "ja", "2,3,0,0")
+    assert runs.calls[-1].argv[2:4] == ["--language", "ja"]

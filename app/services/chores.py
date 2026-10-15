@@ -10,7 +10,7 @@ the library store's helper (`_maybe_maintain`, `_schedule_maintain`, `maintain_a
 - **Each one as the Tk dashboard runs it**, the same switches turning it off: the indexer never under
   `SURASURA_NO_AUTOINDEX`, at most every 2 s unless forced, never two (a `indexer` job: never beside Generate, which
   writes the same store); its start 1.5 s on, the store's helper 1.5 s on and 2 s after the last focus or language
-  switch, the warm-up and Connect's notice at 2.5 s — none of them under `SURASURA_NO_UI_TIMERS` (testing.md §5.4).
+  switch, Connect's notice at 2.5 s and the warm-up at 3 s — none of them under `SURASURA_NO_UI_TIMERS` (testing.md §5.4).
 - **Child processes** start with `subprocess` and `build_subprocess_env` (never QProcess) and are jobs: the indexer a
   gated `indexer` job (stopped when the window quits), the store's helper a recorded `library-maintain` job (detached:
   it outlives the window, Library_Store_Spec §6.7). Koe's helper is in-process and never ends: a server this service
@@ -38,6 +38,11 @@ START_INDEX = 1.5           # root.after(1500, lambda: self._maybe_launch_indexe
 START_MAINTAIN = 1.5        # root.after(1500, self._maybe_maintain)
 MAINTAIN_SETTLE = 2.0       # _schedule_maintain: 2 s after the last trigger
 ARRIVALS_AT = 2.5           # root.after(2500, self._arrivals_notice)
+# The Rarity tables' warm-up (`_prepare_preview`): the Tk window starts it as it opens; here once the start's own work
+# is done (the duties made and started, the indexer's and the helper's checks at 1.5 s, Connect's notice at 2.5 s). At
+# once it ran beside that work and the first paint of the duties' controls: ~0.25 s of a worker's CPU on Python's one
+# lock made the window's thread wait 45 + 130 ms on the desktop (the start-light fix, 2026-10-14).
+WARM_AT = 3.0
 INDEX_LABEL = "Indexing"
 MAINTAIN_LABEL = "Tidying your library"
 LOG_NAME = "indexer-window.log"
@@ -137,16 +142,16 @@ class Chores:
     # --- the window's triggers (each returns at once) ------------------------------------------------------------ #
     def started(self):
         """The window opened: the install note, surasura.json, Koe as the settings say, and — unless timers are off —
-        the Rarity tables' warm-up, the indexer and the store's helper 1.5 s on, Connect's notice 2.5 s on."""
+        the indexer and the store's helper 1.5 s on, Connect's notice 2.5 s on, the Rarity tables' warm-up 3 s on."""
         self.worker.put(self._install_note)
         self.worker.put(self._tools_entry)
         self.worker.put(self._koe)
         if os.environ.get("SURASURA_NO_UI_TIMERS"):
             return
-        self.worker.put(self._prepare_preview)
         self._later(START_INDEX, lambda: self.index(force=True))
         self._later(START_MAINTAIN, lambda: self.worker.put(self._maintain))
         self._later(ARRIVALS_AT, lambda: self.worker.put(self._arrivals))
+        self._later(WARM_AT, lambda: self.worker.put(self._prepare_preview))
 
     def activated(self):
         """The window came back into focus: the indexer (2 s throttle), the store's helper (2 s after the last)."""

@@ -4,7 +4,6 @@ import uuid
 import json
 import logging
 import threading
-import requests
 from dotenv import load_dotenv
 from app import path_utils
 from app import __version__
@@ -130,6 +129,9 @@ def _send_heartbeat_thread(status, respect_optout=True):
             "open_count": open_count
         }
 
+        # Imported here, on the heartbeat's own thread: at module level it cost every start ~0.1 s before the
+        # window's first frame, a start that sends nothing (a dev build, no URL, opted out) too.
+        import requests
         requests.get(TELEMETRY_URL, params=params, timeout=2)
     except Exception:
         # Fail silently

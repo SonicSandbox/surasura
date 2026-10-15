@@ -316,13 +316,14 @@ def test_koe_absent_the_chores_still_run(monkeypatch, timers_on):
     chores.activated()
     chores.koe_changed()
     assert chores.worker.idle(5)
-    assert len(timers) == 4, "the indexer, the store's helper, Connect's notice, the helper's debounce"
+    assert len(timers) == 5, "the indexer, the store's helper, Connect's notice, the warm-up, the helper's debounce"
     chores.close()
 
 
 # --- the start-up chores ----------------------------------------------------------------------------------------- #
 def test_each_start_chore_runs_once_per_start(monkeypatch, timers_on):
-    """`__init__`'s `_prepare_preview` thread, `_write_install_note`, and the timers at 1.5 s / 1.5 s / 2.5 s."""
+    """`_write_install_note`, and the timers at 1.5 s / 1.5 s / 2.5 s / 3 s — the last the Rarity tables' warm-up
+    (`_prepare_preview`), after the start's own work: at once it held the window's thread off 45 + 130 ms."""
     from app import path_utils, token_index
     notes, warm = [], []
     monkeypatch.setattr(path_utils, "write_install_note", lambda *a, **k: notes.append(1))
@@ -332,8 +333,12 @@ def test_each_start_chore_runs_once_per_start(monkeypatch, timers_on):
     chores, _r, _p = _make(timers=timers)
     chores.started()
     assert chores.worker.idle(5)
-    assert notes == [1] and warm == ["ja"]
-    assert sorted(t.delay for t in timers) == [C.START_INDEX, C.START_MAINTAIN, C.ARRIVALS_AT]
+    assert notes == [1] and warm == []                      # not at once: its timer
+    assert sorted(t.delay for t in timers) == [C.START_INDEX, C.START_MAINTAIN, C.ARRIVALS_AT, C.WARM_AT]
+    assert C.WARM_AT > max(C.START_INDEX, C.START_MAINTAIN, C.ARRIVALS_AT)
+    [t for t in timers if t.delay == C.WARM_AT][0].call()
+    assert chores.worker.idle(5)
+    assert warm == ["ja"]
     chores.close()
     assert all(t.cancelled for t in timers)
 

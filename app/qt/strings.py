@@ -282,3 +282,12 @@ DICT_OPEN_FOLDER = "Open folder"
 DICT_OPEN_FOLDER_TIP = "Open the folder the dictionary was saved in"
 DICT_OPEN_LOG = "Open the log"
 DICT_OPEN_LOG_TIP = "Open the export's log: it says why it stopped"
+
+# --- W3.4 row 4: Koe and YouTube — their doors on the Settings tab's list (the windows' own words are each module's
+# qt_strings.py)
+DOOR_TRANSCRIPTS = "Video transcripts"
+DOOR_TRANSCRIPTS_TIP = "Download YouTube and bilibili.tv transcripts into your Processed folder"
+DOOR_PREVIEW = "Preview a video"
+DOOR_PREVIEW_TIP = "See a video's vocab journey against your library before adding it"
+DOOR_SPEECH = "Speech"
+DOOR_SPEECH_TIP = "Speech (声): the Gemini key, the voice and the daily limit for spoken sentences"

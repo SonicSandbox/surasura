@@ -58,6 +58,9 @@ RESOURCES = {
     # it) and the library store's helper (detached: it outlives the window).
     "anki-backlog": set(),
     "library-maintain": set(),
+    # W3.4 row 4: the YouTube module's runs (a transcript download, the cue-time fill, yt-dlp's update, a preview's
+    # fetch and scoring): one yt-dlp run at a time across its windows, beside everything else.
+    "youtube": set(),
 }
 
 Progress = namedtuple("Progress", "step done total")

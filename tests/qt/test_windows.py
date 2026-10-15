@@ -198,7 +198,7 @@ def test_a_settings_write_that_changes_no_door_repaints_none(main, monkeypatch):
     main.show_tab("settings")
     row = _doors(monkeypatch, main, [jiten])
     before = row.paints
-    main.services.settings.set({"enable_youtube_preview": True})       # an enable_ key no door changes with
+    main.services.settings.set({"enable_no_door_w34": True})           # an enable_ key no door changes with
     QTest.qWait(400)
     main.show_tab("current")
     main.show_tab("settings")                                          # the page shown again: nothing changed
@@ -224,10 +224,13 @@ def test_the_modules_are_looked_for_once_and_never_on_the_windows_thread(main, m
     for _ in range(3):
         main.show_tab("current")
         main.show_tab("settings")
-    assert looks == [("no_such_module_w34", False)]
+    assert ("no_such_module_w34", False) in looks                      # (the rows' own modules are looked for too)
+    assert not any(on_gui for _name, on_gui in looks)
+    assert len(looks) == len({name for name, _on_gui in looks})        # each module once
     assert row.buttons["ghost"].isHidden()
     again = windows.launchers(main, main.page_widgets["settings"])     # a row made after the look ended: no new look
-    assert not wait_until(lambda: len(looks) > 1, timeout=1.0)          # (a second look would run on a worker)
+    first = len(looks)
+    assert not wait_until(lambda: len(looks) > first, timeout=1.0)     # (a second look would run on a worker)
     assert again.buttons["ghost"].isHidden()
 
 

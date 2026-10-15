@@ -644,7 +644,7 @@ class NewCardsRow(QWidget):
         if outcome.value is not None and self.reading is not None:
             self.reading = self.reading._replace(value=outcome.value)     # Anki's number now (a moved one too)
         self.field.set_value(self.reading.value)
-        if outcome.ok:
+        if outcome.ok or outcome.took:                                    # the pace follows the number Anki holds
             changes = ado.words_per_day_after(self.rows.settings(), outcome)
             if changes:
                 self.rows.store.set(changes)

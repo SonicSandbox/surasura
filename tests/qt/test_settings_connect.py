@@ -599,6 +599,22 @@ def test_a_write_anki_refused_because_the_value_moved_is_said_and_saves_nothing(
     assert row.field.value() == 25 and row.reading.value == 25, "the number Anki holds now"
 
 
+def test_a_number_anki_took_while_other_options_moved_is_said_and_the_pace_follows_it(world):
+    # Anki holds the confirmed 30 but the read-back saw another option of the group move: the warning is said, and the
+    # report's pace follows the number the row now shows (what the deck gives each day).
+    page, store, rows, _fake = make(world)
+    row = rows.new_cards
+    world.outcome = ado.Outcome(False, "Anki took 30 New cards a day, but other options came back different: "
+                                       "new.delays. Check the options group in Anki.", 30, False, True)
+    row.field.set_value(30)
+    QTest.mouseClick(row.change, Qt.MouseButton.LeftButton)
+    world.asked[0].answer(True)
+    assert wait_until(lambda: not row.busy and store.calls, 5)
+    assert store.calls == [({"words_per_day": 30}, None)]
+    assert world.bar.lines[-1] == world.outcome.message
+    assert row.field.value() == 30
+
+
 def test_the_same_number_asks_nothing_and_writes_nothing(world):
     page, store, rows, _fake = make(world)
     QTest.mouseClick(rows.new_cards.change, Qt.MouseButton.LeftButton)

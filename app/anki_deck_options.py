@@ -50,8 +50,9 @@ _MISSING = object()
 # A read: Anki's value, the deck, its options group's name, and how many decks share that group (None: not told).
 Reading = collections.namedtuple("Reading", "value deck config_name shared_with")
 
-# A write's answer: did Anki take it, the plain words, Anki's value now (None when unknown), the lock was held.
-Outcome = collections.namedtuple("Outcome", "ok message value busy")
+# A write's answer: did Anki take it, the plain words, Anki's value now (None when unknown), the lock was held, and
+# `took`: Anki holds the confirmed number though the answer is not ok (the read-back saw other options of the group move).
+Outcome = collections.namedtuple("Outcome", "ok message value busy took", defaults=(False,))
 
 
 def deck_for(settings):
@@ -181,7 +182,7 @@ def _write(url, deck, value, expect):
         group = str(config.get("name") or "") or deck
         return Outcome(False, f"Anki took {value} New cards a day for “{deck}”, but other options of “{group}” came "
                               f"back different: {', '.join(moved)}. Check the options group “{group}” in Anki.",
-                       now, False)
+                       now, False, True)
     return Outcome(True, f"New cards a day for “{deck}” is now {value} in Anki. {OWN_LIMIT}", value, False)
 
 
@@ -217,8 +218,9 @@ def row_number(settings, reading):
 
 def words_per_day_after(settings, outcome):
     """What the caller saves through the settings service after a write: `{"words_per_day": n}` when Anki now holds a
-    new `n` (a confirmed change, `n` ≥ 1 — the report reads 0 as its default 5, so 0 leaves the pace as it is), else
+    new `n` (a confirmed change, `n` ≥ 1 — the report reads 0 as its default 5, so 0 leaves the pace as it is; also one
+    Anki took though other options of its group came back different, `took`: the pace follows what Anki holds), else
     `{}`."""
-    if not isinstance(outcome, Outcome) or not outcome.ok or not valid(outcome.value) or outcome.value < 1:
+    if not isinstance(outcome, Outcome) or not (outcome.ok or outcome.took) or not valid(outcome.value) or outcome.value < 1:
         return {}
     return {} if outcome.value == (settings or {}).get("words_per_day") else {"words_per_day": outcome.value}

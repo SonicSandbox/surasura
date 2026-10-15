@@ -201,6 +201,8 @@ def test_words_per_day_follows_only_a_confirmed_change_to_a_number_the_report_ca
     assert options.words_per_day_after({"words_per_day": 5}, Outcome(True, "", 30, False)) == {"words_per_day": 30}
     assert options.words_per_day_after({"words_per_day": 30}, Outcome(True, "", 30, False)) == {}
     assert options.words_per_day_after({"words_per_day": 5}, Outcome(False, "", 30, False)) == {}
+    assert options.words_per_day_after({"words_per_day": 5}, Outcome(False, "", 30, False, True)) == \
+        {"words_per_day": 30}, "a number Anki took though the read-back saw other options move"
     assert options.words_per_day_after({"words_per_day": 5}, Outcome(True, "", 0, False)) == {}, \
         "0 (Anki paused) would read as the report's default 5"
     assert options.words_per_day_after({"words_per_day": 5}, Outcome(True, "", None, False)) == {}
@@ -307,7 +309,9 @@ def test_a_read_back_where_another_option_moved_is_not_reported_as_done(anki, ro
         assert key in outcome.message
     assert "“Default”" in outcome.message and "Anki" in outcome.message and "check" in outcome.message.lower()
     assert "perDay" not in outcome.message, "the one key the write changed is not a moved option"
-    assert options.words_per_day_after({"words_per_day": 5}, outcome) == {}, "a failed write moves no pace"
+    assert outcome.took, "Anki holds the confirmed number"
+    assert options.words_per_day_after({"words_per_day": 5}, outcome) == {"words_per_day": 30}, \
+        "the pace follows the number Anki took, as the row shows it (the other options are the user's to check)"
     assert locks.held_in_process(anki_connect.WRITER_LOCK) is None
 
 

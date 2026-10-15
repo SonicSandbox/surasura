@@ -47,6 +47,7 @@ def test_an_added_list_is_one_the_analyzer_finds_and_reads(ja_list):
     name, kept = frequency_lists.add(ja_list, "ja")
     assert name == "frequency_list_ja_novels.csv"          # its bare prefix made the language's
     assert kept is None
+    assert os.listdir(_user_files("ja")) == [name]          # moved in whole: no temporary copy left beside it
     found = analyzer.discover_yomitan_frequency_lists(_user_files("ja"), "ja")
     assert found == {"novels": os.path.join(_user_files("ja"), name)}
     ranks = analyzer.load_yomitan_frequency_list(found["novels"], language="ja")

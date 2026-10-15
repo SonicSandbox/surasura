@@ -15,7 +15,13 @@ keeps every line it doesn't change, byte for byte.
 - `words_in(text, language, kind)` -> the candidate words of pasted text, read by the library's own tokenizer
   (`analyzer.JapaneseTokenizer`: `join_affixes` with the library's tables; `ChineseTokenizer`: `chinese_cut` /
   `chinese_word`), each a `Candidate(word, spelling, status)`: `word` is the lemma (the identity everywhere, what a
-  line names), `spelling` the text's dictionary form to show. Loads the tokenizer: call it on a worker.
+  line names), `spelling` the text's dictionary form to show. Loads the tokenizer: the child's (below).
+- `find_words(text, language, kind, paste)` -> `words_in`'s answer, worked out in a child process of its own (n16: "a
+  worker process"; FX-wl S2): `app_entry.py word-lists-find --headless` (`find_main`), one per paste, the text on its
+  stdin and the words back as JSON on its stdout — so the window's process never loads the tokenizer, never holds
+  Python's lock for it, and never changes its own `analyzer.LOGIC` (the child reads the settings itself). Blocks:
+  call it on a worker. `paste.cancel()` (any thread) kills the child; a child that fails, times out
+  (`FIND_TIMEOUT`) or is cancelled raises `FindFailed` (`Cancelled`): nothing found, nothing changed.
 
 Every write, the rules a user's list could be damaged by otherwise (CLAUDE.md §4):
   * KnownWord.json's lock (`known-words-<lang>`, `anki_sync.hold_known_words`) is held for the read-modify-write — the
@@ -31,8 +37,11 @@ Every write, the rules a user's list could be damaged by otherwise (CLAUDE.md §
     written.
 Qt-free and Tk-free: the window calls every function on a worker.
 """
+import json
 import os
 import re
+import subprocess
+import sys
 import threading
 from collections import namedtuple
 from dataclasses import dataclass, field
@@ -43,6 +52,8 @@ KINDS = {"ignore": "IgnoreList.txt", "blacklist": "Blacklist.txt"}
 # The first line of a list made here, as `path_utils.ensure_data_setup` makes it.
 HEADERS = {"ignore": "# Add words to ignore here (one per line)", "blacklist": "# {language} Blacklist"}
 VERB = "Word lists"
+FIND_VERB = "word-lists-find"       # app_entry.py's verb for the paste's child
+FIND_TIMEOUT = 120.0                # s a paste's child may take before it is stopped (the arrivals worker's STUCK)
 
 Entry = namedtuple("Entry", "word source")                # source: "list" · "known" (KnownWord.json) · "names"
 Candidate = namedtuple("Candidate", "word spelling status")   # status: "new" · "listed" · "known" · "left_out"
@@ -353,7 +364,8 @@ def words_in(text, language, kind="ignore"):
     """The words of `text` the list could take, in the order first met, each once -> [`Candidate`]. A word is marked
     `listed` (on this list already), `known` (a known word) or `left_out` (another list or KnownWord.json leaves it
     out already); the rest are `new`. Japanese: a one-character word the list never offers there (grammar, a piece of
-    a term: `analyzer.unoffered`) is no candidate, as it is no word on the list. Loads the tokenizer: a worker's."""
+    a term: `analyzer.unoffered`) is no candidate, as it is no word on the list. Loads the tokenizer: the paste's
+    child's (`find_main`), never the window's."""
     from app import analyzer, settings_manager, token_index, zh_script
     settings = settings_manager.load_settings()
     try:
@@ -429,3 +441,121 @@ def _known(language, user_files, script):
         return set(), token_index.preview_known_approx(user_files, language, script)
     except Exception:
         return set(), set()
+
+
+# --- pasted text, in a child process (FX-wl S2) ------------------------------------------------------------------ #
+class FindFailed(Exception):
+    """The paste's child failed, timed out or was stopped: nothing found (the message is a plain sentence)."""
+
+
+class Cancelled(FindFailed):
+    """The paste was cancelled (`Paste.cancel`): its child killed."""
+
+
+class Paste:
+    """One paste's child process: `cancel()` from any thread kills it (before it starts too); `find_words` then raises
+    `Cancelled`."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._proc = None
+        self.cancelled = False
+
+    def cancel(self):
+        with self._lock:
+            self.cancelled = True
+            proc = self._proc
+        if proc is not None:
+            _kill(proc)
+
+    def _started(self, proc):
+        """-> False when the paste was cancelled before its child started (the child is killed)."""
+        with self._lock:
+            self._proc = proc
+            cancelled = self.cancelled
+        if cancelled:
+            _kill(proc)
+        return not cancelled
+
+    def _ended(self):
+        with self._lock:
+            self._proc = None
+
+
+def _kill(proc):
+    try:
+        proc.kill()
+    except OSError:
+        pass                                    # it had ended
+
+
+def find_command():
+    """The paste's child: the frozen app's own verb, or app_entry.py from source (as `arrivals.command_line`)."""
+    from app.path_utils import is_frozen
+    verb = [FIND_VERB, "--headless"]
+    if is_frozen():
+        return [sys.executable] + verb
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    return [sys.executable, os.path.join(root, "app_entry.py")] + verb
+
+
+def find_words(text, language, kind="ignore", paste=None, timeout=None):
+    """`words_in(text, language, kind)` worked out in a child process (see the module docstring) -> [`Candidate`].
+    Raises `FindFailed` (`Cancelled` when `paste` was cancelled). The text goes on the child's stdin, never its
+    command line (app_entry.py logs every argv)."""
+    from app.path_utils import build_subprocess_env, is_frozen
+    paste = paste if paste is not None else Paste()
+    timeout = FIND_TIMEOUT if timeout is None else timeout
+    request = json.dumps({"text": text, "language": language, "kind": kind}, ensure_ascii=False).encode("utf-8")
+    if paste.cancelled:
+        raise Cancelled("The paste was cancelled.")
+    try:
+        proc = subprocess.Popen(find_command(), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                env=build_subprocess_env(is_frozen()),
+                                creationflags=0x08000000 if sys.platform == "win32" else 0)   # CREATE_NO_WINDOW
+    except OSError as e:
+        raise FindFailed(f"Surasura's word reader couldn't start ({e}).")
+    try:
+        if not paste._started(proc):
+            proc.communicate()
+            raise Cancelled("The paste was cancelled.")
+        try:
+            out, err = proc.communicate(request, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _kill(proc)
+            proc.communicate()
+            raise FindFailed(f"Reading the text took longer than {timeout:g} seconds, so it was stopped.")
+    finally:
+        paste._ended()
+    if paste.cancelled:
+        raise Cancelled("The paste was cancelled.")
+    if proc.returncode != 0:
+        why = [line for line in err.decode("utf-8", "replace").splitlines() if line.strip()]
+        raise FindFailed(f"Surasura's word reader stopped (exit code {proc.returncode})"
+                         + (f": {why[-1].strip()}" if why else "") + ".")
+    try:
+        return [Candidate(*(str(part) for part in w)) for w in json.loads(out.decode("utf-8"))["words"]]
+    except (ValueError, KeyError, TypeError, UnicodeDecodeError):
+        raise FindFailed("Surasura's word reader gave an answer it couldn't read.")
+
+
+def find_main():
+    """The paste's child (`app_entry.py word-lists-find --headless`): one JSON request on stdin, {"text",
+    "language", "kind"}; `words_in`'s answer on stdout, {"words": [[word, spelling, status], ...]} -> 0, or 1 with
+    the traceback on stderr. Writes nothing: `words_in` only reads (the token store read-only)."""
+    stream = sys.stdout                         # held: the stream app_entry made, closed if it were let go
+    out = stream.buffer
+    sys.stdout = sys.stderr                     # anything the analyzer prints stays off the answer
+    try:
+        request = json.loads(sys.stdin.buffer.read().decode("utf-8"))
+        language, kind = request["language"], request.get("kind", "ignore")
+        if language not in ("ja", "zh") or kind not in KINDS:
+            raise ValueError(f"no such list: {kind} ({language})")
+        found = words_in(str(request["text"]), language, kind)
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        return 1
+    out.write(json.dumps({"words": [list(c) for c in found]}, ensure_ascii=False).encode("utf-8"))
+    out.flush()
+    return 0

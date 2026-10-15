@@ -3,9 +3,13 @@ time — the main window's, followed when idle.
 
 A tab per list; the list's words with a search and their count, ✕ on each (Delete on the current row too; a
 KnownWord.json entry only after the in-window question, `confirm.ask`); an *Add* field (Enter commits; several words
-separated by spaces); *Paste text…*: the text read by the library's own tokenizer (`word_lists.words_in`), each word found a chip to keep or drop — a new word kept, one already known or left out
-dropped, one already on the list shown and fixed — then *Add N words*. A chip adds the word's `Word` (the lemma),
-shown by its spelling. Every read and write is `app/services/word_lists.py`'s, on a worker; the window decides nothing.
+separated by spaces); *Paste text…*: the text read by the library's own tokenizer in a child process of its own
+(`word_lists.find_words`: the tokenizer never loads here; closing the window, hiding the text or a new paste kills it),
+each word found a chip to keep or drop — a new word kept, one already known or left out dropped, one already on the
+list shown and fixed — then *Add N words*. A chip adds the word's `Word` (the lemma), shown by its spelling. Every read
+and write is `app/services/word_lists.py`'s, on a worker; the window decides nothing. After an add or a ✕ only the rows
+that changed are inserted or removed (S19); every row is made again only for a list or language switch, or a read
+that changed many rows.
 """
 import re
 
@@ -22,6 +26,7 @@ from app.services import word_lists
 WORD = Qt.ItemDataRole.UserRole                           # a row's word, as the list holds it
 SOURCE = Qt.ItemDataRole.UserRole + 1                     # where it is held: "list" · "known" · "names"
 _SPLIT = re.compile(r"[\s,、，]+")                          # the Add field's words
+_REBUILD_OVER = 100                                       # rows changed by one read past which every row is made again
 
 
 class _RemoveDelegate(QStyledItemDelegate):
@@ -76,6 +81,8 @@ class WordListsWindow(SecondaryWindow):
         self._asked = 0                                   # the newest read: an older answer is dropped
         self._finds = 0                                   # the newest find: an older answer is dropped
         self.question = None                              # the open question (a known-words entry's removal)
+        pasting = self._pasting = [None]                  # the paste whose child is running (`word_lists.Paste`)
+        self.destroyed.connect(lambda *_a: pasting[0] is not None and pasting[0].cancel())   # gone with its main window
 
         self.kinds = QWidget(self)                        # one of the two lists, as the main window's tabs are
         self.kinds.setAccessibleName(s.WORD_LISTS_KINDS_NAME)
@@ -189,23 +196,9 @@ class WordListsWindow(SecondaryWindow):
         if asked != self._asked:
             return                                        # read for a list or a language the window has left
         entries = [tuple(e) for e in listing.entries]
-        if entries != self.entries:                       # rebuilt only when the words changed (S19)
+        if entries != self.entries:                       # touched only when the words changed (S19)
+            self._update_rows(entries)
             self.entries = entries
-            self.model.clear()
-            for word, source in entries:
-                if source == "known":
-                    text, tip = s.WORD_LISTS_MARK_KNOWN.format(word=word), s.WORD_LISTS_ROW_KNOWN
-                elif source == "names":
-                    text, tip = s.WORD_LISTS_MARK_NAMES.format(word=word), s.WORD_LISTS_ROW_NAMES
-                else:
-                    text, tip = word, s.WORD_LISTS_ROW_LIST
-                item = QStandardItem(text)
-                item.setData(word, WORD)
-                item.setData(source, SOURCE)
-                item.setData(tip.format(word=word), Qt.ItemDataRole.ToolTipRole)
-                item.setData(text, Qt.ItemDataRole.AccessibleTextRole)
-                item.setEditable(False)
-                self.model.appendRow(item)
             self.list_paints += 1
         self._count()
         lines = [line] if line else []
@@ -214,6 +207,29 @@ class WordListsWindow(SecondaryWindow):
         elif not entries and not line:
             lines.append(s.WORD_LISTS_EMPTY)
         self.say(" · ".join(lines))
+
+    def _update_rows(self, entries):
+        """The model brought to `entries` from `self.entries` (the rows it holds): the run of rows that differs, past
+        the common start and end, removed and the new ones inserted — an add's rows, a ✕'s row. Every row made again
+        for a first read (a list or language switch) or a read that changed more than `_REBUILD_OVER` rows."""
+        old = self.entries
+        if old is not None:
+            start, n = 0, min(len(old), len(entries))
+            while start < n and old[start] == entries[start]:
+                start += 1
+            end_old, end_new = len(old), len(entries)
+            while end_old > start and end_new > start and old[end_old - 1] == entries[end_new - 1]:
+                end_old -= 1
+                end_new -= 1
+            if (end_old - start) + (end_new - start) <= _REBUILD_OVER:
+                if end_old > start:
+                    self.model.removeRows(start, end_old - start)
+                for i in range(start, end_new):
+                    self.model.insertRow(i, _item(*entries[i]))
+                return
+        self.model.clear()
+        for entry in entries:
+            self.model.appendRow(_item(*entry))
 
     def _count(self):
         n, shown = self.model.rowCount(), self.shown.rowCount()
@@ -243,6 +259,7 @@ class WordListsWindow(SecondaryWindow):
 
     def language_changed(self, language):
         self._drop_question()
+        self._stop_paste()
         self.entries = None
         self.model.clear()
         self._clear_chips()
@@ -326,6 +343,8 @@ class WordListsWindow(SecondaryWindow):
     # --- pasted text -> chips --------------------------------------------------------------------------------- #
     def _toggle_paste(self):
         on = self.paste_button.isChecked()
+        if not on:
+            self._stop_paste()                            # hidden: the text isn't being read any more
         for w in (self.text, self.find_button):
             w.setVisible(on)
         self.chips.setVisible(on and bool(self.candidates))
@@ -337,16 +356,36 @@ class WordListsWindow(SecondaryWindow):
         text = self.text.toPlainText()
         if not text.strip():
             return
+        self._stop_paste()                                # an older paste's child: killed, its answer dropped
         self._finds += 1
         asked, kind, language = self._finds, self.kind, self.language
+        paste = self._pasting[0] = word_lists.Paste()
         self.say(s.WORD_LISTS_FINDING)
-        bridge.run_in_worker(word_lists.words_in, text, language, kind,
+        bridge.run_in_worker(word_lists.find_words, text, language, kind, paste,
                              then=self.alive(lambda found: self._found(asked, language, found)),
-                             failed=self.alive(lambda info: self.say(s.WORD_LISTS_FIND_FAILED.format(why=info[0]))))
+                             failed=self.alive(lambda info: self._find_failed(asked, info)))
+
+    def _stop_paste(self):
+        """The running paste's child killed (none: nothing); its answer is dropped."""
+        paste, self._pasting[0] = self._pasting[0], None
+        if paste is not None:
+            paste.cancel()
+
+    def _find_failed(self, asked, info):
+        """The paste's child failed or timed out: said, the chips as they were. A cancelled one says nothing."""
+        if asked != self._finds:
+            return                                        # asked again since: the newer paste speaks
+        self._pasting[0] = None
+        if isinstance(info[0], word_lists.Cancelled):
+            if self.status.text() == s.WORD_LISTS_FINDING:
+                self.say("")
+            return
+        self.say(s.WORD_LISTS_FIND_FAILED.format(why=info[0]))
 
     def _found(self, asked, language, found):
         if language != self.language or asked != self._finds:
             return                                        # found for a language the window left, or asked again
+        self._pasting[0] = None
         self.say("" if found else s.WORD_LISTS_FOUND_NONE)
         self.candidates = list(found)
         self.chips.blockSignals(True)                     # the marks, loaded: not a keep or drop
@@ -384,12 +423,34 @@ class WordListsWindow(SecondaryWindow):
         self.add_kept_button.setAccessibleName(self.add_kept_button.text())
         self.add_kept_button.setEnabled(n > 0 and not self.busy())
 
+    def closeEvent(self, event):
+        super().closeEvent(event)
+        if self.gone:
+            self._stop_paste()                            # closed mid-paste: its child killed
+
     def _clear_chips(self):
         """The chips gone (the pasted text kept: Find words reads it again)."""
         self.candidates = None
         self.chips.clear()
         self.chips.setVisible(False)
         self.add_kept_button.setVisible(False)
+
+
+def _item(word, source):
+    """A row of the list: the word, marked by where it is held, with its tip."""
+    if source == "known":
+        text, tip = s.WORD_LISTS_MARK_KNOWN.format(word=word), s.WORD_LISTS_ROW_KNOWN
+    elif source == "names":
+        text, tip = s.WORD_LISTS_MARK_NAMES.format(word=word), s.WORD_LISTS_ROW_NAMES
+    else:
+        text, tip = word, s.WORD_LISTS_ROW_LIST
+    item = QStandardItem(text)
+    item.setData(word, WORD)
+    item.setData(source, SOURCE)
+    item.setData(tip.format(word=word), Qt.ItemDataRole.ToolTipRole)
+    item.setData(text, Qt.ItemDataRole.AccessibleTextRole)
+    item.setEditable(False)
+    return item
 
 
 def _line(change, adding):

@@ -124,7 +124,7 @@ hiddenimports += ['app.analyzer', 'app.epub_importer', 'app.migaku_db_importer_g
                   'app.static_html_generator', 'app.migaku_converter', 'app.jiten_converter',
                   'app.content_importer_gui', 'app.frequency_list_gui', 'app.anki_db_importer_gui', 'app.indexer',
                   'app.arrivals_worker', 'app.sentence_corpus', 'app.telemetry', 'app.main', 'app.qt.shell',
-                  'app.replan_preview']
+                  'app.replan_preview', 'app.services.word_lists']
 # The 2.x -> 3.0 import and the GraduatedList merge (S3.1 D11-D13): the window's first-run page imports them inside a
 # function, so nothing at the top of the import graph names them (row 3.1.9b found both missing from a build).
 hiddenimports += ['app.import_2x', 'app.graduated_merge']

@@ -48,7 +48,7 @@ def calls(monkeypatch):
     """Every service call the window makes: (name, args, on the window's thread?)."""
     gui = threading.current_thread()
     seen = []
-    for name in ("read", "add", "remove", "words_in"):
+    for name in ("read", "add", "remove", "find_words"):
         real = getattr(word_lists, name)
 
         def record(*args, _real=real, _name=name, **kw):
@@ -348,7 +348,7 @@ def test_pasted_text_becomes_chips_and_only_the_kept_ones_are_added(main, calls)
     assert w.text.isVisible() and w.find_button.isVisible()
     w.text.setPlainText("冒険の準備で灯台の砂時計を見た。")
     w.find_button.click()
-    assert wait_until(lambda: w.candidates is not None)
+    assert wait_until(lambda: w.candidates is not None, 60)   # the paste's child process
     chips = _chips(w)
     assert ("冒険", True, False) in chips                           # on the list already: shown, fixed
     assert ("灯台", True, True) in chips and ("砂時計", True, True) in chips
@@ -364,7 +364,7 @@ def test_pasted_text_becomes_chips_and_only_the_kept_ones_are_added(main, calls)
     assert _text(path) == "冒険\n灯台\n"
     assert [c[1] for c in calls if c[0] == "add"] == [("ignore", "ja", ["灯台"])]
     assert not any(gui for _n, _a, gui in calls)                  # every read, find and write on a worker
-    assert {n for n, _a, _g in calls} == {"read", "words_in", "add"}
+    assert {n for n, _a, _g in calls} == {"read", "find_words", "add"}
 
 
 def test_a_chip_adds_the_words_dictionary_form_shown_by_its_spelling(main):
@@ -373,7 +373,7 @@ def test_a_chip_adds_the_words_dictionary_form_shown_by_its_spelling(main):
     w.paste_button.click()
     w.text.setPlainText("彼は毎日冒険に出かけます。")
     w.find_button.click()
-    assert wait_until(lambda: w.candidates is not None)
+    assert wait_until(lambda: w.candidates is not None, 60)   # the paste's child process
     for i in range(w.chips.count()):
         item = w.chips.item(i)
         item.setCheckState(Qt.CheckState.Checked if item.text() == "出かける" else Qt.CheckState.Unchecked)
@@ -391,7 +391,7 @@ def test_a_known_word_comes_as_a_dropped_chip(main, ja_resources_dir):
     w.paste_button.click()
     w.text.setPlainText("準備と砂時計")
     w.find_button.click()
-    assert wait_until(lambda: w.candidates is not None)
+    assert wait_until(lambda: w.candidates is not None, 60)   # the paste's child process
     assert ("準備", False, True) in _chips(w) and ("砂時計", True, True) in _chips(w)
     assert w.add_kept_button.text() == s.WORD_LISTS_ADD_KEPT_ONE
 
@@ -401,7 +401,7 @@ def test_text_with_no_words_says_so(main):
     w.paste_button.click()
     w.text.setPlainText("。、！？")
     w.find_button.click()
-    assert wait_until(lambda: w.candidates is not None)
+    assert wait_until(lambda: w.candidates is not None, 60)   # the paste's child process
     assert w.candidates == [] and w.status.text() == s.WORD_LISTS_FOUND_NONE
     assert not w.add_kept_button.isVisible()
 
@@ -414,7 +414,7 @@ def test_the_window_follows_the_main_windows_language_and_drops_the_chips(main):
     w.paste_button.click()
     w.text.setPlainText("冒険")
     w.find_button.click()
-    assert wait_until(lambda: w.candidates is not None)
+    assert wait_until(lambda: w.candidates is not None, 60)   # the paste's child process
     main.services.settings.set({"target_language": "zh"})
     assert wait_until(lambda: _rows(w) == ["东西"])
     assert w.language == "zh" and w.candidates is None and not w.add_kept_button.isVisible()

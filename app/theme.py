@@ -52,6 +52,11 @@ ROOM = MappingProxyType({
     "overlay-edge-side": "#1a253a",         # its sides' hairline, as quiet as the face (--ov-es)
     "overlay-edge-bottom": "#0a101b",       # its darkest, bottom edge (--ov-eb)
     "ring": "#26d1cf",                      # the cyan ring: next (✅)
+    # text on an overlay (list-r14m :1979 lightens the faint one inside overlays): grey text that says something
+    # clears 4.5:1 on the overlay and on its item under the hand (Sonic: "Readability is critical"); the faint one is
+    # for what's disabled or decorative
+    "overlay-ink-dim": "#8693ab",
+    "overlay-ink-faint": "#6d7b97",
     "dim": "#04060acc",                     # a dialog dims the room: the content's colour at 80 %
 })
 # The iris (90°): Surasura's run carried into the purple — the wordmark's second half, the tab's vein, progress (✅).
@@ -76,7 +81,7 @@ GEM = MappingProxyType({
 KIND_GEM = MappingProxyType({"shows": "sapphire", "reading": "emerald", "videos": "ruby"})
 # Hard-coded, not tokens: the same whatever the theme. Tooltips and toasts are overlays: slate navy, solid (brief §4).
 FIXED = MappingProxyType({
-    "tooltip": "#111a2b", "toast": "#111a2b", "scrim": "#04060acc", "on-accent": "#0b1018",
+    "tooltip": ROOM["overlay"], "toast": ROOM["overlay"], "scrim": ROOM["dim"], "on-accent": "#0b1018",
     "cover-badge": "#000000b0", "cover-badge-hi": "#000000b8", "cover-badge-border": "#ffffff40",
     "watched-track": "#00000070", "cover-ink": "#f4efe6", "mark-shadow": "#1e83b940", "page": "#070a0f",
     "cover-ground": "#04060a",
@@ -85,6 +90,10 @@ FIXED = MappingProxyType({
 # The mixes the painters read: name -> (where it comes from, expression). An expression is a colour (a token, room or
 # fixed name, `#hex` or "transparent") or ("mix", a, pa, b, pb) — `pb` None when CSS leaves it out. The old mock's
 # mixes for parts the redesign drops are retired with the themes (git history keeps them).
+# **Invented here, not the brief's values:** frame-edge, groove, groove-lip, cut-wall-top, cut-wall-low and well-lit
+# are Mado's flat stand-ins for what the brief describes in words (rule 3's edge, rule 4's groove, §5's lit lower wall
+# of a hole, the well under the hand); the reference draws them with shadows and lighting a flat window can't. Each is
+# one line to change once Sonic (or his design tools) names a value.
 MIXES = {
     # the frame meets the list along its edge (top and bottom only); a divider is a groove: 1 px dark, then a lit lip
     "frame-edge": ("brief §4 rule 3", ("mix", "frame", 55, "#000000", None)),
@@ -94,8 +103,8 @@ MIXES = {
     "cut-wall-top": ("brief §5", ("mix", "cut", 40, "#000000", None)),
     "cut-wall-low": ("brief §5", ("mix", "line-hi", 55, "frame", None)),
     "well-lit": ("brief §2, the buckets", ("mix", "ok", 12, "cut", None)),
-    # a row under the hand catches a little light (list-r14m :663's #0d121a); it lifts, never a hover fill (rule 5)
-    "row-hover": ("list-r14m :663", ("mix", "surface", 80, "line-hi", None)),
+    # a row under the hand: the reference's ground for it, as written (list-r14m :663); W3.1a adds the lift
+    "row-hover": ("list-r14m :663", "#0d121a"),
     # Generate (W3.1a moves it into the level pop) and its stale state
     "generate-hover": ("mock.html :228", ("mix", "raised", 70, "accent", 12)),       # sums to 82 %
     "generate-stale-glow": ("mock.html :230", ("mix", "accent", 70, "transparent", None)),
@@ -275,10 +284,16 @@ FAMILY_BY_LANGUAGE = {"ja": ("Yu Gothic UI", "Yu Gothic", "Meiryo", "Hiragino Sa
                       "zh-hans": ("Microsoft YaHei UI", "PingFang SC", "Noto Sans CJK SC"),
                       "zh-hant": ("Microsoft JhengHei UI", "PingFang TC", "Noto Sans CJK TC")}
 MONO = ("Consolas", "Cascadia Mono")
-# A file's path, wherever the window shows one: never a Japanese family first — Yu Gothic UI and Meiryo draw the
-# backslash as ¥ (a path reads `E:¥Shows¥…`; found by the wizard's draft, 2026-10-14). Segoe UI, whatever family the
-# rest of the window takes (the brief's Yu Gothic UI for everything else, W3.1a).
-PATH_FAMILY = ("Segoe UI", "Consolas")
+# For a file's path: never a Japanese family first — Yu Gothic UI and Meiryo draw the backslash as ¥ (a path reads
+# `E:¥Shows¥…`; found by the wizard's draft, 2026-10-14). Segoe UI first, then the language's own family (a Japanese
+# or Chinese folder name still takes its shapes), whatever family the rest of the window takes (the brief's Yu Gothic UI,
+# W3.1a, which wires every path through `path_font_families`).
+PATH_FAMILY = ("Segoe UI",)
+
+
+def path_font_families(language="ja", script=None):
+    """The families a path is drawn in: Segoe UI first (its backslash), then the language's own."""
+    return PATH_FAMILY + font_families(language, script)[1:]
 LINE_HEIGHT = 1.45
 TEXT_SIZES = {"S": 1.0, "M": 1.15, "L": 1.3}
 DEFAULT_TEXT_SIZE = "M"

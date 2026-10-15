@@ -76,7 +76,7 @@ def stylesheet(theme_name=theme.DEFAULT_THEME, text_size=theme.DEFAULT_TEXT_SIZE
 /* the window's own parts (shell.py names them). Their dividing lines are separators, never borders: a border lands
    between device pixels at 125 / 175 % and smears over two rows; a separator's fill stays one crisp row */
 QWidget#header {{ background: {c['frame']}; }}
-QLabel#wordsub {{ color: {c['ink-faint']}; {font('status-pill')} font-weight: 400; }}
+QLabel#wordsub {{ color: {c['ink-dim']}; {font('status-pill')} font-weight: 400; }}
 QWidget#tabbar {{ background: {c['frame']}; }}
 QToolButton#tab {{ background: transparent; border: 0; border-bottom: 2px solid transparent; color: {c['ink-dim']};
   padding: 10px 14px 9px 14px; {font('tab')} }}
@@ -89,7 +89,7 @@ QLabel#barline {{ color: {c['ink-dim']}; {font('footer')} font-weight: 400; }}
 QLabel#barfailure {{ color: {c['warn']}; {font('footer')} font-weight: 400; }}
 QLabel#barmark {{ color: {c['ink-dim']}; {font('footer')} font-weight: 400; }}
 QLabel#journeydot {{ color: {c['accent']}; {font('badge')} }}
-QLabel#pagewaiting {{ color: {c['ink-faint']}; {font('body')} font-weight: 400; }}
+QLabel#pagewaiting {{ color: {c['ink-dim']}; {font('body')} font-weight: 400; }}
 QLabel#pagetitle {{ color: {c['ink']}; {font('page-heading')} }}
 QFrame#separator {{ background: {c['frame-edge']}; border: 0; }}
 
@@ -173,8 +173,9 @@ QMenu {{ background: {c['overlay']}; color: {c['ink']}; border: 0; border-top: 1
   border-bottom: 1px solid {c['overlay-edge-bottom']}; padding: 6px; {font('menu-item')} }}
 QMenu::item {{ padding: {px(7)} {px(12)}; border-radius: 7px; }}
 QMenu::item:selected {{ background: {c['overlay-hover']}; }}
-QMenu::item:disabled {{ color: {c['ink-faint']}; }}
-QMenu::separator {{ height: 1px; background: {c['groove']}; margin: 4px 8px; }}
+QMenu::item:disabled {{ color: {c['overlay-ink-faint']}; }}
+QMenu::separator {{ height: 2px; margin: 4px 8px; background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+  stop:0 {c['groove']}, stop:0.5 {c['groove']}, stop:0.51 {c['groove-lip']}, stop:1 {c['groove-lip']}); }}
 QMenu::indicator {{ width: {px(14)}; height: {px(14)}; }}
 QTabWidget::pane {{ border: 0; }}
 QTabBar::tab {{ background: transparent; color: {c['ink-dim']}; border: 0; border-bottom: 2px solid transparent;
@@ -404,15 +405,21 @@ def paint_overlay(p, rect, radius):
     p.setPen(Qt.PenStyle.NoPen)
     p.setBrush(qcolor(c["overlay"]))
     p.drawPath(path)
+    # The two edges on whole device rows, never antialiased: at 125 / 150 / 175 % a 1 px logical edge would blend over
+    # two rows (or never reach its colour), the smear the separators avoid (review L1-1).
+    dpr = p.device().devicePixelRatioF() if p.device() is not None else 1.0
+    edge = max(1, round(dpr)) / dpr
+    bottom = round((r.top() + r.height()) * dpr) / dpr - edge
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
     p.setClipPath(path)
-    p.fillRect(QRectF(r.left(), r.top(), r.width(), 1), qcolor(c["overlay-edge-top"]))
-    p.fillRect(QRectF(r.left(), r.bottom() - 1, r.width(), 1), qcolor(c["overlay-edge-bottom"]))
+    p.fillRect(QRectF(r.left(), r.top(), r.width(), edge), qcolor(c["overlay-edge-top"]))
+    p.fillRect(QRectF(r.left(), bottom, r.width(), edge), qcolor(c["overlay-edge-bottom"]))
     p.restore()
 
 
 def separator(parent=None, vertical=False):
     """A plain separator (the stack pack: a QFrame with a frameShape paints its own palette frame over the stylesheet's
-    background): no frameShape, a fixed 1 px, the `line` colour from the stylesheet."""
+    background): no frameShape, a fixed 1 px, the frame's edge colour (`frame-edge`) from the stylesheet."""
     sep = QFrame(parent)
     sep.setObjectName("separator")
     if vertical:

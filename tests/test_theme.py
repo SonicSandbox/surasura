@@ -89,7 +89,7 @@ def test_the_mixes_land_on_the_browsers_values():
     """Qt can't mix colours: each `color-mix(in oklab)` is worked out here, as a browser does (these answers are
     Edge's own, headless, 2026-10-14, for the same inputs; one step at most per channel, for rounding)."""
     browser = {"top20-line": "#32536f", "watched-chip-fill": "#132230", "watched-chip-border": "#375d7d",
-               "frame-edge": "#020305", "cut-wall-low": "#19212f", "well-lit": "#101a1b", "row-hover": "#0f141d"}
+               "frame-edge": "#020305", "cut-wall-low": "#19212f", "well-lit": "#101a1b"}
     c = theme.colours()
     for name, expected in browser.items():
         got = c[name]
@@ -115,6 +115,21 @@ def test_body_text_passes_the_contrast_floor_on_every_surface():
         for ground in ("bg", "surface", "raised", "frame", "overlay"):
             assert theme.contrast(c[ink], c[ground]) >= 4.5, (ink, ground)
     assert theme.contrast(c["ink"], c["overlay-hover"]) >= 7
+
+
+def test_grey_text_on_an_overlay_clears_the_floor_even_under_the_hand():
+    """A menu or tray row's grey line says something (Sonic: "Readability is critical"): at least 4.5:1 on the overlay
+    and on its item under the hand. The overlay's faint text (disabled items) is the reference's lighter grey, never
+    under the page's own faint."""
+    c = theme.colours()
+    for ground in ("overlay", "overlay-hover"):
+        assert theme.contrast(c["overlay-ink-dim"], c[ground]) >= 4.5, ground
+    assert theme.contrast(c["overlay-ink-faint"], c["overlay"]) > theme.contrast(c["ink-faint"], c["overlay"])
+    assert c["overlay-ink-faint"] == "#6d7b97"                     # list-r14m :1979
+
+
+def test_a_hovered_row_takes_the_references_ground_as_written():
+    assert theme.colours()["row-hover"] == "#0d121a"
 
 
 def test_the_contrast_figures():
@@ -182,10 +197,14 @@ def test_font_families_put_each_languages_own_family_after_segoe():
     assert theme.font_families("zh", "t")[1] == "Microsoft JhengHei UI"
 
 
-def test_a_path_is_never_drawn_in_a_family_that_turns_the_backslash_into_a_yen_sign():
-    """Yu Gothic UI and Meiryo draw the backslash as a yen sign: every path takes its own family, Segoe UI first."""
+def test_a_path_is_drawn_in_segoe_first_whose_backslash_is_a_backslash():
+    """Yu Gothic UI and Meiryo draw the backslash as a yen sign: a path takes Segoe UI first, then the language's own
+    family (a Japanese or Chinese folder name keeps its shapes)."""
     assert theme.PATH_FAMILY[0] == "Segoe UI"
-    assert not set(theme.PATH_FAMILY) & {"Yu Gothic UI", "Yu Gothic", "Meiryo", "MS Gothic", "MS UI Gothic"}
+    for language, script in (("ja", None), ("zh", "s"), ("zh", "t")):
+        families = theme.path_font_families(language, script)
+        assert families[0] == "Segoe UI" and families[1:] == theme.font_families(language, script)[1:]
+    assert theme.path_font_families("ja")[0] not in ("Yu Gothic UI", "Yu Gothic", "Meiryo")
 
 
 def test_percentages_out_of_range_are_refused_and_over_100_scale_down():

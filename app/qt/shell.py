@@ -774,8 +774,7 @@ class ShellWindow(QMainWindow):
         root = QVBoxLayout(central)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
-        root.addWidget(self._build_header())
-        root.addWidget(style.separator(central))
+        root.addWidget(self._build_header())                  # header and tabs: one frame band, no line between
         root.addWidget(self._build_tabs())
         root.addWidget(style.separator(central))
         self.pages = QStackedWidget(central)

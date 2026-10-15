@@ -1139,7 +1139,8 @@ def test_a_list_at_rest_paints_nothing_on_screen_while_it_paints_ahead(seeded):
 def test_a_row_takes_each_colour_from_the_theme_now_applied_and_asking_twice_gives_the_same(qapp):
     """A row's colours are kept once per theme (its first paint asks for about twelve), so a theme change must hand the
     new theme's colour, not the one kept from the last theme, or rows would keep painting in the old theme's inks until
-    the app restarts. Asking a second time gives the same colour."""
+    the app restarts. Asking a second time gives the same colour. (One theme in 3.0, RS-1: the theme-change half has
+    nothing to switch between until 3.1's themes; the colours-match half still holds.)"""
     try:
         for t in theme.THEMES:
             style.apply(qapp, t, "M", "ja")

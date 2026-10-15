@@ -104,10 +104,9 @@ def run_scale(scale, out_dir):
         seps = sorted(win.centralWidget().findChildren(QFrame, "separator"), key=lambda f: f.mapTo(win, QPoint(0, 0)).y())
         lines = [f.mapTo(win, QPoint(0, 0)).y() * dpr for f in seps]       # device rows where each 1 px line starts
 
-        y1, y2, y3 = (int(v) for v in lines[:3])
-        regions = {"header": arr[: y1 - 1], "tabs": arr[y1 + 3: y2 - 1], "page": arr[y2 + 3: y3 - 1],
-                   "footer": arr[y3 + 3:]}
-        tokens = {"header": (c["frame"],), "tabs": (c["frame"],), "page": (c["bg"],), "footer": (c["frame"],)}
+        y2, y3 = (int(v) for v in lines[:2])          # header and tabs are one frame band: no line between them
+        regions = {"frame": arr[: y2 - 1], "page": arr[y2 + 3: y3 - 1], "footer": arr[y3 + 3:]}
+        tokens = {"frame": (c["frame"],), "page": (c["bg"],), "footer": (c["frame"],)}
         problems = []
         if (arr.shape[1], arr.shape[0]) != (round(w * scale / 100), round(h * scale / 100)):
             problems.append(f"size {arr.shape[1]}x{arr.shape[0]} is not {w}x{h} at {scale} %")
@@ -123,7 +122,7 @@ def run_scale(scale, out_dir):
                 if o[key] not in [c[k] for k in ("surface", "bg", "frame", "raised")] and stray:
                     problems.append(f"{region}: another theme's {key}")
         seams = {where: _seam_rows(arr, y - 2, y + 4, c["frame-edge"])
-                 for where, y in zip(("under the header", "under the tabs", "above the bar"), (y1, y2, y3))}
+                 for where, y in zip(("under the tabs", "above the bar"), (y2, y3))}
         for where, rows in seams.items():
             if not rows:
                 problems.append(f"the line {where} is missing")

@@ -11,7 +11,7 @@ import re
 import pytest
 
 pytest.importorskip("PyQt6")
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QRectF, Qt
 from PyQt6.QtGui import QPalette
 from PyQt6.QtWidgets import (QCheckBox, QComboBox, QFrame, QLabel, QRadioButton, QScrollBar, QStyle,
                              QStyleFactory)
@@ -228,3 +228,28 @@ def test_a_combos_open_list_is_themed(qapp):
     assert count(arr, c["overlay"], 2) + count(arr, c["overlay-hover"], 2) >= 0.5 * arr.shape[0] * arr.shape[1]
     assert count(arr, "#ffffff", 4) < 0.01 * arr.shape[0] * arr.shape[1]
     combo.hidePopup()
+
+
+@pytest.mark.parametrize("dpr", [1.0, 1.25, 1.5, 1.75, 2.0])
+@pytest.mark.parametrize("height", [40, 41, 43])
+def test_an_overlays_edges_are_whole_device_rows_at_every_scale(qapp, dpr, height):
+    # Why: at 125 / 150 / 175 % a 1 px logical edge blends over two device rows, or never reaches its colour (review
+    # L1-1): the lit top and the dark bottom must each be a solid device row, and no side edge (brief §4, rule 3).
+    from PyQt6.QtGui import QImage, QPainter
+    c = theme.colours()
+    w = 120
+    img = QImage(round(w * dpr), round(height * dpr), QImage.Format.Format_ARGB32_Premultiplied)
+    img.setDevicePixelRatio(dpr)
+    img.fill(0)
+    p = QPainter(img)
+    style.paint_overlay(p, QRectF(0, 0, w, height), theme.RADII["toast"])
+    p.end()
+
+    def near(x, y, name):
+        got, want = img.pixelColor(x, y), theme.parse(c[name])
+        return max(abs(got.red() - want[0]), abs(got.green() - want[1]), abs(got.blue() - want[2])) <= 2
+    mid_x, last = img.width() // 2, img.height() - 1
+    assert near(mid_x, 0, "overlay-edge-top")
+    assert near(mid_x, last, "overlay-edge-bottom")
+    assert near(mid_x, round(dpr), "overlay") and near(mid_x, last - round(dpr), "overlay")
+    assert near(0, img.height() // 2, "overlay")                      # the face runs to the side: no side edge

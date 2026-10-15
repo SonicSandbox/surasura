@@ -149,7 +149,7 @@ def test_a_busy_or_failed_deck_import_says_why_and_offers_the_log(main, runs):
     w = importers.open_deck(main)
     w.choose(DECK)
     assert wait_until(lambda: w.deck is not None)
-    w.start(DECK, w.deck.default)
+    w.start(DECK, w.deck.default, "ja")
     runs.end(5, "Error: Your known words are being updated by Anki known-words sync. Nothing was changed: try again "
                 "in a moment.")
     assert w.status.text().startswith(strings.IMPORTERS_FAILED.format(why="Your known words are being updated"))
@@ -170,7 +170,7 @@ def test_the_real_child_imports_a_real_deck_into_known_words(main):
     w = importers.open_deck(main)
     w.choose(DECK)
     assert wait_until(lambda: w.deck is not None)
-    w.start(DECK, w.deck.default)
+    w.start(DECK, w.deck.default, "ja")
     assert wait_until(lambda: not w.busy(), timeout=120)
     assert w.status.text().startswith(strings.APKG_DONE.split("{")[0]), w.status.text()
     with open(os.path.join(get_user_files_path("ja"), "KnownWord.json"), encoding="utf-8") as f:
@@ -255,6 +255,67 @@ def test_an_unreadable_known_words_file_is_said_before_any_question_or_replace(m
     assert _card(j) is None and len(runs.calls) == 1 and not os.path.exists(folder)
 
 
+def test_a_language_switch_drops_an_open_replace_question_and_never_replaces_the_other_language(main, runs):
+    """AD2-5: the question named one language's numbers; a switch to the other drops it, unanswered — a Yes could
+    never replace the Chinese known words under the Japanese numbers."""
+    _known(CURRENT)
+    w = importers.open_migaku(main)
+    w.read(MIGAKU)
+    assert wait_until(lambda: _card(w) is not None)
+    card = _card(w)
+    main.services.settings.set({"target_language": "zh"})
+    assert wait_until(lambda: w.language == "zh")
+    assert card.answer is False and _card(w) is None
+    card.yes.click()                                          # a click on the dropped card does nothing
+    QApplication.processEvents()
+    assert runs.calls == []
+
+
+def test_a_plan_read_for_one_language_is_never_asked_in_the_other(main, runs, monkeypatch):
+    """AD2-5: the export was read for Japanese; the switch landed before the answer — it asks nothing."""
+    _known(CURRENT)
+    from app import importers_view
+    plans = []
+    monkeypatch.setattr(importers.bridge, "run_in_worker",
+                        lambda fn, *a, then=None, failed=None: plans.append((fn(*a), then)))
+    w = importers.open_migaku(main)
+    w.read(MIGAKU)
+    main.services.settings.set({"target_language": "zh"})
+    assert wait_until(lambda: w.language == "zh")
+    [(plan, then)] = plans
+    then(plan)                                                # the Japanese answer lands now
+    assert _card(w) is None and runs.calls == []
+    assert isinstance(plan, importers_view.Plan)
+
+
+def test_a_language_switch_drops_the_deck_question_and_the_import_names_the_language_asked(main, runs):
+    """AD2-5: the deck window's question too; and a Yes starts the child in the language it was asked in."""
+    w = importers.open_deck(main)
+    w.choose(DECK)
+    assert wait_until(lambda: w.deck is not None)
+    w.go.click()
+    card = _card(w)
+    main.services.settings.set({"target_language": "zh"})
+    assert wait_until(lambda: w.language == "zh")
+    assert card.answer is False and runs.calls == []
+    w.start(DECK, w.deck.default, "ja")
+    assert runs.calls[-1].argv[:3] == ["anki_db_import.py", "--language", "ja"]
+
+
+def test_a_language_switch_drops_jitens_question_and_its_fetched_cards(main, runs):
+    _known(CURRENT)
+    j = importers.open_jiten(main)
+    j.key.setText(SECRET)
+    j.go.click()
+    folder = os.path.dirname(runs.calls[-1].argv[-1])
+    _fetched(runs, [{"wordText": "猫", "state": 5}])
+    assert wait_until(lambda: _card(j) is not None)
+    card = _card(j)
+    main.services.settings.set({"target_language": "zh"})
+    assert wait_until(lambda: j.language == "zh")
+    assert card.answer is False and len(runs.calls) == 1 and not os.path.exists(folder)
+
+
 def test_choose_a_file_asks_too(main, runs, monkeypatch):
     """The Tk window's *Select File Manually…* replaced the known words with no question at all (inv §3.9)."""
     _known(CURRENT)
@@ -291,7 +352,7 @@ def test_a_db_that_isnt_migakus_is_said_and_nothing_asked(main, runs, tmp_path):
 
 def test_a_failed_migaku_import_says_why(main, runs):
     w = importers.open_migaku(main)
-    w.start(MIGAKU)
+    w.start(MIGAKU, "ja")
     runs.end(1, "Error: could not back up your current known words, so nothing was changed (disk full).")
     assert "could not back up" in w.status.text() and w.log_button.isVisibleTo(w)
 

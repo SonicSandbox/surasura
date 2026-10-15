@@ -83,6 +83,7 @@ class ToolWindow(windows.SecondaryWindow):
         super().__init__(shell, name, language)
         self._lines = []
         self._result = None
+        self.question = None                              # the open confirmation, dropped by a language switch
         self.log_button = _button(self, strings.IMPORTERS_LOG, strings.IMPORTERS_LOG_TIP, self._open_log, "chip")
         self.log_button.setVisible(False)
         self.layout().addWidget(self.log_button, 0, Qt.AlignmentFlag.AlignRight)
@@ -123,6 +124,17 @@ class ToolWindow(windows.SecondaryWindow):
         self.say(strings.IMPORTERS_BUSY)
         return tools.run(self.shell.services.registry, self.kind, label, argv, env=env, on_line=lines.call,
                          on_end=on_end)
+
+    def ask(self, title, body, yes, yes_tip, on_answer, **how):
+        """`confirm.ask` in this window, kept as `question` until it is answered or dropped."""
+        self.question = confirm.ask(self, title, body, yes, yes_tip, on_answer=on_answer, **how)
+        return self.question
+
+    def language_changed(self, language):
+        """The open question named the other language's numbers: dropped, unanswered (AD1-12's rule)."""
+        if self.question is not None:
+            self.question.drop()
+            self.question = None
 
     def _why(self):
         """The last line the child printed that says why it failed, or None."""
@@ -226,14 +238,14 @@ class DeckWindow(ToolWindow):
     def _ask(self):
         if not self.go.isEnabled():
             return
-        field, deck, path = self.field.currentText(), self.deck, self._deck_path
-        confirm.ask(self, strings.APKG_ASK_TITLE, strings.APKG_ASK_BODY.format(field=field, notes=deck.notes),
-                    strings.APKG_ASK_YES, strings.APKG_ASK_YES_TIP,
-                    on_answer=lambda yes: yes and self.start(path, field))
+        field, deck, path, language = self.field.currentText(), self.deck, self._deck_path, self.language
+        self.ask(strings.APKG_ASK_TITLE, strings.APKG_ASK_BODY.format(field=field, notes=deck.notes),
+                 strings.APKG_ASK_YES, strings.APKG_ASK_YES_TIP,
+                 on_answer=lambda yes: yes and self.start(path, field, language))
 
-    def start(self, path, field):
-        """The import as a child (`apkg_known_import`)."""
-        return self._run(strings.APKG_NAME, ["anki_db_import.py", "--language", self.language, "--file", path,
+    def start(self, path, field, language):
+        """The import as a child (`apkg_known_import`), in the language it was asked in."""
+        return self._run(strings.APKG_NAME, ["anki_db_import.py", "--language", language, "--file", path,
                                              "--field", field], self._done, parse=anki_db_import.parse_result)
 
     def _done(self, code):
@@ -287,8 +299,9 @@ class MigakuWindow(ToolWindow):
 
     def read(self, path):
         """Read the export's words first (a worker), then ask with both numbers."""
-        bridge.run_in_worker(importers_view.migaku_plan, path, self.language, then=self.alive(self._ask),
-                             failed=self.alive(self._unread))
+        language = self.language
+        bridge.run_in_worker(importers_view.migaku_plan, path, language,
+                             then=self.alive(lambda plan: self._ask(plan, language)), failed=self.alive(self._unread))
 
     def _unread(self, info):
         from app import migaku_converter
@@ -297,18 +310,21 @@ class MigakuWindow(ToolWindow):
                  else strings.KNOWN_UNREADABLE if isinstance(error, importers_view.KnownUnreadable)
                  else strings.IMPORTERS_READ_FAILED.format(why=error))
 
-    def _ask(self, plan):
+    def _ask(self, plan, language):
+        if language != self.language:
+            return                                        # read for the language the window has left
         if not plan.words:
             self.say(strings.MIGAKU_EMPTY)
             return
         saved = plan.saved.strftime("%Y-%m-%d %H:%M") if plan.saved else "?"
         body = strings.MIGAKU_ASK_BODY.format(file=os.path.basename(plan.path), time=saved, now=plan.now,
                                               after=plan.after, kept=_kept(plan))
-        confirm.ask(self, strings.MIGAKU_ASK_TITLE, body, strings.MIGAKU_ASK_YES, strings.MIGAKU_ASK_YES_TIP,
-                    default_no=True, danger=True, on_answer=lambda yes: yes and self.start(plan.path))
+        self.ask(strings.MIGAKU_ASK_TITLE, body, strings.MIGAKU_ASK_YES, strings.MIGAKU_ASK_YES_TIP,
+                 default_no=True, danger=True, on_answer=lambda yes: yes and self.start(plan.path, language))
 
-    def start(self, path):
-        return self._run(strings.MIGAKU_NAME, ["migaku_converter.py", path, "--language", self.language], self._done)
+    def start(self, path, language):
+        """The replace as a child, in the language its numbers were read for."""
+        return self._run(strings.MIGAKU_NAME, ["migaku_converter.py", path, "--language", language], self._done)
 
     def _done(self, code):
         key, values = importers_view.replace_outcome(code, self._why())
@@ -358,6 +374,9 @@ class JitenWindow(ToolWindow):
         self.key.setEchoMode(QLineEdit.EchoMode.Normal if on else QLineEdit.EchoMode.Password)
 
     def language_changed(self, language):
+        if self.question is not None:                     # Japanese only: the question and its cards go
+            super().language_changed(language)
+            self._drop_folder()
         self.say("" if language == "ja" else strings.JITEN_JAPANESE_ONLY)
         self.refresh()
 
@@ -400,6 +419,9 @@ class JitenWindow(ToolWindow):
         self._drop_folder()
 
     def _ask(self, plan):
+        if self.language != "ja":
+            self._drop_folder()                           # the window left Japanese while the cards were read
+            return
         if plan is None or not plan.words:
             self.say(strings.JITEN_EMPTY)
             self._drop_folder()
@@ -411,8 +433,8 @@ class JitenWindow(ToolWindow):
                 self.replace(plan.path)
             else:
                 self._drop_folder()
-        confirm.ask(self, strings.JITEN_ASK_TITLE, body, strings.JITEN_ASK_YES, strings.JITEN_ASK_YES_TIP,
-                    default_no=True, danger=True, on_answer=answered)
+        self.ask(strings.JITEN_ASK_TITLE, body, strings.JITEN_ASK_YES, strings.JITEN_ASK_YES_TIP,
+                 default_no=True, danger=True, on_answer=answered)
 
     def replace(self, cards):
         """Step 2: the replace from the cards step 1 kept (no key, no fetch)."""

@@ -509,11 +509,11 @@ def test_a_switch_during_a_sync_waits_for_it_its_result_goes_to_the_bar_and_only
 
 
 # --- the doors (inv §1 #4, #19; defect 8) ------------------------------------------------------------------------ #
-def test_without_their_openers_the_doors_are_hidden(main, anki):
+def test_without_their_openers_the_doors_are_hidden(main, anki, monkeypatch):
+    # row 5's `backfill` and row 2's `apkg_known` (IK-41) taken away: (whether a real door shows also hangs on its module)
+    monkeypatch.setattr(windows, "OPENERS", [o for o in windows.OPENERS if o.name not in ("backfill", "apkg_known")])
     w = _open(main, connect=False)
-    names = {o.name for o in windows.OPENERS}
-    assert w.btn_backfill.isHidden() == ("backfill" not in names)
-    assert w.btn_apkg.isHidden() == ("apkg_known" not in names)          # row 2's opener (IK-41)
+    assert w.btn_backfill.isHidden() and w.btn_apkg.isHidden()
 
 
 def test_the_apkg_door_never_closes_this_window_even_mid_job(main, anki, monkeypatch):
@@ -608,6 +608,7 @@ def test_the_doors_are_asked_again_only_by_a_write_that_can_move_them_and_by_the
     looked for (Backfill's door names Junban); the window starts that look itself when no one has."""
     monkeypatch.setattr(windows, "_FOUND", {})
     monkeypatch.setattr(windows, "_LOOKING", set())
+    monkeypatch.setattr(windows, "module_present", lambda name: name == "junban")    # the public repo has no modules/
     _doors(monkeypatch, windows.Opener("backfill", "Backfill", "x", lambda s, lang: s.get("enable_junban") is not False,
                                        lambda s: None, module="junban"))
     asked = []

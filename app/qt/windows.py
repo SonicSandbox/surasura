@@ -206,6 +206,9 @@ OPENERS = [
     Opener("frequency-lists", strings.FREQ_NAME, strings.FREQ_TIP, always, _open_frequency_lists),
     Opener("sentence-dictionary", strings.DICT_NAME, strings.DICT_TIP, always, _open_sentence_dictionary),
 ]
+from app.qt import word_lists_strings as _wls  # noqa: E402  (W3.3 P10, n16: Words to leave out)
+OPENERS += [Opener("word-lists", _wls.WORD_LISTS_NAME, _wls.WORD_LISTS_TIP, always,
+                   lambda shell: importlib.import_module("app.qt.word_lists_window").open_window(shell))]
 
 
 # The optional modules the doors name, looked for once per process (a module can't appear mid-session), on a worker

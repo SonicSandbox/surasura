@@ -179,11 +179,15 @@ class ProgramHolder:
 
 def journal(language):
     path = M.journal_path(language)
-    try:
-        with open(path, encoding="utf-8") as f:
-            return json.load(f)
-    except FileNotFoundError:                           # (none, or removed between a look and the read)
-        return None
+    for _ in range(50):
+        try:
+            with open(path, encoding="utf-8") as f:
+                return json.load(f)
+        except FileNotFoundError:                       # (none, or removed between a look and the read)
+            return None
+        except PermissionError:                         # Windows: the writer's replace holds it this instant
+            time.sleep(0.01)
+    raise AssertionError(f"the journal stayed locked: {path}")
 
 
 def journalled(language):

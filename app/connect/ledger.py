@@ -25,6 +25,12 @@ no longer counted, still listed), `dismissed_at` (left the list), `fixed_at` (it
 entry per language + kind + item (open = not fixed), so a need raised again while open writes nothing (S19) and one
 raised after its fix is new and counts again. `undos`: each *Undo this batch* (N9, Q2-6), what it deleted and what it
 kept and why. `run:<lang>` in meta: when the run working on the language began (the status line's *i of n*).
+
+P4.1 (still SCHEMA 4: one added column and one meta key, both read as absent by a Surasura before them — an older one
+reads an asked job as a first mining, never a wrong write): a job's `asked_at`, the ask it answers (C2 / C3: the
+store's `mine_asked` — *Mine now*, *Mine this*, *Mine it too*), kept whatever way the job ends so an ask is used up
+once (IK S4); a job an ask made is of kind `asked`. `asks_from:<lang>` in meta: the asks watermark (asks made before it
+— while Connect was off — are never mined; written by `resume.turned_on`, else at the first look).
 """
 import datetime
 import json
@@ -47,8 +53,11 @@ STATES = OPEN + FINISHED
 # The steps a job waiting mid-way resumes at (`resume`): before mining it can still be dropped (02 §2: an item that
 # leaves the top 20 before mining; once mining has started, it finishes).
 BEFORE_MINING = (None, "picking", "fit-check")
-# A job's kinds (P2.2): an item's first cards, or the newly listed words of one already mined.
-MINE, LEVEL = "mine", "level"
+# A job's kinds (P2.2): an item's first cards, or the newly listed words of one already mined; P4.1: one an ask made
+# (*Mine this*, *Mine it too*: C3) — the only kind that makes again a word whose card you deleted (N15, IK S1).
+MINE, LEVEL, ASKED = "mine", "level", "asked"
+# P4.1: the asks watermark's meta key, `asks_from:<lang>` (C1 / IK B2: `resume.turned_on` writes it at every off → on)
+ASKS_FROM = "asks_from:"
 
 _SCHEMA_SQL = (
     "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
@@ -88,7 +97,8 @@ _SCHEMA_SQL = (
 _ADDED_COLUMNS = (("kind", "TEXT NOT NULL DEFAULT 'mine'"), ("words", "TEXT"),
                   ("store_id", "TEXT"), ("resume", "TEXT"), ("picked", "TEXT"),
                   ("attempt", "INTEGER NOT NULL DEFAULT 0"), ("failures", "INTEGER NOT NULL DEFAULT 0"),
-                  ("skipped", "TEXT"), ("tag_pending", "TEXT"))
+                  ("skipped", "TEXT"), ("tag_pending", "TEXT"),
+                  ("asked_at", "TEXT"))         # P4.1: the ask the job answers (no SCHEMA bump: see the docstring)
 # P2.4's tables (made IF NOT EXISTS, like the rest)
 _RUNNER_SQL = (
     # N5, one Anki Miner call: `state` running · done · uncertain (words in doubt) · refused (it never ran)
@@ -145,7 +155,8 @@ PREPARE_KINDS = ("known-sync", "generate", "no-store", "no-profile")
 # Every other kind is a failure: one that happens again after you've seen it counts again, with its new words (03 §4)
 STANDING = ("not-timed", "no-profile", "no-store", "no-subtitle")
 # The columns `set_state` may write beside the state
-_STATE_COLUMNS = frozenset(("reason", "resume", "picked", "attempt", "failures", "skipped", "store_id", "tag_pending"))
+_STATE_COLUMNS = frozenset(("reason", "resume", "picked", "attempt", "failures", "skipped", "store_id", "tag_pending",
+                            "asked_at"))
 # Anki Miner's outcomes that settle a word without a card (it turned it down): never sent again for the item
 _NOT_MADE = ("made", "uncertain", "not_attempted")
 
@@ -422,6 +433,48 @@ class Ledger:
                 _log.info("Connect: fixed by itself (%s, %s): %s", language, row["kind"], row["say"])
         return cur.rowcount > 0
 
+    # --- P4.1: asked mining (C2 / C3) ------------------------------------------------------------------------- #
+
+    def asks_from(self, language):
+        """The asks watermark (`asks_from:<lang>`): an ask made before it is never mined, or None (never set)."""
+        return asks_from_in(self.conn, language)
+
+    def set_asks_from(self, language, at=None):
+        """The asks watermark at `at` (default now, the store's stamp format), inside the caller's transaction."""
+        self.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                          (ASKS_FROM + language, at or stamp()))
+
+    def ask(self, language, item_id, asked_at, store_id=None):
+        """An ask for the item (the store's `mine_asked`, C2) -> ("queued", job id): a new job of kind `asked`, by
+        `user`; ("moved", job id): the item's open job now carries it (it goes first — *Mine now* — and stays what it
+        was: it makes no deleted word again, IK S1); None: a job already holds this very ask, however it ended (any
+        ending uses the ask up, IK S4). Inside the caller's transaction."""
+        if ask_recorded_in(self.conn, language, item_id, asked_at):
+            return None
+        marks = ",".join("?" * len(OPEN))
+        row = self.conn.execute(f"SELECT id FROM jobs WHERE language = ? AND item_id = ? AND state IN ({marks}) "
+                                "ORDER BY id DESC LIMIT 1", (language, item_id) + OPEN).fetchone()
+        now = _now()
+        if row is not None:
+            self.conn.execute("UPDATE jobs SET asked_at = ?, updated_at = ? WHERE id = ?", (asked_at, now, row[0]))
+            return "moved", row[0]
+        cur = self.conn.execute("INSERT INTO jobs (language, item_id, state, source, event_id, created_at, updated_at, "
+                                "kind, store_id, asked_at) VALUES (?, ?, 'queued', 'user', NULL, ?, ?, ?, ?, ?)",
+                                (language, item_id, now, now, ASKED, store_id, asked_at))
+        return "queued", cur.lastrowid
+
+    def unask(self, job_id):
+        """The ask a job carried, undone before its mining started: a job the ask made is dropped (*left: ask undone*);
+        one it only moved first goes back to its place (inside the caller's transaction) -> "dropped" or "cleared"."""
+        row = self.conn.execute("SELECT kind, language, item_id FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        if row is None:
+            return None
+        if row[0] == ASKED:
+            self.drop(row[1], row[2], "left: ask undone")
+            return "dropped"
+        self.conn.execute("UPDATE jobs SET asked_at = NULL, updated_at = ? WHERE id = ?", (_now(), job_id))
+        return "cleared"
+
     # --- P2.4: the runner's job (02 §2, N5, N6, N9) ----------------------------------------------------------- #
 
     def set_state(self, job_id, state, **columns):
@@ -654,6 +707,38 @@ class Ledger:
             row["deleted"], row["kept"] = json.loads(row["deleted"]), json.loads(row["kept"])
             out.append(row)
         return out
+
+
+def stamp():
+    """Now in the store's own stamp format (`library_store._now`: microseconds), so the asks watermark and the store's
+    `mine_asked` compare as written."""
+    t = time.time()
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(t)) + ".%06dZ" % int((t % 1) * 1e6)
+
+
+def stamp_key(text):
+    """A UTC stamp as a sortable key, whichever format wrote it (the store's microseconds or Connect's seconds):
+    `2026-10-15T09:00:00Z` sorts as `…00.000000`."""
+    text = str(text or "").rstrip("Z")
+    return text if "." in text else text + ".000000"
+
+
+def asks_from_in(conn, language):
+    """The asks watermark read on any connection to the ledger (the window's look opens it read-only), or None."""
+    try:
+        row = conn.execute("SELECT value FROM meta WHERE key = ?", (ASKS_FROM + language,)).fetchone()
+    except sqlite3.Error:
+        return None
+    return row[0] if row else None
+
+
+def ask_recorded_in(conn, language, item_id, asked_at):
+    """Does a job of the item hold this very ask (any state: an ask is used up once)? On any connection."""
+    try:
+        return conn.execute("SELECT 1 FROM jobs WHERE language = ? AND item_id = ? AND asked_at = ? LIMIT 1",
+                            (language, item_id, asked_at)).fetchone() is not None
+    except sqlite3.Error:
+        return False
 
 
 def _words(text):

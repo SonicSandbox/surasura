@@ -28,7 +28,11 @@ day's words first:
   and a setup Anki Miner lacks wait for the next start. **It exits when no job is left**, or when every job left waits
   for the next start. **It never opens Anki** (Q4-16: only the window's *Open Anki for me*).
 - **An item that left the top 20** before mining → dropped; once mining started → it finishes (E18). A job of another
-  store (the library set up again: a new `store_id`) is dropped before mining (P2.1 adversary #12).
+  store (the library set up again: a new `store_id`) is dropped before mining (P2.1 adversary #12). Never one carrying
+  an ask, nor a level job beyond the line on 3.0 (P4.1 C3, C4: `inbox.keeps`).
+- **Asks first** (P4.1 C3): a job carrying an ask (*Mine now*, *Mine this*, *Mine it too*) goes before the top 20,
+  the newest ask first; only a job an ask made (kind `asked`) makes again a word whose card you deleted (N15, IK S1);
+  one for a book or a text ends skipped with K67's line (IK S3).
 - **A missing tool** (🧭 Q4-2, RD-S10): Anki Miner absent → the job `skipped`, named; Backfill or Junban absent → that
   step skipped and named on the job (`skipped`), the loop goes on.
 - **An update staged** (E26): the run stops at the next step boundary (the command line refuses to start one) —
@@ -47,8 +51,8 @@ import os
 import time
 from types import SimpleNamespace
 
-from app.connect import fit_check
-from app.connect.ledger import BEFORE_MINING, IN_FLIGHT, PREPARE_KINDS, Ledger
+from app.connect import fit_check, inbox
+from app.connect.ledger import ASKED, BEFORE_MINING, IN_FLIGHT, PREPARE_KINDS, Ledger
 
 log = logging.getLogger("surasura-cli")
 
@@ -66,6 +70,9 @@ REVIEWING = "Waiting while you review in Anki."
 ANKI_CLOSED = "Waiting for Anki: it isn't open."
 NO_VIDEO = "No video: its video isn't on this computer (or isn't downloaded yet)."
 CHINESE = "Chinese cards come later."
+# K67 (IK S3): Anki Miner's API mines video only — an asked job for a book or a text ends skipped with this line
+TEXT_ONLY = ("Anki Miner makes cards from videos only: open Anki Miner's own window to mine this one by hand "
+             "(Mine text).")
 NO_LIST = "Waiting for a current list: Generate didn't finish."
 LIBRARY_BUSY = "Surasura's library is busy: tried again shortly."
 STOPPED_FOR_UPDATE = "Surasura is installing an update."
@@ -255,9 +262,16 @@ def _pause(seconds, sleep, cancel, staged):
 
 
 def _ordered(jobs, line):
-    """The open jobs, the top 20's order first (the next day's words first), then the rest oldest first."""
+    """The open jobs: those carrying an ask first, the newest ask first (*Mine now*, *Mine this*, *Mine it too*: P4.1
+    C3); then the top 20's order (the next day's words first); then the rest oldest first (a level raise's beyond the
+    line — the rest of Current, then Goal — in the order it queued them, C4)."""
+    from app.connect.ledger import stamp_key
     place = {item_id: n for n, item_id in enumerate(line)}
-    return sorted(jobs, key=lambda j: (place.get(j["item_id"], len(place)), j["id"]))
+    asked = sorted((j for j in jobs if j.get("asked_at")), key=lambda j: (stamp_key(j["asked_at"]), -j["id"]),
+                   reverse=True)
+    rest = sorted((j for j in jobs if not j.get("asked_at")), key=lambda j: (place.get(j["item_id"], len(place)),
+                                                                              j["id"]))
+    return asked + rest
 
 
 def _waiting_all(ledger, lang, parked, out, reason, look):
@@ -496,9 +510,15 @@ def _job(steps, ledger, lang, job, store_now, line, out):
             ledger.add_gap(lang, [item_id])
         out["dropped"].append(item_id)
         return
-    if droppable and item_id not in line:
+    if droppable and item_id not in line and not inbox.keeps(job):     # an ask, a level raise beyond the line (P4.1)
         ledger.set_state(jid, "dropped", reason="left the top 20")
         out["dropped"].append(item_id)
+        return
+    if droppable and job.get("kind") == ASKED and getattr(steps, "text_only", lambda _l, _j: False)(lang, job):
+        # K67 (IK S3, defensive: the window sends *Mine this* on a book to Anki Miner's own window, no ask): ended,
+        # the ask used up with it
+        ledger.set_state(jid, "skipped", reason=TEXT_ONLY, skipped={"mining": TEXT_ONLY})
+        out["skipped"].append(item_id)
         return
     record = not foreign
     if droppable:
@@ -982,6 +1002,20 @@ class Steps:
         with self._open(lang) as store:
             return library.store_id(store)
 
+    def text_only(self, lang, job):
+        """P4.1 (K67): is the job's item a book or a text (no video to mine from)? Its file's type as the window
+        reads it (`infer_source_type`); a busy store → False (the pick looks at it as for any job)."""
+        from app.path_utils import infer_source_type
+        try:
+            store = self._open(lang)
+        except (Wait, Needs):
+            return False
+        with store:
+            item = store.item(job["item_id"]) or {}
+        if not item:
+            return False
+        return infer_source_type(item.get("rel_path") or "", declared=item.get("source_type")) in ("epub", "text")
+
     def title(self, lang, job):
         try:
             store = self._open(lang)
@@ -1429,7 +1463,7 @@ class Steps:
         with _held():                       # the store's reads, one open; never around `verbs.pick` (Anki Miner)
             subtitle = self.subtitle(lang, job)
             with self._open(lang) as store:      # every word Connect ever made, or no pick at all
-                made = library.made_words_all(store)
+                made = library.made_words_for(store, job)   # P4.1: an asked job makes a deleted card again (N15)
             # P3.3: the re-plan's ranks (a move served), else the list's (None) — its look at the store's versions in
             # the same open; a re-plan when something moved is the engine's (sub-second, no tokenizer, no Anki)
             got = self._plan_now(lang)

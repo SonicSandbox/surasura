@@ -14,14 +14,13 @@ RUNBOOK-P2.5 *The status contract*), and the kick after a placement (row 3.1.9).
 - **A placement reaches Connect** (3.1.9): a Content Manager move into the top 20 doesn't start Connect by itself —
   the dashboard's session look kicks it only after a session's first sync — so when the stamp changed (the library
   file moved) and Connect isn't running, one read-only look at the placement log: an event Connect hasn't read →
-  `kick.kick` (which refuses by itself when off or an update is staged), once per newest event.
+  `kick.kick` (which refuses by itself when off or an update is staged), once per newest event. P4.1 row 4.1.6: the
+  rule lives in `window_link.Link` (an unread ask counts too), which the Qt window holds as well.
 
 GUI_Design_Guidelines: the dark palette, ttk where it styles (the badge is a plain tk Label: a filled or outlined
 accent box), a tooltip on both. The tooltip is handed in, so this module never imports app.main.
 """
 import os
-import pathlib
-import sqlite3
 import threading
 import tkinter as tk
 import webbrowser
@@ -33,25 +32,9 @@ EVERY_MS = 3000
 
 def unread(language, reader="connect"):
     """The newest placement-log event Connect's reader hasn't read, or None (no store, no reader yet, nothing new).
-    Read-only (`mode=ro`): never makes or writes the library file."""
-    from app.connect import status
-    db = status._store_path(language)
-    if not db or not os.path.exists(db):
-        return None
-    try:
-        conn = sqlite3.connect(pathlib.Path(db).as_uri() + "?mode=ro", uri=True, timeout=1.0, isolation_level=None)
-    except sqlite3.Error:
-        return None
-    try:
-        row = conn.execute("SELECT value FROM meta WHERE key = ?", (f"reader:{reader}",)).fetchone()
-        if row is None:
-            return None
-        newest = conn.execute("SELECT MAX(id) FROM placement_log WHERE id > ?", (int(row[0]),)).fetchone()[0]
-        return newest
-    except (sqlite3.Error, ValueError, TypeError):
-        return None
-    finally:
-        conn.close()
+    Read-only (`mode=ro`): never makes or writes the library file. P4.1: the look lives in `window_link`."""
+    from app.connect import window_link
+    return window_link.unread_event(language, reader)
 
 
 def detail(rec):
@@ -101,7 +84,7 @@ class StatusRow:
         self._stamp, self._read, self._kick, self._unread = stamp, read, kick, unread
         self._post_to = post
         self._last = None               # (language, stamp) last drawn
-        self._kicked = None             # (language, the newest event) a kick started Connect for
+        self._link = None               # P4.1: the kick's rule (`window_link.Link`), made at the first kick look
         self._kick_due = False          # the stamp moved and no kick has started yet
         self._shown = None              # what the last draw put on the row (`drawn`)
         self._looking = False
@@ -199,25 +182,15 @@ class StatusRow:
     def _maybe_kick(self, language, stamp):
         """3.1.9: an event Connect hasn't read, and Connect not running → one kick for it. The event counts as kicked
         only once a kick started Connect (a process); refused (an update staged, Connect starting), it is tried again
-        at the next look."""
+        at the next look. P4.1 row 4.1.6: the rule is `window_link.Link`'s (the Qt window holds one too); the row
+        hands it its language, its settings, its stand-ins and whether its stamp saw Connect running."""
         try:
-            if not (self.settings() or {}).get("connect_enabled"):
-                self._kick_due = False
-                return                  # off (switched off since the row was built): nothing
-            if len(stamp) > 2 and stamp[2]:
-                self._kick_due = False
-                return                  # running: it reads the log again before it exits
-            newest = (self._unread or unread)(language)
-            if newest is None or (language, newest) == self._kicked:
-                self._kick_due = False
-                return
-            if self._kick is not None:
-                started = self._kick(self.settings())
-            else:
-                from app.connect import kick
-                started = kick.kick(self.settings())
-            if started:
-                self._kicked, self._kick_due = (language, newest), False
+            if self._link is None:
+                from app.connect import window_link
+                self._link = window_link.Link(self.language, self.settings, kick=self._kick,
+                                              unread=self._unread)     # none handed in: events and asks
+            got = self._link.after_change(running=bool(len(stamp) > 2 and stamp[2]), language=language)
+            self._kick_due = got == "refused"
         except Exception as e:
             self._kick_due = False
             print(f"Connect wasn't started: {e}")

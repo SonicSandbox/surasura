@@ -93,6 +93,51 @@ def pairing_of(store, item_id):
         return None
 
 
+# --------------------------------------------------------------------------- #
+# P4.1 row 4.1.3: asked mining (C2 — *Mine now*, *Mine this*, *Mine it too* are all the store's `ask_mining`)
+# --------------------------------------------------------------------------- #
+def asks(store):
+    """{item_id: (mine_asked, mined_at)} of every item with an ask, read-only (`store.conn`, as `pairings`)."""
+    return asks_in(store.conn)
+
+
+def asks_in(conn):
+    """`asks` on any connection to the store (the window's look opens it read-only); a store before the column: {}."""
+    import sqlite3
+    try:
+        rows = conn.execute("SELECT id, mine_asked, mined_at FROM items WHERE mine_asked IS NOT NULL").fetchall()
+    except sqlite3.Error:
+        return {}
+    return {item_id: (asked_at, mined) for item_id, asked_at, mined in rows}
+
+
+def unanswered(found):
+    """[(item_id, asked_at)] of `asks` no receipt answers (the item's `mined_at` older than the ask, or none: C3 —
+    a receipt at or after the ask answers it), the newest ask first."""
+    from app.connect.ledger import stamp_key
+    out = [(i, a) for i, (a, mined) in found.items() if mined is None or stamp_key(mined) < stamp_key(a)]
+    return sorted(out, key=lambda p: (stamp_key(p[1]), p[0]), reverse=True)
+
+
+def asked(store):
+    """[(item_id, asked_at)]: the asks with no receipt newer than them, the newest first (RUNBOOK 4.1.3)."""
+    return unanswered(asks(store))
+
+
+def made_words_for(store, job):
+    """The words a job's pick counts as made (never sent): every word Connect ever made (G1.3-4) — but for a job an
+    ask made (*Mine this*, *Mine it too*, kind `asked`), only the words whose card the store still holds a note for:
+    a word whose card you deleted is made again only when you ask (N15; *Mine now* moves a job first and makes
+    nothing again, IK S1)."""
+    from app.connect.ledger import ASKED
+    if (job or {}).get("kind") != ASKED:
+        return made_words_all(store)
+    if not store.conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'made_words'").fetchone():
+        return set()
+    return {row[0] for row in store.conn.execute("SELECT DISTINCT word FROM made_words WHERE note_ids NOT IN "
+                                                 "('[]', '')")}
+
+
 def store_id(store):
     """The store's identity (a new one when the library is set up again): a job is kept with it (P2.1 adversary
     #12)."""

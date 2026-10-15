@@ -212,6 +212,13 @@ QLabel#confirmline {{ color: {c['ink-dim']}; {font('body')} font-weight: 400; }}
 QPushButton[kind="danger"] {{ background: {c['bad']}; color: {c['bad-type']}; border: 0; }}
 QPushButton[kind="danger"]:focus {{ border: 2px solid {c['ink']}; }}
 QListWidget#windowlist {{ background: {c['bg']}; border-radius: {theme.RADII['button']}px; padding: {px(4)}; }}
+QLabel#ankistate {{ color: {c['ink-dim']}; {font('body')} font-weight: 600; }}
+QLabel#ankistate[state="connected"] {{ color: {c['ok']}; }}
+QLabel#ankistate[state="closed"] {{ color: {c['bad']}; }}
+QLabel#ankiresolved {{ color: {c['accent']}; {font('footer')} font-weight: 600; }}
+QLabel#ankiskipped {{ color: {c['bad']}; {font('footer')} font-weight: 600; }}
+QLabel#ankitotal {{ color: {c['ink']}; {font('dialog-title')} }}
+QLabel#ankidelta {{ color: {c['ok']}; {font('body')} font-weight: 600; }}
 QPushButton[kind="primary"]:disabled {{ background: {c['raised']}; color: {c['ink-faint']}; }}
 """
     _state["generated_ms"] = (time.perf_counter() - t0) * 1000

@@ -259,6 +259,15 @@ OPENERS += [
 ]
 
 
+# row 3: the Anki window
+def _open_anki(shell):
+    from app.qt import anki_window
+    return anki_window.open_anki(shell)
+
+
+OPENERS += [Opener("anki", strings.ANKI_DOOR, strings.ANKI_DOOR_TIP, always, _open_anki)]
+
+
 # The optional modules the doors name, looked for once per process (a module can't appear mid-session), on a worker
 # after the window opened: name -> bool. A door that names a module stays hidden until its module was found.
 _FOUND = {}
@@ -303,6 +312,22 @@ def _moves_doors(keys):
     return any(k == "target_language" or k.startswith("enable_") for k in keys)
 
 
+def _look():
+    """The optional modules no one has looked for yet, looked for on a worker (once per process)."""
+    wanted = sorted({op.module for op in OPENERS if op.module} - set(_FOUND) - _LOOKING)
+    if wanted:
+        _LOOKING.update(wanted)
+        bridge.run_in_worker(_look_for, wanted, then=_found,
+                             failed=lambda info: applog.log("windows", f"looking for the modules: {info[1]}"))
+
+
+def follow_doors(widget):
+    """(Row 3.) A window with doors of its own: `widget.refresh()` is called when the modules were looked for — the
+    look started now if no one asked yet (the Settings tab's row may not exist)."""
+    _ROWS.add(widget)
+    _look()
+
+
 class _Doors(QWidget):
     """The Settings tab's row of doors. Asked again when the page shows, when a settings write can move a door, and
     when the modules were looked for; repaints only the buttons whose answer changed (S19)."""
@@ -333,11 +358,7 @@ class _Doors(QWidget):
         heard = getattr(self.shell, "bridge", None)
         if heard is not None:
             heard.settings_written.connect(self._written)
-        wanted = sorted({op.module for op in OPENERS if op.module} - set(_FOUND) - _LOOKING)
-        if wanted:
-            _LOOKING.update(wanted)
-            bridge.run_in_worker(_look_for, wanted, then=_found,
-                                 failed=lambda info: applog.log("windows", f"looking for the modules: {info[1]}"))
+        _look()
 
     def _written(self, keys):
         if _moves_doors(keys):

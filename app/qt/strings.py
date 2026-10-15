@@ -436,6 +436,123 @@ EXTRACT_PROCESSED_ONLY = ("Extracted {parts:,} parts into Processed › {name}: 
                           "nothing was added to {section}")
 EXTRACT_EMPTY = "No text was found in it: nothing was saved"
 
+# --- W3.4 row 3: the Anki window (app/qt/anki_window.py; its rules in app/anki_window.py) ---------------------------
+ANKI_NAME = "Anki known words"
+ANKI_DOOR = "Anki known words"
+ANKI_DOOR_TIP = "Read your known words from the cards you've studied in Anki: decks, fields, Sync now and Replace"
+ANKI_LANGUAGES = {"ja": "Japanese", "zh": "Chinese"}
+ANKI_HEADING_TIP = ("Sync adds the words from {language} cards you've studied to your known words: new cards are left "
+                    "alone, and nothing is removed\n• Replace rebuilds your known words from Anki instead (your list "
+                    "is backed up first)")
+ANKI_STATE_UNCHECKED = "● not checked yet"
+ANKI_STATE_CHECKING = "● checking…"
+ANKI_STATE_CONNECTED = "● connected"
+ANKI_STATE_CLOSED = "● not connected"
+ANKI_STATE_NAME = "Anki's state"
+ANKI_STATE_TIP = "Anki is running."
+ANKI_STATE_TIP_VERSION = "Anki is running (AnkiConnect {version})."
+ANKI_CLOSED_LINE = "Anki isn't running. Start it with your profile open, then press ⟳."
+ANKI_RECHECK = "⟳"
+ANKI_RECHECK_NAME = "Check again"
+ANKI_RECHECK_TIP = "Check again: whether Anki is running with AnkiConnect, and its list of decks"
+ANKI_BACKFILL = "Backfill cards…"
+ANKI_BACKFILL_TIP = "Fill fields on your cards from Surasura"
+ANKI_DECKS = "Decks"
+ANKI_DECKS_TIP = "Words are read from these decks (and their subdecks)\n• ✕ or Delete removes one"
+ANKI_NO_DECKS = "No decks chosen yet — add one below."
+ANKI_STUDIED = "{n:,} studied"
+ANKI_REMOVE = "✕"
+ANKI_REMOVE_NAME = "Remove {deck}"
+ANKI_REMOVE_TIP = "Remove {deck}: its cards are no longer read (words already known stay known)"
+ANKI_ADD = "Add a deck…"
+ANKI_ADD_NONE = "No other decks"
+ANKI_ADD_TIP = "Add another deck to read known words from"
+ANKI_FIELD = "Word field"
+ANKI_FIELD_AUTO = "Auto — first field"
+ANKI_FIELD_TIP = ("The field that holds the word. Auto uses each note type's first field — where Anki Miner and most "
+                  "decks keep it")
+ANKI_ALSO = "Also read"
+ANKI_ALSO_NONE = "—"
+ANKI_ALSO_TIP = ("Optionally read a second field too. Pick a word field first — a sentence field marks every word in "
+                 "the sentence as known")
+ANKI_RESOLVED = "{model} → {fields}"
+ANKI_RESOLVED_JOIN = "   ·   "
+ANKI_FIELDS_JOIN = " + "
+ANKI_SKIPPED = "{model} → (no such field — skipped)"
+ANKI_SUSPENDED = "Include suspended cards"
+ANKI_SUSPENDED_TIP = ("Count cards you've suspended as known. Off by default — suspended cards are often ones you "
+                      "struggled with")
+ANKI_AUTO = "Sync automatically when Anki is running"
+ANKI_AUTO_TIP = "When Anki is open, Surasura adds new known words on its own — at start-up and when you come back to it"
+ANKI_GENERATE = "Generate when Anki adds known words"
+ANKI_GENERATE_TIP = ("When a sync brings in words you now know, Generate runs on its own in the background, so your "
+                     "list is current. At most every 10 minutes, never beside another Generate or an import")
+ANKI_KNOWN = "known words"
+ANKI_KNOWN_TIP = "Every word Surasura counts as known, from all your sources"
+ANKI_TOTAL_NAME = "Known words"
+ANKI_DELTA = "+{n:,}"
+ANKI_BACKLOG = {1: "{n:,} new card in your backlog", 0: "{n:,} new cards in your backlog"}
+ANKI_BACKLOG_TIP = ("The new cards waiting to be learned in these decks, read with each sync. Junban (順) can put them in "
+                    "your journey's order")
+ANKI_AGO = {"now": "just now", "min": "{n} min ago", "h": "{n} h ago", "days": "{n} days ago", "day": "1 day ago"}
+ANKI_LAST = "Last synced {ago} · +{n:,} words"
+ANKI_PICKED = "Picked the decks you've studied cards in — remove any that aren't vocabulary, then press Sync now."
+ANKI_APKG = "Import an .apkg instead…"
+ANKI_APKG_TIP = "Offline: read an exported deck file instead. That imports every note in the file, studied or not"
+ANKI_RESTORE = "Restore previous…"
+ANKI_RESTORE_TIP = ("Put back the known-words list saved before your last Replace or Restore\n• Asks first, with both "
+                    "totals")
+ANKI_REPLACE = "Replace with Anki…"
+ANKI_REPLACE_TIP = "Rebuild your known words from Anki only. Your current list is backed up first\n• Asks first, with the numbers"
+ANKI_SYNC = "Sync now"
+ANKI_SYNC_TIP = "Add the words from newly studied cards\n• Shift-click: re-read every card instead of just the new ones"
+ANKI_SYNCING = "Syncing…"
+ANKI_REREADING = "Re-reading every card…"
+ANKI_READING = "Reading Anki…"
+ANKI_REPLACING = "Replacing…"
+ANKI_RESTORING = "Restoring…"
+ANKI_READING_BACKUP = "Reading your previous list…"
+ANKI_SCOPE_FAILED = "Couldn't read your decks from Anki: {error}"
+ANKI_UPDATE_WAITS = "An update is waiting to install, so Anki isn't read now: try again once it's installed or cancelled."
+ANKI_SYNCED = "Synced just now · +{added:,} words · {scanned:,} cards checked"
+ANKI_REPLACED = "Replaced: {total:,} known words now — {added:,} from Anki"
+ANKI_REPLACED_GRADUATED = " · {graduated:,} from past Graduates"
+ANKI_REPLACED_IGNORED = {1: " · 1 ignored word kept", 0: " · {ignored:,} ignored words kept"}
+ANKI_RESTORED = "Restored your previous known words: {total:,} known"
+ANKI_NOTHING_TO_RESTORE = "There is no previous list to restore."
+ANKI_JOB_SYNC = "Syncing known words from Anki"
+ANKI_JOB_DRY = "Reading Anki for Replace"
+ANKI_JOB_REPLACE = "Replacing your known words with Anki's"
+ANKI_JOB_RESTORE = "Restoring your previous known words"
+ANKI_REPLACE_TITLE = "Replace your known words with Anki's?"
+ANKI_REPLACE_AGAIN_TITLE = "Anki changed since you looked: replace with these numbers?"
+# The Replace confirmation's body, a line each; a "kept" line only when something is kept (IK-44, Sonic's W3.4-1).
+ANKI_REPLACE_HEAD = "Known words: {now:,} → {after:,}"
+ANKI_REPLACE_ANKI = "• {n:,} from Anki"
+ANKI_REPLACE_GRADUATED = {1: "• 1 word from past Graduates kept", 0: "• {n:,} words from past Graduates kept"}
+ANKI_REPLACE_IGNORED = {1: "• 1 ignored word kept", 0: "• {n:,} ignored words kept"}
+ANKI_REPLACE_TAIL = ("Known words from Migaku, Jiten or other imports that Anki doesn't have are removed. Your current "
+                     "list is backed up first; Restore previous puts it back.")
+ANKI_REPLACE_YES = "Replace"
+ANKI_REPLACE_YES_TIP = ("Go ahead. Your current list is backed up first, as a dated copy (KnownWord.<date>.json) in "
+                        "your known words' .trash folder")
+ANKI_WAITING_FOR = "Waiting its turn: {what} runs first"
+ANKI_WAITING = "Waiting to start: {reason}"
+ANKI_REPLACE_MOVED_JOB = "Nothing replaced: Anki changed"
+ANKI_RESTORE_MOVED_JOB = "Nothing restored: your known words changed"
+ANKI_REPLACE_MOVED_CLOSED = ("Nothing replaced: Anki changed after you said yes. Open Anki known words to see the new "
+                             "numbers.")
+ANKI_RESTORE_MOVED_CLOSED = "Nothing restored: your previous known words changed after you said yes."
+ANKI_KEEP_TIP = "Stop here. Your known words are not changed (Esc and Enter do the same)"
+ANKI_RESTORE_TITLE = "Put back your known words from {when}?"
+ANKI_RESTORE_TITLE_UNDATED = "Put back your previous known words?"
+ANKI_WHEN = "%d %b %Y, %H:%M"
+ANKI_RESTORE_BODY = "Known words: {now:,} → {then:,}\nYour current list is backed up first, so this can be undone too."
+ANKI_RESTORE_BODY_UNREAD = ("Known words now: {now:,}. The previous list couldn't be counted.\nYour current list is "
+                            "backed up first, so this can be undone too.")
+ANKI_RESTORE_YES = "Restore"
+ANKI_RESTORE_YES_TIP = "Put it back. Your current list is backed up first"
+ANKI_RESTORE_CHANGED = "Your known words changed since you asked; here are the numbers now."
 # --- W3.4 row 4: Koe and YouTube — their doors on the Settings tab's list (the windows' own words are each module's
 # qt_strings.py)
 DOOR_TRANSCRIPTS = "Video transcripts"

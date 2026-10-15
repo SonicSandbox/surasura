@@ -207,10 +207,22 @@ def test_a_refused_insert_sends_the_copies_to_the_trash_and_keeps_the_parts_in_p
     result = extract.extract(_text_file(tmp_path, "ja"), "旅の本", "ja", section="soon", value="300", spawn=False)
     assert result.code == extract.EXIT_PROCESSED_ONLY and result.note == "insert"
     left = os.path.join(data_dir, "LowPriority", "旅の本")
-    assert not os.path.exists(left) or not any(files for _w, _d, files in os.walk(left))
+    assert not os.path.exists(left)                        # its files trashed and the folders it made removed
     trashed = [n for n in os.listdir(os.path.join(data_dir, ".trash")) if n.startswith("旅の本_")]
     assert len(trashed) == result.parts                    # moved to the trash (its clock restarted), never deleted
     assert len(os.listdir(os.path.join(data_dir, "Processed", "旅の本"))) == result.parts
+
+
+def test_an_insert_that_adds_nothing_sends_the_copies_to_the_trash_too(tmp_path, monkeypatch):
+    """AD2-10: an insert that answers nothing added (every file a row already: a race) left the copies in the section's
+    folder outside the store, for the disk sync to take in by the folder rule."""
+    data_dir, _uf = _store_library("ja")
+    monkeypatch.setattr(ls.Store, "insert", lambda self, *a, **k: None)
+    result = extract.extract(_text_file(tmp_path, "ja"), "旅の本", "ja", section="soon", value="300", spawn=False)
+    assert result.code == extract.EXIT_PROCESSED_ONLY and result.note == "insert"
+    assert not os.path.exists(os.path.join(data_dir, "LowPriority", "旅の本"))
+    trashed = [n for n in os.listdir(os.path.join(data_dir, ".trash")) if n.startswith("旅の本_")]
+    assert len(trashed) == result.parts
 
 
 def test_an_empty_file_is_a_failure_and_saves_nothing(tmp_path):
@@ -384,3 +396,65 @@ def test_the_child_takes_a_dash_delimiter_and_a_dash_name_glued_to_their_options
                          "--value=---"])
     result = extract.parse_result(capsys.readouterr().out.strip().splitlines()[-1])
     assert code == extract.EXIT_DONE and result.parts == 3 and result.folder == "-draft"
+
+
+def test_the_child_starts_no_store_helper_when_its_environment_says_so(tmp_path, monkeypatch, capsys):
+    """A test that runs the real child sets NO_HELPER_ENV: the detached helper would outlive the test's folders (the
+    hazard conftest's in-process patch can't reach in a child). Without it the child asks for the helper."""
+    asked = []
+    monkeypatch.setattr(extract, "extract", lambda *a, spawn=True, **k: asked.append(spawn) or
+                        extract.Result(extract.EXIT_DONE, 1, "x", None, False, None))
+    argv = ["--language", "ja", "--file", _text_file(tmp_path, "ja"), "--name", "旅の本"]
+    monkeypatch.delenv(extract.NO_HELPER_ENV, raising=False)
+    extract.main(argv)
+    monkeypatch.setenv(extract.NO_HELPER_ENV, "1")
+    extract.main(argv)
+    assert asked == [True, False]
+
+
+def test_a_long_name_is_cut_so_a_grouped_splits_paths_stay_short():
+    """AD2-13: <section>/<name>/<name>_k/<name>_k_NN.txt holds the name three times — at 120 characters a grouped
+    split passed Windows' 260-character path on a system without long paths."""
+    assert extract.NAME_LIMIT <= 60
+    assert len(extract.clean_name("吾輩は猫である" * 20)) == extract.NAME_LIMIT
+
+
+# --- AD2-12: what the tests didn't reach -------------------------------------------------------------------------- #
+def test_an_epub_extracted_into_a_section_enters_the_library_as_a_book(tmp_path):
+    """The book marker travels with the copy into the section's folder, and the store's rows say epub (the report's
+    source badge) — not only the parts left in Processed."""
+    from app.path_utils import SOURCE_MARKER
+    data_dir, _uf = _store_library("ja")
+    src = _epub(tmp_path / "旅の記録.epub", ["<p>吾輩は猫である。名前はまだ無い。</p>" * 40,
+                                             "<h1>第二章</h1><p>どこで生れたかとんと見当がつかぬ。</p>" * 40])
+    result = extract.extract(src, "旅の記録", "ja", section="goal", value="300", spawn=False)
+    assert result.code == extract.EXIT_DONE and result.in_library
+    copy = os.path.join(data_dir, ls.FOLDER_OF_TIER["goal"], "旅の記録")
+    with open(os.path.join(copy, SOURCE_MARKER), encoding="utf-8") as f:
+        assert json.load(f)["source_type"] == "epub"
+    store = _open("ja")
+    try:
+        rows = [e for _i, e, _a in store.ordered("goal") if e["physical_path"].startswith("GoalContent/旅の記録/")]
+    finally:
+        store.close()
+    assert len(rows) == result.parts and {e.get("source_type") for e in rows} == {"epub"}
+
+
+# --- the round-2 mutant pass's survivors ------------------------------------------------------------------------ #
+def test_a_copy_that_cant_go_to_the_trash_never_stops_the_others_or_the_answer(tmp_path, monkeypatch):
+    """One copy held open by another program can't be moved: the rest still go to the trash, and the run still says
+    the parts stay in Processed (never an error from the clean-up)."""
+    data_dir, _uf = _store_library("ja")
+    monkeypatch.setattr(ls.Store, "insert", lambda self, *a, **k: None)
+    real, held = ls.trash_file, []
+
+    def trash(data, rel):
+        if not held:
+            held.append(rel)
+            raise PermissionError("held open by another program")
+        return real(data, rel)
+    monkeypatch.setattr(ls, "trash_file", trash)
+    result = extract.extract(_text_file(tmp_path, "ja"), "旅の本", "ja", section="soon", value="300", spawn=False)
+    assert result.code == extract.EXIT_PROCESSED_ONLY and result.note == "insert"
+    trashed = [n for n in os.listdir(os.path.join(data_dir, ".trash")) if n.startswith("旅の本_")]
+    assert len(trashed) == result.parts - 1 and held

@@ -43,7 +43,8 @@ GENERATE_EVERY = 600.0      # _maybe_auto_generate: at most every 10 minutes
 JUNBAN_EVERY = 300.0        # _maybe_junban_auto: like the sync
 START_DELAY = 2.0           # the Tk `root.after(2000, lambda: self._maybe_anki_sync(force=True))`
 CHECK_SETTLE = 0.6          # _schedule_journey_state: one journey check for a burst of triggers
-# The Tk window's child processes, and the 3.0 importers' (W3.4 row 2: an import was a child in Tk; IK-54).
+# The child processes the automatic Generate waits for: the Tk window's, and the 3.0 importers' (a known-words import,
+# Extract: the Tk tooltip's "never while … an import … is running")
 CHILD_KINDS = ("generate", "indexer", "sentence-corpus", "child", "known-import", "extract")
 
 IDLE, SYNCING, SYNCED, CLOSED, FAILED = "idle", "syncing", "synced", "anki-closed", "failed"
@@ -556,6 +557,14 @@ class Automation:
         self.worker.put(self.sync.maybe, True)
         self.worker.put(self.generate.maybe)
 
+    def known_changed(self):
+        """A known-words import ended having written (W3.4 row 2: the deck, Migaku, Jiten): the bar's count read again
+        and the journey asked again. Any thread; returns at once. Nothing once closed."""
+        if self.closed:
+            return
+        self.worker.put(self._read_known)
+        self.recheck()
+
     def recheck(self):
         """Is the journey still current? (`_schedule_journey_state`) — the Generate button's mark: one
         `GenerateController.check` 0.6 s after the last of a burst of triggers (focus, an indexer's end — the chores'
@@ -571,16 +580,6 @@ class Automation:
             def ring():
                 self.worker.put(self.check, timer)
             timer = self._check_timer = self.timer(CHECK_SETTLE, ring)
-
-    def anki_synced(self, result, language):
-        """The Anki window's own Sync, Replace or Restore ended (W3.4 row 3; the Tk window's
-        `_on_anki_sync_result(result, auto=False, language=…)`): what a sync's result asks for — the quiet Generate for
-        the language it read, or the indexer, and the journey asked again (`AutoSync.result`) — and the bar's count
-        read again. Any thread; returns at once. Nothing once closed."""
-        if self.closed:
-            return
-        self.worker.put(self.sync.result, result, language)
-        self.worker.put(self._read_known)
 
     def update_cancelled(self):
         """An update that held everything was cancelled: a Generate it held back asks again."""

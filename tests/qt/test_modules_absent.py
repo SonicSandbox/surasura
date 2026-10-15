@@ -58,16 +58,11 @@ result = {"doors": doors, "opened": opened, "tk": sorted(m for m in sys.modules 
           "bar": win.bar_line.full(), "junban_found": windows.module_present("junban")}
 for w in app.topLevelWidgets():
     w.close()
-services.shutdown(0.5)
+from PyQt6.QtCore import QCoreApplication, QEvent
+QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)   # the closed windows deleted while Python
+services.shutdown(0.5)                               # runs, as the event loop does (never in its teardown)
 from app.qt import bridge
 bridge.wait_for_workers(5000)                        # no pool worker still running Python as the process ends
-# Every window deleted now, in Qt's order, while the application lives: left to the interpreter's finalization, a
-# window outliving the QApplication crashed the exit now and then (0xC0000005) once rows 2-3's windows were here.
-from PyQt6.QtCore import QCoreApplication, QEvent
-for w in app.topLevelWidgets():
-    w.deleteLater()
-QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
-app.processEvents()
 sys.stdout.write("\\n" + json.dumps(result) + "\\n")
 """
 

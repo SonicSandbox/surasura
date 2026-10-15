@@ -31,6 +31,9 @@ def refuse_language(language):
     return None
 
 
+ERROR_BODY = 100                 # characters of an error reply kept for the status line
+
+
 def fetch_cards(api_key):
     """Jiten's cards for `api_key` -> (cards, None), or (None, the line that says why). Prints its progress; never
     the key."""
@@ -41,7 +44,8 @@ def fetch_cards(api_key):
         if response.status_code == 401:
             return None, "Error: Invalid API key. Please check your API key and try again."
         elif response.status_code != 200:
-            return None, f"Error: API returned status {response.status_code}\nResponse: {response.text}"
+            said = " ".join(str(response.text or "").split())[:ERROR_BODY]   # one short line: never a whole page
+            return None, f"Error: API returned status {response.status_code}" + (f" ({said})" if said else "")
         cards = response.json()
         if not isinstance(cards, list):
             return None, "Error: Unexpected API response format."
@@ -111,10 +115,11 @@ def words_from_cards(cards):
     return words
 
 
-def replace_known(words, language=LANGUAGE, output_json=None):
+def replace_known(words, language=LANGUAGE, output_json=None, expect=None):
     """Replace KnownWord.json with Jiten's `words`, holding its lock: a dated backup first (none made: nothing
     written), then the words of past Graduates and the words the user dismissed kept (`anki_sync.replaced_words`,
-    W3.4-1), written atomically. -> True when written. Prints each step."""
+    W3.4-1), written atomically. -> True when written. Prints each step. `expect`: the numbers the user confirmed
+    (`anki_sync.replace_numbers`); moved by now, nothing is written and `anki_sync.NumbersChanged` is raised."""
     refused_language = refuse_language(language)
     if refused_language:
         print(refused_language)
@@ -157,6 +162,8 @@ def replace_known(words, language=LANGUAGE, output_json=None):
         if unreadable:
             print(f"Error: {unreadable}")
             return False
+        from app.anki_sync import check_numbers
+        check_numbers(language, words, output_json, expect)
         # This import REPLACES the file. Keep a dated copy of what it replaces first
         # (User Files/<lang>/.trash/KnownWord.<YYYYmmdd-HHMMSS>.json); no copy, no overwrite.
         try:
@@ -254,7 +261,7 @@ def load_cards(path):
     return cards if isinstance(cards, list) else None
 
 
-def replace_from_cards(path, language='ja', output_json=None):
+def replace_from_cards(path, language='ja', output_json=None, expect=None):
     """The window's second step: replace KnownWord.json with the cards kept at `path` (no second fetch)."""
     refused_language = refuse_language(language)
     if refused_language:
@@ -264,8 +271,11 @@ def replace_from_cards(path, language='ja', output_json=None):
     if cards is None:
         print("Error: the fetched cards could not be read, so nothing was changed.")
         return False
+    from app.anki_sync import NumbersChanged
     try:
-        return replace_known(words_from_cards(cards), language, output_json)
+        return replace_known(words_from_cards(cards), language, output_json, expect)
+    except NumbersChanged:
+        raise
     except Exception as e:
         print(f"Error: {e}")
         return False
@@ -282,6 +292,9 @@ def main(argv=None):
                         help="Fetch only: keep the cards in this file, change no known words (the window's step 1)")
     parser.add_argument("--cards", default=None,
                         help="Replace from the cards --save-cards kept, with no fetch (the window's step 2)")
+    parser.add_argument("--expect", default=None,
+                        help="With --cards: the numbers the user confirmed (now,after,graduated,ignored); moved by "
+                             "then, nothing is replaced and the exit code is 4")
 
     args = parser.parse_args(argv)
     refused_language = refuse_language(args.language)
@@ -289,7 +302,13 @@ def main(argv=None):
         print(refused_language)
         sys.exit(1)
     if args.cards:
-        sys.exit(0 if replace_from_cards(args.cards, args.language, args.out_file) else 1)
+        from app.anki_sync import EXIT_CHANGED, NumbersChanged, parse_expect
+        try:
+            ok = replace_from_cards(args.cards, args.language, args.out_file, parse_expect(args.expect))
+        except NumbersChanged as e:
+            print(f"Error: {e}")
+            sys.exit(EXIT_CHANGED)
+        sys.exit(0 if ok else 1)
     api_key = args.api_key or os.environ.get(API_KEY_ENV)
     if not api_key:
         print("Error: No Jiten API key was given.")

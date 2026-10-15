@@ -20,9 +20,12 @@ from PyQt6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QComboBox, Q
 
 from app import anki_db_import, extract, importers_view
 from app.qt import bridge, confirm, strings, windows
-from app.services import tools
+from app.services import jobs as jobs_module, tools
 
 PREVIEW_LINES = 4
+
+
+WAITS_FOR = "waits for "                                 # the registry's reason for a job held back by another
 
 
 def _pick_file(parent, title, filters):
@@ -57,6 +60,14 @@ def _kept(plan):
                                                                      (strings.KEPT_IGNORED, plan.ignored)) if n)
 
 
+def _remove(kept):
+    """A destroyed Jiten window's fetched cards (`kept[0]`, its folder): removed — the app quitting with the question
+    open destroys the window with its main window, with no closeEvent."""
+    folder, kept[0] = kept[0], None
+    if folder:
+        shutil.rmtree(folder, ignore_errors=True)
+
+
 def _row(*widgets, stretch_at=None):
     box = QHBoxLayout()
     box.setContentsMargins(0, 0, 0, 0)
@@ -84,6 +95,11 @@ class ToolWindow(windows.SecondaryWindow):
         self._lines = []
         self._result = None
         self.question = None                              # the open confirmation, dropped by a language switch
+        self.child = None                                 # the child's job, followed while it waits (IK-58)
+        self._job_state = None
+        heard = getattr(shell, "bridge", None)
+        if heard is not None:
+            heard.jobs_changed.connect(self._follow)
         self.log_button = _button(self, strings.IMPORTERS_LOG, strings.IMPORTERS_LOG_TIP, self._open_log, "chip")
         self.log_button.setVisible(False)
         self.layout().addWidget(self.log_button, 0, Qt.AlignmentFlag.AlignRight)
@@ -91,9 +107,11 @@ class ToolWindow(windows.SecondaryWindow):
     def _open_log(self):
         windows.open_url(tools.log_path(self.kind))
 
-    def _run(self, label, argv, done, env=None, parse=None, after=None):
+    def _run(self, label, argv, done, env=None, parse=None, after=None, on_quit="wait"):
         """`argv` as a child job of this window's kind. `parse(line)` -> a result or None (its RESULT line);
-        `after(code)` runs on the tool's thread when it ends, the window open or not (a temporary file's cleanup)."""
+        `after(code)` runs on the tool's thread when it ends, the window open or not (a temporary file's cleanup).
+        `on_quit`: a writer finishes before the app quits (`wait`: never cut between its backup or copy and its
+        write); a child that only reads is cancelled."""
         self._lines, self._result = [], None
         lines, end = bridge.Relay(self), bridge.Relay(self)
 
@@ -122,8 +140,28 @@ class ToolWindow(windows.SecondaryWindow):
         self.begin_write()
         self.refresh()
         self.say(strings.IMPORTERS_BUSY)
-        return tools.run(self.shell.services.registry, self.kind, label, argv, env=env, on_line=lines.call,
-                         on_end=on_end)
+        self.child = tools.run(self.shell.services.registry, self.kind, label, argv, env=env, on_line=lines.call,
+                               on_end=on_end, on_quit=on_quit)
+        self._job_state = None
+        self._follow(self.shell.services.registry.snapshot())
+        return self.child
+
+    def _follow(self, views):
+        """The registry's newest snapshot: while the child's job waits its turn (a sync holds the known words), the
+        line says what runs first; once it runs, that it works. Repainted only when its state changed."""
+        job = self.child
+        if job is None or self.gone or not hasattr(job, "id"):
+            return
+        view = next((v for v in views if v.id == job.id), None)
+        if view is None or (view.state, view.reason) == self._job_state:
+            return
+        self._job_state = (view.state, view.reason)
+        if view.state == jobs_module.WAITING:
+            reason = view.reason or ""
+            self.say(strings.IMPORTERS_WAITING_FOR.format(what=reason[len(WAITS_FOR):]) if reason.startswith(WAITS_FOR)
+                     else strings.IMPORTERS_WAITING.format(reason=reason))
+        elif view.state == jobs_module.RUNNING:
+            self.say(strings.IMPORTERS_BUSY)
 
     def ask(self, title, body, yes, yes_tip, on_answer, **how):
         """`confirm.ask` in this window, kept as `question` until it is answered or dropped."""
@@ -143,6 +181,12 @@ class ToolWindow(windows.SecondaryWindow):
             if why:
                 return why
         return None
+
+    def _wrote(self):
+        """Known words written: the bar's count and the journey asked again (the automation, once it is made)."""
+        automation = getattr(self.shell.services, "automation", None)
+        if automation is not None:
+            automation.known_changed()
 
     def _failed_line(self, why):
         return strings.IMPORTERS_FAILED.format(why=why) if why else strings.IMPORTERS_FAILED_PLAIN
@@ -191,7 +235,7 @@ class DeckWindow(ToolWindow):
         self.field.clear()
         self.sample.setPlainText("")
         self.refresh()
-        if not importers_view.is_deck(path) or not os.path.isfile(path):
+        if not importers_view.is_deck(path):
             self._reading = None
             self.say(strings.APKG_NOT_A_DECK if path else "")
             return
@@ -239,7 +283,8 @@ class DeckWindow(ToolWindow):
         if not self.go.isEnabled():
             return
         field, deck, path, language = self.field.currentText(), self.deck, self._deck_path, self.language
-        self.ask(strings.APKG_ASK_TITLE, strings.APKG_ASK_BODY.format(field=field, notes=deck.notes),
+        self.ask(strings.APKG_ASK_TITLE.format(language=strings.LANGUAGE_NAMES.get(language, language)),
+                 strings.APKG_ASK_BODY.format(field=field, notes=deck.notes),
                  strings.APKG_ASK_YES, strings.APKG_ASK_YES_TIP,
                  on_answer=lambda yes: yes and self.start(path, field, language))
 
@@ -252,6 +297,8 @@ class DeckWindow(ToolWindow):
         key, values = importers_view.deck_outcome(code, self._result, self._why())
         line = {"done": lambda: strings.APKG_DONE.format(**values), "nothing": lambda: strings.APKG_NOTHING,
                 "failed": lambda: self._failed_line(values["why"])}[key]()
+        if key == "done":
+            self._wrote()
         self.say(line)
         self.end_write(line)
 
@@ -316,19 +363,31 @@ class MigakuWindow(ToolWindow):
         if not plan.words:
             self.say(strings.MIGAKU_EMPTY)
             return
-        saved = plan.saved.strftime("%Y-%m-%d %H:%M") if plan.saved else "?"
+        saved = plan.saved.strftime(strings.MIGAKU_SAVED) if plan.saved else strings.MIGAKU_SAVED_UNKNOWN
         body = strings.MIGAKU_ASK_BODY.format(file=os.path.basename(plan.path), time=saved, now=plan.now,
                                               after=plan.after, kept=_kept(plan))
-        self.ask(strings.MIGAKU_ASK_TITLE, body, strings.MIGAKU_ASK_YES, strings.MIGAKU_ASK_YES_TIP,
-                 default_no=True, danger=True, on_answer=lambda yes: yes and self.start(plan.path, language))
+        self.ask(strings.MIGAKU_ASK_TITLE.format(language=strings.LANGUAGE_NAMES.get(language, language)), body,
+                 strings.MIGAKU_ASK_YES, strings.MIGAKU_ASK_YES_TIP,
+                 default_no=True, danger=True,
+                 on_answer=lambda yes: yes and self.start(plan.path, language, importers_view.expect_arg(plan)))
 
-    def start(self, path, language):
-        """The replace as a child, in the language its numbers were read for."""
-        return self._run(strings.MIGAKU_NAME, ["migaku_converter.py", path, "--language", language], self._done)
+    def start(self, path, language, expect=None):
+        """The replace as a child, in the language its numbers were read for; `expect`: those numbers (moved by the
+        time it holds the lock, it writes nothing and the window asks again)."""
+        argv = ["migaku_converter.py", path, "--language", language] + (["--expect", expect] if expect else [])
+        return self._run(strings.MIGAKU_NAME, argv, lambda code: self._done(code, path, language))
 
-    def _done(self, code):
+    def _done(self, code, path=None, language=None):
         key, values = importers_view.replace_outcome(code, self._why())
+        if key == "changed":
+            self.say(strings.KNOWN_CHANGED)
+            self.end_write()
+            if path and language == self.language:
+                self.read(path)                           # the numbers as they are now, asked again
+            return
         line = strings.MIGAKU_DONE if key == "done" else self._failed_line(values["why"])
+        if key == "done":
+            self._wrote()
         self.say(line)
         self.end_write(line)
 
@@ -345,7 +404,8 @@ class JitenWindow(ToolWindow):
 
     def __init__(self, shell, language=None):
         super().__init__(shell, strings.JITEN_NAME, language)
-        self._folder = None
+        self._kept = [None]                               # the fetched cards' folder (`_folder`), in a box the
+        self.destroyed.connect(lambda *_a, kept=self._kept: _remove(kept))   # window's end empties, close or not
         self.key = QLineEdit(self)
         self.key.setEchoMode(QLineEdit.EchoMode.Password)
         self.key.setPlaceholderText(strings.JITEN_KEY_HINT)
@@ -369,6 +429,14 @@ class JitenWindow(ToolWindow):
         self.body.addLayout(line)
         self.refresh()
         self.language_changed(self.language)
+
+    @property
+    def _folder(self):
+        return self._kept[0]
+
+    @_folder.setter
+    def _folder(self, folder):
+        self._kept[0] = folder
 
     def _show(self, on):
         self.key.setEchoMode(QLineEdit.EchoMode.Normal if on else QLineEdit.EchoMode.Password)
@@ -396,13 +464,21 @@ class JitenWindow(ToolWindow):
         self._drop_folder()
         self._folder = tempfile.mkdtemp(prefix="surasura-jiten-")
         cards = os.path.join(self._folder, "cards.json")
+        folder = self._folder
+
+        def after(code):
+            # On the tool's thread: the cards are kept only for a window still open to ask about them
+            if code != 0 or self.gone:
+                shutil.rmtree(folder, ignore_errors=True)
         job = self._run(strings.JITEN_NAME, ["jiten_converter.py", "--language", "ja", "--save-cards", cards],
-                        lambda code: self._fetched(code, cards), env={jiten_converter.API_KEY_ENV: key})
+                        lambda code: self._fetched(code, cards), env={jiten_converter.API_KEY_ENV: key}, after=after,
+                        on_quit="cancel")
         self.say(strings.JITEN_FETCHING)
         return job
 
     def _fetched(self, code, cards):
         if code != 0:
+            self._folder = None                           # removed by the fetch's `after`
             line = self._failed_line(self._why())
             self.say(line)
             self.end_write(line)
@@ -430,33 +506,52 @@ class JitenWindow(ToolWindow):
 
         def answered(yes):
             if yes:
-                self.replace(plan.path)
+                self.replace(plan.path, importers_view.expect_arg(plan))
             else:
                 self._drop_folder()
         self.ask(strings.JITEN_ASK_TITLE, body, strings.JITEN_ASK_YES, strings.JITEN_ASK_YES_TIP,
                  default_no=True, danger=True, on_answer=answered)
 
-    def replace(self, cards):
-        """Step 2: the replace from the cards step 1 kept (no key, no fetch)."""
+    def replace(self, cards, expect=None):
+        """Step 2: the replace from the cards step 1 kept (no key, no fetch); `expect`: the numbers confirmed."""
+        from app import anki_sync
         folder = self._folder
         self._folder = None                               # the child's now: removed when it ends
-        return self._run(strings.JITEN_NAME, ["jiten_converter.py", "--language", "ja", "--cards", cards],
-                         self._done, after=lambda _code: shutil.rmtree(folder, ignore_errors=True) if folder else None)
 
-    def _done(self, code):
+        def after(code):
+            # On the tool's thread: the numbers moved — the cards stay for the window to ask again, if it is open
+            if code == anki_sync.EXIT_CHANGED and not self.gone:
+                self._folder = folder
+            elif folder:
+                shutil.rmtree(folder, ignore_errors=True)
+        argv = ["jiten_converter.py", "--language", "ja", "--cards", cards] + (["--expect", expect] if expect else [])
+        return self._run(strings.JITEN_NAME, argv, lambda code: self._done(code, cards, folder), after=after)
+
+    def _done(self, code, cards=None, folder=None):
         key, values = importers_view.replace_outcome(code, self._why())
+        if key == "changed":
+            self.say(strings.KNOWN_CHANGED)
+            self.end_write()
+            self._folder = folder or self._folder         # kept by `after`, whichever of the two comes first
+            if cards and self._folder:
+                self._fetched(0, cards)                   # the same cards, the numbers as they are now
+            return
         line = strings.JITEN_DONE if key == "done" else self._failed_line(values["why"])
+        if key == "done":
+            self._wrote()
         self.say(line)
         self.end_write(line)
 
-    def _drop_folder(self):
-        if self._folder and not self.busy():
+    def _drop_folder(self, closing=False):
+        """The fetched cards' folder removed — never under a fetch still writing it, unless the window is closing (the
+        fetch's `after` removes what it writes then)."""
+        if self._folder and (closing or not self.busy()):
             shutil.rmtree(self._folder, ignore_errors=True)
             self._folder = None
 
     def closeEvent(self, event):
         self.key.clear()
-        self._drop_folder()
+        self._drop_folder(closing=True)
         super().closeEvent(event)
 
 
@@ -572,7 +667,7 @@ class ExtractWindow(ToolWindow):
         self.field.clear()
         self.sample.setPlainText("")
         self._reading = None
-        if importers_view.is_deck(path) and os.path.isfile(path):
+        if importers_view.is_deck(path):
             self._reading = path
             self.say(strings.APKG_READING)
             bridge.run_in_worker(anki_db_import.read_deck, path, 10,
@@ -589,8 +684,8 @@ class ExtractWindow(ToolWindow):
         self.deck, self._deck_path = deck, path
         self.field.blockSignals(True)
         self.field.addItems(deck.fields)
-        default = anki_db_import.pick_field(deck.fields, ("Sentence", "Expression"))
-        if default in ("Sentence", "Expression"):          # the Tk window chose these two only
+        default = importers_view.extract_field(deck.fields)
+        if default:
             self.field.setCurrentText(default)
         else:
             self.field.setCurrentIndex(-1)
@@ -612,11 +707,9 @@ class ExtractWindow(ToolWindow):
         self.refresh()
 
     def _method_changed(self, by_length):
-        value = self.value.text()
-        if by_length and not value.isdigit():
-            self.value.setText(self._length)
-        elif not by_length and (not value or value.isdigit()):
-            self.value.setText(extract.DEFAULT_DELIMITER)
+        value = importers_view.split_value(by_length, self.value.text(), self._length)
+        if value is not None:
+            self.value.setText(value)
 
     def refresh(self):
         path = self.path.text().strip()

@@ -50,9 +50,9 @@ class Runs:
     def __init__(self):
         self.calls = []
 
-    def __call__(self, registry, kind, label, argv, env=None, on_line=None, on_end=None, **_kw):
+    def __call__(self, registry, kind, label, argv, env=None, on_line=None, on_end=None, on_quit="cancel", **_kw):
         call = SimpleNamespace(kind=kind, label=label, argv=list(argv), env=dict(env or {}), on_line=on_line,
-                               on_end=on_end)
+                               on_end=on_end, on_quit=on_quit)
         self.calls.append(call)
         return call
 
@@ -120,6 +120,14 @@ def test_the_deck_window_reads_the_deck_on_a_worker_and_shows_its_fields_and_fir
     assert w.go.isEnabled()
     labels = [l.text() for l in w.findChildren(type(w.status))]
     assert strings.APKG_EVERY_NOTE in labels                  # the tested sentence, kept (inv §2.1 #8)
+
+
+def test_a_deck_that_isnt_there_is_said_by_the_read_on_a_worker(main, runs, tmp_path):
+    """IK-59: the window's thread never looks at the disk; the worker's read says the deck can't be read."""
+    w = importers.open_deck(main)
+    w.choose(str(tmp_path / "無い.apkg"))
+    assert wait_until(lambda: w.status.text().startswith(strings.IMPORTERS_READ_FAILED.split("{")[0]))
+    assert w.deck is None and not w.go.isEnabled()
 
 
 def test_the_deck_import_runs_only_after_a_yes_that_names_what_it_adds(main, runs):
@@ -208,7 +216,8 @@ def test_a_migaku_file_is_read_first_then_one_confirmation_with_both_numbers_can
     assert wait_until(lambda: _card(w) is not None)
     _card(w).yes.click()
     [call] = runs.calls
-    assert call.kind == "known-import" and call.argv == ["migaku_converter.py", MIGAKU, "--language", "ja"]
+    assert call.kind == "known-import" and call.argv == ["migaku_converter.py", MIGAKU, "--language", "ja",
+                                                         "--expect", importers_view.expect_arg(plan)]
     runs.end(0, "Found 10 words", "Conversion complete!")
     assert w.status.text() == strings.MIGAKU_DONE
 
@@ -316,6 +325,48 @@ def test_a_language_switch_drops_jitens_question_and_its_fetched_cards(main, run
     assert card.answer is False and len(runs.calls) == 1 and not os.path.exists(folder)
 
 
+def test_a_replace_whose_numbers_moved_reads_again_and_asks_again(main, runs):
+    """IK-56: the child found the known words changed since the yes (a sync appended words) and wrote nothing; the
+    window says so, reads again and asks with the numbers as they are now."""
+    _known(CURRENT)
+    from app import anki_sync
+    w = importers.open_migaku(main)
+    w.read(MIGAKU)
+    assert wait_until(lambda: _card(w) is not None)
+    _card(w).yes.click()
+    runs.end(anki_sync.EXIT_CHANGED, "Error: Your known words changed since you confirmed, so nothing was replaced.")
+    assert wait_until(lambda: _card(w) is not None)
+    assert len(runs.calls) == 1 and strings.KNOWN_CHANGED == w.status.text()
+    j = importers.open_jiten(main)
+    j.key.setText(SECRET)
+    j.go.click()
+    folder = os.path.dirname(runs.calls[-1].argv[-1])
+    _fetched(runs, [{"wordText": "猫", "state": 5}])
+    assert wait_until(lambda: _card(j) is not None)
+    _card(j).yes.click()
+    runs.end(anki_sync.EXIT_CHANGED, "Error: Your known words changed since you confirmed, so nothing was replaced.")
+    assert wait_until(lambda: _card(j) is not None)             # asked again from the same fetched cards
+    assert os.path.exists(folder) and len(runs.calls) == 3
+    _card(j).no.click()
+    assert not os.path.exists(folder)
+
+
+def test_each_question_names_its_language(main, runs):
+    """IK-53: a question never says which list it writes; now its title names it (日本語 / 中文), and the deck's says
+    that words still being learned become known."""
+    _known(CURRENT)
+    w = importers.open_migaku(main)
+    w.read(MIGAKU)
+    assert wait_until(lambda: _card(w) is not None)
+    assert strings.LANGUAGE_NAMES["ja"] in _card(w).accessibleName()
+    _card(w).no.click()
+    d = importers.open_deck(main)
+    d.choose(DECK)
+    assert wait_until(lambda: d.deck is not None)
+    d.go.click()
+    assert strings.LANGUAGE_NAMES["ja"] in _card(d).accessibleName() and "still learning" in _card(d).body.text()
+
+
 def test_choose_a_file_asks_too(main, runs, monkeypatch):
     """The Tk window's *Select File Manually…* replaced the known words with no question at all (inv §3.9)."""
     _known(CURRENT)
@@ -388,7 +439,8 @@ def test_jiten_fetches_first_with_the_key_in_the_environment_only_then_asks_with
     assert card.default is card.no and len(runs.calls) == 1   # nothing replaced before the yes
     card.yes.click()
     replace = runs.calls[-1]
-    assert replace.argv == ["jiten_converter.py", "--language", "ja", "--cards", os.path.join(folder, "cards.json")]
+    assert replace.argv == ["jiten_converter.py", "--language", "ja", "--cards", os.path.join(folder, "cards.json"),
+                            "--expect", "2,2,1,1"]
     assert replace.env == {}                                  # step 2 needs no key
     runs.end(0, "Conversion complete!")
     assert w.status.text() == strings.JITEN_DONE
@@ -433,6 +485,104 @@ def test_the_key_is_never_saved_and_never_in_the_log(main, monkeypatch, tmp_path
     assert jc.API_KEY_ENV not in os.environ
     w.close()
     assert w.key.text() == ""
+
+
+@pytest.mark.parametrize("code", [0, 1])
+def test_jitens_fetched_cards_never_outlive_a_window_closed_during_the_fetch(main, runs, code):
+    """AD2-8: the window closed while the child fetched — its folder (the user's whole Jiten vocabulary) is removed
+    when the child ends, whatever its end."""
+    j = importers.open_jiten(main)
+    j.key.setText(SECRET)
+    j.go.click()
+    cards = runs.calls[-1].argv[-1]
+    j.close()
+    os.makedirs(os.path.dirname(cards), exist_ok=True)       # the child writes its cards after the close
+    _fetched(runs, [{"wordText": "猫", "state": 5}]) if code == 0 else runs.end(1, "Error: Invalid API key.")
+    assert not os.path.exists(os.path.dirname(cards))
+
+
+def test_jitens_fetched_cards_go_with_a_window_destroyed_without_a_close(main, runs):
+    """The app quitting with the question open destroys the window with its main window (no closeEvent): the cards
+    (the user's whole Jiten vocabulary) go with it, never left in the temp folder."""
+    from PyQt6.QtCore import QCoreApplication, QEvent
+    j = importers.open_jiten(main)
+    j.key.setText(SECRET)
+    j.go.click()
+    folder = os.path.dirname(runs.calls[-1].argv[-1])
+    _fetched(runs, [{"wordText": "猫", "state": 5}])
+    assert wait_until(lambda: _card(j) is not None) and os.path.exists(folder)
+    j.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
+    QApplication.processEvents()
+    assert not os.path.exists(folder)
+
+
+def test_a_failed_fetch_removes_its_folder(main, runs):
+    j = importers.open_jiten(main)
+    j.key.setText(SECRET)
+    j.go.click()
+    folder = os.path.dirname(runs.calls[-1].argv[-1])
+    runs.end(1, "Error: Invalid API key.")
+    assert not os.path.exists(folder)
+
+
+def test_every_writing_child_is_waited_for_at_quit_and_the_fetch_is_not(main, runs, tmp_path):
+    """AD2-9: quitting cut a child wherever it was — Extract between its copy and the store's insert, a replace after
+    its backup. The writers now finish (the window waits, as for an Anki write); Jiten's fetch only reads: cancelled."""
+    _known(CURRENT)
+    importers.open_deck(main).start(DECK, "Sentence", "ja")
+    importers.open_migaku(main).start(MIGAKU, "ja")
+    j = importers.open_jiten(main)
+    j.key.setText(SECRET)
+    j.fetch()
+    fetch = runs.calls[-1]
+    j._folder = os.path.dirname(fetch.argv[-1])
+    j.replace(fetch.argv[-1])
+    e = importers.open_extract(main)
+    e.path.setText(_text(tmp_path))
+    e.start("旅")
+    assert [c.on_quit for c in runs.calls] == ["wait", "wait", "cancel", "wait", "wait"]
+    for call in runs.calls:                                   # every child ends: nothing left in the temp folder
+        call.on_end(1)
+    QApplication.processEvents()
+    assert not os.path.exists(j._folder or os.path.dirname(fetch.argv[-1]))
+
+
+def test_an_import_that_wrote_tells_the_known_words_count_and_one_that_failed_does_not(main, runs, monkeypatch):
+    """IK-54: after a replace the bar's known-words count went stale until the next sync."""
+    told = []
+    monkeypatch.setattr(main.services, "automation", SimpleNamespace(known_changed=lambda: told.append(1)))
+    _known(CURRENT)
+    m = importers.open_migaku(main)
+    m.start(MIGAKU, "ja")
+    runs.end(1, "Error: the database could not be read.")
+    assert told == []
+    m.start(MIGAKU, "ja")
+    runs.end(0, "Conversion complete!")
+    d = importers.open_deck(main)
+    d.start(DECK, "Sentence", "ja")
+    runs.end(0, anki_db_import.result_line(anki_db_import.Merge(0, 0, 52, None, None, False)))   # nothing new
+    d.start(DECK, "Sentence", "ja")
+    runs.end(0, anki_db_import.result_line(anki_db_import.Merge(12, 3, 52, None, None, False)))
+    j = importers.open_jiten(main)
+    j.replace(os.path.join(str(get_user_files_path("ja")), "cards.json"))
+    runs.end(0, "Conversion complete!")
+    assert told == [1, 1, 1]
+
+
+def test_an_import_waiting_its_turn_says_so_until_it_runs(main, tmp_path):
+    """IK-58: a known-words import waits behind a sync (one known-words writer at a time); its line said "Working…"
+    while it only waited. Now it says what runs first, then that it works once it runs (the real registry)."""
+    registry = main.services.registry
+    sync = registry.submit("anki-sync", "Updating known words from Anki", start=lambda job: None)
+    w = importers.open_migaku(main)
+    job = w.start(str(tmp_path / "無い.db"), "ja")
+    assert wait_until(lambda: w.status.text() == strings.IMPORTERS_WAITING_FOR.format(
+        what="Updating known words from Anki"))
+    sync.finish(ok=True)
+    assert wait_until(lambda: w.status.text() != strings.IMPORTERS_WAITING_FOR.format(
+        what="Updating known words from Anki"))
+    assert job.wait(60) and wait_until(lambda: not w.busy(), timeout=30)
 
 
 def test_jiten_is_off_for_chinese_and_follows_the_main_windows_language(main, runs):
@@ -594,8 +744,27 @@ def test_extract_glues_every_value_to_its_option(main, runs, tmp_path):
     assert "--value=---" in argv and "--name=-draft" in argv and f"--file={src}" in argv
 
 
-def test_the_real_extract_child_adds_its_parts_to_the_library(main, tmp_path):
+def test_a_chinese_extract_runs_in_chinese_with_the_section_chosen(main, runs, tmp_path):
+    """AD2-12: the windows ran on Japanese data only; a Chinese file through the Chinese window names zh to the child."""
+    main.services.settings.set({"target_language": "zh"})
+    w = importers.open_extract(main)
+    assert wait_until(lambda: w.language == "zh")
+    src = tmp_path / "夜市.txt"
+    with open(os.path.join(RES, "zh", "chinese_text_1.txt"), encoding="utf-8") as f:
+        src.write_text(f.read() * 3, encoding="utf-8")
+    w.path.setText(str(src))
+    w.choose(str(src))
+    assert w.name.text() == "夜市"
+    w.section.setCurrentIndex(2)
+    w.go.click()
+    assert wait_until(lambda: runs.calls)
+    argv = runs.calls[0].argv
+    assert argv[1:3] == ["--language", "zh"] and "--name=夜市" in argv and argv[argv.index("--section") + 1] == "goal"
+
+
+def test_the_real_extract_child_adds_its_parts_to_the_library(main, tmp_path, monkeypatch):
     from tests.test_library_store_support import library, write_manifest
+    monkeypatch.setenv(extract.NO_HELPER_ENV, "1")      # the child's detached helper would outlive this test's folders
     from app import library_store as ls
     data_dir, user_files_dir, doc = library("ja", shows=1, episodes=2, loose=0)
     write_manifest(user_files_dir, doc)
@@ -665,3 +834,13 @@ def test_a_deck_read_that_lands_after_another_choice_is_dropped(main, runs, tmp_
     w.choose(str(text))                                         # chosen before the deck's read came back
     QTest.qWait(1500)
     assert w.deck is None and not w.go.isEnabled() and w.status.text() == strings.APKG_NOT_A_DECK
+
+
+# --- the round-2 mutant pass's survivors ------------------------------------------------------------------------ #
+def test_migakus_replace_runs_in_the_language_it_was_asked_in(main, runs):
+    """`start` takes the language the question was read for, never the window's current one."""
+    m = importers.open_migaku(main)
+    main.services.settings.set({"target_language": "zh"})
+    assert wait_until(lambda: m.language == "zh")
+    m.start(MIGAKU, "ja", "2,3,0,0")
+    assert runs.calls[-1].argv[2:4] == ["--language", "ja"]

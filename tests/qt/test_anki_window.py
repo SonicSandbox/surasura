@@ -44,6 +44,9 @@ def main(qapp, ja_resources_dir):
     yield win
     win.close()
     services.shutdown(0.5)
+    # Every settings write lands while the test root is still set: a writer finishing after the test would take the
+    # settings lock in the REAL local data folder (it made %LOCALAPPDATA%\Houseki\Surasura\<key> once).
+    assert services.settings.flush(10)
 
 
 @pytest.fixture
@@ -633,8 +636,8 @@ def test_replace_and_restore_writes_are_waited_for_at_quit_and_the_dry_run_and_s
     kinds = []
     real_submit = QAW.AW.submit
 
-    def spy(registry, label, work, on_end, automation=None, language=None, on_quit="detach"):
-        job = real_submit(registry, label, work, on_end, automation, language, on_quit=on_quit)
+    def spy(registry, label, work, on_end, automation=None, language=None, on_quit="detach", **kw):
+        job = real_submit(registry, label, work, on_end, automation, language, on_quit=on_quit, **kw)
         kinds.append((label, job.on_quit))
         return job
     monkeypatch.setattr(QAW.AW, "submit", spy)
@@ -800,5 +803,46 @@ def test_restore_asks_again_when_a_sync_changed_the_total_meanwhile(main, anki, 
     assert wait_until(lambda: w.question is not first and w.question.isVisible(), 10)
     assert w.status.text() == strings.ANKI_RESTORE_CHANGED and _bytes(_file()) == meanwhile
     assert w.question.body.text().startswith("Known words: 4 →")
+    w.question.no.click()
+    assert wait_until(lambda: not w.busy())
+
+
+def test_include_suspended_saves_its_own_key_alone(main, anki, monkeypatch):
+    """IK-47 (S19): the switch writes its key; the decks and fields, unchanged, are not written again."""
+    _choose(main)
+    w = _open(main)
+    writes = []
+    real = main.services.settings.set
+    monkeypatch.setattr(main.services.settings, "set", lambda *a, **k: (writes.append((a, sorted(k))), real(*a, **k))[1])
+    w.chk_suspended.click()
+    assert writes == [(({"anki_sync_include_suspended": True},), [])]
+
+
+def test_while_its_job_waits_its_turn_the_line_says_so(main, anki):
+    """IK-58: the window's job waits behind another known-words job (an import, the automatic sync): the line says
+    what it waits for, then that it syncs once it runs."""
+    _choose(main)
+    w = _open(main)
+    other = main.services.registry.submit("known-import", "Importing known words", lambda job: None)
+    w.btn_sync.click()
+    assert wait_until(lambda: w.status.text() == strings.ANKI_WAITING_FOR.format(what="Importing known words"))
+    other.finish(ok=True)
+    _idle(main, w)
+    assert w.status.text() == strings.ANKI_SYNCED.format(added=3, scanned=3)
+
+
+def test_a_replace_whose_numbers_moved_ends_its_job_saying_nothing_was_replaced(main, anki, ja_resources_dir):
+    """IK-46 (sharpened): the bar's list of jobs never shows the stopped write as a plain "done"."""
+    _migaku(ja_resources_dir)
+    _choose(main)
+    w = _open(main)
+    w.btn_replace.click()
+    assert wait_until(lambda: getattr(w, "question", None) is not None and w.question.isVisible())
+    anki.add(WORDS[3], deck="TheBank")
+    w.question.yes.click()
+    assert wait_until(lambda: any(v.label == strings.ANKI_JOB_REPLACE and v.state == "done"
+                                  for v in main.services.registry.snapshot()), 10)
+    view = next(v for v in main.services.registry.snapshot() if v.label == strings.ANKI_JOB_REPLACE)
+    assert view.message == strings.ANKI_REPLACE_MOVED_JOB
     w.question.no.click()
     assert wait_until(lambda: not w.busy())

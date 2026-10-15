@@ -480,7 +480,7 @@ ANKI_AUTO = "Sync automatically when Anki is running"
 ANKI_AUTO_TIP = "When Anki is open, Surasura adds new known words on its own — at start-up and when you come back to it"
 ANKI_GENERATE = "Generate when Anki adds known words"
 ANKI_GENERATE_TIP = ("When a sync brings in words you now know, Generate runs on its own in the background, so your "
-                     "list is current. At most every 10 minutes, never beside another Generate")
+                     "list is current. At most every 10 minutes, never beside another Generate or an import")
 ANKI_KNOWN = "known words"
 ANKI_KNOWN_TIP = "Every word Surasura counts as known, from all your sources"
 ANKI_TOTAL_NAME = "Known words"
@@ -530,6 +530,10 @@ ANKI_REPLACE_TAIL = ("Known words from Migaku, Jiten or other imports that Anki 
 ANKI_REPLACE_YES = "Replace"
 ANKI_REPLACE_YES_TIP = ("Go ahead. Your current list is backed up first, as a dated copy (KnownWord.<date>.json) in "
                         "your known words' .trash folder")
+ANKI_WAITING_FOR = "Waiting its turn: {what} runs first"
+ANKI_WAITING = "Waiting to start: {reason}"
+ANKI_REPLACE_MOVED_JOB = "Nothing replaced: Anki changed"
+ANKI_RESTORE_MOVED_JOB = "Nothing restored: your known words changed"
 ANKI_REPLACE_MOVED_CLOSED = ("Nothing replaced: Anki changed after you said yes. Open Anki known words to see the new "
                              "numbers.")
 ANKI_RESTORE_MOVED_CLOSED = "Nothing restored: your previous known words changed after you said yes."

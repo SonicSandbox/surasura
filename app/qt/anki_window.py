@@ -32,8 +32,10 @@ from PyQt6.QtWidgets import (QCheckBox, QComboBox, QHBoxLayout, QLabel, QListWid
 from app import anki_connect, anki_sync, theme
 from app import anki_window as AW
 from app.qt import applog, bridge, confirm, strings, style, windows
+from app.services import jobs as jobs_module
 
 NAME = "anki"
+WAITS_FOR = "waits for "                                 # the registry's reason for a job held back by another
 FLASH_MS = 5000                         # the "+N" beside the total, after a sync that added words
 DOORS = (("btn_backfill", "backfill"), ("btn_apkg", "apkg_known"))      # row 5's opener, row 2's (IK-41)
 SWITCHES = (("chk_auto", "anki_sync_auto"), ("chk_generate", "anki_auto_generate"))
@@ -73,6 +75,9 @@ class AnkiWindow(windows.SecondaryWindow):
         self._known = None
         self._automation_seq = None
         self._deck_key = self._add_key = self._field_key = None       # what each part shows now (S19)
+        self.job = None                   # the window's job under way, and the line it shows while it runs
+        self._job_line = None
+        self._job_state = None
         self.deck_paints = self.add_paints = self.field_paints = 0
         self._load_choices()
         self._build()
@@ -88,6 +93,7 @@ class AnkiWindow(windows.SecondaryWindow):
         if b is not None:
             b.settings_written.connect(self._settings_heard)
             b.automation_changed.connect(self._automation_state)
+            b.jobs_changed.connect(self._follow)
         windows.follow_doors(self)                        # told when the modules were looked for (a door names one)
         if not os.environ.get("SURASURA_NO_UI_TIMERS"):     # never reach Anki from a test's window (testing.md §5.4)
             QTimer.singleShot(0, self.alive(self.refresh_connection))
@@ -100,6 +106,7 @@ class AnkiWindow(windows.SecondaryWindow):
         self.decks, chosen, self.suspended = AW.saved(self._settings(), self.language)
         self.first = chosen[0] if chosen else None
         self.second = chosen[1] if len(chosen) > 1 else None
+        self._saved_choices = (tuple(self.decks), tuple(self.chosen()))       # as the file holds them
 
     def chosen(self):
         return AW.fields(self.first, self.second)
@@ -107,6 +114,10 @@ class AnkiWindow(windows.SecondaryWindow):
     def _save_choices(self):
         """This language's decks and fields onto the file as it is (the settings service's worker writes it)."""
         self._unsaved_pick = False
+        now = (tuple(self.decks), tuple(self.chosen()))
+        if now == self._saved_choices:
+            return                                        # unchanged: nothing written (IK-47, S19)
+        self._saved_choices = now
         self.services.settings.set({}, update=AW.merge(self.language, self.decks, self.chosen()))
 
     def _first_action(self):
@@ -540,7 +551,7 @@ class AnkiWindow(windows.SecondaryWindow):
             self.refresh_known()
 
     # --- the jobs ----------------------------------------------------------------------------------------------- #
-    def _submit(self, label, work, then, on_quit="detach"):
+    def _submit(self, label, work, then, on_quit="detach", moved=None):
         """`work` as the window's `anki-sync` job; `then(result)` on this thread when it ended — or, the window closed
         meanwhile, its line in the bottom bar (`_closed_line`): nothing is painted on a closed window (AD3-6). The relay
         lives on the main window and is freed after its one call; the automation service is found when the job ends
@@ -558,12 +569,34 @@ class AnkiWindow(windows.SecondaryWindow):
             then(result)
         relay.said.connect(ended)
         job = AW.submit(services.registry, label, work, relay.call, lambda: getattr(services, "automation", None),
-                        self.language, on_quit=on_quit)
+                        self.language, on_quit=on_quit, moved=moved)
         if job is None:
             relay.deleteLater()
             self.say(strings.ANKI_UPDATE_WAITS)
             return False
+        self.job, self._job_line, self._job_state = job, self.status.text(), None
+        self._follow(services.registry.snapshot())
         return True
+
+    def _follow(self, views):
+        """The registry's newest snapshot: while the window's job waits its turn (behind an import or the automatic
+        sync), the line says what for; once it runs, what it does (the base's IK-22 way; IK-58). Repainted only when
+        the job's state changed."""
+        job = self.job
+        if job is None or self.gone:
+            return
+        view = next((v for v in views if v.id == job.id), None)
+        if view is None or view.state not in (jobs_module.WAITING, jobs_module.RUNNING):
+            return
+        if (view.state, view.reason) == self._job_state:
+            return
+        self._job_state = (view.state, view.reason)
+        if view.state == jobs_module.WAITING:
+            reason = view.reason or ""
+            self.say(strings.ANKI_WAITING_FOR.format(what=reason[len(WAITS_FOR):]) if reason.startswith(WAITS_FOR)
+                     else strings.ANKI_WAITING.format(reason=reason))
+        else:
+            self.say(self._job_line)
 
     def _begin(self, line):
         self.begin_write()
@@ -602,6 +635,7 @@ class AnkiWindow(windows.SecondaryWindow):
         return self._result_line(result) or None
 
     def _ended(self, result, line=None):
+        self.job = None
         line = line if line is not None else self._result_line(result)
         self.say(line)
         if result is not None and not result.error and result.mode in ("delta", "full") and result.added > 0:
@@ -658,7 +692,7 @@ class AnkiWindow(windows.SecondaryWindow):
         work = lambda: AW.run_replace(snap["language"], snap["url"], snap["decks"], snap["fields"], snap["suspended"],
                                       expect)
         if not self._submit(strings.ANKI_JOB_REPLACE, work, lambda result: self._replaced(result, snap),
-                            on_quit="wait"):
+                            on_quit="wait", moved=strings.ANKI_REPLACE_MOVED_JOB):
             self._done()
 
     def _replaced(self, result, snap):
@@ -697,7 +731,8 @@ class AnkiWindow(windows.SecondaryWindow):
             return
         self.say(strings.ANKI_RESTORING)
         if not self._submit(strings.ANKI_JOB_RESTORE, lambda: AW.run_restore(language, point.name, point.now),
-                            lambda result: self._restored(result, language), on_quit="wait"):
+                            lambda result: self._restored(result, language), on_quit="wait",
+                            moved=strings.ANKI_RESTORE_MOVED_JOB):
             self._done()
 
     def _restored(self, result, language):

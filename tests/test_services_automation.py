@@ -1149,3 +1149,20 @@ def test_junbans_reorder_reads_the_deck_juns_own_window_recorded_behind_the_wind
     _settle(auto, registry)
     assert len(seen) == 2 and seen[-1]["junban_auto_reorder"] is True and seen[-1]["junban_replan_deck"] == "Mining"
     auto.close()
+
+
+@pytest.mark.parametrize("kind", ["known-import", "extract"])
+def test_the_automatic_generate_waits_for_an_import_as_for_any_child_and_is_asked_again_when_it_ends(live, kind):
+    """IK-54: in Tk an import was a child process the automatic Generate waited for; the 3.0 importers (W3.4 row 2)
+    run as `known-import` / `extract` jobs, which hold it the same way (CHILD_KINDS) — never a Generate beside an
+    import, as the Anki window's switch says."""
+    auto, registry, controller, launches = _make(_settings())
+    job = registry.record(kind, "Importing known words")
+    auto.worker.put(auto.generate.known_words_changed, "ja")
+    assert auto.worker.idle(5)
+    assert launches.count() == 0 and not registry.live("generate")
+    job.finish(ok=True)
+    assert h.until(lambda: launches.count() == 1, seconds=5), "the import's end asks again"
+    for run in launches.runs:
+        run.ended(0)
+    auto.close()

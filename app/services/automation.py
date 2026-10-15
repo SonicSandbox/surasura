@@ -43,7 +43,8 @@ GENERATE_EVERY = 600.0      # _maybe_auto_generate: at most every 10 minutes
 JUNBAN_EVERY = 300.0        # _maybe_junban_auto: like the sync
 START_DELAY = 2.0           # the Tk `root.after(2000, lambda: self._maybe_anki_sync(force=True))`
 CHECK_SETTLE = 0.6          # _schedule_journey_state: one journey check for a burst of triggers
-CHILD_KINDS = ("generate", "indexer", "sentence-corpus", "child")      # the Tk window's child processes
+# The Tk window's child processes, and the 3.0 importers' (W3.4 row 2: an import was a child in Tk; IK-54).
+CHILD_KINDS = ("generate", "indexer", "sentence-corpus", "child", "known-import", "extract")
 
 IDLE, SYNCING, SYNCED, CLOSED, FAILED = "idle", "syncing", "synced", "anki-closed", "failed"
 SYNC_LABEL = "Updating known words from Anki"

@@ -26,6 +26,9 @@ def main(qapp):
     yield win
     win.close()
     services.shutdown(0.5)
+    # Every settings write lands while the test root is still set: a writer finishing after the test would take the
+    # settings lock in the REAL local data folder (it made %LOCALAPPDATA%\Houseki\Surasura\<key> once).
+    assert services.settings.flush(10)
 
 
 class Probe(windows.SecondaryWindow):
@@ -255,6 +258,9 @@ def test_a_window_whose_main_window_is_gone_counts_as_gone(qapp):
     w.end_write("Added: 1")                                            # a worker's late answer: no error
     windows.say_in_bar(win, "Added: 1")
     services.shutdown(0.5)
+    # Every settings write lands while the test root is still set: a writer finishing after the test would take the
+    # settings lock in the REAL local data folder (it made %LOCALAPPDATA%\Houseki\Surasura\<key> once).
+    assert services.settings.flush(10)
 
 
 def test_a_door_whose_rule_fails_stays_hidden(main, monkeypatch):

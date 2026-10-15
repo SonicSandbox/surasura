@@ -225,6 +225,39 @@ OPENERS += [
            _importers("open_extract")),
 ]
 
+# row 4: Koe and YouTube — each module's own window, imported only when its door is pressed; shown as the Tk dashboard
+# showed them: the downloader with `enable_youtube_transcripts`, the preview with `enable_youtube_preview`, Speech
+# whenever revealed (the reveal line in settings.json, `modules.koe`, true or false).
+
+
+def _koe_door(settings, _language):
+    from modules.koe import koe_view
+    return koe_view.door_open(settings)
+
+
+def _open_koe(shell):
+    from modules.koe import open_koe_settings
+    return open_koe_settings(shell)
+
+
+def _open_downloader(shell):
+    from modules.youtube_downloader import open_downloader
+    return open_downloader(shell)                         # no on_complete until W3.2's arrivals: files stay in Processed
+
+
+def _open_preview(shell):
+    from modules.youtube_downloader import open_preview
+    return open_preview(shell)
+
+
+OPENERS += [
+    Opener("youtube-downloader", strings.DOOR_TRANSCRIPTS, strings.DOOR_TRANSCRIPTS_TIP,
+           lambda s, _l: bool(s.get("enable_youtube_transcripts")), _open_downloader, module="youtube_downloader"),
+    Opener("youtube-preview", strings.DOOR_PREVIEW, strings.DOOR_PREVIEW_TIP,
+           lambda s, _l: bool(s.get("enable_youtube_preview")), _open_preview, module="youtube_downloader"),
+    Opener("koe", strings.DOOR_SPEECH, strings.DOOR_SPEECH_TIP, _koe_door, _open_koe, module="koe"),
+]
+
 
 # The optional modules the doors name, looked for once per process (a module can't appear mid-session), on a worker
 # after the window opened: name -> bool. A door that names a module stays hidden until its module was found.

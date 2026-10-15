@@ -181,6 +181,10 @@ if enable_reels:
 if enable_junban:
     hiddenimports.append('modules.junban.patterns_build')
 
+# The transcripts preview's scoring child (`youtube_preview`, app_entry.py): the 3.0 window runs it as its own process.
+if enable_youtube:
+    hiddenimports.append('modules.youtube_downloader.preview')
+
 tmp_ret = collect_all('unidic_lite')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 

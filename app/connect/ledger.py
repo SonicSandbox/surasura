@@ -31,6 +31,8 @@ reads an asked job as a first mining, never a wrong write): a job's `asked_at`, 
 store's `mine_asked` — *Mine now*, *Mine this*, *Mine it too*), kept whatever way the job ends so an ask is used up
 once (IK S4); a job an ask made is of kind `asked`. `asks_from:<lang>` in meta: the asks watermark (asks made before it
 — while Connect was off — are never mined; written by `resume.turned_on`, else at the first look).
+Also P4.1: `generating:<lang>` in meta, set while Connect's own Generate runs (F9: the status line's
+*Connect is updating your list*), cleared when it ends and by the next run when a crash left it.
 """
 import datetime
 import json
@@ -674,6 +676,22 @@ class Ledger:
     def run_started(self, language):
         row = self.conn.execute("SELECT value FROM meta WHERE key = ?", (f"run:{language}",)).fetchone()
         return row[0] if row else None
+
+    # --- P4.1 row 4.1.7 (F9): Connect's own Generate, for the status line --------------------------------------- #
+
+    def mark_updating(self, language):
+        """Connect's own Generate for the language starts now (`generating:<lang>` in meta): the status line says
+        *Connect is updating your list* while it runs."""
+        self.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (f"generating:{language}", _now()))
+
+    def updating(self, language):
+        """When Connect's Generate for the language began, or None (none running, or none marked)."""
+        row = self.conn.execute("SELECT value FROM meta WHERE key = ?", (f"generating:{language}",)).fetchone()
+        return row[0] if row else None
+
+    def updated(self, language):
+        """Connect's Generate ended (or a run found a mark a crash left): the mark cleared."""
+        self.conn.execute("DELETE FROM meta WHERE key = ?", (f"generating:{language}",))
 
     def start_undo(self, job_id, language, planned, kept):
         """*Undo this batch* about to write Anki (its own transaction): the notes it will delete (`planned`) and those

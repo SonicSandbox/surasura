@@ -224,6 +224,45 @@ QLineEdit#settingsfield:disabled {{ color: {c['settings-ink-greyed']}; }}
 QLabel#settingsaffix {{ color: {c['ink-dim']}; {font('number-field')} }}
 QLabel#settingsaffix:disabled {{ color: {c['settings-ink-greyed']}; }}
 """
+    # the page (settings_page.py; mock.html :585–645): the page on the ground (layer 0), the nav, the big search (a
+    # cut), the section slabs (layer 0: the top hairline lit, the lower edge darker, no side edges; every other one
+    # tinted), each text in its proven role (theme.SETTINGS_TEXT)
+    t = {role: c[name] for role, name in theme.SETTINGS_TEXT.items()}
+    sp = theme.SPACING
+    rules += f"""
+QWidget#settingspage {{ background: {c['content']}; }}
+QWidget#settingsnav {{ background: {c['settings-nav']}; }}
+QScrollArea#settingsscroll {{ background: {c['content']}; border: 0; }}
+QWidget#settingsbody {{ background: {c['content']}; }}
+QPushButton#settingsnavitem {{ background: transparent; color: {t['nav-unlit']}; border: 0; border-radius: 7px;
+  text-align: left; min-height: 0; padding: {px(6)} {px(9)}; {font('settings-nav')} }}
+QPushButton#settingsnavitem:hover {{ color: {t['nav-lit']}; border: 0; }}
+QPushButton#settingsnavitem:checked {{ background: {c['settings-nav-lit']}; color: {t['nav-lit']}; }}
+QPushButton#settingsnavitem:focus {{ border: 2px solid {c['accent']}; padding: {round(6 * f) - 2}px {round(9 * f) - 2}px; }}
+QWidget#settingsfind {{ background: {c['cut']}; border: 0; border-top: 1px solid {c['cut-wall-top']};
+  border-bottom: 1px solid {c['cut-wall-low']}; border-radius: {theme.RADII['button']}px; }}
+QLineEdit#settingssearch {{ background: transparent; color: {t['search']}; border: 0; padding: 0;
+  {font('settings-search')} }}
+QLabel#settingskbd {{ color: {t['kbd']}; border: 1px solid {c['line-hi']}; border-radius: 4px; padding: 1px 5px;
+  {font('key-hint')} }}
+QWidget#settingsslab {{ background: {c['slab']}; border: 0; border-top: 1px solid {c['line-hi']};
+  border-bottom: 1px solid {c['groove']}; border-radius: {theme.RADII['r']}px; }}
+QWidget#settingsslab[tint="true"] {{ background: {c['settings-slab-tint']}; }}
+QLabel#settingshead {{ color: {t['label']}; {font('settings-head')} }}
+QLabel#settingslabel {{ color: {t['label']}; {font('settings-label')} }}
+QLabel#settingssublabel {{ color: {t['sub-label']}; {font('settings-label')} font-weight: 500; }}
+QLabel#settingslabel:disabled, QLabel#settingssublabel:disabled, QLabel#settingshelp:disabled {{
+  color: {t['greyed']}; }}
+QLabel#settingshelp {{ color: {t['help']}; {font('settings-help')} }}
+QLabel#settingsvalue {{ color: {t['value']}; {font('body')} font-weight: 400; }}
+QLabel#settingsgroup {{ color: {t['group']}; {font('group-label')}
+  padding: {px(sp['settings-group'][0])} {px(sp['settings-group'][1])} {px(sp['settings-group'][2])} {px(sp['settings-group'][1])}; }}
+QLabel#settingshint {{ color: {t['hint']}; {font('body')} font-weight: 400; }}
+QPushButton#settingsmore {{ background: transparent; color: {t['more']}; border: 0; border-radius: 4px; min-height: 0;
+  padding: 0; text-align: left; {font('settings-more')} }}
+QPushButton#settingsmore:hover {{ border: 0; }}
+QPushButton#settingsmore:focus {{ border: 2px solid {c['accent']}; padding: 0 2px; }}
+"""
     # --- end W3.3
     _state["generated_ms"] = (time.perf_counter() - t0) * 1000
     return rules

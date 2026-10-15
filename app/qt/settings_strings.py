@@ -48,6 +48,20 @@ UNIT_PERCENT = "%"
 README_POINTER = "Each source's files and licence are in README's Data Credits."
 OFFER_AGAIN = "Offer {version} again"
 OFFER_AGAIN_TIP = "You chose Skip this version. Offer it again as a one-click update."
+SEARCH_KEY = "/"
+SEARCH_NAME = "Search settings"
+NAV_NAME = "Settings sections"
+MORE_TIP = "Shows this section's other settings, the ones most people never change"
+FEWER_TIP = "Hides this section's other settings again"
+LINK_OPEN = "Open ↗"
+HOW_PARSING_URL = "https://github.com/SonicSandbox/surasura/blob/main/docs/How%20Parsing%20Works.md"
+FOLDER_PICK_TITLE = "Where videos are looked for"
+
+# --- the controls' own words (settings_controls.py; moved here from its top, W3.3 P3) ------------------------------ #
+ADD = "Add"                                      # an empty bed's words when the page names none
+REMOVE_NAME = "Remove {item}"                    # a list tablet's ✕, for screen readers (the accessible description)
+CROSS = "✕"
+STATUS_NAME = "{name}: {words}"                  # the status mark, for screen readers
 
 # --- the sections (the mock's order, with Language & Parsing after Level: 05 §5.7) --------------------------------- #
 SECTIONS = {

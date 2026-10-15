@@ -42,14 +42,8 @@ from PyQt6.QtWidgets import QApplication, QHBoxLayout, QLabel, QLineEdit, QMenu,
 
 from app import theme
 from app.qt import freeze, motion, style
+from app.qt.settings_strings import ADD, CROSS, RANGE_TO, REMOVE_NAME, STATUS_NAME
 
-# --- the controls' own words (P3 moves them into app/qt/settings_strings.py; named in tracks/window/work/w33/P2.md) -- #
-RANGE_TO = "to"                                  # between a range's two numbers
-ADD = "Add"                                      # an empty bed's words when the page names none
-REMOVE_NAME = "Remove {item}"                    # a list tablet's ✕, for screen readers (the accessible description)
-CROSS = "✕"
-STATUS_NAME = "{name}: {words}"                 # the status mark, for screen readers
-# --- end of the words ----------------------------------------------------------------------------------------------- #
 
 M = theme.SETTINGS_MOTION
 

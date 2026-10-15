@@ -512,4 +512,39 @@ SETTINGS_MOTION = MappingProxyType({
     "toggle-light-down": SLOW, "slider-lift": 130, "slider-lift-omega": 34.0, "slider-lift-zeta": 0.9,
     "slider-glide": FAST, "slider-fall": 85, "slider-follow": 18.0, "slider-hold-px": 16, "slider-hold": 0.2,
 })
+# The page (W3.3 P3; mock.html :585–645, the RUNBOOK's measures at Medium): the nav on its own ground (the mock's
+# `.set-nav`, its lit item the mock's `.navi.on`), the reveal's wash over a row (a breath of the accent: at 8 % every
+# text on it still clears its floor on both slabs), its text roles, sizes, type and motion.
+MIXES.update({
+    "settings-nav": ("mock.html :586 .set-nav", ("mix", "surface", 45, "bg", None)),
+    "settings-nav-lit": ("mock.html :594 .navi.on", "accent-wash"),
+    "settings-row-wash": ("RUNBOOK W3.3 reveal: the row washed once", ("mix", "accent", 8, "transparent", None)),
+})
+_COLOURS = {theme_: _build(theme_) for theme_ in THEMES}
+SETTINGS_TEXT = MappingProxyType({**SETTINGS_TEXT, "sub-label": "ink-dim", "more": "accent", "kbd": "ink-dim"})
+# where the page's own roles sit besides the two slabs (S5: proven in place by tests/qt/test_settings_page.py)
+SETTINGS_PAGE_GROUNDS = MappingProxyType({
+    "label": SETTINGS_GROUNDS, "sub-label": SETTINGS_GROUNDS, "help": SETTINGS_GROUNDS, "group": SETTINGS_GROUNDS,
+    "hint": SETTINGS_GROUNDS + ("content",), "more": SETTINGS_GROUNDS, "greyed": SETTINGS_GROUNDS,
+    "value": SETTINGS_GROUNDS, "nav-lit": ("settings-nav-lit",), "nav-unlit": ("settings-nav",),
+    "search": ("cut",), "placeholder": ("cut",), "kbd": ("cut",),
+})
+TYPE.update({
+    "settings-head": (12, 700), "settings-label": (13, 550), "settings-help": (11.5, 400), "settings-nav": (13, 400),
+    "settings-more": (12.5, 400),
+})
+LETTER_SPACING_EM.update({"settings-head": 0.1})
+SIZES.update({
+    "settings-nav-icon": 15, "settings-head-icon": 16, "settings-search-icon": 14, "settings-more-icon": 12,
+})
+SPACING.update({
+    "settings-nav": (18, 10, 20, 16), "settings-main": (18, 26, 60), "settings-head": (13, 16, 11),
+    "settings-group": (14, 16, 5), "settings-more": (8, 16, 12), "settings-search-gap": 14,
+})
+SETTINGS_MOTION = MappingProxyType({
+    **SETTINGS_MOTION,
+    "page-scroll": SLOW,                     # the nav's click and a reveal glide the page there; reduced: a jump
+    "row-wash": MOTION["row-flash"],         # a revealed row's wash, fading once
+    "row-wash-steady": 1000,                 # reduced motion: a steady wash this long, then gone
+})
 # --- end W3.3 ------------------------------------------------------------------------------------------------------ #

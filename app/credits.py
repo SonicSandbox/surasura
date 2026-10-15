@@ -46,6 +46,23 @@ def data_credits():
     return DATA_CREDITS.replace("{jmdict}", created or "unknown")
 
 
+# The services' logos the 3.0 window's Settings › Connections shows (W3.3 PL; app/qt/logos.py, app/assets/logos/),
+# each with the notice its owner asks for (the planning folder's tracks/window/work/w33/logos/LOGOS.md). Kept apart
+# from DATA_CREDITS, which stays 2.4's text: the Tk dashboard never shows these logos. The TMDB notice is the API
+# terms' own wording, word for word.
+LOGO_CREDITS = """Logos
+
+• Anki® is a registered trademark of Ankitects Pty Ltd. Surasura is not affiliated with or endorsed by Anki. https://apps.ankiweb.net — Anki's icon is copyright Alex Fraser, AGPL-3.0, used unmodified under its limited alternative licence (app/assets/logos/LICENSE-anki.txt).
+• Anki Miner icon © 0xzerolight (Zero), GPL-3.0 (app/assets/logos/LICENSE-anki_miner.txt); its 鉱 is an outline from Shippori Mincho B1 (SIL OFL 1.1).
+• hato and tsubasa icons — SonicSandbox, GPL-3.0-or-later.
+• This application uses TMDB and the TMDB APIs but is not endorsed, certified, or otherwise approved by TMDB."""
+
+
+def all_credits():
+    """`data_credits()` followed by the logos' credits: what the 3.0 window's Data credits shows."""
+    return data_credits() + "\n\n" + LOGO_CREDITS
+
+
 # --- Surasura's own licence (the `LICENSE` file: its first line and its copyright line) --------------------------- #
 LICENCE_FILE = "LICENSE"
 _LICENCE = []               # read once, the first time it is asked for

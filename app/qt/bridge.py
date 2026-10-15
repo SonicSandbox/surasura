@@ -79,6 +79,29 @@ class Bridge(QObject):
             self._alive = False
 
 
+class Relay(QObject):
+    """(W3.4) One service callback as a signal, for a window that hands a Qt-free runner a callback (a tool's lines and
+    its end, `app/services/tools.py`): `relay.call` is the callback (any thread), `said` arrives on the GUI thread, in
+    order. Made on the GUI thread with a parent: once the parent is gone, a call is dropped."""
+    said = pyqtSignal(object)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._alive = True
+        self.destroyed.connect(self._gone)
+
+    def call(self, value=None):
+        if not self._alive:
+            return
+        try:
+            self.said.emit(value)
+        except RuntimeError:                      # the C++ object is gone
+            self._alive = False
+
+    def _gone(self, *_):
+        self._alive = False
+
+
 class _Relay(QObject):
     done = pyqtSignal(object)
     failed = pyqtSignal(object)

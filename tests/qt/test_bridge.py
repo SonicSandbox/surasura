@@ -136,12 +136,37 @@ def test_the_string_scan_sees_an_inline_string():
     assert not user_string_literals('    label.setText("")')
 
 
-def test_no_user_string_is_written_inline_under_app_qt():
-    found = []
-    for where, dirs, files in os.walk(os.path.join(ROOT, "app", "qt")):
+def _window_files(root=None):
+    """Every window file a string could be written inline in: `app/qt/*.py` but its table, and every module's
+    `modules/<name>/qt_*.py` but its `qt_strings.py` (W3.4, IK-3)."""
+    root = root or ROOT
+    for where, dirs, files in os.walk(os.path.join(root, "app", "qt")):
         dirs[:] = [d for d in dirs if d != "__pycache__"]
         for name in files:
             if name.endswith(".py") and name != "strings.py":
-                with open(os.path.join(where, name), encoding="utf-8") as f:
-                    found += [f"{name}: {line}" for line in user_string_literals(f.read())]
+                yield os.path.join(where, name)
+    modules = os.path.join(root, "modules")
+    for where, dirs, files in os.walk(modules) if os.path.isdir(modules) else ():
+        dirs[:] = [d for d in dirs if d != "__pycache__"]
+        for name in files:
+            if name.startswith("qt_") and name.endswith(".py") and name != "qt_strings.py":
+                yield os.path.join(where, name)
+
+
+def test_no_user_string_is_written_inline_under_app_qt():
+    found = []
+    for path in _window_files():
+        with open(path, encoding="utf-8") as f:
+            found += [f"{os.path.relpath(path, ROOT)}: {line}" for line in user_string_literals(f.read())]
     assert found == []
+
+
+def test_the_string_scan_reads_the_module_windows_too(tmp_path):
+    # IK-3's witness: a module window's inline string is found; its own table and its engine are not window files.
+    fake = tmp_path / "modules" / "w34probe"
+    fake.mkdir(parents=True)
+    for name in ("qt_window.py", "qt_strings.py", "engine.py"):
+        (fake / name).write_text('    b = QPushButton("Download", self)\n', encoding="utf-8")
+    (tmp_path / "app" / "qt").mkdir(parents=True)
+    files = sorted(os.path.basename(p) for p in _window_files(str(tmp_path)))
+    assert files == ["qt_window.py"]

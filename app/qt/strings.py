@@ -204,3 +204,12 @@ QUIT_FINISHING = "Finishing with Anki first… the window closes by itself"
 QUIT_FINISHING_LIST = "Finishing your list first… the window closes by itself"
 QUIT_HELD = "Surasura is closing"
 QUIT_CLOSING_TIP = "Surasura is closing: it finishes what can't stop part-way, then closes by itself"
+
+# --- W3.4: the ported windows — the base (windows.py, confirm.py) and row 1 (the frequency lists, the sentence
+# dictionary). The Settings tab lists the ported windows' doors until W3.3 / W3.2 give each its row (IK-16).
+SECONDARY_TITLE = "{name} — Surasura"
+WINDOW_STATUS_NAME = "What this window is doing"
+LAUNCHERS_NAME = "Windows that open from here until their Settings rows arrive"
+OPEN_FAILED = "{name} couldn't open: {why}"
+CONFIRM_NO = "Cancel"
+CONFIRM_NO_TIP = "Leave everything as it is (Esc does the same)"

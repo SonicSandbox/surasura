@@ -896,7 +896,11 @@ class ShellWindow(QMainWindow):
     # --- W2.2: the pages a library fills ----------------------------------------------------------------------- #
     def _page(self, name):
         if self.services.library is None or name not in screens.PAGES:
-            return self._waiting_page(name)
+            page = self._waiting_page(name)
+            if name == "settings":                         # W3.4: the ported windows' doors until W3.3 / W3.2 (IK-16)
+                from app.qt import windows
+                self.launchers = windows.launchers(self, page)
+            return page
         return screens.make_page(name, language=self.language)
 
     def show_library(self, view):

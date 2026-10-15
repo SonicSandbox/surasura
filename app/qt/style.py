@@ -196,6 +196,17 @@ QLabel#sheetline {{ color: {c['ink-dim']}; {font('body')} font-weight: 400; }}
 QWidget#needscard {{ background: {c['surface']}; border: 1px solid {c['line']}; border-radius: {theme.RADII['r']}px; }}
 QLabel#needstitle {{ color: {c['ink']}; {font('needs-title')} }}
 """
+    # --- W3.4: the ported windows (windows.py, confirm.py, row 1's windows; looks to re-skin with W3.3's surfaces)
+    rules += f"""
+QLabel#windowstatus {{ color: {c['ink-dim']}; {font('footer')} font-weight: 400; }}
+QLabel#windowheading {{ color: {c['ink']}; {font('dialog-title')} }}
+QLabel#windowline {{ color: {c['ink-dim']}; {font('body')} font-weight: 400; }}
+QLabel#confirmtitle {{ color: {c['ink']}; {font('dialog-title')} }}
+QLabel#confirmline {{ color: {c['ink-dim']}; {font('body')} font-weight: 400; }}
+QPushButton[kind="danger"] {{ background: {c['bad']}; color: {c['bad-type']}; border: 0; }}
+QPushButton[kind="danger"]:focus {{ border: 2px solid {c['ink']}; }}
+QListWidget#windowlist {{ background: {c['bg']}; border-radius: 9px; padding: {px(4)}; }}
+"""
     _state["generated_ms"] = (time.perf_counter() - t0) * 1000
     return rules
 

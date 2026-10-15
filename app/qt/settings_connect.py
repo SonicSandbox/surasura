@@ -293,6 +293,8 @@ class SwitchRow(QWidget):
         def then(answer):
             if rows.alive():
                 step(answer)
+            # the page gone: an off that would ask first is a question nobody saw — as one dropped with its window it
+            # answers nothing (confirm's rule): Connect stays on, as saved
             elif saved(answer) and _alive(heard):
                 heard.settings_written.emit(("connect_enabled",))
         return then
@@ -702,9 +704,9 @@ class NewCardsRow(QWidget):
         rows, store = self.rows, self.rows.store
 
         def written(outcome):                     # a plain function: the pace saved though the page went (S1)
+            _save_pace(store, outcome)            # first: no painting can stop it
             if rows.alive():
                 self._written(outcome)
-            _save_pace(store, outcome)
         bridge.run_in_worker(_write_new_cards, self.rows.settings(), reading.deck, value, reading.value,
                              self.rows.cancel, self.waits.call, then=written, failed=self._broke)
 

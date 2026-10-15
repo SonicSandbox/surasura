@@ -135,3 +135,14 @@ def test_a_rule_that_failed_on_the_first_call_places_the_item_on_hatos_retry(mon
     monkeypatch.setattr(rules, "apply", real)
     retry = _ok(h.call("register", "--pairing", c.write_record(rec)))
     assert (retry["landed"], retry["pairing"], retry["rule"], retry["tier"]) == ("already", "same", "top", "now")
+
+
+def test_a_record_naming_no_producer_follows_hatos_line_on_the_cli_path_as_in_the_store():
+    # Settings shows hato's line as the rule for a drop that names no program, and the store reads it so
+    # (`library_store._rule_for`); the CLI's own reading (`rules.rule_for`) must agree, or the line would lie.
+    from app.connect import rules
+    assert rules.rule_for({"show": {"title": "ぼっち・ざ・ろっく！"}}, {"placing_rules": {"hato": "top"}}) == ("hato", "top")
+    assert rules.rule_for({"producer": "", "channel_id": None}, {"placing_rules": {"hato": "finished"}}) == \
+        ("hato", "finished")
+    assert rules.rule_for({"producer": "youtube"}, {"placing_rules": {"hato": "top"}}) is None, \
+        "a named program has only its own lines"

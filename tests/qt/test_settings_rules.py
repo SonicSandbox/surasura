@@ -358,3 +358,24 @@ def test_the_sources_seen_come_from_the_library_stores_pairings():
         second = c.drop("ぼっち・ざ・ろっく！ - 06.ja.srt")
         s.register(second, c.record(second, "v6", producer="youtube", channel_id="UCgx8nPpXp9c0Kv4bUk1D3ng"))
     assert sr.sources_seen(("ja", "zh")) == {"hato", "youtube", CHANNEL}, "no Chinese store: it adds nothing"
+
+
+def test_one_language_whose_pairings_cannot_be_read_keeps_the_other_languages_sources(monkeypatch):
+    # A pairings read that breaks in one store drops only that store's sources from + rule, never every language's.
+    from app.connect import library
+    from tests import connect_helpers as c
+    c.library("ja")
+    with c.store("ja") as s:
+        first = c.drop("ぼっち・ざ・ろっく！ - 05.ja.srt")
+        s.register(first, c.record(first, "v5", producer="youtube", channel_id="UCgx8nPpXp9c0Kv4bUk1D3ng"))
+    c.library("zh")
+    real = library.pairings
+    calls = []
+
+    def pairings(store):
+        calls.append(store)
+        if len(calls) == 1:
+            raise OSError("the store is busy")
+        return real(store)
+    monkeypatch.setattr(library, "pairings", pairings)
+    assert sr.sources_seen(("zh", "ja")) == {"youtube", CHANNEL}

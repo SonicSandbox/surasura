@@ -362,3 +362,20 @@ def test_tab_reaches_connects_switch_and_the_anki_miner_card_where_they_stand(wo
     miner = first_focusable(page.rows["anki_miner"])
     assert at[first_focusable(page.rows["enable_youtube_transcripts"])] < at[miner]
     assert at[miner] < at[first_focusable(page.rows["theme"])] < at[first_focusable(page.rows["text_size"])]
+
+
+def test_a_painting_that_breaks_after_a_confirmed_write_still_saves_the_pace(world, monkeypatch, qt_errors):
+    # Anki took the confirmed 30: the pace is saved before the row paints the answer, so a painting that raises
+    # (any slip in the row) can never leave Anki at 30 and the report's pace at 5.
+    page, store, rows, _fake = make(world)
+    row = rows.new_cards
+
+    def broken(self, outcome):
+        raise RuntimeError("the row could not paint")
+    monkeypatch.setattr(scn.NewCardsRow, "_written", broken)
+    row.field.set_value(30)
+    QTest.mouseClick(row.change, Qt.MouseButton.LeftButton)
+    world.asked[0].answer(True)
+    assert wait_until(lambda: store.calls, 5)
+    assert store.calls == [({"words_per_day": 30}, None)]
+    qt_errors.clear()

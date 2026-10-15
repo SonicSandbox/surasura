@@ -95,9 +95,12 @@ def sources_seen(languages=catalog.LANGUAGES):
             continue
         if store is None:
             continue
-        with store:
-            for records in library.pairings(store).values():
-                found |= sources_of(records)
+        try:
+            with store:
+                for records in library.pairings(store).values():
+                    found |= sources_of(records)
+        except Exception as e:                                   # noqa: BLE001 — one store unread, the others kept
+            applog.log("settings", f"placing rules: the {language} pairings unread: {e}")
     return found
 
 
@@ -379,7 +382,7 @@ class RulesRow(QObject):
         line.select.setFocus(Qt.FocusReason.OtherFocusReason)
 
     def type_source(self):
-        """*Another source…*: a field under the lines; Enter adds its line, Esc closes it adding nothing."""
+        """*Another source…*: a field under the lines; Enter or leaving the field adds its line (at Wait: nothing saved until a place is picked), Esc closes it adding nothing."""
         if not self.alive():
             return
         if self.typing is None or not _alive(self.typing):

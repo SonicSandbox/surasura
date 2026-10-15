@@ -189,6 +189,22 @@ def test_a_missing_library_is_made_again_only_by_the_users_choice_and_an_import_
     assert os.path.isdir(old), "the old folder is never touched"
 
 
+def test_a_fresh_start_in_a_missing_library_leaves_a_finished_imports_record_as_it_was(tmp_path, monkeypatch):
+    # Why: only an unfinished import into this library is let go; a finished one's record (what came over, from where)
+    # is never rewritten when its library folder was removed and the user starts it again empty.
+    _old_install(tmp_path / "old", store=False, languages=("ja",))
+    library = _installed(monkeypatch, str(tmp_path / "Documents" / "Surasura"))
+    assert first_run.run(first_run.state())["status"] == "done"
+    finished = import_2x.read_import_note()
+    assert finished["complete"] is True
+    import shutil
+    shutil.rmtree(library)
+    st = first_run.state()
+    assert st["state"] == first_run.LIBRARY_MISSING
+    assert first_run.run(st, fresh=True)["status"] == "done" and os.path.isdir(library)
+    assert import_2x.read_import_note() == finished, "the finished import's record is untouched"
+
+
 def test_folder_access_denied_says_how_to_allow_surasura_and_leaves_no_folder(tmp_path, monkeypatch):
     def denied(path):
         raise PermissionError(13, "Access is denied", path)

@@ -465,3 +465,85 @@ def tokens(theme=DEFAULT_THEME, text_size=DEFAULT_TEXT_SIZE):
         "sizes": {name: size(name, text_size) for name in SIZES}, "radii": dict(RADII), "shadows": dict(SHADOWS),
         "ease": EASE, "fast": FAST, "slow": SLOW, "motion": MOTION,
     })
+
+
+# --- W3.1a frame --------------------------------------------------------------------------------------------------- #
+# The frame (W3.1a package E, `app/qt/frame.py`; ref-extract §1–2, §8): the header + tabs band and the bottom band
+# (the Goal dock over the footer), their baked edges onto the content, the vein, the level ▾, the emerald, the known
+# corner, Goal's bar and the wells. Distances in px (× the text size only where said); alphas 0–1.
+FRAME = MappingProxyType({
+    "edge-strip": 14,               # the frame's baked shadow onto the content: its tail past 14 px is under 2 %
+    "progress-alpha": 0.7,          # Generate's share, an iris hairline along the header's foot (list-r14m :1627)
+    "progress-busy-alpha": 0.3,     # a job running with no share to show: the hairline whole, quieter (never pulsing)
+    "vein-h": 5, "vein-inset": 10, "vein-min": 6,          # under the current tab, 10 in from each side (:1853)
+    "vein-segments": 14, "vein-seeds": 8,                  # its pre-drawn shapes: 14 segments, a fixed set of 8 seeds
+    "vein-top-w": 0.45, "vein-top-alpha": 0.45, "vein-node-alpha": 0.85,       # its lit top line and nodes (:8164)
+    "chevron": 10, "mark-dot": 6,   # the level ▾'s chevron, and its mark (Generate stale / failed, the journey owed)
+    "emerald": 15,                  # the footer's emerald (14.95 high in the reference)
+    "emerald-facet-alpha": 0.55,    # its one facet highlight
+    "known-step": 2500,             # the known corner's milestone: the next multiple of this
+    "known-hairline-alpha": 0.75,
+    "dock-pad": (10, 24),           # the dock band's padding (top and bottom, the sides)
+    "goal-bar": 46,                 # Goal's bar, × the text size (52.9 at Medium)
+    "goal-bar-radius": 10,
+    "dock-cover": (26, 37), "dock-cover-overlap": 12, "dock-cover-turn": 2.0, "dock-covers": 9,
+    "dock-cover-grey": 0.62, "dock-cover-alpha": 0.8,      # the loose hand: grey at 62 % and .8, made once
+    "well-gap": 10, "well-covers": 3, "well-slot": 6, "well-cover-gap": 5, "well-wall": 2,
+    "slot-fill-alpha": 0.08,        # an open slot's fill: its gem's light at 8 %
+})
+FRAME_COLOURS = MappingProxyType({
+    "known-ink": "#a9b3c3",                 # the known number, large and dim (:1599)
+    "milestone-left": "#1c2533",            # the milestone hairline past the progress (:7656; up to it, the iris blue)
+    "vein-node": "#f2fbff",                 # the vein's three diamonds (:8170)
+    # the emerald when Anki doesn't answer (closed, failed, off): the reference's dark stone (:9273), flat
+    "emerald-dark-base": "#152019", "emerald-dark-light": "#26352d", "emerald-dark-edge": "#4a5c53",
+})
+TYPE.update({"known-number": (21, 600), "foot-chip": (11.5, 400), "level": (12.5, 400)})
+SHADOWS.update({
+    "frame-edge": (0, 12, 14, -12, "#000000f2"),      # the header + tabs band onto the content (:1743)
+    "dock-edge": (0, -12, 14, -12, "#000000f2"),      # the bottom band onto the content, upward (:1745)
+    "goal-bar": (0, 3, 6, -3, "#000000f2"),           # Goal's bar keeps its lift (:1795, L14)
+})
+
+
+# --- W3.1a rows ---------------------------------------------------------------------------------------------------- #
+# Current's one-line row, the string on it, Up Next flat, the grooves (W3.1a package D, `app/qt/rows.py`; ref-extract
+# §3–§4, §6–§7, list-r14m :655–700, :808–822, :1498–1522): px, × the text size where marked `*`; alphas 0–1. Finished's
+# rows keep today's layout (`SIZES["row"]`, C-scope §2.3).
+ROW_LINE = MappingProxyType({
+    "height": 60,                   # * a Current row (69 at Medium)
+    "gap": 4,                       # between two rows: half above the slab, half below (a lift moves inside it)
+    "line": 4,                      # a groove's own strip (the top-20 and Soon lines): its 2 px in the middle
+    "line-hit": 12,                 # ... and its hover area, at least (S10)
+    "pos": 26,                      # * the number's column
+    "art-min": 92, "art-max": 150,  # * the wide art: 10 % of the list's width, between these
+    "art-share": 0.10,
+    "art-fade": 0.45,               # the art is opaque for its first 45 %, then fades to nothing at its right edge
+    "art-focus": 0.22,              # a cover cropped to the strip from 22 % down (a banner's centre, 30 %, when there is one)
+    "gap-x": 12,                    # between the line's columns
+    "string-in": 14,                # the string starts 14 px past the gap after the title
+    "pad-right": 10,
+    "diff": 104,                    # * % · N new
+    "icon-w": 26, "icon-h": 28,     # * a status as its icon, in the hover group
+    "button": 28,                   # * ▶ and ⋯ in the hover group
+    "hover-pad": 4, "hover-gap": 2, # the hover group (over the string's end, holding no room)
+    "hover-fade": 20,               # the string fades out under it over 20 px
+    "anki-icon": 15,                # the Anki count's mark
+    "mover-w": 22, "mover-h": 18, "mover-pad": 5,      # ↑ ↓ in the number's column
+    "title-fade": 24,               # * a title that runs over fades out over its last 24 px
+    "dim": 0.45,                    # a stone that won't mine itself (not mined, not watched, below the top-20 line)
+    "shadow": 4,                    # the lifted row's baked shadow, inside its own gap
+    "shadow-alpha": 0.62, "lift-line-alpha": 0.09,     # the shadow, and the lit top line, at the lift's share
+    "open-pad": 10,                 # under an opened row's episodes
+    "hero-pad-x": 20, "hero-pad-y": 16, "hero-pad-right": 18, "hero-gap": 18, "hero-below": 8,
+    "hero-trillion": 20,            # ▶ Play's trillion, in its kind's gem
+    "hero-string": 30,              # * the Up Next string's band, under its numbers
+    "sheen-alpha": 0.05,            # an opened row's one sheen, at its brightest
+})
+ROW_COLOURS = MappingProxyType({
+    "string": "#2c3a4e",            # the string's hairline (list-r14m :675)
+    "open-row": "#0e141d",          # an opened row's ground (:705, flat)
+    "sheen": "#ffffff",             # its sheen (at `sheen-alpha`), baked into the head's picture
+    "shadow": "#000000",            # the lifted row's shadow (at `shadow-alpha`)
+    "lift-line": "#ffffff",         # ... and its lit top line (at `lift-line-alpha`)
+})

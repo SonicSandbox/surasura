@@ -1,6 +1,6 @@
 """The dashboard's duties in the window (W3.5 rows 2, 4, 5; the window's spec 05 §5.2, 03 — the update mark —, 06 E10):
-the header's **Generate** and **Your journey ↗**, the bottom bar's update mark, the update sheet and Needs you's update
-cards. Each shows what its service's state says (`app/services/updates.py`, `generate.py`, `automation.py`), repaints
+**Generate** (in the level ▾'s pop since W3.1a, `frame.LevelPop`; its share is the header's hairline), the bottom
+bar's update mark, the update sheet and Needs you's update cards. Each shows what its service's state says (`app/services/updates.py`, `generate.py`, `automation.py`), repaints
 only when that changed (S19), and says what a click asks for through a signal: the window calls the service, on a worker.
 
 Every look here is the shell's own widgets and the theme's tokens (Sonic is redesigning the theme, 2026-10-11): a
@@ -59,8 +59,9 @@ def generate_look(state):
 
 
 class GenerateControl(QWidget):
-    """Generate (with its thin bar while it runs) and, after a failure, *Open the log*. `pressed`: the button was
-    clicked (the window runs or cancels, as the state allows); `log_asked`: *Open the log*."""
+    """Generate and, after a failure, *Open the log* (W3.1a: quiet, in the level ▾'s pop; its share while it runs is
+    the header's hairline, `frame.Progress`). `pressed`: the button was clicked (the window runs or cancels, as the
+    state allows); `log_asked`: *Open the log*."""
     pressed = pyqtSignal()
     log_asked = pyqtSignal()
 
@@ -68,9 +69,6 @@ class GenerateControl(QWidget):
         super().__init__(parent)
         row = self.row = QHBoxLayout(self)
         row.setContentsMargins(0, 0, 0, 0)
-        column = QVBoxLayout()
-        column.setContentsMargins(0, 0, 0, 0)
-        column.setSpacing(0)
         self.button = QPushButton(strings.GENERATE, self)
         self.button.setObjectName("generate")
         self.button.setProperty("look", "idle")
@@ -79,17 +77,7 @@ class GenerateControl(QWidget):
         self.button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self.button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.button.clicked.connect(self.pressed)
-        column.addWidget(self.button)
-        self.bar = QProgressBar(self)
-        self.bar.setRange(0, 100)
-        self.bar.setTextVisible(False)
-        self.bar.setAccessibleName(strings.GENERATE_PROGRESS_NAME)
-        keep = self.bar.sizePolicy()
-        keep.setRetainSizeWhenHidden(True)                 # the header never jumps as a run starts or ends
-        self.bar.setSizePolicy(keep)
-        self.bar.setVisible(False)
-        column.addWidget(self.bar)
-        row.addLayout(column)
+        row.addWidget(self.button)
         self.log_button = QPushButton(strings.GENERATE_LOG, self)
         self.log_button.setProperty("kind", "chip")
         self.log_button.setToolTip(strings.GENERATE_LOG_TIP)
@@ -97,14 +85,12 @@ class GenerateControl(QWidget):
         self.log_button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self.log_button.clicked.connect(self.log_asked)
         self.log_button.setVisible(False)
-        row.addWidget(self.log_button, 0, Qt.AlignmentFlag.AlignTop)
+        row.addWidget(self.log_button)
+        row.addStretch(1)
+        self.percent = None                                # the share shown now (the header's hairline draws it)
         self._shown = None
         self._held = None                                  # the window is closing: off, with this tooltip
         self.paints = 0                                    # how many times a new state was painted (tests: S19)
-
-    def add_beside(self, widget):
-        """A header button beside Generate (*Your journey ↗*), its top on Generate's (the bar hangs below both)."""
-        self.row.addWidget(widget, 0, Qt.AlignmentFlag.AlignTop)
 
     def hold(self, tip):
         """The window is closing (it waits for what can't stop part-way): a click would start nothing, so the button is
@@ -131,9 +117,7 @@ class GenerateControl(QWidget):
         b.setToolTip(tip)
         b.setEnabled(enabled)
         _set_prop(b, "look", look)
-        if pct is not None:
-            self.bar.setValue(pct)
-        self.bar.setVisible(pct is not None)
+        self.percent = pct
         self.log_button.setVisible(failed_log)
         return True
 

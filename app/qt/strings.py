@@ -210,3 +210,56 @@ QUIT_FINISHING = "Finishing with Anki first… the window closes by itself"
 QUIT_FINISHING_LIST = "Finishing your list first… the window closes by itself"
 QUIT_HELD = "Surasura is closing"
 QUIT_CLOSING_TIP = "Surasura is closing: it finishes what can't stop part-way, then closes by itself"
+
+# --- W3.1a frame (app/qt/frame.py): the level ▾ and its pop, the footer's emerald and known corner, the Goal dock and
+# its wells. The level's words are the old chip's (BAR_LEVEL_*); Generate's are the button's (GENERATE_*).
+LEVEL_WAITING = "Level"                               # the ▾ before the level is first read
+LEVEL_NAME = "Your level: {level}"
+LEVEL_TIP = "{level}\n• Click for Generate and your journey"
+LEVEL_TIP_MARK = "{level}\n{mark}\n• Click for Generate and your journey"
+LEVEL_MARKS = {
+    "failed": "⚠ The last Generate didn't finish",
+    "stale": "Something changed since your last Generate: your list is out of date",
+    "journey": "Your journey's sentences are catching up",
+}
+LEVEL_POP_NAME = "Your level, Generate and your journey"
+LEVEL_POP_HEADING = "YOUR LEVEL"
+LEVEL_POP_AUTO = {True: "Automatic: on — Surasura picks the band for you",
+                  False: "Automatic: off — the band stays where you set it"}
+LEVEL_JOURNEY = "Open your journey ↗"
+FOOT_ANKI = "Anki"
+FOOT_ANKI_NAME = "Anki: {words}"
+FOOT_ANKI_TIP = "{words}\n{tip}"
+FOOT_ANKI_ANKIWEB = "{tip}\n\n{ankiweb}"
+FOOT_KNOWN = "known"
+FOOT_KNOWN_TIP = "{tip}\n{left:,} to {next:,}"
+WELLS = {"soon": "Soon", "goal": "Goal", "finished": "Finished"}
+WELL_SUBS = {"soon": "next in line", "goal": "someday · in no order", "finished": "newest first"}
+WELL_TIPS = {"soon": "Soon: drop it here and it comes up next in line",
+             "goal": "Goal: drop it here for someday, in no order",
+             "finished": "Finished: drop it here when you're done with it"}
+WELL_UNLIT_SPLIT = "Finished: a split's first part finishes with its last part, not on its own"
+WELL_UNLIT_MIX = "Finished: hato's mix never finishes, it keeps bringing new videos"
+WELLS_NAME = "Where it can go: {wells}"
+
+# --- W3.1a rows (app/qt/rows.py): Current's one-line row, the string on it, Up Next flat, the grooves. A row's other
+# words are W2.2's (ROWS_*) and view_rows'.
+ROWS_MORE_TIP = "More\n• Click for what you can do with it"
+ROWS_MOVE_TIP = {"up": "Move up one\n• Click to move it up one place",
+                 "down": "Move down one\n• Click to move it down one place"}
+ROWS_MINE_NOW_TIP = "{tip}\n• Click to mine it now"
+ROWS_MINE_NOW_LATER = "Mine now arrives with Anki Miner's step, in a later build"
+ROWS_NO_MEDIA_LATER = "{tip}\nLink… · Mine text: in a later build"
+ROWS_STONE_TIP = "{label}{state}\n• Click to mark it {action}"
+ROWS_STONE_STATE = {"cut": " · watched", "raw": " · {n} cards in Anki", "rock": ""}
+ROWS_STONE_MISSING = " · no {word} on disk"
+ROWS_STONE_ACTION = {True: "not watched", False: "watched"}
+ROWS_DONE = "Done"
+ROWS_DONE_TIP = "Mark {ep} watched\n• Click: the one after it comes up next"
+ROWS_DONE_ALL_TIP = "Every file of it is watched"
+ROWS_HERO_KNOWN = "{pct}% known · "
+ROWS_HERO_NEW_LINK = "{n} new words ↗"
+ROWS_JOURNEY_TIP = "Open your journey at this episode\n• It opens in its own window"
+ROWS_TOP_LINE_WHERE = "{tip}\nIts setting: Settings → Anki & mining, in a later build"
+ROWS_SOON_LINE_WHERE = "{tip}\nWhere Soon starts is a setting: Settings, in a later build"
+ROWS_ACCESSIBLE_STRING = "{line} · {string}"

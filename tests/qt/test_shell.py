@@ -119,9 +119,9 @@ def test_needs_you_shows_while_anything_is_listed_and_counts_only_unseen(window)
 def test_running_jobs_light_the_bar(window):
     window.show_status(_snap(lines=("Updating known words from Anki", "Generating · Reading your files 3 / 12")))
     assert window.bar_line.full() == "Updating known words from Anki · Generating · Reading your files 3 / 12"
-    assert window.bar_dot.property("busy") == "true"
+    assert window.progress.busy and window.progress.share is None     # W3.1a: the header's hairline, whole and quiet
     window.show_status(_snap())
-    assert window.bar_line.full() == "" and window.bar_dot.property("busy") == "false"
+    assert window.bar_line.full() == "" and not window.progress.busy
 
 
 def test_a_command_line_failure_shows_in_the_bar_within_a_poll_and_never_as_a_dialog(window, services, monkeypatch):
@@ -141,9 +141,10 @@ def test_a_command_line_failure_shows_in_the_bar_within_a_poll_and_never_as_a_di
 
 def test_the_ankiweb_mark_and_connects_line_show_only_when_they_exist(window):
     window.show_status(_snap())
-    assert window.bar_ankiweb.isHidden() and window.bar_connect.isHidden()
+    assert window.anki_mark.isHidden() and window.bar_connect.isHidden()
     window.show_status(_snap(ankiweb="AnkiWeb synced", connect="Connect: 3 waiting"))
-    assert window.bar_ankiweb.text() == "AnkiWeb synced" and not window.bar_connect.isHidden()
+    # W3.1a: the AnkiWeb mark's words live in the emerald's hover
+    assert "AnkiWeb synced" in window.anki_mark.toolTip() and not window.bar_connect.isHidden()
 
 
 def test_open_the_logs_folder_goes_to_a_worker(window, monkeypatch):
@@ -357,7 +358,9 @@ def test_the_logs_button_needs_a_folder(window):
 
 def test_the_bars_lines_are_plain_text(window):
     window.show_status(_snap(ankiweb="<b>AnkiWeb</b> synced"))
-    assert window.bar_ankiweb.textFormat() == Qt.TextFormat.PlainText
+    # W3.1a: in the emerald's hover — a provider's words are never markup there either (escaped, shown as written)
+    assert "&lt;b&gt;AnkiWeb&lt;/b&gt; synced" in window.anki_mark.toolTip()
+    assert "<b>" not in window.anki_mark.toolTip()
 
 
 # --- Esc and Back (✅ G1.2-2) ---------------------------------------------------------------------------------------- #

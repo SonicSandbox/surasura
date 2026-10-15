@@ -687,7 +687,9 @@ def _alone(widget):
     return img
 
 
-def test_the_bars_dot_runs_while_a_job_runs(clock, qapp):
+def test_the_headers_hairline_shows_a_running_job_and_never_moves_the_clock(clock, qapp):
+    # why (W3.1a): the pulsing dot went ("light never pulses"); a job running shows as the header's still hairline,
+    # whole and quiet with no share, and nothing of it runs on the motion clock
     from app.services import status as status_service
     services = shell.Services()
     win = shell.open_window(qapp, services)
@@ -696,9 +698,9 @@ def test_the_bars_dot_runs_while_a_job_runs(clock, qapp):
     try:
         snap = status_service.Snapshot((), None, (), None, None, None, 0.0)
         win.show_status(snap._replace(lines=("Generating · Reading your files 3 / 12",)))
-        assert win.bar_dot.running and win.bar_dot.property("busy") == "true"
+        assert win.progress.busy and not motion.clock().running
         win.show_status(snap)
-        assert not win.bar_dot.running and not win.bar_dot.on_clock
+        assert not win.progress.busy and not motion.clock().running
     finally:
         win.close()
         services.shutdown(0.5)

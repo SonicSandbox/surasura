@@ -16,44 +16,43 @@ from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication
 
 from app import theme
-from app.qt import motion, rows, screens, shell, style
+from app.qt import motion, rows, screens, shell, stones, style
 from app.services import status as status_service
 from app.services import view_rows
-from app.services.view_rows import Chip
 from tests.qt.conftest import wait_until
 from tests.qt.pixels import count, rgb, rgb_array
-from tests.qt.test_current import current, grab, part, seeded   # noqa: F401  (seeded is a fixture)
+from tests.qt.test_current import _stones_sheet, current, grab, part, seeded   # noqa: F401  (fixtures)
 from tests.qt.test_shell import _snap, services, window         # noqa: F401  (window / services are fixtures)
 
 
 # --- G1 --------------------------------------------------------------------------------------------------------------
 def test_an_open_rows_episodes_stand_in_the_shows_columns(seeded):
-    """Each episode's % · new, status and ▶ start where its show row's own do, with the same widths. Why: the
-    episodes must line up under the show's columns; a shift of even a few pixels reads as a ragged table."""
+    """Each episode's % · new stands in its show row's own % · new column (the same left, the same width), and its
+    status ends where the row's Anki count does — a gap before % · new. Why: the episodes must line up under the
+    show's columns; a shift of even a few pixels reads as a ragged table. (W3.1a: the row is one line, its ▶ in the
+    hover group over the string's end, so the episode's ▶ stands before its own status instead.)"""
     seed, win = seeded()
     lst = current(win)
     d = lst.delegate
     i, (kind, row, _l) = next((i, e) for i, e in enumerate(lst.model().entries)
-                              if e[0] == rows.ROW and e[1].episodes)
+                              if e[0] == rows.ROW and e[1].episodes and e[1].status.kind == "in_anki")
     before = lst.visualRect(lst.model().index(i, 0)).height()
     lst.toggle(lst.model().index(i, 0))
     assert wait_until(lambda: lst.visualRect(lst.model().index(i, 0)).height() > before)
     QApplication.processEvents()
 
     rect = lst.visualRect(lst.model().index(i, 0))
-    h = round(theme.SIZES["row"] * rows.fz())
-    show = d.columns(QRect(rect.left(), rect.top(), rect.width(), h))
-    show_play = part(lst, i, "play")[0][1]              # the show row's own ▶, as painted (listed before its episodes')
-    episodes = d._episode_rows(row, QRect(rect.left(), rect.top() + h, rect.width(), rect.height() - h))
+    slab = d.slab_of(rect)
+    show = d.line_geometry(row, slab, opened=True)
+    assert show["stat"].width() > 0, "the row shows its Anki count, or the status check proves nothing"
+    episodes = d._episode_rows(row, QRect(rect.left(), slab.bottom() + 1, rect.width(), rect.bottom() - slab.bottom()))
     assert episodes, "an open row with episodes must list them, or this test checks nothing"
     for r, _ep in episodes:
         cols = d._episode_cols(r)
         assert cols["diff"].left() == show["diff"].left()
         assert cols["diff"].width() == show["diff"].width()
-        assert cols["stat"].left() == show["stat"].left()
-        assert cols["stat"].width() == show["stat"].width()
-        assert cols["play"].left() == show_play.left()     # (this test found an episode's rect 1 px short: fixed)
-        assert cols["play"].width() == show_play.width()
+        assert cols["stat"].right() == show["stat"].right()     # the status ends where the Anki count does
+        assert cols["play"].right() < cols["stat"].left()        # ... and its ▶ stands before it
 
 
 # --- G2 --------------------------------------------------------------------------------------------------------------
@@ -67,7 +66,7 @@ def test_an_open_rows_episode_labels_start_where_the_shows_title_does(seeded):
     lst.toggle(lst.model().index(i, 0))
     assert wait_until(lambda: lst.visualRect(lst.model().index(i, 0)).height() > before)
     rect = lst.visualRect(lst.model().index(i, 0))
-    title_x = rows.RowDelegate.lead(rows.ROW, rect.left())[2]
+    title_x = lst.delegate.line_geometry(row, lst.delegate.slab_of(rect))["main"].left()   # W3.1a: the one-line row
     eps = lst.delegate._episode_rows(row, rect)
     assert eps, "an open row with episodes must lay out its episode rects"
     for r, _ep in eps:
@@ -92,35 +91,36 @@ def test_the_open_heros_episode_labels_start_where_its_title_does(seeded):
 
 
 # --- G3 --------------------------------------------------------------------------------------------------------------
-CHIP_TOP = 10                # the chip's rectangle, in logical px
-CHIP_H = 28
 DPR = 4.0
-TOLERANCE = 40               # per-channel colour distance that still counts as "the dot's green"
 
 
-def test_a_mined_chips_dot_is_centred_on_the_chips_midline(seeded):
-    # why: the dot once sat 1.5 px above the chip's midline, so it looked lifted beside its number
+def test_a_rows_string_runs_along_the_rows_midline(seeded):
+    """W3.1a (the chips are gone: the mined chip's dot retired for the string that took its place): the string's
+    hairline, from the first stone's centre to the last's, sits on the row's midline (± 0.75 px) at 400 %. Why: a
+    string above or below the line's middle reads as lifted beside the title and the numbers."""
     seed, win = seeded()
     lst = current(win)
-    colours = style.colours()
-    dot = rgb(colours["ok"])
-
-    w, h = 60, 40
+    d = lst.delegate
+    i, (kind, row, _l) = next((i, e) for i, e in enumerate(lst.model().entries)
+                              if e[0] == rows.ROW and len(e[1].episodes) >= 3)
+    slab = d.slab_of(lst.visualRect(lst.model().index(i, 0)))
+    w, h = slab.width(), slab.height()
+    sheet = stones.build(DPR, "M")
     img = QImage(int(w * DPR), int(h * DPR), QImage.Format.Format_ARGB32)
     img.setDevicePixelRatio(DPR)
-    img.fill(QColor(colours["bg"]))
+    img.fill(rows.c("surface"))
     p = QPainter(img)
-    lst.delegate._paint_chip(p, QRect(10, CHIP_TOP, 60, CHIP_H), Chip("3", False, False, True, ""), DPR)
-    p.end()
-
-    arr = rgb_array(img)
-    mask = np.all(np.abs(arr.astype(np.int16) - dot) <= TOLERANCE, axis=2)
-    dot_rows = np.where(mask.any(axis=1))[0]
-    assert len(dot_rows) >= 12, "the mined chip's dot is not painted in the ok colour at all"
-
-    dot_mid = (dot_rows.min() + dot_rows.max() + 1) / 2.0 / DPR     # logical px
-    chip_mid = CHIP_TOP + CHIP_H / 2.0
-    assert abs(dot_mid - chip_mid) <= 0.75, f"dot midline {dot_mid} vs chip midline {chip_mid}"
+    try:
+        d._paint_current(p, row, QRect(0, 0, w, h), False, DPR, sheet, tw=d.title_w(w))
+    finally:
+        p.end()
+    g = d.line_geometry(row, QRect(0, 0, w, h), d.title_w(w))
+    arr = rgb_array(img)[:, int(g["gstr"].left() * DPR):int(g["gstr"].right() * DPR)]
+    hairline = (np.abs(arr.astype(np.int16) - rgb(theme.ROW_COLOURS["string"])) <= 3).all(axis=2).sum(axis=1)
+    hits = np.where(hairline > 8)[0]
+    assert len(hits) >= 2, "the string's hairline is not painted at all"
+    mid = (hits.min() + hits.max() + 1) / 2.0 / DPR
+    assert abs(mid - h / 2.0) <= 0.75, f"hairline midline {mid} vs the row's {h / 2.0}"
 
 
 # --- G4 --------------------------------------------------------------------------------------------------------------
@@ -183,8 +183,9 @@ def test_a_key_press_shows_the_focus_ring_and_a_click_on_a_row_takes_it_away(see
 
 
 # --- G6 --------------------------------------------------------------------------------------------------------------
-def test_an_open_rows_episodes_stand_on_the_lists_ground_not_a_surface(seeded):
-    """G2.3 R1: an open row (not the hero) has no box under its episodes: the list's bg shows, surface does not."""
+def test_an_open_rows_episodes_stand_on_the_opened_rows_ground_not_a_surface(seeded):
+    """G2.3 R1, as W3.1a builds it: an open row (not the hero) has no surface card under its episodes — they stand on
+    the opened row's own ground (`open-row`, list-r14m :705, flat), and the surface does not show."""
     seed, win = seeded(size=(1280, 1100))
     lst = current(win)
     i, (kind, row, _l) = next((i, e) for i, e in enumerate(lst.model().entries)
@@ -198,14 +199,14 @@ def test_an_open_rows_episodes_stand_on_the_lists_ground_not_a_surface(seeded):
     QApplication.sendEvent(lst.viewport(), QEvent(QEvent.Type.Leave))
     QApplication.processEvents()
     rect = lst.visualRect(lst.model().index(i, 0))
-    head = round(theme.SIZES["row"] * rows.fz())
+    head = theme.ROW_LINE["gap"] // 2 + lst.delegate._line_h()        # the slab's top, then its one line
     # The episodes' area under the row's head, inset so the rule line and the row's edges stay out of it.
     area = QRect(rect.left(), rect.top() + head, rect.width(), rect.height() - head).adjusted(12, 4, -12, -4)
     arr = rgb_array(lst.viewport().grab(area))
     total = area.width() * area.height()
     c = style.colours()
     # Why: a surface box under the episodes is the old look (the card's ground); it must not come back on a row.
-    assert count(arr, c["bg"], 2) > total * 0.5
+    assert count(arr, theme.ROW_COLOURS["open-row"], 2) > total * 0.5
     assert count(arr, c["surface"], 2) < total * 0.02
 
 
@@ -299,17 +300,14 @@ def test_a_needs_you_cards_line_is_in_its_tooltip_after_the_title(seeded):
 
 
 # --- G11 --------------------------------------------------------------------------------------------------------------
-def test_the_bars_line_starts_beside_its_dot_with_no_gap_of_its_own(window):
-    # why: the dot's widget already holds its glow's room (GLOW on each side), so the line starts GLOW px past the
-    # dot's painted edge; a layout gap of its own would push it further out
+def test_the_bars_line_starts_at_the_bars_own_edge(window):
+    # why (W3.1a): with the pulsing dot gone, the status line opens the bar itself, at the bar's left padding, not
+    # after a hole where the dot was
     window.bar_line.set_full("Couldn't open Ep 1: no video beside it on disk")
     QApplication.processEvents()
     line = window.bar_line.geometry()
-    dot = window.bar_dot.geometry()
-    assert line.width() > 0 and dot.width() > 0, "the bar is not laid out, so the gap would be meaningless"
-    dot_right = dot.center().x() + motion.Spinner.DOT / 2
-    gap = line.left() - dot_right
-    assert gap <= motion.GLOW + 1
+    assert line.width() > 0, "the bar is not laid out, so its edge would be meaningless"
+    assert line.left() <= window.footer.layout().contentsMargins().left() + 1
 
 
 # --- G12 --------------------------------------------------------------------------------------------------------------
@@ -319,42 +317,41 @@ def _matches(colour, target, tol=6):
         (colour.red(), colour.green(), colour.blue()), (target.red(), target.green(), target.blue())))
 
 
-def test_the_goal_strip_spans_the_window_and_its_box_sits_an_em_from_each_edge(seeded):
-    """Edge to edge: the strip has no side margins of its own, and its box is `edge_room()` px from each edge (±1), so
-    the box never reads as a card floating in the page."""
+def test_the_goal_dock_spans_its_page_edge_to_edge(seeded):
+    """W3.1a: Goal's dock is part of the bottom band, the page's full width with no side margins of its own (its bar
+    keeps the dock's padding inside, `theme.FRAME["dock-pad"]`)."""
     seed, win = seeded()
-    gs = win.page_widgets["current"].goal_strip
-    assert gs.width() == gs.parentWidget().width()
-    dpr = gs.devicePixelRatioF() or 1.0
-    image = gs.grab().toImage()
-    row = round(gs.height() * dpr / 2)           # the middle row: through the box, clear of its rounded corners
-    line = QColor(style.colours()["line"])
-    columns = [x for x in range(image.width()) if _matches(image.pixelColor(x, row), line)]
-    assert columns, "no border colour found on the strip's middle row"
-    edge = screens.edge_room()
-    left = columns[0] / dpr
-    right = columns[-1] / dpr
-    assert abs(left - edge) <= 1, f"left border at {left} px, expected an em ({edge} px) from the edge"
-    assert abs(right - (gs.width() - edge - 1)) <= 1, f"right border at {right} px, expected {gs.width() - edge - 1}"
+    dock = win.dock
+    assert dock.isVisible() and dock.width() == dock.parentWidget().width()
+    bar = dock.bar_rect()
+    assert 0 < bar.left() and bar.right() < dock.width()
 
 
 # --- G13 --------------------------------------------------------------------------------------------------------------
-def test_the_soon_line_is_a_quiet_hairline_in_the_separator_colour_with_no_word(seeded):
-    """G2.3 L1: the Soon line is a 1 px hairline in the separators' colour (line), with no word, so it reads
-    quieter than the dashed top-20 line; the pixel test is on the line's own strip (the row's last strip)."""
+def _over(top, ground):
+    r, g, b, a = theme.parse(top)
+    gr, gg, gb, _ga = theme.parse(ground)
+    return "#%02x%02x%02x" % tuple(round(t * a + u * (1 - a)) for t, u in ((r, gr), (g, gg), (b, gb)))
+
+
+def test_the_soon_line_is_a_quiet_lit_lip_with_no_word(seeded):
+    """G2.3 L1, as W3.1a builds it: the Soon line is the top-20 groove made quieter — its lit lip alone (1 px), no dark
+    line and no word — in its own strip, the row's last; so it reads quieter than the top-20 line (groove and lip)."""
     seed, win = seeded()
     lst = current(win)
     i = next(i for i, e in enumerate(lst.model().entries) if any(ln.kind == "soon" for ln in e[2]))
     lst.scrollTo(lst.model().index(i, 0), lst.ScrollHint.PositionAtTop)
     QApplication.processEvents()
+    QApplication.sendEvent(lst.viewport(), QEvent(QEvent.Type.Leave))     # unlit: not under the hand
+    QApplication.processEvents()
     col = style.colours()
-    assert col["line"] != col["top20-line"]          # the premise: the two rules differ in colour
     rect, arr = grab(lst, i)
-    h = round(15 * rows.fz() + 6)                    # the strip the Soon line is painted in
-    strip = arr[rect.height() - h:]
+    strip = arr[rect.height() - theme.ROW_LINE["line"]:]                  # the strip the Soon line is painted in
     width = strip.shape[1]
-    best = max(count(strip[r:r + 1], col["line"], tolerance=3) for r in range(strip.shape[0]))
-    assert best >= 0.6 * width                       # one pixel row of the strip is the hairline
+    lip = _over(col["groove-lip"], col["bg"])
+    best = max(count(strip[r:r + 1], lip, tolerance=2) for r in range(strip.shape[0]))
+    assert best >= 0.9 * width                       # one pixel row of the strip is the lip, across the row
+    assert count(strip, col["groove"], tolerance=1) == 0       # no dark groove line: quieter than the top-20 line
     assert count(strip, col["ink-faint"], tolerance=10) == 0   # no word in the faint ink ...
     assert count(strip, col["ink-dim"], tolerance=10) == 0     # ... nor in the dim ink
 
@@ -579,3 +576,39 @@ def test_the_finished_tab_is_not_set_again_when_its_count_did_not_change(seeded,
     assert calls == []
     win.show_library(view._replace(counts=view.counts._replace(finished=view.counts.finished + 1)))
     assert len(calls) == 1                                     # a new count: set once
+
+
+# --- W3.1a: the one-line row's columns ----------------------------------------------------------------------------------
+@pytest.mark.parametrize("width", [1024, 1280])
+@pytest.mark.parametrize("size", ["S", "M", "L"])
+def test_every_current_rows_title_string_and_numbers_line_up_at_every_size_and_width(qapp, seeded, size, width):
+    """W3.1a §1 *Rows*: one title width for every row, so the titles, the strings and the numbers stand in columns
+    down the list — at Small, Medium and Large, at 1024 and 1280 wide. Each row is one line (60 × the text size), and
+    the string keeps room between the title and the Anki count. Why: a list whose strings start at different places
+    reads as a ragged table, and a learner compares rows by their strings."""
+    seed, win = seeded(size=(width, 800))
+    lst = current(win)
+    theme_name, _size, language = style.current()
+    style.apply(qapp, theme_name, size, language)
+    try:
+        d = lst.delegate
+        f = rows.fz()
+        geos = []
+        for i, (kind, row, lines) in enumerate(lst.model().entries):
+            if kind != rows.ROW or row.key == lst.model().open_key:
+                continue
+            rect = lst.visualRect(lst.model().index(i, 0))
+            slab = d.slab_of(rect)
+            assert slab.height() == round(theme.ROW_LINE["height"] * f)          # one line at every size
+            geos.append(d.line_geometry(row, slab))
+        assert len(geos) >= 4, "the seed puts several rows in Current, or nothing lines up"
+        for name, edge in (("main", "left"), ("main", "width"), ("gstr", "left"), ("diff", "left"), ("diff", "width"),
+                           ("stat", "right"), ("art", "left"), ("art", "width")):
+            assert len({getattr(g[name], edge)() for g in geos}) == 1, (name, edge, size, width)
+        g = geos[0]
+        assert g["main"].width() >= round(80 * f)                                # the title's floor
+        assert g["art"].right() < g["main"].left() < g["main"].right() < g["gstr"].left()
+        assert g["gstr"].right() < g["stat"].left() and g["stat"].left() + g["stat"].width() < g["diff"].left()
+        assert g["diff"].right() <= lst.viewport().width()                     # nothing pushed off the row
+    finally:
+        style.apply(qapp, theme_name, "M", language)

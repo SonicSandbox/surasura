@@ -81,7 +81,7 @@ QWidget#tabbar {{ background: {c['frame']}; }}
 QToolButton#tab {{ background: transparent; border: 0; border-bottom: 2px solid transparent; color: {c['ink-dim']};
   padding: 10px 14px 9px 14px; {font('tab')} }}
 QToolButton#tab:hover {{ color: {c['ink']}; }}
-QToolButton#tab:checked {{ color: {c['ink']}; border-bottom: 2px solid {iris}; }}
+QToolButton#tab:checked {{ color: {c['ink']}; }}
 QToolButton#tab:focus {{ color: {c['ink']}; border: 2px solid {c['accent']}; border-radius: 6px;
   padding: 8px 12px 9px 12px; }}
 QWidget#footer {{ background: {c['frame']}; }}
@@ -201,6 +201,24 @@ QLabel#sheetline {{ color: {c['ink-dim']}; {font('body')} font-weight: 400; }}
 QWidget#needscard {{ background: {c['slab']}; border: 0; border-top: 1px solid {c['line-hi']};
   border-bottom: 1px solid {c['groove']}; border-radius: {theme.RADII['r']}px; }}
 QLabel#needstitle {{ color: {c['ink']}; {font('needs-title')} }}
+"""
+    # --- W3.1a: the frame (frame.py) — the current tab's line is the vein (painted); the level ▾'s pop: its words,
+    # Generate quiet (its stale and failed looks kept), *Open your journey* as a link
+    rules += f"""
+QLabel#popeyebrow {{ color: {c['overlay-ink-dim']}; {font('eyebrow')} letter-spacing: 1px; }}
+QLabel#popband {{ color: {c['ink']}; {font('sheet-heading')} }}
+QLabel#popline {{ color: {c['overlay-ink-dim']}; {font('body')} font-weight: 400; }}
+QWidget#levelpop QPushButton#generate {{ background: transparent; color: {c['ink']};
+  border: 1px solid {c['overlay-edge-top']}; }}
+QWidget#levelpop QPushButton#generate:hover {{ background: {c['overlay-hover']}; border-color: {c['accent']}; }}
+QWidget#levelpop QPushButton#generate[look="stale"] {{ border: 1px solid {c['generate-stale-glow']}; }}
+QWidget#levelpop QPushButton#generate[look="failed"] {{ border: 1px solid {c['warn']}; color: {c['warn']}; }}
+QWidget#levelpop QPushButton#generate:disabled {{ color: {c['overlay-ink-faint']}; }}
+QWidget#levelpop QPushButton#generate:focus {{ border: 2px solid {c['accent']}; }}
+QWidget#levelpop QPushButton#popjourney {{ background: transparent; color: {c['accent']}; border: 0; padding: 0;
+  text-align: left; }}
+QWidget#levelpop QPushButton#popjourney:hover {{ color: {c['ink']}; }}
+QWidget#levelpop QPushButton#popjourney:focus {{ border: 2px solid {c['accent']}; padding: 0 {px(4)}; }}
 """
     _state["generated_ms"] = (time.perf_counter() - t0) * 1000
     return rules

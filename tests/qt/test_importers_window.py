@@ -709,6 +709,24 @@ def test_extract_glues_every_value_to_its_option(main, runs, tmp_path):
     assert "--value=---" in argv and "--name=-draft" in argv and f"--file={src}" in argv
 
 
+def test_a_chinese_extract_runs_in_chinese_with_the_section_chosen(main, runs, tmp_path):
+    """AD2-12: the windows ran on Japanese data only; a Chinese file through the Chinese window names zh to the child."""
+    main.services.settings.set({"target_language": "zh"})
+    w = importers.open_extract(main)
+    assert wait_until(lambda: w.language == "zh")
+    src = tmp_path / "夜市.txt"
+    with open(os.path.join(RES, "zh", "chinese_text_1.txt"), encoding="utf-8") as f:
+        src.write_text(f.read() * 3, encoding="utf-8")
+    w.path.setText(str(src))
+    w.choose(str(src))
+    assert w.name.text() == "夜市"
+    w.section.setCurrentIndex(2)
+    w.go.click()
+    assert wait_until(lambda: runs.calls)
+    argv = runs.calls[0].argv
+    assert argv[1:3] == ["--language", "zh"] and "--name=夜市" in argv and argv[argv.index("--section") + 1] == "goal"
+
+
 def test_the_real_extract_child_adds_its_parts_to_the_library(main, tmp_path, monkeypatch):
     from tests.test_library_store_support import library, write_manifest
     monkeypatch.setenv(extract.NO_HELPER_ENV, "1")      # the child's detached helper would outlive this test's folders

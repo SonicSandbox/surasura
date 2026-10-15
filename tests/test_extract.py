@@ -417,3 +417,24 @@ def test_a_long_name_is_cut_so_a_grouped_splits_paths_stay_short():
     split passed Windows' 260-character path on a system without long paths."""
     assert extract.NAME_LIMIT <= 60
     assert len(extract.clean_name("吾輩は猫である" * 20)) == extract.NAME_LIMIT
+
+
+# --- AD2-12: what the tests didn't reach -------------------------------------------------------------------------- #
+def test_an_epub_extracted_into_a_section_enters_the_library_as_a_book(tmp_path):
+    """The book marker travels with the copy into the section's folder, and the store's rows say epub (the report's
+    source badge) — not only the parts left in Processed."""
+    from app.path_utils import SOURCE_MARKER
+    data_dir, _uf = _store_library("ja")
+    src = _epub(tmp_path / "旅の記録.epub", ["<p>吾輩は猫である。名前はまだ無い。</p>" * 40,
+                                             "<h1>第二章</h1><p>どこで生れたかとんと見当がつかぬ。</p>" * 40])
+    result = extract.extract(src, "旅の記録", "ja", section="goal", value="300", spawn=False)
+    assert result.code == extract.EXIT_DONE and result.in_library
+    copy = os.path.join(data_dir, ls.FOLDER_OF_TIER["goal"], "旅の記録")
+    with open(os.path.join(copy, SOURCE_MARKER), encoding="utf-8") as f:
+        assert json.load(f)["source_type"] == "epub"
+    store = _open("ja")
+    try:
+        rows = [e for _i, e, _a in store.ordered("goal") if e["physical_path"].startswith("GoalContent/旅の記録/")]
+    finally:
+        store.close()
+    assert len(rows) == result.parts and {e.get("source_type") for e in rows} == {"epub"}

@@ -1014,6 +1014,11 @@ def _broke(key, info):
 
 
 def clear():
-    """Drop every sheet (tests; a theme change would call it)."""
+    """Drop every sheet (tests; a theme change would call it), and every window's hold with the builds it deferred
+    (AD-13: a window that never painted nor went must not hold every later build back)."""
     _SHEETS.clear()
     _FAILED.clear()
+    _HELD.clear()
+    for key in _DEFERRED:
+        _BUILDING.pop(key, None)                # never started: asked for again, it starts
+    _DEFERRED.clear()

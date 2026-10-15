@@ -119,8 +119,8 @@ def make_writer(lib):
     def make(heard=None, **kw):
         heard = heard or Heard()
         kw.setdefault("retry", 0.05)
-        w = M.Writer(lib.opener(), lib.language, journal_file=M.journal_path(lib.language), words=WORDS,
-                     **heard.kw(), **kw)
+        kw.setdefault("words", WORDS)
+        w = M.Writer(lib.opener(), lib.language, journal_file=M.journal_path(lib.language), **heard.kw(), **kw)
         w.start()
         made.append(w)
         return w, heard
@@ -179,10 +179,11 @@ class ProgramHolder:
 
 def journal(language):
     path = M.journal_path(language)
-    if not os.path.exists(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:                           # (none, or removed between a look and the read)
         return None
-    with open(path, encoding="utf-8") as f:
-        return json.load(f)
 
 
 def journalled(language):
@@ -639,6 +640,10 @@ class StubOpener:
 
     def handle(self):
         return self.store if self.mode == "store" else None
+
+    @property
+    def data_dir(self):                                 # `StoreOpener.data_dir`: the copier's folder
+        return getattr(self.store, "data_dir", None)
 
     def close(self):
         self.closed += 1
@@ -1501,15 +1506,17 @@ def test_an_explorer_drop_never_copies_over_a_file(lib, make_writer, tmp_path):
     w.insert_at([same], "now", before_id=now[0])
     assert h.until(lambda: heard.saved)
     first = heard.saved[0][0].added[0]
-    w.insert_at([same], "now", before_id=now[0])         # the same file again: already in the library
-    assert h.until(lambda: len(heard.saved) == 2)
-    assert heard.saved[1][0].added == [] and [i for _p, i, _t in heard.saved[1][0].existing] == [first]
+    rereads = heard.rereads
+    w.insert_at([same], "now", before_id=now[0])         # the same file again: already in the library (AD-9)
+    assert h.until(lambda: heard.rereads > rereads)      # the window drops its ghost row …
+    assert len(heard.saved) == 1 and list(w._undo) == [heard.saved[0][0]]  # … and nothing joins the Undo stack
+    assert lib.ids("now").count(first) == 1 and _in_folder(lib, "HighPriority") == [_DROPPED[lib.language]]
     differing = _outside_file(tmp_path / "Explorer2", lib.language, extra="\n")
     w.insert_at([differing], "now", before_id=now[0])
-    assert h.until(lambda: len(heard.saved) == 3)
+    assert h.until(lambda: len(heard.saved) == 2)
     base, ext = os.path.splitext(_DROPPED[lib.language])
     assert _in_folder(lib, "HighPriority") == sorted([_DROPPED[lib.language], f"{base} (2){ext}"])
-    assert lib.store.item(heard.saved[2][0].added[0])["rel_path"] == f"HighPriority/{base} (2){ext}"
+    assert lib.store.item(heard.saved[1][0].added[0])["rel_path"] == f"HighPriority/{base} (2){ext}"
 
 
 def test_an_explorer_drop_of_a_file_in_the_library_folder_places_it_without_a_copy(lib, make_writer):
@@ -1521,12 +1528,35 @@ def test_an_explorer_drop_of_a_file_in_the_library_folder_places_it_without_a_co
         f.write(text)
     soon = lib.ids("soon")
     w.insert_at([inside], "soon", before_id=soon[0])
+    assert h.until(lambda: lib.ids("soon")[0] not in soon)
+    new = lib.ids("soon")[0]
+    assert lib.store.item(new)["rel_path"] == f"LowPriority/{_DROPPED[lib.language]}"
+    assert _in_folder(lib, "LowPriority") == [_DROPPED[lib.language]]
+    # (AD-9 / AD-10) nothing it copied, so nothing its Undo could take back for good: removing the row of a file
+    # in a tier's folder would come undone at the next disk sync — the drop never joins the Undo stack
+    assert h.until(lambda: heard.rereads) and heard.saved == [] and not w.can_undo()
+
+
+def test_AD10_undoing_a_drop_takes_out_only_the_rows_of_the_files_it_copied(lib, make_writer, tmp_path):
+    """A drop of an outside file and a file already in a tier's folder: its Undo trashes the copy and takes its row
+    out; the learner's own file keeps its file and its row (a sync would only add it back)."""
+    w, heard = make_writer()
+    inside = os.path.join(lib.data_dir, "LowPriority", "既に_" + _DROPPED[lib.language])
+    with open(os.path.join(h.RESOURCES, lib.language, h.LIBRARY[lib.language][0]), encoding="utf-8") as f:
+        text = f.read()
+    with open(inside, "w", encoding="utf-8") as f:
+        f.write(text)
+    now = lib.ids("now")
+    w.insert_at([_outside_file(tmp_path / "Explorer", lib.language), inside], "now", before_id=now[0])
     assert h.until(lambda: heard.saved)
-    new = heard.saved[0][0].added[0]
-    assert lib.ids("soon")[0] == new and _in_folder(lib, "LowPriority") == [_DROPPED[lib.language]]
-    w.undo()                                            # its Undo leaves the learner's own file where it is
+    added = heard.saved[0][0].added
+    assert len(added) == 2
+    copied = [i for i in added if lib.store.item(i)["rel_path"].startswith("HighPriority/")]
+    kept = [i for i in added if i not in copied]
+    w.undo()
     assert h.until(lambda: heard.undone)
-    assert lib.store.item(new) is None and os.path.isfile(inside)
+    assert lib.store.item(copied[0]) is None and _in_folder(lib, "HighPriority") == []
+    assert lib.store.item(kept[0]) is not None and os.path.isfile(inside) and heard.notes == []
 
 
 def test_an_explorer_drop_whose_anchor_went_meanwhile_lands_beside_the_nearest_neighbour(lib, make_writer, tmp_path):
@@ -1638,6 +1668,286 @@ def test_an_explorer_drop_cant_go_to_finished(stub_writer):
     w.insert_at(["x.srt"], "graduated")
     assert h.until(lambda: heard.notes)
     assert heard.notes == [WORDS["failed"].format(error="files can't be dropped into 'graduated'")]
+
+
+def _slow_copy(monkeypatch):
+    """Each drop's copy waits for the test's gate (a big file, a slow USB stick or share). -> (started, gate)."""
+    real = M._copy_whole
+    started, gate = threading.Event(), threading.Event()
+
+    def slow(src, dest):
+        started.set()
+        assert gate.wait(10)
+        return real(src, dest)
+    monkeypatch.setattr(M, "_copy_whole", slow)
+    return started, gate
+
+
+def test_R2B1_a_move_given_behind_a_slow_copy_is_saved_before_the_copy_ends(lib, make_writer, tmp_path, monkeypatch):
+    """G1: a move is saved within moments, whatever an Explorer drop is copying; the drop lands once its file is in."""
+    started, gate = _slow_copy(monkeypatch)
+    w, heard = make_writer()
+    goal, now = lib.ids("goal"), lib.ids("now")
+    try:
+        w.insert_at([_outside_file(tmp_path / "Explorer", lib.language)], "now", before_id=now[0], label="drop")
+        assert started.wait(5)
+        w.move([goal[5]], "goal", before_id=goal[0], label="move")
+        assert h.until(lambda: heard.saved)                       # saved while the copy still runs
+        assert [label for _c, label in heard.saved] == ["move"] and lib.ids("goal")[0] == goal[5]
+        assert w.pending() == 1                                   # the drop: still copying, counted for the quit
+    finally:
+        gate.set()
+    assert h.until(lambda: len(heard.saved) == 2)
+    assert heard.saved[1][1] == "drop" and lib.ids("now")[0] == heard.saved[1][0].added[0]
+
+
+def test_R2B1_a_move_behind_a_slow_copy_on_a_busy_store_is_journalled_before_the_copy_ends(
+        lib, make_writer, tmp_path, monkeypatch, short_lock_wait):
+    started, gate = _slow_copy(monkeypatch)
+    w, heard = make_writer()
+    goal = lib.ids("goal")
+    holder = LockHolder(lib.db)
+    try:
+        w.insert_at([_outside_file(tmp_path / "Explorer", lib.language)], "now")
+        assert started.wait(5)
+        w.move([goal[5]], "goal")
+        assert h.until(lambda: journalled(lib.language) == [("move", [goal[5]])])
+    finally:
+        gate.set()
+        holder.release()
+    assert h.until(lambda: len(heard.saved) == 2)
+
+
+def test_AD2_a_drop_on_a_busy_store_at_quit_leaves_its_copy_whole_for_the_next_disk_sync(lib, make_writer, tmp_path,
+                                                                                          short_lock_wait):
+    """The quit runs out of time while the store is busy: the drop's file is already whole in the tier's folder, so
+    the next start's disk sync takes it in — never lost, never half a file, no stray `.part`."""
+    w, heard = make_writer()
+    goal = lib.ids("goal")
+    holder = LockHolder(lib.db)
+    try:
+        w.move([goal[4]], "goal")                       # a move waiting ahead of it
+        w.insert_at([_outside_file(tmp_path / "Explorer", lib.language)], "now")
+        assert h.until(lambda: _in_folder(lib, "HighPriority") == [_DROPPED[lib.language]])
+        assert not w.finish(time.monotonic() + 0.5)     # the quit: the store never freed
+        assert journalled(lib.language) == [("move", [goal[4]])]
+    finally:
+        holder.release()
+    folder = os.path.join(lib.data_dir, "HighPriority")
+    assert _in_folder(lib, "HighPriority") == [_DROPPED[lib.language]]
+    assert not [n for n in os.listdir(folder) if n.endswith(M.PART)]
+    with open(os.path.join(folder, _DROPPED[lib.language]), encoding="utf-8") as f, \
+            open(os.path.join(tmp_path, "Explorer", _DROPPED[lib.language]), encoding="utf-8") as g:
+        assert f.read() == g.read()
+    lib.store.sync_disk()                               # the next start
+    rel = f"HighPriority/{_DROPPED[lib.language]}"
+    assert any(lib.store.item(i)["rel_path"] == rel for t in ("now", "soon", "goal", "arrivals") for i in lib.ids(t))
+    w2, _heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: journal(lib.language) is None)
+    assert lib.ids("goal")[0] == goal[4]
+
+
+def test_AD2_a_drop_given_during_a_drag_is_copied_at_once_and_lands_after_the_release(lib, make_writer, tmp_path):
+    w, heard = make_writer()
+    w.hold()
+    w.insert_at([_outside_file(tmp_path / "Explorer", lib.language)], "now")
+    assert h.until(lambda: _in_folder(lib, "HighPriority") == [_DROPPED[lib.language]])
+    time.sleep(0.1)
+    assert heard.saved == [] and w.pending() == 1
+    w.release()
+    assert h.until(lambda: heard.saved)
+
+
+def test_AD3_a_copy_that_fails_part_way_leaves_no_file_and_no_part(lib, make_writer, tmp_path, monkeypatch):
+    import shutil
+
+    def broken(src, dst, *a, **kw):
+        dst.write(src.read(64))                         # half a file …
+        raise OSError(28, "No space left on device")    # … then the disk is full
+    monkeypatch.setattr(shutil, "copyfileobj", broken)
+    w, heard = make_writer()
+    now = lib.ids("now")
+    w.insert_at([_outside_file(tmp_path / "Explorer", lib.language)], "now", before_id=now[0])
+    assert h.until(lambda: heard.notes)
+    assert heard.notes[0].startswith(WORDS["failed"].split("{")[0]) and heard.saved == []
+    assert _in_folder(lib, "HighPriority") == []        # neither the half file nor its part
+    assert lib.ids("now") == now
+
+
+def test_AD3_a_whole_copy_carries_the_files_bytes_and_leaves_no_part(lib, make_writer, tmp_path):
+    w, heard = make_writer()
+    src = _outside_file(tmp_path / "Explorer", lib.language)
+    w.insert_at([src], "now")
+    assert h.until(lambda: heard.saved)
+    folder = os.path.join(lib.data_dir, "HighPriority")
+    with open(src, "rb") as a, open(os.path.join(folder, _DROPPED[lib.language]), "rb") as b:
+        assert a.read() == b.read()
+    assert not [n for n in os.listdir(folder) if n.endswith(M.PART)]
+
+
+def test_AD12_a_file_another_program_writes_under_the_same_name_meanwhile_is_never_written_over(
+        lib, make_writer, tmp_path, monkeypatch):
+    """The name was free when looked at; another program (an importer, the YouTube module) writes it before the copy
+    is renamed: the copy steps to `name (2)`, the other file is left as it was."""
+    real = ls._rename_no_overwrite
+    folder = os.path.join(lib.data_dir, "HighPriority")
+    theirs = os.path.join(folder, _DROPPED[lib.language])
+
+    def racing(src, dst):
+        if os.path.normcase(os.path.abspath(dst)) == os.path.normcase(os.path.abspath(theirs)) \
+                and not os.path.exists(theirs):
+            with open(theirs, "w", encoding="utf-8") as f:
+                f.write("別のプログラムのファイル")
+        return real(src, dst)
+    monkeypatch.setattr(ls, "_rename_no_overwrite", racing)
+    w, heard = make_writer()
+    w.insert_at([_outside_file(tmp_path / "Explorer", lib.language)], "now")
+    assert h.until(lambda: heard.saved)
+    base, ext = os.path.splitext(_DROPPED[lib.language])
+    with open(theirs, encoding="utf-8") as f:
+        assert f.read() == "別のプログラムのファイル"
+    assert lib.store.item(heard.saved[0][0].added[0])["rel_path"] == f"HighPriority/{base} (2){ext}"
+    assert not [n for n in os.listdir(folder) if n.endswith(M.PART)]
+
+
+@pytest.mark.parametrize("named", [True, False])
+def test_AD4_only_content_files_are_taken_and_the_rest_are_named_in_a_note(lib, make_writer, tmp_path, named):
+    """Explorer hands over whatever was dragged: a shortcut, a video, a picture, a Word file, a folder. Only what the
+    disk sync and Add Files take (text and subtitles) comes in; the rest is named, never silently dropped."""
+    words = dict(WORDS, not_content="Left out (not text or subtitles): {names}") if named else WORDS
+    w, heard = make_writer(words=words)
+    src = tmp_path / "Explorer"
+    keep = _outside_file(src, lib.language)
+    others = []
+    for name in ("番組.lnk", "第1話.mkv", "表紙.jpg", "メモ.docx"):
+        (src / name).write_bytes(b"\x00\x01binary")
+        others.append(str(src / name))
+    (src / "フォルダ").mkdir()
+    others.append(str(src / "フォルダ"))
+    w.insert_at(others[:2] + [keep] + others[2:], "now")
+    assert h.until(lambda: heard.saved and heard.notes)
+    names = "番組.lnk, 第1話.mkv, 表紙.jpg, メモ.docx, フォルダ"
+    expected = words["not_content"].format(names=names) if named else WORDS["failed"].format(error=names)
+    assert heard.notes == [expected]
+    assert len(heard.saved[0][0].added) == 1
+    assert _in_folder(lib, "HighPriority") == [_DROPPED[lib.language]]
+    assert not set(os.listdir(os.path.join(lib.data_dir, "HighPriority"))) & {os.path.basename(p) for p in others}
+
+
+def test_AD4_a_drop_of_nothing_but_other_files_places_nothing_and_says_so(lib, make_writer, tmp_path):
+    w, heard = make_writer()
+    os.makedirs(tmp_path / "Explorer")
+    (tmp_path / "Explorer" / "第1話.mkv").write_bytes(b"\x00video")
+    now = lib.ids("now")
+    w.insert_at([str(tmp_path / "Explorer" / "第1話.mkv")], "now")
+    assert h.until(lambda: heard.notes and heard.rereads)
+    assert heard.notes == [WORDS["failed"].format(error="第1話.mkv")] and heard.saved == []
+    assert lib.ids("now") == now and not os.path.exists(os.path.join(lib.data_dir, "HighPriority", "第1話.mkv"))
+
+
+def test_AD11_a_file_dragged_out_of_the_trash_is_copied_in_never_placed_where_the_purge_deletes_it(
+        lib, make_writer, tmp_path):
+    w, heard = make_writer()
+    trash = os.path.join(lib.data_dir, ".trash")
+    os.makedirs(trash, exist_ok=True)
+    gone = os.path.join(trash, _DROPPED[lib.language])
+    with open(_outside_file(tmp_path / "Explorer", lib.language), encoding="utf-8") as f:
+        text = f.read()
+    with open(gone, "w", encoding="utf-8") as f:
+        f.write(text)
+    w.insert_at([gone], "now")
+    assert h.until(lambda: heard.saved)
+    new = heard.saved[0][0].added[0]
+    assert lib.store.item(new)["rel_path"] == f"HighPriority/{_DROPPED[lib.language]}"
+    assert os.path.isfile(gone)                         # the trash's copy is left as it is
+    w.undo()                                            # a copy it made: its Undo takes it back
+    assert h.until(lambda: heard.undone)
+    assert lib.store.item(new) is None and _in_folder(lib, "HighPriority") == []
+
+
+# AD-6: the Finished toast's Undo takes its cards' choice back too ----------------------------------------------- #
+def test_AD6_the_drops_undo_puts_it_back_with_the_cards_its_follow_up_took_out(lib, make_writer):
+    w, heard = make_writer()
+    now = lib.ids("now")
+    lib.store.pin([now[1]])
+    pinned = _learning(lib, now[1])[1]
+    w.set_tier([now[1]], "graduated", label="finished")             # the drop on the Finished well
+    assert h.until(lambda: heard.saved)
+    drop = heard.saved[0][0]
+    w.set_finished([now[1]], keep_cards=False, follows=drop)        # the toast's *Take its new cards out*
+    assert h.until(lambda: len(heard.saved) == 2)
+    assert _learning(lib, now[1]) == (0, None)
+    w.undo(drop, label="back")                                      # the toast's Undo
+    assert h.until(lambda: heard.undone)
+    assert heard.notes == [] and heard.undone == [(drop, "back")]
+    assert lib.store.place_of(now[1])[0] in ("now", "soon") and _learning(lib, now[1]) == (1, pinned)
+    assert not w.can_undo()                                         # both changes left the Undo stack
+
+
+def test_AD6_ctrl_z_still_takes_the_cards_choice_back_first_then_the_drop(lib, make_writer):
+    w, heard = make_writer()
+    now = lib.ids("now")
+    lib.store.pin([now[1]])
+    pinned = _learning(lib, now[1])[1]
+    w.set_tier([now[1]], "graduated")
+    assert h.until(lambda: heard.saved)
+    w.set_finished([now[1]], keep_cards=False, follows=heard.saved[0][0])
+    assert h.until(lambda: len(heard.saved) == 2)
+    w.undo()                                                        # Ctrl+Z: the newest, the cards' choice
+    assert h.until(lambda: len(heard.undone) == 1)
+    assert lib.store.place_of(now[1])[0] == "graduated" and _learning(lib, now[1]) == (1, pinned)
+    w.undo()                                                        # Ctrl+Z again: the drop
+    assert h.until(lambda: len(heard.undone) == 2)
+    assert lib.store.place_of(now[1])[0] in ("now", "soon") and _learning(lib, now[1]) == (1, pinned)
+    assert heard.notes == []
+
+
+def test_AD6_the_drops_undo_after_the_cards_were_put_back_meanwhile_still_undoes_the_drop(lib, make_writer):
+    w, heard = make_writer()
+    now = lib.ids("now")
+    w.set_tier([now[1]], "graduated")
+    assert h.until(lambda: heard.saved)
+    drop = heard.saved[0][0]
+    w.set_finished([now[1]], keep_cards=False, follows=drop)
+    assert h.until(lambda: len(heard.saved) == 2)
+    lib.store.undo(heard.saved[1][0])                               # another window put its cards back
+    w.undo(drop)
+    assert h.until(lambda: heard.undone)
+    assert heard.notes == [] and lib.store.place_of(now[1])[0] in ("now", "soon")
+    assert _learning(lib, now[1])[0] == 1
+
+
+# AD-15: a finish undo that restored nothing says so ------------------------------------------------------------- #
+def test_AD15_a_finish_undo_whose_rows_all_changed_after_the_check_says_cant_undo(lib, make_writer, monkeypatch):
+    """The rows changed between `undo_check` and the undo (another program's write in between): the store skips them
+    all — the toast says *Can't undo*, never *undone*."""
+    w, heard = make_writer()
+    now = lib.ids("now")
+    w.set_finished([now[2]], keep_cards=True)
+    assert h.until(lambda: heard.saved)
+    real = ls.Store.undo_check
+    monkeypatch.setattr(ls.Store, "undo_check", lambda self, change: (real(self, change)[0] or
+                                                                       [it["id"] for it in change.items], []))
+    lib.store.move([now[2]], "goal")                                # another program, after the look
+    w.undo()
+    assert h.until(lambda: heard.notes)
+    assert heard.notes == [WORDS["cant_undo"]] and heard.undone == []
+    assert lib.store.place_of(now[2])[0] == "goal"
+
+
+def test_AD15_the_store_skip_count_is_read_from_its_notes():
+    out = ls.Change("undo", 1, 2)
+    out.notes = ["2 items changed since and were left as they are"]
+    finish = ls.Change("finish", 1, 1)
+    finish.items = [{"id": 1}]
+    finish.status = [(1, "pinned", "x", None)]
+    assert M._skips(out) == 2 and M._refused(finish, out)
+    out.notes = ["1 item changed since and was left as it is"]
+    assert M._skips(out) == 1 and not M._refused(finish, out)       # its value came back
+    out.items = [{"id": 1}]
+    out.notes = ["1 item changed since and was left as it is"]
+    assert not M._refused(finish, out)                              # its row came back
 
 
 # the verdict, one opener ---------------------------------------------------------------------------------------- #

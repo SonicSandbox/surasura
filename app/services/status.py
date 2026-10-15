@@ -335,7 +335,8 @@ def anki_backlog(language):
     to Anki. None while no backlog file exists (someone who never synced sees *Anki*, never *0 waiting*), and for one
     that can't be read or holds no notes table (not a count: *Anki*, not a false 0); a read file with no notes is 0.
     Ticking every 3 s, it stats the file and reads it again only when its stamp (mtime, size) moved: the count is
-    kept. A worker's call, one at a time (the service's refresh)."""
+    kept. A read that fails (the file held a moment by a scanner, just after the sync replaced it) keeps the last count
+    and is tried again at the next tick (AD-8). A worker's call, one at a time (the service's refresh)."""
     last = {"stamp": None, "n": None}
 
     def provider():
@@ -345,7 +346,10 @@ def anki_backlog(language):
             last["stamp"] = last["n"] = None            # gone (or never written): *Anki*
             return None
         if stamp != last["stamp"]:
-            notes = anki_sync.load_backlog(language).get("notes")
+            data = anki_sync.load_backlog(language)
+            if not data:                                # couldn't be read (`load_backlog`'s {}): asked again next tick
+                return last["n"]
+            notes = data.get("notes")
             last["n"] = len(notes) if isinstance(notes, dict) else None
             last["stamp"] = stamp
         return last["n"]

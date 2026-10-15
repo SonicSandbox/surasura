@@ -79,11 +79,15 @@ class Services:
     then started there (`start`). Qt-free: everything here runs on a worker or after the window is gone."""
 
     def __init__(self, settings=None, registry=None, status=None, library=None, controller=None, updates=None,
-                 automation=None, chores=None, replan=None):
+                 automation=None, chores=None, replan=None, writer=None):
         self.settings = settings if settings is not None else settings_service.SettingsService()
         self.registry = registry if registry is not None else jobs_module.JobRegistry()
         self.status = status if status is not None else status_service.StatusService(self.registry)
         self.library = library            # W2.2: a library reader (app/services/library_reader.py), or None
+        # W3.1a: the window's writer (`app/services/moves.Writer`, on the reader's opener; its `numbers` the reader's),
+        # or None — then nothing in the window writes. The window starts it (and its replay) and wires its callbacks;
+        # the quit waits for its queue (`finish_moves`). The real `main()` has no library yet, so no writer either.
+        self.writer = writer
         # --- W3.5: the duties
         self.controller, self.updates, self.automation, self.chores = controller, updates, automation, chores
         # row 7: the journey keeper and the re-order host of the language open (`replan_host.Replan`), made with the
@@ -396,6 +400,26 @@ class Services:
         return QUIT_FINISH_WAIT if began is None else max(0.0, QUIT_FINISH_WAIT - (time.monotonic() - began))
     # --- end W3.5 ------------------------------------------------------------------------------------------------ #
 
+    def finish_moves(self, deadline):
+        """(A worker, or the last call.) W3.1a, 04 §4.5: the window's moves still queued are written before the window
+        goes, until `deadline` (monotonic; *Saving your moves…* meanwhile) — what is left stays in the writer's journal for
+        the next start — then the numbers' worker closed. -> True when every move landed."""
+        writer = self.writer
+        if writer is None:
+            return True
+        try:
+            done = writer.finish(deadline)
+        except Exception as e:
+            applog.log("shell", f"the window's moves at quit: {e}")
+            done = False
+        close = getattr(getattr(writer, "numbers", None), "close", None)
+        if close is not None:
+            try:
+                close()
+            except Exception as e:
+                applog.log("shell", f"the numbers at quit: {e}")
+        return done
+
     def shutdown(self, timeout=2.0, release=None):
         """At quit, after the window is gone: nothing new starts and an update under way is cancelled first (nothing it
         held starts), the duties closed on a thread of their own (Koe's stop may wait; at most `QUIT_CLOSE_WAIT`),
@@ -408,6 +432,8 @@ class Services:
         began = time.monotonic()
         closer = threading.Thread(target=self._close_duties, name="duties-close", daemon=True)
         closer.start()
+        if self.writer is not None:                       # W3.1a: the moves still queued, then the numbers; the reader after
+            self.finish_moves(time.monotonic() + self._finish_wait_left())
         if self.library is not None:
             try:
                 self.library.stop(timeout)
@@ -823,7 +849,7 @@ class ShellWindow(QMainWindow):
             self.library_bridge.library_changed.connect(self.show_library)
             for page in self.page_widgets.values():
                 if hasattr(page, "message"):
-                    page.message.connect(self.bar_line.set_full)       # a file ▶ couldn't open: said in the bar
+                    page.message.connect(self.say)                     # a file ▶ couldn't open: said in the bar
             current = self.page_widgets.get("current")
             if hasattr(current, "on_journey"):                         # W3.1a S5: Up Next's *N new words ↗*
                 current.on_journey = lambda _row, _episode: self._open_journey(asked=True)
@@ -847,6 +873,12 @@ class ShellWindow(QMainWindow):
         for page in self.page_widgets.values():           # W2.2: painted parts' tooltips go through the bubble
             if hasattr(page, "list"):
                 page.list.tooltips = self.tooltips
+        # --- W3.1a: the drag, the moves, Done and Undo (`drag.py`), given a writer beside the library ---------------- #
+        self.moves = None
+        if services.library is not None and services.writer is not None:
+            from app.qt import drag
+            self.moves = drag.DragController(self, services.writer, services.library)
+            self.moves.start()
 
         self._restore_state(read_state(self.state_file))
 
@@ -919,7 +951,14 @@ class ShellWindow(QMainWindow):
         return screens.make_page(name, language=self.language)
 
     def show_library(self, view):
-        """The reader's newest view: the pages, the subline's counts, the tabs' counts."""
+        """The reader's newest view: the pages, the subline's counts, the tabs' counts. W3.1a: the drag's expectation
+        asks first (`drag.DragController.view_in`) — held while a drag runs (E6), shown in the drop's order while the
+        store catches up (no flash back)."""
+        moves = getattr(self, "moves", None)
+        if moves is not None:
+            view = moves.view_in(view)
+            if view is None:
+                return
         moved = False
         for name in screens.PAGES:
             page = self.page_widgets.get(name)
@@ -1075,7 +1114,9 @@ class ShellWindow(QMainWindow):
         lines = (self._quit_line,) if self._quit == "waiting" else snap.lines     # E20: one line says so
         self._busy = bool(lines)
         self._paint_progress()
-        self.bar_line.set_full(" · ".join(lines))
+        self._status_line = " · ".join(lines)
+        if not self._saying() or self._quit == "waiting":       # (a line just said keeps the slot: `say`)
+            self.bar_line.set_full(self._status_line)
         failure = snap.failure or ""
         self.bar_failure.set_full(strings.BAR_FAILURE_PREFIX + failure if failure else "")
         self.bar_failure.setToolTip(strings.BAR_FAILURE_TIP + ("\n\n" + failure if failure else ""))
@@ -1101,13 +1142,35 @@ class ShellWindow(QMainWindow):
         """W3.1a: the header's hairline — Generate's share while it has one, else whole and quiet while any job runs."""
         self.progress.set(self._busy, self._share)
 
+    def say(self, text):
+        """A line for the bar that answers what the user just did (a file ▶ couldn't open, the journey's absence, a
+        move the store placed elsewhere): it takes the footer's slot for `DRAG["message-ms"]`, over the update chip and
+        the failure line, then the slot is as it was (AD-7: said into a hidden line, it was never seen)."""
+        self.bar_line.set_full(text)
+        self._message_until = time.monotonic() + theme.DRAG["message-ms"] / 1000.0
+        if getattr(self, "_message_timer", None) is None:
+            self._message_timer = QTimer(self)
+            self._message_timer.setSingleShot(True)
+            self._message_timer.timeout.connect(self._paint_slot)
+        self._message_timer.start(theme.DRAG["message-ms"] + 1)
+        self._paint_slot()
+
+    def _saying(self):
+        until = getattr(self, "_message_until", None)
+        return until is not None and time.monotonic() < until
+
     def _paint_slot(self):
         """W31A-1: the footer's one slot — the failure line (with *Open the logs folder* when there is a folder) while
         it applies, else the update chip while it applies, else the status line (always the line while the close
-        waits: E20's one line); each part shown or hidden only when that changed (S19)."""
-        failure = bool(self.bar_failure.full()) and self._quit != "waiting"
+        waits: E20's one line); each part shown or hidden only when that changed (S19). A line just said (`say`) holds
+        the slot for a few seconds over both."""
+        saying = self._saying()
+        if not saying and getattr(self, "_message_until", None) is not None:
+            self._message_until = None               # the line said has had its time: the status line is back
+            self.bar_line.set_full(getattr(self, "_status_line", ""))
+        failure = bool(self.bar_failure.full()) and self._quit != "waiting" and not saying
         d = self.duties
-        update = d is not None and d.update_applies and not failure and self._quit != "waiting"
+        update = d is not None and d.update_applies and not failure and self._quit != "waiting" and not saying
         parts = [(self.bar_failure, failure, self.status_paints), (self.logs_button, failure and bool(self._logs_folder),
                  self.status_paints), (self.bar_line, not failure and not update, self.status_paints)]
         if d is not None:
@@ -1123,6 +1186,9 @@ class ShellWindow(QMainWindow):
         another field's change leaves it as it is."""
         text = text or ""
         quiet = hasattr(label, "full")
+        if quiet and Qt.mightBeRichText(tip):       # AD-14: a provider's line in a hover is never markup (as AnkiMark)
+            import html
+            tip = "<p>" + html.escape(tip).replace("\n", "<br>") + "</p>"
         if ((label.full() if quiet else label.text()) == text and label.isHidden() != bool(text)
                 and label.toolTip() == (tip if text else "")):
             return
@@ -1378,7 +1444,7 @@ class ShellWindow(QMainWindow):
             if d.module.gen.can_cancel(state):
                 bridge.run_in_worker(s.controller.cancel)
             return
-        bridge.run_in_worker(s.generate, failed=lambda info: self.bar_line.set_full(str(info[0])))
+        bridge.run_in_worker(s.generate, failed=lambda info: self.say(str(info[0])))
 
     def _open_generate_log(self):
         path = getattr(self.duties.generate_state, "log_path", None)
@@ -1418,9 +1484,9 @@ class ShellWindow(QMainWindow):
             if self.duties is not None:
                 self._show_journey(False)
             if asked:
-                self.bar_line.set_full(strings.JOURNEY_NONE_TIP)
+                self.say(strings.JOURNEY_NONE_TIP)
         bridge.run_in_worker(self.services.open_journey, then=done,
-                             failed=lambda info: self.bar_line.set_full(strings.JOURNEY_FAILED.format(why=info[0])))
+                             failed=lambda info: self.say(strings.JOURNEY_FAILED.format(why=info[0])))
 
     # the bar's marks
     def _show_automation(self, state):
@@ -1573,7 +1639,7 @@ class ShellWindow(QMainWindow):
         text_size = text_size if text_size in theme.TEXT_SIZES else current_size
         self.services.settings.set({"text_size": text_size})
         if not LIVE_LOOK:
-            self.bar_line.set_full(strings.RESTART_TO_APPLY)
+            self.say(strings.RESTART_TO_APPLY)
             return None
         ms = style.apply(QApplication.instance(), theme_name, text_size, language)
         titlebar.apply(self, theme_name)
@@ -1670,6 +1736,13 @@ class ShellWindow(QMainWindow):
         waited = jobs_module.waits_at_quit(self._jobs)
         self._quit_line = (strings.QUIT_FINISHING_LIST if waited and all(j.kind == "generate" for j in waited)
                            else strings.QUIT_FINISHING)
+        if self._moves_pending():                         # W3.1a, 04 §4.5: the moves still queued go first
+            if not waited:
+                self._quit_line = strings.MOVE_WORDS["saving"]
+            self._moves_waited = False
+            began = time.monotonic()
+            bridge.run_in_worker(lambda: self.services.finish_moves(began + QUIT_FINISH_WAIT), then=self._moves_idle,
+                                 failed=self._moves_idle)
         self.closing.emit()                               # a start from now on waits for the claim (single.py)
         if self.duties is not None:                       # no control that does nothing: nothing new starts now
             self.duties.generate.hold(strings.QUIT_CLOSING_TIP)
@@ -1692,13 +1765,18 @@ class ShellWindow(QMainWindow):
         self._replan_waited = True
         self._jobs_changed(self._jobs)
 
+    def _moves_idle(self, _ended):
+        self._moves_waited = True
+        self._jobs_changed(self._jobs)
+
     def _replan_settling(self):
         settling = getattr(self.services, "replan_settling", None)
         return settling is not None and settling()
 
     def _jobs_changed(self, views):
         self._jobs = views
-        if self._quit == "waiting" and self._replan_waited and not jobs_module.waits_at_quit(views):
+        if self._quit == "waiting" and self._replan_waited and getattr(self, "_moves_waited", True) and \
+                not jobs_module.waits_at_quit(views):
             self._close_now()
 
     def _close_now(self):
@@ -1708,9 +1786,20 @@ class ShellWindow(QMainWindow):
         self._quit_timer.stop()
         self.close()
 
+    def _moves_pending(self):
+        """W3.1a: moves the window gave that the store hasn't taken yet (04 §4.5: closing waits for them)."""
+        writer = getattr(self.services, "writer", None)
+        try:
+            return writer is not None and getattr(self, "moves", None) is not None and writer.pending() > 0
+        except Exception:
+            return False
+
     def closeEvent(self, event):
+        moves = getattr(self, "moves", None)
+        if moves is not None:
+            moves.close()                                 # a drag running at the close is let go
         if self._quit == "waiting" or (self._quit is None and (jobs_module.waits_at_quit(self._jobs)
-                                                               or self._replan_settling())):
+                                                               or self._replan_settling() or self._moves_pending())):
             event.ignore()                                # E20: what can't stop part-way ends first
             self._finish_first()
             return

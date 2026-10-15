@@ -257,7 +257,7 @@ ROWS_DONE_TIP = "Mark {ep} watched\n• Click: the one after it comes up next"
 ROWS_DONE_ALL_TIP = "Every file of it is watched"
 ROWS_HERO_KNOWN = "{pct}% known · "
 ROWS_HERO_NEW_LINK = "{n} new words ↗"
-ROWS_JOURNEY_TIP = "Open your journey at this episode\n• It opens in its own window"
+ROWS_JOURNEY_TIP = "Your journey: your list with its sentences\n• Click to open it in its own window"
 ROWS_TOP_LINE_WHERE = "{tip}\nIts setting: Settings → Anki & mining, in a later build"
 ROWS_SOON_LINE_WHERE = "{tip}\nWhere Soon starts is a setting: Settings, in a later build"
 ROWS_ACCESSIBLE_STRING = "{line} · {string}"
@@ -283,3 +283,36 @@ MOVE_WORDS = {
     "read_only": "Your library can't be saved right now: {reason}",
     "failed": "That change couldn't be saved: {error}",
 }
+# the drag in the window (app/qt/drag.py): its toasts (A2's toast list), the ⋯ menu, the bar's lines
+DRAG_UP_NEXT = "{title} is up next"
+DRAG_PLACED = "{title} placed at #{n}"
+DRAG_PLACED_MINES = "{title} placed at #{n} · it mines itself"
+DRAG_SOON = "{title} → Soon · #{n}, after the first {files} files"
+DRAG_SOON_NO_COUNT = "{title} → Soon · #{n}"
+DRAG_GOAL = "{title} moved to Goal · its cards keep their place"
+DRAG_FINISHED = "{title} finished · its cards stay put"
+DRAG_KEEP = "Keep"
+DRAG_KEEP_TIP = "Keep its new cards in your order, as they are"
+DRAG_TAKE_OUT = "Take its new cards out"
+DRAG_TAKE_OUT_TIP = "Its new cards leave your order. None is deleted: Undo puts them back"
+DRAG_TAKEN_OUT = "{title}: its new cards are out of your order"
+DRAG_ADDED = "Added {name} at #{n} · analysed on the next Generate"
+DRAG_ADDED_N = "Added {count} files at #{n} · analysed on the next Generate"
+DRAG_GONE = "That item was removed"
+DRAG_REFUSED = "Your library can't be saved right now: {reason}"
+DONE_NEXT = "✓ {title} {ep} watched · next: {next}"
+DONE_ONE = "✓ {title} {ep} watched"
+DONE_UNDONE = "{title} {ep} marked not watched"
+DONE_ALL = "✓ All {n} watched — finished with it?"
+DONE_MOVE_FINISHED = "Move to Finished"
+DONE_MOVE_FINISHED_TIP = "Move it to Finished: a record of what you've worked through"
+MENU_NAME = "What you can do with {title}"
+MENU_ITEMS = {
+    "up-next": ("Up next", "Make it the next thing you watch or read"),
+    "soon": ("Soon", "Move it to Soon: next in line, after what's in NOW"),
+    "goal": ("Goal", "Move it to Goal: someday, in no order"),
+    "finished": ("Finished", "Move it to Finished: you're done with it"),
+    "journey": ("See it in your journey", "Open your journey (your list with its sentences) in its own window"),
+}
+MENU_REFUSED_TIP = "Your library can't be saved right now: {reason}"
+ROWS_SAVING = "saving…"

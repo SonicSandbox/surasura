@@ -743,6 +743,23 @@ def test_the_backlog_is_read_again_only_when_the_file_changed(monkeypatch):
     assert provider() is None
 
 
+def test_AD8_a_backlog_read_that_fails_keeps_the_last_count_and_tries_again_at_the_next_tick(monkeypatch):
+    """The sync has just replaced the file and a scanner holds it a moment: that read fails. The footer keeps
+    *Anki · 3 waiting* (never plain *Anki* until the next sync), and the next tick reads the new count."""
+    from app import anki_sync
+    path = _backlog("ja", JA_NOTES)
+    provider = S.anki_backlog("ja")
+    assert provider() == 3
+    _backlog("ja", dict(JA_NOTES, **{"1700000000004": _note("走り出す", 3050)}))
+    st = os.stat(path)
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
+    real = anki_sync.load_backlog
+    monkeypatch.setattr(anki_sync, "load_backlog", lambda language: {})    # held: `load_backlog`'s OSError → {}
+    assert provider() == 3 and provider() == 3
+    monkeypatch.setattr(anki_sync, "load_backlog", real)
+    assert provider() == 4                                                  # read again, not left for the next sync
+
+
 def test_the_backlog_reaches_the_snapshot_through_its_tick():
     """The window's poll asks the backlog every 3 s (a stat, on a worker); the snapshot carries the count."""
     _backlog("ja", JA_NOTES)

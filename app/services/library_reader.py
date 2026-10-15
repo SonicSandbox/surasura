@@ -233,8 +233,9 @@ class LibraryReader:
         self._moved(h)
         if self._store_id is None and hasattr(h, "meta"):
             self._store_id = h.meta().get("store_id")
-        if changed and held:                            # E6: merged, never built or shown under the hand
-            self._held_dirty = True
+        if held:                                        # E6: merged, never built or shown under the hand; a quiet
+            if changed:                                 # look later in the drag never forgets what came in (AD-1)
+                self._held_dirty = True
             return
         self._held_dirty = False
         if not changed:                                 # data_version moved with nothing for the window (a checkpoint)

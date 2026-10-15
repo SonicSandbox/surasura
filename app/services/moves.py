@@ -4,8 +4,10 @@
 - **`Writer`**, one per language: its own store handle (opened on its thread through an opener of
   `library_store.StoreOpener`'s shape, role "window"), commands queued in the order given — `move` (a Goal-well drop:
   `end=True`, Goal's end as it stands when the write lands), `nudge`, `set_tier` (Finished is the store's `graduated`),
-  `set_finished` (the store's `finish`: the Finished toast's *Keep* / *Take its new cards out*), `set_watched`,
-  `insert_at` (an Explorer drop: the files copied into the tier's folder on this thread, then placed), `undo`. Each
+  `set_finished` (the store's `finish`: the Finished toast's *Keep* / *Take its new cards out*; `follows=` the drop's
+  change, so that drop's Undo takes the cards' choice back too), `set_watched`, `insert_at` (an Explorer drop: the
+  content files copied into the tier's folder at once on a copier thread of its own, then queued and placed), `undo`.
+  Each
   returns at once (the window has already painted its
   own copy of the order); what happened comes back through callbacks, called on the writer's thread (the window's bridge
   queues them):
@@ -55,14 +57,19 @@ MODE_RECHECK_S = 2.0            # idle, the thread asks the store's mode this of
 JOURNAL_VERSION = 1
 JOURNAL_TRIES = 10              # a journal write Windows refuses (the file held a moment) is tried this many times
 JOURNALLED = ("move", "nudge", "set_tier", "finish", "set_watched")
-#   an undo needs its Change: never journalled; nor an Explorer drop (`insert_at`: no ids yet, and its copied files are
-#   in the tier's folder, where the next disk sync finds them anyway)
+#   an undo needs its Change: never journalled; nor an Explorer drop (`insert_at`: no ids yet). Its files are copied into
+#   the tier's folder at once, on the copier's thread — a busy store or a drag never holds the copy back, and the copy
+#   never holds a move back (G1) — so a quit or a crash before it lands leaves them whole in the folder, where the next
+#   disk sync adds them (AD-2)
 ANALYSED = ("now", "soon", "goal")                          # the plan engine's tiers, in a Generate's order
 PLAN_FILE = "plan.json.gz"      # `analyzer.PLAN_FILE` (not imported: the analyzer is heavy; a test holds them equal)
 CHANGED_KEPT = 64               # `Numbers.changed` remembers this many versions back
 
 WORDS = ("saving", "cant_undo", "nearest", "top", "crash_one", "crash_many", "read_only", "failed")
-#   the keys `words` must hold (`strings.MOVE_WORDS`)
+#   the keys `words` must hold (`strings.MOVE_WORDS`); "not_content" ({names}: the files an Explorer drop left out) may
+#   be held too — without it that note is `failed`'s, with the names
+PART = ".part"                  # a dropped file is copied under its name + this (no content name: no sync takes it up),
+#                                 then renamed whole
 
 
 def journal_path(language):
@@ -158,6 +165,8 @@ class Writer:
         self._abandoned = False
         self._mode_at = 0.0
         self._thread = None
+        self._copier = Worker(f"window-copier-{language}")    # an Explorer drop's files, off the writer's thread
+        self._copying = 0                           # drops whose files are being copied (not queued yet)
         self.attempts = 0                           # store writes tried (tests)
 
     @classmethod
@@ -203,22 +212,41 @@ class Writer:
         """`Store.set_tier` — "graduated" is Finished."""
         return self._put({"op": "set_tier", "ids": list(ids), "tier": tier, "label": label})
 
-    def set_finished(self, ids, keep_cards=True, label=None):
+    def set_finished(self, ids, keep_cards=True, label=None, follows=None):
         """`Store.finish`: to Finished, dated now; `keep_cards=False` (the Finished toast's *Take its new cards out*)
         also takes the items' cards out of the learning order and ends their pin. An item already in Finished keeps its
-        place and date (only its cards' choice is written)."""
-        return self._put({"op": "finish", "ids": list(ids), "keep_cards": bool(keep_cards), "label": label})
+        place and date (only its cards' choice is written). `follows`: the change this one follows (the drop on
+        Finished: `set_tier`'s, as `on_saved` handed it on) — an `undo` of that change undoes this one first, so the
+        toast's Undo puts the item back with its cards; Ctrl+Z still takes this one back first (it is the newer)."""
+        return self._put({"op": "finish", "ids": list(ids), "keep_cards": bool(keep_cards), "label": label,
+                          "follows": follows})
 
     def insert_at(self, paths, tier, before_id=None, after_id=None, near=(), label=None):
-        """An Explorer drop: `paths` (files from anywhere) copied, on this thread, into `tier`'s folder of the data
-        folder (never over a file: an identical one is already there, another comes in under a new name; a file already
-        in the data folder stays where it is), then placed by `Store.insert_at` before `before_id` / after `after_id`,
-        or at the top of `tier` with neither. The anchor gone or out of the tier when the write lands → beside the
-        nearest surviving `near` neighbour, else the top of the tier, with a note. Not journalled: a crash leaves the
-        copies in the folder, where the next disk sync places them. Its Undo sends the files it added to the trash."""
-        return self._put({"op": "insert_at", "ids": [], "files": [os.fspath(p) for p in paths], "tier": tier,
-                          "before_id": before_id, "after_id": after_id, "near": [list(n) for n in near or ()],
-                          "label": label})
+        """An Explorer drop: `paths` (files from anywhere) copied at once, on the copier's own thread, into `tier`'s
+        folder of the data folder (never over a file: an identical one is already there, another comes in under a new
+        name; a file already in a tier's folder stays where it is), then queued and placed by `Store.insert_at` before
+        `before_id` / after `after_id`, or at the top of `tier` with neither. The anchor gone or out of the tier when
+        the write lands → beside the nearest surviving `near` neighbour, else the top of the tier, with a note. Content
+        files only (the disk sync's `is_content_name`): the rest are left out, with a note. The moves given meanwhile
+        never wait for the copy (G1): the drop joins the queue once its files are in place, so it may land after them.
+        Not journalled: a quit or a crash before it lands leaves the copies whole in the folder, where the next disk
+        sync places them (AD-2). Its Undo sends the files it copied to the trash and takes their rows out; a drop that
+        copied nothing (its files were in the tiers' folders already) isn't put on the Undo stack."""
+        if not self._writable():
+            return None                             # E4
+        cmd = {"op": "insert_at", "ids": [], "files": [os.fspath(p) for p in paths], "tier": tier,
+               "before_id": before_id, "after_id": after_id, "near": [list(n) for n in near or ()], "label": label}
+        with self._cond:
+            if self._stop:
+                return None
+            cmd["seq"] = next(self._seq)
+            self._copying += 1
+        if not self._copier.put(self._copy_then_queue, cmd):
+            with self._cond:                        # closed meanwhile (the quit)
+                self._copying -= 1
+                self._cond.notify_all()
+            return None
+        return cmd["seq"]
 
     def set_watched(self, ids, on=True, label=None):
         """`Store.set_watched` on files (an episode is one file, one item)."""
@@ -234,7 +262,7 @@ class Writer:
 
     def pending(self):
         with self._cond:
-            return len(self._pending)
+            return len(self._pending) + self._copying
 
     def hold(self):
         """A drag starts (E6): nothing new is applied until `release()`; the window's moves queue."""
@@ -277,16 +305,17 @@ class Writer:
             if self._stop:
                 return not self._pending            # finished already: the journal is as that left it
             self._held = False
-            waiting = bool(self._pending)
+            waiting = bool(self._pending or self._copying)
             self._cond.notify_all()
         if waiting:
             self._call(self.on_note, self.words["saving"])
         with self._cond:
-            while self._pending and time.monotonic() < deadline:
+            while (self._pending or self._copying) and time.monotonic() < deadline:
                 self._cond.wait(min(0.05, max(0.0, deadline - time.monotonic())))
-            left = bool(self._pending)
+            left = bool(self._pending or self._copying)
             self._stop = True
             self._cond.notify_all()
+        self._copier.close()                        # a copy still running finishes; its drop isn't queued (AD-2)
         if left:
             self._sync_journal(everything=True)
         thread = self._thread
@@ -418,8 +447,6 @@ class Writer:
             elif cmd["op"] == "move" and not cmd.get("numbered"):
                 cmd["numbered"] = (cmd["before_id"], cmd["after_id"])   # the numbers follow the drop once, before its
                 self._numbers_move(cmd)                                 # first write
-            elif cmd["op"] == "insert_at" and "copied" not in cmd:
-                self._copy_in(store, cmd)           # once: a busy store's retries place the same copies
             self._apply(store, cmd)
         except lib.StoreBusy:
             self._busy(cmd)
@@ -465,6 +492,11 @@ class Writer:
             cmd["saved"] = True                     # its copies are the library's now (never sent to the trash)
             if change is not None:                  # what its Undo may send to the trash: the copies it made only
                 change.copied = [_ls().library_rel(cmd["data_dir"], p) for p in cmd["copied"]]
+                if not change.copied:               # nothing it copied (its files were in the tiers' folders, or rows
+                    change = None                   # already): nothing its Undo could take back — never on the stack
+        elif op == "finish" and change is not None and cmd.get("follows") is not None:
+            change.follows = cmd["follows"]         # the drop's Undo takes this one back first (AD-6)
+            cmd["follows"].follow_up = change
         self._refresh_seen(store, cmd["ids"])
         self._landed(cmd)
         if cmd.get("replay"):
@@ -476,6 +508,10 @@ class Writer:
             self._call(self.on_saved, change, cmd.get("label"))
         if note is not None:
             self._call(self.on_note, self.words[note])
+        if cmd.get("left_out"):                     # (AD-4) never a silent drop
+            names = ", ".join(cmd["left_out"])
+            self._call(self.on_note, self.words["not_content"].format(names=names) if "not_content" in self.words
+                       else self.words["failed"].format(error=names))
         if change is None or note is not None:
             self._call(self.on_reread)
         if op != "set_watched" and (op != "move" or change is None or note is not None or
@@ -511,39 +547,66 @@ class Writer:
         return rest[-1] if rest else None
 
     # --- an Explorer drop ----------------------------------------------------------------------------------------- #
-    def _copy_in(self, store, cmd):
-        """The dropped files into the tier's folder, once, before the first write: never over a file (an identical one
-        is the file already there; another comes in as `name (2).ext`), one already in the data folder left where it
-        is, a folder skipped (the importer's Add Folder). `copied`: the files made here (the trash's, if the command
-        is let go)."""
+    def _copy_then_queue(self, cmd):
+        """(The copier's thread.) The drop's files into the tier's folder, then the drop into the writer's queue — not
+        once the writer has stopped (the quit): its copies stay whole in the folder for the next disk sync. A copy that
+        fails lets the drop go with a note, its copies to the trash."""
+        try:
+            data_dir = getattr(self.opener, "data_dir", None)
+            if data_dir is None:
+                raise ValueError("the library's folder isn't known")
+            self._copy_in(data_dir, cmd)
+        except Exception as e:
+            print(f"Window writer: a dropped file couldn't be copied: {e!r}")
+            self._trash_copies(cmd)
+            with self._cond:
+                self._copying -= 1
+                self._cond.notify_all()
+            self._call(self.on_note, self.words["failed"].format(error=e))
+            self._call(self.on_reread)
+            return
+        with self._cond:
+            self._copying -= 1
+            if not self._stop and not self._abandoned:
+                self._pending.append(cmd)
+                self._start()
+            self._cond.notify_all()
+
+    def _copy_in(self, data_dir, cmd):
+        """The dropped files into the tier's folder, once, before the drop is queued: content files only (the disk sync's rule; a shortcut, a video, a folder are left out and named in a note); never
+        over a file (an identical one is the file already there; another comes in as `name (2).ext`); one already in a
+        tier's folder left where it is (one elsewhere in the data folder — its trash — is copied in). `copied`: the
+        files made here (the trash's, if the command is let go)."""
         import filecmp
-        import shutil
         lib = _ls()
         folder = lib.FOLDER_OF_TIER.get(cmd["tier"])
         if folder is None:
             raise ValueError(f"files can't be dropped into {cmd['tier']!r}")
-        data_dir = cmd["data_dir"] = store.data_dir
-        cmd["started_at"] = lib._now()              # a sync that meets a copy half-made: the command takes the row over
-        out, made = [], []
+        cmd["data_dir"] = data_dir
+        cmd["started_at"] = lib._now()              # a sync that meets a copy made: the command takes the row over
+        walked = {lib.path_key(f) for f in lib.FOLDER_OF_TIER.values()}    # the folders the disk sync walks
+        out, made, left = [], [], []
         try:
             for path in cmd["files"]:
-                if lib.library_rel(data_dir, path) is not None:
-                    out.append(path)
+                if not os.path.isfile(path) or not lib.is_content_name(path):
+                    left.append(os.path.basename(os.path.normpath(path)))       # (AD-4)
                     continue
-                if not os.path.isfile(path):
+                rel = lib.library_rel(data_dir, path)
+                if rel is not None and lib.path_key(rel.split("/", 1)[0]) in walked:   # (AD-11: not the trash)
+                    out.append(path)
                     continue
                 dest = os.path.join(data_dir, folder, os.path.basename(path))
                 if os.path.exists(dest) and filecmp.cmp(path, dest, shallow=False):
                     out.append(dest)
                     continue
-                dest = _free_name(dest)
                 os.makedirs(os.path.dirname(dest), exist_ok=True)
-                shutil.copy2(path, dest)
+                dest = _copy_whole(path, dest)
                 made.append(dest)
                 out.append(dest)
         finally:
             cmd["copied"] = made
         cmd["files"] = out
+        cmd["left_out"] = left
 
     def _insert(self, store, cmd):
         """`Store.insert_at` beside the anchor; gone or out of the tier → beside the nearest surviving `near`
@@ -578,20 +641,26 @@ class Writer:
     def _undo_added(self, store, change, ok):
         """Undo an Explorer drop: the copies it made to the trash first (the importer's Undo-Add; a file that was in the
         data folder already stays where it is), then the rows; the files put back if the store refuses."""
+        import copy
         lib = _ls()
         copied = {lib.path_key(r) for r in getattr(change, "copied", ()) if r}
-        trashed, moved = {}, []
+        trashed, moved, mine = {}, [], []
         try:
             for item_id in ok:
                 row = store.item(item_id)
                 if row is None or lib.path_key(row["rel_path"]) not in copied:
-                    continue
+                    continue                        # a file it didn't copy keeps its row: a sync would add it back
+                mine.append(item_id)
                 to = lib.trash_file(store.data_dir, row["rel_path"])
                 if to:
                     trashed[item_id] = to
                     moved.append((os.path.join(store.data_dir, *to.split("/")),
                                   os.path.join(store.data_dir, *row["rel_path"].split("/"))))
-            out = store.undo(change, trashed_paths=trashed)
+            if not mine:
+                raise lib.UndoRefused("none of its copies is left to undo")
+            only = copy.copy(change)                # its own copies' rows only (AD-10)
+            only.added = mine
+            out = store.undo(only, trashed_paths=trashed)
             if out is None:
                 raise lib.UndoRefused("nothing was undone")
             return out
@@ -612,23 +681,29 @@ class Writer:
             self._landed(cmd)
             return
         refused = False
+        then = getattr(change, "follow_up", None)   # the cards' choice made after this drop (AD-6): undone first
         try:
             ok, changed = store.undo_check(change)
             if changed:
                 refused = True
-            elif change.kind in ("insert", "insert_at"):
-                refused = _refused(change, self._undo_added(store, change, ok))
-            elif change.kind == "finish" and not change.items and not _still_set(store, change.status):
-                refused = True                      # only its cards' choice, and every value changed since: nothing
             else:
-                refused = _refused(change, store.undo(change))
+                if then is not None:                # nothing left of it to undo (its cards put back meanwhile) is no
+                    self._undo_one(store, then)     # reason to leave the drop
+                if change.kind in ("insert", "insert_at"):
+                    refused = _refused(change, self._undo_added(store, change, ok))
+                else:
+                    refused = self._undo_one(store, change)
         except (lib.StoreConflict, lib.UndoRefused):
             refused = True
         with self._cond:
-            try:
-                self._undo.remove(change)
-            except ValueError:
-                pass
+            for done in (change, then):
+                try:
+                    self._undo.remove(done)
+                except ValueError:
+                    pass
+        first = getattr(change, "follows", None)
+        if first is not None and getattr(first, "follow_up", None) is change:
+            first.follow_up = None                  # undone on its own (Ctrl+Z): the drop's Undo is the drop's alone
         self._landed(cmd)
         if refused:
             self._call(self.on_note, self.words["cant_undo"])
@@ -636,6 +711,12 @@ class Writer:
             self._call(self.on_undone, change, cmd.get("label"))
             self._numbers_resync()
         self._call(self.on_reread)
+
+    def _undo_one(self, store, change):
+        """`Store.undo` of a change other than an Add. -> True when it was refused (nothing written)."""
+        if change.kind == "finish" and not change.items and not _still_set(store, change.status):
+            return True                             # only its cards' choice, and every value changed since: nothing
+        return _refused(change, store.undo(change))
 
     def _busy(self, cmd):
         with self._cond:
@@ -806,14 +887,24 @@ class Writer:
 
 
 def _refused(change, out):
-    """An undo that wrote nothing: no answer, or a status undo that restored nothing. A finish's rows are put back
-    whenever its check passed (`undo_check` saw them unchanged), and one that only took cards out was looked at before
-    (the store doesn't hand its restored values back for a finish)."""
+    """An undo that wrote nothing: no answer, or a status undo that restored nothing. A finish: no row put back and
+    every one of its values skipped — the store doesn't hand a finish's restored values back, but its notes count what
+    it skipped, its rows' and its values' (AD-15)."""
     if out is None:
         return True
     if change.kind == "finish":
-        return False
+        return not out.items and _skips(out) - len(change.items) >= len(change.status)
     return bool(change.status and not out.status)
+
+
+def _skips(out):
+    """How many an undo's notes say it skipped (the store's "N item(s) changed since …")."""
+    n = 0
+    for note in getattr(out, "notes", None) or ():
+        head = str(note).split(" ", 1)[0]
+        if head.isdigit() and "changed since" in str(note):
+            n += int(head)
+    return n
 
 
 def _still_set(store, status):
@@ -825,15 +916,43 @@ def _still_set(store, status):
     return False
 
 
-def _free_name(path):
-    """`path`, or `name (2).ext`, `name (3).ext`, … — the first free (the importer's `_unique_path`)."""
-    if not os.path.exists(path):
-        return path
-    base, ext = os.path.splitext(path)
-    n = 2
-    while os.path.exists(f"{base} ({n}){ext}"):
+def _copy_whole(src, dest):
+    """`src` copied to `dest`, or `name (2).ext`, `name (3).ext`, … — the first free (the importer's `_unique_path`) —
+    never over a file: written into `<name>.part`, created exclusively, then renamed without overwriting; a name taken
+    meanwhile (another program writing into the folder) steps to the next (AD-12). A sync never meets half a file (a
+    `.part` isn't a content name), and a copy that fails removes its part (AD-3). -> the path made."""
+    import shutil
+    base, ext = os.path.splitext(dest)
+    n = 1
+    while True:
+        name = dest if n == 1 else f"{base} ({n}){ext}"
         n += 1
-    return f"{base} ({n}){ext}"
+        if os.path.exists(name):
+            continue
+        part = name + PART
+        try:
+            f = open(part, "xb")
+        except FileExistsError:
+            continue
+        try:
+            with f, open(src, "rb") as s:
+                shutil.copyfileobj(s, f)
+            shutil.copystat(src, part)
+            _ls()._rename_no_overwrite(part, name)
+        except FileExistsError:
+            _remove_part(part)
+            continue
+        except BaseException:
+            _remove_part(part)
+            raise
+        return name
+
+
+def _remove_part(path):
+    try:
+        os.remove(path)
+    except OSError as e:
+        print(f"Window writer: a half-made copy couldn't be removed: {e!r}")
 
 
 def _entry(cmd):

@@ -55,6 +55,33 @@ def test_E6_a_change_during_a_drag_is_merged_but_never_shown_until_the_drop(tmp_
         reader.stop()
 
 
+def test_AD1_a_quiet_look_later_in_a_long_drag_never_drops_what_came_in(monkeypatch):
+    """A drag held past CARDS_ALL_S: a later held look that finds nothing new (every item's cards asked again, or a
+    checkpoint moving data_version) must not forget the change that came in earlier — the drop builds it."""
+    seed = window_seed.build()
+    reader, views = _started(seed)
+    try:
+        before = len(views)
+        row = views[-1][1].rows[3]
+        reader.hold()
+        seed.library.commit(items=[{"id": row.episodes[0].id, "watched": 1}])        # a sync lands mid-drag
+        assert _wait(lambda: reader._held_dirty)
+        reads = reader.reads
+        monkeypatch.setattr(library_reader, "CARDS_ALL_S", 0.0)                      # 2 s later: every card asked
+        with seed.library._lock:
+            seed.library._data_version += 1                                         # and a checkpoint, nothing new
+        reader.refresh()
+        assert _wait(lambda: reader.reads > reads)                                   # a quiet held look …
+        _wait(lambda: False, 0.1)
+        assert len(views) == before                                                  # … found nothing new
+        reader.release()                                                             # the drop
+        assert _wait(lambda: len(views) == before + 1)
+        new = views[-1][1].rows[3]
+        assert new.key == row.key and new.episodes[0].watched
+    finally:
+        reader.stop()
+
+
 def test_a_drag_with_nothing_coming_in_publishes_nothing_at_its_drop():
     seed = window_seed.build()
     reader, views = _started(seed)

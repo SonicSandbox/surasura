@@ -548,3 +548,29 @@ ROW_COLOURS = MappingProxyType({
     "shadow": "#000000",            # the lifted row's shadow (at `shadow-alpha`)
     "lift-line": "#ffffff",         # ... and its lit top line (at `lift-line-alpha`)
 })
+
+
+# --- W3.1a drag ---------------------------------------------------------------------------------------------------- #
+# The drag in the window (W3.1a §2, `app/qt/drag.py`; ref-extract §8 *drag*, list-r14m :4262, :4290–4306, :4325–4331):
+# the ghost (the row's cached picture, its long shadow `SHADOWS["drag-ghost"]` and a 1 px accent ring, turned and grown a
+# little), the placeholder its slot leaves, and how long the window's own copy of the order waits for the store. Px;
+# alphas 0–1. Its times are `MOTION`'s (drag-start-px, ghost-glide, ghost-removed, click-swallow-after-drag,
+# auto-scroll-*), its springs `SPRINGS["drag-part"]`.
+DRAG = MappingProxyType({
+    "ghost-turn": 0.8,              # degrees
+    "ghost-scale": 1.015,
+    "ghost-alpha": 0.97,            # over the list
+    "ghost-alpha-well": 0.45,       # over a well or the Finished tab: it is about to leave the list
+    "ghost-radius": 10,
+    "ghost-ring": 1,                # the accent ring
+    "placeholder-ring": 1.5,        # the slot left behind: its fill and an inset accent ring at 60 %
+    "placeholder-ring-alpha": 0.6,
+    "placeholder-radius": 8,
+    "settle-ms": 300,               # the window's own order stands until the writer has been idle this long
+    "message-ms": 4000,             # a line said in the footer's slot holds it this long (over the update chip)
+    "near": 3,                      # painted neighbours on each side handed to the writer (an anchor gone meanwhile)
+    "px-rest": 0.05,                # a px spring rests once this close (L5: its drawn value no longer changes)
+})
+DRAG_COLOURS = MappingProxyType({
+    "placeholder": "#1a2a3a",       # the slot's fill (list-r14m :4330)
+})

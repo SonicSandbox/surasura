@@ -1054,7 +1054,7 @@ class RowDelegate(QStyledItemDelegate):
             if g["journey"] is not None:
                 out.append(("journey", g["journey"], strings.ROWS_JOURNEY_TIP, nxt))
             is_open = self.view.model().open_key == payload.key
-            if not is_open:                            # G16: the string hides while Up Next is open
+            if not is_open and self._sheet_there():    # G16: the string hides while Up Next is open; L4: no stone
                 s = g["string"]
                 out += self._stone_parts(payload, self._info(payload)[0], s, s.top() + s.height() / 2, big=True)
             out.append(("title", g["title"], payload.title, None))
@@ -1069,7 +1069,7 @@ class RowDelegate(QStyledItemDelegate):
                 out.append((name, r, tip, pl))
             out.append(("up", g["up"], strings.ROWS_MOVE_TIP["up"], None))
             out.append(("down", g["down"], strings.ROWS_MOVE_TIP["down"], None))
-            if not is_open:
+            if not is_open and self._sheet_there():    # L4: a stone is hit only where it is drawn
                 out += self._stone_parts(payload, self._info(payload)[0], g["gstr"], slab.top() + slab.height() / 2)
             if g["stat"].width():
                 out.append(("status", g["stat"], payload.status.tip, None))
@@ -1099,6 +1099,11 @@ class RowDelegate(QStyledItemDelegate):
             out.append(("title", rect, payload.title + ("\n" + payload.line if payload.line else ""), None))
         out = self._line_parts(lines, rect) + out      # a line's hover area overlaps its rows' edges: it wins there
         return out
+
+    def _sheet_there(self):
+        """Whether the stones' sheet is there to draw a string from (L4: until it lands — or all session, if its build
+        failed — a row paints no stone, so none can be clicked: a click on the bare string opens the row)."""
+        return stones.get(self.view.viewport().devicePixelRatioF() or 1.0, style.current()[1]) is not None
 
     def _line_parts(self, lines, rect):
         """The lines after a row, as parts: each strip's hover area at least `line-hit` tall around its groove (S10),
@@ -1254,7 +1259,22 @@ class RowDelegate(QStyledItemDelegate):
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
         is_open = self.view.model().open_key == getattr(payload, "key", None)
-        if kind == HERO and not is_open:
+        p.save()                                     # (the body only: a drag's lines stay where they are)
+        body = True
+        if kind in (HERO, ROW):                      # W3.1a §2: a drag parts the rows; the dragged one leaves its slot
+            parting = self.view.parting
+            if parting is not None and parting.src == index.row():
+                body = False                         # its slot travels with the hand (`drag.Parting.paint_over`)
+            elif parting is not None:
+                shift = parting.offset(index.row())
+                if shift:
+                    p.translate(0, shift)
+            if self.view.landing is not None and self.view.landing == payload.key:
+                body = False                         # a drop's ghost glides onto it: its slot shows meanwhile
+                self.paint_slot(p, self.slot_rect(kind, rect, lines))
+        if not body:
+            pass
+        elif kind == HERO and not is_open:
             pix, box = self._closed(kind, payload, lines, rect, dpr, hovered or focused, p)
             if pix is not None:
                 p.drawPixmap(box.topLeft(), pix)
@@ -1286,6 +1306,9 @@ class RowDelegate(QStyledItemDelegate):
                       dpr=dpr)
             TEXT.draw(p, rect.left(), mid + 14 * fz(), line_, "body", rect.width(), c("ink-dim"), weight=400,
                       align="centre", dpr=dpr)
+        if body and kind == ROW and payload.key in self.view.saving:
+            self._paint_saving(p, payload, rect, dpr)
+        p.restore()
         y = rect.bottom() + 1 - self._lines_h(lines)
         hot = self.view.line_hover
         for ln in lines:
@@ -1660,6 +1683,40 @@ class RowDelegate(QStyledItemDelegate):
             self._warming = False
         return False
 
+    def slot_rect(self, kind, rect, lines):
+        """The slot an entry leaves while it is dragged (W3.1a §2): its slab — Up Next's card, or a row with its gap's
+        halves outside — never its lines."""
+        if kind == HERO:
+            return QRect(rect.left(), rect.top(), rect.width(), rect.height() - rl("hero-below") - self._lines_h(lines))
+        half = rl("gap") // 2
+        return QRect(rect.left(), rect.top() + half, rect.width(), rect.height() - self._lines_h(lines) - rl("gap"))
+
+    @staticmethod
+    def paint_slot(p, r):
+        """The placeholder a dragged row leaves (list-r14m :4330): `placeholder` with an inset accent ring at 60 %."""
+        d = theme.DRAG
+        p.save()
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(style.qcolor(theme.DRAG_COLOURS["placeholder"]))
+        radius = d["placeholder-radius"]
+        p.drawRoundedRect(QRectF(r), radius, radius)
+        w = d["placeholder-ring"]
+        p.setPen(QPen(faded("accent", d["placeholder-ring-alpha"]), w))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRoundedRect(QRectF(r).adjusted(w / 2, w / 2, -w / 2, -w / 2), radius - w / 2, radius - w / 2)
+        p.restore()
+
+    def _paint_saving(self, p, row, rect, dpr):
+        """*saving…* over the string's end while the row's move waits for a busy store (04 §4.5, after 300 ms)."""
+        slab = self.slab_of(rect)
+        g = self.line_geometry(row, slab)
+        text = strings.ROWS_SAVING
+        fm = TEXT.metrics("row-sub", dpr=dpr)
+        w = fm.horizontalAdvance(text) + 12
+        box = QRectF(g["end"] - w, slab.top() + slab.height() / 2 - fm.height() / 2, w, fm.height())
+        p.fillRect(box, c("surface"))
+        TEXT.draw(p, box.left() + 6, box.center().y(), text, "row-sub", w, c("ink-dim"), dpr=dpr, elide=False)
+
     def _paint_line(self, p, ln, strip, dpr, hot=False):
         """A line after its row (W3.1a §1 *Top-20 line*, *Soon line*): a groove — 1 px dark, then 1 px lit lip —
         across the list in its own strip, no word; Soon's quieter still (the lip only). Under the hand it lights a step
@@ -2032,6 +2089,14 @@ def whole_step(dpr):
     return 1
 
 
+NO_DRAG = frozenset(("play", "more", "up", "down", "done", "mine-now", "journey"))     # buttons: a press there clicks
+
+
+def _same_payload(a, b):
+    """A part's payload at the release is the press's: the same object, or the same episode (a refresh between)."""
+    return a is b or (a is not None and b is not None and getattr(a, "id", object()) == getattr(b, "id", None))
+
+
 def lines_top(lines):
     return next(ln for ln in lines if ln.kind == "top")
 
@@ -2118,6 +2183,14 @@ class RowsView(QListView):
         self._active = set()                         # the row keys showing their hover look (the hand's, the keyboard's)
         self._key_rows = (None, {})                  # (the model's keys, key -> row) for the touches' repaints
         self.line_hover = None                       # (row, line kind) of the line under the hand: it lights a step
+        # W3.1a §2, the drag (`app/qt/drag.py`): a press records its part and acts on its release over the same part,
+        # unless the hand travels `drag-start-px` first — then the drag has it (B1: a drag begun on a stone never marks
+        # it watched, one begun on a row never opens it)
+        self.drag = None                             # the drag controller (Current's list only)
+        self._press = None                           # (row, part name, payload, pos, key): a press waiting for release
+        self.parting = None                          # the running drag's parting (`drag.Parting`): offsets, the slot
+        self.landing = None                          # the key a drop's ghost is gliding onto: its slot shows meanwhile
+        self.saving = frozenset()                    # keys whose moves wait for a busy store (*saving…*)
         stones.notifier().ready.connect(self._sheet_ready)
 
     def paintEvent(self, event):
@@ -2125,6 +2198,8 @@ class RowsView(QListView):
         p.fillRect(event.rect(), c("bg"))
         p.end()
         super().paintEvent(event)
+        if self.parting is not None:                 # a drag: the rows it moved into view, and the slot it opens
+            self.parting.paint_over(self, event)
 
     # entries ---------------------------------------------------------------------------------------------------- #
     def set_entries(self, entries):
@@ -2132,7 +2207,10 @@ class RowsView(QListView):
         model = self.model()
         anchor = self._anchor()
         before = model.entries
+        held = self._held_keys(before)
         how = model.set_entries(entries)
+        if how == "moved":                           # AD-5: the keyboard's row and the hand's stay on their rows
+            self._follow_rows(*held)
         if how in ("same", "moved"):                 # a move keeps every place's height: no relayout (W3.1a S3)
             self.delegate.same_heights(before, model.entries)     # equal shapes: equal heights (review D-2)
             lo, hi = self._near()
@@ -2161,6 +2239,37 @@ class RowsView(QListView):
                 self._apply_restore()
                 self._restore = None                     # tried once: a place gone stays gone (W2.2 review A-15)
         return how
+
+    def _held_keys(self, entries):
+        """(the current row's key, the hovered row's key) in `entries`: what a reorder must keep on its row."""
+        def key(row):
+            if row is None or not 0 <= row < len(entries):
+                return None
+            return getattr(entries[row][1], "key", None)
+        cur = self.currentIndex()
+        return key(cur.row() if cur.isValid() else None), key(self._hover)
+
+    def _follow_rows(self, cur_key, hover_key):
+        """AD-5: a "moved" refresh swaps the rows in their places with no reset, so Qt's current index and the hovered
+        place still name places: put them back on the rows they were on (the focus ring, Enter / Space, the next ↑ ↓
+        act on the same title). Only the two places repaint."""
+        places = {}
+        for i, (kind, payload, _lines) in enumerate(self.model().entries):
+            k = getattr(payload, "key", None)
+            if k is not None and k in (cur_key, hover_key):
+                places[k] = i
+        cur = self.currentIndex()
+        if cur_key is not None and cur_key in places and (not cur.isValid() or cur.row() != places[cur_key]):
+            scrolls = self.hasAutoScroll()
+            self.setAutoScroll(False)                    # followed where it stands: the list doesn't jump
+            self.selectionModel().setCurrentIndex(self.model().index(places[cur_key], 0),
+                                                  QItemSelectionModel.SelectionFlag.NoUpdate)
+            self.setAutoScroll(scrolls)
+            if cur.isValid():
+                self.update(cur)
+            self.update(self.model().index(places[cur_key], 0))
+        if hover_key is not None:
+            self._hover = places.get(hover_key)
 
     def _near(self):
         """The rows on screen and those painted ahead past each edge (`WARM_AHEAD`): (first, last), by place."""
@@ -2394,11 +2503,18 @@ class RowsView(QListView):
         if t is None:
             return
         setattr(t, field, value)
+        if field != "fade":                          # L5: a px spring rests once what it draws stops changing
+            s = t.s_lift if field == "lift" else t.s_nb
+            if s is not None and s.alive and abs(value - s.target) < theme.DRAG["px-rest"]:
+                s.finish()                           # (its last value comes back through here, at rest)
+                return
         keys = self.model().keys
         if self._key_rows[0] is not keys:
             self._key_rows = (keys, {k[1]: i for i, k in enumerate(keys) if k[0] in (HERO, ROW)})
         row = self._key_rows[1].get(key)
-        if row is not None:
+        if self.parting is not None:                 # a drag parts the rows: a row may stand in another's place
+            self.viewport().update()
+        elif row is not None:
             entries = self.model().entries
             for r in ((row - 1, row, row + 1) if field != "fade" else (row,)):
                 if 0 <= r < len(entries) and (r == row or entries[r][0] == ROW):    # Up Next never eases apart
@@ -2456,6 +2572,13 @@ class RowsView(QListView):
         return super().viewportEvent(event)
 
     def mouseMoveEvent(self, event):
+        press = self._press
+        if press is not None and event.buttons() & Qt.MouseButton.LeftButton and \
+                (event.pos() - press[3]).manhattanLength() >= theme.MOTION["drag-start-px"] and self.drag_from(press):
+            self._press = None                           # B1: the press is the drag's now, never a click
+            self.drag.begin(press, event.globalPosition().toPoint())
+            event.accept()
+            return
         idx = self.indexAt(event.pos())
         row = idx.row() if idx.isValid() else None
         if row != self._hover:
@@ -2502,25 +2625,57 @@ class RowsView(QListView):
             self._retouch()
 
     def mousePressEvent(self, event):
+        """B1 (W3.1a): a press only records the part under it; the part acts when the button comes up over it again
+        (`mouseReleaseEvent`). A hand that travels `drag-start-px` first hands the press to the drag (`mouseMoveEvent`):
+        a drag begun on a stone never marks it watched, one begun on a row never opens it."""
         self._show_focus(False)
+        self._press = None
         if event.button() == Qt.MouseButton.LeftButton:
             idx, part = self.part_at(event.pos())
             if idx.isValid():
                 self.setCurrentIndex(idx)
-                if part is not None and part[0] == "play" and part[3] is not None:
-                    if part[3].can_play:
-                        self.play_requested.emit(part[3])
-                    event.accept()
-                    return
-                if part is not None and part[0] in ("open", "title"):
-                    self.toggle(idx)
-                    event.accept()
-                    return
                 if part is not None:
-                    self._act(idx, part)
+                    entry = self.model().entries[idx.row()]
+                    self._press = (idx.row(), part[0], part[3], event.pos(), getattr(entry[1], "key", None))
                     event.accept()
                     return
         super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        press, self._press = self._press, None
+        if press is None or event.button() != Qt.MouseButton.LeftButton:
+            super().mouseReleaseEvent(event)
+            return
+        event.accept()
+        idx, part = self.part_at(event.pos())
+        row, name, payload, _pos, key = press
+        entries = self.model().entries
+        if part is None or not idx.isValid() or idx.row() != row or part[0] != name or \
+                getattr(entries[row][1], "key", None) != key or not _same_payload(part[3], payload):
+            return                                       # let go somewhere else: nothing happens
+        if name == "play" and payload is not None:
+            if payload.can_play:
+                self.play_requested.emit(payload)
+        elif name in ("open", "title"):
+            self.toggle(idx)
+        else:
+            self._act(idx, part)
+
+    def drag_from(self, press):
+        """Whether a press may become a drag (W3.1a §2): on Current's rows (Up Next's card, a row's one line — never an
+        opened row's episodes, a line, or a button: ▶, ⋯, ↑ ↓, ✓ Done, Mine now, ↗)."""
+        row, name, _payload, pos, _key = press
+        entries = self.model().entries
+        if self.drag is None or not 0 <= row < len(entries) or name in NO_DRAG or name.endswith("-line"):
+            return False
+        kind, payload, lines = entries[row]
+        if kind not in (HERO, ROW):
+            return False
+        rect = self.visualRect(self.model().index(row, 0))
+        if kind == HERO:
+            head = QRect(rect.left(), rect.top(), rect.width(), self.delegate._hero_head_h())
+            return head.contains(pos)
+        return self.delegate.slab_of(rect).contains(pos)
 
     def _act(self, idx, part):
         """A click on a part that isn't ▶ or the row itself: a stone or ✓ Done asks for a Done for its file (one path,
@@ -2546,6 +2701,14 @@ class RowsView(QListView):
     def keyPressEvent(self, event):
         if event.key() not in self.MODIFIERS:        # Ctrl held for a Ctrl+wheel is no navigation (D-6)
             self._show_focus(True)
+        if event.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down) and \
+                event.modifiers() & Qt.KeyboardModifier.AltModifier:     # A2 #14 (L7): Alt+↑ / ↓ moves the row
+            idx = self.currentIndex()
+            if idx.isValid() and self.model().entries[idx.row()][0] in (HERO, ROW):
+                self.nudge_requested.emit(self.model().entries[idx.row()][1],
+                                          -1 if event.key() == Qt.Key.Key_Up else 1)
+            event.accept()
+            return
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
             idx = self.currentIndex()
             if idx.isValid():
@@ -2583,6 +2746,25 @@ class RowsView(QListView):
                 self.focus_visible = False
             self._retouch()
         event.accept()
+
+    # files dragged in from Windows Explorer (W3.1a §2): the drag controller places them --------------------------- #
+    def dragEnterEvent(self, event):
+        if self.drag is not None and self.drag.files_wanted(event):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        if self.drag is not None and self.drag.files_wanted(event):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        if self.drag is not None and self.drag.files_dropped(event):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
 
     def _update_current(self):
         index = self.currentIndex()

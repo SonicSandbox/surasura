@@ -207,6 +207,31 @@ def test_the_sheet_is_built_off_the_gui_thread_and_get_answers_none_until_it_lan
     assert stones.held_bytes() == sheet.bytes
 
 
+def test_AD13_clear_lets_go_of_a_hold_no_window_will_release(qapp, monkeypatch):
+    """A window built but never painted nor destroyed (a test's, dropped) holds every build back; `clear()` lets go of
+    it and its deferred builds, so the next ask starts its build at once instead of waiting forever."""
+    started = []
+    monkeypatch.setattr(stones, "_start", started.append)
+    stones.clear()
+    stones.hold(object())                                             # a window that never paints, never goes
+    assert stones.get(1.75, "M") is None and started == []           # deferred
+    stones.clear()
+    assert not stones._HELD and not stones._DEFERRED and (1.75, "M") not in stones._BUILDING
+    assert stones.get(1.75, "M") is None and started == [(1.75, "M")]
+    stones._BUILDING.pop((1.75, "M"), None)                           # (never built: the stand-in started nothing)
+
+
+def test_AD13_the_window_fixture_lets_go_of_a_hold_a_test_left_behind():
+    """The per-test fixture (tests/qt/conftest.py) releases whatever hold the last test left: the order of the tests
+    never decides whether rows paint with their stones."""
+    assert not stones._HELD
+    stones.hold(object())                                             # left behind on purpose: the next test sees none
+
+
+def test_AD13_no_hold_is_left_from_the_test_before():
+    assert not stones._HELD
+
+
 def test_nothing_is_built_when_the_module_loads():
     # The first frame is never held up for the stones: importing the module draws nothing and starts no worker.
     code = ("import os; os.environ['QT_QPA_PLATFORM'] = 'offscreen'\n"

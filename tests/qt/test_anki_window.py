@@ -149,7 +149,8 @@ def test_every_control_is_wired_tipped_and_named_with_both_doors(main, anki, mon
 
 def test_the_anki_door_is_on_the_settings_tab_and_opens_one_window(main):
     op = next(o for o in windows.OPENERS if o.name == "anki")
-    assert not main.launchers.buttons["anki"].isHidden()
+    row = windows.launchers(main, main.page_widgets["settings"])      # the Settings tab's doors, as the shell will build them
+    assert not row.buttons["anki"].isHidden()
     a = windows.launch(main, op)
     b = windows.launch(main, op)
     assert a is b and isinstance(a, QAW.AnkiWindow)

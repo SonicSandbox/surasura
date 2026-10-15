@@ -410,3 +410,10 @@ def test_the_child_starts_no_store_helper_when_its_environment_says_so(tmp_path,
     monkeypatch.setenv(extract.NO_HELPER_ENV, "1")
     extract.main(argv)
     assert asked == [True, False]
+
+
+def test_a_long_name_is_cut_so_a_grouped_splits_paths_stay_short():
+    """AD2-13: <section>/<name>/<name>_k/<name>_k_NN.txt holds the name three times — at 120 characters a grouped
+    split passed Windows' 260-character path on a system without long paths."""
+    assert extract.NAME_LIMIT <= 60
+    assert len(extract.clean_name("吾輩は猫である" * 20)) == extract.NAME_LIMIT

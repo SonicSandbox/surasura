@@ -31,6 +31,9 @@ def refuse_language(language):
     return None
 
 
+ERROR_BODY = 100                 # characters of an error reply kept for the status line
+
+
 def fetch_cards(api_key):
     """Jiten's cards for `api_key` -> (cards, None), or (None, the line that says why). Prints its progress; never
     the key."""
@@ -41,7 +44,8 @@ def fetch_cards(api_key):
         if response.status_code == 401:
             return None, "Error: Invalid API key. Please check your API key and try again."
         elif response.status_code != 200:
-            return None, f"Error: API returned status {response.status_code}\nResponse: {response.text}"
+            said = " ".join(str(response.text or "").split())[:ERROR_BODY]   # one short line: never a whole page
+            return None, f"Error: API returned status {response.status_code}" + (f" ({said})" if said else "")
         cards = response.json()
         if not isinstance(cards, list):
             return None, "Error: Unexpected API response format."

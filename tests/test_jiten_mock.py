@@ -306,3 +306,12 @@ def test_step_one_refuses_before_any_fetch_when_the_known_words_cant_be_read(mon
     cards = tmp_path / "cards.json"
     assert jiten_converter.save_cards("key", str(cards), "ja") is False
     assert fetched == [] and not cards.exists()
+
+
+def test_an_error_page_is_cut_short_to_one_line(monkeypatch):
+    """AD2-4: a 502 with a long HTML page put the whole page on the window's status line (the last line it says)."""
+    from app import jiten_converter
+    page = MagicMock(status_code=502, text="<html>\n" + "<p>Bad gateway</p>\n" * 200 + "</html>")
+    monkeypatch.setattr("requests.get", lambda *a, **k: page)
+    cards, error = jiten_converter.fetch_cards("key")
+    assert cards is None and "\n" not in error and len(error) < 200 and "502" in error

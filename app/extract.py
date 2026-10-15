@@ -44,7 +44,8 @@ DEFAULT_PARTS = 5
 TEXT_EXTENSIONS = (".epub", ".txt", ".md", ".srt", ".ass", ".ssa")
 RESULT_MARK = "RESULT "
 EXIT_DONE, EXIT_FAILED, EXIT_REFUSED, EXIT_PROCESSED_ONLY = 0, 1, 2, 3
-NAME_LIMIT = 120                                # characters: a folder name, and its parts' names after it
+NAME_LIMIT = 60                                 # characters: a folder name, and its parts' names after it (a grouped
+                                                # split holds it three times: under Windows' 260-character paths)
 # Set (by a test running the real child): the child adds its parts but starts no store helper — a detached helper would
 # outlive the test's folders. The window's runs never set it.
 NO_HELPER_ENV = "SURASURA_EXTRACT_NO_HELPER"

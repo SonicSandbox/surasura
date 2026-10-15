@@ -219,6 +219,7 @@ QLabel#ankiresolved {{ color: {c['accent']}; {font('footer')} font-weight: 600; 
 QLabel#ankiskipped {{ color: {c['bad']}; {font('footer')} font-weight: 600; }}
 QLabel#ankitotal {{ color: {c['ink']}; {font('dialog-title')} }}
 QLabel#ankidelta {{ color: {c['ok']}; {font('body')} font-weight: 600; }}
+QPushButton[kind="primary"]:disabled {{ background: {c['raised']}; color: {c['ink-faint']}; }}
 """
     _state["generated_ms"] = (time.perf_counter() - t0) * 1000
     return rules

@@ -73,6 +73,8 @@ def test_the_map_is_the_tk_dashboards_map_as_it_is():
     from app.main import MasterDashboardApp
     source = inspect.getsource(MasterDashboardApp.run_command_async)
     for script, word in tools.SCRIPT_MAP.items():
+        if script in tools.QT_SCRIPTS:                     # the 3.0 window's own tools (W3.4 row 2)
+            continue
         assert f"'{script}': '{word}'" in source
 
 
@@ -451,6 +453,13 @@ def test_run_returns_at_once(tmp_path):
     assert time.perf_counter() - t0 < 0.2
     job.cancel()
     assert job.wait(20)
+
+
+def test_the_3_0_tools_run_as_their_subcommands_when_frozen():
+    for script, word in (("anki_db_import.py", "apkg_known_import"), ("extract.py", "extract"),
+                         ("jiten_converter.py", "convert_jiten")):
+        assert tools.command([script, "--language", "ja"], frozen=True, executable="S.exe") == \
+            ["S.exe", word, "--headless", "--language", "ja"]
 
 
 def test_each_run_writes_its_log_fresh(tmp_path):

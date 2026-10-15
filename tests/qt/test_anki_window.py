@@ -53,6 +53,12 @@ def anki(monkeypatch):
     return fake
 
 
+def _doors(monkeypatch, *doors):
+    """Stand-in openers, each in place of the real one of its name (row 2's `apkg_known` is real on this line)."""
+    names = {d.name for d in doors}
+    monkeypatch.setattr(windows, "OPENERS", [o for o in windows.OPENERS if o.name not in names] + list(doors))
+
+
 def _choose(main, language="ja", decks=("TheBank",), **extra):
     """Choices already saved (a returning user), written before the window opens."""
     changes = {"anki_sync_decks": {language: list(decks)}}
@@ -160,7 +166,7 @@ def test_every_control_is_wired_tipped_and_named_with_both_doors(main, anki, mon
     opened = []
     doors = [windows.Opener("backfill", "Backfill", "x", windows.always, lambda s: opened.append("backfill")),
              windows.Opener("apkg_known", "Import .apkg", "x", windows.always, lambda s: opened.append("apkg"))]
-    monkeypatch.setattr(windows, "OPENERS", windows.OPENERS + doors)
+    _doors(monkeypatch, *doors)
     _choose(main)
     w = _open(main)
     assert w.windowTitle() == "Anki known words — Surasura"
@@ -509,9 +515,9 @@ def test_without_their_openers_the_doors_are_hidden(main, anki):
 
 def test_the_apkg_door_never_closes_this_window_even_mid_job(main, anki, monkeypatch):
     opened = []
-    monkeypatch.setattr(windows, "OPENERS", windows.OPENERS + [
-        windows.Opener("apkg_known", "Import .apkg", "x", windows.always, lambda s: opened.append("apkg")),
-        windows.Opener("backfill", "Backfill", "x", lambda s, lang: lang == "ja", lambda s: opened.append("bf"))])
+    _doors(monkeypatch,
+           windows.Opener("apkg_known", "Import .apkg", "x", windows.always, lambda s: opened.append("apkg")),
+           windows.Opener("backfill", "Backfill", "x", lambda s, lang: lang == "ja", lambda s: opened.append("bf")))
     _choose(main)
     w = _open(main)
     gate = _Gate(monkeypatch)
@@ -599,9 +605,8 @@ def test_the_doors_are_asked_again_only_by_a_write_that_can_move_them_and_by_the
     looked for (Backfill's door names Junban); the window starts that look itself when no one has."""
     monkeypatch.setattr(windows, "_FOUND", {})
     monkeypatch.setattr(windows, "_LOOKING", set())
-    monkeypatch.setattr(windows, "OPENERS", windows.OPENERS + [
-        windows.Opener("backfill", "Backfill", "x", lambda s, lang: s.get("enable_junban") is not False,
-                       lambda s: None, module="junban")])
+    _doors(monkeypatch, windows.Opener("backfill", "Backfill", "x", lambda s, lang: s.get("enable_junban") is not False,
+                                       lambda s: None, module="junban"))
     asked = []
     real = windows.available
     monkeypatch.setattr(windows, "available", lambda op, s, lang: (asked.append(op.name), real(op, s, lang))[1])
@@ -749,3 +754,13 @@ def test_the_two_switches_follow_a_write_made_elsewhere_and_write_nothing_back(m
     monkeypatch.setattr(main.services.settings, "set", lambda *a, **k: (writes.append(a), real(*a, **k))[1])
     assert wait_until(lambda: w.chk_auto.isChecked() and w.chk_generate.isChecked())
     assert writes == []
+
+
+def test_the_apkg_link_opens_row_2s_deck_importer_and_this_window_stays(main, anki):
+    """IK-41: the link is row 2's real opener (`apkg_known`), found by its name."""
+    w = _open(main, connect=False)
+    assert not w.btn_apkg.isHidden()
+    w.btn_apkg.click()
+    deck = windows.opened(main, "apkg_known")
+    assert deck is not None and deck is not w and windows.opened(main, QAW.NAME) is w and w.isVisible()
+    deck.close()

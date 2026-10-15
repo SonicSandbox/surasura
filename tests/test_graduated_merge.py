@@ -438,7 +438,7 @@ def test_the_replace_confirmations_total_after_counts_the_graduates_words_kept(j
     with mock.patch("urllib.request.urlopen", FakeCollection([{"word": "危険"}, {"word": "素晴らしい"}])):
         dry = anki_sync.replace("ja", URL, ["TheBank"], [], dry_run=True)
         assert (dry.added, dry.kept_graduated, dry.total_after) == (2, 5, 7)
-        result = anki_sync.replace("ja", URL, ["TheBank"], [], expect=anki_sync.replace_numbers(dry))
+        result = anki_sync.replace("ja", URL, ["TheBank"], [], expect=anki_sync.confirmed(dry))
     assert not result.changed and result.total_known == result.total_after == dry.total_after
     assert result.total_known == 2 + 5
 

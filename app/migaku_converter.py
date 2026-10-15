@@ -1,3 +1,4 @@
+import glob
 import os
 import sqlite3
 import json
@@ -10,29 +11,58 @@ if __name__ == "__main__" and __package__ is None:
 
 from app.path_utils import get_user_file, get_user_files_path, backup_to_trash
 
-def convert_db_to_json(db_path, output_json=None, language=None):
-    if not output_json:
-        # Save to User Files/<lang>/KnownWord.json
-        user_files_dir = get_user_files_path(language)
-        output_json = os.path.join(user_files_dir, "KnownWord.json")
+# The browser console line that downloads Migaku's database (the importer's step 1: without it there is no .db).
+CONSOLE_CODE = "await coreApi.Database_downloadAsFile({})"
+# "Find it for me" looks at this many of the newest .db files in Downloads.
+DOWNLOADS_LOOK = 3
 
 
+class NotMigaku(Exception):
+    """The file has no WordList table: not a Migaku export."""
+
+
+def is_migaku_db(db_path):
+    """Whether `db_path` holds Migaku's WordList table (read only; never raises). Moved from the Tk window's
+    `is_valid_migaku_db`."""
+    for target, uri in ((f"file:{os.path.abspath(db_path)}?mode=ro", True), (db_path, False)):
+        conn = None
+        try:
+            conn = sqlite3.connect(target, uri=uri)
+            row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='WordList'").fetchone()
+            return row is not None
+        except Exception:
+            continue
+        finally:
+            if conn is not None:
+                conn.close()
+    return False
+
+
+def find_export(folder=None, look=DOWNLOADS_LOOK):
+    """The newest Migaku export among the `look` newest `.db` files in `folder` (the user's Downloads) -> (its path or
+    None, how many .db files the folder holds). Moved from the Tk window's `scan_downloads`."""
+    folder = folder or os.path.join(os.path.expanduser("~"), "Downloads")
+    found = glob.glob(os.path.join(folder, "*.db"))
+    for path in sorted(found, key=os.path.getmtime, reverse=True)[:look]:
+        if is_migaku_db(path):
+            return path, len(found)
+    return None, len(found)
+
+
+def read_words(db_path, language=None):
+    """The WordList's rows (only `language`'s when given) as KnownWord.json entries. Raises NotMigaku when the
+    file has no WordList table, sqlite3.Error when it can't be read. The connection is always closed."""
+    conn = sqlite3.connect(db_path)
     try:
-        conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-
-        print(f"Opening database: {db_path}")
 
         # Migaku export databases typically have a 'WordList' table
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='WordList'")
         if not cursor.fetchone():
-            print("Error: Table 'WordList' not found in database.")
-            conn.close()
-            return False
+            raise NotMigaku("Table 'WordList' not found in database.")
 
         if language:
-            print(f"Filtering words for language: {language}")
             cursor.execute("SELECT * FROM WordList WHERE language=?", (language,))
         else:
             cursor.execute("SELECT * FROM WordList")
@@ -66,6 +96,27 @@ def convert_db_to_json(db_path, output_json=None, language=None):
                 'mod': rowd.get('mod'),
                 'isModern': rowd.get('isModern')
             })
+        return words
+    finally:
+        conn.close()
+
+
+def convert_db_to_json(db_path, output_json=None, language=None):
+    if not output_json:
+        # Save to User Files/<lang>/KnownWord.json
+        user_files_dir = get_user_files_path(language)
+        output_json = os.path.join(user_files_dir, "KnownWord.json")
+
+
+    try:
+        print(f"Opening database: {db_path}")
+        if language:
+            print(f"Filtering words for language: {language}")
+        try:
+            words = read_words(db_path, language)
+        except NotMigaku as e:
+            print(f"Error: {e}")
+            return False
 
         print(f"Found {len(words)} words")
 
@@ -85,7 +136,7 @@ def convert_db_to_json(db_path, output_json=None, language=None):
         print(f"  Learning Words: {stats['learningWords']}")
         print(f"  Unknown Words: {stats['unknownWords']}")
         print(f"  Ignored Words: {stats['ignoredWords']}")
-        
+
         languages_list = stats.get('languages', [])
         languages_str = ", ".join([str(l) for l in languages_list])
         print(f"  Languages: {languages_str}")
@@ -95,7 +146,6 @@ def convert_db_to_json(db_path, output_json=None, language=None):
         if not words and os.path.exists(output_json) and os.path.getsize(output_json) > 0:
             print("Error: the database has no words for this language, so your existing known "
                   "words were left unchanged.")
-            conn.close()
             return False
 
         # KnownWord.json is replaced holding its lock (P0.3 04 §2): never beside the Anki sync's or surasura-cli's write.
@@ -104,26 +154,31 @@ def convert_db_to_json(db_path, output_json=None, language=None):
         held, refused = hold_known_words(lock_language, "Migaku import")
         if refused is not None:
             print(f"Error: {refused[0]}")
-            conn.close()
             return False
         try:
+            # A file that exists but can't be read is never replaced: what it keeps can't be kept (AD2-1).
+            from app.anki_sync import known_file_refusal
+            unreadable = known_file_refusal(lock_language, output_json)
+            if unreadable:
+                print(f"Error: {unreadable}")
+                return False
             # This import REPLACES the file. Keep a dated copy of what it replaces first
             # (User Files/<lang>/.trash/KnownWord.<YYYYmmdd-HHMMSS>.json); no copy, no overwrite.
             try:
                 backup = backup_to_trash(output_json)
             except OSError as e:
                 print(f"Error: could not back up your current known words, so nothing was changed ({e}).")
-                conn.close()
                 return False
             if backup:
                 print(f"Backed up your previous known words to: {backup}")
 
-            # The words the old GraduatedList.txt gave the file stay known words (S3.1 D13).
-            from app.anki_sync import kept_graduated
-            kept = kept_graduated(output_json, lock_language, words)
-            words = words + kept
-            stats['totalWords'] += len(kept)
-            stats['knownWords'] += len(kept)
+            # The words the old GraduatedList.txt gave the file stay known words (S3.1 D13), and the words the user
+            # dismissed that Migaku doesn't name stay ignored (W3.4-1: the rule Anki's and Jiten's replaces follow).
+            from app.anki_sync import replaced_words
+            words, graduated, ignored = replaced_words(output_json, lock_language, words)
+            stats['totalWords'] += graduated + ignored
+            stats['knownWords'] += graduated
+            stats['ignoredWords'] += ignored
 
             print(f"\nWriting JSON to: {output_json}")
             json_data = {
@@ -144,7 +199,6 @@ def convert_db_to_json(db_path, output_json=None, language=None):
                 held.release()
         print(f"JSON exported: {output_json}")
 
-        conn.close()
         print("\nConversion complete!")
         return True
 
@@ -163,7 +217,7 @@ def main():
     parser.add_argument("db_file", help="Path to Migaku .db file")
     parser.add_argument("out_file", nargs='?', help="Optional output JSON path")
     parser.add_argument("--language", help="Optional language filter (e.g., ja, zh)")
-    
+
     args = parser.parse_args()
     ok = convert_db_to_json(args.db_file, args.out_file, args.language)
     # The importer window reads the exit code to choose between "Success" and "Error"; returning

@@ -865,13 +865,13 @@ def test_replace_whose_numbers_changed_since_the_confirmation_writes_nothing_and
     dry = _replace(fake, dry_run=True)
     fake.add(ja_words[3])                                     # studied meanwhile
 
-    changed = _replace(fake, expect=anki_sync.replace_numbers(dry))
+    changed = _replace(fake, expect=anki_sync.confirmed(dry))
 
     assert changed.changed and changed.error is None and changed.mode == "dry-run"
     assert (changed.added, changed.total_after) == (4, 4)
     assert _read_bytes(migaku_file) == before and _trash_files() == [] and not os.path.exists(_state_path())
 
-    result = _replace(fake, expect=anki_sync.replace_numbers(changed))
+    result = _replace(fake, expect=anki_sync.confirmed(changed))
     assert result.error is None and not result.changed and result.mode == "replace" and result.total_known == 4
 
 

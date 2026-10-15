@@ -14,7 +14,7 @@
   the dashboard (`Automation.anki_synced`: the quiet Generate, the indexer), from the job's own thread, so a window
   closed meanwhile loses nothing.
 - **Replace and Restore write only what was confirmed:** the confirmation shows the dry run's numbers
-  (`anki_sync.replace_numbers`) and the write carries them (`replace(expect=)`); Restore names its backup
+  (`anki_sync.confirmed`) and the write carries them (`replace(expect=)`); Restore names its backup
   (`restore_previous(expect=)`). Changed meanwhile, nothing is written and the window asks again.
 
 Nothing here touches a widget or waits on the caller's thread except the reads named as a worker's.

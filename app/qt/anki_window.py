@@ -654,7 +654,7 @@ class AnkiWindow(windows.SecondaryWindow):
             self._done()
             return
         self.say(strings.ANKI_REPLACING)
-        expect = anki_sync.replace_numbers(dry)
+        expect = anki_sync.confirmed(dry)
         work = lambda: AW.run_replace(snap["language"], snap["url"], snap["decks"], snap["fields"], snap["suspended"],
                                       expect)
         if not self._submit(strings.ANKI_JOB_REPLACE, work, lambda result: self._replaced(result, snap),

@@ -181,6 +181,15 @@ def always(_settings, _language):
 OPENERS = []
 
 
+# row 3: the Anki window
+def _open_anki(shell):
+    from app.qt import anki_window
+    return anki_window.open_anki(shell)
+
+
+OPENERS += [Opener("anki", strings.ANKI_DOOR, strings.ANKI_DOOR_TIP, always, _open_anki)]
+
+
 def module_present(name):
     """Whether `modules/<name>` can be imported (found, not run: nothing of it is loaded here)."""
     try:

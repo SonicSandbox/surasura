@@ -182,6 +182,23 @@ def test_connected_it_shows_the_studied_counts_the_fields_and_the_known_total(ma
     assert [w.add_box.itemText(i) for i in range(w.add_box.count())] == ["Grammar"]
 
 
+def test_a_deck_removed_while_anki_is_checked_never_leaves_the_check_again_off(main, anki, monkeypatch):
+    """A scope read asked during the probe makes the probe's answer stale; the window must still know the probe ended
+    (else ⟳ stays off for good)."""
+    from app import anki_window as AW
+    _choose(main, decks=("TheBank", "Grammar"))
+    w = _open(main)
+    gate, real = threading.Event(), AW.read_probe
+    monkeypatch.setattr(AW, "read_probe", lambda *a: (gate.wait(10), real(*a))[1])
+    w.refresh_connection()
+    assert not w.btn_recheck.isEnabled()
+    w.remove_deck("Grammar")
+    gate.set()
+    assert wait_until(lambda: w.btn_recheck.isEnabled())
+    assert w.decks == ["TheBank"]
+    assert w.state.text() == strings.ANKI_STATE_CONNECTED, "never left saying checking…"
+
+
 def test_a_named_field_that_a_note_type_lacks_is_named_as_skipped(main, anki):
     anki.add(WORDS[4], deck="TheBank", model="Migaku Japanese", fields=[("Target Word", WORDS[4])])
     _choose(main, **{"anki_sync_fields": {"ja": ["Expression"]}})

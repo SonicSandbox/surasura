@@ -347,9 +347,9 @@ class AnkiWindow(windows.SecondaryWindow):
     def refresh_connection(self):
         if self.busy() or self._probing or self.gone:
             return
-        self._probing = True
         self._probe_seq += 1
         seq, snap = self._probe_seq, self._snapshot()
+        self._probing = seq                               # the probe under way (a newer read may outdate its answer)
         self._set_label(self.state, strings.ANKI_STATE_CHECKING)
         self._paint_controls()
         bridge.run_in_worker(AW.read_probe, snap["url"], snap["decks"], snap["suspended"],
@@ -359,10 +359,12 @@ class AnkiWindow(windows.SecondaryWindow):
                                  snap["language"])))
 
     def _probed(self, probe, seq, language):
-        if seq != self._probe_seq:
-            return
-        self._probing = False
-        if language != self.language:
+        if self._probing == seq:
+            self._probing = False                         # it ended, whether or not its answer is still the newest
+        if seq != self._probe_seq or language != self.language:
+            if not self._probing:                         # outdated: the state as it was known before it
+                self._set_label(self.state, strings.ANKI_STATE_CONNECTED if self._connected
+                                else strings.ANKI_STATE_UNCHECKED)
             self._paint_controls()
             return
         kind, detail = AW.connection(probe.report)

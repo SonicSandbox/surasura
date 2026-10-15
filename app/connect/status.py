@@ -104,7 +104,7 @@ def _store_path(lang):
 
 def _empty(lang):
     return {"line": "Up to date", "state": "idle", "jobs": [], "needs": [], "unseen": 0, "undo": [],
-            "shelf": {"on_shelf": 0, "runs": [], "swap_ins": 0}, "made_today": 0}
+            "shelf": {"on_shelf": 0, "runs": [], "swap_ins": 0}, "made_today": 0, "updating": False}
 
 
 def read(languages=None, words=False, path=None):
@@ -199,6 +199,9 @@ def _language(conn, lang, is_running, words):
                                                   "outcome != 'made' ORDER BY rowid", (entry["job"],))
     rec["made_today"] = _made_today(conn, lang)
     rec["shelf"] = _shelf(conn, lang)
+    # F9 (P4.1 row 4.1.7): Connect's own Generate under way — only while Connect runs (a mark a crash left says nothing)
+    rec["updating"] = bool(is_running and (conn.execute("SELECT value FROM meta WHERE key = ?",
+                                                         (f"generating:{lang}",)).fetchone() or [None])[0])
     rec["line"], rec["state"] = _line(conn, lang, rec, open_jobs, items, is_running, {n["say"] for n in needs})
     return rec
 
@@ -260,11 +263,14 @@ def _shelf(conn, lang):
 
 
 NEEDS_YOU_LINE = "Waiting for you: see Needs you."
+UPDATING_LINE = "Connect is updating your list"     # F9: its own Generate (before mining, or after it)
 
 
 def _line(conn, lang, rec, open_jobs, items, is_running, need_says=()):
     """U1's line and its state (working · waiting · idle). A job waiting on something *Needs you* lists says so in
-    its own words there; the line points at it instead of repeating them (the contract: never Needs you's words)."""
+    its own words there; the line points at it instead of repeating them (the contract: never Needs you's words).
+    While Connect runs its own Generate (F9, `rec["updating"]`) and no job is mid-step: *Connect is updating your
+    list*."""
     working = [j for j in open_jobs if j["state"] in book.IN_FLIGHT]
     if working and is_running:
         job = working[0]
@@ -277,6 +283,8 @@ def _line(conn, lang, rec, open_jobs, items, is_running, need_says=()):
         total = finished + len(open_jobs)
         title = items.get(job["item_id"], {}).get("title") or "an episode"
         return f"Making cards {finished + 1} of {total} — {title} ({STEP_WORDS[job['state']]})", "working"
+    if rec.get("updating"):                 # F9: a mining job's line wins; then Connect's own Generate
+        return UPDATING_LINE, "working"
     if open_jobs:
         first = sorted(open_jobs, key=lambda j: (items.get(j["item_id"], {}).get("place", (9, 0.0)), j["id"]))[0]
         if first.get("reason"):

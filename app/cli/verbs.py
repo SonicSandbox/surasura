@@ -779,6 +779,14 @@ def _junban_auto(args, lang, junban_settings, auto, job=None, current=None, posi
     if outcome == "list-stale":
         return {"language": lang, "moves": 0, "unchanged": 0, "not_on_list": 0, "undo": None,
                 "skipped": "the list is out of date: Generate first"}, {}
+    if outcome == "refused" and report.get("stands_aside"):
+        # P4.1 C8 (FT-1): a put-back cleared this deck while the run waited for `anki-writer` — the user's own *Put
+        # Anki back…*, so nothing was written and nothing is owed: a plain answer (exit 0, P0.3 02 §2 additive), never
+        # a failure; the next run's `deck_aside` stands aside before it asks Anki anything
+        aside = (report.get("problems") or ["Anki's deck was put back the way it was: pick it in 順 to re-order it "
+                                            "again"])[0]
+        return {"language": lang, "moves": 0, "unchanged": 0, "not_on_list": 0, "undo": None,
+                "stood_aside": aside}, {}
     if outcome in ("refused", "failed"):
         problem = (report.get("problems") or [done.get("error") or "it could not finish"])[0]
         raise CliError("failed", f"Junban did not make any changes: {problem}")
@@ -888,7 +896,7 @@ def resort(args):
         answer, stats = _junban_dry_run(lang, junban_settings, reposition, job, unattended=True)
     else:
         answer, stats = _junban_auto(args, lang, junban_settings, auto, job)
-    if answer.get("skipped"):
+    if answer.get("skipped") or answer.get("stood_aside"):     # P4.1 C8: a put-back's deck, nothing numbered
         return dict(idle, **answer)
     answer.update(pinned_first=int((stats or {}).get("pinned") or 0), numbering=_numbering(stats, job))
     return answer
@@ -1003,6 +1011,9 @@ def backfill(args):
     if report.get("busy"):
         raise contract.busy_error("anki-writer", locks.read_holder("anki-writer"),
                                   (report.get("problems") or ["Another program is writing to Anki."])[0])
+    if report.get("stands_aside"):
+        # P4.1 N2 (FT-1): you put this deck's fields back — nothing filled, a plain line (Connect's step names it)
+        return dict(out, skipped=(report.get("problems") or ["Backfill stands aside for this deck."])[0])
     if not report.get("ok"):
         problem = (report.get("problems") or ["it could not finish"])[0]
         raise CliError("failed", f"Nothing was filled: {problem}")

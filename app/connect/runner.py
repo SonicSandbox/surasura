@@ -8,11 +8,11 @@ day's words first:
 - **Once a run, never per episode** (02 §4): the session's sync (`anki_session.begin`, P2.3: before Connect reads
   what you studied), one known-sync, then the plan's verdict (P3.3, K78: `replan.current`). A move or a placement of
   counted items is **re-planned** — mined and ordered from the engine's re-plan, no Generate in the loop; known words
-  moved or the level raised alone → mined first (from the provisional re-plan, or the list as it is), then **one
-  Generate after mining** and a follow-up re-order from its plan, the level look on the new run (F11,
-  `_after_mining`); a new file, a lowered level, no plan, another engine → one Generate first, as before
-  (`generate`'s own "nothing changed"; a failed one → *Needs you* with its log, E29, and mining waits for a current
-  list). Prepared per language, the first time a language has work.
+  moved, new files placed (P4.1 C5) or the level raised alone → mined first (from the provisional re-plan, or the
+  list as it is), then **one Generate after mining** and a follow-up re-order from its plan, the level look on the
+  new run (F11, `_after_mining`); a changed file, a lowered level, no plan, another engine → one Generate first, as
+  before (`generate`'s own "nothing changed"; a failed one → *Needs you* with its log, E29, and mining waits for a
+  current list). Prepared per language, the first time a language has work.
 - **One Anki Miner batch at a time** (E19), each job's words in one batch. **The carded set is read again for every
   pick** (P2.2 adversary #3: a word a higher job just carded is skipped — `pick.carded` asks Anki itself), together
   with every word Connect has ever made (the store's `made_words`, G1.3-4: a card you deleted is never made again).
@@ -135,6 +135,8 @@ def run(loaded, languages, steps=None, ledger=None, sleep=None, cancel=None, loo
     own = ledger is None
     ledger = ledger or Ledger()
     summary = {"languages": {lang: _empty() for lang in languages}, "looks": 0}
+    for lang in languages:                  # F9: a crash's *updating your list* mark is cleared by the next run
+        _updating(ledger, lang, False)
     prepared = set()            # the languages whose sync, known-sync and Generate ran this run (02 §4: once)
     begun = set()               # the languages this run has worked on (the status line's *i of n* counts from then)
     undos_looked = set()        # the languages whose half-done undos this run has finished (once a run)
@@ -199,6 +201,9 @@ def _said(steps, lang, out):
     said = (getattr(steps, "said", None) or {}).get(lang)
     if said:
         out["shelf"] = list(said)
+    aside = (getattr(steps, "stood_aside", None) or {}).get(lang)
+    if aside:                               # P4.1 C8: the order step stood aside for a deck you put back
+        out["stood_aside"] = aside
 
 
 def _stop(steps):
@@ -476,6 +481,24 @@ def _held():
     Repair while the handle stays open; adversary L3.3 wiring #1-#3)."""
     from app import library_store
     return library_store.held()
+
+
+def _updating(ledger, lang, on):
+    """F9 (P4.1 row 4.1.7): Connect's own Generate marked (`on`) or cleared in the ledger's meta, each in its own short
+    transaction; nothing written when the mark already reads so (S19). A ledger fault is logged, never a reason not to
+    Generate (R15). `ledger` None: nothing to mark."""
+    if ledger is None:
+        return
+    try:
+        if not on and ledger.updating(lang) is None:
+            return
+        with ledger.transaction():
+            if on:
+                ledger.mark_updating(lang)
+            else:
+                ledger.updated(lang)
+    except Exception:
+        log.exception("Connect couldn't %s its *updating your list* mark (%s)", "set" if on else "clear", lang)
 
 
 def _job(steps, ledger, lang, job, store_now, line, out):
@@ -1110,9 +1133,10 @@ class Steps:
 
     def prepare(self, lang, ledger):
         """Once a run, per language: the session's sync, one known-sync, then the plan's verdict (P3.3,
-        `replan.current`): a Generate first only when the plan can't serve the library as it stands (a new file, no
-        plan, another engine, a lowered level: "first"); known words or a level raise ("after"): marked, the
-        Generate runs once mining is done (`generate_after`, F11); only the order moved ("no"): no Generate at all."""
+        `replan.current`): a Generate first only when the plan can't serve the library as it stands (a changed file,
+        no plan, another engine, a lowered level: "first"); known words, new files alone (P4.1 C5) or a level raise
+        ("after"): marked, the Generate runs once mining is done (`generate_after`, F11); only the order moved
+        ("no"): no Generate at all."""
         from app.cli import verbs
         from app.cli.contract import CliError
         from app.connect import anki_session
@@ -1129,7 +1153,7 @@ class Steps:
             raise Needs("known-sync", e.message) from None
         got = self.current(lang, fresh=True)        # after the known-sync: its new words are part of the verdict
         if got.generate == "first":
-            self._generate(ns, "Generate didn't finish, so Connect waits for a current list.")
+            self._generate(ns, "Generate didn't finish, so Connect waits for a current list.", ledger)
             got = self.current(lang, fresh=True)
         if got.generate == "after":
             self._after[lang] = got.reason
@@ -1145,17 +1169,22 @@ class Steps:
         except Exception:                   # never a reason not to mine: looked at again next run
             log.exception("Connect's shelf look or deleted-notes check didn't finish")
 
-    def _generate(self, ns, say):
+    def _generate(self, ns, say, ledger=None):
         """`surasura-cli generate` in this process: a moment's state (another Generate, settings.json caught
-        mid-save) is a Wait, anything else *Needs you* with its log (E29)."""
+        mid-save) is a Wait, anything else *Needs you* with its log (E29). P4.1 row 4.1.7 (F9): `ledger`'s
+        `generating:<lang>` mark is set while it runs and cleared however it ends — the status line's *Connect is
+        updating your list*."""
         from app.cli import verbs
         from app.cli.contract import CliError
+        _updating(ledger, ns.lang, True)
         try:
             return verbs.generate(ns)
         except CliError as e:
             if e.code in ("busy", "settings-unreadable"):     # exit 3: a moment's state, looked at again
                 raise Wait(e.message) from None
             raise Needs("generate", f"{say} {e.message}") from None
+        finally:
+            _updating(ledger, ns.lang, False)
 
     def _settings(self, lang):
         """settings.json as it is now, for `lang` (the analyzer's argv is built from it), else this run's."""
@@ -1208,7 +1237,8 @@ class Steps:
             return False
         log.info("Connect: Generate after mining (%s): %s", lang, why)
         self._generate(SimpleNamespace(lang=lang, wait=WAIT_S, full=False, force=False),
-                       "Generate didn't finish after Connect made its cards: your list catches up at the next one.")
+                       "Generate didn't finish after Connect made its cards: your list catches up at the next one.",
+                       ledger)
         try:
             self._serves(lang, self.current(lang, fresh=True))
         except (Wait, Needs) as e:
@@ -1556,6 +1586,13 @@ class Steps:
                 raise Skip("Junban isn't installed")
             if out.get("skipped"):          # 順 off, an update waiting, the list out of date: named, the re-sort owed
                 raise Skip(str(out["skipped"]))
+            if out.get("stood_aside"):
+                # P4.1 C8 (FT-1): you put this deck back while the step waited for `anki-writer` — nothing written, a
+                # plain line in the run's summary, no job error and no re-sort owed (the deck isn't Surasura's to
+                # re-order until you pick it in 順 again)
+                log.info("Connect: the re-order stood aside (%s): %s", lang, out["stood_aside"])
+                self.stood_aside = dict(getattr(self, "stood_aside", None) or {}, **{lang: str(out["stood_aside"])})
+                return None
             if not getattr(ns, "newer", False):
                 return None
             if again:                       # newer again during the second write: owed, never a third (#1)

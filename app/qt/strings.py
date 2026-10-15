@@ -553,3 +553,11 @@ ANKI_RESTORE_BODY_UNREAD = ("Known words now: {now:,}. The previous list couldn'
 ANKI_RESTORE_YES = "Restore"
 ANKI_RESTORE_YES_TIP = "Put it back. Your current list is backed up first"
 ANKI_RESTORE_CHANGED = "Your known words changed since you asked; here are the numbers now."
+# --- W3.4 row 4: Koe and YouTube — their doors on the Settings tab's list (the windows' own words are each module's
+# qt_strings.py)
+DOOR_TRANSCRIPTS = "Video transcripts"
+DOOR_TRANSCRIPTS_TIP = "Download YouTube and bilibili.tv transcripts into your Processed folder"
+DOOR_PREVIEW = "Preview a video"
+DOOR_PREVIEW_TIP = "See a video's vocab journey against your library before adding it"
+DOOR_SPEECH = "Speech"
+DOOR_SPEECH_TIP = "Speech (声): the Gemini key, the voice and the daily limit for spoken sentences"

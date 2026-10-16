@@ -208,6 +208,44 @@ def folder_key_of(rel):
     return path_key(below) if below else None
 
 
+_NAME_EXT = re.compile(r"\.[A-Za-z0-9]{1,5}$")
+_NAME_LANG = re.compile(r"\.(?:ja|jp|jpn|japanese|zh|zho|chi|chs|cht|sc|tc|en|eng|"
+                        r"ja-jp|zh-cn|zh-tw|zh-hk|zh-hans|zh-hant)$", re.I)
+_NAME_TAGS = re.compile(r"\[[^\]]*\]|\([^)]*\)")                 # [group], [ABCD1234], (1080p): never the show
+_NAME_JUNK = re.compile(r"\b(?:\d{3,4}[pi]|\d{3,4}x\d{3,4}|(?=[0-9A-F]*\d)[0-9A-F]{8})\b")
+_NAME_SEASON_EP = re.compile(r"\bS(\d{1,2})[ ._-]?E\d{1,4}", re.I)     # S01E13: season 1 is the show, S02 is " S2"
+_NAME_EPISODE = re.compile(r"(?:\s[-–~]\s*|\b(?:EP?\.?\s?)|#\s?)\d{1,4}(?:\.\d)?(?:v\d+)?\b"   # - 16, E13, #13
+                           r"|第\s?\d{1,4}\s?[話话集回]", re.I)                              # 第13話, 第13集
+_NAME_VERSION = re.compile(r"(?:(?<=\d)|\s)v\d+$", re.I)
+
+
+def show_of_name(file_name):
+    """A stranded episode's show, read from its file name (SRC-11): a leading `[group]`, every `[…]` / `(…)` tag, the
+    extension and a language tag (`.ja`), resolution and hash tags, a version (`v2`), and the episode marker with all
+    after it (` - 16`, `S01E13`, `E13`, `#13`, `第13話`) come off. A season stays part of the name, as `_work_by_record`
+    keeps seasons apart (`S2`, `Season 2`, `II`, `2期`; `S02E05` reads as `… S2`). As written (NFKC), never folded:
+    compare two with `search_fold`. None when nothing, or only digits and marks, is left. Pure."""
+    name = unicodedata.normalize("NFKC", str(file_name or "")).replace("\\", "/").rsplit("/", 1)[-1]
+    name = _NAME_EXT.sub("", name)
+    while _NAME_LANG.search(name):
+        name = _NAME_LANG.sub("", name)
+    name = _NAME_TAGS.sub(" ", name).replace("_", " ")
+    if " " not in name.strip() and name.count(".") >= 2:        # Show.Name.S01E13.1080p: dots are the spaces
+        name = name.replace(".", " ")
+    season = ""
+    m = _NAME_SEASON_EP.search(name)
+    if m:
+        season = "" if int(m.group(1)) <= 1 else f" S{int(m.group(1))}"
+        name = name[:m.start()]
+    m = _NAME_EPISODE.search(name)
+    if m:
+        name = name[:m.start()]
+    name = _NAME_JUNK.sub(" ", name)
+    name = _NAME_VERSION.sub("", name.strip())
+    name = _SPACES.sub(" ", name).strip(" -–~._")
+    return None if re.fullmatch(r"[\W\d_]*", name) else name + season
+
+
 def _test_root():
     return os.environ.get("SURASURA_TEST_ROOT") or None
 
@@ -2556,7 +2594,7 @@ class Store:
     def _folder_work(self, rel, title, cmd, cache=None):
         """A new file's work by its folder (05 §5.3 (3)–(4)): the work holding its folder key; else the work of the
         files beside it (a folder whose work was merged into another keeps going there); else a new work, titled by
-        its folder below the tier folder, or by its own title when it is loose."""
+        its folder below the tier folder. A loose file's work is its show's, read from its name (`_stranded_work`)."""
         fk = folder_key_of(rel)
         if cache is not None and fk is not None and fk in cache:
             return cache[fk]
@@ -2572,10 +2610,30 @@ class Store:
                     "AND instr(substr(rel_key, ?), '/') = 0 ORDER BY ord DESC LIMIT 1",
                     (base, base[:-1] + "0", len(base) + 1)).fetchone()
                 wid = row[0] if row else None
+        if wid is None and fk is None:
+            return self._stranded_work(rel, title, cmd, cache)
         if wid is None:
-            wid = self._new_work(_below_tier(rel) if fk is not None else (title or rel.rsplit("/", 1)[-1]), fk, cmd)
-        if cache is not None and fk is not None:
+            wid = self._new_work(_below_tier(rel), fk, cmd)
+        if cache is not None:
             cache[fk] = wid
+        return wid
+
+    def _stranded_work(self, rel, title, cmd, cache=None):
+        """A loose file's work (SRC-11): one in hato's drop folder or directly in a tier folder has no show folder, so
+        its show is read from its file name (`show_of_name`): the work whose title (or another title) folds the same,
+        else a new work titled by that show; a name no show is read from stays a title of its own, by its title. Only a
+        new item comes here (`_settle_works`): an existing work is never regrouped and never renamed."""
+        show = show_of_name(rel.rsplit("/", 1)[-1])
+        if show is None:
+            return self._new_work(title or rel.rsplit("/", 1)[-1], None, cmd)
+        key = search_fold(show, self.language)
+        if cache is not None and ("show", key) in cache:
+            return cache[("show", key)]
+        row = self.conn.execute("SELECT id FROM works WHERE instr(char(10) || search_key || char(10), ?) > 0 "
+                                "ORDER BY id LIMIT 1", ("\n" + key + "\n",)).fetchone()
+        wid = row[0] if row else self._new_work(show, None, cmd)
+        if cache is not None:
+            cache[("show", key)] = wid
         return wid
 
     def _work_by_record(self, record):
@@ -2610,16 +2668,17 @@ class Store:
 
     def _title_scanned_drop(self, cmd, item_id, rel, record):
         """A loose drop the folder scan found before hato's hand-off (✅ L3.1 call b; the intent review #2) sits in a
-        title of its own, named by its file: on the first hand-off the record's title takes it, as `register` places a
-        new drop (`_work_by_record`, else a new title named by its show). Only that title: alone, never paired, no id,
-        nothing of the user's in it. The emptied title goes in the helper's run (`tidy_works`)."""
+        title of its own, named by its file (or the show read from it, SRC-11): on the first hand-off the record's title
+        takes it, as `register` places a new drop (`_work_by_record`, else a new title named by its show). Only that
+        title: alone, never paired, no id, nothing of the user's in it. The emptied title goes in the helper's run
+        (`tidy_works`)."""
         if folder_key_of(rel) is not None or \
                 self.conn.execute("SELECT 1 FROM pairings WHERE item_id = ?", (item_id,)).fetchone():
             return
         cur, title = self.conn.execute("SELECT work_id, title FROM items WHERE id = ?", (item_id,)).fetchone()
         w = self._work_row(cur) if cur is not None else None
-        if w is None or w["title"] != title or w["title_by_user"] or w["media_type_by"] == "user" or \
-                w["cover_locked"] or w["cover_source"] == "user" or \
+        if w is None or w["title"] not in (title, show_of_name(rel)) or w["title_by_user"] or \
+                w["media_type_by"] == "user" or w["cover_locked"] or w["cover_source"] == "user" or \
                 any(w[c] is not None for c in ("anilist_id", "tmdb_id", "youtube_channel")) or \
                 self.conn.execute("SELECT COUNT(*) FROM items WHERE work_id = ?", (cur,)).fetchone()[0] != 1:
             return

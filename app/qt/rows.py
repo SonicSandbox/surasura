@@ -2124,7 +2124,7 @@ def whole_step(dpr):
     return 1
 
 
-NO_DRAG = frozenset(("play", "more", "up", "down", "done", "mine-now", "journey", "put-back"))   # W3.2 Q4     # buttons: a press there clicks
+NO_DRAG = frozenset(("play", "more", "up", "down", "done", "mine-now", "journey", "put-back"))   # buttons (W3.2 Q4: put-back)
 
 
 def _same_payload(a, b):

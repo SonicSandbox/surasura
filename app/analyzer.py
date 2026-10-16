@@ -137,7 +137,11 @@ ENSURE_AUDIO_EXAMPLE = False
 # 31: Japanese TV captions are read through the caption cleaner (app/caption_clean.py, P1.3 row 1.3.2, ✅ G1.3-11 and
 #     P1.3-1 a): a word's reading written as a small-type row of its own is no line and no words (its kana counted as
 #     words before) — the list reads the lines Connect's pick and Anki Miner read. The release after 2.5: one re-analysis, with SCHEMA_VERSION 20.
-ENGINE_REVISION = 31
+# 32: the 3.0 batch (S4.0): a word a frequency list names twice keeps its commoner rank in every list, as a Chinese one
+#     read in another script did (a Japanese list names 方 as かた and as ほう: as common as its commoner row, never its
+#     last — load_yomitan_frequency_list), so its frequency tier (the report's G-n badge) can move; a library holding a missing item lists it from its cached
+#     words (E2.2 K2). No tokenizing changed: SCHEMA_VERSION stays 20. 3.0: one re-analysis with 31.
+ENGINE_REVISION = 32
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -2547,7 +2551,9 @@ def load_yomitan_frequency_list(csv_path, script="asis", language=None):
     Uses csv module for fast loading of large files.
 
     `script` ("s"/"t", Chinese only) reads the words in the library's script. Two spellings can then
-    become one word (乾 and 幹 are both 干 in Simplified); it keeps the commoner rank.
+    become one word (乾 and 幹 are both 干 in Simplified). A word met again keeps the commoner rank, in
+    every list: a Japanese list names a word once per reading (方 is かた and ほう), and the sanitizer's
+    cut makes repeats too (S4.0; before, a Japanese repeat kept its last row's rank).
 
     Read in the file's own encoding (path_utils.read_text): Excel's "CSV UTF-8" starts with a BOM,
     which glued to the "Word" header skipped every row, and its plain CSV is CP932 / GBK.
@@ -2569,8 +2575,8 @@ def load_yomitan_frequency_list(csv_path, script="asis", language=None):
                 rank = int(row['Rank'])
                 if script != "asis":
                     word = zh_script.convert(word, script)
-                    if word_to_rank.get(word, rank) < rank:
-                        continue
+                if word_to_rank.get(word, rank) < rank:
+                    continue  # a word met again keeps its commoner rank (S4.0)
                 word_to_rank[word] = rank
             except (ValueError, KeyError):
                 continue  # Skip malformed rows

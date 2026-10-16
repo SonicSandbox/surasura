@@ -1255,7 +1255,8 @@ def test_real_store_E5_a_busy_store_queues_the_drop_says_saving_and_lands_it_whe
         assert rows_of(win)[1].key == moved.key                       # kept where the hand left it
         assert wait_until(lambda: moved.key in lst_of(win).saving, 5)   # *saving…* after 300 ms
         assert writer.pending() == 1
-        assert os.path.exists(moves_module.journal_path("ja"))        # journalled: a crash keeps it
+        # journalled: a crash keeps it (the *saving* mark is told just before the journal is written)
+        assert wait_until(lambda: os.path.exists(moves_module.journal_path("ja")), 5)
         assert rows_of(win)[1].key == moved.key
     finally:
         holder.release()

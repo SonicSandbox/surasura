@@ -367,8 +367,9 @@ def test_a_changed_original_is_copied_again_with_the_old_copy_kept_in_the_trash(
         old = open(copy, "rb").read()
         tier = store.item(item)["tier"]
         _write(path, _text(language, 1, extra="、修正版の字幕"), age=30)       # a corrected subtitle
+        _write(os.path.join(src, a, "ep02.srt"), _text(language, 2))           # its folder is listed again
         quick = _look(store, language, root)                                    # S4: a quick look compares no stats
-        assert quick["recopied"] == 0 and open(copy, "rb").read() == old
+        assert quick["recopied"] == 0 and quick["added"] == 1 and open(copy, "rb").read() == old
         result = _look(store, language, root, full=True)
         assert result["recopied"] == 1 and result["added"] == 0
         assert _sha(copy) == _sha(path)
@@ -376,7 +377,7 @@ def test_a_changed_original_is_copied_again_with_the_old_copy_kept_in_the_trash(
         assert len(trashed) == 1 and open(os.path.join(data_dir, ".trash", trashed[0]), "rb").read() == old
         origin = store.origins()[ls.path_key(os.path.abspath(path))]
         assert (origin.item_id, origin.sha256, origin.size) == (item, _sha(path), os.path.getsize(path))
-        assert store.item(item)["tier"] == tier and _items(store) == 1          # the item keeps its place
+        assert store.item(item)["tier"] == tier and _items(store) == 2          # the item keeps its place
         assert not [n for n in os.listdir(os.path.dirname(copy)) if n.endswith(".part")]
 
 
@@ -508,6 +509,46 @@ def test_a_crash_between_copy_and_take_in_leaves_a_copy_the_next_look_reuses(lan
         assert result["added"] == 1
         assert _library_files(data_dir) == [f"Library/{a}/ep01.srt"]             # re-used, never "ep01 (2).srt"
         assert _current(store) == [f"Library/{a}/ep01.srt"]
+
+
+def test_a_copy_never_overwrites_a_file_that_appears_at_its_name_meanwhile(monkeypatch):
+    """Another program writes a file at the copy's name between the look choosing it and the rename: that file is
+    kept as it is and the episode waits (a rename that never overwrites)."""
+    language = "ja"
+    store, data_dir = _empty(language)
+    a = _SHOWS[language][0]
+    src = _drive("driveA")
+    _write(os.path.join(src, a, "ep01.srt"), _text(language, 1))
+    other = os.path.join(data_dir, "Library", a, "ep01.srt")
+    real = ls.content_target
+
+    def raced(data_dir_, rel, size=None, sha256=None):
+        out = real(data_dir_, rel, size, sha256)
+        _write(other, _text(language, 5))                                        # it appears just then
+        return out
+    monkeypatch.setattr(ls, "content_target", raced)
+    with store:
+        root = store.add_source(src)
+        result = _look(store, language, root, first=True)
+        assert (result["added"], result["waiting"]) == (0, 1)
+        assert open(other, encoding="utf-8").read() == _text(language, 5)
+        assert _library_files(data_dir) == [f"Library/{a}/ep01.srt"]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="a junction is Windows' folder link")
+def test_a_library_folder_that_links_elsewhere_is_never_written_through():
+    """The data folder's Library turned into a link to another drive: the look writes nothing through it."""
+    language = "ja"
+    store, data_dir = _empty(language)
+    src, landing = _drive("driveA"), _drive("driveB")
+    _write(os.path.join(src, _SHOWS[language][0], "ep01.srt"), _text(language, 1))
+    import _winapi
+    os.makedirs(data_dir, exist_ok=True)
+    _winapi.CreateJunction(landing, os.path.join(data_dir, "Library"))
+    with store:
+        root = store.add_source(src)
+        result = _look(store, language, root, first=True)                       # (_look: driveB untouched)
+        assert result["added"] == 0 and result["waiting"] == 1 and _items(store) == 0
 
 
 def test_a_different_file_of_the_same_name_already_there_gets_a_free_name():
@@ -672,7 +713,7 @@ def test_a_look_never_follows_a_folder_link():
         assert _look(store, language, root, first=True)["added"] == 0 and _items(store) == 0
 
 
-def test_a_look_never_follows_a_file_link():
+def test_a_look_never_follows_a_file_link(monkeypatch):
     language = "ja"
     store, data_dir = _empty(language)
     src, target = _drive("driveA"), _drive("driveB")
@@ -681,9 +722,13 @@ def test_a_look_never_follows_a_file_link():
         os.symlink(real, os.path.join(src, "ep01.srt"))
     except OSError:
         pytest.skip("this system makes no file links for this user")
+    read = []
+    real_sha = ls.sha256_of
+    monkeypatch.setattr(ls, "sha256_of", lambda p: read.append(p) or real_sha(p))
     with store:
         root = store.add_source(src)
         assert _look(store, language, root, first=True)["added"] == 0 and _items(store) == 0
+        assert read == []                                                        # never even read
 
 
 def test_a_cloud_placeholder_is_never_read_text_or_video(monkeypatch):
@@ -760,7 +805,12 @@ def test_an_epub_is_split_into_a_free_folder_once_all_parts_in_one_take_in(monke
         keys = store.origins()
         assert all(ls.path_key(os.path.abspath(book) + f"#{n}") in keys for n in range(1, len(parts) + 1))
         assert open(taken, "rb").read() == _text(language, 9).encode("utf-8")
+        from app import extract
+        opened = []
+        real_chunks = extract.chunks_of
+        monkeypatch.setattr(extract, "chunks_of", lambda *a, **k: opened.append(a[0]) or real_chunks(*a, **k))
         again = _look(store, language, root, full=True)                         # a known EPUB is never split again
+        assert opened == []                                                      # nor even read
         assert again["added"] == 0 and _items(store) == len(parts)
         assert len([r for r in _library_files(data_dir) if r.endswith(".txt")]) == len(parts) + 1
 

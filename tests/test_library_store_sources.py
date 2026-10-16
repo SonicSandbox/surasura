@@ -543,7 +543,9 @@ def test_remove_keeps_every_origin_out_and_undo_lets_it_back(language):
         assert store.excluded([root + 1]) == {}
         back = store.take_in(root, [dict(f)])
         assert back.added == [] and len(back.skipped["excluded"]) == 1
-        moved = dict(f, origin=shutil.copyfile(f["origin"], os.path.join(src, "moved.srt")))
+        retimed = dict(f, sha256="0" * 64, size=f["size"] + 1, video_key=None)   # its path, other bytes (a v2)
+        assert store.take_in(root, [retimed]).skipped["excluded"]
+        moved = dict(f, origin=shutil.copyfile(f["origin"], os.path.join(src, "moved.srt")), video_key=None)
         assert store.take_in(root, [moved]).skipped["excluded"]               # the same bytes, moved
         other = _found(language, data_dir, src, show, "ep1.en.srt", 7, video_key="v1-feed")
         assert store.take_in(root, [other]).skipped["excluded"]                # the same video's other subtitle
@@ -651,6 +653,10 @@ def test_place_after_show_reads_hatos_episode_not_a_newer_origin_row(language):
         store.move([ids[3]], "goal")
         g = _found(language, data_dir, src, show, "three.srt", 3, copy=False, item_id=ids[3])
         store.take_in(root, [g])                                              # the newest row is the origin's
+        with store._writing():                                                # beside hato's ep 2: an origin row
+            store.conn.execute("INSERT INTO pairings (content_key, item_id, pairing, paired_at) VALUES (?, ?, ?, ?)",
+                               ("src:y", ids[2], json.dumps({"producer": "source", "show": {"title": show, "episode": 9}}),
+                                ls._now()))                                   # naming another episode: never read
         store.place([ids[3]], "after-show")
         order = [store.item_id(p) for p in _current(store)]
         assert order.index(ids[3]) == order.index(ids[2]) + 1 == order.index(ids[4]) - 1   # by hato's episode 3

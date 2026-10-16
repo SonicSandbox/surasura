@@ -29,7 +29,7 @@ import math
 import random
 from collections import OrderedDict
 
-from PyQt6.QtCore import QEvent, QObject, QPointF, QRectF, QSize, Qt
+from PyQt6.QtCore import QEvent, QObject, QPointF, QRectF, QSize, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QImage, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
 from PyQt6.QtWidgets import QApplication, QLabel, QSizePolicy, QToolButton, QVBoxLayout, QWidget
 
@@ -790,6 +790,11 @@ def well_covers(view):
     return {"soon": (before, after), "goal": goal_titles, "finished": tuple(finished)}
 
 
+def _bar_of(goal):
+    """--- W3.2 Q2: what Goal's bar shows of a `Goal` (all but the sheet's tiles), or None."""
+    return None if goal is None else tuple(goal)[:5]
+
+
 class GoalDock(QWidget):
     """The bottom band's dock over the footer (Current only): Goal's bar — the box mark, *Goal*, the loose hand of up to
     nine covers (26 × 37, overlapping by 12, each turned (i − 4) · 2°, greyed once into the picture), *N titles · N
@@ -803,11 +808,17 @@ class GoalDock(QWidget):
       tooltip says why (`unlit_tip(name)`);
     - `end_drag()`: the wells fall, the bar comes back, the unlit wells are lit again.
 
-    Only the dock repaints, and only for what moved."""
+    Only the dock repaints, and only for what moved.
+
+    W3.2 Q2: a click on the bar (a press and its release on it, never during a drag) asks for Goal's sheet
+    (`sheet_requested`; the shell opens or closes it)."""
+    sheet_requested = pyqtSignal()                   # --- W3.2 Q2
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("goaldock")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)       # --- W3.2 Q2: the bar opens the sheet
+        self._pressed_at = None                                  # --- W3.2 Q2
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setAccessibleName(strings.GOAL_NAME)
@@ -839,7 +850,9 @@ class GoalDock(QWidget):
 
     def set_goal(self, goal):
         """The same `Goal` the strip took (`view_rows.Goal`). -> True when it changed (and the dock repainted)."""
-        if goal == self.goal:
+        bar = _bar_of(goal)                                     # --- W3.2 Q2: the bar never reads the sheet's tiles
+        if bar == _bar_of(self.goal):
+            self.goal = goal                                    # the newest kept; nothing the bar shows changed
             return False
         self.goal = goal
         self.setToolTip(goal.tip if goal is not None else "")
@@ -856,6 +869,21 @@ class GoalDock(QWidget):
     def bar_rect(self):
         top, side = F["dock-pad"]
         return QRectF(side, top, max(0, self.width() - 2 * side), self.bar_h())
+
+    # --- W3.2 Q2: the bar's click --------------------------------------------------------------------------------- #
+    def mousePressEvent(self, event):
+        on_bar = not self.wells and self.bar_rect().contains(event.position())
+        self._pressed_at = event.position() if on_bar and event.button() == Qt.MouseButton.LeftButton else None
+        event.accept()
+
+    def mouseReleaseEvent(self, event):
+        at, self._pressed_at = self._pressed_at, None
+        if at is None or self.wells or event.button() != Qt.MouseButton.LeftButton:
+            return
+        moved = (event.position() - at).manhattanLength()
+        if self.bar_rect().contains(event.position()) and moved < theme.MOTION["drag-start-px"]:
+            self.sheet_requested.emit()
+    # --- end W3.2 Q2
 
     # --- the wells' API (package F drives it) ------------------------------------------------------------------- #
     def begin_drag(self, source):
@@ -969,7 +997,7 @@ class GoalDock(QWidget):
             self._paint_wells(p)
         else:
             dpr = self.devicePixelRatioF() or 1.0
-            key = (self.goal, self.width(), self.height(), dpr, style.current())
+            key = (_bar_of(self.goal), self.width(), self.height(), dpr, style.current())     # (W3.2 Q2)
             if key != self._key:
                 self._pix, self._key = self._bar_picture(dpr), key
                 self.pictures += 1

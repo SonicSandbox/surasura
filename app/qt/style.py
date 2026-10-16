@@ -178,6 +178,11 @@ QMenu::separator {{ height: 2px; margin: 4px 8px; background: qlineargradient(x1
   stop:0 {c['groove']}, stop:0.5 {c['groove']}, stop:0.51 {c['groove-lip']}, stop:1 {c['groove-lip']}); }}
 QMenu::indicator {{ width: {px(14)}; height: {px(14)}; }}
 QTabWidget::pane {{ border: 0; }}
+/* --- W3.2 Q2: Goal's sheet (goal_sheet.py: its face, heading and tiles are painted) --- */
+QScrollArea#goalsheetscroll {{ background: transparent; border: 0; }}
+QWidget#goalsheetbody {{ background: transparent; }}
+QToolButton#goalsheetclose, QToolButton#goaltilemore {{ color: {c['overlay-ink-dim']}; }}
+/* --- end W3.2 Q2 --- */
 QTabBar::tab {{ background: transparent; color: {c['ink-dim']}; border: 0; border-bottom: 2px solid transparent;
   padding: {px(10)} {px(14)} {px(9)} {px(14)}; {font('tab')} }}
 QTabBar::tab:selected {{ color: {c['ink']}; border-bottom: 2px solid {iris}; }}

@@ -422,6 +422,7 @@ SPRINGS = MappingProxyType({
     "vein-tail": (22.0, 1.0),            # ... and its trailing end
     "press": (36.0, 1.0),                # a press going down
     "release": (26.0, 1.0),              # ... and coming back
+    "sheet": (22.0, 1.0),                # --- W3.2 Q2: Goal's sheet rising into place (critical: never past it; ≈ 260 ms)
     "lift-px": 2, "neighbour-px": 1.5, "inset-px": 1.5,
     "sub-step-ms": 6,                    # the physics' step: never longer, whatever the frame interval
     "catch-up-ms": 1000,                 # a stalled clock (a sleep, a long step) catches up at most this much

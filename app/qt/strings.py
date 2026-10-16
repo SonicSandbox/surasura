@@ -322,6 +322,38 @@ MENU_ITEMS = {
 }
 MENU_REFUSED_TIP = "Your library can't be saved right now: {reason}"
 ROWS_SAVING = "saving…"
+# --- W3.2 Q2: Goal's sheet (goal_sheet.py) ------------------------------------------------------------------------ #
+GOAL_SHEET_NAME = "Goal: everything you'll get to someday"
+GOAL_SHEET_TIP = "Goal: someday, in no order. Drag a title into Current, or use its ⋯"
+GOAL_SHEET_CLOSE = "✕"
+GOAL_SHEET_CLOSE_NAME = "Close Goal"
+GOAL_SHEET_CLOSE_TIP = "Close Goal (Esc, or click anywhere outside it)"
+GOAL_TILE_MORE = "⋯"
+GOAL_TILE_MORE_NAME = "What you can do with {title}"
+GOAL_TILE_MORE_TIP = "What you can do with {title}: move it, open its folder or remove it (Enter)"
+GOAL_MENU_ITEMS = {
+    "top": ("Move to the top", "Bring {first} up to the top of Current; the rest stays in Goal"),
+    "top-all": ("Move to the top", "Bring it up to the top of Current"),
+    "soon": ("Move to Soon", "Bring {first} up to the top of Soon; the rest stays in Goal"),
+    "soon-all": ("Move to Soon", "Bring it up to the top of Soon"),
+    "finished": ("Move to Finished", "Move all of it to Finished: you're done with it"),
+    "folder": ("Open its folder", "Show its files in File Explorer"),
+    "remove": ("Remove…", "Send its {n} files to the trash (kept 30 days). You're asked first"),
+}
+GOAL_UP = "{title} {first} moved up from Goal · #{n} · the rest stays in Goal"
+GOAL_UP_ALL = "{title} moved up from Goal · #{n}"
+GOAL_SOON = "{title} {first} → Soon · #{n} · the rest stays in Goal"
+GOAL_SOON_ALL = "{title} → Soon · #{n}"
+GOAL_REMOVE_ASK = "Remove {title}?"
+GOAL_REMOVE_BODY = "Its {n} files go to the trash, kept for 30 days. Undo puts them back."
+GOAL_REMOVE_BODY_ONE = "Its file goes to the trash, kept for 30 days. Undo puts it back."
+GOAL_REMOVE_YES = "Remove {n} files"
+GOAL_REMOVE_YES_ONE = "Remove 1 file"
+GOAL_REMOVE_YES_TIP = "Send them to the trash (kept 30 days); the toast's Undo puts them back"
+GOAL_REMOVED = "{title} removed · {n} files in the trash for 30 days"
+GOAL_REMOVED_ONE = "{title} removed · its file is in the trash for 30 days"
+GOAL_FOLDER_FAILED = "Couldn't open the folder of {title}"
+# --- end W3.2 Q2
 
 # --- W3.4: the ported windows — the base (windows.py, confirm.py) and row 1 (the frequency lists, the sentence
 # dictionary). The Settings tab lists the ported windows' doors until W3.3 / W3.2 give each its row (IK-16).

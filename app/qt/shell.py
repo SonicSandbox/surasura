@@ -879,6 +879,14 @@ class ShellWindow(QMainWindow):
             from app.qt import drag
             self.moves = drag.DragController(self, services.writer, services.library)
             self.moves.start()
+        # --- W3.2 Q2: Goal's sheet, opened (and closed) by a click on the dock's bar; Esc / Back close it ----------- #
+        self.goal_sheet = None
+        if self.dock is not None:
+            from app.qt import goal_sheet
+            self.goal_sheet = goal_sheet.GoalSheet(self, self.page_widgets["current"], self.dock)
+            self.dock.sheet_requested.connect(self.goal_sheet.toggle)
+            self.register_overlay(self.goal_sheet)
+        # --- end W3.2 Q2
 
         self._restore_state(read_state(self.state_file))
 
@@ -974,6 +982,11 @@ class ShellWindow(QMainWindow):
             self.show_status(self.services.status.snapshot())
         if self.dock is not None:                   # W3.1a: Goal's bar (and the wells' covers) from the same view
             self._show_dock(view)
+        sheet = getattr(self, "goal_sheet", None)   # --- W3.2 Q2: the sheet's tiles; a piece it moved, scrolled to
+        if sheet is not None:
+            if view.goal is not None:
+                sheet.set_goal(view.goal)
+            sheet.view_shown(view)                  # --- end W3.2 Q2
         if moved:                                   # a view that changed no list paints nothing ahead
             self._warm_hidden_pages()
 

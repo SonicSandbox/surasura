@@ -423,6 +423,14 @@ class RowView(QWidget):
         p.end()
 
 
+def auto_change(row, on, slider):
+    """Automatic's toggle on the level row: on, Automatic alone; off, the band the slider shows (Automatic's, while it
+    was on) written with it — 2.x's D3: the list doesn't change the moment you switch it off (W3.1b B1)."""
+    if on:
+        return {row.keys[1]: True}
+    return {row.keys[1]: False, row.keys[0]: slider.value()}
+
+
 class SettingsPage(QWidget):
     """The Settings tab's page. `shell_or_services`: the shell (its services, bridge, doors) or the services alone (a
     test, or the page standalone: it makes its own bridge, and a door asks through `door_asked`). `found`: the optional
@@ -815,7 +823,7 @@ class SettingsPage(QWidget):
             auto_tip = S.LEVEL_AUTOMATIC_TIP.format(
                 n=catalog.value_of(settings, "logic.selection.auto_max_words"))
             auto = sc.Toggle(value[row.keys[1]], tooltip=auto_tip, name=S.LEVEL_AUTOMATIC)
-            auto.changed.connect(lambda v, r=row, c=auto: self._changed(r, {r.keys[1]: bool(v)}, c))
+            auto.changed.connect(lambda v, r=row, c=auto, s=control: self._changed(r, auto_change(r, v, s), c))
             view.controls.append(auto)
             place = view.aside if view.aside is not None else view.slot.layout()
             place.addWidget(words)

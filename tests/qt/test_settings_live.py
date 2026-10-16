@@ -281,6 +281,17 @@ def test_a_hand_pick_writes_the_band_and_automatic_off_in_one_set(qapp, fakes):
     assert slider.value() == "native"
 
 
+def test_turning_automatic_off_keeps_the_band_it_was_showing(qapp, fakes):
+    # W3.1b B1 (2.x's D3): Automatic showed Rare over a written Common; switched off, Rare becomes the hand pick in the
+    # same write — the list doesn't change the moment it goes off
+    fakes.level = ("rare", True, PREVIEWS)
+    page, store, shell = make(fakes, {"logic": {"selection": {"auto": True, "band": "common"}}})
+    slider, auto = page.row("level").controls[:2]
+    assert wait_until(lambda: slider.value() == "rare")
+    auto.changed.emit(False)
+    assert store.calls == [({"logic.selection.auto": False, "logic.selection.band": "rare"}, None)]
+
+
 def test_the_readout_says_of_your_content_never_known():
     assert live.readout(PREVIEWS["common"]) == "≈1,234 words · 91.3% of your content · about every 3.4 hours"
     assert live.readout(dict(PREVIEWS["common"], hours_between=26.6)).endswith("about every 27 hours")

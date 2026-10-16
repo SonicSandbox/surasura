@@ -281,8 +281,8 @@ def _ensure_schema(conn):
 def _add_counted(conn):
     """The counted / kept flag (E2.2) on a store made before it: added, every row counted — it was counted before — so
     the store is read exactly as it was, nothing rebuilt and no version moved. Two first opens may race to add it; the
-    loser finds it there (looked at again inside the write lock; a "duplicate column" is success, never damage — open_store
-    deletes a store on any other database error)."""
+    loser finds it there (looked at again inside the write lock; a "duplicate column" is success; any other error is raised,
+    and open_store deletes the store only when it says the file is damaged: `_damaged`)."""
     def has_it():
         return "counted" in [r[1] for r in conn.execute("PRAGMA table_info(files)")]
     if has_it():
@@ -308,7 +308,8 @@ def _delete_db(path):
 
 def open_store(language, path=None):
     """Open (or create/rebuild) the SQLite token store for a language. WAL, busy-timeout, schema
-    ensured, corruption self-heals by rebuilding."""
+    ensured, corruption self-heals by rebuilding; any other database error (busy, a full disk, an I/O error) is
+    raised, the store kept (`_damaged`)."""
     db_path = path or store_path_for(language)
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
 
@@ -340,8 +341,8 @@ def open_store(language, path=None):
     try:
         return Store(_connect(), language, db_path)
     except sqlite3.DatabaseError as e:
-        if _locked(e):
-            raise                       # busy, not damaged: another program has the file — never delete it
+        if not _damaged(e):
+            raise                       # busy, a full disk, an I/O error: the file may be whole — never delete it
         # Corrupt DB -> delete + rebuild (it's a regenerable cache). The kept text beside it is another file: untouched.
         _delete_db(db_path)
         return Store(_connect(), language, db_path)
@@ -371,11 +372,42 @@ def open_reader(language, path=None):
     return Store(c, language, db_path)
 
 
+# SQLite's primary result codes (Python 3.11's sqlite3.SQLITE_*), read from an error's `sqlite_errorcode`.
+_BUSY_CODES = (5, 6, 15)        # SQLITE_BUSY, SQLITE_LOCKED, SQLITE_PROTOCOL
+_DAMAGE_CODES = (11, 26)        # SQLITE_CORRUPT, SQLITE_NOTADB
+
+
+def _code(error):
+    """The error's primary SQLite result code, or None (an error raised by hand, an older Python): read by its text."""
+    code = getattr(error, "sqlite_errorcode", None)
+    return None if code is None else code & 0xFF
+
+
 def _locked(error):
-    """SQLite's "database is locked" / "busy": another connection holds the file (an OperationalError, which is a
-    DatabaseError too — never a sign of a damaged file)."""
+    """SQLite's "database is locked" / "busy" / "locking protocol": another connection holds the file, or the WAL
+    index was changing as this one looked (SQLITE_PROTOCOL, after SQLite's own retries) — an OperationalError, which is
+    a DatabaseError too, and never a sign of a damaged file. Waited on and asked again where an open waits; else raised."""
+    code = _code(error)
+    if code is not None:
+        return code in _BUSY_CODES
     text = str(error).lower()
-    return isinstance(error, sqlite3.OperationalError) and ("locked" in text or "busy" in text)
+    return isinstance(error, sqlite3.OperationalError) and (
+        "locked" in text or "busy" in text or "locking protocol" in text)
+
+
+def _damaged(error):
+    """The file itself is damaged — SQLite says it is corrupt or not a database (a file cut short or scribbled on lands
+    here too) — the one error open_store answers by deleting the store (a cache: built again). Anything else says
+    nothing of the file and is raised, the store kept: busy or a locking protocol (another connection), a full disk (a
+    rebuild would only fill it again), a disk I/O error (the disk's: a rebuild meets the same disk), no permission,
+    can't open. Never deleted for it: the next open tries again, and Generate runs on without the cache meanwhile. By
+    its text only when raised without a code: SQLite's own words for damage, never any "malformed" (JSON's is not)."""
+    code = _code(error)
+    if code is not None:
+        return code in _DAMAGE_CODES
+    text = str(error).lower()
+    return any(words in text for words in ("database disk image is malformed", "malformed database schema",
+                                           "not a database"))
 
 
 # --------------------------------------------------------------------------- #

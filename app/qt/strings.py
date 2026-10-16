@@ -315,17 +315,35 @@ QUIT_CLOSING_TIP = "Surasura is closing: it finishes what can't stop part-way, t
 # its wells. The level's words are the old chip's (BAR_LEVEL_*); Generate's are the button's (GENERATE_*).
 LEVEL_WAITING = "Level"                               # the ▾ before the level is first read
 LEVEL_NAME = "Your level: {level}"
-LEVEL_TIP = "{level}\n• Click for Generate and your journey"
-LEVEL_TIP_MARK = "{level}\n{mark}\n• Click for Generate and your journey"
+LEVEL_TIP = "{level}\n• Click to change your level, Generate, or open your journey"
+LEVEL_TIP_MARK = "{level}\n{mark}\n• Click to change your level, Generate, or open your journey"
 LEVEL_MARKS = {
     "failed": "⚠ The last Generate didn't finish",
     "stale": "Something changed since your last Generate: your list is out of date",
     "journey": "Your journey's sentences are catching up",
 }
 LEVEL_POP_NAME = "Your level, Generate and your journey"
-LEVEL_POP_HEADING = "YOUR LEVEL"
-LEVEL_POP_AUTO = {True: "Automatic: on — Surasura picks the band for you",
-                  False: "Automatic: off — the band stays where you set it"}
+# W3.1b: the Level menu (the brief's pop: only words, %, how often, the slider, Automatic)
+LEVEL_POP_HEADING = "Level"
+LEVEL_POP_HELP = "?"
+LEVEL_POP_HELP_NAME = "What the level is"
+LEVEL_POP_HELP_TIP = ("How rare a word can be and still make your list.\nRaise it: more words join your list. "
+                      "Lower it: nothing is deleted.\n• Click for the level's settings")
+LEVEL_POP_AUTO_WORD = "Automatic"
+LEVEL_POP_AUTO_TIP = ("Surasura picks the level for you and moves it as you learn: the rarest one whose list stays "
+                      "short\n• Click to turn it on or off")
+LEVEL_POP_SLIDER_NAME = "Your level"
+LEVEL_POP_SLIDER_TIP = ("Your level: common on the left, rare on the right\n• Drag the gem or click a chamber; "
+                        "picking one turns Automatic off")
+LEVEL_POP_READ_HOURS = "≈{words} words · {coverage}% · every {hours} h"
+LEVEL_POP_READ_MINUTES = "≈{words} words · {coverage}% · every {minutes} min"
+LEVEL_POP_READ_NO_TIME = "≈{words} words · {coverage}%"
+LEVEL_POP_AUTO_WAITING = "Automatic picks your level after your first Generate"
+LEVEL_POP_COVERAGE = "Your list follows its coverage target: {n}%"
+LEVEL_POP_COVERAGE_TIP = ("The level does nothing while your list is set by coverage\n• Change it in Settings › Level "
+                          "(the gear)")
+LEVEL_POP_GEAR_NAME = "Level settings"
+LEVEL_POP_GEAR_TIP = "Level settings\n• Click to open them in Settings"
 LEVEL_JOURNEY = "Open your journey ↗"
 FOOT_ANKI = "Anki"
 FOOT_ANKI_NAME = "Anki: {words}"

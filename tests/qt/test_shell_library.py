@@ -549,10 +549,12 @@ def test_three_switches_back_to_back_end_on_the_last_language_with_one_reader_an
     _ask(services, win, "ja")
     _ask(services, win, "zh")
     assert _switched_to(win, services, "zh", 30)
-    time.sleep(0.5)
-    QApplication.processEvents()
-    alive = [r for r in readers if r._thread is not None and r._thread.is_alive()]
-    assert alive == [services.library] and services.library.language == "zh"
+    def alive():
+        QApplication.processEvents()
+        return [r for r in readers if r._thread is not None and r._thread.is_alive()]
+    # the readers left stop on their own threads: on a loaded machine that can take longer than half a second
+    assert wait_until(lambda: alive() == [services.library], 15), alive()
+    assert services.library.language == "zh"
     assert win.moves.writer is services.writer and win.moves.reader is services.library
     now = zh.ids("now")
     assert win.moves.writer.move([now[-1]], "now", before_id=now[0]) is not None

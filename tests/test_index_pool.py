@@ -20,6 +20,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 
 import pytest
 
@@ -261,11 +262,15 @@ def test_two_first_opens_at_once_never_delete_the_store(monkeypatch):
         barrier = threading.Barrier(2)
 
         def opener():
+            began = None
             try:
                 barrier.wait()
+                began = time.monotonic()
                 ti.open_store("ja", path=db).close()
-            except Exception as e:
-                errors.append(repr(e))
+            except Exception:
+                # where it failed and after how long (5 s: the busy wait ran out; at once: a refusal SQLite never
+                # waits on) — a load flake on 2026-10-15 left only "database is locked" to read
+                errors.append(f"after {time.monotonic() - (began or time.monotonic()):.3f} s: {traceback.format_exc()}")
         threads = [threading.Thread(target=opener) for _ in range(2)]
         for t in threads:
             t.start()

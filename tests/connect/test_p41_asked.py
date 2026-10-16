@@ -13,6 +13,7 @@ Real subtitles (the suite's own) in a store built from folders; real Japanese wo
 `FakeSteps`' stand-ins (a JSON file of notes) — never a live Anki.
 """
 import os
+import time
 
 import pytest
 
@@ -253,6 +254,7 @@ def test_asks_made_while_connect_was_off_are_never_mined(tmp_path):
     ids, kinds = _library()
     early, late = _srt(ids, kinds)[-2:]
     _ask([early])                                       # while Connect is off …
+    time.sleep(0.05)                                    # (Windows' clock steps ~16 ms: the switch comes later)
     with Ledger() as ledger, ledger.transaction():
         ledger.set_asks_from("ja", stamp())             # … switched on (`resume.turned_on` writes the watermark)
     assert _look()["asked"] == [], "asked before the watermark: history"

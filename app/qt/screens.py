@@ -264,8 +264,42 @@ class NeedsPage(Page):
     def __init__(self, tooltips=None, language="ja", parent=None):
         super().__init__("needs", strings.NEEDS_HEADING, tooltips, language, parent)
         self.failures = ()
+        # --- W3.2 Q5: the cards with their buttons (`app/qt/needs.py`) take the painted list's place; their entries
+        # come from `needs.NeedsYou` (the shell's `needs_you`), worked out on a worker
+        from app.qt import needs as needs_ui
+        self.controller = None
+        box = self.layout().itemAt(0).layout()
+        self.list.setVisible(False)
+        self.area, self.cards = needs_ui.make_area(self)
+        box.addWidget(self.area, 1)
+        self.empty = QLabel(strings.NEEDS_EMPTY_TEXT, self)
+        self.empty.setObjectName("sheetline")
+        self.empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.empty.setVisible(False)
+        box.addWidget(self.empty)
+
+    def set_view(self, view):
+        if self.controller is None:
+            return super().set_view(view)
+        self.view_model = view
+        line = state_line(view)
+        if line != self.state_bar.text() or self.state_bar.isHidden() == bool(line):
+            self.state_bar.show_line(line)
+        self.controller.view_in(view)
+        self.list.looks_changed = False
+        return "same"                                   # its cards repaint on their own entries (`show_entries`)
+
+    def show_entries(self, entries, found=None, looking=()):
+        self.cards.show_entries(entries, found, looking)
+        empty = not entries and self.view_model is not None and not self.view_model.loading
+        if self.empty.isHidden() == empty:
+            self.empty.setVisible(empty)
+    # --- end W3.2 Q5
 
     def set_failures(self, entries):
+        if self.controller is not None:                # W3.2 Q5: the controller works them in
+            self.controller.failures_in(entries)
+            return
         entries = tuple(entries or ())
         if same_objects(entries, self.failures):    # the bar's every snapshot comes here: unchanged, nothing to do
             return

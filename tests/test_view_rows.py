@@ -844,7 +844,7 @@ def test_a_hato_show_wears_hatos_chip_and_says_its_episodes_cards_and_missing_vi
     a = vr.build(items, WORKS, {}, cards={1: 4, 3: 7}).arrivals[0]
     assert (a.source, a.chip, a.title, a.line, a.media) == ("hato", "hato", "海辺の図書室", "Ep 1–6", "anime")
     assert (a.cards, a.no_media) == (11, 2)
-    assert a.parts == (("Ep 1–6", "dim"), ("11 in Anki", "ok"), ("2 no video", "warn"))
+    assert a.parts == (("Ep 1–6", "dim"), ("11 in Anki", "ok"), ("2 files gone", "warn"))
     assert a.cover_title == "海辺の図書室" and a.channel is None
     off_hato = vr.build(items_of([("arrivals", 5, 5, eps("海辺の図書室", 7, 8), {})]), WORKS, {}).arrivals[0]
     assert (off_hato.source, off_hato.chip) == ("anilist", "AniList")

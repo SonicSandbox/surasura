@@ -2497,3 +2497,289 @@ def test_S2_a_crash_replays_an_import_a_relink_a_split_a_media_type_and_a_put_ba
     assert _file(lib, x) == new and lib.store.item(now[1])["piece_id"] != piece
     assert lib.ids("now")[:4] == back and all(_learning(lib, i)[0] == 1 for i in back)
     assert heard2.notes == []
+
+
+# --- W3.2 B: register — a producer's files into New arrivals (the YouTube module's downloads) ------------------ #
+# What a wrong answer would cost: a download that never reaches the library (left in Processed, which no sync walks),
+# an arrival placed where the learner set no rule (D30: an arrival never places itself), a channel's rule ignored, a
+# download Ctrl+Z could take back out of the library, or a register written to a store that can't be saved.
+def _download(lib, name, channel=None, video="dQw4w9WgXcQ", folder="Processed"):
+    """A transcript as the YouTube downloader writes it into data/<lang>/Processed: its header, then real text."""
+    words = names(lib.language)
+    rel = f"{folder}/{name} [{video}].txt"
+    header = f"{name}\n{channel or 'Unknown'} | 2026-10-14 | 12:34\nCaptions: {lib.language} (manual)\n\n"
+    path = os.path.join(lib.data_dir, *rel.split("/"))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(header + " ".join(words[:12]) + "\n")
+    return path
+
+
+def _yt(channel=None, producer="youtube"):
+    rec = {"schema": 1, "producer": producer, "content_key": None, "media_type": "youtube"}
+    if channel:
+        rec["channel_id"] = channel
+    return rec
+
+
+def _keyed(rec):
+    def pairing(path):
+        return dict(rec, content_key=f"{rec['producer']}:{os.path.basename(path)}")
+    return pairing
+
+
+def _tier_of(lib, path):
+    item = lib.store.item_id(ls.library_rel(lib.data_dir, path))
+    return None if item is None else lib.store.place_of(item)[0]
+
+
+def _records(lib):
+    from app.connect import library
+    return [r for rs in library.pairings(lib.store).values() for r in rs]
+
+
+def test_B_a_register_without_a_rule_waits_in_new_arrivals_and_never_goes_on_the_undo_stack(lib, make_writer):
+    lib.store.set_library_options(arrivals_on=True)
+    w, heard = make_writer()
+    told = []
+    words = names(lib.language)
+    a, b = _download(lib, words[20], words[21], "aaaaaaaaaaa"), _download(lib, words[22], words[21], "bbbbbbbbbbb")
+    assert w.register([a, b], _keyed(_yt(words[21])), rules={}, done=lambda *n: told.append(n)) is not None
+    assert h.until(lambda: told)
+    assert told == [(2, 0)]
+    assert _tier_of(lib, a) == _tier_of(lib, b) == "arrivals"
+    assert heard.saved == [] and not w.can_undo()       # Ctrl+Z never takes a download back out of the library
+    assert {(r["producer"], r["channel_id"]) for r in _records(lib)} == {("youtube", words[21])}
+
+
+def test_B_placing_rules_youtube_to_finished_hato_to_top_and_a_channels_rule_beats_youtubes(lib, make_writer):
+    """The user's own rules (D30), read from settings as the caller hands them: `youtube` → Finished, `hato` → the top
+    of Current, `youtube:<channel>` over `youtube`; a producer with no rule waits."""
+    lib.store.set_library_options(arrivals_on=True)
+    w, heard = make_writer()
+    words = names(lib.language)
+    rules = {"youtube": "finished", "hato": "top", f"youtube:{words[31]}": "soon"}
+    plain = _download(lib, words[30], words[30], "ccccccccccc")
+    chan = _download(lib, words[32], words[31], "ddddddddddd")
+    drop = _download(lib, words[33], None, "eeeeeeeeeee", folder="HighPriority/Hato")
+    other = _download(lib, words[34], None, "fffffffffff")
+    told = []
+    w.register([plain], _keyed(_yt(words[30])), rules=rules, done=lambda *n: told.append(n))
+    w.register([chan], _keyed(_yt(words[31])), rules=rules, done=lambda *n: told.append(n))
+    w.register([drop], _keyed(_yt(producer="hato")), rules=rules, done=lambda *n: told.append(n))
+    w.register([other], _keyed(_yt(producer="kotoba-tool")), rules=rules, done=lambda *n: told.append(n))
+    assert h.until(lambda: len(told) == 4)
+    assert told == [(0, 1), (0, 1), (0, 1), (1, 0)]
+    assert _tier_of(lib, plain) == "graduated"
+    assert _tier_of(lib, chan) == "soon"
+    assert lib.ids("now")[0] == lib.store.item_id(ls.library_rel(lib.data_dir, drop))
+    assert _tier_of(lib, other) == "arrivals"           # no rule names it: it waits
+
+
+def test_B_a_folder_the_downloader_made_registers_its_transcripts_only(lib, make_writer):
+    """A playlist's folder: its .txt transcripts register, its cue sidecars (not content) never do."""
+    lib.store.set_library_options(arrivals_on=True)
+    w, heard = make_writer()
+    words = names(lib.language)
+    folder = f"Processed/{words[40]} - {words[41]} (playlist)"
+    one = _download(lib, words[42], words[40], "ggggggggggg", folder=folder)
+    two = _download(lib, words[43], words[40], "hhhhhhhhhhh", folder=folder)
+    with open(os.path.splitext(one)[0] + ".surasura.json", "w", encoding="utf-8") as f:
+        json.dump({"video_id": "ggggggggggg", "cues": []}, f)
+    told = []
+    w.register([os.path.join(lib.data_dir, *folder.split("/"))], _keyed(_yt(words[40])),
+               done=lambda *n: told.append(n))
+    assert h.until(lambda: told)
+    assert told == [(2, 0)] and _tier_of(lib, one) == _tier_of(lib, two) == "arrivals"
+    assert len(_records(lib)) == 2
+
+
+def test_B_a_file_outside_the_library_is_left_out_and_the_rest_register(lib, make_writer, tmp_path):
+    lib.store.set_library_options(arrivals_on=True)
+    w, heard = make_writer()
+    words = names(lib.language)
+    inside = _download(lib, words[50], words[50], "iiiiiiiiiii")
+    outside = str(tmp_path / f"{words[51]}.txt")
+    with open(outside, "w", encoding="utf-8") as f:
+        f.write(words[51] + "\n")
+    told = []
+    w.register([outside, inside], _keyed(_yt(words[50])), done=lambda *n: told.append(n))
+    assert h.until(lambda: told)
+    assert told == [(1, 0)] and _tier_of(lib, inside) == "arrivals" and heard.notes == []
+
+
+def test_B_E4_a_read_only_store_refuses_register_before_anything_is_read(lib, make_writer):
+    w, heard = make_writer()
+    lib.close()
+    ls.mark_damaged(lib.db, "test: a damaged store")
+    assert h.until(lambda: not w.can_write(), seconds=M.MODE_RECHECK_S * 3)
+    read = []
+    assert w.register([os.path.join(lib.data_dir, "Processed", "x.txt")], lambda p: read.append(p) or {}) is None
+    assert w.pending() == 0 and read == []
+
+
+def test_B_a_crash_while_the_store_is_busy_replays_the_register_at_the_next_start(lib, make_writer, short_lock_wait):
+    """Queued behind a busy store, the register is journalled with its records and rules; after a crash the next
+    start registers it (the files sit in Processed, which no sync walks: a lost register is a lost download)."""
+    lib.store.set_library_options(arrivals_on=True)
+    w, heard = make_writer()
+    words = names(lib.language)
+    a = _download(lib, words[60], words[61], "jjjjjjjjjjj")
+    b = _download(lib, words[62], words[61], "kkkkkkkkkkk")
+    holder = LockHolder(lib.db)
+    w.register([a, b], _keyed(_yt(words[61])), rules={f"youtube:{words[61]}": "goal"})
+    assert h.until(lambda: [op for op, _i in journalled(lib.language)] == ["register"])
+    entry = journal(lib.language)["pending"][0]
+    assert [os.path.basename(p) for p, _r in entry["records"]] == [os.path.basename(a), os.path.basename(b)]
+    assert entry["rules"] == {f"youtube:{words[61]}": "goal"} and "done" not in entry
+    w._abandon()
+    holder.release()
+    assert _tier_of(lib, a) is None
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: journal(lib.language) is None and _tier_of(lib, b) is not None)
+    assert _tier_of(lib, a) == _tier_of(lib, b) == "goal"
+    assert heard2.notes == [] and not w2.can_undo()
+    assert len(_records(lib)) == 2
+
+
+def test_B_a_quit_that_comes_while_the_records_are_read_journals_the_register(lib, make_writer, monkeypatch):
+    """The quit lands between the call and the queue (the records still being read): the register goes to the journal,
+    never dropped — its files sit where no sync would ever find them."""
+    lib.store.set_library_options(arrivals_on=True)
+    w, heard = make_writer()
+    words = names(lib.language)
+    a = _download(lib, words[70], words[71], "lllllllllll")
+    go, reading = threading.Event(), threading.Event()
+
+    def slow(path):
+        reading.set()
+        go.wait(10)
+        return _keyed(_yt(words[71]))(path)
+    w.register([a], slow)
+    assert reading.wait(5)
+    quit_ = threading.Thread(target=w.finish, args=(time.monotonic() + 0.3,))
+    quit_.start()
+    quit_.join(5)
+    go.set()
+    assert h.until(lambda: [op for op, _i in journalled(lib.language)] == ["register"])
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: _tier_of(lib, a) == "arrivals")
+# --- S fix round: the journal's race, stale entries, background covers, an import let go ------------------------- #
+def test_S1_a_command_landing_while_the_timer_writes_the_journal_leaves_no_entry_behind(lib, make_writer, monkeypatch):
+    """S1 (a): the 0.3 s timer journals what waits, and only then says what the file holds. A command that landed in
+    between was never taken out of the file — it stayed there, through a quit, to be replayed over a later choice."""
+    work = lib.store.item(lib.ids("now")[0])["work_id"]
+    writing, wrote = threading.Event(), threading.Event()
+    real_cover, real_write = ls.Store.set_cover, M._write_json
+
+    def slow_cover(self, *a, **k):
+        writing.wait(5)                                 # the store answers once the timer's journal write has begun
+        return real_cover(self, *a, **k)
+
+    def slow_write(path, data):
+        if threading.current_thread().name != f"window-writer-{lib.language}" and not writing.is_set():
+            writing.set()
+            time.sleep(0.5)                             # the command lands meanwhile
+            try:
+                return real_write(path, data)
+            finally:
+                wrote.set()
+        return real_write(path, data)
+    monkeypatch.setattr(ls.Store, "set_cover", slow_cover)
+    monkeypatch.setattr(M, "_write_json", slow_write)
+    w, heard = make_writer(saving_after=0.05)
+    w.set_cover(work, "user", path="user:選んだ表紙.jpg", locked=True)
+    assert h.until(lambda: heard.saved)
+    assert writing.is_set() and wrote.wait(5), "the timer's journal write ran while the command waited"
+    assert h.until(lambda: journal(lib.language) is None and not w.pending(), seconds=3),         "the landed command's entry stayed in the file"
+    time.sleep(0.2)
+    assert journal(lib.language) is None, "the landed command's entry stayed in the file"
+
+
+def _stale(lib, w, holder, queue):
+    """A command journalled while the store is busy, the entry as the file held it, then landed: -> the entry (what a
+    journal left behind by the race looks like)."""
+    queue()
+    assert h.until(lambda: journalled(lib.language))
+    entry = journal(lib.language)
+    holder.release()
+    assert h.until(lambda: not w.pending() and journal(lib.language) is None)
+    return entry
+
+
+def test_S1_a_cover_left_in_the_journal_never_writes_over_the_cover_chosen_after_it(lib, make_writer, short_lock_wait):
+    """The review's case: cover A journalled (busy), landed, its entry left behind; B chosen later (nothing busy,
+    nothing journalled); quit, restart: A must not be written over B. A replay checks a title's fields as queued."""
+    w, heard = make_writer()
+    work = lib.store.item(lib.ids("soon")[0])["work_id"]
+    stale = _stale(lib, w, LockHolder(lib.db),
+                   lambda: w.set_cover(work, "user", path="user:表紙A.jpg", locked=True))
+    assert stale["pending"][0]["before"], "journalled with what it touches as queued"
+    w.set_cover(work, "user", path="user:表紙B.jpg", locked=True)
+    assert h.until(lambda: len(heard.saved) == 2)
+    w._abandon()
+    M._write_json(M.journal_path(lib.language), stale)
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: journal(lib.language) is None and heard2.notes)
+    assert lib.store._work_row(work)["cover_path"] == "user:表紙B.jpg"
+    assert heard2.notes == [WORDS["crash_one"]] and heard2.saved == []
+
+
+def test_S1_a_pin_left_in_the_journal_is_let_go_quietly_and_never_pins_again_what_was_unpinned(lib, make_writer,
+                                                                                            short_lock_wait):
+    """A status write moves no `changed_in`: the pin's entry replayed unchecked. Landed and nothing since → let go, no
+    note; unpinned since (*Done with its cards*, or its Undo) → listed, never pinned again."""
+    w, heard = make_writer()
+    x = lib.ids("now")[1]
+    stale = _stale(lib, w, LockHolder(lib.db), lambda: w.pin([x]))
+    pinned = lib.store.item(x)["pinned"]
+    assert pinned is not None
+    w._abandon()
+    M._write_json(M.journal_path(lib.language), stale)
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: journal(lib.language) is None and not w2.pending())
+    assert lib.store.item(x)["pinned"] == pinned and heard2.notes == [], "done before the crash: let go quietly"
+    w2.pin([x], on=False)
+    assert h.until(lambda: heard2.saved)
+    w2._abandon()
+    M._write_json(M.journal_path(lib.language), stale)
+    w3, heard3 = make_writer()
+    assert w3.replay()
+    assert h.until(lambda: journal(lib.language) is None and heard3.notes)
+    assert lib.store.item(x)["pinned"] is None and heard3.notes == [WORDS["crash_one"]]
+
+
+def test_S1_a_join_and_an_import_left_in_the_journal_are_let_go_and_a_media_type_changed_since_is_kept(
+        lib, make_writer, tmp_path, short_lock_wait):
+    """No ids to check: a join's pieces, an import's paths, the titles' types are what a replay compares."""
+    w, heard = make_writer()
+    now, soon = lib.ids("now"), lib.ids("soon")
+    piece = lib.store.item(now[0])["piece_id"]
+    lib.store.split(piece, now[2])
+    second = lib.store.item(now[2])["piece_id"]
+    copied = ls.copy_into_finished(lib.data_dir, [_outside_file(str(tmp_path / "Downloads"), lib.language)])
+    work = lib.store.item(soon[0])["work_id"]
+    holder = LockHolder(lib.db)
+    w.import_finished(copied, copied=copied)          # first: its new piece never takes the joined one's id
+    w.join([piece, second])
+    w.set_media_type([work], "drama")
+    assert h.until(lambda: [op for op, _i in journalled(lib.language)] == ["import_finished", "join",
+                                                                           "set_media_type"])
+    stale = journal(lib.language)
+    holder.release()
+    assert h.until(lambda: not w.pending() and journal(lib.language) is None)
+    row = lib.store.item_id(copied[0])
+    lib.store.set_tier([row], "now")                    # the imported file taken out of Finished since
+    lib.store.set_media_type([work], "anime")           # another window's answer to *What is it?*
+    w._abandon()
+    M._write_json(M.journal_path(lib.language), stale)
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: journal(lib.language) is None and heard2.notes)
+    assert lib.store.place_of(row)[0] == "now", "the import never puts it back in Finished"
+    assert lib.store.media_type(work)[0] == "anime" and {lib.store.item(i)["piece_id"] for i in now[:4]} == {piece}
+    assert heard2.notes == [WORDS["crash_many"].format(n=2)], "the join was done: quiet; the other two listed"

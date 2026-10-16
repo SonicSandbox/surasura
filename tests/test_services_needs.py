@@ -253,10 +253,55 @@ def test_the_seen_file_is_the_local_data_folders_written_whole_and_never_setting
     assert needs.read_seen("ja") == frozenset() and needs.read_answered("ja") == frozenset()
 
 
-def test_the_seen_file_keeps_only_its_newest_keys():
-    needs.mark_seen("ja", [f"gone:{i}:x" for i in range(needs.SEEN_KEPT + 5)])
-    kept = needs.read_seen("ja")
-    assert len(kept) == needs.SEEN_KEPT and "gone:0:x" not in kept and f"gone:{needs.SEEN_KEPT + 4}:x" in kept
+def test_S3_keep_all_their_words_across_2500_gone_files_keeps_every_answer_and_every_seen_key():
+    """S3: a count cap evicted answers — *Keep all their words* over 2,500 files kept only the last 2,000, and 500
+    entries came back counted at once. No key falls off by age or count."""
+    assert needs.answer("ja", [needs.item_key(i) for i in range(1, 2501)]) == 2500
+    assert needs.mark_seen("ja", [f"gone:{i}:x" for i in range(2500)]) == 2500
+    assert len(needs.read_answered("ja")) == 2500 and needs.item_key(1) in needs.read_answered("ja")
+    assert len(needs.read_seen("ja")) == 2500 and "gone:0:x" in needs.read_seen("ja")
+
+
+def test_S3_prune_takes_out_only_the_keys_whose_trouble_is_gone_so_a_file_gone_again_is_asked_again():
+    """A kept file that comes back, then goes missing again, is news again (its old *Keep its words* went with it);
+    a file still missing keeps its answer; a key of a kind the caller didn't read (Connect's, the rename asks, a
+    drive's) is never judged; a view that isn't the store's prunes nothing."""
+    gone = view_of([(1, FRIEREN_DIR, frieren_eps(9, 11), {0: MISSING, 1: MISSING})])
+    card = needs.entries(gone)[0]
+    needs.mark_seen("ja", [card.key, "video:1:abc", "ask:def", "offline:e:\\anime", "gap:7"])
+    needs.answer("ja", [needs.item_key(1), needs.item_key(2), "offline:e:\\anime", "gap:7"])
+    assert needs.entries(gone, answered=needs.read_answered("ja")) == []
+    assert needs.prune("ja", gone) == 1, "only the card's seen key went: its files are answered, it isn't listed"
+    back = view_of([(1, FRIEREN_DIR, frieren_eps(9, 11), {1: MISSING})])                  # Ep 9 found again
+    assert needs.prune("ja", None) == 0 and needs.prune("ja", back._replace(mode="json")) == 0
+    assert needs.prune("ja", back) == 1
+    assert needs.read_answered("ja") == {needs.item_key(2), "offline:e:\\anime", "gap:7"}
+    assert needs.read_seen("ja") == {"video:1:abc", "ask:def", "offline:e:\\anime", "gap:7"}
+    stamp = os.stat(needs.seen_path("ja")).st_mtime_ns
+    assert needs.prune("ja", back) == 0 and os.stat(needs.seen_path("ja")).st_mtime_ns == stamp, "nothing: no write"
+    again = view_of([(1, FRIEREN_DIR, frieren_eps(9, 11), {0: MISSING, 1: MISSING})])     # Ep 9 gone once more
+    out = needs.entries(again, seen=needs.read_seen("ja"), answered=needs.read_answered("ja"))
+    assert [ln.label for ln in out[0].lines] == ["Ep 9"] and needs.badge(out) == 1
+    # Connect read, no gap 7 and no video card left: theirs go too; asks read, none: the ask's goes
+    assert needs.prune("ja", again, connect={"jobs": [], "needs": [], "gaps": []}, asks=()) == 4
+    assert needs.read_seen("ja") == {"offline:e:\\anime"} and needs.read_answered("ja") == {needs.item_key(2),
+                                                                                           "offline:e:\\anime"}
+
+
+def test_N10_a_drive_kept_while_offline_is_asked_again_after_it_came_back_and_went_offline_again():
+    """N10: *Keep their words* on an offline drive was kept for ever — the same drive offline next month stayed
+    hidden. While it is offline the answer holds; once the drive is back (no longer among the roots), it goes."""
+    view = view_of([(1, "E-drive/Anime/" + FRIEREN, frieren_eps(1, 3), {0: MISSING, 1: MISSING, 2: MISSING})])
+    root = needs.Root(path="C:\\Surasura\\data\\ja\\E-drive", rel="E-drive", label="Drive E:", files=3)
+    entry = [e for e in needs.entries(view, offline_roots=[root]) if e.kind == needs.OFFLINE][0]
+    needs.answer("ja", needs.answer_keys(entry))
+    needs.mark_seen("ja", [entry.key])
+    assert needs.prune("ja", view, offline_roots=[root]) == 0, "still offline: the answer holds"
+    assert needs.OFFLINE not in kinds(needs.entries(view, offline_roots=[root], answered=needs.read_answered("ja")))
+    plugged = view_of([(1, "E-drive/Anime/" + FRIEREN, frieren_eps(1, 3), {})])
+    assert needs.prune("ja", plugged, offline_roots=[]) == 2 and needs.read_answered("ja") == frozenset()
+    later = needs.entries(view, offline_roots=[root], seen=needs.read_seen("ja"), answered=needs.read_answered("ja"))
+    assert [e.kind for e in later] == [needs.OFFLINE] and needs.badge(later) == 1
 
 
 def test_keep_its_words_takes_the_file_off_the_page_and_keep_all_takes_every_show(tmp_path):

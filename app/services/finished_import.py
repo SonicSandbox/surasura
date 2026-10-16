@@ -21,8 +21,10 @@ Tk-free, pandas-free (the import guard); nothing here runs on the window's threa
 - **N15:** an imported file is kept, never counted — `Store.text_lists()`' kept list (Finished), which the indexer's
   `token_store_lists` hands the token store: its sentences stay for 例文 and the sentence dictionary.
 
-`outcome` after the job ends: `imported` (handed to the writer) · `nothing` (nothing new to add) · `cancelled` ·
-`refused` (the store can't be written) · `failed`; `paths` / `copied` what it handed on.
+`outcome` after the job ends — the job waits for the writer's answer (S2): `imported` (saved; or still queued at a
+cancel or the quit: the writer's, journalled) · `nothing` (nothing new to add) · `cancelled` · `refused` (the store
+can't be written, before the copy or as the command landed: its copies in the trash) · `failed` (a copy, or the store's
+command: the same); `paths` / `copied` what it handed on.
 """
 import filecmp
 import os
@@ -32,6 +34,7 @@ import threading
 KIND = "finished-import"
 LABEL = "Adding what you finished before"
 STEP = "Copying"
+WAIT_S = 0.1                                  # the job asks whether it was cancelled this often while the store saves
 _NUMBERED = re.compile(r"^(.*)_(\d+)$")       # `copy_into_finished`'s taken-name form: name_1.ext
 
 
@@ -119,10 +122,22 @@ class ImportJob:
                 return
             self.paths = [os.path.join(data_dir, *p.split("/")) for p in paths]
             self.copied = [os.path.join(data_dir, *p.split("/")) for p in copied]
-            if self.writer.import_finished(self.paths, copied=self.copied, label=self.label) is None:
+            landed = threading.Event()
+            answer = {}
+            if self.writer.import_finished(self.paths, copied=self.copied, label=self.label,
+                                           answer=lambda cmd: (answer.update(cmd), landed.set())) is None:
                 self._trash(ls, data_dir, made)
                 self.paths, self.copied = [], []
                 self._end(job, "refused", ok=False, message=self.writer.reason())
+                return
+            while not landed.wait(WAIT_S):          # the writer's answer (S2); a quit meanwhile leaves it journalled
+                if self._stop.is_set():
+                    break
+            if landed.is_set() and not answer.get("saved"):   # refused or failed as it landed: the writer trashed
+                self.paths, self.copied = [], []              # the copies, nothing was written
+                refused = "refused" in answer
+                self._end(job, "refused" if refused else "failed", ok=False,
+                          message=answer.get("refused") if refused else answer.get("failed"))
                 return
             self._end(job, "imported", completed=self._stop.is_set())   # asked too late: it's the writer's now
         except BaseException as e:

@@ -24,6 +24,7 @@ Its words are the overlay's: `STRINGS` here, nothing in Qt.
 """
 import threading
 import time
+import unicodedata
 from collections import namedtuple
 
 from app.services import view_rows
@@ -59,14 +60,20 @@ def spans(title, query, language=None):
     key = library_store.search_fold(query, language)
     if not key or not title:
         return ()
-    chars, at = [], []
-    for i, ch in enumerate(title):
-        folded = " " if ch.isspace() else library_store.search_fold(ch)
+    chars, at, ends = [], [], []
+    i, n = 0, len(title)
+    while i < n:
+        j = i + 1                                         # a letter with its marks folds as one (N3: ｶﾞ, NFD が)
+        while j < n and _mark(title[j]):
+            j += 1
+        folded = " " if title[i].isspace() and j == i + 1 else library_store.search_fold(title[i:j])
         for c in folded:
             if c == " " and (not chars or chars[-1] == " "):
                 continue                                  # a whitespace run is one space, none leading
             chars.append(c)
             at.append(i)
+            ends.append(j)
+        i = j
     text = "".join(chars)
     if language == "zh" and text:
         from app.zh_script import to_simplified
@@ -77,13 +84,19 @@ def spans(title, query, language=None):
         k = text.find(key, start)
         if k < 0:
             break
-        a, b = at[k], at[k + len(key) - 1] + 1
+        a, b = at[k], ends[k + len(key) - 1]
         if out and a <= out[-1][1]:
             out[-1] = (out[-1][0], b)
         else:
             out.append((a, b))
         start = k + len(key)
     return tuple(out)
+
+
+def _mark(ch):
+    """A mark that belongs to the letter before it: a combining one (U+3099 / U+309A in NFD kana) or the half-width
+    ﾞ / ﾟ."""
+    return ch in "ﾞﾟ" or unicodedata.combining(ch) != 0
 
 
 # --- the groups --------------------------------------------------------------------------------------------------- #
@@ -115,7 +128,13 @@ def _next_part(files):
 def _goal(store, view, works, items, probe, query, language, limit):
     """Goal's hits from the store: each title found by its name (`works`) or by one of its files in Goal (`items`), in
     the tier's order (its first file's place), one hit a title. `probe`: more titles to look for in Goal only to say
-    whether they have a piece there (a split show). → (hits, total, the titles with files in Goal among all asked)."""
+    whether they have a piece there (a split show). Its reads agree (N5: one read transaction — a write between them
+    never leaves a title listed with no files). → (hits, total, the titles with files in Goal among all asked)."""
+    with store._reading():
+        return _goal_read(store, view, works, items, probe, query, language, limit)
+
+
+def _goal_read(store, view, works, items, probe, query, language, limit):
     from app import library_store as ls
     conn = store.conn
     elsewhere = {e.id for r in view.rows for e in r.episodes} | {i for a in view.arrivals for i in a.item_ids} | \

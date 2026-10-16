@@ -20,7 +20,9 @@
     command has waited `SAVING_AFTER_S`, `on_saving(False)` when it lands; and **journalled** to
     `window_pending_<lang>.json` in the local data folder (written atomically; an entry leaves it when the store
     confirms it), so after a crash `replay()` at the next start applies them by id — or, where an item changed
-    meanwhile, lists them once (`on_note`: *2 moves from before the crash couldn't be applied*);
+    meanwhile, lists them once (`on_note`: *2 moves from before the crash couldn't be applied*); a status, a title's
+    fields, a join or an import (`GUARDED`) is checked against what it touched as queued: changed since → listed, what
+    it writes there already (it landed, its entry left behind) → let go quietly;
   - `None` (nothing to change: the items gone, or already there) → `on_reread()`;
   - `ValueError` (the anchor gone or out of the tier meanwhile) → placed again by id beside the nearest neighbour the
     window named (`near`) that is still in that tier, else at the top of the tier, with one note and `on_reread()`;
@@ -66,7 +68,10 @@ JOURNALLED = ("move", "nudge", "set_tier", "finish", "set_watched",
 #   an undo needs its Change: never journalled; nor an Explorer drop (`insert_at`: no ids yet). Its files are copied into
 #   the tier's folder at once, on the copier's thread — a busy store or a drag never holds the copy back, and the copy
 #   never holds a move back (G1) — so a quit or a crash before it lands leaves them whole in the folder, where the next
-#   disk sync adds them (AD-2)
+#   disk sync adds them (AD-2); nor a background cover (`auto`: the scan runs again)
+GUARDED = ("pin", "keep_cards", "ask_mining", "set_cover", "set_media_type", "join", "import_finished")
+#   a replay checks these against what they touch as queued (`_as_queued`): their writes move no `changed_in` (a
+#   status, a title's fields) or they hold no ids (a join's pieces, an import's paths)
 ANALYSED = ("now", "soon", "goal")                          # the plan engine's tiers, in a Generate's order
 PLAN_FILE = "plan.json.gz"      # `analyzer.PLAN_FILE` (not imported: the analyzer is heavy; a test holds them equal)
 CHANGED_KEPT = 64               # `Numbers.changed` remembers this many versions back
@@ -78,8 +83,12 @@ WORDS = ("saving", "cant_undo", "nearest", "top", "crash_one", "crash_many", "re
 PLACES = ("top", "after-show", "soon", "goal", "finished")  # `place`'s targets (`Store.place`)
 KEPT = ("tier", "before_id", "after_id", "near", "direction", "on", "keep_cards", "end", "seen",
         "where", "paths", "copied", "path", "trash_ids", "piece_id", "piece_ids", "work_ids", "media_type",
-        "work_id", "source", "ref", "locked")
-#   a journal entry's values beside its op and ids (`_entry`): each command's own
+        "work_id", "source", "ref", "locked", "before")
+#   a journal entry's values beside its op and ids (`_entry`): each command's own; `before`: a GUARDED one's as queued
+# --- W3.2 B: `register` (a producer's files into New arrivals): journalled, its records and rules kept
+JOURNALLED += ("register",)
+KEPT += ("records", "rules")
+# --- end W3.2 B
 PART = ".part"                  # a dropped file is copied under its name + this (no content name: no sync takes it up),
 #                                 then renamed whole
 
@@ -286,12 +295,18 @@ class Writer:
         change (G1.6-10)."""
         return self._put({"op": "put_back", "ids": list(ids), "label": label})
 
-    def import_finished(self, paths, copied=(), label=None):
+    def import_finished(self, paths, copied=(), label=None, answer=None):
         """`Store.import_finished` (the importer's store half; its copying job is the caller's, done first): `paths`
         in the data folder land in Finished, dated *Earlier*. `copied`: those the job copied in — its Undo sends
-        those to the trash and takes every row it placed out; a file it didn't copy stays where it is."""
-        return self._put({"op": "import_finished", "ids": [], "paths": [os.fspath(p) for p in paths],
-                          "copied": [os.fspath(p) for p in copied], "label": label})
+        those to the trash and takes every row it placed out; a file it didn't copy stays where it is; one the store
+        refuses or fails sends them to the trash (Finished isn't walked: no sync would ever take them up). `answer`:
+        called once with the command when it is done with (this thread): `saved`, else `refused` (the store's reason)
+        or `failed` (the error) — never for one left in the journal at the quit."""
+        cmd = {"op": "import_finished", "ids": [], "paths": [os.fspath(p) for p in paths],
+               "copied": [os.fspath(p) for p in copied], "label": label}
+        if answer is not None:
+            cmd["answer"] = answer
+        return self._put(cmd)
 
     def relink(self, item_id, path, label=None):
         """`Store.relink`: a missing item pointed at its content file (`path`, in the data folder) — *Link these*,
@@ -347,11 +362,100 @@ class Writer:
         return self._put({"op": "set_media_type", "ids": [], "work_ids": list(work_ids), "media_type": media_type,
                           "label": label})
 
-    def set_cover(self, work_id, source, ref=None, path=None, locked=False, label=None):
+    def set_cover(self, work_id, source, ref=None, path=None, locked=False, label=None, auto=False):
         """`Store.set_cover`: a title's cover record; a fetch (`locked=False`) never writes over the user's locked
-        choice (nothing written, `on_reread`)."""
-        return self._put({"op": "set_cover", "ids": [], "work_id": work_id, "source": source, "ref": ref,
-                          "path": path, "locked": bool(locked), "label": label})
+        choice (nothing written, `on_reread`). `auto` (the disk scan's, a book's at its import): nobody's choice —
+        never on the Undo stack, no `on_saved` (`on_reread` instead), not journalled (the scan runs again)."""
+        cmd = {"op": "set_cover", "ids": [], "work_id": work_id, "source": source, "ref": ref, "path": path,
+               "locked": bool(locked), "label": label}
+        if auto:
+            cmd["auto"] = True
+        return self._put(cmd)
+
+    # --- W3.2 B: a producer's files into New arrivals (RUNBOOK §1 *Routing*; Sonic's W3.2-2) ------------------- #
+    def register(self, paths, pairing, rules=None, label=None, done=None):
+        """`Store.register` for each content file of `paths` (files in the data folder; a folder: the content files
+        under it, sorted), each with its pairing record — `pairing(path)` -> the record, read on the copier's thread
+        (never the caller's: it may read the file), or one dict for every file. Each waits in New arrivals unless
+        `rules` (settings.json's `placing_rules` as the caller read them) place it in the same store command (D30): an
+        arrival never places itself. One queued, journalled command (a replay registers again: `register` finds the
+        item it made, and the same record writes nothing). Never on the Undo stack: a download is no move of the
+        user's (the tray's placing is). `done(waiting, placed)` (the writer's thread, once it lands; not after a
+        replay): how many wait in New arrivals and how many a rule placed. -> the command's number, or None when
+        refused (read-only, E4)."""
+        if not self._writable():
+            return None                             # E4: refused before anything is read
+        cmd = {"op": "register", "ids": [], "paths": [os.fspath(p) for p in paths], "rules": dict(rules or {}),
+               "label": label, "done": done}
+        with self._cond:
+            if self._stop:
+                return None
+            cmd["seq"] = next(self._seq)
+            self._copying += 1                      # the quit waits for its records as for a drop's copies
+        if not self._copier.put(self._records_then_queue, cmd, pairing):
+            with self._cond:
+                self._copying -= 1
+                self._cond.notify_all()
+            return None
+        return cmd["seq"]
+
+    def _records_then_queue(self, cmd, pairing):
+        """(The copier's thread.) Each content file's record, then the command into the queue — and, when the quit came
+        meanwhile, into the journal (the files sit in a folder no sync walks: never left unregistered)."""
+        lib = _ls()
+        try:
+            records = []
+            for path in cmd["paths"]:
+                files = [path]
+                if os.path.isdir(path):
+                    files = sorted(os.path.join(d, n) for d, _s, names in os.walk(path) for n in names
+                                   if lib.is_content_name(n))
+                for f in files:
+                    if lib.is_content_name(f):
+                        records.append([f, dict(pairing(f) if callable(pairing) else pairing)])
+            cmd["records"] = records
+        except Exception as e:
+            print(f"Window writer: the files to register couldn't be read: {e!r}")
+            with self._cond:
+                self._copying -= 1
+                self._cond.notify_all()
+            self._call(self.on_note, self.words["failed"].format(error=e))
+            return
+        with self._cond:
+            self._copying -= 1
+            late = self._stop and not self._abandoned
+            if not self._abandoned and records:
+                self._pending.append(cmd)
+                if not late:
+                    self._start()
+            self._cond.notify_all()
+        if late and records:
+            self._sync_journal(everything=True)     # the next start replays it
+
+    def _register(self, store, cmd):
+        """Each record registered (one store command each: a busy store's retry registers again, idempotent); the
+        changes to `after_commit`, none to the Undo stack. -> None."""
+        lib = _ls()
+        waiting = placed = 0
+        for path, record in cmd.get("records") or ():
+            try:
+                change = store.register(path, record, rules=cmd.get("rules") or None)
+            except lib.NotInLibrary as e:           # outside the data folder: never registered, said once
+                print(f"Window writer: {e}")
+                continue
+            if change is not None:
+                self._call(self.after_commit, change, "register")
+            item_id = store.item_id(lib.library_rel(store.data_dir, path))
+            row = store.item(item_id) if item_id is not None else None
+            if row is not None:
+                if row["tier"] == "arrivals":
+                    waiting += 1
+                else:
+                    placed += 1
+        if cmd.get("done") is not None and not cmd.get("replay"):
+            self._call(cmd["done"], waiting, placed)
+        return None
+    # --- end W3.2 B
 
     def undo(self, change=None, label=None):
         """Undo `change` (a toast's), or the newest saved change (Ctrl+Z) as it stands when the queue reaches it."""
@@ -364,6 +468,18 @@ class Writer:
     def pending(self):
         with self._cond:
             return len(self._pending) + self._copying
+
+    def idle(self, timeout=None):
+        """(A worker's call: the cover scan's pace, G1.) Wait up to `timeout` for nothing to be queued — a drag's hold
+        and a busy store keep it waiting. -> True once idle, or the writer stopped (nothing more lands)."""
+        end = None if timeout is None else time.monotonic() + timeout
+        with self._cond:
+            while (self._pending or self._copying) and not (self._stop or self._abandoned):
+                left = None if end is None else end - time.monotonic()
+                if left is not None and left <= 0:
+                    return False
+                self._cond.wait(WAIT_S if left is None else min(left, WAIT_S))
+            return True
 
     def hold(self):
         """A drag starts (E6): nothing new is applied until `release()`; the window's moves queue."""
@@ -433,7 +549,7 @@ class Writer:
                 return None
             cmd["seq"] = next(self._seq)
             self._pending.append(cmd)
-            if self._held or self._journalled:
+            if (self._held or self._journalled) and _journals(cmd):
                 self._journal_dirty = True          # stuck already: the journal takes it at once
             self._start()
             self._cond.notify_all()
@@ -472,6 +588,7 @@ class Writer:
                 except Exception as e:              # never dies: the command is let go with a note, the queue goes on
                     print(f"Window writer: {e!r}")
                     if cmd is not None:
+                        cmd.setdefault("failed", f"{e}")
                         self._landed(cmd)
                         self._call(self.on_note, self.words["failed"].format(error=e))
                         self._call(self.on_reread)
@@ -525,6 +642,7 @@ class Writer:
         store, busy = self._store()
         if store is None and not busy:
             reason = getattr(self.opener, "reason", None) or self.opener.mode
+            cmd["refused"] = f"{reason}"
             self._landed(cmd)
             self._call(self.on_note, self.words["read_only"].format(reason=reason))
             self._call(self.on_reread)
@@ -541,8 +659,10 @@ class Writer:
             if cmd.get("end"):                      # the tier's end as it stands now (each attempt, a replay's too)
                 cmd["after_id"] = self._tier_end(store, cmd)
             if cmd.get("replay"):
-                if self._changed_since(store, cmd):
-                    self._replay_failed += 1
+                verdict = self._changed_since(store, cmd)
+                if verdict:
+                    if verdict != "done":           # one that landed before the crash is let go quietly
+                        self._replay_failed += 1
                     self._landed(cmd)
                     return
             elif cmd["op"] == "move" and not cmd.get("numbered"):
@@ -552,6 +672,7 @@ class Writer:
         except lib.StoreBusy:
             self._busy(cmd)
         except lib.StoreReadOnly as e:
+            cmd["refused"] = f"{e}"
             self._landed(cmd)
             self._call(self.on_note, self.words["read_only"].format(reason=e))
             self._call(self.on_reread)
@@ -585,6 +706,8 @@ class Writer:
                 change, note = self._insert(store, cmd)
             elif op in ("remove", "restore"):
                 change = self._remove(store, cmd) if op == "remove" else self._restore(store, cmd)
+            elif op == "register":                  # --- W3.2 B
+                change = self._register(store, cmd)
             else:
                 change = self._w32(store, cmd)
         except ValueError:
@@ -600,16 +723,19 @@ class Writer:
         elif op == "finish" and change is not None and cmd.get("follows") is not None:
             change.follows = cmd["follows"]         # the drop's Undo takes this one back first (AD-6)
             cmd["follows"].follow_up = change
-        elif op == "import_finished" and change is not None:   # what its Undo sends to the trash: the job's copies
-            change.copied = [_ls().library_rel(store.data_dir, p) for p in cmd["copied"]]
+        elif op == "import_finished":
+            cmd["saved"] = True                     # its copies are the library's now (S2: else to the trash)
+            if change is not None:                  # what its Undo sends to the trash: the job's copies
+                change.copied = [_ls().library_rel(store.data_dir, p) for p in cmd["copied"]]
         elif op == "restore" and change is not None:           # ... and a Put back's: every file it brought back
             change.copied = [r["rel_path"] for r in map(store.item, change.added) if r is not None]
         self._refresh_seen(store, cmd["ids"])
+        self._refresh_before(store, cmd)
         self._landed(cmd)
         if cmd.get("replay"):
             if change is not None:
                 self._replay_applied += 1
-        elif change is not None:
+        elif change is not None and not cmd.get("auto"):  # B1: a background cover is nobody's to undo
             with self._cond:
                 self._undo.append(change)
             self._call(self.on_saved, change, cmd.get("label"))
@@ -623,7 +749,7 @@ class Writer:
             self._call(self.after_commit, change, op)
         if cmd.get("renamed"):                      # a Put back that couldn't take its own name
             self._call(self.on_note, self.words["put_back_as"].format(names=", ".join(cmd["renamed"])))
-        if change is None or note is not None:
+        if change is None or note is not None or cmd.get("auto"):
             self._call(self.on_reread)
         if op not in UNORDERED and (op != "move" or change is None or note is not None or
                                     cmd.get("numbered") not in (None, (cmd["before_id"], cmd["after_id"]))):
@@ -849,11 +975,13 @@ class Writer:
         return change, None if anchor is None else "top"
 
     def _trash_copies(self, cmd):
-        """A drop let go (read-only, an error): the copies it made go to the trash, never left for a sync to place."""
+        """A drop or an import let go (read-only, an error): the copies it made go to the trash, never left for a sync
+        to place (a drop's) or invisible in Finished's folder (an import's: never walked)."""
         lib = _ls()
+        data_dir = cmd.get("data_dir") or getattr(self.opener, "data_dir", None)
         for path in cmd.get("copied") or ():
             try:
-                lib.trash_file(cmd["data_dir"], lib.library_rel(cmd["data_dir"], path))
+                lib.trash_file(data_dir, lib.library_rel(data_dir, path))
             except OSError as e:
                 print(f"Window writer: a dropped file's copy couldn't go to the trash: {e!r}")
 
@@ -982,18 +1110,23 @@ class Writer:
                     self._pending.remove(cmd)
                 except ValueError:
                     pass
-            journalled = cmd["seq"] in self._journalled
             replay_done = cmd.get("replay") and not any(c.get("replay") for c in self._pending)
             if self._saving:
                 self._saving = False
                 self._call(self.on_saving, False)
             self._cond.notify_all()
-        if cmd["op"] == "insert_at" and not cmd.get("saved"):
-            self._trash_copies(cmd)
+        with self._jlock:                           # S1: a journal write under way (the timer's) has said what the
+            with self._cond:                        # file holds — this command too, perhaps — before it is asked
+                journalled = cmd["seq"] in self._journalled
+        if cmd["op"] in ("insert_at", "import_finished") and not cmd.get("saved") and not cmd.get("replay"):
+            self._trash_copies(cmd)                 # (a replay's may be rows already: the copies stay)
         if journalled:
             self._sync_journal(everything=False)
         if replay_done:
             self._replay_finished()
+        answer = cmd.pop("answer", None)
+        if answer is not None:
+            self._call(answer, cmd)
 
     # --- the journal (04 §4.5: queued moves survive a crash) ------------------------------------------------------ #
     def _sync_journal(self, everything, fill=False):
@@ -1004,7 +1137,7 @@ class Writer:
         with self._jlock:
             with self._cond:
                 if everything:
-                    keep = [c for c in self._pending if c["op"] in JOURNALLED]
+                    keep = [c for c in self._pending if _journals(c)]
                 else:
                     keep = [c for c in self._pending if c["seq"] in self._journalled]
                 if everything and not fill and {c["seq"] for c in keep} == self._journalled:
@@ -1065,10 +1198,12 @@ class Writer:
         """Each queued command's items as they stand (`Store.check`: their `changed_in`), read once, the first time the
         thread meets it: what a replay compares against. One the journal holds without them is written again."""
         with self._cond:
-            todo = [c for c in self._pending if c["op"] in JOURNALLED and c.get("seen") is None]
+            todo = [c for c in self._pending if _journals(c) and c.get("seen") is None]
         for cmd in todo:
             items = store.check(cmd["ids"]).items
             cmd["seen"] = [[i, items.get(i)] for i in cmd["ids"]]
+            if cmd["op"] in GUARDED and not cmd.get("replay"):
+                cmd["before"] = _as_queued(store, cmd)
         with self._cond:
             if any(c["seq"] in self._journalled for c in todo):
                 self._journal_dirty = True
@@ -1089,18 +1224,44 @@ class Writer:
         for cmd in later:
             cmd["seen"] = [[i, now.get(i) if i in ids else v] for i, v in cmd["seen"]]
 
+    def _refresh_before(self, store, cmd):
+        """A command landed: the GUARDED commands queued behind it that touch its items, titles or pieces take what it
+        left as their *as queued* (the user's own two clicks are never a change "meanwhile"); one the journal holds is
+        written again."""
+        keys = _keys(cmd)
+        with self._cond:
+            later = [c for c in itertools.islice(self._pending, 1, None) if "before" in c and keys & _keys(c)]
+        if not later:
+            return
+        try:
+            for c in later:
+                c["before"] = _as_queued(store, c)
+        except Exception as e:                      # the command itself was saved: never reported as failed
+            print(f"Window writer: what a saved command left couldn't be read: {e!r}")
+            return
+        with self._cond:
+            if any(c["seq"] in self._journalled for c in later):
+                self._journal_dirty = True
+
     def _changed_since(self, store, cmd):
         """A replayed command whose items changed since it was queued (or are gone); a Put back's, a trash row put back
-        meanwhile (or purged from the table)."""
+        meanwhile (or purged from the table); a GUARDED one's titles, statuses, pieces or paths no longer as queued.
+        -> True (listed once), "done" (it landed before the crash: what it writes is there — let go quietly), or
+        False (applied)."""
         if cmd["op"] == "restore" and cmd.get("trash_ids"):
             rows = store.trash_rows(cmd["trash_ids"])
             if len(rows) != len(set(cmd["trash_ids"])) or any(r["restored_at"] for r in rows):
                 return True
         seen = cmd.get("seen")
-        if seen is None:
-            return False
-        now = store.check([i for i, _v in seen]).items      # `changed_in` is never NULL: None is gone
-        return any(now.get(i) != v for i, v in seen)
+        if seen is not None:
+            now = store.check([i for i, _v in seen]).items      # `changed_in` is never NULL: None is gone
+            if any(now.get(i) != v for i, v in seen):
+                return True
+        if cmd["op"] in GUARDED and cmd.get("before") is not None:
+            if _done(store, cmd):
+                return "done"
+            return _as_queued(store, cmd) != cmd["before"]
+        return False
 
     # --- the numbers ---------------------------------------------------------------------------------------------- #
     def _numbers_move(self, cmd):
@@ -1158,6 +1319,82 @@ def _skips(out):
         if head.isdigit() and "changed since" in str(note):
             n += int(head)
     return n
+
+
+def _journals(cmd):
+    """Whether `cmd` goes in the journal: one the user gave (never an undo, a drop's copy, a background cover)."""
+    return cmd["op"] in JOURNALLED and not cmd.get("auto")
+
+
+def _keys(cmd):
+    """What a command touches, for `_refresh_before`: its items, titles and pieces."""
+    out = {("i", i) for i in cmd.get("ids") or ()}
+    out |= {("w", w) for w in cmd.get("work_ids") or ()} | {("p", p) for p in cmd.get("piece_ids") or ()}
+    if cmd.get("work_id") is not None:
+        out.add(("w", cmd["work_id"]))
+    if cmd.get("piece_id") is not None:
+        out.add(("p", cmd["piece_id"]))
+    return out
+
+
+STATUS_OF = {"pin": "pinned", "keep_cards": "in_learning_order", "ask_mining": "mine_asked"}
+COVER_FIELDS = ("cover_source", "cover_ref", "cover_path", "cover_locked")
+
+
+def _as_queued(store, cmd):
+    """What a GUARDED command touches as it stands (JSON's shapes: lists): each item's status and `feed_in` (a status
+    write moves no `changed_in`; `feed_in` moves with every write the row's view sees — a pin undone since too), each
+    title's fields and `feed_in`, each piece's items, each path's row and tier."""
+    op = cmd["op"]
+    with store._reading():
+        if op in STATUS_OF:
+            out = []
+            for i in cmd["ids"]:
+                row = store.item(i)
+                out.append([i, row[STATUS_OF[op]], row["feed_in"]] if row is not None else [i, None, None])
+            return out
+        if op in ("set_cover", "set_media_type"):
+            cols = COVER_FIELDS if op == "set_cover" else ("media_type", "media_type_by")
+            out = []
+            for w in ([cmd["work_id"]] if op == "set_cover" else cmd["work_ids"]):
+                row = store._work_row(w)
+                out.append([w] + ([row["feed_in"]] + [row[c] for c in cols] if row is not None else [None]))
+            return out
+        if op == "join":
+            return [[p, [i for (i,) in store.conn.execute("SELECT id FROM items WHERE piece_id = ? ORDER BY id",
+                                                           (p,))]] for p in cmd["piece_ids"]]
+        held = store.check(paths=cmd["paths"]).keys                 # import_finished
+        out = []
+        for key in sorted(held):
+            row = store.item(held[key]) if held[key] is not None else None
+            out.append([key, held[key], row["tier"] if row is not None else None])
+        return out
+
+
+def _done(store, cmd):
+    """Whether what a GUARDED command writes is there already (it landed before the crash, its entry left behind)."""
+    op = cmd["op"]
+    with store._reading():
+        if op in STATUS_OF:
+            rows = [store.item(i) for i in cmd["ids"]]
+            if op == "keep_cards":
+                return all(r is not None and r["in_learning_order"] == (1 if cmd["on"] else 0) for r in rows)
+            return all(r is not None and (r[STATUS_OF[op]] is not None) == bool(cmd["on"]) for r in rows)
+        if op == "set_cover":
+            row = store._work_row(cmd["work_id"])
+            return row is not None and (row["cover_source"], row["cover_ref"], row["cover_path"],
+                                        bool(row["cover_locked"])) == (cmd["source"], cmd["ref"], cmd["path"],
+                                                                       bool(cmd["locked"]))
+        if op == "set_media_type":
+            rows = [store._work_row(w) for w in cmd["work_ids"]]
+            return all(r is not None and r["media_type"] == cmd["media_type"] for r in rows)
+        if op == "join":
+            others = cmd["piece_ids"][1:]
+            return bool(others) and not any(store.conn.execute("SELECT 1 FROM items WHERE piece_id = ? LIMIT 1",
+                                                               (p,)).fetchone() for p in others)
+        held = store.check(paths=cmd["paths"]).keys                 # import_finished: every file in Finished
+        rows = [store.item(i) if i is not None else None for i in held.values()]
+        return all(r is not None and r["tier"] == "graduated" for r in rows)
 
 
 def _works_as_set(store, fields):

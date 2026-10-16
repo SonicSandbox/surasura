@@ -64,7 +64,14 @@ Row = namedtuple("Row", "key index tier work_id piece_id media media_word verb t
 Chip = namedtuple("Chip", "text watched next mined tip")
 Line = namedtuple("Line", "kind after tip split")              # drawn after row `after` (0-based in Current);
 #                                                                 `split`: the row's first `split` files are above it
-Goal = namedtuple("Goal", "titles files covers line tip")
+Goal = namedtuple("Goal", "titles files covers line tip works", defaults=((),))     # works: W3.2 Q2 (below)
+# --- W3.2 Q2: Goal's sheet — one tile per title in Goal's order (`works`), each with its pieces in order (a piece's
+# files and its range): *Move to the top* / *Soon* and a drag take the first piece, the rest stays in Goal (G2). Not in
+# the first screen's cache (the first frame shows no sheet)
+GoalWork = namedtuple("GoalWork", "key work_id title cover_title media source n_files line pieces item_ids folder "
+                                  "tip accessible")       # folder: its first file's, in the data folder (*Open its folder*)
+GoalPiece = namedtuple("GoalPiece", "item_ids line")
+# --- end W3.2 Q2
 Month = namedtuple("Month", "label rows")
 Need = namedtuple("Need", "key work_id title line episodes cover_title")
 Arrival = namedtuple("Arrival", "key work_id piece_id item_ids rel_paths title media media_word source chip channel "
@@ -72,7 +79,7 @@ Arrival = namedtuple("Arrival", "key work_id piece_id item_ids rel_paths title m
                                 "accessible")
 #   one New arrivals row (W3.2 S1): a piece of the arrivals tier. `source` the chip's colour key (hato · youtube ·
 #   anilist · disk), `chip` its word; `line` *Ep x–y* or a video's channel; `parts` the one line as (text, tone):
-#   the line, *N in Anki* (ok), *N no video* (warn); `group` "new" or "watched" (every file watched); `per_ep` the
+#   the line, *N in Anki* (ok), *N files gone* (warn); `group` "new" or "watched" (every file watched); `per_ep` the
 #   estimate's *N new* (at the top of Current) over its files, rounded — None until every file has one
 ArrivalGroup = namedtuple("ArrivalGroup", "kind label rows")
 Counts = namedtuple("Counts", "current_rows current_files goal_titles goal_files finished arrivals arrival_files")
@@ -104,8 +111,9 @@ STRINGS = {
     "mark_removed": "{Word} deleted after mining: {eps}\nThe cards keep their pictures and audio; only ▶ can't play it",
     "play": "{verb} {name} in your {player}\nThe {word} beside its subtitle file",
     "play_online": "Its video is online: opening it from here comes in a later build",
-    "play_missing": "No {word} on disk\n• Link one to {verb_l} it from here: Needs you, in a later build",
-    "play_missing_plain": "No {word} on disk, so it can't {verb_l} from here",
+    # --- W3.2 Q5: an item whose content file is gone says so (its *video* is Connect's, S3), never "no video"
+    "play_missing": "Its file is gone from your library folder\n• Point it at its file in Needs you",
+    "play_missing_plain": "Its file is gone from your library folder, so it can't {verb_l} from here",
     "play_removed": "Its {word} was removed\n• Link it to {verb_l} it from here: Needs you, in a later build",
     "eps_more": " and {n} more",
     "player": {"video": "video player", "audio": "audio player", "EPUB": "e-book reader", "file": "default app"},
@@ -132,7 +140,7 @@ STRINGS = {
     # New arrivals (W3.2 S1): the tray's groups, its source chips and each row's one line and number
     "arr_new": "New", "arr_watched": "Already watched",
     "chip": {"hato": "hato", "youtube": "YouTube", "anilist": "AniList", "disk": "disk"},
-    "arr_cards": "{n} in Anki", "arr_no_media": "{n} no {word}",
+    "arr_cards": "{n} in Anki", "arr_no_media": "{n} files gone", "arr_no_media_one": "1 file gone",   # W3.2 Q5
     "per_ep": "{n} new / {unit}", "per_unit": {"eps": "ep", "videos": "video", "parts": "part"},
     "arr_units": {"eps": ("episode", "episodes"), "videos": ("video", "videos"), "parts": ("part", "parts")},
     "arr_each": {"eps": "an episode", "videos": "a video", "parts": "a part"},
@@ -140,6 +148,11 @@ STRINGS = {
                   "until analysed",
     "per_ep_tip_none": "{files} {units} · its new words are counted when it first shows: an estimate until analysed",
     "acc_arrival": "{title} · {line} · {number}", "acc_per_ep_none": "not counted yet",
+    # --- W3.2 Q2: Goal's tiles
+    "goal_count": "{n} {units}",
+    "goal_tile_tip": "{title} · {line}\nDrag it into Current to bring up {first}, or ⋯ to move it",
+    "acc_goal_tile": "{title} · {line}",
+    # --- end W3.2 Q2
 }
 
 _EXT = re.compile(r"\.[A-Za-z0-9]{1,5}$")
@@ -752,7 +765,7 @@ def _arrival(piece, works, cards, estimates, guessed):
     if n_cards:
         parts += ((STRINGS["arr_cards"].format(n=n_cards), "ok"),)
     if no_media:
-        parts += ((STRINGS["arr_no_media"].format(n=no_media, word=row.media_word), "warn"),)
+        parts += ((STRINGS["arr_no_media_one" if no_media == 1 else "arr_no_media"].format(n=no_media), "warn"),)
     watched = all(e.watched for e in eps)
     unit = _arrival_unit(media)
     one, many = STRINGS["arr_units"][unit]
@@ -816,6 +829,70 @@ def _arrivals(cache, tier_rows, works, cards, estimates, guessed, changed, chang
                        if any(a.group == kind for a in rows))
     _keep(cache, "arrivals", tier_rows, {r.get("work_id") for r in tier_rows}, sigs, (rows, groups, entries))
     return rows, groups
+
+
+# --- W3.2 Q2: Goal's sheet ----------------------------------------------------------------------------------------- #
+def _goal_work(key, ps, works, guessed):
+    """One tile: a title's pieces in Goal (in Goal's order), titled as Current's rows are, *N episodes / videos /
+    parts* over all its files, each piece's range (*Ep 1–12*)."""
+    first = ps[0][0]
+    work = works.get(first.get("work_id")) or {}
+    media = work.get("media_type")
+    if media is None and work and guessed is not None:
+        media = guessed.of(work)
+    if media is None and first.get("source_type") in ("youtube", "bilibili"):
+        media = "youtube"
+    files = [it for p in ps for it in p]
+    name = first.get("title") or (first.get("rel_path") or "").rsplit("/", 1)[-1]
+    title = (work.get("title") or work.get("youtube_channel")) if media == "youtube" else None
+    title = title or work.get("title") or first.get("parent_folder") or stem(name)
+    unit = _arrival_unit(media)
+    one, many = STRINGS["arr_units"][unit]
+    line = STRINGS["goal_count"].format(n=thousands(len(files)), units=one if len(files) == 1 else many)
+    pieces_ = []
+    for p in ps:
+        nums = [] if media == "youtube" else \
+            [episode_number(it.get("title") or (it.get("rel_path") or "").rsplit("/", 1)[-1]) for it in p]
+        nums = [n for n in nums if n is not None]
+        pieces_.append(GoalPiece(item_ids=tuple(it["id"] for it in p), line=range_text(media, nums, len(p))))
+    return GoalWork(key=key, work_id=first.get("work_id"), title=title, cover_title=work.get("title") or title,
+                    media=media, source=source_of(first, work) or "disk", n_files=len(files), line=line,
+                    pieces=tuple(pieces_), item_ids=tuple(it["id"] for it in files),
+                    folder=(first.get("rel_path") or "").rpartition("/")[0],
+                    tip=STRINGS["goal_tile_tip"].format(title=title, line=line, first=pieces_[0].line),
+                    accessible=STRINGS["acc_goal_tile"].format(title=title, line=line))
+
+
+def goal_tiles(goal_items, works, guessed=None, before=None):
+    """Goal's tiles (`Goal.works`), in Goal's order: its pieces grouped by title (a piece with no title: by itself).
+    `before`: the last build's {key: (items, work, guess, tile)} — a title whose items and work are the same objects
+    and whose guess is equal gives back its tile (S19). -> (tiles, entries)."""
+    groups, order = {}, []
+    for p in pieces(goal_items):
+        first = p[0]
+        key = f"w{first['work_id']}" if first.get("work_id") is not None else \
+            f"p{first['piece_id']}" if first.get("piece_id") is not None else f"i{first['id']}"
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(p)
+    before = before or {}
+    entries, tiles = {}, []
+    for key in order:
+        ps = groups[key]
+        items = tuple(it for p in ps for it in p)
+        work = works.get(ps[0][0].get("work_id"))
+        guess = guessed.of(work) if guessed is not None and work and work.get("media_type") is None else None
+        old = before.get(key)
+        if old is not None and old[1] is work and old[2] == guess and len(old[0]) == len(items) and \
+                all(a is b for a, b in zip(old[0], items)):
+            tile = old[3]
+        else:
+            tile = _goal_work(key, ps, works, guessed)
+        entries[key] = (items, work, guess, tile)
+        tiles.append(tile)
+    return tuple(tiles), entries
+# --- end W3.2 Q2
 
 
 def build(items, works, options, numbers=None, cards=None, mining=(), language="ja", mode="store", reason=None,
@@ -882,9 +959,14 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
         lines.append(Line("soon", first_soon - 1, tip, None))
     # Goal: titles are works, files all their items
     goal_items = tiers["goal"]
-    kept = _kept(cache, "goal", goal_items, changed, changed_works)
+    # --- W3.2 Q2: the tiles read every Goal title (not only the strip's nine) and an untyped title's guess
+    g_hit = cache.sections.get("goal") if cache is not None else None
+    g_more = tuple((w, guessed.of(works[w])) for w in g_hit[4][2]) if g_hit is not None and \
+        all(w in works for w in g_hit[4][2]) else (object(),) if g_hit is not None else ()
+    # --- end W3.2 Q2
+    kept = _kept(cache, "goal", goal_items, changed, changed_works, g_more)
     if kept is not None:
-        goal, n_goal_works = kept
+        goal, n_goal_works = kept[0], kept[1]
     else:
         goal_works = list(dict.fromkeys(r.get("work_id") for r in goal_items))   # in order, one pass (a list's `in`
         # was quadratic: ~90 ms a build at 20,000 files, bench 7)
@@ -894,9 +976,19 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
                 STRINGS["goal_line"].format(titles=len(goal_works), files=thousands(len(goal_items)))
         else:
             g_line = STRINGS["goal_empty"]
-        goal = Goal(titles=len(goal_works), files=len(goal_items), covers=covers, line=g_line, tip=STRINGS["goal_tip"])
+        # --- W3.2 Q2: the tiles (a title unchanged gives back its tile), every title watched, an untyped one's guess
+        tiles, g_entries = goal_tiles(goal_items, works, guessed, g_hit[4][3] if g_hit is not None else None)
+        old_goal = g_hit[4][0] if g_hit is not None else None
+        if old_goal is not None and len(old_goal.works) == len(tiles) and \
+                all(a is b for a, b in zip(old_goal.works, tiles)):
+            tiles = old_goal.works                       # every tile the same: the same tuple
+        goal = Goal(titles=len(goal_works), files=len(goal_items), covers=covers, line=g_line, tip=STRINGS["goal_tip"],
+                    works=tiles)
         n_goal_works = len(goal_works)
-        _keep(cache, "goal", goal_items, goal_works[:9], (), (goal, n_goal_works))
+        g_untyped = tuple(w for w in goal_works if w in works and works[w].get("media_type") is None)
+        _keep(cache, "goal", goal_items, goal_works, tuple((w, guessed.of(works[w])) for w in g_untyped),
+              (goal, n_goal_works, g_untyped, g_entries))
+        # --- end W3.2 Q2
     # Finished: newest first, by month; no date last (*Earlier*). Its rows read the cards, the mining set, the line and
     # the numbers (`same_global`, the cache's version) and an untyped title's guess (from all its files, any tier)
     fin_items = tiers["graduated"]
@@ -1009,7 +1101,7 @@ def to_cache(view, rows=CACHE_ROWS):
     kept = view.rows[:rows]
     return {"rows": _plain([r._replace(string=None) for r in kept]),     # planned again as it's read (`_row_from`)
             "lines": _plain([ln for ln in view.lines if ln.after < len(kept)]),
-            "goal": _plain(view.goal), "counts": _plain(view.counts), "subline": view.subline,
+            "goal": _plain(view.goal)[:5], "counts": _plain(view.counts), "subline": view.subline,   # (W3.2 Q2: no tiles)
             "badges": dict(view.badges)}
 
 

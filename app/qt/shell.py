@@ -1984,20 +1984,21 @@ def quiet_exit(workers_ms=QUIT_WORKERS_MS, join_s=QUIT_THREAD_JOIN_S, gone=()):
     """(The quit's last step, after the window closed and the services stopped.) The closed windows' deferred deletes
     run now — never during Python's teardown, the exit crash row 2 measured — then the thread pool's workers and the
     ported 順 windows' own threads (`junban-*`) are waited for, each a bounded wait. The windows in `gone` (the main
-    window: its Settings page and the ported windows with it) are deleted after the workers' wait, never left for
+    window: its Settings page and the ported windows with it) are deleted once the workers ended, never left for
     Python's teardown: there, after the QApplication, the mounted Settings page crashed the exit (0xC0000005, about
     1 run in 80 under load; GitHub's #97). -> True when everything ended."""
     from PyQt6.QtCore import QCoreApplication
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
     ended = bridge.wait_for_workers(workers_ms)
-    if gone:
+    if gone and ended:                                    # (a worker still running: nothing deleted under it)
         for win in gone:
             try:
                 win.deleteLater()
             except RuntimeError:                          # deleted already
                 pass
         QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
-        ended = bridge.wait_for_workers(workers_ms) and ended   # anything a deletion started (nothing, as built)
+        ended = bridge.wait_for_workers(workers_ms)       # what a deletion started (a quit before the first frame:
+                                                          # the stones' release can start their build)
     for thread in threading.enumerate():
         if thread.name.startswith("junban-") and thread is not threading.current_thread():
             thread.join(join_s)

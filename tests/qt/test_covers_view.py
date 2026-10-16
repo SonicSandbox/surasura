@@ -24,7 +24,7 @@ pytest.importorskip("PyQt6")
 from PyQt6.QtWidgets import QApplication
 
 from app import library_store as ls
-from app import path_utils
+from app import path_utils, settings_manager
 from app.qt import covers as qcovers
 from app.qt import rows, shell, stones, strings
 from app.services import library_reader
@@ -367,6 +367,7 @@ def real(qapp):
         store = migrated(language)
         if art is not None:
             art(store)
+        settings_manager.save_keys({"target_language": language})      # the window's language is its library's (P0)
         opener = moves_module.store_opener(language)
         reader = library_reader.LibraryReader(opener, language, poll=0.02)
         writer = moves_module.Writer(opener, language, journal_file=moves_module.journal_path(language),

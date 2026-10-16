@@ -1376,7 +1376,23 @@ class ShellWindow(QMainWindow):
             from app.qt import drag
             self.moves = drag.DragController(self, writer, reader)
             self.moves.start(on_worker=True)        # its first look at the store and its replay off this thread
+        self._follow_covers(reader, writer)
         reader.start()
+
+    def _follow_covers(self, reader, writer):
+        """W3.2 L3: the covers follow the library shown — its data folder, its writer and its drag controller (never the
+        language left's: held there, they kept its reader and writer alive past the switch), its own fetcher (the old
+        one stopped) and its disk scan (once the first frame is out: until then the frame's own scan runs)."""
+        qcovers.stop_scan()
+        qcovers.use_library(self.language, getattr(getattr(reader, "opener", None), "data_dir", None), writer, self,
+                            self.moves)
+        if self._fetcher_for(reader, writer) is None and self._fetcher is not None:
+            self._fetcher.stop(timeout=0)           # (no writer: nothing to record with, so no fetcher)
+            if qcovers.fetcher() is self._fetcher:
+                qcovers.use_fetcher(None)
+            self._fetcher = None
+        if self._first_painted and writer is not None:
+            qcovers.start_scan(getattr(reader, "opener", None), self.language, writer)
 
     def _follow_language_look(self):
         """AD0-11: the application's font for the language open (the CJK face), the theme and size as they are."""
@@ -1403,10 +1419,12 @@ class ShellWindow(QMainWindow):
         """The library's online covers (Q7's `covers_online.Fetcher`) for the window's language and writer as they stand:
         made again when either moved (a library or language switch; the old one stopped), None without a library or a
         writer. It reads `covers_download` from the settings in memory before every request: off, nothing leaves."""
-        services = self.services
-        writer = getattr(services, "writer", None)
-        if services.library is None or writer is None:
+        return self._fetcher_for(self.services.library, getattr(self.services, "writer", None))
+
+    def _fetcher_for(self, library, writer):
+        if library is None or writer is None:
             return None
+        services = self.services
         f = getattr(self, "_fetcher", None)
         if f is not None and f.language == self.language and f.writer is writer:
             return f
@@ -1415,8 +1433,8 @@ class ShellWindow(QMainWindow):
         from app.services import covers_online
         make = getattr(services, "cover_fetcher_factory", None) or covers_online.Fetcher
         f = self._fetcher = make(self.language, writer, settings=services.settings.get)
-        f.data_dir = getattr(getattr(services.library, "opener", None), "data_dir", None) or f.data_dir   # disk first
-        qcovers.use_fetcher(f, qcovers.resolver(getattr(services.library, "opener", None)))
+        f.data_dir = getattr(getattr(library, "opener", None), "data_dir", None) or f.data_dir   # disk first
+        qcovers.use_fetcher(f, qcovers.resolver(getattr(library, "opener", None)))
         return f
 
     def ask_shown_covers(self):

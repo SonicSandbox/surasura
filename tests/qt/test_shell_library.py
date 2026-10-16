@@ -469,6 +469,33 @@ def test_a_reader_a_switch_let_go_is_freed(opened):
     zh.close()
 
 
+def test_L3_the_covers_follow_the_library_a_switch_opens_and_hold_nothing_of_the_one_it_left(opened, monkeypatch):
+    # W3.2 L3: the covers kept the first library's writer, drag controller and fetcher past a switch — the ja reader
+    # was never freed, a Change cover… on a zh row went to the ja writer, and zh's posters were never scanned for.
+    from app.qt import covers as qcovers
+    scans = []
+    real_scan = qcovers.start_scan
+    monkeypatch.setattr(qcovers, "start_scan", lambda opener, language, writer: (
+        scans.append((language, writer)), real_scan(opener, language, writer))[1])
+    ja, zh = migrated("ja"), migrated("zh")
+    services, win = opened()
+    assert wait_until(lambda: _state(win) == "full" and scans, 15)            # the first frame's scan, of ja
+    old_writer, old_fetcher = services.writer, win.cover_fetcher()
+    assert scans == [("ja", old_writer)] and old_fetcher.language == "ja"
+    _ask(services, win, "zh")
+    assert _switched_to(win, services, "zh")
+    assert qcovers._where["language"] == "zh"
+    assert qcovers._where["data_dir"] == services.library.opener.data_dir != old_writer.opener.data_dir
+    assert qcovers._library["writer"] is services.writer is not old_writer
+    assert qcovers._library["moves"] is win.moves and qcovers._library["window"] is win
+    f = qcovers.fetcher()
+    assert f is win._fetcher and f.language == "zh" and f.writer is services.writer
+    assert old_fetcher._stop                                                  # the ja fetcher stopped
+    assert scans[-1] == ("zh", services.writer)                               # zh's posters scanned for
+    ja.close()
+    zh.close()
+
+
 def test_a_switch_straight_back_never_puts_two_writers_on_one_journal(opened, monkeypatch):
     # AD0-1: the ja store busy past the switch's wait; the old writer's thread still inside its write. Back on ja at
     # once, a second ja writer replayed the journalled nudge while the first then landed it too: moved two places.

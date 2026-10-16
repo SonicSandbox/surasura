@@ -1835,6 +1835,20 @@ class ShellWindow(QMainWindow):
         super().closeEvent(event)
 
 
+# --- W3.2 B: how the window wakes (IK0-5, L3.1-4) ----------------------------------------------------------------- #
+def library_lookout(store, wake):
+    """The library reader's `watch` (`LibraryReader(watch=library_lookout)`, through `moves.open_library`'s reader
+    keywords where the window builds its library): called on the reader's thread once the store can be used, never
+    the window's. The tree watch on the language's tier folders (hato's drop folder is under NOW's) and the store's
+    bell (any process's commit), both waking the reader's own `wake`; no copy watch (the helper keeps the copy) and
+    no hourly round (the Content Manager's). Closed with the reader (its stop: the window's close, a library switch).
+    -> an opened `library_watch.Lookout`."""
+    from app import library_store, library_watch
+    return library_watch.Lookout(store.data_dir, under=[library_store.FOLDER_OF_TIER[t] for t in library_store.ANALYSED],
+                                 db_path=store.db_path, wake=wake).open()
+# --- end W3.2 B
+
+
 # --- opening ------------------------------------------------------------------------------------------------------ #
 def open_window(app, services, state_file=None):
     """The look from settings on the QApplication, then the window (not shown yet): theme before the first paint."""

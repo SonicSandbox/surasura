@@ -80,6 +80,10 @@ KEPT = ("tier", "before_id", "after_id", "near", "direction", "on", "keep_cards"
         "where", "paths", "copied", "path", "trash_ids", "piece_id", "piece_ids", "work_ids", "media_type",
         "work_id", "source", "ref", "locked")
 #   a journal entry's values beside its op and ids (`_entry`): each command's own
+# --- W3.2 B: `register` (a producer's files into New arrivals): journalled, its records and rules kept
+JOURNALLED += ("register",)
+KEPT += ("records", "rules")
+# --- end W3.2 B
 PART = ".part"                  # a dropped file is copied under its name + this (no content name: no sync takes it up),
 #                                 then renamed whole
 
@@ -346,6 +350,91 @@ class Writer:
         return self._put({"op": "set_cover", "ids": [], "work_id": work_id, "source": source, "ref": ref,
                           "path": path, "locked": bool(locked), "label": label})
 
+    # --- W3.2 B: a producer's files into New arrivals (RUNBOOK §1 *Routing*; Sonic's W3.2-2) ------------------- #
+    def register(self, paths, pairing, rules=None, label=None, done=None):
+        """`Store.register` for each content file of `paths` (files in the data folder; a folder: the content files
+        under it, sorted), each with its pairing record — `pairing(path)` -> the record, read on the copier's thread
+        (never the caller's: it may read the file), or one dict for every file. Each waits in New arrivals unless
+        `rules` (settings.json's `placing_rules` as the caller read them) place it in the same store command (D30): an
+        arrival never places itself. One queued, journalled command (a replay registers again: `register` finds the
+        item it made, and the same record writes nothing). Never on the Undo stack: a download is no move of the
+        user's (the tray's placing is). `done(waiting, placed)` (the writer's thread, once it lands; not after a
+        replay): how many wait in New arrivals and how many a rule placed. -> the command's number, or None when
+        refused (read-only, E4)."""
+        if not self._writable():
+            return None                             # E4: refused before anything is read
+        cmd = {"op": "register", "ids": [], "paths": [os.fspath(p) for p in paths], "rules": dict(rules or {}),
+               "label": label, "done": done}
+        with self._cond:
+            if self._stop:
+                return None
+            cmd["seq"] = next(self._seq)
+            self._copying += 1                      # the quit waits for its records as for a drop's copies
+        if not self._copier.put(self._records_then_queue, cmd, pairing):
+            with self._cond:
+                self._copying -= 1
+                self._cond.notify_all()
+            return None
+        return cmd["seq"]
+
+    def _records_then_queue(self, cmd, pairing):
+        """(The copier's thread.) Each content file's record, then the command into the queue — and, when the quit came
+        meanwhile, into the journal (the files sit in a folder no sync walks: never left unregistered)."""
+        lib = _ls()
+        try:
+            records = []
+            for path in cmd["paths"]:
+                files = [path]
+                if os.path.isdir(path):
+                    files = sorted(os.path.join(d, n) for d, _s, names in os.walk(path) for n in names
+                                   if lib.is_content_name(n))
+                for f in files:
+                    if lib.is_content_name(f):
+                        records.append([f, dict(pairing(f) if callable(pairing) else pairing)])
+            cmd["records"] = records
+        except Exception as e:
+            print(f"Window writer: the files to register couldn't be read: {e!r}")
+            with self._cond:
+                self._copying -= 1
+                self._cond.notify_all()
+            self._call(self.on_note, self.words["failed"].format(error=e))
+            return
+        with self._cond:
+            self._copying -= 1
+            late = self._stop and not self._abandoned
+            if not self._abandoned and records:
+                self._pending.append(cmd)
+                if not late:
+                    self._start()
+            self._cond.notify_all()
+        if late and records:
+            self._sync_journal(everything=True)     # the next start replays it
+
+    def _register(self, store, cmd):
+        """Each record registered (one store command each: a busy store's retry registers again, idempotent); the
+        changes to `after_commit`, none to the Undo stack. -> None."""
+        lib = _ls()
+        waiting = placed = 0
+        for path, record in cmd.get("records") or ():
+            try:
+                change = store.register(path, record, rules=cmd.get("rules") or None)
+            except lib.NotInLibrary as e:           # outside the data folder: never registered, said once
+                print(f"Window writer: {e}")
+                continue
+            if change is not None:
+                self._call(self.after_commit, change, "register")
+            item_id = store.item_id(lib.library_rel(store.data_dir, path))
+            row = store.item(item_id) if item_id is not None else None
+            if row is not None:
+                if row["tier"] == "arrivals":
+                    waiting += 1
+                else:
+                    placed += 1
+        if cmd.get("done") is not None and not cmd.get("replay"):
+            self._call(cmd["done"], waiting, placed)
+        return None
+    # --- end W3.2 B
+
     def undo(self, change=None, label=None):
         """Undo `change` (a toast's), or the newest saved change (Ctrl+Z) as it stands when the queue reaches it."""
         return self._put({"op": "undo", "ids": [], "change": change, "label": label}, check_mode=False)
@@ -578,6 +667,8 @@ class Writer:
                 change, note = self._insert(store, cmd)
             elif op in ("remove", "restore"):
                 change = self._remove(store, cmd) if op == "remove" else self._restore(store, cmd)
+            elif op == "register":                  # --- W3.2 B
+                change = self._register(store, cmd)
             else:
                 change = self._w32(store, cmd)
         except ValueError:

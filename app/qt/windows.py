@@ -15,6 +15,9 @@ W3.2 attach the same openers to their rows and **retire the list** (IK-16: it ne
 `show(shell, name, make)`: one window of a kind per main window, kept and raised if open.
 """
 import importlib.util
+import json
+import os
+import re
 import weakref
 from collections import namedtuple
 
@@ -22,7 +25,7 @@ from PyQt6.QtCore import QEvent, QTimer, QUrl, Qt, pyqtSignal
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
-from app import theme
+from app import path_utils, theme
 from app.qt import applog, bridge, strings, style
 
 Opener = namedtuple("Opener", "name label tip available open module", defaults=(None,))
@@ -245,7 +248,107 @@ def _open_koe(shell):
 
 def _open_downloader(shell):
     from modules.youtube_downloader import open_downloader
-    return open_downloader(shell)                         # no on_complete until W3.2's arrivals: files stay in Processed
+    return open_downloader(shell, on_complete=youtube_arrivals(shell))     # W3.2 B: into New arrivals
+
+
+# --- W3.2 B: the downloader's files into New arrivals (Sonic's W3.2-2: they wait there unless a rule places them) -- #
+_YT_TOKEN = re.compile(r"\[(bilibili-)?([A-Za-z0-9_-]+)\][\s_()\-.\d]*$")   # the id the downloader ends a name with
+
+
+def youtube_record(path, language):
+    """(The writer's copier thread.) The pairing record of one transcript the downloader wrote, from what it keeps per
+    file — read only: its cue sidecar (`<stem>.surasura.json`: the video's id, address and title) and the transcript's
+    own header (line 2: `<channel> | <published> | <length>`), else the id its name ends with. Producer `youtube` (the
+    module's, bilibili.tv's too); `channel_id` = the channel's name as the header gives it (the downloader keeps no
+    channel id), which `placing_rules`' `youtube:<channel>` names; no channel (bilibili.tv names none) → the producer's
+    rule alone. The show is the channel, so one channel's videos are one title."""
+    stem = os.path.splitext(path)[0]
+    side = {}
+    try:
+        with open(stem + path_utils.SIDECAR_SUFFIX, encoding="utf-8") as f:
+            side = json.load(f)
+    except (OSError, ValueError):
+        pass
+    side = side if isinstance(side, dict) else {}
+    header = []
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            header = [f.readline().strip() for _ in range(2)]
+    except OSError:
+        pass
+    m = _YT_TOKEN.search(os.path.basename(stem))
+    site = "bilibili" if m and m.group(1) else "youtube"
+    video = str(side.get("video_id") or (m.group(2) if m else "")).strip()
+    channel = header[1].split(" | ", 1)[0].strip() if len(header) > 1 and " | " in header[1] else ""
+    record = {"schema": 1, "producer": "youtube", "language": language, "media_type": "youtube",
+              "content_key": f"{site}:{video}" if video else f"{site}:file:{os.path.basename(path)}"}
+    if video:
+        record["video_id"] = video
+    if side.get("url"):
+        record["url"] = side["url"]
+    title = side.get("title") or (header[0] if header else "")
+    if title:
+        record["title"] = title
+    if channel and channel != "Unknown" and site == "youtube":
+        record["channel_id"] = channel
+        record["show"] = {"title": channel}
+    return record
+
+
+def arrived_line(waiting, placed):
+    """The downloader's done line once its files landed: how many wait in New arrivals, how many a rule placed."""
+    if waiting and placed:
+        return strings.YT_ARRIVED_BOTH.format(waiting=waiting, placed=placed)
+    if waiting:
+        return strings.YT_ARRIVED_WAITING.format(what=strings.yt_transcripts(waiting))
+    if placed:
+        return strings.YT_ARRIVED_PLACED.format(what=strings.yt_transcripts(placed))
+    return ""
+
+
+def youtube_arrivals(shell):
+    """The downloader's `on_complete(paths)` (the window's thread): its created files (and the files in the folders it
+    made) registered through the window's writer — never the store on this thread — each waiting in New arrivals
+    unless the user's `placing_rules` (`youtube`, `youtube:<channel>`) place it; once they land, the downloader's
+    status line and the bottom bar say where they went. None without a writer (no library: they stay in Processed,
+    and the downloader says so). Raises when the store can't be written (the downloader says why; the files wait in
+    Processed)."""
+    if getattr(getattr(shell, "services", None), "writer", None) is None:
+        return None
+
+    def complete(paths):
+        writer = shell.services.writer                    # the library open now (a switch makes another)
+        if writer is None:
+            raise RuntimeError(strings.YT_NO_LIBRARY)
+        try:
+            rules = shell.services.settings.get().get("placing_rules")
+        except Exception:
+            rules = None
+        rules = {str(k): v for k, v in rules.items()} if hasattr(rules, "items") else {}
+        language = writer.language
+        relay = bridge.Relay(parent=shell)
+        relay.said.connect(lambda counts: _arrived(shell, relay, counts))
+        seq = writer.register(paths, lambda path: youtube_record(path, language), rules=rules,
+                              label=strings.YT_ARRIVED_LABEL, done=lambda waiting, placed: relay.call((waiting, placed)))
+        if seq is None:
+            relay.deleteLater()
+            raise RuntimeError(strings.YT_READ_ONLY.format(reason=writer.reason()))
+    return complete
+
+
+def _arrived(shell, relay, counts):
+    try:
+        relay.deleteLater()
+    except RuntimeError:
+        pass
+    line = arrived_line(*counts)
+    if not line:
+        return
+    say_in_bar(shell, line)
+    win = shell.__dict__.get("_secondary_windows", {}).get("youtube-downloader")
+    if win is not None and not win.gone and getattr(win, "running", None) is None:
+        win.say(line)                                     # its done line names the tray (no link: the tray is Q1's)
+# --- end W3.2 B
 
 
 def _open_preview(shell):

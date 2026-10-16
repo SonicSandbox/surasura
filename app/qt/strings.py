@@ -289,6 +289,18 @@ MOVE_WORDS.update({
     "put_back_as": "Put back under a new name (the old one was taken): {names}",
 })
 # --- end W3.2 S2
+# --- W3.2 B: the YouTube downloader's files into New arrivals (its status line and the bottom bar, once they land)
+YT_ARRIVED_WAITING = "{what} in New arrivals"
+YT_ARRIVED_PLACED = "{what} placed by your rules for new arrivals"
+YT_ARRIVED_BOTH = "{waiting} in New arrivals · {placed} placed by your rules"
+YT_ARRIVED_LABEL = "New transcripts"
+YT_READ_ONLY = "your library can't be saved right now ({reason}): the transcripts wait in Processed"
+YT_NO_LIBRARY = "no library is open: the transcripts wait in Processed"
+
+
+def yt_transcripts(n):
+    return f"{n} transcript" if n == 1 else f"{n} transcripts"
+# --- end W3.2 B
 # the drag in the window (app/qt/drag.py): its toasts (A2's toast list), the ⋯ menu, the bar's lines
 DRAG_UP_NEXT = "{title} is up next"
 DRAG_PLACED = "{title} placed at #{n}"

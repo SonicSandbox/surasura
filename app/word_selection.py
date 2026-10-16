@@ -27,8 +27,9 @@ DEFAULT_BANDS_PPM = dict(_SELECTION_DEFAULTS["bands_ppm"])
 DEFAULT_MIN_COUNT = _SELECTION_DEFAULTS["min_count"]
 MINUTES_PER_FILE = _SELECTION_DEFAULTS["minutes_per_file"]
 DEFAULT_AUTO_MAX_WORDS = _SELECTION_DEFAULTS["auto_max_words"]
-# Q4-3's second threshold: a band Automatic chose is kept until its list grows past this (never below the first line),
-# so a list near 850 doesn't flip back and forth with every episode added or word learned.
+# Q4-3's second threshold: a band Automatic chose is kept until the commoner band that would replace it holds more than
+# this (never below the first line), so a list near 850 doesn't flip back and forth with every episode added or word
+# learned: a band left when it fell under 850 is taken back only once it holds over 1,100.
 DEFAULT_AUTO_STEP_BACK_WORDS = 1100
 
 # Slider order = the band keys in their defined order ('native', the min_count baseline, last).
@@ -111,9 +112,9 @@ def auto_band(previews, max_words=DEFAULT_AUTO_MAX_WORDS, bands=None, remembered
     the band the slider still shows. None when there is no preview: the caller keeps the band it has.
 
     `remembered` (Q4-3, the band this library's store remembers Automatic last chose): a rarer band is taken (the
-    remembered one fell under the line); otherwise the remembered band stays while its list holds `step_back_words`
-    words or fewer (never below `max_words`), and only above that does it step back. No remembered band: the rule
-    above, as ever."""
+    remembered one fell under the line); a commoner band that reached the line takes over only once it holds more than
+    `step_back_words` words (never below `max_words`) — till then the remembered band stays. So a band hovering at 850
+    doesn't flip the list with every episode added or word learned. No remembered band: the rule above, as ever."""
     if not previews:
         return None
     bands = bands or BANDS_ORDER
@@ -125,7 +126,7 @@ def auto_band(previews, max_words=DEFAULT_AUTO_MAX_WORDS, bands=None, remembered
         at += 1                                   # the same list under a rarer name: the band the slider keeps
     chosen = shown[at]
     if remembered in bands and remembered in previews and bands.index(chosen) < bands.index(remembered):
-        if previews[remembered]["word_count"] <= max(step_back_words, max_words):
+        if previews[chosen]["word_count"] <= max(step_back_words, max_words):
             return remembered
     return chosen
 

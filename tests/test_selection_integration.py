@@ -677,8 +677,8 @@ def _with_library_store(root):
 
 
 def test_the_remembered_band_is_kept_by_the_second_threshold(samples_env, capsys):
-    # Why: Q4-3 — a band Automatic chose stays until its list passes ~1,100 words, so the list stops flipping. On
-    # this small library every band is far under 1,100, so a remembered rarer band holds.
+    # Why: Q4-3 — a band Automatic chose stays until the commoner band that would replace it passes ~1,100 words, so
+    # the list stops flipping. On this small library every band is far under 1,100, so a remembered rarer band holds.
     root = samples_env
     _use_selection(root, band="very_rare", bands_ppm=SMALL_LIBRARY_BANDS_PPM)
     _run_samples(root)
@@ -690,7 +690,7 @@ def test_the_remembered_band_is_kept_by_the_second_threshold(samples_env, capsys
     capsys.readouterr()
     lib = _run_samples(root)
     log = capsys.readouterr().out
-    assert "Selection band 'rare' (automatic: kept until its list passes 1100 words)" in log
+    assert "Selection band 'rare' (automatic: kept until a commoner band passes 1100 words)" in log
     assert lib["min_count"] == pytest.approx(_floor("rare", lib))
     assert ls.read_auto_band("ja", data_dir) == "rare"
 

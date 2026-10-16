@@ -4983,7 +4983,7 @@ def main():
             if auto is not None:
                 band, why = auto, f" (automatic: the commonest band with {SELECT_AUTO_MAX_WORDS} words or more)"
                 if auto != plain:
-                    why = f" (automatic: kept until its list passes {word_selection.DEFAULT_AUTO_STEP_BACK_WORDS} words)"
+                    why = f" (automatic: kept until a commoner band passes {word_selection.DEFAULT_AUTO_STEP_BACK_WORDS} words)"
                 _auto_pick.update(band=auto, words=previews[auto]["word_count"])
         floor = word_selection.band_floor_count(band, total_tokens, SELECT_BANDS_PPM, SELECT_MIN_COUNT)
         print(f"Configuration: Selection band '{band}'{why} -> keep count >= {floor:.2f} "

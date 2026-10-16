@@ -215,18 +215,18 @@ def test_learning_moves_the_band_on_and_new_content_steps_it_back():
     assert ws.auto_band(_ladder(0, 6, 210, 900, 2_600, 5_100, 11_000), 850) == "uncommon"
 
 
-# --- Q4-3: the second threshold (a band Automatic chose is kept until its list passes ~1,100) -------- #
+# --- Q4-3: the second threshold (a band Automatic left is taken back only once it holds over ~1,100) ------ #
 
-def test_the_second_threshold_keeps_the_remembered_band_until_its_list_passes_1100():
-    # Why: a band hovering around 850 flipped back and forth with every episode added or word learned, each flip
-    # reshuffling the list and Anki's order. Here Occasional grew to the line (a new episode) while Uncommon, the
-    # band Automatic chose, still holds 1,100 or fewer: it stays.
-    ladder = _ladder(0, 14, 860, 1_050, 2_600, 4_900, 10_400)
-    assert ws.auto_band(ladder, 850) == "occasional", "nothing remembered: the plain rule"
-    assert ws.auto_band(ladder, 850, remembered="uncommon") == "uncommon", "remembered, 1,050 <= 1,100: kept"
-    assert ws.auto_band(_ladder(0, 14, 860, 1_100, 2_600, 4_900, 10_400), 850, remembered="uncommon") == "uncommon"
-    assert ws.auto_band(_ladder(0, 14, 860, 1_101, 2_600, 4_900, 10_400), 850, remembered="uncommon") == \
-        "occasional", "past 1,100: steps back to the commonest band at or over the line"
+def test_the_second_threshold_keeps_the_remembered_band_until_the_commoner_one_passes_1100():
+    # Why: a band hovering around 850 flipped the list back and forth with every episode added or word learned, each
+    # flip reshuffling the list and Anki's order. Learning took Uncommon under 850, so Automatic moved on to Rare (and
+    # remembers it); an episode then brings Uncommon back to 860. Rare stays until Uncommon holds more than 1,100.
+    # (Bands far apart, as in a real library: Rare holds thousands, so its own size can't be the test.)
+    ladder = _ladder(0, 14, 318, 860, 2_600, 4_900, 10_400)
+    assert ws.auto_band(ladder, 850) == "uncommon", "nothing remembered: the plain rule"
+    assert ws.auto_band(ladder, 850, remembered="rare") == "rare", "Uncommon at 860 <= 1,100: Rare kept"
+    assert ws.auto_band(_ladder(0, 14, 318, 1_100, 2_600, 4_900, 10_400), 850, remembered="rare") == "rare"
+    assert ws.auto_band(_ladder(0, 14, 318, 1_101, 2_600, 4_900, 10_400), 850, remembered="rare") ==         "uncommon", "past 1,100: steps back to the commonest band at or over the line"
 
 
 def test_a_remembered_band_that_falls_under_the_line_gives_way_to_a_rarer_one():
@@ -234,15 +234,26 @@ def test_a_remembered_band_that_falls_under_the_line_gives_way_to_a_rarer_one():
     assert ws.auto_band(_ladder(0, 5, 150, 840, 2_300, 4_541, 9_978), 850, remembered="uncommon") == "rare"
 
 
+def test_the_list_no_longer_flips_with_each_episode_and_each_word_learned():
+    # Why: the flip Q4-3 was built to stop, walked through: Uncommon at 849 / 860 / 849 / 860 as words are learned and
+    # episodes added. Each pick is remembered, as Generate records it; the list stays on Rare all the way.
+    remembered = None
+    picks = []
+    for uncommon in (849, 860, 849, 860, 1_050):
+        remembered = ws.auto_band(_ladder(0, 14, 318, uncommon, 2_600, 4_900, 10_400), 850, remembered=remembered)
+        picks.append(remembered)
+    assert picks == ["rare"] * 5, picks
+
+
 def test_a_remembered_band_the_preview_lacks_or_a_line_above_1100_behaves():
     # Why: a collapsed tail can drop a band from the preview; a hand-edited line above 1,100 is never undercut.
-    ladder = _ladder(0, 14, 860, 1_050, 2_600, 4_900, 10_400)
-    assert ws.auto_band({b: p for b, p in ladder.items() if b != "uncommon"}, 850, remembered="uncommon") == \
-        "occasional"
-    assert ws.auto_band(ladder, 850, remembered="no-such-band") == "occasional"
+    ladder = _ladder(0, 14, 318, 860, 2_600, 4_900, 10_400)
+    assert ws.auto_band({b: p for b, p in ladder.items() if b != "rare"}, 850, remembered="rare") == "uncommon"
+    assert ws.auto_band(ladder, 850, remembered="no-such-band") == "uncommon"
     assert ws.auto_band(_ladder(0, 5, 193, 756, 1_400, 4_541, 9_978), 1_500) == "very_rare"
-    # A line above 1,100 is its own step-back point: a remembered band past it steps back.
-    assert ws.auto_band(_ladder(0, 5, 193, 1_500, 1_600, 4_541, 9_978), 1_500, remembered="rare") == "uncommon"
+    # A line above 1,100 is its own step-back point: a commoner band at the line is still kept off, one past it isn't.
+    assert ws.auto_band(_ladder(0, 5, 193, 1_500, 2_600, 4_541, 9_978), 1_500, remembered="rare") == "rare"
+    assert ws.auto_band(_ladder(0, 5, 193, 1_501, 2_600, 4_541, 9_978), 1_500, remembered="rare") == "uncommon"
 
 
 # --- The rule over real text, both languages ------------------------------------------------------ #

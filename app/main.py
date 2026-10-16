@@ -1610,7 +1610,7 @@ class MasterDashboardApp:
         # why and where to turn that off.
         ToolTip(self.band_slider, lambda: (
                 f"Chosen for you by Automatic rarity: the commonest band with {self._auto_max_words_text()} "
-                f"words or more, kept until its list passes {self._auto_step_back_text()}. "
+                f"words or more, kept until a commoner band passes {self._auto_step_back_text()}. "
                 "To choose it yourself, turn off Automatic rarity in "
                 "Settings → Sentences & Logic."
                 if self.var_auto_band.get() else
@@ -2177,7 +2177,7 @@ class MasterDashboardApp:
         chk_auto_band.pack(anchor=tk.W)
         ToolTip(chk_auto_band, lambda: (
             f"Picks the Rarity band for you: the commonest band with {self._auto_max_words_text()} words or "
-            f"more, and keeps it until its list passes {self._auto_step_back_text()}, so your list doesn't "
+            f"more, and keeps it until a commoner band passes {self._auto_step_back_text()}, so your list doesn't "
             "flip back and forth. It moves on by itself as you learn. The slider on the main window is locked while "
             "this is on. By Commonness only."))
 

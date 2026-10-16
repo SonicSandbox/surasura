@@ -274,7 +274,7 @@ ROWS = {
                   "min count appear at least"),
     "minutes_per_file": ("Minutes per file", "For the “every N hours” estimate",
                          "How long a file takes you, for the “every N hours” estimate", "minutes per file"),
-    "auto_max_words": ("Automatic keeps about", "Words ahead of you",
+    "auto_max_words": ("Automatic keeps at least", "Words ahead of you",
                        "With Automatic on: the commonest level whose list holds at least this many words",
                        "automatic max words ahead"),
 

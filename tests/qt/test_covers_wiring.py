@@ -369,3 +369,52 @@ def test_the_download_covers_toggle_saves_only_its_key_through_the_settings_serv
     assert toggle.value() is False and toggle.toolTip()
     change(toggle, True)
     assert store.calls == [({"covers_download": True}, None)]
+
+
+# --- W3.2 L3 fix round ------------------------------------------------------------------------------------------- #
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_turned_on_from_settings_currents_rows_in_view_are_asked_and_titles_dropped_while_off_are_asked_again(
+        real, anilist, language):
+    """S1: the switch lives on the Settings page, so 'the shown page' is Settings — Current's rows in view are asked
+    all the same. N1: a title asked while the fetcher dropped it (the switch went off) is asked again when it's on."""
+    store, win, _writer, switch = real(language, anilist, on=False)
+    lst = win.page_widgets["current"].list
+    view = win.page_widgets["current"].view_model
+    elsewhere = {a.work_id for a in view.arrivals or ()}
+    elsewhere |= {w.work_id for w in (view.goal.works if view.goal is not None else ())}
+    in_view = []
+    for _kind, payload, _lines in lst.model().entries[:6]:
+        work = getattr(payload, "work_id", None)
+        if work is not None and work not in elsewhere and work not in in_view:
+            in_view.append(work)
+    wants = {w.id: w for w in O.wants_for(store, in_view)}
+    picked = [w for w in in_view if w in wants and O.fetchable(wants[w]) and not wants[w].anilist_id][:2]
+    assert len(picked) == 2, "two of Current's rows in view, asked by name"
+    for n, work in enumerate(picked):
+        name = O.clean_title(wants[work].title)[0]
+        anilist.add(170000 + n, f"Title {n}", name, search=name)
+    win.show_tab("settings")
+    settle(20)
+    qcovers._online["asked"].add(picked[1])         # asked once while the fetcher dropped it (the switch went off)
+    switch["covers_download"] = True
+    win._settings_written(["covers_download"])
+    assert wait_until(lambda: (settle() or True) and all(
+        store._work_row(w)["cover_source"] == "anilist" for w in picked), 10)
+
+
+def test_a_downloaded_cover_whose_file_went_is_asked_online_again_when_its_decode_finds_it_gone(qapp):
+    """S3 / S4: the decoder finds an online record's cached file gone (another library's Remove, an Undo to an old
+    record): that title is asked again; a missing file of the art beside the files is never asked online."""
+    class Fetcher:
+        def on(self):
+            return True
+
+        def want(self, wants):
+            return 0
+    qcovers.use_fetcher(Fetcher(), lambda ids: [])
+    gone = (7, "anilist", "16498", "cache:anilist-7.jpg", "row", 40, 60, 1.0)
+    disk = (8, "file", "アニメ/進撃の巨人/poster.jpg", None, "row", 40, 60, 1.0)
+    for key in (gone, disk):
+        qcovers._running[key] = []
+        qcovers._landed(key, None)
+    assert 7 in qcovers._online["asked"] and 8 not in qcovers._online["asked"]

@@ -432,8 +432,8 @@ ROWS = {
     "set_up_again": ("Set up again", "Walks through the first steps again", "Opens the setup again",
                      "set up again wizard setup"),
     # --- W3.2 L3: Connections' covers (the window's spec 01 §1.3: the switch says in one line what is sent)
-    "covers_download": ("Download covers", "Pictures for your shows from AniList: each show's name or id is sent, "
-                        "nothing else", "Fetch your shows' covers from AniList (YouTube videos: their own thumbnail)",
+    "covers_download": ("Download covers", "Sends each show's AniList id or name to AniList, and a video's id to "
+                        "YouTube. Nothing else.", "Fetch your shows' covers from AniList (YouTube videos: their own thumbnail)",
                         "covers download pictures anilist thumbnails posters"),
     "remove_downloaded_covers": ("Remove downloaded covers", "The pictures you chose and those beside your files stay",
                                  "Delete every cover Surasura downloaded; pictures beside your files come back by "

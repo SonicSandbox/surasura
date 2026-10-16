@@ -48,6 +48,15 @@ def blocked(monkeypatch):
         return REAL_URLOPEN(request, *args, **kwargs)
 
     monkeypatch.setattr(urllib.request, "urlopen", guard)
+    real_open = O._open
+
+    def guard_open(request, allowed):               # the fetcher's own door (its redirects checked)
+        if urlsplit(request.full_url).hostname != "127.0.0.1":
+            refused.append(request.full_url)
+            raise urllib.error.URLError("the network is blocked in tests")
+        return real_open(request, allowed)
+
+    monkeypatch.setattr(O, "_open", guard_open)
     yield refused
     assert refused == [], f"a request tried to leave the machine: {refused}"
 
@@ -60,6 +69,7 @@ class AniList:
         self.posts = []                 # (body, headers)
         self.gets = []                  # (path, headers)
         self.down = False
+        self.after_post = None          # called as an answer goes out (a test turns the switch off there)
         fake = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -81,6 +91,8 @@ class AniList:
                 v = body["variables"]
                 ids = v.get("ids") or [i for i in fake.found.get(v.get("search"), ())]
                 media = [fake.media[i] for i in ids if i in fake.media]
+                if fake.after_post is not None:
+                    fake.after_post()
                 self._send(200, json.dumps({"data": {"Page": {"media": media}}}).encode("utf-8"), "application/json")
 
             def do_GET(self):
@@ -520,3 +532,214 @@ def test_an_image_from_anywhere_but_anilist_or_youtube_is_never_fetched(anilist)
     f = fetcher(pen, anilist)
     f.want([want(1, "葬送のフリーレン", anilist_id=154587)])
     assert f.run_once() == 0 and pen.covers == [] and anilist.gets == []
+
+
+# --- W3.2 L3 fix round: the switch holds mid-wait, a stop ends at once, art on disk first, gone files asked again -- #
+def test_B1_the_switch_turned_off_while_the_throttle_waits_sends_nothing_after_it(anilist):
+    """A full minute, the user turns *Download covers* off: the search waiting its turn never leaves (01 §1.3 C1)."""
+    pen = Pen()
+    clock = Clock()
+    f = fetcher(pen, anilist, clock=clock, per_minute=1)
+
+    def sleep(seconds):
+        f.switch["covers_download"] = False         # turned off in Settings while the fetcher waits for its turn
+        clock.sleep(seconds)
+    f.api_gate.sleep = sleep
+    f.want([want(1, "葬送のフリーレン"), want(2, "進撃の巨人")])
+    assert f.run_once() == 0
+    assert len(anilist.posts) == 1 and clock.slept, "the second search waited, and the switch was off at its turn"
+    assert anilist.gets == [] and pen.covers == []
+    f.switch["covers_download"] = True
+    assert f.want([want(2, "進撃の巨人")]) == 1, "dropped while off, never parked for a retry: asked again once on"
+
+
+def test_B1_the_switch_turned_off_inside_an_id_answer_fetches_no_image_of_its_batch(anilist):
+    pen = Pen()
+    ids = [154587 + n for n in range(5)]
+    for i in ids:
+        anilist.add(i, f"Title {i}")
+    f = fetcher(pen, anilist, images_per_minute=1000)
+    anilist.after_post = lambda: f.switch.update(covers_download=False)
+    f.want([want(n, f"作品{n}", anilist_id=i) for n, i in enumerate(ids, 1)])
+    assert f.run_once() == 0 and len(anilist.posts) == 1
+    assert anilist.gets == [] and pen.covers == [], "no image of the batch once the switch is off"
+
+
+def test_B1_a_fetcher_stopped_mid_throttle_ends_at_once_never_spins_and_sends_nothing_more(anilist):
+    """A library switch or the window closing stops the fetcher: its thread ends within a second, the throttle's loop
+    turns only a handful of times (it used to spin a core for up to a minute), and the waiting search never leaves."""
+    pen = Pen()
+    f = O.Fetcher("ja", pen, settings=lambda: {"covers_download": True}, api=anilist.base, ytimg=anilist.base,
+                  image_hosts=("127.0.0.1",), per_minute=1)
+    try:
+        f.want([want(1, "葬送のフリーレン"), want(2, "進撃の巨人")])
+        assert h.until(lambda: len(anilist.posts) == 1 and f.api_gate.turns >= 2)   # the second waits its minute
+        time.sleep(0.1)
+        started = time.monotonic()
+        f.stop(timeout=5)
+        assert not f._thread.is_alive() and time.monotonic() - started < 1.0
+        assert f.api_gate.turns <= 3, f"the wait loop ran {f.api_gate.turns} turns"
+        time.sleep(0.2)
+        assert len(anilist.posts) == 1 and pen.covers == []
+    finally:
+        f.stop(timeout=0)
+
+
+def test_N_an_idle_fetcher_sleeps_until_asked_with_no_timer_waking_it(anilist):
+    pen = Pen()
+    f = O.Fetcher("ja", pen, settings=lambda: {"covers_download": True}, api=anilist.base, ytimg=anilist.base,
+                  image_hosts=("127.0.0.1",))
+    waits = []
+
+    class Cond(type(f._cond)):
+        def wait(self, timeout=None):
+            waits.append(timeout)
+            return super().wait(timeout)
+    f._cond = Cond()
+    try:
+        f.want([want(1, "葬送のフリーレン")])          # nothing found: done, nothing to retry
+        assert h.until(lambda: len(anilist.posts) == 1 and waits)
+        time.sleep(0.7)
+        assert waits == [None], "asleep without a timeout (S19), never waking every half second"
+    finally:
+        f.stop()
+
+
+def test_N_an_image_redirected_to_another_host_is_refused_and_plain_http_never_leaves(anilist):
+    class Redirect(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            self.send_response(302)
+            self.send_header("Location", f"http://localhost:{anilist.server.server_address[1]}/img/1.jpg")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Redirect)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        f = fetcher(Pen(), anilist)
+        with pytest.raises(O._Failed):
+            f._image(f"http://127.0.0.1:{server.server_address[1]}/img/1.jpg")
+        assert anilist.gets == [], "the redirect's other host was never asked"
+    finally:
+        server.shutdown()
+        server.server_close()
+    real = O.Fetcher("ja", Pen())
+    assert real._allowed("https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx16498.jpg")
+    assert real._allowed("https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg")
+    assert not real._allowed("http://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx16498.jpg")
+    assert not real._allowed("https://evil.example/cover.jpg")
+
+
+def test_S2_the_users_own_ask_goes_ahead_of_a_full_background_minute():
+    clock = Clock()
+    gate = O.Throttle(30, clock, clock.sleep, reserve=5)
+    for _ in range(25):
+        assert gate.wait()
+    assert clock.slept == []
+    assert gate.wait(first=True) and clock.slept == [], "Find it online… never waits behind the queue"
+    gate.wait()
+    assert clock.slept == [60.0], "the background's 26th waits its minute"
+    assert O.Fetcher("ja", Pen()).api_gate.reserve == 5
+
+
+def test_S2_a_waiter_sleeps_outside_the_throttles_lock_so_the_users_ask_never_waits_behind_it():
+    over = threading.Event()
+    gate = O.Throttle(6, time.monotonic, lambda s: over.wait(s), reserve=1)
+    for _ in range(5):
+        gate.wait()
+    background = threading.Thread(target=gate.wait, args=(lambda: not over.is_set(),), daemon=True)
+    background.start()
+    try:
+        assert h.until(lambda: gate.turns >= 6)     # the background's sixth waits its minute
+        started = time.monotonic()
+        user = threading.Thread(target=gate.wait, kwargs={"first": True}, daemon=True)
+        user.start()
+        user.join(2)
+        assert not user.is_alive() and time.monotonic() - started < 0.5
+    finally:
+        over.set()
+        background.join(2)
+    assert not background.is_alive()
+
+
+def test_S2_find_it_online_goes_ahead_of_the_background_queue(anilist):
+    pen = Pen()
+    clock = Clock()
+    _frieren(anilist)
+    f = fetcher(pen, anilist, clock=clock, per_minute=6)
+    f.want([want(n, t) for n, t in enumerate(("進撃の巨人", "本好きの下剋上", "薬屋のひとりごと", "鬼滅の刃", "呪術廻戦"), 1)])
+    f.run_once()
+    assert len(anilist.posts) == 5 and clock.slept == []
+    assert f.candidates(want(9, "葬送のフリーレン")) and clock.slept == []
+
+
+def test_B2_the_store_writes_a_fetched_cover_only_over_none_generated_or_its_own(lib):
+    s = lib.store
+    a, b, c = (lib.work_of(s.ids(t)[0]) for t in ("now", "soon", "goal"))
+    assert s.set_cover(a, "anilist", ref="16498", path="cache:anilist-a.jpg") is not None, "over none"
+    assert s.set_cover(a, "anilist", ref="16498", path="cache:anilist-a2.jpg") is not None, "its own source's"
+    assert s.set_cover(a, "youtube", ref="dQw4w9WgXcQ", path="cache:youtube-a.jpg") is None, "another source's"
+    poster = lib.rel(os.path.join(lib.folder_of(s.ids("soon")[0]), "poster.jpg"))
+    assert s.set_cover(b, "file", ref=poster) is not None
+    assert s.set_cover(b, "anilist", ref="16498", path="cache:anilist-b.jpg") is None, "never over the art on disk"
+    assert lib.row(b) == ("file", poster, None, 0)
+    assert s.set_cover(c, "generated") is not None
+    assert s.set_cover(c, "anilist", ref="16498", path="cache:anilist-c.jpg") is not None, "over the generated one"
+    assert s.set_cover(a, "file", ref=poster) is not None, "art on disk is written over a downloaded cover (D-1)"
+
+
+def test_B2_an_arrival_with_its_folder_art_takes_the_art_and_anilist_is_never_asked(lib, anilist):
+    """Scenario A: a show arrives mid-session with folder.jpg beside it (the open's scan never saw it): the disk is
+    looked at first — even with an AniList id — and nothing leaves the machine."""
+    show = lib.store.ids("now")[0]
+    work = lib.work_of(show)
+    art = write(os.path.join(lib.folder_of(show), "folder.jpg"), jpeg())
+    w = _wants(lib)[work]._replace(anilist_id=16498)
+    assert w.rel_paths
+    anilist.add(16498, "Shingeki no Kyojin", w.title, search=O.clean_title(w.title)[0])
+    f = fetcher(lib.writer, anilist, language=lib.language, data_dir=lib.data_dir)
+    before = lib.heard.rereads
+    assert f.want([w]) == 1 and f.run_once() == 0 and _landed(lib, before)
+    assert lib.row(work) == ("file", lib.rel(art), None, 0)
+    assert anilist.posts == [] and anilist.gets == []
+    assert f.want([w]) == 0, "done for the session"
+
+
+def test_B2_the_scans_disk_record_landing_before_a_fetch_is_never_overwritten(lib, anilist):
+    """Scenario B: the fetch read the record before the open's scan recorded the art beside the files; the store
+    refuses the fetch at write time."""
+    show = lib.store.ids("now")[0]
+    work = lib.work_of(show)
+    w = _wants(lib)[work]._replace(anilist_id=16498)                 # the fetch's copy: no cover yet
+    anilist.add(16498, "Shingeki no Kyojin", w.title)
+    f = fetcher(lib.writer, anilist, language=lib.language, data_dir=lib.data_dir)
+    assert f.want([w]) == 1
+    poster = lib.rel(os.path.join(lib.folder_of(show), "poster.jpg"))
+    lib.writer.set_cover(work, "file", ref=poster, auto=True)        # the scan's record lands first
+    assert h.until(lambda: lib.row(work)[0] == "file" and not lib.writer.pending())
+    before = lib.heard.rereads
+    f.run_once()
+    assert _landed(lib, before)
+    assert lib.row(work) == ("file", poster, None, 0), "the art beside the files stays"
+
+
+def test_S3_S4_a_downloaded_cover_whose_file_went_is_asked_again_and_lands_under_a_new_name(lib, anilist):
+    """Another library's *Remove downloaded covers* (or an Undo back to an old record) took the cached file: the title
+    is askable again, and its new file lands under a new name so the row repaints."""
+    work = lib.work_of(lib.store.ids("now")[0])
+    anilist.add(16498, "Shingeki no Kyojin", "進撃の巨人")
+    f = fetcher(lib.writer, anilist, language=lib.language, data_dir=lib.data_dir)
+    before = lib.heard.rereads
+    f.want([_wants(lib)[work]._replace(anilist_id=16498)])
+    assert f.run_once() == 1 and _landed(lib, before)
+    old = _wants(lib)[work]._replace(anilist_id=16498)
+    os.remove(C.image_path(lib.language, old))
+    assert O.fetchable(old)
+    again = fetcher(lib.writer, anilist, language=lib.language, data_dir=lib.data_dir)    # the next ask
+    before = lib.heard.rereads
+    assert again.want([old]) == 1 and again.run_once() == 1 and _landed(lib, before)
+    new = _wants(lib)[work]
+    assert new.cover_source == "anilist" and new.cover_path != old.cover_path
+    assert os.path.isfile(C.image_path(lib.language, new))

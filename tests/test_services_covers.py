@@ -285,7 +285,9 @@ def test_a_book_at_its_import_keeps_its_cover_from_wherever_the_user_keeps_it(li
 
 
 # --- never over a better or the user's cover --------------------------------------------------------------------- #
-def test_a_locked_user_cover_and_a_fetched_anilist_cover_are_never_written_over_by_disk_art(lib, tmp_path):
+def test_a_locked_user_cover_is_never_written_over_by_disk_art_but_a_downloaded_one_is(lib, tmp_path):
+    """W3.2 L3 B2, the lean D-1 *disk art first*: the art beside the files beats a downloaded cover (even one found by
+    its AniList id); the user's own choice stays."""
     mine, fetched = lib.work_of(lib.store.ids("now")[0]), lib.work_of(lib.store.ids("soon")[0])
     picked = write(str(tmp_path / "Pictures" / "お気に入り.png"), png())
     kept = C.keep_user_image(lib.language, mine, picked, lib.writer)
@@ -293,9 +295,10 @@ def test_a_locked_user_cover_and_a_fetched_anilist_cover_are_never_written_over_
     assert h.until(lambda: len(lib.heard.saved) == 2)
     for item in (lib.store.ids("now")[0], lib.store.ids("soon")[0]):
         write(os.path.join(lib.folder_of(item), "poster.jpg"), jpeg())
-    assert lib.scan() == 0
+    assert lib.scan() == 1
     assert lib.row(mine) == ("user", None, kept, 1)
-    assert lib.row(fetched) == ("anilist", "16498", "cache:anilist_16498.jpg", 0)
+    poster = lib.rel(os.path.join(lib.folder_of(lib.store.ids("soon")[0]), "poster.jpg"))
+    assert lib.row(fetched) == ("file", poster, None, 0)
 
 
 def test_use_a_generated_cover_is_the_users_choice_too_and_no_poster_replaces_it(lib):

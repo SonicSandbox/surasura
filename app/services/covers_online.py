@@ -63,7 +63,8 @@ Q_SEARCH = ("query ($search: String) { Page(perPage: 10) { media(search: $search
             "seasonYear startDate { year } title { romaji english native } synonyms coverImage { extraLarge large } "
             "} } }")
 
-Want = namedtuple("Want", "id title anilist_id video_id kind media_type cover_source cover_ref cover_path cover_locked")
+Want = namedtuple("Want", "id title anilist_id video_id kind media_type cover_source cover_ref cover_path cover_locked "
+                         "rel_paths", defaults=((),))     # rel_paths: its files' (the disk is looked at first: B2)
 Candidate = namedtuple("Candidate", "id cover_url title year format")
 
 
@@ -77,11 +78,13 @@ def wants_from(items, works):
     """[Want] from the feed's rows (`Store.read_feed`'s `items` / `works`, the reader's copy): each work with its
     files' commonest source type and, for a YouTube title, its first video's id (the downloader's file name, "<title>
     [<id>]": `path_utils`' own reading of it)."""
-    kinds, videos = {}, {}
+    kinds, videos, rels = {}, {}, {}
     for item in sorted(items, key=lambda r: (r.get("ord") or 0, r["id"])):
         w = item.get("work_id")
         if w is None:
             continue
+        if item.get("rel_path"):
+            rels.setdefault(w, []).append(item["rel_path"])
         kind = item.get("source_type")
         kinds.setdefault(w, {})[kind] = kinds.get(w, {}).get(kind, 0) + 1
         if kind == "youtube" and w not in videos and item.get("rel_path"):
@@ -95,7 +98,7 @@ def wants_from(items, works):
             kind = max(counts, key=lambda k: (counts[k], k or ""))
             out.append(Want(w["id"], w.get("title") or "", w.get("anilist_id"), videos.get(w["id"]), kind,
                             w.get("media_type"), w.get("cover_source"), w.get("cover_ref"), w.get("cover_path"),
-                            bool(w.get("cover_locked"))))
+                            bool(w.get("cover_locked")), tuple(rels.get(w["id"], ()))))
     return out
 
 
@@ -243,37 +246,72 @@ def drop_cached(paths):
 # --- the pace ------------------------------------------------------------------------------------------------------ #
 class Throttle:
     """At most `per_minute` requests in any 60 s: `wait()` before each (sleeps, through `sleep`, until the oldest of
-    the minute leaves it). Any thread."""
+    the minute leaves it — outside the lock, so a waiter never holds the others). `reserve`: the minute's last slots,
+    kept for the user's own asks (`first`: *Find it online…*, a pick, *Paste a link* go ahead of the background queue,
+    never behind it for a minute). Any thread."""
 
-    def __init__(self, per_minute, clock=time.monotonic, sleep=time.sleep):
+    def __init__(self, per_minute, clock=time.monotonic, sleep=time.sleep, reserve=0):
         self.per_minute = per_minute
         self.clock = clock
         self.sleep = sleep
+        self.reserve = reserve
+        self.turns = 0                      # the wait loop's turns (tests: a stopped wait ends, never spins)
         self._at = deque()
         self._lock = threading.Lock()
 
-    def wait(self):
-        with self._lock:
-            while True:
+    def wait(self, go=None, first=False):
+        """A slot taken -> True; or False once `go()` (asked after every sleep) says no — switched off, stopped:
+        nothing may be sent."""
+        limit = self.per_minute if first else max(1, self.per_minute - self.reserve)
+        while True:
+            self.turns += 1
+            with self._lock:
                 now = self.clock()
                 while self._at and now - self._at[0] >= 60:
                     self._at.popleft()
-                if len(self._at) < self.per_minute:
+                if len(self._at) < limit:
                     self._at.append(now)
-                    return
-                self.sleep(60 - (now - self._at[0]))
+                    return True
+                pause = 60 - (now - self._at[len(self._at) - limit])
+            self.sleep(pause)
+            if go is not None and not go():
+                return False
 
 
 class _Failed(Exception):
     """A request that didn't answer (offline, refused, a server's error, an answer that isn't one): retried later."""
 
 
+class _Redirects(urllib.request.HTTPRedirectHandler):
+    """A redirect followed only where the request itself may go (the request's `allowed`): never another host, never
+    plain http."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        allowed = getattr(req, "allowed", None)
+        if allowed is None or not allowed(newurl):
+            return None                             # urllib raises the 3xx as an HTTPError: a failed request
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is not None:
+            new.allowed = allowed
+        return new
+
+
+_OPENER = urllib.request.build_opener(_Redirects())
+
+
+def _open(request, allowed):
+    """`request` sent (TIMEOUT_S), its redirects checked by `allowed(url)`."""
+    request.allowed = allowed
+    return _OPENER.open(request, timeout=TIMEOUT_S)
+
+
 # --- the fetcher ---------------------------------------------------------------------------------------------------- #
 class Fetcher:
     def __init__(self, language, writer, settings=None, api=ANILIST_API, ytimg=YTIMG, image_hosts=IMAGE_HOSTS,
                  per_minute=PER_MINUTE, images_per_minute=IMAGES_PER_MINUTE, retry_s=RETRY_S, clock=time.monotonic,
-                 sleep=None, background=True):
+                 sleep=None, background=True, data_dir=None):
         self.language = language
+        self.data_dir = data_dir            # the library's data folder (None: `path_utils`' for the language)
         self.writer = writer
         self.settings = settings            # a function giving settings.json's values (None: `load_settings`)
         self.api = api
@@ -284,8 +322,8 @@ class Fetcher:
         self.background = background        # False (tests): no thread — the caller runs `run_once()` itself
         self._wake = threading.Event()
         nap = sleep or self._nap
-        self.api_gate = Throttle(per_minute, clock, nap)
-        self.image_gate = Throttle(images_per_minute, clock, nap)
+        self.api_gate = Throttle(per_minute, clock, nap, reserve=per_minute // 6)
+        self.image_gate = Throttle(images_per_minute, clock, nap, reserve=images_per_minute // 6)
         self._cond = threading.Condition()
         self._queue = OrderedDict()         # work id -> Want, in the order asked
         self._later = {}                    # work id -> (when, Want): failed, asked again then
@@ -346,6 +384,8 @@ class Fetcher:
             self._thread.start()
 
     def _nap(self, seconds):
+        """The throttle's sleep: ended at once by `stop()` (the throttle then asks `_go`, and stops: never a loop on the
+        set event)."""
         self._wake.wait(max(0.0, seconds))
 
     # --- the thread -------------------------------------------------------------------------------------------------- #
@@ -354,8 +394,10 @@ class Fetcher:
             with self._cond:
                 while not self._stop and not self._queue and not self._due():
                     soonest = min((t for t, _w in self._later.values()), default=None)
-                    wait = WAIT_S if soonest is None else max(0.01, min(WAIT_S * 20, soonest - self.clock()))
-                    self._cond.wait(wait)
+                    if soonest is None:
+                        self._cond.wait()               # nothing queued: asleep until `want` or `stop` (S19)
+                    else:
+                        self._cond.wait(max(0.01, min(WAIT_S * 20, soonest - self.clock())))
                 if self._stop:
                     return
             try:
@@ -386,6 +428,7 @@ class Fetcher:
             for w in todo:
                 self._failed(w)
             return 0
+        todo = [w for w in todo if not self._on_disk(w)]
         landed = 0
         ids = [w for w in todo if w.anilist_id]
         for at in range(0, len(ids), BATCH):
@@ -397,10 +440,28 @@ class Fetcher:
                 landed += self._search(w)
         return landed
 
+    def _on_disk(self, w):
+        """(B2, D-1 *disk art first*) The art beside its files (`covers._scan_one`), looked at before AniList is asked:
+        a title that arrived mid-session, which the open's scan never saw. True: recorded from disk, nothing asked."""
+        if not w.rel_paths or not covers._my_turn(self.writer, lambda: self._stop):
+            return False
+        work = covers.Work(w.id, tuple(w.rel_paths), w.cover_source, w.cover_ref, w.cover_path, w.cover_locked)
+        try:
+            found = covers._scan_one(self.language, self.data_dir or path_utils.get_data_path(self.language), work,
+                                     self.writer)
+        except Exception as e:                      # one title's trouble: asked online as before
+            print(f"Covers online: work {w.id}'s folder couldn't be read: {e!r}")
+            return False
+        if found:
+            self._finished(w)
+        return found
+
     def _go(self):
         return not self._stop and self.on()
 
     def _failed(self, w):
+        if not self._go():
+            return                                  # switched off or stopped: dropped (a later `want` asks again)
         with self._cond:
             self._later[w.id] = (self.clock() + self.retry_s, w)
 
@@ -429,8 +490,10 @@ class Fetcher:
 
     def _search(self, w):
         name, year = clean_title(w.title)
-        if not name or not self._go():
+        if not name:
             self._finished(w)
+            return 0
+        if not self._go():
             return 0
         try:
             media = self._find(name)
@@ -450,12 +513,16 @@ class Fetcher:
 
     def _land(self, w, source, ref, url):
         """The image at `url` into the cache, recorded as a background cover once the writer's queue is empty."""
+        if not self._go():
+            return 0                                # switched off (or stopped) inside a batch: no image more
         try:
             data, ext = self._image(url)
         except _Failed:
             self._failed(w)
             return 0
         name = _cache_name(self.language, source, ref, ext)
+        if "cache:" + name == w.cover_path:         # its file went (S4): a new name, so the record — and the row — moves
+            name = _cache_name(self.language, source, f"{ref}@{time.time_ns()}", ext)
         if not covers._write_whole(os.path.join(path_utils.get_covers_cache_path(), name), data):
             self._failed(w)
             return 0
@@ -465,18 +532,20 @@ class Fetcher:
         return 1 if self.writer.set_cover(w.id, source, ref=ref, path="cache:" + name, auto=True) is not None else 0
 
     # --- requests ---------------------------------------------------------------------------------------------------- #
-    def _find(self, name):
-        data = self._post({"search": name}, Q_SEARCH)
+    def _find(self, name, first=False):
+        data = self._post({"search": name}, Q_SEARCH, first)
         return [m for m in (data.get("Page") or {}).get("media") or () if isinstance(m, dict)]
 
-    def _post(self, variables, query):
-        """AniList's answer's `data` for `query` with `variables` (the only values sent: ids, or a cleaned title)."""
-        self.api_gate.wait()
+    def _post(self, variables, query, first=False):
+        """AniList's answer's `data` for `query` with `variables` (the only values sent: ids, or a cleaned title).
+        `first`: the user's own ask (ahead of the background queue). The switch asked again after the throttle's wait."""
+        if not self.api_gate.wait(self._go, first) or not self._go():
+            raise _Failed()
         body = json.dumps({"query": query, "variables": variables}, ensure_ascii=False).encode("utf-8")
         request = urllib.request.Request(self.api, data=body, method="POST", headers={
             "User-Agent": _user_agent(), "Content-Type": "application/json", "Accept": "application/json"})
         try:
-            with urllib.request.urlopen(request, timeout=TIMEOUT_S) as r:
+            with _open(request, self._allowed) as r:
                 raw = r.read(MAX_JSON + 1)
             if len(raw) > MAX_JSON:
                 raise ValueError("too long")
@@ -489,17 +558,25 @@ class Fetcher:
             print(f"Covers online: AniList didn't answer ({type(e).__name__})")
             raise _Failed() from e
 
-    def _image(self, url):
-        """(bytes, ext) of the image at `url` — an AniList image host's or YouTube's, nowhere else."""
+    def _allowed(self, url):
+        """Whether a request (or a redirect) may go to `url`: AniList's API or image hosts, or YouTube's thumbnails —
+        over https (plain http only to this machine: the tests' fake server)."""
         parts = urlsplit(url or "")
         host = (parts.hostname or "").lower()
-        hosts = self.image_hosts + ((urlsplit(self.ytimg).hostname or "").lower(),)
-        if parts.scheme not in ("https", "http") or not any(host == h or host.endswith("." + h) for h in hosts if h):
+        hosts = self.image_hosts + tuple((urlsplit(u).hostname or "").lower() for u in (self.ytimg, self.api))
+        scheme_ok = parts.scheme == "https" or (parts.scheme == "http" and host == "127.0.0.1")
+        return scheme_ok and any(host == h or host.endswith("." + h) for h in hosts if h)
+
+    def _image(self, url, first=False):
+        """(bytes, ext) of the image at `url` — an AniList image host's or YouTube's, nowhere else (nor redirected
+        anywhere else)."""
+        if not self._allowed(url):
             raise _Failed()
-        self.image_gate.wait()
+        if not self.image_gate.wait(self._go, first) or not self._go():
+            raise _Failed()
         request = urllib.request.Request(url, headers={"User-Agent": _user_agent()})   # no Referer, no cookie
         try:
-            with urllib.request.urlopen(request, timeout=TIMEOUT_S) as r:
+            with _open(request, self._allowed) as r:
                 data = r.read(covers.MAX_IMAGE + 1)
         except (OSError, ValueError, urllib.error.URLError) as e:
             print(f"Covers online: an image didn't come ({type(e).__name__})")
@@ -517,7 +594,7 @@ class Fetcher:
         if not name or not self._go():
             return []
         try:
-            media = self._find(name)
+            media = self._find(name, first=True)
         except _Failed:
             return []
         out = []
@@ -536,7 +613,7 @@ class Fetcher:
         if not self._go() or not writer.can_write():
             return None
         try:
-            data, _ext = self._image(candidate.cover_url)
+            data, _ext = self._image(candidate.cover_url, first=True)
         except _Failed:
             return None
         return covers.keep_user_bytes(self.language, want.id, data, writer, current=want.cover_path,
@@ -559,7 +636,7 @@ class Fetcher:
             return None, "failed"
         if kind == "anilist":
             try:
-                media = (self._post({"ids": [ref]}, Q_IDS).get("Page") or {}).get("media") or ()
+                media = (self._post({"ids": [ref]}, Q_IDS, first=True).get("Page") or {}).get("media") or ()
             except _Failed:
                 return None, "failed"
             url = next((_cover_url(m) for m in media if isinstance(m, dict) and m.get("id") == ref), None)
@@ -568,7 +645,7 @@ class Fetcher:
         if not url:
             return None, "failed"
         try:
-            data, _ext = self._image(url)
+            data, _ext = self._image(url, first=True)
         except _Failed:
             return None, "failed"
         path = covers.keep_user_bytes(self.language, want.id, data, writer, current=want.cover_path,
@@ -583,11 +660,22 @@ def fetchable(want):
     calls something other than anime)."""
     if want.cover_locked:
         return False
-    if want.cover_source not in _OPEN and not (want.cover_source in ("anilist", "youtube") and not want.cover_path):
+    if want.cover_source not in _OPEN and not (want.cover_source in ("anilist", "youtube") and _gone(want.cover_path)):
         return False
     if want.anilist_id or want.video_id:
         return True
     return (want.kind == "subtitle" and want.media_type not in NOT_ANIME and bool(clean_title(want.title)[0]))
+
+
+def _gone(path):
+    """No cached file: no path, or a 'cache:' one whose file went (another library's *Remove*, an Undo to an old
+    record: S3 / S4)."""
+    if not path:
+        return True
+    if not str(path).startswith("cache:"):
+        return False
+    target = covers._named(path_utils.get_covers_cache_path(), str(path)[len("cache:"):])
+    return target is not None and not os.path.exists(target)
 
 
 # --- W3.2 L3: the window's asks ------------------------------------------------------------------------------------- #

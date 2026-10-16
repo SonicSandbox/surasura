@@ -1144,25 +1144,27 @@ class ShellWindow(QMainWindow):
         from app.services import covers_online
         make = getattr(services, "cover_fetcher_factory", None) or covers_online.Fetcher
         f = self._fetcher = make(self.language, writer, settings=services.settings.get)
+        f.data_dir = getattr(getattr(services.library, "opener", None), "data_dir", None) or f.data_dir   # disk first
         qcovers.use_fetcher(f, qcovers.resolver(getattr(services.library, "opener", None)))
         return f
 
     def ask_shown_covers(self):
-        """The titles on screen now (the shown list's rows in view, New arrivals, Goal's hand) asked online — after the
-        switch is turned on, since rows already painted aren't painted again by it. -> how many were asked."""
+        """The titles on screen now (the rows in view of Current, Finished and Needs you — whichever page shows: the
+        switch lives on Settings — New arrivals, Goal's hand) asked online — after the switch is turned on, since rows
+        already painted aren't painted again by it. -> how many were asked."""
         if self.cover_fetcher() is None:
             return 0
         refs = []
-        page = self.pages.currentWidget()
-        lst = getattr(page, "list", None)
-        model = lst.model() if lst is not None else None
-        entries = getattr(model, "entries", None)
-        if entries:
-            vp = lst.viewport().rect()
-            top, bottom = lst.indexAt(vp.topLeft()).row(), lst.indexAt(vp.bottomLeft()).row()
-            top = max(0, top)
-            bottom = len(entries) - 1 if bottom < 0 else bottom
-            refs += [getattr(entries[i][1], "cover", None) for i in range(top, bottom + 1)]
+        for name in ("current", "finished", "needs"):
+            lst = getattr(self.page_widgets.get(name), "list", None)
+            model = lst.model() if lst is not None else None
+            entries = getattr(model, "entries", None)
+            if entries:
+                vp = lst.viewport().rect()
+                top, bottom = lst.indexAt(vp.topLeft()).row(), lst.indexAt(vp.bottomLeft()).row()
+                top = max(0, top)
+                bottom = len(entries) - 1 if bottom < 0 else bottom
+                refs += [getattr(entries[i][1], "cover", None) for i in range(top, bottom + 1)]
         view = getattr(self.page_widgets.get("current"), "view_model", None)
         if view is not None:
             refs += [getattr(a, "cover", None) for a in getattr(view, "arrivals", ()) or ()]
@@ -1412,6 +1414,7 @@ class ShellWindow(QMainWindow):
         if "app_motion" in keys:
             motion.clock().mode.set_setting(self.services.settings.get().get("app_motion"))
         if "covers_download" in keys:                   # --- W3.2 L3: turned on, what is on screen now is asked
+            qcovers.ask_again()                         # (titles dropped while it was off too: N1)
             self.ask_shown_covers()
         if "connect_enabled" in keys:                   # Connect's tick is skipped while off: its line asked now
             refresh = getattr(self.services.status, "refresh_soon", None)

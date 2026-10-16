@@ -513,7 +513,8 @@ def test_download_covers_is_a_connections_toggle_writing_only_its_key_and_remove
     assert catalog.change(row, {"covers_download": False}, "ja", True) == ({"covers_download": True}, None)
     assert catalog.FILLED_BY["remove_downloaded_covers"] == "app.qt.settings_live"
     assert "covers_download" not in catalog.NOT_SHOWN and "covers_download" not in catalog.FILLED_BY
-    assert "AniList" in row.help and "nothing else" in row.help                       # what is sent, in one line
+    assert row.help == ("Sends each show's AniList id or name to AniList, and a video's id to YouTube. "
+                        "Nothing else.")                                                # what is sent, in one line
 
 
 # --- find() ------------------------------------------------------------------------------------------------------------ #

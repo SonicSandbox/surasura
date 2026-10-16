@@ -180,6 +180,8 @@ def _landed(key, out):
         return                                  # let go meanwhile (`clear`: another library)
     if out is None:
         _broken.add(key)
+        if key[1] in ("anilist", "youtube") and str(key[3] or "").startswith("cache:") and _online["fetcher"]:
+            ask((key[:4] + (False,),), gone=True)   # --- W3.2 L3 S3 / S4: its downloaded file went: asked again
     else:
         image, path, stat = out
         pix = QPixmap.fromImage(image)
@@ -495,13 +497,14 @@ def resolver(opener):
     return resolve
 
 
-def _askable(ref):
-    """What the cover record alone says: no cover, an unlocked generated one, or an online one whose file went."""
+def _askable(ref, gone=False):
+    """What the cover record alone says: no cover, an unlocked generated one, or an online one whose file went (no
+    path; or `gone`: the decoder found its cache file missing — the fetcher checks again on its worker)."""
     _w, source, _rel, path, locked = tuple(ref)[:5]
-    return not locked and (source in (None, "generated") or (source in ("anilist", "youtube") and not path))
+    return not locked and (source in (None, "generated") or (source in ("anilist", "youtube") and (not path or gone)))
 
 
-def ask(refs):
+def ask(refs, gone=False):
     """(GUI thread.) These titles' covers asked online — each once a session; nothing while the switch is off.
     -> how many were newly asked."""
     f = _online["fetcher"]
@@ -510,7 +513,7 @@ def ask(refs):
     asked = _online["asked"]
     new = []
     for ref in refs:
-        if ref is None or tuple(ref)[0] is None or tuple(ref)[0] in asked or not _askable(ref):
+        if ref is None or tuple(ref)[0] is None or tuple(ref)[0] in asked or not _askable(ref, gone):
             continue
         new.append(tuple(ref)[0])
     if not new or not f.on():

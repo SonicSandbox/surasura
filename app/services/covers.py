@@ -17,7 +17,8 @@ decodes an image for the screen (Q6 does, off the window's thread).
      the covers cache (`path_utils.get_covers_cache_path()`; its name a hash of the language, the work, the EPUB's
      path, size and time — never the user's path; a changed book is a new name): `set_cover(work, "file", ref=<the
      EPUB's path>, path="cache:<name>")`.
-  **Never over the user's** (`cover_locked`) **nor any cover already set** but the generated one — unless it is this same
+  **Never over the user's** (`cover_locked`) **nor any cover already set** but the generated one or a downloaded one
+  (art on disk first, W3.2 L3 B2) — unless it is this same
   disk source (written again only when its record differs: the EPUB changed, or *Remove downloaded covers* cleared its
   cache path — so disk covers come back by themselves, N5), or a disk cover whose file is gone. A cloud placeholder (a
   OneDrive / iCloud online-only file: Windows' OFFLINE / RECALL_ON_OPEN / RECALL_ON_DATA_ACCESS attributes) is never
@@ -304,10 +305,14 @@ def image_path(language, work, data_dir=None):
     return None
 
 
+_ONLINE = ("anilist", "tmdb", "youtube")
+
+
 def _may_write(work):
-    """Never over the user's lock, nor a better source's cover (AniList, TMDB, YouTube, the user's): only over none,
-    the generated one, or a disk cover."""
-    return not work.cover_locked and work.cover_source in _REPLACEABLE + ("file",)
+    """Never over the user's lock (the user's own image is always locked): over none, the generated one, a disk cover,
+    or a downloaded one — art beside the files comes first, even before a cover found by an id (W3.2 L3 B2, the
+    lean D-1 *disk art first*)."""
+    return not work.cover_locked and work.cover_source in _REPLACEABLE + ("file",) + _ONLINE
 
 
 def _replaceable(language, data_dir, work, ref):
@@ -315,7 +320,7 @@ def _replaceable(language, data_dir, work, ref):
     or another disk cover whose file is gone."""
     if not _may_write(work):
         return False
-    if work.cover_source in _REPLACEABLE or work.cover_ref == ref:
+    if work.cover_source in _REPLACEABLE + _ONLINE or work.cover_ref == ref:
         return True
     there = image_path(language, work, data_dir)
     return there is None or not os.path.exists(there)   # a placeholder counts as there (never read)

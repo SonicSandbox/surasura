@@ -314,6 +314,9 @@ ROW = {row.id: row for row in ROWS}
 NOT_SHOWN = {
     "app_theme": "one theme in 3.0 (RS-1): no theme picker",
     "onboarding_completed": "state: the first start's",
+    "setup_seen": "state: the version whose setup pages were seen (the wizard, WZ-8)",
+    "setup_passed": "state: the setup pages saved before setup finished (the wizard)",
+    "covers_download": "the wizard's *Your shows* page; its row here shows once the covers owner lands (G1.2-19)",
     "open_count": "state: a launch counter",
     "skipped_version": "state: its way back is App's *Offer <version> again*",
     "youtube_risk_acknowledged": "the downloader's own one-time ask",

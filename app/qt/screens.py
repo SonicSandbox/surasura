@@ -14,7 +14,7 @@ import sys
 
 from PyQt6.QtCore import Qt, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices
-from PyQt6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget   # W3.2 Q4
 
 from app import path_utils, theme
 from app.qt import bridge, rows, strings
@@ -222,6 +222,27 @@ class FinishedPage(Page):
         self.help.setAccessibleName(strings.FINISHED_HELP_NAME)
         self.help.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.head_row.insertWidget(1, self.help)
+        # --- W3.2 Q4: what the rows ask for, handed to Finished's actions (`app/qt/finished.py`); until a hook is set,
+        # nothing is written. The importer's button shows once its hook is set (a window with a writer).
+        self.on_put_back = None                     # (row): the hover's *Put back*
+        self.on_menu = None                         # (row, global QPoint): ⋯ (Enter on the keyboard)
+        self.on_import = None                       # (): *Add what you finished before…*
+        self.list.put_back_requested.connect(lambda row: self._ask(self.on_put_back, row))
+        self.list.menu_requested.connect(lambda row, at: self._ask(self.on_menu, row, at))
+        self.importer = QPushButton(strings.FIN_IMPORT, self)
+        self.importer.setObjectName("finimport")
+        self.importer.setToolTip(strings.FIN_IMPORT_TIP)
+        self.importer.setAccessibleName(strings.FIN_IMPORT)
+        self.importer.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.importer.clicked.connect(lambda _c=False: self._ask(self.on_import))
+        self.importer.setVisible(False)
+        self.head_row.addWidget(self.importer)
+
+    @staticmethod
+    def _ask(hook, *args):
+        if hook is not None:
+            hook(*args)
+    # --- end W3.2 Q4
 
     def unchanged(self, old, new):
         return len(old.finished) == len(new.finished) and all(

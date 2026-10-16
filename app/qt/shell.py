@@ -879,6 +879,13 @@ class ShellWindow(QMainWindow):
             from app.qt import drag
             self.moves = drag.DragController(self, services.writer, services.library)
             self.moves.start()
+        # --- W3.2 Q4: Finished's actions (`finished.py`): Put back, ⋯, *What if I added it back?*, the importer and
+        # Explorer's files on the Finished tab — given a writer, as the moves are
+        self.finished = None
+        if self.moves is not None and hasattr(self.page_widgets.get("finished"), "on_put_back"):
+            from app.qt import finished
+            self.finished = finished.FinishedActions(self)
+        # --- end W3.2 Q4
 
         self._restore_state(read_state(self.state_file))
 

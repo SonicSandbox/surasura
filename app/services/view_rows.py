@@ -56,7 +56,9 @@ Episode = namedtuple("Episode", "id label number title watched cards mining miss
                                 "status mark rel_path play_tip can_play deleted", defaults=(False,))
 Row = namedtuple("Row", "key index tier work_id piece_id media media_word verb title title_ep line source n_files n_watched "
                         "pct pct_tone n_new status mark episodes next_index studying date cover_title accessible "
-                        "description chips more_chips play_tip can_play string", defaults=(None,))
+                        "description chips more_chips play_tip can_play cards_out string", defaults=(False, None))
+#   cards_out (W3.2 Q4): a piece with an item out of the learning order (`in_learning_order` 0: Finished's *Leave its
+#   new cards out of your order*) — ⋯ shows *Put them back in the order* then; never painted
 #   string: a Current row's (stone plan, its need at its tightest — `stone_plan`, fz 1), planned here, on the reader's
 #   thread, once per row content (W3.1a B2); None on Finished's rows and on the first screen's cached rows
 Chip = namedtuple("Chip", "text watched next mined tip")
@@ -489,7 +491,8 @@ def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, 
                pct_tone=pct_tone(pct), n_new=n_new, status=st, mark=mark, episodes=tuple(eps), next_index=next_index,
                studying=studying, date=day_label(stamp) if finished else "", cover_title=work.get("title") or title,
                accessible=accessible, description=line, chips=chips, more_chips=more, play_tip=nxt.play_tip,
-               can_play=nxt.can_play, string=string)
+               can_play=nxt.can_play, string=string,
+               cards_out=any(it.get("in_learning_order", 1) == 0 for it in piece))     # --- W3.2 Q4
 
 
 class RowCache:

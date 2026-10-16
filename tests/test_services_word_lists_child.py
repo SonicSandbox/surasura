@@ -65,6 +65,9 @@ def test_the_childs_japanese_words_and_marks_equal_the_in_process_read(ja_resour
     marks = {c.word: c.status for c in child}
     assert marks["冒険"] == "listed" and marks["灯台"] == "left_out" and marks["砂時計"] == "new"
     assert marks["食べる"] == "known"                                 # KNOWN in KnownWord.json
+    # IGNORED in KnownWord.json as kana (いる, ある): ignored as a run reads them — whatever an earlier test left in
+    # analyzer.SANITIZE_JA (a fresh child had it off, so it said "known" where a Generate ignores the word)
+    assert marks["居る"] == "listed" and marks["有る"] == "listed"
     assert all(isinstance(c, word_lists.Candidate) for c in child)
 
 

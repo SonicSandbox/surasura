@@ -85,10 +85,14 @@ def seed_library(lang="ja", files=None, copies=0):
 
 
 def until(condition, seconds=30.0, every=0.02):
-    """Wait for `condition()` to be true, up to `seconds`: its last value."""
+    """Wait for `condition()` to be true, up to `seconds`: its last value. A file read while the writer replaces it
+    (Windows: PermissionError for that moment) is "not yet"."""
     deadline = time.monotonic() + seconds
     while True:
-        value = condition()
+        try:
+            value = condition()
+        except PermissionError:
+            value = None
         if value or time.monotonic() > deadline:
             return value
         time.sleep(every)

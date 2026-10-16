@@ -7,6 +7,7 @@ changed from this one; a name taken off (it is the Ignore names setting's); a co
 import json
 import os
 import threading
+import time
 
 import pytest
 
@@ -67,8 +68,17 @@ def _put(text, kind="ignore", language="ja"):
 
 
 def _text(path):
-    with open(path, "rb") as f:
-        return f.read().decode("utf-8")
+    """The list file as it is on disk. Windows refuses an open while the app's save replaces the file (os.replace), so
+    a look that meets one looks again (a load red: PermissionError on IgnoreList.txt)."""
+    deadline = time.monotonic() + 5
+    while True:
+        try:
+            with open(path, "rb") as f:
+                return f.read().decode("utf-8")
+        except PermissionError:
+            if time.monotonic() > deadline:
+                raise
+            time.sleep(0.01)
 
 
 def _open(main):

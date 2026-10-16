@@ -84,7 +84,10 @@ FIN_IMPORTED = "Added {n} to Finished"
 FIN_IMPORTED_ONE = "Added {name} to Finished"
 FIN_IMPORT_NOTHING = "Nothing new to add: it's in Finished already"
 FIN_IMPORT_STOPPED = "Stopped: nothing was added"
+FIN_IMPORT_LATER = "Still saving what you finished before: it's added once the library can be saved"
 FIN_IMPORT_FAILED = "Couldn't add it to Finished: {why}"
+FIN_IMPORT_IN_LIBRARY = "{name} is in your library already: finish it from its row, with the choice for its cards"
+FIN_IMPORT_IN_LIBRARY_N = "{n} of these are in your library already: finish them from their rows"
 # --- end W3.2 Q4
 # --- W3.2 Q8: the rest of Current's ⋯ (app/qt/item_menu.py), the ✂ seam and drop-to-join -------------------------- #
 ITEM_MENU = {
@@ -135,10 +138,12 @@ TAB_COUNT = "{name}  {count}"                   # Finished's records, Needs you'
 GOAL_NAME = "Goal"
 LIST_NAMES = {"current": "Current", "finished": "Finished", "needs": "Needs you"}
 STATE_LINES = {
-    "getting-ready": "Getting your library ready… Your list shows as it was; nothing can be moved until it's done.",
+    # (W3.2 P0, IK0-1: no line promises rows the window can't show — it reads no JSON copy; G1.2-18's rows from the
+    # copy are a named follow-up)
+    "getting-ready": "Getting your library ready… Your list shows here once it's done; until then nothing can be moved.",
     "busy": "Updating your library…",
     "read-only": "Read-only: {reason}. Nothing can be moved until it's fixed.",
-    "migration-failed": "Read-only: your library couldn't be brought into 3.0's store, so it shows as it was. "
+    "migration-failed": "Your library couldn't be brought into 3.0's store, so it can't show here yet. "
                         "Open the logs folder (the bar) and send it in; nothing of yours was changed.",
 }
 READ_ONLY_REASONS = {
@@ -310,17 +315,35 @@ QUIT_CLOSING_TIP = "Surasura is closing: it finishes what can't stop part-way, t
 # its wells. The level's words are the old chip's (BAR_LEVEL_*); Generate's are the button's (GENERATE_*).
 LEVEL_WAITING = "Level"                               # the ▾ before the level is first read
 LEVEL_NAME = "Your level: {level}"
-LEVEL_TIP = "{level}\n• Click for Generate and your journey"
-LEVEL_TIP_MARK = "{level}\n{mark}\n• Click for Generate and your journey"
+LEVEL_TIP = "{level}\n• Click to change your level, Generate, or open your journey"
+LEVEL_TIP_MARK = "{level}\n{mark}\n• Click to change your level, Generate, or open your journey"
 LEVEL_MARKS = {
     "failed": "⚠ The last Generate didn't finish",
     "stale": "Something changed since your last Generate: your list is out of date",
     "journey": "Your journey's sentences are catching up",
 }
 LEVEL_POP_NAME = "Your level, Generate and your journey"
-LEVEL_POP_HEADING = "YOUR LEVEL"
-LEVEL_POP_AUTO = {True: "Automatic: on — Surasura picks the band for you",
-                  False: "Automatic: off — the band stays where you set it"}
+# W3.1b: the Level menu (the brief's pop: only words, %, how often, the slider, Automatic)
+LEVEL_POP_HEADING = "Level"
+LEVEL_POP_HELP = "?"
+LEVEL_POP_HELP_NAME = "What the level is"
+LEVEL_POP_HELP_TIP = ("How rare a word can be and still make your list.\nRaise it: more words join your list. "
+                      "Lower it: nothing is deleted.\n• Click for the level's settings")
+LEVEL_POP_AUTO_WORD = "Automatic"
+LEVEL_POP_AUTO_TIP = ("Surasura picks the level for you and moves it as you learn: the rarest one whose list stays "
+                      "short\n• Click to turn it on or off")
+LEVEL_POP_SLIDER_NAME = "Your level"
+LEVEL_POP_SLIDER_TIP = ("Your level: common on the left, rare on the right\n• Drag the gem or click a chamber; "
+                        "picking one turns Automatic off")
+LEVEL_POP_READ_HOURS = "≈{words} words · {coverage}% · every {hours} h"
+LEVEL_POP_READ_MINUTES = "≈{words} words · {coverage}% · every {minutes} min"
+LEVEL_POP_READ_NO_TIME = "≈{words} words · {coverage}%"
+LEVEL_POP_AUTO_WAITING = "Automatic picks your level after your first Generate"
+LEVEL_POP_COVERAGE = "Your list follows its coverage target: {n}%"
+LEVEL_POP_COVERAGE_TIP = ("The level does nothing while your list is set by coverage\n• Change it in Settings › Level "
+                          "(the gear)")
+LEVEL_POP_GEAR_NAME = "Level settings"
+LEVEL_POP_GEAR_TIP = "Level settings\n• Click to open them in Settings"
 LEVEL_JOURNEY = "Open your journey ↗"
 FOOT_ANKI = "Anki"
 FOOT_ANKI_NAME = "Anki: {words}"
@@ -355,8 +378,8 @@ ROWS_DONE_ALL_TIP = "Every file of it is watched"
 ROWS_HERO_KNOWN = "{pct}% known · "
 ROWS_HERO_NEW_LINK = "{n} new words ↗"
 ROWS_JOURNEY_TIP = "Your journey: your list with its sentences\n• Click to open it in its own window"
-ROWS_TOP_LINE_WHERE = "{tip}\nIts setting: Settings → Anki & mining, in a later build"
-ROWS_SOON_LINE_WHERE = "{tip}\nWhere Soon starts is a setting: Settings, in a later build"
+ROWS_TOP_LINE_WHERE = "{tip}\nIts setting: Settings → Anki & mining"
+ROWS_SOON_LINE_WHERE = "{tip}\nWhere Soon starts is a setting: Settings → Content"
 ROWS_ACCESSIBLE_STRING = "{line} · {string}"
 
 # --- W3.1a footer (W31A-1 / W31A-2): the re-order's and Connect's lines as quiet marks (their words in the hover), and
@@ -393,6 +416,8 @@ YT_ARRIVED_BOTH = "{waiting} in New arrivals · {placed} placed by your rules"
 YT_ARRIVED_LABEL = "New transcripts"
 YT_READ_ONLY = "your library can't be saved right now ({reason}): the transcripts wait in Processed"
 YT_NO_LIBRARY = "no library is open: the transcripts wait in Processed"
+YT_OTHER_LIBRARY = "the language changed while they downloaded: the transcripts wait in the other library's Processed"
+YT_NOT_ADDED = "{what} couldn't be added (gone, or not in your library folder)"
 
 
 def yt_transcripts(n):
@@ -408,13 +433,17 @@ DRAG_GOAL = "{title} moved to Goal · its cards keep their place"
 DRAG_FINISHED = "{title} finished · its cards stay put"
 DRAG_KEEP = "Keep"
 DRAG_KEEP_TIP = "Keep its new cards in your order, as they are"
-DRAG_TAKE_OUT = "Take its new cards out"
-DRAG_TAKE_OUT_TIP = "Its new cards leave your order. None is deleted: Undo puts them back"
+DRAG_TAKE_OUT = "Leave its new cards out of your order"      # IK-1: Finished's ⋯ words, one name for one action
+DRAG_TAKE_OUT_TIP = "Its new cards leave your learning order; none is deleted: Undo puts them back"
 DRAG_TAKEN_OUT = "{title}: its new cards are out of your order"
 DRAG_ADDED = "Added {name} at #{n} · analysed on the next Generate"
 DRAG_ADDED_N = "Added {count} files at #{n} · analysed on the next Generate"
 DRAG_GONE = "That item was removed"
 DRAG_REFUSED = "Your library can't be saved right now: {reason}"
+# W3.2 P0: a language switch, and a library that couldn't be opened
+SWITCHING = "Switching to {name}… Nothing can be moved until its library is open"
+MOVE_NOT_SAVED = "That change wasn't saved: try it again"
+LIBRARY_NOT_OPENED = "Your library couldn't be opened. Open the logs folder (the bar) and send it in"
 DONE_NEXT = "✓ {title} {ep} watched · next: {next}"
 DONE_ONE = "✓ {title} {ep} watched"
 DONE_UNDONE = "{title} {ep} marked not watched"
@@ -970,6 +999,7 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
     "save_logs": ("Save logs to a file…", "Save the last week's logs into one zip file you can send"),
 }
 NEEDS_LOOKING = "Looking…"
+NEEDS_MORE_LINES = "and {n} more"
 NEEDS_LOOK_FAILED = "Couldn't look for its videos: {why}"
 NEEDS_REMOVE_TITLE_ONE = "Remove {name}?"
 NEEDS_REMOVE_TITLE = "Remove {n} files?"

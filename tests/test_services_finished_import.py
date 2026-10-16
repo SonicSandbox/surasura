@@ -12,6 +12,7 @@ What a wrong answer would cost a learner:
 The job runs in a real registry, its store half through the window's writer on a real migrated store (Japanese and
 Chinese names from tests/Test Resources); the folders it imports from sit in the test's own folder, as Explorer's do.
 """
+import json
 import os
 import shutil
 import threading
@@ -27,6 +28,7 @@ from app.services import jobs
 from app.services import moves as M
 from tests import services_helpers as h
 from tests.test_library_store_support import migrated, roots
+from tests.test_services_moves import LockHolder, short_lock_wait  # noqa: F401  (the fixture, by name)
 
 SHOW = {"ja": ("進撃の巨人", "phrases_sample.srt", "ja"), "zh": ("进击的巨人", "night_market.srt", "zh")}
 
@@ -327,8 +329,8 @@ def test_nothing_to_import_is_a_job_done_with_nothing_written(lib, tmp_path):
 
 
 def test_undo_trashes_only_the_jobs_copies_never_a_file_that_was_already_in_finisheds_folder(lib, tmp_path):
-    """A file already in `Graduated/` but no row yet (put there by hand) is imported where it is; its Undo takes the
-    row out and leaves the file — only what the job copied goes to the trash."""
+    """A file already in `Graduated/` but no row yet (put there by hand) is imported where it is; its Undo leaves the
+    file and its row — only what the job copied goes to the trash, with its row."""
     title, resource, tag = SHOW[lib.language]
     there = os.path.join(lib.data_dir, ls.GRADUATED_FOLDER, f"{title} 総集編.{tag}.srt")
     os.makedirs(os.path.dirname(there), exist_ok=True)
@@ -339,5 +341,144 @@ def test_undo_trashes_only_the_jobs_copies_never_a_file_that_was_already_in_fini
     assert len(job.paths) == 2 and len(job.copied) == 1
     lib.writer.undo()
     assert h.until(lambda: lib.heard.undone)
-    assert lib.finished() == {} and os.path.isfile(there), "a file it didn't copy stays where it was"
+    # C2: a file it didn't copy stays where it was, row and all (Finished's folder is never walked)
+    assert list(lib.finished()) == [f"{ls.GRADUATED_FOLDER}/{os.path.basename(there)}"] and os.path.isfile(there)
     assert not os.path.exists(job.copied[0])
+
+
+# --- W3.2 H: the last fix round ------------------------------------------------------------------------------------ #
+def test_H_F4_a_job_that_fails_after_the_writer_took_its_import_never_trashes_the_saved_copies(lib, tmp_path,
+                                                                                              monkeypatch):
+    """Once the import is the writer's, the job's own failure (its bar's end raising) sent the copies to the trash
+    — rows saved, pointing at files that were gone. The copies are the writer's from the queue on."""
+    folder = lib.show_folder(str(tmp_path / "Downloads"))
+    real = jobs.Job.finish
+    calls = []
+
+    def finish(self, *a, **k):
+        calls.append(k)
+        if len(calls) == 1:
+            raise RuntimeError("the jobs bar went away")
+        return real(self, *a, **k)
+    monkeypatch.setattr(jobs.Job, "finish", finish)
+    job = lib.run([folder])
+    assert job.outcome == "failed"                      # (the job's own end said so)
+    assert h.until(lambda: lib.heard.saved) and len(lib.finished()) == 3
+    assert sorted(lib.finished()) == lib.graduated_files(), "every saved row's file is where it says"
+
+
+def _held_import(lib, tmp_path):
+    """An import whose store half waits behind a drag (the writer held): -> (job, its folder) once it is queued."""
+    folder = lib.show_folder(str(tmp_path / "Downloads"))
+    lib.writer.hold()
+    job = F.ImportJob(lib.language, [folder], lib.writer, lib.registry, data_dir=lib.data_dir)
+    job.start()
+    assert h.until(lambda: lib.writer.pending() == 1)
+    return job, folder
+
+
+def test_H_T3_stop_pressed_while_the_store_saves_takes_the_writers_answer_never_imported_for_a_refusal(lib,
+                                                                                                     tmp_path):
+    """T3: Stop while the job waited for the writer ended it *imported* — then the store refused the command and
+    trashed the copies. The job's outcome now follows the writer's answer."""
+    job, _folder = _held_import(lib, tmp_path)
+    job.cancel()
+    assert job.wait(10) and job.outcome == "pending"
+    lib.store.close()
+    ls.mark_damaged(lib.store.db_path, "test: a damaged store")
+    assert h.until(lambda: not lib.writer.can_write(), seconds=M.MODE_RECHECK_S * 3)
+    lib.writer.release()
+    assert h.until(lambda: job.outcome == "refused")
+    assert job.paths == [] and lib.graduated_files() == []
+
+
+def test_H_T2_an_import_whose_writer_stopped_ends_stopped_and_stays_in_the_journal(lib, tmp_path, short_lock_wait):
+    """T2: a language switch (or the quit) stopped the writer with the import queued: the job waited for an answer
+    that never comes — RUNNING for ever, every later import of the session waiting behind it."""
+    holder = LockHolder(lib.store.db_path)              # another program's save: the import can't land
+    try:
+        job = F.ImportJob(lib.language, [lib.show_folder(str(tmp_path / "Downloads"))], lib.writer, lib.registry,
+                          data_dir=lib.data_dir)
+        job.start()
+        assert h.until(lambda: lib.writer.pending() == 1)
+        lib.writer.finish(time.monotonic() + 0.3)       # the switch's wait ran out: the writer let go
+        assert job.wait(5) and job.outcome == "stopped"
+    finally:
+        holder.release()
+    assert job.job.view().state == jobs.DONE
+    with open(M.journal_path(lib.language), encoding="utf-8") as f:
+        assert [e["op"] for e in json.load(f)["pending"]] == ["import_finished"], "the next start lands it"
+
+
+def test_H_F5_a_twin_copy_that_cant_go_to_the_trash_is_listed_never_left_hidden(lib, tmp_path, monkeypatch):
+    """The same folder imported again makes `name_1.srt` twins, which go to the trash; one that couldn't stayed in
+    Finished's folder — never walked, listed nowhere, outside Undo. Now it is listed as it stands."""
+    folder = lib.show_folder(str(tmp_path / "Downloads"))
+    lib.run([folder])
+    assert h.until(lambda: len(lib.heard.saved) == 1)
+
+    def held(data_dir, rel):
+        raise PermissionError(13, "the file is open in another program")
+    monkeypatch.setattr(ls, "trash_file", held)
+    lib.run([folder])
+    assert h.until(lambda: len(lib.heard.saved) == 2)
+    assert len(lib.graduated_files()) == 6 and sorted(lib.finished()) == lib.graduated_files()
+
+
+def test_H_F5_copies_a_cancel_couldnt_trash_are_listed_never_left_hidden(lib, tmp_path, monkeypatch):
+    folder = lib.show_folder(str(tmp_path / "Downloads"), episodes=(1, 2, 3, 4))
+    holder = {}
+
+    def heard(snapshot):                                # the first file's progress: the user presses Stop
+        for view in snapshot:
+            if view.kind == F.KIND and view.progress is not None and view.progress.done == 1 and "job" in holder:
+                holder.pop("job").cancel()
+    lib.registry.subscribe(heard)
+
+    def held(data_dir, rel):
+        raise PermissionError(13, "the file is open in another program")
+    monkeypatch.setattr(ls, "trash_file", held)
+    job = F.ImportJob(lib.language, [folder], lib.writer, lib.registry, data_dir=lib.data_dir)
+    holder["job"] = job
+    job.start()
+    assert job.wait(30) and job.outcome == "cancelled"
+    assert h.until(lambda: not lib.writer.pending() and lib.graduated_files())
+    assert sorted(lib.finished()) == lib.graduated_files()
+def test_a_store_that_turns_read_only_while_the_job_waits_copies_nothing(lib, tmp_path):
+    """E4 asked again when the job starts (it may wait behind another import): no copy made only to go to the trash."""
+    class Turning(Writer):
+        def __init__(self):
+            super().__init__()
+            self.asked = 0
+
+        def can_write(self):
+            self.asked += 1
+            return self.asked == 1                  # writable at the click, read-only when the job runs
+    folder = lib.show_folder(str(tmp_path / "Downloads"))
+    w = Turning()
+    job = F.ImportJob(lib.language, [folder], w, lib.registry, data_dir=lib.data_dir)
+    assert job.start() is not None and job.wait(30)
+    assert job.outcome == "refused" and job.job.view().message == "read-only" and w.calls == []
+    trash = os.path.join(lib.data_dir, ".trash")
+    assert lib.graduated_files() == [] and (not os.path.isdir(trash) or os.listdir(trash) == [])
+
+
+def test_a_copy_with_the_same_size_and_time_but_other_words_is_no_twin_and_is_kept(lib, tmp_path):
+    """A twin is byte for byte, never by size and time alone (copy2 keeps the time): an episode re-timed by its
+    fansub, the same length, is imported beside the old one, never sent to the trash in its place."""
+    title, _resource, tag = SHOW[lib.language]
+    outside = lib.show_folder(str(tmp_path / "Downloads"), episodes=(1,))
+    name = f"[Group] {title} - 01.{tag}.srt"
+    src = os.path.join(outside, name)
+    with open(src, encoding="utf-8") as f:
+        text = f.read()
+    there = os.path.join(lib.data_dir, ls.GRADUATED_FOLDER, title, name)
+    os.makedirs(os.path.dirname(there), exist_ok=True)
+    with open(there, "w", encoding="utf-8") as f:
+        f.write(text[:-2] + "9\n")                  # the same length, another line
+    st = os.stat(src)
+    os.utime(there, ns=(st.st_atime_ns, st.st_mtime_ns))
+    job = lib.run([outside])
+    assert h.until(lambda: lib.heard.saved)
+    assert len(job.copied) == 1 and os.path.isfile(job.copied[0]), "the new episode kept, not trashed as a twin"
+    assert os.path.basename(job.copied[0]) == f"[Group] {title} - 01.{tag}_1.srt"

@@ -98,10 +98,10 @@ QPushButton {{ background: {c['raised']}; color: {c['ink']}; border: 1px solid {
   min-height: {px(30)}; padding: 0 {px(13)}; {font('button')} }}
 QPushButton:hover {{ border-color: {c['accent']}; }}
 QPushButton:pressed {{ background: {c['generate-hover']}; }}
-QPushButton:focus {{ border: 2px solid {c['accent']}; padding: 0 {round(13 * f) - 1}px; }}
+QPushButton:focus {{ border: 2px solid {c['accent']}; padding: 0 {round(13 * f) - 1}px; outline: 0; }}
 QPushButton:disabled {{ color: {c['ink-faint']}; border-color: {c['line']}; }}
 QPushButton[kind="primary"] {{ background: {iris}; color: {fixed['on-accent']}; border: 0; }}
-QPushButton[kind="primary"]:focus {{ border: 2px solid {c['ink']}; }}
+QPushButton[kind="primary"]:focus {{ border: 2px solid {c['ink']}; padding: 0 {round(13 * f) - 2}px; outline: 0; }}
 QPushButton[kind="chip"] {{ background: {c['bg']}; color: {c['ink-dim']}; border: 1px solid {c['line']}; border-radius: 7px;
   min-height: {px(22)}; padding: 0 {px(9)}; {font('status-pill')} }}
 QPushButton[kind="chip"]:hover {{ color: {c['ink']}; border-color: {c['accent']}; }}
@@ -213,11 +213,15 @@ QLabel#needswhy {{ color: {c['warn']}; {font('body')} font-weight: 400; }}
 QLabel#needswhy[found="true"] {{ color: {c['ok']}; }}
 """
     # --- end W3.2 Q5
-    # --- W3.1a: the frame (frame.py) — the current tab's line is the vein (painted); the level ▾'s pop: its words,
+    # --- W3.1a: the frame (frame.py) — the current tab's line is the vein (painted); the level ▾'s pop (W3.1b): its words,
     # Generate quiet (its stale and failed looks kept), *Open your journey* as a link
     rules += f"""
-QLabel#popeyebrow {{ color: {c['overlay-ink-dim']}; {font('eyebrow')} letter-spacing: 1px; }}
-QLabel#popband {{ color: {c['ink']}; {font('sheet-heading')} }}
+QLabel#popheading {{ color: {c['ink']}; {font('settings-label')} }}
+QWidget#levelpop QToolButton#pophelp {{ background: transparent; color: {c['overlay-ink-faint']}; border: 0;
+  padding: 0 {px(4)}; {font('settings-help')} }}
+QWidget#levelpop QToolButton#pophelp:hover {{ color: {c['ink']}; }}
+QWidget#levelpop QToolButton#pophelp:focus {{ border: 2px solid {c['accent']}; border-radius: 6px; }}
+QLabel#popread {{ color: {c['overlay-ink-dim']}; {font('body')} font-weight: 400; }}
 QLabel#popline {{ color: {c['overlay-ink-dim']}; {font('body')} font-weight: 400; }}
 QWidget#levelpop QPushButton#generate {{ background: transparent; color: {c['ink']};
   border: 1px solid {c['overlay-edge-top']}; }}

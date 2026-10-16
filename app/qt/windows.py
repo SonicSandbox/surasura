@@ -189,6 +189,19 @@ def opened(shell, name):
     return win if win is not None and not win.gone else None
 
 
+def close_all(shell):
+    """The main window's quit (AD4-4): every ported window still open is closed — its own `closeEvent` runs (a run
+    told to stop, its workspace cleaned) before Qt deletes it with its parent. A window that refuses (one finishing a
+    write) is left to Qt. -> how many were asked."""
+    opened_now = [w for w in list(shell.__dict__.get("_secondary_windows", {}).values()) if not w.gone]
+    for win in opened_now:
+        try:
+            win.close()
+        except RuntimeError:                              # already deleted with its parent
+            pass
+    return len(opened_now)
+
+
 # --- the registry ------------------------------------------------------------------------------------------------ #
 def always(_settings, _language):
     return True
@@ -279,7 +292,8 @@ def youtube_record(path, language):
     m = _YT_TOKEN.search(os.path.basename(stem))
     site = "bilibili" if m and m.group(1) else "youtube"
     video = str(side.get("video_id") or (m.group(2) if m else "")).strip()
-    channel = header[1].split(" | ", 1)[0].strip() if len(header) > 1 and " | " in header[1] else ""
+    # the date and the length are always the last two fields: a channel holding " | " (`TBS | 公式`) stays whole (L1 N1)
+    channel = header[1].rsplit(" | ", 2)[0].strip() if len(header) > 1 and " | " in header[1] else ""
     record = {"schema": 1, "producer": "youtube", "language": language, "media_type": "youtube",
               "content_key": f"{site}:{video}" if video else f"{site}:file:{os.path.basename(path)}"}
     if video:
@@ -295,31 +309,39 @@ def youtube_record(path, language):
     return record
 
 
-def arrived_line(waiting, placed):
-    """The downloader's done line once its files landed: how many wait in New arrivals, how many a rule placed."""
+def arrived_line(waiting, placed, missed=0):
+    """The downloader's done line once its files landed: how many wait in New arrivals, how many a rule placed, how
+    many weren't added (L1 S3)."""
+    line = ""
     if waiting and placed:
-        return strings.YT_ARRIVED_BOTH.format(waiting=waiting, placed=placed)
-    if waiting:
-        return strings.YT_ARRIVED_WAITING.format(what=strings.yt_transcripts(waiting))
-    if placed:
-        return strings.YT_ARRIVED_PLACED.format(what=strings.yt_transcripts(placed))
-    return ""
+        line = strings.YT_ARRIVED_BOTH.format(waiting=waiting, placed=placed)
+    elif waiting:
+        line = strings.YT_ARRIVED_WAITING.format(what=strings.yt_transcripts(waiting))
+    elif placed:
+        line = strings.YT_ARRIVED_PLACED.format(what=strings.yt_transcripts(placed))
+    if missed:
+        not_added = strings.YT_NOT_ADDED.format(what=strings.yt_transcripts(missed))
+        line = f"{line} · {not_added}" if line else not_added
+    return line
 
 
 def youtube_arrivals(shell):
     """The downloader's `on_complete(paths)` (the window's thread): its created files (and the files in the folders it
     made) registered through the window's writer — never the store on this thread — each waiting in New arrivals
     unless the user's `placing_rules` (`youtube`, `youtube:<channel>`) place it; once they land, the downloader's
-    status line and the bottom bar say where they went. None without a writer (no library: they stay in Processed,
-    and the downloader says so). Raises when the store can't be written (the downloader says why; the files wait in
-    Processed)."""
-    if getattr(getattr(shell, "services", None), "writer", None) is None:
-        return None
+    status line and the bottom bar say where they went. Always the callable (the downloader's window is kept and
+    raised: one opened before the library must still hand its files over; L1 N2). Raises when no library is open, the
+    files aren't in the open library's folder (the language switched mid-download; L1 S3) or the store can't be
+    written — the downloader says why; the files wait in Processed."""
 
     def complete(paths):
-        writer = shell.services.writer                    # the library open now (a switch makes another)
+        writer = getattr(shell.services, "writer", None)  # the library open now (a switch makes another)
         if writer is None:
             raise RuntimeError(strings.YT_NO_LIBRARY)
+        from app.library_store import library_rel
+        data_dir = getattr(writer.opener, "data_dir", None)
+        if data_dir is not None and any(library_rel(data_dir, os.fspath(p)) is None for p in paths):
+            raise RuntimeError(strings.YT_OTHER_LIBRARY)
         try:
             rules = shell.services.settings.get().get("placing_rules")
         except Exception:
@@ -329,7 +351,8 @@ def youtube_arrivals(shell):
         relay = bridge.Relay(parent=shell)
         relay.said.connect(lambda counts: _arrived(shell, relay, counts))
         seq = writer.register(paths, lambda path: youtube_record(path, language), rules=rules,
-                              label=strings.YT_ARRIVED_LABEL, done=lambda waiting, placed: relay.call((waiting, placed)))
+                              label=strings.YT_ARRIVED_LABEL,
+                              done=lambda waiting, placed, missed: relay.call((waiting, placed, missed)))
         if seq is None:
             relay.deleteLater()
             raise RuntimeError(strings.YT_READ_ONLY.format(reason=writer.reason()))

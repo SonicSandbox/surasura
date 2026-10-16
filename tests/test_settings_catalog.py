@@ -493,7 +493,7 @@ def test_the_known_words_road_starts_on_anki_with_decks_and_the_page_can_turn_it
 
 
 def test_rows_waiting_for_their_owner_and_the_anki_label_without_decks_stay_hidden():
-    assert not {"set_up_again"} & _shown({}, "ja")
+    assert "set_up_again" in _shown({}, "ja")               # its owner landed (W3.5 part 3: `settings_store`)
     assert "anki_backlog_on_generate" not in _shown({}, "ja")
     assert "anki_backlog_on_generate" in _shown({"anki_sync_decks": {"zh": ["中文::挖矿"]}}, "ja")
 

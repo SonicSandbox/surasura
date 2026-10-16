@@ -325,6 +325,69 @@ def test_another_disk_cover_stays_until_its_file_is_gone(lib):
     assert lib.scan() == 1 and lib.row(work)[1] == lib.rel(best)
 
 
+def test_a_poster_added_beside_a_recorded_disk_cover_still_there_never_replaces_it(lib):
+    """Another disk cover is replaced only once its file is gone: a cover.jpg dropped in later (a better name) waits."""
+    item = lib.store.ids("soon")[0]
+    work = lib.work_of(item)
+    poster = write(os.path.join(lib.folder_of(item), "poster.jpg"), jpeg())
+    assert lib.scan() == 1
+    write(os.path.join(lib.folder_of(item), "cover.jpg"), png())
+    assert lib.scan() == 0 and lib.row(work)[:2] == ("file", lib.rel(poster))
+
+
+def test_the_book_its_folders_source_marker_names_gives_the_cover_before_the_others(lib):
+    """Extract's parts came from 第二巻.epub (the marker's origin): its cover, though 第一巻.epub sorts first."""
+    item = lib.store.ids("goal")[0]
+    work = lib.work_of(item)
+    folder = lib.folder_of(item)
+    epub(os.path.join(folder, "第一巻.epub"), "第一巻", cover=jpeg(), language=lib.language)
+    origin = epub(os.path.join(folder, "第二巻.epub"), "第二巻", cover=png(), language=lib.language)
+    path_utils.write_source_marker(folder, "epub", origin="第二巻.epub")
+    assert lib.scan() == 1
+    source, ref, path, _locked = lib.row(work)
+    assert (source, ref) == ("file", lib.rel(origin)) and path.endswith(".png")
+
+
+def test_a_books_cover_named_outside_its_package_folder_is_refused(tmp_path):
+    """A cover href climbing out of the book's folder (../) is never taken, whatever the zip holds under that name."""
+    import zipfile
+    book = str(tmp_path / "表紙.epub")
+    with zipfile.ZipFile(book, "w") as z:
+        z.writestr("mimetype", "application/epub+zip")
+        z.writestr("META-INF/container.xml", '<?xml version="1.0"?><container version="1.0" '
+                   'xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles>'
+                   '<rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>'
+                   '</rootfiles></container>')
+        z.writestr("OEBPS/content.opf", '<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" '
+                   'version="3.0"><manifest><item id="cover" href="../../cover.jpg" media-type="image/jpeg" '
+                   'properties="cover-image"/></manifest></package>')
+        z.writestr("../cover.jpg", jpeg())
+    assert C.epub_cover(book) is None
+
+
+def test_a_locked_title_is_never_looked_at_on_disk(lib, monkeypatch):
+    work = lib.work_of(lib.store.ids("goal")[0])
+    lib.writer.set_cover(work, "generated", locked=True)
+    assert h.until(lambda: lib.heard.saved)
+    monkeypatch.setattr(C, "art_beside", lambda *a: pytest.fail("a locked title's folder was listed"))
+    monkeypatch.setattr(C, "epubs_beside", lambda *a: pytest.fail("a locked title's folder was listed"))
+    assert lib.scan([lib.one(work)]) == 0
+
+
+def test_a_cover_is_written_beside_its_name_and_only_renamed_in_once_whole(lib, tmp_path, monkeypatch):
+    """At the flush, only the .part exists: a crash mid-write never leaves a half image under the cover's name."""
+    work = lib.work_of(lib.store.ids("now")[0])
+    folder = os.path.join(path_utils.get_user_files_path(lib.language), "covers")
+    seen, real = [], C.os.fsync
+
+    def fsync(fd):
+        seen.append(sorted(os.listdir(folder)))
+        return real(fd)
+    monkeypatch.setattr(C.os, "fsync", fsync)
+    kept = C.keep_user_image(lib.language, work, write(str(tmp_path / "表紙.png"), png()), lib.writer)
+    assert kept and seen == [[kept[len("user:"):] + ".part"]]
+    assert h.until(lambda: lib.heard.saved)
+
 # --- the user's own image (IK-7) --------------------------------------------------------------------------------- #
 def test_the_users_image_is_kept_as_user_data_the_one_it_replaces_backed_up_dated_and_undo_shows_it_again(lib,
                                                                                                          tmp_path):
@@ -374,6 +437,13 @@ def test_E4_a_store_that_cant_be_written_gets_nothing_and_nothing_is_read(lib, m
     refusing = Refusing()
     assert C.scan(lib.language, lib.works(), refusing, data_dir=lib.data_dir) == 0 and refusing.calls == []
     assert C.keep_user_image(lib.language, 1, __file__, refusing) is None
+
+
+def test_E4_choose_an_image_on_a_store_that_cant_be_written_copies_nothing(lib, tmp_path):
+    picked = write(str(tmp_path / "お気に入り.jpg"), jpeg())
+    refusing = Refusing()
+    assert C.keep_user_image(lib.language, 1, picked, refusing) is None and refusing.calls == []
+    assert not os.path.exists(os.path.join(path_utils.get_user_files_path(lib.language), "covers"))
 
 
 def test_the_scan_stops_between_works_when_cancelled(lib):

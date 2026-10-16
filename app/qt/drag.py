@@ -16,9 +16,10 @@ for Current's list — W3.2's tray and Goal sheet feed the same one through `beg
   (`app/services/moves.py`, its own thread: nothing here writes the store): in the list → `move` beside its painted
   neighbour (`placement`); the Soon well → `move(…, "soon")` (after the Soon line); the Goal well → Goal's end
   (`end=True`, read by the writer when it saves); the Finished well or the Finished tab → `set_tier(…, "graduated")`,
-  the toast *X finished · its cards stay put* with *Keep* / *Take its new cards out* (live: the store's `finish`). A
-  split's first part and hato's mix leave the Finished well unlit (its tip says why) and ⋯ leaves Finished out. **The
-  numbers at the drop** come from the writer's `Numbers.after_move`, before its first write, through the reader.
+  the toast *X finished · its cards stay put* with *Keep* / *Leave its new cards out of your order* (live: the store's
+  `finish`). A split's first part and hato's mix leave the Finished well unlit (its tip says why) and ⋯ leaves Finished
+  out. **The numbers at the drop** come from the writer's `Numbers.after_move`, before its first write, through the
+  reader.
 - **Undo**: every move toast's *Undo*, and Ctrl+Z (the newest change, as the writer reaches it); *Can't undo — that
   item changed since* (E21) comes as a toast.
 - **An expectation** keeps the drop's order on screen while the store catches up: a view from the reader with the
@@ -575,13 +576,35 @@ class DragController(QObject):
         self.undo_key.activated.connect(self.undo_last)
         self._replay_owed = False
         self.joins = None                            # --- W3.2 Q8: drop-to-join (`item_menu.ItemActions`: target/show/drop)
+        self.blocked = None                          # W3.2 P0: why nothing can be moved now (a language switch), or None
+        self._started = False
 
     # --- the writer's start ----------------------------------------------------------------------------------- #
-    def start(self):
+    def start(self, on_worker=False):
         """The writer started, then the journal of a crash or a quit that ran out of time replayed (again once the
-        store can be written, if it can't be now)."""
-        self.writer.start()
-        self._replay_owed = not self.writer.replay()
+        store can be written, if it can't be now). `on_worker` (W3.2 P0, the real window's): both on a worker — the
+        writer's first look at the store opens it, never on the window's thread (S6). Once: a second replay would
+        load the journal's moves twice."""
+        if self._started:
+            return
+        self._started = True
+        if not on_worker:
+            self.writer.start()
+            self._replay_owed = not self.writer.replay()
+            return
+        from app.qt import bridge
+        writer = self.writer
+        bridge.run_in_worker(lambda: (writer.start(), writer.replay())[1], then=self._writer_started,
+                             failed=lambda info: print(f"Window writer: its start failed: {info[1]}"))
+
+    def _writer_started(self, replayed):
+        self._replay_owed = not replayed
+
+    def switching(self, text):
+        """W3.2 P0 (AD0-5): `text` — every move refused with it said (a drag running let go), until `switching(None)`."""
+        self.blocked = text
+        if text and self.running is not None:
+            self.cancel(text)
 
     # --- the reader's views (the shell's `show_library` asks first) ------------------------------------------------ #
     def view_in(self, view):
@@ -669,6 +692,9 @@ class DragController(QObject):
     # --- E4: can it be written? --------------------------------------------------------------------------------- #
     def refused(self):
         """None when the store takes moves; else the bar's words (said now)."""
+        if self.blocked:
+            self.say(self.blocked)
+            return self.blocked
         if self.writer.can_write():
             return None
         reason = self.writer.reason() or ""
@@ -1100,8 +1126,8 @@ class DragController(QObject):
             self._finish(d.title, d.ids, keys)
 
     def _finish(self, title, ids, keys=()):
-        """To Finished: `set_tier(…, "graduated")`, and its toast's choice (D14) — *Keep* or *Take its new cards out*,
-        each written as `set_finished` (live, never greyed)."""
+        """To Finished: `set_tier(…, "graduated")`, and its toast's choice (D14) — *Keep* or *Leave its new cards out of
+        your order*, each written as `set_finished` (live, never greyed)."""
         ticket = Ticket(strings.DRAG_FINISHED.format(title=title), keys, ids)
         if self._give(ticket, lambda t: self.writer.set_tier(list(ids), FINISHED, label=t), toast=False) is None:
             return
@@ -1175,8 +1201,14 @@ class DragController(QObject):
         """Hand a command to the writer (`command(label)` -> its number, or None when refused); its toast with Undo."""
         seq = command(ticket)
         if seq is None:                              # refused (E4 meanwhile): nothing written, the store's view stands
-            self.refused()
+            if self.refused() is None:               # W3.2 P0 (AD0-5): never silent — a writer let go at a switch
+                self.say(strings.MOVE_NOT_SAVED)
+            held = self.held
             self._let_go()
+            view = getattr(self.reader, "view", None)
+            view = view() if held is None and view is not None else None
+            if view is not None and view is not self.page.view_model:
+                self._show(view)                     # ... and the order painted ahead of it put back as the store has it
             return None
         self.drops += 1
         self.tickets.append(ticket)

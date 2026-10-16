@@ -359,13 +359,22 @@ def seen_path(language):
     return os.path.join(path_utils.get_local_data_path(), f"needs_seen_{language}.json")
 
 
-def _read(language):
+def _read(language, strict=False):
+    """The seen file's two lists. `strict` (a write-back's read, W3.2 H W5): only a file that isn't there reads as
+    empty — one that can't be read, isn't JSON or is another version raises, so a write never goes over earlier answers
+    (a held file, a newer Surasura's)."""
     try:
         with open(seen_path(language), encoding="utf-8") as f:
             data = json.load(f)
+    except FileNotFoundError:
+        return {"seen": [], "answered": []}
     except (OSError, ValueError):
+        if strict:
+            raise
         return {"seen": [], "answered": []}
     if not isinstance(data, dict) or data.get("version") != SEEN_VERSION:
+        if strict:
+            raise ValueError(f"the seen file isn't version {SEEN_VERSION}: left as it is")
         return {"seen": [], "answered": []}
     return {k: [x for x in data.get(k) or () if isinstance(x, str)] for k in ("seen", "answered")}
 
@@ -385,7 +394,7 @@ def _add(language, field, keys):
     if not keys:
         return 0
     with _lock:
-        data = _read(language)
+        data = _read(language, strict=True)
         have = data[field]
         new = [k for k in keys if k not in set(have)]
         if not new:
@@ -428,7 +437,7 @@ def prune(language, view, offline_roots=None, connect=None, asks=None):
         ({"video", "gap"} if connect is not None else set()) | ({"ask"} if asks is not None else set())
     roots = [r if isinstance(r, Root) else Root(*r) for r in offline_roots or ()]
     with _lock:
-        data = _read(language)
+        data = _read(language, strict=True)
         present = {item_key(e.id) for r in view.rows for e in r.episodes if e.missing}
         present |= {e.key for e in entries(view, connect=connect, offline_roots=roots, asks=asks or (),
                                           answered=frozenset(data["answered"]))}

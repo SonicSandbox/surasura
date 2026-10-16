@@ -21,10 +21,13 @@ Tk-free, pandas-free (the import guard); nothing here runs on the window's threa
 - **N15:** an imported file is kept, never counted — `Store.text_lists()`' kept list (Finished), which the indexer's
   `token_store_lists` hands the token store: its sentences stay for 例文 and the sentence dictionary.
 
-`outcome` after the job ends — the job waits for the writer's answer (S2): `imported` (saved; or still queued at a
-cancel or the quit: the writer's, journalled) · `nothing` (nothing new to add) · `cancelled` · `refused` (the store
-can't be written, before the copy or as the command landed: its copies in the trash) · `failed` (a copy, or the store's
-command: the same); `paths` / `copied` what it handed on.
+`outcome` after the job ends — the job waits for the writer's answer (S2): `imported` (saved) · `nothing` (nothing
+new to add) · `cancelled` · `refused` (the store can't be written, before the copy or as the command landed: its
+copies in the trash) · `failed` (a copy, or the store's command: the same) · `pending` (Stop pressed while the store
+saved it: the writer's now — the outcome follows the writer's answer when it comes, W3.2 H T3) · `stopped` (the writer
+stopped first — the quit, a language switch: the command stays in its journal and lands at the next start, T2);
+`paths` / `copied` what it handed on. A copy that can't go to the trash is listed (imported as it stands), never left
+hidden in Finished's folder, which no sync walks.
 """
 import filecmp
 import os
@@ -57,6 +60,7 @@ class ImportJob:
         self.paths, self.copied = [], []
         self._stop = threading.Event()
         self._thread = None
+        self._lock = threading.Lock()           # the job's end and the writer's late answer (T3)
 
     def start(self):
         """Ask the registry for the job (it starts at once unless another import runs). -> the Job, or None when the
@@ -114,7 +118,8 @@ class ImportJob:
             paths, copied = self._same_as_before(ls, data_dir, out, made, before)
             made = copied
             if self._stop.is_set():
-                self._trash(ls, data_dir, made)
+                left, made = self._trash(ls, data_dir, made), []
+                self._list_left(data_dir, left)
                 self._end(job, "cancelled", cancelled=True)
                 return
             if not paths:
@@ -125,23 +130,30 @@ class ImportJob:
             landed = threading.Event()
             answer = {}
             if self.writer.import_finished(self.paths, copied=self.copied, label=self.label,
-                                           answer=lambda cmd: (answer.update(cmd), landed.set())) is None:
+                                           answer=lambda cmd: self._answered(cmd, answer, landed)) is None:
                 self._trash(ls, data_dir, made)
                 self.paths, self.copied = [], []
                 self._end(job, "refused", ok=False, message=self.writer.reason())
                 return
+            made = []                               # queued: the copies are the writer's now (never trashed here)
+            stopped = getattr(self.writer, "stopped", None)
             while not landed.wait(WAIT_S):          # the writer's answer (S2); a quit meanwhile leaves it journalled
-                if self._stop.is_set():
-                    break
-            if landed.is_set() and not answer.get("saved"):   # refused or failed as it landed: the writer trashed
-                self.paths, self.copied = [], []              # the copies, nothing was written
+                if self._stop.is_set() or (stopped is not None and stopped()):
+                    break                           # T2: a writer that stopped answers nothing more
+            with self._lock:
+                if not landed.is_set():             # T3: Stop pressed, or the writer stopped: the writer's answer, when
+                    outcome = "stopped" if stopped is not None and stopped() else "pending"   # it comes, decides
+                    self._end(job, outcome, completed=True)
+                    return
+            if not answer.get("saved"):             # refused or failed as it landed: the writer trashed
+                self.paths, self.copied = [], []    # the copies, nothing was written
                 refused = "refused" in answer
                 self._end(job, "refused" if refused else "failed", ok=False,
                           message=answer.get("refused") if refused else answer.get("failed"))
                 return
-            self._end(job, "imported", completed=self._stop.is_set())   # asked too late: it's the writer's now
+            self._end(job, "imported", completed=self._stop.is_set())
         except BaseException as e:
-            self._trash(ls, data_dir, made)
+            self._list_left(data_dir, self._trash(ls, data_dir, made))
             self._end(job, "failed", ok=False, message=f"{e}")
             if not isinstance(e, Exception):
                 raise
@@ -157,22 +169,51 @@ class ImportJob:
                 paths.append(rel)
                 continue
             same = _earlier_twin(ls, data_dir, rel, before)
-            if same is None:
-                paths.append(rel)
-                copied.append(rel)
-            else:
-                self._trash(ls, data_dir, [rel])
-                if same not in paths:
-                    paths.append(same)
+            if same is None or self._trash(ls, data_dir, [rel]):
+                paths.append(rel)                   # (a twin that couldn't go to the trash is listed as it
+                copied.append(rel)                  # stands — never left hidden in Finished's folder)
+            elif same not in paths:
+                paths.append(same)
         return paths, copied
 
     @staticmethod
     def _trash(ls, data_dir, rels):
+        """Each copy to the data folder's trash. -> the rels that couldn't go (the caller lists them)."""
+        left = []
         for rel in rels:
             try:
                 ls.trash_file(data_dir, rel)
             except OSError as e:
                 print(f"Finished import: a copy couldn't go to the trash: {e!r}")
+                left.append(rel)
+        return left
+
+    def _list_left(self, data_dir, left):
+        """Copies that couldn't go to the trash (a cancel, a failure) are listed — imported as they stand, with
+        their Undo — never left in Finished's folder, which no sync walks. A store that can't take them: said."""
+        if not left:
+            return
+        full = [os.path.join(data_dir, *rel.split("/")) for rel in left]
+        try:
+            if self.writer.import_finished(full, copied=full, label=self.label) is not None:
+                return
+        except Exception as e:
+            print(f"Finished import: copies that couldn't go to the trash couldn't be listed: {e!r}")
+            return
+        print(f"Finished import: {len(left)} copies that couldn't go to the trash stay in Finished's folder unlisted")
+
+    def _answered(self, cmd, answer, landed):
+        """(The writer's thread.) Its answer for the import: the job's outcome when the job ended before it came
+        (T3: Stop pressed meanwhile — never *imported* for a command the writer then refused)."""
+        with self._lock:
+            answer.update(cmd)
+            landed.set()
+            if self.outcome in ("pending", "stopped"):
+                if cmd.get("saved"):
+                    self.outcome = "imported"
+                else:
+                    self.outcome = "refused" if "refused" in cmd else "failed"
+                    self.paths, self.copied = [], []
 
     def _end(self, job, outcome, ok=True, message=None, cancelled=False, completed=False):
         self.outcome = outcome

@@ -196,10 +196,10 @@ def _decode_tokens(blob):
 # --------------------------------------------------------------------------- #
 # Schema
 # --------------------------------------------------------------------------- #
-# IF NOT EXISTS on every object, deliberately. Two processes can both read a stale `user_version`
-# (the background indexer and a Generate run race routinely), both decide the schema is missing, and
-# both execute this script; without the guard the loser dies on "table files already exists". The
-# work is idempotent either way — the winner's tables are the ones everybody ends up using.
+# IF NOT EXISTS on every object, kept as a second guard. Two processes can both read a stale `user_version` (the
+# background indexer and a Generate run race routinely) and both decide the schema is missing; what keeps them apart is
+# the write lock: _ensure_schema builds inside BEGIN IMMEDIATE and looks at the version again inside it, so the second
+# finds the first's build done and runs nothing.
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS files (
     path   TEXT PRIMARY KEY,   -- normcase abspath
@@ -224,32 +224,65 @@ CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 """
 
 
+def _statements(script):
+    """A script's statements, one by one (a ';' inside a comment ends none: sqlite3.complete_statement decides)."""
+    out, part = [], ""
+    for piece in script.split(";"):
+        part += piece + ";"
+        if sqlite3.complete_statement(part):
+            statement = part.strip().rstrip(";").strip()
+            if statement:
+                out.append(statement)
+            part = ""
+    return out
+
+
+_REBUILD = [f"DROP TABLE IF EXISTS {t}" for t in ("files", "aggregate", "bound", "meta")] + _statements(_SCHEMA)
+
+
+def _schema_ready(conn):
+    """The store is this schema, every table there. A table or column missing (a half-built DB) is "not ready"; any other
+    error — busy, a disk error, damage — is raised, never read as "build it again" (the build drops every table)."""
+    if conn.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION:
+        return False
+    try:
+        conn.execute("SELECT names, bound FROM files LIMIT 1")
+        conn.execute("SELECT 1 FROM aggregate LIMIT 1")
+        conn.execute("SELECT 1 FROM bound LIMIT 1")
+        conn.execute("SELECT 1 FROM meta LIMIT 1")
+    except sqlite3.OperationalError as e:
+        if "no such" in str(e).lower():
+            return False
+        raise
+    return True
+
+
 def _ensure_schema(conn):
-    ver = conn.execute("PRAGMA user_version").fetchone()[0]
-    if ver == SCHEMA_VERSION:
-        try:  # verify tables actually exist (guard a half-built DB)
-            conn.execute("SELECT names, bound FROM files LIMIT 1")
-            conn.execute("SELECT 1 FROM aggregate LIMIT 1")
-            conn.execute("SELECT 1 FROM bound LIMIT 1")
-        except sqlite3.DatabaseError:
-            pass  # fall through to rebuild
-        else:
-            _add_counted(conn)
-            return
-    conn.executescript(
-        "DROP TABLE IF EXISTS files; DROP TABLE IF EXISTS aggregate; DROP TABLE IF EXISTS bound; "
-        "DROP TABLE IF EXISTS meta;"
-        + _SCHEMA
-    )
-    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-    conn.commit()
+    """The schema, built when it is missing or old — inside BEGIN IMMEDIATE, the version looked at again inside the lock:
+    two first opens (Generate and the indexer) both read user_version 0, and the second's drops, landing between the
+    first's statements, gave it "no such table" (read as damage: open_store deleted the store) or took tables it was
+    already writing to. Now the second waits for the first's build (up to the busy timeout; past it, "database is
+    locked", which open_store raises and never deletes on) and finds it done. Statement by statement, never
+    executescript (it COMMITs the open transaction first); a build cut short leaves nothing (rolled back)."""
+    if not _schema_ready(conn):
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            if not _schema_ready(conn):
+                for statement in _REBUILD:
+                    conn.execute(statement)
+                conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+    _add_counted(conn)
 
 
 def _add_counted(conn):
     """The counted / kept flag (E2.2) on a store made before it: added, every row counted — it was counted before — so
     the store is read exactly as it was, nothing rebuilt and no version moved. Two first opens may race to add it; the
-    loser finds it there (looked at again inside the write lock; a "duplicate column" is success, never damage — open_store
-    deletes a store on any other database error)."""
+    loser finds it there (looked at again inside the write lock; a "duplicate column" is success; any other error is raised,
+    and open_store deletes the store only when it says the file is damaged: `_damaged`)."""
     def has_it():
         return "counted" in [r[1] for r in conn.execute("PRAGMA table_info(files)")]
     if has_it():
@@ -275,13 +308,17 @@ def _delete_db(path):
 
 def open_store(language, path=None):
     """Open (or create/rebuild) the SQLite token store for a language. WAL, busy-timeout, schema
-    ensured, corruption self-heals by rebuilding."""
+    ensured, corruption self-heals by rebuilding; any other database error (busy, a full disk, an I/O error) is
+    raised, the store kept (`_damaged`)."""
     db_path = path or store_path_for(language)
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
 
     def _connect():
         c = sqlite3.connect(db_path, timeout=5.0)
         try:
+            # Before the switch to WAL: a new file's switch is a rollback-mode commit, and at the default FULL each
+            # attempt fsyncs a journal — under a disk storm one attempt's wait could use the loop's whole 5 s.
+            c.execute("PRAGMA synchronous=NORMAL")
             # A new file's switch to WAL answers "database is locked" at once — no busy timeout — while another
             # connection makes the same file (two first opens: Generate and the indexer on a first run). Asked
             # again until the busy timeout, as any other wait for the file.
@@ -295,7 +332,6 @@ def open_store(language, path=None):
                         raise
                     time.sleep(0.02)
             c.execute("PRAGMA busy_timeout=5000")
-            c.execute("PRAGMA synchronous=NORMAL")
             _ensure_schema(c)
         except Exception:
             c.close()   # never leak a handle to a corrupt file (Windows can't delete an open file)
@@ -305,8 +341,8 @@ def open_store(language, path=None):
     try:
         return Store(_connect(), language, db_path)
     except sqlite3.DatabaseError as e:
-        if _locked(e):
-            raise                       # busy, not damaged: another program has the file — never delete it
+        if not _damaged(e):
+            raise                       # busy, a full disk, an I/O error: the file may be whole — never delete it
         # Corrupt DB -> delete + rebuild (it's a regenerable cache). The kept text beside it is another file: untouched.
         _delete_db(db_path)
         return Store(_connect(), language, db_path)
@@ -336,11 +372,42 @@ def open_reader(language, path=None):
     return Store(c, language, db_path)
 
 
+# SQLite's primary result codes (Python 3.11's sqlite3.SQLITE_*), read from an error's `sqlite_errorcode`.
+_BUSY_CODES = (5, 6, 15)        # SQLITE_BUSY, SQLITE_LOCKED, SQLITE_PROTOCOL
+_DAMAGE_CODES = (11, 26)        # SQLITE_CORRUPT, SQLITE_NOTADB
+
+
+def _code(error):
+    """The error's primary SQLite result code, or None (an error raised by hand, an older Python): read by its text."""
+    code = getattr(error, "sqlite_errorcode", None)
+    return None if code is None else code & 0xFF
+
+
 def _locked(error):
-    """SQLite's "database is locked" / "busy": another connection holds the file (an OperationalError, which is a
-    DatabaseError too — never a sign of a damaged file)."""
+    """SQLite's "database is locked" / "busy" / "locking protocol": another connection holds the file, or the WAL
+    index was changing as this one looked (SQLITE_PROTOCOL, after SQLite's own retries) — an OperationalError, which is
+    a DatabaseError too, and never a sign of a damaged file. Waited on and asked again where an open waits; else raised."""
+    code = _code(error)
+    if code is not None:
+        return code in _BUSY_CODES
     text = str(error).lower()
-    return isinstance(error, sqlite3.OperationalError) and ("locked" in text or "busy" in text)
+    return isinstance(error, sqlite3.OperationalError) and (
+        "locked" in text or "busy" in text or "locking protocol" in text)
+
+
+def _damaged(error):
+    """The file itself is damaged — SQLite says it is corrupt or not a database (a file cut short or scribbled on lands
+    here too) — the one error open_store answers by deleting the store (a cache: built again). Anything else says
+    nothing of the file and is raised, the store kept: busy or a locking protocol (another connection), a full disk (a
+    rebuild would only fill it again), a disk I/O error (the disk's: a rebuild meets the same disk), no permission,
+    can't open. Never deleted for it: the next open tries again, and Generate runs on without the cache meanwhile. By
+    its text only when raised without a code: SQLite's own words for damage, never any "malformed" (JSON's is not)."""
+    code = _code(error)
+    if code is not None:
+        return code in _DAMAGE_CODES
+    text = str(error).lower()
+    return any(words in text for words in ("database disk image is malformed", "malformed database schema",
+                                           "not a database"))
 
 
 # --------------------------------------------------------------------------- #

@@ -11,7 +11,9 @@
   order), `import_finished` (the Finished importer's store half), `relink` / `its_new` (Needs you's *Link these*, the
   rename asks), `link_video` (Connect's *Link…*: a video, never `relink`), `remove` / `restore` (the trash, 30 days),
   `pin`, `keep_cards` (a Finished item's cards out of / back in the order), `ask_mining`, `split` / `join`,
-  `set_media_type`, `set_cover`, `forget_covers` (*Remove downloaded covers*, W3.2 Q7). Each
+  `set_media_type`, `set_cover`, `forget_covers` (*Remove downloaded covers*, W3.2 Q7); W3.3 P6's `set_options`
+  (Settings' *Soon starts after N files* and *Mine automatically: the top N files*: journalled, never on the Undo
+  stack; the row is where it is changed back). Each
   returns at once (the window has already painted its
   own copy of the order); what happened comes back through callbacks, called on the writer's thread (the window's bridge
   queues them):
@@ -64,7 +66,7 @@ JOURNAL_VERSION = 1
 JOURNAL_TRIES = 10              # a journal write Windows refuses (the file held a moment) is tried this many times
 JOURNALLED = ("move", "nudge", "set_tier", "finish", "set_watched",
               "place", "put_back", "import_finished", "relink", "its_new", "link_video", "remove", "restore", "pin",
-              "keep_cards", "ask_mining", "split", "join", "set_media_type", "set_cover")
+              "keep_cards", "ask_mining", "split", "join", "set_media_type", "set_cover", "set_options")
 #   an undo needs its Change: never journalled; nor an Explorer drop (`insert_at`: no ids yet). Its files are copied into
 #   the tier's folder at once, on the copier's thread — a busy store or a drag never holds the copy back, and the copy
 #   never holds a move back (G1) — so a quit or a crash before it lands leaves them whole in the folder, where the next
@@ -88,6 +90,7 @@ KEPT = ("tier", "before_id", "after_id", "near", "direction", "on", "keep_cards"
 # --- W3.2 B: `register` (a producer's files into New arrivals): journalled, its records and rules kept
 JOURNALLED += ("register",)
 KEPT += ("records", "rules")
+KEPT += ("soon_line", "mine_line")              # W3.3 P6: `set_options`'s values
 # --- end W3.2 B
 PART = ".part"                  # a dropped file is copied under its name + this (no content name: no sync takes it up),
 #                                 then renamed whole
@@ -130,13 +133,21 @@ def open_library(language, check=None, **reader_kw):
     """The window's library on one opener: the reader, and the numbers it shows — told of every move of
     the order (another program's, hato's drop, an undo elsewhere) and refreshing the reader when they change. Nothing
     started: the caller calls `numbers.load()` and `reader.start()`, and hands the same opener to the `Writer`.
-    `check`: `Numbers`' verdict (`plan_check`). -> (opener, numbers, reader)."""
+    `check`: `Numbers`' verdict (`plan_check`). The numbers hold the reader weakly (W3.2 P0, AD0-2): never a cycle
+    reader → numbers → reader, so a reader a language switch let go is freed by its count alone. -> (opener, numbers,
+    reader)."""
+    import weakref
     from app.services.library_reader import LibraryReader
     opener = store_opener(language)
     held = []
-    numbers = Numbers(opener, language, check=check, on_change=lambda: held and held[0].refresh())
+
+    def refresh():
+        reader = held[0]() if held else None
+        if reader is not None:
+            reader.refresh()
+    numbers = Numbers(opener, language, check=check, on_change=refresh)
     reader = LibraryReader(opener, language, numbers=numbers, **reader_kw)
-    held.append(reader)
+    held.append(weakref.ref(reader))
     reader.subscribe_moves(lambda _language, _versions: numbers.resync())
     return opener, numbers, reader
 
@@ -279,6 +290,22 @@ class Writer:
             return None
         return cmd["seq"]
 
+    def set_options(self, soon_line=None, mine_line=None):
+        """Settings' two store lines (W3.3 P6): `soon_line` -> `Store.set_soon_line(n)`, `mine_line` ->
+        `Store.set_library_options(mine_line=n)` (each an int >= 0, or None to leave it). -> the command's number, or
+        None when refused (read-only) or there is nothing to set."""
+        if soon_line is None and mine_line is None:
+            return None
+        cmd = {"op": "set_options", "ids": []}
+        if soon_line is not None:
+            cmd["soon_line"] = int(soon_line)
+        if mine_line is not None:
+            cmd["mine_line"] = int(mine_line)
+        for value in (cmd.get("soon_line"), cmd.get("mine_line")):
+            if value is not None and value < 0:
+                raise ValueError("a line can't be negative")
+        return self._put(cmd)
+
     def set_watched(self, ids, on=True, label=None):
         """`Store.set_watched` on files (an episode is one file, one item)."""
         return self._put({"op": "set_watched", "ids": list(ids), "on": bool(on), "label": label})
@@ -299,10 +326,11 @@ class Writer:
     def import_finished(self, paths, copied=(), label=None, answer=None):
         """`Store.import_finished` (the importer's store half; its copying job is the caller's, done first): `paths`
         in the data folder land in Finished, dated *Earlier*. `copied`: those the job copied in — its Undo sends
-        those to the trash and takes every row it placed out; a file it didn't copy stays where it is; one the store
+        those to the trash with their rows; a file it didn't copy stays where it is, row and all; one the store
         refuses or fails sends them to the trash (Finished isn't walked: no sync would ever take them up). `answer`:
-        called once with the command when it is done with (this thread): `saved`, else `refused` (the store's reason)
-        or `failed` (the error) — never for one left in the journal at the quit."""
+        called once with the command when it is done with (this thread): `saved` (and `changed`: a change on its way
+        to `on_saved`, else nothing new), else `refused` (the store's reason) or `failed` (the error) — never for one
+        left in the journal at the quit."""
         cmd = {"op": "import_finished", "ids": [], "paths": [os.fspath(p) for p in paths],
                "copied": [os.fspath(p) for p in copied], "label": label}
         if answer is not None:
@@ -385,9 +413,9 @@ class Writer:
         `rules` (settings.json's `placing_rules` as the caller read them) place it in the same store command (D30): an
         arrival never places itself. One queued, journalled command (a replay registers again: `register` finds the
         item it made, and the same record writes nothing). Never on the Undo stack: a download is no move of the
-        user's (the tray's placing is). `done(waiting, placed)` (the writer's thread, once it lands; not after a
-        replay): how many wait in New arrivals and how many a rule placed. -> the command's number, or None when
-        refused (read-only, E4)."""
+        user's (the tray's placing is). `done(waiting, placed, missed)` (the writer's thread, once it lands; not after a
+        replay): how many wait in New arrivals, how many a rule placed and how many weren't added (gone since, outside
+        the data folder, a record refused; L1 S3). -> the command's number, or None when refused (read-only, E4)."""
         if not self._writable():
             return None                             # E4: refused before anything is read
         cmd = {"op": "register", "ids": [], "paths": [os.fspath(p) for p in paths], "rules": dict(rules or {}),
@@ -409,16 +437,23 @@ class Writer:
         meanwhile, into the journal (the files sit in a folder no sync walks: never left unregistered)."""
         lib = _ls()
         try:
-            records = []
+            records, missed = [], 0
             for path in cmd["paths"]:
                 files = [path]
                 if os.path.isdir(path):
                     files = sorted(os.path.join(d, n) for d, _s, names in os.walk(path) for n in names
                                    if lib.is_content_name(n))
                 for f in files:
-                    if lib.is_content_name(f):
-                        records.append([f, dict(pairing(f) if callable(pairing) else pairing)])
+                    if not lib.is_content_name(f):
+                        continue
+                    try:                            # W3.2 H: one file's record that can't be read is counted
+                        records.append([f, dict(pairing(f) if callable(pairing) else pairing)])   # the rest go on
+                    except Exception as e:
+                        print(f"Window writer: {f}'s record couldn't be read: {e!r}")
+                        missed += 1
             cmd["records"] = records
+            if missed:
+                cmd["missed"] = missed
         except Exception as e:
             print(f"Window writer: the files to register couldn't be read: {e!r}")
             with self._cond:
@@ -431,22 +466,36 @@ class Writer:
             late = self._stop and not self._abandoned
             if not self._abandoned and records:
                 self._pending.append(cmd)
+                if (self._held or self._journalled) and _journals(cmd):
+                    self._journal_dirty = True      # stuck already (a drag, a write waiting): journalled now (L1 S4)
                 if not late:
                     self._start()
             self._cond.notify_all()
         if late and records:
             self._sync_journal(everything=True)     # the next start replays it
+        if not records and cmd.get("done") is not None:
+            self._call(cmd["done"], 0, 0, missed)   # W3.2 H: nothing to register — nothing queued, said once
 
     def _register(self, store, cmd):
         """Each record registered (one store command each: a busy store's retry registers again, idempotent); the
-        changes to `after_commit`, none to the Undo stack. -> None."""
+        changes to `after_commit`, none to the Undo stack. A file gone since (deleted from Processed, or a stale
+        journal entry's) is never registered: no row for a file that isn't there (L1 S2). A record that fails on its
+        own (outside the data folder, a bad record) is counted and the rest go on (L1 S3); a busy or read-only store
+        stops the command as any write's. -> None."""
         lib = _ls()
         waiting = placed = 0
+        missed = cmd.get("missed") or 0             # the records that couldn't be read (`_records_then_queue`)
         for path, record in cmd.get("records") or ():
+            if not os.path.exists(path):
+                missed += 1
+                continue
             try:
                 change = store.register(path, record, rules=cmd.get("rules") or None)
-            except lib.NotInLibrary as e:           # outside the data folder: never registered, said once
-                print(f"Window writer: {e}")
+            except (lib.StoreBusy, lib.StoreReadOnly):
+                raise
+            except Exception as e:                  # outside the data folder, a record it can't take: said once
+                print(f"Window writer: {path} couldn't be registered: {e!r}")
+                missed += 1
                 continue
             if change is not None:
                 self._call(self.after_commit, change, "register")
@@ -458,7 +507,7 @@ class Writer:
                 else:
                     placed += 1
         if cmd.get("done") is not None and not cmd.get("replay"):
-            self._call(cmd["done"], waiting, placed)
+            self._call(cmd["done"], waiting, placed, missed)
         return None
     # --- end W3.2 B
     # --- W3.2 Q7 ------------------------------------------------------------------------------------------------ #
@@ -499,6 +548,12 @@ class Writer:
                     return False
                 self._cond.wait(WAIT_S if left is None else min(left, WAIT_S))
             return True
+
+    def stopped(self):
+        """W3.2 H (T2): True once the writer stopped (the quit, a language switch let it go) — what is still queued
+        stays in the journal and lands at the next start; no answer comes for it here."""
+        with self._cond:
+            return bool(self._stop or self._abandoned)
 
     def hold(self):
         """A drag starts (E6): nothing new is applied until `release()`; the window's moves queue."""
@@ -721,6 +776,9 @@ class Writer:
                 change = store.finish(cmd["ids"], keep_cards=cmd["keep_cards"])
             elif op == "set_watched":
                 change = store.set_watched(cmd["ids"], cmd["on"])
+            elif op == "set_options":
+                self._set_options(store, cmd)
+                return
             elif op == "insert_at":
                 change, note = self._insert(store, cmd)
             elif op in ("remove", "restore"):
@@ -744,6 +802,7 @@ class Writer:
             cmd["follows"].follow_up = change
         elif op == "import_finished":
             cmd["saved"] = True                     # its copies are the library's now (S2: else to the trash)
+            cmd["changed"] = change is not None     # (the importer's answer: *Added N*, or nothing new — L1 S6)
             if change is not None:                  # what its Undo sends to the trash: the job's copies
                 change.copied = [_ls().library_rel(store.data_dir, p) for p in cmd["copied"]]
         elif op == "restore" and change is not None:           # ... and a Put back's: every file it brought back
@@ -891,6 +950,23 @@ class Writer:
             cmd.pop("renamed", None)
             _move_back(moved)
             raise
+    def _set_options(self, store, cmd):
+        """Settings' store lines, written (never on the Undo stack: the row is where it is changed back). Nothing to
+        change (the line there already) or a write: the reader looks again, and the numbers when the Soon line moved
+        rows between NOW and Soon."""
+        moved = False
+        if cmd.get("soon_line") is not None:
+            moved = store.set_soon_line(cmd["soon_line"]) is not None
+        if cmd.get("mine_line") is not None:
+            store.set_library_options(mine_line=cmd["mine_line"])
+        if moved:                                   # the rows it moved changed tier: the moves queued behind it
+            with self._cond:                        # compare against what it left (a crash's replay keeps them)
+                later = {i for c in itertools.islice(self._pending, 1, None) for i in c.get("ids") or ()}
+            self._refresh_seen(store, later)
+        self._landed(cmd)
+        self._call(self.on_reread)
+        if moved:
+            self._numbers_resync()
 
     def _nearest(self, store, cmd):
         """The anchor is gone or left the tier: the nearest neighbour the window named that is still in the tier, else
@@ -1004,12 +1080,21 @@ class Writer:
         change = store.insert(cmd["files"], cmd["tier"], "top", started_at=cmd["started_at"])
         return change, None if anchor is None else "top"
 
-    def _trash_copies(self, cmd):
+    def _trash_copies(self, cmd, unlisted=False):
         """A drop or an import let go (read-only, an error): the copies it made go to the trash, never left for a sync
-        to place (a drop's) or invisible in Finished's folder (an import's: never walked)."""
+        to place (a drop's) or invisible in Finished's folder (an import's: never walked). `unlisted` (a replayed
+        import let go, W3.2 H): only the copies the store holds no row for — one that landed before the crash and
+        was changed since is the user's listed file; a store that can't be read at all keeps them all (never a guess)."""
         lib = _ls()
         data_dir = cmd.get("data_dir") or getattr(self.opener, "data_dir", None)
-        for path in cmd.get("copied") or ():
+        copied = list(cmd.get("copied") or ())
+        if unlisted and copied:
+            held = _rows_held(self.language, data_dir, [lib.library_rel(data_dir, p) for p in copied])
+            if held is None:
+                print("Window writer: a replayed import's copies were kept: the library couldn't be read")
+                return
+            copied = [p for p in copied if not held.get(lib.path_key(lib.library_rel(data_dir, p) or ""))]
+        for path in copied:
             try:
                 lib.trash_file(data_dir, lib.library_rel(data_dir, path))
             except OSError as e:
@@ -1019,8 +1104,9 @@ class Writer:
         """Undo an Add: the files it brought in to the trash first, then the rows; the files put back if the store
         refuses. An Explorer drop: its own copies and their rows only (a file that was in the data folder already
         stays where it is, row and all: a sync would add it back, AD-10). The Finished importer's: its job's copies
-        (`copied`), and every row it placed out (Finished isn't walked: no sync takes a file up again), its moved rows
-        back. A Put back (`restore`): every file it brought back, back to the trash."""
+        (`copied`) and their rows, its moved rows back; a file it listed where it was keeps its new row (Finished isn't
+        walked: that row is all that lists it — W3.2 H C2). A Put back (`restore`): every file it brought back, back to
+        the trash."""
         import copy
         lib = _ls()
         copied = {lib.path_key(r) for r in getattr(change, "copied", ()) if r}
@@ -1041,6 +1127,11 @@ class Writer:
                     raise lib.UndoRefused("none of its copies is left to undo")
                 only = copy.copy(change)            # its own copies' rows only (AD-10)
                 only.added = mine
+            elif set(change.added or ()) - set(mine):
+                if not mine and not change.items:   # W3.2 H (C2): a file it listed where it was keeps its row — never
+                    raise lib.UndoRefused("nothing of it is left to undo")  # walked, its row is all that lists it
+                only = copy.copy(change)
+                only.added = [i for i in change.added if i in mine]
             out = store.undo(only, trashed_paths=trashed)
             if out is None or _refused(change, out):
                 raise lib.UndoRefused("nothing was undone")
@@ -1150,6 +1241,8 @@ class Writer:
                 journalled = cmd["seq"] in self._journalled
         if cmd["op"] in ("insert_at", "import_finished") and not cmd.get("saved") and not cmd.get("replay"):
             self._trash_copies(cmd)                 # (a replay's may be rows already: the copies stay)
+        elif cmd["op"] == "import_finished" and not cmd.get("saved"):
+            self._trash_copies(cmd, unlisted=True)  # W3.2 H: a replay's — only the copies with no row
         if journalled:
             self._sync_journal(everything=False)
         if replay_done:
@@ -1280,8 +1373,14 @@ class Writer:
         False (applied)."""
         if cmd["op"] == "restore" and cmd.get("trash_ids"):
             rows = store.trash_rows(cmd["trash_ids"])
-            if len(rows) != len(set(cmd["trash_ids"])) or any(r["restored_at"] for r in rows):
+            if len(rows) != len(set(cmd["trash_ids"])):
                 return True
+            if all(r["restored_at"] for r in rows):
+                return "done"                       # W3.2 H (C3): put back before the crash, as this command leaves it
+            if any(r["restored_at"] for r in rows):
+                return True
+        if cmd["op"] == "remove" and _removed(store, cmd["ids"]):
+            return "done"                           # W3.2 H (C3): its rows in the trash already, as it leaves them
         seen = cmd.get("seen")
         if seen is not None:
             now = store.check([i for i, _v in seen]).items      # `changed_in` is never NULL: None is gone
@@ -1402,6 +1501,16 @@ def _as_queued(store, cmd):
         return out
 
 
+def _removed(store, ids):
+    """Whether every item of a Remove is out of the items and in the trash table, not put back: it landed."""
+    with store._reading():
+        for i in ids:
+            if store.item(i) is not None or not store.conn.execute(
+                    "SELECT 1 FROM trash WHERE item_id = ? AND restored_at IS NULL LIMIT 1", (i,)).fetchone():
+                return False
+    return bool(ids)
+
+
 def _done(store, cmd):
     """Whether what a GUARDED command writes is there already (it landed before the crash, its entry left behind)."""
     op = cmd["op"]
@@ -1426,6 +1535,32 @@ def _done(store, cmd):
         held = store.check(paths=cmd["paths"]).keys                 # import_finished: every file in Finished
         rows = [store.item(i) if i is not None else None for i in held.values()]
         return all(r is not None and r["tier"] == "graduated" for r in rows)
+
+
+def _rows_held(language, data_dir, rels):
+    """W3.2 H: {path_key: whether the store holds a row for it} for each rel (None: not in the data folder),
+    through a `mode=ro` look — a store gone read-only is read too, nothing written. -> None when it can't be read."""
+    import pathlib
+    import sqlite3
+    lib = _ls()
+    try:
+        db_path = lib.library_db_path(language, data_dir)
+        if not os.path.exists(db_path):
+            return None
+        conn = sqlite3.connect(pathlib.Path(db_path).as_uri() + "?mode=ro", uri=True, timeout=1.0)
+    except (sqlite3.Error, OSError, ValueError):
+        return None
+    try:
+        out = {}
+        for rel in rels:
+            if rel is not None:
+                key = lib.path_key(rel)
+                out[key] = conn.execute("SELECT 1 FROM items WHERE rel_key = ? LIMIT 1", (key,)).fetchone() is not None
+        return out
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
 
 
 def _works_as_set(store, fields):

@@ -565,7 +565,7 @@ COPY_PATH = "Copy path"
 COPY_PATH_TIP = "Copy the whitelist file's path, to paste into Anki Miner's file chooser."
 PATH_COPIED = "The whitelist file's path is copied: paste it into Anki Miner's file chooser."
 INSTALL_MINER = "Install Anki Miner…"
-INSTALL_MINER_TIP = "Open Anki Miner's releases page in your browser: download the Windows Setup file and run it."
+INSTALL_MINER_TIP = "Get Anki Miner, free: its installer, from its GitHub release.\n• Asks before it downloads"
 BROWSE_MINER = "Browse…"
 BROWSE_MINER_TIP = "Anki Miner is installed somewhere else: show Surasura where."
 BROWSE_MINER_TITLE = "Where is Anki Miner?"
@@ -604,6 +604,12 @@ NEW_CARDS_DECK_MOVED = ("New cards a day wasn't changed: Junban's deck is “{de
 NEW_CARDS_VALUE_MOVED = ("New cards a day for “{deck}” is now {n} in Anki — it changed while you were asked. Nothing "
                          "was written; look at it again.")
 NEW_CARDS_UNREAD_NOW = "New cards a day wasn't changed: Anki can't be read now. Nothing was written."
+
+# --- P6: the store's two lines; *Set up again* (settings_store.py) ------------------------------------------------- #
+STORE_FILES = "files"
+STORE_NO_LIBRARY_TIP = "Opens with your library"
+STORE_NOT_SAVED = "Not saved: {reason}"
+SET_UP_AGAIN_OPEN = "Start ›"
 
 # --- PR: *Where new arrivals go* — the placing rules' lines (settings_rules.py; RULE_FROM, RULE_ADD, its tip above) -- #
 RULE_LINE_TIP = "Where arrivals from {source} go. Wait here: they wait in New arrivals for you"

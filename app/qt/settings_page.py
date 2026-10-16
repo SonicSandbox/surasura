@@ -423,6 +423,14 @@ class RowView(QWidget):
         p.end()
 
 
+def auto_change(row, on, slider):
+    """Automatic's toggle on the level row: on, Automatic alone; off, the band the slider shows (Automatic's, while it
+    was on) written with it — 2.x's D3: the list doesn't change the moment you switch it off (W3.1b B1)."""
+    if on:
+        return {row.keys[1]: True}
+    return {row.keys[1]: False, row.keys[0]: slider.value()}
+
+
 class SettingsPage(QWidget):
     """The Settings tab's page. `shell_or_services`: the shell (its services, bridge, doors) or the services alone (a
     test, or the page standalone: it makes its own bridge, and a door asks through `door_asked`). `found`: the optional
@@ -697,18 +705,17 @@ class SettingsPage(QWidget):
     def _scrolled(self, *_args):
         """A scroll the page didn't make itself (Tab focus's `ensureWidgetVisible`, anyone's `setValue`) lets a held
         reveal go, as the user's scroll does (the time lens's H7) — never the clamp a shorter page makes."""
-        if not getattr(self, "_own_scroll", False) and not getattr(self, "_clamp", False):
-            self._let_go()
+        clamp, self._clamp = getattr(self, "_clamp", None), None
+        if getattr(self, "_own_scroll", False) or (clamp is not None and _args and _args[0] == clamp):
+            return
+        self._let_go()
 
-    def _ranged(self, *_args):
-        """The scroll range moved (a relayout): the value Qt clamps into it in the same call is no one's scroll."""
-        if not getattr(self, "_clamp", False):
-            self._clamp = True
-            QTimer.singleShot(0, self._unclamp)
-
-    def _unclamp(self):
-        if _alive(self):
-            self._clamp = False
+    def _ranged(self, low, high):
+        """The scroll range moved (a relayout): the value Qt clamps into it in the same call (`setRange` emits
+        `rangeChanged`, then the clamped `valueChanged`) is no one's scroll. Known by its value, never by a timer: a
+        timer still pending let a real scroll after the relayout pass for the clamp (GitHub's #97 run 1)."""
+        value = self.scroll.verticalScrollBar().value()      # still the value before the clamp
+        self._clamp = min(max(value, low), high) if value < low or value > high else None
 
     def _let_go(self, *_args):
         """The user scrolled, went to a section or changed a setting: a reveal stops aiming at its row, and its wash
@@ -816,7 +823,7 @@ class SettingsPage(QWidget):
             auto_tip = S.LEVEL_AUTOMATIC_TIP.format(
                 n=catalog.value_of(settings, "logic.selection.auto_max_words"))
             auto = sc.Toggle(value[row.keys[1]], tooltip=auto_tip, name=S.LEVEL_AUTOMATIC)
-            auto.changed.connect(lambda v, r=row, c=auto: self._changed(r, {r.keys[1]: bool(v)}, c))
+            auto.changed.connect(lambda v, r=row, c=auto, s=control: self._changed(r, auto_change(r, v, s), c))
             view.controls.append(auto)
             place = view.aside if view.aside is not None else view.slot.layout()
             place.addWidget(words)
@@ -967,6 +974,8 @@ class SettingsPage(QWidget):
             self.store.set({}, update=update)
         elif changes:
             self.store.set(changes)
+            from app.qt import settings_store
+            settings_store.resume_connect(settings, changes)             # the automation row on: Connect's marks
         else:
             return
         self._refresh_visibility(anchor=control)

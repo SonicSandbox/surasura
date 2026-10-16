@@ -31,6 +31,7 @@ from tests.qt.conftest import wait_until
 from tests.qt.test_drag import FakeWriter, open_window, press, real, release, settle  # noqa: F401 (real: a fixture)
 from tests.qt.test_wiring import problems
 from tests.test_library_store_support import names, roots, touch
+from tests.test_services_moves import LockHolder, short_lock_wait  # noqa: F401  (the fixture, by name)
 
 
 # --- a recording writer with Finished's commands -------------------------------------------------------------------- #
@@ -44,8 +45,11 @@ class FinWriter(FakeWriter):
     def keep_cards(self, ids, on, label=None):
         return self._put("keep_cards", ids, label, on=on)
 
-    def import_finished(self, paths, copied=(), label=None):
-        return self._put("import_finished", [], label, paths=list(paths), copied=list(copied))
+    def import_finished(self, paths, copied=(), label=None, answer=None):
+        seq = self._put("import_finished", [], label, paths=list(paths), copied=list(copied))
+        if seq is not None and answer is not None:          # the writer's own answer, as the real one gives it
+            answer({"saved": True, "changed": "import_finished" not in self.nothing})
+        return seq
 
 
 class FakeEstimator:
@@ -596,3 +600,131 @@ def test_real_store_a_past_graduate_from_2x_is_a_row_like_any_and_puts_back_the_
     ids = drag.ids_of(row)
     win.finished.put_back(row)
     assert wait_until(lambda: store.ids("now")[:len(ids)] == ids, 5)
+
+
+# ================================================================================================================== #
+# W3.2 L1 fix round: S5 (the library at call time), S6 (the writer's own answer), N5, N6, N7, IK-L1-1
+# ================================================================================================================== #
+def test_L1_S5_finisheds_writes_go_to_the_writer_and_language_open_now_never_the_one_it_was_made_with(fin):
+    """S5: the actions kept the writer and language they were made with. After a library or language switch (P0
+    rebuilds `win.moves` and the services' writer) Put back, pin and the cards went to the old writer — refused, or the
+    new library's ids written into the old store. Now they read the window's at each call."""
+    _seed, win, first, _e = fin()
+    _i, row = finished_rows(win)[0]
+    second = FinWriter(None, apply=False)
+    win.services.writer = second                       # the library opened since (P0's switch)
+    win.moves = drag.DragController(win, second, win.services.library)
+    win.language = "zh"
+    fa = win.finished
+    assert fa.writer is second and fa.moves is win.moves and fa.language == "zh"
+    assert fa.put_back(row) is not None
+    fa.pin(row, True)
+    fa.keep_cards(row, False)
+    assert [c[0] for c in calls(second)] == ["put_back", "pin", "keep_cards"]
+    assert calls(first) == []
+    win.moves = None                                   # no library open now: nothing written, nothing raised
+    assert fa.put_back(row) is None and fa.import_paths([__file__]) is None
+    assert all(not e[3] for e in fa.menu_entries(row) if e[0] in ("put-back", "pin", "unpin"))
+
+
+def test_L1_N5_a_file_already_in_the_library_dropped_on_finished_is_refused_with_a_line_never_imported(fin):
+    _seed, win, writer, _e = fin()
+    from app.path_utils import get_data_path
+    mine = os.path.join(get_data_path("ja"), "HighPriority", "海辺の図書室", "海辺の図書室 第01話.srt")
+    _drop_on(win.tab_buttons["finished"], [mine])
+    assert win.finished.import_job is None and calls(writer, "import_finished") == []
+    assert win.bar_line.full() == strings.FIN_IMPORT_IN_LIBRARY.format(name=os.path.basename(mine))
+
+
+def test_L1_N7_each_menu_is_deleted_once_it_closes(fin):
+    from PyQt6 import sip
+    _seed, win, _w, _e = fin()
+    _i, row = finished_rows(win)[0]
+    menus = [win.finished.menu(row, QPoint(10, 10))]
+    menus[0].close()
+    menus.append(win.finished.pick())
+    menus[1].close()
+    QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert all(sip.isdeleted(m) for m in menus)
+
+
+def test_L1_IK1_the_finish_toasts_choice_says_what_finisheds_menu_says_and_never_that_anki_changed():
+    assert strings.DRAG_TAKE_OUT == strings.FIN_MENU["cards-out"][0]
+    assert "Anki" not in strings.DRAG_TAKE_OUT + strings.DRAG_TAKE_OUT_TIP
+
+
+def test_L1_S6_an_import_whose_change_reaches_the_toast_late_still_says_added_never_nothing_new(real, tmp_path):
+    """S6: *Nothing new* was guessed from the writer going idle twice, 50 ms apart. When the change reached the toast
+    later (the journal rewritten first: up to 10 tries) a real import read as *Nothing new* and its Undo never showed.
+    Now the toast waits for the writer's own answer: saved with a change → *Added N*."""
+    store, win, writer = real()
+    folder = _a_show_folder(tmp_path)
+    late = writer.on_saved
+
+    def slow(change, label):
+        time.sleep(0.4)                                # the journal's rewrite before the saved signal
+        late(change, label)
+    writer.on_saved = slow
+    win.finished.import_paths([str(folder)])
+    assert wait_until(lambda: win.toasts.card.message == strings.FIN_IMPORTED.format(n="3"), 15)
+    assert win.bar_line.full() != strings.FIN_IMPORT_NOTHING
+
+
+def test_L1_S6_an_import_the_store_refuses_as_it_lands_says_why_never_nothing_new(real, tmp_path, monkeypatch):
+    store, win, writer = real()
+    folder = _a_show_folder(tmp_path)
+    before = len(store.ids("graduated"))
+
+    def refused(self, *a, **k):
+        raise ls.StoreReadOnly("the library store is damaged and needs Repair")
+    monkeypatch.setattr(ls.Store, "import_finished", refused)
+    win.finished.import_paths([str(folder)])
+    assert wait_until(lambda: win.finished.import_job is None and win.finished._landing is None, 15)
+    assert wait_until(lambda: win.bar_line.full().startswith(strings.FIN_IMPORT_FAILED.format(why="")), 5)
+    assert not win.toasts.shown and len(store.ids("graduated")) == before
+    assert not win.moves.tickets
+
+
+def test_L1_N6_ctrl_z_while_an_import_copies_takes_back_the_import_never_the_move_before_it(real, tmp_path,
+                                                                                             monkeypatch):
+    """AD2-5: Ctrl+Z takes back the newest command the window gave, as it lands. The import's ticket wasn't among the
+    window's, so Ctrl+Z during its copy undid the move made before it."""
+    store, win, writer = real()
+    folder = _a_show_folder(tmp_path)
+    before = len(store.ids("graduated"))
+    now = list(store.ids("now"))
+    writer.move([now[-1]], "now", before_id=now[0])    # the move before the import
+    assert wait_until(lambda: store.ids("now")[0] == now[-1] and writer.can_undo(), 5)
+    real_copy, go, copying = ls.copy_into_finished, threading.Event(), threading.Event()
+
+    def held_copy(*a, **k):
+        copying.set()
+        go.wait(10)
+        return real_copy(*a, **k)
+    monkeypatch.setattr(ls, "copy_into_finished", held_copy)
+    assert win.finished.import_paths([str(folder)]) is not None
+    assert copying.wait(5)
+    win.moves.undo_last()                              # Ctrl+Z while it copies
+    go.set()
+    assert wait_until(lambda: win.finished.import_job is None and win.finished._landing is None, 15)
+    assert wait_until(lambda: len(store.ids("graduated")) == before and writer.pending() == 0, 10)
+    assert store.ids("now")[0] == now[-1]              # the move before it stands
+    assert win.toasts.card.message != strings.FIN_IMPORTED.format(n="3")
+
+
+def test_H_T2_an_import_whose_writer_stopped_says_it_lands_later_and_frees_the_importer(real, tmp_path,
+                                                                                         short_lock_wait):
+    """T2: the writer stopped (a language switch, the quit) with the import queued: the job waited for ever, the
+    importer's button stayed *Stop adding* and every later import waited behind it. Now it ends with a line."""
+    store, win, writer = real()
+    folder = _a_show_folder(tmp_path)
+    holder = LockHolder(store.db_path)                 # another program's save: the import can't land
+    try:
+        assert win.finished.import_paths([str(folder)]) is not None
+        assert wait_until(lambda: writer.pending() == 1, 15)
+        writer.finish(time.monotonic() + 0.3)          # the switch's wait ran out: the writer let go, journalled
+        assert wait_until(lambda: win.finished.import_job is None and win.finished._landing is None, 10)
+    finally:
+        holder.release()
+    assert wait_until(lambda: win.bar_line.full() == strings.FIN_IMPORT_LATER, 5)
+    assert win.page_widgets["finished"].importer.text() == strings.FIN_IMPORT

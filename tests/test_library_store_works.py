@@ -330,6 +330,27 @@ def test_join_across_tiers_moves_then_joins_in_one_undo(language):
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
+def test_H_Bo1_a_part_never_joins_a_finished_one_so_nothing_reaches_finished_unfinished(language):
+    """W3.2 H (Bo1): joined onto a part that is wholly in Finished, a Current part's episodes went to Finished with no
+    watched mark, no finished date and no `finished` event — a show "finished" that Finished's own rules never
+    finished. The window joins onto Current rows only; a stale row's race is refused, nothing written."""
+    store = migrated(language, shows=2, episodes=4)
+    show = [i for i in store.ids("goal") if store.item(i)["parent_folder"]]
+    members = _members(store, _piece(store, show[0]))
+    store.split(_piece(store, members[0]), members[2])
+    done, rest = _piece(store, members[0]), _piece(store, members[2])
+    store.finish(members[:2], keep_cards=True)
+    assert {store.item(i)["tier"] for i in members[:2]} == {"graduated"}
+    order = {t: store.ids(t) for t in ls.TIERS}
+    with pytest.raises(ValueError):
+        store.join([done, rest])
+    assert {t: store.ids(t) for t in ls.TIERS} == order and _piece(store, members[2]) == rest
+    assert store.join([rest, done]) is not None                 # the other way: the finished part comes back
+    assert pieces_ok(store) is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 def test_pieces_stay_contiguous_runs_of_one_work(language):
     """The property (05 §5.2 rule 1), over random command sequences with the Soon line kept: moves anywhere (into
     pieces, across the line, across tiers), set_tier, Adds into show folders and loose, removes and Put back, undos of

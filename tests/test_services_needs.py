@@ -184,6 +184,16 @@ def test_a_drive_offline_is_one_entry_without_remove_and_remove_all_never_counts
     assert [e.title for e in one if e.kind == needs.OFFLINE] == ["Drive E: is offline — 3 files"]
 
 
+def test_an_offline_drive_the_user_kept_leaves_the_page_and_stays_off_it(tmp_path):
+    """Its *Keep its words* is answered by its key: the card goes, and a later look never brings it back."""
+    view = view_of([(1, "E-drive/Anime/" + FRIEREN, frieren_eps(1, 2), {0: MISSING, 1: MISSING})])
+    root = needs.Root(path="C:\\Surasura\\data\\ja\\E-drive", rel="E-drive", label="Drive E:", files=2)
+    off = [e for e in needs.entries(view, offline_roots=[root]) if e.kind == needs.OFFLINE][0]
+    assert needs.answer("ja", needs.answer_keys(off)) == 1
+    out = needs.entries(view, offline_roots=[root], answered=needs.read_answered("ja"))
+    assert [e for e in out if e.kind == needs.OFFLINE] == [] and [e for e in out if e.kind == needs.GONE] == []
+
+
 def test_the_whole_library_offline_is_one_entry_that_holds_every_file(tmp_path):
     view = view_of([(1, FRIEREN_DIR, frieren_eps(1, 1), {0: MISSING})])
     roots = needs.find_offline("ja", [r.rel_path for r in view.rows[0].episodes], data_dir=str(tmp_path / "gone"))
@@ -302,8 +312,20 @@ def test_N10_a_drive_kept_while_offline_is_asked_again_after_it_came_back_and_we
     assert needs.prune("ja", plugged, offline_roots=[]) == 2 and needs.read_answered("ja") == frozenset()
     later = needs.entries(view, offline_roots=[root], seen=needs.read_seen("ja"), answered=needs.read_answered("ja"))
     assert [e.kind for e in later] == [needs.OFFLINE] and needs.badge(later) == 1
+def test_a_seen_file_write_that_fails_half_way_leaves_the_last_one_whole(monkeypatch):
+    """Written beside it and swapped in: a crash or a full disk mid-write never truncates what was seen and kept."""
+    needs.mark_seen("ja", [f"gone:1:{FRIEREN}"])
+    needs.answer("ja", ["item:7"])
+    real = json.dump
 
-
+    def half(obj, f, **kw):
+        f.write('{"version": 1, "seen": [')
+        raise OSError(28, "No space left on device")
+    monkeypatch.setattr(needs.json, "dump", half)
+    with pytest.raises(OSError):
+        needs.mark_seen("ja", [f"gone:2:{YUUSHA}"])
+    monkeypatch.setattr(needs.json, "dump", real)
+    assert needs.read_seen("ja") == {f"gone:1:{FRIEREN}"} and needs.read_answered("ja") == {"item:7"}
 def test_keep_its_words_takes_the_file_off_the_page_and_keep_all_takes_every_show(tmp_path):
     """L2.2 9b: *Keep its words* leaves the file missing and counted — the answer lives here, the store unchanged."""
     view = view_of([(1, FRIEREN_DIR, frieren_eps(9, 10), {0: MISSING, 1: MISSING}),
@@ -489,6 +511,22 @@ def test_find_videos_never_takes_a_cloud_placeholder(library, monkeypatch):
     assert got["Ep 10"] == (None, '✗ "10" is still in the cloud: download it first')
 
 
+def test_find_videos_never_takes_a_cloud_placeholder_in_the_shows_own_folder(library, monkeypatch):
+    """The show's own folder holds only a placeholder for Ep 9: never opened, the video folders' copy is the answer."""
+    data, settings, entry, _root = library
+    real = runner._on_disk
+    monkeypatch.setattr(runner, "_on_disk", lambda p: False if p.endswith("[ABCD].mkv") else real(p))
+    got = {label: (path, why) for label, path, why in needs.find_videos("ja", entry, settings, data_dir=data)}
+    assert got["Ep 9"][0] is not None and os.path.basename(got["Ep 9"][0]) == f"{FRIEREN} 09.mp4"
+
+
+def test_find_videos_never_guesses_between_two_videos_in_the_shows_own_folder(library):
+    data, settings, entry, _root = library
+    _touch(os.path.join(data, "HighPriority", FRIEREN, f"{FRIEREN} 第09話 (BD).mp4"))
+    got = {label: (path, why) for label, path, why in needs.find_videos("ja", entry, settings, data_dir=data)}
+    assert got["Ep 9"] == (None, '✗ 2 videos have "09" in their names: choose one')
+
+
 def test_find_videos_serves_the_no_video_card_only():
     """IK-2: a gone subtitle is relinked; it is never handed a video."""
     view = view_of([(1, FRIEREN_DIR, frieren_eps(9, 9), {0: MISSING})])
@@ -540,3 +578,23 @@ def test_chinese_shows_read_the_same_way_and_find_their_videos_by_episode(tmp_pa
                             data_dir=str(data))
     assert [(label, os.path.basename(path)) for label, path, _w in got] == [
         ("Ep 9", f"{title} 第09集.mp4"), ("Ep 10", f"{title} 第10集.mkv")]
+
+
+def test_H_W5_an_answer_never_writes_over_a_seen_file_it_couldnt_read():
+    """W5: a seen file that couldn't be read (half written by another window, held, a newer Surasura's) read as empty,
+    and the next answer wrote the whole file back over every earlier *Keep its words*. A write-back reads strictly: a
+    file it can't read fails the write and stays as it was; one that isn't there is a first answer."""
+    assert needs.answer("ja", [needs.item_key(1)]) == 1                  # no file yet: written
+    path = needs.seen_path("ja")
+    for broken in ('{"version": 1, "seen": [], "answered": ["item:1"', '{"version": 2, "seen": [], "answered": []}'):
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(broken)
+        with pytest.raises(ValueError):
+            needs.answer("ja", [needs.item_key(2)])
+        with pytest.raises(ValueError):
+            needs.mark_seen("ja", ["gone:1:abc"])
+        with pytest.raises(ValueError):
+            needs.prune("ja", view_of([(1, FRIEREN_DIR, frieren_eps(9, 10), {})]))
+        with open(path, encoding="utf-8") as f:
+            assert f.read() == broken, "never written over"
+        assert needs.read_answered("ja") == frozenset()                   # (the page still reads it as nothing)

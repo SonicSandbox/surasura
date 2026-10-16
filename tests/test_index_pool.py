@@ -279,6 +279,155 @@ def test_two_first_opens_at_once_never_delete_the_store(monkeypatch):
     assert errors == [] and deleted == []
 
 
+@pytest.mark.parametrize("hold_at", ["CREATE INDEX", "PRAGMA user_version ="])
+def test_a_second_first_open_mid_rebuild_never_drops_the_firsts_tables(monkeypatch, hold_at):
+    """The load-flakes review's row 3, stepped by hand (no sleeps): A's first open is held mid-build — after its CREATE
+    TABLE aggregate and before its CREATE INDEX on it, or before it writes the version — and B's first open then runs. Before the fix B read user_version 0
+    too and ran the drops, A's CREATE INDEX met "no such table: main.aggregate", and open_store deleted the store as
+    damaged. Now the build runs inside BEGIN IMMEDIATE and user_version is read again inside the lock: B waits, then
+    finds A's finished store and builds nothing (the version written after the lock is let go would let B build again).
+    Both opens succeed, nothing is deleted, the store is whole."""
+    db = os.path.join(h.root(), "stepped", "shared.db")
+    os.makedirs(os.path.dirname(db))
+    deleted = []
+    real_delete = ti._delete_db
+    monkeypatch.setattr(ti, "_delete_db", lambda path: (deleted.append(path), real_delete(path)))
+    a_held, b_asked, a_done = threading.Event(), threading.Event(), threading.Event()
+    seen = {"A": [], "B": []}
+    real_connect = sqlite3.connect
+
+    def trace(sql):
+        # runs on the thread stepping the statement, before the statement takes any lock
+        who = threading.current_thread().name
+        if who not in seen:
+            return
+        seen[who].append(sql)
+        if who == "A" and hold_at in sql and not a_held.is_set():
+            a_held.set()
+            b_asked.wait(30)                    # B has asked for the write lock (fixed) or dropped A's tables (bug)
+        elif who == "B" and ("BEGIN IMMEDIATE" in sql or "DROP TABLE IF EXISTS bound" in sql):
+            b_asked.set()
+            if "DROP" in sql:
+                a_done.wait(30)                 # the bug: B's drop of aggregate (the statement before) has landed
+
+    def connect(*args, **kwargs):
+        c = real_connect(*args, **kwargs)
+        c.set_trace_callback(trace)
+        return c
+    monkeypatch.setattr(sqlite3, "connect", connect)
+    errors = {}
+
+    def opener():
+        who = threading.current_thread().name
+        try:
+            ti.open_store("ja", path=db).close()
+        except Exception:
+            errors[who] = traceback.format_exc()
+        finally:
+            if who == "A":
+                a_done.set()
+    a = threading.Thread(target=opener, name="A")
+    a.start()
+    assert a_held.wait(30), f"A never reached {hold_at}"
+    b = threading.Thread(target=opener, name="B")
+    b.start()
+    a.join(60)
+    b.join(60)
+    assert not a.is_alive() and not b.is_alive()
+    assert errors == {} and deleted == []
+    assert not any(s.lstrip().startswith(("DROP", "CREATE")) for s in seen["B"]), "B built over A's store"
+    conn = real_connect(db)
+    try:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == ti.SCHEMA_VERSION
+        names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master")}
+        assert {"files", "aggregate", "bound", "meta", "idx_aggregate_count"} <= names
+    finally:
+        conn.close()
+
+
+def test_the_journal_switch_commits_at_synchronous_normal(monkeypatch):
+    """The review's row 4: a new file's switch to WAL is a rollback-mode commit; at the default synchronous=FULL it
+    fsyncs a journal for each attempt, and under an fsync storm one attempt's wait can use the loop's whole 5 s. NORMAL
+    is set before the switch."""
+    statements = []
+    real_connect = sqlite3.connect
+    me = threading.current_thread()
+
+    def connect(*args, **kwargs):
+        c = real_connect(*args, **kwargs)
+        if threading.current_thread() is me:            # this test's open only, never a thread left by another test
+            c.set_trace_callback(statements.append)
+        return c
+    monkeypatch.setattr(sqlite3, "connect", connect)
+    db = os.path.join(h.root(), "sync", "new.db")
+    os.makedirs(os.path.dirname(db))
+    ti.open_store("ja", path=db).close()
+    pragmas = [s for s in statements if s.startswith("PRAGMA synchronous") or s.startswith("PRAGMA journal_mode")]
+    assert pragmas[:2] == ["PRAGMA synchronous=NORMAL", "PRAGMA journal_mode=WAL"]
+
+
+@pytest.mark.parametrize("table", ["files", "aggregate", "bound", "meta"])
+def test_a_store_at_the_version_missing_a_table_is_built_again(tmp_path, table):
+    """The half-built guard, looked at outside the lock and again inside it: user_version says this schema, but a table
+    is gone (a build cut short by an older copy, or a hand edit) — the open builds the schema again instead of handing
+    out a store whose first read fails."""
+    db = str(tmp_path / "half.db")
+    ti.open_store("ja", path=db).close()
+    conn = sqlite3.connect(db)
+    conn.execute(f"DROP TABLE {table}")
+    conn.commit()
+    conn.close()
+    store = ti.open_store("ja", path=db)
+    try:
+        assert store.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+        assert store.conn.execute("PRAGMA user_version").fetchone()[0] == ti.SCHEMA_VERSION
+    finally:
+        store.close()
+
+
+def test_a_busy_look_at_a_current_store_is_raised_and_never_builds_it_again(tmp_path, monkeypatch):
+    """The half-built check reads "no such table" as not ready, and nothing else: a busy answer to its look at a store
+    at this version is raised (open_store never deletes on it) — never read as "build it again", which drops every
+    table and its rows."""
+    db = str(tmp_path / "current.db")
+    store = ti.open_store("ja", path=db)
+    store.set_meta("kept", "yes")
+    store.close()
+    real_connect = sqlite3.connect
+
+    class Busy(sqlite3.Connection):
+        def execute(self, sql, *args):
+            if sql.startswith("SELECT 1 FROM aggregate"):
+                raise sqlite3.OperationalError("database is locked")
+            return super().execute(sql, *args)
+    monkeypatch.setattr(sqlite3, "connect", lambda *a, **kw: real_connect(*a, factory=Busy, **kw))
+    deleted = []
+    monkeypatch.setattr(ti, "_delete_db", deleted.append)
+    with pytest.raises(sqlite3.OperationalError, match="locked"):
+        ti.open_store("ja", path=db)
+    monkeypatch.setattr(sqlite3, "connect", real_connect)
+    store = ti.open_store("ja", path=db)
+    try:
+        assert deleted == [] and store.get_meta("kept") == "yes"
+    finally:
+        store.close()
+
+
+def test_a_locked_store_is_never_deleted(tmp_path, monkeypatch):
+    """Busy is not damage: an open that meets "database is locked" while it builds raises it and leaves the file."""
+    db = str(tmp_path / "busy.db")
+    ti.open_store("ja", path=db).close()
+    deleted = []
+    monkeypatch.setattr(ti, "_delete_db", deleted.append)
+
+    def busy(conn):
+        raise sqlite3.OperationalError("database is locked")
+    monkeypatch.setattr(ti, "_ensure_schema", busy)
+    with pytest.raises(sqlite3.OperationalError, match="locked"):
+        ti.open_store("ja", path=db)
+    assert deleted == [] and os.path.exists(db)
+
+
 def test_a_damaged_store_is_still_rebuilt():
     """The corruption path stays for a file that really is damaged."""
     db = os.path.join(h.root(), "damaged.db")
@@ -286,3 +435,169 @@ def test_a_damaged_store_is_still_rebuilt():
         f.write(b"this is not a database" * 100)
     ti.open_store("ja", path=db).close()
     assert sqlite3.connect(db).execute("PRAGMA user_version").fetchone()[0] == ti.SCHEMA_VERSION
+
+
+# --- only real damage drops a store (follow-up (b) of the first-open race) ---------------------------------------- #
+def _sqlite_error(cls, text, code, name):
+    """An error as SQLite's own carry it (Python 3.11: `sqlite_errorcode` / `sqlite_errorname`); `code` None: one raised
+    by hand, read by its text alone."""
+    error = cls(text)
+    if code is not None:
+        error.sqlite_errorcode, error.sqlite_errorname = code, name
+    return error
+
+
+def _failing_connect(monkeypatch, at, error, times=1):
+    """sqlite3.connect whose connections raise `error` at the first `times` statements starting with `at`; the count."""
+    real_connect = sqlite3.connect
+    raised = []
+
+    class Failing(sqlite3.Connection):
+        def execute(self, sql, *args):
+            if sql.startswith(at) and len(raised) < times:
+                raised.append(sql)
+                raise error
+            return super().execute(sql, *args)
+    monkeypatch.setattr(sqlite3, "connect", lambda *a, **kw: real_connect(*a, factory=Failing, **kw))
+    return raised
+
+
+def _store_with_a_row(db):
+    store = ti.open_store("ja", path=db)
+    store.set_meta("kept", "yes")
+    store.close()
+
+
+NOT_DAMAGE = [
+    pytest.param(sqlite3.OperationalError, "disk I/O error", 266, "SQLITE_IOERR_READ", id="io-error"),
+    pytest.param(sqlite3.OperationalError, "disk I/O error", 778, "SQLITE_IOERR_WRITE", id="io-write-error"),
+    pytest.param(sqlite3.OperationalError, "database or disk is full", 13, "SQLITE_FULL", id="disk-full"),
+    pytest.param(sqlite3.OperationalError, "locking protocol", 15, "SQLITE_PROTOCOL", id="locking-protocol"),
+]
+
+
+@pytest.mark.parametrize("coded", [True, False], ids=["coded", "by-text"])
+@pytest.mark.parametrize("cls, text, code, name", NOT_DAMAGE)
+def test_a_disk_or_locking_error_at_the_open_is_raised_and_never_deletes_the_store(tmp_path, monkeypatch,
+                                                                                  cls, text, code, name, coded):
+    """A full disk, a disk I/O error or SQLite's "locking protocol" (the WAL index changing as it looked) says nothing of
+    the file: met at the open's look at a current store, it is raised and the store is kept — before, every database
+    error but "locked" deleted it, and a passing I/O error cost a whole library's tokens. The next open, the error gone,
+    reads the store as it was. Read by its code, and by its text when raised by hand."""
+    db = str(tmp_path / "current.db")
+    _store_with_a_row(db)
+    deleted = []
+    monkeypatch.setattr(ti, "_delete_db", lambda path: deleted.append(path))
+    raised = _failing_connect(monkeypatch, "SELECT 1 FROM aggregate",
+                              _sqlite_error(cls, text, code if coded else None, name))
+    with pytest.raises(cls, match=text):
+        ti.open_store("ja", path=db)
+    assert raised and deleted == []
+    monkeypatch.undo()
+    store = ti.open_store("ja", path=db)
+    try:
+        assert store.get_meta("kept") == "yes"
+    finally:
+        store.close()
+
+
+def test_a_full_disk_while_an_old_store_is_built_again_is_raised_and_keeps_the_file(tmp_path, monkeypatch):
+    """A real SQLITE_FULL: a store from an older version is built again at the open, and the disk can't take the new
+    tables (SQLite's page cap stands in for the full disk). The build rolls back and the error is raised; the file is
+    not deleted — a full disk never deletes a store (the brief's rule; this one's rows are old, and the next good open
+    drops them) — and the rollback leaves it as it was."""
+    db = str(tmp_path / "old.db")
+    old = sqlite3.connect(db)
+    old.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
+    old.execute("INSERT INTO meta VALUES ('kept', 'yes')")
+    old.execute(f"PRAGMA user_version = {ti.SCHEMA_VERSION - 1}")
+    old.commit()
+    pages = old.execute("PRAGMA page_count").fetchone()[0]
+    old.close()
+    deleted = []
+    monkeypatch.setattr(ti, "_delete_db", lambda path: deleted.append(path))
+    real_connect = sqlite3.connect
+
+    def capped(*a, **kw):
+        c = real_connect(*a, **kw)
+        c.execute(f"PRAGMA max_page_count = {pages}")      # no room for one more page
+        return c
+    monkeypatch.setattr(sqlite3, "connect", capped)
+    with pytest.raises(sqlite3.OperationalError) as caught:
+        ti.open_store("ja", path=db)
+    assert caught.value.sqlite_errorcode & 0xFF == 13 and deleted == []
+    monkeypatch.undo()
+    kept = sqlite3.connect(db)
+    try:
+        assert kept.execute("SELECT value FROM meta WHERE key = 'kept'").fetchone() == ("yes",)
+    finally:
+        kept.close()
+
+
+@pytest.mark.parametrize("coded", [True, False], ids=["coded", "by-text"])
+def test_a_locking_protocol_answer_to_the_wal_switch_is_asked_again(tmp_path, monkeypatch, coded):
+    """SQLITE_PROTOCOL is SQLite's "try again" (the WAL index moved under it): the new file's switch to WAL waits on it
+    as on "locked" and asks again — the open succeeds and deletes nothing. Before, the busy check missed it: the open
+    deleted the file as damaged. By its code, and by its text when raised by hand."""
+    db = str(tmp_path / "new.db")
+    deleted = []
+    monkeypatch.setattr(ti, "_delete_db", lambda path: deleted.append(path))
+    raised = _failing_connect(monkeypatch, "PRAGMA journal_mode=WAL", _sqlite_error(
+        sqlite3.OperationalError, "locking protocol", 15 if coded else None, "SQLITE_PROTOCOL"), times=2)
+    ti.open_store("ja", path=db).close()
+    assert len(raised) == 2 and deleted == []
+    monkeypatch.undo()
+    c = sqlite3.connect(db)
+    try:
+        assert c.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        assert c.execute("PRAGMA user_version").fetchone()[0] == ti.SCHEMA_VERSION
+    finally:
+        c.close()
+
+
+DAMAGE = [
+    pytest.param(sqlite3.DatabaseError, "database disk image is malformed", 779, "SQLITE_CORRUPT_INDEX", id="corrupt"),
+    pytest.param(sqlite3.DatabaseError, "database disk image is malformed", None, None, id="corrupt-by-text"),
+    pytest.param(sqlite3.DatabaseError, "malformed database schema (files)", None, None, id="schema-by-text"),
+]
+
+
+@pytest.mark.parametrize("cls, text, code, name", DAMAGE)
+def test_a_corrupt_store_is_still_deleted_and_built_again(tmp_path, monkeypatch, cls, text, code, name):
+    """Real damage keeps its path: SQLITE_CORRUPT ("database disk image is malformed"; here its extended code, an index
+    found damaged) met at the open deletes the store and builds it again — by its code, and by its text when raised by
+    hand (SQLite's own words for it)."""
+    db = str(tmp_path / "corrupt.db")
+    _store_with_a_row(db)
+    deleted = []
+    real_delete = ti._delete_db
+    monkeypatch.setattr(ti, "_delete_db", lambda path: (deleted.append(path), real_delete(path)))
+    _failing_connect(monkeypatch, "SELECT 1 FROM aggregate", _sqlite_error(cls, text, code, name))
+    store = ti.open_store("ja", path=db)
+    try:
+        assert deleted == [db] and store.get_meta("kept") is None
+        assert store.conn.execute("PRAGMA user_version").fetchone()[0] == ti.SCHEMA_VERSION
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("coded", [True, False], ids=["coded", "by-text"])
+def test_an_error_is_read_by_its_code_before_its_text(tmp_path, monkeypatch, coded):
+    """The code decides when SQLite gives one: "malformed JSON" is SQLITE_ERROR (a bad argument to a JSON function),
+    no damage to the file, though its text says "malformed" — raised, the store kept. Without a code, only SQLite's own
+    words for damage count, so it is raised then too."""
+    db = str(tmp_path / "current.db")
+    _store_with_a_row(db)
+    deleted = []
+    monkeypatch.setattr(ti, "_delete_db", lambda path: deleted.append(path))
+    _failing_connect(monkeypatch, "SELECT 1 FROM aggregate", _sqlite_error(
+        sqlite3.OperationalError, "malformed JSON", 1 if coded else None, "SQLITE_ERROR"))
+    with pytest.raises(sqlite3.OperationalError, match="malformed JSON"):
+        ti.open_store("ja", path=db)
+    assert deleted == []
+    monkeypatch.undo()
+    store = ti.open_store("ja", path=db)
+    try:
+        assert store.get_meta("kept") == "yes"
+    finally:
+        store.close()

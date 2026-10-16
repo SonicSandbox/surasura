@@ -208,18 +208,22 @@ class ArrivalNumbers:
                     todo.append((item_id, path, placed, chained))
         known = token[1] if token else None
         client = self.client if todo else None
+        language = self.language if todo else None
         for item_id, path, placed, chained in todo:
             self.requests += 1
             try:
                 client.estimate(path, placed=placed,
-                                     callback=lambda ans, i=item_id, c=chained, k=known: self._answer(i, c, k, ans))
+                                     callback=lambda ans, i=item_id, c=chained, k=known, l=language:
+                                     self._answer(i, c, k, ans, l))
             except Exception as e:                  # a client that can't take it: the dash stays
                 print(f"New arrivals: an estimate couldn't be asked: {e!r}")
 
-    def _answer(self, item_id, chained, known, answer):
+    def _answer(self, item_id, chained, known, answer, language=None):
         n = answer_number(answer, chained)
         if n is None:
             return                                  # a failure shows nothing (never an error)
+        if language is not None and language != self.language:
+            return                                  # W3.2 H: asked before a switch — another library's item ids
         sig = (answer.get("plan"), known)
         with self._lock:
             self.kept[(item_id, sig[0], sig[1])] = n

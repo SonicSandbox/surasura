@@ -82,6 +82,7 @@ def real(qapp):
     def make(language="ja", rules=None, watch=True):
         store = migrated(language)                     # the outside writer's handle (hato, another program)
         store.set_library_options(arrivals_on=True)
+        settings_manager.save_keys({"target_language": language})      # the window's language is its library's (P0)
         if rules is not None:
             settings_manager.save_keys({"placing_rules": rules})
         opener = moves_module.store_opener(language)
@@ -306,7 +307,86 @@ def test_the_downloaders_window_hands_its_files_to_new_arrivals_and_its_done_lin
 
 
 def test_without_a_writer_the_door_hands_nothing_and_the_files_wait_in_processed(qapp):
-    assert windows.youtube_arrivals(FakeShell(None)) is None
+    """L1 N2: the door is always the callable (the downloader's window is kept and raised, so one opened before the
+    library opens must still hand its files over); with no library open it says so and the files wait."""
+    shell_ = FakeShell(None)
+    complete = windows.youtube_arrivals(shell_)
+    with pytest.raises(RuntimeError) as got:
+        complete([os.path.join(roots("ja")[0], "Processed", "ぼっち・ざ・ろっく！ 第1話 [AbCdEfGhIj1].txt")])
+    assert str(got.value) == strings.YT_NO_LIBRARY
+
+
+def test_L1_N2_a_downloader_opened_before_the_library_hands_its_files_to_the_library_opened_since(real):
+    words = names("ja")
+    lib = real()
+    shell_ = FakeShell(None)
+    complete = windows.youtube_arrivals(shell_)          # made while no library was open
+    shell_.services.writer = lib.writer                  # P0 opens the library after the first frame
+    path = _download(lib.data_dir, words[90], words[91], "LateLibrary")
+    complete([path])
+    assert wait_until(lambda: _item(lib.store, lib.data_dir, path) in _arrival_ids(lib.page.view_model), 5)
+
+
+def test_L1_S3_files_from_the_other_languages_processed_are_refused_with_the_words_and_never_queued(qapp):
+    """The language switched mid-download: the files are under the old data/<lang>. Each record used to be refused
+    on its own and only printed, while the downloader said *handed to your library*; now the hand-off fails at once
+    and the downloader says why (they wait in the other library's Processed)."""
+    writer = moves_module.Writer(moves_module.store_opener("ja"), "ja", journal_file=moves_module.journal_path("ja"),
+                                 words=strings.MOVE_WORDS)
+    words = names("zh")
+    path = os.path.join(roots("zh")[0], "Processed", f"{words[3]} [Zx9_-Ab3CdE].txt")
+    with pytest.raises(RuntimeError) as got:
+        windows.youtube_arrivals(FakeShell(writer))([path])
+    assert str(got.value) == strings.YT_OTHER_LIBRARY
+    assert writer.pending() == 0
+
+
+def test_L1_S3_the_done_line_says_how_many_werent_added():
+    one, two = strings.yt_transcripts(1), strings.yt_transcripts(2)
+    assert windows.arrived_line(2, 0, 0) == strings.YT_ARRIVED_WAITING.format(what=two)
+    assert windows.arrived_line(1, 0, 1) == (strings.YT_ARRIVED_WAITING.format(what=one) + " · "
+                                             + strings.YT_NOT_ADDED.format(what=one))
+    assert windows.arrived_line(0, 0, 2) == strings.YT_NOT_ADDED.format(what=two)     # said even when none landed
+
+
+def test_L1_N1_a_channel_whose_name_holds_a_bar_stays_whole_and_two_such_channels_stay_two_titles(tmp_path):
+    def written(name, channel, video):                   # the downloader's file name holds no "|": the header does
+        path = tmp_path / f"{name} [{video}].txt"
+        path.write_text(f"{name}\n{channel} | 2026-10-14 | 12:34\nCaptions: ja (manual)\n\n{name}\n", encoding="utf-8")
+        return str(path)
+    a = written("日曜劇場 第1話", "TBS | 公式", "TbsVideo001")
+    b = written("ニュース23", "TBS | NEWS", "TbsVideo002")
+    ra, rb = windows.youtube_record(a, "ja"), windows.youtube_record(b, "ja")
+    assert ra["channel_id"] == "TBS | 公式" and rb["channel_id"] == "TBS | NEWS"
+    assert ra["show"] != rb["show"]
+
+
+def test_L1_B2_two_downloads_into_one_channels_folder_both_reach_new_arrivals(real):
+    """B2: from the second video of one channel the downloader writes into `Processed/<channel>/`, and a refreshed
+    playlist into its old folder. The diff was top level only: the second batch was `[]`, *No new transcripts*, and
+    its files stayed in Processed, which no sync walks. Now the new files are found at any depth."""
+    view = pytest.importorskip("modules.youtube_downloader.downloader_view")
+    lib = real()
+    words = names("ja")
+    channel = words[92]
+
+    def fake(ks):
+        def extract(urls, folder, lang, keep_timestamps, channel_first, log, should_stop):
+            for k in ks:
+                _download(lib.data_dir, words[k], channel, f"ChanVid{k:04d}", folder=f"Processed/{channel}")
+        return extract
+    complete = windows.youtube_arrivals(lib.win)
+    run = lambda ks: view.run_extract(["https://youtu.be/dQw4w9WgXcQ"], "ja", "Japanese", True, True,  # noqa: E731
+                                      lambda line: None, ensure=lambda log: True, extract=fake(ks))
+    first = run((93, 94))
+    assert len(first) == 2
+    complete(first)
+    second = run((95,))
+    assert [os.path.basename(p) for p in second] == [f"{channel} - {words[95]} [ChanVid0095].txt"]
+    complete(second)
+    every = first + second
+    assert wait_until(lambda: all(_item(lib.store, lib.data_dir, p) in _arrival_ids(lib.page.view_model)
+                                  for p in every), 5)
 
 
 def test_E4_a_read_only_store_refuses_the_downloads_and_says_they_wait_in_processed(qapp):

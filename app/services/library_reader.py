@@ -167,6 +167,11 @@ class LibraryReader:
         self._hold.clear()
         self._wake.set()
 
+    def options(self):
+        """The store's options as the last feed read gave them ({soon_line, mine_line, arrivals_on}; empty until the
+        first read): Settings' store lines show them (W3.3 P6). A copy; any thread."""
+        return dict(self._options)
+
     def view(self):
         with self._lock:
             return self._view
@@ -178,25 +183,33 @@ class LibraryReader:
         self._wake.set()
 
     def start(self):
-        if self._thread is None:
-            self._thread = threading.Thread(target=self._run, name="library-reader", daemon=True)
-            self._thread.start()
+        """The thread started — never once `stop()` was asked (W3.2 P0: a reader a second language switch let go)."""
+        with self._lock:
+            if self._thread is None and not self._stop.is_set():
+                self._thread = threading.Thread(target=self._run, name="library-reader", daemon=True)
+                self._thread.start()
         return self
+
+    def stopped(self):
+        return self._stop.is_set()
 
     def refresh(self):
         """Look now, rather than at the next poll (the window's own change, a test)."""
         self._wake.set()
 
     def stop(self, timeout=2.0):
-        self._stop.set()
+        with self._lock:
+            self._stop.set()
+            thread = self._thread
         self._wake.set()
-        if self._thread is not None:
-            self._thread.join(timeout)
+        if thread is not None:
+            thread.join(timeout)
 
     # --- the thread ------------------------------------------------------------------------------------------------- #
     def _run(self):
         try:
-            self._first_screen()
+            if not self._stop.is_set():
+                self._first_screen()
         except Exception:
             pass                                    # a cache that can't be read is no cache
         while not self._stop.is_set():
@@ -211,11 +224,22 @@ class LibraryReader:
         except Exception:
             pass                                        # never in the way of closing (the store's handle below)
         try:
-            h = self.opener.handle()
-            if h is not None and hasattr(h, "close") and getattr(self.opener, "closes_handles", False):
-                h.close()
+            close = getattr(self.opener, "close", None)
+            if close is not None:
+                close()                                 # this thread's handle, as the store closes it (`StoreOpener.close`,
+            else:                                       # §6.12: never the collector's; a language switch drops a reader)
+                h = self.opener.handle()
+                if h is not None and hasattr(h, "close") and getattr(self.opener, "closes_handles", False):
+                    h.close()
         except Exception:
             pass
+        # W3.2 P0 (AD0-2): the library copy and the row cache let go — hundreds of thousands of objects at 20,000
+        # files — so a reader a language switch dropped holds none of them, whoever still holds the reader. The last
+        # view stays (`view()`: the window shows it until the next language's first view comes)
+        self._items, self._works, self._cards, self._options = {}, {}, {}, {}
+        self._tiers, self._pos, self._dirty, self._moved_in = None, {}, set(), {}
+        self.row_cache = view_rows.RowCache()
+        self._cache_due = None
 
     def _handle(self):
         """(mode, reason, handle). The mode is asked of the opener at the start, after a failed read, and every few
@@ -309,6 +333,12 @@ class LibraryReader:
         """Until the next look. No watch, or a deaf one (no bell to hear other programs by): every `poll`, as before.
         Else until the bell or the tree watch wakes it (`wake` is the Lookout's), a Lookout timer falls due (the slow
         look without a watch, the watch's retry, its settle), or one of the reader's own retries does."""
+        self._wake.wait(self._timeout())
+        self._wake.clear()
+
+    def _timeout(self):
+        """The wait's seconds. While the store can't be used `_watching` (which takes what the watch says is due) isn't
+        reached, so a timer already due would wake the reader at once, every time: floored at `poll` then (L1 B1)."""
         lookout = self._lookout
         if lookout is None or lookout.deaf:
             timeout = self.poll
@@ -323,9 +353,8 @@ class LibraryReader:
             if self._cards_stale:                       # a card made elsewhere moves no row: asked again when due
                 timeout = min(timeout, max(0.0, self._cards_all_at + CARDS_ALL_S - time.monotonic()))
             if self._mode is not None and self._mode[0] != "store":
-                timeout = min(timeout, MODE_RECHECK_S)
-        self._wake.wait(timeout)
-        self._wake.clear()
+                timeout = max(self.poll, min(timeout, MODE_RECHECK_S))
+        return timeout
 
     def _watching(self, h):
         """(The reader's thread.) The watch made once the store can be used — the open's full sync owed first (the
@@ -344,6 +373,10 @@ class LibraryReader:
         else:
             jobs = self._lookout.jobs()
             jobs_full, folders, slow = jobs.full, jobs.folders, jobs.slow
+            # the hourly full look (no `make_round` here): owed and `looked()`, else the Lookout's round stays due and
+            # the reader would wake at once, for good, an hour after the open (L1 B1)
+            from app.library_watch import ROUND_S
+            jobs_full = jobs_full or self._lookout.clock() - self._lookout._last_full >= ROUND_S
         if jobs_full:
             self._lookout.looked()
         with self._lock:

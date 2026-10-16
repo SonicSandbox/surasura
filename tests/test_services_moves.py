@@ -178,7 +178,10 @@ class ProgramHolder:
 
 
 def journal(language):
-    path = M.journal_path(language)
+    return read_journal(M.journal_path(language))
+
+
+def read_journal(path):
     for _ in range(50):
         try:
             with open(path, encoding="utf-8") as f:
@@ -447,13 +450,15 @@ def test_E5_replay_waits_while_the_store_cant_be_written(lib, make_writer, short
 
 # --- E6: a drag holds the writer ----------------------------------------------------------------------------------- #
 def test_E6_a_move_given_during_a_drag_waits_and_lands_after_release(lib, make_writer):
-    w, heard = make_writer()
+    # A held move's wait never reads *saving…*: held longer than saving_after, then each save gets a second of its
+    # own — at the default 0.3 s, a save slowed by a loaded machine said *saving…*, as it should (a load red).
+    w, heard = make_writer(saving_after=1.0)
     goal = lib.ids("goal")
     w.hold()
     w.move([goal[5]], "goal")
     w.move([goal[6]], "goal")
     assert h.until(lambda: len(journalled(lib.language)) == 2)        # held moves survive a crash too
-    time.sleep(0.2)
+    time.sleep(1.2)
     assert w.attempts == 0 and lib.ids("goal") == goal and heard.saved == []
     w.release()
     assert h.until(lambda: len(heard.saved) == 2)
@@ -1128,17 +1133,25 @@ def test_a_busy_store_asked_again_doesnt_write_the_same_journal_again(stub_write
 
 
 def test_a_move_given_while_stuck_is_journalled_before_the_next_retry(stub_writer, tmp_path):
-    """(M13) Stuck already: a new command joins the journal at once, not at the next ask."""
-    w, heard, store, opener = stub_writer(retry=3.0, saving_after=5.0)
+    """(M13) Stuck already: a new command joins the journal at once, not at the next ask. Told by the order of the two
+    events — the journal holds the second command while the writer has asked the store once — not by a 1 s bound (it
+    failed under a loaded run); the waits' 30 s ceilings only end a stuck test, and the next ask is a minute away until
+    the test lets it come."""
+    w, heard, store, opener = stub_writer(retry=60.0, saving_after=120.0)
     store.fail["move"] = ls.StoreBusy("busy")
     store.always.add("move")
     path = tmp_path / "window_pending_ja.json"
     w.move([1], "goal")
     assert h.until(lambda: path.exists())
     w.move([2], "goal")
-    assert h.until(lambda: len(json.loads(path.read_text("utf-8"))["pending"]) == 2, seconds=1.0)
+    assert h.until(lambda: len(read_journal(path)["pending"]) == 2)
+    assert w.attempts == 1                              # before the next ask, not at it
     store.always.discard("move")
     store.fail.pop("move")
+    with w._cond:                                       # the next ask now: both land
+        w._retry_at = 0.0
+        w._cond.notify_all()
+    assert h.until(lambda: len(heard.saved) == 2 and not path.exists())
 
 
 def test_a_drag_starting_over_queued_commands_journals_them(stub_writer, tmp_path):
@@ -1153,7 +1166,7 @@ def test_a_drag_starting_over_queued_commands_journals_them(stub_writer, tmp_pat
     store.gate.set()
     assert h.until(lambda: heard.saved)
     assert h.until(lambda: path.exists())
-    assert [e["ids"] for e in json.loads(path.read_text("utf-8"))["pending"]] == [[2]]
+    assert [e["ids"] for e in read_journal(path)["pending"]] == [[2]]
     w.release()
     assert h.until(lambda: len(heard.saved) == 2 and not path.exists())
 
@@ -1213,7 +1226,7 @@ def test_nothing_is_journalled_over_a_crashs_journal_before_it_is_read(stub_writ
                     "utf-8")
     w._replay_due = True
     w._sync_journal(everything=True)                    # e.g. the quit, or a timer, before the thread read it
-    assert json.loads(path.read_text("utf-8"))["pending"][0]["ids"] == [7]
+    assert read_journal(path)["pending"][0]["ids"] == [7]
     with w._cond:
         w._cond.notify_all()
     assert h.until(lambda: store.calls and store.calls[0][1] == [7])
@@ -1743,6 +1756,8 @@ def test_AD2_a_drop_on_a_busy_store_at_quit_leaves_its_copy_whole_for_the_next_d
     with open(os.path.join(folder, _DROPPED[lib.language]), encoding="utf-8") as f, \
             open(os.path.join(tmp_path, "Explorer", _DROPPED[lib.language]), encoding="utf-8") as g:
         assert f.read() == g.read()
+    if w._thread is not None:                           # the quit's process ends: its worker's last try (it may take
+        w._thread.join(5)                               # the lock the holder just freed) is over before the next start
     lib.store.sync_disk()                               # the next start
     rel = f"HighPriority/{_DROPPED[lib.language]}"
     assert any(lib.store.item(i)["rel_path"] == rel for t in ("now", "soon", "goal", "arrivals") for i in lib.ids(t))
@@ -2238,6 +2253,95 @@ def test_S2_remove_on_a_busy_store_leaves_the_file_in_place_while_it_waits_then_
     assert not os.path.exists(path) and lib.store.item(x) is None and journal(lib.language) is None
 
 
+def test_S2_E21_undoing_a_remove_of_two_one_put_back_meanwhile_brings_back_the_other_and_leaves_the_first_alone(
+        lib, make_writer):
+    """A row someone put back meanwhile is skipped whole: its file isn't taken out of the trash a second time (a stray
+    copy beside its own, its words counted twice)."""
+    w, heard = make_writer()
+    x, y = lib.ids("goal")[1], lib.ids("goal")[2]
+    path_x, path_y = _file(lib, x), _file(lib, y)
+    w.remove([x, y])
+    assert h.until(lambda: heard.saved)
+    rows = {r["item_id"]: r for r in lib.store.trash_rows(heard.saved[0][0].trash_ids)}
+    lib.store.restore([rows[x]["id"]])                  # another window's Put back of x (its file still in the trash)
+    trashed_x = os.path.join(lib.data_dir, *rows[x]["trashed_path"].split("/"))
+    w.undo()
+    assert h.until(lambda: heard.undone or heard.notes)
+    assert heard.notes == [] and os.path.exists(path_y) and lib.store.item(y) is not None
+    assert os.path.exists(trashed_x) and not os.path.exists(path_x),         "x's row was put back already: its file is never moved again"
+
+
+def test_S2_a_remove_the_store_refuses_after_its_file_went_to_the_trash_puts_the_file_back(lib, make_writer,
+                                                                                         monkeypatch):
+    """A raw error at the store's write, after the file was moved: the file back where it was, the row kept (never a
+    row pointing at a file that sits in the trash)."""
+    x = lib.ids("soon")[1]
+    path = _file(lib, x)
+    with open(path, "rb") as f:
+        body = f.read()
+
+    def refuse(self, *a, **kw):
+        raise RuntimeError("disk I/O error")
+    monkeypatch.setattr(ls.Store, "remove", refuse)
+    w, heard = make_writer()
+    w.remove([x])
+    assert h.until(lambda: heard.notes)
+    assert heard.notes == [WORDS["failed"].format(error="disk I/O error")] and heard.saved == []
+    with open(path, "rb") as f:
+        assert f.read() == body
+    assert lib.store.item(x) is not None
+
+
+def test_S2_undoing_a_remove_the_store_refuses_sends_its_file_back_to_the_trash(lib, make_writer, monkeypatch):
+    """The file comes out of the trash first; a refused undo puts it back there (no file in the folder with no row:
+    a sync would add it a second time, its words counted again)."""
+    w, heard = make_writer()
+    x = lib.ids("goal")[2]
+    path = _file(lib, x)
+    w.remove([x])
+    assert h.until(lambda: heard.saved)
+    row = lib.store.trash_rows(heard.saved[0][0].trash_ids)[0]
+    trashed = os.path.join(lib.data_dir, *row["trashed_path"].split("/"))
+
+    def refuse(self, change, trashed_paths=None, rel_paths=None):
+        raise ls.StoreConflict("an item changed since its file was moved; nothing was undone")
+    monkeypatch.setattr(ls.Store, "undo", refuse)
+    w.undo()
+    assert h.until(lambda: heard.notes)
+    assert heard.notes == [WORDS["cant_undo"]] and heard.undone == []
+    assert os.path.exists(trashed) and not os.path.exists(path)
+
+
+def test_S2_undoing_a_remove_on_a_busy_store_takes_no_file_out_of_the_trash_until_it_lands(lib, make_writer,
+                                                                                         short_lock_wait,
+                                                                                         monkeypatch):
+    """Under the store's write lock first: a busy store answers before any file moves (the trash is never touched
+    while another window writes)."""
+    w, heard = make_writer()
+    x = lib.ids("now")[2]
+    path = _file(lib, x)
+    w.remove([x])
+    assert h.until(lambda: heard.saved)
+    real, holding, early = ls.put_back, [True], []
+
+    def put_back(*a, **kw):
+        if holding[0]:
+            early.append(a)
+        return real(*a, **kw)
+    monkeypatch.setattr(ls, "put_back", put_back)
+    holder = LockHolder(lib.db)
+    try:
+        attempts = w.attempts
+        w.undo()
+        assert h.until(lambda: w.attempts >= attempts + 2)
+        holding[0] = False
+    finally:
+        holder.release()
+    assert h.until(lambda: heard.undone)
+    assert early == [], "a file came out of the trash while the store was busy"
+    assert os.path.exists(path) and lib.store.item(x) is not None
+
+
 def test_S2_put_back_from_the_trash_and_its_undo_sends_it_back(lib, make_writer):
     w, heard = make_writer()
     x = lib.ids("goal")[4]
@@ -2256,6 +2360,21 @@ def test_S2_put_back_from_the_trash_and_its_undo_sends_it_back(lib, make_writer)
     assert heard.notes[0].startswith(WORDS["failed"].split("{")[0]) and not os.path.exists(path)
 
 
+def test_S2_a_put_back_from_the_trash_whose_name_was_taken_comes_back_under_a_new_name_and_says_so(lib, make_writer):
+    w, heard = make_writer()
+    x = lib.ids("soon")[3]
+    path = _file(lib, x)
+    gone = lib.store.remove([x], {x: ls.trash_file(lib.data_dir, lib.store.item(x)["rel_path"])})
+    with open(path, "w", encoding="utf-8") as f:        # another file under its name since: never written over
+        f.write(names(lib.language)[41] + "\n")
+    w.restore(gone.trash_ids, label="put back")
+    assert h.until(lambda: heard.saved and heard.notes)
+    back = lib.store.item(x)["rel_path"]
+    assert back.endswith("_1.srt") and heard.notes == [WORDS["put_back_as"].format(names=back.rsplit("/", 1)[-1])]
+    with open(path, encoding="utf-8") as f:
+        assert f.read() == names(lib.language)[41] + "\n"
+
+
 def test_S2_import_finished_lands_as_earlier_and_undo_trashes_only_the_jobs_copies(lib, make_writer, tmp_path):
     w, heard = make_writer()
     src = _outside_file(str(tmp_path / "Downloads"), lib.language)
@@ -2271,9 +2390,24 @@ def test_S2_import_finished_lands_as_earlier_and_undo_trashes_only_the_jobs_copi
         assert item["tier"] == "graduated" and item["graduated_at"] is None, "dated Earlier"
     w.undo()
     assert h.until(lambda: heard.undone)
-    assert lib.store.item_id(copied[0]) is None and lib.store.item_id(listed) is None
+    assert lib.store.item_id(copied[0]) is None and lib.store.item_id(listed) is not None   # C2: its row stays
     assert not os.path.exists(os.path.join(lib.data_dir, *copied[0].split("/"))), "its copy went to the trash"
     assert os.path.exists(there) and os.path.exists(src), "a file it didn't copy stays; the user's own untouched"
+
+
+def test_S2_E21_undoing_an_import_whose_only_row_was_moved_since_says_cant_undo(lib, make_writer):
+    """An import that listed a file already in the library (its row moved to Finished, nothing copied), that row
+    moved again since: the undo skips it, so it wrote nothing — said so, never heard as undone."""
+    w, heard = make_writer()
+    x = lib.ids("now")[1]
+    w.import_finished([_file(lib, x)], label="imported")
+    assert h.until(lambda: heard.saved)
+    assert lib.store.place_of(x)[0] == "graduated" and heard.saved[0][0].added == []
+    lib.store.move([x], "soon")                         # another window's drag since
+    w.undo()
+    assert h.until(lambda: heard.notes)
+    assert heard.notes == [WORDS["cant_undo"]] and heard.undone == []
+    assert lib.store.place_of(x)[0] == "soon"
 
 
 def test_S2_relink_points_a_missing_episode_at_its_file_and_undo_points_it_back(lib, make_writer):
@@ -2437,8 +2571,10 @@ def test_S2_a_crash_with_new_commands_queued_replays_each_from_the_journal(lib, 
     assert not os.path.exists(gone) and heard2.notes == [] and heard2.saved == []
 
 
-def test_S2_a_replayed_put_back_from_the_trash_that_someone_did_meanwhile_is_listed_once(lib, make_writer,
-                                                                                       short_lock_wait):
+def test_S2_a_replayed_put_back_from_the_trash_that_someone_did_meanwhile_is_let_go_quietly(lib, make_writer,
+                                                                                          short_lock_wait):
+    # W3.2 H (C3): what it asked for holds (its file is back), as a GUARDED command's `_done` reads it — the store
+    # can't tell this command's Put back from another window's, and *couldn't be applied* was false for its own
     w, heard = make_writer()
     x = lib.ids("soon")[3]
     gone = lib.store.remove([x], {x: ls.trash_file(lib.data_dir, lib.store.item(x)["rel_path"])})
@@ -2450,8 +2586,8 @@ def test_S2_a_replayed_put_back_from_the_trash_that_someone_did_meanwhile_is_lis
     lib.store.restore(gone.trash_ids)                   # meanwhile another window put it back
     w2, heard2 = make_writer()
     assert w2.replay()
-    assert h.until(lambda: heard2.notes)
-    assert heard2.notes == [WORDS["crash_one"]] and journal(lib.language) is None
+    assert h.until(lambda: journal(lib.language) is None and not w2.pending())
+    assert heard2.notes == [] and lib.store.item(x) is not None
 
 
 def test_S2_after_commit_hears_every_committed_write_and_undo_on_the_writers_thread(lib, make_writer):
@@ -2546,7 +2682,7 @@ def test_B_a_register_without_a_rule_waits_in_new_arrivals_and_never_goes_on_the
     a, b = _download(lib, words[20], words[21], "aaaaaaaaaaa"), _download(lib, words[22], words[21], "bbbbbbbbbbb")
     assert w.register([a, b], _keyed(_yt(words[21])), rules={}, done=lambda *n: told.append(n)) is not None
     assert h.until(lambda: told)
-    assert told == [(2, 0)]
+    assert told == [(2, 0, 0)]
     assert _tier_of(lib, a) == _tier_of(lib, b) == "arrivals"
     assert heard.saved == [] and not w.can_undo()       # Ctrl+Z never takes a download back out of the library
     assert {(r["producer"], r["channel_id"]) for r in _records(lib)} == {("youtube", words[21])}
@@ -2569,7 +2705,7 @@ def test_B_placing_rules_youtube_to_finished_hato_to_top_and_a_channels_rule_bea
     w.register([drop], _keyed(_yt(producer="hato")), rules=rules, done=lambda *n: told.append(n))
     w.register([other], _keyed(_yt(producer="kotoba-tool")), rules=rules, done=lambda *n: told.append(n))
     assert h.until(lambda: len(told) == 4)
-    assert told == [(0, 1), (0, 1), (0, 1), (1, 0)]
+    assert told == [(0, 1, 0), (0, 1, 0), (0, 1, 0), (1, 0, 0)]
     assert _tier_of(lib, plain) == "graduated"
     assert _tier_of(lib, chan) == "soon"
     assert lib.ids("now")[0] == lib.store.item_id(ls.library_rel(lib.data_dir, drop))
@@ -2590,7 +2726,7 @@ def test_B_a_folder_the_downloader_made_registers_its_transcripts_only(lib, make
     w.register([os.path.join(lib.data_dir, *folder.split("/"))], _keyed(_yt(words[40])),
                done=lambda *n: told.append(n))
     assert h.until(lambda: told)
-    assert told == [(2, 0)] and _tier_of(lib, one) == _tier_of(lib, two) == "arrivals"
+    assert told == [(2, 0, 0)] and _tier_of(lib, one) == _tier_of(lib, two) == "arrivals"
     assert len(_records(lib)) == 2
 
 
@@ -2605,7 +2741,7 @@ def test_B_a_file_outside_the_library_is_left_out_and_the_rest_register(lib, mak
     told = []
     w.register([outside, inside], _keyed(_yt(words[50])), done=lambda *n: told.append(n))
     assert h.until(lambda: told)
-    assert told == [(1, 0)] and _tier_of(lib, inside) == "arrivals" and heard.notes == []
+    assert told == [(1, 0, 1)] and _tier_of(lib, inside) == "arrivals" and heard.notes == []   # one not added (L1 S3)
 
 
 def test_B_E4_a_read_only_store_refuses_register_before_anything_is_read(lib, make_writer):
@@ -2666,6 +2802,66 @@ def test_B_a_quit_that_comes_while_the_records_are_read_journals_the_register(li
     w2, heard2 = make_writer()
     assert w2.replay()
     assert h.until(lambda: _tier_of(lib, a) == "arrivals")
+# --- W3.2 L1 fix round: a register's files gone, failing on their own, queued while held ------------------------- #
+def test_L1_S2_a_download_deleted_before_its_register_lands_makes_no_row_and_is_counted_not_added(lib, make_writer):
+    """S2: `Store.register` makes a row for a file that isn't there (a missing fingerprint), which rules may then place:
+    a zombie *file gone* card in Needs you. A file deleted from Processed before the command lands is left out."""
+    lib.store.set_library_options(arrivals_on=True)
+    w, heard = make_writer()
+    words = names(lib.language)
+    gone = _download(lib, words[80], words[81], "mmmmmmmmmmm")
+    kept = _download(lib, words[82], words[81], "nnnnnnnnnnn")
+    told = []
+    w.hold()                                            # a drag: the register waits in the queue
+    w.register([gone, kept], _keyed(_yt(words[81])), rules={"youtube": "top"}, done=lambda *n: told.append(n))
+    assert h.until(lambda: w.pending() == 1)
+    os.remove(gone)
+    w.release()
+    assert h.until(lambda: told)
+    assert told == [(0, 1, 1)]
+    assert _tier_of(lib, gone) is None and _tier_of(lib, kept) == "now"
+    assert len(_records(lib)) == 1
+
+
+def test_L1_S3_a_record_that_fails_on_its_own_is_counted_and_the_records_after_it_still_register(lib, make_writer,
+                                                                                                monkeypatch):
+    """S3: one record's error escaped `_register`, so `_run` let the whole command go: the records after it were lost
+    and `done` never said so. Now it is counted and the rest go on; a busy store still retries the command."""
+    lib.store.set_library_options(arrivals_on=True)
+    w, heard = make_writer()
+    words = names(lib.language)
+    bad = _download(lib, words[83], words[84], "ooooooooooo")
+    good = _download(lib, words[85], words[84], "ppppppppppp")
+    real = ls.Store.register
+
+    def register(self, path, record, rules=None):
+        if path == bad:
+            raise ValueError(f"{os.path.basename(path)}: a record the store can't take")
+        return real(self, path, record, rules=rules)
+    monkeypatch.setattr(ls.Store, "register", register)
+    told = []
+    w.register([bad, good], _keyed(_yt(words[84])), done=lambda *n: told.append(n))
+    assert h.until(lambda: told)
+    assert told == [(1, 0, 1)] and _tier_of(lib, bad) is None and _tier_of(lib, good) == "arrivals"
+
+
+def test_L1_S4_a_register_queued_during_a_drag_is_journalled_and_a_crash_then_still_registers_it(lib, make_writer):
+    """S4: a register queued while the writer is held (a long drag) never set the journal dirty, as a move does: a
+    crash then lost it, and nothing (no sync walks Processed) would ever find the download again."""
+    lib.store.set_library_options(arrivals_on=True)
+    w, heard = make_writer()
+    words = names(lib.language)
+    a = _download(lib, words[86], words[87], "qqqqqqqqqqq")
+    w.hold()
+    w.register([a], _keyed(_yt(words[87])))
+    assert h.until(lambda: [op for op, _i in journalled(lib.language)] == ["register"])
+    w._abandon()                                        # the crash, mid-drag
+    assert _tier_of(lib, a) is None
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: _tier_of(lib, a) == "arrivals")
+
+
 # --- S fix round: the journal's race, stale entries, background covers, an import let go ------------------------- #
 def test_S1_a_command_landing_while_the_timer_writes_the_journal_leaves_no_entry_behind(lib, make_writer, monkeypatch):
     """S1 (a): the 0.3 s timer journals what waits, and only then says what the file holds. A command that landed in
@@ -2781,6 +2977,7 @@ def test_S1_a_join_and_an_import_left_in_the_journal_are_let_go_and_a_media_type
     assert w2.replay()
     assert h.until(lambda: journal(lib.language) is None and heard2.notes)
     assert lib.store.place_of(row)[0] == "now", "the import never puts it back in Finished"
+    assert os.path.exists(os.path.join(lib.data_dir, *copied[0].split("/"))), "a listed file's copy stays"
     assert lib.store.media_type(work)[0] == "anime" and {lib.store.item(i)["piece_id"] for i in now[:4]} == {piece}
     assert heard2.notes == [WORDS["crash_many"].format(n=2)], "the join was done: quiet; the other two listed"
 
@@ -2816,3 +3013,295 @@ def test_a_join_ahead_is_one_journalled_command_and_a_no_op_hands_its_label_back
     w.move([show[0]], "now", before_id=show[1], label="no-op")
     assert h.until(lambda: heard.rereads)
     assert w.landed_empty() == ["no-op"] and w.landed_empty() == []
+def test_a_reader_let_go_is_freed_by_its_count_alone_and_its_numbers_then_refresh_nothing(lib):
+    """W3.2 P0 (AD0-2): the numbers held the reader (`on_change` → the reader's refresh) and the reader held the
+    numbers: a cycle only Python's collector frees — and the window process once froze the collector after every view,
+    so a library a language switch let go (its whole copy, hundreds of thousands of objects at 20,000 files) was
+    never freed. The numbers now hold the reader weakly: let go, it is freed at once, collector or not, and a late
+    figure from its numbers refreshes nothing."""
+    import gc
+    import weakref
+    opener, numbers, reader = M.open_library(lib.language, cache_file=None)
+    reader.start()
+    assert h.until(lambda: reader.view() is not None and reader.view().rows)
+    reader.stop()
+    assert reader._items == {} and reader._works == {}          # the copy let go at the stop, whoever holds it
+    assert reader.view() is not None                            # (the last view stays: the window shows it meanwhile)
+    gone = weakref.ref(reader)
+    was = gc.isenabled()
+    gc.disable()                                                # no collector: only a cycle-free reader goes
+    try:
+        del reader
+        assert gone() is None
+    finally:
+        if was:
+            gc.enable()
+    numbers._call_change()                                      # nothing left to refresh: no error
+    numbers.close()
+    opener.close()
+
+
+def test_a_stopped_reader_never_starts_again(lib):
+    """W3.2 P0 (AD0-4): a reader a second language switch stopped before the window got to it is never started — no
+    cache read, no store handle, no view published for a library that is no longer open."""
+    _opener, numbers, reader = M.open_library(lib.language, cache_file=None)
+    reader.stop()
+    reader.start()
+    assert reader._thread is None and reader.view() is None
+    numbers.close()
+
+
+# --- W3.3 P6: Settings' two store lines through the writer ---------------------------------------------------------- #
+def _meta(lib, key):
+    return lib.store.meta().get(key)
+
+
+def test_settings_store_lines_are_written_by_the_writer_and_never_go_on_the_undo_stack(lib, make_writer):
+    # *Soon starts after N files* moves the rows that cross it (the store's own rule); *Mine automatically: the top N*
+    # sets the mine line. A Ctrl+Z in Current must never take a Settings value back: the row is where it changes.
+    w, heard = make_writer()
+    now = lib.ids("now")
+    assert len(now) >= 2
+    assert w.set_options(soon_line=len(now) - 1) is not None
+    assert h.until(lambda: _meta(lib, "soon_line") == len(now) - 1)
+    assert h.until(lambda: lib.ids("now") == now[:-1])                    # the last NOW file is Soon's first now
+    assert lib.ids("soon")[0] == now[-1]
+    assert w.set_options(mine_line=7) is not None
+    assert h.until(lambda: _meta(lib, "mine_line") == 7)
+    assert heard.saved == [] and not w.can_undo()
+    assert h.until(lambda: heard.rereads >= 2)                           # the reader looks again after each
+    assert w.pending() == 0 and journal(lib.language) is None
+
+
+def test_settings_store_lines_with_nothing_to_set_or_a_negative_line_write_nothing(lib, make_writer):
+    w, heard = make_writer()
+    before = (_meta(lib, "soon_line"), _meta(lib, "mine_line"))
+    assert w.set_options() is None
+    with pytest.raises(ValueError):
+        w.set_options(soon_line=-1)
+    with pytest.raises(ValueError):
+        w.set_options(mine_line=-3)
+    assert w.pending() == 0
+    assert (_meta(lib, "soon_line"), _meta(lib, "mine_line")) == before
+    w.set_options(mine_line=_meta(lib, "mine_line") or 20)                # (written or the same: the reader looks again)
+    assert h.until(lambda: heard.rereads >= 1)
+    assert heard.notes == []
+
+
+def test_a_store_line_set_while_the_store_is_busy_is_journalled_and_replayed_after_a_crash(lib, make_writer,
+                                                                                          short_lock_wait):
+    # A busy store (a sync holding it) queues the Settings change with the moves; a crash before it lands leaves it in
+    # the journal and the next start writes it.
+    w, heard = make_writer()
+    holder = LockHolder(lib.db)
+    w.set_options(mine_line=5)
+    assert h.until(lambda: journalled(lib.language) == [("set_options", [])])
+    assert journal(lib.language)["pending"][0]["mine_line"] == 5
+    w._abandon()
+    holder.release()
+    assert _meta(lib, "mine_line") != 5
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: _meta(lib, "mine_line") == 5)
+    assert h.until(lambda: journal(lib.language) is None)
+    assert heard2.notes == [] and heard2.saved == []
+
+
+def test_a_store_line_on_a_read_only_store_is_refused_before_it_is_queued(lib, make_writer):
+    w, heard = make_writer()
+    lib.close()
+    ls.mark_damaged(lib.db, "test: a damaged store")
+    assert h.until(lambda: not w.can_write(), seconds=M.MODE_RECHECK_S * 3)
+    assert w.set_options(soon_line=1) is None and w.pending() == 0
+
+
+def test_a_move_queued_behind_a_soon_line_that_moved_its_row_survives_a_crash(lib, make_writer):
+    # The line moves NOW's last file into Soon; a drag of that file queued behind the line, then a crash
+    # right after the line lands: the replay must apply the learner's move, never list it as "changed since".
+    heard = Heard()
+    kw = heard.kw()
+    w = None
+
+    def crash_after_the_line():
+        with w._cond:
+            w._abandoned = True                         # the crash: the thread stops at its next look
+            w._cond.notify_all()
+    kw["on_reread"] = crash_after_the_line
+    w = M.Writer(lib.opener(), lib.language, journal_file=M.journal_path(lib.language), retry=0.05, words=WORDS, **kw)
+    w.start()
+    now, goal = lib.ids("now"), lib.ids("goal")
+    w.hold()
+    w.set_options(soon_line=len(now) - 1)
+    w.move([now[-1]], "goal", before_id=goal[0])
+    assert h.until(lambda: len(journalled(lib.language)) == 2)
+    w.release()
+    assert h.until(lambda: _meta(lib, "soon_line") == len(now) - 1)
+    assert h.until(lambda: not w._thread.is_alive())
+    assert journalled(lib.language) == [("move", [now[-1]])]
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: lib.ids("goal")[:1] == [now[-1]])
+    assert heard2.notes == []
+
+
+# --- W3.2 H: the last fix round before landings 1 + 2's --all ------------------------------------------------------ #
+def test_H_F1_a_record_that_cant_be_read_is_counted_and_the_other_downloads_still_register(lib, make_writer):
+    """One file's pairing record raising dropped the whole register — the other downloads never reached the
+    library (Processed is walked by no sync) and `done` never came. Now that one is counted, the rest register."""
+    lib.store.set_library_options(arrivals_on=True)
+    w, heard = make_writer()
+    words = names(lib.language)
+    bad = _download(lib, words[90], words[91], "qqqqqqqqqqq")
+    good = _download(lib, words[92], words[91], "rrrrrrrrrrr")
+    keyed = _keyed(_yt(words[91]))
+
+    def pairing(path):
+        if path == bad:
+            raise RuntimeError("its sidecar can't be read")
+        return keyed(path)
+    told = []
+    w.register([bad, good], pairing, done=lambda *n: told.append(n))
+    assert h.until(lambda: told)
+    assert told == [(1, 0, 1)] and _tier_of(lib, bad) is None and _tier_of(lib, good) == "arrivals"
+
+
+def test_H_F1_a_register_with_no_record_queues_nothing_and_still_says_done(lib, make_writer):
+    """No records (every one unreadable, or no content file) left `done` uncalled — the caller's line waited
+    for ever. Now nothing is queued or journalled and `done(0, 0, missed)` comes once."""
+    lib.store.set_library_options(arrivals_on=True)
+    w, heard = make_writer()
+    words = names(lib.language)
+    only = _download(lib, words[93], words[94], "sssssssssss")
+
+    def pairing(path):
+        raise RuntimeError("its sidecar can't be read")
+    told = []
+    w.register([only], pairing, done=lambda *n: told.append(n))
+    assert h.until(lambda: told)
+    assert told == [(0, 0, 1)] and w.pending() == 0 and journal(lib.language) is None
+    assert _tier_of(lib, only) is None
+
+
+def test_H_C2_an_imports_undo_keeps_the_row_of_a_file_it_listed_where_it_was(lib, make_writer, tmp_path):
+    """C2: a file already in Finished's folder with no row (lesson.mp3 put there by hand) is listed where it is, never
+    copied; the import's Undo took its new row out too — and Finished's folder is never walked, so it was never listed
+    again. Now only the copies' rows go; an import of such files alone has nothing to undo."""
+    w, heard = make_writer()
+    copied = ls.copy_into_finished(lib.data_dir, [_outside_file(str(tmp_path / "Downloads"), lib.language)])
+    words = names(lib.language)
+    there = os.path.join(lib.data_dir, ls.GRADUATED_FOLDER, words[64] + ".txt")
+    with open(there, "w", encoding="utf-8") as f:
+        f.write(words[64] + "\n")
+    listed = f"{ls.GRADUATED_FOLDER}/{os.path.basename(there)}"
+    w.import_finished(copied + [listed], copied=copied, label="imported")
+    assert h.until(lambda: heard.saved)
+    w.undo()
+    assert h.until(lambda: heard.undone)
+    assert lib.store.item_id(copied[0]) is None, "the copy's row went with its file"
+    row = lib.store.item_id(listed)
+    assert row is not None and lib.store.place_of(row)[0] == "graduated" and os.path.exists(there)
+    alone = os.path.join(lib.data_dir, ls.GRADUATED_FOLDER, words[65] + ".txt")
+    with open(alone, "w", encoding="utf-8") as f:
+        f.write(words[65] + "\n")
+    rel = f"{ls.GRADUATED_FOLDER}/{os.path.basename(alone)}"
+    w.import_finished([rel], label="alone")
+    assert h.until(lambda: len(heard.saved) == 2)
+    w.undo()
+    assert h.until(lambda: WORDS["cant_undo"] in heard.notes)
+    assert lib.store.item_id(rel) is not None and os.path.exists(alone)
+
+
+def _left_behind(lib, w, holder, queue):
+    """A command that landed before the crash with its journal entry left behind: queued behind another program's
+    save (journalled), the entry kept, landed once the save let go, then the crash and the entry written back."""
+    queue()
+    assert h.until(lambda: len(journalled(lib.language)) == 1)
+    stale = journal(lib.language)
+    holder.release()
+    assert h.until(lambda: not w.pending() and journal(lib.language) is None)
+    w._abandon()
+    M._write_json(M.journal_path(lib.language), stale)
+
+
+def test_H_C3_a_remove_that_landed_before_the_crash_replays_as_done_never_couldnt_be_applied(lib, make_writer,
+                                                                                           short_lock_wait):
+    """C3: a Remove whose entry outlived its landing replayed as *couldn't be applied* (its rows gone read as changed):
+    a false line the learner would act on. Its rows in the trash as it left them: done, quietly."""
+    w, heard = make_writer()
+    x, y = lib.ids("soon")[2], lib.ids("soon")[3]
+    files = [_file(lib, i) for i in (x, y)]
+    _left_behind(lib, w, LockHolder(lib.db), lambda: w.remove([x, y]))
+    assert lib.store.item(x) is None and not any(os.path.exists(f) for f in files)
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: journal(lib.language) is None and not w2.pending())
+    assert heard2.notes == [] and lib.store.item(x) is None and lib.store.item(y) is None
+    assert len([r for r in lib.store.trash_rows() if r["item_id"] in (x, y) and not r["restored_at"]]) == 2
+
+
+def test_H_C3_a_put_back_that_landed_before_the_crash_replays_as_done(lib, make_writer, short_lock_wait):
+    w, heard = make_writer()
+    x = lib.ids("soon")[3]
+    gone = lib.store.remove([x], {x: ls.trash_file(lib.data_dir, lib.store.item(x)["rel_path"])})
+    _left_behind(lib, w, LockHolder(lib.db), lambda: w.restore(gone.trash_ids))
+    assert lib.store.item(x) is not None
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: journal(lib.language) is None and not w2.pending())
+    assert heard2.notes == [] and lib.store.item(x) is not None and os.path.exists(_file(lib, x))
+
+
+def test_H_F2_a_replayed_import_the_store_refuses_trashes_its_copies_never_leaves_them_unlisted(lib, make_writer,
+                                                                                               tmp_path):
+    """A replayed import that never landed (the store read-only at the next start) kept its copies — in Finished's
+    folder, which no sync walks: there for ever, listed nowhere. Its copies with no row now go to the trash."""
+    w, heard = make_writer()
+    copied = ls.copy_into_finished(lib.data_dir, [_outside_file(str(tmp_path / "Downloads"), lib.language)])
+    path = os.path.join(lib.data_dir, *copied[0].split("/"))
+    w.hold()                                            # a drag: the import waits in the queue, journalled
+    w.import_finished(copied, copied=copied)
+    assert h.until(lambda: [op for op, _i in journalled(lib.language)] == ["import_finished"])
+    w._abandon()                                        # the crash
+    w2, heard2 = make_writer()
+    w2.hold()
+    assert w2.replay()
+    assert h.until(lambda: w2.pending() == 1)
+    lib.close()
+    ls.mark_damaged(lib.db, "test: a damaged store")
+    assert h.until(lambda: not w2.can_write(), seconds=M.MODE_RECHECK_S * 3)
+    w2.release()
+    assert h.until(lambda: w2.pending() == 0)
+    assert not os.path.exists(path), "its copy went to the trash"
+    assert any(n.startswith(os.path.splitext(os.path.basename(path))[0]) for n in
+               os.listdir(os.path.join(lib.data_dir, ".trash")))
+
+
+def test_H_F2_a_replayed_import_that_failed_keeps_a_copy_the_store_lists_and_trashes_one_it_doesnt(
+        lib, make_writer, tmp_path, monkeypatch):
+    """The other half: a copy whose row the store holds (it landed once, changed since) is the learner's listed
+    file — never trashed by the replay; only the copy with no row goes."""
+    w, heard = make_writer()
+    downloads = str(tmp_path / "Downloads")
+    first = ls.copy_into_finished(lib.data_dir, [_outside_file(downloads, lib.language)])
+    second = ls.copy_into_finished(lib.data_dir, [_outside_file(os.path.join(downloads, "b"), lib.language, "b")])
+    lib.store.import_finished([os.path.join(lib.data_dir, *first[0].split("/"))])   # the first landed once
+    w.hold()
+    w.import_finished(first + second, copied=first + second)
+    assert h.until(lambda: [op for op, _i in journalled(lib.language)] == ["import_finished"])
+    w._abandon()
+
+    def fails(self, paths):
+        raise ls.NotInLibrary("not in the library: a folder moved meanwhile")
+    monkeypatch.setattr(ls.Store, "import_finished", fails)
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: journal(lib.language) is None and w2.pending() == 0)
+    assert os.path.exists(os.path.join(lib.data_dir, *first[0].split("/"))), "a listed file stays"
+    assert not os.path.exists(os.path.join(lib.data_dir, *second[0].split("/"))), "an unlisted copy goes"
+
+
+def test_H_T2_the_writer_says_when_it_stopped(lib, make_writer):
+    w, heard = make_writer()
+    assert not w.stopped()
+    w.finish(time.monotonic() + 1)
+    assert w.stopped()

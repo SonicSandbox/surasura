@@ -372,7 +372,15 @@ def test_the_install_proof_points_the_swappers_recovery_entry_at_its_own_key_and
         proof.forget_proof_key(profile)                                 # never left behind, whatever failed
 
 
-ISCC = package_app.find_iscc()
+def _iscc_on_this_pc():
+    # The harness moved %LOCALAPPDATA% for the run: Inno Setup installed for this user is under the one it started with.
+    from unittest.mock import patch
+    from tests import harness_guards
+    with patch.dict(os.environ, {k: v for k, v in harness_guards.ORIGINAL_BASES.items() if v}):
+        return package_app.find_iscc()
+
+
+ISCC = _iscc_on_this_pc()
 
 
 @pytest.mark.skipif(not ISCC, reason="Inno Setup 6 is not on this PC")
@@ -383,6 +391,7 @@ def test_the_script_compiles_into_the_named_installer(tmp_path, monkeypatch):
     (program / "Surasura.exe").write_bytes(b"MZ")
     (program / "_internal" / "build_stamp.json").write_text('{"data_name": "Surasura-test"}', encoding="utf-8")
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(package_app, "ISCC_PLACES", (ISCC,))
     out = package_app.build_installer(str(program), "3.0.0", "Surasura-test", "Surasura", out_dir=str(tmp_path / "dist"))
     assert out == str(tmp_path / "dist" / "Surasura-3.0.0-setup.exe") and os.path.getsize(out) > 100_000
 

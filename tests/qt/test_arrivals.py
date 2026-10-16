@@ -26,7 +26,7 @@ from PyQt6.QtGui import QKeyEvent, QMouseEvent
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication
 
-from app import theme
+from app import settings_manager, theme
 from app.qt import arrivals, freeze, motion, shell, strings
 from app.services import library_reader, view_rows
 from tests.fixtures import window_seed
@@ -90,6 +90,7 @@ class FakeWorker:
 def open_window(qapp, seed, writer, worker=None, size=(1280, 900)):
     reader = library_reader.LibraryReader(seed.opener, language=seed.language, numbers=seed.numbers,
                                           mining=seed.mining, poll=0.02)
+    settings_manager.save_keys({"target_language": seed.language})    # the window's language is its library's (P0)
     services = shell.Services(library=reader, writer=writer)
     services.arrivals = worker
     win = shell.open_window(qapp, services)
@@ -611,6 +612,50 @@ def test_IK_5_each_file_is_asked_once_with_the_pieces_earlier_files_placed_befor
         assert [os.path.basename(x) for x in asked[name]] == names[:k]  # its earlier files placed before it
     est = nums.estimates()
     assert est[hato.item_ids[0]] == 12 and est[hato.item_ids[1]] == 4  # the first at the top, the rest after them
+
+
+class HeldWorker(FakeWorker):
+    """Answers only when told (`release`): an answer still out when the window switched language."""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.held = []
+
+    def estimate(self, path, placed=(), callback=None):
+        with self.lock:
+            self.asked.append((path, list(placed)))
+            rid = len(self.asked)
+        self.held.append(lambda: callback({"id": rid, "op": "estimate", "path": path, "n_new_top": self.n,
+                                           "n_new_after_show": None, "plan": self.plan, "exact": True}))
+        return rid
+
+    def release(self):
+        held, self.held = self.held, []
+        for answer in held:
+            answer()
+
+
+def test_W32_H_an_answer_asked_before_a_language_switch_never_reaches_the_new_librarys_numbers(tmp_path):
+    # The window's numbers now go to the reader open as they come (a switch let the first reader go). A ja file's
+    # answer landing after the switch to zh would hand ja item ids to the zh library, where an id can name another file.
+    seed = window_seed.build()
+    view = _view(seed)
+    worker = HeldWorker()
+    language = ["ja"]
+    got = []
+    known = tmp_path / "KnownWord.json"
+    known.write_text('{"words": ["猫"]}', encoding="utf-8")
+    nums = arrivals.ArrivalNumbers(worker, lambda: language[0], on_change=got.append, data_path=str(tmp_path / "d"),
+                                   known_file=str(known), plan_token=lambda: 1, run=_sync)
+    nums.want(view.arrivals)
+    assert len(worker.asked) == 10 and got == []
+    language[0] = "zh"                                                # the switch, the answers still out
+    worker.release()
+    assert got == [] and nums.estimates() == {}
+    language[0] = "ja"                                                # (and the same answers, asked in ja, land)
+    nums.want(view.arrivals, force=True)
+    worker.release()
+    assert got and set(got[-1]) == {i for a in view.arrivals for i in a.item_ids}
 
 
 def test_IK_10_answers_are_kept_by_item_plan_and_known_words_and_a_change_asks_again(tmp_path):

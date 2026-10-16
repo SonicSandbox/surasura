@@ -220,7 +220,7 @@ def test_status_answers_on_a_library_and_is_quick_in_the_timed_run(monkeypatch):
     """Recorded in the step note: status (no Anki probe) and status --anki with Anki closed, on 774 files. The figure is
     a speed check, so it is taken in the timed run (SURASURA_STORE_BENCH=1: the machine is the run's own), never in a
     full run beside two others — there a call's Python start alone took 5.07 s once, where status answers in ~0.3 s on
-    a quiet machine. Otherwise a short functional pass: both calls answer on a library of 40 files."""
+    a quiet machine. Otherwise a short functional pass: both calls answer on a library of 40 files, well inside 30 s."""
     bench = os.environ.get("SURASURA_STORE_BENCH") == "1"
     size = 774 if bench else 40
     folder = h.seed_library("ja", templates=False)
@@ -238,6 +238,8 @@ def test_status_answers_on_a_library_and_is_quick_in_the_timed_run(monkeypatch):
     if bench:
         print(f"\nTIMING status on 774 files: {json.dumps(timings)}")
         assert timings["status"] < 5.0
+    else:
+        assert timings["status"] < 30.0                   # a hang, never a figure: ~100x the quiet machine's
 
 
 def test_list_after_a_generate_killed_part_way_says_generate_again(generated):

@@ -82,6 +82,7 @@ def real(qapp):
     def make(language="ja", rules=None, watch=True):
         store = migrated(language)                     # the outside writer's handle (hato, another program)
         store.set_library_options(arrivals_on=True)
+        settings_manager.save_keys({"target_language": language})      # the window's language is its library's (P0)
         if rules is not None:
             settings_manager.save_keys({"placing_rules": rules})
         opener = moves_module.store_opener(language)

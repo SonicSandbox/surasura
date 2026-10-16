@@ -25,6 +25,7 @@ Nothing here reads or writes the store on the window's thread: the writes are th
 their toasts and Undo through W3.1a's `drag.DragController`), the folder check and the estimates run on workers.
 """
 import os
+import time
 
 from PyQt6.QtCore import QEvent, QObject, QPoint, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QPainter
@@ -36,6 +37,7 @@ from app.qt import bridge, drag, motion, shadow, strings, style, windows
 
 WORDS_SHOWN = 20                                     # Sonic's W3.2-1: the first 20 new words
 LAND_MS = 50                                         # how often the import toast looks for the writer's answer
+LAND_DEADLINE_S = 300                                # ... and for how long (W3.2 H T2): then a line, never for ever
 
 
 def folder_of(language, row):
@@ -121,6 +123,10 @@ class _TicketWriter:
 
     def reason(self):
         return self.writer.reason()
+
+    def stopped(self):
+        stopped = getattr(self.writer, "stopped", None)
+        return bool(stopped()) if stopped is not None else False
 
     def import_finished(self, paths, copied=(), label=None, answer=None):
         def answered(cmd):
@@ -309,6 +315,7 @@ class FinishedActions(QObject):
         self._asking = None                         # (token, row, answers) of the card's estimates
         self.import_job = None
         self._landing = None                        # (the import handed to the writer, idle looks) until it lands
+        self._land_until = 0.0                      # ... and the monotonic time `_land` stops looking (T2)
         self._land_timer = QTimer(self)
         self._land_timer.setSingleShot(True)
         self._land_timer.setInterval(LAND_MS)
@@ -570,8 +577,9 @@ class FinishedActions(QObject):
             self.import_job = None
             self._show_importing(False)
         outcome = job.outcome
-        if outcome == "imported":
+        if outcome in ("imported", "pending"):      # (pending: Stop pressed as the store saved it — the writer's)
             self._landing = job                     # its toast once the writer answers (`_land`)
+            self._land_until = time.monotonic() + LAND_DEADLINE_S
             self._land()
             return
         self._settle(job.ticket)
@@ -579,6 +587,8 @@ class FinishedActions(QObject):
             self._say(strings.FIN_IMPORT_NOTHING)
         elif outcome == "cancelled":
             self._say(strings.FIN_IMPORT_STOPPED)
+        elif outcome == "stopped":                  # T2: the writer stopped first — its journal lands it next start
+            self._say(strings.FIN_IMPORT_LATER)
         else:
             writer = self.writer
             why = (job.job.message if job.job is not None else None) or \
@@ -595,6 +605,11 @@ class FinishedActions(QObject):
             return
         ticket, got = job.ticket, job.writer.answer
         if got is None or (got.get("saved") and got.get("changed") and ticket.change is None):
+            if (got is None and job.writer.stopped()) or time.monotonic() > self._land_until:
+                self._landing = None                # T2: no answer will come (the writer stopped), or none in time:
+                self._settle(ticket)                # a line, never a poll for ever
+                self._say(strings.FIN_IMPORT_LATER)
+                return
             self._land_timer.start()                # not answered yet, or its change on its way to the controller
             return
         self._landing = None

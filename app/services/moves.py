@@ -326,7 +326,7 @@ class Writer:
     def import_finished(self, paths, copied=(), label=None, answer=None):
         """`Store.import_finished` (the importer's store half; its copying job is the caller's, done first): `paths`
         in the data folder land in Finished, dated *Earlier*. `copied`: those the job copied in — its Undo sends
-        those to the trash and takes every row it placed out; a file it didn't copy stays where it is; one the store
+        those to the trash with their rows; a file it didn't copy stays where it is, row and all; one the store
         refuses or fails sends them to the trash (Finished isn't walked: no sync would ever take them up). `answer`:
         called once with the command when it is done with (this thread): `saved` (and `changed`: a change on its way
         to `on_saved`, else nothing new), else `refused` (the store's reason) or `failed` (the error) — never for one
@@ -437,16 +437,23 @@ class Writer:
         meanwhile, into the journal (the files sit in a folder no sync walks: never left unregistered)."""
         lib = _ls()
         try:
-            records = []
+            records, missed = [], 0
             for path in cmd["paths"]:
                 files = [path]
                 if os.path.isdir(path):
                     files = sorted(os.path.join(d, n) for d, _s, names in os.walk(path) for n in names
                                    if lib.is_content_name(n))
                 for f in files:
-                    if lib.is_content_name(f):
-                        records.append([f, dict(pairing(f) if callable(pairing) else pairing)])
+                    if not lib.is_content_name(f):
+                        continue
+                    try:                            # W3.2 H: one file's record that can't be read is counted
+                        records.append([f, dict(pairing(f) if callable(pairing) else pairing)])   # the rest go on
+                    except Exception as e:
+                        print(f"Window writer: {f}'s record couldn't be read: {e!r}")
+                        missed += 1
             cmd["records"] = records
+            if missed:
+                cmd["missed"] = missed
         except Exception as e:
             print(f"Window writer: the files to register couldn't be read: {e!r}")
             with self._cond:
@@ -466,6 +473,8 @@ class Writer:
             self._cond.notify_all()
         if late and records:
             self._sync_journal(everything=True)     # the next start replays it
+        if not records and cmd.get("done") is not None:
+            self._call(cmd["done"], 0, 0, missed)   # W3.2 H: nothing to register — nothing queued, said once
 
     def _register(self, store, cmd):
         """Each record registered (one store command each: a busy store's retry registers again, idempotent); the
@@ -474,7 +483,8 @@ class Writer:
         own (outside the data folder, a bad record) is counted and the rest go on (L1 S3); a busy or read-only store
         stops the command as any write's. -> None."""
         lib = _ls()
-        waiting = placed = missed = 0
+        waiting = placed = 0
+        missed = cmd.get("missed") or 0             # the records that couldn't be read (`_records_then_queue`)
         for path, record in cmd.get("records") or ():
             if not os.path.exists(path):
                 missed += 1
@@ -531,6 +541,12 @@ class Writer:
                     return False
                 self._cond.wait(WAIT_S if left is None else min(left, WAIT_S))
             return True
+
+    def stopped(self):
+        """W3.2 H (T2): True once the writer stopped (the quit, a language switch let it go) — what is still queued
+        stays in the journal and lands at the next start; no answer comes for it here."""
+        with self._cond:
+            return bool(self._stop or self._abandoned)
 
     def hold(self):
         """A drag starts (E6): nothing new is applied until `release()`; the window's moves queue."""
@@ -1050,12 +1066,21 @@ class Writer:
         change = store.insert(cmd["files"], cmd["tier"], "top", started_at=cmd["started_at"])
         return change, None if anchor is None else "top"
 
-    def _trash_copies(self, cmd):
+    def _trash_copies(self, cmd, unlisted=False):
         """A drop or an import let go (read-only, an error): the copies it made go to the trash, never left for a sync
-        to place (a drop's) or invisible in Finished's folder (an import's: never walked)."""
+        to place (a drop's) or invisible in Finished's folder (an import's: never walked). `unlisted` (a replayed
+        import let go, W3.2 H): only the copies the store holds no row for — one that landed before the crash and
+        was changed since is the user's listed file; a store that can't be read at all keeps them all (never a guess)."""
         lib = _ls()
         data_dir = cmd.get("data_dir") or getattr(self.opener, "data_dir", None)
-        for path in cmd.get("copied") or ():
+        copied = list(cmd.get("copied") or ())
+        if unlisted and copied:
+            held = _rows_held(self.language, data_dir, [lib.library_rel(data_dir, p) for p in copied])
+            if held is None:
+                print("Window writer: a replayed import's copies were kept: the library couldn't be read")
+                return
+            copied = [p for p in copied if not held.get(lib.path_key(lib.library_rel(data_dir, p) or ""))]
+        for path in copied:
             try:
                 lib.trash_file(data_dir, lib.library_rel(data_dir, path))
             except OSError as e:
@@ -1065,8 +1090,9 @@ class Writer:
         """Undo an Add: the files it brought in to the trash first, then the rows; the files put back if the store
         refuses. An Explorer drop: its own copies and their rows only (a file that was in the data folder already
         stays where it is, row and all: a sync would add it back, AD-10). The Finished importer's: its job's copies
-        (`copied`), and every row it placed out (Finished isn't walked: no sync takes a file up again), its moved rows
-        back. A Put back (`restore`): every file it brought back, back to the trash."""
+        (`copied`) and their rows, its moved rows back; a file it listed where it was keeps its new row (Finished isn't
+        walked: that row is all that lists it — W3.2 H C2). A Put back (`restore`): every file it brought back, back to
+        the trash."""
         import copy
         lib = _ls()
         copied = {lib.path_key(r) for r in getattr(change, "copied", ()) if r}
@@ -1087,6 +1113,11 @@ class Writer:
                     raise lib.UndoRefused("none of its copies is left to undo")
                 only = copy.copy(change)            # its own copies' rows only (AD-10)
                 only.added = mine
+            elif set(change.added or ()) - set(mine):
+                if not mine and not change.items:   # W3.2 H (C2): a file it listed where it was keeps its row — never
+                    raise lib.UndoRefused("nothing of it is left to undo")  # walked, its row is all that lists it
+                only = copy.copy(change)
+                only.added = [i for i in change.added if i in mine]
             out = store.undo(only, trashed_paths=trashed)
             if out is None or _refused(change, out):
                 raise lib.UndoRefused("nothing was undone")
@@ -1196,6 +1227,8 @@ class Writer:
                 journalled = cmd["seq"] in self._journalled
         if cmd["op"] in ("insert_at", "import_finished") and not cmd.get("saved") and not cmd.get("replay"):
             self._trash_copies(cmd)                 # (a replay's may be rows already: the copies stay)
+        elif cmd["op"] == "import_finished" and not cmd.get("saved"):
+            self._trash_copies(cmd, unlisted=True)  # W3.2 H: a replay's — only the copies with no row
         if journalled:
             self._sync_journal(everything=False)
         if replay_done:
@@ -1326,8 +1359,14 @@ class Writer:
         False (applied)."""
         if cmd["op"] == "restore" and cmd.get("trash_ids"):
             rows = store.trash_rows(cmd["trash_ids"])
-            if len(rows) != len(set(cmd["trash_ids"])) or any(r["restored_at"] for r in rows):
+            if len(rows) != len(set(cmd["trash_ids"])):
                 return True
+            if all(r["restored_at"] for r in rows):
+                return "done"                       # W3.2 H (C3): put back before the crash, as this command leaves it
+            if any(r["restored_at"] for r in rows):
+                return True
+        if cmd["op"] == "remove" and _removed(store, cmd["ids"]):
+            return "done"                           # W3.2 H (C3): its rows in the trash already, as it leaves them
         seen = cmd.get("seen")
         if seen is not None:
             now = store.check([i for i, _v in seen]).items      # `changed_in` is never NULL: None is gone
@@ -1447,6 +1486,16 @@ def _as_queued(store, cmd):
         return out
 
 
+def _removed(store, ids):
+    """Whether every item of a Remove is out of the items and in the trash table, not put back: it landed."""
+    with store._reading():
+        for i in ids:
+            if store.item(i) is not None or not store.conn.execute(
+                    "SELECT 1 FROM trash WHERE item_id = ? AND restored_at IS NULL LIMIT 1", (i,)).fetchone():
+                return False
+    return bool(ids)
+
+
 def _done(store, cmd):
     """Whether what a GUARDED command writes is there already (it landed before the crash, its entry left behind)."""
     op = cmd["op"]
@@ -1471,6 +1520,32 @@ def _done(store, cmd):
         held = store.check(paths=cmd["paths"]).keys                 # import_finished: every file in Finished
         rows = [store.item(i) if i is not None else None for i in held.values()]
         return all(r is not None and r["tier"] == "graduated" for r in rows)
+
+
+def _rows_held(language, data_dir, rels):
+    """W3.2 H: {path_key: whether the store holds a row for it} for each rel (None: not in the data folder),
+    through a `mode=ro` look — a store gone read-only is read too, nothing written. -> None when it can't be read."""
+    import pathlib
+    import sqlite3
+    lib = _ls()
+    try:
+        db_path = lib.library_db_path(language, data_dir)
+        if not os.path.exists(db_path):
+            return None
+        conn = sqlite3.connect(pathlib.Path(db_path).as_uri() + "?mode=ro", uri=True, timeout=1.0)
+    except (sqlite3.Error, OSError, ValueError):
+        return None
+    try:
+        out = {}
+        for rel in rels:
+            if rel is not None:
+                key = lib.path_key(rel)
+                out[key] = conn.execute("SELECT 1 FROM items WHERE rel_key = ? LIMIT 1", (key,)).fetchone() is not None
+        return out
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
 
 
 def _works_as_set(store, fields):

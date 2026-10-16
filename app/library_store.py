@@ -3268,6 +3268,10 @@ class Store:
                 return None
             last = members[target][0] if ahead else members[target][-1]
             tier = last[1]
+            # W3.2 H (Bo1): never into Finished by a join — that would skip finishing (no watched / graduated_at, no
+            # `finished` event); the window joins onto Current rows only, so this guards a stale row's race
+            if tier == "graduated" and any(r[1] != "graduated" for r in moving):
+                raise ValueError("a part can't join a finished one: finish it first")
             nxt = self._beyond(tier, (last[0], last[2]), set(), -1 if ahead else 1, len(moving))
             if ahead:
                 nxt = nxt[::-1]

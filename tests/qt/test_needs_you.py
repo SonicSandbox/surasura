@@ -577,3 +577,15 @@ def test_L1_IK5_choose_a_folder_looks_for_the_shows_folder_off_the_windows_threa
     button(ny, gone.key, "choose_folder").click()
     assert wait_until(lambda: picked, 5)
     assert looked and not any(looked)
+
+
+def test_H_W5_a_kept_file_that_came_back_leaves_the_seen_file_at_the_next_look(world):
+    """W5: `prune` had no caller — a file kept (*Keep its words*) that came back kept its answer for ever, so gone
+    again it was never asked again, and the seen file only grew. The page's look prunes by what it read."""
+    seed, win, writer, ny = world()
+    gone = next(e for e in ny.entries if e.kind == service.GONE)
+    still = gone.lines[0].item_id
+    there = next(e.id for r in rows_of(win) for e in r.episodes if not e.missing)
+    service.answer("ja", [service.item_key(still), service.item_key(there)])    # `there`: kept once, back since
+    settle(ny)
+    assert service.read_answered("ja") == {service.item_key(still)}, "a file still gone keeps its answer"

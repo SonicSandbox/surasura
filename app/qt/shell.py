@@ -1044,11 +1044,13 @@ class ShellWindow(QMainWindow):
             self.arrivals_tray = arrivals_view.ArrivalsTray(central, self.arrivals_inset, self)
             self.register_overlay(self.arrivals_tray)
             if getattr(services, "arrivals", None) is not None or getattr(services, "library_for", None) is not None:
-                reader = services.library
                 # S2: asked again when the plan file moves (a Generate), never on a drop (`Numbers.version` does);
-                # N3 / IK-L2-2: the client and the language read at each ask — the window's one warm worker
+                # N3 / IK-L2-2: the client and the language read at each ask — the window's one warm worker. The
+                # numbers go to the reader open as they come (W3.2 H: never the first reader's bound method — a
+                # switch let that one go, and the new language's arrivals had no numbers)
                 self.arrival_numbers = arrivals_view.ArrivalNumbers(
-                    self.arrivals_worker, lambda: self.language, on_change=getattr(reader, "set_estimates", None),
+                    self.arrivals_worker, lambda: self.language, on_change=lambda estimates: _set_estimates(
+                        services.library, estimates),
                     plan_token=lambda: _plan_key(getattr(services.library, "numbers", None)))
         # --- end W3.2 Q1
 
@@ -2287,6 +2289,13 @@ def open_window(app, services, state_file=None):
 # --- W3.2 P0: the library main() opens (W3.1a's R3-L7) -------------------------------------------------------------- #
 def _no_callback(*_args):
     pass
+
+
+def _set_estimates(reader, estimates):
+    """New arrivals' numbers to the reader open now (any thread); none with no reader or one without them."""
+    set_estimates = getattr(reader, "set_estimates", None)
+    if set_estimates is not None:
+        set_estimates(estimates)
 
 
 def _stopped(reader):

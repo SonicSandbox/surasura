@@ -31,6 +31,7 @@ from tests.qt.conftest import wait_until
 from tests.qt.test_drag import FakeWriter, open_window, press, real, release, settle  # noqa: F401 (real: a fixture)
 from tests.qt.test_wiring import problems
 from tests.test_library_store_support import names, roots, touch
+from tests.test_services_moves import LockHolder, short_lock_wait  # noqa: F401  (the fixture, by name)
 
 
 # --- a recording writer with Finished's commands -------------------------------------------------------------------- #
@@ -709,3 +710,21 @@ def test_L1_N6_ctrl_z_while_an_import_copies_takes_back_the_import_never_the_mov
     assert wait_until(lambda: len(store.ids("graduated")) == before and writer.pending() == 0, 10)
     assert store.ids("now")[0] == now[-1]              # the move before it stands
     assert win.toasts.card.message != strings.FIN_IMPORTED.format(n="3")
+
+
+def test_H_T2_an_import_whose_writer_stopped_says_it_lands_later_and_frees_the_importer(real, tmp_path,
+                                                                                         short_lock_wait):
+    """T2: the writer stopped (a language switch, the quit) with the import queued: the job waited for ever, the
+    importer's button stayed *Stop adding* and every later import waited behind it. Now it ends with a line."""
+    store, win, writer = real()
+    folder = _a_show_folder(tmp_path)
+    holder = LockHolder(store.db_path)                 # another program's save: the import can't land
+    try:
+        assert win.finished.import_paths([str(folder)]) is not None
+        assert wait_until(lambda: writer.pending() == 1, 15)
+        writer.finish(time.monotonic() + 0.3)          # the switch's wait ran out: the writer let go, journalled
+        assert wait_until(lambda: win.finished.import_job is None and win.finished._landing is None, 10)
+    finally:
+        holder.release()
+    assert wait_until(lambda: win.bar_line.full() == strings.FIN_IMPORT_LATER, 5)
+    assert win.page_widgets["finished"].importer.text() == strings.FIN_IMPORT

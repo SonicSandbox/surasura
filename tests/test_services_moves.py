@@ -2278,7 +2278,7 @@ def test_S2_import_finished_lands_as_earlier_and_undo_trashes_only_the_jobs_copi
         assert item["tier"] == "graduated" and item["graduated_at"] is None, "dated Earlier"
     w.undo()
     assert h.until(lambda: heard.undone)
-    assert lib.store.item_id(copied[0]) is None and lib.store.item_id(listed) is None
+    assert lib.store.item_id(copied[0]) is None and lib.store.item_id(listed) is not None   # C2: its row stays
     assert not os.path.exists(os.path.join(lib.data_dir, *copied[0].split("/"))), "its copy went to the trash"
     assert os.path.exists(there) and os.path.exists(src), "a file it didn't copy stays; the user's own untouched"
 
@@ -2444,8 +2444,10 @@ def test_S2_a_crash_with_new_commands_queued_replays_each_from_the_journal(lib, 
     assert not os.path.exists(gone) and heard2.notes == [] and heard2.saved == []
 
 
-def test_S2_a_replayed_put_back_from_the_trash_that_someone_did_meanwhile_is_listed_once(lib, make_writer,
-                                                                                       short_lock_wait):
+def test_S2_a_replayed_put_back_from_the_trash_that_someone_did_meanwhile_is_let_go_quietly(lib, make_writer,
+                                                                                          short_lock_wait):
+    # W3.2 H (C3): what it asked for holds (its file is back), as a GUARDED command's `_done` reads it — the store
+    # can't tell this command's Put back from another window's, and *couldn't be applied* was false for its own
     w, heard = make_writer()
     x = lib.ids("soon")[3]
     gone = lib.store.remove([x], {x: ls.trash_file(lib.data_dir, lib.store.item(x)["rel_path"])})
@@ -2457,8 +2459,8 @@ def test_S2_a_replayed_put_back_from_the_trash_that_someone_did_meanwhile_is_lis
     lib.store.restore(gone.trash_ids)                   # meanwhile another window put it back
     w2, heard2 = make_writer()
     assert w2.replay()
-    assert h.until(lambda: heard2.notes)
-    assert heard2.notes == [WORDS["crash_one"]] and journal(lib.language) is None
+    assert h.until(lambda: journal(lib.language) is None and not w2.pending())
+    assert heard2.notes == [] and lib.store.item(x) is not None
 
 
 def test_S2_after_commit_hears_every_committed_write_and_undo_on_the_writers_thread(lib, make_writer):
@@ -2848,6 +2850,7 @@ def test_S1_a_join_and_an_import_left_in_the_journal_are_let_go_and_a_media_type
     assert w2.replay()
     assert h.until(lambda: journal(lib.language) is None and heard2.notes)
     assert lib.store.place_of(row)[0] == "now", "the import never puts it back in Finished"
+    assert os.path.exists(os.path.join(lib.data_dir, *copied[0].split("/"))), "a listed file's copy stays"
     assert lib.store.media_type(work)[0] == "anime" and {lib.store.item(i)["piece_id"] for i in now[:4]} == {piece}
     assert heard2.notes == [WORDS["crash_many"].format(n=2)], "the join was done: quiet; the other two listed"
 
@@ -3012,3 +3015,166 @@ def test_a_move_queued_behind_a_soon_line_that_moved_its_row_survives_a_crash(li
     assert w2.replay()
     assert h.until(lambda: lib.ids("goal")[:1] == [now[-1]])
     assert heard2.notes == []
+
+
+# --- W3.2 H: the last fix round before landings 1 + 2's --all ------------------------------------------------------ #
+def test_H_F1_a_record_that_cant_be_read_is_counted_and_the_other_downloads_still_register(lib, make_writer):
+    """One file's pairing record raising dropped the whole register — the other downloads never reached the
+    library (Processed is walked by no sync) and `done` never came. Now that one is counted, the rest register."""
+    lib.store.set_library_options(arrivals_on=True)
+    w, heard = make_writer()
+    words = names(lib.language)
+    bad = _download(lib, words[90], words[91], "qqqqqqqqqqq")
+    good = _download(lib, words[92], words[91], "rrrrrrrrrrr")
+    keyed = _keyed(_yt(words[91]))
+
+    def pairing(path):
+        if path == bad:
+            raise RuntimeError("its sidecar can't be read")
+        return keyed(path)
+    told = []
+    w.register([bad, good], pairing, done=lambda *n: told.append(n))
+    assert h.until(lambda: told)
+    assert told == [(1, 0, 1)] and _tier_of(lib, bad) is None and _tier_of(lib, good) == "arrivals"
+
+
+def test_H_F1_a_register_with_no_record_queues_nothing_and_still_says_done(lib, make_writer):
+    """No records (every one unreadable, or no content file) left `done` uncalled — the caller's line waited
+    for ever. Now nothing is queued or journalled and `done(0, 0, missed)` comes once."""
+    lib.store.set_library_options(arrivals_on=True)
+    w, heard = make_writer()
+    words = names(lib.language)
+    only = _download(lib, words[93], words[94], "sssssssssss")
+
+    def pairing(path):
+        raise RuntimeError("its sidecar can't be read")
+    told = []
+    w.register([only], pairing, done=lambda *n: told.append(n))
+    assert h.until(lambda: told)
+    assert told == [(0, 0, 1)] and w.pending() == 0 and journal(lib.language) is None
+    assert _tier_of(lib, only) is None
+
+
+def test_H_C2_an_imports_undo_keeps_the_row_of_a_file_it_listed_where_it_was(lib, make_writer, tmp_path):
+    """C2: a file already in Finished's folder with no row (lesson.mp3 put there by hand) is listed where it is, never
+    copied; the import's Undo took its new row out too — and Finished's folder is never walked, so it was never listed
+    again. Now only the copies' rows go; an import of such files alone has nothing to undo."""
+    w, heard = make_writer()
+    copied = ls.copy_into_finished(lib.data_dir, [_outside_file(str(tmp_path / "Downloads"), lib.language)])
+    words = names(lib.language)
+    there = os.path.join(lib.data_dir, ls.GRADUATED_FOLDER, words[64] + ".txt")
+    with open(there, "w", encoding="utf-8") as f:
+        f.write(words[64] + "\n")
+    listed = f"{ls.GRADUATED_FOLDER}/{os.path.basename(there)}"
+    w.import_finished(copied + [listed], copied=copied, label="imported")
+    assert h.until(lambda: heard.saved)
+    w.undo()
+    assert h.until(lambda: heard.undone)
+    assert lib.store.item_id(copied[0]) is None, "the copy's row went with its file"
+    row = lib.store.item_id(listed)
+    assert row is not None and lib.store.place_of(row)[0] == "graduated" and os.path.exists(there)
+    alone = os.path.join(lib.data_dir, ls.GRADUATED_FOLDER, words[65] + ".txt")
+    with open(alone, "w", encoding="utf-8") as f:
+        f.write(words[65] + "\n")
+    rel = f"{ls.GRADUATED_FOLDER}/{os.path.basename(alone)}"
+    w.import_finished([rel], label="alone")
+    assert h.until(lambda: len(heard.saved) == 2)
+    w.undo()
+    assert h.until(lambda: WORDS["cant_undo"] in heard.notes)
+    assert lib.store.item_id(rel) is not None and os.path.exists(alone)
+
+
+def _left_behind(lib, w, holder, queue):
+    """A command that landed before the crash with its journal entry left behind: queued behind another program's
+    save (journalled), the entry kept, landed once the save let go, then the crash and the entry written back."""
+    queue()
+    assert h.until(lambda: len(journalled(lib.language)) == 1)
+    stale = journal(lib.language)
+    holder.release()
+    assert h.until(lambda: not w.pending() and journal(lib.language) is None)
+    w._abandon()
+    M._write_json(M.journal_path(lib.language), stale)
+
+
+def test_H_C3_a_remove_that_landed_before_the_crash_replays_as_done_never_couldnt_be_applied(lib, make_writer,
+                                                                                           short_lock_wait):
+    """C3: a Remove whose entry outlived its landing replayed as *couldn't be applied* (its rows gone read as changed):
+    a false line the learner would act on. Its rows in the trash as it left them: done, quietly."""
+    w, heard = make_writer()
+    x, y = lib.ids("soon")[2], lib.ids("soon")[3]
+    files = [_file(lib, i) for i in (x, y)]
+    _left_behind(lib, w, LockHolder(lib.db), lambda: w.remove([x, y]))
+    assert lib.store.item(x) is None and not any(os.path.exists(f) for f in files)
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: journal(lib.language) is None and not w2.pending())
+    assert heard2.notes == [] and lib.store.item(x) is None and lib.store.item(y) is None
+    assert len([r for r in lib.store.trash_rows() if r["item_id"] in (x, y) and not r["restored_at"]]) == 2
+
+
+def test_H_C3_a_put_back_that_landed_before_the_crash_replays_as_done(lib, make_writer, short_lock_wait):
+    w, heard = make_writer()
+    x = lib.ids("soon")[3]
+    gone = lib.store.remove([x], {x: ls.trash_file(lib.data_dir, lib.store.item(x)["rel_path"])})
+    _left_behind(lib, w, LockHolder(lib.db), lambda: w.restore(gone.trash_ids))
+    assert lib.store.item(x) is not None
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: journal(lib.language) is None and not w2.pending())
+    assert heard2.notes == [] and lib.store.item(x) is not None and os.path.exists(_file(lib, x))
+
+
+def test_H_F2_a_replayed_import_the_store_refuses_trashes_its_copies_never_leaves_them_unlisted(lib, make_writer,
+                                                                                               tmp_path):
+    """A replayed import that never landed (the store read-only at the next start) kept its copies — in Finished's
+    folder, which no sync walks: there for ever, listed nowhere. Its copies with no row now go to the trash."""
+    w, heard = make_writer()
+    copied = ls.copy_into_finished(lib.data_dir, [_outside_file(str(tmp_path / "Downloads"), lib.language)])
+    path = os.path.join(lib.data_dir, *copied[0].split("/"))
+    w.hold()                                            # a drag: the import waits in the queue, journalled
+    w.import_finished(copied, copied=copied)
+    assert h.until(lambda: [op for op, _i in journalled(lib.language)] == ["import_finished"])
+    w._abandon()                                        # the crash
+    w2, heard2 = make_writer()
+    w2.hold()
+    assert w2.replay()
+    assert h.until(lambda: w2.pending() == 1)
+    lib.close()
+    ls.mark_damaged(lib.db, "test: a damaged store")
+    assert h.until(lambda: not w2.can_write(), seconds=M.MODE_RECHECK_S * 3)
+    w2.release()
+    assert h.until(lambda: w2.pending() == 0)
+    assert not os.path.exists(path), "its copy went to the trash"
+    assert any(n.startswith(os.path.splitext(os.path.basename(path))[0]) for n in
+               os.listdir(os.path.join(lib.data_dir, ".trash")))
+
+
+def test_H_F2_a_replayed_import_that_failed_keeps_a_copy_the_store_lists_and_trashes_one_it_doesnt(
+        lib, make_writer, tmp_path, monkeypatch):
+    """The other half: a copy whose row the store holds (it landed once, changed since) is the learner's listed
+    file — never trashed by the replay; only the copy with no row goes."""
+    w, heard = make_writer()
+    downloads = str(tmp_path / "Downloads")
+    first = ls.copy_into_finished(lib.data_dir, [_outside_file(downloads, lib.language)])
+    second = ls.copy_into_finished(lib.data_dir, [_outside_file(os.path.join(downloads, "b"), lib.language, "b")])
+    lib.store.import_finished([os.path.join(lib.data_dir, *first[0].split("/"))])   # the first landed once
+    w.hold()
+    w.import_finished(first + second, copied=first + second)
+    assert h.until(lambda: [op for op, _i in journalled(lib.language)] == ["import_finished"])
+    w._abandon()
+
+    def fails(self, paths):
+        raise ls.NotInLibrary("not in the library: a folder moved meanwhile")
+    monkeypatch.setattr(ls.Store, "import_finished", fails)
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: journal(lib.language) is None and w2.pending() == 0)
+    assert os.path.exists(os.path.join(lib.data_dir, *first[0].split("/"))), "a listed file stays"
+    assert not os.path.exists(os.path.join(lib.data_dir, *second[0].split("/"))), "an unlisted copy goes"
+
+
+def test_H_T2_the_writer_says_when_it_stopped(lib, make_writer):
+    w, heard = make_writer()
+    assert not w.stopped()
+    w.finish(time.monotonic() + 1)
+    assert w.stopped()

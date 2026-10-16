@@ -409,7 +409,13 @@ class NeedsYou(QObject):
             connect = read_connect(lang) if settings.get("connect_enabled") else None
             rels = [e.rel_path for r in view.rows for e in r.episodes if e.rel_path] if view.mode == "store" else []
             roots = find_offline(lang, rels, data_dir) if rels else []
-            out = service.entries(view, failures, connect, service.read_seen(lang), roots, read_asks(),
+            asks = read_asks()
+            try:                                    # W3.2 H (W5): the keys whose trouble is gone leave the seen file,
+                service.prune(lang, view, offline_roots=roots, connect=connect,   # judged by what was read (no ask
+                              asks=asks or None)                                 # read: a failed read looks the same)
+            except Exception as e:                  # (a file that can't be read is left as it is: the gather goes on)
+                print(f"Needs you: the seen file wasn't pruned: {e!r}")
+            out = service.entries(view, failures, connect, service.read_seen(lang), roots, asks,
                                   service.read_answered(lang))
             return asked, tuple(out)
         bridge.run_in_worker(gather, then=self._got, failed=self._gather_failed)

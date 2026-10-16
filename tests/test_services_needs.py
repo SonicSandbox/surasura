@@ -540,3 +540,23 @@ def test_chinese_shows_read_the_same_way_and_find_their_videos_by_episode(tmp_pa
                             data_dir=str(data))
     assert [(label, os.path.basename(path)) for label, path, _w in got] == [
         ("Ep 9", f"{title} 第09集.mp4"), ("Ep 10", f"{title} 第10集.mkv")]
+
+
+def test_H_W5_an_answer_never_writes_over_a_seen_file_it_couldnt_read():
+    """W5: a seen file that couldn't be read (half written by another window, held, a newer Surasura's) read as empty,
+    and the next answer wrote the whole file back over every earlier *Keep its words*. A write-back reads strictly: a
+    file it can't read fails the write and stays as it was; one that isn't there is a first answer."""
+    assert needs.answer("ja", [needs.item_key(1)]) == 1                  # no file yet: written
+    path = needs.seen_path("ja")
+    for broken in ('{"version": 1, "seen": [], "answered": ["item:1"', '{"version": 2, "seen": [], "answered": []}'):
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(broken)
+        with pytest.raises(ValueError):
+            needs.answer("ja", [needs.item_key(2)])
+        with pytest.raises(ValueError):
+            needs.mark_seen("ja", ["gone:1:abc"])
+        with pytest.raises(ValueError):
+            needs.prune("ja", view_of([(1, FRIEREN_DIR, frieren_eps(9, 10), {})]))
+        with open(path, encoding="utf-8") as f:
+            assert f.read() == broken, "never written over"
+        assert needs.read_answered("ja") == frozenset()                   # (the page still reads it as nothing)

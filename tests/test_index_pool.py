@@ -553,18 +553,24 @@ def test_a_locking_protocol_answer_to_the_wal_switch_is_asked_again(tmp_path, mo
         c.close()
 
 
-@pytest.mark.parametrize("coded", [True, False], ids=["coded", "by-text"])
-def test_a_corrupt_store_is_still_deleted_and_built_again(tmp_path, monkeypatch, coded):
+DAMAGE = [
+    pytest.param(sqlite3.DatabaseError, "database disk image is malformed", 779, "SQLITE_CORRUPT_INDEX", id="corrupt"),
+    pytest.param(sqlite3.DatabaseError, "database disk image is malformed", None, None, id="corrupt-by-text"),
+    pytest.param(sqlite3.OperationalError, "disk I/O error", 778, "SQLITE_IOERR_CORRUPTFS", id="file-cut-short"),
+]
+
+
+@pytest.mark.parametrize("cls, text, code, name", DAMAGE)
+def test_a_corrupt_store_is_still_deleted_and_built_again(tmp_path, monkeypatch, cls, text, code, name):
     """Real damage keeps its path: SQLITE_CORRUPT ("database disk image is malformed"; here its extended code, an index
     found damaged) met at the open deletes the store and builds it again — by its code, and by its text when raised by
-    hand."""
+    hand; and the one I/O error that is the file's own, a read cut short inside it (SQLITE_IOERR_CORRUPTFS)."""
     db = str(tmp_path / "corrupt.db")
     _store_with_a_row(db)
     deleted = []
     real_delete = ti._delete_db
     monkeypatch.setattr(ti, "_delete_db", lambda path: (deleted.append(path), real_delete(path)))
-    _failing_connect(monkeypatch, "SELECT 1 FROM aggregate", _sqlite_error(
-        sqlite3.DatabaseError, "database disk image is malformed", 779 if coded else None, "SQLITE_CORRUPT_INDEX"))
+    _failing_connect(monkeypatch, "SELECT 1 FROM aggregate", _sqlite_error(cls, text, code, name))
     store = ti.open_store("ja", path=db)
     try:
         assert deleted == [db] and store.get_meta("kept") is None

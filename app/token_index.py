@@ -281,8 +281,8 @@ def _ensure_schema(conn):
 def _add_counted(conn):
     """The counted / kept flag (E2.2) on a store made before it: added, every row counted — it was counted before — so
     the store is read exactly as it was, nothing rebuilt and no version moved. Two first opens may race to add it; the
-    loser finds it there (looked at again inside the write lock; a "duplicate column" is success, never damage — open_store
-    deletes a store on any other database error)."""
+    loser finds it there (looked at again inside the write lock; a "duplicate column" is success; any other error is raised,
+    and open_store deletes the store only when it says the file is damaged: `_damaged`)."""
     def has_it():
         return "counted" in [r[1] for r in conn.execute("PRAGMA table_info(files)")]
     if has_it():
@@ -374,6 +374,7 @@ def open_reader(language, path=None):
 # SQLite's primary result codes (Python 3.11's sqlite3.SQLITE_*), read from an error's `sqlite_errorcode`.
 _BUSY_CODES = (5, 6, 15)        # SQLITE_BUSY, SQLITE_LOCKED, SQLITE_PROTOCOL
 _DAMAGE_CODES = (11, 26)        # SQLITE_CORRUPT, SQLITE_NOTADB
+_IOERR_CORRUPTFS = 778          # the one I/O error that is the file's: a read cut short inside it (the file damaged)
 
 
 def _code(error):
@@ -395,13 +396,14 @@ def _locked(error):
 
 
 def _damaged(error):
-    """The file itself is damaged — SQLite says it is corrupt or not a database — the one error open_store answers by
-    deleting the store (a cache: built again). Anything else says nothing of the file and is raised, the store kept:
-    busy or a locking protocol (another connection), a full disk (a rebuild would only fill it again), a disk I/O
-    error, no permission, can't open. The next open tries again."""
+    """The file itself is damaged — SQLite says it is corrupt, not a database, or cut short (SQLITE_IOERR_CORRUPTFS) —
+    the one error open_store answers by deleting the store (a cache: built again). Anything else says nothing of the
+    file and is raised, the store kept: busy or a locking protocol (another connection), a full disk (a rebuild would
+    only fill it again), any other disk I/O error (the disk's: a rebuild meets the same disk), no permission, can't
+    open. Never deleted for it: the next open tries again, and Generate runs on without the cache meanwhile."""
     code = _code(error)
     if code is not None:
-        return code in _DAMAGE_CODES
+        return code in _DAMAGE_CODES or error.sqlite_errorcode == _IOERR_CORRUPTFS
     text = str(error).lower()
     return "malformed" in text or "not a database" in text
 

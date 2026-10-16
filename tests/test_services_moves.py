@@ -1134,8 +1134,9 @@ def test_a_busy_store_asked_again_doesnt_write_the_same_journal_again(stub_write
 
 def test_a_move_given_while_stuck_is_journalled_before_the_next_retry(stub_writer, tmp_path):
     """(M13) Stuck already: a new command joins the journal at once, not at the next ask. Told by the order of the two
-    events — the journal holds the second command while the writer has asked the store once — never by a time bound
-    (a 1 s one failed under a loaded run); the next ask is a minute away until the test lets it come."""
+    events — the journal holds the second command while the writer has asked the store once — not by a 1 s bound (it
+    failed under a loaded run); the waits' 30 s ceilings only end a stuck test, and the next ask is a minute away until
+    the test lets it come."""
     w, heard, store, opener = stub_writer(retry=60.0, saving_after=120.0)
     store.fail["move"] = ls.StoreBusy("busy")
     store.always.add("move")

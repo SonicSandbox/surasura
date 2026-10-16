@@ -412,6 +412,16 @@ def get_user_files_path(language=None):
         return os.path.join(base, language)
     return base
 
+# --- W3.2 S5: the covers cache ---------------------------------------------------------------------------------- #
+def get_covers_cache_path():
+    """The covers cache (the window's spec 01 §1.3; L2.2 05 §5.5): `covers/` in the local data folder — never roams
+    (D15), re-made at will; a work's `cover_path` 'cache:<name>' names a file in it. An image the user chose is user
+    data instead: `User Files/<lang>/covers/` (`get_user_files_path`). Created on first use."""
+    path = os.path.join(get_local_data_path(), "covers")
+    os.makedirs(path, exist_ok=True)
+    return path
+# --- W3.2 S5 end ------------------------------------------------------------------------------------------------ #
+
 def get_icon_path():
     """Returns the path to the application icon."""
     return get_resource(os.path.join("app", "assets", "images", "app_icon.png"))

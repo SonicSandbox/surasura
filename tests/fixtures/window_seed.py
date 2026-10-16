@@ -121,8 +121,9 @@ class _Builder:
         return w
 
     def add(self, work, tier, names, folder, source_type="subtitle", watched=0, mined=0, missing=(), mined_missing=(),
-            mining=(), graduated_at=None, pinned=None, numbers=True):
-        """One piece: `names` its files' names, in order. -> the items."""
+            mining=(), graduated_at=None, pinned=None, numbers=True, added=None):
+        """One piece: `names` its files' names, in order; `added`: each file's `added_at` by index (else the seed's
+        one day). -> the items."""
         piece = self.next_piece
         self.next_piece += 1
         out = []
@@ -136,7 +137,7 @@ class _Builder:
                    "parent_folder": folder.split("/", 1)[1] if "/" in folder else None, "source_type": source_type,
                    "availability": avail, "work_id": work["id"], "piece_id": piece, "watched": 1 if k < watched else 0,
                    "mined_at": mined_at, "pinned": pinned, "mine_asked": None, "graduated_at": graduated_at,
-                   "in_learning_order": 1, "added_at": "2026-09-01T10:00:00Z", "feed_in": 1}
+                   "in_learning_order": 1, "added_at": (added or {}).get(k, ADDED_AT), "feed_in": 1}
             self.items.append(row)
             if mined_at:
                 self.cards[iid] = [9_000_000 + iid * 100 + c for c in range(self.rng.randint(4, 14))]
@@ -165,6 +166,7 @@ class _Builder:
         return name + f" [{self.rng.randrange(36 ** 6):06x}].srt"
 
 
+ADDED_AT = "2026-09-01T10:00:00Z"              # every file's `added_at` but New arrivals' (they arrive apart)
 TIER_FOLDER = {"now": "HighPriority", "soon": "LowPriority", "goal": "GoalContent", "graduated": "Graduated",
                "arrivals": "HighPriority/Hato"}
 
@@ -235,10 +237,23 @@ def build(files=SMALL, language="ja", rng_seed=7, root=None, mode="store", reaso
     b.add(fw, "graduated", b.chapters(t, 3), f"Graduated/{t}", watched=99, mined=3, graduated_at="2026-09-28T20:00:00Z",
           pinned="2026-09-29T08:00:00Z", numbers=False)
     show("graduated", "anime", eps=12, watched=99, graduated_at=None, numbers=False)   # finished before Surasura
-    # New arrivals: a hato show
-    t = b.title("anime")
+    # New arrivals (W3.2 S1), each at its own time; none draws on `rng`, so the scaled fill below stays as it was. In the
+    # tray, newest first: New = the YouTube video (Oct 15), the hato show (its newest files Oct 14); Already watched =
+    # the hato show watched elsewhere (Oct 13), one file mined, one with no video
+    t = b.title("anime")                                     # a hato show: Ep 1–4 one evening, Ep 5–6 two days on
     aw = b.work(t, "anime", f"HighPriority/Hato/{t}", anilist=202)
-    b.add(aw, "arrivals", b.episodes(t, 1, 6), f"HighPriority/Hato/{t}", numbers=False)
+    b.add(aw, "arrivals", b.episodes(t, 1, 6), f"HighPriority/Hato/{t}", numbers=False,
+          added={k: "2026-10-12T21:00:00Z" if k < 4 else "2026-10-14T21:00:00Z" for k in range(6)})
+    ch = v["channels"][1]                                    # a YouTube channel's video, with its channel
+    yw = b.work(ch, "youtube", f"HighPriority/{ch}", channel=ch)
+    b.add(yw, "arrivals", [v["video_open"][0] + v["videos"][2] + " [a3f9c1].srt"], f"HighPriority/{ch}",
+          source_type="youtube", numbers=False, added={0: "2026-10-15T08:30:00Z"})
+    t = b.title("anime")                                     # every episode watched: *Already watched*
+    ww = b.work(t, "anime", f"HighPriority/Hato/{t}", anilist=303)
+    wi = b.add(ww, "arrivals", b.episodes(t, 1, 3), f"HighPriority/Hato/{t}", watched=3, missing={2}, numbers=False,
+               added={k: "2026-10-13T19:00:00Z" for k in range(3)})
+    wi[0]["mined_at"] = "2026-10-13T20:00:00Z"               # mined before it came (its cards fixed, not drawn)
+    b.cards[wi[0]["id"]] = [9_000_000 + wi[0]["id"] * 100 + c for c in range(6)]
 
     # Scale: fill to `files`, in the mock's shares (Current's tail in Soon, most in Goal) or `current_share`
     target = files if files and files > len(b.items) else 0

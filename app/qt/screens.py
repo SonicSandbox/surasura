@@ -14,7 +14,7 @@ import sys
 
 from PyQt6.QtCore import Qt, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices
-from PyQt6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget   # W3.2 Q4
 
 from app import path_utils, theme
 from app.qt import bridge, rows, strings
@@ -222,6 +222,27 @@ class FinishedPage(Page):
         self.help.setAccessibleName(strings.FINISHED_HELP_NAME)
         self.help.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.head_row.insertWidget(1, self.help)
+        # --- W3.2 Q4: what the rows ask for, handed to Finished's actions (`app/qt/finished.py`); until a hook is set,
+        # nothing is written. The importer's button shows once its hook is set (a window with a writer).
+        self.on_put_back = None                     # (row): the hover's *Put back*
+        self.on_menu = None                         # (row, global QPoint): ⋯ (Enter on the keyboard)
+        self.on_import = None                       # (): *Add what you finished before…*
+        self.list.put_back_requested.connect(lambda row: self._ask(self.on_put_back, row))
+        self.list.menu_requested.connect(lambda row, at: self._ask(self.on_menu, row, at))
+        self.importer = QPushButton(strings.FIN_IMPORT, self)
+        self.importer.setObjectName("finimport")
+        self.importer.setToolTip(strings.FIN_IMPORT_TIP)
+        self.importer.setAccessibleName(strings.FIN_IMPORT)
+        self.importer.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.importer.clicked.connect(lambda _c=False: self._ask(self.on_import))
+        self.importer.setVisible(False)
+        self.head_row.addWidget(self.importer)
+
+    @staticmethod
+    def _ask(hook, *args):
+        if hook is not None:
+            hook(*args)
+    # --- end W3.2 Q4
 
     def unchanged(self, old, new):
         return len(old.finished) == len(new.finished) and all(
@@ -243,8 +264,42 @@ class NeedsPage(Page):
     def __init__(self, tooltips=None, language="ja", parent=None):
         super().__init__("needs", strings.NEEDS_HEADING, tooltips, language, parent)
         self.failures = ()
+        # --- W3.2 Q5: the cards with their buttons (`app/qt/needs.py`) take the painted list's place; their entries
+        # come from `needs.NeedsYou` (the shell's `needs_you`), worked out on a worker
+        from app.qt import needs as needs_ui
+        self.controller = None
+        box = self.layout().itemAt(0).layout()
+        self.list.setVisible(False)
+        self.area, self.cards = needs_ui.make_area(self)
+        box.addWidget(self.area, 1)
+        self.empty = QLabel(strings.NEEDS_EMPTY_TEXT, self)
+        self.empty.setObjectName("sheetline")
+        self.empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.empty.setVisible(False)
+        box.addWidget(self.empty)
+
+    def set_view(self, view):
+        if self.controller is None:
+            return super().set_view(view)
+        self.view_model = view
+        line = state_line(view)
+        if line != self.state_bar.text() or self.state_bar.isHidden() == bool(line):
+            self.state_bar.show_line(line)
+        self.controller.view_in(view)
+        self.list.looks_changed = False
+        return "same"                                   # its cards repaint on their own entries (`show_entries`)
+
+    def show_entries(self, entries, found=None, looking=()):
+        self.cards.show_entries(entries, found, looking)
+        empty = not entries and self.view_model is not None and not self.view_model.loading
+        if self.empty.isHidden() == empty:
+            self.empty.setVisible(empty)
+    # --- end W3.2 Q5
 
     def set_failures(self, entries):
+        if self.controller is not None:                # W3.2 Q5: the controller works them in
+            self.controller.failures_in(entries)
+            return
         entries = tuple(entries or ())
         if same_objects(entries, self.failures):    # the bar's every snapshot comes here: unchanged, nothing to do
             return

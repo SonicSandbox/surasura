@@ -25,6 +25,15 @@ library store, on a plain thread of its own — never the window's thread.
   items it changed when the provider says which (`numbers.changed(since)`, W3.1a's `moves.Numbers`: a drop moves *N new*
   on a few rows), else every row. *Mining now* comes from Connect's status (`mining()` → item ids; none until Connect's
   record exists, 04 §4.4 gap 9).
+- **It wakes on the bell** (W3.2 B; IK0-5, L3.1-4: "let windows handle it but with the fallback"): given `watch`
+  (`watch(store, wake)` -> an opened `library_watch.Lookout` on the reader's own wake event — the shell's
+  `library_lookout`), made on this thread once the store can be used, the reader sleeps until the store's bell rings
+  (any process's commit, the window's own writer's too), the tree watch reports a folder (a hand copy, hato's drop) or
+  one of its own retries falls due (a failed read, the cache's quiet look, the cards' re-ask, the mode's recheck) —
+  never every `poll` while the bell is live; with no bell (deaf: no slot, not Windows) it looks every `poll` as
+  before. The folders the watch reports (all of them at the open and when Windows lost track; the slow look's
+  without a watch) are synced on a worker of its own (`library_store.sync_for_window`, its own handle), never this
+  thread or the window's; the sync's commit rings the bell back here. Without `watch`: every `poll`, as before.
 - **A drag holds it** (06 E6, `hold()` / `release()`): while held it still reads and merges the feed (its copy stays
   current) but builds and publishes nothing, so nothing moves under the hand; `release()` builds and publishes once. An
   item gone meanwhile is told at once (`subscribe_gone(cb)`: `cb(item_ids)`) — the drag of a removed item is let go.
@@ -62,7 +71,7 @@ def _no_mining():
 
 class LibraryReader:
     def __init__(self, opener, language="ja", numbers=None, mining=None, poll=POLL_S, cache_file=None,
-                 cache_rows=view_rows.CACHE_ROWS, freeze_gc=False):
+                 cache_rows=view_rows.CACHE_ROWS, freeze_gc=False, watch=None):
         self.opener = opener
         self.language = language
         self.numbers = numbers or _no_numbers
@@ -106,6 +115,21 @@ class LibraryReader:
         self.reads = 0                     # feed reads (tests)
         self.builds = 0                    # views built (tests)
         self.skipped = 0                   # reads that changed nothing the window shows (tests)
+        # --- W3.2 Q1: New arrivals' estimates ({item_id: N new}, the window's `arrivals.ArrivalNumbers`), built into
+        # the next view (`view_rows.build(estimates=)`); new ones rebuild it (only the arrivals' rows change)
+        self._estimates = {}
+        self._estimates_new = False
+        # --- end W3.2 Q1
+        # --- W3.2 B: the bell and the tree watch (`watch`), the folders they report synced on a worker of its own
+        self.watch = watch
+        self._lookout = None
+        self._syncer = None
+        self._owed = (set(), False, False)  # (folders, full, slow) still to sync (a busy store's are tried again)
+        self._syncing = False
+        self._disk_poll = None             # the slow look's `DiskPoll` (the sync worker's own)
+        self.looks = 0                     # looks at the store (tests: an idle reader on the bell makes none)
+        self.syncs = 0                     # syncs the watch asked for (tests)
+        # --- end W3.2 B
 
     # --- the window's side --------------------------------------------------------------------------------------- #
     def subscribe(self, callback):
@@ -121,6 +145,18 @@ class LibraryReader:
         """`callback(item_ids)` for the items the feed lets go of while a drag holds the view, on the reader's thread."""
         with self._lock:
             self._gone_subscribers.append(callback)
+
+    # --- W3.2 Q1
+    def set_estimates(self, estimates):
+        """New arrivals' numbers ({item_id: N new}), from any thread: built into the next view, looked at now."""
+        new = dict(estimates or {})
+        with self._lock:
+            if new == self._estimates:
+                return                                  # W3.2 S2: the same numbers build nothing
+            self._estimates = new
+            self._estimates_new = True
+        self._wake.set()
+    # --- end W3.2 Q1
 
     def hold(self):
         """A drag starts (E6): the feed is still read, but nothing is built or published until `release()`."""
@@ -181,8 +217,8 @@ class LibraryReader:
                 self._look()
             except Exception as e:                  # never dies of a read: the last view, marked busy
                 self._busy(e)
-            self._wake.wait(self.poll)
-            self._wake.clear()
+            self._wait()                            # W3.2 B: the bell, the watch or a retry (no watch: `poll`)
+        self._unwatch()                             # W3.2 B
         try:
             self._flush_cache()                         # the last view's cache, as the window closes
         except Exception:
@@ -223,9 +259,12 @@ class LibraryReader:
         return mode, reason, (fallback() if fallback is not None else None)
 
     def _look(self):
+        self.looks += 1                                 # W3.2 B
         mode, reason, h = self._handle()
         changed_mode = (mode, reason) != self._mode
         self._mode = (mode, reason)
+        if mode == "store" and h is not None and self.watch is not None:
+            self._watching(h)                           # W3.2 B: the watch made once, what it reports synced
         version, numbers = self.numbers()
         held = self._hold.is_set()
         released = self._held_dirty and not held        # the drop: what came in during the drag, built once now
@@ -238,10 +277,13 @@ class LibraryReader:
                 self._held_dirty = False
                 self._publish(self._build(numbers, mode, reason, rows_known=self._seen is not None))   # (review B-12)
             return
+        with self._lock:                                # W3.2 Q1: new estimates from the window
+            estimates_new, self._estimates_new = self._estimates_new, False
         dv = h.data_version()
         cards_due = self._cards_stale and time.monotonic() - self._cards_all_at >= CARDS_ALL_S
         if not changed_mode and dv == self._data_version and version == self._numbers_version \
-                and self._view is not None and not self._view.busy and not cards_due and not released:
+                and self._view is not None and not self._view.busy and not cards_due and not released \
+                and not estimates_new:                  # W3.2 Q1
             self._flush_cache()
             return
         feed = h.read_feed(self._seen, self._epoch)
@@ -256,7 +298,8 @@ class LibraryReader:
         cards = self._card_counts(h)
         changed = (feed["full"] or feed["items"] or feed["works"] or feed["gone"] or changed_mode
                    or self._options != options_before or version != self._numbers_version
-                   or cards != self._cards or self._view is None or self._view.busy or self._view.cached or released)
+                   or cards != self._cards or self._view is None or self._view.busy or self._view.cached or released
+                   or estimates_new)                    # W3.2 Q1
         self._cards = cards
         self._data_version = dv
         self._numbers_version = version
@@ -284,6 +327,123 @@ class LibraryReader:
             self._cache_due = (view, [self._store_id, feed["epoch"], feed["version"], version])
             if time.monotonic() - self._cache_due_at >= CACHE_LATEST_S:
                 self._flush_cache()                     # a store that never rests: written anyway, now and then
+
+    # --- W3.2 B: the window wakes on the bell (IK0-5, L3.1-4, W2.2's *How the window wakes*) -------------------- #
+    def _wait(self):
+        """Until the next look. No watch, or a deaf one (no bell to hear other programs by): every `poll`, as before.
+        Else until the bell or the tree watch wakes it (`wake` is the Lookout's), a Lookout timer falls due (the slow
+        look without a watch, the watch's retry, its settle), or one of the reader's own retries does."""
+        self._wake.wait(self._timeout())
+        self._wake.clear()
+
+    def _timeout(self):
+        """The wait's seconds. While the store can't be used `_watching` (which takes what the watch says is due) isn't
+        reached, so a timer already due would wake the reader at once, every time: floored at `poll` then (L1 B1)."""
+        lookout = self._lookout
+        if lookout is None or lookout.deaf:
+            timeout = self.poll
+        else:
+            timeout = lookout.timeout()
+            with self._lock:
+                owed = any(self._owed) and not self._syncing
+            view = self._view
+            if owed or self._cache_due is not None or self._recheck or self._held_dirty or \
+                    (view is not None and view.busy):
+                timeout = min(timeout, self.poll)       # a sync, a read or the cache's quiet look to try again
+            if self._cards_stale:                       # a card made elsewhere moves no row: asked again when due
+                timeout = min(timeout, max(0.0, self._cards_all_at + CARDS_ALL_S - time.monotonic()))
+            if self._mode is not None and self._mode[0] != "store":
+                timeout = max(self.poll, min(timeout, MODE_RECHECK_S))
+        return timeout
+
+    def _watching(self, h):
+        """(The reader's thread.) The watch made once the store can be used — the open's full sync owed first (the
+        watch before the walk: a change while it runs is reported, never lost) — then what it says is due, handed to
+        the sync worker (one sync at a time; what comes in meanwhile waits for the next)."""
+        if self._lookout is None:
+            try:
+                self._lookout = self.watch(h, self._wake)
+            except Exception as e:                      # no watch: every `poll`, as without one
+                print(f"Library reader: the library's watch couldn't start: {e!r}")
+                self.watch = None
+                return
+            from app.services.automation import Worker
+            self._syncer = Worker(f"library-sync-{self.language}")
+            jobs_full, folders, slow = True, (), False
+        else:
+            jobs = self._lookout.jobs()
+            jobs_full, folders, slow = jobs.full, jobs.folders, jobs.slow
+            # the hourly full look (no `make_round` here): owed and `looked()`, else the Lookout's round stays due and
+            # the reader would wake at once, for good, an hour after the open (L1 B1)
+            from app.library_watch import ROUND_S
+            jobs_full = jobs_full or self._lookout.clock() - self._lookout._last_full >= ROUND_S
+        if jobs_full:
+            self._lookout.looked()
+        with self._lock:
+            owed = self._owed
+            self._owed = (owed[0] | set(folders), owed[1] or jobs_full, owed[2] or slow)
+            if self._syncing or not any(self._owed):
+                return
+            self._syncing = True
+        if not self._syncer.put(self._sync):
+            with self._lock:
+                self._syncing = False
+
+    def _sync(self):
+        """(The sync worker.) What the watch reported, synced through this thread's own handle; the commit rings the
+        bell. A busy store keeps it owed (the reader's next look hands it back); any other failure lets it go — the
+        next report or slow look syncs again (the disk is the truth)."""
+        from app import library_store
+        while True:
+            with self._lock:
+                folders, full, slow = self._owed
+                self._owed = (set(), False, False)
+                if not (folders or full or slow):
+                    self._syncing = False
+                    return
+            store = None
+            try:
+                store = self.opener.handle()
+                if store is None:
+                    raise library_store.StoreBusy("the library can't be read now")
+                if slow and not full:                   # no watch: the folders that hold items, stat'ed
+                    if self._disk_poll is None:
+                        self._disk_poll = library_store.DiskPoll(store)
+                    if self._disk_poll.check():
+                        folders = folders | set(self._disk_poll.changed)
+                if full:
+                    library_store.sync_for_window(store)
+                elif folders:
+                    library_store.sync_for_window(store, folders=sorted(folders))
+                self.syncs += 1
+            except library_store.StoreBusy:
+                with self._lock:
+                    owed = self._owed
+                    self._owed = (owed[0] | folders, owed[1] or full, owed[2] or slow)
+                    self._syncing = False
+                if store is not None:                   # (it waited the store's lock first): the reader, asleep
+                    self._wake.set()                    # since this began, hands it back at its next look
+                return
+            except Exception as e:                      # never dies of a sync
+                print(f"Library reader: the library's folders couldn't be synced: {e!r}")
+
+    def _unwatch(self):
+        """(The reader's thread, at its stop.) The watch and the bell closed; the sync worker closes its handle and
+        ends (a sync running finishes first: its transaction is whole or not at all)."""
+        lookout, self._lookout = self._lookout, None
+        if lookout is not None:
+            try:
+                lookout.close()
+            except Exception:
+                pass
+        syncer, self._syncer = self._syncer, None
+        if syncer is not None:
+            close = getattr(self.opener, "close", None)
+            if close is not None:
+                syncer.put(close)                       # the sync worker's own handle (`StoreOpener.close`)
+            syncer.close()
+
+    # --- end W3.2 B
 
     def _moved(self, h):
         """The order or the pins moved since the last read: told once (`subscribe_moves`). Read only after
@@ -426,7 +586,8 @@ class LibraryReader:
                                cards=self._cards, mining=set(self.mining()), language=self.language, mode=mode,
                                reason=reason, loading=not rows_known, cache=self.row_cache,
                                tiers=self._sorted_tiers() if self._items else None, changed=self._build_changed,
-                               changed_works=self._build_works, numbers_changed=numbers_changed)
+                               changed_works=self._build_works, numbers_changed=numbers_changed,
+                               estimates=self._estimates)     # W3.2 Q1
         self._built_numbers = self._numbers_version
         self._build_changed = set()                     # built: from here on, only what the feed changes
         self._build_works = set()

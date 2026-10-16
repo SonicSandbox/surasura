@@ -22,6 +22,9 @@ frozen `View`:
 - Goal's strip, Finished by month (newest first; no date → *Earlier*), Needs you's entries (each show with files the top
   20 waits on that aren't on disk), the badges, the header's subline, each row's accessible text, and the section's
   state (full · empty · loading · getting ready · read-only; busy beside any of them).
+- **New arrivals' tray** (W3.2 S1): a row per piece of the arrivals tier, newest first by `added_at`, *New* then
+  *Already watched*, each with its source chip, its one line and the number slot the arrivals worker's estimates fill
+  (*N new / ep*). The badge stays the file count.
 
 Every user-facing word is here or in the window's strings; nothing here imports Qt, Tk or pandas (the import guard).
 """
@@ -53,19 +56,38 @@ Episode = namedtuple("Episode", "id label number title watched cards mining miss
                                 "status mark rel_path play_tip can_play deleted", defaults=(False,))
 Row = namedtuple("Row", "key index tier work_id piece_id media media_word verb title title_ep line source n_files n_watched "
                         "pct pct_tone n_new status mark episodes next_index studying date cover_title accessible "
-                        "description chips more_chips play_tip can_play string", defaults=(None,))
+                        "description chips more_chips play_tip can_play cards_out string", defaults=(False, None))
+#   cards_out (W3.2 Q4): a piece with an item out of the learning order (`in_learning_order` 0: Finished's *Leave its
+#   new cards out of your order*) — ⋯ shows *Put them back in the order* then; never painted
 #   string: a Current row's (stone plan, its need at its tightest — `stone_plan`, fz 1), planned here, on the reader's
 #   thread, once per row content (W3.1a B2); None on Finished's rows and on the first screen's cached rows
 Chip = namedtuple("Chip", "text watched next mined tip")
 Line = namedtuple("Line", "kind after tip split")              # drawn after row `after` (0-based in Current);
 #                                                                 `split`: the row's first `split` files are above it
-Goal = namedtuple("Goal", "titles files covers line tip")
+Goal = namedtuple("Goal", "titles files covers line tip works", defaults=((),))     # works: W3.2 Q2 (below)
+# --- W3.2 Q2: Goal's sheet — one tile per title in Goal's order (`works`), each with its pieces in order (a piece's
+# files and its range): *Move to the top* / *Soon* and a drag take the first piece, the rest stays in Goal (G2). Not in
+# the first screen's cache (the first frame shows no sheet)
+GoalWork = namedtuple("GoalWork", "key work_id title cover_title media source n_files line pieces item_ids folder "
+                                  "tip accessible")       # folder: its first file's, in the data folder (*Open its folder*)
+GoalPiece = namedtuple("GoalPiece", "item_ids line")
+# --- end W3.2 Q2
 Month = namedtuple("Month", "label rows")
 Need = namedtuple("Need", "key work_id title line episodes cover_title")
+Arrival = namedtuple("Arrival", "key work_id piece_id item_ids rel_paths title media media_word source chip channel "
+                                "line cards no_media parts n_files watched group added_at cover_title per_ep tip "
+                                "accessible")
+#   one New arrivals row (W3.2 S1): a piece of the arrivals tier. `source` the chip's colour key (hato · youtube ·
+#   anilist · disk), `chip` its word; `line` *Ep x–y* or a video's channel; `parts` the one line as (text, tone):
+#   the line, *N in Anki* (ok), *N files gone* (warn); `group` "new" or "watched" (every file watched); `per_ep` the
+#   estimate's *N new* (at the top of Current) over its files, rounded — None until every file has one
+ArrivalGroup = namedtuple("ArrivalGroup", "kind label rows")
 Counts = namedtuple("Counts", "current_rows current_files goal_titles goal_files finished arrivals arrival_files")
 View = namedtuple("View", "language mode reason state busy loading cached rows lines goal finished needs counts "
-                          "subline badges worst", defaults=(None,))
+                          "subline badges worst arrivals arrival_groups", defaults=(None, (), ()))
 #   worst: Current's rows below Up Next, the most-needing string per kind of Anki count beside it (`worst_needs`)
+#   arrivals: the tray's rows as it shows them (New, then Already watched; each newest first); arrival_groups: the
+#   groups that hold any, in that order. Neither is in the first screen's cache (the first frame shows no tray)
 
 STRINGS = {
     "dash": "—",
@@ -89,8 +111,9 @@ STRINGS = {
     "mark_removed": "{Word} deleted after mining: {eps}\nThe cards keep their pictures and audio; only ▶ can't play it",
     "play": "{verb} {name} in your {player}\nThe {word} beside its subtitle file",
     "play_online": "Its video is online: opening it from here comes in a later build",
-    "play_missing": "No {word} on disk\n• Link one to {verb_l} it from here: Needs you, in a later build",
-    "play_missing_plain": "No {word} on disk, so it can't {verb_l} from here",
+    # --- W3.2 Q5: an item whose content file is gone says so (its *video* is Connect's, S3), never "no video"
+    "play_missing": "Its file is gone from your library folder\n• Point it at its file in Needs you",
+    "play_missing_plain": "Its file is gone from your library folder, so it can't {verb_l} from here",
     "play_removed": "Its {word} was removed\n• Link it to {verb_l} it from here: Needs you, in a later build",
     "eps_more": " and {n} more",
     "player": {"video": "video player", "audio": "audio player", "EPUB": "e-book reader", "file": "default app"},
@@ -114,6 +137,22 @@ STRINGS = {
     "hero_stats_none": "not analysed yet",
     "acc_row": "{title} · {pct} · {new} · {status}", "acc_pct_none": "not analysed",
     "acc_hero": "Up next: {title} {ep} · {pct} · {new} · {status}",
+    # New arrivals (W3.2 S1): the tray's groups, its source chips and each row's one line and number
+    "arr_new": "New", "arr_watched": "Already watched",
+    "chip": {"hato": "hato", "youtube": "YouTube", "anilist": "AniList", "disk": "disk"},
+    "arr_cards": "{n} in Anki", "arr_no_media": "{n} files gone", "arr_no_media_one": "1 file gone",   # W3.2 Q5
+    "per_ep": "{n} new / {unit}", "per_unit": {"eps": "ep", "videos": "video", "parts": "part"},
+    "arr_units": {"eps": ("episode", "episodes"), "videos": ("video", "videos"), "parts": ("part", "parts")},
+    "arr_each": {"eps": "an episode", "videos": "a video", "parts": "a part"},
+    "per_ep_tip": "About {n} new words {each} if you put it at the top of Current\n{files} {units} · an estimate "
+                  "until analysed",
+    "per_ep_tip_none": "{files} {units} · its new words are counted when it first shows: an estimate until analysed",
+    "acc_arrival": "{title} · {line} · {number}", "acc_per_ep_none": "not counted yet",
+    # --- W3.2 Q2: Goal's tiles
+    "goal_count": "{n} {units}",
+    "goal_tile_tip": "{title} · {line}\nDrag it into Current to bring up {first}, or ⋯ to move it",
+    "acc_goal_tile": "{title} · {line}",
+    # --- end W3.2 Q2
 }
 
 _EXT = re.compile(r"\.[A-Za-z0-9]{1,5}$")
@@ -465,7 +504,8 @@ def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, 
                pct_tone=pct_tone(pct), n_new=n_new, status=st, mark=mark, episodes=tuple(eps), next_index=next_index,
                studying=studying, date=day_label(stamp) if finished else "", cover_title=work.get("title") or title,
                accessible=accessible, description=line, chips=chips, more_chips=more, play_tip=nxt.play_tip,
-               can_play=nxt.can_play, string=string)
+               can_play=nxt.can_play, string=string,
+               cards_out=any(it.get("in_learning_order", 1) == 0 for it in piece))     # --- W3.2 Q4
 
 
 class RowCache:
@@ -688,14 +728,183 @@ def _keep(cache, name, tier_rows, work_ids, more, made):
         cache.sections[name] = (tier_rows, frozenset(r["id"] for r in tier_rows), frozenset(work_ids), more, made)
 
 
+# --- New arrivals (W3.2 S1) --------------------------------------------------------------------------------------- #
+def _arrival_unit(media):
+    return "videos" if media == "youtube" else "eps" if media in EPISODIC or media == "podcast" else "parts"
+
+
+def per_episode(item_ids, estimates):
+    """*N new / ep*: the estimates' *N new* (each file asked with the earlier ones placed, IK-5) summed over the files
+    and divided by them, rounded — None while any file has none (a dash until every answer is in)."""
+    if not item_ids or estimates is None:
+        return None
+    vals = [estimates.get(i) for i in item_ids]
+    if any(v is None for v in vals):
+        return None
+    return int(sum(vals) / len(vals) + 0.5)
+
+
+def _arrival(piece, works, cards, estimates, guessed):
+    """One tray row from one piece of the arrivals tier: titled as Current's rows are (`_row`), its source from hato's
+    folder, its files' type and the work's AniList id (the feed carries no pairing: see `source_of`), else the disk."""
+    row = _row(0, "arrivals", piece, works, {}, cards, set(), set(), 20, finished=True, guessed=guessed)
+    first = piece[0]
+    work = works.get(first.get("work_id")) or {}
+    media, eps = row.media, row.episodes
+    n = len(eps)
+    source = row.source or "disk"
+    channel = (work.get("title") or work.get("youtube_channel")) if media == "youtube" else None
+    if media == "youtube" and n == 1:
+        line = channel or ""
+    else:
+        line = range_text(media, [e.number for e in eps if e.number is not None], n)
+    ids = tuple(it["id"] for it in piece)
+    n_cards = sum(cards.get(i, 0) for i in ids)
+    no_media = sum(1 for e in eps if e.missing)
+    parts = ((line, "dim"),) if line else ()
+    if n_cards:
+        parts += ((STRINGS["arr_cards"].format(n=n_cards), "ok"),)
+    if no_media:
+        parts += ((STRINGS["arr_no_media_one" if no_media == 1 else "arr_no_media"].format(n=no_media), "warn"),)
+    watched = all(e.watched for e in eps)
+    unit = _arrival_unit(media)
+    one, many = STRINGS["arr_units"][unit]
+    per_ep = per_episode(ids, estimates)
+    if per_ep is None:
+        tip = STRINGS["per_ep_tip_none"].format(files=n, units=one if n == 1 else many)
+        number = STRINGS["acc_per_ep_none"]
+    else:
+        tip = STRINGS["per_ep_tip"].format(n=per_ep, each=STRINGS["arr_each"][unit], files=n,
+                                           units=one if n == 1 else many)
+        number = STRINGS["per_ep"].format(n=per_ep, unit=STRINGS["per_unit"][unit])
+    return Arrival(key=row.key, work_id=row.work_id, piece_id=row.piece_id, item_ids=ids,
+                   rel_paths=tuple(it.get("rel_path") for it in piece), title=row.title, media=media,
+                   media_word=row.media_word, source=source, chip=STRINGS["chip"][source], channel=channel, line=line,
+                   cards=n_cards, no_media=no_media, parts=parts, n_files=n, watched=watched,
+                   group="watched" if watched else "new",
+                   added_at=max((it.get("added_at") or "" for it in piece), default="") or None,
+                   cover_title=row.cover_title, per_ep=per_ep, tip=tip,
+                   accessible=STRINGS["acc_arrival"].format(title=row.title, line=" · ".join(t for t, _ in parts),
+                                                            number=number).replace(" ·  · ", " · "))
+
+
+def _arrivals(cache, tier_rows, works, cards, estimates, guessed, changed, changed_works):
+    """The tray's rows and groups (RUNBOOK §1 *The tray*): one per piece, newest first by `added_at` (a piece by its
+    newest file; equal stamps keep the store's order), *New* then *Already watched*. With the reader's cache an
+    unchanged tier gives back last build's objects (`_kept`), and a piece whose items, work, cards, estimates and guess
+    are the same gives back its row — the window repaints only the rows that moved (S19)."""
+    ps = pieces(tier_rows)
+    estimates = estimates or {}
+
+    def sig(p):
+        work = works.get(p[0].get("work_id"))
+        guess = guessed.of(work) if work and work.get("media_type") is None else None
+        return (tuple(cards.get(it["id"], 0) for it in p), tuple(estimates.get(it["id"]) for it in p), guess)
+    sigs = tuple(sig(p) for p in ps)
+    kept = _kept(cache, "arrivals", tier_rows, changed, changed_works, sigs)
+    if kept is not None:
+        return kept[0], kept[1]
+    hit = cache.sections.get("arrivals") if cache is not None else None
+    before = hit[4][2] if hit is not None else {}
+    entries, made = {}, []
+    for p, s in zip(ps, sigs):
+        first = p[0]
+        work = works.get(first.get("work_id"))
+        key = f"p{first['piece_id']}" if first.get("piece_id") is not None else f"i{first['id']}"
+        old = before.get(key)
+        if old is not None and old[1] is work and old[2] == s and len(old[0]) == len(p) and \
+                all(a is b for a, b in zip(old[0], p)):
+            row = old[3]
+        else:
+            row = _arrival(p, works, cards, estimates, guessed)
+        entries[key] = (tuple(p), work, s, row)
+        made.append(row)
+    made.sort(key=lambda a: a.added_at or "", reverse=True)          # stable: equal stamps keep the store's order
+    rows = tuple(a for a in made if a.group == "new") + tuple(a for a in made if a.group == "watched")
+    if hit is not None and len(hit[4][0]) == len(rows) and all(a is b for a, b in zip(hit[4][0], rows)):
+        rows, groups = hit[4][0], hit[4][1]                         # nothing moved: the same objects
+    else:
+        groups = tuple(ArrivalGroup(kind, STRINGS[label], tuple(a for a in rows if a.group == kind))
+                       for kind, label in (("new", "arr_new"), ("watched", "arr_watched"))
+                       if any(a.group == kind for a in rows))
+    _keep(cache, "arrivals", tier_rows, {r.get("work_id") for r in tier_rows}, sigs, (rows, groups, entries))
+    return rows, groups
+
+
+# --- W3.2 Q2: Goal's sheet ----------------------------------------------------------------------------------------- #
+def _goal_work(key, ps, works, guessed):
+    """One tile: a title's pieces in Goal (in Goal's order), titled as Current's rows are, *N episodes / videos /
+    parts* over all its files, each piece's range (*Ep 1–12*)."""
+    first = ps[0][0]
+    work = works.get(first.get("work_id")) or {}
+    media = work.get("media_type")
+    if media is None and work and guessed is not None:
+        media = guessed.of(work)
+    if media is None and first.get("source_type") in ("youtube", "bilibili"):
+        media = "youtube"
+    files = [it for p in ps for it in p]
+    name = first.get("title") or (first.get("rel_path") or "").rsplit("/", 1)[-1]
+    title = (work.get("title") or work.get("youtube_channel")) if media == "youtube" else None
+    title = title or work.get("title") or first.get("parent_folder") or stem(name)
+    unit = _arrival_unit(media)
+    one, many = STRINGS["arr_units"][unit]
+    line = STRINGS["goal_count"].format(n=thousands(len(files)), units=one if len(files) == 1 else many)
+    pieces_ = []
+    for p in ps:
+        nums = [] if media == "youtube" else \
+            [episode_number(it.get("title") or (it.get("rel_path") or "").rsplit("/", 1)[-1]) for it in p]
+        nums = [n for n in nums if n is not None]
+        pieces_.append(GoalPiece(item_ids=tuple(it["id"] for it in p), line=range_text(media, nums, len(p))))
+    return GoalWork(key=key, work_id=first.get("work_id"), title=title, cover_title=work.get("title") or title,
+                    media=media, source=source_of(first, work) or "disk", n_files=len(files), line=line,
+                    pieces=tuple(pieces_), item_ids=tuple(it["id"] for it in files),
+                    folder=(first.get("rel_path") or "").rpartition("/")[0],
+                    tip=STRINGS["goal_tile_tip"].format(title=title, line=line, first=pieces_[0].line),
+                    accessible=STRINGS["acc_goal_tile"].format(title=title, line=line))
+
+
+def goal_tiles(goal_items, works, guessed=None, before=None):
+    """Goal's tiles (`Goal.works`), in Goal's order: its pieces grouped by title (a piece with no title: by itself).
+    `before`: the last build's {key: (items, work, guess, tile)} — a title whose items and work are the same objects
+    and whose guess is equal gives back its tile (S19). -> (tiles, entries)."""
+    groups, order = {}, []
+    for p in pieces(goal_items):
+        first = p[0]
+        key = f"w{first['work_id']}" if first.get("work_id") is not None else \
+            f"p{first['piece_id']}" if first.get("piece_id") is not None else f"i{first['id']}"
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(p)
+    before = before or {}
+    entries, tiles = {}, []
+    for key in order:
+        ps = groups[key]
+        items = tuple(it for p in ps for it in p)
+        work = works.get(ps[0][0].get("work_id"))
+        guess = guessed.of(work) if guessed is not None and work and work.get("media_type") is None else None
+        old = before.get(key)
+        if old is not None and old[1] is work and old[2] == guess and len(old[0]) == len(items) and \
+                all(a is b for a, b in zip(old[0], items)):
+            tile = old[3]
+        else:
+            tile = _goal_work(key, ps, works, guessed)
+        entries[key] = (items, work, guess, tile)
+        tiles.append(tile)
+    return tuple(tiles), entries
+# --- end W3.2 Q2
+
+
 def build(items, works, options, numbers=None, cards=None, mining=(), language="ja", mode="store", reason=None,
-          loading=False, busy=False, cache=None, tiers=None, changed=None, changed_works=None, numbers_changed=None):
+          loading=False, busy=False, cache=None, tiers=None, changed=None, changed_works=None, numbers_changed=None,
+          estimates=None):
     """The window's view of the library (see the module's doc). `items` / `works`: {id: feed row}; `options`: the
     feed's {soon_line, mine_line, arrivals_on}; `numbers`: (version, {item_id: (known, counted, n_new)}) or the dict;
     `cards`: {item_id: count}; `mining`: item ids being mined now; `changed`: with `cache`, the item ids changed or gone
     since the cache's last build (None: unknown, every item looked at); `changed_works`: the same for works;
     `numbers_changed`: with `cache`, the item ids whose numbers changed since the version it last built with (None:
-    unknown — on a new version every row is built again)."""
+    unknown — on a new version every row is built again); `estimates`: {item_id: *N new* at the top} for New arrivals'
+    files, as the arrivals worker answers (W3.2 S1: a missing one leaves its row's number None)."""
     numbers_version = None
     if isinstance(numbers, tuple):
         numbers_version, numbers = numbers
@@ -750,9 +959,14 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
         lines.append(Line("soon", first_soon - 1, tip, None))
     # Goal: titles are works, files all their items
     goal_items = tiers["goal"]
-    kept = _kept(cache, "goal", goal_items, changed, changed_works)
+    # --- W3.2 Q2: the tiles read every Goal title (not only the strip's nine) and an untyped title's guess
+    g_hit = cache.sections.get("goal") if cache is not None else None
+    g_more = tuple((w, guessed.of(works[w])) for w in g_hit[4][2]) if g_hit is not None and \
+        all(w in works for w in g_hit[4][2]) else (object(),) if g_hit is not None else ()
+    # --- end W3.2 Q2
+    kept = _kept(cache, "goal", goal_items, changed, changed_works, g_more)
     if kept is not None:
-        goal, n_goal_works = kept
+        goal, n_goal_works = kept[0], kept[1]
     else:
         goal_works = list(dict.fromkeys(r.get("work_id") for r in goal_items))   # in order, one pass (a list's `in`
         # was quadratic: ~90 ms a build at 20,000 files, bench 7)
@@ -762,9 +976,19 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
                 STRINGS["goal_line"].format(titles=len(goal_works), files=thousands(len(goal_items)))
         else:
             g_line = STRINGS["goal_empty"]
-        goal = Goal(titles=len(goal_works), files=len(goal_items), covers=covers, line=g_line, tip=STRINGS["goal_tip"])
+        # --- W3.2 Q2: the tiles (a title unchanged gives back its tile), every title watched, an untyped one's guess
+        tiles, g_entries = goal_tiles(goal_items, works, guessed, g_hit[4][3] if g_hit is not None else None)
+        old_goal = g_hit[4][0] if g_hit is not None else None
+        if old_goal is not None and len(old_goal.works) == len(tiles) and \
+                all(a is b for a, b in zip(old_goal.works, tiles)):
+            tiles = old_goal.works                       # every tile the same: the same tuple
+        goal = Goal(titles=len(goal_works), files=len(goal_items), covers=covers, line=g_line, tip=STRINGS["goal_tip"],
+                    works=tiles)
         n_goal_works = len(goal_works)
-        _keep(cache, "goal", goal_items, goal_works[:9], (), (goal, n_goal_works))
+        g_untyped = tuple(w for w in goal_works if w in works and works[w].get("media_type") is None)
+        _keep(cache, "goal", goal_items, goal_works, tuple((w, guessed.of(works[w])) for w in g_untyped),
+              (goal, n_goal_works, g_untyped, g_entries))
+        # --- end W3.2 Q2
     # Finished: newest first, by month; no date last (*Earlier*). Its rows read the cards, the mining set, the line and
     # the numbers (`same_global`, the cache's version) and an untyped title's guess (from all its files, any tier)
     fin_items = tiers["graduated"]
@@ -832,11 +1056,12 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
                           episodes=tuple((e.label, STRINGS["need_ep"].format(word=word)) for e in waiting),
                           cover_title=row.cover_title))
     arrivals = tiers["arrivals"]
+    arrival_rows, arrival_groups = _arrivals(cache, arrivals, works, cards, estimates, guessed, changed, changed_works)
     if cache is not None:
         cache.end()
     counts = Counts(current_rows=len(rows), current_files=len(current), goal_titles=n_goal_works,
                     goal_files=len(goal_items), finished=n_fin,
-                    arrivals=len(pieces(arrivals)), arrival_files=len(arrivals))
+                    arrivals=len(arrival_rows), arrival_files=len(arrivals))
     lang = LANGUAGE_NAMES.get(language, "")
     if rows:
         subline = STRINGS["subline"].format(lang=lang, rows=counts.current_rows, files=counts.current_files)
@@ -855,7 +1080,7 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
     badges = {"needs": len(needs), "arrivals": counts.arrival_files, "finished": counts.finished}
     return View(language=language, mode=mode, reason=reason, state=state, busy=busy, loading=loading, cached=False,
                 rows=tuple(rows), lines=tuple(lines), goal=goal, finished=finished, needs=tuple(needs), counts=counts,
-                subline=subline, badges=badges, worst=worst)
+                subline=subline, badges=badges, worst=worst, arrivals=arrival_rows, arrival_groups=arrival_groups)
 
 
 # --- the first screen's cache (02 §2.1) ---------------------------------------------------------------------- #
@@ -876,7 +1101,7 @@ def to_cache(view, rows=CACHE_ROWS):
     kept = view.rows[:rows]
     return {"rows": _plain([r._replace(string=None) for r in kept]),     # planned again as it's read (`_row_from`)
             "lines": _plain([ln for ln in view.lines if ln.after < len(kept)]),
-            "goal": _plain(view.goal), "counts": _plain(view.counts), "subline": view.subline,
+            "goal": _plain(view.goal)[:5], "counts": _plain(view.counts), "subline": view.subline,   # (W3.2 Q2: no tiles)
             "badges": dict(view.badges)}
 
 

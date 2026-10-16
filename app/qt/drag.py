@@ -16,9 +16,10 @@ for Current's list — W3.2's tray and Goal sheet feed the same one through `beg
   (`app/services/moves.py`, its own thread: nothing here writes the store): in the list → `move` beside its painted
   neighbour (`placement`); the Soon well → `move(…, "soon")` (after the Soon line); the Goal well → Goal's end
   (`end=True`, read by the writer when it saves); the Finished well or the Finished tab → `set_tier(…, "graduated")`,
-  the toast *X finished · its cards stay put* with *Keep* / *Take its new cards out* (live: the store's `finish`). A
-  split's first part and hato's mix leave the Finished well unlit (its tip says why) and ⋯ leaves Finished out. **The
-  numbers at the drop** come from the writer's `Numbers.after_move`, before its first write, through the reader.
+  the toast *X finished · its cards stay put* with *Keep* / *Leave its new cards out of your order* (live: the store's
+  `finish`). A split's first part and hato's mix leave the Finished well unlit (its tip says why) and ⋯ leaves Finished
+  out. **The numbers at the drop** come from the writer's `Numbers.after_move`, before its first write, through the
+  reader.
 - **Undo**: every move toast's *Undo*, and Ctrl+Z (the newest change, as the writer reaches it); *Can't undo — that
   item changed since* (E21) comes as a toast.
 - **An expectation** keeps the drop's order on screen while the store catches up: a view from the reader with the
@@ -574,6 +575,7 @@ class DragController(QObject):
         self.undo_key.setContext(Qt.ShortcutContext.WindowShortcut)
         self.undo_key.activated.connect(self.undo_last)
         self._replay_owed = False
+        self.joins = None                            # --- W3.2 Q8: drop-to-join (`item_menu.ItemActions`: target/show/drop)
         self.blocked = None                          # W3.2 P0: why nothing can be moved now (a language switch), or None
         self._started = False
 
@@ -875,6 +877,8 @@ class DragController(QObject):
             dock.hover(target[1] if target[0] == "well" else None)
         # over a well or the tab the slot goes back to the row's own place (from outside: none opens)
         d.parting.move_to(target[1] if target[0] == "list" else d.src)
+        if self.joins is not None:                   # --- W3.2 Q8: the part to join outlined (the rows hold still)
+            self.joins.show(target[1] if target[0] == "join" else None)
 
     def target_at(self, global_pos):
         """What the hand is over: ("well", name) · ("tab", "finished") · ("list", slot)."""
@@ -886,6 +890,10 @@ class DragController(QObject):
         tab = self.win.tab_buttons.get("finished")
         if tab is not None and tab.isVisible() and tab.rect().contains(tab.mapFromGlobal(global_pos)):
             return "tab", "finished"
+        if self.joins is not None and self.running is not None:     # --- W3.2 Q8: over another part of the same title
+            key = self.joins.target(self.running, global_pos)
+            if key is not None:
+                return "join", key
         return "list", self.slot_at(self.lst.viewport().mapFromGlobal(global_pos).y())
 
     def slot_at(self, y):
@@ -969,6 +977,8 @@ class DragController(QObject):
         dock = self.win.dock
         if dock is not None:
             dock.end_drag()
+        if self.joins is not None:                   # --- W3.2 Q8
+            self.joins.show(None)
         self.win.toasts.set_dragging(False)
         if d.holding:                                # (a lift that failed before its holds holds nothing)
             d.holding = False
@@ -1012,6 +1022,10 @@ class DragController(QObject):
                 self.cancel(strings.WELL_UNLIT_SPLIT)
                 return
             self._to_well(d, "finished")
+        elif kind == "join":                         # --- W3.2 Q8: dropped on another part of the same title
+            self._end(d)
+            self._glide_away()
+            self.joins.drop(d, name)
         else:
             vp = self.lst.viewport()
             if not vp.rect().contains(vp.mapFromGlobal(global_pos)):
@@ -1112,8 +1126,8 @@ class DragController(QObject):
             self._finish(d.title, d.ids, keys)
 
     def _finish(self, title, ids, keys=()):
-        """To Finished: `set_tier(…, "graduated")`, and its toast's choice (D14) — *Keep* or *Take its new cards out*,
-        each written as `set_finished` (live, never greyed)."""
+        """To Finished: `set_tier(…, "graduated")`, and its toast's choice (D14) — *Keep* or *Leave its new cards out of
+        your order*, each written as `set_finished` (live, never greyed)."""
         ticket = Ticket(strings.DRAG_FINISHED.format(title=title), keys, ids)
         if self._give(ticket, lambda t: self.writer.set_tier(list(ids), FINISHED, label=t), toast=False) is None:
             return
@@ -1285,7 +1299,10 @@ class DragController(QObject):
 
     def _reread(self):
         """The store placed something elsewhere, or had nothing to change: its view stands now (a choice waiting for a
-        drop that landed as nothing is given unlinked)."""
+        drop that landed as nothing is given unlinked). W3.2 (S5): while others still wait, the tickets whose own
+        command landed as nothing settle (Ctrl+Z never picks one that has nothing to undo)."""
+        landed = getattr(self.writer, "landed_empty", None)
+        empty = landed() if landed is not None else ()
         if not self.writer.pending():
             for t in list(self.tickets):
                 then, t.then = t.then, None
@@ -1293,6 +1310,13 @@ class DragController(QObject):
                     then()
             self.tickets = []
             self._paint_saving()
+        else:
+            for t in list(self.tickets):
+                if t.change is None and any(t is e for e in empty):
+                    then, t.then = t.then, None
+                    if then is not None and not t.undo_asked:
+                        then()
+                    self._settle_ticket(t)
         self._let_go()
 
     def _note(self, text):

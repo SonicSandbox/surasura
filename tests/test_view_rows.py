@@ -760,3 +760,210 @@ def test_hatos_mix_is_planned_as_the_mix_not_by_its_videos_kind():
     mix = view.rows[1]
     assert mix.source == "hato" and mix.string[0] == sp.plan_of(mix)
     assert mix.string[0].gem == sp.gem_of(mix.media, mix=True) != sp.gem_of(mix.media)
+
+
+# --- W3.2 S1: New arrivals in the view (the tray's rows; RUNBOOK §1 *The tray*, *The arrival's number*) ------------- #
+def _at(stamp):
+    return {"added_at": stamp}
+
+
+def _hato(names, **more):
+    return {k: dict({"rel_path": f"{vr.HATO_FOLDER}{n}"}, **more) for k, n in enumerate(names)}
+
+
+def test_arrivals_are_newest_first_by_when_they_came_and_equal_times_keep_the_stores_order():
+    """C-scope §3: what came last is what the learner looks for first. A piece is as new as its newest file (Ep 1–3 came
+    on the 10th, Ep 4 on the 14th: the show is the 14th's); two pieces that came at the same moment stay in the store's
+    order, or the tray would shuffle them on every refresh."""
+    a = eps("星降る街の小さな工房", 1, 4)
+    items = items_of([("arrivals", 1, 1, a, {0: _at("2026-10-10T09:00:00Z"), 1: _at("2026-10-10T09:00:00Z"),
+                                              2: _at("2026-10-10T09:00:00Z"), 3: _at("2026-10-14T21:00:00Z")}),
+                      ("arrivals", 2, 2, eps("雲の上の郵便屋さん", 1, 2), {k: _at("2026-10-12T08:00:00Z") for k in (0, 1)}),
+                      ("arrivals", 3, 3, ["白銀の書庫番 01 章.txt"], {0: _at("2026-10-12T08:00:00Z")}),
+                      ("arrivals", 4, 4, ["【検証】一週間お弁当を作り続けてみた [a1b2c3].srt"],
+                       {0: dict(_at("2026-10-15T07:00:00Z"), source_type="youtube")})])
+    view = vr.build(items, WORKS, {})
+    assert [a.title for a in view.arrivals] == ["【検証】一週間お弁当を作り続けてみた", "星降る街の小さな工房",
+                                                "雲の上の郵便屋さん", "白銀の書庫番"]
+    assert view.arrivals[1].added_at == "2026-10-14T21:00:00Z"
+    assert view.arrivals[1].item_ids == (1, 2, 3, 4)                  # the whole piece: the drag's and the writer's ids
+    assert view.arrivals[1].rel_paths[0] == "HighPriority/星降る街の小さな工房 - 01.srt"   # what the estimate is asked by
+    # the same two pieces the other way round in the store: the tie follows the store, not the title or the id
+    swapped = items_of([("arrivals", 3, 3, ["白銀の書庫番 01 章.txt"], {0: _at("2026-10-12T08:00:00Z")}),
+                        ("arrivals", 2, 2, eps("雲の上の郵便屋さん", 1, 2), {k: _at("2026-10-12T08:00:00Z") for k in (0, 1)})])
+    assert [a.title for a in vr.build(swapped, WORKS, {}).arrivals] == ["白銀の書庫番", "雲の上の郵便屋さん"]
+
+
+def test_a_show_split_in_two_pieces_arrives_as_two_rows_each_with_its_own_episodes():
+    """A row is a piece (store digest §2.3) in the tray too: a show whose second half came apart is two rows, each with
+    its own *Ep x–y* and its own ids, so placing one never moves the other."""
+    t = "星降る街の小さな工房"
+    items = items_of([("arrivals", 1, 10, eps(t, 1, 4), {k: _at("2026-10-11T00:00:00Z") for k in range(4)}),
+                      ("arrivals", 2, 11, eps("雲の上の郵便屋さん", 1, 2), {k: _at("2026-10-12T00:00:00Z") for k in (0, 1)}),
+                      ("arrivals", 1, 12, eps(t, 5, 8), {k: _at("2026-10-13T00:00:00Z") for k in range(4)})])
+    view = vr.build(items, WORKS, {})
+    split = [a for a in view.arrivals if a.work_id == 1]
+    assert [(a.key, a.line) for a in split] == [("p12", "Ep 5–8"), ("p10", "Ep 1–4")]
+    assert set(split[0].item_ids).isdisjoint(split[1].item_ids)
+    assert view.counts.arrivals == 3 and view.badges["arrivals"] == 10    # the badge stays the files (R4b-12)
+
+
+def test_new_comes_first_and_already_watched_second_each_newest_first():
+    """RUNBOOK §5 lean 3: an arrival whose every file is watched (YouTube's history, a hato record's flag) goes under
+    *Already watched*, whose head offers *All to Finished*; one partly watched is still new to the learner."""
+    both = {0: dict(_at("2026-10-15T00:00:00Z"), watched=1), 1: dict(_at("2026-10-15T00:00:00Z"), watched=1)}
+    items = items_of([("arrivals", 1, 1, eps("星降る街の小さな工房", 1, 2), both),
+                      ("arrivals", 2, 2, eps("雲の上の郵便屋さん", 1, 2), {0: dict(_at("2026-10-12T00:00:00Z"), watched=1),
+                                                                   1: _at("2026-10-12T00:00:00Z")}),
+                      ("arrivals", 3, 3, ["白銀の書庫番 01 章.txt"], {0: dict(_at("2026-10-14T00:00:00Z"), watched=1)}),
+                      ("arrivals", 4, 4, ["町の小さな図書館を紹介します [d4e5f6].srt"],
+                       {0: dict(_at("2026-10-13T00:00:00Z"), source_type="youtube")})])
+    view = vr.build(items, WORKS, {})
+    assert [(a.title, a.group) for a in view.arrivals] == [
+        ("町の小さな図書館を紹介します", "new"), ("雲の上の郵便屋さん", "new"),
+        ("星降る街の小さな工房", "watched"), ("白銀の書庫番", "watched")]
+    assert [(g.kind, g.label, [a.title for a in g.rows]) for g in view.arrival_groups] == [
+        ("new", "New", ["町の小さな図書館を紹介します", "雲の上の郵便屋さん"]),
+        ("watched", "Already watched", ["星降る街の小さな工房", "白銀の書庫番"])]
+    assert view.arrivals[2].watched and not view.arrivals[1].watched
+    only_new = vr.build(items_of([("arrivals", 2, 2, eps("雲の上の郵便屋さん", 1, 2), {})]), WORKS, {})
+    assert [g.kind for g in only_new.arrival_groups] == ["new"]          # an empty group isn't shown
+    only_watched = vr.build(items_of([("arrivals", 1, 1, eps("星降る街の小さな工房", 1, 2), both)]), WORKS, {})
+    assert [g.kind for g in only_watched.arrival_groups] == ["watched"]
+
+
+def test_a_hato_show_wears_hatos_chip_and_says_its_episodes_cards_and_missing_videos():
+    """The tray's one line: the source chip, *Ep x–y*, *N in Anki* (ok) and *N no video* (amber). hato's drop folder
+    names it hato even with an AniList id (hato brought it); an AniList show outside it is AniList's; the rest, disk."""
+    work(5, "海辺の図書室", anilist=202)
+    names = eps("海辺の図書室", 1, 6)
+    extra = _hato(names)
+    extra[1]["availability"] = "missing"
+    extra[4]["availability"] = "missing"
+    items = items_of([("arrivals", 5, 5, names, extra)])
+    a = vr.build(items, WORKS, {}, cards={1: 4, 3: 7}).arrivals[0]
+    assert (a.source, a.chip, a.title, a.line, a.media) == ("hato", "hato", "海辺の図書室", "Ep 1–6", "anime")
+    assert (a.cards, a.no_media) == (11, 2)
+    assert a.parts == (("Ep 1–6", "dim"), ("11 in Anki", "ok"), ("2 files gone", "warn"))
+    assert a.cover_title == "海辺の図書室" and a.channel is None
+    off_hato = vr.build(items_of([("arrivals", 5, 5, eps("海辺の図書室", 7, 8), {})]), WORKS, {}).arrivals[0]
+    assert (off_hato.source, off_hato.chip) == ("anilist", "AniList")
+    on_disk = vr.build(items_of([("arrivals", 2, 2, eps("雲の上の郵便屋さん", 1, 2), {})]), WORKS, {}).arrivals[0]
+    assert (on_disk.source, on_disk.chip, on_disk.parts) == ("disk", "disk", (("Ep 1–2", "dim"),))
+
+
+def test_a_youtube_video_arrives_titled_by_itself_with_its_channel_and_a_channels_videos_by_the_channel():
+    """The mock's video row: its own title, the channel on the line (per-channel rules read it); several videos of one
+    channel arriving together read as the channel with *N videos*, as Current's rows do."""
+    one = items_of([("arrivals", 4, 4, ["【検証】一週間お弁当を作り続けてみた [a1b2c3].srt"], {0: {"source_type": "youtube"}})])
+    a = vr.build(one, WORKS, {}).arrivals[0]
+    assert (a.title, a.line, a.channel, a.source, a.chip, a.media) == (
+        "【検証】一週間お弁当を作り続けてみた", "Tsubasa no Kitchen", "Tsubasa no Kitchen", "youtube", "YouTube", "youtube")
+    assert a.media_word == "video" and a.cover_title == "Tsubasa no Kitchen"
+    two = items_of([("arrivals", 4, 4, ["祖母に教わった味噌汁の作り方 [0a1b2c].srt", "手作りパンを毎朝焼いてみた [9f8e7d].srt"],
+                     {k: {"source_type": "youtube"} for k in (0, 1)})])
+    b = vr.build(two, WORKS, {}).arrivals[0]
+    assert (b.title, b.line, b.channel) == ("Tsubasa no Kitchen", "2 videos", "Tsubasa no Kitchen")
+
+
+def test_nothing_arrived_means_no_rows_and_no_group():
+    """The inset is absent when nothing has arrived (A2 #22): the view gives it nothing to draw, never an empty group."""
+    items = items_of([("now", 1, 1, eps("星降る街の小さな工房", 1, 3), {})])
+    for view in (vr.build(items, WORKS, {}), vr.build({}, WORKS, {})):
+        assert view.arrivals == () and view.arrival_groups == ()
+        assert view.badges["arrivals"] == 0 and view.counts.arrivals == 0
+
+
+def test_the_number_per_episode_waits_for_every_files_estimate_then_is_their_mean_rounded():
+    """*N new / ep* (E2.2, IK-5): each file's *N new at the top* summed over the show and divided by its files. A show
+    with one answer still out shows a dash (None), never a number from part of it that would read too low or high."""
+    items = items_of([("arrivals", 1, 1, eps("星降る街の小さな工房", 1, 3), {})])
+    assert vr.build(items, WORKS, {}).arrivals[0].per_ep is None                      # nothing asked yet
+    partial = vr.build(items, WORKS, {}, estimates={1: 30, 2: 25}).arrivals[0]
+    assert partial.per_ep is None and "estimate" in partial.tip and "not counted yet" in partial.accessible
+    full = vr.build(items, WORKS, {}, estimates={1: 30, 2: 25, 3: 20, 99: 400}).arrivals[0]
+    assert full.per_ep == 25 and full.tip.startswith("About 25 new words an episode")
+    assert "3 episodes" in full.tip and "an estimate until analysed" in full.tip
+    assert full.accessible == "星降る街の小さな工房 · Ep 1–3 · 25 new / ep"
+    assert vr.per_episode((1, 2), {1: 3, 2: 4}) == 4                  # 3.5 rounds up, as a learner reads it
+    assert vr.per_episode((1, 2), {1: 0, 2: 0}) == 0                  # nothing new is a number, not a dash
+    assert vr.per_episode((), {}) is None and vr.per_episode((1,), None) is None
+
+
+def test_an_unchanged_arrivals_tier_gives_back_the_same_objects_and_one_changed_arrival_only_its_own():
+    """S19: the reader rebuilds on every change; an unchanged tray must come back as the very same objects (the window
+    repaints nothing), and when one arrival changes — a file watched, its estimate in — only that row is new, the others
+    are last build's, so the tray repaints the one row that moved."""
+    items = items_of([("now", 1, 1, eps("星降る街の小さな工房", 1, 2), {}),
+                      ("arrivals", 2, 2, eps("雲の上の郵便屋さん", 1, 2), {k: _at("2026-10-14T00:00:00Z") for k in (0, 1)}),
+                      ("arrivals", 3, 3, ["白銀の書庫番 01 章.txt"], {0: _at("2026-10-13T00:00:00Z")})])
+    tiers = vr._by_tier(items)
+    cards = {1: 0}
+    cache = vr.RowCache()
+
+    def view(changed=None, estimates=None):
+        return vr.build(items, WORKS, {}, numbers=(1, {}), cards=cards, cache=cache, tiers=tiers, changed=changed,
+                        changed_works=None if changed is None else set(), estimates=estimates)
+    first = view()
+    again = view()                                    # no ids named: each row checked, every one the same
+    assert again.arrivals is first.arrivals and again.arrival_groups is first.arrival_groups
+    fast = view(changed=[])                           # the reader says nothing changed: given back whole (`_kept`)
+    assert fast.arrivals is first.arrivals
+    show, book = first.arrivals
+    items[3] = dict(items[3], watched=1)              # one episode of the first arrival watched (a new feed row)
+    tiers["arrivals"][0] = items[3]
+    moved = view(changed=[3])
+    assert moved.arrivals[0] is not show and moved.arrivals[1] is book
+    assert moved.arrivals is not first.arrivals and moved.arrivals[0].n_files == 2
+    estimated = view(changed=[], estimates={5: 12})   # the book's estimate comes in: only its row is new
+    assert estimated.arrivals[0] is moved.arrivals[0] and estimated.arrivals[1] is not book
+    assert estimated.arrivals[1].per_ep == 12
+    assert view(changed=[], estimates={5: 12}).arrivals is estimated.arrivals
+    fresh = vr.build(items, WORKS, {}, numbers=(1, {}), cards=cards, estimates={5: 12})
+    assert estimated.arrivals == fresh.arrivals and estimated.arrival_groups == fresh.arrival_groups
+
+
+def test_new_arrivals_stay_out_of_the_first_screens_cache():
+    """The first frame shows no tray (it opens by hand): the cache doesn't carry it, and a cached view has none."""
+    items = items_of([("now", 1, 1, eps("星降る街の小さな工房", 1, 2), {}), ("arrivals", 2, 2, eps("雲の上の郵便屋さん", 1, 2), {})])
+    view = vr.build(items, WORKS, {})
+    import json
+    data = json.loads(json.dumps(vr.to_cache(view)))
+    assert "arrivals" not in data
+    back = vr.from_cache(data)
+    assert back.arrivals == () and back.arrival_groups == () and back.badges["arrivals"] == 2
+
+
+def test_chinese_arrivals_read_the_same_way():
+    work(5, "雷鸣之剑与见习魔女", anilist=88)
+    work(6, "小厨房频道", media="youtube", channel="小厨房频道")
+    names = ["雷鸣之剑与见习魔女 第3集.srt", "雷鸣之剑与见习魔女 第4集.srt"]
+    items = items_of([("arrivals", 5, 5, names, _hato(names, added_at="2026-10-11T00:00:00Z")),
+                      ("arrivals", 6, 6, ["【实测】连续一周做便当 [a3f9c1].srt"],
+                       {0: dict(_at("2026-10-12T00:00:00Z"), source_type="youtube")})])
+    view = vr.build(items, WORKS, {}, language="zh", estimates={1: 40, 2: 31, 3: 9})
+    assert [(a.title, a.line, a.chip, a.per_ep) for a in view.arrivals] == [
+        ("【实测】连续一周做便当", "小厨房频道", "YouTube", 9), ("雷鸣之剑与见习魔女", "Ep 3–4", "hato", 36)]
+    assert view.arrivals[0].tip.startswith("About 9 new words a video")
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_the_seeds_tray_holds_every_state_the_mock_draws(language):
+    """The seed (W3.2 S1): a YouTube channel's video, a hato show whose files came on two days, and a show watched
+    elsewhere with a file mined and one with no video — newest first, in the two groups. Only New arrivals' files
+    carry their own times, so no other test's expectations move."""
+    from tests.fixtures import window_seed
+    seed = window_seed.build(language=language)
+    items = {r["id"]: r for r in seed.items}
+    works = {w["id"]: w for w in seed.works}
+    seed.opener.check()
+    cards = {i: len(c) for i, c in seed.opener.handle().cards_of(list(items)).items() if c}
+    view = vr.build(items, works, {"mine_line": 20}, cards=cards)
+    assert [(a.source, a.group) for a in view.arrivals] == [("youtube", "new"), ("hato", "new"), ("hato", "watched")]
+    video, show, watched = view.arrivals
+    assert video.line == video.channel and video.n_files == 1 and video.chip == "YouTube"
+    assert show.line == "Ep 1–6" and show.added_at == "2026-10-14T21:00:00Z"
+    assert watched.cards == 6 and watched.no_media == 1 and watched.watched
+    assert video.added_at > show.added_at > watched.added_at
+    assert len({r["added_at"] for r in seed.items if r["tier"] == "arrivals"}) == 4
+    assert {r["added_at"] for r in seed.items if r["tier"] != "arrivals"} == {window_seed.ADDED_AT}

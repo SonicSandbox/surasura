@@ -178,6 +178,11 @@ QMenu::separator {{ height: 2px; margin: 4px 8px; background: qlineargradient(x1
   stop:0 {c['groove']}, stop:0.5 {c['groove']}, stop:0.51 {c['groove-lip']}, stop:1 {c['groove-lip']}); }}
 QMenu::indicator {{ width: {px(14)}; height: {px(14)}; }}
 QTabWidget::pane {{ border: 0; }}
+/* --- W3.2 Q2: Goal's sheet (goal_sheet.py: its face, heading and tiles are painted) --- */
+QScrollArea#goalsheetscroll {{ background: transparent; border: 0; }}
+QWidget#goalsheetbody {{ background: transparent; }}
+QToolButton#goalsheetclose, QToolButton#goaltilemore {{ color: {c['overlay-ink-dim']}; }}
+/* --- end W3.2 Q2 --- */
 QTabBar::tab {{ background: transparent; color: {c['ink-dim']}; border: 0; border-bottom: 2px solid transparent;
   padding: {px(10)} {px(14)} {px(9)} {px(14)}; {font('tab')} }}
 QTabBar::tab:selected {{ color: {c['ink']}; border-bottom: 2px solid {iris}; }}
@@ -202,6 +207,12 @@ QWidget#needscard {{ background: {c['slab']}; border: 0; border-top: 1px solid {
   border-bottom: 1px solid {c['groove']}; border-radius: {theme.RADII['r']}px; }}
 QLabel#needstitle {{ color: {c['ink']}; {font('needs-title')} }}
 """
+    # --- W3.2 Q5: Needs you's cards (needs.py): a line's find result — found ok, nothing amber
+    rules += f"""
+QLabel#needswhy {{ color: {c['warn']}; {font('body')} font-weight: 400; }}
+QLabel#needswhy[found="true"] {{ color: {c['ok']}; }}
+"""
+    # --- end W3.2 Q5
     # --- W3.1a: the frame (frame.py) — the current tab's line is the vein (painted); the level ▾'s pop (W3.1b): its words,
     # Generate quiet (its stale and failed looks kept), *Open your journey* as a link
     rules += f"""
@@ -307,6 +318,33 @@ QPushButton#settingsmore:hover {{ border: 0; }}
 QPushButton#settingsmore:focus {{ border: 2px solid {c['accent']}; padding: 0 2px; }}
 """
     # --- end W3.3
+    # --- W3.2 Q1: New arrivals' tray (arrivals.py): its scroll and body on the tray's own face; its heading, ✕ and
+    # *✓ All to Finished* in the overlay's ink
+    rules += f"""
+QScrollArea#trayscroll, QWidget#traybody {{ background: transparent; border: 0; }}
+QLabel#trayheading {{ color: {c['ink']}; {font('tray-heading')} }}
+QWidget#arrivalstray QToolButton {{ color: {c['overlay-ink-dim']}; border: 1px solid transparent; }}
+QWidget#arrivalstray QToolButton:hover {{ background: {c['overlay-hover']}; color: {c['ink']}; }}
+"""
+    # --- end W3.2 Q1
+    # --- W3.2 Q3: search your library (search.py: the cut and its results paint themselves) and + Add's paste card
+    rules += f"""
+QLineEdit#librarysearch {{ background: transparent; color: {c['ink']}; border: 0; padding: 0; {font('input')} }}
+QLabel#searchkbd {{ color: {c['ink-faint']}; border: 1px solid {c['line']}; border-radius: 4px; padding: 1px 5px;
+  {font('key-hint')} }}
+QScrollArea#searchscroll, QWidget#searchbody {{ background: transparent; border: 0; }}
+QLabel#searchgroup {{ color: {c['overlay-ink-faint']}; {font('eyebrow')} letter-spacing: 1px; }}
+QLabel#searchnone {{ color: {c['overlay-ink-dim']}; {font('body')} font-weight: 400; }}
+QLabel#searchmore {{ color: {c['overlay-ink-faint']}; {font('row-sub')} }}
+QToolButton#searchact {{ color: {c['overlay-ink-dim']}; min-width: {px(24)}; min-height: {px(24)}; }}
+QToolButton#searchact:hover {{ background: {c['overlay-hover']}; border-color: {c['overlay-edge-top']};
+  color: {c['ink']}; }}
+QToolButton#addstone, QToolButton#addstone:hover, QToolButton#addstone:pressed {{ background: transparent; border: 0;
+  padding: 0; }}
+QLabel#pasteheading {{ color: {c['ink']}; {font('dialog-title')} }}
+QWidget#pastecard QLineEdit, QWidget#pastecard QPlainTextEdit {{ background: {c['overlay-cut']}; }}
+"""
+    # --- end W3.2 Q3
     _state["generated_ms"] = (time.perf_counter() - t0) * 1000
     return rules
 

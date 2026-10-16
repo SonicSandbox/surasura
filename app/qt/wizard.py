@@ -50,6 +50,8 @@ from app.qt import wizard_strings as S
 PAGES = ("language", "known", "shows", "order", "cards", "level")      # the contract's ids, in order
 BUSY = ("queued", "running", "cancelling")      # a Generate under way (`generate.QUEUED` / `RUNNING` / `CANCELLING`)
 ROWS_SHOWN = 6                                  # page 3's rows; the rest are "and N more"
+ADD_ACTIONS = ("files", "folder", "extract", "youtube")     # W3.2 Q3: page 3's add actions, + Add's (IK-12)
+ADD_DOORS = {"extract": "extract", "youtube": "youtube-downloader"}
 COUNT_AGAIN_MS = 3000                           # page 6 asks for its numbers again while it says *Counting…* —
 COUNT_MOST_MS = 30000                           # each time twice as long after, up to this (and when the indexer ran)
 ASK_WAIT_S = 600                               # the install's question waits this long for an answer, then is No
@@ -1278,13 +1280,18 @@ class ShowsPage(_Page):
 
     def __init__(self, wiz):
         super().__init__(wiz, S.SHOWS_TITLE, S.UPGRADE_SHOWS_LINE if wiz.upgrading else "")
+        # --- W3.2 Q3: + Add's own actions (Files / Folder / EPUB / YouTube), each shown while it can act (IK-12)
         adds = QHBoxLayout()
         adds.setSpacing(_px(10))
-        self.btn_add = _button(S.ADD_CONTENT, S.ADD_CONTENT_TIP, self.wiz.open_content, self)
-        adds.addWidget(self.btn_add)
-        self.btn_youtube = _button(S.YOUTUBE, S.YOUTUBE_TIP, lambda: self.wiz.open_door("youtube-downloader"), self)
-        adds.addWidget(self.btn_youtube)
+        self.add_buttons = {}
+        for name in ADD_ACTIONS:
+            label, tip = strings.ADD_ITEMS[name]
+            b = _button(label, tip, lambda n=name: self.wiz.add(n), self)
+            adds.addWidget(b)
+            self.add_buttons[name] = b
+        self.btn_files, self.btn_youtube = self.add_buttons["files"], self.add_buttons["youtube"]
         adds.addStretch(1)
+        # --- end W3.2 Q3
         self.box.addLayout(adds)
         self.rows_part = QWidget(self)
         self.rows_part.setAccessibleName(S.ROWS_NAME)
@@ -1296,7 +1303,7 @@ class ShowsPage(_Page):
                                 picture=CoversPicture())
         self.box.addWidget(self.covers)
         samples = QHBoxLayout()
-        self.btn_samples = _button(S.SAMPLES, S.SAMPLES_TIP, self.wiz.open_content, self, name="wizlink")
+        self.btn_samples = _button(S.SAMPLES, S.SAMPLES_TIP, self.wiz.add_samples, self, name="wizlink")  # W3.2 Q3
         samples.addWidget(self.btn_samples)
         samples.addStretch(1)
         self.box.addLayout(samples)
@@ -1311,13 +1318,9 @@ class ShowsPage(_Page):
         return {"covers": self.covers.switch.isChecked()}
 
     def entered(self):
-        _show(self.btn_youtube, self.wiz.door("youtube-downloader") is not None)
+        for name, b in self.add_buttons.items():          # --- W3.2 Q3: an action that can't act now isn't shown
+            _show(b, self.wiz.can_add(name))
         self.wiz.read_rows()
-
-    def content_open(self, on):
-        """The Content Manager is open (`on`): *Add content…* and the samples wait for it (one at a time, AD-13)."""
-        for b in (self.btn_add, self.btn_samples):
-            _enable(b, not on)
 
     def show_rows(self, rows):
         rows = list(rows or [])
@@ -1843,6 +1846,12 @@ class SetupWizard(QWidget):
             page.load(answers.get(page.id) or {})
         self.setStyleSheet(sheet(style.current()[1]))
         windows.follow_doors(self)          # the doors (YouTube) shown once the modules were looked for
+        adder = self._adder()               # --- W3.2 Q3: what + Add hands the writer shows in page 3's rows
+        if adder is not None:
+            adder.given.connect(self._added)
+        lib = getattr(shell, "library_bridge", None)
+        if lib is not None:
+            lib.library_changed.connect(self._added)
         bridge.run_in_worker(windows.module_present, "junban", then=self.alive(self._junban_looked),
                              failed=lambda info: applog.log("wizard", f"looking for 順: {info[0]}"))
         closing = getattr(shell, "closing", None)
@@ -2021,8 +2030,8 @@ class SetupWizard(QWidget):
         self._shown_at, self._painted = time.monotonic(), False        # a press waits until it was seen (`settled`)
         self._offered = None
         self._fresh.clear()
-        if self.say_line.text() == S.CONTENT_OPEN:
-            self.say("")                                  # the Content Manager's line is page 3's (AD-12)
+        if self.say_line.text() and self.say_line.text() == getattr(self, "samples_said", None):
+            self.say("")                                  # the samples' line is page 3's (AD-12)
         self.stack.setCurrentIndex(self.index)              # instant: no page light-up to borrow (module docstring)
         self.steps.set_state(self.index, self.passed)
         self.page.entered()
@@ -2262,25 +2271,46 @@ class SetupWizard(QWidget):
         elif self.page.id == "known":
             self.page.anki_changed()
 
-    def open_content(self):
-        """*Add content…* / *Try it with samples first*: the Content Manager as a child job (one at a time: both wait
-        while it is open, AD-13); when it ends its line leaves and the rows read again (AD-12)."""
-        page = self.pages[2]
-        relay = bridge.Relay(self)
-        page.content_open(True)
+    # --- W3.2 Q3: page 3's add actions are + Add's (`shell.adder`, app/qt/add_menu.py); the doors are the wizard's own
+    def _adder(self):
+        return getattr(self.shell, "adder", None)
 
-        def ended(_code=None):
-            if not sip.isdeleted(relay):
-                relay.deleteLater()
-            page.content_open(False)
-            if self.say_line.text() == S.CONTENT_OPEN:
-                self.say("")
+    def can_add(self, name):
+        """Whether page 3's `name` (`ADD_ACTIONS`) acts now: a door while it is available; Files and Folder while the
+        window can copy into its library (+ Add's own rule)."""
+        if name in ADD_DOORS:
+            return self.door(ADD_DOORS[name]) is not None
+        adder = self._adder()
+        return adder is not None and bool(adder.entries((name,)))
+
+    def add(self, name):
+        if name in ADD_DOORS:
+            self.open_door(ADD_DOORS[name])
+            return
+        adder = self._adder()
+        if adder is not None:
+            adder.run(name)
+
+    def _added(self, _text=None):
+        """+ Add handed something to the writer: the rows read again (now, and as the library's view moves)."""
+        if not self._gone and not sip.isdeleted(self) and self.page.id == "shows":
             self.read_rows()
-        relay.said.connect(self.alive(ended))
-        services, language = self.services, self.language
-        bridge.run_in_worker(lambda: self.api.open_content_manager(services.registry, language, relay.call),
-                             then=self.alive(lambda _job: self.say(S.CONTENT_OPEN)),      # (a Job, always: `tools.run`)
-                             failed=self.alive(lambda info: (ended(), self.say(str(info[0])))))
+
+    def add_samples(self):
+        """*Try it with samples first*: the bundled samples copied into the empty tier folders (`seed_samples`, the
+        Content Manager's own), on a worker; the disk sync takes them in and the rows follow."""
+        language = self.language
+        _enable(self.pages[2].btn_samples, False)
+
+        def done(n):
+            _enable(self.pages[2].btn_samples, True)
+            self.samples_said = S.SAMPLES_ADDED_LINE.format(n=n) if n else S.SAMPLES_NONE
+            self.say(self.samples_said)
+            self.read_rows()
+        bridge.run_in_worker(self.api.add_samples, language, then=self.alive(done),
+                             failed=self.alive(lambda info: (_enable(self.pages[2].btn_samples, True),
+                                                             self.say(str(info[0])))))
+    # --- end W3.2 Q3
 
     def read_rows(self):
         self._rows_seq += 1

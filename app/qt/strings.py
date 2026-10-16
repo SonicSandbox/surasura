@@ -137,10 +137,12 @@ TAB_COUNT = "{name}  {count}"                   # Finished's records, Needs you'
 GOAL_NAME = "Goal"
 LIST_NAMES = {"current": "Current", "finished": "Finished", "needs": "Needs you"}
 STATE_LINES = {
-    "getting-ready": "Getting your library ready… Your list shows as it was; nothing can be moved until it's done.",
+    # (W3.2 P0, IK0-1: no line promises rows the window can't show — it reads no JSON copy; G1.2-18's rows from the
+    # copy are a named follow-up)
+    "getting-ready": "Getting your library ready… Your list shows here once it's done; until then nothing can be moved.",
     "busy": "Updating your library…",
     "read-only": "Read-only: {reason}. Nothing can be moved until it's fixed.",
-    "migration-failed": "Read-only: your library couldn't be brought into 3.0's store, so it shows as it was. "
+    "migration-failed": "Your library couldn't be brought into 3.0's store, so it can't show here yet. "
                         "Open the logs folder (the bar) and send it in; nothing of yours was changed.",
 }
 READ_ONLY_REASONS = {
@@ -357,8 +359,8 @@ ROWS_DONE_ALL_TIP = "Every file of it is watched"
 ROWS_HERO_KNOWN = "{pct}% known · "
 ROWS_HERO_NEW_LINK = "{n} new words ↗"
 ROWS_JOURNEY_TIP = "Your journey: your list with its sentences\n• Click to open it in its own window"
-ROWS_TOP_LINE_WHERE = "{tip}\nIts setting: Settings → Anki & mining, in a later build"
-ROWS_SOON_LINE_WHERE = "{tip}\nWhere Soon starts is a setting: Settings, in a later build"
+ROWS_TOP_LINE_WHERE = "{tip}\nIts setting: Settings → Anki & mining"
+ROWS_SOON_LINE_WHERE = "{tip}\nWhere Soon starts is a setting: Settings → Content"
 ROWS_ACCESSIBLE_STRING = "{line} · {string}"
 
 # --- W3.1a footer (W31A-1 / W31A-2): the re-order's and Connect's lines as quiet marks (their words in the hover), and
@@ -419,6 +421,10 @@ DRAG_ADDED = "Added {name} at #{n} · analysed on the next Generate"
 DRAG_ADDED_N = "Added {count} files at #{n} · analysed on the next Generate"
 DRAG_GONE = "That item was removed"
 DRAG_REFUSED = "Your library can't be saved right now: {reason}"
+# W3.2 P0: a language switch, and a library that couldn't be opened
+SWITCHING = "Switching to {name}… Nothing can be moved until its library is open"
+MOVE_NOT_SAVED = "That change wasn't saved: try it again"
+LIBRARY_NOT_OPENED = "Your library couldn't be opened. Open the logs folder (the bar) and send it in"
 DONE_NEXT = "✓ {title} {ep} watched · next: {next}"
 DONE_ONE = "✓ {title} {ep} watched"
 DONE_UNDONE = "{title} {ep} marked not watched"

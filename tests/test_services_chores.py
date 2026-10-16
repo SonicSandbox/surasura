@@ -508,6 +508,48 @@ def test_the_store_helper_by_mode(monkeypatch, mode, expected):
     chores.close()
 
 
+@pytest.mark.parametrize("there", ["nothing", "a manifest", "a store file"])
+def test_a_fresh_language_builds_its_store_from_its_folders_never_over_a_manifest_or_a_store(monkeypatch, there):
+    """W3.2 P0 (IK0-2): no manifest and no store — a fresh install, a language never opened — the helper built nothing
+    (it builds only from a manifest), so the window said *Getting ready* forever and refused every drop. Now it is
+    built from the tiers' folders (`--from-folders`, once a minute at most); with a manifest (the helper builds from
+    that) or a store file (mid-migration, or a failed build: their own paths) never."""
+    from app import library_store, path_utils
+    monkeypatch.setitem(sys.modules, "modules.koe", None)
+    spawned = []
+    monkeypatch.setattr(library_store, "check_mode", lambda language, data_dir, busy_wait=None: ("json", "no store"))
+    monkeypatch.setattr(library_store, "spawn_build_if_waiting", lambda language, d, u: None)
+
+    def spawn(language, *extra):
+        proc = _Proc(["maintain", language, *extra])
+        spawned.append(proc)
+        return proc
+    monkeypatch.setattr(library_store, "spawn_maintain", spawn)
+    if there == "a manifest":
+        path = library_store.manifest_path(path_utils.get_user_files_path("ja"))
+    elif there == "a store file":
+        path = library_store.library_db_path("ja", path_utils.get_data_path("ja"))
+    if there != "nothing":
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb"):
+            pass
+    clock = _Clock(100.0)
+    chores, registry, _p = _make(clock=clock)
+    chores.worker.put(chores._maintain)
+    chores.worker.put(chores._maintain)                         # a second look within the minute
+    assert chores.worker.idle(5)
+    expected = [["maintain", "ja", "--from-folders"]] if there == "nothing" else []
+    assert [p.args for p in spawned] == expected
+    if there == "nothing":
+        assert registry.live("library-maintain")                 # the bar's *Tidying your library* while it runs
+        clock.now += C.FROM_FOLDERS_EVERY
+        chores.worker.put(chores._maintain)
+        assert chores.worker.idle(5) and len(spawned) == 2      # still none a minute on: asked again
+    for proc in spawned:
+        proc.end(0)
+    chores.close()
+
+
 @pytest.mark.parametrize("on", [True, False])
 def test_connects_notices_only_with_it_on(monkeypatch, timers_on, on):
     """`_arrivals_notice` 2.5 s on and `notice.at_close` at close, while `connect_enabled`; off, nothing of

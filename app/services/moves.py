@@ -11,7 +11,9 @@
   order), `import_finished` (the Finished importer's store half), `relink` / `its_new` (Needs you's *Link these*, the
   rename asks), `link_video` (Connect's *Link…*: a video, never `relink`), `remove` / `restore` (the trash, 30 days),
   `pin`, `keep_cards` (a Finished item's cards out of / back in the order), `ask_mining`, `split` / `join`,
-  `set_media_type`, `set_cover`. Each
+  `set_media_type`, `set_cover`; W3.3 P6's `set_options` (Settings' *Soon starts after N files*
+  and *Mine automatically: the top N files*: journalled, never on the Undo stack; the row is where it is changed
+  back). Each
   returns at once (the window has already painted its
   own copy of the order); what happened comes back through callbacks, called on the writer's thread (the window's bridge
   queues them):
@@ -64,7 +66,7 @@ JOURNAL_VERSION = 1
 JOURNAL_TRIES = 10              # a journal write Windows refuses (the file held a moment) is tried this many times
 JOURNALLED = ("move", "nudge", "set_tier", "finish", "set_watched",
               "place", "put_back", "import_finished", "relink", "its_new", "link_video", "remove", "restore", "pin",
-              "keep_cards", "ask_mining", "split", "join", "set_media_type", "set_cover")
+              "keep_cards", "ask_mining", "split", "join", "set_media_type", "set_cover", "set_options")
 #   an undo needs its Change: never journalled; nor an Explorer drop (`insert_at`: no ids yet). Its files are copied into
 #   the tier's folder at once, on the copier's thread — a busy store or a drag never holds the copy back, and the copy
 #   never holds a move back (G1) — so a quit or a crash before it lands leaves them whole in the folder, where the next
@@ -88,6 +90,7 @@ KEPT = ("tier", "before_id", "after_id", "near", "direction", "on", "keep_cards"
 # --- W3.2 B: `register` (a producer's files into New arrivals): journalled, its records and rules kept
 JOURNALLED += ("register",)
 KEPT += ("records", "rules")
+KEPT += ("soon_line", "mine_line")              # W3.3 P6: `set_options`'s values
 # --- end W3.2 B
 PART = ".part"                  # a dropped file is copied under its name + this (no content name: no sync takes it up),
 #                                 then renamed whole
@@ -130,13 +133,21 @@ def open_library(language, check=None, **reader_kw):
     """The window's library on one opener: the reader, and the numbers it shows — told of every move of
     the order (another program's, hato's drop, an undo elsewhere) and refreshing the reader when they change. Nothing
     started: the caller calls `numbers.load()` and `reader.start()`, and hands the same opener to the `Writer`.
-    `check`: `Numbers`' verdict (`plan_check`). -> (opener, numbers, reader)."""
+    `check`: `Numbers`' verdict (`plan_check`). The numbers hold the reader weakly (W3.2 P0, AD0-2): never a cycle
+    reader → numbers → reader, so a reader a language switch let go is freed by its count alone. -> (opener, numbers,
+    reader)."""
+    import weakref
     from app.services.library_reader import LibraryReader
     opener = store_opener(language)
     held = []
-    numbers = Numbers(opener, language, check=check, on_change=lambda: held and held[0].refresh())
+
+    def refresh():
+        reader = held[0]() if held else None
+        if reader is not None:
+            reader.refresh()
+    numbers = Numbers(opener, language, check=check, on_change=refresh)
     reader = LibraryReader(opener, language, numbers=numbers, **reader_kw)
-    held.append(reader)
+    held.append(weakref.ref(reader))
     reader.subscribe_moves(lambda _language, _versions: numbers.resync())
     return opener, numbers, reader
 
@@ -278,6 +289,22 @@ class Writer:
                 self._cond.notify_all()
             return None
         return cmd["seq"]
+
+    def set_options(self, soon_line=None, mine_line=None):
+        """Settings' two store lines (W3.3 P6): `soon_line` -> `Store.set_soon_line(n)`, `mine_line` ->
+        `Store.set_library_options(mine_line=n)` (each an int >= 0, or None to leave it). -> the command's number, or
+        None when refused (read-only) or there is nothing to set."""
+        if soon_line is None and mine_line is None:
+            return None
+        cmd = {"op": "set_options", "ids": []}
+        if soon_line is not None:
+            cmd["soon_line"] = int(soon_line)
+        if mine_line is not None:
+            cmd["mine_line"] = int(mine_line)
+        for value in (cmd.get("soon_line"), cmd.get("mine_line")):
+            if value is not None and value < 0:
+                raise ValueError("a line can't be negative")
+        return self._put(cmd)
 
     def set_watched(self, ids, on=True, label=None):
         """`Store.set_watched` on files (an episode is one file, one item)."""
@@ -726,6 +753,9 @@ class Writer:
                 change = store.finish(cmd["ids"], keep_cards=cmd["keep_cards"])
             elif op == "set_watched":
                 change = store.set_watched(cmd["ids"], cmd["on"])
+            elif op == "set_options":
+                self._set_options(store, cmd)
+                return
             elif op == "insert_at":
                 change, note = self._insert(store, cmd)
             elif op in ("remove", "restore"):
@@ -890,6 +920,23 @@ class Writer:
             cmd.pop("renamed", None)
             _move_back(moved)
             raise
+    def _set_options(self, store, cmd):
+        """Settings' store lines, written (never on the Undo stack: the row is where it is changed back). Nothing to
+        change (the line there already) or a write: the reader looks again, and the numbers when the Soon line moved
+        rows between NOW and Soon."""
+        moved = False
+        if cmd.get("soon_line") is not None:
+            moved = store.set_soon_line(cmd["soon_line"]) is not None
+        if cmd.get("mine_line") is not None:
+            store.set_library_options(mine_line=cmd["mine_line"])
+        if moved:                                   # the rows it moved changed tier: the moves queued behind it
+            with self._cond:                        # compare against what it left (a crash's replay keeps them)
+                later = {i for c in itertools.islice(self._pending, 1, None) for i in c.get("ids") or ()}
+            self._refresh_seen(store, later)
+        self._landed(cmd)
+        self._call(self.on_reread)
+        if moved:
+            self._numbers_resync()
 
     def _nearest(self, store, cmd):
         """The anchor is gone or left the tier: the nearest neighbour the window named that is still in the tier, else

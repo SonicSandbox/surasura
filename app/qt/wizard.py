@@ -2101,7 +2101,11 @@ class SetupWizard(QWidget):
     def _save(self, page_id, answers):
         self.saves.append((page_id, dict(answers)))
         try:
-            self.api.save(self.services.settings, page_id, answers, self.language)
+            before = self._settings()
+            changes = self.api.save(self.services.settings, page_id, answers, self.language)
+            if changes:
+                from app.qt import settings_store
+                settings_store.resume_connect(before, changes)          # *Make cards for me* on: Connect's marks
         except Exception as e:
             applog.log("wizard", f"saving {page_id}: {e}")
             windows.say_in_bar(self.shell, str(e))
@@ -2357,9 +2361,13 @@ class SetupWizard(QWidget):
             self.installing = None
             page.show_progress(None, None)
             self.say(str(info[0]))
-        bridge.run_in_worker(lambda: self.miner.install(lambda d, t: progress.call((d, t)), cancel, lambda _r: None,
-                                                        confirm=ask),
-                             then=self.alive(done), failed=self.alive(failed))
+        registry = getattr(self.services, "registry", None)
+        install = getattr(self.miner, "install_as_job", None)
+        if install is not None and registry is not None:            # the bar lists it once the learner says yes
+            run = lambda: install(registry, lambda d, t: progress.call((d, t)), cancel, lambda _r: None, confirm=ask)
+        else:
+            run = lambda: self.miner.install(lambda d, t: progress.call((d, t)), cancel, lambda _r: None, confirm=ask)
+        bridge.run_in_worker(run, then=self.alive(done), failed=self.alive(failed))
 
     def cancel_install(self):
         if self.installing is not None:

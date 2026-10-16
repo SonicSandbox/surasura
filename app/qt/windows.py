@@ -189,6 +189,19 @@ def opened(shell, name):
     return win if win is not None and not win.gone else None
 
 
+def close_all(shell):
+    """The main window's quit (AD4-4): every ported window still open is closed — its own `closeEvent` runs (a run
+    told to stop, its workspace cleaned) before Qt deletes it with its parent. A window that refuses (one finishing a
+    write) is left to Qt. -> how many were asked."""
+    opened_now = [w for w in list(shell.__dict__.get("_secondary_windows", {}).values()) if not w.gone]
+    for win in opened_now:
+        try:
+            win.close()
+        except RuntimeError:                              # already deleted with its parent
+            pass
+    return len(opened_now)
+
+
 # --- the registry ------------------------------------------------------------------------------------------------ #
 def always(_settings, _language):
     return True

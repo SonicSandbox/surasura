@@ -28,7 +28,7 @@ import threading
 import time
 import traceback
 
-from PyQt6.QtCore import QEvent, QObject, QPointF, QRect, QRectF, QSize, Qt, QTimer, QUrl, pyqtSignal
+from PyQt6.QtCore import QEvent, QObject, QPointF, QRect, QSize, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices, QFontMetrics, QFontMetricsF, QGuiApplication, QIcon, QLinearGradient, QPainter
 from PyQt6.QtWidgets import (QApplication, QButtonGroup, QDialog, QHBoxLayout, QLabel, QMainWindow, QMenu, QPushButton,
                              QSizePolicy, QStackedWidget, QToolButton, QVBoxLayout, QWidget)
@@ -759,7 +759,7 @@ class TabButton(QToolButton):
 
     def _count_font(self):
         font = self.font()
-        px, weight = theme.font("badge" if self.badge else "tab-count", style.current()[1])
+        px, weight = theme.font("needs-stone" if self.badge else "tab-count", style.current()[1])   # W3.2 Q5
         font.setPointSizeF(px * style.PT_PER_PX)
         font.setWeight(weight)
         return font
@@ -768,6 +768,9 @@ class TabButton(QToolButton):
         if not self.count:
             return 0
         _t, _side, _b, f = self._pads()
+        if self.badge:                                    # --- W3.2 Q5: Needs you's cracked amber stone
+            from app.qt import needs as needs_ui
+            return needs_ui.stone_size(f)
         w = QFontMetrics(self._count_font()).horizontalAdvance(str(self.count))
         return round(max(18 * f, w + 10)) if self.badge else w
 
@@ -808,14 +811,10 @@ class TabButton(QToolButton):
             text = str(self.count)
             figures = round((line + cm.capHeight() / 2) * dpr) / dpr
             p.setFont(font)
-            if self.badge:
+            if self.badge:                                # --- W3.2 Q5: the cracked amber stone, its number on it
+                from app.qt import needs as needs_ui
                 p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-                w, h = self._count_w(), round(18 * f)
-                p.setPen(Qt.PenStyle.NoPen)
-                p.setBrush(style.qcolor(c["warn"]))
-                p.drawRoundedRect(QRectF(x, round((line - h / 2) * dpr) / dpr, w, h), h / 2, h / 2)   # crisp edges
-                p.setPen(style.qcolor(theme.FIXED["on-accent"]))
-                p.drawText(QPointF(x + (w - cm.horizontalAdvance(text)) / 2, figures), text)
+                needs_ui.paint_stone(p, x, line, self._count_w(), self.count, font)
             else:
                 p.setPen(style.qcolor(c["ink-faint"]))
                 p.drawText(QPointF(x, figures), text)
@@ -974,12 +973,14 @@ class ShellWindow(QMainWindow):
             current = self.page_widgets.get("current")
             if hasattr(current, "on_journey"):                         # W3.1a S5: Up Next's *N new words ↗*
                 current.on_journey = lambda _row, _episode: self._open_journey(asked=True)
+            self.library_bridge.library_changed.connect(self.search.library_moved)     # --- W3.2 Q3
             if not getattr(services, "library_after_frame", False):
                 services.library.start()                       # (W3.2 P0: main's starts after the first frame)
         self._reader_shown = services.library                 # W3.2 P0: the reader the pages follow (a switch: another)
         self._language_asked = self.language                   # W3.2 P0: the language asked for last (IK0-7)
         self._asks = 0                                         # ... how many switches were asked (the last one ends one)
         # --- end W2.2 ------------------------------------------------------------------------------------------------ #
+        self.closing.connect(self.search.close_searcher)                             # --- W3.2 Q3
         self._poll = QTimer(self)
         self._poll.timeout.connect(self._poll_status)
         self._poll.start(POLL_MS)
@@ -1005,6 +1006,56 @@ class ShellWindow(QMainWindow):
             self.moves = drag.DragController(self, services.writer, services.library)
             if not getattr(services, "library_after_frame", False):
                 self.moves.start()                             # (W3.2 P0: main's after the first frame, on a worker)
+        # --- W3.2 Q5: Needs you's entries and their actions (`app/qt/needs.py`), given a library -------------------- #
+        self.needs_you = None
+        needs_page = self.page_widgets.get("needs")
+        if services.library is not None and hasattr(needs_page, "cards"):
+            from app.qt import needs as needs_ui
+            self.needs_you = needs_ui.NeedsYou(self, needs_page, self.language)
+            self.needs_you.changed.connect(self._paint_needs)
+            needs_page.controller = self.needs_you
+            self.needs_you.failures_in(services.status.snapshot().needs_you)
+            if needs_page.view_model is not None:
+                self.needs_you.view_in(needs_page.view_model)
+        # --- end W3.2 Q5
+        # --- W3.2 Q2: Goal's sheet, opened (and closed) by a click on the dock's bar; Esc / Back close it ----------- #
+        self.goal_sheet = None
+        if self.dock is not None:
+            from app.qt import goal_sheet
+            self.goal_sheet = goal_sheet.GoalSheet(self, self.page_widgets["current"], self.dock)
+            self.dock.sheet_requested.connect(self.goal_sheet.toggle)
+            self.register_overlay(self.goal_sheet)
+        # --- end W3.2 Q2
+        # --- W3.2 Q4: Finished's actions (`finished.py`): Put back, ⋯, *What if I added it back?*, the importer and
+        # Explorer's files on the Finished tab — given a writer, as the moves are
+        self.finished = None
+        if self.moves is not None and hasattr(self.page_widgets.get("finished"), "on_put_back"):
+            from app.qt import finished
+            self.finished = finished.FinishedActions(self)
+        # --- end W3.2 Q4
+        # --- W3.2 Q8: the rest of Current's ⋯ (`item_menu.py`), the ✂ seam and drop-to-join
+        self.items = None
+        if self.moves is not None:
+            from app.qt import item_menu
+            self.items = item_menu.ItemActions(self)
+        # --- end W3.2 Q8
+        # --- W3.2 Q1: the tray under the inset, and the arrivals' numbers (the warm worker, asked once per file). The
+        # worker's client is the services' `arrivals` (a test's), else made for a real library (P0's `library_for`)
+        self.arrivals_tray = self.arrival_numbers = None
+        if services.library is not None:
+            from app.qt import arrivals as arrivals_view
+            self.arrivals_tray = arrivals_view.ArrivalsTray(central, self.arrivals_inset, self)
+            self.register_overlay(self.arrivals_tray)
+            if getattr(services, "arrivals", None) is not None or getattr(services, "library_for", None) is not None:
+                # S2: asked again when the plan file moves (a Generate), never on a drop (`Numbers.version` does);
+                # N3 / IK-L2-2: the client and the language read at each ask — the window's one warm worker. The
+                # numbers go to the reader open as they come (W3.2 H: never the first reader's bound method — a
+                # switch let that one go, and the new language's arrivals had no numbers)
+                self.arrival_numbers = arrivals_view.ArrivalNumbers(
+                    self.arrivals_worker, lambda: self.language, on_change=lambda estimates: _set_estimates(
+                        services.library, estimates),
+                    plan_token=lambda: _plan_key(getattr(services.library, "numbers", None)))
+        # --- end W3.2 Q1
 
         self._restore_state(read_state(self.state_file))
 
@@ -1034,7 +1085,29 @@ class ShellWindow(QMainWindow):
         self.subline.setObjectName("wordsub")
         names.addWidget(self.subline)
         row.addLayout(names)
+        # --- W3.2 Q3: the search cut after the name (shown with a library); + Add at the right, before ? (the level ▾
+        # goes before it: `_attach_duties`)
+        from app.qt import add_menu, search as search_ui
+        self.search = search_ui.SearchCut(self, header)
+        self.search.setVisible(self.services.library is not None)
+        row.addWidget(self.search)
+        # --- end W3.2 Q3
         row.addStretch(1)                                  # the header's controls arrive with their features (G-2):
+        # --- W3.2 Q1: New arrivals, an inset in the band before the level ▾ (with a library; absent until something
+        # arrives)
+        self.arrivals_inset = None
+        if self.services.library is not None:
+            from app.qt import arrivals as arrivals_view
+            self.arrivals_inset = arrivals_view.ArrivalsInset(header)
+            self.arrivals_inset.clicked.connect(lambda _checked=False: self.open_arrivals())
+            row.addWidget(self.arrivals_inset)
+        # --- end W3.2 Q1
+        # --- W3.2 Q3
+        self.adder = add_menu.Adder(self)
+        self.add_stone = add_menu.AddStone(self.adder, header)
+        self.add_stone.setVisible(bool(self.adder.entries()))
+        row.addWidget(self.add_stone)
+        # --- end W3.2 Q3
         self.progress = frame.Progress(header)             # W3.1a: the jobs' hairline along its foot (no pulsing dot)
         self._busy, self._share = False, None              # ... the bar's lines running, Generate's share
         return header                                      # W3.5's with the duties (`_attach_duties`)
@@ -1140,6 +1213,12 @@ class ShellWindow(QMainWindow):
             self.show_status(self.services.status.snapshot())
         if self.dock is not None:                   # W3.1a: Goal's bar (and the wells' covers) from the same view
             self._show_dock(view)
+        self._show_arrivals(view)                   # W3.2 Q1: the inset, the tray, the numbers asked
+        sheet = getattr(self, "goal_sheet", None)   # --- W3.2 Q2: the sheet's tiles; a piece it moved, scrolled to
+        if sheet is not None:
+            if view.goal is not None:
+                sheet.set_goal(view.goal)
+            sheet.view_shown(view)                  # --- end W3.2 Q2
         if moved:                                   # a view that changed no list paints nothing ahead
             self._warm_hidden_pages()
 
@@ -1154,6 +1233,53 @@ class ShellWindow(QMainWindow):
         if self.dock.isHidden() == shown:
             self.dock.setVisible(shown)
 
+    # --- W3.2 Q1: New arrivals (app/qt/arrivals.py) -------------------------------------------------------------- #
+    def arrivals_worker(self):
+        """IK-L2-2: the window's one warm arrivals worker (E2.2 D10), for its language as it stands — New arrivals'
+        numbers and Finished's *What if* share it (`services.arrivals_worker`; a test's `services.arrivals` first).
+        Made on first use; its process starts on its first ask."""
+        services = self.services
+        client = getattr(services, "arrivals", None)
+        if client is not None:
+            return client
+        worker = getattr(services, "arrivals_worker", None)
+        if worker is None or getattr(worker, "language", self.language) != self.language:
+            if worker is not None and hasattr(worker, "stop"):
+                worker.stop()                       # another language's: one warm worker at a time
+            from app.services.arrivals import ArrivalsWorker
+            worker = services.arrivals_worker = ArrivalsWorker(services.registry, self.language)
+        return worker
+
+    def _show_arrivals(self, view):
+        """The view's arrivals: the inset (absent with none), the tray's rows (only what changed), each new file's
+        estimate asked (on a worker); the tray closes once nothing is left in it (A2 #32)."""
+        arrivals = getattr(view, "arrivals", ()) or ()
+        if self.arrivals_inset is None:
+            return
+        self.arrivals_inset.set_arrivals(arrivals, (getattr(view, "badges", None) or {}).get("arrivals", 0))
+        tray = getattr(self, "arrivals_tray", None)
+        if tray is None:
+            return
+        tray.set_groups(getattr(view, "arrival_groups", ()) or ())
+        if not arrivals and (tray.isVisible() or motion.opening_of(tray) is not None):
+            tray.close()
+        if self.arrival_numbers is not None and getattr(view, "language", self.language) == self.language:
+            self.arrival_numbers.want(arrivals)
+
+    def open_arrivals(self):
+        """The inset's click (A2 #89: from any tab, Current first, then the tray), again to close it."""
+        tray = getattr(self, "arrivals_tray", None)
+        if tray is None:
+            return
+        if tray.isVisible() or motion.opening_of(tray) is not None:
+            tray.close()
+            return
+        if self.current_tab() != "current":
+            self.show_tab("current")
+        tray.open()
+        if self.arrival_numbers is not None:
+            self.arrival_numbers.recheck()
+    # --- end W3.2 Q1
     # --- W3.2 P0: a language switch: the pages follow that language's library ---------------------------------- #
     def _ask_language(self, language, then):
         """(This thread.) Settings › Language moved: the services follow on a worker (`Services.language_changed`),
@@ -1346,6 +1472,8 @@ class ShellWindow(QMainWindow):
         size = style.current()[1]
         self.footer.setFixedHeight(round(theme.size("footer", size)))
         self.wordmark.updateGeometry()
+        self.search.restyle()                                  # --- W3.2 Q3: the cut and the stone × the text size
+        self.add_stone.restyle()
         if self.dock is not None:                              # W3.1a: the dock's bar × the text size
             self.dock.apply_size()
         duties = getattr(self, "duties", None)                 # (none yet on the first call)
@@ -1367,6 +1495,8 @@ class ShellWindow(QMainWindow):
             self._warm_hidden_pages()
         if name == "needs":                                    # looked at: its failures stop counting, stay listed
             bridge.run_in_worker(self.services.status.mark_seen)
+            if getattr(self, "needs_you", None) is not None:  # W3.2 Q5: and its own entries (the seen file, Connect's)
+                self.needs_you.opened()
             if self.duties is not None:                       # W3.5: the update's own
                 bridge.run_in_worker(self.services.updates.mark_seen)
 
@@ -1407,6 +1537,8 @@ class ShellWindow(QMainWindow):
         needs_page = self.page_widgets.get("needs")
         if hasattr(needs_page, "set_failures"):
             needs_page.set_failures(snap.needs_you)
+        if getattr(self, "needs_you", None) is not None:          # W3.2 Q5: Connect's line moved: its entries may have
+            self.needs_you.connect_in(snap.connect)
         if self.duties is not None and bool(logs_before) != bool(snap.logs):
             self._show_update(self.duties.update_state, force_cards=True)     # the cards' *Open the logs folder*
         self._paint_needs()
@@ -1480,6 +1612,8 @@ class ShellWindow(QMainWindow):
         entries = snap.needs_you if snap is not None else ()
         listed = len(entries) + self._library_needs          # W2.2: the library's entries count too
         unseen = sum(1 for e in entries if not e.seen) + self._library_needs
+        if getattr(self, "needs_you", None) is not None:      # W3.2 Q5: the page's entries (the bar's failures among
+            listed, unseen = self.needs_you.counts()          # them) are what it lists and counts
         if self.duties is not None:                           # W3.5: the update's cards
             more, more_unseen = self.duties.cards.counts()
             listed, unseen = listed + more, unseen + more_unseen
@@ -1627,8 +1761,11 @@ class ShellWindow(QMainWindow):
         journey_row.addWidget(d.journey_dot)
         journey_row.addStretch(1)
         d.pop.actions.addLayout(journey_row)
-        self.header.layout().addWidget(d.level)
-        self.header.layout().addWidget(d.help)
+        # --- W3.2 Q3: the level ▾ before + Add, ? after it
+        header_row = self.header.layout()
+        header_row.insertWidget(header_row.indexOf(self.add_stone), d.level)
+        header_row.addWidget(d.help)
+        # --- end W3.2 Q3
         self._paint_level()
         # the bar (W3.1a): the known corner and the emerald are the footer's (statuses: W3.3 makes them open
         # Settings; the level chip gave way to the ▾); the update chip in the status line's slot while it applies
@@ -2215,6 +2352,29 @@ class ShellWindow(QMainWindow):
         super().closeEvent(event)
 
 
+# --- W3.2 B: how the window wakes (IK0-5, L3.1-4) ----------------------------------------------------------------- #
+def _plan_key(numbers):
+    """W3.2 S2: the plan file's key as the reader's numbers last read it (`moves.Numbers.plan_key`), else None."""
+    key = getattr(numbers, "plan_key", None)
+    try:
+        return key() if callable(key) else None
+    except Exception:
+        return None
+
+
+def library_lookout(store, wake):
+    """The library reader's `watch` (`LibraryReader(watch=library_lookout)`, through `moves.open_library`'s reader
+    keywords where the window builds its library): called on the reader's thread once the store can be used, never
+    the window's. The tree watch on the language's tier folders (hato's drop folder is under NOW's) and the store's
+    bell (any process's commit), both waking the reader's own `wake`; no copy watch (the helper keeps the copy) and
+    no hourly round (the Content Manager's). Closed with the reader (its stop: the window's close, a library switch).
+    -> an opened `library_watch.Lookout`."""
+    from app import library_store, library_watch
+    return library_watch.Lookout(store.data_dir, under=[library_store.FOLDER_OF_TIER[t] for t in library_store.ANALYSED],
+                                 db_path=store.db_path, wake=wake).open()
+# --- end W3.2 B
+
+
 # --- opening ------------------------------------------------------------------------------------------------------ #
 def open_window(app, services, state_file=None):
     """The look from settings on the QApplication, then the window (not shown yet): theme before the first paint."""
@@ -2236,6 +2396,13 @@ def _no_callback(*_args):
     pass
 
 
+def _set_estimates(reader, estimates):
+    """New arrivals' numbers to the reader open now (any thread); none with no reader or one without them."""
+    set_estimates = getattr(reader, "set_estimates", None)
+    if set_estimates is not None:
+        set_estimates(estimates)
+
+
 def _stopped(reader):
     stopped = getattr(reader, "stopped", None)
     return bool(stopped()) if stopped is not None else False
@@ -2254,7 +2421,8 @@ def library_for(language, settings, freeze_gc=False):
     from app.services import library_reader, moves
     _opener, numbers, reader = moves.open_library(
         language, check=moves.plan_check(language, lambda: settings_service.thaw(settings.get())),
-        cache_file=library_reader.cache_path(language), freeze_gc=freeze_gc)
+        cache_file=library_reader.cache_path(language), freeze_gc=freeze_gc,
+        watch=library_lookout)                              # W3.2 B: woken by the bell + the tree watch (IK0-5)
     writer = moves.Writer(_opener, language, journal_file=moves.journal_path(language), numbers=numbers,
                           words=strings.MOVE_WORDS)
     return reader, writer

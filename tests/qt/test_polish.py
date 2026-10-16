@@ -211,15 +211,16 @@ def test_an_open_rows_episodes_stand_on_the_opened_rows_ground_not_a_surface(see
 
 
 # --- G7 --------------------------------------------------------------------------------------------------------------
-def test_needs_you_count_sits_on_a_warn_badge(window):
-    # One unseen failure shows the tab with its count on a filled warn pill: a large block of the warn colour
-    # (a plain count would paint only a few warn-coloured glyph pixels, far below 100).
+def test_needs_you_count_sits_on_the_cracked_amber_stone(window):
+    # One unseen failure shows the tab with its count on a stone (W3.2 Q5: the cracked amber stone, ref-extract
+    # row 115): a solid block of the stone's dark amber fill (a plain count would paint none of it), the number in warn.
     unseen = status_service.Entry("Command line (status): it failed", "t", False)
     window.show_status(_snap(needs_you=(unseen,)))
     tab = window.tab_buttons["needs"]
     assert not tab.isHidden()
-    warn = style.colours()["warn"]
-    assert count(rgb_array(tab.grab()), warn, 10) >= 100
+    pixels = rgb_array(tab.grab())
+    assert count(pixels, theme.NEEDS_STONE["fill"], 6) >= 60
+    assert count(pixels, style.colours()["warn"], 30) >= 5
 
 
 # --- G8 --------------------------------------------------------------------------------------------------------------
@@ -289,14 +290,22 @@ def test_a_tooltip_action_is_on_its_own_line_and_never_in_brackets():
 
 
 # --- G10 --------------------------------------------------------------------------------------------------------------
-def test_a_needs_you_cards_line_is_in_its_tooltip_after_the_title(seeded):
-    # Why: the card stays clean (the line is what's waiting, not what to paint); the tooltip carries it on its own line.
+def test_a_needs_you_card_says_what_waits_under_its_title(seeded):
+    # Why (W3.2 Q5): the painted card's line moved into the card as its own words, under the title, with its buttons:
+    # what waits and what each answer does are read before a button is pressed.
+    from PyQt6.QtWidgets import QLabel
+    from app import path_utils
+    os.makedirs(path_utils.get_data_path("ja"), exist_ok=True)
     seed, win = seeded()
-    lst = win.page_widgets["needs"].list
-    index, need = next((i, p) for i, (k, p, _l) in enumerate(lst.model().entries) if k == rows.NEED)
-    assert need.line, "the seed's Needs-you card must carry its line, or this test proves nothing"
-    tips = [tip for _name, _rect, tip, _payload in part(lst, index, "title")]
-    assert tips == [need.title + "\n" + need.line]
+    ny = win.needs_you
+    ny.data_dir = path_utils.get_data_path("ja")
+    n = ny.gathers
+    ny.refresh()
+    assert wait_until(lambda: ny.gathers > n and not ny._running, 10)
+    gone = next(e for e in ny.entries if e.kind == "file-gone")
+    assert gone.say, "the seed's Needs-you card must carry its line, or this test proves nothing"
+    words = [lab.text() for lab in ny.cards.card(gone.key).findChildren(QLabel)]
+    assert words[:2] == [gone.title, gone.say]
 
 
 # --- G11 --------------------------------------------------------------------------------------------------------------

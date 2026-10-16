@@ -339,7 +339,8 @@ def anki_look(settings, language):
 
 def library_rows(settings, language):
     """(A worker.) What is in the library now, one row per title (a show, a book) -> [{"name", "count" (its files),
-    "folder" (where its first file is)}] in the library's order (NOW, Soon, 6+ Months, New arrivals); [] for an empty
+    "folder" (where its first file is), "kind" (W3.2 Q3: "shows" · "reading" · "videos" by the title's media type, as
+    the rows' stones read it; None for files no title holds)}] in the library's order (NOW, Soon, 6+ Months, New arrivals); [] for an empty
     library or no store. A read-only look: the store is never built or migrated here."""
     from app import library_store
     from app.path_utils import get_data_path, get_user_files_path
@@ -355,7 +356,8 @@ def library_rows(settings, language):
         roots = {rid: path for rid, path in store.conn.execute("SELECT id, path FROM roots")}
         rank = " ".join(f"WHEN '{t}' THEN {n}" for n, t in enumerate(LISTED_TIERS))
         rows = store.conn.execute(
-            "SELECT i.work_id, w.title, i.rel_path, i.root_id FROM items i LEFT JOIN works w ON w.id = i.work_id "
+            "SELECT i.work_id, w.title, i.rel_path, i.root_id, w.media_type FROM items i "
+            "LEFT JOIN works w ON w.id = i.work_id "
             f"WHERE i.tier IN ({', '.join('?' * len(LISTED_TIERS))}) ORDER BY CASE i.tier {rank} END, i.ord, i.id",
             LISTED_TIERS).fetchall()
     except Exception as e:
@@ -363,8 +365,9 @@ def library_rows(settings, language):
         return []
     finally:
         store.close()
+    from app.services.stone_plan import _KIND             # --- W3.2 Q3: a title's kind, as its row's stones read it
     titles = {}
-    for work_id, title, rel, root_id in rows:
+    for work_id, title, rel, root_id, media_type in rows:
         folder_rel = rel.rsplit("/", 1)[0] if "/" in rel else ""
         key = ("work", work_id) if work_id is not None else ("folder", root_id, folder_rel)
         row = titles.get(key)
@@ -372,9 +375,31 @@ def library_rows(settings, language):
             base = roots.get(root_id) or data_dir
             name = title or (folder_rel.rsplit("/", 1)[-1] if "/" in folder_rel else "") or rel.rsplit("/", 1)[-1]
             titles[key] = row = {"name": name, "count": 0,
-                                 "folder": os.path.normpath(os.path.join(base, *folder_rel.split("/")))}
+                                 "folder": os.path.normpath(os.path.join(base, *folder_rel.split("/"))),
+                                 "kind": _KIND.get(media_type, "shows") if work_id is not None else None}
         row["count"] += 1
     return list(titles.values())
+
+
+def add_samples(language):
+    """(A worker; W3.2 Q3.) *Try it with samples first*: the bundled samples copied into the tier folders that are still
+    empty (`path_utils.seed_samples`, the Content Manager's own), then those folders synced into the store, as the
+    Content Manager synced them (`sync_for_window`) -> how many were copied (0: the library has files)."""
+    from app import library_store
+    from app.path_utils import get_data_path, get_user_files_path, seed_samples
+    language = _language(language)
+    n = seed_samples(language)
+    if n:
+        try:
+            store = library_store.open_store(language, get_data_path(language), get_user_files_path(language),
+                                             role="window")
+            if store is not None:
+                with store:
+                    library_store.sync_for_window(store, [library_store.FOLDER_OF_TIER[t]
+                                                          for t in library_store.ANALYSED])
+        except Exception as e:
+            print(f"Setup: the samples' folders couldn't be synced now ({e}); the next sync takes them in")
+    return n
 
 
 def level_numbers(settings, language):

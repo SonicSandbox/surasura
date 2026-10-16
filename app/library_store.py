@@ -2138,6 +2138,14 @@ class Store:
             if tier == "graduated":
                 self.conn.executemany("UPDATE items SET graduated_at = ? WHERE id = ?",
                                       [(_now(), i) for i in moving])
+                # --- W3.2 (IK-L2-3, A2 #28): an arrival to Finished is recorded as already watched (undone with it)
+                came = [i for i in moving if rows[i][1] == "arrivals"]
+                if came:
+                    change.status = [(i, "watched", old, 1) for i, old in self.conn.execute(
+                        f"SELECT id, watched FROM items WHERE id IN ({','.join('?' * len(came))})", came).fetchall()
+                        if old != 1]
+                    self.conn.executemany("UPDATE items SET watched = 1 WHERE id = ?",
+                                          [(i,) for i, *_r in change.status])
             cmd.touch({rows[i][1] for i in moving} | {tier})
             for item_id in moving:
                 cmd.event(item_id, "finished" if tier == "graduated" else "placed",
@@ -3231,11 +3239,15 @@ class Store:
             cmd.touch()
             return change
 
-    def join(self, piece_ids):
+    def join(self, piece_ids, ahead=False):
         """One piece of several pieces of one title (05 §5.2 #6): the other pieces' items move to just after the first
         piece's last item — "a join across sections lands where the target part is" (W1.2 §8.2), across tiers or
         with other items between — and become one piece; one command, one undo. A join of two titles' pieces is
-        refused: make them one title first (`merge_works`)."""
+        refused: make them one title first (`merge_works`).
+        W3.2: `ahead` — they go just before the first piece's first item instead (the part coming in holds the earlier
+        episodes: episode order, E22). Items that come in from Finished have their cards back in the learning order
+        (`in_learning_order` 1, as `put_back_finished`: anything taken out comes back, G1.6-10); items that come in
+        from New arrivals are placed (a `placed` event, as `move`'s) — in the same command, undone with it."""
         piece_ids = list(dict.fromkeys(piece_ids))
         if len(piece_ids) < 2:
             return None
@@ -3254,15 +3266,33 @@ class Store:
             moving = [r for p in others for r in members[p]]
             if not moving:
                 return None
-            last = members[target][-1]
+            last = members[target][0] if ahead else members[target][-1]
             tier = last[1]
-            nxt = self._beyond(tier, (last[0], last[2]), set(), 1, len(moving))
+            # W3.2 H (Bo1): never into Finished by a join — that would skip finishing (no watched / graduated_at, no
+            # `finished` event); the window joins onto Current rows only, so this guards a stale row's race
+            if tier == "graduated" and any(r[1] != "graduated" for r in moving):
+                raise ValueError("a part can't join a finished one: finish it first")
+            nxt = self._beyond(tier, (last[0], last[2]), set(), -1 if ahead else 1, len(moving))
+            if ahead:
+                nxt = nxt[::-1]
             change = self._change(cmd, "join")
             if [r[0] for r in nxt] != [r[0] for r in moving] or any(r[1] != tier for r in moving):
                 rows = self._rows([r[0] for r in moving])
                 self._before(change, list(rows.values()))
-                self._put(tier, [r[0] for r in moving], ("after", last[0]), cmd.version)
+                self._put(tier, [r[0] for r in moving], ("before" if ahead else "after", last[0]), cmd.version)
                 cmd.touch({r[1] for r in moving} | {tier})
+            # --- W3.2 (IK-L2-1): a part from Finished comes back with its cards; one from New arrivals is placed
+            back = [r[0] for r in moving if r[1] == "graduated" and tier != "graduated"]
+            if back:
+                change.status = [(i, "in_learning_order", old, 1) for i, old in self.conn.execute(
+                    f"SELECT id, in_learning_order FROM items WHERE id IN ({','.join('?' * len(back))})",
+                    back).fetchall() if old != 1]
+                self.conn.executemany("UPDATE items SET in_learning_order = 1 WHERE id = ?",
+                                      [(i,) for i, *_r in change.status])
+            for r in moving:
+                if r[1] == "arrivals" and tier != "arrivals":
+                    cmd.event(r[0], "placed", 1)
+            # --- end W3.2
             self.conn.executemany("UPDATE items SET piece_id = ?, changed_in = ? WHERE id = ?",
                                   [(target, cmd.version, r[0]) for r in moving])
             for r in moving:
@@ -3293,6 +3323,9 @@ class Store:
         holder = Change(change.kind, change.epoch, change.version)
         holder.pieces = rest
         _o, more = self._undo_pieces(cmd, holder)
+        if change.status:                                       # W3.2: the cards a Finished part brought back
+            _o, cards = self._undo_status(cmd, change)
+            more = list(more) + [i for i in cards if i not in more and i not in skipped]
         return out, list(skipped) + list(more)
 
     # --- status writes (§6.6): state_version only; undo by the value check ----------------------- #
@@ -3477,25 +3510,71 @@ class Store:
             return None
         with self._command("finish", by) as cmd:
             change = self.set_tier(ids, "graduated", by=by, explicit=explicit)
-            status = []
-            if not keep_cards:
-                marks = ",".join("?" * len(ids))
-                for item_id, order, pinned in self.conn.execute(
-                        f"SELECT id, in_learning_order, pinned FROM items WHERE id IN ({marks})", ids).fetchall():
-                    if order != 0:
-                        status.append((item_id, "in_learning_order", order, 0))
-                    if pinned is not None:
-                        status.append((item_id, "pinned", pinned, None))
-                for item_id, column, _old, new in status:
-                    self.conn.execute(f"UPDATE items SET {column} = ? WHERE id = ?", (new, item_id))
-                cmd.feed(i for i, _c, _o, _n in status)
-                if status:
-                    cmd.touch(pins=any(c == "pinned" for _i, c, _o, _n in status))
+            status = [] if keep_cards else self._cards_out(cmd, ids)
             if change is None and not status:
                 return None
             if change is None:
                 change = self._change(cmd, "finish")
             change.kind = "finish"
+            change.status = list(change.status) + status       # (W3.2: an arrival's watched, from `set_tier`)
+            return change
+
+    def _cards_out(self, cmd, ids):
+        """*Take its new cards out* (D14), inside the caller's command: the items' cards out of the learning order and
+        their pin ended (G2.2-8: the later click wins) -> the status values written, for undo."""
+        status = []
+        marks = ",".join("?" * len(ids))
+        for item_id, order, pinned in self.conn.execute(
+                f"SELECT id, in_learning_order, pinned FROM items WHERE id IN ({marks})", ids).fetchall():
+            if order != 0:
+                status.append((item_id, "in_learning_order", order, 0))
+            if pinned is not None:
+                status.append((item_id, "pinned", pinned, None))
+        for item_id, column, _old, new in status:
+            self.conn.execute(f"UPDATE items SET {column} = ? WHERE id = ?", (new, item_id))
+        cmd.feed(i for i, _c, _o, _n in status)
+        if status:
+            cmd.touch(pins=any(c == "pinned" for _i, c, _o, _n in status))
+        return status
+
+    def set_learning_order(self, item_ids, on=True):
+        """A Finished item's *Put them back in the order* (on) ↔ *Take its new cards out* (off), D14: `in_learning_order`
+        1 / 0. Off also ends the pin, as `finish(keep_cards=False)` does; on never pins again. Writes no card (Anki's
+        side is the re-plan's). Undo by the value check. Returns the change, or None (nothing new)."""
+        ids = list(dict.fromkeys(item_ids))
+        if not ids:
+            return None
+        if on:
+            return self._status("set_learning_order", ids, "in_learning_order", 1)
+        with self._command("set_learning_order") as cmd:
+            status = self._cards_out(cmd, ids)
+            if not status:
+                return None
+            change = self._change(cmd, "set_learning_order")
+            change.status = status
+            return change
+
+    def put_back_finished(self, item_ids):
+        """*Put back* (Finished's hover and ⋯, G1.6-10: anything taken out comes back): to the top of Current and its
+        cards back in the learning order (`in_learning_order` 1), one command, one undo. A pin Finish ended stays ended
+        (the user pins again). Returns the change, or None (nothing new)."""
+        ids = list(dict.fromkeys(item_ids))
+        if not ids:
+            return None
+        with self._command("put_back_finished") as cmd:
+            change = self.move(ids, "now")
+            marks = ",".join("?" * len(ids))
+            status = [(i, "in_learning_order", old, 1) for i, old in self.conn.execute(
+                f"SELECT id, in_learning_order FROM items WHERE id IN ({marks})", ids).fetchall() if old != 1]
+            self.conn.executemany("UPDATE items SET in_learning_order = 1 WHERE id = ?", [(i,) for i, *_r in status])
+            cmd.feed(i for i, *_r in status)
+            if status:
+                cmd.touch()
+            if change is None and not status:
+                return None
+            if change is None:
+                change = self._change(cmd, "put_back_finished")
+            change.kind = "put_back_finished"
             change.status = status
             return change
 
@@ -4187,16 +4266,18 @@ class Store:
                 skipped = [t for t in change.trash_ids if t not in waiting]
             elif kind == "relink":
                 out, skipped = self._undo_relink(cmd, change)
-            elif kind == "finish":
+            elif kind in ("finish", "put_back_finished"):
                 out, skipped = self._undo_finish(cmd, change)
             elif kind == "import_finished":
                 out, skipped = self._undo_import(cmd, change, trashed_paths)
             elif getattr(change, "options", None):
                 out, skipped = self._undo_options(cmd, change)
+            elif kind == "set_tier" and change.status:              # W3.2: an arrival finished, its watched
+                out, skipped = self._undo_finish(cmd, change)
+            elif kind == "join" and change.pieces is not None:       # (before the status: W3.2's join has one)
+                out, skipped = self._undo_join(cmd, change)
             elif change.status:
                 out, skipped = self._undo_status(cmd, change)
-            elif kind == "join" and change.pieces is not None:
-                out, skipped = self._undo_join(cmd, change)
             elif change.works is not None:
                 out, skipped = self._undo_works(cmd, change)
             elif change.pieces is not None:
@@ -6772,15 +6853,23 @@ def sync_for_window(store, folders=None):
     """`sync_disk` for a window's process (the dashboard's journey check, the Content Manager), called on a
     worker. At 100k a sync on a worker thread still stalled the window 20–60 ms through the interpreter
     lock, whatever the switch interval (§12.1), so from `SYNC_IN_PROCESS_AT` items the sync runs in a
-    process of its own and this thread only waits for it. Returns sync_disk's summary (in-process) or None."""
+    process of its own and this thread only waits for it. Returns sync_disk's summary (in-process) or None
+    (the Content Manager reads a summary as a dict). The helper's exit code is read: one that found the store
+    busy, failed or ran out of time raises `StoreBusy`, as the sync in-process does — the caller keeps the
+    folders owed (W3.2 L1 S1)."""
     count = store.conn.execute("SELECT COUNT(*) FROM items").fetchone()[0]
     if count < SYNC_IN_PROCESS_AT:
         return store.sync_disk(folders=folders)
     import subprocess
     args = _helper_args(store.language, "sync") + [a for f in (folders or ()) for a in ("--folder", f)]
     flags = 0x08000000 if sys.platform == "win32" else 0                # CREATE_NO_WINDOW
-    subprocess.run(args, env=_helper_env(), creationflags=flags, stdin=subprocess.DEVNULL,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=SYNC_TIMEOUT)
+    try:
+        code = subprocess.run(args, env=_helper_env(), creationflags=flags, stdin=subprocess.DEVNULL,
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=SYNC_TIMEOUT).returncode
+    except subprocess.TimeoutExpired:
+        raise StoreBusy("the library's sync took too long") from None
+    if code in (EXIT_BUSY, EXIT_FAILED):
+        raise StoreBusy("the library is busy" if code == EXIT_BUSY else "the library's sync failed")
     return None
 
 
@@ -7318,7 +7407,8 @@ def main(argv=None):
 
 def sync_process(language, folders=None):
     """`sync`: a window's `sync_disk` in a process of its own (`sync_for_window`, a large library). 0 when
-    something changed, 3 nothing, 4 no ready store, 5 an update staged, 1 failed. Dialog-free."""
+    something changed, 3 nothing, 4 no ready store, 5 an update staged or the store busy, 1 failed.
+    Dialog-free."""
     from app.path_utils import get_data_path, get_user_files_path
     try:
         if update_staged():
@@ -7328,6 +7418,8 @@ def sync_process(language, folders=None):
             return EXIT_NEEDS_YOU
         with store:
             return EXIT_DONE if store.sync_disk(folders=folders) else EXIT_NOTHING
+    except StoreBusy:
+        return EXIT_BUSY                                                # its own code: the window keeps it owed
     except Exception:
         return EXIT_FAILED
 

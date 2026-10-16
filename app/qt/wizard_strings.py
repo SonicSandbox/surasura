@@ -81,14 +81,12 @@ KEEP_CAME_OVER_TIP = "Keep the words you know from Surasura 2, as they are.\n•
 
 # --- 3 · your shows --------------------------------------------------------------------------------------------------- #
 SHOWS_TITLE = "Bring in what you'll watch and read"
-ADD_CONTENT = "Add content…"
-ADD_CONTENT_TIP = "Add shows, books and videos: a folder, files or subtitles.\n• Opens the Content Manager"
-YOUTUBE = "YouTube link…"
-YOUTUBE_TIP = "Bring in a YouTube or bilibili video's subtitles from its link."
 SAMPLES = "Try it with samples first"
-SAMPLES_TIP = "Not sure yet? Start with a few samples to see how it works.\n• Opens the Content Manager, which has them"
+SAMPLES_TIP = "Not sure yet? Start with a few samples to see how it works.\n• Copies a few sample files into your library"
+SAMPLES_ADDED_LINE = "Added {n:,} samples: they show here in a moment."     # (W3.2 Q3: page 3 takes + Add's actions)
+SAMPLES_NONE = "Samples go into an empty library only: yours has files already."
 ROWS_NAME = "What's in your library"
-ROW_COUNT = {"shows": ("1 episode", "{n:,} episodes"), "reading": ("a book", "{n:,} books"),
+ROW_COUNT = {"shows": ("1 episode", "{n:,} episodes"), "reading": ("a book", "a book · {n:,} parts"),
              "videos": ("1 video", "{n:,} videos")}
 ROW_FILES = ("1 file", "{n:,} files")
 ROW_LINE = "{count} · {folder}"
@@ -98,7 +96,6 @@ COVERS_LINE = "Sends each show's name to AniList or TMDB. Nothing else."
 COVERS_TIP = ("Covers for your shows, looked up by each show's name.\n"
               "• Turn it off any time: Settings")
 COVERS_PICTURE_NAME = "A plain tile becomes the show's cover"
-CONTENT_OPEN = "The Content Manager is open: what you add shows here when you close it."
 UPGRADE_SHOWS_LINE = "Your library came over from Surasura 2."
 
 # --- 4 · card order --------------------------------------------------------------------------------------------------- #

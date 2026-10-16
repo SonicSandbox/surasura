@@ -32,6 +32,106 @@ FINISHED_HELP_TIP = ("<b>A record of what you've worked through.</b> Your list i
                      "in what you're <i>going</i> to watch and read. You won't meet a finished show again, so its words "
                      "stop pushing your list around — but its sentences can still be your examples")
 FINISHED_EMPTY = ("Nothing finished yet", "What you finish is kept here: a record, and a source of sentences")
+# --- W3.2 Q4: Finished's actions (app/qt/finished.py): Put back, ⋯, *What if I added it back?*, the importer -------- #
+FIN_PUT_BACK = "Put back"
+FIN_PUT_BACK_TIP = ("Put back: to the top of Current, its cards back in your order\n"
+                    "• Click to put it back (Undo takes it back to Finished)")
+FIN_MORE_TIP = "More\n• Click for what you can do with it (Enter on the keyboard)"
+FIN_MENU_NAME = "What you can do with {title}"
+FIN_MENU = {
+    "what-if": ("What if I added it back?", "How many new words it would bring at the top of Current — nothing moves"),
+    "put-back": ("Put back", "To the top of Current, its cards back in your order"),
+    "pin": ("Study its cards first", "Its cards come first in your Anki order"),
+    "unpin": ("Done with its cards", "Its cards go back to their place in your order"),
+    "cards": ("Its {n} cards in Anki", "What happens to its new cards"),
+    "cards-none": ("Its cards in Anki", "What happens to its new cards"),
+    "cards-out": ("Leave its new cards out of your order", "Its new cards leave your learning order; none is deleted"),
+    "cards-in": ("Put them back in the order", "Its new cards come back into your learning order"),
+    "mine": ("Mine", "Make its cards"),
+    "mine-too": ("Mine it too", "Make cards for what isn't mined yet"),
+    "folder": ("Open its folder", "Open the folder its files are in"),
+}
+FIN_REFUSED_TIP = "Your library can't be saved right now: {reason}"
+FIN_PUT_BACK_DONE = "{title} is back at the top of Current"
+FIN_PINNED = "{title}: its cards come first"
+FIN_UNPINNED = "{title}: done with its cards"
+FIN_CARDS_OUT = "{title}: its new cards are out of your order"
+FIN_CARDS_IN = "{title}: its new cards are back in your order"
+FIN_NO_FOLDER = "{title}'s folder isn't there any more"
+WHATIF_NAME = "What if you added {title} back"
+WHATIF_HEADING = "WHAT IF I ADDED IT BACK?"
+WHATIF_LINE = "At the top of Current it would bring {n} new words · {pct} known"
+WHATIF_DASH = "—"
+WHATIF_PCT = "{pct} %"
+WHATIF_WORDS = "The first new words you'd meet: {words}"
+WHATIF_NO_WORDS = "No new words in it: you know every word of it on your list"
+WHATIF_NO_PLAN = "Generate once and it can count the new words too"
+WHATIF_NONE = "Can't count it right now"
+WHATIF_PUT_BACK_TIP = "Put back: to the top of Current, its cards back in your order"
+WHATIF_JOURNEY = "Open your journey"
+WHATIF_JOURNEY_TIP = "Open your journey: your list with its sentences, in its own window"
+WHATIF_CLOSE_TIP = "Close: nothing moves (Esc)"
+WHATIF_CLOSE_NAME = "Close"
+FIN_IMPORT = "Add what you finished before…"
+FIN_IMPORT_TIP = ("Add what you finished before Surasura: copied into Finished, dated Earlier\n"
+                  "• Its words don't move your list; its sentences can be your examples")
+FIN_IMPORT_FILES = ("Files…", "Choose subtitle or text files you finished")
+FIN_IMPORT_FOLDER = ("A folder…", "Choose a folder of what you finished (it keeps its name)")
+FIN_IMPORT_PICK = "Add what you finished before"
+FIN_IMPORT_STOP = "Stop adding"
+FIN_IMPORT_STOP_TIP = "Stop adding: what was copied so far goes to the trash, nothing is added"
+FIN_IMPORTED = "Added {n} to Finished"
+FIN_IMPORTED_ONE = "Added {name} to Finished"
+FIN_IMPORT_NOTHING = "Nothing new to add: it's in Finished already"
+FIN_IMPORT_STOPPED = "Stopped: nothing was added"
+FIN_IMPORT_LATER = "Still saving what you finished before: it's added once the library can be saved"
+FIN_IMPORT_FAILED = "Couldn't add it to Finished: {why}"
+FIN_IMPORT_IN_LIBRARY = "{name} is in your library already: finish it from its row, with the choice for its cards"
+FIN_IMPORT_IN_LIBRARY_N = "{n} of these are in your library already: finish them from their rows"
+# --- end W3.2 Q4
+# --- W3.2 Q8: the rest of Current's ⋯ (app/qt/item_menu.py), the ✂ seam and drop-to-join -------------------------- #
+ITEM_MENU = {
+    "pin": ("Study its cards first", "Its cards come first in your Anki order"),
+    "unpin": ("Done with its cards", "Its cards go back to their place in your order"),
+    "type": ("What is it?", "Say what it is: its words, its icon and how it counts follow"),
+    "split": ("Split here…", "Make the episodes after this point a part of its own (one Undo joins them back)"),
+    "join": ("Join with…", "Join another part of the same title to this one, in episode order"),
+    "cover": ("Change cover…", "Choose the picture it shows"),
+    "folder": ("Open its folder", "Open the folder its files are in"),
+    "remove": ("Remove…", "Take it out of your library: its files go to the trash for 30 days (asks first)"),
+}
+ITEM_TYPES = {"anime": "Anime", "drama": "Drama", "movie": "Movie", "youtube": "YouTube", "podcast": "Podcast",
+              "audiobook": "Audiobook", "book": "Book", "lightnovel": "Light novel", "manga": "Manga", "game": "Game",
+              "text": "Text"}
+ITEM_TYPE_TIP = "It's a {kind}"
+ITEM_TYPE_GUESS = ("Let Surasura tell", "Surasura works it out from its files again")
+ITEM_TYPE_DONE = "{title} is now {kind}"
+ITEM_TYPE_GUESSED = "Surasura tells what {title} is again"
+ITEM_SPLIT_AFTER = "After {ep}"
+ITEM_SPLIT_AFTER_TIP = "Split it after {ep}: {rest} becomes a part of its own"
+ITEM_SPLIT_HERE = "Split here (after {ep})"
+ITEM_SPLIT_DONE = "Split {title}: {rest} is a part of its own"
+ITEM_JOIN_PART = "{range} · {where}"
+ITEM_JOIN_PART_TIP = "Join {range} to this part, in episode order"
+ITEM_JOIN_WHERE = {"now": "#{n} in Current", "soon": "#{n} in Current (Soon)", "goal": "in Goal",
+                   "graduated": "in Finished", "arrivals": "in New arrivals"}
+ITEM_JOINED = "Joined {range}"
+ITEM_RANGE = "Ep {a}–{b}"
+ITEM_RANGE_ONE = "Ep {a}"
+ITEM_RANGE_FILES = "{n} files"
+ITEM_PINNED = "{title}: its cards come first"
+ITEM_UNPINNED = "{title}: done with its cards"
+ITEM_REMOVE_ASK = "Remove {title}?"
+ITEM_REMOVE_BODY = "Its {n} files go to the trash for 30 days. Undo puts them back where they were."
+ITEM_REMOVE_BODY_ONE = "Its file goes to the trash for 30 days. Undo puts it back where it was."
+ITEM_REMOVE_YES = "Remove {n} files"
+ITEM_REMOVE_YES_ONE = "Remove 1 file"
+ITEM_REMOVE_YES_TIP = "Take it out of your library: its files go to the trash for 30 days"
+ITEM_REMOVED = "Removed {title}"
+SEAM_LABEL = "✂ Split here"
+SEAM_TIP = "✂ Split here\n• Click to make {rest} a part of its own"
+JOIN_LABEL = "Drop to join"
+# --- end W3.2 Q8
 NEEDS_HEADING = "Needs you"
 NEEDS_EMPTY = ("Nothing needs you", "When something waits on you, it shows here")
 TAB_COUNT = "{name}  {count}"                   # Finished's records, Needs you's unseen entries
@@ -304,6 +404,25 @@ MOVE_WORDS = {
     "failed": "That change couldn't be saved: {error}",
     "not_content": "Only text and subtitle files can be added — left out: {names}",
 }
+# --- W3.2 S2: the writer's new commands (moves.WORDS) --------------------------------------------------------------- #
+MOVE_WORDS.update({
+    "put_back_as": "Put back under a new name (the old one was taken): {names}",
+})
+# --- end W3.2 S2
+# --- W3.2 B: the YouTube downloader's files into New arrivals (its status line and the bottom bar, once they land)
+YT_ARRIVED_WAITING = "{what} in New arrivals"
+YT_ARRIVED_PLACED = "{what} placed by your rules for new arrivals"
+YT_ARRIVED_BOTH = "{waiting} in New arrivals · {placed} placed by your rules"
+YT_ARRIVED_LABEL = "New transcripts"
+YT_READ_ONLY = "your library can't be saved right now ({reason}): the transcripts wait in Processed"
+YT_NO_LIBRARY = "no library is open: the transcripts wait in Processed"
+YT_OTHER_LIBRARY = "the language changed while they downloaded: the transcripts wait in the other library's Processed"
+YT_NOT_ADDED = "{what} couldn't be added (gone, or not in your library folder)"
+
+
+def yt_transcripts(n):
+    return f"{n} transcript" if n == 1 else f"{n} transcripts"
+# --- end W3.2 B
 # the drag in the window (app/qt/drag.py): its toasts (A2's toast list), the ⋯ menu, the bar's lines
 DRAG_UP_NEXT = "{title} is up next"
 DRAG_PLACED = "{title} placed at #{n}"
@@ -314,8 +433,8 @@ DRAG_GOAL = "{title} moved to Goal · its cards keep their place"
 DRAG_FINISHED = "{title} finished · its cards stay put"
 DRAG_KEEP = "Keep"
 DRAG_KEEP_TIP = "Keep its new cards in your order, as they are"
-DRAG_TAKE_OUT = "Take its new cards out"
-DRAG_TAKE_OUT_TIP = "Its new cards leave your order. None is deleted: Undo puts them back"
+DRAG_TAKE_OUT = "Leave its new cards out of your order"      # IK-1: Finished's ⋯ words, one name for one action
+DRAG_TAKE_OUT_TIP = "Its new cards leave your learning order; none is deleted: Undo puts them back"
 DRAG_TAKEN_OUT = "{title}: its new cards are out of your order"
 DRAG_ADDED = "Added {name} at #{n} · analysed on the next Generate"
 DRAG_ADDED_N = "Added {count} files at #{n} · analysed on the next Generate"
@@ -341,6 +460,88 @@ MENU_ITEMS = {
 }
 MENU_REFUSED_TIP = "Your library can't be saved right now: {reason}"
 ROWS_SAVING = "saving…"
+# --- W3.2 Q1: New arrivals — the header's inset and its tray (app/qt/arrivals.py) ---------------------------------- #
+ARRIVALS = "New arrivals"
+ARRIVALS_NAME = "New arrivals · {n} files"
+ARRIVALS_NAME_ONE = "New arrivals · 1 file"
+ARRIVALS_TIP = "New arrivals: {n} files waiting for a place\n• Open the tray to put them where you want them"
+ARRIVALS_TIP_ONE = "New arrivals: 1 file waiting for a place\n• Open the tray to put it where you want it"
+TRAY_NAME = "New arrivals: what came in, newest first"
+TRAY_CLOSE = "✕"
+TRAY_CLOSE_NAME = "Close"
+TRAY_CLOSE_TIP = "Close the tray (Esc, Back or a click outside close it too)"
+TRAY_ALL_FINISHED = "✓ All to Finished"
+TRAY_ALL_FINISHED_TIP = "Record every already-watched arrival as finished\n• Then choose whether their new cards stay"
+TRAY_ALL_TITLES = "{n} watched titles"
+TRAY_MINE_TOO = "Mine them too"
+TRAY_MINE_TOO_TIP = "Make cards from the already-watched arrivals as well"
+TRAY_ICON = {
+    "top": ("Top", "Top · Add to the top of Current, the next thing you watch or read"),
+    "finished": ("Finished", "Finished · Record it as finished: you've watched it already\n• Then choose whether its "
+                             "new cards stay"),
+}
+TRAY_MORE_NAME = "More"
+TRAY_MORE_TIP = "More · Place it elsewhere, open its folder, or remove it"
+TRAY_MENU_NAME = "Where {title} goes"
+TRAY_NO_SHOW = "None of its show is in Current: Top of Current puts it there"                 # W3.2 fix round (N1)
+TRAY_MENU = {
+    "top": ("Top of Current", "The top of Current: the next thing you watch or read"),
+    "after-show": ("After its show", "Right after the episodes of its show already in Current"),
+    "soon": ("Soon", "Soon: next in line in Current, after what's at its top"),
+    "goal": ("Goal", "Goal: someday, in no order"),
+    "finished": ("Finished", "Record it as finished: you've watched it already"),
+    "folder": ("Open its folder", "Show its files in Explorer"),
+    "remove": ("Remove…", "Send its files to the trash (kept 30 days; Undo puts them back). Asks first"),
+}
+TRAY_PLACED = {
+    "top": "{title} is at the top of Current",
+    "after-show": "{title} placed after its show",
+    "soon": "{title} → Soon",
+    "goal": "{title} moved to Goal",
+}
+TRAY_REMOVE_TITLE = "Remove {title}?"
+TRAY_REMOVE_BODY = "Its {n} files go to the trash, kept there for 30 days. Undo puts them back."
+TRAY_REMOVE_BODY_ONE = "Its file goes to the trash, kept there for 30 days. Undo puts it back."
+TRAY_REMOVE_YES = "Remove {n} files"
+TRAY_REMOVE_YES_ONE = "Remove 1 file"
+TRAY_REMOVE_YES_TIP = "Send them to the trash. Undo on the next message puts them back"
+TRAY_REMOVED = "{title} removed · in the trash for 30 days"
+TRAY_NO_FOLDER = "Couldn't open its folder: {path}"
+TRAY_NUMBER_NONE = "—"
+TRAY_NUMBER_UNIT = "new / {unit}"
+# --- end W3.2 Q1
+# --- W3.2 Q2: Goal's sheet (goal_sheet.py) ------------------------------------------------------------------------ #
+GOAL_SHEET_NAME = "Goal: everything you'll get to someday"
+GOAL_SHEET_TIP = "Goal: someday, in no order. Drag a title into Current, or use its ⋯"
+GOAL_SHEET_CLOSE = "✕"
+GOAL_SHEET_CLOSE_NAME = "Close Goal"
+GOAL_SHEET_CLOSE_TIP = "Close Goal (Esc, or click anywhere outside it)"
+GOAL_TILE_MORE = "⋯"
+GOAL_TILE_MORE_NAME = "What you can do with {title}"
+GOAL_TILE_MORE_TIP = "What you can do with {title}: move it, open its folder or remove it (Enter)"
+GOAL_MENU_ITEMS = {
+    "top": ("Move to the top", "Bring {first} up to the top of Current; the rest stays in Goal"),
+    "top-all": ("Move to the top", "Bring it up to the top of Current"),
+    "soon": ("Move to Soon", "Bring {first} up to the top of Soon; the rest stays in Goal"),
+    "soon-all": ("Move to Soon", "Bring it up to the top of Soon"),
+    "finished": ("Move to Finished", "Move all of it to Finished: you're done with it"),
+    "folder": ("Open its folder", "Show its files in File Explorer"),
+    "remove": ("Remove…", "Send its {n} files to the trash (kept 30 days). You're asked first"),
+}
+GOAL_UP = "{title} {first} moved up from Goal · #{n} · the rest stays in Goal"
+GOAL_UP_ALL = "{title} moved up from Goal · #{n}"
+GOAL_SOON = "{title} {first} → Soon · #{n} · the rest stays in Goal"
+GOAL_SOON_ALL = "{title} → Soon · #{n}"
+GOAL_REMOVE_ASK = "Remove {title}?"
+GOAL_REMOVE_BODY = "Its {n} files go to the trash, kept for 30 days. Undo puts them back."
+GOAL_REMOVE_BODY_ONE = "Its file goes to the trash, kept for 30 days. Undo puts it back."
+GOAL_REMOVE_YES = "Remove {n} files"
+GOAL_REMOVE_YES_ONE = "Remove 1 file"
+GOAL_REMOVE_YES_TIP = "Send them to the trash (kept 30 days); the toast's Undo puts them back"
+GOAL_REMOVED = "{title} removed · {n} files in the trash for 30 days"
+GOAL_REMOVED_ONE = "{title} removed · its file is in the trash for 30 days"
+GOAL_FOLDER_FAILED = "Couldn't open the folder of {title}"
+# --- end W3.2 Q2
 
 # --- W3.4: the ported windows — the base (windows.py, confirm.py) and row 1 (the frequency lists, the sentence
 # dictionary). The Settings tab lists the ported windows' doors until W3.3 / W3.2 give each its row (IK-16).
@@ -709,3 +910,120 @@ DOOR_PREVIEW = "Preview a video"
 DOOR_PREVIEW_TIP = "See a video's vocab journey against your library before adding it"
 DOOR_SPEECH = "Speech"
 DOOR_SPEECH_TIP = "Speech (声): the Gemini key, the voice and the daily limit for spoken sentences"
+# --- W3.2 Q3: search your library (app/qt/search.py) and + Add (app/qt/add_menu.py) ----------------------------------- #
+SEARCH_PLACEHOLDER = "Search your library"
+SEARCH_NAME = "Search your library"
+SEARCH_TIP = "Search your library: a title by its kana, kanji or romaji name\n• / or Ctrl+K · Esc clears, then closes"
+SEARCH_KEY = "/"
+SEARCH_RESULTS_NAME = "What your library holds for “{query}”"
+SEARCH_NONE = "Nothing in your library matches “{query}”"
+SEARCH_MORE = "and {n:,} more"
+SEARCH_PLAY = "▶"
+SEARCH_TOP = "⤒"
+SEARCH_PLAY_NAME = "Play"
+SEARCH_PLAY_TIP = "Play: open its next episode, as its row's ▶ does"
+SEARCH_TOP_NAME = "Top"
+SEARCH_TOP_TIP = {
+    "current": "Top: make it the next thing you watch or read",
+    "goal": "Top: bring its next part up to the top of Current; the rest stays in Goal",
+    "arrivals": "Top: put it up next, out of New arrivals",
+    "finished": "Top: put it back at the top of Current, its cards back in your order",
+}
+SEARCH_SHOW_TIP = {
+    "current": "Show it in Current",
+    "goal": "Show it in Goal",
+    "arrivals": "Show it in New arrivals",
+    "finished": "Show it in Finished",
+}
+ADD_NAME = "Add"
+ADD_TIP = "Add: files, a folder, a book or deck, a video's subtitles, or pasted text"
+ADD_MENU_NAME = "What you can add to your library"
+ADD_ITEMS = {
+    "files": ("Files…", "Add subtitle or text files: with their show when it's in Current, else at the top of Current"),
+    "folder": ("A folder…", "Add a folder: every subtitle and text file in it, its folders kept, at the top of Current "
+                            "(or with its show)"),
+    "extract": ("EPUB or Anki deck…", "Turn an EPUB or an Anki deck into text you can add"),
+    "youtube": ("YouTube or bilibili…", "Bring in a YouTube or bilibili.tv video's subtitles from its link"),
+    "paste": ("Paste text…", "Paste text and give it a title: it's added as one text file"),
+}
+ADD_DROP_LINE = "Or drop files anywhere in your list"
+ADD_PICK_FILES = "Add files to your library"
+ADD_PICK_FOLDER = "Add a folder to your library"
+ADD_PICK_FILTER = "Subtitles and text (*.srt *.ass *.ssa *.txt *.md);;All files (*)"
+ADD_NOTHING = "Nothing to add in {name}: no subtitle or text files"
+ADD_FOLDER_FAILED = "{name} couldn't be read: {why}"
+PASTE_NAME = "Paste text"
+PASTE_HEADING = "Paste text"
+PASTE_TITLE_PLACEHOLDER = "Its title"
+PASTE_TITLE_NAME = "The text's title"
+PASTE_TEXT_PLACEHOLDER = "Paste the text here"
+PASTE_TEXT_NAME = "The text"
+PASTE_DEFAULT_TITLE = "Pasted text"
+PASTE_ADD = "Add"
+PASTE_ADD_TIP = "Add it to your library as one text file, at the top of Current"
+PASTE_CANCEL = "Cancel"
+PASTE_CANCEL_TIP = "Close without adding anything (Esc does the same)"
+PASTE_FAILED = "The pasted text couldn't be saved: {why}"
+PASTE_KEPT = "The pasted text wasn't added. It is kept in {folder}"                     # W3.2 fix round (N7)
+# --- end W3.2 Q3
+# --- W3.2 Q5: Needs you's cards, their buttons and what they say (app/qt/needs.py; the entries' own words are
+# `app/services/needs.STRINGS`) ------------------------------------------------------------------------------------- #
+NEEDS_EMPTY_TEXT = "\n".join(NEEDS_EMPTY)
+NEEDS_ACTIONS = {   # action name -> (label, tooltip)
+    "find_videos": ("Find videos", "Look in the show's folder and your video folders for each episode's video, by its "
+                                   "number. Nothing is linked until you say so"),
+    "link_these": ("Link these · {n}", "Link each video found to its episode, so its cards get their pictures and "
+                                       "audio"),
+    "find_all": ("Find all missing videos", "Look for every show's missing videos at once, by episode number"),
+    "choose_folder": ("Choose a folder…", "Point these files at the folder they're in now: each is matched by its "
+                                          "name, else by its episode number"),
+    "choose_file": ("Choose file…", "Point this episode at its file, wherever it is now in your library folder"),
+    "choose_video": ("Choose file…", "Choose this episode's video yourself"),
+    "keep_words": ("Keep its words", "Leave it as it is: its words still count toward your list, and it stops "
+                                     "asking"),
+    "keep_all": ("Keep all their words", "Leave every missing file as it is: their words still count, and they stop "
+                                         "asking"),
+    "remove": ("Remove", "Send it to the trash (kept 30 days): its words stop counting. Undo puts it back"),
+    "remove_episode": ("Remove episode", "Send this episode to the trash (kept 30 days). Undo puts it back"),
+    "remove_all": ("Remove all", "Send every missing file below to the trash (kept 30 days). Never a drive that's "
+                                 "only offline. Undo puts them back"),
+    "this_one": ("This one", "It's this missing file, moved or renamed: it keeps its place, its ✓ and its cards"),
+    "its_new": ("It's new", "None of these: it joins your library as a new file"),
+    "mine_anyway": ("Mine anyway", "Make its cards without timing them to the video"),
+    "ask_hato": ("Ask hato again", "Ask hato for the videos it paired, now"),
+    "dismiss": ("Dismiss", "Take this off the list"),
+    "leave_them": ("Leave them", "Make no cards for them: they stop asking"),
+    "make_cards": ("Make their cards", "Make the cards Connect missed"),
+    "mine_text_only": ("Mine the text only", "Make its cards from the subtitles alone, with no picture or audio"),
+    "open_logs": ("Open the logs folder", "Open the folder where Surasura keeps its logs, to look at them or send them"),
+    "save_logs": ("Save logs to a file…", "Save the last week's logs into one zip file you can send"),
+}
+NEEDS_LOOKING = "Looking…"
+NEEDS_MORE_LINES = "and {n} more"
+NEEDS_LOOK_FAILED = "Couldn't look for its videos: {why}"
+NEEDS_REMOVE_TITLE_ONE = "Remove {name}?"
+NEEDS_REMOVE_TITLE = "Remove {n} files?"
+NEEDS_REMOVE_BODY = "They go to the trash, kept 30 days; their words stop counting. Undo puts them back where they were."
+NEEDS_REMOVE_YES_ONE = "Remove it"
+NEEDS_REMOVE_YES = "Remove {n} files"
+NEEDS_REMOVE_YES_TIP = "Send them to the trash (30 days)"
+NEEDS_REMOVED_ONE = "{name} went to the trash (30 days)"
+NEEDS_REMOVED = "{n} files went to the trash (30 days)"
+NEEDS_RELINKED = "{label} points at its file again"
+NEEDS_RELINKED_N = "{k} of {n} files found in that folder and pointed at"
+NEEDS_RELINKED_NONE = "Nothing in that folder has these files' names or episode numbers"
+NEEDS_LINKING = "Linking {n} videos to their episodes"
+NEEDS_LINKING_ONE = "Linking {label}'s video"
+NEEDS_KEPT = "Kept: their words still count"
+NEEDS_ITS_NEW = "{name} joins your library as a new file"
+NEEDS_ASKED_HATO = "Asked hato for its videos"
+NEEDS_MINE_ANYWAY = "It mines without timing, in turn"
+NEEDS_MINE_ANYWAY_NOT = "Nothing to mine there any more"
+NEEDS_DISMISSED = "Taken off the list"
+NEEDS_SAVED_LOGS = "Logs saved to {path}"
+NEEDS_SAVE_LOGS_TITLE = "Save logs to a file"
+NEEDS_CHOOSE_FILE_TITLE = "Choose {label}'s file"
+NEEDS_CHOOSE_VIDEO_TITLE = "Choose {label}'s video"
+NEEDS_CHOOSE_FOLDER_TITLE = "Choose the folder they're in now"
+NEEDS_FAILED = "That couldn't be done: {why}"
+# --- end W3.2 Q5

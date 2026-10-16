@@ -63,6 +63,7 @@ class FakeApi:
         self.calls = []
         self.synced = []
         self.content_ends = []
+        self.samples = 4
 
     def should_open(self, settings):
         return settings.get("onboarding_completed") is not True
@@ -123,6 +124,10 @@ class FakeApi:
         self.calls.append(("content", language))
         self.content_ends.append(on_end)
         return object()
+
+    def add_samples(self, language):                       # (W3.2 Q3: page 3's samples, without the Content Manager)
+        self.calls.append(("samples", language))
+        return self.samples
 
     def level_numbers(self, settings, language):
         self.calls.append(("level_numbers", language))
@@ -232,6 +237,8 @@ def make(qapp, monkeypatch):
     monkeypatch.setattr(windows, "open_url", lambda url: launched.append(url))
     # 順 present, as in the app (GitHub's checkout has no private modules/; the absent case has its own test)
     monkeypatch.setattr(windows, "module_present", lambda name: True)
+    monkeypatch.setattr(windows, "_FOUND", {})                     # looked for again: an earlier test may have found none
+    monkeypatch.setattr(windows, "_LOOKING", set())
 
     def build(api=None, miner=None, data=None):
         settings = FakeSettings(data if data is not None else {})
@@ -466,20 +473,93 @@ def test_shows_lists_the_library_with_paths_in_a_backslash_font_and_covers_on_by
     assert settings.calls == [{"covers_download": True}]
 
 
-def test_add_content_opens_the_content_manager_and_its_end_reads_the_rows_again(make):
+class FakeAdder(QObject):
+    """+ Add's actions as the window holds them (`shell.adder`, app/qt/add_menu.py): what can act, each run recorded."""
+    given = pyqtSignal(str)
+
+    def __init__(self, names=("files", "folder", "paste")):
+        super().__init__()
+        self.names = names
+        self.ran = []
+
+    def entries(self, names=()):
+        return [(n, n, n) for n in names if n in self.names]
+
+    def run(self, name):
+        self.ran.append(name)
+        self.given.emit("Added 進撃の巨人 at #1 · analysed on the next Generate")
+
+
+def test_page_three_takes_add_actions_and_never_opens_the_content_manager(make):
+    """W3.2 Q3 (IK-12): page 3's buttons are + Add's — Files and A folder through the window's adder (the Explorer
+    drop's path), EPUB / Anki deck and YouTube through their doors — and a write handed to the writer reads the rows
+    again. Nothing opens the 2.x Content Manager (no Tk from the 3.0 window)."""
+    wiz, shell, api, *_ = make()
+    adder = shell.adder = FakeAdder()
+    adder.given.connect(wiz._added)                                # (the fixture's shell had no adder when it was made)
+    go_to(wiz, "shows")
+    page = wiz.page
+    assert wait_until(lambda: ("library_rows", "ja") in api.calls)
+    page.entered()
+    shown = {n for n, b in page.add_buttons.items() if not b.isHidden()}
+    assert shown == {"files", "folder", "extract"}                  # YouTube's door is off (enable_youtube_transcripts)
+    reads = api.calls.count(("library_rows", "ja"))
+    QTest.mouseClick(page.add_buttons["files"], Qt.MouseButton.LeftButton)
+    QTest.mouseClick(page.add_buttons["folder"], Qt.MouseButton.LeftButton)
+    assert adder.ran == ["files", "folder"]
+    assert wait_until(lambda: api.calls.count(("library_rows", "ja")) >= reads + 2)
+    QTest.mouseClick(page.add_buttons["extract"], Qt.MouseButton.LeftButton)
+    assert wiz.launched[-1] == "extract"
+    assert ("content", "ja") not in api.calls
+
+
+def test_page_three_without_a_library_open_offers_only_the_doors(make):
+    """No writer in the window (no library open yet): Files and A folder aren't shown — a button that can't act is
+    never offered — and the doors still are."""
+    wiz, *_ = make(data={"enable_youtube_transcripts": True})
+    go_to(wiz, "shows")
+    page = wiz.page
+    page.entered()
+    assert wait_until(lambda: not page.add_buttons["youtube"].isHidden())
+    assert page.add_buttons["files"].isHidden() and page.add_buttons["folder"].isHidden()
+    QTest.mouseClick(page.add_buttons["youtube"], Qt.MouseButton.LeftButton)
+    assert wiz.launched[-1] == "youtube-downloader"
+
+
+def test_samples_are_copied_in_said_and_the_rows_read_again_and_the_line_leaves_with_its_page(make):
     wiz, _shell, api, *_ = make()
     go_to(wiz, "shows")
     page = wiz.page
     assert wait_until(lambda: ("library_rows", "ja") in api.calls)
     reads = api.calls.count(("library_rows", "ja"))
-    QTest.mouseClick(page.btn_add, Qt.MouseButton.LeftButton)
-    assert wait_until(lambda: api.content_ends)
-    api.rows = [{"name": "ゆるキャン△", "count": 12, "folder": r"D:\Anime\Yuru Camp", "kind": "shows"}]
-    api.content_ends[0](0)                                         # the Content Manager's job ended (its thread)
-    assert wait_until(lambda: api.calls.count(("library_rows", "ja")) == reads + 1)
-    assert wait_until(lambda: page.row_paints >= 1 and not page.rows_part.isHidden())
     QTest.mouseClick(page.btn_samples, Qt.MouseButton.LeftButton)
-    assert wait_until(lambda: len(api.content_ends) == 2)          # the samples live in the Content Manager
+    assert wait_until(lambda: wiz.say_line.text() == S.SAMPLES_ADDED_LINE.format(n=4))
+    assert ("samples", "ja") in api.calls and ("content", "ja") not in api.calls
+    assert wait_until(lambda: api.calls.count(("library_rows", "ja")) == reads + 1)
+    wiz.skip()
+    assert wiz.say_line.isHidden()                                 # page 3's line is page 3's (AD-12)
+
+
+def test_samples_into_a_library_with_files_say_so(make):
+    api = FakeApi()
+    api.samples = 0
+    wiz, *_ = make(api=api)
+    go_to(wiz, "shows")
+    QTest.mouseClick(wiz.page.btn_samples, Qt.MouseButton.LeftButton)
+    assert wait_until(lambda: wiz.say_line.text() == S.SAMPLES_NONE)
+
+
+def test_a_rows_kind_names_its_count_a_book_in_parts_and_files_without_a_title(make):
+    rows = [{"name": "夜の図書館", "count": 12, "folder": r"E:\Books\Yoru", "kind": "reading"},
+            {"name": "VTuber 切り抜き", "count": 3, "folder": r"E:\Videos\Clips", "kind": "videos"},
+            {"name": "Downloads", "count": 2, "folder": r"E:\Downloads", "kind": None}]
+    wiz, *_ = make(api=FakeApi(rows=rows))
+    go_to(wiz, "shows")
+    page = wiz.page
+    assert wait_until(lambda: page.row_paints == 1)
+    texts = [w.text() for w in page.rows_part.findChildren(W.QLabel)]
+    assert r"a book · 12 parts · E:\Books\Yoru" in texts
+    assert r"3 videos · E:\Videos\Clips" in texts and r"2 files · E:\Downloads" in texts
 
 
 def test_an_empty_library_shows_no_rows(make):
@@ -790,12 +870,12 @@ def test_enter_on_skip_back_or_finish_later_saves_nothing_and_moves_nothing(make
     settings.calls.clear()
     seen = []
     wiz.finished.connect(seen.append)
-    for b in (wiz.btn_skip, wiz.btn_back, wiz.btn_later, wiz.page.btn_add):
+    for b in (wiz.btn_skip, wiz.btn_back, wiz.btn_later, wiz.page.btn_samples):
         b.setFocus(Qt.FocusReason.TabFocusReason)
         QTest.keyClick(b, Qt.Key.Key_Return)
         QTest.keyClick(b, Qt.Key.Key_Enter)
     assert W.PAGES[wiz.index] == "shows" and settings.calls == [] and seen == []
-    assert ("content", "ja") not in api.calls                     # Enter isn't a click on another button either
+    assert ("samples", "ja") not in api.calls                     # Enter isn't a click on another button either
     wiz.btn_next.setFocus(Qt.FocusReason.TabFocusReason)
     QTest.keyClick(wiz.btn_next, Qt.Key.Key_Return)                # on Next itself, Enter is Next
     assert W.PAGES[wiz.index] == "order" and settings.calls == [{"covers_download": True}]
@@ -1030,7 +1110,7 @@ def test_the_first_syncs_result_is_said_even_after_another_line(make, monkeypatc
     assert wait_until(lambda: wiz.anki is not None)
     wiz.next()
     assert wait_until(lambda: held)
-    wiz.say(S.CONTENT_OPEN)                                        # another line came since
+    wiz.say(S.SAMPLES_NONE)                                        # another line came since
     held[0]("the sync's result")
     assert wait_until(lambda: wiz.say_line.text() == "Anki: 214 words you know added")
 
@@ -1050,29 +1130,27 @@ def test_a_door_that_cant_open_is_said_in_the_wizard(make, monkeypatch):
     assert wiz.say_line.text() == said and shell.bar == [said]
 
 
-# --- the Content Manager's line and second press (AD-12, AD-13) ---------------------------------------------------------- #
-def test_the_content_managers_line_leaves_when_it_closes_and_a_second_press_waits(make):
-    wiz, _shell, api, *_ = make()
+# --- the samples' second press (AD-13) --------------------------------------------------------------------------------- #
+def test_a_second_press_on_samples_waits_for_the_first(make):
+    held = []
+
+    class Slow(FakeApi):
+        def add_samples(self, language):
+            self.calls.append(("samples", language))
+            import time
+            while not held:
+                time.sleep(0.01)
+            return 2
+    api = Slow()
+    wiz, *_ = make(api=api)
     go_to(wiz, "shows")
     page = wiz.page
-    QTest.mouseClick(page.btn_add, Qt.MouseButton.LeftButton)
-    assert wait_until(lambda: wiz.say_line.text() == S.CONTENT_OPEN)
-    assert not page.btn_add.isEnabled() and not page.btn_samples.isEnabled()      # one Content Manager at a time
     QTest.mouseClick(page.btn_samples, Qt.MouseButton.LeftButton)
-    QApplication.processEvents()
-    assert len(api.content_ends) == 1
-    api.content_ends[0](0)
-    assert wait_until(lambda: page.btn_add.isEnabled() and page.btn_samples.isEnabled())
-    assert wiz.say_line.isHidden()
-
-
-def test_the_content_managers_line_leaves_with_its_page(make):
-    wiz, *_ = make()
-    go_to(wiz, "shows")
-    QTest.mouseClick(wiz.page.btn_add, Qt.MouseButton.LeftButton)
-    assert wait_until(lambda: wiz.say_line.text() == S.CONTENT_OPEN)
-    wiz.skip()
-    assert wiz.say_line.isHidden()
+    assert wait_until(lambda: ("samples", "ja") in api.calls)
+    assert not page.btn_samples.isEnabled()                        # one copy at a time
+    held.append(True)
+    assert wait_until(lambda: page.btn_samples.isEnabled())
+    assert api.calls.count(("samples", "ja")) == 1
 
 
 # --- page 6's counting (AD-14, the intent keeper's IK-18) ------------------------------------------------------------------ #

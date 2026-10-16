@@ -25,7 +25,7 @@ INSTALLED = "installed · {version}"
 NOT_INSTALLED = "not installed"
 OPEN = "Open"
 LEVEL_AUTOMATIC = "Automatic"
-LEVEL_AUTOMATIC_TIP = "Surasura picks the level for you: the rarest one whose list stays about {n} words ahead"
+LEVEL_AUTOMATIC_TIP = "Surasura picks the level for you: the commonest one whose list holds at least {n} words"
 LEVEL_READOUT = "≈{words} words · {coverage}% of your content · every {hours} hours"    # S4: never "% known"
 NEW_CARDS_FROM_ANKI = "· from Anki (deck: {deck})"
 CHANGE_IN_ANKI = "Change in Anki…"
@@ -275,7 +275,7 @@ ROWS = {
     "minutes_per_file": ("Minutes per file", "For the “every N hours” estimate",
                          "How long a file takes you, for the “every N hours” estimate", "minutes per file"),
     "auto_max_words": ("Automatic keeps about", "Words ahead of you",
-                       "With Automatic on: the rarest level whose list holds about this many words or fewer",
+                       "With Automatic on: the commonest level whose list holds at least this many words",
                        "automatic max words ahead"),
 
     # Language & Parsing

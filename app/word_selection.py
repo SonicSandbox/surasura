@@ -102,23 +102,28 @@ def _ranked(unknown):
 
 def auto_band(previews, max_words=DEFAULT_AUTO_MAX_WORDS, bands=None, remembered=None,
               step_back_words=DEFAULT_AUTO_STEP_BACK_WORDS):
-    """Automatic rarity (logic.selection.auto): the RAREST band whose list holds `max_words` words or
-    fewer — the same word counts the slider shows (band_previews). Learning shrinks every band, so the
-    choice moves on by itself; new content can grow a band past the line again, and then it steps back
-    — worked out fresh on every run, it always describes the list you have. A collapsed tail (Very
-    Rare == Native) picks Native, the band the slider still shows. If even the first band (Core) holds
-    more, the first band. None when there is no preview: the caller keeps the band it has.
+    """Automatic rarity (logic.selection.auto): the COMMONEST band whose list holds `max_words` words or
+    more — the same word counts the slider shows (band_previews). So the list is never short: where the rarest band
+    at or under the line holds fewer (Occasional's 318), the next band is taken (Uncommon's 1,093; Sonic, G3.2).
+    Learning shrinks every band, so the choice moves on by itself; new content can grow a commoner band to the line,
+    and then it steps back — worked out fresh on every run, it always describes the list you have. If no band reaches
+    the line, the rarest band (everything the slider offers). A collapsed tail (Very Rare == Native) picks Native,
+    the band the slider still shows. None when there is no preview: the caller keeps the band it has.
 
-    `remembered` (Q4-3, the band this library's store remembers Automatic last chose): a rarer band at or under the
-    line is still taken; otherwise the remembered band stays while its list holds `step_back_words` words or fewer
-    (never below `max_words`), and only above that does it step back. No remembered band: the rule above, as ever."""
+    `remembered` (Q4-3, the band this library's store remembers Automatic last chose): a rarer band is taken (the
+    remembered one fell under the line); otherwise the remembered band stays while its list holds `step_back_words`
+    words or fewer (never below `max_words`), and only above that does it step back. No remembered band: the rule
+    above, as ever."""
     if not previews:
         return None
     bands = bands or BANDS_ORDER
-    chosen = bands[0]
-    for band in bands:
-        if band in previews and previews[band]["word_count"] <= max_words:
-            chosen = band
+    shown = [band for band in bands if band in previews]
+    if not shown:
+        return bands[0]
+    at = next((i for i, band in enumerate(shown) if previews[band]["word_count"] >= max_words), len(shown) - 1)
+    while at + 1 < len(shown) and previews[shown[at + 1]]["word_count"] == previews[shown[at]]["word_count"]:
+        at += 1                                   # the same list under a rarer name: the band the slider keeps
+    chosen = shown[at]
     if remembered in bands and remembered in previews and bands.index(chosen) < bands.index(remembered):
         if previews[remembered]["word_count"] <= max(step_back_words, max_words):
             return remembered

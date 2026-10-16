@@ -433,7 +433,7 @@ def _floor(band, lib):
 
 
 def test_automatic_rarity_lists_the_band_it_picks_and_library_frequency_follows(samples_env, capsys):
-    """Automatic rarity on: the run lists the RAREST band holding auto_max_words words or fewer —
+    """Automatic rarity on: the run lists the COMMONEST band holding auto_max_words words or more —
     the line drawn here at Uncommon's own count, mid-ladder — the log says which band and why, and
     library_frequency.json carries that band's floor (YouTube Preview, Junban and "In Anki" read
     their cut-off there, so they follow with no change). --min-freq and coverage mode still win over
@@ -450,7 +450,7 @@ def test_automatic_rarity_lists_the_band_it_picks_and_library_frequency_follows(
     capsys.readouterr()
     lib = _run_samples(root)
     log = capsys.readouterr().out
-    assert f"Selection band 'uncommon' (automatic: the rarest band with {line} words or fewer)" in log
+    assert f"Selection band 'uncommon' (automatic: the commonest band with {line} words or more)" in log
     assert lib["min_count"] == pytest.approx(_floor("uncommon", lib))
     words = pd.read_csv(root / "results" / "priority_learning_list.csv")["Word"].tolist()
     assert len(words) == line, "the list is exactly the band the rule counted"
@@ -499,8 +499,8 @@ def test_the_automatic_band_moves_on_as_you_learn_without_writing_settings(sampl
     _run_samples(root)
     counts, freqs = _band_counts()
     line = counts["uncommon"]
-    learned = counts["rare"] - line + 3        # the commonest words, enough to bring Rare under the line
-    assert counts["very_rare"] - learned > line + 20, counts   # ...while Very Rare stays well over it
+    learned = 3                                # the commonest words: Uncommon falls under the line (G3.2)...
+    assert counts["rare"] - learned > line + 20, counts        # ...while Rare stays well over it
 
     _use_selection(root, band="very_rare", bands_ppm=SMALL_LIBRARY_BANDS_PPM,
                    auto=True, auto_max_words=line)
@@ -522,9 +522,9 @@ def test_the_automatic_band_moves_on_as_you_learn_without_writing_settings(sampl
 def test_the_band_the_dashboard_shows_is_the_band_generate_uses(samples_env):
     """I3. The analyzer's own ignore set reads a hiragana line through the tokenizer (する -> 為る);
     the dashboard can't (fugashi never enters the GUI process), so its preview counts 為る. The
-    automatic choice is therefore made with the PREVIEW's recipe on both sides. The line is drawn one
-    word under the preview's Rare: a run that decided on its own counts (為る ignored: one word fewer)
-    would pick Rare, while the dashboard shows Uncommon. Known words come from the store's known
+    automatic choice is therefore made with the PREVIEW's recipe on both sides. The line is drawn at
+    the preview's Rare: a run that decided on its own counts (為る ignored: one word fewer) would pick
+    a rarer band, while the dashboard shows Rare. Known words come from the store's known
     cache on both sides (いる is read as 居る there, never by the dictForm approximation)."""
     from app.main import MasterDashboardApp
     root = samples_env
@@ -539,9 +539,9 @@ def test_the_band_the_dashboard_shows_is_the_band_generate_uses(samples_env):
     sel = {"bands_ppm": SMALL_LIBRARY_BANDS_PPM, "min_count": 2}
     dashboard = MasterDashboardApp.__new__(MasterDashboardApp)       # no window: the worker's own read
     previews = dashboard._compute_band_previews("ja", sel, "asis")
-    line = previews["rare"]["word_count"] - 1
+    line = previews["rare"]["word_count"]
     shown = word_selection.auto_band(previews, line)
-    assert shown == "uncommon", {b: p["word_count"] for b, p in previews.items()}
+    assert shown == "rare", {b: p["word_count"] for b, p in previews.items()}
 
     _use_selection(root, band="very_rare", bands_ppm=SMALL_LIBRARY_BANDS_PPM,
                    auto=True, auto_max_words=line)
@@ -608,7 +608,10 @@ def test_a_store_that_opens_but_cannot_be_read_at_the_cut_falls_back_to_the_runs
     _use_selection(root, band="very_rare", bands_ppm=SMALL_LIBRARY_BANDS_PPM)
     _run_samples(root)
     counts, _freqs = _band_counts()
-    line = counts["uncommon"]
+    # Between Occasional and Uncommon, not at Uncommon's own count: this run's own counts can differ from the
+    # store's by a word or two, and with "the commonest band with the line or more" a line at Uncommon's count
+    # would hang on that word (G3.2).
+    line = (counts["occasional"] + counts["uncommon"]) // 2 + 1
     _use_selection(root, band="very_rare", bands_ppm=SMALL_LIBRARY_BANDS_PPM,
                    auto=True, auto_max_words=line)
     capsys.readouterr()
@@ -617,7 +620,7 @@ def test_a_store_that_opens_but_cannot_be_read_at_the_cut_falls_back_to_the_runs
         lib = _run_samples(root)
     log = capsys.readouterr().out
     assert "could not read the token store (database is locked)" in log
-    assert f"Selection band 'uncommon' (automatic: the rarest band with {line} words or fewer)" in log
+    assert f"Selection band 'uncommon' (automatic: the commonest band with {line} words or more)" in log
     assert lib["min_count"] == pytest.approx(_floor("uncommon", lib))
 
 

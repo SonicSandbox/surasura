@@ -189,9 +189,10 @@ def test_automatic_raritys_band_moving_rarer_mines_first_and_commoner_generates_
     root, store = lib
     from app.path_utils import get_data_path, get_user_files_path
     from app.word_selection import BANDS_ORDER as bands
-    # RP-2's bands: Core lists 1 word, every rarer band the same 162 — so Automatic takes Core under 162 words (a
-    # rarer band is there to move to) and Native at 850 (a commoner one is)
-    for max_words, step, generate in ((100, +1, "after"), (850, -1, "first")):
+    # RP-2's bands: Core lists 1 word, every rarer band the same 162 — so Automatic (the commonest band with the line
+    # or more, G3.2) takes Core at a line of 1 word (a rarer band is there to move to) and Native at 850, which no
+    # band reaches (a commoner one is there)
+    for max_words, step, generate in ((1, +1, "after"), (850, -1, "first")):
         _settings_file(root, "ja", logic={"selection": {"auto": True, "auto_max_words": max_words}})
         _generate(root, "rp2-ja", "ja")
         chosen = library_store.read_auto_band("ja", get_data_path("ja"))

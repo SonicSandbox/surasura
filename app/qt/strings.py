@@ -150,7 +150,7 @@ BAR_ANKI_TIP = {
 BAR_LEVEL_AUTO = "Auto · {band}"
 BAR_LEVEL_AUTO_NONE = "Auto"
 BAR_LEVEL_TIP = "Your level: your list holds the words at least as common as {band}"
-BAR_LEVEL_AUTO_TIP = ("Your level, chosen for you: the rarest band whose list stays short, {band} now")
+BAR_LEVEL_AUTO_TIP = ("Your level, chosen for you: the commonest band whose list holds enough words, {band} now")
 BAR_LEVEL_AUTO_NONE_TIP = "Your level is chosen for you after your first Generate"
 # W3.5 row 7: the re-order's line (the host's own words, said whole in its tooltip), Connect's, AnkiWeb's, the dot.
 # The re-order's tip promises nothing: the line beside it may say it stands aside.
@@ -230,8 +230,8 @@ LEVEL_POP_HELP_NAME = "What the level is"
 LEVEL_POP_HELP_TIP = ("How rare a word can be and still make your list.\nRaise it: more words join your list. "
                       "Lower it: nothing is deleted.\n• Click for the level's settings")
 LEVEL_POP_AUTO_WORD = "Automatic"
-LEVEL_POP_AUTO_TIP = ("Surasura picks the level for you and moves it as you learn: the rarest one whose list stays "
-                      "short\n• Click to turn it on or off")
+LEVEL_POP_AUTO_TIP = ("Surasura picks the level for you and moves it as you learn: the commonest one whose list "
+                      "holds enough words\n• Click to turn it on or off")
 LEVEL_POP_SLIDER_NAME = "Your level"
 LEVEL_POP_SLIDER_TIP = ("Your level: common on the left, rare on the right\n• Drag the gem or click a chamber; "
                         "picking one turns Automatic off")

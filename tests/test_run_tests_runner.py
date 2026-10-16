@@ -58,7 +58,7 @@ def test_a_checkout_without_modules_runs_the_core_suite_only(tmp_path):
 
 
 def test_each_suite_is_its_own_pytest_process_from_the_project_root(tmp_path, monkeypatch):
-    """The documented module command, from the root (the satoru suite has no conftest), with the
+    """The documented module command, from the root (each module conftest imports tests.harness_guards), with the
     shared pytest cache off and the environment passed through unchanged."""
     seen = {}
 

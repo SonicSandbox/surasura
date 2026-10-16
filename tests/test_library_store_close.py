@@ -332,8 +332,13 @@ def _quick_idle(monkeypatch):
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_a_burst_of_connect_receipts_spawns_one_helper(language, store_helper_spawns, monkeypatch):
-    """Connect's three receipts in a row are one burst: one idle trigger, one helper, not one per receipt."""
+    """Connect's three receipts in a row are one burst: one idle trigger, one helper, not one per receipt. Each
+    receipt replaces the trigger before it (cancelled, off the list), so only the last one fires. The first two arm
+    with a 30 s wait and only the last with the short one: a burst is receipts closer than the wait, and on a loaded
+    machine three receipts can take longer than 0.2 s (a real gap, two exports: right, but not this test's case)."""
     _quick_idle(monkeypatch)
+    monkeypatch.setattr(ls, "OUTSIDE_IDLE_S", 30)
+    monkeypatch.setattr(ls, "_IDLE", {})
     data_dir, user_files_dir = roots(language)
     migrated(language).close()
     store_helper_spawns.clear()
@@ -341,8 +346,17 @@ def test_a_burst_of_connect_receipts_spawns_one_helper(language, store_helper_sp
     try:
         ids = connect.ids("now")
         assert len(ids) >= 3, "the library needs three items for the burst"
+        key = _idle_key(connect)
+        timers = []
         for n, item in enumerate(ids[:3]):
+            if n == 2:
+                monkeypatch.setattr(ls, "OUTSIDE_IDLE_S", 0.2)
             assert connect.receipt(item, f"2026-10-08T10:0{n}:00Z") is not None
+            if n < 2:
+                timers.append(ls._IDLE[key][0])
+        assert len({id(t) for t in timers}) == 2, "each receipt arms a trigger of its own"
+        assert all(t.finished.is_set() for t in timers), "a later receipt left an earlier trigger armed"
+        assert ls._IDLE.get(key, (None,))[0] not in timers, "an earlier trigger is still the pending one"
         assert _until(lambda: store_helper_spawns), "the burst's trigger never spawned the helper"
         assert not _until(lambda: len(store_helper_spawns) > 1, limit=0.5), "a second spawn for one burst"
         assert store_helper_spawns == [(language,)]

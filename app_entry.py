@@ -226,6 +226,13 @@ def main():
                 from app import arrivals_worker
                 sys.exit(arrivals_worker.main(sys.argv[2:]) or 0)
 
+            elif command == 'word-lists-find':
+                # *Words to leave out*'s Paste text (W3.3 FX-wl, n16 "a worker process"): `word-lists-find --headless`,
+                # the text as JSON on stdin, its words as JSON on stdout. One per paste, started by the window's
+                # services (app/services/word_lists.py `find_words`), never by a user.
+                from app.services import word_lists
+                sys.exit(word_lists.find_main() or 0)
+
             elif command == 'sentence_corpus':
                 from app import sentence_corpus
                 sys.argv = [sys.argv[0]] + sys.argv[2:]

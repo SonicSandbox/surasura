@@ -152,7 +152,9 @@ def status(args):
         "update_staged": bool(library_store.update_staged(looks=library_store.PROBE_LOOKS)),
         "logs": contract.log_folder(),          # cli.log, cli-events.jsonl, generate.log: where to look when one fails
     }
-    if loaded.get("connect_enabled"):           # P2.5: Connect's record (read-only; no ledger → Up to date)
+    # P2.5: Connect's record (read-only; no ledger → Up to date). `connect_enabled` alone (P4.1 row 4.1.1): `connect`
+    # describes your set-up, shown with the automation off too
+    if loaded.get("connect_enabled"):
         from app.connect import status as connect_status
         record = connect_status.read([lang], words=getattr(args, "words", False))
         out["connect"] = dict(connect_status.language_record(record, lang), running=record["running"])
@@ -431,10 +433,12 @@ def known(args):
 # Connect's Anki session, for the verbs that read or write Anki (P2.3 row 2.3.5)
 # --------------------------------------------------------------------------- #
 def _session(loaded):
-    """`app/connect/anki_session` while Connect's preview is on (✅ Q4-1, Q4-4: the session's one sync before Connect
-    reads what you studied or writes Anki), else None — off, nothing of Connect's is imported and every request is as
-    before; never under `SURASURA_NO_ANKI_SYNC` (the test suites, a developer's run)."""
-    if not (loaded or {}).get("connect_enabled") or os.environ.get("SURASURA_NO_ANKI_SYNC"):
+    """`app/connect/anki_session` while Connect is on (✅ Q4-1, Q4-4: the session's one sync before Connect reads what
+    you studied or writes Anki; its switch and, 3.0, D29's automation — `settings_manager.connect_on`, P4.1 row
+    4.1.1), else None — off, nothing of Connect's is imported and every request is as before; never under
+    `SURASURA_NO_ANKI_SYNC` (the test suites, a developer's run)."""
+    from app import settings_manager
+    if not settings_manager.connect_on(loaded) or os.environ.get("SURASURA_NO_ANKI_SYNC"):
         return None
     from app.connect import anki_session
     return anki_session
@@ -779,6 +783,14 @@ def _junban_auto(args, lang, junban_settings, auto, job=None, current=None, posi
     if outcome == "list-stale":
         return {"language": lang, "moves": 0, "unchanged": 0, "not_on_list": 0, "undo": None,
                 "skipped": "the list is out of date: Generate first"}, {}
+    if outcome == "refused" and report.get("stands_aside"):
+        # P4.1 C8 (FT-1): a put-back cleared this deck while the run waited for `anki-writer` — the user's own *Put
+        # Anki back…*, so nothing was written and nothing is owed: a plain answer (exit 0, P0.3 02 §2 additive), never
+        # a failure; the next run's `deck_aside` stands aside before it asks Anki anything
+        aside = (report.get("problems") or ["Anki's deck was put back the way it was: pick it in 順 to re-order it "
+                                            "again"])[0]
+        return {"language": lang, "moves": 0, "unchanged": 0, "not_on_list": 0, "undo": None,
+                "stood_aside": aside}, {}
     if outcome in ("refused", "failed"):
         problem = (report.get("problems") or [done.get("error") or "it could not finish"])[0]
         raise CliError("failed", f"Junban did not make any changes: {problem}")
@@ -888,7 +900,7 @@ def resort(args):
         answer, stats = _junban_dry_run(lang, junban_settings, reposition, job, unattended=True)
     else:
         answer, stats = _junban_auto(args, lang, junban_settings, auto, job)
-    if answer.get("skipped"):
+    if answer.get("skipped") or answer.get("stood_aside"):     # P4.1 C8: a put-back's deck, nothing numbered
         return dict(idle, **answer)
     answer.update(pinned_first=int((stats or {}).get("pinned") or 0), numbering=_numbering(stats, job))
     return answer
@@ -1003,6 +1015,9 @@ def backfill(args):
     if report.get("busy"):
         raise contract.busy_error("anki-writer", locks.read_holder("anki-writer"),
                                   (report.get("problems") or ["Another program is writing to Anki."])[0])
+    if report.get("stands_aside"):
+        # P4.1 N2 (FT-1): you put this deck's fields back — nothing filled, a plain line (Connect's step names it)
+        return dict(out, skipped=(report.get("problems") or ["Backfill stands aside for this deck."])[0])
     if not report.get("ok"):
         problem = (report.get("problems") or ["it could not finish"])[0]
         raise CliError("failed", f"Nothing was filled: {problem}")

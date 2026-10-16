@@ -21,8 +21,9 @@ its one state file per user — so a session never syncs twice, whichever Surasu
 - ***Open Anki for me*** (`connect_open_anki`, off by default): `at_window` is the one caller of `open_anki.start`,
   at the window's start only, never after mining and never from Connect, hato or a command-line verb.
 
-Everything here runs only while Connect's preview is on (`connect_enabled`), and never under `SURASURA_NO_ANKI_SYNC`
-(the test suites, a developer's run). Standard library only; no Tk. Every call that talks to Anki runs on a worker.
+Everything here runs only while Connect is on (`settings_manager.connect_on`: `connect_enabled` and D29's automation,
+P4.1 row 4.1.1), and never under `SURASURA_NO_ANKI_SYNC` (the test suites, a developer's run). Standard library only;
+no Tk. Every call that talks to Anki runs on a worker.
 """
 import os
 import time
@@ -35,11 +36,21 @@ SETTLE_MAX_DELAY_S = 10 * 60    # … nor a delay longer than this: a longer one
 OPENING_EVERY_S = 5             # after Open Anki for me started Anki: a look this often …
 OPENING_WAIT_S = 120            # … for up to this long
 FAILS_TO_ASK = 3                # 06-edges E6: three sync points in a row whose sync failed → Needs you
+# `waiting`'s reasons (the runner's ANKI_CLOSED and REVIEWING are the same words): named, so the window's Connect feed
+# tells a job waiting on Anki by them, never by its wording (P4.1 row 4.1.2)
+CLOSED = "Waiting for Anki: it isn't open."
+BUSY = "Waiting for Anki: it's busy."
+UNUSABLE = "Waiting for Anki: it doesn't answer as AnkiConnect should (a permission prompt in Anki?)."
+OTHER_PROFILE = 'Waiting for Anki\'s profile "{}": "{}" is open.'
+REVIEWING = "Waiting while you review in Anki."
 
 
 def on(settings):
-    """Connect's preview on, and Anki not switched off for this run."""
-    return bool((settings or {}).get("connect_enabled")) and not os.environ.get("SURASURA_NO_ANKI_SYNC")
+    """Connect on — its switch and, 3.0, D29's automation (`settings_manager.connect_on`, P4.1 row 4.1.1: with the
+    automation off no session sync is sent, nothing of Connect's waits on Anki and *Open Anki for me* opens nothing) —
+    and Anki not switched off for this run."""
+    from app import settings_manager
+    return settings_manager.connect_on(settings) and not os.environ.get("SURASURA_NO_ANKI_SYNC")
 
 
 def look(url):
@@ -133,11 +144,11 @@ def waiting(url, settings):
     from app import anki_connect
     state = look(url)
     if state == "closed":
-        return "Waiting for Anki: it isn't open."
+        return CLOSED
     if state == "busy":
-        return "Waiting for Anki: it's busy."
+        return BUSY
     if state == "unusable":
-        return "Waiting for Anki: it doesn't answer as AnkiConnect should (a permission prompt in Anki?)."
+        return UNUSABLE
     from app.connect import setup
     mine = setup.anki_profile()
     if mine:
@@ -146,9 +157,9 @@ def waiting(url, settings):
         except anki_connect.AnkiError:
             open_now = None
         if isinstance(open_now, str) and open_now and open_now != mine:
-            return f'Waiting for Anki\'s profile "{mine}": "{open_now}" is open.'
+            return OTHER_PROFILE.format(mine, open_now)
     if anki_connect.reviewing(url):
-        return "Waiting while you review in Anki."
+        return REVIEWING
     return None
 
 

@@ -45,7 +45,7 @@ def rule_for(record, settings):
     rules = settings.get("placing_rules")
     if not isinstance(rules, dict):
         return None
-    producer = str((record or {}).get("producer") or "").strip()
+    producer = str((record or {}).get("producer") or "hato").strip()   # no producer: hato's (as the store reads it)
     channel = (record or {}).get("channel_id")
     for source in ([f"{producer}:{channel}"] if channel else []) + [producer]:
         target = rules.get(source)

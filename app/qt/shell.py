@@ -879,6 +879,24 @@ class ShellWindow(QMainWindow):
             from app.qt import drag
             self.moves = drag.DragController(self, services.writer, services.library)
             self.moves.start()
+        # --- W3.2 Q1: the tray under the inset, and the arrivals' numbers (the warm worker, asked once per file). The
+        # worker's client is the services' `arrivals` (a test's), else made for a real library (P0's `library_for`)
+        self.arrivals_tray = self.arrival_numbers = None
+        if services.library is not None:
+            from app.qt import arrivals as arrivals_view
+            self.arrivals_tray = arrivals_view.ArrivalsTray(central, self.arrivals_inset, self)
+            self.register_overlay(self.arrivals_tray)
+            client = getattr(services, "arrivals", None)
+            if client is None and getattr(services, "library_for", None) is not None:
+                from app.services.arrivals import ArrivalsWorker
+                client = services.arrivals = ArrivalsWorker(services.registry, self.language)
+            if client is not None:
+                reader = services.library
+                numbers = getattr(reader, "numbers", None)
+                self.arrival_numbers = arrivals_view.ArrivalNumbers(
+                    client, self.language, on_change=getattr(reader, "set_estimates", None),
+                    plan_token=(lambda: numbers()[0]) if callable(numbers) else None)
+        # --- end W3.2 Q1
 
         self._restore_state(read_state(self.state_file))
 
@@ -909,6 +927,15 @@ class ShellWindow(QMainWindow):
         names.addWidget(self.subline)
         row.addLayout(names)
         row.addStretch(1)                                  # the header's controls arrive with their features (G-2):
+        # --- W3.2 Q1: New arrivals, an inset in the band before the level ▾ (with a library; absent until something
+        # arrives)
+        self.arrivals_inset = None
+        if self.services.library is not None:
+            from app.qt import arrivals as arrivals_view
+            self.arrivals_inset = arrivals_view.ArrivalsInset(header)
+            self.arrivals_inset.clicked.connect(lambda _checked=False: self.open_arrivals())
+            row.addWidget(self.arrivals_inset)
+        # --- end W3.2 Q1
         self.progress = frame.Progress(header)             # W3.1a: the jobs' hairline along its foot (no pulsing dot)
         self._busy, self._share = False, None              # ... the bar's lines running, Generate's share
         return header                                      # W3.5's with the duties (`_attach_duties`)
@@ -974,7 +1001,8 @@ class ShellWindow(QMainWindow):
             self.show_status(self.services.status.snapshot())
         if self.dock is not None:                   # W3.1a: Goal's bar (and the wells' covers) from the same view
             self._show_dock(view)
-        if moved:                                   # a view that changed no list paints nothing ahead
+        self._show_arrivals(view)                   # W3.2 Q1: the inset, the tray, the numbers asked
+        if moved:                                  # a view that changed no list paints nothing ahead
             self._warm_hidden_pages()
 
     def _show_dock(self, view):
@@ -987,6 +1015,38 @@ class ShellWindow(QMainWindow):
         shown = goal is not None and (bool(view.rows) or bool(goal.files) or not view.loading)
         if self.dock.isHidden() == shown:
             self.dock.setVisible(shown)
+
+    # --- W3.2 Q1: New arrivals (app/qt/arrivals.py) -------------------------------------------------------------- #
+    def _show_arrivals(self, view):
+        """The view's arrivals: the inset (absent with none), the tray's rows (only what changed), each new file's
+        estimate asked (on a worker); the tray closes once nothing is left in it (A2 #32)."""
+        arrivals = getattr(view, "arrivals", ()) or ()
+        if self.arrivals_inset is None:
+            return
+        self.arrivals_inset.set_arrivals(arrivals, (getattr(view, "badges", None) or {}).get("arrivals", 0))
+        tray = getattr(self, "arrivals_tray", None)
+        if tray is None:
+            return
+        tray.set_groups(getattr(view, "arrival_groups", ()) or ())
+        if not arrivals and (tray.isVisible() or motion.opening_of(tray) is not None):
+            tray.close()
+        if self.arrival_numbers is not None and getattr(view, "language", self.language) == self.language:
+            self.arrival_numbers.want(arrivals)
+
+    def open_arrivals(self):
+        """The inset's click (A2 #89: from any tab, Current first, then the tray), again to close it."""
+        tray = getattr(self, "arrivals_tray", None)
+        if tray is None:
+            return
+        if tray.isVisible() or motion.opening_of(tray) is not None:
+            tray.close()
+            return
+        if self.current_tab() != "current":
+            self.show_tab("current")
+        tray.open()
+        if self.arrival_numbers is not None:
+            self.arrival_numbers.recheck()
+    # --- end W3.2 Q1
 
     def _warm_hidden_pages(self):
         """The hidden tabs' lists paint their first screen ahead, laid out as the shown list (`RowsView.warm_like`)."""

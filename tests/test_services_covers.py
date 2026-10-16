@@ -277,7 +277,8 @@ def test_a_book_at_its_import_keeps_its_cover_from_wherever_the_user_keeps_it(li
     work = lib.work_of(lib.store.ids("now")[0])
     book = epub(str(tmp_path / "Downloads" / "進撃の巨人 1.epub"), "進撃の巨人", cover=png())
     assert C.keep_epub_cover(lib.language, work, book, lib.writer, data_dir=lib.data_dir)
-    assert h.until(lambda: lib.heard.saved)
+    assert h.until(lambda: lib.heard.rereads and not lib.writer.pending())
+    assert lib.heard.saved == [] and not lib.writer.can_undo(), "B1: a book's cover is nobody's to undo"
     source, ref, path, _locked = lib.row(work)
     assert (source, ref) == ("file", "進撃の巨人 1.epub") and path.startswith("cache:"), "its name, never its path"
     assert os.path.isfile(C.image_path(lib.language, lib.one(work), lib.data_dir))
@@ -389,6 +390,61 @@ def test_one_works_trouble_never_stops_the_rest(lib, monkeypatch):
     works = lib.works()
     broken = C.Work(works[0].id, None, None, None, None, False)      # no file list: raises inside its own turn
     assert lib.scan([broken] + works) == 2
+
+
+# --- the scan and the user's own moves (B1, S4) ---------------------------------------------------------------- #
+def test_B1_a_scan_never_reaches_the_users_undo_so_ctrl_z_after_it_still_takes_back_their_move(lib):
+    """B1: every cover the scan recorded went on the Undo stack (40 deep) and through `on_saved` — Ctrl+Z then took back
+    a cover nobody chose, and the user's own move fell off the stack. A scan's covers are background: a reread only."""
+    goal = lib.store.ids("goal")
+    lib.writer.move([goal[5]], "goal", before_id=goal[0], label="moved up")
+    assert h.until(lambda: lib.heard.saved and not lib.writer.pending())
+    for tier in ("now", "soon", "goal"):
+        write(os.path.join(lib.folder_of(lib.store.ids(tier)[0]), "poster.jpg"), jpeg())
+    rereads = lib.heard.rereads
+    assert lib.scan() == 3
+    assert lib.heard.rereads == rereads + 3 and len(lib.heard.saved) == 1, "a reread each, no toast"
+    assert len(lib.writer._undo) == 1 and not os.path.exists(M.journal_path(lib.language)), "never journalled"
+    lib.writer.undo()
+    assert h.until(lambda: lib.heard.undone)
+    assert lib.store.ids("goal") == goal, "Ctrl+Z took back the user's move"
+    assert all(lib.row(lib.work_of(lib.store.ids(t)[0]))[0] == "file" for t in ("now", "soon")), "the covers stay"
+
+
+def test_S4_a_drop_given_during_a_200_title_scan_lands_before_the_scan_ends(lib):
+    """S4 (G1): the scan handed its 200 covers on at once — the user's drop waited behind all of them (and a held or
+    busy queue rewrote the journal at each). Paced, the scan hands on its next cover only once nothing is queued: a
+    drop given meanwhile lands next. Held first (a drag): the scan waits with one cover queued."""
+    name = names(lib.language)
+    folder = ls.FOLDER_OF_TIER["goal"]
+    files = []
+    for k in range(200):
+        show = os.path.join(lib.data_dir, folder, f"{name[k % len(name)]} {k:03d}")
+        files.append(write(os.path.join(show, f"{name[k % len(name)]} 第01話.srt"),
+                           f"{name[k % len(name)]}\n".encode("utf-8")))
+        write(os.path.join(show, "poster.jpg"), jpeg())
+    had = {w.id for w in lib.works()}
+    lib.store.insert(files, "goal", "top")
+    works = [w for w in lib.works() if w.id not in had]
+    assert len(works) == 200
+    order = []
+    lib.writer.after_commit = lambda change, op: order.append(op)
+    lib.writer.hold()                                   # a drag: nothing lands until it ends
+    found = []
+    scan = threading.Thread(target=lambda: found.append(C.scan(lib.language, works, lib.writer,
+                                                                data_dir=lib.data_dir)), daemon=True)
+    scan.start()
+    assert h.until(lambda: lib.writer.pending() >= 1)
+    scan.join(2)                                        # the old scan queued all 200 meanwhile; the paced one waits
+    assert lib.writer.pending() == 1, "one cover queued at a time"
+    goal = lib.store.ids("goal")
+    lib.writer.move([goal[-1]], "goal", before_id=goal[0], label="the drop")
+    lib.writer.release()
+    scan.join(120)
+    assert not scan.is_alive() and found == [200]
+    assert h.until(lambda: not lib.writer.pending() and len(order) == 201)
+    assert order.index("move") == 1, "the drop landed right after the cover in hand, before the other 199"
+    assert lib.store.ids("goal")[0] == goal[-1]
 
 
 def test_a_record_naming_a_path_outside_its_folder_resolves_to_nothing():

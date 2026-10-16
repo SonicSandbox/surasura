@@ -293,3 +293,46 @@ def test_the_searcher_finds_nothing_while_the_store_cant_be_read_and_never_raise
     assert searcher.idle(5)
     assert calls == [("工房", ()), ("工房", ())]
     searcher.close()
+
+
+def test_N3_a_title_whose_kana_carry_their_marks_apart_is_lit_whole():
+    """N3: half-width ｶﾞﾗｽ and a macOS / NAS file name's decomposed が (か + U+3099) were found but lit nothing — each
+    character was folded alone. A letter folds with the marks that follow it, and its span covers them."""
+    import unicodedata
+    assert S.spans("ｶﾞﾗｽの鯨が泳ぐ空", "がらす", "ja") == ((0, 4),)
+    nfd = unicodedata.normalize("NFD", "ガラスの鯨が泳ぐ空")
+    assert len(nfd) == 12 and S.spans(nfd, "がらす", "ja") == ((0, 4),)
+    assert S.spans(nfd, "鯨が泳ぐ", "ja") == ((5, 11),), "ぐ is く + its mark too"
+    assert S.spans("ﾊﾟﾝ屋さん", "ぱん", "ja") == ((0, 3),) and S.spans("ｶﾞﾗｽ", "か", "ja") == ()
+
+
+def test_N5_goals_reads_agree_when_another_window_moves_its_files_between_them(small):
+    """N5: Goal's four reads ran outside one read transaction: a write between them left a title listed with no
+    files, its row couldn't be built, and the whole result went blank. Read as one, it is the library as it stood."""
+    seed, store, view = small
+    goal_work = next(r["work_id"] for r in seed.items if r["tier"] == "goal")
+    title = work_title(seed, goal_work)
+    goal_ids = [r["id"] for r in seed.items if r["work_id"] == goal_work]
+    other = ls.open_store(seed.language, *roots(seed.language))     # another window's handle
+    real, moved = store.conn, []
+
+    class Between:
+        """The searcher's connection, with the other window's move landing right after Goal's first place is read."""
+        in_transaction = property(lambda self: real.in_transaction)
+
+        def __getattr__(self, name):
+            return getattr(real, name)
+
+        def execute(self, sql, *args):
+            cur = real.execute(sql, *args)
+            if "MIN(ord)" in sql and not moved:
+                moved.append(other.move(goal_ids, "soon"))
+            return cur
+    store.conn = Between()
+    try:
+        g = groups_of(store, view, title)["goal"]
+    finally:
+        store.conn = real
+        other.close()
+    assert moved and moved[0] is not None and store.place_of(goal_ids[0])[0] == "soon"
+    assert len(g.hits) == 1 and sorted(g.hits[0].item_ids) == sorted(goal_ids)

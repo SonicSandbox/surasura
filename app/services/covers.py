@@ -4,7 +4,9 @@ store on the window's thread, never a network call. Qt-free, Tk-free, pandas-fre
 decodes an image for the screen (Q6 does, off the window's thread).
 
 - **`scan(language, works, writer, cancel)`** (a worker, one work at a time; `cancel()` True stops between works) ->
-  how many covers it handed to the writer. For each work (`works_from(items, works)`: the reader's / the feed's rows):
+  how many covers it handed to the writer — each once the writer's queue is empty (`Writer.idle`: a drop or a drag
+  never waits behind the scan, G1), as a background cover (`auto`: never on the user's Undo stack, B1; never
+  journalled). For each work (`works_from(items, works)`: the reader's / the feed's rows):
   1. art beside its files — `cover` · `poster` · `folder` (`.jpg` · `.jpeg` · `.png`, any case, in that order) in the
      folder holding its files, and one level up from a season folder (*Season 2*, *S02*, *第2期*, *第二季*, *シーズン2*);
      never in a tier's own folder (a loose file's art there would be every loose file's). Read where it is:
@@ -22,7 +24,7 @@ decodes an image for the screen (Q6 does, off the window's thread).
   read, so nothing downloads (N4); a broken or non-image file is passed over (the next candidate, else the generated
   cover stays). A store that can't be written reads nothing (E4).
 - **`keep_epub_cover(language, work_id, epub_path, writer)`**: the same for a book at its import (Extract's door: the
-  EPUB is read where the user keeps it; the library holds only its parts).
+  EPUB is read where the user keeps it; the library holds only its parts), a background cover too.
 - **`keep_user_image(language, work_id, source_path, writer, current=None)`** (IK-7: *Choose an image…*): the user's image
   copied into `User Files/<lang>/covers/` (user data: travels with the library, never emptied with the cache), named by
   the work and the image's own hash, so a new pick is a new file and an Undo still finds the old one; the cover it
@@ -52,6 +54,7 @@ _PLACEHOLDER = 0x1000 | 0x40000 | 0x400000      # OFFLINE · RECALL_ON_OPEN · R
 _SEASON = re.compile(r"(?i)^(?:season|series)[\s._-]*\d{1,3}\b|^s\d{1,3}$|^第\s*[\d０-９一二三四五六七八九十]+\s*[期季部]"
                      r"|^[\d０-９]+\s*期$|^シーズン\s*[\d０-９]+")
 _REPLACEABLE = (None, "generated")              # a cover the scan may write over (unlocked)
+PACE_S = 0.1                    # the scan asks `cancel` this often while it waits for the writer's queue to empty
 
 Work = namedtuple("Work", "id rel_paths cover_source cover_ref cover_path cover_locked")
 
@@ -329,11 +332,22 @@ def scan(language, works, writer, cancel=None, data_dir=None):
     for work in works:
         if cancel is not None and cancel():
             break
+        if not _my_turn(writer, cancel):
+            break
         try:
             found += 1 if _scan_one(language, data_dir, work, writer) else 0
         except Exception as e:                      # one title's trouble never stops the rest
             print(f"Covers: work {work.id} skipped: {e!r}")
     return found
+
+
+def _my_turn(writer, cancel):
+    """(S4, G1) The scan's pace: the next cover is handed on only once nothing is queued — its last one landed, and
+    whatever the user gave meanwhile (a drop, a drag's hold, a busy store) went first. False when cancelled."""
+    while not writer.idle(PACE_S):
+        if cancel is not None and cancel():
+            return False
+    return True
 
 
 def _scan_one(language, data_dir, work, writer):
@@ -345,13 +359,13 @@ def _scan_one(language, data_dir, work, writer):
         if not _replaceable(language, data_dir, work, ref):
             return False
         if _read_image(_full(data_dir, ref)) is not None:
-            return writer.set_cover(work.id, "file", ref=ref) is not None
+            return writer.set_cover(work.id, "file", ref=ref, auto=True) is not None
     for ref in epubs_beside(data_dir, work.rel_paths):
         recorded = _epub_record(language, data_dir, work, ref)
         if recorded is False:
             return False
         if recorded is not None:
-            return writer.set_cover(work.id, "file", ref=ref, path=recorded) is not None
+            return writer.set_cover(work.id, "file", ref=ref, path=recorded, auto=True) is not None
     return False
 
 
@@ -390,7 +404,7 @@ def keep_epub_cover(language, work_id, epub_path, writer, data_dir=None):
     ref = library_rel(data_dir, os.path.abspath(epub_path)) or os.path.basename(epub_path)
     work = Work(work_id, (), None, None, None, False)
     path = _epub_record(language, data_dir, work, ref, path=epub_path)
-    return bool(path) and writer.set_cover(work_id, "file", ref=ref, path=path) is not None
+    return bool(path) and writer.set_cover(work_id, "file", ref=ref, path=path, auto=True) is not None
 
 
 # --- the user's own image (IK-7) ---------------------------------------------------------------------------------- #

@@ -235,7 +235,7 @@ class Writer:
         return self._put({"op": "finish", "ids": list(ids), "keep_cards": bool(keep_cards), "label": label,
                           "follows": follows})
 
-    def insert_at(self, paths, tier, before_id=None, after_id=None, near=(), label=None):
+    def insert_at(self, paths, tier, before_id=None, after_id=None, near=(), label=None, into=None):
         """An Explorer drop: `paths` (files from anywhere) copied at once, on the copier's own thread, into `tier`'s
         folder of the data folder (never over a file: an identical one is already there, another comes in under a new
         name; a file already in a tier's folder stays where it is), then queued and placed by `Store.insert_at` before
@@ -245,11 +245,18 @@ class Writer:
         never wait for the copy (G1): the drop joins the queue once its files are in place, so it may land after them.
         Not journalled: a quit or a crash before it lands leaves the copies whole in the folder, where the next disk
         sync places them (AD-2). Its Undo sends the files it copied to the trash and takes their rows out; a drop that
-        copied nothing (its files were in the tiers' folders already) isn't put on the Undo stack."""
+        copied nothing (its files were in the tiers' folders already) isn't put on the Undo stack.
+        # --- W3.2 Q3: `into` (+ Add): the folder each file is copied into instead of the tier's own, relative to the
+        # data folder and inside one of the folders the disk sync walks — one for every file, or a list beside `paths`
+        # (a show's folder, so the file joins its show; a folder added, its own folders kept)."""
         if not self._writable():
             return None                             # E4
         cmd = {"op": "insert_at", "ids": [], "files": [os.fspath(p) for p in paths], "tier": tier,
                "before_id": before_id, "after_id": after_id, "near": [list(n) for n in near or ()], "label": label}
+        if into is not None:                        # --- W3.2 Q3
+            cmd["into"] = [into] * len(cmd["files"]) if isinstance(into, str) else list(into)
+            if len(cmd["into"]) != len(cmd["files"]):
+                raise ValueError("`into` names a folder for every file")
         with self._cond:
             if self._stop:
                 return None
@@ -797,8 +804,9 @@ class Writer:
         cmd["started_at"] = lib._now()              # a sync that meets a copy made: the command takes the row over
         walked = {lib.path_key(f) for f in lib.FOLDER_OF_TIER.values()}    # the folders the disk sync walks
         out, made, left = [], [], []
+        into = cmd.get("into") or [None] * len(cmd["files"])          # --- W3.2 Q3: + Add's folders
         try:
-            for path in cmd["files"]:
+            for path, sub in zip(cmd["files"], into):
                 if not os.path.isfile(path) or not lib.is_content_name(path):
                     left.append(os.path.basename(os.path.normpath(path)))       # (AD-4)
                     continue
@@ -806,7 +814,7 @@ class Writer:
                 if rel is not None and lib.path_key(rel.split("/", 1)[0]) in walked:   # (AD-11: not the trash)
                     out.append(path)
                     continue
-                dest = os.path.join(data_dir, folder, os.path.basename(path))
+                dest = os.path.join(data_dir, *_into(sub, folder, walked, lib), os.path.basename(path))
                 if os.path.exists(dest) and filecmp.cmp(path, dest, shallow=False):
                     out.append(dest)
                     continue
@@ -1202,6 +1210,17 @@ def _copy_whole(src, dest):
             _remove_part(part)
             raise
         return name
+
+
+def _into(sub, folder, walked, lib):
+    """(W3.2 Q3) The parts of the folder a file is copied into: `sub` (relative to the data folder, inside a folder the
+    disk sync walks, never above it), else the tier's own `folder`."""
+    if not sub:
+        return [folder]
+    parts = [p for p in sub.replace("\\", "/").split("/") if p and p != "."]
+    if not parts or ".." in parts or ":" in parts[0] or lib.path_key(parts[0]) not in walked:
+        raise ValueError(f"files can't be copied into {sub!r}")
+    return parts
 
 
 def _full(store, rel):

@@ -836,3 +836,58 @@ DOOR_PREVIEW = "Preview a video"
 DOOR_PREVIEW_TIP = "See a video's vocab journey against your library before adding it"
 DOOR_SPEECH = "Speech"
 DOOR_SPEECH_TIP = "Speech (声): the Gemini key, the voice and the daily limit for spoken sentences"
+# --- W3.2 Q3: search your library (app/qt/search.py) and + Add (app/qt/add_menu.py) ----------------------------------- #
+SEARCH_PLACEHOLDER = "Search your library"
+SEARCH_NAME = "Search your library"
+SEARCH_TIP = "Search your library: a title by its kana, kanji or romaji name\n• / or Ctrl+K · Esc clears, then closes"
+SEARCH_KEY = "/"
+SEARCH_RESULTS_NAME = "What your library holds for “{query}”"
+SEARCH_NONE = "Nothing in your library matches “{query}”"
+SEARCH_MORE = "and {n:,} more"
+SEARCH_PLAY = "▶"
+SEARCH_TOP = "⤒"
+SEARCH_PLAY_NAME = "Play"
+SEARCH_PLAY_TIP = "Play: open its next episode, as its row's ▶ does"
+SEARCH_TOP_NAME = "Top"
+SEARCH_TOP_TIP = {
+    "current": "Top: make it the next thing you watch or read",
+    "goal": "Top: bring its next part up to the top of Current; the rest stays in Goal",
+    "arrivals": "Top: put it up next, out of New arrivals",
+    "finished": "Top: put it back at the top of Current, its cards back in your order",
+}
+SEARCH_SHOW_TIP = {
+    "current": "Show it in Current",
+    "goal": "Show it in Goal",
+    "arrivals": "Show it in New arrivals",
+    "finished": "Show it in Finished",
+}
+ADD_NAME = "Add"
+ADD_TIP = "Add: files, a folder, a book or deck, a video's subtitles, or pasted text"
+ADD_MENU_NAME = "What you can add to your library"
+ADD_ITEMS = {
+    "files": ("Files…", "Add subtitle or text files: with their show when it's in Current, else at the top of Current"),
+    "folder": ("A folder…", "Add a folder: every subtitle and text file in it, its folders kept, at the top of Current "
+                            "(or with its show)"),
+    "extract": ("EPUB or Anki deck…", "Turn an EPUB or an Anki deck into text you can add"),
+    "youtube": ("YouTube or bilibili…", "Bring in a YouTube or bilibili.tv video's subtitles from its link"),
+    "paste": ("Paste text…", "Paste text and give it a title: it's added as one text file"),
+}
+ADD_DROP_LINE = "Or drop files anywhere in your list"
+ADD_PICK_FILES = "Add files to your library"
+ADD_PICK_FOLDER = "Add a folder to your library"
+ADD_PICK_FILTER = "Subtitles and text (*.srt *.ass *.ssa *.txt *.md);;All files (*)"
+ADD_NOTHING = "Nothing to add in {name}: no subtitle or text files"
+ADD_FOLDER_FAILED = "{name} couldn't be read: {why}"
+PASTE_NAME = "Paste text"
+PASTE_HEADING = "Paste text"
+PASTE_TITLE_PLACEHOLDER = "Its title"
+PASTE_TITLE_NAME = "The text's title"
+PASTE_TEXT_PLACEHOLDER = "Paste the text here"
+PASTE_TEXT_NAME = "The text"
+PASTE_DEFAULT_TITLE = "Pasted text"
+PASTE_ADD = "Add"
+PASTE_ADD_TIP = "Add it to your library as one text file, at the top of Current"
+PASTE_CANCEL = "Cancel"
+PASTE_CANCEL_TIP = "Close without adding anything (Esc does the same)"
+PASTE_FAILED = "The pasted text couldn't be saved: {why}"
+# --- end W3.2 Q3

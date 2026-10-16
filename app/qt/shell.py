@@ -854,7 +854,9 @@ class ShellWindow(QMainWindow):
             if hasattr(current, "on_journey"):                         # W3.1a S5: Up Next's *N new words ↗*
                 current.on_journey = lambda _row, _episode: self._open_journey(asked=True)
             services.library.start()
+            self.library_bridge.library_changed.connect(self.search.library_moved)     # --- W3.2 Q3
         # --- end W2.2 ------------------------------------------------------------------------------------------------ #
+        self.closing.connect(self.search.close_searcher)                             # --- W3.2 Q3
         self._poll = QTimer(self)
         self._poll.timeout.connect(self._poll_status)
         self._poll.start(POLL_MS)
@@ -939,6 +941,13 @@ class ShellWindow(QMainWindow):
         self.subline.setObjectName("wordsub")
         names.addWidget(self.subline)
         row.addLayout(names)
+        # --- W3.2 Q3: the search cut after the name (shown with a library); + Add at the right, before ? (the level ▾
+        # goes before it: `_attach_duties`)
+        from app.qt import add_menu, search as search_ui
+        self.search = search_ui.SearchCut(self, header)
+        self.search.setVisible(self.services.library is not None)
+        row.addWidget(self.search)
+        # --- end W3.2 Q3
         row.addStretch(1)                                  # the header's controls arrive with their features (G-2):
         # --- W3.2 Q1: New arrivals, an inset in the band before the level ▾ (with a library; absent until something
         # arrives)
@@ -949,6 +958,12 @@ class ShellWindow(QMainWindow):
             self.arrivals_inset.clicked.connect(lambda _checked=False: self.open_arrivals())
             row.addWidget(self.arrivals_inset)
         # --- end W3.2 Q1
+        # --- W3.2 Q3
+        self.adder = add_menu.Adder(self)
+        self.add_stone = add_menu.AddStone(self.adder, header)
+        self.add_stone.setVisible(bool(self.adder.entries()))
+        row.addWidget(self.add_stone)
+        # --- end W3.2 Q3
         self.progress = frame.Progress(header)             # W3.1a: the jobs' hairline along its foot (no pulsing dot)
         self._busy, self._share = False, None              # ... the bar's lines running, Generate's share
         return header                                      # W3.5's with the duties (`_attach_duties`)
@@ -1148,6 +1163,8 @@ class ShellWindow(QMainWindow):
         size = style.current()[1]
         self.footer.setFixedHeight(round(theme.size("footer", size)))
         self.wordmark.updateGeometry()
+        self.search.restyle()                                  # --- W3.2 Q3: the cut and the stone × the text size
+        self.add_stone.restyle()
         if self.dock is not None:                              # W3.1a: the dock's bar × the text size
             self.dock.apply_size()
         duties = getattr(self, "duties", None)                 # (none yet on the first call)
@@ -1414,8 +1431,11 @@ class ShellWindow(QMainWindow):
         journey_row.addWidget(d.journey_dot)
         journey_row.addStretch(1)
         d.pop.actions.addLayout(journey_row)
-        self.header.layout().addWidget(d.level)
-        self.header.layout().addWidget(d.help)
+        # --- W3.2 Q3: the level ▾ before + Add, ? after it
+        header_row = self.header.layout()
+        header_row.insertWidget(header_row.indexOf(self.add_stone), d.level)
+        header_row.addWidget(d.help)
+        # --- end W3.2 Q3
         self._paint_level()
         # the bar (W3.1a): the known corner and the emerald are the footer's (statuses: W3.3 makes them open
         # Settings; the level chip gave way to the ▾); the update chip in the status line's slot while it applies

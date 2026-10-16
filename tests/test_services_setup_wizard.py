@@ -374,6 +374,37 @@ def test_the_library_rows_are_one_per_title_with_its_files_and_folder(language):
         assert os.path.isdir(row["folder"]) and os.path.normcase(row["folder"]).startswith(data_dir + os.sep)
 
 
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_each_library_row_says_its_kind_by_its_titles_media_type(language):
+    # W3.2 Q3 (IK-9 / IK2-10): page 3 counts episodes, a book's parts or videos — never "12 files" for a show. A title
+    # with no media type yet reads as a show (as its row's stones do); a book set by the user reads as reading.
+    store = migrated(language, shows=2, episodes=3, loose=0, tiers=("now",))
+    try:
+        works = [w for (w,) in store.conn.execute("SELECT id FROM works ORDER BY id")]
+        store.set_media_type([works[1]], "book")
+        titles = dict(store.conn.execute("SELECT id, title FROM works").fetchall())
+    finally:
+        store.close()
+    kinds = {r["name"]: r["kind"] for r in SW.library_rows({}, language)}
+    assert kinds == {titles[works[0]]: "shows", titles[works[1]]: "reading"}
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_samples_go_into_an_empty_library_once_and_are_synced_into_the_store(language):
+    # W3.2 Q3: *Try it with samples first* without the Content Manager — copied into the empty tier folders, then those
+    # folders synced, so page 3's rows hold them; a second press copies nothing (never over a learner's files).
+    store = migrated(language, shows=1, episodes=1, loose=0, tiers=("soon",))
+    store.close()
+    n = SW.add_samples(language)
+    if n == 0:
+        pytest.skip("no bundled samples for this language in this checkout")
+    rows = SW.library_rows({}, language)
+    assert len(rows) >= 2, "the samples are in the store, beside the show that was there"
+    assert SW.add_samples(language) == 0
+    with pytest.raises(ValueError):
+        SW.add_samples("fr")
+
+
 # --- the level -------------------------------------------------------------------------------------------------- #
 def _index(language):
     from app import indexer

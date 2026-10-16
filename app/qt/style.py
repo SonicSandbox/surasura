@@ -312,6 +312,24 @@ QWidget#arrivalstray QToolButton {{ color: {c['overlay-ink-dim']}; border: 1px s
 QWidget#arrivalstray QToolButton:hover {{ background: {c['overlay-hover']}; color: {c['ink']}; }}
 """
     # --- end W3.2 Q1
+    # --- W3.2 Q3: search your library (search.py: the cut and its results paint themselves) and + Add's paste card
+    rules += f"""
+QLineEdit#librarysearch {{ background: transparent; color: {c['ink']}; border: 0; padding: 0; {font('input')} }}
+QLabel#searchkbd {{ color: {c['ink-faint']}; border: 1px solid {c['line']}; border-radius: 4px; padding: 1px 5px;
+  {font('key-hint')} }}
+QScrollArea#searchscroll, QWidget#searchbody {{ background: transparent; border: 0; }}
+QLabel#searchgroup {{ color: {c['overlay-ink-faint']}; {font('eyebrow')} letter-spacing: 1px; }}
+QLabel#searchnone {{ color: {c['overlay-ink-dim']}; {font('body')} font-weight: 400; }}
+QLabel#searchmore {{ color: {c['overlay-ink-faint']}; {font('row-sub')} }}
+QToolButton#searchact {{ color: {c['overlay-ink-dim']}; min-width: {px(24)}; min-height: {px(24)}; }}
+QToolButton#searchact:hover {{ background: {c['overlay-hover']}; border-color: {c['overlay-edge-top']};
+  color: {c['ink']}; }}
+QToolButton#addstone, QToolButton#addstone:hover, QToolButton#addstone:pressed {{ background: transparent; border: 0;
+  padding: 0; }}
+QLabel#pasteheading {{ color: {c['ink']}; {font('dialog-title')} }}
+QWidget#pastecard QLineEdit, QWidget#pastecard QPlainTextEdit {{ background: {c['overlay-cut']}; }}
+"""
+    # --- end W3.2 Q3
     _state["generated_ms"] = (time.perf_counter() - t0) * 1000
     return rules
 

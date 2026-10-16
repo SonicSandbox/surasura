@@ -219,7 +219,7 @@ def test_the_pop_shows_the_band_and_automatics_state(world):
     world.services.settings.set({"logic.selection.band": "rare"}, now=True)
     world.start()
     assert wait_until(lambda: world.d.level.text() == "Rare")
-    assert world.d.pop.band.text() == "Rare" and world.d.pop.auto.text() == strings.LEVEL_POP_AUTO[False]
+    assert world.d.pop.slider.value() == "rare" and not world.d.pop.auto_toggle.value()     # W3.1b: the slider
     assert world.d.level.toolTip().startswith(strings.BAR_LEVEL_TIP.format(band="Rare"))
 
 

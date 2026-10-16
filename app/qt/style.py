@@ -202,11 +202,15 @@ QWidget#needscard {{ background: {c['slab']}; border: 0; border-top: 1px solid {
   border-bottom: 1px solid {c['groove']}; border-radius: {theme.RADII['r']}px; }}
 QLabel#needstitle {{ color: {c['ink']}; {font('needs-title')} }}
 """
-    # --- W3.1a: the frame (frame.py) — the current tab's line is the vein (painted); the level ▾'s pop: its words,
+    # --- W3.1a: the frame (frame.py) — the current tab's line is the vein (painted); the level ▾'s pop (W3.1b): its words,
     # Generate quiet (its stale and failed looks kept), *Open your journey* as a link
     rules += f"""
-QLabel#popeyebrow {{ color: {c['overlay-ink-dim']}; {font('eyebrow')} letter-spacing: 1px; }}
-QLabel#popband {{ color: {c['ink']}; {font('sheet-heading')} }}
+QLabel#popheading {{ color: {c['ink']}; {font('settings-label')} }}
+QWidget#levelpop QToolButton#pophelp {{ background: transparent; color: {c['overlay-ink-faint']}; border: 0;
+  padding: 0 {px(4)}; {font('settings-help')} }}
+QWidget#levelpop QToolButton#pophelp:hover {{ color: {c['ink']}; }}
+QWidget#levelpop QToolButton#pophelp:focus {{ border: 2px solid {c['accent']}; border-radius: 6px; }}
+QLabel#popread {{ color: {c['overlay-ink-dim']}; {font('body')} font-weight: 400; }}
 QLabel#popline {{ color: {c['overlay-ink-dim']}; {font('body')} font-weight: 400; }}
 QWidget#levelpop QPushButton#generate {{ background: transparent; color: {c['ink']};
   border: 1px solid {c['overlay-edge-top']}; }}

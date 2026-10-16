@@ -7114,7 +7114,8 @@ Store._undo_reset = _store_undo_reset
 # to `take_in`; every origin is one `pairings` row keyed "src:" + its path key (B1), so a file is read once whichever
 # source found it. Remove keeps an origin out for good (an `exclusions` row); Finish keeps its records.
 
-SKIP_DIRS = ("$recycle.bin", "#recycle", "@eadir", ".stversions", ".trash", "system volume information")
+SKIP_DIRS = ("$recycle.bin", "#recycle", "@eadir", ".stversions", ".trash", "system volume information", "@recycle",
+             "#snapshot", "@recently-snapshot", "~snapshot", ".snapshot")   # + QNAP's / Synology's bins and snapshots
 PLACEHOLDER_ATTRS = 0x1000 | 0x40000 | 0x400000   # OFFLINE · RECALL_ON_OPEN · RECALL_ON_DATA_ACCESS (Connect's `_on_disk`)
 _LINK_TAGS = (0xA000000C, 0xA0000003)              # IO_REPARSE_TAG_SYMLINK, IO_REPARSE_TAG_MOUNT_POINT (a junction)
 _DIGITS = re.compile(r"(\d+)")
@@ -7333,8 +7334,8 @@ def _store_update_origin(self, origin, size, mtime_ns, sha256):
 
 def _store_exclude_origins(self, pairs, now):
     """Inside `remove`: an exclusion per origin of the removed items (`pairs`: {item_id: [[key, record, at]]}) — its
-    path key, `kind` 'removed', the note {size, sha256, video_key?} (S6: the same bytes or video found elsewhere stay
-    out too). -> the exclusion ids written."""
+    path key, `kind` 'removed', the note {size, sha256, video_key?, show?, episode?} (S6: the same bytes or video found
+    elsewhere stay out too, and K1b keeps a v2 of that show's episode out). -> the exclusion ids written."""
     rows = []
     for records in pairs.values():
         for key, text, _at in records:
@@ -7344,6 +7345,9 @@ def _store_exclude_origins(self, pairs, now):
             note = {"size": record.get("size"), "sha256": record.get("sha256")}
             if record.get("video_key"):
                 note["video_key"] = record["video_key"]
+            show = record.get("show") if isinstance(record.get("show"), dict) else {}
+            if show.get("title") and isinstance(record.get("episode"), (int, float)):
+                note["show"], note["episode"] = show["title"], record["episode"]    # its re-release (v2) stays out
             rows.append((record.get("root"), key[len(SOURCE_KEY):], "removed", now, _dumps(note)))
     if not rows:
         return []

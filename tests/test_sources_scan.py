@@ -218,6 +218,7 @@ def test_an_unchanged_folder_is_not_listed_again_and_refresh_lists_everything(mo
     src = _drive("driveA")
     _write(os.path.join(src, a, "ep01.srt"), _text(language, 1))
     _write(os.path.join(src, b, "ep01.srt"), _text(language, 2))
+    _settle(src)
     with store:
         root = store.add_source(src)
         _look(store, language, root, first=True)                                # the first look this run: all
@@ -285,6 +286,7 @@ def test_a_file_written_in_the_last_seconds_waits_for_the_next_look(language):
     a = _SHOWS[language][0]
     src = _drive("driveA")
     path = _write(os.path.join(src, a, "ep01.srt"), _text(language, 1), age=0)   # still being written
+    _settle(src)                                                                  # (only the file is new)
     with store:
         root = store.add_source(src)
         result = _look(store, language, root, first=True)
@@ -302,6 +304,7 @@ def test_a_file_that_changes_while_copied_is_not_taken_and_leaves_no_part(monkey
     a = _SHOWS[language][0]
     src = _drive("driveA")
     path = _write(os.path.join(src, a, "ep01.srt"), _text(language, 1))
+    _settle(src)
     real = sources._copy_part
 
     def growing(origin, part):
@@ -331,6 +334,7 @@ def test_a_file_that_cannot_be_read_waits_and_the_look_goes_on(monkeypatch):
     src = _drive("driveA")
     locked = _write(os.path.join(src, a, "ep01.srt"), _text(language, 1))
     _write(os.path.join(src, a, "ep02.srt"), _text(language, 2))
+    _settle(src)
     real = ls.sha256_of
 
     def sha(p):
@@ -933,3 +937,418 @@ def test_local_or_network():
     assert sources.local_or_network(os.environ["SURASURA_TEST_ROOT"]) == "local"
     if sys.platform == "win32":
         assert sources.local_or_network(r"\\nas\video\Anime") == "network"
+
+
+# --- the fix round (the adversary's K1–K7 and the N rows taken) ----------------------------------------------------- #
+
+def _settle(root, age=60):
+    """Every folder under `root` a minute old: a folder's time in the last seconds is never trusted (N5), so a test
+    of the folder-time cache ages its folders first."""
+    t = time.time() - age
+    for where, _dirs, _files in os.walk(root, topdown=False):
+        os.utime(where, (t, t))
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_v1_and_its_v2_in_one_look_are_one_item_holding_the_v2(language):
+    """K1 (SRC-7): the first scan meets both releases of one episode; the v2 is taken, the v1 is skipped — then and in
+    every later look (it is an earlier release of an episode already in)."""
+    store, data_dir = _empty(language)
+    show = _SHOWS[language][1]
+    src = _drive("driveA")
+    tag = _OURS[language]
+    _write(os.path.join(src, show, f"[Grp] {show} - 05 (1080p).{tag}.srt"), _text(language, 1))
+    v2 = _write(os.path.join(src, show, f"[Grp] {show} - 05v2 (1080p).{tag}.srt"), _text(language, 1, extra="、訂正"))
+    _write(os.path.join(src, show, f"[Grp] {show} - 06 (1080p).{tag}.srt"), _text(language, 2))
+    with store:
+        root = store.add_source(src)
+        result = _look(store, language, root, first=True)
+        assert result["added"] == 2 and _items(store) == 2
+        copies = _library_files(data_dir)
+        assert copies == sorted([f"Library/{show}/[Grp] {show} - 05v2 (1080p).{tag}.srt",
+                                 f"Library/{show}/[Grp] {show} - 06 (1080p).{tag}.srt"])
+        assert _sha(os.path.join(data_dir, copies[0])) == _sha(v2)
+        again = _look(store, language, root, full=True)
+        assert (again["added"], again["attached"]) == (0, 0) and _items(store) == 2
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_v2_of_a_removed_episode_stays_out(language):
+    """K2 (S6): Remove keeps an episode out by its show and number too (the exclusion's note), so its re-release —
+    a new path and new bytes, no video beside it — never brings it back."""
+    store, data_dir = _empty(language)
+    show = _SHOWS[language][1]
+    src = _drive("driveA")
+    tag = _OURS[language]
+    _write(os.path.join(src, show, f"[Grp] {show} - 05 (1080p).{tag}.srt"), _text(language, 1))
+    with store:
+        root = store.add_source(src)
+        item = _look(store, language, root, first=True)["ids"][0]
+        store.remove([item])
+        note = json.loads(store.conn.execute("SELECT note FROM exclusions WHERE kind = 'removed'").fetchone()[0])
+        assert (note["show"], note["episode"]) == (show, 5)
+        _write(os.path.join(src, show, f"[Grp] {show} - 05v2 (1080p).{tag}.srt"), _text(language, 1, extra="、訂正"))
+        _write(os.path.join(src, show, f"[Grp] {show} - 06v2 (1080p).{tag}.srt"), _text(language, 2))
+        result = _look(store, language, root, full=True)
+        assert result["added"] == 1                                              # 06's v2 is no removed episode
+        assert [r for r in _library_files(data_dir) if " - 05" in r] == \
+            [f"Library/{show}/[Grp] {show} - 05 (1080p).{tag}.srt"]              # (the Remove's caller trashes it)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_one_subtitle_per_video_per_language_tracked_by_the_video(language):
+    """K3 (1): two subtitles that both go with one video, in one look — one item; the other waits and the next look
+    records it on that item through its video (check a), never a second item."""
+    store, data_dir = _empty(language)
+    a = _SHOWS[language][0]
+    src = _drive("driveA")
+    folder = os.path.join(src, a)
+    _video(os.path.join(folder, "ep01.mkv"))
+    _write(os.path.join(folder, f"ep01.{_OURS[language]}.srt"), _text(language, 1))
+    _write(os.path.join(folder, "ep01.alt.srt"), _text(language, 2))                     # an unknown tag: untagged
+    with store:
+        root = store.add_source(src)
+        result = _look(store, language, root, first=True)
+        assert (result["added"], result["waiting"]) == (1, 1) and _items(store) == 1
+        again = _look(store, language, root)
+        assert (again["added"], again["attached"]) == (0, 1) and _items(store) == 1
+        assert len(_library_files(data_dir)) == 1
+
+
+@pytest.mark.parametrize("name, expected", [
+    ("S01E01.ja.forced.srt", ("S01E01", "ja", {"forced"})),
+    ("S01E01.ja.sdh.srt", ("S01E01", "ja", {"sdh"})),
+    ("S01E01.ja.hi.srt", ("S01E01", "ja", {"hi"})),                    # Bazarr's hearing-impaired, never Hindi
+    ("S01E01.JA.CC.srt", ("S01E01", "ja", {"cc"})),
+    ("S01E01.forced.ja.srt", ("S01E01", "ja", {"forced"})),
+    ("ep01.cze.srt", ("ep01", "other", set())), ("ep01.fin.srt", ("ep01", "other", set())),
+    ("ep01.heb.srt", ("ep01", "other", set())), ("ep01.gre.srt", ("ep01", "other", set())),
+    ("ep01.pt-BR.srt", ("ep01", "other", set())), ("ep01.hin.srt", ("ep01", "other", set())),
+    ("ep01.jpn.srt", ("ep01", "ja", set())), ("ep01.jap.srt", ("ep01", "ja", set())),
+    ("ep01.ja-JP.srt", ("ep01", "ja", set())),
+    ("ep01.chi.srt", ("ep01", "zh", set())), ("ep01.zho.srt", ("ep01", "zh", set())),
+    ("ep01.chs.srt", ("ep01", "zh", set())), ("ep01.cht.srt", ("ep01", "zh", set())),
+    ("ep01.sc.srt", ("ep01", "zh", set())), ("ep01.tc.srt", ("ep01", "zh", set())),
+    ("ep01.zh-Hant.srt", ("ep01", "zh", set())),
+    ("ep01.director.srt", ("ep01.director", None, set())),            # an unknown tag reads as untagged
+    ("ep01.srt", ("ep01", None, set())), ("ep01.hi.srt", ("ep01", None, {"hi"})),
+])
+def test_a_subtitles_language_tag_and_flags_are_read_from_the_right(name, expected):
+    assert sources._tag(name) == expected
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_flagged_subtitles_rank_after_the_plain_one_and_a_forced_track_is_never_taken(language):
+    """K3 (2)(3): `.forced` (only the signs) is never an episode's text; `.sdh` / `.hi` / `.cc` are ours, taken only
+    where no plain one is; another language's tag skipped whatever the list misses (`cze`)."""
+    store, data_dir = _empty(language)
+    a = _SHOWS[language][0]
+    tag = _OURS[language]
+    src = _drive("driveA")
+    folder = os.path.join(src, a)
+    _write(os.path.join(folder, f"ep01.{tag}.sdh.srt"), _text(language, 1))
+    _write(os.path.join(folder, f"ep01.{tag}.srt"), _text(language, 2))
+    _write(os.path.join(folder, f"ep01.{tag}.forced.srt"), _text(language, 3))
+    _write(os.path.join(folder, f"ep02.{tag}.hi.srt"), _text(language, 4))                # the only one: taken
+    _write(os.path.join(folder, f"ep03.{tag}.forced.srt"), _text(language, 5))            # forced alone: skipped
+    _write(os.path.join(folder, "ep04.cze.srt"), "1\n00:00:01,000 --> 00:00:02,000\nDobrý večer.\n")
+    with store:
+        root = store.add_source(src)
+        assert _look(store, language, root, first=True)["added"] == 2
+        assert _library_files(data_dir) == [f"Library/{a}/ep01.{tag}.srt", f"Library/{a}/ep02.{tag}.hi.srt"]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_subtitle_with_flags_finds_the_video_beside_it(language):
+    store, data_dir = _empty(language)
+    a = _SHOWS[language][0]
+    src = _drive("driveA")
+    _video(os.path.join(src, a, "ep01.mkv"))
+    _write(os.path.join(src, a, f"ep01.{_OURS[language]}.sdh.srt"), _text(language, 1))
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        record = json.loads(store.conn.execute("SELECT pairing FROM pairings").fetchone()[0])
+        assert record["video_key"] == videos.content_key(os.path.join(src, a, "ep01.mkv"))
+
+
+def test_a_renamed_or_moved_epub_is_the_same_book_and_is_never_read_or_copied_again(monkeypatch):
+    """K4 (SRC-7): each part's record holds the EPUB file's sha256, so a renamed or moved copy of the book is known by
+    its bytes: its parts' origins recorded on the items already in, nothing parsed, nothing written."""
+    language = "ja"
+    store, data_dir = _empty(language)
+    src = _drive("driveA")
+    book = _epub(os.path.join(src, "Books", "星の歌.epub"), _chapters())
+    with store:
+        root = store.add_source(src)
+        ids = _look(store, language, root, first=True)["ids"]
+        assert len(ids) >= 2
+        record = json.loads(store.conn.execute("SELECT pairing FROM pairings ORDER BY item_id").fetchone()[0])
+        assert record["sha256"] == _sha(book)
+        files = _library_files(data_dir)
+        from app import extract
+        opened = []
+        real_chunks = extract.chunks_of
+        monkeypatch.setattr(extract, "chunks_of", lambda *a, **k: opened.append(a[0]) or real_chunks(*a, **k))
+        renamed = os.path.join(src, "Books", "星の歌 第一巻.epub")
+        os.rename(book, renamed)
+        result = _look(store, language, root, full=True)
+        assert (result["added"], result["attached"]) == (0, len(ids)) and _items(store) == len(ids)
+        assert opened == [] and _library_files(data_dir) == files
+        keys = store.origins()
+        assert all(keys[ls.path_key(os.path.abspath(renamed) + f"#{n}")].item_id == i for n, i in enumerate(ids, 1))
+
+
+def test_a_removed_book_moved_or_renamed_is_never_written_again(monkeypatch):
+    """K4 (S6): Remove keeps the book's bytes out — a moved copy is neither parsed nor written into Library."""
+    language = "ja"
+    store, data_dir = _empty(language)
+    src = _drive("driveA")
+    book = _epub(os.path.join(src, "Books", "星の歌.epub"), _chapters())
+    with store:
+        root = store.add_source(src)
+        ids = _look(store, language, root, first=True)["ids"]
+        rels = [store.item(i)["rel_path"] for i in ids]
+        store.remove(ids)
+        for rel in rels:                                                         # the Remove's caller trashes them
+            ls.trash_file(data_dir, rel)
+        files = _library_files(data_dir)
+        from app import extract
+        opened = []
+        monkeypatch.setattr(extract, "chunks_of", lambda *a, **k: opened.append(a[0]) or ([], None))
+        os.makedirs(os.path.join(src, "Moved"))
+        os.rename(book, os.path.join(src, "Moved", "星の歌.epub"))
+        result = _look(store, language, root, full=True)
+        assert result["added"] == 0 and opened == [] and _library_files(data_dir) == files
+
+
+def test_a_book_whose_parts_are_already_in_writes_nothing():
+    """K4 (b) for a book: an EPUB new to the sources whose every part's text an item already holds (the same book
+    from another file) — each part's origin recorded on that item, nothing written."""
+    language = "ja"
+    store, data_dir = _empty(language)
+    src, other = _drive("driveA"), _drive("driveB")
+    book = _epub(os.path.join(src, "Books", "星の歌.epub"), _chapters())
+    with store:
+        root = store.add_source(src)
+        ids = _look(store, language, root, first=True)["ids"]
+        files = _library_files(data_dir)
+        again = _epub(os.path.join(other, "星の歌 (copy).epub"), _chapters())  # written again: the same text
+        if _sha(again) == _sha(book):                                            # (the same bytes: make them differ)
+            with open(again, "ab") as f:
+                f.write(b"\0")
+            t = time.time() - 60
+            os.utime(again, (t, t))
+        result = _look(store, language, store.add_source(other), full=True)
+        assert (result["added"], result["attached"]) == (0, len(ids)) and _library_files(data_dir) == files
+
+
+def test_an_epub_with_no_text_is_read_once_until_it_changes(monkeypatch):
+    """K5 (SRC-9, S19): a book Extract can't read (no text, DRM, broken) is remembered by its size and time in the
+    scan's cache — never parsed again at a start or a Refresh, read again once it changes."""
+    language = "ja"
+    store, data_dir = _empty(language)
+    src = _drive("driveA")
+    book = _epub(os.path.join(src, "Books", "鍵のかかった本.epub"), _chapters())
+    from app import extract
+    opened = []
+    monkeypatch.setattr(extract, "chunks_of", lambda *a, **k: opened.append(a[0]) or ([], None))
+    with store:
+        root = store.add_source(src)
+        assert _look(store, language, root, first=True)["added"] == 0
+        sources._LOOKED.clear()                                                  # a start
+        _look(store, language, root)
+        _look(store, language, root, full=True)                                  # a Refresh
+        assert len(opened) == 1
+        t = time.time() - 30
+        os.utime(book, (t, t))                                                   # it changed: read again
+        _look(store, language, root, full=True)
+        assert len(opened) == 2
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_overlapping_sources_give_a_folder_one_show_whichever_looks(language):
+    """K6 (SRC-2): `Video` took ep01 in as show `Anime/<show>`; the inner source `Video/Anime` finding ep02 names it
+    by the outermost source too — it joins its show in Current, never a new title in New arrivals."""
+    store, data_dir = _empty(language)
+    a = _SHOWS[language][0]
+    outer = _drive("Video")
+    _write(os.path.join(outer, "Anime", a, "ep01.srt"), _text(language, 1))
+    with store:
+        first = store.add_source(outer)
+        _look(store, language, first, first=True)
+        inner = store.add_source(os.path.join(outer, "Anime"))
+        _write(os.path.join(outer, "Anime", a, "ep02.srt"), _text(language, 2))
+        assert _look(store, language, inner, full=True)["added"] == 1
+        assert _current(store) == [f"Library/Anime/{a}/ep01.srt", f"Library/Anime/{a}/ep02.srt"]
+        assert store.ordered("arrivals") == []
+        assert store.conn.execute("SELECT COUNT(DISTINCT work_id) FROM items").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("folder", ["@Recycle", "#snapshot", "@Recently-Snapshot", "~snapshot", ".snapshot",
+                                    "#recycle"])
+def test_a_look_skips_a_nas_recycle_bin_and_its_snapshots(folder):
+    """K7 (B3): QNAP's and Synology's recycle bins and snapshot folders hold what the user deleted and older
+    versions: never read."""
+    language = "ja"
+    store, data_dir = _empty(language)
+    src = _drive("driveA")
+    _write(os.path.join(src, folder, "Show", "ep01.srt"), _text(language, 1))
+    with store:
+        root = store.add_source(src)
+        assert _look(store, language, root, first=True)["added"] == 0 and _items(store) == 0
+
+
+def test_a_recopy_the_held_open_copy_refuses_leaves_no_trash_copy(monkeypatch):
+    """N1: the old copy can't be replaced (Generate holds it open): the trash keeps no copy of a text never
+    replaced — however many looks try."""
+    language = "ja"
+    store, data_dir = _empty(language)
+    a = _SHOWS[language][0]
+    src = _drive("driveA")
+    path = _write(os.path.join(src, a, "ep01.srt"), _text(language, 1))
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        copy = os.path.join(data_dir, "Library", a, "ep01.srt")
+        old = open(copy, "rb").read()
+        _write(path, _text(language, 1, extra="、修正版"), age=30)
+        real = os.replace
+
+        def held(s, d):
+            if os.path.abspath(d) == os.path.abspath(copy):
+                raise PermissionError(13, "in use by another program", d)
+            return real(s, d)
+        monkeypatch.setattr(os, "replace", held)
+        for _ in range(3):
+            assert _look(store, language, root, full=True)["waiting"] == 1
+        assert _trash(data_dir) == [] and open(copy, "rb").read() == old
+
+
+def test_a_trashed_old_copy_has_a_fresh_time_even_if_its_clock_cannot_be_restarted(monkeypatch):
+    """N8: the old copy's trash file is made with a fresh time (never the old copy's own), so a failed clock restart
+    can't have it purged at the next cleanup."""
+    language = "ja"
+    store, data_dir = _empty(language)
+    a = _SHOWS[language][0]
+    src = _drive("driveA")
+    path = _write(os.path.join(src, a, "ep01.srt"), _text(language, 1))
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        copy = os.path.join(data_dir, "Library", a, "ep01.srt")
+        old = time.time() - 40 * 86400
+        os.utime(copy, (old, old))
+        monkeypatch.setattr(sources, "restart_trash_clock", lambda p: None)
+        _write(path, _text(language, 1, extra="、修正版"), age=20)
+        assert _look(store, language, root, full=True)["recopied"] == 1
+        assert time.time() - os.stat(os.path.join(data_dir, ".trash", _trash(data_dir)[0])).st_mtime < 60
+
+
+def test_a_v2_whose_recopy_is_refused_is_not_recorded_on_the_episode():
+    """N9: a v2 under half its episode's copy is refused — and not recorded either (its record would name bytes the
+    item doesn't hold, and it would never be tried again)."""
+    language = "ja"
+    store, data_dir = _empty(language)
+    show = _SHOWS[language][1]
+    src = _drive("driveA")
+    _write(os.path.join(src, show, f"[Grp] {show} - 05 (1080p).ja.srt"), _text(language, 1) * 4)
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        v2 = _write(os.path.join(src, show, f"[Grp] {show} - 05v2 (1080p).ja.srt"), _text(language, 1)[:200])
+        result = _look(store, language, root, full=True)
+        assert (result["added"], result["attached"], result["recopied"]) == (0, 0, 0)
+        assert ls.path_key(os.path.abspath(v2)) not in store.origins()
+
+
+def test_copies_take_in_cannot_take_go_to_the_trash(monkeypatch):
+    """N3: the source stopped mid-look (take_in refuses): the copies this look made are trashed, never left in Library
+    untracked for the folder readers."""
+    language = "ja"
+    store, data_dir = _empty(language)
+    a = _SHOWS[language][0]
+    src = _drive("driveA")
+    _write(os.path.join(src, a, "ep01.srt"), _text(language, 1))
+    with store:
+        root = store.add_source(src)
+
+        def stopped(*args, **kw):
+            raise ls.NotASource("That folder isn't being read any more.")
+        monkeypatch.setattr(store, "take_in", stopped)
+        result = _look(store, language, root, first=True)
+        assert result["stopped"] is True and _library_files(data_dir) == [] and len(_trash(data_dir)) == 1
+
+
+def test_a_folder_loop_with_no_link_is_listed_once(monkeypatch):
+    """N4: a share that shows a loop as an ordinary folder (Samba following links): a folder already listed this look,
+    by its device and file number, is not listed again."""
+    language = "ja"
+    store, data_dir = _empty(language)
+    src = _drive("driveA")
+    _write(os.path.join(src, "Show", "ep01.srt"), _text(language, 1))
+    _write(os.path.join(src, "Show", "loop", "ep01.srt"), _text(language, 1, extra=" again"))
+    loop, show = os.path.join(src, "Show", "loop"), os.path.join(src, "Show")
+    real = os.stat
+
+    def same_inode(p, *a, **k):
+        if isinstance(p, str) and os.path.normcase(os.path.abspath(p)) == os.path.normcase(loop):
+            return real(show, *a, **k)
+        return real(p, *a, **k)
+    monkeypatch.setattr(os, "stat", same_inode)
+    with store:
+        root = store.add_source(src)
+        assert _look(store, language, root, first=True)["added"] == 1
+
+
+def test_a_folder_whose_time_is_in_the_last_seconds_is_listed_again():
+    """N5: a folder listed within SETTLE_S of its own time (a FAT32 or coarse share's tick) may gain a file in the
+    same tick: its time is not kept, so the next look lists it."""
+    language = "ja"
+    store, data_dir = _empty(language)
+    src = _drive("driveA")
+    _write(os.path.join(src, "Show", "ep01.srt"), _text(language, 1))
+    _settle(src)
+    os.utime(os.path.join(src, "Show"), None)                                    # just now
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        dirs = _cache(language)["roots"][str(root)]["dirs"]
+        assert dirs[ls.path_key(os.path.join(src, "Show"))]["mtime_ns"] is None
+        assert dirs[ls.path_key(src)]["mtime_ns"] is not None
+
+
+def test_books_land_among_the_shows_in_name_order_on_the_first_scan():
+    """N7 (SRC-1): setup's first scan places a book where its name falls among the shows, not after them all."""
+    language = "ja"
+    store, data_dir = _empty(language)
+    src = _drive("driveA")
+    _write(os.path.join(src, "Alpha Line", "ep01.srt"), _text(language, 1))
+    _write(os.path.join(src, "Gamma Line", "ep01.srt"), _text(language, 2))
+    _epub(os.path.join(src, "Beta Book.epub"), _chapters())
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        shows = [r.split("/")[1] for r in _current(store)]
+        assert shows[0] == "Alpha Line" and shows[-1] == "Gamma Line" and set(shows[1:-1]) == {"Beta Book"}
+
+
+def test_a_cloud_placeholder_folder_is_never_listed(monkeypatch):
+    """N13: a folder the cloud hasn't brought down (its attributes a placeholder's): listing it could download it."""
+    language = "ja"
+    store, data_dir = _empty(language)
+    src = _drive("driveA")
+    _write(os.path.join(src, "Cloud", "ep01.srt"), _text(language, 1))
+    _write(os.path.join(src, "Here", "ep01.srt"), _text(language, 2))
+    import stat as stat_
+    t = time.time() - 12345
+    os.utime(os.path.join(src, "Cloud"), (t, t))
+    ghost = os.stat(os.path.join(src, "Cloud")).st_mtime_ns                     # (a listing's stat has no inode)
+    real = ls.is_placeholder
+    monkeypatch.setattr(ls, "is_placeholder", lambda st: (stat_.S_ISDIR(st.st_mode) and st.st_mtime_ns == ghost)
+                        or real(st))
+    with store:
+        root = store.add_source(src)
+        spy = _ScandirSpy(monkeypatch)
+        assert _look(store, language, root, first=True)["added"] == 1
+        assert not spy.saw(os.path.join(src, "Cloud"))

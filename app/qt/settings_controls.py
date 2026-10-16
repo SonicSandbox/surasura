@@ -987,6 +987,10 @@ class LevelSlider(_Control):
         self._describe()
         self.update()
 
+    def busy(self):
+        """The hand holds the gem, or it is still gliding or falling into a chamber: a shown value waits (W3.1b)."""
+        return self._held or any(anim is not None and anim.alive for anim in self._anims.values())
+
     def set_named(self, named):
         """`one_name`: show the chosen band's name, or none (a band not read yet)."""
         if bool(named) != self._named:

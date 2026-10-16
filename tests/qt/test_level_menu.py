@@ -128,10 +128,44 @@ def test_picking_a_band_never_reads_the_numbers_again(world, reads):
     slider = world.d.pop.slider
     slider.setFocus()
     QTest.keyClick(slider, Qt.Key.Key_Left)
-    assert wait_until(lambda: _selection(world).get("band") == "uncommon")
+    assert wait_until(lambda: world.d.level.text() == "Uncommon")     # the write landed and the level was read
     for _ in range(10):
         QApplication.processEvents()
     assert len(reads) == 1 and world.d.pop.read.text().startswith("≈3,125 words")
+
+
+def test_a_library_view_alone_never_marks_the_numbers(world, reads):
+    # S19: the window's own drag views, mined cards and reorders change nothing the bands' numbers read
+    _rare_by_hand(world)
+    _open(world)
+    assert wait_until(lambda: len(reads) == 1)
+    world.d.pop.close()
+
+    class View:                                            # a view of this language (its rows don't matter here)
+        language = world.win.language
+    try:
+        world.win.show_library(View())
+    except AttributeError:
+        pass                                               # the pages want a whole view; the mark came first
+    assert not world.d.previews_dirty
+    _open(world)
+    for _ in range(10):
+        QApplication.processEvents()
+    assert len(reads) == 1
+
+
+def test_numbers_read_for_a_language_left_meanwhile_are_never_shown(world, monkeypatch):
+    _rare_by_hand(world)
+
+    def read(settings, language):
+        world.win.language = "zh"                          # the switch lands while the read runs
+        return PREVIEWS
+    monkeypatch.setattr(settings_live, "read_previews", read)
+    _open(world)
+    for _ in range(30):
+        QApplication.processEvents()
+    world.win.language = "ja"
+    assert world.d.pop.previews is None and world.d.pop.read.text() == ""
 
 
 def test_with_no_store_the_readout_stays_empty(world, monkeypatch):
@@ -245,6 +279,55 @@ def test_showing_the_automatic_band_is_never_a_pick(world, writes):
     for _ in range(10):
         QApplication.processEvents()
     assert picked == [] and len(writes) == before
+
+
+def test_a_show_while_the_hand_holds_the_gem_never_drops_the_drag_or_picks(world, writes):
+    # adversary S1: a level read landing mid-gesture (indexing, known words) must neither cancel the drag nor send a pick
+    _rare_by_hand(world)
+    _open(world)
+    slider = world.d.pop.slider
+    picked = []
+    world.d.pop.picked.connect(picked.append)
+    QTest.mousePress(slider, Qt.MouseButton.LeftButton, pos=slider.chamber(4).toPoint())
+    QTest.mouseMove(slider, slider.chamber(2).toPoint())
+    world.d.pop.set_level("common", True)                  # a show arrives while the gem is held
+    assert picked == [] and slider.busy()
+    QTest.mouseRelease(slider, Qt.MouseButton.LeftButton, pos=slider.chamber(2).toPoint())
+    assert wait_until(lambda: picked == ["occasional"])    # the hand's pick, once
+    assert world.d.pop.level is None or world.d.pop.level[0] != "common" or slider.value() == "occasional"
+
+
+def test_a_pick_with_automatic_on_shows_it_off_at_once(world):
+    world.services.settings.set({"logic.selection.band": "common", "logic.selection.auto": True}, now=True)
+    world.start()
+    assert wait_until(lambda: world.d.pop.auto_toggle.value())
+    _open(world)
+    slider = world.d.pop.slider
+    slider.setFocus()
+    QTest.keyClick(slider, Qt.Key.Key_Right)
+    assert not world.d.pop.auto_toggle.value()             # before the write lands (S2)
+
+
+def test_an_older_level_answer_never_moves_the_slider(world, monkeypatch):
+    # adversary S3: two reads in flight; the first (slow) answer lands last and is dropped
+    import threading
+    _rare_by_hand(world)
+    gate = threading.Event()
+    answers = iter([("core", False), ("very_rare", False)])
+
+    def level():
+        band = next(answers)
+        if band[0] == "core":
+            gate.wait(5)                                   # the older read is slow
+        return band
+    monkeypatch.setattr(world.services, "level", level)
+    world.win._read_level()
+    world.win._read_level()
+    assert wait_until(lambda: world.d.pop.level is not None and world.d.pop.level[0] == "very_rare")
+    gate.set()
+    for _ in range(30):
+        QApplication.processEvents()
+    assert world.d.pop.slider.value() == "very_rare"
 
 
 def test_automatic_with_no_numbers_yet_shows_the_written_band(world):

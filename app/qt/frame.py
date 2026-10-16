@@ -450,8 +450,9 @@ class LevelPop(motion.Overlay):
         self.hide()
 
     def add_action(self, widget):
-        """Generate, at the foot's left (the gear stays at its right)."""
+        """Generate, at the foot's left (the gear stays at its right); Tab reaches it before the gear."""
         self.foot.insertWidget(0, widget)
+        self.setTabOrder(widget, self.gear)
 
     def set_level(self, band, automatic, waiting=False, coverage=None):
         """Show `band` (a key of `word_selection.BANDS_ORDER`; None or an unknown one leaves the slider where it is) and
@@ -465,9 +466,17 @@ class LevelPop(motion.Overlay):
         self.level = level
         self.waiting, self.coverage = bool(waiting), coverage
         self.slider.setEnabled(coverage is None)
+        self.auto_toggle.setEnabled(coverage is None)       # Automatic does nothing in coverage mode either
         self.slider.set_named(not self.waiting)             # no band read yet: no band named (S16)
         if band in {k for k, _n in self.bands} and band != self.slider.value():
-            self.slider.set_value(band)
+            if self.slider.busy():
+                self.level = None                           # a gesture under way wins; the next show puts it right
+            else:
+                self.slider.blockSignals(True)              # a shown band is never a pick
+                try:
+                    self.slider.set_value(band)
+                finally:
+                    self.slider.blockSignals(False)
         if self.auto_toggle.value() != bool(automatic):
             self.auto_toggle.set_value(bool(automatic))
         self._paint_readout()
@@ -490,13 +499,13 @@ class LevelPop(motion.Overlay):
             text, tip = strings.LEVEL_POP_AUTO_WAITING, strings.BAR_LEVEL_AUTO_NONE_TIP
         else:
             text, tip = level_readout(preview), None
-        if text == self.read.text():
+        if text and tip is None:
+            from app.qt import settings_live
+            tip = settings_live.readout(preview)
+        if text == self.read.text() and (not text or tip == self.read.toolTip()):
             return False
         self.read.setText(text)
         if text:
-            if tip is None:
-                from app.qt import settings_live
-                tip = settings_live.readout(preview)
             self.read.setToolTip(tip)
         self.read.setVisible(bool(text))
         if self.isVisible():
@@ -507,6 +516,8 @@ class LevelPop(motion.Overlay):
         """The slider let go in another chamber: the numbers there at once (they change when it locks), the pick to
         the shell."""
         self._paint_readout()
+        if self.auto_toggle.value():
+            self.auto_toggle.set_value(False)               # a hand pick turns Automatic off: shown at once (S2)
         self.picked.emit(band)
 
     def _to_settings(self):

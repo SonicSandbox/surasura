@@ -895,6 +895,7 @@ class _Duties:
         self.level_text = self.level_tip = strings.LEVEL_WAITING   # W3.1a: the ▾'s words and the level's tip
         self.previews_busy = self.previews_again = False           # W3.1b: the pop's numbers, one read at a time,
         self.previews_dirty = True                                 # and only when what they read moved
+        self.level_asked = 0                                       # the newest level read (older answers dropped)
         self.update_state = self.generate_state = self.auto_state = None
         self.notice = self.junban_said = self.updated_said = None      # the lines toasted once (IK-23)
         self.update_unseen = ()             # the update's failures not looked at yet (the bar's line: HR-23)
@@ -1119,8 +1120,6 @@ class ShellWindow(QMainWindow):
         store catches up (no flash back)."""
         if getattr(view, "language", self.language) != self.language:
             return                                  # W3.2 P0: a view of the language left, queued before the switch
-        if getattr(self, "duties", None) is not None:
-            self._previews_moved()                  # W3.1b: the level's numbers read the library
         moves = getattr(self, "moves", None)
         if moves is not None:
             view = moves.view_in(view)
@@ -1708,8 +1707,8 @@ class ShellWindow(QMainWindow):
                 s.replan.level_changed()                    # W3.3 S3: the journey keeper hears a level key
         elif "strategy" in keys or "target_coverage" in keys:
             self._read_level()                              # W3.1b: the pop greys its slider in coverage mode
-        if (set(keys) - {"logic.selection.band", "logic.selection.auto"} and
-                (s.level_moved(keys) or "exclude_single" in keys or "logic.phrase_rows" in keys)):
+        read = set(keys) - {"logic.selection.band", "logic.selection.auto", "logic.selection.auto_max_words"}
+        if read and (s.level_moved(read) or "exclude_single" in read or "logic.phrase_rows" in read):
             self._previews_moved()                          # W3.1b: a key the bands' numbers read (Settings' set)
         if "anki_sync_auto" in keys:
             self._show_automation(s.automation.state())
@@ -1822,8 +1821,17 @@ class ShellWindow(QMainWindow):
             d.paints[d.anki] = d.paints.get(d.anki, 0) + 1
 
     def _read_level(self):
-        if self.duties is not None:
-            bridge.run_in_worker(self.services.level, then=self._show_level)
+        d = self.duties
+        if d is not None:
+            d.level_asked += 1                             # W3.1b: an older answer never moves the pop's slider
+            asked, level = d.level_asked, self.services.level
+            # a bound method (`_level_answer`) as the answer: Qt drops it with the window
+            bridge.run_in_worker(lambda: (asked, level()), then=self._level_answer)
+
+    def _level_answer(self, answer):
+        asked, level = answer
+        if self.duties is not None and asked == self.duties.level_asked:
+            self._show_level(level)
 
     def _show_level(self, level):
         from app import word_selection
@@ -1884,31 +1892,38 @@ class ShellWindow(QMainWindow):
         """Every band's numbers for the pop's readout (`settings_live.read_previews`), on a worker — only when
         something they read moved since the last read, one at a time, once more if asked meanwhile."""
         d = self.duties
-        if d is None or not d.previews_dirty:
-            return
+        if d is None or not d.previews_dirty or d.pop.coverage is not None:
+            return                                         # nothing moved, or coverage mode: no numbers shown
         if d.previews_busy:
             d.previews_again = True
             return
         d.previews_busy, d.previews_again, d.previews_dirty = True, False, False
-        language = self.language
+        language, settings = self.language, self.services.settings
 
         def read():
             from app.qt import settings_live
-            return settings_live.read_previews(settings_service.thaw(self.services.settings.get()), language)
+            return language, settings_live.read_previews(settings_service.thaw(settings.get()), language)
+        # bound methods as the answers: Qt drops them with the window
+        bridge.run_in_worker(read, then=self._previews_read, failed=self._previews_failed)
 
-        def done(previews):
-            d.previews_busy = False
-            if d.previews_again:
-                self._read_previews()
-                return
-            if language == self.language:                  # a language left meanwhile: its numbers never shown
-                d.pop.set_previews(previews)
+    def _previews_read(self, answer):
+        language, previews = answer
+        d = self.duties
+        if d is None:
+            return
+        d.previews_busy = False
+        if d.previews_again:
+            self._read_previews()
+            return
+        if language == self.language:                      # a language left meanwhile: its numbers never shown
+            d.pop.set_previews(previews)
 
-        def failed(info):
-            applog.log("shell", f"the level's numbers: {info[0]}")
+    def _previews_failed(self, info):
+        applog.log("shell", f"the level's numbers: {info[0]}")
+        d = self.duties
+        if d is not None:
             d.previews_dirty = True                        # asked again at the next opening
-            done(None)
-        bridge.run_in_worker(read, then=done, failed=failed)
+            self._previews_read((None, None))
 
     def _paint_level(self):
         """W3.1a: the level ▾ — its words, its tooltip (the level, then its mark's words) and its mark: Generate failed

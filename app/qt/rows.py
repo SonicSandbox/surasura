@@ -1062,7 +1062,8 @@ class RowDelegate(QStyledItemDelegate):
             g = self._hero_geometry(payload, rect, lines)
             nxt = payload.episodes[payload.next_index]
             out.append(("play", g["play"], payload.play_tip, nxt))
-            out.append(("done", g["done"], strings.ROWS_DONE_ALL_TIP if nxt.watched else
+            all_tip = strings.ROWS_DONE_ALL_MIX_TIP if payload.source == "hato" else strings.ROWS_DONE_ALL_TIP
+            out.append(("done", g["done"], all_tip if nxt.watched else
                         strings.ROWS_DONE_TIP.format(ep=nxt.label), nxt))
             out.append(("more", g["more"], strings.ROWS_MORE_TIP, None))
             if nxt.status is not None:

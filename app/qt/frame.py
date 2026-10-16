@@ -1083,6 +1083,7 @@ class GoalDock(QWidget):
         self.source = source
         self.wells = wells_for(source)
         self.lit = None
+        self._unlit = {}                         # a drag begun while the last one's wells fell: never its dark wells
         self._slot_w = {w: float(F["well-slot"]) for w in self.wells}
         for s in self._slots.values():
             s.stop()

@@ -1175,9 +1175,33 @@ def test_G3_2_up_next_done_with_a_file_left_still_marks_it_watched_and_hatos_mix
     seed.library.commit(items=[{"id": e.id, "watched": 1} for e in hero.episodes])
     assert wait_until(lambda: all(e.watched for e in rows_of(win)[0].episodes), 3)
     writer.calls.clear()
-    click_hero_done(win)
+    done = click_hero_done(win)
+    assert done[2] == strings.ROWS_DONE_ALL_MIX_TIP                   # its tip never promises Finished
     assert calls(writer) == []
     assert win.bar_line.full() == strings.WELL_UNLIT_MIX
+
+
+def test_G3_2_up_next_done_on_a_splits_first_part_all_watched_says_why_and_offers_no_finish(world):
+    """A split's first part never finishes while a later part is in Current (its parts stay together): with every
+    file watched, Up Next's Done writes nothing, shows no finish toast, and the bar says why."""
+    seed, win, writer = world()
+    rs = rows_of(win)
+    i = next(n for n, r in enumerate(rs) if drag.split_first(rs, r))
+    moved = rs[i]
+    lift(win, i)
+    move_global(win, row_point(win, 0))
+    release_global(win, row_point(win, 0))                            # the first part is Up Next now
+    assert rows_of(win)[0].key == moved.key and drag.split_first(rows_of(win), rows_of(win)[0])
+    seed.library.commit(items=[{"id": e.id, "watched": 1} for e in moved.episodes])
+    assert wait_until(lambda: all(e.watched for e in rows_of(win)[0].episodes), 3)
+    QTest.qWait(theme.MOTION["click-swallow-after-drag"] + 30)
+    settle()
+    writer.calls.clear()
+    click_hero_done(win)
+    assert calls(writer) == []
+    assert win.bar_line.full() == strings.WELL_UNLIT_SPLIT
+    shown = win.toasts.card.message if win.toasts.card is not None else None
+    assert shown != strings.DONE_ALL.format(n=len(moved.episodes))   # no finish offered
 
 
 def test_split_first_is_a_part_with_a_later_part_in_current(world):

@@ -997,3 +997,17 @@ NEEDS_CHOOSE_VIDEO_TITLE = "Choose {label}'s video"
 NEEDS_CHOOSE_FOLDER_TITLE = "Choose the folder they're in now"
 NEEDS_FAILED = "That couldn't be done: {why}"
 # --- end W3.2 Q5
+# --- W3.2 Q6: Change cover… (the ⋯ menu's entries, `app/qt/covers.cover_menu_entries`), its toasts and notes
+COVER_MENU = {
+    "choose": ("Choose an image…", "Use a picture from this computer as its cover. It's copied into your User Files and "
+                                  "kept, even when another picture is found"),
+    "generated": ("Use a generated cover", "Show its painted cover from now on, even when a picture is found beside "
+                                           "its files"),
+}
+COVER_PICK_TITLE = "Choose a cover image"
+COVER_PICK_FILTER = "Images (*.jpg *.jpeg *.png *.gif *.webp)"
+COVER_CHOSEN = "New cover for {title}"
+COVER_GENERATED = "{title} shows its generated cover"
+COVER_NOT_IMAGE = "That file isn't a picture Surasura can use as a cover"
+COVER_CANT = "The library can't be changed right now, so its cover stays as it is"
+# --- end W3.2 Q6

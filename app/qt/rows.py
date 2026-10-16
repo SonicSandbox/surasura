@@ -40,6 +40,7 @@ from PyQt6.QtWidgets import QAbstractItemView, QListView, QStyle, QStyledItemDel
 
 from app import theme
 from app.qt import motion, stones, strings, style
+from app.qt import covers as qcovers                 # --- W3.2 Q6: a title's own picture, decoded off the GUI thread
 from app.services import stone_plan, view_rows
 
 ROW_ROLE = Qt.ItemDataRole.UserRole + 1
@@ -178,9 +179,14 @@ def clear_covers():
     _COVER_BYTES[0] = 0
 
 
-def cover(title, w, h, dpr, large=False):
+def cover(title, w, h, dpr, large=False, ref=None):
     """The generated cover of a title (05 §5.6: the fallback and the offline look): the mock's gradient, the title's
     first characters down it. Cached per (title, size, ratio)."""
+    # --- W3.2 Q6: its own picture once decoded (`ref`: the row's `CoverRef`); the generated one meanwhile
+    real = qcovers.decoded(ref, w, h, dpr, "tile" if large else "row") if ref is not None else None
+    if real is not None:
+        return real
+    # --- end W3.2 Q6
     key = (title, int(w), int(h), dpr, large)
     pix = _COVERS.get(key)
     if pix is not None:
@@ -232,10 +238,15 @@ def clear_art():
     _ART_BYTES[0] = 0
 
 
-def art(title, w, h, dpr):
+def art(title, w, h, dpr, ref=None):
     """A Current row's wide art (W3.1a §1 *Rows*): its cover — the generated one, until the store holds pictures —
     cropped to a strip from `art-focus` down, its fade to nothing **baked in** (opaque for its first `art-fade`, then out
     at its right edge). Cached per (title, size, ratio), so a row's picture blits it."""
+    # --- W3.2 Q6: its own picture once decoded (`ref`: the row's `CoverRef`); the generated one meanwhile
+    real = qcovers.decoded(ref, w, h, dpr, "art") if ref is not None else None
+    if real is not None:
+        return real
+    # --- end W3.2 Q6
     key = (title, int(w), int(h), dpr)
     pix = _ART.get(key)
     if pix is not None:
@@ -607,6 +618,10 @@ class RowsModel(QAbstractListModel):
 # --- the delegate: geometry, painting, hit-testing ----------------------------------------------------------------- #
 GRIP = 12                                            # Finished: the grip's column it leaves out (`lead`)
 EP_LABEL_IN = 12 + 20 + 12                           # an episode's label from its rule: a gap, its stone, a gap
+# --- W3.2 Q6: the opened row's standing cover: 64 × 96 (× the text size), 8 px in, 6 px under its head — left of the
+# episodes' stones at every text size (they start 32 px before the art's right edge, the art ≥ 92 × the text size)
+STAND_W, STAND_IN, STAND_TOP = 64, 8, 6
+# --- end W3.2 Q6
 SPRITES_KEPT = 64                                    # painted rows kept (~0.7 MB each at 150 %, a 1,280 px window)
 EPISODES_KEPT = 64                                   # painted episode rows, kept apart: opening rows never pushes rows out
 SPRITE_MB = {"row": 64, "ep": 16}                    # and by bytes, per list: a row is ~2 MB at 250 % (W2.2 review B-2)
@@ -786,8 +801,8 @@ class RowDelegate(QStyledItemDelegate):
             return QSize(100, h + rl("hero-below") + self._lines_h(lines))
         if kind == ROW:                              # one line at every size, its gap half above, half below
             h = self._line_h()
-            if is_open:
-                h += self._episodes_h(payload) + rl("open-pad")
+            if is_open:                              # W3.2 Q6: its standing cover's height at least
+                h += max(self._episodes_h(payload), self.stand_h()) + rl("open-pad")
             return QSize(100, h + rl("gap") + self._lines_h(lines))
         if kind == FINISHED:                         # today's layout (C-scope §2.3)
             return QSize(100, round(theme.SIZES["row"] * f) + gap + self._lines_h(lines))
@@ -1464,7 +1479,7 @@ class RowDelegate(QStyledItemDelegate):
         if opened:
             self._sheen(p, slab)
         a = g["art"]
-        p.drawPixmap(a.topLeft(), art(row.cover_title, a.width(), a.height(), dpr))
+        p.drawPixmap(a.topLeft(), art(row.cover_title, a.width(), a.height(), dpr, ref=row.cover))     # W3.2 Q6
         f = fz()
         m = g["main"]
         mid = slab.top() + slab.height() / 2
@@ -1643,6 +1658,39 @@ class RowDelegate(QStyledItemDelegate):
             self._focus_ring(p, panel, theme.RADII["r-sm"])
         self._paint_episodes(p, row, QRect(rect.left(), slab.bottom() + 1, rect.width(), panel.bottom() -
                                            slab.bottom()), dpr, lines=lines)
+        # --- W3.2 Q6: the whole cover standing at its left (C-scope Q6: the opened row replaces the panel), flat
+        st = self.stand_rect(slab)
+        p.drawPixmap(st.topLeft(), qcovers.pixmap_for(row.cover, row.cover_title, st.width(), st.height(), dpr,
+                                                      "stand"))
+        # --- end W3.2 Q6
+
+    # --- W3.2 Q6: the opened row's standing cover, and a title's picture landing ------------------------------- #
+    @staticmethod
+    def stand_size():
+        """The standing cover (2 : 3) at the text size: inside the number's and the art's columns, left of the
+        episodes' stones at every text size."""
+        f = fz()
+        return round(STAND_W * f), round(STAND_W * 1.5 * f)
+
+    def stand_h(self):
+        return STAND_TOP + self.stand_size()[1]
+
+    def stand_rect(self, slab):
+        w, h = self.stand_size()
+        return QRect(slab.left() + STAND_IN, slab.bottom() + 1 + STAND_TOP, w, h)
+
+    def drop_work(self, work_id):
+        """A title's picture landed (or was let go): its rows' pictures let go, so the next paint draws them with it.
+        -> whether any was."""
+        dropped = False
+        for name in ("row", "ep"):
+            cache = self._sprites[name]
+            for key in list(cache):
+                if getattr(cache[key][0], "work_id", None) == work_id:
+                    self._bytes[name] -= _size(cache.pop(key)[1])
+                    dropped = True
+        return dropped
+    # --- end W3.2 Q6
 
     def keep_only(self, entries, dpr=None, width=None):
         """At rest, a list keeps the pixmaps of these entries only (its screen and the rows ahead, or a hidden list's
@@ -1794,8 +1842,8 @@ class RowDelegate(QStyledItemDelegate):
             p.fillRect(QRectF(x0, y, w, k), c("groove"))
         p.fillRect(QRectF(x0, y + k, w, k), c("line-hi" if hot else "groove-lip"))
 
-    def _paint_cover(self, p, title, rect, dpr, large=False):
-        p.drawPixmap(rect.topLeft(), cover(title, rect.width(), rect.height(), dpr, large))
+    def _paint_cover(self, p, title, rect, dpr, large=False, ref=None):                          # W3.2 Q6: ref
+        p.drawPixmap(rect.topLeft(), cover(title, rect.width(), rect.height(), dpr, large, ref=ref))
 
     def _paint_watched_bar(self, p, row, crect):
         if row.n_files <= 1 or not row.n_watched:
@@ -1833,7 +1881,7 @@ class RowDelegate(QStyledItemDelegate):
         _number_x, x, title_x = self.lead(kind, line_r.left())
         cw, ch = round(theme.SIZES["row-cover-w"] * f), round(theme.SIZES["row-cover-h"] * f)
         crect = QRect(x, line_r.center().y() - ch // 2, cw, ch)
-        self._paint_cover(p, row.cover_title, crect, dpr)
+        self._paint_cover(p, row.cover_title, crect, dpr, ref=row.cover)                         # W3.2 Q6
         x = title_x
         cols = self.columns(line_r, kind)
         text_w = cols["text_right"] - x
@@ -2008,7 +2056,7 @@ class RowDelegate(QStyledItemDelegate):
         """Up Next's head (the old mock's card, flat): no border and no iris bar (the iris is for what the hand
         opened); while it's open, no string (G16)."""
         g = self._hero_geometry(row, rect, lines)
-        self._paint_cover(p, row.cover_title, g["cover"], dpr, large=True)
+        self._paint_cover(p, row.cover_title, g["cover"], dpr, large=True, ref=row.cover)        # W3.2 Q6
         self._paint_watched_bar(p, row, g["cover"])
         nxt = row.episodes[row.next_index]
         e = g["eyebrow"]
@@ -2131,7 +2179,7 @@ class RowDelegate(QStyledItemDelegate):
         p.setPen(QPen(c("line"), 1))
         p.drawPath(path)
         cov = QRect(round(box.left() + 18), round(box.top() + 16), 44, 63)
-        p.drawPixmap(cov.topLeft(), cover(need.cover_title, 44, 63, dpr))
+        p.drawPixmap(cov.topLeft(), cover(need.cover_title, 44, 63, dpr, ref=getattr(need, "cover", None)))     # W3.2 Q6
         x = cov.right() + 16
         w = box.right() - 18 - x
         y = box.top() + 16
@@ -2301,6 +2349,7 @@ class RowsView(QListView):
         self.ep_hover = None                         # --- W3.2 Q8: (row key, episode id) the hand was last on
         self.join_key = None                         # --- W3.2 Q8: the part a drag would join (outlined)
         stones.notifier().ready.connect(self._sheet_ready)
+        qcovers.notifier().ready.connect(self._cover_ready)              # --- W3.2 Q6
 
     def paintEvent(self, event):
         p = QPainter(self.viewport())
@@ -2703,6 +2752,16 @@ class RowsView(QListView):
         t.fade = 1.0 if t.on else 0.0
         if not t.on:
             self._touch.pop(key, None)
+
+    # --- W3.2 Q6
+    def _cover_ready(self, work_id):
+        """A title's picture landed: only the rows showing that title are painted again (S19)."""
+        self.delegate.drop_work(work_id)
+        model = self.model()
+        for i, (_kind, payload, _lines) in enumerate(model.entries):
+            if getattr(payload, "work_id", None) == work_id:
+                self.update(model.index(i))
+    # --- end W3.2 Q6
 
     def _sheet_ready(self, key):
         """The stones' sheet landed: the pictures painted before it are drawn once more, with their stones (B3)."""

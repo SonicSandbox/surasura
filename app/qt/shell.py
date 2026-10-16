@@ -39,6 +39,7 @@ from app.services import jobs as jobs_module
 from app.services import settings as settings_service
 from app.services import status as status_service
 from app.qt import screens                                # W2.2: the pages a library fills
+from app.qt import covers as qcovers                      # --- W3.2 Q6: the titles' own pictures
 
 TABS = ("current", "finished", "needs", "settings")
 STATE_FILE = "window_state.json"
@@ -797,6 +798,8 @@ class ShellWindow(QMainWindow):
         self._stones_hold = object()
         stones.hold(self._stones_hold)
         self.destroyed.connect(lambda _obj=None, token=self._stones_hold: stones.release(token))
+        qcovers.hold(self._stones_hold)                       # --- W3.2 Q6: no cover decoded before the first frame
+        self.destroyed.connect(lambda _obj=None, token=self._stones_hold: qcovers.release(token))
         self.setWindowTitle(strings.WINDOW_TITLE)
         icon = path_utils.get_icon_path()
         if os.path.exists(icon):
@@ -928,6 +931,11 @@ class ShellWindow(QMainWindow):
                     self.arrivals_worker, lambda: self.language, on_change=getattr(reader, "set_estimates", None),
                     plan_token=lambda: _plan_key(getattr(services.library, "numbers", None)))
         # --- end W3.2 Q1
+        # --- W3.2 Q6: the covers' library — its data folder (the opener's), its writer (Change cover…, the disk scan)
+        if services.library is not None:
+            qcovers.use_library(self.language, getattr(getattr(services.library, "opener", None), "data_dir", None),
+                                services.writer, self, self.moves)
+        # --- end W3.2 Q6
 
         self._restore_state(read_state(self.state_file))
 
@@ -1813,6 +1821,18 @@ class ShellWindow(QMainWindow):
         stones.release(self._stones_hold)
         if self.services.library is not None:                 # (no library: no row, no stone to draw)
             stones.get(self.devicePixelRatioF() or 1.0, style.current()[1])
+        # --- W3.2 Q6: the covers asked for meanwhile decode now; the disk scan once per open
+        qcovers.release(self._stones_hold)
+        self.scan_covers()
+
+    def scan_covers(self):
+        """W3.2 Q6: the library's covers from disk (`covers.start_scan`), on a thread of its own — after the first
+        frame, and again when another library opens. -> the scan's thread, or None (no library or no writer)."""
+        library, writer = self.services.library, self.services.writer
+        if library is None or writer is None:
+            return None
+        return qcovers.start_scan(getattr(library, "opener", None), self.language, writer)
+        # --- end W3.2 Q6
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -1934,6 +1954,7 @@ class ShellWindow(QMainWindow):
         moves = getattr(self, "moves", None)
         if moves is not None:
             moves.close()                                 # a drag running at the close is let go
+        qcovers.stop_scan()                               # --- W3.2 Q6: the disk scan stops between titles
         if self._quit == "waiting" or (self._quit is None and (jobs_module.waits_at_quit(self._jobs)
                                                                or self._replan_settling() or self._moves_pending())):
             event.ignore()                                # E20: what can't stop part-way ends first

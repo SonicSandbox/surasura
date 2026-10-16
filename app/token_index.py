@@ -196,7 +196,8 @@ def _decode_tokens(blob):
 # --------------------------------------------------------------------------- #
 # Schema
 # --------------------------------------------------------------------------- #
-# IF NOT EXISTS on every object, deliberately. Two processes can both read a stale `user_version`
+# IF NOT EXISTS on every object, deliberately — a second guard: the build runs in the write lock with the version
+# looked at again inside it (_ensure_schema). Two processes can both read a stale `user_version`
 # (the background indexer and a Generate run race routinely), both decide the schema is missing, and
 # both execute this script; without the guard the loser dies on "table files already exists". The
 # work is idempotent either way — the winner's tables are the ones everybody ends up using.
@@ -224,25 +225,52 @@ CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 """
 
 
+def _statements(script):
+    """A script's statements, one by one (a ';' inside a comment ends none: sqlite3.complete_statement decides)."""
+    out, part = [], ""
+    for piece in script.split(";"):
+        part += piece + ";"
+        if sqlite3.complete_statement(part):
+            statement = part.strip().rstrip(";").strip()
+            if statement:
+                out.append(statement)
+            part = ""
+    return out
+
+
+_REBUILD = [f"DROP TABLE IF EXISTS {t}" for t in ("files", "aggregate", "bound", "meta")] + _statements(_SCHEMA)
+
+
+def _schema_ready(conn):
+    if conn.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION:
+        return False
+    try:  # verify tables actually exist (guard a half-built DB)
+        conn.execute("SELECT names, bound FROM files LIMIT 1")
+        conn.execute("SELECT 1 FROM aggregate LIMIT 1")
+        conn.execute("SELECT 1 FROM bound LIMIT 1")
+    except sqlite3.DatabaseError:
+        return False
+    return True
+
+
 def _ensure_schema(conn):
-    ver = conn.execute("PRAGMA user_version").fetchone()[0]
-    if ver == SCHEMA_VERSION:
-        try:  # verify tables actually exist (guard a half-built DB)
-            conn.execute("SELECT names, bound FROM files LIMIT 1")
-            conn.execute("SELECT 1 FROM aggregate LIMIT 1")
-            conn.execute("SELECT 1 FROM bound LIMIT 1")
-        except sqlite3.DatabaseError:
-            pass  # fall through to rebuild
-        else:
-            _add_counted(conn)
-            return
-    conn.executescript(
-        "DROP TABLE IF EXISTS files; DROP TABLE IF EXISTS aggregate; DROP TABLE IF EXISTS bound; "
-        "DROP TABLE IF EXISTS meta;"
-        + _SCHEMA
-    )
-    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-    conn.commit()
+    """The schema, built when it is missing or old — inside BEGIN IMMEDIATE, the version looked at again inside the lock:
+    two first opens (Generate and the indexer) both read user_version 0, and the second's drops, landing between the
+    first's statements, gave it "no such table" (read as damage: open_store deleted the store) or took tables it was
+    already writing to. Now the second waits for the first's build and finds it done. Statement by statement, never
+    executescript (it COMMITs the open transaction first); a build cut short leaves nothing (rolled back)."""
+    if not _schema_ready(conn):
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            if not _schema_ready(conn):
+                for statement in _REBUILD:
+                    conn.execute(statement)
+                conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+    _add_counted(conn)
 
 
 def _add_counted(conn):
@@ -282,6 +310,9 @@ def open_store(language, path=None):
     def _connect():
         c = sqlite3.connect(db_path, timeout=5.0)
         try:
+            # Before the switch to WAL: a new file's switch is a rollback-mode commit, and at the default FULL each
+            # attempt fsyncs a journal — under a disk storm one attempt's wait could use the loop's whole 5 s.
+            c.execute("PRAGMA synchronous=NORMAL")
             # A new file's switch to WAL answers "database is locked" at once — no busy timeout — while another
             # connection makes the same file (two first opens: Generate and the indexer on a first run). Asked
             # again until the busy timeout, as any other wait for the file.
@@ -295,7 +326,6 @@ def open_store(language, path=None):
                         raise
                     time.sleep(0.02)
             c.execute("PRAGMA busy_timeout=5000")
-            c.execute("PRAGMA synchronous=NORMAL")
             _ensure_schema(c)
         except Exception:
             c.close()   # never leak a handle to a corrupt file (Windows can't delete an open file)

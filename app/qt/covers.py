@@ -95,6 +95,8 @@ def release(token):
         key, job = _DEFERRED.pop(0)
         if key in _running:
             _start(key, job)
+    if _online["pending"]:                      # --- W3.2 L3: the online asks held back meanwhile
+        _flush_soon()
 
 
 def clear(keep_holds=False):
@@ -126,6 +128,8 @@ def _key(ref, shape, w, h, dpr):
 def decoded(ref, w, h, dpr, shape="row", on_ready=None):
     """The title's own picture at (w × h, dpr) in `shape`, or None — the generated cover is the caller's meanwhile
     (the decode is asked for; `on_ready()` runs once on the GUI thread when it lands). GUI thread."""
+    if ref is not None and _online["fetcher"] is not None:      # --- W3.2 L3: a title first painted is asked online
+        ask((ref,))
     if not showable(ref) or w <= 0 or h <= 0:
         return None
     key = _key(ref, shape, w, h, dpr)
@@ -450,3 +454,220 @@ def _say(text):
     say = getattr(window, "say", None)
     if say is not None:
         say(text)
+
+
+# --- W3.2 L3: online covers asked for what the window shows, and Change cover…'s online entries ---------------------- #
+# The shell makes Q7's `covers_online.Fetcher` with the library (`use_fetcher`; again at a library / language switch,
+# stopped at close). A title is asked when it first paints here (`decoded`: rows, Up Next, Goal's dock and wells, the
+# sheet, the tray) or arrives (the shell's `_show_arrivals`) — once a session, never a sweep; with `covers_download`
+# off nothing is kept and nothing read (asked again at its next paint once it is on). Its row read (`resolve`: the
+# store's rows of those works only, `covers_online.wants_for`) and the hand-on run on a worker; the fetcher's own
+# thread does the rest, and a cover it records repaints through the reader's next view.
+_online = {"fetcher": None, "resolve": None, "asked": set(), "pending": set(), "flushing": False, "menu": None}
+asked_online = [0]              # tests: the titles handed to the fetcher's `want`
+
+
+def use_fetcher(fetcher, resolve=None):
+    """(GUI thread.) The library's fetcher, or None, and `resolve(work_ids) -> [Want]` (a worker's: the store read)."""
+    _online.update(fetcher=fetcher, resolve=resolve, asked=set(), pending=set(), menu=None)
+
+
+def fetcher():
+    return _online["fetcher"]
+
+
+def ask_again():
+    """(GUI thread.) Every title may be asked again (after *Remove downloaded covers*: refetched while the switch is on)."""
+    _online["asked"] = set()
+
+
+def resolver(opener):
+    """`resolve` over the library's opener: this worker's handle, read, then closed (a handle belongs to its thread)."""
+    def resolve(work_ids):
+        from app.services import covers_online
+        h = opener.handle() if opener is not None else None
+        if h is None:
+            return []
+        try:
+            return covers_online.wants_for(h, work_ids)
+        finally:
+            opener.close()
+    return resolve
+
+
+def _askable(ref):
+    """What the cover record alone says: no cover, an unlocked generated one, or an online one whose file went."""
+    _w, source, _rel, path, locked = tuple(ref)[:5]
+    return not locked and (source in (None, "generated") or (source in ("anilist", "youtube") and not path))
+
+
+def ask(refs):
+    """(GUI thread.) These titles' covers asked online — each once a session; nothing while the switch is off.
+    -> how many were newly asked."""
+    f = _online["fetcher"]
+    if f is None or _online["resolve"] is None:
+        return 0
+    asked = _online["asked"]
+    new = []
+    for ref in refs:
+        if ref is None or tuple(ref)[0] is None or tuple(ref)[0] in asked or not _askable(ref):
+            continue
+        new.append(tuple(ref)[0])
+    if not new or not f.on():
+        return 0
+    asked.update(new)
+    _online["pending"].update(new)
+    _flush_soon()
+    return len(new)
+
+
+def _flush_soon():
+    if not _online["flushing"]:
+        _online["flushing"] = True
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(0, _flush)
+
+
+def _flush():
+    _online["flushing"] = False
+    f, resolve = _online["fetcher"], _online["resolve"]
+    if _HELD or f is None or resolve is None or not _online["pending"]:
+        return                                  # held: the release flushes
+    ids, _online["pending"] = sorted(_online["pending"]), set()
+    from app.qt import bridge
+    bridge.run_in_worker(_hand_on, f, resolve, ids,
+                         failed=lambda info: print(f"Covers online: the titles couldn't be read: {info[1]}"))
+
+
+def _hand_on(f, resolve, ids):
+    """(A worker.) The works' rows read, handed to the fetcher (which asks the switch again)."""
+    wants = resolve(ids)
+    asked_online[0] += len(wants)
+    return f.want(wants)
+
+
+def _want_of(row):
+    """A menu row's Want, from what the view holds (the candidates read its name; a pick its id and cover file)."""
+    from app.services import covers_online
+    ref = tuple(getattr(row, "cover", None) or (row.work_id, None, None, None, False))
+    title = getattr(row, "cover_title", None) or getattr(row, "title", "")
+    return covers_online.Want(row.work_id, title, None, None, None, None, ref[1], ref[2], ref[3], bool(ref[4]))
+
+
+def change_cover_entries(row):
+    """Every ⋯'s *Change cover…*: [(name, label, tip, callable)] — Q6's two, then, only with the fetcher and
+    `covers_download` on, *Find it online…* (the top five candidates) and *Paste a link*."""
+    from app.qt import strings
+    out = cover_menu_entries(row)
+    f = _online["fetcher"]
+    if out and f is not None and f.on():
+        out.append(("cover-online", *strings.COVER_ONLINE, lambda: find_online(row)))
+        out.append(("cover-paste", *strings.COVER_PASTE, lambda: paste_link(row)))
+    return out
+
+
+def add_cover_menu(menu, row, writable=True, reason=None):
+    """*Change cover…* as a submenu of `menu` (a tray's, a Goal tile's, Finished's ⋯), its entries' tips shown; greyed
+    with the store's reason while it can't be written. -> the submenu, or None (nothing to offer)."""
+    from PyQt6.QtGui import QAction
+    from app.qt import strings
+    entries = change_cover_entries(row)
+    if not entries:
+        return None
+    sub = menu.addMenu(strings.ITEM_MENU["cover"][0])
+    sub.setObjectName("rowmenu")
+    sub.setToolTipsVisible(True)
+    sub.menuAction().setToolTip(strings.ITEM_MENU["cover"][1] if writable else (reason or ""))
+    sub.menuAction().setEnabled(writable)
+    for _name, label, tip, call in entries:
+        act = QAction(label, sub)
+        act.setToolTip(tip if writable else (reason or tip))
+        act.setEnabled(writable)
+        act.triggered.connect(lambda _c=False, c=call: c())
+        sub.addAction(act)
+    return sub
+
+
+def find_online(row, at=None):
+    """*Find it online…*: the top five candidates read on a worker, then a menu of them at the hand (`at`) — a pick
+    fetched and kept as the user's (locked, its toast's Undo)."""
+    from app.qt import bridge, strings
+    f, writer = _online["fetcher"], _library["writer"]
+    if f is None or writer is None or not writer.can_write():
+        _say(strings.COVER_CANT)
+        return False
+    want = _want_of(row)
+    _say(strings.COVER_LOOKING.format(title=want.title))
+    if at is None:
+        from PyQt6.QtGui import QCursor
+        at = QCursor.pos()
+    bridge.run_in_worker(f.candidates, want, then=lambda found: _offer(row, want, found, at),
+                         failed=lambda _info: _offer(row, want, [], at))
+    return True
+
+
+def _offer(row, want, found, at):
+    from PyQt6.QtGui import QAction
+    from PyQt6.QtWidgets import QMenu
+    from app.qt import strings
+    if not found:
+        _say(strings.COVER_NONE_FOUND.format(title=want.title))
+        return None
+    m = QMenu(_library["window"])
+    m.setObjectName("rowmenu")
+    m.setToolTipsVisible(True)
+    m.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+    for c in found:
+        act = QAction(" · ".join(str(p) for p in (c.title, c.year, c.format) if p), m)
+        act.setToolTip(strings.COVER_CANDIDATE_TIP.format(title=want.title))
+        act.triggered.connect(lambda _c=False, cand=c: pick(row, want, cand))
+        m.addAction(act)
+    _online["menu"] = m
+    m.popup(at)
+    return m
+
+
+def pick(row, want, candidate):
+    """A candidate chosen: fetched on a worker and kept as the user's; its record given with a toast and Undo."""
+    f = _online["fetcher"]
+    return _kept(row, want, lambda deferred: f.pick(want, candidate, writer=deferred))
+
+
+def paste_link(row, link=None):
+    """*Paste a link*: the link copied (the clipboard's text, or `link`) — AniList, TMDB or YouTube only — fetched on
+    a worker and kept as the user's (locked, Undo)."""
+    from app.qt import strings
+    from app.services import covers_online
+    if link is None:
+        from PyQt6.QtWidgets import QApplication
+        link = QApplication.clipboard().text()
+    link = (link or "").strip()
+    if covers_online.parse_link(link) is None:
+        _say(strings.COVER_PASTE_NOT_A_LINK)
+        return False
+    f, want = _online["fetcher"], _want_of(row)
+
+    def fetch(deferred):
+        path, why = f.paste(want, link, writer=deferred)
+        return path if path else why
+    return _kept(row, want, fetch)
+
+
+def _kept(row, want, fetch):
+    from app.qt import bridge, strings
+    writer = _library["writer"]
+    if _online["fetcher"] is None or writer is None or not writer.can_write():
+        _say(strings.COVER_CANT)
+        return False
+    deferred = _Deferred(writer)
+
+    def done(answer):
+        if deferred.call is None:
+            _say(strings.COVER_PASTE_WHY[answer if answer in strings.COVER_PASTE_WHY else "failed"])
+            return
+        args, kw = deferred.call
+        _give(strings.COVER_CHOSEN.format(title=want.title), row,
+              lambda label: writer.set_cover(*args, label=label, **kw))
+    bridge.run_in_worker(fetch, deferred, then=done, failed=lambda _info: done(None))
+    return True
+# --- end W3.2 L3

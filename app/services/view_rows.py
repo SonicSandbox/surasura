@@ -96,6 +96,9 @@ Row = namedtuple("Row", Row._fields[:Row._fields.index("string")] + ("cover",) +
 Need = namedtuple("Need", Need._fields + ("cover",), defaults=(None,))
 Arrival = namedtuple("Arrival", Arrival._fields + ("cover",), defaults=(None,))
 Goal = namedtuple("Goal", Goal._fields + ("cover_refs",), defaults=tuple(Goal._field_defaults.values()) + ((),))    # beside `covers`, the first nine works'
+# --- W3.2 L3: a Goal tile's cover record (the sheet paints its picture)
+GoalWork = namedtuple("GoalWork", GoalWork._fields + ("cover",), defaults=(None,))
+# --- end W3.2 L3
 
 
 def cover_of(work):
@@ -879,7 +882,8 @@ def _goal_work(key, ps, works, guessed):
                     pieces=tuple(pieces_), item_ids=tuple(it["id"] for it in files),
                     folder=(first.get("rel_path") or "").rpartition("/")[0],
                     tip=STRINGS["goal_tile_tip"].format(title=title, line=line, first=pieces_[0].line),
-                    accessible=STRINGS["acc_goal_tile"].format(title=title, line=line))
+                    accessible=STRINGS["acc_goal_tile"].format(title=title, line=line),
+                    cover=cover_of(work))           # --- W3.2 L3
 
 
 def goal_tiles(goal_items, works, guessed=None, before=None):

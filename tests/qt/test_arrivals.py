@@ -302,7 +302,9 @@ def test_the_menu_lists_its_entries_in_order_and_disables_the_moves_on_a_read_on
     row = tray_rows(win)[0]
     menu = tray_of(win).menu(row)
     labels = [a.text() for a in menu.actions() if not a.isSeparator()]
-    assert labels == [strings.TRAY_MENU[n][0] for n in arrivals.MENU]
+    # --- W3.2 L3: *Change cover…* (a submenu) after the moves, before *Open its folder*
+    want = [strings.TRAY_MENU[n][0] for n in arrivals.MENU]
+    assert labels == want[:5] + [strings.ITEM_MENU["cover"][0]] + want[5:]
     menu.close()
     writer.writable = False
     menu = tray_of(win).menu(row)

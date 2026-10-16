@@ -936,6 +936,10 @@ class ShellWindow(QMainWindow):
             qcovers.use_library(self.language, getattr(getattr(services.library, "opener", None), "data_dir", None),
                                 services.writer, self, self.moves)
         # --- end W3.2 Q6
+        # --- W3.2 L3: online covers — Q7's fetcher made with the library (`cover_fetcher`), asked for what shows
+        self._fetcher = None
+        self.cover_fetcher()
+        # --- end W3.2 L3
 
         self._restore_state(read_state(self.state_file))
 
@@ -1053,6 +1057,8 @@ class ShellWindow(QMainWindow):
             self.show_status(self.services.status.snapshot())
         if self.dock is not None:                   # W3.1a: Goal's bar (and the wells' covers) from the same view
             self._show_dock(view)
+        if self.cover_fetcher() is not None:        # --- W3.2 L3: the arrivals' covers asked online as they arrive
+            qcovers.ask([getattr(a, "cover", None) for a in getattr(view, "arrivals", ()) or ()])
         self._show_arrivals(view)                   # W3.2 Q1: the inset, the tray, the numbers asked
         sheet = getattr(self, "goal_sheet", None)   # --- W3.2 Q2: the sheet's tiles; a piece it moved, scrolled to
         if sheet is not None:
@@ -1120,6 +1126,49 @@ class ShellWindow(QMainWindow):
         if self.arrival_numbers is not None:
             self.arrival_numbers.recheck()
     # --- end W3.2 Q1
+
+    # --- W3.2 L3: online covers ------------------------------------------------------------------------------------ #
+    def cover_fetcher(self):
+        """The library's online covers (Q7's `covers_online.Fetcher`) for the window's language and writer as they stand:
+        made again when either moved (a library or language switch; the old one stopped), None without a library or a
+        writer. It reads `covers_download` from the settings in memory before every request: off, nothing leaves."""
+        services = self.services
+        writer = getattr(services, "writer", None)
+        if services.library is None or writer is None:
+            return None
+        f = getattr(self, "_fetcher", None)
+        if f is not None and f.language == self.language and f.writer is writer:
+            return f
+        if f is not None:
+            f.stop(timeout=0)
+        from app.services import covers_online
+        make = getattr(services, "cover_fetcher_factory", None) or covers_online.Fetcher
+        f = self._fetcher = make(self.language, writer, settings=services.settings.get)
+        qcovers.use_fetcher(f, qcovers.resolver(getattr(services.library, "opener", None)))
+        return f
+
+    def ask_shown_covers(self):
+        """The titles on screen now (the shown list's rows in view, New arrivals, Goal's hand) asked online — after the
+        switch is turned on, since rows already painted aren't painted again by it. -> how many were asked."""
+        if self.cover_fetcher() is None:
+            return 0
+        refs = []
+        page = self.pages.currentWidget()
+        lst = getattr(page, "list", None)
+        model = lst.model() if lst is not None else None
+        entries = getattr(model, "entries", None)
+        if entries:
+            vp = lst.viewport().rect()
+            top, bottom = lst.indexAt(vp.topLeft()).row(), lst.indexAt(vp.bottomLeft()).row()
+            top = max(0, top)
+            bottom = len(entries) - 1 if bottom < 0 else bottom
+            refs += [getattr(entries[i][1], "cover", None) for i in range(top, bottom + 1)]
+        view = getattr(self.page_widgets.get("current"), "view_model", None)
+        if view is not None:
+            refs += [getattr(a, "cover", None) for a in getattr(view, "arrivals", ()) or ()]
+            refs += list(getattr(view.goal, "cover_refs", ()) or ()) if view.goal is not None else []
+        return qcovers.ask(refs)
+    # --- end W3.2 L3
 
     def _warm_hidden_pages(self):
         """The hidden tabs' lists paint their first screen ahead, laid out as the shown list (`RowsView.warm_like`)."""
@@ -1362,6 +1411,8 @@ class ShellWindow(QMainWindow):
     def _settings_written(self, keys):
         if "app_motion" in keys:
             motion.clock().mode.set_setting(self.services.settings.get().get("app_motion"))
+        if "covers_download" in keys:                   # --- W3.2 L3: turned on, what is on screen now is asked
+            self.ask_shown_covers()
         if "connect_enabled" in keys:                   # Connect's tick is skipped while off: its line asked now
             refresh = getattr(self.services.status, "refresh_soon", None)
             if refresh is not None:
@@ -1955,6 +2006,10 @@ class ShellWindow(QMainWindow):
         if moves is not None:
             moves.close()                                 # a drag running at the close is let go
         qcovers.stop_scan()                               # --- W3.2 Q6: the disk scan stops between titles
+        if getattr(self, "_fetcher", None) is not None:  # --- W3.2 L3: the online covers stop (between requests)
+            self._fetcher.stop(timeout=0)
+            if qcovers.fetcher() is self._fetcher:
+                qcovers.use_fetcher(None)
         if self._quit == "waiting" or (self._quit is None and (jobs_module.waits_at_quit(self._jobs)
                                                                or self._replan_settling() or self._moves_pending())):
             event.ignore()                                # E20: what can't stop part-way ends first

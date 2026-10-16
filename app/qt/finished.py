@@ -368,6 +368,12 @@ class FinishedActions(QObject):
         m.setToolTipsVisible(True)
         m.setAccessibleName(strings.FIN_MENU_NAME.format(title=row.title))
         for name, label, tip, ok, children in self.menu_entries(row):
+            if name == "folder":                                    # --- W3.2 L3: Change cover… before Open its folder
+                from app.qt import covers as qcovers
+                writable = self.writer.can_write()
+                raw = "" if writable else (self.writer.reason() or "")
+                qcovers.add_cover_menu(m, row, writable, None if writable else strings.FIN_REFUSED_TIP.format(
+                    reason=strings.READ_ONLY_REASONS.get(raw) or raw))
             if children is not None:
                 sub = m.addMenu(label)
                 sub.setObjectName("rowmenu")

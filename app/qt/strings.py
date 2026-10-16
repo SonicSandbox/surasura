@@ -1011,3 +1011,18 @@ COVER_GENERATED = "{title} shows its generated cover"
 COVER_NOT_IMAGE = "That file isn't a picture Surasura can use as a cover"
 COVER_CANT = "The library can't be changed right now, so its cover stays as it is"
 # --- end W3.2 Q6
+# --- W3.2 L3: Change cover…'s online entries (only with Download covers on) and its words
+COVER_ONLINE = ("Find it online…", "Look its name up on AniList and choose one of the top five covers")
+COVER_PASTE = ("Paste a link", "Use the cover of the AniList, TMDB or YouTube page whose link you copied")
+COVER_LOOKING = "Looking {title} up on AniList…"
+COVER_CANDIDATE_TIP = "Use this cover for {title}. It's kept, even when another picture is found"
+COVER_NONE_FOUND = "AniList found no cover for {title}"
+COVER_PASTE_NOT_A_LINK = "Copy an AniList, TMDB or YouTube link first, then choose Paste a link"
+COVER_PASTE_WHY = {
+    "off": "Download covers is off in Settings → Connections, so nothing was fetched",
+    "no_key": "TMDB covers aren't available yet: copy an AniList or YouTube link instead",
+    "failed": "That cover couldn't be fetched. Check the link, or try again later",
+}
+COVERS_REMOVED = "Downloaded covers removed. Pictures beside your files come back by themselves"
+COVERS_REMOVE_NONE = "There's no library open, so there are no downloaded covers to remove"
+# --- end W3.2 L3

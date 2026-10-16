@@ -91,6 +91,11 @@ class ItemActions(QObject):
             self.cover_entries = getattr(covers, "cover_menu_entries", None)
         except ImportError:
             pass
+        # --- W3.2 L3: Q6's entries and, with Download covers on, Q7's online ones — in this hook's shape
+        from app.qt import covers as qcovers
+        self.cover_entries = lambda row: [(label, tip, True, call)
+                                          for _name, label, tip, call in qcovers.change_cover_entries(row)]
+        # --- end W3.2 L3
         self.last_menu = None
         self.question = None                         # *Remove…*'s confirmation while it is open
 

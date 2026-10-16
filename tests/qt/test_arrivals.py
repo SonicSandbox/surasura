@@ -170,7 +170,7 @@ def test_A2_22_the_inset_counts_files_and_shows_the_three_newest_covers_in_the_h
     assert inset.accessibleName() == strings.ARRIVALS_NAME.format(n=10)
     assert inset.toolTip().startswith("New arrivals")
     lay = win.header.layout()
-    assert lay.indexOf(inset) == lay.count() - 1                      # after the stretch: the level ▾ and ? follow it
+    assert lay.indexOf(inset) == lay.indexOf(win.add_stone) - 1       # after the stretch: the level ▾, + Add and ? follow it
 
 
 def test_A2_32_with_nothing_arrived_the_inset_is_absent_and_placing_the_last_closes_the_tray(world):

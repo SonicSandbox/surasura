@@ -33,8 +33,10 @@ LIMIT = 6                                   # hits shown a group (A2 #81)
 GROUPS = ("current", "goal", "arrivals", "finished")
 
 Hit = namedtuple("Hit", "key group title spans where item_ids work_id piece_id can_play can_top play_tip cover_title "
-                        "accessible")
+                        "accessible top_ids", defaults=(None,))
 #   spans: ((start, end), …) in `title`'s characters, the parts the query lights; () when the title doesn't hold it
+#   top_ids (W3.2 Q3): what ⤒ moves when it isn't `item_ids` — a Goal title's next part (the piece holding its next
+#   unwatched file, else its first), the rest staying in Goal (A2 #83); None elsewhere
 Group = namedtuple("Group", "kind label hits total")
 
 STRINGS = {
@@ -90,11 +92,24 @@ def _range_of(media, episodes):
 
 
 def _hit(key, group, title, query, language, where, item_ids, work_id, piece_id, can_play=False, can_top=True,
-         play_tip="", cover_title=None):
+         play_tip="", cover_title=None, top_ids=None):
     return Hit(key=key, group=group, title=title, spans=spans(title, query, language), where=where,
                item_ids=tuple(item_ids), work_id=work_id, piece_id=piece_id, can_play=can_play, can_top=can_top,
                play_tip=play_tip, cover_title=cover_title or title,
-               accessible=STRINGS["acc_hit"].format(title=title, where=where))
+               accessible=STRINGS["acc_hit"].format(title=title, where=where),
+               top_ids=tuple(top_ids) if top_ids is not None else None)
+
+
+def _next_part(files):
+    """(W3.2 Q3) A Goal title's next part: the files of the piece holding its first unwatched file (else its first
+    file's piece), in Goal's order — a file in no piece is a part of its own."""
+    if not files:
+        return ()
+    first = next((r for r in files if not r.get("watched")), files[0])
+    piece = first.get("piece_id")
+    if piece is None:
+        return (first["id"],)
+    return tuple(r["id"] for r in files if r.get("piece_id") == piece)
 
 
 def _goal(store, view, works, items, probe, query, language, limit):
@@ -145,7 +160,7 @@ def _goal(store, view, works, items, probe, query, language, limit):
         where = STRINGS["goal_next" if n > 1 and nxt is not None else "goal"].format(
             n=view_rows.thousands(n), units=one if n == 1 else many, next=nxt.label if nxt is not None else "")
         hits.append(_hit(f"w{w}", "goal", row.title, query, language, where, [r["id"] for r in files], w, None,
-                         cover_title=row.cover_title))
+                         cover_title=row.cover_title, top_ids=_next_part(files)))
     return tuple(hits), len(order), {w for w, _o in first}
 
 

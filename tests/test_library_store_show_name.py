@@ -20,45 +20,45 @@ from tests.test_library_store_support import (LANGUAGES, entry, library, migrate
 # --- show_of_name (pure) ---------------------------------------------------------------------------- #
 
 @pytest.mark.parametrize("file_name", [
-    "[SubsPlease] Yomi no Tsugai - 16 (1080p) [ABCD1234].ja.ass",
-    "[SubsPlease] Yomi no Tsugai - 12v2 (1080p) [0F1E2D3C].ass",
-    "[NanakoRaws] Yomi no Tsugai S01E13 (1080p).ass",
-    "Yomi no Tsugai E13.srt",
-    "Yomi no Tsugai #13.srt",
-    "Yomi_no_Tsugai_-_14_[720p].ja-JP.srt",
-    "Yomi.no.Tsugai.S01E15.1080p.WEB.mkv",
-    "HighPriority/Hato/[SubsPlease] Yomi no Tsugai - 17 (1080p) [9A8B7C6D].ja.ass",
+    "[SubsPlease] Hoshizora Kissa - 16 (1080p) [ABCD1234].ja.ass",
+    "[SubsPlease] Hoshizora Kissa - 12v2 (1080p) [0F1E2D3C].ass",
+    "[NanakoRaws] Hoshizora Kissa S01E13 (1080p).ass",
+    "Hoshizora Kissa E13.srt",
+    "Hoshizora Kissa #13.srt",
+    "Hoshizora_Kissa_-_14_[720p].ja-JP.srt",
+    "Hoshizora.Kissa.S01E15.1080p.WEB.mkv",
+    "HighPriority/Hato/[SubsPlease] Hoshizora Kissa - 17 (1080p) [9A8B7C6D].ja.ass",
 ])
 def test_release_names_of_one_show_read_as_one_show(file_name):
     """Every way a release names an episode — a leading [group], (resolution) / [hash] tags, ` - 16`, `v2`, `S01E13`,
     `E13`, `#13`, a language tag and the extension; scene names with dots or underscores for spaces — comes off,
     and what is left is the show, as written."""
-    assert ls.show_of_name(file_name) == "Yomi no Tsugai"
+    assert ls.show_of_name(file_name) == "Hoshizora Kissa"
 
 
 def test_japanese_and_chinese_episode_markers_and_full_width_forms():
     """第05話 / 第13集 are episode markers; a full-width ＃ and digits read as their ASCII forms (NFKC); a Japanese
     title's own 【】 brackets are part of its name, not a tag."""
-    assert ls.show_of_name("葬送のフリーレン 第05話.srt") == "葬送のフリーレン"
-    assert ls.show_of_name("葬送のフリーレン　＃０５.ja.srt") == "葬送のフリーレン"
+    assert ls.show_of_name("月影の旅人 第05話.srt") == "月影の旅人"
+    assert ls.show_of_name("月影の旅人　＃０５.ja.srt") == "月影の旅人"
     assert ls.show_of_name("某部电视剧 第13集.zh.srt") == "某部电视剧"
-    assert ls.show_of_name("【推しの子】 第05話.ass") == "【推しの子】"
+    assert ls.show_of_name("【星の歌】 第05話.ass") == "【星の歌】"
 
 
 def test_a_season_stays_part_of_the_name():
     """Another season is another title (as `_work_by_record` keeps them): `S2`, `2期`, `II`, `2nd Season` stay in the
     name, and `S02E05` reads as `… S2` — the same show a `… S2 - 05` release names; season 1 is the show itself."""
-    s2 = ls.show_of_name("[SubsPlease] Yomi no Tsugai S2 - 05 (1080p) [ABCD1234].ass")
-    assert s2 == ls.show_of_name("[NanakoRaws] Yomi no Tsugai S02E05 (1080p).ass") == "Yomi no Tsugai S2"
-    assert ls.search_fold(s2, "ja") != ls.search_fold(ls.show_of_name("Yomi no Tsugai S01E05.ass"), "ja")
-    assert ls.show_of_name("葬送のフリーレン 第2期 第05話.srt") == "葬送のフリーレン 第2期"
+    s2 = ls.show_of_name("[SubsPlease] Hoshizora Kissa S2 - 05 (1080p) [ABCD1234].ass")
+    assert s2 == ls.show_of_name("[NanakoRaws] Hoshizora Kissa S02E05 (1080p).ass") == "Hoshizora Kissa S2"
+    assert ls.search_fold(s2, "ja") != ls.search_fold(ls.show_of_name("Hoshizora Kissa S01E05.ass"), "ja")
+    assert ls.show_of_name("月影の旅人 第2期 第05話.srt") == "月影の旅人 第2期"
     assert ls.show_of_name("[Group] Some Show II - 03 (720p).ass") == "Some Show II"
     assert ls.show_of_name("[Group] Some Show 2nd Season - 03.ass") == "Some Show 2nd Season"
 
 
 def test_a_number_inside_the_title_is_kept():
     """Only a marked episode number comes off: a number that is part of the title stays."""
-    assert ls.show_of_name("[Group] Mob Psycho 100 - 05 (1080p).ass") == "Mob Psycho 100"
+    assert ls.show_of_name("[Group] Robo Kissa 100 - 05 (1080p).ass") == "Robo Kissa 100"
 
 
 @pytest.mark.parametrize("file_name", ["05.srt", "[SubsPlease] - 05 (1080p) [ABCD1234].ass", "第05話.srt",

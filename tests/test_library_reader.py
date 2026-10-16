@@ -571,3 +571,114 @@ def test_a_move_listener_that_raises_never_stops_the_reader():
     seed.library.commit(order=True)
     reader._look()
     assert len(heard) == 1 and not views[-1][1].busy
+
+
+# --- W3.2 L1 fix round: B1, the hour ------------------------------------------------------------------------------ #
+def test_B1_an_hour_after_the_open_the_watched_reader_owes_one_full_sync_and_sleeps_again_never_spins(tmp_path,
+                                                                                                    monkeypatch):
+    """The window's watch has no hourly round of its own: an hour after its last full look the Lookout's round falls
+    due, and only `looked()` moves it. The reader owes one full sync then and calls it; it waits the next hour, never
+    0 s for the rest of the session (a core at 100 % from the second hour on)."""
+    from app import library_store, library_watch
+    import pytest
+    if not library_watch.watchable():
+        pytest.skip("the tree watch is Windows'")
+    os.makedirs(tmp_path / "HighPriority" / "葬送のフリーレン")
+    clock = [1000.0]
+    synced = []
+    monkeypatch.setattr(library_store, "sync_for_window", lambda store, folders=None: synced.append(folders))
+    seed = window_seed.build()
+    reader = _reader(seed, watch=lambda store, wake: library_watch.Lookout(
+        str(tmp_path), under=["HighPriority"], wake=wake, clock=lambda: clock[0]).open())
+    seed.opener.check()                                      # the store can be used (the reader's own first look)
+    h = seed.opener.handle()
+    try:
+        reader._watching(h)                                  # the open: its full sync
+        assert _wait(lambda: synced == [None] and not reader._syncing)
+        assert reader._timeout() > library_watch.ROUND_S - 1
+        clock[0] += library_watch.ROUND_S + 1                # the hour went by
+        assert reader._lookout.timeout() == 0.0              # the round is due: what made the reader spin
+        reader._watching(h)
+        assert _wait(lambda: synced == [None, None] and not reader._syncing)
+        assert reader._timeout() > library_watch.ROUND_S - 1  # asleep until the next hour
+        reader._watching(h)
+        assert synced == [None, None]                        # owed once, not every look
+    finally:
+        reader._unwatch()
+
+
+def test_B1_while_the_store_cant_be_used_a_due_watch_timer_waits_the_poll_never_zero(tmp_path):
+    """Read-only or busy, the reader never reaches `_watching` (which takes what the watch says is due): a timer due
+    meanwhile (the hour, a settled folder) floors the wait at `poll` — never a loop of looks back to back."""
+    from app import library_watch
+    import pytest
+    if not library_watch.watchable():
+        pytest.skip("the tree watch is Windows'")
+    clock = [1000.0]
+    seed = window_seed.build()
+    reader = _reader(seed)
+    reader._lookout = library_watch.Lookout(str(tmp_path), wake=reader._wake, clock=lambda: clock[0]).open()
+    try:
+        clock[0] += library_watch.ROUND_S + 1
+        assert reader._lookout.timeout() == 0.0
+        reader._mode = ("read_only", "葬送のフリーレン is being moved")
+        assert reader._timeout() >= reader.poll
+        reader._cards_stale, reader._cards_all_at = True, 0.0
+        assert reader._timeout() >= reader.poll
+    finally:
+        reader._lookout.close()
+
+
+# --- W3.2 L1 fix round: S1, a large library's sync in its own process --------------------------------------------- #
+def test_S1_a_large_librarys_sync_helper_that_finds_the_store_busy_or_fails_raises_busy_so_the_reader_keeps_it_owed(
+        monkeypatch):
+    """From `SYNC_IN_PROCESS_AT` items the sync runs in a helper process. Its exit code was ignored: busy (Connect
+    holding the lock), failed or out of time all read as done, and a hand copy or hato drop made meanwhile waited
+    for some later report. Now each raises `StoreBusy`, as the in-process sync does, and the reader keeps it owed."""
+    import subprocess
+    import pytest
+    from app import library_store as ls
+    from tests.test_library_store_support import migrated
+    store = migrated("ja", shows=1, episodes=2)
+    try:
+        monkeypatch.setattr(ls, "SYNC_IN_PROCESS_AT", 0)
+        asked = []
+
+        def helper(code):
+            def run(args, **kw):
+                asked.append(args)
+                if code == "timeout":
+                    raise subprocess.TimeoutExpired(args, kw.get("timeout"))
+                return subprocess.CompletedProcess(args, code)
+            return run
+        for code in (ls.EXIT_BUSY, ls.EXIT_FAILED, "timeout"):
+            monkeypatch.setattr(subprocess, "run", helper(code))
+            with pytest.raises(ls.StoreBusy):
+                ls.sync_for_window(store, folders=["HighPriority"])
+        for code in (ls.EXIT_DONE, ls.EXIT_NOTHING, ls.EXIT_NEEDS_YOU):
+            monkeypatch.setattr(subprocess, "run", helper(code))
+            assert ls.sync_for_window(store) is None
+        assert asked[0][-2:] == ["--folder", "HighPriority"]
+    finally:
+        store.close()
+
+
+def test_S1_the_sync_helper_answers_a_busy_store_with_its_own_code_never_failed(monkeypatch):
+    """`sync_process` (the helper's `sync`): a store busy under another program's lock is EXIT_BUSY (try again), a
+    real failure EXIT_FAILED — both owed again by the window, told apart in the helper's log."""
+    from app import library_store as ls
+
+    class Busy:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def sync_disk(self, folders=None):
+            raise ls.StoreBusy("ぼっち・ざ・ろっく！ is being saved by another program")
+    monkeypatch.setattr(ls, "update_staged", lambda: False)
+    monkeypatch.setattr(ls, "open_store", lambda *a, **kw: Busy())
+    assert ls.sync_process("ja") == ls.EXIT_BUSY
+    monkeypatch.setattr(Busy, "sync_disk", lambda self, folders=None: 1 / 0)
+    assert ls.sync_process("ja") == ls.EXIT_FAILED

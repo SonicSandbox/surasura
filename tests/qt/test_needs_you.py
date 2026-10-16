@@ -21,7 +21,7 @@ import pytest
 pytest.importorskip("PyQt6")
 from PyQt6.QtCore import Qt
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication, QLabel
+from PyQt6.QtWidgets import QApplication, QLabel, QPushButton
 
 from app import path_utils
 from app.qt import needs as needs_ui
@@ -539,3 +539,41 @@ def test_N9_an_empty_status_tick_works_nothing_out_and_repaints_no_card(world):
     assert ny.gathers == gathers and ny.cards.builds == builds
     settle(ny)                                                   # asked again: the same entries → nothing rebuilt
     assert ny.cards.builds == builds
+
+
+def test_L1_IK4_a_300_file_show_gone_shows_twelve_lines_and_and_n_more_its_answers_still_count_every_file(qapp):
+    """IK-L1-4: a card built a label and up to three buttons per gone file, on the window's thread: E8's moved show of
+    300 files made ~1,000 widgets. Twelve lines show, then *and 288 more*; the card's own answers act on all."""
+    show = "葬送のフリーレン"
+    lines = tuple(service.NeedLine(key=f"item:{i}", text=f"{show} 第{i:03d}話 · its file is gone", item_id=i,
+                                   label=f"第{i:03d}話", number=i, rel_path=f"HighPriority/{show}/{i:03d}.srt",
+                                   actions=("choose_file", "keep_words", "remove")) for i in range(1, 301))
+    entry = service.Entry(key="gone:show:300", kind=service.GONE, title=show, lines=lines,
+                          actions=("choose_folder", "keep_words", "remove"), unseen=True,
+                          data={"item_ids": list(range(1, 301)), "folder": f"HighPriority/{show}"})
+    cards = needs_ui.NeedsCards()
+    cards.show_entries([entry])
+    card = cards.card(entry.key)
+    texts = [lab.text() for lab in card.findChildren(QLabel)]
+    assert sum(1 for t in texts if t.endswith("its file is gone")) == needs_ui.LINES_SHOWN
+    assert strings.NEEDS_MORE_LINES.format(n="288") in texts
+    assert len(card.findChildren(QPushButton)) <= 3 * needs_ui.LINES_SHOWN + 3
+    assert set(service.answer_keys(entry)) == {service.item_key(i) for i in range(1, 301)}   # every file
+    cards.deleteLater()
+
+
+def test_L1_IK5_choose_a_folder_looks_for_the_shows_folder_off_the_windows_thread(world, monkeypatch):
+    """IK-L1-5: `os.path.isdir(start)` ran on the window's thread — exactly when a drive may be offline."""
+    seed, win, writer, ny = world()
+    gone = next(e for e in ny.entries if e.kind == service.GONE)
+    looked, picked = [], []
+    real_isdir = os.path.isdir
+
+    def isdir(path):
+        looked.append(threading.current_thread() is threading.main_thread())
+        return real_isdir(path)
+    monkeypatch.setattr(needs_ui.os.path, "isdir", isdir)
+    ny.pick_folder = lambda title, start: picked.append(start) or ""
+    button(ny, gone.key, "choose_folder").click()
+    assert wait_until(lambda: picked, 5)
+    assert looked and not any(looked)

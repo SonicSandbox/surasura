@@ -301,8 +301,9 @@ class Writer:
         in the data folder land in Finished, dated *Earlier*. `copied`: those the job copied in — its Undo sends
         those to the trash and takes every row it placed out; a file it didn't copy stays where it is; one the store
         refuses or fails sends them to the trash (Finished isn't walked: no sync would ever take them up). `answer`:
-        called once with the command when it is done with (this thread): `saved`, else `refused` (the store's reason)
-        or `failed` (the error) — never for one left in the journal at the quit."""
+        called once with the command when it is done with (this thread): `saved` (and `changed`: a change on its way
+        to `on_saved`, else nothing new), else `refused` (the store's reason) or `failed` (the error) — never for one
+        left in the journal at the quit."""
         cmd = {"op": "import_finished", "ids": [], "paths": [os.fspath(p) for p in paths],
                "copied": [os.fspath(p) for p in copied], "label": label}
         if answer is not None:
@@ -385,9 +386,9 @@ class Writer:
         `rules` (settings.json's `placing_rules` as the caller read them) place it in the same store command (D30): an
         arrival never places itself. One queued, journalled command (a replay registers again: `register` finds the
         item it made, and the same record writes nothing). Never on the Undo stack: a download is no move of the
-        user's (the tray's placing is). `done(waiting, placed)` (the writer's thread, once it lands; not after a
-        replay): how many wait in New arrivals and how many a rule placed. -> the command's number, or None when
-        refused (read-only, E4)."""
+        user's (the tray's placing is). `done(waiting, placed, missed)` (the writer's thread, once it lands; not after a
+        replay): how many wait in New arrivals, how many a rule placed and how many weren't added (gone since, outside
+        the data folder, a record refused; L1 S3). -> the command's number, or None when refused (read-only, E4)."""
         if not self._writable():
             return None                             # E4: refused before anything is read
         cmd = {"op": "register", "ids": [], "paths": [os.fspath(p) for p in paths], "rules": dict(rules or {}),
@@ -431,6 +432,8 @@ class Writer:
             late = self._stop and not self._abandoned
             if not self._abandoned and records:
                 self._pending.append(cmd)
+                if (self._held or self._journalled) and _journals(cmd):
+                    self._journal_dirty = True      # stuck already (a drag, a write waiting): journalled now (L1 S4)
                 if not late:
                     self._start()
             self._cond.notify_all()
@@ -439,14 +442,23 @@ class Writer:
 
     def _register(self, store, cmd):
         """Each record registered (one store command each: a busy store's retry registers again, idempotent); the
-        changes to `after_commit`, none to the Undo stack. -> None."""
+        changes to `after_commit`, none to the Undo stack. A file gone since (deleted from Processed, or a stale
+        journal entry's) is never registered: no row for a file that isn't there (L1 S2). A record that fails on its
+        own (outside the data folder, a bad record) is counted and the rest go on (L1 S3); a busy or read-only store
+        stops the command as any write's. -> None."""
         lib = _ls()
-        waiting = placed = 0
+        waiting = placed = missed = 0
         for path, record in cmd.get("records") or ():
+            if not os.path.exists(path):
+                missed += 1
+                continue
             try:
                 change = store.register(path, record, rules=cmd.get("rules") or None)
-            except lib.NotInLibrary as e:           # outside the data folder: never registered, said once
-                print(f"Window writer: {e}")
+            except (lib.StoreBusy, lib.StoreReadOnly):
+                raise
+            except Exception as e:                  # outside the data folder, a record it can't take: said once
+                print(f"Window writer: {path} couldn't be registered: {e!r}")
+                missed += 1
                 continue
             if change is not None:
                 self._call(self.after_commit, change, "register")
@@ -458,7 +470,7 @@ class Writer:
                 else:
                     placed += 1
         if cmd.get("done") is not None and not cmd.get("replay"):
-            self._call(cmd["done"], waiting, placed)
+            self._call(cmd["done"], waiting, placed, missed)
         return None
     # --- end W3.2 B
 
@@ -737,6 +749,7 @@ class Writer:
             cmd["follows"].follow_up = change
         elif op == "import_finished":
             cmd["saved"] = True                     # its copies are the library's now (S2: else to the trash)
+            cmd["changed"] = change is not None     # (the importer's answer: *Added N*, or nothing new — L1 S6)
             if change is not None:                  # what its Undo sends to the trash: the job's copies
                 change.copied = [_ls().library_rel(store.data_dir, p) for p in cmd["copied"]]
         elif op == "restore" and change is not None:           # ... and a Put back's: every file it brought back

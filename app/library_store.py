@@ -6849,15 +6849,23 @@ def sync_for_window(store, folders=None):
     """`sync_disk` for a window's process (the dashboard's journey check, the Content Manager), called on a
     worker. At 100k a sync on a worker thread still stalled the window 20–60 ms through the interpreter
     lock, whatever the switch interval (§12.1), so from `SYNC_IN_PROCESS_AT` items the sync runs in a
-    process of its own and this thread only waits for it. Returns sync_disk's summary (in-process) or None."""
+    process of its own and this thread only waits for it. Returns sync_disk's summary (in-process) or None
+    (the Content Manager reads a summary as a dict). The helper's exit code is read: one that found the store
+    busy, failed or ran out of time raises `StoreBusy`, as the sync in-process does — the caller keeps the
+    folders owed (W3.2 L1 S1)."""
     count = store.conn.execute("SELECT COUNT(*) FROM items").fetchone()[0]
     if count < SYNC_IN_PROCESS_AT:
         return store.sync_disk(folders=folders)
     import subprocess
     args = _helper_args(store.language, "sync") + [a for f in (folders or ()) for a in ("--folder", f)]
     flags = 0x08000000 if sys.platform == "win32" else 0                # CREATE_NO_WINDOW
-    subprocess.run(args, env=_helper_env(), creationflags=flags, stdin=subprocess.DEVNULL,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=SYNC_TIMEOUT)
+    try:
+        code = subprocess.run(args, env=_helper_env(), creationflags=flags, stdin=subprocess.DEVNULL,
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=SYNC_TIMEOUT).returncode
+    except subprocess.TimeoutExpired:
+        raise StoreBusy("the library's sync took too long") from None
+    if code in (EXIT_BUSY, EXIT_FAILED):
+        raise StoreBusy("the library is busy" if code == EXIT_BUSY else "the library's sync failed")
     return None
 
 
@@ -7395,7 +7403,8 @@ def main(argv=None):
 
 def sync_process(language, folders=None):
     """`sync`: a window's `sync_disk` in a process of its own (`sync_for_window`, a large library). 0 when
-    something changed, 3 nothing, 4 no ready store, 5 an update staged, 1 failed. Dialog-free."""
+    something changed, 3 nothing, 4 no ready store, 5 an update staged or the store busy, 1 failed.
+    Dialog-free."""
     from app.path_utils import get_data_path, get_user_files_path
     try:
         if update_staged():
@@ -7405,6 +7414,8 @@ def sync_process(language, folders=None):
             return EXIT_NEEDS_YOU
         with store:
             return EXIT_DONE if store.sync_disk(folders=folders) else EXIT_NOTHING
+    except StoreBusy:
+        return EXIT_BUSY                                                # its own code: the window keeps it owed
     except Exception:
         return EXIT_FAILED
 

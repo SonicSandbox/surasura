@@ -36,6 +36,8 @@ _TOP = ((6.2, 3.4), (13, 1.4), (20.6, 5.2), (14.6, 9), (8.2, 8.6))
 _LEFT = ((2.4, 10), (8.2, 8.6), (14.6, 9), (12.4, 14), (5, 15.4))
 _CRACK = ((13, 1.6), (11.6, 4.6), (13.4, 6.6))
 _STONES = {}                                # (size, dpr) -> QPixmap: drawn once each
+LINES_SHOWN = 12                            # a card's per-file lines shown (*and N more*: a 300-file show is no
+#                                             1,000 widgets; the card's own answers still count every line — IK-L1-4)
 drawn = [0]                                 # stones drawn (tests)
 
 
@@ -209,7 +211,7 @@ class NeedsCards(QWidget):
         if e.say:
             box.addWidget(_label(e.say, "sheetline", card))
         by_line = dict(zip((ln.key for ln in e.lines), results or ())) if results else {}
-        for ln in e.lines:
+        for ln in e.lines[:LINES_SHOWN]:
             row = QHBoxLayout()
             row.setSpacing(round(8 * f))
             words = QVBoxLayout()
@@ -230,6 +232,9 @@ class NeedsCards(QWidget):
                 if self.shown(name, e, ln):
                     row.addWidget(self._button(card, name, e, ln))
             box.addLayout(row)
+        if len(e.lines) > LINES_SHOWN:
+            box.addWidget(_label(strings.NEEDS_MORE_LINES.format(n=f"{len(e.lines) - LINES_SHOWN:,}"), "sheetline",
+                                 card))
         acts = QHBoxLayout()
         acts.setSpacing(round(8 * f))
         labels = (e.data or {}).get("labels") or {}
@@ -559,13 +564,19 @@ class NeedsYou(QObject):
                    lambda t: writer.relink(line.item_id, path, label=t))
 
     def _do_choose_folder(self, entry, _line):
-        start = os.path.join(self._data(), *[p for p in (entry.data or {}).get("folder", "").split("/") if p])
-        folder = self.pick_folder(strings.NEEDS_CHOOSE_FOLDER_TITLE, start if os.path.isdir(start) else self._data())
-        if not folder:
-            return
+        data = self._data()
+        start = os.path.join(data, *[p for p in (entry.data or {}).get("folder", "").split("/") if p])
         lines = tuple(entry.lines)
-        bridge.run_in_worker(match_folder, folder, lines, then=lambda pairs: self._relink_all(pairs, len(lines)),
-                             failed=self._failed)
+
+        def pick(there):                            # looked for on a worker: a drive may be offline (IK-L1-5)
+            if not self._alive():
+                return
+            folder = self.pick_folder(strings.NEEDS_CHOOSE_FOLDER_TITLE, start if there else data)
+            if not folder:
+                return
+            bridge.run_in_worker(match_folder, folder, lines, then=lambda pairs: self._relink_all(pairs, len(lines)),
+                                 failed=self._failed)
+        bridge.run_in_worker(os.path.isdir, start, then=pick, failed=lambda _info: pick(False))
 
     def _relink_all(self, pairs, n):
         if not pairs:

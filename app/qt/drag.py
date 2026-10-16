@@ -16,9 +16,10 @@ for Current's list — W3.2's tray and Goal sheet feed the same one through `beg
   (`app/services/moves.py`, its own thread: nothing here writes the store): in the list → `move` beside its painted
   neighbour (`placement`); the Soon well → `move(…, "soon")` (after the Soon line); the Goal well → Goal's end
   (`end=True`, read by the writer when it saves); the Finished well or the Finished tab → `set_tier(…, "graduated")`,
-  the toast *X finished · its cards stay put* with *Keep* / *Take its new cards out* (live: the store's `finish`). A
-  split's first part and hato's mix leave the Finished well unlit (its tip says why) and ⋯ leaves Finished out. **The
-  numbers at the drop** come from the writer's `Numbers.after_move`, before its first write, through the reader.
+  the toast *X finished · its cards stay put* with *Keep* / *Leave its new cards out of your order* (live: the store's
+  `finish`). A split's first part and hato's mix leave the Finished well unlit (its tip says why) and ⋯ leaves Finished
+  out. **The numbers at the drop** come from the writer's `Numbers.after_move`, before its first write, through the
+  reader.
 - **Undo**: every move toast's *Undo*, and Ctrl+Z (the newest change, as the writer reaches it); *Can't undo — that
   item changed since* (E21) comes as a toast.
 - **An expectation** keeps the drop's order on screen while the store catches up: a view from the reader with the
@@ -1100,8 +1101,8 @@ class DragController(QObject):
             self._finish(d.title, d.ids, keys)
 
     def _finish(self, title, ids, keys=()):
-        """To Finished: `set_tier(…, "graduated")`, and its toast's choice (D14) — *Keep* or *Take its new cards out*,
-        each written as `set_finished` (live, never greyed)."""
+        """To Finished: `set_tier(…, "graduated")`, and its toast's choice (D14) — *Keep* or *Leave its new cards out of
+        your order*, each written as `set_finished` (live, never greyed)."""
         ticket = Ticket(strings.DRAG_FINISHED.format(title=title), keys, ids)
         if self._give(ticket, lambda t: self.writer.set_tier(list(ids), FINISHED, label=t), toast=False) is None:
             return

@@ -2152,10 +2152,9 @@ class RowDelegate(QStyledItemDelegate):
         TEXT.draw(p, x + side + 7, r.center().y(), label, "button", r.right() - x - side - 7, ink, dpr=dpr)
 
     def _paint_done(self, p, r, nxt, dpr):
-        """✓ Done, quiet beside ▶ Play (A2 #1); muted once every file is watched."""
+        """✓ Done, quiet beside ▶ Play (A2 #1); drawn whole once every file is watched too: it offers Move to Finished
+        then (G3.2)."""
         p.save()
-        if nxt.watched:
-            p.setOpacity(0.4)
         rr = QRectF(r).adjusted(0.5, 0.5, -0.5, -0.5)
         p.setPen(QPen(c("line-hi"), 1))
         p.setBrush(c("raised"))

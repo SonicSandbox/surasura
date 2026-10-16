@@ -435,3 +435,138 @@ def test_a_damaged_store_is_still_rebuilt():
         f.write(b"this is not a database" * 100)
     ti.open_store("ja", path=db).close()
     assert sqlite3.connect(db).execute("PRAGMA user_version").fetchone()[0] == ti.SCHEMA_VERSION
+
+
+# --- only real damage drops a store (follow-up (b) of the first-open race) ---------------------------------------- #
+def _sqlite_error(cls, text, code, name):
+    """An error as SQLite's own carry it (Python 3.11: `sqlite_errorcode` / `sqlite_errorname`); `code` None: one raised
+    by hand, read by its text alone."""
+    error = cls(text)
+    if code is not None:
+        error.sqlite_errorcode, error.sqlite_errorname = code, name
+    return error
+
+
+def _failing_connect(monkeypatch, at, error, times=1):
+    """sqlite3.connect whose connections raise `error` at the first `times` statements starting with `at`; the count."""
+    real_connect = sqlite3.connect
+    raised = []
+
+    class Failing(sqlite3.Connection):
+        def execute(self, sql, *args):
+            if sql.startswith(at) and len(raised) < times:
+                raised.append(sql)
+                raise error
+            return super().execute(sql, *args)
+    monkeypatch.setattr(sqlite3, "connect", lambda *a, **kw: real_connect(*a, factory=Failing, **kw))
+    return raised
+
+
+def _store_with_a_row(db):
+    store = ti.open_store("ja", path=db)
+    store.set_meta("kept", "yes")
+    store.close()
+
+
+NOT_DAMAGE = [
+    pytest.param(sqlite3.OperationalError, "disk I/O error", 266, "SQLITE_IOERR_READ", id="io-error"),
+    pytest.param(sqlite3.OperationalError, "database or disk is full", 13, "SQLITE_FULL", id="disk-full"),
+    pytest.param(sqlite3.OperationalError, "locking protocol", 15, "SQLITE_PROTOCOL", id="locking-protocol"),
+]
+
+
+@pytest.mark.parametrize("coded", [True, False], ids=["coded", "by-text"])
+@pytest.mark.parametrize("cls, text, code, name", NOT_DAMAGE)
+def test_a_disk_or_locking_error_at_the_open_is_raised_and_never_deletes_the_store(tmp_path, monkeypatch,
+                                                                                  cls, text, code, name, coded):
+    """A full disk, a disk I/O error or SQLite's "locking protocol" (the WAL index changing as it looked) says nothing of
+    the file: met at the open's look at a current store, it is raised and the store is kept — before, every database
+    error but "locked" deleted it, and a passing I/O error cost a whole library's tokens. The next open, the error gone,
+    reads the store as it was. Read by its code, and by its text when raised by hand."""
+    db = str(tmp_path / "current.db")
+    _store_with_a_row(db)
+    deleted = []
+    monkeypatch.setattr(ti, "_delete_db", lambda path: deleted.append(path))
+    raised = _failing_connect(monkeypatch, "SELECT 1 FROM aggregate",
+                              _sqlite_error(cls, text, code if coded else None, name))
+    with pytest.raises(cls, match=text):
+        ti.open_store("ja", path=db)
+    assert raised and deleted == []
+    monkeypatch.undo()
+    store = ti.open_store("ja", path=db)
+    try:
+        assert store.get_meta("kept") == "yes"
+    finally:
+        store.close()
+
+
+def test_a_full_disk_while_an_old_store_is_built_again_is_raised_and_keeps_the_file(tmp_path, monkeypatch):
+    """A real SQLITE_FULL: a store from an older version is built again at the open, and the disk can't take the new
+    tables (SQLite's page cap stands in for the full disk). The build rolls back and the error is raised; the file is
+    never deleted (a rebuild would only fill the disk again) and still holds what it held."""
+    db = str(tmp_path / "old.db")
+    old = sqlite3.connect(db)
+    old.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
+    old.execute("INSERT INTO meta VALUES ('kept', 'yes')")
+    old.execute(f"PRAGMA user_version = {ti.SCHEMA_VERSION - 1}")
+    old.commit()
+    pages = old.execute("PRAGMA page_count").fetchone()[0]
+    old.close()
+    deleted = []
+    monkeypatch.setattr(ti, "_delete_db", lambda path: deleted.append(path))
+    real_connect = sqlite3.connect
+
+    def capped(*a, **kw):
+        c = real_connect(*a, **kw)
+        c.execute(f"PRAGMA max_page_count = {pages}")      # no room for one more page
+        return c
+    monkeypatch.setattr(sqlite3, "connect", capped)
+    with pytest.raises(sqlite3.OperationalError) as caught:
+        ti.open_store("ja", path=db)
+    assert caught.value.sqlite_errorcode & 0xFF == 13 and deleted == []
+    monkeypatch.undo()
+    kept = sqlite3.connect(db)
+    try:
+        assert kept.execute("SELECT value FROM meta WHERE key = 'kept'").fetchone() == ("yes",)
+    finally:
+        kept.close()
+
+
+def test_a_locking_protocol_answer_to_the_wal_switch_is_asked_again(tmp_path, monkeypatch):
+    """SQLITE_PROTOCOL is SQLite's "try again" (the WAL index moved under it): the new file's switch to WAL waits on it
+    as on "locked" and asks again — the open succeeds and deletes nothing. Before, the busy check missed it: the open
+    deleted the file as damaged."""
+    db = str(tmp_path / "new.db")
+    deleted = []
+    monkeypatch.setattr(ti, "_delete_db", lambda path: deleted.append(path))
+    raised = _failing_connect(monkeypatch, "PRAGMA journal_mode=WAL", _sqlite_error(
+        sqlite3.OperationalError, "locking protocol", 15, "SQLITE_PROTOCOL"), times=2)
+    ti.open_store("ja", path=db).close()
+    assert len(raised) == 2 and deleted == []
+    monkeypatch.undo()
+    c = sqlite3.connect(db)
+    try:
+        assert c.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        assert c.execute("PRAGMA user_version").fetchone()[0] == ti.SCHEMA_VERSION
+    finally:
+        c.close()
+
+
+@pytest.mark.parametrize("coded", [True, False], ids=["coded", "by-text"])
+def test_a_corrupt_store_is_still_deleted_and_built_again(tmp_path, monkeypatch, coded):
+    """Real damage keeps its path: SQLITE_CORRUPT ("database disk image is malformed"; here its extended code, an index
+    found damaged) met at the open deletes the store and builds it again — by its code, and by its text when raised by
+    hand."""
+    db = str(tmp_path / "corrupt.db")
+    _store_with_a_row(db)
+    deleted = []
+    real_delete = ti._delete_db
+    monkeypatch.setattr(ti, "_delete_db", lambda path: (deleted.append(path), real_delete(path)))
+    _failing_connect(monkeypatch, "SELECT 1 FROM aggregate", _sqlite_error(
+        sqlite3.DatabaseError, "database disk image is malformed", 779 if coded else None, "SQLITE_CORRUPT_INDEX"))
+    store = ti.open_store("ja", path=db)
+    try:
+        assert deleted == [db] and store.get_meta("kept") is None
+        assert store.conn.execute("PRAGMA user_version").fetchone()[0] == ti.SCHEMA_VERSION
+    finally:
+        store.close()

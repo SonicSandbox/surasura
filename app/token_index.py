@@ -340,8 +340,8 @@ def open_store(language, path=None):
     try:
         return Store(_connect(), language, db_path)
     except sqlite3.DatabaseError as e:
-        if _locked(e):
-            raise                       # busy, not damaged: another program has the file — never delete it
+        if not _damaged(e):
+            raise                       # busy, a full disk, an I/O error: the file may be whole — never delete it
         # Corrupt DB -> delete + rebuild (it's a regenerable cache). The kept text beside it is another file: untouched.
         _delete_db(db_path)
         return Store(_connect(), language, db_path)
@@ -371,11 +371,39 @@ def open_reader(language, path=None):
     return Store(c, language, db_path)
 
 
+# SQLite's primary result codes (Python 3.11's sqlite3.SQLITE_*), read from an error's `sqlite_errorcode`.
+_BUSY_CODES = (5, 6, 15)        # SQLITE_BUSY, SQLITE_LOCKED, SQLITE_PROTOCOL
+_DAMAGE_CODES = (11, 26)        # SQLITE_CORRUPT, SQLITE_NOTADB
+
+
+def _code(error):
+    """The error's primary SQLite result code, or None (an error raised by hand, an older Python): read by its text."""
+    code = getattr(error, "sqlite_errorcode", None)
+    return None if code is None else code & 0xFF
+
+
 def _locked(error):
-    """SQLite's "database is locked" / "busy": another connection holds the file (an OperationalError, which is a
-    DatabaseError too — never a sign of a damaged file)."""
+    """SQLite's "database is locked" / "busy" / "locking protocol": another connection holds the file, or the WAL
+    index was changing as this one looked (SQLITE_PROTOCOL, after SQLite's own retries) — an OperationalError, which is
+    a DatabaseError too, and never a sign of a damaged file. Waited on and asked again where an open waits; else raised."""
+    code = _code(error)
+    if code is not None:
+        return code in _BUSY_CODES
     text = str(error).lower()
-    return isinstance(error, sqlite3.OperationalError) and ("locked" in text or "busy" in text)
+    return isinstance(error, sqlite3.OperationalError) and (
+        "locked" in text or "busy" in text or "locking protocol" in text)
+
+
+def _damaged(error):
+    """The file itself is damaged — SQLite says it is corrupt or not a database — the one error open_store answers by
+    deleting the store (a cache: built again). Anything else says nothing of the file and is raised, the store kept:
+    busy or a locking protocol (another connection), a full disk (a rebuild would only fill it again), a disk I/O
+    error, no permission, can't open. The next open tries again."""
+    code = _code(error)
+    if code is not None:
+        return code in _DAMAGE_CODES
+    text = str(error).lower()
+    return "malformed" in text or "not a database" in text
 
 
 # --------------------------------------------------------------------------- #

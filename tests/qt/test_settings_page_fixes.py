@@ -276,6 +276,23 @@ def test_a_scroll_not_made_by_the_page_lets_the_held_reveal_go(qapp):
     assert store.calls == []
 
 
+def test_a_relayouts_clamp_keeps_the_held_reveal_and_a_scroll_right_after_it_lets_go(qapp):
+    # why: the clamp was once told apart by a zero timer, so a real scroll in the same event-loop pass as a relayout
+    # (no pass between them, as on a slow runner) was taken for the clamp and the reveal kept aiming (GitHub #97 run 1)
+    page, store = make_page(ALL_ON, "ja")
+    bar = page.scroll.verticalScrollBar()
+    top = bar.maximum()
+    bar.setValue(top)
+    marker = page.rows["max_contexts"]
+    page._revealed = marker
+    bar.setRange(0, top - 100)                                # a shorter page: Qt clamps the value, nobody scrolled
+    assert bar.value() == top - 100 and page._revealed is marker
+    bar.setRange(0, top)                                      # a longer page: no clamp follows
+    bar.setValue(40)                                          # then a real scroll, with no event-loop pass between
+    assert page._revealed is None
+    assert store.calls == []
+
+
 def test_the_pages_own_scrolls_keep_the_held_reveal(qapp):
     page, store = make_page(ALL_ON, "ja")
     marker = page.rows["split_length"]

@@ -187,7 +187,21 @@ def test_a_junban_thread_still_running_past_its_wait_is_said_not_waited_for_fore
 
 def test_main_ends_with_the_quiet_exit_after_the_services_stopped():
     source = inspect.getsource(shell.main)
-    assert source.index("services.shutdown(") < source.index("quiet_exit()")
+    assert source.index("services.shutdown(") < source.index("quiet_exit(gone=(window,))")
+
+
+def test_the_quits_last_step_deletes_the_main_window_and_its_settings_page_while_python_runs(qapp):
+    # why: left for Python's teardown (after the QApplication), the mounted Settings page crashed the exit about 1 run
+    # in 80 under load (0xC0000005, GitHub #97); the quit deletes the window first, after the workers ended
+    from PyQt6 import sip
+    from PyQt6.QtWidgets import QWidget
+    win = QWidget()
+    page = QWidget(win)
+    win.show()
+    win.close()
+    assert shell.quiet_exit(workers_ms=3000, join_s=0.2, gone=(win,)) is True
+    assert sip.isdeleted(win) and sip.isdeleted(page)
+    assert shell.quiet_exit(workers_ms=100, join_s=0.2, gone=(win,)) is True   # once deleted, a second quit is quiet
 
 
 # --- the wizard's *Make cards for me*: Connect's watermarks (W-A7) ------------------------------------------------- #

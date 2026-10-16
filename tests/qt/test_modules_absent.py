@@ -58,11 +58,9 @@ result = {"doors": doors, "opened": opened, "tk": sorted(m for m in sys.modules 
           "bar": win.bar_line.full(), "junban_found": windows.module_present("junban")}
 for w in app.topLevelWidgets():
     w.close()
-from PyQt6.QtCore import QCoreApplication, QEvent
-QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)   # the closed windows deleted while Python
-services.shutdown(0.5)                               # runs, as the event loop does (never in its teardown)
-from app.qt import bridge
-bridge.wait_for_workers(5000)                        # no pool worker still running Python as the process ends
+services.shutdown(0.5)
+shell.quiet_exit(workers_ms=5000, gone=(win,))       # the quit's last step, as `main` ends: the closed windows and the
+                                                     # main window deleted while Python runs, no pool worker left
 sys.stdout.write("\\n" + json.dumps(result) + "\\n")
 """
 

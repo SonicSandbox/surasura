@@ -245,7 +245,7 @@ def backfill(lang, settings, wait=10, run=None):
     off → skipped, hato never asked, nothing written."""
     summary = {"language": lang, "hato": None, "new": 0, "same": 0, "replaced": 0, "refused": [], "unpaired": [],
                "stopped": None, "skipped": None, "need": None}
-    if not (settings or {}).get("connect_enabled"):
+    if not (settings or {}).get("connect_enabled"):     # set-up, not automation (P4.1 row 4.1.1): never `connect_on`
         summary["skipped"] = PREVIEW_OFF
         return summary
     if not _running.acquire(blocking=False):        # the switch's back-fill or *Ask hato again* is asking hato now
@@ -273,7 +273,7 @@ def _backfill(lang, wait, run, summary):
         if summary["stopped"] != SWITCHED_OFF:          # switched off: nothing more of Connect's is written
             # read again (strictly) before the entry: a switch-off no line came after to see (none, or after the last)
             from app.cli import verbs
-            if verbs.settings().get("connect_enabled"):
+            if verbs.settings().get("connect_enabled"):         # set-up (P4.1 row 4.1.1), as above
                 _no_pairing(lang, lines, _since(result), summary)
             else:
                 summary["stopped"] = SWITCHED_OFF

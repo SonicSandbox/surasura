@@ -84,8 +84,9 @@ def test_a_move_mid_run_is_re_planned_before_the_next_pick(lib, monkeypatch):
     assert "generate" not in calls
 
 
-def test_a_new_file_still_generates_first(lib, monkeypatch):
-    # C3: a new episode's words exist only after a Generate (E1.1 04 §4 row 2): today's path
+def test_a_new_file_alone_is_mined_first_and_generated_after(lib, monkeypatch):
+    # P4.1 row 4.1.4 (C5) moved this from P3.3's C3 ("a new file still Generates first"): files added alone are
+    # mined from the re-plan of the plan's files, the Generate after mining counts the new one (F11)
     root, store = lib
     from app import library_store
     from app.path_utils import get_data_path
@@ -95,7 +96,8 @@ def test_a_new_file_still_generates_first(lib, monkeypatch):
     steps, calls = _steps(), []
     _prepared(monkeypatch, steps, calls)
     steps.prepare("ja", None)
-    assert calls == ["known_sync", "generate", "notes_gone", "shelf_session"], calls
+    assert calls == ["known_sync", "notes_gone", "shelf_session"], calls
+    assert steps._after == {"ja": "new-files"}, "the Generate owed once mining is done"
 
 
 # --------------------------------------------------------------------------------------------------------------- #

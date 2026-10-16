@@ -120,8 +120,10 @@ def _page(url):
 
 
 def _allowed(settings, fetch):
-    """May a check read or write anything: Connect's preview on, and the real fetch not gated (NO_CHECK_ENV)."""
-    return bool((settings or {}).get("connect_enabled")) and not (fetch is None and os.environ.get(NO_CHECK_ENV))
+    """May a check read or write anything: Connect on (`settings_manager.connect_on`: its switch and D29's automation
+    — the daily check is unattended, P4.1 row 4.1.1), and the real fetch not gated (NO_CHECK_ENV)."""
+    from app import settings_manager
+    return settings_manager.connect_on(settings) and not (fetch is None and os.environ.get(NO_CHECK_ENV))
 
 
 def _claim(now):

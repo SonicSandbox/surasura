@@ -366,7 +366,7 @@ def act(settings, language, job=None, shelf_run=None, confirm=False, sync=None):
     unwritable, `RECORDS`). Waits up to 10 s for Anki's write lock:
     the window calls it on a worker, never the Tk thread."""
     from app.cli.contract import CliError
-    if not (settings or {}).get("connect_enabled"):
+    if not (settings or {}).get("connect_enabled"):     # yours to ask with the automation off too (P4.1 row 4.1.1)
         return {"skipped": PREVIEW_OFF}
     from app.cli.verbs import require_set_up
     require_set_up(language)

@@ -206,7 +206,7 @@ def register_record(record, lang, *, backfill=False, wait=0.0, loaded=None):
     key = record["content_key"]
     if loaded is None:
         loaded = settings()
-    if not loaded.get("connect_enabled"):
+    if not loaded.get("connect_enabled"):       # set-up, not automation (P4.1 row 4.1.1): registers with it off too
         return {"file_id": None, "landed": "skipped", "tier": None, "position": None, "pairing": None,
                 "content_key": key, "skipped": PREVIEW_OFF}
     require_set_up(lang)
@@ -328,7 +328,7 @@ def place(args):
         if item["tier"] == "graduated":
             raise _bad("That item is finished (Graduated). Bring it back from Surasura's window.", file_id=args.file)
         tier, before_id, after_id = _target(store, args.file, args.to, args.position)
-        if loaded.get("connect_enabled"):
+        if loaded.get("connect_enabled"):       # set-up (P4.1 row 4.1.1): the watermark, never a start (`_kick`'s)
             _store_write(lambda: library.ensure_reader(store), args.wait)
         change = _store_write(lambda: library.place(store, args.file, tier, before_id=before_id, after_id=after_id,
                                                     source=source), args.wait)
@@ -385,6 +385,7 @@ def connect(args):
     again after letting go of its lock while anything new was logged meanwhile — a kick that found it running is never
     lost."""
     loaded = settings()
+    # `connect_on` (P4.1 row 4.1.1) as its two halves, each answered in its own words: Connect's switch first
     if not loaded.get("connect_enabled"):
         return {"skipped": PREVIEW_OFF}
     from app import settings_manager
@@ -554,7 +555,7 @@ def setup(args):
     loaded = settings()
     lang = language(args, loaded)
     require_set_up(lang)
-    if args.use_anki_profile and not loaded.get("connect_enabled"):
+    if args.use_anki_profile and not loaded.get("connect_enabled"):     # set-up (P4.1 row 4.1.1), not automation
         raise CliError("usage", "--use-anki-profile is for Connect's preview: switch it on first.")
     from app.connect import setup as checking
     contract.emit_progress("checking Anki and Anki Miner", 0, 1)
@@ -568,7 +569,7 @@ def setup(args):
         if not out["recorded"]:
             raise CliError("failed", "Surasura couldn't save Connect's setup record. Try again in a moment.")
     contract.emit_progress("done", 1, 1)
-    return dict(out, language=lang, connect=bool(loaded.get("connect_enabled")))
+    return dict(out, language=lang, connect=bool(loaded.get("connect_enabled")))     # set-up (P4.1 row 4.1.1)
 
 
 # --------------------------------------------------------------------------- #
@@ -588,7 +589,7 @@ def undo(args):
     with why (`app/connect/undo.py`). `--shelf`: a shelf restore point put back. Without `--confirm`, the plan only
     (nothing written). The window's in 2.x; only with Connect's preview on. Never while you review."""
     loaded = settings()
-    if not loaded.get("connect_enabled"):
+    if not loaded.get("connect_enabled"):       # yours to ask with the automation off too (P4.1 row 4.1.1: set-up)
         return {"skipped": PREVIEW_OFF}
     from app.connect import undo as undoing
     # the window's sequence too (P3.1 row 3.1.5): the checks, the plain words and the owed sync live in one place

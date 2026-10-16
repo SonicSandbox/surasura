@@ -868,6 +868,14 @@ def _warm_read(request):
     if request["action"] == "multi" and entries and all(
             entry.get("action") in ("cardsInfo", "notesInfo") for entry in entries):
         return ["multi"] + sorted({entry["action"] for entry in entries})
+    actions = [entry.get("action") for entry in entries] if request["action"] == "multi" else []
+    if actions[:1] == ["guiReviewActive"] and len(actions) > 1 and all(
+            action in ("cardsModTime", "cardsInfo") for action in actions[1:]):
+        # A write's re-check (`ankiconnect._checked`): the same cards, asked by `cardsModTime` when their mod time is
+        # older than the read's second less one, else by `cardsInfo` — the clock again (beside other test runs, a
+        # job straddling a second asked one where the other world asked the other). Compared by the cards it re-checks.
+        return ["multi", "guiReviewActive", "re-check",
+                sorted(card for entry in entries[1:] for card in (entry.get("params") or {}).get("cards") or ())]
     return request
 
 
@@ -1561,7 +1569,8 @@ def test_a_generates_reorder_cut_short_places_the_rest_at_its_retry(lib):
         fake._multi = multi
         fake.write_requests.clear()
         host._job("generate")
-        assert len(fake.write_requests) == 1 and host._retry_at is not None
+        # the host's own lines say why when it wrote nothing (a load flake on 2026-10-15 left no line to read)
+        assert len(fake.write_requests) == 1 and host._retry_at is not None, (lines, host._retry_at)
         fake._multi = real
         fake.reviewing = False
         host._retry_at = time.monotonic() - 1

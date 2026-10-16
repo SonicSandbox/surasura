@@ -1155,19 +1155,50 @@ def test_quit_never_waits_on_a_close_chore_that_never_returns(qapp, monkeypatch)
 
 def test_the_close_chores_cap_counts_from_the_quits_start(qapp, monkeypatch):
     """The quit's close cap (`QUIT_CLOSE_WAIT` from the quit's start): the duties' close runs beside the wait for an Anki write, so a hung
-    close chore and a write finishing its batch keep the claim for the longer of the two — never their sum."""
-    monkeypatch.setattr(shell, "QUIT_CLOSE_WAIT", 1.0)
-    log, never, released = [], threading.Event(), []
+    close chore and a write finishing its batch keep the claim for the longer of the two — never their sum.
+
+    Checked by the deadline the quit gives the duties' close (when it joins them, and for how long), never by the release's wall
+    time: beside other test runs a 1 s timer ended up to 1 s late and once the whole quit stalled 15 s, and a 1.6 s bound read
+    either as the sum. The cap counted from the quit's start ends by the closer's start + the cap; the sum would give the closer a
+    whole cap again after the write's end."""
+    cap = 2.0
+    monkeypatch.setattr(shell, "QUIT_CLOSE_WAIT", cap)
+    log, never, released, ended, joins, starts = [], threading.Event(), [], [], [], []
     services = _services_only(log)
     monkeypatch.setattr(services.chores, "close", lambda *a, **k: never.wait())
-    write = services.registry.submit("junban", A.JUNBAN_LABEL, lambda j: threading.Timer(1.0, j.finish).start(),
+    real_start, real_join = threading.Thread.start, threading.Thread.join
+
+    def start(thread):
+        if thread.name == "duties-close":
+            starts.append(time.monotonic())
+        return real_start(thread)
+
+    def join(thread, timeout=None):
+        if thread.name == "duties-close":
+            joins.append((time.monotonic(), timeout))
+        return real_join(thread, timeout)
+    monkeypatch.setattr(threading.Thread, "start", start)
+    monkeypatch.setattr(threading.Thread, "join", join)
+
+    def end(job):
+        ended.append(time.monotonic())
+        job.finish()
+    write = services.registry.submit("junban", A.JUNBAN_LABEL, lambda j: threading.Timer(cap, end, (j,)).start(),
                                      automatic=True, on_quit="wait")
     t0 = time.monotonic()
     try:
-        services.shutdown(0.05, release=lambda: released.append(time.monotonic() - t0))
+        services.shutdown(0.05, release=lambda: released.append(time.monotonic()))
     finally:
         never.set()
-    assert write.state == "done" and len(released) == 1 and released[0] < 1.6, released
+    assert write.state == "done" and len(released) == 1 and len(ended) == 1 and len(starts) == 1 and len(joins) == 1
+    (joined_at, timeout), = joins
+    assert joined_at >= ended[0], "the duties' close was joined before the Anki write ended"
+    # Correct code works the timeout out after the write ended, from a start no later than the closer's: so it is at most
+    # what was left of the cap then — by cause, no clock slack (the clock steps 15.6 ms here). The sum gives a whole cap.
+    assert timeout is not None and timeout <= max(0.0, starts[0] + cap - ended[0]) + 1e-6, \
+        ("the duties' close got its cap again after the write: the sum", joined_at - t0, timeout)
+    assert released[0] >= ended[0], "the claim went while the Anki write still ran"
+    assert released[0] >= t0 + cap - 0.05, "the claim went before the close cap with a close chore still running"
 
 
 def test_quit_lets_the_claim_go_before_the_stores_close_and_never_waits_on_a_hung_one(qapp, monkeypatch):

@@ -288,6 +288,12 @@ class LibraryReader:
         """Until the next look. No watch, or a deaf one (no bell to hear other programs by): every `poll`, as before.
         Else until the bell or the tree watch wakes it (`wake` is the Lookout's), a Lookout timer falls due (the slow
         look without a watch, the watch's retry, its settle), or one of the reader's own retries does."""
+        self._wake.wait(self._timeout())
+        self._wake.clear()
+
+    def _timeout(self):
+        """The wait's seconds. While the store can't be used `_watching` (which takes what the watch says is due) isn't
+        reached, so a timer already due would wake the reader at once, every time: floored at `poll` then (L1 B1)."""
         lookout = self._lookout
         if lookout is None or lookout.deaf:
             timeout = self.poll
@@ -302,9 +308,8 @@ class LibraryReader:
             if self._cards_stale:                       # a card made elsewhere moves no row: asked again when due
                 timeout = min(timeout, max(0.0, self._cards_all_at + CARDS_ALL_S - time.monotonic()))
             if self._mode is not None and self._mode[0] != "store":
-                timeout = min(timeout, MODE_RECHECK_S)
-        self._wake.wait(timeout)
-        self._wake.clear()
+                timeout = max(self.poll, min(timeout, MODE_RECHECK_S))
+        return timeout
 
     def _watching(self, h):
         """(The reader's thread.) The watch made once the store can be used — the open's full sync owed first (the
@@ -323,6 +328,10 @@ class LibraryReader:
         else:
             jobs = self._lookout.jobs()
             jobs_full, folders, slow = jobs.full, jobs.folders, jobs.slow
+            # the hourly full look (no `make_round` here): owed and `looked()`, else the Lookout's round stays due and
+            # the reader would wake at once, for good, an hour after the open (L1 B1)
+            from app.library_watch import ROUND_S
+            jobs_full = jobs_full or self._lookout.clock() - self._lookout._last_full >= ROUND_S
         if jobs_full:
             self._lookout.looked()
         with self._lock:

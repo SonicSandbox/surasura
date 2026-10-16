@@ -35,7 +35,7 @@ from app import path_utils, theme
 from app.qt import bridge, drag, motion, shadow, strings, style, windows
 
 WORDS_SHOWN = 20                                     # Sonic's W3.2-1: the first 20 new words
-LAND_MS = 50                                         # how often the import toast looks for its change (`_land`)
+LAND_MS = 50                                         # how often the import toast looks for the writer's answer
 
 
 def folder_of(language, row):
@@ -86,12 +86,35 @@ def word_text(word, reading):
     return word if not reading or reading == word else f"{word}（{reading}）"
 
 
+class _ImportTicket(drag.Ticket):
+    """The importer's ticket, kept in the drag controller's `tickets` while it copies and lands, so Ctrl+Z then takes
+    the import back as it lands (AD2-5; L1 N6). `taken_back`: its Undo was asked before it landed (the controller
+    clears `undo_asked` as it takes the change back) — no *Added N* toast then."""
+    __slots__ = ("taken_back",)
+
+    def __init__(self, text):
+        self.taken_back = False
+        super().__init__(text)
+
+    @property
+    def undo_asked(self):
+        return drag.Ticket.undo_asked.__get__(self)
+
+    @undo_asked.setter
+    def undo_asked(self, on):
+        if on:
+            self.taken_back = True
+        drag.Ticket.undo_asked.__set__(self, on)
+
+
 class _TicketWriter:
     """The importer's writer: the window's own, its command labelled with the toast's ticket (so the toast's Undo is
-    that change's, through W3.1a's `DragController`)."""
+    that change's, through W3.1a's `DragController`). `answer`: the writer's own answer for this import (its thread
+    sets it) — `saved` / `changed`, or `refused` / `failed` — which the toast is decided from (L1 S6)."""
 
     def __init__(self, writer, ticket):
         self.writer, self.ticket = writer, ticket
+        self.answer = None
 
     def can_write(self):
         return self.writer.can_write()
@@ -99,8 +122,12 @@ class _TicketWriter:
     def reason(self):
         return self.writer.reason()
 
-    def import_finished(self, paths, copied=(), label=None):
-        return self.writer.import_finished(paths, copied=copied, label=self.ticket)
+    def import_finished(self, paths, copied=(), label=None, answer=None):
+        def answered(cmd):
+            self.answer = {k: cmd[k] for k in ("saved", "changed", "refused", "failed") if k in cmd}
+            if answer is not None:
+                answer(cmd)
+        return self.writer.import_finished(paths, copied=copied, label=self.ticket, answer=answered)
 
 
 class _Relay(QObject):
@@ -248,14 +275,13 @@ class WhatIfCard(motion.Overlay):
 class FinishedActions(QObject):
     """Finished's rows' actions, the card, the importer and Explorer's drops, on the window's thread. Made by the shell
     when it has a writer (W3.1a's `DragController` holds the toasts and Undo). `estimator(path, placed, callback)`: the
-    arrivals worker's `estimate` (default: the window's worker, made on first use)."""
+    arrivals worker's `estimate` (default: the window's worker, made on first use). The controller, the writer and the
+    language are the window's as they are at each call (L1 S5): a library or language switch (P0's, which rebuilds
+    `win.moves`) needs nothing rebuilt here, and never sends a write to the library left."""
 
     def __init__(self, win, estimator=None):
         super().__init__(win)
         self.win = win
-        self.moves = win.moves
-        self.writer = win.services.writer
-        self.language = win.language
         self.page = win.page_widgets["finished"]
         self.lst = self.page.list
         self.estimator = estimator
@@ -289,10 +315,27 @@ class FinishedActions(QObject):
         self._land_timer.timeout.connect(self._land)
         self.last_menu = None
 
+    @property
+    def moves(self):
+        return self.win.moves
+
+    @property
+    def writer(self):
+        return self.win.services.writer
+
+    @property
+    def language(self):
+        return self.win.language
+
+    def _refused(self):
+        """No controller (no library open now), or the store can't be written (said in the bar): True."""
+        moves = self.moves
+        return moves is None or self.writer is None or moves.refused() is not None
+
     # --- the writes ----------------------------------------------------------------------------------------------- #
     def put_back(self, row):
         """*Put back*: to the top of Current and its cards back in the order (IK-1), its toast with Undo."""
-        if self.moves.refused() is not None:
+        if self._refused():
             return None
         if self.card.isVisible() and self.card.row is not None and self.card.row.key == row.key:
             self.card.close()
@@ -302,7 +345,7 @@ class FinishedActions(QObject):
 
     def pin(self, row, on):
         """*Study its cards first* (on) ↔ *Done with its cards* (off)."""
-        if self.moves.refused() is not None:
+        if self._refused():
             return None
         ids = drag.ids_of(row)
         text = (strings.FIN_PINNED if on else strings.FIN_UNPINNED).format(title=row.title)
@@ -310,7 +353,7 @@ class FinishedActions(QObject):
 
     def keep_cards(self, row, on):
         """*Put them back in the order* (on) ↔ *Leave its new cards out of your order* (off): the store's flag."""
-        if self.moves.refused() is not None:
+        if self._refused():
             return None
         ids = drag.ids_of(row)
         text = (strings.FIN_CARDS_IN if on else strings.FIN_CARDS_OUT).format(title=row.title)
@@ -324,7 +367,7 @@ class FinishedActions(QObject):
             if there:
                 windows.open_url(path)
             else:
-                self.moves.say(strings.FIN_NO_FOLDER.format(title=row.title))
+                self._say(strings.FIN_NO_FOLDER.format(title=row.title))
         if path is None:
             found(False)
             return
@@ -334,10 +377,11 @@ class FinishedActions(QObject):
     def menu_entries(self, row):
         """⋯'s entries for a Finished row, in order: [(name, label, tip, enabled, children)] — `children` the
         submenu's entries in the same shape (or None)."""
-        writable = self.writer.can_write()
+        writer = self.writer
+        writable = writer is not None and self.moves is not None and writer.can_write()
         reason = None
         if not writable:
-            raw = self.writer.reason() or ""
+            raw = (writer.reason() if writer is not None else None) or ""
             reason = strings.FIN_REFUSED_TIP.format(reason=strings.READ_ONLY_REASONS.get(raw) or raw)
 
         def entry(name, key=None, label=None, writes=True, children=None):
@@ -364,6 +408,7 @@ class FinishedActions(QObject):
     def menu(self, row, at):
         """⋯: a plain menu in the theme's style (Esc closes it), its entries' tips shown."""
         m = QMenu(self.lst)
+        m.aboutToHide.connect(m.deleteLater)            # one menu per click, gone once it closes (L1 N7)
         m.setObjectName("rowmenu")
         m.setToolTipsVisible(True)
         m.setAccessibleName(strings.FIN_MENU_NAME.format(title=row.title))
@@ -468,6 +513,7 @@ class FinishedActions(QObject):
             self.import_job.cancel()
             return None
         m = QMenu(self.page.importer)
+        m.aboutToHide.connect(m.deleteLater)            # (L1 N7)
         m.setObjectName("rowmenu")
         m.setToolTipsVisible(True)
         for (label, tip), how in ((strings.FIN_IMPORT_FILES, "files"), (strings.FIN_IMPORT_FOLDER, "folder")):
@@ -490,18 +536,30 @@ class FinishedActions(QObject):
             self.import_paths(paths)
 
     def import_paths(self, paths):
-        """Files or folders from anywhere into Finished, dated *Earlier* (`ImportJob`). -> the job, or None."""
+        """Files or folders from anywhere into Finished, dated *Earlier* (`ImportJob`). -> the job, or None. A file or
+        folder already in the library (its data folder) is left out with a line: finishing it is its row's (the drag,
+        ⋯) with the choice for its cards, never an import dated *Earlier* (L1 N5)."""
         paths = [os.path.normpath(p) for p in paths if p]
-        if not paths or self.import_job is not None or self.moves.refused() is not None:
+        if not paths or self.import_job is not None or self._refused():
             return None
+        from app.library_store import library_rel
+        data = path_utils.get_data_path(self.language)
+        mine = [p for p in paths if library_rel(data, p) is not None]
+        if mine:
+            self._say(strings.FIN_IMPORT_IN_LIBRARY.format(name=os.path.basename(mine[0]))
+                               if len(mine) == 1 else strings.FIN_IMPORT_IN_LIBRARY_N.format(n=f"{len(mine):,}"))
+            paths = [p for p in paths if p not in mine]
+            if not paths:
+                return None
         from app.services import finished_import
-        ticket = drag.Ticket("")
+        ticket = _ImportTicket("")
         job = finished_import.ImportJob(self.language, paths, _TicketWriter(self.writer, ticket),
                                         self.win.services.registry, on_done=self.relay.imported.emit)
         job.ticket = ticket
         if job.start() is None:
             self.moves.refused()
             return None
+        self.moves.tickets.append(ticket)           # Ctrl+Z meanwhile takes this import back as it lands (L1 N6)
         self.import_job = job
         self._show_importing(True)
         return job
@@ -518,40 +576,60 @@ class FinishedActions(QObject):
             self._show_importing(False)
         outcome = job.outcome
         if outcome == "imported":
-            self._landing = (job, 0)                # its toast once the store answers (`_land`)
+            self._landing = job                     # its toast once the writer answers (`_land`)
             self._land()
-        elif outcome == "nothing":
-            self.moves.say(strings.FIN_IMPORT_NOTHING)
+            return
+        self._settle(job.ticket)
+        if outcome == "nothing":
+            self._say(strings.FIN_IMPORT_NOTHING)
         elif outcome == "cancelled":
-            self.moves.say(strings.FIN_IMPORT_STOPPED)
+            self._say(strings.FIN_IMPORT_STOPPED)
         else:
-            why = (job.job.message if job.job is not None else None) or self.writer.reason() or outcome
-            self.moves.say(strings.FIN_IMPORT_FAILED.format(why=why))
+            writer = self.writer
+            why = (job.job.message if job.job is not None else None) or \
+                (writer.reason() if writer is not None else None) or outcome
+            self._say(strings.FIN_IMPORT_FAILED.format(why=why))
 
     def _land(self):
-        """The import handed to the writer: *Added N to Finished* with Undo once its change is saved (N what the store
-        added or moved in), or *Nothing new to add* when it landed as nothing (everything was in Finished already) —
-        the writer idle twice in a row with no change saved (its saved signal is queued before it goes idle)."""
-        if self._landing is None:
+        """The import handed to the writer, decided from the writer's own answer for it (L1 S6) — never from how long
+        it took (a busy store, a slow journal): *Added N to Finished* with Undo once its change reaches the toast (N
+        what the store added or moved in), *Nothing new to add* when it saved nothing (everything was in Finished
+        already), the store's reason when it refused or failed; nothing when Ctrl+Z took it back as it landed."""
+        job = self._landing
+        if job is None:
             return
-        job, idle = self._landing
-        ticket = job.ticket
-        if ticket.change is not None:
-            self._landing = None
-            change = ticket.change
-            n = len(getattr(change, "added", None) or ()) + len(getattr(change, "items", None) or ()) or \
-                len(job.paths)
-            ticket.text = strings.FIN_IMPORTED_ONE.format(name=os.path.basename(job.paths[0])) \
-                if n == 1 and len(job.paths) == 1 else strings.FIN_IMPORTED.format(n=f"{n:,}")
-            self.moves._toast(ticket)
+        ticket, got = job.ticket, job.writer.answer
+        if got is None or (got.get("saved") and got.get("changed") and ticket.change is None):
+            self._land_timer.start()                # not answered yet, or its change on its way to the controller
             return
-        idle = idle + 1 if self.writer.pending() == 0 else 0
-        if idle >= 2:
-            self._landing = None
-            self.moves.say(strings.FIN_IMPORT_NOTHING)
+        self._landing = None
+        self._settle(ticket)
+        if not got.get("saved"):
+            why = got.get("refused") or got.get("failed") or (self.writer.reason() if self.writer else None) or ""
+            self._say(strings.FIN_IMPORT_FAILED.format(why=why))
             return
-        self._landing = (job, idle)
-        self._land_timer.start()
+        if not got.get("changed"):
+            self._say(strings.FIN_IMPORT_NOTHING)
+            return
+        if ticket.taken_back or self.moves is None:
+            return
+        change = ticket.change
+        n = len(getattr(change, "added", None) or ()) + len(getattr(change, "items", None) or ()) or len(job.paths)
+        ticket.text = strings.FIN_IMPORTED_ONE.format(name=os.path.basename(job.paths[0])) \
+            if n == 1 and len(job.paths) == 1 else strings.FIN_IMPORTED.format(n=f"{n:,}")
+        self.moves._toast(ticket)
+
+    def _say(self, text):
+        moves = self.moves
+        if moves is not None:
+            moves.say(text)
+        else:
+            windows.say_in_bar(self.win, text)
+
+    def _settle(self, ticket):
+        moves = self.moves
+        if moves is not None:
+            moves._settle_ticket(ticket)            # out of the controller's waiting tickets (a no-op once saved)
 
     # --- Explorer's files: on the list (its drag API) and on the tab (a filter) ----------------------------------- #
     @staticmethod

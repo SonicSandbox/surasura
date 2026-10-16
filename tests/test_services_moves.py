@@ -2546,7 +2546,7 @@ def test_B_a_register_without_a_rule_waits_in_new_arrivals_and_never_goes_on_the
     a, b = _download(lib, words[20], words[21], "aaaaaaaaaaa"), _download(lib, words[22], words[21], "bbbbbbbbbbb")
     assert w.register([a, b], _keyed(_yt(words[21])), rules={}, done=lambda *n: told.append(n)) is not None
     assert h.until(lambda: told)
-    assert told == [(2, 0)]
+    assert told == [(2, 0, 0)]
     assert _tier_of(lib, a) == _tier_of(lib, b) == "arrivals"
     assert heard.saved == [] and not w.can_undo()       # Ctrl+Z never takes a download back out of the library
     assert {(r["producer"], r["channel_id"]) for r in _records(lib)} == {("youtube", words[21])}
@@ -2569,7 +2569,7 @@ def test_B_placing_rules_youtube_to_finished_hato_to_top_and_a_channels_rule_bea
     w.register([drop], _keyed(_yt(producer="hato")), rules=rules, done=lambda *n: told.append(n))
     w.register([other], _keyed(_yt(producer="kotoba-tool")), rules=rules, done=lambda *n: told.append(n))
     assert h.until(lambda: len(told) == 4)
-    assert told == [(0, 1), (0, 1), (0, 1), (1, 0)]
+    assert told == [(0, 1, 0), (0, 1, 0), (0, 1, 0), (1, 0, 0)]
     assert _tier_of(lib, plain) == "graduated"
     assert _tier_of(lib, chan) == "soon"
     assert lib.ids("now")[0] == lib.store.item_id(ls.library_rel(lib.data_dir, drop))
@@ -2590,7 +2590,7 @@ def test_B_a_folder_the_downloader_made_registers_its_transcripts_only(lib, make
     w.register([os.path.join(lib.data_dir, *folder.split("/"))], _keyed(_yt(words[40])),
                done=lambda *n: told.append(n))
     assert h.until(lambda: told)
-    assert told == [(2, 0)] and _tier_of(lib, one) == _tier_of(lib, two) == "arrivals"
+    assert told == [(2, 0, 0)] and _tier_of(lib, one) == _tier_of(lib, two) == "arrivals"
     assert len(_records(lib)) == 2
 
 
@@ -2605,7 +2605,7 @@ def test_B_a_file_outside_the_library_is_left_out_and_the_rest_register(lib, mak
     told = []
     w.register([outside, inside], _keyed(_yt(words[50])), done=lambda *n: told.append(n))
     assert h.until(lambda: told)
-    assert told == [(1, 0)] and _tier_of(lib, inside) == "arrivals" and heard.notes == []
+    assert told == [(1, 0, 1)] and _tier_of(lib, inside) == "arrivals" and heard.notes == []   # one not added (L1 S3)
 
 
 def test_B_E4_a_read_only_store_refuses_register_before_anything_is_read(lib, make_writer):
@@ -2666,6 +2666,66 @@ def test_B_a_quit_that_comes_while_the_records_are_read_journals_the_register(li
     w2, heard2 = make_writer()
     assert w2.replay()
     assert h.until(lambda: _tier_of(lib, a) == "arrivals")
+# --- W3.2 L1 fix round: a register's files gone, failing on their own, queued while held ------------------------- #
+def test_L1_S2_a_download_deleted_before_its_register_lands_makes_no_row_and_is_counted_not_added(lib, make_writer):
+    """S2: `Store.register` makes a row for a file that isn't there (a missing fingerprint), which rules may then place:
+    a zombie *file gone* card in Needs you. A file deleted from Processed before the command lands is left out."""
+    lib.store.set_library_options(arrivals_on=True)
+    w, heard = make_writer()
+    words = names(lib.language)
+    gone = _download(lib, words[80], words[81], "mmmmmmmmmmm")
+    kept = _download(lib, words[82], words[81], "nnnnnnnnnnn")
+    told = []
+    w.hold()                                            # a drag: the register waits in the queue
+    w.register([gone, kept], _keyed(_yt(words[81])), rules={"youtube": "top"}, done=lambda *n: told.append(n))
+    assert h.until(lambda: w.pending() == 1)
+    os.remove(gone)
+    w.release()
+    assert h.until(lambda: told)
+    assert told == [(0, 1, 1)]
+    assert _tier_of(lib, gone) is None and _tier_of(lib, kept) == "now"
+    assert len(_records(lib)) == 1
+
+
+def test_L1_S3_a_record_that_fails_on_its_own_is_counted_and_the_records_after_it_still_register(lib, make_writer,
+                                                                                                monkeypatch):
+    """S3: one record's error escaped `_register`, so `_run` let the whole command go: the records after it were lost
+    and `done` never said so. Now it is counted and the rest go on; a busy store still retries the command."""
+    lib.store.set_library_options(arrivals_on=True)
+    w, heard = make_writer()
+    words = names(lib.language)
+    bad = _download(lib, words[83], words[84], "ooooooooooo")
+    good = _download(lib, words[85], words[84], "ppppppppppp")
+    real = ls.Store.register
+
+    def register(self, path, record, rules=None):
+        if path == bad:
+            raise ValueError(f"{os.path.basename(path)}: a record the store can't take")
+        return real(self, path, record, rules=rules)
+    monkeypatch.setattr(ls.Store, "register", register)
+    told = []
+    w.register([bad, good], _keyed(_yt(words[84])), done=lambda *n: told.append(n))
+    assert h.until(lambda: told)
+    assert told == [(1, 0, 1)] and _tier_of(lib, bad) is None and _tier_of(lib, good) == "arrivals"
+
+
+def test_L1_S4_a_register_queued_during_a_drag_is_journalled_and_a_crash_then_still_registers_it(lib, make_writer):
+    """S4: a register queued while the writer is held (a long drag) never set the journal dirty, as a move does: a
+    crash then lost it, and nothing (no sync walks Processed) would ever find the download again."""
+    lib.store.set_library_options(arrivals_on=True)
+    w, heard = make_writer()
+    words = names(lib.language)
+    a = _download(lib, words[86], words[87], "qqqqqqqqqqq")
+    w.hold()
+    w.register([a], _keyed(_yt(words[87])))
+    assert h.until(lambda: [op for op, _i in journalled(lib.language)] == ["register"])
+    w._abandon()                                        # the crash, mid-drag
+    assert _tier_of(lib, a) is None
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: _tier_of(lib, a) == "arrivals")
+
+
 # --- S fix round: the journal's race, stale entries, background covers, an import let go ------------------------- #
 def test_S1_a_command_landing_while_the_timer_writes_the_journal_leaves_no_entry_behind(lib, make_writer, monkeypatch):
     """S1 (a): the 0.3 s timer journals what waits, and only then says what the file holds. A command that landed in

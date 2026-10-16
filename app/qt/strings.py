@@ -85,6 +85,8 @@ FIN_IMPORTED_ONE = "Added {name} to Finished"
 FIN_IMPORT_NOTHING = "Nothing new to add: it's in Finished already"
 FIN_IMPORT_STOPPED = "Stopped: nothing was added"
 FIN_IMPORT_FAILED = "Couldn't add it to Finished: {why}"
+FIN_IMPORT_IN_LIBRARY = "{name} is in your library already: finish it from its row, with the choice for its cards"
+FIN_IMPORT_IN_LIBRARY_N = "{n} of these are in your library already: finish them from their rows"
 # --- end W3.2 Q4
 NEEDS_HEADING = "Needs you"
 NEEDS_EMPTY = ("Nothing needs you", "When something waits on you, it shows here")
@@ -350,6 +352,8 @@ YT_ARRIVED_BOTH = "{waiting} in New arrivals · {placed} placed by your rules"
 YT_ARRIVED_LABEL = "New transcripts"
 YT_READ_ONLY = "your library can't be saved right now ({reason}): the transcripts wait in Processed"
 YT_NO_LIBRARY = "no library is open: the transcripts wait in Processed"
+YT_OTHER_LIBRARY = "the language changed while they downloaded: the transcripts wait in the other library's Processed"
+YT_NOT_ADDED = "{what} couldn't be added (gone, or not in your library folder)"
 
 
 def yt_transcripts(n):
@@ -365,8 +369,8 @@ DRAG_GOAL = "{title} moved to Goal · its cards keep their place"
 DRAG_FINISHED = "{title} finished · its cards stay put"
 DRAG_KEEP = "Keep"
 DRAG_KEEP_TIP = "Keep its new cards in your order, as they are"
-DRAG_TAKE_OUT = "Take its new cards out"
-DRAG_TAKE_OUT_TIP = "Its new cards leave your order. None is deleted: Undo puts them back"
+DRAG_TAKE_OUT = "Leave its new cards out of your order"      # IK-1: Finished's ⋯ words, one name for one action
+DRAG_TAKE_OUT_TIP = "Its new cards leave your learning order; none is deleted: Undo puts them back"
 DRAG_TAKEN_OUT = "{title}: its new cards are out of your order"
 DRAG_ADDED = "Added {name} at #{n} · analysed on the next Generate"
 DRAG_ADDED_N = "Added {count} files at #{n} · analysed on the next Generate"
@@ -821,6 +825,7 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
     "save_logs": ("Save logs to a file…", "Save the last week's logs into one zip file you can send"),
 }
 NEEDS_LOOKING = "Looking…"
+NEEDS_MORE_LINES = "and {n} more"
 NEEDS_LOOK_FAILED = "Couldn't look for its videos: {why}"
 NEEDS_REMOVE_TITLE_ONE = "Remove {name}?"
 NEEDS_REMOVE_TITLE = "Remove {n} files?"

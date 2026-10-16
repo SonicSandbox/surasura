@@ -202,6 +202,12 @@ QWidget#needscard {{ background: {c['slab']}; border: 0; border-top: 1px solid {
   border-bottom: 1px solid {c['groove']}; border-radius: {theme.RADII['r']}px; }}
 QLabel#needstitle {{ color: {c['ink']}; {font('needs-title')} }}
 """
+    # --- W3.2 Q5: Needs you's cards (needs.py): a line's find result — found ok, nothing amber
+    rules += f"""
+QLabel#needswhy {{ color: {c['warn']}; {font('body')} font-weight: 400; }}
+QLabel#needswhy[found="true"] {{ color: {c['ok']}; }}
+"""
+    # --- end W3.2 Q5
     # --- W3.1a: the frame (frame.py) — the current tab's line is the vein (painted); the level ▾'s pop: its words,
     # Generate quiet (its stale and failed looks kept), *Open your journey* as a link
     rules += f"""

@@ -295,13 +295,22 @@ def test_finished_shows_its_months_newest_first_and_the_tab_counts_its_records(s
     assert page.help.toolTip() == strings.FINISHED_HELP_TIP
 
 
-def test_needs_you_shows_the_show_waiting_on_videos_and_its_tab_appears(seeded):
+def test_needs_you_shows_the_show_whose_files_are_gone_and_its_tab_appears(seeded):
+    # W3.2 Q5: the page's cards are Needs you's entries (S3): a content file gone is *its file is gone*, never "no
+    # video" (that is Connect's, IK-2); the tab counts the unseen entries
+    from app import path_utils
+    os.makedirs(path_utils.get_data_path("ja"), exist_ok=True)     # the library folder there (else: all offline)
     seed, win = seeded()
-    page = win.page_widgets["needs"]
-    needs = [p for k, p, _l in page.list.model().entries if k == rows.NEED]
-    assert len(needs) == 1 and needs[0].title.endswith("3 episodes have no video")
+    ny = win.needs_you
+    ny.data_dir = path_utils.get_data_path("ja")
+    n = ny.gathers
+    ny.refresh()
+    assert wait_until(lambda: ny.gathers > n and not ny._running, 10)
+    titles = [e.title for e in ny.entries if e.kind == "file-gone"]
+    assert any(t.endswith("3 episodes' files are gone") for t in titles)
     assert not win.tab_buttons["needs"].isHidden()
-    assert win.tab_buttons["needs"].text() == strings.TAB_COUNT.format(name="Needs you", count=1)
+    unseen = ny.counts()[1]
+    assert unseen > 0 and win.tab_buttons["needs"].text() == strings.TAB_COUNT.format(name="Needs you", count=unseen)
 
 
 def test_the_subline_counts_current(seeded):

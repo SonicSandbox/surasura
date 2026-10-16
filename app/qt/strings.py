@@ -690,3 +690,63 @@ DOOR_PREVIEW = "Preview a video"
 DOOR_PREVIEW_TIP = "See a video's vocab journey against your library before adding it"
 DOOR_SPEECH = "Speech"
 DOOR_SPEECH_TIP = "Speech (声): the Gemini key, the voice and the daily limit for spoken sentences"
+# --- W3.2 Q5: Needs you's cards, their buttons and what they say (app/qt/needs.py; the entries' own words are
+# `app/services/needs.STRINGS`) ------------------------------------------------------------------------------------- #
+NEEDS_EMPTY_TEXT = "\n".join(NEEDS_EMPTY)
+NEEDS_ACTIONS = {   # action name -> (label, tooltip)
+    "find_videos": ("Find videos", "Look in the show's folder and your video folders for each episode's video, by its "
+                                   "number. Nothing is linked until you say so"),
+    "link_these": ("Link these · {n}", "Link each video found to its episode, so its cards get their pictures and "
+                                       "audio"),
+    "find_all": ("Find all missing videos", "Look for every show's missing videos at once, by episode number"),
+    "choose_folder": ("Choose a folder…", "Point these files at the folder they're in now: each is matched by its "
+                                          "name, else by its episode number"),
+    "choose_file": ("Choose file…", "Point this episode at its file, wherever it is now in your library folder"),
+    "choose_video": ("Choose file…", "Choose this episode's video yourself"),
+    "keep_words": ("Keep its words", "Leave it as it is: its words still count toward your list, and it stops "
+                                     "asking"),
+    "keep_all": ("Keep all their words", "Leave every missing file as it is: their words still count, and they stop "
+                                         "asking"),
+    "remove": ("Remove", "Send it to the trash (kept 30 days): its words stop counting. Undo puts it back"),
+    "remove_episode": ("Remove episode", "Send this episode to the trash (kept 30 days). Undo puts it back"),
+    "remove_all": ("Remove all", "Send every missing file below to the trash (kept 30 days). Never a drive that's "
+                                 "only offline. Undo puts them back"),
+    "this_one": ("This one", "It's this missing file, moved or renamed: it keeps its place, its ✓ and its cards"),
+    "its_new": ("It's new", "None of these: it joins your library as a new file"),
+    "mine_anyway": ("Mine anyway", "Make its cards without timing them to the video"),
+    "ask_hato": ("Ask hato again", "Ask hato for the videos it paired, now"),
+    "dismiss": ("Dismiss", "Take this off the list"),
+    "leave_them": ("Leave them", "Make no cards for them: they stop asking"),
+    "make_cards": ("Make their cards", "Make the cards Connect missed"),
+    "mine_text_only": ("Mine the text only", "Make its cards from the subtitles alone, with no picture or audio"),
+    "open_logs": ("Open the logs folder", "Open the folder where Surasura keeps its logs, to look at them or send them"),
+    "save_logs": ("Save logs to a file…", "Save the last week's logs into one zip file you can send"),
+}
+NEEDS_LOOKING = "Looking…"
+NEEDS_LOOK_FAILED = "Couldn't look for its videos: {why}"
+NEEDS_REMOVE_TITLE_ONE = "Remove {name}?"
+NEEDS_REMOVE_TITLE = "Remove {n} files?"
+NEEDS_REMOVE_BODY = "They go to the trash, kept 30 days; their words stop counting. Undo puts them back where they were."
+NEEDS_REMOVE_YES_ONE = "Remove it"
+NEEDS_REMOVE_YES = "Remove {n} files"
+NEEDS_REMOVE_YES_TIP = "Send them to the trash (30 days)"
+NEEDS_REMOVED_ONE = "{name} went to the trash (30 days)"
+NEEDS_REMOVED = "{n} files went to the trash (30 days)"
+NEEDS_RELINKED = "{label} points at its file again"
+NEEDS_RELINKED_N = "{k} of {n} files found in that folder and pointed at"
+NEEDS_RELINKED_NONE = "Nothing in that folder has these files' names or episode numbers"
+NEEDS_LINKING = "Linking {n} videos to their episodes"
+NEEDS_LINKING_ONE = "Linking {label}'s video"
+NEEDS_KEPT = "Kept: their words still count"
+NEEDS_ITS_NEW = "{name} joins your library as a new file"
+NEEDS_ASKED_HATO = "Asked hato for its videos"
+NEEDS_MINE_ANYWAY = "It mines without timing, in turn"
+NEEDS_MINE_ANYWAY_NOT = "Nothing to mine there any more"
+NEEDS_DISMISSED = "Taken off the list"
+NEEDS_SAVED_LOGS = "Logs saved to {path}"
+NEEDS_SAVE_LOGS_TITLE = "Save logs to a file"
+NEEDS_CHOOSE_FILE_TITLE = "Choose {label}'s file"
+NEEDS_CHOOSE_VIDEO_TITLE = "Choose {label}'s video"
+NEEDS_CHOOSE_FOLDER_TITLE = "Choose the folder they're in now"
+NEEDS_FAILED = "That couldn't be done: {why}"
+# --- end W3.2 Q5

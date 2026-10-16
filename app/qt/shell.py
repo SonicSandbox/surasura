@@ -28,7 +28,7 @@ import threading
 import time
 import traceback
 
-from PyQt6.QtCore import QEvent, QObject, QPointF, QRect, QRectF, QSize, Qt, QTimer, QUrl, pyqtSignal
+from PyQt6.QtCore import QEvent, QObject, QPointF, QRect, QSize, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices, QFontMetrics, QFontMetricsF, QGuiApplication, QIcon, QLinearGradient, QPainter
 from PyQt6.QtWidgets import (QApplication, QButtonGroup, QDialog, QHBoxLayout, QLabel, QMainWindow, QMenu, QPushButton,
                              QSizePolicy, QStackedWidget, QToolButton, QVBoxLayout, QWidget)
@@ -643,7 +643,7 @@ class TabButton(QToolButton):
 
     def _count_font(self):
         font = self.font()
-        px, weight = theme.font("badge" if self.badge else "tab-count", style.current()[1])
+        px, weight = theme.font("needs-stone" if self.badge else "tab-count", style.current()[1])   # W3.2 Q5
         font.setPointSizeF(px * style.PT_PER_PX)
         font.setWeight(weight)
         return font
@@ -652,6 +652,9 @@ class TabButton(QToolButton):
         if not self.count:
             return 0
         _t, _side, _b, f = self._pads()
+        if self.badge:                                    # --- W3.2 Q5: Needs you's cracked amber stone
+            from app.qt import needs as needs_ui
+            return needs_ui.stone_size(f)
         w = QFontMetrics(self._count_font()).horizontalAdvance(str(self.count))
         return round(max(18 * f, w + 10)) if self.badge else w
 
@@ -692,14 +695,10 @@ class TabButton(QToolButton):
             text = str(self.count)
             figures = round((line + cm.capHeight() / 2) * dpr) / dpr
             p.setFont(font)
-            if self.badge:
+            if self.badge:                                # --- W3.2 Q5: the cracked amber stone, its number on it
+                from app.qt import needs as needs_ui
                 p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-                w, h = self._count_w(), round(18 * f)
-                p.setPen(Qt.PenStyle.NoPen)
-                p.setBrush(style.qcolor(c["warn"]))
-                p.drawRoundedRect(QRectF(x, round((line - h / 2) * dpr) / dpr, w, h), h / 2, h / 2)   # crisp edges
-                p.setPen(style.qcolor(theme.FIXED["on-accent"]))
-                p.drawText(QPointF(x + (w - cm.horizontalAdvance(text)) / 2, figures), text)
+                needs_ui.paint_stone(p, x, line, self._count_w(), self.count, font)
             else:
                 p.setPen(style.qcolor(c["ink-faint"]))
                 p.drawText(QPointF(x, figures), text)
@@ -879,6 +878,18 @@ class ShellWindow(QMainWindow):
             from app.qt import drag
             self.moves = drag.DragController(self, services.writer, services.library)
             self.moves.start()
+        # --- W3.2 Q5: Needs you's entries and their actions (`app/qt/needs.py`), given a library -------------------- #
+        self.needs_you = None
+        needs_page = self.page_widgets.get("needs")
+        if services.library is not None and hasattr(needs_page, "cards"):
+            from app.qt import needs as needs_ui
+            self.needs_you = needs_ui.NeedsYou(self, needs_page, self.language)
+            self.needs_you.changed.connect(self._paint_needs)
+            needs_page.controller = self.needs_you
+            self.needs_you.failures_in(services.status.snapshot().needs_you)
+            if needs_page.view_model is not None:
+                self.needs_you.view_in(needs_page.view_model)
+        # --- end W3.2 Q5
 
         self._restore_state(read_state(self.state_file))
 
@@ -1094,6 +1105,8 @@ class ShellWindow(QMainWindow):
             self._warm_hidden_pages()
         if name == "needs":                                    # looked at: its failures stop counting, stay listed
             bridge.run_in_worker(self.services.status.mark_seen)
+            if getattr(self, "needs_you", None) is not None:  # W3.2 Q5: and its own entries (the seen file, Connect's)
+                self.needs_you.opened()
             if self.duties is not None:                       # W3.5: the update's own
                 bridge.run_in_worker(self.services.updates.mark_seen)
 
@@ -1134,6 +1147,8 @@ class ShellWindow(QMainWindow):
         needs_page = self.page_widgets.get("needs")
         if hasattr(needs_page, "set_failures"):
             needs_page.set_failures(snap.needs_you)
+        if getattr(self, "needs_you", None) is not None:          # W3.2 Q5: Connect's line moved: its entries may have
+            self.needs_you.connect_in(snap.connect)
         if self.duties is not None and bool(logs_before) != bool(snap.logs):
             self._show_update(self.duties.update_state, force_cards=True)     # the cards' *Open the logs folder*
         self._paint_needs()
@@ -1207,6 +1222,8 @@ class ShellWindow(QMainWindow):
         entries = snap.needs_you if snap is not None else ()
         listed = len(entries) + self._library_needs          # W2.2: the library's entries count too
         unseen = sum(1 for e in entries if not e.seen) + self._library_needs
+        if getattr(self, "needs_you", None) is not None:      # W3.2 Q5: the page's entries (the bar's failures among
+            listed, unseen = self.needs_you.counts()          # them) are what it lists and counts
         if self.duties is not None:                           # W3.5: the update's cards
             more, more_unseen = self.duties.cards.counts()
             listed, unseen = listed + more, unseen + more_unseen

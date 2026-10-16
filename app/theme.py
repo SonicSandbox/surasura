@@ -692,3 +692,11 @@ SETTINGS_MOTION = MappingProxyType({
     "row-wash-steady": 1000,                 # reduced motion: a steady wash this long, then gone
 })
 # --- end W3.3 ------------------------------------------------------------------------------------------------------ #
+# --- W3.2 Q5: Needs you's cracked amber stone on its tab (ref-extract row 115, `rough3`; flat: no shadow, no blur) ---- #
+NEEDS_STONE = MappingProxyType({
+    "fill": "#24190a", "stroke": "#b9873a", "top": "#4d3613", "left": "#3a280d", "crack": "#e2b86a",
+    "left-alpha": 0.7, "crack-alpha": 0.45, "number-shade": "#000000e6",
+})
+NEEDS_STONE_PX = 24                     # its square (viewBox 24), × the text size
+TYPE.update({"needs-stone": (13, 700)})    # its number (13.2 px, 800 in the reference: drawn 700)
+# --- end W3.2 Q5 -------------------------------------------------------------------------------------------------- #

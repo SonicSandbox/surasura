@@ -70,7 +70,7 @@ Arrival = namedtuple("Arrival", "key work_id piece_id item_ids rel_paths title m
                                 "accessible")
 #   one New arrivals row (W3.2 S1): a piece of the arrivals tier. `source` the chip's colour key (hato · youtube ·
 #   anilist · disk), `chip` its word; `line` *Ep x–y* or a video's channel; `parts` the one line as (text, tone):
-#   the line, *N in Anki* (ok), *N no video* (warn); `group` "new" or "watched" (every file watched); `per_ep` the
+#   the line, *N in Anki* (ok), *N files gone* (warn); `group` "new" or "watched" (every file watched); `per_ep` the
 #   estimate's *N new* (at the top of Current) over its files, rounded — None until every file has one
 ArrivalGroup = namedtuple("ArrivalGroup", "kind label rows")
 Counts = namedtuple("Counts", "current_rows current_files goal_titles goal_files finished arrivals arrival_files")
@@ -102,8 +102,9 @@ STRINGS = {
     "mark_removed": "{Word} deleted after mining: {eps}\nThe cards keep their pictures and audio; only ▶ can't play it",
     "play": "{verb} {name} in your {player}\nThe {word} beside its subtitle file",
     "play_online": "Its video is online: opening it from here comes in a later build",
-    "play_missing": "No {word} on disk\n• Link one to {verb_l} it from here: Needs you, in a later build",
-    "play_missing_plain": "No {word} on disk, so it can't {verb_l} from here",
+    # --- W3.2 Q5: an item whose content file is gone says so (its *video* is Connect's, S3), never "no video"
+    "play_missing": "Its file is gone from your library folder\n• Point it at its file in Needs you",
+    "play_missing_plain": "Its file is gone from your library folder, so it can't {verb_l} from here",
     "play_removed": "Its {word} was removed\n• Link it to {verb_l} it from here: Needs you, in a later build",
     "eps_more": " and {n} more",
     "player": {"video": "video player", "audio": "audio player", "EPUB": "e-book reader", "file": "default app"},
@@ -130,7 +131,7 @@ STRINGS = {
     # New arrivals (W3.2 S1): the tray's groups, its source chips and each row's one line and number
     "arr_new": "New", "arr_watched": "Already watched",
     "chip": {"hato": "hato", "youtube": "YouTube", "anilist": "AniList", "disk": "disk"},
-    "arr_cards": "{n} in Anki", "arr_no_media": "{n} no {word}",
+    "arr_cards": "{n} in Anki", "arr_no_media": "{n} files gone", "arr_no_media_one": "1 file gone",   # W3.2 Q5
     "per_ep": "{n} new / {unit}", "per_unit": {"eps": "ep", "videos": "video", "parts": "part"},
     "arr_units": {"eps": ("episode", "episodes"), "videos": ("video", "videos"), "parts": ("part", "parts")},
     "arr_each": {"eps": "an episode", "videos": "a video", "parts": "a part"},
@@ -749,7 +750,7 @@ def _arrival(piece, works, cards, estimates, guessed):
     if n_cards:
         parts += ((STRINGS["arr_cards"].format(n=n_cards), "ok"),)
     if no_media:
-        parts += ((STRINGS["arr_no_media"].format(n=no_media, word=row.media_word), "warn"),)
+        parts += ((STRINGS["arr_no_media_one" if no_media == 1 else "arr_no_media"].format(n=no_media), "warn"),)
     watched = all(e.watched for e in eps)
     unit = _arrival_unit(media)
     one, many = STRINGS["arr_units"][unit]

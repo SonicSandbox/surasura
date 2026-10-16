@@ -178,7 +178,10 @@ class ProgramHolder:
 
 
 def journal(language):
-    path = M.journal_path(language)
+    return read_journal(M.journal_path(language))
+
+
+def read_journal(path):
     for _ in range(50):
         try:
             with open(path, encoding="utf-8") as f:
@@ -447,13 +450,15 @@ def test_E5_replay_waits_while_the_store_cant_be_written(lib, make_writer, short
 
 # --- E6: a drag holds the writer ----------------------------------------------------------------------------------- #
 def test_E6_a_move_given_during_a_drag_waits_and_lands_after_release(lib, make_writer):
-    w, heard = make_writer()
+    # A held move's wait never reads *saving…*: held longer than saving_after, then each save gets a second of its
+    # own — at the default 0.3 s, a save slowed by a loaded machine said *saving…*, as it should (a load red).
+    w, heard = make_writer(saving_after=1.0)
     goal = lib.ids("goal")
     w.hold()
     w.move([goal[5]], "goal")
     w.move([goal[6]], "goal")
     assert h.until(lambda: len(journalled(lib.language)) == 2)        # held moves survive a crash too
-    time.sleep(0.2)
+    time.sleep(1.2)
     assert w.attempts == 0 and lib.ids("goal") == goal and heard.saved == []
     w.release()
     assert h.until(lambda: len(heard.saved) == 2)
@@ -1136,7 +1141,7 @@ def test_a_move_given_while_stuck_is_journalled_before_the_next_retry(stub_write
     w.move([1], "goal")
     assert h.until(lambda: path.exists())
     w.move([2], "goal")
-    assert h.until(lambda: len(json.loads(path.read_text("utf-8"))["pending"]) == 2, seconds=1.0)
+    assert h.until(lambda: len(read_journal(path)["pending"]) == 2, seconds=1.0)
     store.always.discard("move")
     store.fail.pop("move")
 
@@ -1153,7 +1158,7 @@ def test_a_drag_starting_over_queued_commands_journals_them(stub_writer, tmp_pat
     store.gate.set()
     assert h.until(lambda: heard.saved)
     assert h.until(lambda: path.exists())
-    assert [e["ids"] for e in json.loads(path.read_text("utf-8"))["pending"]] == [[2]]
+    assert [e["ids"] for e in read_journal(path)["pending"]] == [[2]]
     w.release()
     assert h.until(lambda: len(heard.saved) == 2 and not path.exists())
 
@@ -1213,7 +1218,7 @@ def test_nothing_is_journalled_over_a_crashs_journal_before_it_is_read(stub_writ
                     "utf-8")
     w._replay_due = True
     w._sync_journal(everything=True)                    # e.g. the quit, or a timer, before the thread read it
-    assert json.loads(path.read_text("utf-8"))["pending"][0]["ids"] == [7]
+    assert read_journal(path)["pending"][0]["ids"] == [7]
     with w._cond:
         w._cond.notify_all()
     assert h.until(lambda: store.calls and store.calls[0][1] == [7])

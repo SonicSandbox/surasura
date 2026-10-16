@@ -175,9 +175,13 @@ class LibraryReader:
         except Exception:
             pass                                        # never in the way of closing (the store's handle below)
         try:
-            h = self.opener.handle()
-            if h is not None and hasattr(h, "close") and getattr(self.opener, "closes_handles", False):
-                h.close()
+            close = getattr(self.opener, "close", None)
+            if close is not None:
+                close()                                 # this thread's handle, as the store closes it (`StoreOpener.close`,
+            else:                                       # §6.12: never the collector's; a language switch drops a reader)
+                h = self.opener.handle()
+                if h is not None and hasattr(h, "close") and getattr(self.opener, "closes_handles", False):
+                    h.close()
         except Exception:
             pass
 

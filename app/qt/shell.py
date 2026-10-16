@@ -79,15 +79,20 @@ class Services:
     then started there (`start`). Qt-free: everything here runs on a worker or after the window is gone."""
 
     def __init__(self, settings=None, registry=None, status=None, library=None, controller=None, updates=None,
-                 automation=None, chores=None, replan=None, writer=None):
+                 automation=None, chores=None, replan=None, writer=None, library_for=None):
         self.settings = settings if settings is not None else settings_service.SettingsService()
         self.registry = registry if registry is not None else jobs_module.JobRegistry()
         self.status = status if status is not None else status_service.StatusService(self.registry)
         self.library = library            # W2.2: a library reader (app/services/library_reader.py), or None
         # W3.1a: the window's writer (`app/services/moves.Writer`, on the reader's opener; its `numbers` the reader's),
         # or None — then nothing in the window writes. The window starts it (and its replay) and wires its callbacks;
-        # the quit waits for its queue (`finish_moves`). The real `main()` has no library yet, so no writer either.
+        # the quit waits for its queue (`finish_moves`). The real `main()`'s: `open_services` (W3.2 P0).
         self.writer = writer
+        # --- W3.2 P0: `library_for(language)` -> (reader, writer): another language's library at a switch
+        # (`_switch_library`); None (a test's library, or none) — the window keeps the library it was given
+        self.library_for = library_for
+        self.library_after_frame = False        # True (`open_services`): the window starts the reader after the first frame
+        self._library_lock = threading.Lock()   # one switch at a time; the quit waits for one under way
         # --- W3.5: the duties
         self.controller, self.updates, self.automation, self.chores = controller, updates, automation, chores
         # row 7: the journey keeper and the re-order host of the language open (`replan_host.Replan`), made with the
@@ -247,6 +252,7 @@ class Services:
             refresh = getattr(self.status, "refresh_soon", None)
             if refresh is not None:
                 refresh("journey", "replan")              # the new language's dot and line at once
+        return self._switch_library(self.language)        # W3.2 P0: the window's library follows (the replan first)
 
     def generate(self):
         """(A worker.) The header's Generate: the newest settings written first (the analyzer reads settings.json), the
@@ -400,6 +406,48 @@ class Services:
         return QUIT_FINISH_WAIT if began is None else max(0.0, QUIT_FINISH_WAIT - (time.monotonic() - began))
     # --- end W3.5 ------------------------------------------------------------------------------------------------ #
 
+    # --- W3.2 P0: the library main() opens, and a language switch ----------------------------------------------- #
+    def load_numbers(self):
+        """(After the first frame: main connects it.) The numbers' plan read and their engine built, on their own worker
+        (*% known*, *N new*): never inside the first frame."""
+        load = getattr(getattr(self.writer, "numbers", None), "load", None)
+        if load is not None and not self.closing.is_set():
+            load()
+
+    def _switch_library(self, language):
+        """(A worker: `language_changed`.) The old language's library let go — its moves still queued written first
+        (`finish_moves`: up to `QUIT_FINISH_WAIT`; what is left stays in its own journal for its next open), its numbers
+        closed, its reader stopped — then `language`'s opened and its numbers loaded; the window starts the reader and
+        the writer (`ShellWindow._library_switched`). Nothing without `library_for`, for the language open already, or
+        once the quit began (the quit waits for a switch under way: never a library opened behind it). -> True when it
+        switched."""
+        if self.library_for is None:
+            return False
+        with self._library_lock:
+            if self.closing.is_set() or getattr(self.library, "language", None) == language:
+                return False
+            if self.writer is not None:
+                self.finish_moves(time.monotonic() + QUIT_FINISH_WAIT)
+            if self.library is not None:
+                try:
+                    self.library.stop()
+                except Exception as e:
+                    applog.log("shell", f"library reader at the language switch: {e}")
+            self.library, self.writer = None, None
+            if self.closing.is_set():
+                return False
+            try:
+                reader, writer = self.library_for(language)
+            except Exception as e:                    # never a crash: the window keeps its last view, said in the log
+                applog.log("shell", f"the {language} library couldn't be opened: {e!r}")
+                return False
+            if self._replan_wired:
+                reader.subscribe_moves(self._store_moved)
+            self.library, self.writer = reader, writer
+            self.load_numbers()
+        return True
+    # --- end W3.2 P0 ------------------------------------------------------------------------------------------------ #
+
     def finish_moves(self, deadline):
         """(A worker, or the last call.) W3.1a, 04 §4.5: the window's moves still queued are written before the window
         goes, until `deadline` (monotonic; *Saving your moves…* meanwhile) — what is left stays in the writer's journal for
@@ -432,13 +480,14 @@ class Services:
         began = time.monotonic()
         closer = threading.Thread(target=self._close_duties, name="duties-close", daemon=True)
         closer.start()
-        if self.writer is not None:                       # W3.1a: the moves still queued, then the numbers; the reader after
-            self.finish_moves(time.monotonic() + self._finish_wait_left())
-        if self.library is not None:
-            try:
-                self.library.stop(timeout)
-            except Exception as e:
-                applog.log("shell", f"library reader at quit: {e}")
+        with self._library_lock:                          # W3.2 P0: after a language switch under way
+            if self.writer is not None:                   # W3.1a: the moves still queued, then the numbers; the reader after
+                self.finish_moves(time.monotonic() + self._finish_wait_left())
+            if self.library is not None:
+                try:
+                    self.library.stop(timeout)
+                except Exception as e:
+                    applog.log("shell", f"library reader at quit: {e}")
         try:
             self.registry.quit(timeout, wait_timeout=self._finish_wait_left())
         except Exception as e:
@@ -853,7 +902,9 @@ class ShellWindow(QMainWindow):
             current = self.page_widgets.get("current")
             if hasattr(current, "on_journey"):                         # W3.1a S5: Up Next's *N new words ↗*
                 current.on_journey = lambda _row, _episode: self._open_journey(asked=True)
-            services.library.start()
+            if not getattr(services, "library_after_frame", False):
+                services.library.start()                       # (W3.2 P0: main's starts after the first frame)
+        self._reader_shown = services.library                 # W3.2 P0: the reader the pages follow (a switch: another)
         # --- end W2.2 ------------------------------------------------------------------------------------------------ #
         self._poll = QTimer(self)
         self._poll.timeout.connect(self._poll_status)
@@ -954,6 +1005,8 @@ class ShellWindow(QMainWindow):
         """The reader's newest view: the pages, the subline's counts, the tabs' counts. W3.1a: the drag's expectation
         asks first (`drag.DragController.view_in`) — held while a drag runs (E6), shown in the drop's order while the
         store catches up (no flash back)."""
+        if getattr(view, "language", self.language) != self.language:
+            return                                  # W3.2 P0: a view of the language left, queued before the switch
         moves = getattr(self, "moves", None)
         if moves is not None:
             view = moves.view_in(view)
@@ -987,6 +1040,50 @@ class ShellWindow(QMainWindow):
         shown = goal is not None and (bool(view.rows) or bool(goal.files) or not view.loading)
         if self.dock.isHidden() == shown:
             self.dock.setVisible(shown)
+
+    # --- W3.2 P0: a language switch: the pages follow that language's library ---------------------------------- #
+    def _library_switched(self, _switched=None):
+        """(This thread, after `Services.language_changed`.) The library the services hold now, shown: the old reader's
+        bridge let go (a view it queued is dropped: `show_library` asks its language), the drag let go and its Undo
+        with it (an Undo of the language left can never reach the new language's writer), the new reader and writer
+        started — a drag controller of their own. Nothing when the pages show that reader already (a second switch
+        overtook this one), without a library, or once the quit began."""
+        s = self.services
+        reader = s.library
+        if reader is None or reader is getattr(self, "_reader_shown", None) or self._quit is not None:
+            return
+        self._reader_shown = reader
+        self.language = getattr(reader, "language", None) or s.language
+        old = getattr(self, "library_bridge", None)
+        if old is not None:
+            old.stop()
+            old.deleteLater()
+        moves, self.moves = self.moves, None
+        if moves is not None:
+            moves.close()                           # a drag running is let go
+            self.toasts.close()                     # a move's toast and its Undo: the language left's
+            moves.undo_key.setEnabled(False)        # (the window's own Ctrl+Z goes to the new controller's)
+            moves.undo_key.deleteLater()
+            for name in ("on_saved", "on_undone", "on_saving", "on_reread", "on_note"):
+                setattr(moves.writer, name, _no_callback)   # a write still in hand past the switch's wait tells no one
+            moves.relay.setParent(self)             # ... and one telling now reaches a live relay (never a deleted one)
+            moves.deleteLater()
+        for page in self.page_widgets.values():
+            if hasattr(page, "language"):
+                page.language = self.language       # ▶ opens a file of this language's library
+        self.library_bridge = bridge.Bridge(library=reader, parent=self)
+        self.library_bridge.library_changed.connect(self.show_library)
+        if moves is not None and s.writer is not None:
+            from app.qt import drag
+            self.moves = drag.DragController(self, s.writer, reader)
+            self.moves.start()
+        reader.start()
+
+    def _language_followed(self, switched):
+        """`Services.language_changed`'s answer (the duties' path): the library, then the level read again."""
+        self._library_switched(switched)
+        self._read_level()
+    # --- end W3.2 P0 ------------------------------------------------------------------------------------------------ #
 
     def _warm_hidden_pages(self):
         """The hidden tabs' lists paint their first screen ahead, laid out as the shown list (`RowsView.warm_like`)."""
@@ -1229,6 +1326,10 @@ class ShellWindow(QMainWindow):
             self._duty_settings(keys)
             if "logic.automation" in keys:
                 self._read_d29()                        # the dot's tooltip follows D29
+        elif "target_language" in keys:                 # --- W3.2 P0: before the duties, the library follows alone
+            language = self.services.settings.get().get("target_language") or "ja"
+            if language != self.services.language:
+                bridge.run_in_worker(self.services.language_changed, language, then=self._library_switched)
 
     def _read_d29(self):
         """D29 for the dot, read on a worker (the settings service's lock and copy stay off this thread); the dot
@@ -1405,7 +1506,7 @@ class ShellWindow(QMainWindow):
             bridge.run_in_worker(s.chores.koe_changed)
         language = settings.get("target_language") or "ja"
         if "target_language" in keys and language != s.language:
-            bridge.run_in_worker(s.language_changed, language, then=lambda _r: self._read_level())
+            bridge.run_in_worker(s.language_changed, language, then=self._language_followed)    # (W3.2 P0)
         elif s.level_moved(keys):                           # only what the level reads (IK-28, S19)
             self._read_level()
         if "anki_sync_auto" in keys:
@@ -1677,6 +1778,8 @@ class ShellWindow(QMainWindow):
         stones.release(self._stones_hold)
         if self.services.library is not None:                 # (no library: no row, no stone to draw)
             stones.get(self.devicePixelRatioF() or 1.0, style.current()[1])
+        if getattr(self.services, "library_after_frame", False) and self._reader_shown is not None:
+            self._reader_shown.start()                         # W3.2 P0: the first screen's cache read off the frame
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -1834,6 +1937,44 @@ def open_window(app, services, state_file=None):
     return window
 
 
+# --- W3.2 P0: the library main() opens (W3.1a's R3-L7) -------------------------------------------------------------- #
+def _no_callback(*_args):
+    pass
+
+
+def library_for(language, settings, freeze_gc=False):
+    """`language`'s library as the window reads and writes it: the reader and its numbers on one opener
+    (`moves.open_library`; the plan's staleness checked against the settings as they are at each check, the first
+    screen from `window_cache_<lang>.json`), the writer on the same opener, its journal the language's. Nothing started
+    and nothing read here — no store opened, no file read: the window starts the reader after its first frame
+    (`library_after_frame`) and the writer with its drag (`start`, the journal's replay), main the numbers after the
+    first frame too (`Services.load_numbers`).
+    The opener's role is "window": it opens a store that is there and never builds, migrates or repairs one — no store
+    yet (a fresh install, a 2.x library not migrated), one being migrated, read-only or damaged opens in the reader's
+    mode for it, and the chores' helper (W3.5) builds or migrates it as 2.5 did. -> (reader, writer)."""
+    from app.services import library_reader, moves
+    _opener, numbers, reader = moves.open_library(
+        language, check=moves.plan_check(language, lambda: settings_service.thaw(settings.get())),
+        cache_file=library_reader.cache_path(language), freeze_gc=freeze_gc)
+    writer = moves.Writer(_opener, language, journal_file=moves.journal_path(language), numbers=numbers,
+                          words=strings.MOVE_WORDS)
+    return reader, writer
+
+
+def open_services(settings=None, freeze_gc=False, **kw):
+    """The window's services with settings.json's `target_language`'s library and writer (`library_for`), and the same
+    for another language at a switch (`Services.library_for`). `freeze_gc`: the reader's (the window process's, never a
+    test's). -> Services."""
+    settings = settings if settings is not None else settings_service.SettingsService()
+    language = settings.get().get("target_language") or "ja"
+    reader, writer = library_for(language, settings, freeze_gc)
+    services = Services(settings=settings, library=reader, writer=writer,
+                        library_for=lambda other: library_for(other, settings, freeze_gc), **kw)
+    services.library_after_frame = True      # its first-screen cache read and first feed read never in the first frame
+    return services
+# --- end W3.2 P0 ---------------------------------------------------------------------------------------------------- #
+
+
 def _log_unhandled(kind, value, tb):
     # PyQt6 aborts the process on an exception escaping a slot unless a hook is set: the window logs it and goes on.
     text = "".join(traceback.format_exception(kind, value, tb))
@@ -1871,7 +2012,7 @@ def main(argv=None):
     if not instance.claim(argv[1:]):
         return 0
     hud.mark("claimed")
-    services = Services()
+    services = open_services(freeze_gc=True)          # W3.2 P0: the library and its writer (nothing read yet)
     hud.mark("services")
     window = open_window(app, services)
     connect_instance(window, instance)
@@ -1882,6 +2023,7 @@ def main(argv=None):
         window.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         hud.Probe(window, probe_file, hud=meter)
     window.first_frame.connect(window.start_duties)  # W3.5: the duties after the first paint
+    window.first_frame.connect(services.load_numbers)  # W3.2 P0: the plan's numbers after it too
     window.show_first()
     hud.mark("shown")
     try:

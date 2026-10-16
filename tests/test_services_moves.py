@@ -447,13 +447,15 @@ def test_E5_replay_waits_while_the_store_cant_be_written(lib, make_writer, short
 
 # --- E6: a drag holds the writer ----------------------------------------------------------------------------------- #
 def test_E6_a_move_given_during_a_drag_waits_and_lands_after_release(lib, make_writer):
-    w, heard = make_writer()
+    # A held move's wait never reads *saving…*: held longer than saving_after, then each save gets a second of its
+    # own — at the default 0.3 s, a save slowed by a loaded machine said *saving…*, as it should (a load red).
+    w, heard = make_writer(saving_after=1.0)
     goal = lib.ids("goal")
     w.hold()
     w.move([goal[5]], "goal")
     w.move([goal[6]], "goal")
     assert h.until(lambda: len(journalled(lib.language)) == 2)        # held moves survive a crash too
-    time.sleep(0.2)
+    time.sleep(1.2)
     assert w.attempts == 0 and lib.ids("goal") == goal and heard.saved == []
     w.release()
     assert h.until(lambda: len(heard.saved) == 2)

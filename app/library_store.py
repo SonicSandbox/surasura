@@ -2662,8 +2662,7 @@ class Store:
 
     def _work_by_record(self, record):
         """A record's work (05 §5.3 (1)–(2), `register`'s only): the work holding its AniList / TMDB id (or YouTube
-        channel), else one whose folded title or other title is its show's title; None. An item's origin rows (SRC
-        B1) count only when it has no other record."""
+        channel), else one whose folded title or other title is its show's title; None."""
         ids = _work_ids_of(record)
         for col in ("anilist_id", "tmdb_id", "youtube_channel"):
             if ids[col] is not None:
@@ -7418,18 +7417,18 @@ def _store_take_in(self, root_id, found, first=False, rules=None):
             for k in ("sha256", "video_key"):
                 if note.get(k):
                     out[k].add(note[k])
-        seen, works = set(), {}
+        works = {}
         for f in order:
             origin = os.path.abspath(f["origin"])
             key = origin_key(origin)
-            if key in seen or self.conn.execute("SELECT 1 FROM pairings WHERE content_key = ?", (key,)).fetchone():
+            # recorded already — by any source, or earlier in this batch (each record is written as it goes)
+            if self.conn.execute("SELECT 1 FROM pairings WHERE content_key = ?", (key,)).fetchone():
                 change.skipped["known"].append(origin)
                 continue
             if key[len(SOURCE_KEY):] in out["patterns"] or (f.get("sha256") and f["sha256"] in out["sha256"]) or \
                     (f.get("video_key") and f["video_key"] in out["video_key"]):
                 change.skipped["excluded"].append(origin)
                 continue
-            seen.add(key)
             record = _origin_record(root_id, origin, f)
             item_id = f.get("item_id")
             if item_id is None:

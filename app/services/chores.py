@@ -38,6 +38,7 @@ START_INDEX = 1.5           # root.after(1500, lambda: self._maybe_launch_indexe
 START_MAINTAIN = 1.5        # root.after(1500, self._maybe_maintain)
 MAINTAIN_SETTLE = 2.0       # _schedule_maintain: 2 s after the last trigger
 ARRIVALS_AT = 2.5           # root.after(2500, self._arrivals_notice)
+FROM_FOLDERS_EVERY = 60.0   # W3.2 P0: a fresh language's store built from its folders at most this often
 # The Rarity tables' warm-up (`_prepare_preview`): the Tk window starts it as it opens; here once the start's own work
 # is done (the duties made and started, the indexer's and the helper's checks at 1.5 s, Connect's notice at 2.5 s). At
 # once it ran beside that work and the first paint of the duties' controls: ~0.25 s of a worker's CPU on Python's one
@@ -120,6 +121,7 @@ class Chores:
         self._indexing = False          # from the check until the indexer's end: never two
         self._proc = None
         self._handed = {}               # the store copy's stat last handed to a helper, per language
+        self._from_folders = {}         # when a fresh language's build from its folders was last asked, per language
         self._state = State(None, None, 0)
         self._subscribers = []
         self._indexed = []
@@ -366,7 +368,10 @@ class Chores:
             data_dir, user_files_dir = get_data_path(language), get_user_files_path(language)
             mode, _reason = library_store.check_mode(language, data_dir, busy_wait=0.0)
             if mode == "json":
-                self._watch(library_store.spawn_build_if_waiting(language, data_dir, user_files_dir))
+                proc = library_store.spawn_build_if_waiting(language, data_dir, user_files_dir)
+                if proc is None and self._fresh(library_store, language, data_dir, user_files_dir):
+                    proc = library_store.spawn_maintain(language, "--from-folders")
+                self._watch(proc)
                 return
             if mode != "store":
                 return
@@ -382,6 +387,21 @@ class Chores:
                 self._watch(proc)
         except Exception as e:
             print(f"Library store helper check: {e}")
+
+    def _fresh(self, library_store, language, data_dir, user_files_dir):
+        """(W3.2 P0, IK0-2) A language with no store and no manifest at all — a fresh install, or a language never
+        opened: the helper builds its store from the tiers' folders (`--from-folders`, as the Content Manager's open
+        does), so the window reaches its empty state and takes a drop. Never over a manifest (that one is built from,
+        `spawn_build_if_waiting`) nor a store file (being migrated, or failed: its own path); at most once a minute
+        per language (the build trigger's rule)."""
+        if os.path.exists(library_store.manifest_path(user_files_dir)) or \
+                os.path.exists(library_store.library_db_path(language, data_dir)):
+            return False
+        now = self._clock()
+        if now - self._from_folders.get(language, -FROM_FOLDERS_EVERY) < FROM_FOLDERS_EVERY:
+            return False
+        self._from_folders[language] = now
+        return True
 
     def _watch(self, proc):
         """A detached helper (`spawn_maintain`'s Popen) listed as a job until it ends; quitting leaves it running."""

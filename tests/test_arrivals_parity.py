@@ -24,7 +24,7 @@ import sys
 
 import pytest
 
-from app import analyzer, plan_engine
+from app import analyzer, plan_engine, word_selection
 from tests import plan_file_cases as cases
 from tests.test_plan_engine import _check_index, _check_parity
 from tests.test_plan_file import read_run
@@ -247,8 +247,9 @@ def test_each_gate_moves_where_it_should(libraries, case, gate):
 
 
 def test_automatic_raritys_step_moves_the_band(tmp_path):
-    """Automatic rarity, its line at the band's word count and no band remembered: an arrival adding a list word steps
-    the band back (`band` named); with the band the store remembers (Q4-3) it stays — the gate reads it as `main()`."""
+    """Automatic rarity, its line one word past the bands' word count and no band remembered: an arrival adding a list
+    word brings them to it and the band steps back (`band` named); with the band the store remembers (Q4-3) it stays
+    — the gate reads it as `main()`."""
     case, language = "rp2-ja", "ja"
     root = str(tmp_path / "auto")
     cases.build(root, case)
@@ -257,9 +258,17 @@ def test_automatic_raritys_step_moves_the_band(tmp_path):
     _write(root, language, rel, _text(case, sources, at))
     _settings(root, {"selection": {"auto": True}})
     cases.generate(root, case)
-    # The line: the rarest band's word count (every band at the min_count floor holds the same words here).
+    # G3.2: Automatic takes the commonest band with the line or more, so a band moves back only when a commoner
+    # band grows to the line; on a library this small every band sits at the min_count floor and grows with Native.
+    # So: min_count 1 (Native keeps the words met once), every other band's floor at 1.5 uses (the words met twice),
+    # and the line one word past those bands: Native before the arrival, Very Rare once its word is met twice.
+    total = _band_counts(root, language)["_total"]
+    selection = {"auto": True, "min_count": 1,
+                 "bands_ppm": {band: (1 if band == "native" else 1.5e6 / total) for band in word_selection.BANDS_ORDER}}
+    _settings(root, {"selection": selection})
     counts = _band_counts(root, language)
-    _settings(root, {"selection": {"auto": True, "auto_max_words": counts["native"]}})
+    assert counts["very_rare"] < counts["native"], counts
+    _settings(root, {"selection": dict(selection, auto_max_words=counts["very_rare"] + 1)})
     _forget_band(root, language)
     cases.generate(root, case)
     held = _child(root, case, [rel], remembered="none")["arrivals"][rel]
@@ -324,11 +333,13 @@ print("OUT " + json.dumps(out))
 def _band_counts(root, language):
     code = r"""
 import json, sys
-from app import token_index, word_selection
+from app import settings_manager, token_index, word_selection
 from app.path_utils import get_user_files_path
 store = token_index.open_store(sys.argv[1])
 freqs = token_index.preview_frequencies(store, sys.argv[1], get_user_files_path(sys.argv[1]))
-print("OUT " + json.dumps({b: p["word_count"] for b, p in word_selection.band_previews(freqs).items()}))
+sel = settings_manager.load_settings()["logic"]["selection"]
+previews = word_selection.band_previews(freqs, sel.get("bands_ppm"), sel.get("min_count", word_selection.DEFAULT_MIN_COUNT))
+print("OUT " + json.dumps(dict({b: p["word_count"] for b, p in previews.items()}, _total=freqs["total_tokens"])))
 """
     p = subprocess.run([sys.executable, "-c", code, language], cwd=cases.REPO, env=cases.child_env(root),
                        capture_output=True, text=True, encoding="utf-8", errors="replace")

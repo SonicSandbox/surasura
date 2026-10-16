@@ -2919,8 +2919,8 @@ class RowsView(QListView):
         row = self.model().entries[idx.row()][1]
         if name == "stone" and payload is not None:
             self.done_requested.emit(row, payload)
-        elif name == "done" and payload is not None and not payload.watched:
-            self.done_requested.emit(row, payload)
+        elif name == "done" and payload is not None:   # all watched: no file to mark, the finish offered (G3.2)
+            self.done_requested.emit(row, None if payload.watched else payload)
         elif name in ("up", "down"):
             self.nudge_requested.emit(row, -1 if name == "up" else 1)
         elif name == "more":

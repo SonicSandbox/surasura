@@ -747,6 +747,14 @@ class TabButton(QToolButton):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.name, self.count, self.badge = "", 0, False
+        self.drop_lit = False                             # G3.2: a drag's hand over it (a drag swallows hover)
+
+    def set_drop_lit(self, on):
+        """Lit as on a hover while a drag's drop would land on it (`DragController._follow`; `underMouse` never reads
+        a running drag's hand)."""
+        if on != self.drop_lit:
+            self.drop_lit = on
+            self.update()
 
     def set_name(self, name, count=0, badge=False):
         self.name, self.count, self.badge = name, count, badge
@@ -793,7 +801,7 @@ class TabButton(QToolButton):
         p.drawComplexControl(QStyle.ComplexControl.CC_ToolButton, opt)
         top, side, bottom, f = self._pads()
         c = style.colours()
-        lit = self.isChecked() or self.underMouse() or self.hasFocus()
+        lit = self.isChecked() or self.underMouse() or self.hasFocus() or self.drop_lit
         fm = QFontMetricsF(self.font())
         mid = (top + self.height() - bottom - 2) / 2
         dpr = self.devicePixelRatioF()

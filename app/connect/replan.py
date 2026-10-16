@@ -13,11 +13,18 @@ recipe: `replan_preview`'s `_snapshot`, `plan_path`, `places`) decides —
   * `None` (only the order or the pins moved): re-plan; mine and order from it; **no Generate** ("no");
   * `replan-now` (known words, word lists, items left): re-plan now — provisional (E2.2-1 (b)) — and Generate after
     mining ("after");
+  * `generate-first` for **files added** alone (P4.1 C5, row 4.1.4: a new episode placed before its Generate) —
+    every file the plan holds still there, unchanged, and more, nothing else moved but the known words or the word
+    lists: re-plan now the files the plan knows (the new ones wait for the Generate), mine — the pick reads each
+    episode's own lines as for every job, so a new episode's words already on the list are picked by the re-plan's
+    ranks — and Generate after mining ("after", reason `new-files`); the level look on that Generate's list then
+    gives the episode the words it newly lists. A word that Generate drops from the list keeps its card, at the back
+    (N38);
   * `generate-first` for a **level raise proven** (`_level_raised`): the band alone moved,
     to a rarer one (more words: later in `word_selection.BANDS_ORDER`) — with Automatic rarity on, the band it
     remembers — and nothing else moved but the known words or the word lists: no re-plan — mine from the list as it
     is (its words keep their places; the raise only adds words) — and Generate after mining ("after");
-  * anything else (no plan, another language or engine, a run that didn't finish, a new or changed file, the store
+  * anything else (no plan, another language or engine, a run that didn't finish, a changed or removed file, the store
     set up again, a level lowered — its Generate drops words the old list would have mined — another setting, the
     args, a frequency list, the band with any of them, a band not found) and `stand-aside`: today's path, Generate
     first ("first").
@@ -134,8 +141,14 @@ def _current(language, settings, store, previous):
     found = analyzer.resolve_found_files(language, verbose=False, schedule=schedule, missing=True)
     args = analyzer.parse_analysis_args(run_args.analyzer_args(settings, language)[1:])
     parts = analyzer.run_signature_parts(language, found, args)
-    verdict = plan_engine.check(plan, language, analyzer.engine_id(), analyzer.read_run_stamp(get_user_file("results")),
-                                parts, versions.get("epoch"))
+    engine_id, stamp = analyzer.engine_id(), analyzer.read_run_stamp(get_user_file("results"))
+    verdict = plan_engine.check(plan, language, engine_id, stamp, parts, versions.get("epoch"))
+    added = _added(plan, parts) if verdict == ("generate-first", "files") else ()
+    if added:
+        # P4.1 C5 (row 4.1.4): files added alone — the engine's own classifier asked again with them named as added
+        # (`check`'s "files-added"): the plan's files are re-planned below and the new ones wait for the Generate
+        # after mining; any other part moved with them (a setting, the args, a file changed) stays generate-first
+        verdict = plan_engine.check(plan, language, engine_id, stamp, parts, versions.get("epoch"), added=added)
     if verdict is not None and verdict[0] == "generate-first" and verdict[1] in ("settings", "auto_band"):
         raised = _level_raised(plan, parts, language)
         if raised is not None:
@@ -155,7 +168,24 @@ def _current(language, settings, store, previous):
     result = engine.replan([(item_id, tier) for _rank, _place, tier, item_id in ranked])
     if verdict is None:
         return Current(None, "no", "only the order moved", result, plan, ids, versions, at, plan_key)
-    return Current(verdict, "after", ",".join(verdict[1]), result, plan, ids, versions, at, plan_key)
+    reason = ",".join("new-files" if part == "files-added" else part for part in verdict[1])
+    return Current(verdict, "after", reason, result, plan, ids, versions, at, plan_key)
+
+
+def _added(plan, parts):
+    """The digests (`plan_rules.file_digest`) of the files the library counts that the plan doesn't hold — what
+    `plan_engine.check` is asked again with (`added=`): its own `_only_added` decides whether they are files added
+    alone (every plan file still counted, unchanged); a file changed or gone with them stays generate-first.
+
+    No token store is read (P4.1 S2: one recipe): the engine re-plans only the files the plan holds, and the pick reads
+    a new episode's own lines through the analyzer's tokenizer, as for every job — a file not yet indexed is served
+    the same way, so a placed episode never waits for the background indexer."""
+    from app import plan_rules
+    held = {entry[2] for entry in plan.files if len(entry) > 2}
+    try:
+        return tuple(sorted({plan_rules.file_digest(entry) for entry in parts["files"]} - held))
+    except Exception:
+        return ()
 
 
 def _level_raised(plan, parts, language):

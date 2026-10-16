@@ -128,6 +128,11 @@ _ALLOWED = {
     os.path.join("app", "settings_placement.py"): 1,
     os.path.join("app", "main.py"): 2,
     os.path.join("app", "import_2x.py"): 5,     # 3.0's import converts a 2.x file: `address()`'s answer, one key
+    # 3.0's Settings page names the key, never reads the address: the row and its words, and the write that makes
+    # *New cards a day* read Anki again (through `address()`)
+    os.path.join("app", "qt", "settings_catalog.py"): 2,
+    os.path.join("app", "qt", "settings_strings.py"): 1,
+    os.path.join("app", "qt", "settings_connect.py"): 1,
 }
 _KEY = re.compile(r"""["'](anki_connect_url|junban_url)["']""")
 

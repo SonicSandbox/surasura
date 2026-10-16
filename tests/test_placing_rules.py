@@ -135,3 +135,26 @@ def test_a_rule_that_failed_on_the_first_call_places_the_item_on_hatos_retry(mon
     monkeypatch.setattr(rules, "apply", real)
     retry = _ok(h.call("register", "--pairing", c.write_record(rec)))
     assert (retry["landed"], retry["pairing"], retry["rule"], retry["tier"]) == ("already", "same", "top", "now")
+
+
+def test_a_record_naming_no_producer_follows_hatos_line_on_the_cli_path_as_in_the_store():
+    # Settings shows hato's line as the rule for a drop that names no program, and the store reads it so
+    # (`library_store._rule_for`); the CLI's own reading (`rules.rule_for`) must agree, or the line would lie.
+    from app.connect import rules
+    assert rules.rule_for({"show": {"title": "ぼっち・ざ・ろっく！"}}, {"placing_rules": {"hato": "top"}}) == ("hato", "top")
+    assert rules.rule_for({"producer": "", "channel_id": None}, {"placing_rules": {"hato": "finished"}}) == \
+        ("hato", "finished")
+    assert rules.rule_for({"producer": "youtube"}, {"placing_rules": {"hato": "top"}}) is None, \
+        "a named program has only its own lines"
+
+
+def test_a_channel_set_to_wait_waits_though_its_program_has_a_place_and_a_place_no_rule_names_is_never_used():
+    # a hand-edited settings.json: the channel's own "wait" outranks youtube's line (the channel is asked first), and
+    # a target that names no place ("graduated", 2.x's folder word) places nothing — the arrival waits for the user
+    from app.connect import rules
+    channel = "UCgx8nPpXp9c0Kv4bUk1D3ng"
+    record = {"producer": "youtube", "channel_id": channel}
+    assert rules.rule_for(record, {"placing_rules": {"youtube": "top", f"youtube:{channel}": "wait"}}) is None
+    assert rules.rule_for(record, {"placing_rules": {"youtube": "soon", f"youtube:{channel}": "goal"}}) == \
+        (f"youtube:{channel}", "goal")
+    assert rules.rule_for({"producer": "hato"}, {"placing_rules": {"hato": "graduated"}}) is None

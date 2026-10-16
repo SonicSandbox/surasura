@@ -9,8 +9,8 @@ Months), generated once per test. What these prove:
     journey's referee `_differs`) — the parity that lets Connect skip the Generate — in Japanese and Chinese;
   - known words changed → re-plan now, Generate "after" mining; the level raised alone (the band, or Automatic
     rarity's band, to a rarer one) → "after", no re-plan (mine from the list as it is); a lowering, the band with
-    another setting or a new file → Generate "first"; a new file → "first" (its words aren't
-    counted yet);
+    another setting or a new file → Generate "first"; a new file alone → "after" (P4.1 row 4.1.4: the plan's
+    files re-planned now, the new one's words counted by the Generate after mining);
   - no plan, a damaged plan, a plan the engine stands aside from (Coverage) → "first": today's path.
 
 What a wrong answer would cost: cards picked by the last Generate's ranks after you moved an episode up (the words you
@@ -178,7 +178,9 @@ def test_the_level_raised_with_a_new_file_generates_first(lib):
     library_store.sync_for_window(store)
     _settings_file(root, "ja", logic={"selection": {"band": "uncommon"}})
     got = _current(store)
-    assert got.verdict == ("generate-first", "files") and got.generate == "first", got.verdict
+    # P4.1 row 4.1.4: the files added are named to the engine (`added=`), so its verdict names the setting that moved
+    # with them; the band with it is not the level raised alone (`_level_raised`): still a Generate first
+    assert got.verdict == ("generate-first", "settings") and got.generate == "first", got.verdict
 
 
 def test_automatic_raritys_band_moving_rarer_mines_first_and_commoner_generates_first(lib):
@@ -201,7 +203,10 @@ def test_automatic_raritys_band_moving_rarer_mines_first_and_commoner_generates_
         assert got.verdict == ("generate-first", "auto_band") and got.generate == generate, (band, got.verdict)
 
 
-def test_a_new_file_generates_first(lib):
+def test_a_new_file_alone_re_plans_now_and_generates_after_mining(lib):
+    # P4.1 row 4.1.4 (C5) moved this from "first": files added alone -> the plan's files re-planned, mined, Generate
+    # after (test_p41_new_episode.py proves the run); with anything else moved it still Generates first (above, and
+    # test_p41_new_episode.py's)
     root, store = lib
     from app.path_utils import get_data_path
     path = os.path.join(get_data_path("ja"), "GoalContent", "new_episode.txt")
@@ -209,8 +214,8 @@ def test_a_new_file_generates_first(lib):
         f.write("新しい話が始まった。今日は学校で友達に会った。\n")
     library_store.sync_for_window(store)
     got = _current(store)
-    assert got.verdict == ("generate-first", "files") and got.generate == "first", got.verdict
-    assert got.result is None and got.listed is None
+    assert got.verdict == ("replan-now", ("files-added",)) and got.generate == "after", got.verdict
+    assert got.reason == "new-files" and got.result is not None and got.listed
 
 
 def test_no_plan_or_a_damaged_one_generates_first(lib):

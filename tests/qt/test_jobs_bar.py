@@ -1193,7 +1193,10 @@ def test_the_close_chores_cap_counts_from_the_quits_start(qapp, monkeypatch):
     assert write.state == "done" and len(released) == 1 and len(ended) == 1 and len(starts) == 1 and len(joins) == 1
     (joined_at, timeout), = joins
     assert joined_at >= ended[0], "the duties' close was joined before the Anki write ended"
-    assert timeout is not None and joined_at + timeout <= max(starts[0] + cap, joined_at) + 0.01,         ("the duties' close got its cap again after the write: the sum", joined_at - t0, timeout)
+    # Correct code works the timeout out after the write ended, from a start no later than the closer's: so it is at most
+    # what was left of the cap then — by cause, no clock slack (the clock steps 15.6 ms here). The sum gives a whole cap.
+    assert timeout is not None and timeout <= max(0.0, starts[0] + cap - ended[0]) + 1e-6, \
+        ("the duties' close got its cap again after the write: the sum", joined_at - t0, timeout)
     assert released[0] >= ended[0], "the claim went while the Anki write still ran"
     assert released[0] >= t0 + cap - 0.05, "the claim went before the close cap with a close chore still running"
 

@@ -46,16 +46,6 @@ def _pump(root, until, timeout=10.0):
     return False
 
 
-def _until(check, timeout=30.0):
-    """`check()` came true within `timeout` (a worker's result: a bound for a hang, never a timing check)."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if check():
-            return True
-        time.sleep(0.02)
-    return False
-
-
 @pytest.fixture
 def dashboard():
     """The real dashboard on a hidden root (as tests/test_zh_script_dashboard.py builds it)."""
@@ -368,18 +358,30 @@ def test_a_burst_of_triggers_within_2_s_spawns_one_helper(language, store_helper
     app = types.SimpleNamespace(root=timers, var_language=types.SimpleNamespace(get=lambda: language))
     app._maybe_maintain = lambda: MasterDashboardApp._maybe_maintain(app)
     monkeypatch.delenv("SURASURA_NO_UI_TIMERS")
+    checks, real_start = [], threading.Thread.start
+
+    def start(thread):                                                   # the check's worker, joined before counting
+        if "_maybe_maintain" in getattr(getattr(thread, "_target", None), "__qualname__", ""):
+            checks.append(thread)
+        return real_start(thread)
+    monkeypatch.setattr(threading.Thread, "start", start)
+
+    def checked():
+        for thread in checks:
+            thread.join(30)
+            assert not thread.is_alive(), "the store check's worker hung"
     for _ in range(5):
         MasterDashboardApp._schedule_maintain(app)
     assert [ms for ms, _callback in timers.pending.values()] == [2000], "each trigger re-arms the one 2 s check"
-    assert store_helper_spawns == []
+    assert store_helper_spawns == [] and checks == []
     timers.fire()                                                        # 2 s after the last trigger
-    assert _until(lambda: bool(store_helper_spawns))
-    assert store_helper_spawns == [(language,)]
+    checked()
+    assert len(checks) == 1 and store_helper_spawns == [(language,)]
     MasterDashboardApp._schedule_maintain(app)                           # the same stat: handed once
     assert [ms for ms, _callback in timers.pending.values()] == [2000]
     timers.fire()
-    assert _until(lambda: len(store_helper_spawns) == 2), "a change still due is handed again"
-    assert store_helper_spawns == [(language,), (language,)]
+    checked()
+    assert len(checks) == 2 and store_helper_spawns == [(language,), (language,)], "a change still due is handed again"
 
 
 @pytest.mark.parametrize("language", LANGUAGES)

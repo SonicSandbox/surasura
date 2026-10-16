@@ -61,7 +61,8 @@ def test_search_fold_zh_traditional_simplified():
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_add_and_sync_find_the_work_by_folder(language):
     """05 §5.3 (3)–(4): a new episode — by Add or by the disk sync — joins the title of its folder, wherever that title's
-    other episodes sit (another tier folder too); a new folder is a new title, a loose file a title of its own."""
+    other episodes sit (another tier folder too); a new folder is a new title, a loose file a title of its own, named by
+    the show its file name reads as (SRC-11: here the name less its extension)."""
     store = migrated(language, shows=2, episodes=3)
     data_dir, _u = roots(language)
     w = names(language)
@@ -76,7 +77,7 @@ def test_add_and_sync_find_the_work_by_folder(language):
     loose = store.insert([touch(data_dir, f"LowPriority/{w[74]}.srt")], "soon").added[0]
     assert len({_work(store, i) for i in (show, fresh, loose)}) == 3
     titles = dict(store.conn.execute("SELECT id, title FROM works"))
-    assert titles[_work(store, fresh)] == w[72] and titles[_work(store, loose)] == f"{w[74]}.srt"
+    assert titles[_work(store, fresh)] == w[72] and titles[_work(store, loose)] == w[74]
     assert pieces_ok(store) is None
     store.close()
 

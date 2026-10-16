@@ -218,12 +218,14 @@ def test_a_language_never_set_up_is_not_set_up(generated):
 # --------------------------------------------------------------------------- #
 def test_status_on_a_774_file_library_is_quick(monkeypatch):
     """Recorded in the step note: status (no Anki probe) and status --anki with Anki closed, on 774 files. The figure is
-    a speed check, so its bound holds in the timed run (SURASURA_STORE_BENCH=1: the machine is the run's own), never
-    in a full run beside two others — there a call's Python start alone took 5.07 s once, where status answers in
-    ~0.3 s on a quiet machine."""
+    a speed check, so it is taken in the timed run (SURASURA_STORE_BENCH=1: the machine is the run's own), never in a
+    full run beside two others — there a call's Python start alone took 5.07 s once, where status answers in ~0.3 s on
+    a quiet machine. Otherwise a short functional pass: both calls answer on a library of 40 files."""
+    bench = os.environ.get("SURASURA_STORE_BENCH") == "1"
+    size = 774 if bench else 40
     folder = h.seed_library("ja", templates=False)
     text = open(os.path.join(h.RESOURCES, "ja", "context_test.txt"), encoding="utf-8").read()
-    for n in range(774 - len(h.LIBRARY["ja"])):
+    for n in range(size - len(h.LIBRARY["ja"])):
         with open(os.path.join(folder, f"episode_{n:03d}.txt"), "w", encoding="utf-8") as f:
             f.write(text[: 200 + n % 300])
     h.write_settings()
@@ -233,8 +235,8 @@ def test_status_on_a_774_file_library_is_quick(monkeypatch):
         code, lines = h.run_cli(*args)
         timings[label] = round(time.perf_counter() - started, 3)
         assert code == 0, lines
-    print(f"\nTIMING status on 774 files: {json.dumps(timings)}")
-    if os.environ.get("SURASURA_STORE_BENCH") == "1":
+    if bench:
+        print(f"\nTIMING status on 774 files: {json.dumps(timings)}")
         assert timings["status"] < 5.0
 
 

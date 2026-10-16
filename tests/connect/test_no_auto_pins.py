@@ -36,6 +36,15 @@ def _sources():
             yield rel, path
 
 
+# The user's own *Study its cards first* / *Done with its cards* (W3.2): the window's ⋯ on a Current or Finished row
+# hands the writer a `pin` command, and the writer's queue calls the store's pin / unpin for it — never by itself.
+USERS_OWN_PIN = {
+    "app/qt/finished.py": ("writer.pin(", "self.pin(row,"),
+    "app/qt/item_menu.py": ("writer.pin(", "self.pin(row,"),
+    "app/services/moves.py": ("return store.pin(ids) if cmd[\"on\"] else store.unpin(ids)",),
+}
+
+
 def test_no_code_outside_the_store_writes_a_pin():
     offenders = []
     for rel, path in _sources():
@@ -43,6 +52,8 @@ def test_no_code_outside_the_store_writes_a_pin():
             continue                    # the store: checked by behaviour below (its commands run with a trap)
         with open(path, encoding="utf-8", errors="replace") as f:
             for number, line in enumerate(f, 1):
+                if any(marker in line for marker in USERS_OWN_PIN.get(rel, ())):
+                    continue            # the user's own Study its cards first, through the window's writer
                 if WRITES_A_PIN.search(line) and not line.lstrip().startswith("#"):
                     offenders.append(f"{rel}:{number}: {line.strip()}")
     assert offenders == [], "only the user's Study its cards first may pin: " + "; ".join(offenders)

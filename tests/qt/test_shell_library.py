@@ -490,6 +490,7 @@ def test_L3_the_covers_follow_the_library_a_switch_opens_and_hold_nothing_of_the
     assert qcovers._library["moves"] is win.moves and qcovers._library["window"] is win
     f = qcovers.fetcher()
     assert f is win._fetcher and f.language == "zh" and f.writer is services.writer
+    assert f.data_dir == services.library.opener.data_dir, "its disk-first look reads zh's folder, not a default one"
     assert old_fetcher._stop                                                  # the ja fetcher stopped
     assert scans[-1] == ("zh", services.writer)                               # zh's posters scanned for
     ja.close()

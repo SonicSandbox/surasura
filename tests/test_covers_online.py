@@ -447,6 +447,19 @@ def test_remove_downloaded_covers_takes_only_the_downloaded_ones_and_they_may_co
     assert f.want([_wants(lib)[fetched]._replace(anilist_id=16498)]) == 1, "re-fetchable while the switch is on"
 
 
+def test_remove_downloaded_covers_deletes_only_a_bare_name_in_the_cache_never_a_path_a_record_names():
+    # Why: `drop_cached` deletes what the store's records name; a record naming a path (an old store, a hand edit)
+    # must never reach a file outside the cache — the local data folder one level up, the user's own covers.
+    folder = path_utils.get_covers_cache_path()
+    outside = write(os.path.join(os.path.dirname(folder), "進撃の巨人.jpg"), jpeg())
+    mine = write(os.path.join(path_utils.get_user_files_path("ja"), "covers", "葬送のフリーレン.png"), png())
+    cached = write(os.path.join(folder, "anilist-16498.jpg"), jpeg())
+    named = ["cache:../進撃の巨人.jpg", "cache:..\\進撃の巨人.jpg", "cache:" + mine, "user:葬送のフリーレン.png",
+             "cache:anilist-16498.jpg"]
+    assert O.drop_cached(named) == 1
+    assert os.path.isfile(outside) and os.path.isfile(mine) and not os.path.exists(cached)
+
+
 def test_a_picked_candidate_is_the_users_locked_with_undo(lib, anilist):
     work = lib.work_of(lib.store.ids("now")[0])
     w = _wants(lib)[work]
@@ -687,6 +700,10 @@ def test_B2_the_store_writes_a_fetched_cover_only_over_none_generated_or_its_own
     assert lib.row(b) == ("file", poster, None, 0)
     assert s.set_cover(c, "generated") is not None
     assert s.set_cover(c, "anilist", ref="16498", path="cache:anilist-c.jpg") is not None, "over the generated one"
+    # Its own source, but an image of the user's (User Files, not the re-fetchable cache): never written over.
+    assert s.set_cover(c, "anilist", ref="16498", path="user:薬屋のひとりごと.png") is not None
+    assert s.set_cover(c, "anilist", ref="16498", path="cache:anilist-c2.jpg") is None, "never over a user: image"
+    assert lib.row(c) == ("anilist", "16498", "user:薬屋のひとりごと.png", 0)
     assert s.set_cover(a, "file", ref=poster) is not None, "art on disk is written over a downloaded cover (D-1)"
 
 

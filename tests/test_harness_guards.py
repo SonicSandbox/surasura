@@ -258,6 +258,27 @@ def test_a_child_that_ended_is_forgotten():
 
 # --- every module suite takes the guards ------------------------------------------------------------------------- #
 
+def _names_bound(node):
+    """The names a module-level statement binds: its own (a def, a class, an import, an assignment's, a del's, a for's,
+    a with's or an except's target), and those of the statements in its bodies (if, try, with, for, while), never
+    inside a def or a class."""
+    import ast
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return {node.name}
+    if isinstance(node, (ast.Import, ast.ImportFrom)):
+        return {(alias.asname or alias.name).split(".")[0] for alias in node.names}
+    targets = list(getattr(node, "targets", None) or [])                    # Assign, Delete
+    targets += [t for t in (getattr(node, "target", None),) if t is not None]  # AnnAssign, AugAssign, For
+    targets += [item.optional_vars for item in getattr(node, "items", []) if item.optional_vars is not None]  # With
+    names = {n.id for t in targets for n in ast.walk(t) if isinstance(n, ast.Name)}
+    if isinstance(node, ast.ExceptHandler) and node.name:
+        names.add(node.name)
+    for field in ("body", "orelse", "finalbody", "handlers"):
+        for child in getattr(node, field, None) or []:
+            names |= _names_bound(child)
+    return names
+
+
 def test_every_module_suite_on_disk_takes_the_harness_guards():
     # A module suite is a pytest process of its own (`run_tests.py --all`, or `python -m pytest modules/<name>/tests`)
     # and never loads tests/conftest.py: its own conftest imports the guards, or its threads and children go unguarded
@@ -278,16 +299,11 @@ def test_every_module_suite_on_disk_takes_the_harness_guards():
         taken = set()
         for node in tree.body:
             if isinstance(node, ast.ImportFrom) and node.module == "tests.harness_guards":
-                taken |= {alias.name for alias in node.names if (alias.asname or alias.name) == alias.name}
-                continue
-            bound = set()
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                bound = {node.name}
-            elif isinstance(node, (ast.Import, ast.ImportFrom)):
-                bound = {(alias.asname or alias.name).split(".")[0] for alias in node.names}
-            elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
-                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-                bound = {n.id for t in targets for n in ast.walk(t) if isinstance(n, ast.Name)}
+                as_is = {alias.name for alias in node.names if alias.asname in (None, alias.name)}
+                bound = {alias.asname for alias in node.names if alias.asname not in (None, alias.name)}
+            else:
+                as_is, bound = set(), _names_bound(node)
             rebound = bound & wanted & taken
             assert not rebound, f"{path} binds {sorted(rebound)} again after importing it from tests.harness_guards"
+            taken |= as_is
         assert wanted <= taken, f"{path} does not import {sorted(wanted - taken)} from tests.harness_guards"

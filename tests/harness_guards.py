@@ -35,8 +35,12 @@ EVERY_SUITE = ("_guard_real_local_data", "pytest_collection", "pytest_runtest_te
 # — but code that reaches them where neither holds (a module imported before the run starts, a window's worker past the
 # end of the run, a route that builds the path itself) made the real, empty %LOCALAPPDATA%\Houseki\Surasura\<key> from
 # a plain `python -m pytest tests/qt/test_drag.py`, and only the other runs' guards saw it. So every pytest run moves
-# the per-user bases themselves: nothing in it, or started by it, can reach the real Houseki roots.
+# the per-user bases themselves: nothing in it, or started by it, reaches the real Houseki roots through them. (A route
+# past the variables — `expanduser` with one unset, the known-folder API, a path written out — still could: the guard
+# below watches the true roots too.)
 ROOTS_PREFIX = "surasura-test-bases-"
+BASE_NAMES = ("LOCALAPPDATA", "APPDATA", "XDG_DATA_HOME")
+ORIGINAL_BASES = {name: os.environ.get(name) for name in BASE_NAMES}     # as the run was started: None = unset
 
 
 def _redirect_user_bases():
@@ -44,6 +48,7 @@ def _redirect_user_bases():
     PYTHONUSERBASE keeps naming this user's packages (Python looks for them under %APPDATA%), for the children too."""
     import site
     os.environ.setdefault("PYTHONUSERBASE", site.getuserbase())
+    _forget_stale_bases()
     bases = tempfile.mkdtemp(prefix=ROOTS_PREFIX)
     atexit.register(shutil.rmtree, bases, True)   # before any test's exit hook, so it runs after them
     for name, sub in (("LOCALAPPDATA", "Local"), ("APPDATA", "Roaming"), ("XDG_DATA_HOME", "Local")):
@@ -51,7 +56,20 @@ def _redirect_user_bases():
         os.environ[name] = os.path.join(bases, sub)
 
 
-_redirect_user_bases()
+def _forget_stale_bases(older_than=86400):
+    """Remove the bases a run killed before its exit left in TEMP (a day old or more)."""
+    temp = tempfile.gettempdir()
+    try:
+        names = [n for n in os.listdir(temp) if n.startswith(ROOTS_PREFIX)]
+    except OSError:
+        return
+    for name in names:
+        path = os.path.join(temp, name)
+        try:
+            if time.time() - os.path.getmtime(path) > older_than:
+                shutil.rmtree(path, True)
+        except OSError:
+            pass
 
 
 def _real_local_data_folder():
@@ -62,19 +80,18 @@ def _real_local_data_folder():
     return os.path.join(path_utils._local_data_root(), path_utils._install_key(project_root))
 
 
-_REAL_LOCAL_DATA = _real_local_data_folder()
-
-
 def _real_houseki_roots():
-    """The Houseki roots a source run uses (under the run's own bases) — path_utils.local_data_root() and get_persistent_user_data_path() with
-    no test root: %LOCALAPPDATA%\\Houseki\\Surasura and %APPDATA%\\Houseki\\Surasura — computed once, here, before any
-    test can point the environment or path_utils elsewhere."""
+    """The Houseki roots a source run uses: path_utils.local_data_root() and get_persistent_user_data_path() with no
+    test root (%LOCALAPPDATA%\\Houseki\\Surasura and %APPDATA%\\Houseki\\Surasura), for the bases as they are now."""
     from app import path_utils
     return tuple(os.path.join(base, path_utils.VENDOR, path_utils.DATA_NAME)
                  for base in (path_utils._local_base(), path_utils._roaming_base()))
 
 
-_REAL_HOUSEKI_ROOTS = _real_houseki_roots()
+_TRUE_HOUSEKI_ROOTS = _real_houseki_roots()     # the user's own, before the move
+_redirect_user_bases()
+_REAL_LOCAL_DATA = _real_local_data_folder()    # the run's own, after it: computed once, here, before any test can
+_REAL_HOUSEKI_ROOTS = _real_houseki_roots()     # mock path_utils or point the environment elsewhere
 
 
 def _root_state(root):
@@ -107,14 +124,17 @@ def _guard_real_local_data():
     path built some other way, and a subprocess started without the test root. (Running this checkout's own app or
     `python -m app.cli` by hand during a test run writes that folder too, and fails whichever test is running.)
     The real Houseki local and roaming roots too (S3.1): a test that makes either, or a name at its top, fails — a
-    read of the roaming root once made the real %APPDATA%\\Houseki\\Surasura."""
+    read of the roaming root once made the real %APPDATA%\\Houseki\\Surasura. Since the run's bases moved, these are
+    the run's own roots, and the user's true ones beside them (a route past the variables)."""
+    watched = tuple(dict.fromkeys(_REAL_HOUSEKI_ROOTS + _TRUE_HOUSEKI_ROOTS))
     before = _folder_state(_REAL_LOCAL_DATA)
-    roots = [_root_state(root) for root in _REAL_HOUSEKI_ROOTS]
+    roots = [_root_state(root) for root in watched]
     yield
     assert _folder_state(_REAL_LOCAL_DATA) == before, \
-        f"a test wrote the real local data folder {_REAL_LOCAL_DATA}: use the test root"
-    for root, was in zip(_REAL_HOUSEKI_ROOTS, roots):
-        assert _root_state(root) == was, f"a test made or wrote the real Houseki root {root}: use the test root"
+        f"a test wrote the local data folder {_REAL_LOCAL_DATA} (reached without the test root): use the test root"
+    for root, was in zip(watched, roots):
+        assert _root_state(root) == was, \
+            f"a test made or wrote the Houseki root {root} (reached without the test root): use the test root"
 
 
 def _clear_destroyed_default_root():

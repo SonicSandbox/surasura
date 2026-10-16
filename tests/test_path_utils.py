@@ -136,7 +136,8 @@ def test_the_guard_watches_the_houseki_roots_the_app_would_use(monkeypatch):
     # very folders the app resolves outside a test (computed here without creating either).
     _outside_pytest(monkeypatch)
     monkeypatch.setattr(os, "makedirs", lambda *a, **k: None)
-    assert (path_utils.local_data_root(), path_utils.get_persistent_user_data_path()) == harness_guards._REAL_HOUSEKI_ROOTS
+    resolved = (path_utils.local_data_root(), path_utils.get_persistent_user_data_path())
+    assert resolved == harness_guards._REAL_HOUSEKI_ROOTS
 
 
 def test_the_guard_sees_a_root_made_and_a_name_at_its_top(tmp_path):

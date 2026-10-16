@@ -2,19 +2,26 @@
 (modules/*/tests/conftest.py), which import them: a module suite is its own pytest process (`run_tests.py --all`, or
 `python -m pytest modules/<name>/tests`) and never loads tests/conftest.py.
 
-* the real data roots: a test that writes this checkout's real local data folder, or makes or writes the real Houseki
-  roots, fails (`_guard_real_local_data`);
+* the real Houseki roots are out of reach: the per-user bases (%LOCALAPPDATA%, %APPDATA%, XDG_DATA_HOME) point at a
+  folder of the run's own from the moment a conftest imports this, for the whole process and every child it starts,
+  removed at its exit (`_redirect_user_bases`) — in any pytest run, wrapped or plain;
+* the data roots a run would reach without a test root: a test that writes this checkout's local data folder, or makes
+  or writes the Houseki roots, fails (`_guard_real_local_data`);
 * no moment of the run without a test's guard: PYTEST_CURRENT_TEST names the gap between two tests and the end of the
   run, so a worker thread that outlived its test is refused a real per-user path there too;
 * Tk interpreters are freed on the main thread, never by a worker's collection (Windows fatal 0x80000003);
 * a test's child process never outlives the run: one still running at the end is ended, named, and fails the run.
 
-A conftest takes them by importing these names (pytest registers a conftest's hooks and fixtures by name):
-`EVERY_SUITE` below, plus `pytest_sessionfinish` — or, in a conftest with a session-finish hook of its own, a call to
-`session_finish_guards()` from it. Their own tests: tests/test_harness_guards.py.
+A conftest takes them by importing these names at its top level and never binding them again (pytest registers a
+conftest's hooks and fixtures by name): `EVERY_SUITE` below, plus `pytest_sessionfinish` — a module suite's conftest
+imports that hook itself (tests/test_harness_guards.py checks every one); tests/conftest.py, whose session-finish hook
+does more, calls `session_finish_guards()` from its own. Their own tests: tests/test_harness_guards.py.
 """
+import atexit
 import os
+import shutil
 import sys
+import tempfile
 import threading
 import time
 
@@ -23,9 +30,33 @@ import pytest
 EVERY_SUITE = ("_guard_real_local_data", "pytest_collection", "pytest_runtest_teardown", "pytest_runtestloop")
 
 
+# --- The real per-user roots are out of reach --------------------------------------------------------------------- #
+# path_utils refuses the real per-user folders while PYTEST_CURRENT_TEST is set, and every test runs under a test root
+# — but code that reaches them where neither holds (a module imported before the run starts, a window's worker past the
+# end of the run, a route that builds the path itself) made the real, empty %LOCALAPPDATA%\Houseki\Surasura\<key> from
+# a plain `python -m pytest tests/qt/test_drag.py`, and only the other runs' guards saw it. So every pytest run moves
+# the per-user bases themselves: nothing in it, or started by it, can reach the real Houseki roots.
+ROOTS_PREFIX = "surasura-test-bases-"
+
+
+def _redirect_user_bases():
+    """Point %LOCALAPPDATA%, %APPDATA% and XDG_DATA_HOME at a new folder in TEMP (removed when this process exits);
+    PYTHONUSERBASE keeps naming this user's packages (Python looks for them under %APPDATA%), for the children too."""
+    import site
+    os.environ.setdefault("PYTHONUSERBASE", site.getuserbase())
+    bases = tempfile.mkdtemp(prefix=ROOTS_PREFIX)
+    atexit.register(shutil.rmtree, bases, True)   # before any test's exit hook, so it runs after them
+    for name, sub in (("LOCALAPPDATA", "Local"), ("APPDATA", "Roaming"), ("XDG_DATA_HOME", "Local")):
+        os.makedirs(os.path.join(bases, sub), exist_ok=True)
+        os.environ[name] = os.path.join(bases, sub)
+
+
+_redirect_user_bases()
+
+
 def _real_local_data_folder():
-    """This checkout's REAL per-install local data folder (path_utils.get_local_data_path() with no test root),
-    computed once, here, before any test can mock path_utils."""
+    """This checkout's per-install local data folder as the run reaches it without a test root (under its own bases:
+    path_utils.get_local_data_path()), computed once, here, before any test can mock path_utils."""
     from app import path_utils
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(path_utils._local_data_root(), path_utils._install_key(project_root))
@@ -35,7 +66,7 @@ _REAL_LOCAL_DATA = _real_local_data_folder()
 
 
 def _real_houseki_roots():
-    """The REAL Houseki roots a source run uses — path_utils.local_data_root() and get_persistent_user_data_path() with
+    """The Houseki roots a source run uses (under the run's own bases) — path_utils.local_data_root() and get_persistent_user_data_path() with
     no test root: %LOCALAPPDATA%\\Houseki\\Surasura and %APPDATA%\\Houseki\\Surasura — computed once, here, before any
     test can point the environment or path_utils elsewhere."""
     from app import path_utils

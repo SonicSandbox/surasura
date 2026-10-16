@@ -122,6 +122,54 @@ def test_helper_runs_second():
     pass
 
 
+# --- no pytest run reaches the real Houseki roots ------------------------------------------------------------------ #
+
+def test_a_plain_run_never_reaches_the_real_houseki_roots_even_outside_its_tests(tmp_path):
+    # A plain `python -m pytest <file>` (no wrapper, no SURASURA_TEST_ROOT) whose code reaches the per-user roots where
+    # no test's guard looks — here at the process's exit, by a route without path_utils' refusal (as a window's worker
+    # outliving the run once made the real, empty %LOCALAPPDATA%\Houseki\Surasura\<key>, seen only by other runs'
+    # guards). The harness points the per-user bases at a folder of the run's own, so the real roots (stood in for
+    # here by `real`) stay untouched, and that folder is gone when the process ends.
+    import site
+    real, temp = tmp_path / "real", tmp_path / "temp"
+    (real / "Local").mkdir(parents=True)
+    (real / "Roaming").mkdir()
+    temp.mkdir()
+    record = tmp_path / "record.json"
+    env = dict(os.environ, LOCALAPPDATA=str(real / "Local"), APPDATA=str(real / "Roaming"),
+               XDG_DATA_HOME=str(real / "Local"), TEMP=str(temp), TMP=str(temp), PYTHONIOENCODING="utf-8",
+               PYTHONUSERBASE=os.environ.get("PYTHONUSERBASE") or site.getuserbase())  # this user's packages
+    env[PROBE] = str(record)
+    for name in ("PYTEST_CURRENT_TEST", "PYTEST_ADDOPTS", "SURASURA_TEST_ROOT"):
+        env.pop(name, None)
+    out = subprocess.run(
+        [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "-q",
+         "tests/test_harness_guards.py::test_helper_reaches_the_roots_at_exit"],
+        cwd=PROJECT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=300)
+    text = out.stdout.decode("utf-8", "replace")
+    assert out.returncode == 0 and "1 passed" in text, text
+    reached = json.loads(record.read_text(encoding="utf-8"))
+    assert reached["local"] and reached["roaming"], reached         # the helper's exit hook did run
+    assert not (real / "Local" / "Houseki").exists() and not (real / "Roaming" / "Houseki").exists(), reached
+    assert not os.path.exists(reached["local"]) and not os.path.exists(reached["roaming"]), reached
+    assert not [n for n in os.listdir(temp) if n.startswith(harness_guards.ROOTS_PREFIX)], os.listdir(temp)
+
+
+@pytest.mark.skipif(not os.environ.get(PROBE), reason="a helper of the nested run above")
+def test_helper_reaches_the_roots_at_exit():
+    import atexit
+    from app import path_utils
+
+    def reach():
+        roots = {"local": path_utils._local_data_root(),
+                 "roaming": os.path.join(path_utils._roaming_base(), path_utils.VENDOR, path_utils.DATA_NAME)}
+        for root in roots.values():
+            os.makedirs(os.path.join(root, "made-at-exit"), exist_ok=True)
+        with open(os.environ[PROBE], "w", encoding="utf-8") as f:
+            json.dump(roots, f)
+    atexit.register(reach)
+
+
 # --- Tk interpreters are freed on the main thread ----------------------------------------------------------------- #
 
 def test_an_interpreter_dropped_last_by_a_worker_thread_is_deleted_on_the_main_thread():
@@ -225,6 +273,21 @@ def test_every_module_suite_on_disk_takes_the_harness_guards():
         assert os.path.isfile(path), f"{suite} has no conftest.py: it runs without the harness guards"
         with open(path, encoding="utf-8") as f:
             tree = ast.parse(f.read())
-        taken = {alias.asname or alias.name for node in ast.walk(tree)
-                 if isinstance(node, ast.ImportFrom) and node.module == "tests.harness_guards" for alias in node.names}
+        # Only the file's top level counts (an import under `if` or in a function may never run), and a name the
+        # conftest binds again after importing it (its own `def pytest_runtest_teardown`, say) replaces the guard.
+        taken = set()
+        for node in tree.body:
+            if isinstance(node, ast.ImportFrom) and node.module == "tests.harness_guards":
+                taken |= {alias.name for alias in node.names if (alias.asname or alias.name) == alias.name}
+                continue
+            bound = set()
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                bound = {node.name}
+            elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                bound = {(alias.asname or alias.name).split(".")[0] for alias in node.names}
+            elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                bound = {n.id for t in targets for n in ast.walk(t) if isinstance(n, ast.Name)}
+            rebound = bound & wanted & taken
+            assert not rebound, f"{path} binds {sorted(rebound)} again after importing it from tests.harness_guards"
         assert wanted <= taken, f"{path} does not import {sorted(wanted - taken)} from tests.harness_guards"

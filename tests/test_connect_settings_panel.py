@@ -262,7 +262,8 @@ def test_the_stars_answer_never_raises(monkeypatch):
     """H5: even the local data folder unreachable (`star_path` itself failing) is printed, not raised."""
     def unreachable():
         raise RuntimeError("no local data folder")
-    monkeypatch.setattr(settings_panel, "star_path", unreachable)
+    from app.connect import settings_values          # where the star's answer lives since W3.3 P8
+    monkeypatch.setattr(settings_values, "star_path", unreachable)
     assert settings_panel.answer_star("not-now") is False
 
 

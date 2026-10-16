@@ -61,66 +61,14 @@ def build_subprocess_env(frozen=None):
 
 
 def csv_has_data_rows(path):
-    """True if `path` is a CSV holding at least one row BELOW the header.
-
-    File size can't answer this. The analyzer writes the reading-words header unconditionally, so a
-    library with no read-only words leaves a small file that exists and is non-empty — a size check
-    passed it, the format picker opened, and the user only learned there was nothing to export when
-    the exporter failed with its own generic message. The explanation written for exactly that case
-    was unreachable.
-
-    Short-circuits on the first data row, so a multi-megabyte priority list costs one line.
-    A missing or unreadable file is reported as "no data" rather than raised: this only gates a
-    warning dialog, and the exporters validate their input again anyway.
-
-    Module-level rather than a method on purpose: the export dialog is exercised with a MagicMock
-    `self`, whose every attribute is a truthy Mock, so a `self.`-qualified check would be silently
-    faked and the guard would never fire (see docs/agent instructions/testing.md §5.3).
-    """
-    try:
-        with open(path, 'r', encoding='utf-8-sig', newline='') as f:
-            reader = csv.reader(f)
-            next(reader, None)                                   # header
-            return any(any(cell.strip() for cell in row) for row in reader)
-    except (OSError, UnicodeDecodeError, csv.Error):
-        return False
+    """`exports.csv_has_data_rows` (moved there so the Tk-free exports can use it too)."""
+    from app.exports import csv_has_data_rows as _has
+    return _has(path)
 
 
-# Settings -> Data & System -> Credits (a hover): every data source Surasura ships or is built from — the licences ask
-# for it wherever the data goes, and an in-place update carries only the app, never README. Keep it with README's Data
-# Credits, and with the generated modules that name their source (app/*_data.py). {jmdict} is JMdict's own date.
-DATA_CREDITS = """Data credits — what Surasura ships or is built from
-
-Dictionaries
-• JMdict and JMnedict (JMdict created {jmdict}) — the Electronic Dictionary Research and Development Group (EDRDG), CC BY-SA 4.0: the set phrases, which compounds are phrases or titles, the お / ご words of their own, the words the tokenizer cuts at their grammar (くだらない, いつも), kanji spellings, the one-kanji words the list can offer, and person names (via anki_miner's name lists). Those tables are shared under the same licence.
-• UniDic, as unidic-lite — the UniDic Consortium, BSD licence; read by MeCab (BSD) through fugashi (MIT): how Japanese is split into words.
-• jieba — MIT licence: how Chinese is split into words.
-• OpenCC 1.4.2 — Carbo Kuo and contributors, Apache License 2.0: Simplified and Traditional Chinese, Traditional in Taiwan's standard characters.
-• CC-CEDICT — MDBG, CC BY-SA 4.0: which of jieba's phrases are words, the numbers and doubled forms Chinese counts as their word, the Traditional spellings read as their Simplified pair, the surnames a name jieba guesses starts with, and the Chinese measure words. Those tables (app/cedict_data.py, and those phrases of app/zh_script_data.py) are shared under the same licence.
-• Universal Dependencies Chinese treebanks (GSDSimp, HK, CFL) — CC BY-SA 4.0: which Chinese counts are a number and a measure word (一个 is 一 + 个).
-
-Frequency lists (ranks only)
-• JPDB 2024 and Jiten: which compounds, affixed words, set phrases, adverbs cut at their particles and one-kanji words are words, and which words live only inside a phrase.
-• TMW Netflix, Anime & J-drama, Novels and VN lists: the 文 reading-word badge.
-
-Text, counted into statistics only (never a sentence)
-• RealPersonaChat — Yamashita et al. (2023), CC BY-SA 4.0.
-• Aozora Bunko — public-domain works, via aozorabunko-clean (CC BY 4.0).
-• Japanese and Chinese Wikipedia — Wikipedia contributors, CC BY-SA 4.0.
-• Leipzig Corpora Collection — Universität Leipzig, CC BY 4.0: Japanese news and web text, Chinese news.
-• Tatoeba — CC BY 2.0 FR. KdConv — Zhou et al. (2020), Apache License 2.0. Chinese Wikinews — CC BY 4.0.
-
-The shared パターン data is shared under CC BY-SA 4.0."""
-
-
-def data_credits():
-    """DATA_CREDITS with JMdict's date, as the shipped dictionary table records it ("unknown" when it can't be read)."""
-    try:
-        from app import dictionary_data
-        created = dictionary_data.JMDICT_CREATED
-    except Exception:
-        created = ""
-    return DATA_CREDITS.replace("{jmdict}", created or "unknown")
+# Settings -> Data & System -> Credits (a hover): every data source Surasura ships or is built from, with its licence
+# (DATA_CREDITS, data_credits) — in app/credits.py since W3.3, where the 3.0 window reads them too.
+from app.credits import DATA_CREDITS, data_credits  # noqa: E402,F401
 
 
 class ToolTip:
@@ -2487,7 +2435,8 @@ class MasterDashboardApp:
         shelf, asked once whether to put them back (before the save: the put-back needs the preview on; one not put
         back: still on, and asked whether to turn it off anyway), then saved off (a running Connect stops at its next
         boundary) and surasura.json refreshed, then the controls and the line go and the readers are dropped where the
-        store can. A failed save: back on."""
+        store can. A failed save: back on. The work is `app/connect/switch.py`'s (W3.3 P5); the greying, the asks and
+        the controls stay here."""
         on = bool(self.var_connect_enabled.get())
         was_on = bool((getattr(self, "_current_settings", None) or {}).get("connect_enabled"))
         self._connect_switch_enabled(False)
@@ -2500,108 +2449,24 @@ class MasterDashboardApp:
             pass
 
     def _connect_switched(self, on, was_on=False):
-        """On a worker: the switch's work (`_connect_switch_toggled`)."""
+        """On a worker: the switch's work (`_connect_switch_toggled`; `switch.turn_on`, then `switch.backfill`)."""
         if on:
-            failed = self._connect_watermarks()
-            saved = None
-            if not failed:
-                try:
-                    saved = settings_manager.save_keys({"connect_enabled": True}, strict=True,
-                                                       wait=settings_manager.LOCK_WAIT)    # read next: on disk first
-                except Exception as e:
-                    failed = f"the switch wasn't saved: {e}"
-            if failed:
-                self.log_to_terminal(f"Connect wasn't switched on: {failed}. Nothing changed; try again.")
+            from app.connect import switch
+            ok, saved, _why = switch.turn_on(self.CONNECT_LANGUAGES, log=self.log_to_terminal)
+            if not ok:
                 self.gui_queue.put(lambda: self._connect_switch_done(False))
                 return
-            self._refresh_tools_entry(saved)        # surasura.json lists `register` now (hato registers its drops)
-            self.log_to_terminal("Connect is on: what you place in your top 20 from now on gets cards.")
             self.gui_queue.put(lambda: self._connect_switch_done(True, saved=saved))
-            self._connect_backfill(saved)
+            switch.backfill(self.CONNECT_LANGUAGES, saved, log=self.log_to_terminal)
             return
-        shelved = self._connect_shelved() if was_on else {}
+        shelved = {}
+        if was_on:
+            from app.connect import switch
+            shelved = switch.shelved(self.CONNECT_LANGUAGES)
         if shelved:                     # asked on the Tk thread; the rest on another worker
             self.gui_queue.put(lambda: self._connect_ask_put_back(shelved))
             return
         self._connect_switch_off(was_on=was_on)
-
-    def _connect_watermarks(self):
-        """Each language's watermark at its log's end and its last-looked-at list forgotten, each in its own try ->
-        None, or the failures named by language."""
-        failed = []
-        try:
-            from app import library_store
-            from app.connect import level, library
-            from app.connect.ledger import path as ledger_path
-            from app.path_utils import get_data_path
-        except Exception as e:
-            return str(e)
-        for lang in self.CONNECT_LANGUAGES:
-            try:
-                store = library.open_store(lang, role="window")
-                if store is not None:
-                    with store:
-                        library.switch_on(store)
-                elif os.path.exists(library_store.library_db_path(lang, get_data_path(lang))):
-                    # a library that's there but won't open (busy, damaged, read-only): its watermark isn't set
-                    failed.append(f"{self.LANGUAGE_NAMES.get(lang, lang)}: the library is busy; try again in a "
-                                  "moment")
-                    continue
-                if os.path.exists(ledger_path()):   # no ledger: no list looked at yet (and none made here)
-                    level.forget(lang)
-            except Exception as e:
-                failed.append(f"{self.LANGUAGE_NAMES.get(lang, lang)}: {e}")
-        return "; ".join(failed) or None
-
-    LANGUAGE_NAMES = {"ja": "Japanese", "zh": "Chinese"}
-
-    def _connect_backfill(self, saved):
-        """On the switch-on's worker, after the save (P3.2 row 3.2.4; 09-hato-layer v2 §4): hato's pairings back-filled
-        for each language Surasura is set up for (`hato.backfill`: none mined because of it). With hato's entry in the
-        shared tools folder (hato.json), the Processing Log says hato is being asked (it may take up to a minute a
-        language), then each language's summary; without one (no hato here), nothing of it is said there — Connect's
-        log has why. A failure is only said: the switch stays on."""
-        try:
-            from app.connect import hato
-            shown = hato.connected()
-        except Exception:
-            shown = False
-        if shown:
-            self.log_to_terminal("Asking hato for its pairings…")
-        for lang in self.CONNECT_LANGUAGES:
-            name = self.LANGUAGE_NAMES.get(lang, lang)
-            try:
-                from app.connect import hato
-                from app.path_utils import get_user_files_path
-                if not os.path.isdir(get_user_files_path(lang)):
-                    continue
-                line = hato.say(hato.backfill(lang, saved))
-            except Exception as e:
-                line = (f"hato's pairings ({name}) weren't read: {e}. Connect stays on; ask again from its window "
-                        "when Needs you lists the files.")
-            if shown:
-                self.log_to_terminal(line)
-            else:
-                print(line)
-
-    def _connect_shelved(self):
-        """{lang: (cards on the shelf, [its restore points with cards still on it])}, from the status record — only
-        where Junban can put them back. Read on a worker; only for a switch that was on (it imports Connect)."""
-        try:
-            from app.connect import setup, status
-            if not setup._present("modules.junban.reposition"):
-                return {}
-            records = status.read(list(self.CONNECT_LANGUAGES))["languages"]
-        except Exception as e:
-            print(f"Connect's shelf wasn't read: {e}")
-            return {}
-        out = {}
-        for lang, rec in records.items():
-            shelf = rec.get("shelf") or {}
-            runs = [r["run"] for r in shelf.get("runs") or () if (r.get("back") or 0) < (r.get("cards") or 0)]
-            if shelf.get("on_shelf") and runs:
-                out[lang] = (shelf["on_shelf"], runs)
-        return out
 
     def _connect_ask_put_back(self, shelved):
         """IK-D1 (S16, gate (b)): switched off with cards on the shelf, asked once; then the switch-off goes on."""
@@ -2615,31 +2480,6 @@ class MasterDashboardApp:
 
     PUT_BACK_WAITING = "Waiting for Anki: another program (Anki Miner?) is writing to it. Your shelved cards go back " \
                        "once it's done…"
-
-    def _connect_put_back(self, put_back):
-        """On a worker: each restore point put back (`undo.act`), waiting for Anki's write lock as the Connect window
-        does (`connect_window.wait_for_writer`) -> the reasons of those not put back ([] when every one was)."""
-        failed = []
-        try:
-            from app.connect import connect_window, undo
-            settings = settings_manager.load_settings() or {}
-        except Exception as e:
-            return [str(e)]
-        for lang, (_cards, runs) in put_back.items():
-            for run in runs:
-                try:
-                    out = connect_window.wait_for_writer(
-                        lambda: undo.act(settings, lang, shelf_run=run, confirm=True),
-                        lambda: self.log_to_terminal(self.PUT_BACK_WAITING))
-                    said = (f"Not done: {out['skipped']}." if out.get("skipped") else
-                            f"{out.get('back', 0)} shelved {'card' if out.get('back', 0) == 1 else 'cards'} back in your new cards.")
-                    if out.get("skipped"):
-                        failed.append(said)
-                except Exception as e:
-                    said = f"Shelved cards weren't put back: {getattr(e, 'message', None) or e}"
-                    failed.append(said)
-                self.log_to_terminal(said)
-        return failed
 
     def _connect_ask_off_anyway(self, failed):
         """On the Tk thread: shelved cards weren't put back — Connect stays on unless you turn it off anyway."""
@@ -2658,38 +2498,36 @@ class MasterDashboardApp:
         self._connect_switch_done(True, fresh=False)
 
     def _connect_switch_off(self, put_back=None, was_on=True):
-        """On a worker: the shelf put back first when asked (as you: never shelved again; each restore point waiting
-        for Anki's write lock as the Connect window does), then the switch saved off, then the readers dropped where
-        the store can (`unregister_reader`, 3.0's; 2.x's store hasn't it: nothing) — only for a switch that was on
-        (H11: a switch that was off imports nothing of app.connect). A restore point not put back: the switch stays
-        on and you're asked whether to turn it off anyway (`_connect_ask_off_anyway`)."""
+        """On a worker: the shelf put back first when asked (`switch.put_back`: as you, never shelved again; each
+        restore point waiting for Anki's write lock as the Connect window does), then `switch.turn_off`: saved off,
+        surasura.json refreshed, the readers dropped where the store can — only for a switch that was on. H11: a switch
+        that was off imports nothing of app.connect (`switch` is in it), so its save is done here, as `turn_off` does
+        it. A restore point not put back: the switch stays on and you're asked whether to turn it off anyway
+        (`_connect_ask_off_anyway`)."""
+        if not (put_back or was_on):
+            try:
+                saved = settings_manager.save_keys({"connect_enabled": False}, strict=True,
+                                                   wait=settings_manager.LOCK_WAIT)
+            except Exception as e:
+                self.log_to_terminal(f"Connect wasn't switched off: the switch wasn't saved: {e}. It stays on; try "
+                                     "again.")
+                self.gui_queue.put(lambda: self._connect_switch_done(True, fresh=False))
+                return
+            self._refresh_tools_entry(saved)        # surasura.json no longer lists `register`
+            self.log_to_terminal("Connect is off.")
+            self.gui_queue.put(lambda: self._connect_switch_done(False))
+            return
+        from app.connect import switch
         if put_back:
-            failed = self._connect_put_back(put_back)
+            failed = switch.put_back(put_back, log=self.log_to_terminal,
+                                     waiting=lambda: self.log_to_terminal(self.PUT_BACK_WAITING))
             if failed:
                 self.gui_queue.put(lambda: self._connect_ask_off_anyway(failed))
                 return
-        try:
-            saved = settings_manager.save_keys({"connect_enabled": False}, strict=True,
-                                               wait=settings_manager.LOCK_WAIT)
-        except Exception as e:
-            self.log_to_terminal(f"Connect wasn't switched off: the switch wasn't saved: {e}. It stays on; try again.")
+        ok, _saved, _why = switch.turn_off(was_on=was_on, log=self.log_to_terminal, languages=self.CONNECT_LANGUAGES)
+        if not ok:
             self.gui_queue.put(lambda: self._connect_switch_done(True, fresh=False))
             return
-        self._refresh_tools_entry(saved)            # surasura.json no longer lists `register`
-        try:
-            from app import library_store
-            if was_on and hasattr(library_store.Store, "unregister_reader"):
-                from app.connect import library
-                for lang in self.CONNECT_LANGUAGES:
-                    store = library.open_store(lang, role="window")
-                    if store is None:
-                        continue
-                    with store:
-                        if library.has_reader(store):
-                            store.unregister_reader(library.READER)
-        except Exception as e:
-            print(f"Connect's readers weren't dropped: {e}")
-        self.log_to_terminal("Connect is off.")
         self.gui_queue.put(lambda: self._connect_switch_done(False))
 
     def _connect_switch_done(self, on, saved=None, fresh=True):
@@ -4880,25 +4718,23 @@ class MasterDashboardApp:
         Same three formats as the ordinary frequency-list export — a Migaku user can't do anything
         with a Yomitan ZIP, and two export buttons that behave differently is just confusing. The
         list is a CSV with the same columns as the priority list, so every exporter reads it as-is.
+        The export itself is `app/exports.py` (Tk-free, shared with 3.0's Settings page).
         """
-        from app.path_utils import get_user_file
+        from app import exports
 
         self._show_export_dialog(
-            os.path.join(get_user_file("results"), "reading_words.csv"),
-            initial_name="Surasura Reading Words",
-            empty_message=("Generate your Vocab Journey first — the reading-words list is built "
-                           "during analysis.\n\nIf you have already run one, then no read-only "
-                           "words were found yet, which usually means there isn't enough content "
-                           "for the comparison to be confident."))
+            exports.source("reading_words"),
+            initial_name=exports.INITIAL_NAMES["reading_words"],
+            empty_message=exports.EMPTY["reading_words"])
 
     def generate_frequency_list(self):
-        """Show dialog to choose export format"""
-        from app.path_utils import get_user_file
+        """Show dialog to choose export format (the export itself: `app/exports.py`)."""
+        from app import exports
 
         self._show_export_dialog(
-            os.path.join(get_user_file("results"), "priority_learning_list.csv"),
-            initial_name="MY Immersion FreqList",
-            empty_message="You need to run an analysis first to generate data.")
+            exports.source("frequency_list"),
+            initial_name=exports.INITIAL_NAMES["frequency_list"],
+            empty_message=exports.EMPTY["frequency_list"])
 
     def export_sentence_dictionary(self):
         """Settings → Data & System → Export Sentence Dictionary: "Surasura Corpus (<lang>)", a Yomitan
@@ -5033,34 +4869,36 @@ class MasterDashboardApp:
         wrapper = ttk.Frame(dialog, padding=20)
         wrapper.pack(fill=tk.BOTH, expand=True)
         
-        ttk.Label(wrapper, text="Which format would you like to create?", 
+        from app import exports
+        ttk.Label(wrapper, text=exports.FORMAT_QUESTION,
                  font=('Segoe UI', 11, 'bold'), foreground=TEXT_COLOR, background=BG_COLOR).pack(pady=(0, 20))
                  
         # Buttons
-        btn_migaku = ttk.Button(wrapper, text="Migaku", command=lambda: self.export_wrapper(dialog, "migaku", source_csv, initial_name))
+        btn_migaku = ttk.Button(wrapper, text=exports.FORMAT_LABELS["migaku"], command=lambda: self.export_wrapper(dialog, "migaku", source_csv, initial_name))
         btn_migaku.pack(fill=tk.X, pady=5)
-        ToolTip(btn_migaku, "Export as a JSON array (Standard Migaku Format).")
+        ToolTip(btn_migaku, exports.FORMAT_TIPS["migaku"])
         
-        btn_yomitan = ttk.Button(wrapper, text="Yomichan / Yomitan", command=lambda: self.export_wrapper(dialog, "yomitan", source_csv, initial_name))
+        btn_yomitan = ttk.Button(wrapper, text=exports.FORMAT_LABELS["yomitan"], command=lambda: self.export_wrapper(dialog, "yomitan", source_csv, initial_name))
         btn_yomitan.pack(fill=tk.X, pady=5)
-        ToolTip(btn_yomitan, "Export as a frequency dict ZIP file (v3 format).")
+        ToolTip(btn_yomitan, exports.FORMAT_TIPS["yomitan"])
         
-        btn_txt = ttk.Button(wrapper, text="Word List (Text)", command=lambda: self.export_wrapper(dialog, "txt", source_csv, initial_name))
+        btn_txt = ttk.Button(wrapper, text=exports.FORMAT_LABELS["txt"], command=lambda: self.export_wrapper(dialog, "txt", source_csv, initial_name))
         btn_txt.pack(fill=tk.X, pady=5)
-        ToolTip(btn_txt, "Export as a plain text file (one word per line).")
+        ToolTip(btn_txt, exports.FORMAT_TIPS["txt"])
 
     def generate_anki_sentence_warning(self):
-        from app.path_utils import get_user_file
-        results_dir = get_user_file("results")
-        priority_csv = os.path.join(results_dir, "priority_learning_list.csv")
+        """Generate Sentence List: 2.4's warning, then the Anki sentence CSV (the export itself: `app/exports.py`)."""
+        from app import exports
+        priority_csv = exports.source("sentence_list")
 
-        if not os.path.exists(priority_csv) or os.path.getsize(priority_csv) == 0:
-            messagebox.showwarning("No Data", "You need to run an analysis first to generate data.")
+        not_ready = exports.ready("sentence_list")
+        if not_ready is not None:
+            messagebox.showwarning(exports.TITLES[not_ready.kind], not_ready.message)
             return
 
         # Warning Dialog
         dialog = tk.Toplevel(self.root)
-        dialog.title("Anki Export Warning")
+        dialog.title(exports.SENTENCE_WARNING_TITLE)
         dialog.geometry("450x420")
         dialog.resizable(False, False)
         dialog.configure(bg=BG_COLOR)
@@ -5072,79 +4910,49 @@ class MasterDashboardApp:
         wrapper = ttk.Frame(dialog, padding=20)
         wrapper.pack(fill=tk.BOTH, expand=True)
 
-        warn_text = (
-            "WARNING: You will learn words faster with higher retention practice "
-            "if you mine directly from the スラスラ list. You can see multiple "
-            "examples and mine with Yomitan / Migaku.\n\n"
-            "FORMAT: This will generate a list to import into Anki / SRS software. "
-            "Columns included: Index, Word, Reading, Main Sentence, Second Sentence, Tier, Sources.\n\n"
-            "Are you sure you want to do this?"
-        )
+        warn_text = exports.SENTENCE_WARNING
         
         ttk.Label(wrapper, text=warn_text, foreground=ERROR_COLOR, background=BG_COLOR, font=('Segoe UI', 10), wraplength=400, justify=tk.LEFT).pack(pady=(0, 20))
         
         confirm_var = tk.BooleanVar(value=False)
-        chk_confirm = ttk.Checkbutton(wrapper, text="I understand", variable=confirm_var)
+        chk_confirm = ttk.Checkbutton(wrapper, text=exports.SENTENCE_CONFIRM, variable=confirm_var)
         chk_confirm.pack(anchor=tk.W, pady=(0, 20))
         
         def on_generate():
             if not confirm_var.get():
-                messagebox.showwarning("Confirm", "Please check the box to confirm you understand.")
+                messagebox.showwarning("Confirm", exports.SENTENCE_UNCONFIRMED)
                 return
             self.export_wrapper(dialog, "anki", priority_csv)
             
-        btn_gen = ttk.Button(wrapper, text="Generate Sentence List", command=on_generate, style="Action.TButton")
+        btn_gen = ttk.Button(wrapper, text=exports.SENTENCE_BUTTON, command=on_generate, style="Action.TButton")
         btn_gen.pack(fill=tk.X)
 
 
     def export_wrapper(self, dialog, format_type, csv_path, initial_name="MY Immersion FreqList"):
+        """Save-as, then the export (`exports.write`, Tk-free) and 2.4's box for how it went."""
         from tkinter import filedialog
-        from app.frequency_exporter import FrequencyExporter
-        
+        from app import exports
+
         dialog.destroy()
-        
-        file_types = []
-        def_ext = ""
-        
-        if format_type == "migaku":
-            file_types = [("JSON Files", "*.json")]
-            def_ext = ".json"
-        elif format_type == "yomitan":
-            file_types = [("Zip Files", "*.zip")]
-            def_ext = ".zip"
-        elif format_type == "txt":
-            file_types = [("Text Files", "*.txt")]
-            def_ext = ".txt"
-        elif format_type == "anki":
-            file_types = [("CSV Files", "*.csv")]
-            def_ext = ".csv"
-            initial_name = "Anki_Sentence_List"
-            
+
+        def_ext, file_types, initial_file, title = exports.save_as(format_type, initial_name)
         save_path = filedialog.asksaveasfilename(
             defaultextension=def_ext,
-            initialfile=f"{initial_name}{def_ext}",
+            initialfile=initial_file,
             filetypes=file_types,
-            title=f"Save {format_type.capitalize()} List"
+            title=title
         )
-        
+
         if not save_path:
             return
-            
-        try:
-            if format_type == "migaku":
-                FrequencyExporter.export_migaku(csv_path, save_path)
-            elif format_type == "yomitan":
-                lang = self.var_language.get()
-                FrequencyExporter.export_yomitan(csv_path, save_path, language=lang)
-            elif format_type == "txt":
-                FrequencyExporter.export_word_list(csv_path, save_path)
-            elif format_type == "anki":
-                FrequencyExporter.export_anki_sentences(csv_path, save_path)
-                
-            messagebox.showinfo("Success", f"List generated successfully!\n\nSaved to: {save_path}")
-            
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to export:\n{e}")
+
+        lang = self.var_language.get() if format_type == "yomitan" else None
+        outcome = exports.write(format_type, csv_path, save_path, language=lang)
+        if outcome.kind == "done":
+            messagebox.showinfo(exports.TITLES["done"], outcome.message)
+        else:
+            messagebox.showerror(exports.TITLES["failed"], outcome.message)
+
 
 def main():
     root = tk.Tk()

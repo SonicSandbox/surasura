@@ -303,6 +303,15 @@ QPushButton#settingsmore:hover {{ border: 0; }}
 QPushButton#settingsmore:focus {{ border: 2px solid {c['accent']}; padding: 0 2px; }}
 """
     # --- end W3.3
+    # --- W3.2 Q1: New arrivals' tray (arrivals.py): its scroll and body on the tray's own face; its heading, ✕ and
+    # *✓ All to Finished* in the overlay's ink
+    rules += f"""
+QScrollArea#trayscroll, QWidget#traybody {{ background: transparent; border: 0; }}
+QLabel#trayheading {{ color: {c['ink']}; {font('tray-heading')} }}
+QWidget#arrivalstray QToolButton {{ color: {c['overlay-ink-dim']}; border: 1px solid transparent; }}
+QWidget#arrivalstray QToolButton:hover {{ background: {c['overlay-hover']}; color: {c['ink']}; }}
+"""
+    # --- end W3.2 Q1
     _state["generated_ms"] = (time.perf_counter() - t0) * 1000
     return rules
 

@@ -419,6 +419,55 @@ MENU_ITEMS = {
 }
 MENU_REFUSED_TIP = "Your library can't be saved right now: {reason}"
 ROWS_SAVING = "saving…"
+# --- W3.2 Q1: New arrivals — the header's inset and its tray (app/qt/arrivals.py) ---------------------------------- #
+ARRIVALS = "New arrivals"
+ARRIVALS_NAME = "New arrivals · {n} files"
+ARRIVALS_NAME_ONE = "New arrivals · 1 file"
+ARRIVALS_TIP = "New arrivals: {n} files waiting for a place\n• Open the tray to put them where you want them"
+ARRIVALS_TIP_ONE = "New arrivals: 1 file waiting for a place\n• Open the tray to put it where you want it"
+TRAY_NAME = "New arrivals: what came in, newest first"
+TRAY_CLOSE = "✕"
+TRAY_CLOSE_NAME = "Close"
+TRAY_CLOSE_TIP = "Close the tray (Esc, Back or a click outside close it too)"
+TRAY_ALL_FINISHED = "✓ All to Finished"
+TRAY_ALL_FINISHED_TIP = "Record every already-watched arrival as finished\n• Then choose whether their new cards stay"
+TRAY_ALL_TITLES = "{n} watched titles"
+TRAY_MINE_TOO = "Mine them too"
+TRAY_MINE_TOO_TIP = "Make cards from the already-watched arrivals as well"
+TRAY_ICON = {
+    "top": ("Top", "Top · Add to the top of Current, the next thing you watch or read"),
+    "finished": ("Finished", "Finished · Record it as finished: you've watched it already\n• Then choose whether its "
+                             "new cards stay"),
+}
+TRAY_MORE_NAME = "More"
+TRAY_MORE_TIP = "More · Place it elsewhere, open its folder, or remove it"
+TRAY_MENU_NAME = "Where {title} goes"
+TRAY_MENU = {
+    "top": ("Top of Current", "The top of Current: the next thing you watch or read"),
+    "after-show": ("After its show", "Right after the episodes of its show already in Current"),
+    "soon": ("Soon", "Soon: next in line, after what's in NOW"),
+    "goal": ("Goal", "Goal: someday, in no order"),
+    "finished": ("Finished", "Record it as finished: you've watched it already"),
+    "folder": ("Open its folder", "Show its files in Explorer"),
+    "remove": ("Remove…", "Send its files to the trash (kept 30 days; Undo puts them back). Asks first"),
+}
+TRAY_PLACED = {
+    "top": "{title} is at the top of Current",
+    "after-show": "{title} placed after its show",
+    "soon": "{title} → Soon",
+    "goal": "{title} moved to Goal",
+}
+TRAY_REMOVE_TITLE = "Remove {title}?"
+TRAY_REMOVE_BODY = "Its {n} files go to the trash, kept there for 30 days. Undo puts them back."
+TRAY_REMOVE_BODY_ONE = "Its file goes to the trash, kept there for 30 days. Undo puts it back."
+TRAY_REMOVE_YES = "Remove {n} files"
+TRAY_REMOVE_YES_ONE = "Remove 1 file"
+TRAY_REMOVE_YES_TIP = "Send them to the trash. Undo on the next message puts them back"
+TRAY_REMOVED = "{title} removed · in the trash for 30 days"
+TRAY_NO_FOLDER = "Couldn't open its folder: {path}"
+TRAY_NUMBER_NONE = "—"
+TRAY_NUMBER_UNIT = "new / {unit}"
+# --- end W3.2 Q1
 
 # --- W3.4: the ported windows — the base (windows.py, confirm.py) and row 1 (the frequency lists, the sentence
 # dictionary). The Settings tab lists the ported windows' doors until W3.3 / W3.2 give each its row (IK-16).

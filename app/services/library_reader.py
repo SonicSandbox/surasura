@@ -106,6 +106,11 @@ class LibraryReader:
         self.reads = 0                     # feed reads (tests)
         self.builds = 0                    # views built (tests)
         self.skipped = 0                   # reads that changed nothing the window shows (tests)
+        # --- W3.2 Q1: New arrivals' estimates ({item_id: N new}, the window's `arrivals.ArrivalNumbers`), built into
+        # the next view (`view_rows.build(estimates=)`); new ones rebuild it (only the arrivals' rows change)
+        self._estimates = {}
+        self._estimates_new = False
+        # --- end W3.2 Q1
 
     # --- the window's side --------------------------------------------------------------------------------------- #
     def subscribe(self, callback):
@@ -121,6 +126,15 @@ class LibraryReader:
         """`callback(item_ids)` for the items the feed lets go of while a drag holds the view, on the reader's thread."""
         with self._lock:
             self._gone_subscribers.append(callback)
+
+    # --- W3.2 Q1
+    def set_estimates(self, estimates):
+        """New arrivals' numbers ({item_id: N new}), from any thread: built into the next view, looked at now."""
+        with self._lock:
+            self._estimates = dict(estimates or {})
+            self._estimates_new = True
+        self._wake.set()
+    # --- end W3.2 Q1
 
     def hold(self):
         """A drag starts (E6): the feed is still read, but nothing is built or published until `release()`."""
@@ -214,10 +228,13 @@ class LibraryReader:
                 self._held_dirty = False
                 self._publish(self._build(numbers, mode, reason, rows_known=self._seen is not None))   # (review B-12)
             return
+        with self._lock:                                # W3.2 Q1: new estimates from the window
+            estimates_new, self._estimates_new = self._estimates_new, False
         dv = h.data_version()
         cards_due = self._cards_stale and time.monotonic() - self._cards_all_at >= CARDS_ALL_S
         if not changed_mode and dv == self._data_version and version == self._numbers_version \
-                and self._view is not None and not self._view.busy and not cards_due and not released:
+                and self._view is not None and not self._view.busy and not cards_due and not released \
+                and not estimates_new:                  # W3.2 Q1
             self._flush_cache()
             return
         feed = h.read_feed(self._seen, self._epoch)
@@ -232,7 +249,8 @@ class LibraryReader:
         cards = self._card_counts(h)
         changed = (feed["full"] or feed["items"] or feed["works"] or feed["gone"] or changed_mode
                    or self._options != options_before or version != self._numbers_version
-                   or cards != self._cards or self._view is None or self._view.busy or self._view.cached or released)
+                   or cards != self._cards or self._view is None or self._view.busy or self._view.cached or released
+                   or estimates_new)                    # W3.2 Q1
         self._cards = cards
         self._data_version = dv
         self._numbers_version = version
@@ -402,7 +420,8 @@ class LibraryReader:
                                cards=self._cards, mining=set(self.mining()), language=self.language, mode=mode,
                                reason=reason, loading=not rows_known, cache=self.row_cache,
                                tiers=self._sorted_tiers() if self._items else None, changed=self._build_changed,
-                               changed_works=self._build_works, numbers_changed=numbers_changed)
+                               changed_works=self._build_works, numbers_changed=numbers_changed,
+                               estimates=self._estimates)     # W3.2 Q1
         self._built_numbers = self._numbers_version
         self._build_changed = set()                     # built: from here on, only what the feed changes
         self._build_works = set()

@@ -380,6 +380,31 @@ def test_a_changed_original_is_copied_again_with_the_old_copy_kept_in_the_trash(
         assert not [n for n in os.listdir(os.path.dirname(copy)) if n.endswith(".part")]
 
 
+def test_an_original_only_touched_keeps_its_copy_and_the_old_copy_goes_to_the_trash_on_a_fresh_clock():
+    """Its time moved, its bytes didn't: the record takes the new time, nothing is copied or trashed. Then a real
+    change: the trashed old copy's 30 days count from now, not from when the copy was made (else purged at once)."""
+    language = "ja"
+    store, data_dir = _empty(language)
+    a = _SHOWS[language][0]
+    src = _drive("driveA")
+    path = _write(os.path.join(src, a, "ep01.srt"), _text(language, 1))
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        copy = os.path.join(data_dir, "Library", a, "ep01.srt")
+        t = time.time() - 30
+        os.utime(path, (t, t))
+        result = _look(store, language, root, full=True)
+        assert result["recopied"] == 0 and _trash(data_dir) == []
+        assert store.origins()[ls.path_key(os.path.abspath(path))].mtime_ns == os.stat(path).st_mtime_ns
+        old = time.time() - 40 * 86400
+        os.utime(copy, (old, old))                                              # a copy made 40 days ago
+        _write(path, _text(language, 1, extra="、修正版"), age=20)
+        assert _look(store, language, root, full=True)["recopied"] == 1
+        trashed = os.path.join(data_dir, ".trash", _trash(data_dir)[0])
+        assert time.time() - os.stat(trashed).st_mtime < 60
+
+
 @pytest.mark.parametrize("change", ["empty", "under half", "placeholder"])
 def test_a_changed_original_is_never_followed_when_empty_much_smaller_or_a_placeholder(change, monkeypatch):
     language = "ja"

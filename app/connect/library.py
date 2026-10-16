@@ -84,13 +84,19 @@ def pairings(store):
 
 
 def pairing_of(store, item_id):
-    """The item's newest pairing record (hato's, as written), or None."""
-    row = store.conn.execute("SELECT pairing FROM pairings WHERE item_id = ? ORDER BY paired_at DESC, rowid DESC "
-                             "LIMIT 1", (item_id,)).fetchone()
+    """The item's newest pairing record (hato's, as written), or None. A source folder's origin row (`src:…`, SRC B1)
+    only when the item has no other — it never shadows hato's video path, ids and episode numbers — and read without
+    the origin's size, time and sha256, which a re-copy rewrites: the pairing's version (`fit_check.version`) stays."""
+    from app import library_store
+    row = store.conn.execute(f"SELECT content_key, pairing FROM pairings p WHERE item_id = ? ORDER BY "
+                             f"{library_store._ORIGIN_ROW}, paired_at DESC, rowid DESC LIMIT 1", (item_id,)).fetchone()
     try:
-        return json.loads(row[0]) if row else None
+        record = json.loads(row[1]) if row else None
     except ValueError:
         return None
+    if isinstance(record, dict) and row[0].startswith(library_store.SOURCE_KEY):
+        record = {k: v for k, v in record.items() if k not in library_store.SOURCE_STATS}
+    return record
 
 
 # --------------------------------------------------------------------------- #

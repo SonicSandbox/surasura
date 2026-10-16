@@ -12,10 +12,11 @@ folder, `Library/<show>/<file>` (SRC-4). One look (`scan`):
   files' stats.
 - **Never a duplicate** (SRC-7, S7): one subtitle per episode per language (`.ja.ass`, then `.ja.srt`, then untagged;
   an `.sdh` / `.hi` / `.cc` one after the plain one, a `.forced` one and another language's tag skipped), one per video
-  in a look, the latest release of an episode (`- 05v2` over `- 05`); then, cheapest first, (a) a video beside it already paired → that item, (b) an item
-  holding the same bytes → that item, a `v2` of an episode already in → that item, its copy followed (S5), else (c) a
-  copy (`.part`, then renamed; a file changed in the last SETTLE_S seconds, or while copied, waits for the next look).
-  A removed item's path, bytes or video stay out (S6).
+  in a look, the latest release of an episode (`- 05v2` over `- 05`); then, cheapest first, (a) a video beside it
+  already paired → that item, (b) an item holding the same bytes → that item, a `v2` of an episode already in → that
+  item, its copy followed (S5), else (c) a copy (`.part`, then renamed; a file changed in the last SETTLE_S seconds, or
+  while copied, waits for the next look). A removed item's path, bytes, video, or its episode's re-release stay out
+  (S6).
 - **Hands each show's files to `Store.take_in`**, at most BATCH at a time (an EPUB's parts all in one: S11).
 - **A changed original** (a full look): copied again over Surasura's copy — only a copy in `Library`, never from an
   empty file, one under half the copy's size or one that changed while read; the old copy *copied* into the data
@@ -267,7 +268,7 @@ def _listing(folder):
                 try:
                     if entry.is_dir(follow_symlinks=False):
                         # a folder the cloud hasn't brought down: listing it could download it (B3)
-                        if not ls.skip_dir(entry.name, entry) and                                 not ls.is_placeholder(entry.stat(follow_symlinks=False)):
+                        if not (ls.skip_dir(entry.name, entry) or ls.is_placeholder(entry.stat(follow_symlinks=False))):
                             subs.append(entry.path)
                         continue
                     if entry.is_symlink():

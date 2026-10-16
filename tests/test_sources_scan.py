@@ -1280,6 +1280,25 @@ def test_copies_take_in_cannot_take_go_to_the_trash(monkeypatch):
         assert result["stopped"] is True and _library_files(data_dir) == [] and len(_trash(data_dir)) == 1
 
 
+
+def test_a_copy_take_in_keeps_out_after_all_goes_to_the_trash(monkeypatch):
+    """N3: an item removed between the look's read of the exclusions and its take_in — the look copied the file, take_in
+    skips it as excluded: that copy is trashed, never left in Library untracked."""
+    language = "ja"
+    store, data_dir = _empty(language)
+    a = _SHOWS[language][0]
+    src = _drive("driveA")
+    _write(os.path.join(src, a, "ep01.srt"), _text(language, 1))
+    with store:
+        root = store.add_source(src)
+        item = _look(store, language, root, first=True)["ids"][0]
+        rel = store.item(item)["rel_path"]
+        store.remove([item])
+        ls.trash_file(data_dir, rel)
+        monkeypatch.setattr(store, "excluded", lambda root_ids=None: {})      # (the Remove came just after the read)
+        result = _look(store, language, root, full=True)
+        assert result["added"] == 0 and _library_files(data_dir) == [] and len(_trash(data_dir)) == 2
+
 def test_a_folder_loop_with_no_link_is_listed_once(monkeypatch):
     """N4: a share that shows a loop as an ordinary folder (Samba following links): a folder already listed this look,
     by its device and file number, is not listed again."""

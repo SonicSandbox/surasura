@@ -79,6 +79,25 @@ View = namedtuple("View", "language mode reason state busy loading cached rows l
 #   worst: Current's rows below Up Next, the most-needing string per kind of Anki count beside it (`worst_needs`)
 #   arrivals: the tray's rows as it shows them (New, then Already watched; each newest first); arrival_groups: the
 #   groups that hold any, in that order. Neither is in the first screen's cache (the first frame shows no tray)
+# --- W3.2 Q6: each row's, card's, tray row's and Goal cover's record, as the window decodes it (`app/qt/covers.py`)
+CoverRef = namedtuple("CoverRef", "work_id source ref path locked")
+Row = namedtuple("Row", Row._fields[:Row._fields.index("string")] + ("cover",) + Row._fields[Row._fields.index("string"):],
+                 defaults=(None,) + tuple(Row._field_defaults.values()))
+#   before `string`, which stays last (the first screen's cache writes it None; a cache from before reads cover None)
+Need = namedtuple("Need", Need._fields + ("cover",), defaults=(None,))
+Arrival = namedtuple("Arrival", Arrival._fields + ("cover",), defaults=(None,))
+Goal = namedtuple("Goal", Goal._fields + ("cover_refs",), defaults=((),))    # beside `covers`, the first nine works'
+
+
+def cover_of(work):
+    """A work's cover record (`CoverRef`), or None for a row without a work: what the window needs to find its picture
+    (`app/services/covers.image_path`) — a new record is a new row (the reader's cache keeps a row while its work is
+    the same object)."""
+    if not work or work.get("id") is None:
+        return None
+    return CoverRef(work["id"], work.get("cover_source"), work.get("cover_ref"), work.get("cover_path"),
+                    bool(work.get("cover_locked")))
+# --- end W3.2 Q6
 
 STRINGS = {
     "dash": "—",
@@ -489,7 +508,7 @@ def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, 
                pct_tone=pct_tone(pct), n_new=n_new, status=st, mark=mark, episodes=tuple(eps), next_index=next_index,
                studying=studying, date=day_label(stamp) if finished else "", cover_title=work.get("title") or title,
                accessible=accessible, description=line, chips=chips, more_chips=more, play_tip=nxt.play_tip,
-               can_play=nxt.can_play, string=string)
+               can_play=nxt.can_play, string=string, cover=cover_of(work))               # W3.2 Q6
 
 
 class RowCache:
@@ -767,7 +786,7 @@ def _arrival(piece, works, cards, estimates, guessed):
                    cards=n_cards, no_media=no_media, parts=parts, n_files=n, watched=watched,
                    group="watched" if watched else "new",
                    added_at=max((it.get("added_at") or "" for it in piece), default="") or None,
-                   cover_title=row.cover_title, per_ep=per_ep, tip=tip,
+                   cover_title=row.cover_title, per_ep=per_ep, tip=tip, cover=row.cover,     # W3.2 Q6
                    accessible=STRINGS["acc_arrival"].format(title=row.title, line=" · ".join(t for t, _ in parts),
                                                             number=number).replace(" ·  · ", " · "))
 
@@ -891,7 +910,8 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
                 STRINGS["goal_line"].format(titles=len(goal_works), files=thousands(len(goal_items)))
         else:
             g_line = STRINGS["goal_empty"]
-        goal = Goal(titles=len(goal_works), files=len(goal_items), covers=covers, line=g_line, tip=STRINGS["goal_tip"])
+        goal = Goal(titles=len(goal_works), files=len(goal_items), covers=covers, line=g_line, tip=STRINGS["goal_tip"],
+                    cover_refs=tuple(cover_of(works.get(w)) for w in goal_works[:9]))        # W3.2 Q6
         n_goal_works = len(goal_works)
         _keep(cache, "goal", goal_items, goal_works[:9], (), (goal, n_goal_works))
     # Finished: newest first, by month; no date last (*Earlier*). Its rows read the cards, the mining set, the line and
@@ -959,7 +979,7 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
             line = STRINGS["need_line_n"].format(line=line_n, word=word)
         needs.append(Need(key=row.key, work_id=row.work_id, title=title, line=line,
                           episodes=tuple((e.label, STRINGS["need_ep"].format(word=word)) for e in waiting),
-                          cover_title=row.cover_title))
+                          cover_title=row.cover_title, cover=row.cover))                   # W3.2 Q6
     arrivals = tiers["arrivals"]
     arrival_rows, arrival_groups = _arrivals(cache, arrivals, works, cards, estimates, guessed, changed, changed_works)
     if cache is not None:
@@ -1017,7 +1037,8 @@ def _row_from(data):
     eps = tuple(Episode(*e)._replace(status=Status(*e[12]) if e[12] else None, mark=Mark(*e[13]) if e[13] else None)
                 for e in r.episodes)
     chips = tuple(Chip(*c) for c in r.chips)
-    r = r._replace(status=st, mark=mk, episodes=eps, chips=chips)
+    r = r._replace(status=st, mark=mk, episodes=eps, chips=chips,
+                   cover=CoverRef(*r.cover) if r.cover else None)                  # W3.2 Q6
     plan = stone_plan.plan(r.episodes, r.next_index, r.media, r.key, r.source == "hato")     # planned again, not kept
     return r._replace(string=(plan, max(stone_plan.tightest(plan), stone_plan.ahead(plan))))
 

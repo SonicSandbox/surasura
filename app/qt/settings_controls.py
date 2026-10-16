@@ -949,11 +949,14 @@ class LevelSlider(_Control):
     """The level: a well (a cut) with a channel from the common blue to the rare purple, a chamber at each band, the band
     names under it (the chosen one bright) and its gem. Pressed, the gem lifts; held, it glides after the hand, held back
     near each chamber; let go, it falls into the nearest chamber and stops hard. Click a chamber to choose it; Left /
-    Right / Home / End. `bands`: (key, name). `value()` is the chosen band's key."""
+    Right / Home / End. `bands`: (key, name). `value()` is the chosen band's key. `one_name` (the level ▾'s pop, W3.1b):
+    only the chosen band's name, under its chamber."""
 
-    def __init__(self, bands, value=None, tooltip=None, name=None, parent=None):
+    def __init__(self, bands, value=None, tooltip=None, name=None, parent=None, one_name=False):
         super().__init__(tooltip, name, parent)
         self._bands = [(b[0], b[1]) for b in bands]
+        self._one = bool(one_name)
+        self._named = True                         # one name: shown (`set_named`)
         self._index = self._find(value) if value is not None else 0
         self._t = self._at_t(self._index)          # the gem's place along the channel, 0 … 1
         self._lift = 0.0                           # 0 seated … 1 lifted
@@ -983,6 +986,16 @@ class LevelSlider(_Control):
         self._t, self._lift, self._held = self._at_t(self._index), 0.0, False
         self._describe()
         self.update()
+
+    def busy(self):
+        """The hand holds the gem, or it is still gliding or falling into a chamber: a shown value waits (W3.1b)."""
+        return self._held or any(anim is not None and anim.alive for anim in self._anims.values())
+
+    def set_named(self, named):
+        """`one_name`: show the chosen band's name, or none (a band not read yet)."""
+        if bool(named) != self._named:
+            self._named = bool(named)
+            self.update()
 
     def gem(self):
         """(the gem's place along the channel 0 … 1, its lift 0 … 1) as drawn now."""
@@ -1039,6 +1052,8 @@ class LevelSlider(_Control):
     def staggered(self, width=None):
         """Whether the band names stand on two lines (every other one lower): the slider narrower than one line of
         them needs, so no two names ever touch (FX-page B4)."""
+        if self._one:
+            return False                             # one name: never two lines
         width = self.width() if width is None else width
         return width + 0.5 < self._names_w(1)
 
@@ -1049,10 +1064,15 @@ class LevelSlider(_Control):
     def sizeHint(self):
         """Wide enough that no two band names meet on one line: the chambers spaced by the widest neighbouring
         pair."""
+        if self._one:
+            return QSize(math.ceil(_px("settings-slider-w")), self._height(1))
         return QSize(math.ceil(max(_px("settings-slider-w"), self._names_w(1))), self._height(1))
 
     def minimumSizeHint(self):
         """Narrower, every other name goes a line lower: still no two names meet."""
+        if self._one:
+            fm = QFontMetricsF(_font("row-sub"))
+            return QSize(math.ceil(max(fm.horizontalAdvance(n) for _k, n in self._bands) * 2), self._height(1))
         return QSize(math.ceil(self._names_w(2)), self._height(2))
 
     def hasHeightForWidth(self):
@@ -1275,6 +1295,8 @@ class LevelSlider(_Control):
         top = self._well_h() + 4 * _f()
         two = self.staggered()
         for i, (_k, name) in enumerate(self._bands):
+            if self._one and (i != self._index or not self._named):
+                continue
             cx = left + self._at_t(i) * width
             w = fm.horizontalAdvance(name)
             nx = min(max(0.0, cx - w / 2), self.width() - w)

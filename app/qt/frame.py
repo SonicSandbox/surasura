@@ -6,9 +6,10 @@ of the window around the pages, in the redesign's flat look.
   stand in the layout, never over a list: a sibling over a scrolling list turns off its fast scroll.
 - **The header's progress** (`Progress`): Generate's share, a 1 px iris hairline along the header's foot; a job with
   no share shows it whole and quieter. It replaces the bar's pulsing dot: light never pulses.
-- **The level ▾** (`LevelButton`) and **its pop** (`LevelPop`, a `motion.Overlay` in slate navy): the band, Generate,
-  *Open your journey*, Automatic's state. A small mark on the ▾ while Generate is stale or failed (amber) or the
-  journey's sentences are catching up (S6's lean). The pop's full content is W3.1b's.
+- **The level ▾** (`LevelButton`) and **its pop** (`LevelPop`, a `motion.Overlay` in slate navy; W3.1b, the Level
+  menu): *Level* ? and *Automatic*'s toggle, Settings' level slider (one name), words · % · how often, Generate and a
+  gear to Settings › Level, *Open your journey*. A small mark on the ▾ while Generate is stale or failed (amber) or the
+  journey's sentences are catching up (S6's lean).
 - **The vein** (`Vein`): an uneven iris line under the current tab, from a fixed set of pre-drawn shapes (seeded,
   cached per width × ratio), its two ends travelling on springs (`vein-lead` ω 34, `vein-tail` ω 22); Reduced motion
   jumps it.
@@ -29,9 +30,9 @@ import math
 import random
 from collections import OrderedDict
 
-from PyQt6.QtCore import QEvent, QObject, QPointF, QRectF, QSize, Qt
+from PyQt6.QtCore import QEvent, QObject, QPointF, QRectF, QSize, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QImage, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
-from PyQt6.QtWidgets import QApplication, QLabel, QSizePolicy, QToolButton, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QApplication, QHBoxLayout, QLabel, QSizePolicy, QToolButton, QVBoxLayout, QWidget
 
 from app import theme
 from app.qt import motion, rows, shadow, strings, style
@@ -299,42 +300,149 @@ class _Away(QObject):
         return False
 
 
+class _Gear(QToolButton):
+    """The pop's door to Settings › Level: a small painted gear (no box), ink-faint, ink under the hand."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("popgear")
+        self.setToolTip(strings.LEVEL_POP_GEAR_TIP)
+        self.setAccessibleName(strings.LEVEL_POP_GEAR_NAME)
+        self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def sizeHint(self):
+        side = round(theme.SIZES["button"] * theme.text_factor(style.current()[1]))
+        return QSize(side, side)
+
+    def paintEvent(self, _event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        ink = rows.c("ink" if self.underMouse() or self.hasFocus() else "ink-faint")
+        c = QPointF(self.width() / 2, self.height() / 2)
+        r = min(self.width(), self.height()) * 0.22
+        pen = QPen(ink, 1.5)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawEllipse(c, r, r)
+        p.drawEllipse(c, r * 0.4, r * 0.4)
+        teeth = QPen(ink, max(2.4, r * 0.42))               # eight short, square teeth
+        teeth.setCapStyle(Qt.PenCapStyle.FlatCap)
+        p.setPen(teeth)
+        for k in range(8):
+            a = k * math.pi / 4 + math.pi / 8
+            p.drawLine(QPointF(c.x() + r * 0.95 * math.cos(a), c.y() + r * 0.95 * math.sin(a)),
+                       QPointF(c.x() + r * 1.4 * math.cos(a), c.y() + r * 1.4 * math.sin(a)))
+        if self.hasFocus():
+            p.setPen(QPen(rows.c("accent"), 2))
+            p.drawRoundedRect(QRectF(self.rect()).adjusted(1, 1, -1, -1), theme.RADII["icon-button"],
+                              theme.RADII["icon-button"])
+        p.end()
+
+    def enterEvent(self, event):
+        super().enterEvent(event)
+        self.update()
+
+    def leaveEvent(self, event):
+        super().leaveEvent(event)
+        self.update()
+
+
+def level_readout(preview):
+    """The pop's readout for one band's numbers (W3.1b; the brief: only words, %, how often): "" for none."""
+    if not preview:
+        return ""
+    words, coverage = f"{preview['word_count']:,}", f"{preview['coverage_percent']:.1f}"
+    hours = preview.get("hours_between")
+    if hours and hours > 0:
+        if hours < 1:
+            return strings.LEVEL_POP_READ_MINUTES.format(words=words, coverage=coverage,
+                                                         minutes=max(1, round(hours * 60)))
+        shown = f"{hours:.1f}".rstrip("0").rstrip(".") if hours < 10 else f"{round(hours):,}"
+        return strings.LEVEL_POP_READ_HOURS.format(words=words, coverage=coverage, hours=shown)
+    return strings.LEVEL_POP_READ_NO_TIME.format(words=words, coverage=coverage)
+
+
 class LevelPop(motion.Overlay):
-    """The level ▾'s pop (W3.1a: the state and the two actions; its full content is W3.1b): *YOUR LEVEL*, the band,
-    Automatic's state, then the actions the shell adds — Generate (its looks: `duties.generate_look`) and *Open your
-    journey* with the journey's dot. Slate navy with its lit top edge (`style.paint_overlay`); Esc, Back, a press
-    elsewhere and the ▾ again close it."""
+    """The level ▾'s pop (W3.1b, the brief's round-5 pop): *Level* with a quiet ? and, on the right, *Automatic* and its
+    toggle; the level slider (Settings' own, one name: the chosen band's under its gem) in its well; the readout —
+    words, %, how often; the foot: Generate (the shell adds it: `add_action`) and a gear to Settings › Level; then
+    *Open your journey ↗* with the journey's dot. Slate navy with its lit top edge (`style.paint_overlay`); Esc, Back, a
+    press elsewhere and the ▾ again close it.
+
+    It decides nothing and writes nothing: a band picked (`picked`, its key), Automatic flipped (`automatic`, a bool)
+    and the ? or the gear (`settings_asked`) go to the shell, which writes through the settings service as Settings
+    does. `shown` asks the shell for the bands' numbers (`set_previews`), read on a worker."""
     how = "pop"
     shadow_name = "menu"
     focus = True
+    picked = pyqtSignal(str)
+    automatic = pyqtSignal(bool)
+    settings_asked = pyqtSignal()
+    shown = pyqtSignal()
 
     def __init__(self, parent, button):
         super().__init__(parent)
+        from app import word_selection
+        from app.qt import settings_controls as sc
         self.button = button
         self.setObjectName("levelpop")
         self.setAccessibleName(strings.LEVEL_POP_NAME)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         f = theme.text_factor(style.current()[1])
         box = QVBoxLayout(self)
-        box.setContentsMargins(round(16 * f), round(14 * f), round(16 * f), round(14 * f))
-        box.setSpacing(round(4 * f))
+        box.setContentsMargins(round(16 * f), round(12 * f), round(16 * f), round(14 * f))
+        box.setSpacing(round(6 * f))
+        head = QHBoxLayout()
+        head.setContentsMargins(0, 0, 0, 0)
+        head.setSpacing(round(6 * f))
         self.heading = QLabel(strings.LEVEL_POP_HEADING, self)
-        self.heading.setObjectName("popeyebrow")
-        box.addWidget(self.heading)
-        self.band = QLabel(strings.LEVEL_WAITING, self)
-        self.band.setObjectName("popband")
-        self.band.setTextFormat(Qt.TextFormat.PlainText)
-        box.addWidget(self.band)
-        self.auto = QLabel(strings.LEVEL_POP_AUTO[False], self)
-        self.auto.setObjectName("popline")
-        self.auto.setTextFormat(Qt.TextFormat.PlainText)
-        self.auto.setWordWrap(True)
-        box.addWidget(self.auto)
-        box.addSpacing(round(8 * f))
+        self.heading.setObjectName("popheading")
+        head.addWidget(self.heading)
+        self.help = QToolButton(self)
+        self.help.setObjectName("pophelp")
+        self.help.setText(strings.LEVEL_POP_HELP)
+        self.help.setToolTip(strings.LEVEL_POP_HELP_TIP)
+        self.help.setAccessibleName(strings.LEVEL_POP_HELP_NAME)
+        self.help.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        self.help.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.help.clicked.connect(lambda _c=False: self._to_settings())
+        head.addWidget(self.help)
+        head.addStretch(1)
+        self.auto_word = QLabel(strings.LEVEL_POP_AUTO_WORD, self)
+        self.auto_word.setObjectName("popline")
+        head.addWidget(self.auto_word)
+        self.auto_toggle = sc.Toggle(False, tooltip=strings.LEVEL_POP_AUTO_TIP, name=strings.LEVEL_POP_AUTO_WORD,
+                                parent=self)
+        self.auto_toggle.changed.connect(lambda on: self.automatic.emit(bool(on)))
+        head.addWidget(self.auto_toggle)
+        box.addLayout(head)
+        self.bands = [(band, word_selection.band_label(band)) for band in word_selection.BANDS_ORDER]
+        self.slider = sc.LevelSlider(self.bands, word_selection.BANDS_ORDER[0], tooltip=strings.LEVEL_POP_SLIDER_TIP,
+                                     name=strings.LEVEL_POP_SLIDER_NAME, parent=self, one_name=True)
+        self.slider.changed.connect(self._picked)
+        box.addWidget(self.slider)
+        self.read = QLabel("", self)
+        self.read.setObjectName("popread")
+        self.read.setTextFormat(Qt.TextFormat.PlainText)
+        self.read.setVisible(False)
+        box.addWidget(self.read)
+        box.addSpacing(round(4 * f))
+        self.foot = QHBoxLayout()
+        self.foot.setContentsMargins(0, 0, 0, 0)
+        self.foot.addStretch(1)
+        self.gear = _Gear(self)
+        self.gear.clicked.connect(lambda _c=False: self._to_settings())
+        self.foot.addWidget(self.gear)
+        box.addLayout(self.foot)
         self.actions = QVBoxLayout()
         self.actions.setSpacing(round(6 * f))
         box.addLayout(self.actions)
-        self.level = None                                   # (text, automatic) shown
+        self.level = None                                   # (band, automatic, waiting, coverage) shown
+        self.waiting = False                                # Automatic on, its band not read yet
+        self.coverage = None                                # the coverage target while the list follows it
+        self.previews = None                                # every band's numbers, or None (no store yet)
         self.paints = 0
         self.shadow = shadow.Follower(self, self.shadow_name)
         self._away = _Away(self)
@@ -342,20 +450,79 @@ class LevelPop(motion.Overlay):
         self.hide()
 
     def add_action(self, widget):
-        self.actions.addWidget(widget)
+        """Generate, at the foot's left (the gear stays at its right); Tab reaches it before the gear."""
+        self.foot.insertWidget(0, widget)
+        self.setTabOrder(widget, self.gear)
 
-    def set_level(self, text, automatic):
-        """-> True when the band or Automatic's line changed."""
-        level = (text, bool(automatic))
+    def set_level(self, band, automatic, waiting=False, coverage=None):
+        """Show `band` (a key of `word_selection.BANDS_ORDER`; None or an unknown one leaves the slider where it is) and
+        Automatic — no signal, no motion (showing is never a pick, S2). `waiting`: Automatic's band not read yet (the
+        readout says so, never the band as written: S16). `coverage`: the list follows its coverage target (2.x's
+        coverage mode, where the band does nothing): the slider greyed, the readout names the target. -> True when
+        any of it changed."""
+        level = (band, bool(automatic), bool(waiting), coverage)
         if level == self.level:
             return False
         self.level = level
-        self.band.setText(text or strings.LEVEL_WAITING)
-        self.auto.setText(strings.LEVEL_POP_AUTO[bool(automatic)])
+        self.waiting, self.coverage = bool(waiting), coverage
+        self.slider.setEnabled(coverage is None)
+        self.auto_toggle.setEnabled(coverage is None)       # Automatic does nothing in coverage mode either
+        self.slider.set_named(not self.waiting)             # no band read yet: no band named (S16)
+        if band in {k for k, _n in self.bands} and band != self.slider.value():
+            if self.slider.busy():
+                self.level = None                           # a gesture under way wins; the next show puts it right
+            else:
+                self.slider.blockSignals(True)              # a shown band is never a pick
+                try:
+                    self.slider.set_value(band)
+                finally:
+                    self.slider.blockSignals(False)
+        if self.auto_toggle.value() != bool(automatic):
+            self.auto_toggle.set_value(bool(automatic))
+        self._paint_readout()
         self.paints += 1
+        return True
+
+    def set_previews(self, previews):
+        """Every band's numbers (`word_selection.band_previews`), or None: the readout for the slider's band."""
+        if previews == self.previews:
+            return False
+        self.previews = previews
+        return self._paint_readout()
+
+    def _paint_readout(self):
+        """The readout for the slider's band; repainted (and the pop placed again) only when its words changed."""
+        preview = (self.previews or {}).get(self.slider.value())
+        if self.coverage is not None:
+            text, tip = strings.LEVEL_POP_COVERAGE.format(n=self.coverage), strings.LEVEL_POP_COVERAGE_TIP
+        elif self.waiting:
+            text, tip = strings.LEVEL_POP_AUTO_WAITING, strings.BAR_LEVEL_AUTO_NONE_TIP
+        else:
+            text, tip = level_readout(preview), None
+        if text and tip is None:
+            from app.qt import settings_live
+            tip = settings_live.readout(preview)
+        if text == self.read.text() and (not text or tip == self.read.toolTip()):
+            return False
+        self.read.setText(text)
+        if text:
+            self.read.setToolTip(tip)
+        self.read.setVisible(bool(text))
         if self.isVisible():
             self.place()
         return True
+
+    def _picked(self, band):
+        """The slider let go in another chamber: the numbers there at once (they change when it locks), the pick to
+        the shell."""
+        self._paint_readout()
+        if self.auto_toggle.value():
+            self.auto_toggle.set_value(False)               # a hand pick turns Automatic off: shown at once (S2)
+        self.picked.emit(band)
+
+    def _to_settings(self):
+        self.close()
+        self.settings_asked.emit()
 
     def place(self):
         """Under its ▾, its right edge on the ▾'s, kept inside the window."""
@@ -384,6 +551,7 @@ class LevelPop(motion.Overlay):
         super().showEvent(event)
         QApplication.instance().installEventFilter(self._away)
         self.button.set_open(True)
+        self.shown.emit()                                   # the bands' numbers asked again (a worker's read)
 
     def hideEvent(self, event):
         super().hideEvent(event)

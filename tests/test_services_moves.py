@@ -2245,6 +2245,95 @@ def test_S2_remove_on_a_busy_store_leaves_the_file_in_place_while_it_waits_then_
     assert not os.path.exists(path) and lib.store.item(x) is None and journal(lib.language) is None
 
 
+def test_S2_E21_undoing_a_remove_of_two_one_put_back_meanwhile_brings_back_the_other_and_leaves_the_first_alone(
+        lib, make_writer):
+    """A row someone put back meanwhile is skipped whole: its file isn't taken out of the trash a second time (a stray
+    copy beside its own, its words counted twice)."""
+    w, heard = make_writer()
+    x, y = lib.ids("goal")[1], lib.ids("goal")[2]
+    path_x, path_y = _file(lib, x), _file(lib, y)
+    w.remove([x, y])
+    assert h.until(lambda: heard.saved)
+    rows = {r["item_id"]: r for r in lib.store.trash_rows(heard.saved[0][0].trash_ids)}
+    lib.store.restore([rows[x]["id"]])                  # another window's Put back of x (its file still in the trash)
+    trashed_x = os.path.join(lib.data_dir, *rows[x]["trashed_path"].split("/"))
+    w.undo()
+    assert h.until(lambda: heard.undone or heard.notes)
+    assert heard.notes == [] and os.path.exists(path_y) and lib.store.item(y) is not None
+    assert os.path.exists(trashed_x) and not os.path.exists(path_x),         "x's row was put back already: its file is never moved again"
+
+
+def test_S2_a_remove_the_store_refuses_after_its_file_went_to_the_trash_puts_the_file_back(lib, make_writer,
+                                                                                         monkeypatch):
+    """A raw error at the store's write, after the file was moved: the file back where it was, the row kept (never a
+    row pointing at a file that sits in the trash)."""
+    x = lib.ids("soon")[1]
+    path = _file(lib, x)
+    with open(path, "rb") as f:
+        body = f.read()
+
+    def refuse(self, *a, **kw):
+        raise RuntimeError("disk I/O error")
+    monkeypatch.setattr(ls.Store, "remove", refuse)
+    w, heard = make_writer()
+    w.remove([x])
+    assert h.until(lambda: heard.notes)
+    assert heard.notes == [WORDS["failed"].format(error="disk I/O error")] and heard.saved == []
+    with open(path, "rb") as f:
+        assert f.read() == body
+    assert lib.store.item(x) is not None
+
+
+def test_S2_undoing_a_remove_the_store_refuses_sends_its_file_back_to_the_trash(lib, make_writer, monkeypatch):
+    """The file comes out of the trash first; a refused undo puts it back there (no file in the folder with no row:
+    a sync would add it a second time, its words counted again)."""
+    w, heard = make_writer()
+    x = lib.ids("goal")[2]
+    path = _file(lib, x)
+    w.remove([x])
+    assert h.until(lambda: heard.saved)
+    row = lib.store.trash_rows(heard.saved[0][0].trash_ids)[0]
+    trashed = os.path.join(lib.data_dir, *row["trashed_path"].split("/"))
+
+    def refuse(self, change, trashed_paths=None, rel_paths=None):
+        raise ls.StoreConflict("an item changed since its file was moved; nothing was undone")
+    monkeypatch.setattr(ls.Store, "undo", refuse)
+    w.undo()
+    assert h.until(lambda: heard.notes)
+    assert heard.notes == [WORDS["cant_undo"]] and heard.undone == []
+    assert os.path.exists(trashed) and not os.path.exists(path)
+
+
+def test_S2_undoing_a_remove_on_a_busy_store_takes_no_file_out_of_the_trash_until_it_lands(lib, make_writer,
+                                                                                         short_lock_wait,
+                                                                                         monkeypatch):
+    """Under the store's write lock first: a busy store answers before any file moves (the trash is never touched
+    while another window writes)."""
+    w, heard = make_writer()
+    x = lib.ids("now")[2]
+    path = _file(lib, x)
+    w.remove([x])
+    assert h.until(lambda: heard.saved)
+    real, holding, early = ls.put_back, [True], []
+
+    def put_back(*a, **kw):
+        if holding[0]:
+            early.append(a)
+        return real(*a, **kw)
+    monkeypatch.setattr(ls, "put_back", put_back)
+    holder = LockHolder(lib.db)
+    try:
+        attempts = w.attempts
+        w.undo()
+        assert h.until(lambda: w.attempts >= attempts + 2)
+        holding[0] = False
+    finally:
+        holder.release()
+    assert h.until(lambda: heard.undone)
+    assert early == [], "a file came out of the trash while the store was busy"
+    assert os.path.exists(path) and lib.store.item(x) is not None
+
+
 def test_S2_put_back_from_the_trash_and_its_undo_sends_it_back(lib, make_writer):
     w, heard = make_writer()
     x = lib.ids("goal")[4]
@@ -2261,6 +2350,21 @@ def test_S2_put_back_from_the_trash_and_its_undo_sends_it_back(lib, make_writer)
     w.restore(gone.trash_ids)                           # that row was put back once: refused, nothing moved
     assert h.until(lambda: heard.notes)
     assert heard.notes[0].startswith(WORDS["failed"].split("{")[0]) and not os.path.exists(path)
+
+
+def test_S2_a_put_back_from_the_trash_whose_name_was_taken_comes_back_under_a_new_name_and_says_so(lib, make_writer):
+    w, heard = make_writer()
+    x = lib.ids("soon")[3]
+    path = _file(lib, x)
+    gone = lib.store.remove([x], {x: ls.trash_file(lib.data_dir, lib.store.item(x)["rel_path"])})
+    with open(path, "w", encoding="utf-8") as f:        # another file under its name since: never written over
+        f.write(names(lib.language)[41] + "\n")
+    w.restore(gone.trash_ids, label="put back")
+    assert h.until(lambda: heard.saved and heard.notes)
+    back = lib.store.item(x)["rel_path"]
+    assert back.endswith("_1.srt") and heard.notes == [WORDS["put_back_as"].format(names=back.rsplit("/", 1)[-1])]
+    with open(path, encoding="utf-8") as f:
+        assert f.read() == names(lib.language)[41] + "\n"
 
 
 def test_S2_import_finished_lands_as_earlier_and_undo_trashes_only_the_jobs_copies(lib, make_writer, tmp_path):
@@ -2281,6 +2385,21 @@ def test_S2_import_finished_lands_as_earlier_and_undo_trashes_only_the_jobs_copi
     assert lib.store.item_id(copied[0]) is None and lib.store.item_id(listed) is not None   # C2: its row stays
     assert not os.path.exists(os.path.join(lib.data_dir, *copied[0].split("/"))), "its copy went to the trash"
     assert os.path.exists(there) and os.path.exists(src), "a file it didn't copy stays; the user's own untouched"
+
+
+def test_S2_E21_undoing_an_import_whose_only_row_was_moved_since_says_cant_undo(lib, make_writer):
+    """An import that listed a file already in the library (its row moved to Finished, nothing copied), that row
+    moved again since: the undo skips it, so it wrote nothing — said so, never heard as undone."""
+    w, heard = make_writer()
+    x = lib.ids("now")[1]
+    w.import_finished([_file(lib, x)], label="imported")
+    assert h.until(lambda: heard.saved)
+    assert lib.store.place_of(x)[0] == "graduated" and heard.saved[0][0].added == []
+    lib.store.move([x], "soon")                         # another window's drag since
+    w.undo()
+    assert h.until(lambda: heard.notes)
+    assert heard.notes == [WORDS["cant_undo"]] and heard.undone == []
+    assert lib.store.place_of(x)[0] == "soon"
 
 
 def test_S2_relink_points_a_missing_episode_at_its_file_and_undo_points_it_back(lib, make_writer):

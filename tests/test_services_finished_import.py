@@ -444,3 +444,41 @@ def test_H_F5_copies_a_cancel_couldnt_trash_are_listed_never_left_hidden(lib, tm
     assert job.wait(30) and job.outcome == "cancelled"
     assert h.until(lambda: not lib.writer.pending() and lib.graduated_files())
     assert sorted(lib.finished()) == lib.graduated_files()
+def test_a_store_that_turns_read_only_while_the_job_waits_copies_nothing(lib, tmp_path):
+    """E4 asked again when the job starts (it may wait behind another import): no copy made only to go to the trash."""
+    class Turning(Writer):
+        def __init__(self):
+            super().__init__()
+            self.asked = 0
+
+        def can_write(self):
+            self.asked += 1
+            return self.asked == 1                  # writable at the click, read-only when the job runs
+    folder = lib.show_folder(str(tmp_path / "Downloads"))
+    w = Turning()
+    job = F.ImportJob(lib.language, [folder], w, lib.registry, data_dir=lib.data_dir)
+    assert job.start() is not None and job.wait(30)
+    assert job.outcome == "refused" and job.job.view().message == "read-only" and w.calls == []
+    trash = os.path.join(lib.data_dir, ".trash")
+    assert lib.graduated_files() == [] and (not os.path.isdir(trash) or os.listdir(trash) == [])
+
+
+def test_a_copy_with_the_same_size_and_time_but_other_words_is_no_twin_and_is_kept(lib, tmp_path):
+    """A twin is byte for byte, never by size and time alone (copy2 keeps the time): an episode re-timed by its
+    fansub, the same length, is imported beside the old one, never sent to the trash in its place."""
+    title, _resource, tag = SHOW[lib.language]
+    outside = lib.show_folder(str(tmp_path / "Downloads"), episodes=(1,))
+    name = f"[Group] {title} - 01.{tag}.srt"
+    src = os.path.join(outside, name)
+    with open(src, encoding="utf-8") as f:
+        text = f.read()
+    there = os.path.join(lib.data_dir, ls.GRADUATED_FOLDER, title, name)
+    os.makedirs(os.path.dirname(there), exist_ok=True)
+    with open(there, "w", encoding="utf-8") as f:
+        f.write(text[:-2] + "9\n")                  # the same length, another line
+    st = os.stat(src)
+    os.utime(there, ns=(st.st_atime_ns, st.st_mtime_ns))
+    job = lib.run([outside])
+    assert h.until(lambda: lib.heard.saved)
+    assert len(job.copied) == 1 and os.path.isfile(job.copied[0]), "the new episode kept, not trashed as a twin"
+    assert os.path.basename(job.copied[0]) == f"[Group] {title} - 01.{tag}_1.srt"

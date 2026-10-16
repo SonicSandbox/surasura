@@ -300,6 +300,19 @@ def test_S2_an_import_the_store_fails_keeps_no_copy_and_the_job_says_failed(lib,
     assert lib.finished() == {} and lib.heard.saved == [] and not lib.writer.can_undo()
 
 
+def test_S2_an_import_the_store_refuses_read_only_as_it_lands_says_refused_with_its_reason_never_failed(
+        lib, tmp_path, monkeypatch):
+    # the mode read "store" a moment before: read-only met inside the write is the store's reason, never an error
+    def refuses(self, paths):
+        raise ls.StoreReadOnly("the library store is damaged and needs Repair")
+    monkeypatch.setattr(ls.Store, "import_finished", refuses)
+    folder = lib.show_folder(str(tmp_path / "Downloads"))
+    job = lib.run([folder])
+    view = job.job.view()
+    assert job.outcome == "refused" and view.state == jobs.FAILED and "needs Repair" in view.message
+    assert lib.graduated_files() == [] and len(os.listdir(os.path.join(lib.data_dir, ".trash"))) == 3
+
+
 def test_a_copy_that_fails_half_way_sends_what_it_made_to_the_trash_and_says_why(lib, tmp_path, monkeypatch):
     folder = lib.show_folder(str(tmp_path / "Downloads"))
     real = shutil.copy2

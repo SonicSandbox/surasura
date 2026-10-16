@@ -28,6 +28,7 @@ from app.services import covers as C
 from app.services import moves as M
 from tests import services_helpers as h
 from tests.test_library_store_support import migrated, names, roots
+from tests.test_services_moves import read_journal
 
 
 # --- real images, byte by byte ------------------------------------------------------------------------------------ #
@@ -482,6 +483,23 @@ def test_B1_a_scan_never_reaches_the_users_undo_so_ctrl_z_after_it_still_takes_b
     assert h.until(lambda: lib.heard.undone)
     assert lib.store.ids("goal") == goal, "Ctrl+Z took back the user's move"
     assert all(lib.row(lib.work_of(lib.store.ids(t)[0]))[0] == "file" for t in ("now", "soon")), "the covers stay"
+
+
+def test_B1_a_scans_cover_queued_during_a_drag_never_rewrites_the_journal_nor_goes_in_it(lib):
+    """B1 / S4: a background cover is never journalled (the scan runs again), and one queued while the journal holds
+    the user's move asks for no journal write (a 200-title scan during a drag rewrote it at each cover)."""
+    goal = lib.store.ids("goal")
+    lib.writer.hold()                                   # a drag: the user's move is journalled at once
+    lib.writer.move([goal[5]], "goal", before_id=goal[0], label="moved up")
+    assert h.until(lambda: lib.writer._journalled and not lib.writer._journal_dirty)
+    item = lib.store.ids("now")[0]
+    poster = write(os.path.join(lib.folder_of(item), "poster.jpg"), jpeg())
+    with lib.writer._cond:                              # (the writer's thread can't take the journal meanwhile)
+        lib.writer.set_cover(lib.work_of(item), "file", ref=lib.rel(poster), auto=True)
+        assert not lib.writer._journal_dirty, "the scan's cover asked for a journal write"
+    lib.writer.move([goal[6]], "goal", before_id=goal[0], label="moved up again")
+    assert h.until(lambda: len(lib.writer._journalled) == 2)
+    assert [e["op"] for e in read_journal(M.journal_path(lib.language))["pending"]] == ["move", "move"]
 
 
 def test_S4_a_drop_given_during_a_200_title_scan_lands_before_the_scan_ends(lib):

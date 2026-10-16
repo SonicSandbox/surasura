@@ -2982,6 +2982,35 @@ def test_S1_a_join_and_an_import_left_in_the_journal_are_let_go_and_a_media_type
     assert heard2.notes == [WORDS["crash_many"].format(n=2)], "the join was done: quiet; the other two listed"
 
 
+def test_S1_a_pin_unpinned_elsewhere_while_another_rows_tick_landed_is_still_listed_after_a_crash(lib, make_writer,
+                                                                                                 monkeypatch):
+    """A landed command refreshes the *as queued* only of the commands touching its rows, titles or pieces: another
+    row's watched tick never hides that the pinned row was unpinned elsewhere meanwhile — replayed, it is listed, never
+    pinned again."""
+    w, _heard = make_writer()
+    now = lib.ids("now")
+    w.hold()                                            # a drag: both journalled at once, with what they touch as queued
+    w.set_watched([now[0]], True)
+    w.pin([now[1]])
+    assert h.until(lambda: journalled(lib.language) == [("set_watched", [now[0]]), ("pin", [now[1]])]
+                   and "before" in journal(lib.language)["pending"][1])
+    lib.store.pin([now[1]])                             # another window: pinned, then *Done with its cards*
+    lib.store.unpin([now[1]])
+    real_pin = ls.Store.pin
+
+    def busy(self, ids):
+        raise ls.StoreBusy("the library is busy")
+    monkeypatch.setattr(ls.Store, "pin", busy)          # the pin can't land before the crash
+    w.release()
+    assert h.until(lambda: journalled(lib.language) == [("pin", [now[1]])])
+    w._abandon()                                        # the crash
+    monkeypatch.setattr(ls.Store, "pin", real_pin)
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: journal(lib.language) is None and not w2.pending())
+    assert lib.store.item(now[1])["pinned"] is None and heard2.notes == [WORDS["crash_one"]]
+
+
 # --- W3.2 fix round (landing 2) ------------------------------------------------------------------------------------- #
 def test_an_arrival_dropped_on_finished_is_watched_and_one_undo_puts_it_back_without_cant_undo(lib, make_writer):
     """A2 #28 through the writer (the well's `set_tier`): watched in the drop's own change, and its Undo — a set_tier

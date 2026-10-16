@@ -237,6 +237,8 @@ def make(qapp, monkeypatch):
     monkeypatch.setattr(windows, "open_url", lambda url: launched.append(url))
     # 順 present, as in the app (GitHub's checkout has no private modules/; the absent case has its own test)
     monkeypatch.setattr(windows, "module_present", lambda name: True)
+    monkeypatch.setattr(windows, "_FOUND", {})                     # looked for again: an earlier test may have found none
+    monkeypatch.setattr(windows, "_LOOKING", set())
 
     def build(api=None, miner=None, data=None):
         settings = FakeSettings(data if data is not None else {})

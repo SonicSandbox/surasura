@@ -629,6 +629,46 @@ def test_B1_while_the_store_cant_be_used_a_due_watch_timer_waits_the_poll_never_
         reader._lookout.close()
 
 
+def test_B_a_deaf_bell_looks_every_poll_and_a_sync_owed_by_a_busy_store_is_tried_again_within_it():
+    """A live bell sleeps the reader until something rings; with no bell (deaf) it looks every `poll`, as before. A
+    sync the store was too busy for is owed, and the reader's own retry hands it back within `poll` — a hand copy
+    never waits for some later commit to show."""
+    seed = window_seed.build()
+    reader = _reader(seed)
+
+    class Listening:                                     # a live bell with nothing due for an hour
+        deaf = False
+
+        def timeout(self):
+            return 3600.0
+    reader._lookout = Listening()
+    assert reader._timeout() == 3600.0
+    reader._lookout.deaf = True                          # no bell to hear other programs by: every poll
+    assert reader._timeout() == reader.poll
+    reader._lookout.deaf = False
+    reader._owed = ({"HighPriority/葬送のフリーレン"}, False, False)
+    assert reader._timeout() <= reader.poll
+
+
+def test_B_stop_closes_the_sync_workers_own_store_handle_on_that_worker():
+    """The sync worker opened its own handle (a connection per thread): the reader's stop has that worker close it,
+    so no handle is left holding the library file after the window closes."""
+    from app.services.automation import Worker
+    seed = window_seed.build()
+    reader = _reader(seed)
+    closed, where = threading.Event(), []
+
+    class Opener:
+        def close(self):
+            where.append(threading.current_thread().name)
+            closed.set()
+    reader.opener = Opener()
+    reader._syncer = Worker("library-sync-ja")
+    reader._syncer.put(lambda: None)                     # its thread running, as after a sync
+    reader._unwatch()
+    assert closed.wait(30) and where == ["library-sync-ja"]
+
+
 # --- W3.2 L1 fix round: S1, a large library's sync in its own process --------------------------------------------- #
 def test_S1_a_large_librarys_sync_helper_that_finds_the_store_busy_or_fails_raises_busy_so_the_reader_keeps_it_owed(
         monkeypatch):

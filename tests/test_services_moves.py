@@ -2062,3 +2062,41 @@ def test_open_library_shares_one_opener_and_resyncs_the_numbers_on_every_move(li
     finally:
         reader.stop()
         numbers.close()
+
+
+def test_a_reader_let_go_is_freed_by_its_count_alone_and_its_numbers_then_refresh_nothing(lib):
+    """W3.2 P0 (AD0-2): the numbers held the reader (`on_change` → the reader's refresh) and the reader held the
+    numbers: a cycle only Python's collector frees — and the window process once froze the collector after every view,
+    so a library a language switch let go (its whole copy, hundreds of thousands of objects at 20,000 files) was
+    never freed. The numbers now hold the reader weakly: let go, it is freed at once, collector or not, and a late
+    figure from its numbers refreshes nothing."""
+    import gc
+    import weakref
+    opener, numbers, reader = M.open_library(lib.language, cache_file=None)
+    reader.start()
+    assert h.until(lambda: reader.view() is not None and reader.view().rows)
+    reader.stop()
+    assert reader._items == {} and reader._works == {}          # the copy let go at the stop, whoever holds it
+    assert reader.view() is not None                            # (the last view stays: the window shows it meanwhile)
+    gone = weakref.ref(reader)
+    was = gc.isenabled()
+    gc.disable()                                                # no collector: only a cycle-free reader goes
+    try:
+        del reader
+        assert gone() is None
+    finally:
+        if was:
+            gc.enable()
+    numbers._call_change()                                      # nothing left to refresh: no error
+    numbers.close()
+    opener.close()
+
+
+def test_a_stopped_reader_never_starts_again(lib):
+    """W3.2 P0 (AD0-4): a reader a second language switch stopped before the window got to it is never started — no
+    cache read, no store handle, no view published for a library that is no longer open."""
+    _opener, numbers, reader = M.open_library(lib.language, cache_file=None)
+    reader.stop()
+    reader.start()
+    assert reader._thread is None and reader.view() is None
+    numbers.close()

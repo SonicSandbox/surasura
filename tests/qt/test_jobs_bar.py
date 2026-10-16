@@ -1226,6 +1226,9 @@ def test_main_hands_its_claim_to_the_quit_before_the_stores_close_trigger(qapp, 
             free.append(lock is not None)
             path_utils.release_lock(lock)
 
+        def load_numbers(self):                             # (W3.2 P0: main connects it to the first frame)
+            pass
+
     class Window:
         class first_frame:
             @staticmethod
@@ -1236,6 +1239,7 @@ def test_main_hands_its_claim_to_the_quit_before_the_stores_close_trigger(qapp, 
 
     monkeypatch.setattr(single, "SingleInstance", Claim)
     monkeypatch.setattr(shell, "Services", QuittingServices)
+    monkeypatch.setattr(shell, "open_services", lambda **_kw: QuittingServices())   # (W3.2 P0: main's way in)
     monkeypatch.setattr(shell, "open_window", lambda app, services: Window())
     monkeypatch.setattr(shell, "connect_instance", lambda window, instance: None)
     monkeypatch.setattr(QApplication, "exec", lambda self: 0)

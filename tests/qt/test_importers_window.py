@@ -285,8 +285,12 @@ def test_a_plan_read_for_one_language_is_never_asked_in_the_other(main, runs, mo
     _known(CURRENT)
     from app import importers_view
     plans = []
-    monkeypatch.setattr(importers.bridge, "run_in_worker",
-                        lambda fn, *a, then=None, failed=None: plans.append((fn(*a), then)))
+
+    def run_in_worker(fn, *a, then=None, failed=None):
+        if getattr(fn, "__self__", None) is main.services:   # (the window's own language switch: same bridge, W3.2)
+            return fn(*a)
+        plans.append((fn(*a), then))
+    monkeypatch.setattr(importers.bridge, "run_in_worker", run_in_worker)
     w = importers.open_migaku(main)
     w.read(MIGAKU)
     main.services.settings.set({"target_language": "zh"})

@@ -142,25 +142,33 @@ class LibraryReader:
         self._wake.set()
 
     def start(self):
-        if self._thread is None:
-            self._thread = threading.Thread(target=self._run, name="library-reader", daemon=True)
-            self._thread.start()
+        """The thread started — never once `stop()` was asked (W3.2 P0: a reader a second language switch let go)."""
+        with self._lock:
+            if self._thread is None and not self._stop.is_set():
+                self._thread = threading.Thread(target=self._run, name="library-reader", daemon=True)
+                self._thread.start()
         return self
+
+    def stopped(self):
+        return self._stop.is_set()
 
     def refresh(self):
         """Look now, rather than at the next poll (the window's own change, a test)."""
         self._wake.set()
 
     def stop(self, timeout=2.0):
-        self._stop.set()
+        with self._lock:
+            self._stop.set()
+            thread = self._thread
         self._wake.set()
-        if self._thread is not None:
-            self._thread.join(timeout)
+        if thread is not None:
+            thread.join(timeout)
 
     # --- the thread ------------------------------------------------------------------------------------------------- #
     def _run(self):
         try:
-            self._first_screen()
+            if not self._stop.is_set():
+                self._first_screen()
         except Exception:
             pass                                    # a cache that can't be read is no cache
         while not self._stop.is_set():
@@ -184,6 +192,13 @@ class LibraryReader:
                     h.close()
         except Exception:
             pass
+        # W3.2 P0 (AD0-2): the library copy and the row cache let go — hundreds of thousands of objects at 20,000
+        # files — so a reader a language switch dropped holds none of them, whoever still holds the reader. The last
+        # view stays (`view()`: the window shows it until the next language's first view comes)
+        self._items, self._works, self._cards, self._options = {}, {}, {}, {}
+        self._tiers, self._pos, self._dirty, self._moved_in = None, {}, set(), {}
+        self.row_cache = view_rows.RowCache()
+        self._cache_due = None
 
     def _handle(self):
         """(mode, reason, handle). The mode is asked of the opener at the start, after a failed read, and every few

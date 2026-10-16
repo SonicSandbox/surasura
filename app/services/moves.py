@@ -109,13 +109,21 @@ def open_library(language, check=None, **reader_kw):
     """The window's library on one opener: the reader, and the numbers it shows — told of every move of
     the order (another program's, hato's drop, an undo elsewhere) and refreshing the reader when they change. Nothing
     started: the caller calls `numbers.load()` and `reader.start()`, and hands the same opener to the `Writer`.
-    `check`: `Numbers`' verdict (`plan_check`). -> (opener, numbers, reader)."""
+    `check`: `Numbers`' verdict (`plan_check`). The numbers hold the reader weakly (W3.2 P0, AD0-2): never a cycle
+    reader → numbers → reader, so a reader a language switch let go is freed by its count alone. -> (opener, numbers,
+    reader)."""
+    import weakref
     from app.services.library_reader import LibraryReader
     opener = store_opener(language)
     held = []
-    numbers = Numbers(opener, language, check=check, on_change=lambda: held and held[0].refresh())
+
+    def refresh():
+        reader = held[0]() if held else None
+        if reader is not None:
+            reader.refresh()
+    numbers = Numbers(opener, language, check=check, on_change=refresh)
     reader = LibraryReader(opener, language, numbers=numbers, **reader_kw)
-    held.append(reader)
+    held.append(weakref.ref(reader))
     reader.subscribe_moves(lambda _language, _versions: numbers.resync())
     return opener, numbers, reader
 

@@ -270,6 +270,8 @@ def test_a_scroll_not_made_by_the_page_lets_the_held_reveal_go(qapp):
     page, store = make_page(ALL_ON, "ja")
     bar = page.scroll.verticalScrollBar()
     assert bar.maximum() > 200
+    # a late relayout's clamp (one event-loop turn) ignores any scroll: wait it out, or a loaded run sees it
+    assert wait_until(lambda: not getattr(page, "_clamp", False), 5)
     page._revealed = page.rows["max_contexts"]               # a reveal held while the build goes on
     bar.setValue(120)                                         # as Tab's ensureWidgetVisible does: not the page's own
     assert page._revealed is None

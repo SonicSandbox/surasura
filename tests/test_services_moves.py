@@ -32,7 +32,7 @@ from app.qt.strings import MOVE_WORDS as WORDS
 from app.services import moves as M
 from tests import services_helpers as h
 from tests.fixtures import window_seed
-from tests.test_library_store_support import migrated, roots, subprocess_env
+from tests.test_library_store_support import migrated, names, roots, subprocess_env
 
 
 # --- helpers ------------------------------------------------------------------------------------------------------ #
@@ -2062,3 +2062,438 @@ def test_open_library_shares_one_opener_and_resyncs_the_numbers_on_every_move(li
     finally:
         reader.stop()
         numbers.close()
+
+
+# --- W3.2 S2: the writer's new commands --------------------------------------------------------------------------- #
+# What a wrong answer would cost: an arrival placed somewhere the learner never chose (or nowhere, silently); a show
+# put back without its cards; a removed file gone for good, or an Undo that brings back a row without its file; a
+# finished show's pin lost though its cards were kept (E23); a video linked by repointing the episode's subtitle.
+def _arrival(lib, item_id):
+    """`item_id` waiting in New arrivals (as hato's register leaves a 3.0 store's drops)."""
+    lib.store.set_tier([item_id], "arrivals")
+    assert lib.store.place_of(item_id)[0] == "arrivals"
+    return item_id
+
+
+def _file(lib, item_id):
+    return os.path.join(lib.data_dir, *lib.store.item(item_id)["rel_path"].split("/"))
+
+
+def test_S2_each_arrival_lands_where_its_icon_or_menu_says_and_its_undo_puts_it_back_in_new_arrivals(lib, make_writer):
+    w, heard = make_writer()
+    now = lib.ids("now")
+    a, b, c, d = (_arrival(lib, i) for i in (lib.ids("goal")[2], lib.ids("goal")[3], lib.ids("soon")[1], now[3]))
+    w.place([a], "top", label="top")
+    w.place([b], "goal")
+    w.place([c], "finished")
+    w.place([d], "after-show")                          # its show (now[0..2]) is in Current: after its last episode
+    assert h.until(lambda: len(heard.saved) == 4)
+    assert lib.ids("now")[0] == a and lib.store.place_of(b)[0] == "goal"
+    assert lib.store.place_of(c)[0] == "graduated" and lib.store.item(c)["graduated_at"]
+    order = lib.ids("now")
+    assert order.index(d) == order.index(now[2]) + 1
+    assert heard.saved[0][1] == "top" and [ch.kind for ch, _l in heard.saved][2] == "finish"
+    for _ in range(4):
+        w.undo()
+    assert h.until(lambda: len(heard.undone) == 4)
+    assert set(lib.ids("arrivals")) == {a, b, c, d}
+    with pytest.raises(ValueError):
+        w.place([a], "the top")                          # a window's slip: refused at the call, never queued
+
+
+def test_S2_after_show_with_no_show_to_follow_writes_nothing_and_rereads(lib, make_writer):
+    w, heard = make_writer()
+    loose = [i for i in lib.ids("goal") if lib.store.item(i)["rel_path"].count("/") == 1][0]   # a loose file
+    with lib.store._writing():                          # no title: nothing to follow
+        lib.store.conn.execute("UPDATE items SET work_id = NULL WHERE id = ?", (loose,))
+    _arrival(lib, loose)
+    w.place([loose], "after-show")
+    assert h.until(lambda: heard.rereads == 1)
+    assert heard.saved == [] and lib.store.place_of(loose)[0] == "arrivals" and not w.can_undo()
+
+
+def test_S2_put_back_brings_a_finished_show_to_the_top_of_current_with_its_cards_and_one_undo_takes_both(
+        lib, make_writer):
+    """IK-1 (G1.6-10): anything taken out comes back — its place at the top and its cards in the order."""
+    w, heard = make_writer()
+    show = lib.ids("soon")[:4]
+    lib.store.finish(show, keep_cards=False)
+    w.put_back(show, label="put back")
+    assert h.until(lambda: heard.saved)
+    assert lib.ids("now")[:4] == show and all(_learning(lib, i)[0] == 1 for i in show)
+    assert heard.saved[0][0].kind == "put_back_finished"
+    w.undo()
+    assert h.until(lambda: heard.undone)
+    assert all(lib.store.place_of(i)[0] == "graduated" and _learning(lib, i)[0] == 0 for i in show)
+    assert heard.notes == []
+
+
+def test_S2_E23_a_pinned_item_finished_keeps_its_pin_until_its_cards_are_taken_out(lib, make_writer):
+    w, heard = make_writer()
+    x = lib.ids("now")[1]
+    w.pin([x], label="study first")
+    w.set_finished([x], keep_cards=True)
+    assert h.until(lambda: len(heard.saved) == 2)
+    pinned = _learning(lib, x)[1]
+    assert pinned is not None and lib.store.place_of(x)[0] == "graduated", "Finish with its cards kept: still pinned"
+    w.keep_cards([x], False, label="take out")          # Finished's ⋯ *Take its new cards out*
+    assert h.until(lambda: len(heard.saved) == 3)
+    assert _learning(lib, x) == (0, None), "taking its cards out ends the pin, as Finish's own choice does"
+    w.keep_cards([x], True, label="put them back")      # *Put them back in the order*: never pins again
+    assert h.until(lambda: len(heard.saved) == 4)
+    assert _learning(lib, x) == (1, None)
+    w.undo()
+    w.undo()
+    assert h.until(lambda: len(heard.undone) == 2)
+    assert _learning(lib, x) == (1, pinned), "both undone: its cards and its pin back"
+    w.pin([x], on=False, label="done with its cards")
+    assert h.until(lambda: len(heard.saved) == 5)
+    assert _learning(lib, x)[1] is None
+    w.undo()
+    assert h.until(lambda: len(heard.undone) == 3)
+    assert _learning(lib, x)[1] == pinned and heard.notes == []
+
+
+def test_S2_mine_it_too_is_asked_and_undone(lib, make_writer):
+    w, heard = make_writer()
+    x = lib.ids("now")[0]
+    w.ask_mining([x])
+    assert h.until(lambda: heard.saved)
+    assert lib.store.item(x)["mine_asked"]
+    w.undo()
+    assert h.until(lambda: heard.undone)
+    assert lib.store.item(x)["mine_asked"] is None
+
+
+def test_S2_remove_sends_the_file_to_the_trash_with_its_clock_restarted_and_undo_brings_file_and_place_back(
+        lib, make_writer):
+    w, heard = make_writer()
+    soon = lib.ids("soon")
+    x = soon[2]
+    rel, path = lib.store.item(x)["rel_path"], _file(lib, x)
+    with open(path, "rb") as f:
+        body = f.read()
+    old = time.time() - 40 * 86400                      # last edited 40 days ago: purged at once without the restart
+    os.utime(path, (old, old))
+    w.remove([x], label="removed")
+    assert h.until(lambda: heard.saved)
+    assert not os.path.exists(path) and lib.store.item(x) is None
+    row = lib.store.trash_rows(heard.saved[0][0].trash_ids)[0]
+    trashed = os.path.join(lib.data_dir, *row["trashed_path"].split("/"))
+    assert row["trashed_path"].startswith(".trash/") and os.path.getmtime(trashed) > time.time() - 600
+    w.undo()
+    assert h.until(lambda: heard.undone)
+    assert lib.ids("soon") == soon and lib.store.item(x)["rel_path"] == rel
+    with open(path, "rb") as f:
+        assert f.read() == body
+    assert not os.path.exists(trashed) and heard.notes == []
+
+
+def test_S2_undoing_a_remove_whose_name_was_taken_meanwhile_puts_it_back_under_a_new_name_and_says_so(
+        lib, make_writer):
+    w, heard = make_writer()
+    x = lib.ids("goal")[1]
+    path = _file(lib, x)
+    w.remove([x])
+    assert h.until(lambda: heard.saved)
+    with open(path, "w", encoding="utf-8") as f:        # another file under its name meanwhile: never written over
+        f.write(names(lib.language)[40] + "\n")
+    w.undo()
+    assert h.until(lambda: heard.undone)
+    with open(path, encoding="utf-8") as f:
+        assert f.read() == names(lib.language)[40] + "\n"
+    back = lib.store.item(x)["rel_path"]
+    assert back != os.path.relpath(path, lib.data_dir).replace("\\", "/") and back.endswith("_1.srt")
+    assert heard.notes == [WORDS["put_back_as"].format(names=back.rsplit("/", 1)[-1])]
+
+
+def test_S2_E21_undoing_a_remove_someone_put_back_meanwhile_says_cant_undo_and_moves_no_file(lib, make_writer):
+    w, heard = make_writer()
+    x = lib.ids("now")[2]
+    w.remove([x])
+    assert h.until(lambda: heard.saved)
+    change = heard.saved[0][0]
+    lib.store.restore(change.trash_ids)                 # another window's Put back (its file still in the trash)
+    trash = sorted(os.listdir(os.path.join(lib.data_dir, ".trash")))
+    w.undo()
+    assert h.until(lambda: heard.notes)
+    assert heard.notes == [WORDS["cant_undo"]] and heard.undone == []
+    assert sorted(os.listdir(os.path.join(lib.data_dir, ".trash"))) == trash
+
+
+def test_S2_remove_on_a_busy_store_leaves_the_file_in_place_while_it_waits_then_lands(lib, make_writer,
+                                                                                    short_lock_wait):
+    w, heard = make_writer()
+    x = lib.ids("now")[1]
+    path = _file(lib, x)
+    holder = LockHolder(lib.db)
+    try:
+        w.remove([x])
+        assert h.until(lambda: journalled(lib.language) == [("remove", [x])])
+        assert h.until(lambda: w.attempts >= 2)
+        assert os.path.exists(path) and lib.store.item(x) is not None, "each busy try puts the file back"
+    finally:
+        holder.release()
+    assert h.until(lambda: heard.saved)
+    assert not os.path.exists(path) and lib.store.item(x) is None and journal(lib.language) is None
+
+
+def test_S2_put_back_from_the_trash_and_its_undo_sends_it_back(lib, make_writer):
+    w, heard = make_writer()
+    x = lib.ids("goal")[4]
+    path = _file(lib, x)
+    to = ls.trash_file(lib.data_dir, lib.store.item(x)["rel_path"])
+    gone = lib.store.remove([x], {x: to})               # the Content Manager's Remove, before this session
+    w.restore(gone.trash_ids, label="put back")
+    assert h.until(lambda: heard.saved)
+    assert os.path.exists(path) and lib.store.item(x) is not None
+    w.undo()
+    assert h.until(lambda: heard.undone)
+    assert not os.path.exists(path) and lib.store.item(x) is None
+    assert lib.store.trash_rows()[-1]["trashed_path"].startswith(".trash/")
+    w.restore(gone.trash_ids)                           # that row was put back once: refused, nothing moved
+    assert h.until(lambda: heard.notes)
+    assert heard.notes[0].startswith(WORDS["failed"].split("{")[0]) and not os.path.exists(path)
+
+
+def test_S2_import_finished_lands_as_earlier_and_undo_trashes_only_the_jobs_copies(lib, make_writer, tmp_path):
+    w, heard = make_writer()
+    src = _outside_file(str(tmp_path / "Downloads"), lib.language)
+    copied = ls.copy_into_finished(lib.data_dir, [src])             # the importer's job (S5's), done first
+    there = os.path.join(lib.data_dir, ls.GRADUATED_FOLDER, names(lib.language)[60] + ".txt")
+    with open(there, "w", encoding="utf-8") as f:       # already in the data folder: listed as is, never copied
+        f.write(names(lib.language)[60] + "\n")
+    listed = f"{ls.GRADUATED_FOLDER}/{os.path.basename(there)}"
+    w.import_finished(copied + [listed], copied=copied, label="imported")
+    assert h.until(lambda: heard.saved)
+    for rel in copied + [listed]:
+        item = lib.store.item(lib.store.item_id(rel))
+        assert item["tier"] == "graduated" and item["graduated_at"] is None, "dated Earlier"
+    w.undo()
+    assert h.until(lambda: heard.undone)
+    assert lib.store.item_id(copied[0]) is None and lib.store.item_id(listed) is None
+    assert not os.path.exists(os.path.join(lib.data_dir, *copied[0].split("/"))), "its copy went to the trash"
+    assert os.path.exists(there) and os.path.exists(src), "a file it didn't copy stays; the user's own untouched"
+
+
+def test_S2_relink_points_a_missing_episode_at_its_file_and_undo_points_it_back(lib, make_writer):
+    w, heard = make_writer()
+    x = lib.ids("now")[2]
+    old = _file(lib, x)
+    new = os.path.join(os.path.dirname(old), "[Group] " + os.path.basename(old))
+    os.rename(old, new)                                 # renamed in Explorer: the item is missing
+    w.relink(x, new, label="linked")
+    assert h.until(lambda: heard.saved)
+    assert _file(lib, x) == new and lib.store.place_of(x)[0] == "now"
+    w.undo()
+    assert h.until(lambda: heard.undone)
+    assert _file(lib, x) == old and lib.store.item(x)["availability"] == "missing"
+
+
+def test_S2_E21_undoing_a_relink_after_another_relink_says_cant_undo(lib, make_writer):
+    w, heard = make_writer()
+    x = lib.ids("now")[1]
+    old = _file(lib, x)
+    second, third = old + ".srt", old.replace(".srt", "_v2.srt")
+    os.rename(old, second)
+    w.relink(x, second)
+    assert h.until(lambda: heard.saved)
+    os.rename(second, third)
+    lib.store.relink(x, third)                          # another window linked it again
+    w.undo()
+    assert h.until(lambda: heard.notes)
+    assert heard.notes == [WORDS["cant_undo"]] and _file(lib, x) == third
+
+
+def test_S2_its_new_adds_the_file_and_leaves_nothing_to_undo(lib, make_writer):
+    w, heard = make_writer()
+    first = _file(lib, lib.ids("now")[0])
+    path = os.path.join(os.path.dirname(first), names(lib.language)[70] + "_第05話.srt")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(names(lib.language)[70] + "\n")
+    w.its_new(path)
+    assert h.until(lambda: heard.rereads)
+    assert lib.store.item_id(os.path.relpath(path, lib.data_dir).replace("\\", "/")) is not None
+    assert heard.saved == [] and not w.can_undo()
+
+
+def test_S2_IK2_a_video_is_linked_as_a_pairing_never_through_relink(lib, make_writer, tmp_path, monkeypatch):
+    """IK-2: *Link…* writes the pairing Connect reads, beside the episode — never `relink`, which repoints the
+    episode's subtitle and refuses a path outside the data folder."""
+    def never(*_a, **_k):
+        raise AssertionError("a video went through relink")
+    monkeypatch.setattr(ls.Store, "relink", never)
+    w, heard = make_writer()
+    x = lib.ids("now")[0]
+    rel = lib.store.item(x)["rel_path"]
+    video = tmp_path / "Videos" / f"[Group] {names(lib.language)[3]} - 01 (1080p).mkv"
+    video.parent.mkdir()
+    video.write_bytes(os.urandom(4096))
+    w.link_video(x, str(video), label="linked")
+    assert h.until(lambda: heard.saved or heard.notes)
+    assert heard.notes == [] and heard.saved[0][0].kind == "register"
+    pairing = json.loads(lib.store.conn.execute("SELECT pairing FROM pairings WHERE item_id = ?", (x,)).fetchone()[0])
+    assert pairing["video_path"] == str(video) and pairing["producer"] == "surasura"
+    assert lib.store.item(x)["rel_path"] == rel, "the episode's own file is where it was"
+    w.undo()
+    assert h.until(lambda: heard.undone)
+    assert lib.store.conn.execute("SELECT 1 FROM pairings WHERE item_id = ?", (x,)).fetchone() is None
+    w.link_video(x, str(tmp_path / "notes.txt"))        # not a video: refused in its own words, nothing written
+    assert h.until(lambda: heard.notes)
+    assert heard.notes[0].startswith(WORDS["failed"].split("{")[0])
+
+
+def test_S2_split_and_join_a_shows_piece_each_undo(lib, make_writer):
+    w, heard = make_writer()
+    show = lib.ids("now")[:4]
+    piece = lib.store.item(show[0])["piece_id"]
+    assert piece is not None and all(lib.store.item(i)["piece_id"] == piece for i in show)
+    w.split(piece, show[2])
+    assert h.until(lambda: heard.saved)
+    second = lib.store.item(show[2])["piece_id"]
+    assert second != piece and lib.store.item(show[3])["piece_id"] == second
+    w.join([piece, second])
+    assert h.until(lambda: len(heard.saved) == 2)
+    assert {lib.store.item(i)["piece_id"] for i in show} == {piece}
+    w.undo()
+    assert h.until(lambda: heard.undone)
+    assert lib.store.item(show[2])["piece_id"] == second
+    w.undo()
+    assert h.until(lambda: len(heard.undone) == 2)
+    assert {lib.store.item(i)["piece_id"] for i in show} == {piece} and heard.notes == []
+
+
+def test_S2_a_titles_media_type_and_cover_are_set_and_undone_and_a_fetch_never_writes_over_the_users_cover(
+        lib, make_writer):
+    w, heard = make_writer()
+    work = lib.store.item(lib.ids("now")[0])["work_id"]
+    w.set_media_type([work], "anime")
+    w.set_cover(work, "file", path="cache:poster.jpg")
+    w.set_cover(work, "user", path="user:mine.jpg", locked=True)
+    assert h.until(lambda: len(heard.saved) == 3)
+    w.set_cover(work, "anilist", ref="21", path="cache:anilist_21.jpg")    # a fetch after the user's choice
+    assert h.until(lambda: heard.rereads == 1)
+    row = lib.store._work_row(work)
+    assert (row["cover_source"], row["cover_path"], row["cover_locked"]) == ("user", "user:mine.jpg", 1)
+    assert lib.store.media_type(work) == ("anime", "user") and len(heard.saved) == 3
+    w.undo()
+    w.undo()
+    w.undo()
+    assert h.until(lambda: len(heard.undone) == 3)
+    assert lib.store._work_row(work)["cover_path"] is None and lib.store.media_type(work)[1] is None
+
+
+def test_S2_E21_a_cover_chosen_again_elsewhere_isnt_undone_by_half(lib, make_writer):
+    w, heard = make_writer()
+    work = lib.store.item(lib.ids("soon")[0])["work_id"]
+    w.set_cover(work, "user", path="user:mine.jpg", locked=True)
+    assert h.until(lambda: heard.saved)
+    lib.store.set_cover(work, "user", path="user:other.jpg", locked=True)   # another window: same source, new image
+    w.undo()
+    assert h.until(lambda: heard.notes)
+    row = lib.store._work_row(work)
+    assert heard.notes == [WORDS["cant_undo"]]
+    assert (row["cover_source"], row["cover_path"], row["cover_locked"]) == ("user", "user:other.jpg", 1)
+
+
+def test_S2_E4_a_read_only_store_refuses_every_new_command_before_it_is_painted(lib, make_writer):
+    w, heard = make_writer()
+    lib.close()
+    ls.mark_damaged(lib.db, "test: a damaged store")
+    assert h.until(lambda: not w.can_write(), seconds=M.MODE_RECHECK_S * 3)
+    calls = [lambda: w.place([1], "top"), lambda: w.put_back([1]), lambda: w.import_finished(["Graduated/a.txt"]),
+             lambda: w.relink(1, "a.srt"), lambda: w.its_new("a.srt"), lambda: w.link_video(1, "a.mkv"),
+             lambda: w.remove([1]), lambda: w.restore([1]), lambda: w.pin([1]), lambda: w.keep_cards([1], False),
+             lambda: w.ask_mining([1]), lambda: w.split(1, 2), lambda: w.join([1, 2]),
+             lambda: w.set_media_type([1], "anime"), lambda: w.set_cover(1, "file", path="cache:a.jpg")]
+    assert [c() for c in calls] == [None] * len(calls)
+    assert w.pending() == 0 and heard.notes == []
+
+
+def test_S2_a_crash_with_new_commands_queued_replays_each_from_the_journal(lib, make_writer, short_lock_wait):
+    w, heard = make_writer()
+    now, goal = lib.ids("now"), lib.ids("goal")
+    a = _arrival(lib, goal[5])
+    fin = goal[6]
+    lib.store.finish([fin])
+    work = lib.store.item(now[0])["work_id"]
+    gone = _file(lib, goal[7])
+    holder = LockHolder(lib.db)
+    w.place([a], "top")
+    w.pin([now[1]])
+    w.keep_cards([fin], False)
+    w.set_cover(work, "file", path="cache:poster.jpg")
+    w.remove([goal[7]])
+    ops = ["place", "pin", "keep_cards", "set_cover", "remove"]
+    assert h.until(lambda: [op for op, _i in journalled(lib.language)] == ops)
+    w._abandon()                                        # the crash
+    holder.release()
+    assert os.path.exists(gone), "a busy remove left its file in place"
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: journal(lib.language) is None and lib.store.item(goal[7]) is None)
+    assert lib.ids("now")[0] == a and lib.store.item(now[1])["pinned"] is not None
+    assert _learning(lib, fin)[0] == 0 and lib.store._work_row(work)["cover_path"] == "cache:poster.jpg"
+    assert not os.path.exists(gone) and heard2.notes == [] and heard2.saved == []
+
+
+def test_S2_a_replayed_put_back_from_the_trash_that_someone_did_meanwhile_is_listed_once(lib, make_writer,
+                                                                                       short_lock_wait):
+    w, heard = make_writer()
+    x = lib.ids("soon")[3]
+    gone = lib.store.remove([x], {x: ls.trash_file(lib.data_dir, lib.store.item(x)["rel_path"])})
+    holder = LockHolder(lib.db)
+    w.restore(gone.trash_ids)
+    assert h.until(lambda: journalled(lib.language) == [("restore", [])])
+    w._abandon()
+    holder.release()
+    lib.store.restore(gone.trash_ids)                   # meanwhile another window put it back
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: heard2.notes)
+    assert heard2.notes == [WORDS["crash_one"]] and journal(lib.language) is None
+
+
+def test_S2_after_commit_hears_every_committed_write_and_undo_on_the_writers_thread(lib, make_writer):
+    """P4.1's hook (`window_link.Link.after_change`): after each commit, off the window's thread."""
+    heard_after = []
+    w, heard = make_writer(after_commit=lambda change, op: heard_after.append((op, threading.current_thread().name)))
+    x = lib.ids("now")[0]
+    w.pin([x])
+    w.pin([x])                                          # nothing new: nothing committed, nothing heard
+    w.undo()
+    assert h.until(lambda: heard.undone)
+    assert heard_after == [("pin", f"window-writer-{lib.language}"), ("undo", f"window-writer-{lib.language}")]
+
+
+def test_S2_a_crash_replays_an_import_a_relink_a_split_a_media_type_and_a_put_back_by_their_own_values(
+        lib, make_writer, tmp_path, short_lock_wait):
+    """Each command's own values (paths, a path, a piece, titles, ids) survive the journal: none is replayed as another."""
+    w, heard = make_writer()
+    now, soon = lib.ids("now"), lib.ids("soon")
+    copied = ls.copy_into_finished(lib.data_dir, [_outside_file(str(tmp_path / "Downloads"), lib.language)])
+    x = now[3]
+    old = _file(lib, x)
+    new = os.path.join(os.path.dirname(old), "[Group] " + os.path.basename(old))
+    os.rename(old, new)
+    piece = lib.store.item(now[0])["piece_id"]
+    work = lib.store.item(soon[0])["work_id"]
+    back = soon[4:8]
+    lib.store.finish(back, keep_cards=False)
+    holder = LockHolder(lib.db)
+    w.import_finished(copied, copied=copied)
+    w.relink(x, new)
+    w.split(piece, now[1])
+    w.set_media_type([work], "drama")
+    w.put_back(back)
+    ops = ["import_finished", "relink", "split", "set_media_type", "put_back"]
+    assert h.until(lambda: [op for op, _i in journalled(lib.language)] == ops)
+    w._abandon()
+    holder.release()
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: journal(lib.language) is None and lib.store.media_type(work)[0] == "drama")
+    assert lib.store.place_of(lib.store.item_id(copied[0]))[0] == "graduated"
+    assert _file(lib, x) == new and lib.store.item(now[1])["piece_id"] != piece
+    assert lib.ids("now")[:4] == back and all(_learning(lib, i)[0] == 1 for i in back)
+    assert heard2.notes == []

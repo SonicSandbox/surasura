@@ -6,8 +6,12 @@
   `end=True`, Goal's end as it stands when the write lands), `nudge`, `set_tier` (Finished is the store's `graduated`),
   `set_finished` (the store's `finish`: the Finished toast's *Keep* / *Take its new cards out*; `follows=` the drop's
   change, so that drop's Undo takes the cards' choice back too), `set_watched`, `insert_at` (an Explorer drop: the
-  content files copied into the tier's folder at once on a copier thread of its own, then queued and placed), `undo`.
-  Each
+  content files copied into the tier's folder at once on a copier thread of its own, then queued and placed), `undo`;
+  W3.2's: `place` (New arrivals' icons and ⋯), `put_back` (Finished → the top of Current, its cards back in the
+  order), `import_finished` (the Finished importer's store half), `relink` / `its_new` (Needs you's *Link these*, the
+  rename asks), `link_video` (Connect's *Link…*: a video, never `relink`), `remove` / `restore` (the trash, 30 days),
+  `pin`, `keep_cards` (a Finished item's cards out of / back in the order), `ask_mining`, `split` / `join`,
+  `set_media_type`, `set_cover`. Each
   returns at once (the window has already painted its
   own copy of the order); what happened comes back through callbacks, called on the writer's thread (the window's bridge
   queues them):
@@ -56,7 +60,9 @@ WAIT_S = 0.5                    # the thread looks at its queue at least this of
 MODE_RECHECK_S = 2.0            # idle, the thread asks the store's mode this often (`can_write` reads the answer)
 JOURNAL_VERSION = 1
 JOURNAL_TRIES = 10              # a journal write Windows refuses (the file held a moment) is tried this many times
-JOURNALLED = ("move", "nudge", "set_tier", "finish", "set_watched")
+JOURNALLED = ("move", "nudge", "set_tier", "finish", "set_watched",
+              "place", "put_back", "import_finished", "relink", "its_new", "link_video", "remove", "restore", "pin",
+              "keep_cards", "ask_mining", "split", "join", "set_media_type", "set_cover")
 #   an undo needs its Change: never journalled; nor an Explorer drop (`insert_at`: no ids yet). Its files are copied into
 #   the tier's folder at once, on the copier's thread — a busy store or a drag never holds the copy back, and the copy
 #   never holds a move back (G1) — so a quit or a crash before it lands leaves them whole in the folder, where the next
@@ -65,9 +71,15 @@ ANALYSED = ("now", "soon", "goal")                          # the plan engine's 
 PLAN_FILE = "plan.json.gz"      # `analyzer.PLAN_FILE` (not imported: the analyzer is heavy; a test holds them equal)
 CHANGED_KEPT = 64               # `Numbers.changed` remembers this many versions back
 
-WORDS = ("saving", "cant_undo", "nearest", "top", "crash_one", "crash_many", "read_only", "failed")
+WORDS = ("saving", "cant_undo", "nearest", "top", "crash_one", "crash_many", "read_only", "failed", "put_back_as")
 #   the keys `words` must hold (`strings.MOVE_WORDS`); "not_content" ({names}: the files an Explorer drop left out) may
-#   be held too — without it that note is `failed`'s, with the names
+#   be held too — without it that note is `failed`'s, with the names. "put_back_as" ({names}): files a Put back brought
+#   back under a new name (theirs was taken)
+PLACES = ("top", "after-show", "soon", "goal", "finished")  # `place`'s targets (`Store.place`)
+KEPT = ("tier", "before_id", "after_id", "near", "direction", "on", "keep_cards", "end", "seen",
+        "where", "paths", "copied", "path", "trash_ids", "piece_id", "piece_ids", "work_ids", "media_type",
+        "work_id", "source", "ref", "locked")
+#   a journal entry's values beside its op and ids (`_entry`): each command's own
 PART = ".part"                  # a dropped file is copied under its name + this (no content name: no sync takes it up),
 #                                 then renamed whole
 
@@ -132,7 +144,7 @@ def _ls():
 class Writer:
     def __init__(self, opener, language="ja", journal_file=None, numbers=None, on_saved=None, on_saving=None,
                  on_reread=None, on_note=None, on_undone=None, depth=UNDO_DEPTH, retry=RETRY_S,
-                 saving_after=SAVING_AFTER_S, words=None):
+                 saving_after=SAVING_AFTER_S, words=None, after_commit=None):
         missing = [k for k in WORDS if k not in (words or {})]
         if missing:                                 # the window's words (`strings.MOVE_WORDS`): never a key shown
             raise ValueError(f"the writer's words lack {missing}")
@@ -146,6 +158,8 @@ class Writer:
         self.on_reread = on_reread or _nothing
         self.on_note = on_note or _nothing
         self.on_undone = on_undone or _nothing
+        self.after_commit = after_commit or _nothing    # (change, op) after every write the store committed, a replay's
+        #                                                 too, on this thread (P4.1 hangs `window_link.Link.after_change`)
         self.retry = retry
         self.saving_after = saving_after
         self._cond = threading.Condition()
@@ -251,6 +265,86 @@ class Writer:
     def set_watched(self, ids, on=True, label=None):
         """`Store.set_watched` on files (an episode is one file, one item)."""
         return self._put({"op": "set_watched", "ids": list(ids), "on": bool(on), "label": label})
+
+    # --- W3.2: New arrivals, Finished, Needs you, the trash, pins, pieces, titles -------------------------------- #
+    def place(self, ids, where, label=None):
+        """`Store.place`: New arrivals' icons and ⋯ — `where` in `PLACES` (`top` · `after-show` · `soon` · `goal` ·
+        `finished`); `after-show` with no show to follow writes nothing (`on_reread`). Undone as a move (a finish)."""
+        if where not in PLACES:
+            raise ValueError(f"unknown place {where!r}")
+        return self._put({"op": "place", "ids": list(ids), "where": where, "label": label})
+
+    def put_back(self, ids, label=None):
+        """`Store.put_back_finished`: Finished's *Put back* — the top of Current and its cards back in the order, one
+        change (G1.6-10)."""
+        return self._put({"op": "put_back", "ids": list(ids), "label": label})
+
+    def import_finished(self, paths, copied=(), label=None):
+        """`Store.import_finished` (the importer's store half; its copying job is the caller's, done first): `paths`
+        in the data folder land in Finished, dated *Earlier*. `copied`: those the job copied in — its Undo sends
+        those to the trash and takes every row it placed out; a file it didn't copy stays where it is."""
+        return self._put({"op": "import_finished", "ids": [], "paths": [os.fspath(p) for p in paths],
+                          "copied": [os.fspath(p) for p in copied], "label": label})
+
+    def relink(self, item_id, path, label=None):
+        """`Store.relink`: a missing item pointed at its content file (`path`, in the data folder) — *Link these*,
+        the rename ask's *This one*. Never a video (`link_video`)."""
+        return self._put({"op": "relink", "ids": [item_id], "path": os.fspath(path), "label": label})
+
+    def its_new(self, path, label=None):
+        """`Store.its_new`: the rename ask's *It's new* — the ask goes, the file joins as any new file. The store keeps
+        no change for it: never on the Undo stack (`on_reread`)."""
+        return self._put({"op": "its_new", "ids": [], "path": os.fspath(path), "label": label})
+
+    def link_video(self, item_id, video_path, label=None):
+        """Connect's *Link…* (`app/connect/link.link`): the episode's video, as a pairing on the existing item —
+        anywhere on disk, never through `relink` (which repoints the content file). Refused (`link.Refused`, its
+        words) → `failed`'s note, nothing written."""
+        return self._put({"op": "link_video", "ids": [item_id], "path": os.fspath(video_path), "label": label})
+
+    def remove(self, ids, label=None):
+        """*Remove…*: under the store's write lock (a busy store moves no file), each item's file to the data folder's
+        trash (`library_store.trash_file`: its 30-day clock restarted), then `Store.remove` in the same transaction —
+        the files back if anything fails. Undo puts the files back (never over a
+        file: a taken name comes back as `name_1.ext`, named in a note) and the rows where they stood."""
+        return self._put({"op": "remove", "ids": list(ids), "label": label})
+
+    def restore(self, trash_ids, label=None):
+        """Put back from the trash (`Store.restore` by trash ids, the files first, as Undo of a remove does). Undo sends
+        them back to the trash."""
+        return self._put({"op": "restore", "ids": [], "trash_ids": list(trash_ids), "label": label})
+
+    def pin(self, ids, on=True, label=None):
+        """`Store.pin` / `Store.unpin`: *Study its cards first* ↔ *Done with its cards*."""
+        return self._put({"op": "pin", "ids": list(ids), "on": bool(on), "label": label})
+
+    def keep_cards(self, ids, on, label=None):
+        """`Store.set_learning_order`: a Finished item's *Put them back in the order* (on) ↔ *Take its new cards out*
+        (off — its pin ends too, as Finish's choice does)."""
+        return self._put({"op": "keep_cards", "ids": list(ids), "on": bool(on), "label": label})
+
+    def ask_mining(self, ids, asked=True, label=None):
+        """`Store.ask_mining`: the finishing toast's *Mine it too*."""
+        return self._put({"op": "ask_mining", "ids": list(ids), "on": bool(asked), "label": label})
+
+    def split(self, piece_id, at_item_id, label=None):
+        """`Store.split`: a new piece from `at_item_id` to the piece's end (*Split here*)."""
+        return self._put({"op": "split", "ids": [at_item_id], "piece_id": piece_id, "label": label})
+
+    def join(self, piece_ids, label=None):
+        """`Store.join`: one piece of several of one title (a drop on a seam); two titles' pieces → `failed`'s note."""
+        return self._put({"op": "join", "ids": [], "piece_ids": list(piece_ids), "label": label})
+
+    def set_media_type(self, work_ids, media_type, label=None):
+        """`Store.set_media_type`: *What is it?* for the titles (None: back to the guess)."""
+        return self._put({"op": "set_media_type", "ids": [], "work_ids": list(work_ids), "media_type": media_type,
+                          "label": label})
+
+    def set_cover(self, work_id, source, ref=None, path=None, locked=False, label=None):
+        """`Store.set_cover`: a title's cover record; a fetch (`locked=False`) never writes over the user's locked
+        choice (nothing written, `on_reread`)."""
+        return self._put({"op": "set_cover", "ids": [], "work_id": work_id, "source": source, "ref": ref,
+                          "path": path, "locked": bool(locked), "label": label})
 
     def undo(self, change=None, label=None):
         """Undo `change` (a toast's), or the newest saved change (Ctrl+Z) as it stands when the queue reaches it."""
@@ -482,8 +576,10 @@ class Writer:
                 change = store.set_watched(cmd["ids"], cmd["on"])
             elif op == "insert_at":
                 change, note = self._insert(store, cmd)
+            elif op in ("remove", "restore"):
+                change = self._remove(store, cmd) if op == "remove" else self._restore(store, cmd)
             else:
-                raise ValueError(f"unknown command {op!r}")
+                change = self._w32(store, cmd)
         except ValueError:
             if op != "move":
                 raise
@@ -497,6 +593,10 @@ class Writer:
         elif op == "finish" and change is not None and cmd.get("follows") is not None:
             change.follows = cmd["follows"]         # the drop's Undo takes this one back first (AD-6)
             cmd["follows"].follow_up = change
+        elif op == "import_finished" and change is not None:   # what its Undo sends to the trash: the job's copies
+            change.copied = [_ls().library_rel(store.data_dir, p) for p in cmd["copied"]]
+        elif op == "restore" and change is not None:           # ... and a Put back's: every file it brought back
+            change.copied = [r["rel_path"] for r in map(store.item, change.added) if r is not None]
         self._refresh_seen(store, cmd["ids"])
         self._landed(cmd)
         if cmd.get("replay"):
@@ -512,11 +612,122 @@ class Writer:
             names = ", ".join(cmd["left_out"])
             self._call(self.on_note, self.words["not_content"].format(names=names) if "not_content" in self.words
                        else self.words["failed"].format(error=names))
+        if change is not None:
+            self._call(self.after_commit, change, op)
+        if cmd.get("renamed"):                      # a Put back that couldn't take its own name
+            self._call(self.on_note, self.words["put_back_as"].format(names=", ".join(cmd["renamed"])))
         if change is None or note is not None:
             self._call(self.on_reread)
-        if op != "set_watched" and (op != "move" or change is None or note is not None or
+        if op not in UNORDERED and (op != "move" or change is None or note is not None or
                                     cmd.get("numbered") not in (None, (cmd["before_id"], cmd["after_id"]))):
             self._numbers_resync()                  # (a tier's end that moved between the numbers and the write too)
+
+    def _w32(self, store, cmd):
+        """W3.2's store commands, each one store call. -> the change, or None."""
+        op, ids = cmd["op"], cmd["ids"]
+        if op == "place":
+            return store.place(ids, cmd["where"])
+        if op == "put_back":
+            return store.put_back_finished(ids)
+        if op == "import_finished":
+            return store.import_finished(cmd["paths"])
+        if op == "relink":
+            return store.relink(ids[0], cmd["path"])
+        if op == "its_new":
+            store.its_new(cmd["path"])              # a sync's summary, no change: nothing to undo
+            return None
+        if op == "link_video":
+            from app.connect import link
+            return link.link(store, ids[0], cmd["path"])
+        if op == "pin":
+            return store.pin(ids) if cmd["on"] else store.unpin(ids)
+        if op == "keep_cards":
+            return store.set_learning_order(ids, cmd["on"])
+        if op == "ask_mining":
+            return store.ask_mining(ids, cmd["on"])
+        if op == "split":
+            return store.split(cmd["piece_id"], ids[0])
+        if op == "join":
+            return store.join(cmd["piece_ids"])
+        if op == "set_media_type":
+            return store.set_media_type(cmd["work_ids"], cmd["media_type"])
+        if op == "set_cover":
+            return store.set_cover(cmd["work_id"], cmd["source"], ref=cmd["ref"], path=cmd["path"],
+                                   locked=cmd["locked"])
+        raise ValueError(f"unknown command {op!r}")
+
+    # --- the trash: Remove, Put back, their Undo ------------------------------------------------------------------ #
+    def _remove(self, store, cmd):
+        """*Remove...*: under the store's write lock first (busy → StoreBusy before any file moves), each file to the
+        trash (`trash_file`: its 30-day clock restarted; a missing item has none), then `Store.remove` in the same
+        transaction; the files back where they were if anything fails. (The renames are quick: the lock is held for
+        them, so nothing can change the rows between the look and the write.)"""
+        lib = _ls()
+        moved = []
+        try:
+            with store._writing():
+                trashed = {}
+                for item_id in cmd["ids"]:
+                    row = store.item(item_id)
+                    if row is None:
+                        continue
+                    to = lib.trash_file(store.data_dir, row["rel_path"])
+                    if to:
+                        trashed[item_id] = to
+                        moved.append((_full(store, to), _full(store, row["rel_path"])))
+                return store.remove(cmd["ids"], trashed)
+        except BaseException:
+            _move_back(moved)
+            raise
+
+    def _from_trash(self, store, rows, cmd, moved):
+        """A Put back's file half (Undo of a remove, `restore`), under the caller's write lock: each row's file back
+        from the trash (`put_back`: never over a file; a taken name comes back as `name_1.ext`, named in a note; one
+        the trash purged brings its row back missing); each move added to `moved`, for `_move_back`. -> {trash_id:
+        rel}."""
+        lib = _ls()
+        rel_paths = {}
+        for row in rows:
+            if row["restored_at"] or not row["trashed_path"]:
+                continue
+            back, _note = lib.put_back(store.data_dir, row["trashed_path"], row["rel_path"])
+            if back:
+                rel_paths[row["id"]] = back
+                moved.append((_full(store, back), _full(store, row["trashed_path"])))
+                if back != row["rel_path"]:
+                    cmd.setdefault("renamed", []).append(back.rsplit("/", 1)[-1])
+        return rel_paths
+
+    def _restore(self, store, cmd):
+        """Put back from the trash by trash ids: under the write lock, the files first, then `Store.restore`; the files
+        back to the trash if it refuses (a row put back meanwhile, its name an item's again)."""
+        moved = []
+        try:
+            with store._writing():
+                rel_paths = self._from_trash(store, store.trash_rows(cmd["trash_ids"]), cmd, moved)
+                return store.restore(cmd["trash_ids"], rel_paths)
+        except BaseException:
+            cmd.pop("renamed", None)
+            _move_back(moved)
+            raise
+
+    def _undo_removed(self, store, change, cmd):
+        """Undo a remove: its rows are in the trash, so what it checks is theirs (a row put back meanwhile is
+        skipped). Under the write lock, the files back first, then the rows where they stood (`Store.undo`:
+        `restore`); the files back to the trash if the store refuses."""
+        lib = _ls()
+        moved = []
+        try:
+            with store._writing():
+                rel_paths = self._from_trash(store, store.trash_rows(change.trash_ids), cmd, moved)
+                out = store.undo(change, rel_paths=rel_paths)
+                if _refused(change, out):
+                    raise lib.UndoRefused("every row was put back meanwhile")
+                return out
+        except BaseException:
+            cmd.pop("renamed", None)
+            _move_back(moved)
+            raise
 
     def _nearest(self, store, cmd):
         """The anchor is gone or left the tier: the nearest neighbour the window named that is still in the tier, else
@@ -639,8 +850,11 @@ class Writer:
                 print(f"Window writer: a dropped file's copy couldn't go to the trash: {e!r}")
 
     def _undo_added(self, store, change, ok):
-        """Undo an Explorer drop: the copies it made to the trash first (the importer's Undo-Add; a file that was in the
-        data folder already stays where it is), then the rows; the files put back if the store refuses."""
+        """Undo an Add: the files it brought in to the trash first, then the rows; the files put back if the store
+        refuses. An Explorer drop: its own copies and their rows only (a file that was in the data folder already
+        stays where it is, row and all: a sync would add it back, AD-10). The Finished importer's: its job's copies
+        (`copied`), and every row it placed out (Finished isn't walked: no sync takes a file up again), its moved rows
+        back. A Put back (`restore`): every file it brought back, back to the trash."""
         import copy
         lib = _ls()
         copied = {lib.path_key(r) for r in getattr(change, "copied", ()) if r}
@@ -654,22 +868,19 @@ class Writer:
                 to = lib.trash_file(store.data_dir, row["rel_path"])
                 if to:
                     trashed[item_id] = to
-                    moved.append((os.path.join(store.data_dir, *to.split("/")),
-                                  os.path.join(store.data_dir, *row["rel_path"].split("/"))))
-            if not mine:
-                raise lib.UndoRefused("none of its copies is left to undo")
-            only = copy.copy(change)                # its own copies' rows only (AD-10)
-            only.added = mine
+                    moved.append((_full(store, to), _full(store, row["rel_path"])))
+            only = change
+            if change.kind != "import_finished":
+                if not mine:
+                    raise lib.UndoRefused("none of its copies is left to undo")
+                only = copy.copy(change)            # its own copies' rows only (AD-10)
+                only.added = mine
             out = store.undo(only, trashed_paths=trashed)
-            if out is None:
+            if out is None or _refused(change, out):
                 raise lib.UndoRefused("nothing was undone")
             return out
         except BaseException:
-            for src, dst in reversed(moved):
-                try:
-                    os.rename(src, dst)
-                except OSError as e:
-                    print(f"Window writer: a file couldn't come back from the trash: {e!r}")
+            _move_back(moved)
             raise
 
     def _apply_undo(self, store, cmd, lib):
@@ -684,19 +895,24 @@ class Writer:
         then = getattr(change, "follow_up", None)   # the cards' choice made after this drop (AD-6): undone first
         tried = False                               # the choice's undo asked: it leaves the stack (else it stays there)
         try:
-            ok, changed = store.undo_check(change)
+            if change.kind == "remove":             # its rows are in the trash: what it checks is theirs
+                self._undo_removed(store, change, cmd)
+                ok, changed = None, ()
+            else:
+                ok, changed = store.undo_check(change)
             if changed:
                 refused = True
-            else:
+            elif ok is not None:
                 if then is not None:                # nothing left of it to undo (its cards put back meanwhile) is no
                     tried = True                    # reason to leave the drop
                     self._undo_one(store, then)
-                if change.kind in ("insert", "insert_at"):
-                    refused = _refused(change, self._undo_added(store, change, ok))
+                if change.kind in ("insert", "insert_at", "import_finished", "restore"):
+                    self._undo_added(store, change, ok)
                 else:
                     refused = self._undo_one(store, change)
         except (lib.StoreConflict, lib.UndoRefused):
             refused = True
+            cmd.pop("renamed", None)
         with self._cond:
             for done in (change, then if tried else None):     # a drop refused first: its choice stays undoable
                 try:
@@ -711,13 +927,19 @@ class Writer:
             self._call(self.on_note, self.words["cant_undo"])
         else:
             self._call(self.on_undone, change, cmd.get("label"))
+            self._call(self.after_commit, change, "undo")
+            if cmd.get("renamed"):
+                self._call(self.on_note, self.words["put_back_as"].format(names=", ".join(cmd["renamed"])))
             self._numbers_resync()
         self._call(self.on_reread)
 
     def _undo_one(self, store, change):
         """`Store.undo` of a change other than an Add. -> True when it was refused (nothing written)."""
-        if change.kind == "finish" and not change.items and not _still_set(store, change.status):
+        if change.kind in ("finish", "put_back_finished") and not change.items and \
+                not _still_set(store, change.status):
             return True                             # only its cards' choice, and every value changed since: nothing
+        if change.kind in ("set_cover", "set_media_type") and not _works_as_set(store, change.works["fields"]):
+            return True                             # one of the title's values changed since: a cover's record is one
         return _refused(change, store.undo(change))
 
     def _busy(self, cmd):
@@ -731,14 +953,16 @@ class Writer:
     def _stuck(self, cmd):
         """`cmd` has waited `saving_after`: its rows read *saving…* and everything queued is journalled. Called by the
         attempt's timer (its own thread) or after a busy answer; nothing once `cmd` has landed. `on_saving` is told under
-        the queue's lock, so True and False reach the window in the order they happened."""
+        the queue's lock, so True and False reach the window in the order they happened — and after the journal is
+        written: a row that reads *saving…* survives a crash."""
         with self._cond:
             if not any(c is cmd for c in self._pending):
                 return
-            if not self._saving:
+        self._sync_journal(everything=True)
+        with self._cond:
+            if not self._saving and any(c is cmd for c in self._pending):
                 self._saving = True
                 self._call(self.on_saving, True)
-        self._sync_journal(everything=True)
 
     def _landed(self, cmd):
         """The head is done with (saved, let go or refused): out of the queue and out of the journal."""
@@ -858,7 +1082,12 @@ class Writer:
             cmd["seen"] = [[i, now.get(i) if i in ids else v] for i, v in cmd["seen"]]
 
     def _changed_since(self, store, cmd):
-        """A replayed command whose items changed since it was queued (or are gone)."""
+        """A replayed command whose items changed since it was queued (or are gone); a Put back's, a trash row put back
+        meanwhile (or purged from the table)."""
+        if cmd["op"] == "restore" and cmd.get("trash_ids"):
+            rows = store.trash_rows(cmd["trash_ids"])
+            if len(rows) != len(set(cmd["trash_ids"])) or any(r["restored_at"] for r in rows):
+                return True
         seen = cmd.get("seen")
         if seen is None:
             return False
@@ -888,14 +1117,28 @@ class Writer:
             print(f"Window writer: a listener failed: {e!r}")
 
 
+UNORDERED = ("set_watched", "pin", "keep_cards", "ask_mining", "set_cover", "set_media_type", "split")
+#   commands that never change the order: the numbers aren't asked again after them
+
+
 def _refused(change, out):
     """An undo that wrote nothing: no answer, or a status undo that restored nothing. A finish: no row put back and
     every one of its values skipped — the store doesn't hand a finish's restored values back, but its notes count what
     it skipped, its rows' and its values' (AD-15)."""
     if out is None:
         return True
-    if change.kind == "finish":
+    if change.kind in ("finish", "put_back_finished"):
         return not out.items and _skips(out) - len(change.items) >= len(change.status)
+    if change.kind == "remove":
+        return not out.restored                     # every row put back meanwhile
+    if change.kind == "restore":
+        return not out.trash_ids                    # every row it put back changed since
+    if change.kind == "import_finished":
+        return _skips(out) >= len(change.items) + len(change.added)
+    if change.kind in ("split", "join"):
+        return _skips(out) >= len(change.pieces["items"])
+    if change.kind in ("relink", "register"):       # one item each: its undo skipped it (`link_video`'s is a register)
+        return _skips(out) > 0
     return bool(change.status and not out.status)
 
 
@@ -907,6 +1150,17 @@ def _skips(out):
         if head.isdigit() and "changed since" in str(note):
             n += int(head)
     return n
+
+
+def _works_as_set(store, fields):
+    """Whether every title value a change set still holds it. The store's value check (`_undo_works`) goes field by
+    field, silently: a cover chosen again since would come back half (another's path, the old source) — so a title's
+    change undoes whole or not at all (E21)."""
+    for work_id, column, _old, new in fields:
+        row = store._work_row(work_id)
+        if row is None or row[column] != new:
+            return False
+    return True
 
 
 def _still_set(store, status):
@@ -950,6 +1204,19 @@ def _copy_whole(src, dest):
         return name
 
 
+def _full(store, rel):
+    return os.path.join(store.data_dir, *rel.split("/"))
+
+
+def _move_back(moved):
+    """The file moves of a command the store refused, undone newest first: [(where it is now, where it was)]."""
+    for src, dst in reversed(moved):
+        try:
+            os.rename(src, dst)
+        except OSError as e:
+            print(f"Window writer: a file couldn't go back where it was: {e!r}")
+
+
 def _remove_part(path):
     try:
         os.remove(path)
@@ -959,7 +1226,7 @@ def _remove_part(path):
 
 def _entry(cmd):
     out = {k: cmd[k] for k in ("op", "ids") if k in cmd}
-    for k in ("tier", "before_id", "after_id", "near", "direction", "on", "keep_cards", "end", "seen"):
+    for k in KEPT:
         if k in cmd:
             out[k] = cmd[k]
     return out

@@ -3477,25 +3477,71 @@ class Store:
             return None
         with self._command("finish", by) as cmd:
             change = self.set_tier(ids, "graduated", by=by, explicit=explicit)
-            status = []
-            if not keep_cards:
-                marks = ",".join("?" * len(ids))
-                for item_id, order, pinned in self.conn.execute(
-                        f"SELECT id, in_learning_order, pinned FROM items WHERE id IN ({marks})", ids).fetchall():
-                    if order != 0:
-                        status.append((item_id, "in_learning_order", order, 0))
-                    if pinned is not None:
-                        status.append((item_id, "pinned", pinned, None))
-                for item_id, column, _old, new in status:
-                    self.conn.execute(f"UPDATE items SET {column} = ? WHERE id = ?", (new, item_id))
-                cmd.feed(i for i, _c, _o, _n in status)
-                if status:
-                    cmd.touch(pins=any(c == "pinned" for _i, c, _o, _n in status))
+            status = [] if keep_cards else self._cards_out(cmd, ids)
             if change is None and not status:
                 return None
             if change is None:
                 change = self._change(cmd, "finish")
             change.kind = "finish"
+            change.status = status
+            return change
+
+    def _cards_out(self, cmd, ids):
+        """*Take its new cards out* (D14), inside the caller's command: the items' cards out of the learning order and
+        their pin ended (G2.2-8: the later click wins) -> the status values written, for undo."""
+        status = []
+        marks = ",".join("?" * len(ids))
+        for item_id, order, pinned in self.conn.execute(
+                f"SELECT id, in_learning_order, pinned FROM items WHERE id IN ({marks})", ids).fetchall():
+            if order != 0:
+                status.append((item_id, "in_learning_order", order, 0))
+            if pinned is not None:
+                status.append((item_id, "pinned", pinned, None))
+        for item_id, column, _old, new in status:
+            self.conn.execute(f"UPDATE items SET {column} = ? WHERE id = ?", (new, item_id))
+        cmd.feed(i for i, _c, _o, _n in status)
+        if status:
+            cmd.touch(pins=any(c == "pinned" for _i, c, _o, _n in status))
+        return status
+
+    def set_learning_order(self, item_ids, on=True):
+        """A Finished item's *Put them back in the order* (on) ↔ *Take its new cards out* (off), D14: `in_learning_order`
+        1 / 0. Off also ends the pin, as `finish(keep_cards=False)` does; on never pins again. Writes no card (Anki's
+        side is the re-plan's). Undo by the value check. Returns the change, or None (nothing new)."""
+        ids = list(dict.fromkeys(item_ids))
+        if not ids:
+            return None
+        if on:
+            return self._status("set_learning_order", ids, "in_learning_order", 1)
+        with self._command("set_learning_order") as cmd:
+            status = self._cards_out(cmd, ids)
+            if not status:
+                return None
+            change = self._change(cmd, "set_learning_order")
+            change.status = status
+            return change
+
+    def put_back_finished(self, item_ids):
+        """*Put back* (Finished's hover and ⋯, G1.6-10: anything taken out comes back): to the top of Current and its
+        cards back in the learning order (`in_learning_order` 1), one command, one undo. A pin Finish ended stays ended
+        (the user pins again). Returns the change, or None (nothing new)."""
+        ids = list(dict.fromkeys(item_ids))
+        if not ids:
+            return None
+        with self._command("put_back_finished") as cmd:
+            change = self.move(ids, "now")
+            marks = ",".join("?" * len(ids))
+            status = [(i, "in_learning_order", old, 1) for i, old in self.conn.execute(
+                f"SELECT id, in_learning_order FROM items WHERE id IN ({marks})", ids).fetchall() if old != 1]
+            self.conn.executemany("UPDATE items SET in_learning_order = 1 WHERE id = ?", [(i,) for i, *_r in status])
+            cmd.feed(i for i, *_r in status)
+            if status:
+                cmd.touch()
+            if change is None and not status:
+                return None
+            if change is None:
+                change = self._change(cmd, "put_back_finished")
+            change.kind = "put_back_finished"
             change.status = status
             return change
 
@@ -4187,7 +4233,7 @@ class Store:
                 skipped = [t for t in change.trash_ids if t not in waiting]
             elif kind == "relink":
                 out, skipped = self._undo_relink(cmd, change)
-            elif kind == "finish":
+            elif kind in ("finish", "put_back_finished"):
                 out, skipped = self._undo_finish(cmd, change)
             elif kind == "import_finished":
                 out, skipped = self._undo_import(cmd, change, trashed_paths)

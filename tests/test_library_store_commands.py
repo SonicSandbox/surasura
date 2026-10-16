@@ -2318,3 +2318,61 @@ def test_check_records_the_holder_so_an_unchanged_add_reports_it_as_existing(lan
         assert change is not None and [e[1] for e in change.existing] == [item]
     finally:
         store.close()
+
+
+# ================================================================================================ #
+# W3.2 (the window's Finished): the cards' place in the order, and Put back
+# ================================================================================================ #
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_finished_items_new_cards_taken_out_and_put_back_in_the_order_each_undo_by_the_value_check(language):
+    """D14 / G2.2-8: *Take its new cards out* on a Finished item leaves its cards out of the learning order and ends its
+    pin, as Finish's own choice does; *Put them back in the order* returns them and never pins again. Each undoes by
+    the value check: a value someone changed since stays as it is."""
+    store = migrated(language)
+    a, b = store.ids("now")[:2]
+    store.pin([a])
+    stamp = store.item(a)["pinned"]
+    store.finish([a, b])
+    assert store.item(a)["pinned"] == stamp, "E23: Finish with its cards kept keeps the pin"
+    pins = store.versions()["pins_version"]
+    out = store.set_learning_order([a, b], on=False)
+    assert out is not None and out.kind == "set_learning_order"
+    assert (store.item(a)["in_learning_order"], store.item(a)["pinned"]) == (0, None)
+    assert store.item(b)["in_learning_order"] == 0
+    assert store.versions()["pins_version"] == pins + 1, "the pin ended: the re-plan reads its pins again"
+    assert store.set_learning_order([a, b], on=False) is None, "nothing new: nothing written"
+    store.undo(out)
+    assert (store.item(a)["in_learning_order"], store.item(a)["pinned"]) == (1, stamp)
+    back = store.set_learning_order([a, b], on=False)
+    again = store.set_learning_order([a], on=True)
+    assert store.item(a)["in_learning_order"] == 1 and store.item(a)["pinned"] is None, "on never pins again"
+    store.undo(back)                                    # a's value changed since (put back in): it stays; b's comes back
+    assert store.item(a)["in_learning_order"] == 1 and store.item(b)["in_learning_order"] == 1
+    assert store.item(a)["pinned"] == stamp, "its pin was still as the command left it: it comes back"
+    assert again is not None and store.set_learning_order([], on=True) is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_put_back_from_finished_lands_at_the_top_of_current_with_its_cards_back_in_the_order_in_one_undo(language):
+    """IK-1 (G1.6-10: anything taken out comes back): Put back moves a Finished show to the top of Current and returns
+    its cards to the learning order in one command; one Undo takes both back."""
+    store = migrated(language)
+    show = store.ids("now")[:4]
+    store.finish(show, keep_cards=False)
+    assert all(store.item(i)["in_learning_order"] == 0 for i in show)
+    v = store.versions()["state_version"]
+    change = store.put_back_finished(show)
+    assert change is not None and change.kind == "put_back_finished"
+    assert store.versions()["state_version"] == v + 1, "one command"
+    assert store.ids("now")[:4] == show
+    assert all(store.item(i)["in_learning_order"] == 1 for i in show)
+    store.undo(change)
+    assert all(store.item(i)["tier"] == "graduated" and store.item(i)["in_learning_order"] == 0 for i in show)
+    kept = store.ids("soon")[0]
+    store.finish([kept])                                # cards kept: Put back only moves it
+    only_move = store.put_back_finished([kept])
+    assert only_move is not None and only_move.status == [] and store.ids("now")[0] == kept
+    assert store.put_back_finished([kept]) is None and store.put_back_finished([]) is None
+    store.close()

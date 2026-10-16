@@ -284,6 +284,11 @@ MOVE_WORDS = {
     "failed": "That change couldn't be saved: {error}",
     "not_content": "Only text and subtitle files can be added — left out: {names}",
 }
+# --- W3.2 S2: the writer's new commands (moves.WORDS) --------------------------------------------------------------- #
+MOVE_WORDS.update({
+    "put_back_as": "Put back under a new name (the old one was taken): {names}",
+})
+# --- end W3.2 S2
 # the drag in the window (app/qt/drag.py): its toasts (A2's toast list), the ⋯ menu, the bar's lines
 DRAG_UP_NEXT = "{title} is up next"
 DRAG_PLACED = "{title} placed at #{n}"

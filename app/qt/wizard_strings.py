@@ -173,7 +173,7 @@ LEVEL_TITLE = "Your list"
 LEVEL_LINE = "How much there is to learn, and how much of your shows you'll understand."
 LEVEL = "Level"
 AUTOMATIC = "Automatic"
-AUTOMATIC_TIP = ("Surasura picks the level for you, about 850 words ahead, and moves it as you learn.\n"
+AUTOMATIC_TIP = ("Surasura picks the level for you, at least 850 words ahead, and moves it as you learn.\n"
                  "• Moving the slider picks one yourself")
 SLIDER_NAME = "Level"
 SLIDER_TIP = "Fewer, only the most common words to the left; more, rarer words to the right.\n• ← → to move"

@@ -378,3 +378,27 @@ def test_without_a_library_the_search_isnt_offered(qapp):
     finally:
         win.close()
         services.shutdown(0.5)
+
+
+def test_N3_the_searcher_is_made_again_when_the_window_reads_another_library(world, monkeypatch):
+    # a language switch gives the window another reader: the search must never keep reading the old library
+    from types import SimpleNamespace
+    seed, win, _w = world()
+    cut = win.search
+    cut.searcher = None
+    made = []
+
+    class Made:
+        def __init__(self, opener, view):
+            self.opener, self.closed = opener, False
+            made.append(self)
+
+        def close(self):
+            self.closed = True
+    monkeypatch.setattr(S, "Searcher", Made)
+    first = cut._searcher()
+    assert first is cut._searcher() and len(made) == 1                # the same library: kept
+    other = SimpleNamespace(opener="中文の書庫", view=lambda: None)
+    monkeypatch.setattr(win.services, "library", other)
+    second = cut._searcher()
+    assert second is not first and second.opener == "中文の書庫" and first.closed

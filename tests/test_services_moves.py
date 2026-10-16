@@ -2783,3 +2783,36 @@ def test_S1_a_join_and_an_import_left_in_the_journal_are_let_go_and_a_media_type
     assert lib.store.place_of(row)[0] == "now", "the import never puts it back in Finished"
     assert lib.store.media_type(work)[0] == "anime" and {lib.store.item(i)["piece_id"] for i in now[:4]} == {piece}
     assert heard2.notes == [WORDS["crash_many"].format(n=2)], "the join was done: quiet; the other two listed"
+
+
+# --- W3.2 fix round (landing 2) ------------------------------------------------------------------------------------- #
+def test_an_arrival_dropped_on_finished_is_watched_and_one_undo_puts_it_back_without_cant_undo(lib, make_writer):
+    """A2 #28 through the writer (the well's `set_tier`): watched in the drop's own change, and its Undo — a set_tier
+    carrying a status now — is answered as undone, never *Can't undo*."""
+    w, heard = make_writer()
+    x = lib.ids("now")[0]
+    lib.store.set_tier([x], "arrivals")
+    w.set_tier([x], "graduated", label="finished")
+    assert h.until(lambda: heard.saved)
+    assert lib.store.item(x)["watched"] == 1
+    w.undo()
+    assert h.until(lambda: heard.undone)
+    assert lib.store.place_of(x)[0] == "arrivals" and lib.store.item(x)["watched"] != 1
+    assert heard.notes == []
+
+
+def test_a_join_ahead_is_one_journalled_command_and_a_no_op_hands_its_label_back(lib, make_writer):
+    """S5: the earlier part joins the later one in one command (`ahead` kept in the journal entry); a command that
+    lands as nothing hands its label to `landed_empty`, so the window settles its ticket while others still wait."""
+    w, heard = make_writer()
+    show = lib.ids("now")[:4]
+    piece = lib.store.item(show[0])["piece_id"]
+    lib.store.split(piece, show[2])
+    later = lib.store.item(show[2])["piece_id"]
+    assert M._entry({"op": "join", "ids": [], "piece_ids": [later, piece], "ahead": True})["ahead"] is True
+    w.join([later, piece], label="joined", ahead=True)
+    assert h.until(lambda: heard.saved)
+    assert {lib.store.item(i)["piece_id"] for i in show} == {later} and lib.ids("now")[:4] == show
+    w.move([show[0]], "now", before_id=show[1], label="no-op")
+    assert h.until(lambda: heard.rereads)
+    assert w.landed_empty() == ["no-op"] and w.landed_empty() == []

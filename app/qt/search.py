@@ -515,12 +515,19 @@ class SearchCut(QWidget):
                 self.results.hide()
 
     def _searcher(self):
+        """The searcher, made from the window's library reader as it stands (N3: made again when the reader is another
+        — a language switch; a given one is kept)."""
+        library = self.shell.services.library
+        made_for = getattr(self, "_made_for", None)
+        if self.searcher is not None and made_for is not None and made_for is not library:
+            self.close_searcher()
+            self.searcher = None
         if self.searcher is None:
-            library = self.shell.services.library
             if library is None:
                 return None
             from app.services import search as search_service
             self.searcher = search_service.Searcher(library.opener, library.view)
+            self._made_for = library
         return self.searcher
 
     def _ask(self):

@@ -1267,7 +1267,10 @@ class DragController(QObject):
 
     def _reread(self):
         """The store placed something elsewhere, or had nothing to change: its view stands now (a choice waiting for a
-        drop that landed as nothing is given unlinked)."""
+        drop that landed as nothing is given unlinked). W3.2 (S5): while others still wait, the tickets whose own
+        command landed as nothing settle (Ctrl+Z never picks one that has nothing to undo)."""
+        landed = getattr(self.writer, "landed_empty", None)
+        empty = landed() if landed is not None else ()
         if not self.writer.pending():
             for t in list(self.tickets):
                 then, t.then = t.then, None
@@ -1275,6 +1278,13 @@ class DragController(QObject):
                     then()
             self.tickets = []
             self._paint_saving()
+        else:
+            for t in list(self.tickets):
+                if t.change is None and any(t is e for e in empty):
+                    then, t.then = t.then, None
+                    if then is not None and not t.undo_asked:
+                        then()
+                    self._settle_ticket(t)
         self._let_go()
 
     def _note(self, text):

@@ -39,8 +39,8 @@ class ItemWriter(FakeWriter):
     def split(self, piece_id, at_item_id, label=None):
         return self._put("split", [at_item_id], label, piece_id=piece_id)
 
-    def join(self, piece_ids, label=None):
-        return self._put("join", [], label, piece_ids=list(piece_ids))
+    def join(self, piece_ids, label=None, ahead=False):
+        return self._put("join", [], label, piece_ids=list(piece_ids), ahead=ahead)
 
     def set_media_type(self, work_ids, media_type, label=None):
         return self._put("set_media_type", [], label, work_ids=list(work_ids), media_type=media_type)
@@ -204,6 +204,17 @@ def test_study_first_pins_and_done_unpins_each_with_its_toast_and_undo(world):
 
 
 # --- What is it? -------------------------------------------------------------------------------------------------------- #
+def test_N3_the_menu_writes_through_the_windows_writer_as_it_stands_never_the_one_it_was_made_with(world):
+    seed, win, writer = world()
+    row = rows_of(win)[1]
+    other = ItemWriter(seed.library, apply=False)
+    win.services.writer = other                                      # (a language switch: another library's)
+    win.language = "zh"
+    win.items.pin(row, True)
+    assert calls(writer, "pin") == [] and calls(other, "pin") == [("pin", drag.ids_of(row), {"on": True})]
+    assert win.items.language == "zh"
+
+
 def test_what_is_it_offers_every_store_type_the_rows_own_checked_and_sets_it_for_its_title(world):
     _seed, win, writer = world()
     a, _b = split_parts(win)
@@ -306,7 +317,7 @@ def test_joining_the_later_part_onto_the_earlier_is_one_join_with_the_target_fir
     rs = rows_of(win)
     payload = next(e for e in win.items.entries(rs[a]) if e.name == "join").children[0].payload
     win.items.menu_pick(rs[a], "join", payload)
-    assert calls(writer) == [("join", [], {"piece_ids": [rs[a].piece_id, rs[b].piece_id]})]
+    assert calls(writer) == [("join", [], {"piece_ids": [rs[a].piece_id, rs[b].piece_id], "ahead": False})]
     assert wait_until(lambda: win.toasts.card.message == strings.ITEM_JOINED.format(range="Ep 1–8"), 5)
     assert lst_of(win).model().open_key == rs[a].key                # the result opened
     assert wait_until(lambda: not win.moves.tickets, 5)
@@ -314,21 +325,46 @@ def test_joining_the_later_part_onto_the_earlier_is_one_join_with_the_target_fir
     assert [c.op for c in writer.undone] == ["join"]
 
 
-def test_joining_the_earlier_part_onto_the_later_moves_it_before_then_joins_and_one_undo_takes_both(world):
-    # E22: the target keeps its place; episode order kept: Ep 1–4 just before Ep 5, then one part
+def test_joining_the_earlier_part_onto_the_later_is_one_join_ahead_and_one_undo(world):
+    # E22: the target keeps its place; episode order kept: Ep 1–4 just before Ep 5 — the store's one command (S5)
     _seed, win, writer = world()
     a, b = split_parts(win)
     rs = rows_of(win)
     payload = next(e for e in win.items.entries(rs[b]) if e.name == "join").children[0].payload
     win.items.menu_pick(rs[b], "join", payload)
-    assert calls(writer) == [
-        ("move", drag.ids_of(rs[a]), {"tier": rs[b].tier, "before_id": rs[b].episodes[0].id, "after_id": None,
-                                      "near": [], "end": False}),
-        ("join", [], {"piece_ids": [rs[a].piece_id, rs[b].piece_id]})]
+    assert calls(writer) == [("join", [], {"piece_ids": [rs[b].piece_id, rs[a].piece_id], "ahead": True})]
+    assert lst_of(win).model().open_key == rs[b].key
     assert wait_until(lambda: win.toasts.card.message == strings.ITEM_JOINED.format(range="Ep 1–8"), 5)
     assert wait_until(lambda: not win.moves.tickets, 5)
     win.toasts.card.buttons[0].click()
-    assert [c.op for c in writer.undone] == ["join", "move"]        # the join first, then the move
+    assert [c.op for c in writer.undone] == ["join"]
+
+
+def test_S5_a_command_that_landed_as_nothing_settles_its_ticket_so_ctrl_z_takes_the_one_still_waiting(world):
+    # a busy store: a no-op lands while the join still waits; Ctrl+Z must reach the join, not the no-op
+    _seed, win, writer = world()
+    a, b = split_parts(win)
+    rs = rows_of(win)
+    empty = []
+
+    def landed_empty():
+        out = list(empty)
+        empty.clear()
+        return out
+    writer.landed_empty = landed_empty
+    writer.stuck = True
+    step = drag.Ticket("step", (rs[a].key,), drag.ids_of(rs[a]))
+    join = drag.Ticket("join", (rs[a].key,), drag.ids_of(rs[a]) + drag.ids_of(rs[b]))
+    win.moves._give(step, lambda t: writer.move(drag.ids_of(rs[a]), "now", label=t), toast=False)
+    win.moves._give(join, lambda t: writer.join([rs[a].piece_id, rs[b].piece_id], label=t), toast=False)
+    writer._waiting.pop(0)                                           # the move lands as nothing; the join waits
+    empty.append(step)
+    win.moves._reread()
+    assert step not in win.moves.tickets and join in win.moves.tickets
+    win.moves.undo_last()
+    assert join.undo_asked and not step.undo_asked
+    writer.stuck = False
+    writer.free()
 
 
 def test_a_part_dragged_over_the_other_part_holds_the_rows_still_and_outlines_it(world):
@@ -367,7 +403,7 @@ def test_the_drop_on_the_other_part_joins_them_opens_the_result_and_toasts_with_
     to = middle_point(win, a)
     move_global(win, to)
     release_global(win, to)
-    assert calls(writer) == [("join", [], {"piece_ids": [rs[a].piece_id, rs[b].piece_id]})]
+    assert calls(writer) == [("join", [], {"piece_ids": [rs[a].piece_id, rs[b].piece_id], "ahead": False})]
     assert lst_of(win).join_key is None and win.moves.running is None
     assert lst_of(win).model().open_key == rs[a].key
     assert wait_until(lambda: win.toasts.card.message == strings.ITEM_JOINED.format(range="Ep 1–8"), 5)
@@ -535,9 +571,10 @@ def test_real_store_the_seam_splits_the_part_and_its_undo_joins_it_back(real):
 
 
 def test_real_store_E22_join_with_a_part_in_finished_brings_it_to_current_in_episode_order_one_undo(real):
+    # IK-L2-1: finished with its cards taken out, it comes back with them in the order; Undo takes them out again
     store, win, _writer = real()
     ids, piece = _split_outside(store, win)
-    store.set_tier(list(ids[2:]), "graduated")                       # Ep 3–4 in Finished, Ep 1–2 in Current
+    store.finish(list(ids[2:]), keep_cards=False)                    # Ep 3–4 in Finished, Ep 1–2 in Current
     assert wait_until(lambda: _row_of(win, ids[2:]) is None and _row_of(win, ids[:2]) is not None, 10)
     row = _row_of(win, ids[:2])
     join = next(e for e in win.items.entries(row) if e.name == "join")
@@ -548,16 +585,18 @@ def test_real_store_E22_join_with_a_part_in_finished_brings_it_to_current_in_epi
     now = store.ids("now")
     assert now[now.index(ids[0]):now.index(ids[0]) + 4] == list(ids)          # where the target is, in order
     assert {store.item(x)["piece_id"] for x in ids} == {piece}
+    assert [store.item(x)["in_learning_order"] for x in ids[2:]] == [1, 1]
     assert wait_until(lambda: not win.moves.tickets, 5)
     win.toasts.card.buttons[0].click()
     assert wait_until(lambda: all(store.item(x)["tier"] == "graduated" for x in ids[2:]), 5)
     assert store.item(ids[2])["piece_id"] != piece
+    assert [store.item(x)["in_learning_order"] for x in ids[2:]] == [0, 0]
 
 
-def test_real_store_joining_the_earlier_part_from_finished_onto_the_later_keeps_episode_order_and_undoes_both(real):
+def test_real_store_joining_the_earlier_part_from_finished_onto_the_later_keeps_episode_order_one_undo(real):
     store, win, _writer = real()
     ids, piece = _split_outside(store, win)
-    store.set_tier(list(ids[:2]), "graduated")                       # Ep 1–2 in Finished, Ep 3–4 in Current
+    store.finish(list(ids[:2]), keep_cards=False)                    # Ep 1–2 in Finished, Ep 3–4 in Current
     assert wait_until(lambda: _row_of(win, ids[:2]) is None and _row_of(win, ids[2:]) is not None, 10)
     row = _row_of(win, ids[2:])
     later = row.piece_id
@@ -568,10 +607,27 @@ def test_real_store_joining_the_earlier_part_from_finished_onto_the_later_keeps_
                       all(store.item(x)["tier"] == "now" for x in ids), 5)
     now = store.ids("now")
     assert now[now.index(ids[0]):now.index(ids[0]) + 4] == list(ids)          # Ep 1–4, before where Ep 3 stood
+    assert [store.item(x)["in_learning_order"] for x in ids[:2]] == [1, 1]
     assert wait_until(lambda: not win.moves.tickets, 5)
-    win.toasts.card.buttons[0].click()                               # one Undo: the join, then the move
+    win.toasts.card.buttons[0].click()                               # one Undo: the one join
     assert wait_until(lambda: all(store.item(x)["tier"] == "graduated" for x in ids[:2]), 5)
     assert all(store.item(x)["piece_id"] == later for x in ids[2:]) and store.item(ids[0])["piece_id"] != later
+    assert [store.item(x)["in_learning_order"] for x in ids[:2]] == [0, 0]
+
+
+def test_real_store_S5_an_adjacent_earlier_part_dropped_to_join_is_undone_by_one_ctrl_z(real):
+    # Ep 1–2 right above Ep 3–4: no move to make, the join alone; the first Ctrl+Z takes it back
+    store, win, _writer = real()
+    ids, piece = _split_outside(store, win)
+    row = _row_of(win, ids[2:])
+    later = row.piece_id
+    first = _row_of(win, ids[:2])
+    win.items.join(item_menu.part_of(row), item_menu.part_of(first))
+    assert wait_until(lambda: {store.item(x)["piece_id"] for x in ids} == {later}, 5)
+    assert wait_until(lambda: not win.moves.tickets, 5)
+    win.moves.undo_last()
+    assert wait_until(lambda: store.item(ids[0])["piece_id"] != later, 5)
+    assert all(store.item(x)["piece_id"] == later for x in ids[2:])
 
 
 def test_real_store_what_is_it_and_study_first_land_in_the_store(real):

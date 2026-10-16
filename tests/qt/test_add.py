@@ -176,6 +176,7 @@ def test_paste_text_writes_one_utf8_txt_and_adds_it_at_the_top(world):
     card.title.setText("台所の会話: 朝/夜")
     card.text.setPlainText(text)
     assert card.add.isEnabled()
+    writer.stuck = True                                              # (held: its file read before it lands)
     QTest.mouseClick(card.add, Qt.MouseButton.LeftButton)
     assert wait_until(lambda: inserts(writer))
     kw = inserts(writer)[0]
@@ -185,6 +186,8 @@ def test_paste_text_writes_one_utf8_txt_and_adds_it_at_the_top(world):
         assert f.read().decode("utf-8") == text                      # one UTF-8 .txt, the text as pasted
     assert (kw["tier"], kw["after_id"]) == ("now", None)
     assert win.moves.toasted.text == strings.DRAG_ADDED.format(name="台所の会話: 朝/夜", n=1)
+    writer.free()                                                    # N7: landed, its temporary folder goes
+    assert wait_until(lambda: not os.path.exists(os.path.dirname(path)), 5)
 
 
 def test_paste_closes_on_esc_and_cancel_adding_nothing(world):
@@ -213,6 +216,81 @@ def test_a_pasted_texts_name_is_safe_and_never_empty():
     assert add_menu.safe_title("   ") == strings.PASTE_DEFAULT_TITLE
     assert add_menu.safe_title("...") == strings.PASTE_DEFAULT_TITLE
     assert len(add_menu.safe_title("長" * 200)) == add_menu.TITLE_MAX
+
+
+def test_N2_a_pasted_title_that_names_a_device_gets_an_underscore():
+    # Windows 10 writes "con.txt" to the console: the text would be lost
+    named = ("con", "NUL", "Aux", "com1", "LPT9", "prn.backup")
+    assert [add_menu.safe_title(t) for t in named] == ["_con", "_NUL", "_Aux", "_com1", "_LPT9", "_prn.backup"]
+    assert add_menu.safe_title("console") == "console" and add_menu.safe_title("com10") == "com10"
+
+
+# --- S3: its show is the show's own folder, never a leaf another show shares --------------------------------------- #
+def _view_of(*shows):
+    """A Current view of shows in `HighPriority/<show>/<season>` (as a learner's own folders keep them)."""
+    from types import SimpleNamespace as N
+    rows = []
+    for n, (title, sub, ids) in enumerate(shows, 1):
+        eps = [N(id=i, rel_path=f"HighPriority/{title}/{sub}/{title} {k:02d}.srt") for k, i in enumerate(ids, 1)]
+        rows.append(N(tier="now", episodes=eps, title=title, cover_title=title, index=n))
+    return N(rows=rows)
+
+
+def test_S3_season_1_of_another_show_lands_at_the_top_never_in_a_show_with_a_season_1_too(tmp_path):
+    view = _view_of(("黒鉄の剣士", "Season 1", [11, 12, 13]))
+    other = os.path.join(str(tmp_path), "dl", "蒼の旅人", "Season 1", "蒼の旅人 01.srt")
+    assert add_menu.placement(view, [other]) == ("now", None, None, 1)
+    assert add_menu.placement(view, [other], folder=os.path.dirname(other),
+                              rel_dirs=[""]) == ("now", None, ["HighPriority/Season 1"], 1)
+    own = os.path.join(str(tmp_path), "dl", "黒鉄の剣士", "Season 1", "黒鉄の剣士 04.srt")    # its own show's season
+    assert add_menu.placement(view, [own]) == ("now", 13, "HighPriority/黒鉄の剣士/Season 1", 1)
+    for leaf in ("Subs", "S01", "English"):                             # other generic leaves never match a show
+        assert add_menu.show_in_current(_view_of(("黒鉄の剣士", leaf, [1])), leaf) is None
+
+
+def test_S3_a_folder_named_like_hatos_is_never_placed_in_hatos_drop_folder(tmp_path):
+    view = _view_of(("黒鉄の剣士", "Season 1", [11]))
+    folder = os.path.join(str(tmp_path), "Hato")
+    tier, after_id, into, n = add_menu.placement(view, [os.path.join(folder, "雨の駅.srt")], folder=folder,
+                                                 rel_dirs=[""])
+    assert (tier, after_id, into, n) == ("now", None, ["HighPriority/Hato (2)"], 1)
+    from app import library_store as ls
+    from app.services import moves
+    walked = {ls.path_key(f) for f in ls.FOLDER_OF_TIER.values()}
+    for sub in ("HighPriority/Hato", "HighPriority/hato/黒鉄の剣士", "HighPriority/X:", "HighPriority/a/C:"):
+        with pytest.raises(ValueError):
+            moves._into(sub, "HighPriority", walked, ls)
+    assert moves._into("HighPriority/Hato (2)", "HighPriority", walked, ls) == ["HighPriority", "Hato (2)"]
+
+
+# --- S4: a library that can't be saved greys what copies, and the pasted text stays --------------------------------- #
+def test_S4_read_only_greys_files_folder_and_paste_with_the_reason_and_the_doors_stay(world, monkeypatch):
+    seed, win, writer = world(writable=False)
+    monkeypatch.setattr(windows, "available", lambda op, _s, _l: True)
+    win.add_stone._fill()
+    acts = {a.objectName(): a for a in win.add_stone.menu_.actions() if a.objectName().startswith("add-")}
+    for name in ("files", "folder", "paste"):
+        assert not acts[f"add-{name}"].isEnabled()
+        assert acts[f"add-{name}"].toolTip().startswith(strings.MENU_REFUSED_TIP.split("{")[0])
+    assert acts["add-extract"].isEnabled()
+    assert win.adder.paste() is None and writer.calls == []           # no card to type into
+
+
+def test_S4_a_store_that_turns_read_only_keeps_the_paste_card_open_with_its_text(world):
+    seed, win, writer = world()
+    card = win.adder.paste()
+    card.title.setText("駅のアナウンス")
+    said = "まもなく二番線に電車が参ります。"
+    card.text.setPlainText(said)
+    writer.writable = False
+    QTest.mouseClick(card.add, Qt.MouseButton.LeftButton)
+    QApplication.processEvents()
+    assert add_menu._alive(card) and card.isVisible()
+    assert card.text.toPlainText() == said and writer.calls == []
+    assert win.bar_line.full().startswith(strings.DRAG_REFUSED.split("{")[0])
+    writer.writable = True
+    QTest.mouseClick(card.add, Qt.MouseButton.LeftButton)            # saved again: it adds
+    assert wait_until(lambda: inserts(writer))
 
 
 # --- the menu and its doors (E13) --------------------------------------------------------------------------------- #

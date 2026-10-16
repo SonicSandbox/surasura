@@ -20,10 +20,10 @@ a move beside it, so a part can still be placed next to its other part): the row
 shows a green dashed outline and *Drop to join*; the drop joins them in episode order, opens the result and toasts
 *Joined Ep x–y* with Undo.
 
-**Episode order where the target is** (E22): the target part keeps its place. When the part that comes to it holds the
-earlier episodes, it is first moved just before the target's first file (`Writer.move`), then the two are joined with it
-first (`Writer.join`) — two commands, one toast whose Undo takes back both (the join, then the move); otherwise one
-`join` with the target first (the other's files go after the target's last).
+**Episode order where the target is** (E22): the target part keeps its place; one `Writer.join` with the target first —
+the other's files go after the target's last, or just before its first when they hold the earlier episodes (`ahead`).
+A part from Finished comes back with its cards in the order, one from New arrivals is placed, in that same command
+(W3.2 fix round, IK-L2-1): one toast, one Undo.
 
 Every write goes through the window's writer (queued, journalled; W3.1a's `DragController._give` for the toast and
 Undo) and is greyed with the store's reason while it can't be written (E4); nothing here reads or writes the store on the
@@ -80,14 +80,11 @@ class ItemActions(QObject):
     def __init__(self, win):
         super().__init__(win)
         self.win = win
-        self.moves = win.moves
-        self.writer = win.services.writer
-        self.language = win.language
         self.page = win.page_widgets["current"]
         self.lst = self.page.list
         self.page.on_menu = self.menu
         self.lst.split_requested.connect(self.split)
-        self.moves.joins = self
+        win.moves.joins = self
         self.cover_entries = None                    # Q6: (row) -> [(label, tip, enabled, callback)] (*Change cover…*)
         try:
             from app.qt import covers                # (Q6's; absent until it lands)
@@ -96,6 +93,19 @@ class ItemActions(QObject):
             pass
         self.last_menu = None
         self.question = None                         # *Remove…*'s confirmation while it is open
+
+    # N3: the window's moves, writer and language read at call time (a language switch remakes them)
+    @property
+    def moves(self):
+        return self.win.moves
+
+    @property
+    def writer(self):
+        return self.win.services.writer
+
+    @property
+    def language(self):
+        return self.win.language
 
     # --- the view's parts ------------------------------------------------------------------------------------------ #
     def _view(self):
@@ -233,7 +243,7 @@ class ItemActions(QObject):
         elif name == "split" and payload is not None:
             self.split(row, payload)
         elif name == "join" and payload is not None:
-            self.join(part_of(row, self._place(row)), payload, row.tier)
+            self.join(part_of(row, self._place(row)), payload)
         elif name == "cover-to" and payload is not None:
             payload()
         elif name == "folder":
@@ -276,36 +286,21 @@ class ItemActions(QObject):
         return self.moves._give(drag.Ticket(text, (row.key,), drag.ids_of(row)),
                                 lambda t: self.writer.split(piece, ep.id, label=t))
 
-    def join(self, target, other, tier=None):
-        """`other` joins `target` where the target is, in episode order (E22). -> the key the result has (opened)."""
+    def join(self, target, other):
+        """`other` joins `target` where the target is, in episode order (E22): one `Writer.join` with the target first —
+        `ahead` when `other` holds the earlier episodes (they go just before the target's first file). A part from
+        Finished comes back with its cards in the order, one from New arrivals is placed: the store's join does both in
+        its one command (IK-L2-1), so one toast, one Undo, one Ctrl+Z. -> the key the result has (opened)."""
         if self.moves.refused() is not None:
             return None
         text = strings.ITEM_JOINED.format(range=range_text(target, other))
-        ids = target.ids + other.ids
-        if not comes_first(other, target):
-            pieces = [target.piece_id, other.piece_id]
-            if self.moves._give(drag.Ticket(text, (target.key,), ids),
-                                lambda t: self.writer.join(pieces, label=t)) is None:
-                return None
-            self._open(target.key)
-            return target.key
-        # the earlier part comes to the target: just before its first file, then joined with it first
-        tier = tier or target.tier
-        moved = list(other.ids)
-        first = target.ids[0]
-        step = drag.Ticket(text, (target.key,), other.ids)
-        if self.moves._give(step, lambda t: self.writer.move(moved, tier, before_id=first, label=t),
-                            toast=False) is None:
+        pieces = [target.piece_id, other.piece_id]
+        ahead = comes_first(other, target)
+        if self.moves._give(drag.Ticket(text, (target.key,), target.ids + other.ids),
+                            lambda t: self.writer.join(pieces, label=t, ahead=ahead)) is None:
             return None
-        pieces = [other.piece_id, target.piece_id]
-        ticket = drag.Ticket(text, (target.key,), ids)
-        if self.moves._give(ticket, lambda t: self.writer.join(pieces, label=t), toast=False) is None:
-            return None
-        ticket.toast = True
-        self.moves.toasted = ticket
-        self.win.toasts.show(text, undo=lambda: (self.moves.undo(ticket), self.moves.undo(step)))
-        self._open(other.key)
-        return other.key
+        self._open(target.key)
+        return target.key
 
     def _open(self, key):
         """The result opened (G3), as a click on it would."""
@@ -383,7 +378,7 @@ class ItemActions(QObject):
         target = self._row(key)
         if target is None or d.row is None:
             return None
-        return self.join(part_of(target, self._place(target)), part_of(d.row), target.tier)
+        return self.join(part_of(target, self._place(target)), part_of(d.row))
 
 
 def _numbers(arrival):

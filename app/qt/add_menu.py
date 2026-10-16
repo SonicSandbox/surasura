@@ -23,6 +23,7 @@ No section picker (N14): where it lands is the redesign's rule above, never a qu
 import math
 import os
 import re
+import shutil
 import tempfile
 
 from PyQt6.QtCore import QEvent, QObject, QPointF, QRectF, Qt, QTimer, pyqtSignal
@@ -38,7 +39,8 @@ COPIES = frozenset({"files", "folder", "paste"})         # the entries that copy
 DOORS = {"extract": "extract", "youtube": "youtube-downloader"}
 CURRENT = ("now", "soon")
 _UNSAFE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
-TITLE_MAX = 80                                            # a pasted text's file name: its title, this long at most
+_RESERVED = re.compile(r"(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)", re.IGNORECASE)     # Windows' device names
+TITLE_MAX = 80                                           # a pasted text's file name: its title, this long at most
 LIGHT = (0.1, -0.6, -0.8, 0.3, 1.0, 0.8, 0.3, -0.2)       # the stone's eight bevel facets, by their facing (top left lit)
 WOBBLE = (1.0, 0.94, 1.03, 0.97, 1.0, 0.95, 1.02, 0.96)   # … and its outline, a little uneven (the same every paint)
 
@@ -65,8 +67,9 @@ def show_folder(row):
 
 
 def show_in_current(view, name):
-    """The Current row the files of folder `name` belong with — its folder's name, else its title, is `name` (the
-    store's fold: case, width, kana) — the last such row (a show split in two: after its later part), or None."""
+    """The Current row the files of folder `name` belong with — the show's own folder under the tier (`parts[1]`:
+    never a deeper leaf such as *Season 1* or *Subs*, which another show's folder holds too), else its title, is `name`
+    (the store's fold: case, width, kana) — the last such row (a show split in two: after its later part), or None."""
     key = _fold(name)
     if not key or view is None:
         return None
@@ -74,7 +77,7 @@ def show_in_current(view, name):
         if row.tier not in CURRENT:
             continue
         folder = show_folder(row)
-        names = {_fold(folder.rsplit("/", 1)[-1])} if folder else set()
+        names = {_fold(folder.split("/")[1])} if folder else set()
         names |= {_fold(row.cover_title), _fold(row.title)}
         if key in names:
             return row
@@ -91,11 +94,16 @@ def placement(view, paths, folder=None, rel_dirs=None):
     name = os.path.basename(os.path.normpath(folder)) if folder else \
         os.path.basename(os.path.dirname(os.path.normpath(paths[0]))) if paths else ""
     row = show_in_current(view, name)
+    picked = os.path.normpath(folder) if folder else os.path.dirname(os.path.normpath(paths[0])) if paths else ""
+    if row is None and picked:                       # *Show B/Season 1*: its show is the parent's name, if any's
+        row = show_in_current(view, os.path.basename(os.path.dirname(picked)))
     if row is not None and row.episodes:
         into = show_folder(row)
         return row.tier, row.episodes[-1].id, into, row.index if into else row.index + 1
     if folder:
         base = f"{ls.FOLDER_OF_TIER['now']}/{_UNSAFE.sub('_', name).strip()}"
+        if ls.path_key(base + "/").startswith(ls.path_key(ls.HATO_FOLDER + "/")):
+            base += " (2)"                           # never hato's drop folder: its files would read as hato's
         dirs = rel_dirs or [""] * len(paths)
         return "now", None, [f"{base}/{d}" if d else base for d in dirs], 1
     return "now", None, None, 1
@@ -113,9 +121,12 @@ def walk_folder(folder):
 
 
 def safe_title(title):
-    """A pasted text's file name from its title: no character Windows refuses, at most `TITLE_MAX` long."""
+    """A pasted text's file name from its title: no character Windows refuses, at most `TITLE_MAX` long, never a
+    device's name (*con*, *NUL*, *com1* …: `_` before it, N2)."""
     name = _UNSAFE.sub(" ", title or "").strip().strip(".")
     name = re.sub(r"\s+", " ", name)[:TITLE_MAX].strip()
+    if _RESERVED.match(name):
+        name = "_" + name
     return name or strings.PASTE_DEFAULT_TITLE
 
 
@@ -163,6 +174,16 @@ class Adder(QObject):
             return None
         return op
 
+    def why_not(self):
+        """S4 (E4): while the library can't be saved, the copying entries' greyed tip (the store's reason); else None.
+        Read only: nothing said in the bar."""
+        moves = self._moves()
+        writer = getattr(moves, "writer", None)
+        if writer is None or writer.can_write():
+            return None
+        raw = writer.reason() or ""
+        return strings.MENU_REFUSED_TIP.format(reason=strings.READ_ONLY_REASONS.get(raw) or raw)
+
     def entries(self, names=ORDER):
         """The entries that act now, in order: [(name, label, tip)]."""
         out = []
@@ -191,8 +212,9 @@ class Adder(QObject):
         page = getattr(self.shell, "page_widgets", {}).get("current")
         return getattr(page, "view_model", None)
 
-    def add_files(self, paths, name=None, folder=None, rel_dirs=None):
-        """`paths` in, where lean 2 says (see the module's doc) -> the writer's number, or None (nothing, or refused)."""
+    def add_files(self, paths, name=None, folder=None, rel_dirs=None, then=None):
+        """`paths` in, where lean 2 says (see the module's doc) -> the writer's number, or None (nothing, or refused).
+        `then()`: once the command landed (the pasted text's temporary folder removed, N7)."""
         moves = self._moves()
         if not paths or moves is None or moves.refused() is not None:
             return None
@@ -203,7 +225,9 @@ class Adder(QObject):
         else:
             text = strings.DRAG_ADDED.format(name=name or os.path.basename(paths[0]), n=n)
         writer = moves.writer
-        seq = moves._give(drag.Ticket(text), lambda t: writer.insert_at(list(paths), tier, after_id=after_id, label=t,
+        ticket = drag.Ticket(text)
+        ticket.then = then
+        seq = moves._give(ticket, lambda t: writer.insert_at(list(paths), tier, after_id=after_id, label=t,
                                                                          into=into))
         if seq is not None:
             self.given.emit(text)
@@ -227,7 +251,10 @@ class Adder(QObject):
     def paste(self):
         if self.card is not None and _alive(self.card) and self.card.isVisible():
             return self.card
-        self.card = PasteCard(self.shell.window(), self._pasted)
+        moves = self._moves()
+        if moves is None or moves.refused() is not None:
+            return None                                   # S4: said in the bar; nothing typed to lose
+        self.card = PasteCard(self.shell.window(), self._pasted, refused=lambda: moves.refused())
         register = getattr(self.shell, "register_overlay", None)
         if register is not None:
             register(self.card)
@@ -236,7 +263,13 @@ class Adder(QObject):
 
     def _pasted(self, title, text):
         title = title.strip() or strings.PASTE_DEFAULT_TITLE
-        bridge.run_in_worker(write_pasted, title, text, then=lambda path: self.add_files([path], name=title),
+
+        def written(path):
+            folder = os.path.dirname(path)
+            if self.add_files([path], name=title, then=lambda: bridge.run_in_worker(
+                    shutil.rmtree, folder, True)) is None:  # N7: removed once it landed; refused: where it is, said
+                windows.say_in_bar(self.shell, strings.PASTE_KEPT.format(folder=folder))
+        bridge.run_in_worker(write_pasted, title, text, then=written,
                              failed=lambda info: windows.say_in_bar(self.shell, strings.PASTE_FAILED.format(
                                  why=info[0])))
 
@@ -285,9 +318,11 @@ class AddStone(QToolButton):
 
     def _fill(self):
         self.menu_.clear()
+        why = self.adder.why_not()
         for name, label, tip in self.adder.entries():
             act = self.menu_.addAction(label)
-            act.setToolTip(tip)
+            act.setToolTip(why if why and name in COPIES else tip)
+            act.setEnabled(not (why and name in COPIES))  # S4 (E4): greyed with the store's reason
             act.setObjectName(f"add-{name}")
             act.triggered.connect(lambda _c=False, n=name: QTimer.singleShot(0, lambda: self.adder.run(n)))
         if self.adder._moves() is not None:
@@ -363,8 +398,9 @@ class PasteCard(motion.Overlay):
     shadow_name = "dialog"
     focus = True
 
-    def __init__(self, window, on_add):
+    def __init__(self, window, on_add, refused=None):
         super().__init__(window)
+        self._refused = refused                           # S4: () -> None, or the bar's words (the card stays open)
         self.setObjectName("pastecard")
         self.setAccessibleName(strings.PASTE_NAME)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
@@ -431,6 +467,8 @@ class PasteCard(motion.Overlay):
         if not text.strip():
             return
         title = self.title.text()
+        if self._refused is not None and self._refused() is not None:
+            return                                        # S4: can't be saved now: the text stays on screen
         callback, self._on_add = self._on_add, None
         self.close()
         if callback is not None:

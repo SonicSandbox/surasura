@@ -83,7 +83,7 @@ WORDS = ("saving", "cant_undo", "nearest", "top", "crash_one", "crash_many", "re
 PLACES = ("top", "after-show", "soon", "goal", "finished")  # `place`'s targets (`Store.place`)
 KEPT = ("tier", "before_id", "after_id", "near", "direction", "on", "keep_cards", "end", "seen",
         "where", "paths", "copied", "path", "trash_ids", "piece_id", "piece_ids", "work_ids", "media_type",
-        "work_id", "source", "ref", "locked", "before")
+        "work_id", "source", "ref", "locked", "before", "ahead")
 #   a journal entry's values beside its op and ids (`_entry`): each command's own; `before`: a GUARDED one's as queued
 # --- W3.2 B: `register` (a producer's files into New arrivals): journalled, its records and rules kept
 JOURNALLED += ("register",)
@@ -190,6 +190,7 @@ class Writer:
         self._thread = None
         self._copier = Worker(f"window-copier-{language}")    # an Explorer drop's files, off the writer's thread
         self._copying = 0                           # drops whose files are being copied (not queued yet)
+        self._let_go = []                           # W3.2: labels of commands that landed as nothing (`landed_empty`)
         self.attempts = 0                           # store writes tried (tests)
 
     @classmethod
@@ -353,9 +354,13 @@ class Writer:
         """`Store.split`: a new piece from `at_item_id` to the piece's end (*Split here*)."""
         return self._put({"op": "split", "ids": [at_item_id], "piece_id": piece_id, "label": label})
 
-    def join(self, piece_ids, label=None):
-        """`Store.join`: one piece of several of one title (a drop on a seam); two titles' pieces → `failed`'s note."""
-        return self._put({"op": "join", "ids": [], "piece_ids": list(piece_ids), "label": label})
+    def join(self, piece_ids, label=None, ahead=False):
+        """`Store.join`: one piece of several of one title (a drop on a seam); two titles' pieces → `failed`'s note.
+        `ahead`: the others go just before the first piece (W3.2: the earlier episodes coming in, one command)."""
+        cmd = {"op": "join", "ids": [], "piece_ids": list(piece_ids), "label": label}
+        if ahead:
+            cmd["ahead"] = True
+        return self._put(cmd)
 
     def set_media_type(self, work_ids, media_type, label=None):
         """`Store.set_media_type`: *What is it?* for the titles (None: back to the guess)."""
@@ -468,6 +473,13 @@ class Writer:
     def pending(self):
         with self._cond:
             return len(self._pending) + self._copying
+
+    def landed_empty(self):
+        """W3.2 (S5): the labels of the commands that landed as nothing since the last ask (their tickets settle while
+        others still wait)."""
+        with self._cond:
+            out, self._let_go = self._let_go, []
+            return out
 
     def idle(self, timeout=None):
         """(A worker's call: the cover scan's pace, G1.) Wait up to `timeout` for nothing to be queued — a drag's hold
@@ -750,6 +762,10 @@ class Writer:
         if cmd.get("renamed"):                      # a Put back that couldn't take its own name
             self._call(self.on_note, self.words["put_back_as"].format(names=", ".join(cmd["renamed"])))
         if change is None or note is not None or cmd.get("auto"):
+            if change is None and cmd.get("label") is not None:     # W3.2 (S5): its ticket settles, others pending
+                with self._cond:
+                    self._let_go.append(cmd["label"])
+                    del self._let_go[:-64]
             self._call(self.on_reread)
         if op not in UNORDERED and (op != "move" or change is None or note is not None or
                                     cmd.get("numbered") not in (None, (cmd["before_id"], cmd["after_id"]))):
@@ -781,7 +797,7 @@ class Writer:
         if op == "split":
             return store.split(cmd["piece_id"], ids[0])
         if op == "join":
-            return store.join(cmd["piece_ids"])
+            return store.join(cmd["piece_ids"], ahead=bool(cmd.get("ahead")))
         if op == "set_media_type":
             return store.set_media_type(cmd["work_ids"], cmd["media_type"])
         if op == "set_cover":
@@ -1296,7 +1312,7 @@ def _refused(change, out):
     it skipped, its rows' and its values' (AD-15)."""
     if out is None:
         return True
-    if change.kind in ("finish", "put_back_finished"):
+    if change.kind in ("finish", "put_back_finished") or (change.kind == "set_tier" and change.status):
         return not out.items and _skips(out) - len(change.items) >= len(change.status)
     if change.kind == "remove":
         return not out.restored                     # every row put back meanwhile
@@ -1451,11 +1467,13 @@ def _copy_whole(src, dest):
 
 def _into(sub, folder, walked, lib):
     """(W3.2 Q3) The parts of the folder a file is copied into: `sub` (relative to the data folder, inside a folder the
-    disk sync walks, never above it), else the tier's own `folder`."""
+    disk sync walks, never above it, never under hato's drop folder — its files read as hato's), else the tier's own
+    `folder`."""
     if not sub:
         return [folder]
     parts = [p for p in sub.replace("\\", "/").split("/") if p and p != "."]
-    if not parts or ".." in parts or ":" in parts[0] or lib.path_key(parts[0]) not in walked:
+    if not parts or ".." in parts or any(":" in p for p in parts) or lib.path_key(parts[0]) not in walked or \
+            lib.path_key("/".join(parts) + "/").startswith(lib.path_key(lib.HATO_FOLDER + "/")):
         raise ValueError(f"files can't be copied into {sub!r}")
     return parts
 
@@ -1551,6 +1569,12 @@ class Numbers:
             return self.version, self._table
 
     numbers = __call__
+
+    def plan_key(self):
+        """W3.2 (S2): the plan file as last read ((mtime, size), None without one) — moves with a Generate, never with a
+        drop (the version does): New arrivals asks its numbers again on this."""
+        with self._lock:
+            return self._plan_key
 
     def why(self):
         """None while *N new* follows the order; else why not (no plan, it stands aside, it's stale, not read yet)."""

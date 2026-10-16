@@ -433,12 +433,7 @@ class FinishedActions(QObject):
 
     def _worker_estimate(self, path, placed, callback):
         """The window's arrivals worker (one per language, shared with New arrivals: `services.arrivals_worker`)."""
-        services = self.win.services
-        worker = getattr(services, "arrivals_worker", None)
-        if worker is None:
-            from app.services import arrivals
-            worker = services.arrivals_worker = arrivals.ArrivalsWorker(services.registry, self.language)
-        return worker.estimate(path, placed=placed, callback=callback)
+        return self.win.arrivals_worker().estimate(path, placed=placed, callback=callback)    # IK-L2-2: one slot
 
     def _answered(self, token, answer):
         asking = self._asking

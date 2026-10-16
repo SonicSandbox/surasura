@@ -75,13 +75,17 @@ def number_text(arrival):
 MENU = ("top", "after-show", "soon", "goal", "finished", "folder", "remove")
 
 
-def menu_entries(arrival, writable=True, reason=None):
+def menu_entries(arrival, writable=True, reason=None, has_show=True):
     """⋯'s entries: [(name, label, tip, enabled)], in order; the moves disabled with the store's reason while it can't
-    be written (E4) — *Open its folder* never."""
+    be written (E4) — *Open its folder* never; *After its show* greyed while no part of its title is in Current
+    (`has_show`, N1: it would place nothing)."""
     out = []
     for name in MENU:
         label, tip = strings.TRAY_MENU[name]
         ok = writable or name == "folder"
+        if ok and name == "after-show" and not has_show:
+            out.append((name, label, strings.TRAY_NO_SHOW, False))
+            continue
         out.append((name, label, tip if ok else (reason or tip), ok))
     return out
 
@@ -113,12 +117,13 @@ class ArrivalNumbers:
     the newest signature go to `on_change({item_id: N new})` (the reader's `set_estimates`), on the answer's thread.
     `recheck()` (the tray opening): the known words' file and the plan's version read again; when either moved, every
     shown file is asked again (the worker keeps its own answers: an unchanged file is answered from its cache).
-    `run(fn)`: how a task leaves the window's thread (a test's)."""
+    `run(fn)`: how a task leaves the window's thread (a test's). `client` / `language` may be callables, read at each
+    ask (N3: the window's own, as they stand)."""
 
     def __init__(self, client, language, on_change=None, data_path=None, known_file=None, plan_token=None,
                  run=None):
-        self.client = client
-        self.language = language
+        self._client = client
+        self._language = language
         self.on_change = on_change
         self._data_path = data_path
         self._known_file = known_file
@@ -132,18 +137,27 @@ class ArrivalNumbers:
         self._arrivals = ()
         self.requests = 0                   # estimates asked (tests)
         self.answers = 0                    # ... and answered with a number
+        self._handed = None                 # the estimates last handed on (S2: the same never handed again)
+
+    @property
+    def client(self):
+        return self._client() if callable(self._client) and not hasattr(self._client, "estimate") else self._client
+
+    @property
+    def language(self):
+        return self._language() if callable(self._language) else self._language
 
     def data_path(self):
-        if self._data_path is None:
-            from app import path_utils
-            self._data_path = path_utils.get_data_path(self.language)
-        return self._data_path
+        if self._data_path is not None:
+            return self._data_path
+        from app import path_utils
+        return path_utils.get_data_path(self.language)
 
     def known_file(self):
-        if self._known_file is None:
-            from app import path_utils
-            self._known_file = os.path.join(path_utils.get_user_files_path(self.language), "KnownWord.json")
-        return self._known_file
+        if self._known_file is not None:
+            return self._known_file
+        from app import path_utils
+        return os.path.join(path_utils.get_user_files_path(self.language), "KnownWord.json")
 
     def want(self, arrivals, force=False):
         """The window's newest arrivals (`View.arrivals`): a task for the files not asked yet (or all, `force`)."""
@@ -192,10 +206,11 @@ class ArrivalNumbers:
                     self._asked.add(item_id)
                     todo.append((item_id, path, placed, chained))
         known = token[1] if token else None
+        client = self.client if todo else None
         for item_id, path, placed, chained in todo:
             self.requests += 1
             try:
-                self.client.estimate(path, placed=placed,
+                client.estimate(path, placed=placed,
                                      callback=lambda ans, i=item_id, c=chained, k=known: self._answer(i, c, k, ans))
             except Exception as e:                  # a client that can't take it: the dash stays
                 print(f"New arrivals: an estimate couldn't be asked: {e!r}")
@@ -210,6 +225,9 @@ class ArrivalNumbers:
             self._sig = sig
             self.answers += 1
             out = self.estimates_locked()
+            if out == self._handed:
+                return                              # S2: nothing moved, nothing handed on (no build)
+            self._handed = out
         if self.on_change is not None:
             try:
                 self.on_change(out)
@@ -1004,12 +1022,23 @@ class ArrivalsTray(motion.Overlay):
         return os.path.dirname(os.path.join(path_utils.get_data_path(language), *rel.split("/")))
 
     def open_folder(self, arrival):
-        from app.qt import windows
+        """*Open its folder*: looked for on a worker first (a drive may be slow or gone, N4), then opened — or said."""
+        from app.qt import bridge, windows
         path = self.folder_of(arrival)
-        if not windows.open_url(path):
-            say = getattr(self.win, "say", None)
-            if say is not None:
-                say(strings.TRAY_NO_FOLDER.format(path=path))
+
+        def found(there):
+            if not there or not windows.open_url(path):
+                say = getattr(self.win, "say", None)
+                if say is not None:
+                    say(strings.TRAY_NO_FOLDER.format(path=path))
+        bridge.run_in_worker(os.path.isdir, path, then=found, failed=lambda _info: found(False))
+
+    def _has_show(self, arrival):
+        """Whether a part of the arrival's title is in Current (the view's rows), N1."""
+        page = getattr(self.win, "page_widgets", {}).get("current")
+        view = getattr(page, "view_model", None)
+        return arrival.work_id is not None and view is not None and any(
+            r.work_id == arrival.work_id and r.tier in ("now", "soon") for r in view.rows)
 
     def menu(self, row):
         """⋯: a plain menu in the theme's style (Esc closes it), its entries' tips shown."""
@@ -1023,8 +1052,9 @@ class ArrivalsTray(motion.Overlay):
         m = QMenu(row)
         m.setObjectName("rowmenu")
         m.setToolTipsVisible(True)
+        m.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)         # N4: gone once hidden
         m.setAccessibleName(strings.TRAY_MENU_NAME.format(title=a.title))
-        for name, label, tip, ok in menu_entries(a, writable, reason):
+        for name, label, tip, ok in menu_entries(a, writable, reason, self._has_show(a)):
             if name in ("folder", "remove"):
                 m.addSeparator()
             act = QAction(label, m)

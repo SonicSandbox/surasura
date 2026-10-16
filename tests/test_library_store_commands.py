@@ -2376,3 +2376,96 @@ def test_put_back_from_finished_lands_at_the_top_of_current_with_its_cards_back_
     assert only_move is not None and only_move.status == [] and store.ids("now")[0] == kept
     assert store.put_back_finished([kept]) is None and store.put_back_finished([]) is None
     store.close()
+
+
+# ================================================================================================ #
+# W3.2 fix round (landing 2): a join brings a part in properly; an arrival finished is watched
+# ================================================================================================ #
+
+def _four_in_two(store):
+    """The first four-file piece in Current split after its second file: (its ids, the first piece, the second)."""
+    ids = store.ids("now")
+    piece = next(store.item(i)["piece_id"] for i in ids
+                 if sum(store.item(j)["piece_id"] == store.item(i)["piece_id"] for j in ids) >= 4)
+    members = [i for i in ids if store.item(i)["piece_id"] == piece][:4]
+    store.split(piece, members[2])
+    return members, piece, store.item(members[2])["piece_id"]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_part_from_finished_joined_into_current_comes_back_with_its_cards_in_the_order_in_one_undo(language):
+    """IK-L2-1 (G1.6-10: anything taken out comes back): a part finished with its cards taken out, joined onto its show
+    in Current, plays there with its cards back in the learning order — in the join's one command; one Undo puts it back
+    in Finished with its cards out again."""
+    store = migrated(language)
+    members, first, second = _four_in_two(store)
+    store.finish(members[2:], keep_cards=False)
+    assert [store.item(i)["in_learning_order"] for i in members[2:]] == [0, 0]
+    v = store.versions()["state_version"]
+    change = store.join([first, second])
+    assert store.versions()["state_version"] == v + 1, "one command"
+    now = store.ids("now")
+    assert now[now.index(members[0]):now.index(members[0]) + 4] == members
+    assert [store.item(i)["in_learning_order"] for i in members[2:]] == [1, 1]
+    store.undo(change)
+    assert all(store.item(i)["tier"] == "graduated" and store.item(i)["in_learning_order"] == 0 for i in members[2:])
+    assert store.item(members[2])["piece_id"] != first
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_join_ahead_puts_the_earlier_episodes_just_before_the_target_in_one_command(language):
+    """E22 in one command (S5): the part holding the earlier episodes joins the later one where the later one is, just
+    before its first file; next to it already, nothing moves — and one Undo takes the join back either way."""
+    store = migrated(language)
+    members, first, second = _four_in_two(store)
+    order = store.ids("now")
+    change = store.join([second, first], ahead=True)                     # adjacent: in place, only the pieces
+    assert store.ids("now") == order and {store.item(i)["piece_id"] for i in members} == {second}
+    store.undo(change)
+    assert store.item(members[0])["piece_id"] == first and store.item(members[2])["piece_id"] == second
+    store.finish(members[:2], keep_cards=False)                         # Ep 1–2 in Finished, its cards out
+    store.move(members[2:], "now", after_id=store.ids("now")[3])
+    change = store.join([second, first], ahead=True)
+    now = store.ids("now")
+    assert now[now.index(members[0]):now.index(members[0]) + 4] == members, "in episode order, where Ep 3 stood"
+    assert [store.item(i)["in_learning_order"] for i in members[:2]] == [1, 1]
+    store.undo(change)
+    assert all(store.item(i)["tier"] == "graduated" and store.item(i)["in_learning_order"] == 0 for i in members[:2])
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_new_arrival_joined_after_its_show_is_logged_placed_as_the_users(language):
+    """IK-L2-1: an arrival joined onto its show is placed as a move would place it — Connect's notice reads it."""
+    store = migrated(language)
+    members, first, second = _four_in_two(store)
+    store.set_tier(members[2:], "arrivals")
+    store.register_reader("connect")
+    mark = _last_log(store)
+    store.join([first, second])
+    assert [e for e in _events(store, mark) if e[1] == "placed"] == [(i, "placed", "user", 1) for i in members[2:]]
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("how", ["set_tier", "finish", "place"])
+def test_an_arrival_to_finished_is_recorded_as_watched_and_undone_with_it(language, how):
+    """A2 #28 (IK-L2-3): an arrival dropped on Finished, ✓'d, or sent there from its menu is recorded as already watched
+    — in the same command; its Undo puts it back in New arrivals unwatched. Current's own finish records no watch."""
+    store = migrated(language)
+    a, b = store.ids("now")[:2]
+    store.set_tier([a], "arrivals")
+    before = store.item(a)["watched"]
+    assert before != 1
+    if how == "set_tier":
+        change = store.set_tier([a, b], "graduated")
+    elif how == "finish":
+        change = store.finish([a, b], keep_cards=False)
+    else:
+        change = store.place([a, b], "finished")
+    assert store.item(a)["tier"] == "graduated" and store.item(a)["watched"] == 1
+    assert store.item(b)["watched"] != 1, "only what came from New arrivals"
+    store.undo(change)
+    assert store.item(a)["tier"] == "arrivals" and store.item(a)["watched"] == before
+    store.close()

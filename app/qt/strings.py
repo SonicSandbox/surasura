@@ -454,10 +454,11 @@ TRAY_ICON = {
 TRAY_MORE_NAME = "More"
 TRAY_MORE_TIP = "More · Place it elsewhere, open its folder, or remove it"
 TRAY_MENU_NAME = "Where {title} goes"
+TRAY_NO_SHOW = "None of its show is in Current: Top of Current puts it there"                 # W3.2 fix round (N1)
 TRAY_MENU = {
     "top": ("Top of Current", "The top of Current: the next thing you watch or read"),
     "after-show": ("After its show", "Right after the episodes of its show already in Current"),
-    "soon": ("Soon", "Soon: next in line, after what's in NOW"),
+    "soon": ("Soon", "Soon: next in line in Current, after what's at its top"),
     "goal": ("Goal", "Goal: someday, in no order"),
     "finished": ("Finished", "Record it as finished: you've watched it already"),
     "folder": ("Open its folder", "Show its files in Explorer"),
@@ -934,6 +935,7 @@ PASTE_ADD_TIP = "Add it to your library as one text file, at the top of Current"
 PASTE_CANCEL = "Cancel"
 PASTE_CANCEL_TIP = "Close without adding anything (Esc does the same)"
 PASTE_FAILED = "The pasted text couldn't be saved: {why}"
+PASTE_KEPT = "The pasted text wasn't added. It is kept in {folder}"                     # W3.2 fix round (N7)
 # --- end W3.2 Q3
 # --- W3.2 Q5: Needs you's cards, their buttons and what they say (app/qt/needs.py; the entries' own words are
 # `app/services/needs.STRINGS`) ------------------------------------------------------------------------------------- #

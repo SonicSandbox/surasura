@@ -920,16 +920,13 @@ class ShellWindow(QMainWindow):
             from app.qt import arrivals as arrivals_view
             self.arrivals_tray = arrivals_view.ArrivalsTray(central, self.arrivals_inset, self)
             self.register_overlay(self.arrivals_tray)
-            client = getattr(services, "arrivals", None)
-            if client is None and getattr(services, "library_for", None) is not None:
-                from app.services.arrivals import ArrivalsWorker
-                client = services.arrivals = ArrivalsWorker(services.registry, self.language)
-            if client is not None:
+            if getattr(services, "arrivals", None) is not None or getattr(services, "library_for", None) is not None:
                 reader = services.library
-                numbers = getattr(reader, "numbers", None)
+                # S2: asked again when the plan file moves (a Generate), never on a drop (`Numbers.version` does);
+                # N3 / IK-L2-2: the client and the language read at each ask — the window's one warm worker
                 self.arrival_numbers = arrivals_view.ArrivalNumbers(
-                    client, self.language, on_change=getattr(reader, "set_estimates", None),
-                    plan_token=(lambda: numbers()[0]) if callable(numbers) else None)
+                    self.arrivals_worker, lambda: self.language, on_change=getattr(reader, "set_estimates", None),
+                    plan_token=lambda: _plan_key(getattr(services.library, "numbers", None)))
         # --- end W3.2 Q1
 
         self._restore_state(read_state(self.state_file))
@@ -1069,6 +1066,22 @@ class ShellWindow(QMainWindow):
             self.dock.setVisible(shown)
 
     # --- W3.2 Q1: New arrivals (app/qt/arrivals.py) -------------------------------------------------------------- #
+    def arrivals_worker(self):
+        """IK-L2-2: the window's one warm arrivals worker (E2.2 D10), for its language as it stands — New arrivals'
+        numbers and Finished's *What if* share it (`services.arrivals_worker`; a test's `services.arrivals` first).
+        Made on first use; its process starts on its first ask."""
+        services = self.services
+        client = getattr(services, "arrivals", None)
+        if client is not None:
+            return client
+        worker = getattr(services, "arrivals_worker", None)
+        if worker is None or getattr(worker, "language", self.language) != self.language:
+            if worker is not None and hasattr(worker, "stop"):
+                worker.stop()                       # another language's: one warm worker at a time
+            from app.services.arrivals import ArrivalsWorker
+            worker = services.arrivals_worker = ArrivalsWorker(services.registry, self.language)
+        return worker
+
     def _show_arrivals(self, view):
         """The view's arrivals: the inset (absent with none), the tray's rows (only what changed), each new file's
         estimate asked (on a worker); the tray closes once nothing is left in it (A2 #32)."""
@@ -1942,6 +1955,15 @@ class ShellWindow(QMainWindow):
 
 
 # --- W3.2 B: how the window wakes (IK0-5, L3.1-4) ----------------------------------------------------------------- #
+def _plan_key(numbers):
+    """W3.2 S2: the plan file's key as the reader's numbers last read it (`moves.Numbers.plan_key`), else None."""
+    key = getattr(numbers, "plan_key", None)
+    try:
+        return key() if callable(key) else None
+    except Exception:
+        return None
+
+
 def library_lookout(store, wake):
     """The library reader's `watch` (`LibraryReader(watch=library_lookout)`, through `moves.open_library`'s reader
     keywords where the window builds its library): called on the reader's thread once the store can be used, never

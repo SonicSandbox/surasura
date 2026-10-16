@@ -149,8 +149,11 @@ class LibraryReader:
     # --- W3.2 Q1
     def set_estimates(self, estimates):
         """New arrivals' numbers ({item_id: N new}), from any thread: built into the next view, looked at now."""
+        new = dict(estimates or {})
         with self._lock:
-            self._estimates = dict(estimates or {})
+            if new == self._estimates:
+                return                                  # W3.2 S2: the same numbers build nothing
+            self._estimates = new
             self._estimates_new = True
         self._wake.set()
     # --- end W3.2 Q1

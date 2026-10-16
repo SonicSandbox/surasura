@@ -283,7 +283,8 @@ def test_A2_27_the_top_icon_places_the_arrival_through_the_writer_and_the_tray_s
 
 
 @pytest.mark.parametrize("name", ["top", "after-show", "soon", "goal"])
-def test_each_menu_place_calls_the_writer_with_its_place(world, name):
+def test_each_menu_place_calls_the_writer_with_its_place(world, name, monkeypatch):
+    monkeypatch.setattr(arrivals.ArrivalsTray, "_has_show", lambda _self, _a: True)    # (its show in Current)
     seed, win, writer = world()
     open_tray(win)
     row = tray_rows(win)[0]
@@ -374,11 +375,27 @@ def test_open_its_folder_opens_the_arrivals_own_folder(world, monkeypatch):
     seed, win, writer = world()
     open_tray(win)
     row = tray_rows(win)[1]
-    menu = tray_of(win).menu(row)
-    next(a for a in menu.actions() if a.text() == strings.TRAY_MENU["folder"][0]).trigger()
     rel = row.arrival.rel_paths[0]
     want = os.path.dirname(os.path.join(path_utils.get_data_path("ja"), *rel.split("/")))
-    assert opened == [want] and calls(writer) == []
+    tray_of(win).act(row.arrival, "folder")                           # N4: gone: looked for on a worker, then said
+    assert wait_until(lambda: win.bar_line.full() == strings.TRAY_NO_FOLDER.format(path=want), 5)
+    assert opened == []
+    os.makedirs(want, exist_ok=True)
+    menu = tray_of(win).menu(row)
+    next(a for a in menu.actions() if a.text() == strings.TRAY_MENU["folder"][0]).trigger()
+    assert wait_until(lambda: opened == [want], 5) and calls(writer) == []
+
+
+def test_N1_after_its_show_is_greyed_while_none_of_its_show_is_in_current_and_N4_the_menu_goes_once_hidden(world):
+    seed, win, writer = world()
+    open_tray(win)
+    row = tray_rows(win)[0]                                           # a YouTube video: no part of it in Current
+    menu = tray_of(win).menu(row)
+    act = next(a for a in menu.actions() if a.text() == strings.TRAY_MENU["after-show"][0])
+    assert not act.isEnabled() and act.toolTip() == strings.TRAY_NO_SHOW
+    assert menu.testAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+    menu.close()
+    assert wait_until(lambda: sip.isdeleted(menu), 3)
 
 
 def test_remove_asks_first_naming_the_count_esc_is_no_and_yes_removes_with_undo(world):
@@ -650,6 +667,53 @@ def test_the_window_asks_each_new_files_estimate_once_and_shows_it_within_300_ms
     assert len(worker.asked) == 11                                    # only the new file
 
 
+def test_S2_the_same_answers_again_hand_nothing_on_so_the_reader_builds_nothing(tmp_path):
+    seed = window_seed.build()
+    view = _view(seed)
+    worker = FakeWorker()
+    nums, got, _k = _numbers(worker, tmp_path)
+    nums.want(view.arrivals)
+    assert wait_until(lambda: len(got) == 10, 3)
+    nums.want(view.arrivals, force=True)                              # every file asked again, every answer the same
+    assert wait_until(lambda: len(worker.asked) == 20, 3)
+    time.sleep(0.1)
+    assert len(got) == 10
+
+
+def test_S2_a_drag_then_the_tray_opened_asks_no_number_again_and_a_generate_asks_them_all(world, monkeypatch):
+    # the token is the plan file's key, never the numbers' version (which moves with every drop)
+    key = [(1, 100)]
+    monkeypatch.setattr(window_seed._Numbers, "plan_key", lambda self: key[0], raising=False)
+    worker = FakeWorker(n=8)
+    seed, win, _w = world(worker=worker)
+    assert wait_until(lambda: all(r.arrival.per_ep is not None for r in tray_rows(win)), 5)
+    assert len(worker.asked) == 10
+    reader = win.services.library
+    item = next(iter(seed.numbers.table))
+    seed.numbers.set(item, seed.numbers.table[item])                  # a drop: the numbers' version moves
+    reader.refresh()
+    settle(100)
+    open_tray(win)
+    settle(200)
+    assert len(worker.asked) == 10, "a drag then the tray opened: zero new requests"
+    reader.set_estimates(dict(reader._estimates))                     # the same numbers: nothing to build
+    assert not reader._estimates_new
+    key[0] = (2, 120)                                                 # a Generate: a new plan file
+    win.arrival_numbers.recheck()
+    assert wait_until(lambda: len(worker.asked) == 20, 3)
+
+
+def test_IK_L2_2_new_arrivals_and_finisheds_what_if_share_one_warm_worker_for_the_language(world):
+    seed, win, _w = world(worker=FakeWorker())
+    win.services.arrivals = None                                      # (the world's stub off: the real slot)
+    one = win.arrivals_worker()
+    try:
+        assert one is win.arrivals_worker() and one is win.services.arrivals_worker and one.language == "ja"
+        assert win.arrival_numbers.client is one
+    finally:
+        one.stop()
+
+
 def test_without_a_library_the_window_has_neither_the_inset_nor_the_tray(qapp):
     services = shell.Services()
     win = shell.open_window(qapp, services)
@@ -695,11 +759,30 @@ def test_real_store_finished_with_its_new_cards_taken_out(real):
     assert wait_until(lambda: win.arrivals_tray.groups, 10)
     tray = open_tray(win)
     row = next(r for r in tray_rows(win) if ids[0] in r.arrival.item_ids)
+    assert all(store.item(i)["watched"] != 1 for i in row.arrival.item_ids)
     tray.act(row.arrival, "finished")
     assert wait_until(lambda: all(store.item(i)["tier"] == "graduated" for i in row.arrival.item_ids), 5)
+    assert all(store.item(i)["watched"] == 1 for i in row.arrival.item_ids)     # A2 #28 (IK-L2-3): watched
     settle()
     next(b for b in win.toasts.card.buttons if b.text() == strings.DRAG_TAKE_OUT).click()
     assert wait_until(lambda: all(store.item(i)["in_learning_order"] == 0 for i in row.arrival.item_ids), 5)
+    assert all(store.item(i)["watched"] == 1 for i in row.arrival.item_ids)
+
+
+def test_real_store_IK_L2_3_the_check_and_all_to_finished_land_watched_and_after_its_show_is_offered(real):
+    store, win, writer = real()
+    ids = _real_arrivals(store, 2)                                    # its show's earlier files stay in Current
+    assert wait_until(lambda: win.arrivals_tray.groups, 10)
+    tray = open_tray(win)
+    row = next(r for r in tray_rows(win) if ids[0] in r.arrival.item_ids)
+    menu = tray.menu(row)                                             # N1: its show is in Current: offered
+    assert next(a for a in menu.actions() if a.text() == strings.TRAY_MENU["after-show"][0]).isEnabled()
+    menu.close()
+    store.set_watched(ids)                                            # watched elsewhere: ✓ and All to Finished
+    assert wait_until(lambda: tray.watched(), 10)
+    tray.heads["watched"][2].click()
+    assert wait_until(lambda: all(store.item(i)["tier"] == "graduated" for i in ids), 5)
+    assert all(store.item(i)["watched"] == 1 for i in ids)
 
 
 def test_real_store_remove_sends_it_to_the_trash_and_undo_brings_it_back(real):
@@ -731,3 +814,4 @@ def test_real_store_a_drag_from_the_tray_onto_the_finished_well_lands_in_finishe
     move_global(win, at)
     release_global(win, at)
     assert wait_until(lambda: all(store.item(i)["tier"] == "graduated" for i in item_ids), 5)
+    assert all(store.item(i)["watched"] == 1 for i in item_ids)       # A2 #28 (IK-L2-3): the well records it watched

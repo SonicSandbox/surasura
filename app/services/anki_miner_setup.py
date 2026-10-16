@@ -33,6 +33,10 @@
   missing asset or digest, a mismatch, a cap hit, a foreign host, a cancel, Windows blocking the file, or any other
   failure -> the releases page (`"opened-releases"`), staging cleaned: never a half file left. `on_end(result)` is
   told once, at every end (the page checks again).
+- `install_as_job(registry, on_progress, cancel, on_end, confirm=None)` — `install`, listed in the window's job
+  registry as an `anki-miner-install` job (W AD-5 / IK-11) from the learner's yes until the route ends: the bottom bar
+  shows it and its progress, its Cancel (and the quit's) sets `cancel`. Nothing is listed before the yes, nor when the
+  route ends without one.
 
 Every byte from the network goes through ONE function, `_fetch`. Standard library only; no Tk, no Qt.
 """
@@ -374,6 +378,39 @@ def _route(on_progress, cancel, confirm):
         if _stopped(cancel):        # the learner stopped it: the page says so, no browser opens behind the window
             return CANCELLED
         return _releases()
+
+
+JOB_KIND = "anki-miner-install"     # its kind in the window's registry (`jobs.RESOURCES`)
+JOB_LABEL = "Getting Anki Miner"   # the bottom bar's words while it downloads and its installer is open
+JOB_FELL_BACK = "Anki Miner's download didn't finish: its page opened in your browser"
+
+
+def install_as_job(registry, on_progress, cancel, on_end, confirm=None):
+    """`install` as an `anki-miner-install` job in `registry` from the learner's yes until the route ends (the job's
+    cancel sets `cancel`; the quit cancels it) -> `install`'s result. No registry, or no `confirm`: `install` alone."""
+    if registry is None or confirm is None:
+        return install(on_progress, cancel, on_end, confirm)
+    job = []
+
+    def asked():
+        yes = confirm()
+        if yes:
+            job.append(registry.record(JOB_KIND, JOB_LABEL, cancel=lambda _job: cancel.set(), on_quit="cancel"))
+        return yes
+
+    def progress(done, total):
+        on_progress(done, total)
+        if job:
+            job[0].progress(JOB_LABEL, done, total)
+    result = BUSY
+    try:
+        result = install(progress, cancel, on_end, confirm=asked)
+    finally:
+        if job:
+            fell_back = result == OPENED_RELEASES      # the download failed: its page opened in the browser
+            job[0].finish(ok=not fell_back, message=JOB_FELL_BACK if fell_back else None,
+                          cancelled=result == CANCELLED)
+    return result
 
 
 def install(on_progress, cancel, on_end, confirm=None):

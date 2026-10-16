@@ -355,6 +355,7 @@ class Replan:
         self._pending = pending
         self._on_line = on_line
         self.arrivals = None
+        self.held = None                # the window's: `held()` True while the setup wizard is up (the keeper waits)
         self._lock = threading.Lock()
         self._held = False
         self._closing = False
@@ -401,6 +402,11 @@ class Replan:
             return
         host.started(self._asker(keeper), self._pending)    # the start's catch-up and journey look, whatever
                                                         # the new host's gate says: D29 decides through the keeper
+
+    def level_changed(self):
+        """A level key written (Settings, the wizard; W3.3's S3): the keeper's quiet time starts again."""
+        keeper, _host = self._pair()
+        keeper.changed("level")
 
     def update_state(self, state):
         """The update service's state: while it holds the children the host is let go; when the hold ends, back."""
@@ -474,6 +480,9 @@ class Replan:
         return ask
 
     def _automation(self):
+        held = self.held
+        if held is not None and held():
+            return False                # the setup wizard is up: its close asks again (`Services.setup_ended`)
         automation = getattr(self._settings, "automation", None)
         if automation is not None:
             return bool(automation())

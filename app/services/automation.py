@@ -347,6 +347,8 @@ class AutoGenerate:
         settings = o.settings_now()
         if not pending or not settings.get("anki_auto_generate"):
             return False
+        if o.held is not None and o.held():
+            return False                # the setup wizard is up (W3.5 part 3): its close asks again
         if os.environ.get("SURASURA_NO_ANKI_SYNC"):
             return False
         if pending != o.language:
@@ -506,6 +508,7 @@ class Automation:
         self.update_staged = update_staged
         self.lock = threading.RLock()
         self.closed = False
+        self.held = None                # the window's: `held()` True while the setup wizard is up (no quiet Generate)
         self.worker = Worker("automation")
         self._state = State(IDLE, self.language, 0, None, None, None, 0)
         self._subscribers = []

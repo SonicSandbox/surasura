@@ -175,9 +175,30 @@ def test_a_library_folder_never_seen_is_made_only_when_the_user_chooses_it(qapp,
     g = _gate(qapp, _st(first_run.LIBRARY_NEW, create=True))
     assert g.screen == "new" and fake.calls == [], "asked first: nothing runs by itself"
     assert g.heading.text() == start_gate.NEW_HEADING and g.st["library"] in g.line.text()
-    assert _visible_buttons(g) == {start_gate.NEW_HERE, start_gate.TRY_AGAIN, start_gate.QUIT}
-    assert g.fresh_button.toolTip() == start_gate.NEW_HERE_TIP
+    # WZ-9 (c), Sonic 2026-10-15: a welcome step — *Start my library here* the main button, the drive / online ask in
+    # its tooltip (with Try again's meaning), Try again and Quit kept
+    assert g.heading.text() == "Welcome to Surasura"
+    assert _visible_buttons(g) == {"Start my library here", start_gate.TRY_AGAIN, start_gate.QUIT}
+    assert g.fresh_button.property("kind") == "primary" and g.try_button.property("kind") is None
+    tip = g.fresh_button.toolTip()
+    assert "Already have a library on a drive or online?" in tip and "Try again" in tip
     g.fresh_button.click()
+    assert wait_until(lambda: g.ended)
+    assert g.result is True and fake.calls == [{"state": first_run.LIBRARY_NEW, "source": None, "fresh": True}]
+
+
+def test_enter_on_the_welcome_step_starts_the_library_and_nowhere_else(qapp, monkeypatch):
+    # WZ-9 (c): Enter is *Start my library here* on the welcome step only — on the refusal for a library that isn't
+    # there, Enter must never make an empty one (D3: only the user's own click does).
+    fake = FakeRun()
+    monkeypatch.setattr(first_run, "run", fake)
+    g = _gate(qapp, _st(first_run.LIBRARY_MISSING))
+    QTest.keyClick(g, Qt.Key.Key_Return)
+    QApplication.processEvents()
+    assert fake.calls == [] and not g.ended
+    g.finish(False)
+    g = _gate(qapp, _st(first_run.LIBRARY_NEW, create=True))
+    QTest.keyClick(g, Qt.Key.Key_Return)
     assert wait_until(lambda: g.ended)
     assert g.result is True and fake.calls == [{"state": first_run.LIBRARY_NEW, "source": None, "fresh": True}]
 
@@ -432,3 +453,16 @@ def test_a_real_2x_install_is_brought_over_through_the_gate(qapp, monkeypatch, t
     assert note["complete"] is True and note["from"] == old
     assert os.path.isfile(os.path.join(library, "User Files", "ja", "KnownWord.json"))
     assert start_gate.gate(qapp) is True and not first_run.needs_run(first_run.state())
+
+
+def test_enter_on_the_welcome_step_presses_the_button_the_keyboard_is_on(qapp, monkeypatch):
+    # Tabbed to Quit, Enter quits: it never makes a library the learner didn't ask for.
+    fake = FakeRun()
+    monkeypatch.setattr(first_run, "run", fake)
+    g = _gate(qapp, _st(first_run.LIBRARY_NEW, create=True))
+    g.activateWindow()
+    g.quit_button.setFocus()
+    monkeypatch.setattr(g, "focusWidget", lambda: g.quit_button)
+    QTest.keyClick(g, Qt.Key.Key_Return)
+    assert wait_until(lambda: g.ended)
+    assert g.result is False and fake.calls == []

@@ -1141,3 +1141,20 @@ def test_an_import_that_ended_reads_the_known_words_count_again(live):
     assert h.until(lambda: auto.worker.idle(0.05) and auto.state().known == anki_sync.count_known("ja"), seconds=5)
     assert auto.state().known > 0
     auto.close()
+
+
+def test_the_automatic_generate_waits_while_the_setup_wizard_is_up(live):
+    """W3.5 part 3 (AD-8): no quiet Generate while the setup wizard is up (its last page sets the level); its close asks
+    again (the window's `setup_ended` → `activated`)."""
+    up = [True]
+    auto, registry, controller, launches = _make(_settings())
+    auto.held = lambda: up[0]
+    auto.worker.put(auto.generate.known_words_changed, "ja")
+    assert auto.worker.idle(5)
+    assert launches.count() == 0 and not registry.live("generate")
+    assert auto.generate.pending == "ja"                          # the words wait, never dropped
+    up[0] = False
+    auto.activated()
+    assert h.until(lambda: launches.count() == 1, seconds=5)
+    launches.runs[0].ended(0)
+    auto.close()

@@ -59,6 +59,7 @@ PENDING_OPENERS = {
 # module that draws it, or "pending: <who>" for a row still to come (the intent keeper's B2: a slot nobody fills is a
 # row with nothing to click — the test fails on one missing here). PL's logos sit beside the words, never in a slot.
 _LIVE, _CONNECT_ROWS, _RULES = "app.qt.settings_live", "app.qt.settings_connect", "app.qt.settings_rules"
+_STORE = "app.qt.settings_store"
 FILLED_BY = {
     "setup_known": _LIVE, "setup_anki": _LIVE, "setup_mining": _LIVE, "setup_level": _LIVE, "setup_cards": _LIVE,
     "anki_connection": _LIVE, "hato": _LIVE, "jimaku": _LIVE, "anilist": _LIVE, "more_from_houseki": _LIVE,
@@ -66,8 +67,8 @@ FILLED_BY = {
     "logs": _LIVE, "data_credits": _LIVE, "version": _LIVE,
     "new_cards_a_day": _CONNECT_ROWS, "connect_enabled": _CONNECT_ROWS, "anki_miner": _CONNECT_ROWS,
     "placing_rules": _RULES,
-    "mine_line": "pending: P6", "soon_line": "pending: P6",
-    "set_up_again": "pending: W3.5 part 3", "covers_download": "pending: the covers owner (G1.2-19)",
+    "mine_line": _STORE, "soon_line": _STORE, "set_up_again": _STORE,
+    "covers_download": "pending: the covers owner (G1.2-19)",
 }
 
 
@@ -305,7 +306,7 @@ ROWS = (
     _row("logs", "app", "custom"),
     _row("data_credits", "app", "custom"),
     _row("version", "app", "custom"),
-    _row("set_up_again", "app", "custom", when=_never),          # S10: shown once the wizard (W3.5 part 3) lands
+    _row("set_up_again", "app", "custom"),                       # S10: the wizard (W3.5 part 3), `settings_store`
     _row("covers_download", "app", "custom", when=_never),       # S10: shown once the covers owner lands (G1.2-19)
 )
 ROW = {row.id: row for row in ROWS}

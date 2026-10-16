@@ -67,6 +67,11 @@ REPLAN_MARGIN = 0.25
 # P-text (W2.1 row 9): a theme or text-size switch with the shell's widgets alive measured well under ~300 ms, so a
 # change applies at once (G1.2-21). W3.3 measures it again with its Settings page alive; False = *Restart to apply*.
 LIVE_LOOK = True
+# W3.4: at exit, how long the quit waits for the thread pool's workers (`bridge.wait_for_workers`) after the window
+# closed and the duties stopped, and for each of the ported 順 windows' own threads (`junban-*`): a worker still running
+# Python as the process ends can crash it (row 6's find).
+QUIT_WORKERS_MS = 3000
+QUIT_THREAD_JOIN_S = 2.0
 
 
 # --- the services the window calls ------------------------------------------------------------------------------- #
@@ -100,6 +105,9 @@ class Services:
         self.started = False
         self._quit_lock = threading.Lock()
         self._quit_began = None           # when the quit began (`_stop_starting`): E20's wait counts from it
+        # W3.5 part 3 (AD-8 / IK2-7): set while the setup wizard is up — no quiet Generate (the automatic one, the
+        # journey keeper's) before its last page sets the level; an upgrader's library has no journey yet
+        self.setup_open = threading.Event()
         if self.has_duties():
             self._provide()
 
@@ -209,6 +217,7 @@ class Services:
             if self.started or not self.has_duties() or self.closing.is_set():
                 return False
             self.started = True
+            self._hold_while_setup()
             try:
                 self.controller.check(settings_service.thaw(self.settings.get()), self.language)
             except Exception as e:
@@ -219,6 +228,19 @@ class Services:
             if self.replan is not None:
                 self.replan.start()       # the catch-up once; the journey when the store says it is pending
         return True
+
+    def _hold_while_setup(self):
+        """The automatic Generate and the journey keeper hold while the setup wizard is up (`setup_open`)."""
+        held = self.setup_open.is_set
+        if hasattr(self.automation, "held"):
+            self.automation.held = held
+        if self.replan is not None and hasattr(self.replan, "held"):
+            self.replan.held = held
+
+    def setup_ended(self):
+        """(A worker.) The setup wizard closed: what it held is asked again, as at a focus."""
+        self.setup_open.clear()
+        self.activated()
 
     def activated(self):
         """(A worker.) The window came back into focus: the journey, the sync, 順, a waiting Generate, the indexer —
@@ -948,9 +970,47 @@ class ShellWindow(QMainWindow):
 
     # --- W2.2: the pages a library fills ----------------------------------------------------------------------- #
     def _page(self, name):
+        if name == "settings":
+            return self._settings_holder()
         if self.services.library is None or name not in screens.PAGES:
             return self._waiting_page(name)
         return screens.make_page(name, language=self.language)
+
+    # --- W3.3 P7: the Settings page, mounted the first time its tab shows (never on the first frame's path) ------- #
+    def _settings_holder(self):
+        page = QWidget()
+        page.setObjectName("page-settings")
+        box = QVBoxLayout(page)
+        box.setContentsMargins(0, 0, 0, 0)
+        box.setSpacing(0)
+        self.settings_page = None
+        return page
+
+    def mount_settings(self):
+        """The Settings page in its tab (once): the page, then the rows other packages fill — Connect's three, the
+        placing rules, the store's two lines and *Set up again* (`settings_store`). -> the page."""
+        if self.settings_page is not None:
+            return self.settings_page
+        from app.qt import settings_connect, settings_page, settings_rules, settings_store
+        holder = self.page_widgets["settings"]
+        language = self.services.settings.get().get("target_language") or self.language
+        page = settings_page.SettingsPage(self, language, parent=holder)
+        holder.layout().insertWidget(0, page, 1)          # above the bottom edge every page carries
+        self.settings_page = page
+        for attach in (settings_connect.attach, settings_rules.attach, settings_store.attach):
+            try:
+                attach(page)
+            except Exception as e:                        # one package's rows never keep the page from opening
+                applog.log("shell", f"settings rows not attached ({attach.__module__}): {e!r}")
+        return page
+
+    def open_setting(self, target):
+        """The Settings tab, with `target` brought into view (`SettingsPage.reveal`: a row id or key, a section id,
+        `known`, `mine_line`, `soon_line`). -> what `reveal` answered."""
+        page = self.mount_settings()
+        self.show_tab("settings")
+        return page.reveal(target)
+    # --- end W3.3 P7 --------------------------------------------------------------------------------------------- #
 
     def show_library(self, view):
         """The reader's newest view: the pages, the subline's counts, the tabs' counts. W3.1a: the drag's expectation
@@ -1090,6 +1150,8 @@ class ShellWindow(QMainWindow):
         button = self.tab_buttons[name]
         if not button.isChecked():
             button.setChecked(True)
+        if name == "settings":
+            self.mount_settings()                              # W3.3 P7: made the first time it shows
         self.vein.go(button)                                   # W3.1a: the vein travels; the page is there at once
         self.pages.setCurrentWidget(self.page_widgets[name])
         if self.services.library is not None:                 # W2.2: the other tabs' first screens, ahead
@@ -1283,9 +1345,16 @@ class ShellWindow(QMainWindow):
         if self._duties_asked:
             return
         self._duties_asked = True
+        if self.current_tab() == "settings":
+            self.mount_settings()                             # W3.3 P7: the window came back on its Settings tab
+        from app.qt import first_run                          # W3.5 part 3: the setup wizard over the window, first run
+        first_run.host(self)                                  # (never raises; nothing when setup is finished)
 
         def ready(_services=None):
             self._attach_duties()
+            wiz = first_run.opened(self)
+            if wiz is not None:
+                wiz.raise_()                                  # above the update sheet the duties made
             bridge.run_in_worker(self.services.start, then=lambda started: started and self._duties_started(),
                                  failed=lambda info: applog.log("shell", f"duties at start: {info[1]}"))
         if self.services.has_duties():
@@ -1388,6 +1457,14 @@ class ShellWindow(QMainWindow):
             self._paint_journey_dot()
         self._read_d29()                                    # its tooltip's D29, read on a worker
 
+    def setup_held(self, up):
+        """(first_run.py) The setup wizard came up / went: while it is up the quiet Generates wait (AD-8); its close
+        asks again, on a worker."""
+        if up:
+            self.services.setup_open.set()
+        elif self.services.setup_open.is_set():
+            bridge.run_in_worker(self.services.setup_ended)
+
     def _duties_started(self):
         """Started: what the bar and the header read from disk, read on workers."""
         self._check_journey()
@@ -1410,6 +1487,8 @@ class ShellWindow(QMainWindow):
             bridge.run_in_worker(s.language_changed, language, then=lambda _r: self._read_level())
         elif s.level_moved(keys):                           # only what the level reads (IK-28, S19)
             self._read_level()
+            if s.replan is not None:
+                s.replan.level_changed()                    # W3.3 S3: the journey keeper hears a level key
         if "anki_sync_auto" in keys:
             self._show_automation(s.automation.state())
         try:
@@ -1806,6 +1885,8 @@ class ShellWindow(QMainWindow):
             self._finish_first()
             return
         self.closing.emit()                               # single instance stops listening before the window hides
+        from app.qt import windows
+        windows.close_all(self)                           # W3.4 AD4-4: the ported windows' own closes run (their clean-up)
         self._poll.stop()
         self.bridge.stop()                                # the quit's service callbacks reach no slot from here
         state = self.state_now()
@@ -1873,6 +1954,10 @@ def main(argv=None):
     if not instance.claim(argv[1:]):
         return 0
     hud.mark("claimed")
+    from app.qt import start_gate
+    if not start_gate.gate(app):                      # W3.5: the 2.x import, the refusals, the merge — before the store
+        instance.release()
+        return 0
     services = Services()
     hud.mark("services")
     window = open_window(app, services)
@@ -1893,7 +1978,34 @@ def main(argv=None):
             services.shutdown(release=instance.release)   # the claim goes before the store's close trigger
         finally:
             instance.release()                            # (once: done already unless the quit failed before it)
+            quiet_exit(gone=(window,))                    # W3.4: nothing of Qt's or a worker's left for the teardown
     return code
+
+
+def quiet_exit(workers_ms=QUIT_WORKERS_MS, join_s=QUIT_THREAD_JOIN_S, gone=()):
+    """(The quit's last step, after the window closed and the services stopped.) The closed windows' deferred deletes
+    run now — never during Python's teardown, the exit crash row 2 measured — then the thread pool's workers and the
+    ported 順 windows' own threads (`junban-*`) are waited for, each a bounded wait. The windows in `gone` (the main
+    window: its Settings page and the ported windows with it) are deleted once the workers ended, never left for
+    Python's teardown: there, after the QApplication, the mounted Settings page crashed the exit (0xC0000005, about
+    1 run in 80 under load; GitHub's #97). -> True when everything ended."""
+    from PyQt6.QtCore import QCoreApplication
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
+    ended = bridge.wait_for_workers(workers_ms)
+    if gone and ended:                                    # (a worker still running: nothing deleted under it)
+        for win in gone:
+            try:
+                win.deleteLater()
+            except RuntimeError:                          # deleted already
+                pass
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
+        ended = bridge.wait_for_workers(workers_ms)       # what a deletion started (a quit before the first frame:
+                                                          # the stones' release can start their build)
+    for thread in threading.enumerate():
+        if thread.name.startswith("junban-") and thread is not threading.current_thread():
+            thread.join(join_s)
+            ended = ended and not thread.is_alive()
+    return ended
 
 
 if __name__ == "__main__":

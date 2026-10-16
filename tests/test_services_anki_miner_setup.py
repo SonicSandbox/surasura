@@ -679,3 +679,72 @@ def test_the_installer_on_disk_is_checked_again_just_before_it_is_opened(route, 
     monkeypatch.setattr(M, "_download", then_changed)
     assert route.run() == "opened-releases"
     assert route.launcher.started == [] and _staging_empty()
+
+
+# ---------------------------------------------------------------------------
+# The install as a job in the window's registry (W AD-5 / IK-11)
+# ---------------------------------------------------------------------------
+def _route_standin(monkeypatch, result, seen):
+    """`install` replaced by a stand-in that asks `confirm` first, as the route does, then reports progress and ends with
+    `result` — recording what the registry held while it ran."""
+    def install(on_progress, cancel, on_end, confirm=None):
+        yes = confirm() if confirm is not None else False
+        if not yes:
+            return M.DECLINED if confirm is not None else M.OPENED_RELEASES
+        seen["live"] = list(seen["registry"].live(M.JOB_KIND))
+        on_progress(50, 100)
+        seen["progress"] = seen["registry"].live(M.JOB_KIND)[0].progress
+        seen["cancel"] = cancel
+        return result
+    monkeypatch.setattr(M, "install", install)
+
+
+def test_the_install_is_a_job_from_the_learners_yes_until_its_route_ends(monkeypatch):
+    from app.services.jobs import JobRegistry
+    registry = JobRegistry()
+    seen = {"registry": registry}
+    _route_standin(monkeypatch, M.INSTALLER_CLOSED, seen)
+    cancel = threading.Event()
+    shown = []
+    result = M.install_as_job(registry, lambda d, t: shown.append((d, t)), cancel, None, confirm=lambda: True)
+    assert result == M.INSTALLER_CLOSED
+    assert [j.label for j in seen["live"]] == [M.JOB_LABEL]                # listed while it ran: the bar shows it
+    assert seen["progress"].done == 50 and seen["progress"].total == 100 and shown == [(50, 100)]
+    assert registry.live(M.JOB_KIND) == ()                                 # ended with the route
+    ended = [j for j in registry.snapshot() if j.kind == M.JOB_KIND]
+    assert len(ended) == 1 and ended[0].state == "done" and not ended[0].cancelled
+
+
+def test_the_jobs_cancel_and_the_quit_stop_the_download(monkeypatch):
+    from app.services.jobs import JobRegistry
+    registry = JobRegistry()
+    cancel = threading.Event()
+    asked = {}
+
+    def install(on_progress, cancel_event, on_end, confirm=None):
+        assert confirm()
+        registry.quit(timeout=0.5)                                         # the window's quit while it downloads
+        asked["set"] = cancel_event.is_set()
+        return M.CANCELLED
+    monkeypatch.setattr(M, "install", install)
+    assert M.install_as_job(registry, lambda d, t: None, cancel, None, confirm=lambda: True) == M.CANCELLED
+    assert asked["set"] is True
+    ended = [j for j in registry.snapshot() if j.kind == M.JOB_KIND]
+    assert ended and ended[0].cancelled
+
+
+@pytest.mark.parametrize("confirm", [lambda: False, None])
+def test_no_yes_lists_no_job(monkeypatch, confirm):
+    from app.services.jobs import JobRegistry
+    registry = JobRegistry()
+    seen = {"registry": registry}
+    _route_standin(monkeypatch, M.INSTALLER_CLOSED, seen)
+    result = M.install_as_job(registry, lambda d, t: None, threading.Event(), None, confirm=confirm)
+    assert result == (M.DECLINED if confirm is not None else M.OPENED_RELEASES)
+    assert registry.snapshot() == ()
+
+
+def test_the_install_kind_conflicts_with_nothing_but_itself():
+    from app.services import jobs
+    assert jobs.RESOURCES[M.JOB_KIND] == set()
+    assert jobs.conflicts(M.JOB_KIND, M.JOB_KIND) and not jobs.conflicts(M.JOB_KIND, "generate")

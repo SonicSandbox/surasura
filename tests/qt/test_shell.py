@@ -389,6 +389,18 @@ def test_the_mouse_back_button_does_what_esc_does(window):
     assert window.isVisible()
 
 
+def test_an_overlay_gone_after_its_router_raises_nothing(qapp):
+    """At teardown the collector may clear the router's dict before an overlay's `destroyed` reaches `_forget` (seen
+    once in a loaded --all: AttributeError 'overlays' escaped a slot)."""
+    router = shell.EscapeRouter(None)
+    overlay = QWidget()
+    router.register(overlay)
+    router._forget(QWidget())                                  # another overlay: this one stays
+    assert router.overlays == [overlay]
+    router.__dict__.clear()                                    # as the collector leaves a cyclic router
+    router._forget(overlay)                                    # no AttributeError
+
+
 def test_forward_does_nothing(window):
     a = _overlay(window)
     QTest.mouseClick(window.centralWidget(), Qt.MouseButton.ForwardButton)

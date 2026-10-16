@@ -20,6 +20,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 
 import pytest
 
@@ -261,17 +262,170 @@ def test_two_first_opens_at_once_never_delete_the_store(monkeypatch):
         barrier = threading.Barrier(2)
 
         def opener():
+            began = None
             try:
                 barrier.wait()
+                began = time.monotonic()
                 ti.open_store("ja", path=db).close()
-            except Exception as e:
-                errors.append(repr(e))
+            except Exception:
+                # where it failed and after how long (5 s: the busy wait ran out; at once: a refusal SQLite never
+                # waits on) — a load flake on 2026-10-15 left only "database is locked" to read
+                errors.append(f"after {time.monotonic() - (began or time.monotonic()):.3f} s: {traceback.format_exc()}")
         threads = [threading.Thread(target=opener) for _ in range(2)]
         for t in threads:
             t.start()
         for t in threads:
             t.join()
     assert errors == [] and deleted == []
+
+
+@pytest.mark.parametrize("hold_at", ["CREATE INDEX", "PRAGMA user_version ="])
+def test_a_second_first_open_mid_rebuild_never_drops_the_firsts_tables(monkeypatch, hold_at):
+    """The load-flakes review's row 3, stepped by hand (no sleeps): A's first open is held mid-build — after its CREATE
+    TABLE aggregate and before its CREATE INDEX on it, or before it writes the version — and B's first open then runs. Before the fix B read user_version 0
+    too and ran the drops, A's CREATE INDEX met "no such table: main.aggregate", and open_store deleted the store as
+    damaged. Now the build runs inside BEGIN IMMEDIATE and user_version is read again inside the lock: B waits, then
+    finds A's finished store and builds nothing (the version written after the lock is let go would let B build again).
+    Both opens succeed, nothing is deleted, the store is whole."""
+    db = os.path.join(h.root(), "stepped", "shared.db")
+    os.makedirs(os.path.dirname(db))
+    deleted = []
+    real_delete = ti._delete_db
+    monkeypatch.setattr(ti, "_delete_db", lambda path: (deleted.append(path), real_delete(path)))
+    a_held, b_asked, a_done = threading.Event(), threading.Event(), threading.Event()
+    seen = {"A": [], "B": []}
+    real_connect = sqlite3.connect
+
+    def trace(sql):
+        # runs on the thread stepping the statement, before the statement takes any lock
+        who = threading.current_thread().name
+        if who not in seen:
+            return
+        seen[who].append(sql)
+        if who == "A" and hold_at in sql and not a_held.is_set():
+            a_held.set()
+            b_asked.wait(30)                    # B has asked for the write lock (fixed) or dropped A's tables (bug)
+        elif who == "B" and ("BEGIN IMMEDIATE" in sql or "DROP TABLE IF EXISTS bound" in sql):
+            b_asked.set()
+            if "DROP" in sql:
+                a_done.wait(30)                 # the bug: B's drop of aggregate (the statement before) has landed
+
+    def connect(*args, **kwargs):
+        c = real_connect(*args, **kwargs)
+        c.set_trace_callback(trace)
+        return c
+    monkeypatch.setattr(sqlite3, "connect", connect)
+    errors = {}
+
+    def opener():
+        who = threading.current_thread().name
+        try:
+            ti.open_store("ja", path=db).close()
+        except Exception:
+            errors[who] = traceback.format_exc()
+        finally:
+            if who == "A":
+                a_done.set()
+    a = threading.Thread(target=opener, name="A")
+    a.start()
+    assert a_held.wait(30), f"A never reached {hold_at}"
+    b = threading.Thread(target=opener, name="B")
+    b.start()
+    a.join(60)
+    b.join(60)
+    assert not a.is_alive() and not b.is_alive()
+    assert errors == {} and deleted == []
+    assert not any(s.lstrip().startswith(("DROP", "CREATE")) for s in seen["B"]), "B built over A's store"
+    conn = real_connect(db)
+    try:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == ti.SCHEMA_VERSION
+        names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master")}
+        assert {"files", "aggregate", "bound", "meta", "idx_aggregate_count"} <= names
+    finally:
+        conn.close()
+
+
+def test_the_journal_switch_commits_at_synchronous_normal(monkeypatch):
+    """The review's row 4: a new file's switch to WAL is a rollback-mode commit; at the default synchronous=FULL it
+    fsyncs a journal for each attempt, and under an fsync storm one attempt's wait can use the loop's whole 5 s. NORMAL
+    is set before the switch."""
+    statements = []
+    real_connect = sqlite3.connect
+    me = threading.current_thread()
+
+    def connect(*args, **kwargs):
+        c = real_connect(*args, **kwargs)
+        if threading.current_thread() is me:            # this test's open only, never a thread left by another test
+            c.set_trace_callback(statements.append)
+        return c
+    monkeypatch.setattr(sqlite3, "connect", connect)
+    db = os.path.join(h.root(), "sync", "new.db")
+    os.makedirs(os.path.dirname(db))
+    ti.open_store("ja", path=db).close()
+    pragmas = [s for s in statements if s.startswith("PRAGMA synchronous") or s.startswith("PRAGMA journal_mode")]
+    assert pragmas[:2] == ["PRAGMA synchronous=NORMAL", "PRAGMA journal_mode=WAL"]
+
+
+@pytest.mark.parametrize("table", ["files", "aggregate", "bound", "meta"])
+def test_a_store_at_the_version_missing_a_table_is_built_again(tmp_path, table):
+    """The half-built guard, looked at outside the lock and again inside it: user_version says this schema, but a table
+    is gone (a build cut short by an older copy, or a hand edit) — the open builds the schema again instead of handing
+    out a store whose first read fails."""
+    db = str(tmp_path / "half.db")
+    ti.open_store("ja", path=db).close()
+    conn = sqlite3.connect(db)
+    conn.execute(f"DROP TABLE {table}")
+    conn.commit()
+    conn.close()
+    store = ti.open_store("ja", path=db)
+    try:
+        assert store.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+        assert store.conn.execute("PRAGMA user_version").fetchone()[0] == ti.SCHEMA_VERSION
+    finally:
+        store.close()
+
+
+def test_a_busy_look_at_a_current_store_is_raised_and_never_builds_it_again(tmp_path, monkeypatch):
+    """The half-built check reads "no such table" as not ready, and nothing else: a busy answer to its look at a store
+    at this version is raised (open_store never deletes on it) — never read as "build it again", which drops every
+    table and its rows."""
+    db = str(tmp_path / "current.db")
+    store = ti.open_store("ja", path=db)
+    store.set_meta("kept", "yes")
+    store.close()
+    real_connect = sqlite3.connect
+
+    class Busy(sqlite3.Connection):
+        def execute(self, sql, *args):
+            if sql.startswith("SELECT 1 FROM aggregate"):
+                raise sqlite3.OperationalError("database is locked")
+            return super().execute(sql, *args)
+    monkeypatch.setattr(sqlite3, "connect", lambda *a, **kw: real_connect(*a, factory=Busy, **kw))
+    deleted = []
+    monkeypatch.setattr(ti, "_delete_db", deleted.append)
+    with pytest.raises(sqlite3.OperationalError, match="locked"):
+        ti.open_store("ja", path=db)
+    monkeypatch.setattr(sqlite3, "connect", real_connect)
+    store = ti.open_store("ja", path=db)
+    try:
+        assert deleted == [] and store.get_meta("kept") == "yes"
+    finally:
+        store.close()
+
+
+def test_a_locked_store_is_never_deleted(tmp_path, monkeypatch):
+    """Busy is not damage: an open that meets "database is locked" while it builds raises it and leaves the file."""
+    db = str(tmp_path / "busy.db")
+    ti.open_store("ja", path=db).close()
+    deleted = []
+    monkeypatch.setattr(ti, "_delete_db", deleted.append)
+
+    def busy(conn):
+        raise sqlite3.OperationalError("database is locked")
+    monkeypatch.setattr(ti, "_ensure_schema", busy)
+    with pytest.raises(sqlite3.OperationalError, match="locked"):
+        ti.open_store("ja", path=db)
+    assert deleted == [] and os.path.exists(db)
 
 
 def test_a_damaged_store_is_still_rebuilt():

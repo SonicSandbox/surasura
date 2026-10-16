@@ -1743,6 +1743,8 @@ def test_AD2_a_drop_on_a_busy_store_at_quit_leaves_its_copy_whole_for_the_next_d
     with open(os.path.join(folder, _DROPPED[lib.language]), encoding="utf-8") as f, \
             open(os.path.join(tmp_path, "Explorer", _DROPPED[lib.language]), encoding="utf-8") as g:
         assert f.read() == g.read()
+    if w._thread is not None:                           # the quit's process ends: its worker's last try (it may take
+        w._thread.join(5)                               # the lock the holder just freed) is over before the next start
     lib.store.sync_disk()                               # the next start
     rel = f"HighPriority/{_DROPPED[lib.language]}"
     assert any(lib.store.item(i)["rel_path"] == rel for t in ("now", "soon", "goal", "arrivals") for i in lib.ids(t))

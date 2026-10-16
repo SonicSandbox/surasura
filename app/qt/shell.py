@@ -823,7 +823,9 @@ class EscapeRouter(QObject):
             overlay.destroyed.connect(lambda *_a, o=overlay: self._forget(o))
 
     def _forget(self, overlay):
-        self.overlays = [o for o in self.overlays if o is not overlay]
+        overlays = getattr(self, "overlays", None)      # the router may go first (its dict cleared by the collector)
+        if overlays is not None:
+            self.overlays = [o for o in overlays if o is not overlay]
 
     def eventFilter(self, obj, event):
         et = event.type()

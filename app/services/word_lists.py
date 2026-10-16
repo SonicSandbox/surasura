@@ -372,6 +372,7 @@ def words_in(text, language, kind="ignore"):
         analyzer.LOGIC.update(settings.get("logic", {}))    # the run's switches, as every reader outside a run sets them
     except Exception:
         pass
+    analyzer.SANITIZE_JA = language == "ja"          # the lists read as a run reads them (a kana line: いる is 居る)
     script = zh_script.effective(language, settings.get("zh_script"))
     single = bool(settings.get("exclude_single", True))
     if language == "zh":

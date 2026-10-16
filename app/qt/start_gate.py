@@ -7,6 +7,9 @@ window of its own and runs the application's loop until it is safe to go on (Tru
 
   * *Bringing your library over from Surasura 2…* — the stage and a hairline progress, *Cancel* (between files: the
     import's note says unfinished and the next screen offers *Try again*).
+  * A library folder this PC has never seen (`LIBRARY_NEW`: a new install, or a library on a drive or online not
+    there yet): a welcome step, never made by itself (WZ-9 (c), Sonic 2026-10-15) — *Start my library here* the main
+    button (Enter), "Already have a library on a drive or online?" in its tooltip, *Try again*, *Quit*.
   * The refusals — the library folder not there (never made by itself, D3: *Try again*, or the user's own *Start with
     a new, empty library here*), a library folder holding a program, an unfinished import (never used half, D11; its
     old folder gone: *Choose the old folder again…* or *Start fresh, keeping what was brought over*), the write check
@@ -45,9 +48,8 @@ STAGES = {"files": "Copying your shows and books", "settings": "Bringing your se
 STAGE_COUNT = "{stage} · {done:,} of {total:,}"
 MISSING_HEADING = "Your library isn't there"
 MISSING_LINE = "Surasura can't find {folder}. Connect its drive or go online, then try again."
-NEW_HEADING = "Make your library here?"
-NEW_LINE = ("Surasura will keep your shows, books and known words in {folder}. Is your library already there, on a "
-            "drive or online? Connect it, then try again.")
+NEW_HEADING = "Welcome to Surasura"
+NEW_LINE = "Surasura will keep your shows, books and known words in {folder}."      # WZ-9 (c): a welcome step
 PROGRAM_HEADING = "Your library folder holds a Surasura program"
 PROGRAM_LINE = ("Move the program out of {folder}, or run Setup again to choose another folder for your library. Then "
                 "try again.")
@@ -88,9 +90,10 @@ FRESH_KEEP = "Start fresh, keeping what was brought over"
 FRESH_KEEP_TIP = ("Begin with an empty library.\n"
                   "• What was brought over so far is kept in a folder of its own inside it.")
 NEW_HERE = "Start with a new, empty library here"
-NEW_HERE_TIP = ("Make an empty library in this folder.\n"
-                "• Library on a drive that's away? Connect it and try again instead.")
 MISSING_NEW_TIP = "Make an empty library in this folder.\n• Only if your old library is gone for good."
+START_HERE = "Start my library here"
+START_HERE_TIP = ("Make your library in this folder and start setting up.\n"
+                  "• Already have a library on a drive or online? Connect it, then press Try again.")
 
 PROGRESS_EVERY = 0.05          # s: the import's progress reaches the window at most this often (a stage change always)
 QUIET_SHOW = 0.3               # s: quiet work still running after this shows *Getting your library ready…*
@@ -257,7 +260,7 @@ class Gate(QWidget):
         self._picks(installs)
         self._word(self.choose_button, CHOOSE_AGAIN if name == "lost" else CHOOSE_OTHER if installs else CHOOSE,
                    CHOOSE_AGAIN_TIP if name == "lost" else CHOOSE_TIP, "primary")
-        self._word(self.fresh_button, *{"new": (NEW_HERE, NEW_HERE_TIP, "primary"),
+        self._word(self.fresh_button, *{"new": (START_HERE, START_HERE_TIP, "primary"),
                                         "missing": (NEW_HERE, MISSING_NEW_TIP, None),
                                         "lost": (FRESH_KEEP, FRESH_KEEP_TIP, None)}.get(name, (FRESH, FRESH_TIP, None)))
         self._word(self.try_button, TRY_AGAIN, BLOCKED_TRY_TIP if name == "blocked" else TRY_AGAIN_TIP,
@@ -456,6 +459,11 @@ class Gate(QWidget):
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Escape:      # the start's window: Esc closes nothing
             event.accept()
+            return
+        if (event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and self.screen == "new"
+                and self.fresh_button.isVisible() and self.fresh_button.isEnabled()):
+            event.accept()                        # WZ-9 (c): Enter is *Start my library here*
+            self.fresh_button.click()
             return
         super().keyPressEvent(event)
 

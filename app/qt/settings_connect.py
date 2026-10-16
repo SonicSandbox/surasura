@@ -18,8 +18,8 @@ imports its module on the worker that runs it, and the reads start when the page
   question open as the window closes answers nothing (`confirm`'s rule): the switch stays as the file says.
 - **The Anki Miner card** (Connections' *Anki Miner* row; U5): `setup.checks` on a worker → *Not installed* ·
   *Installed <v> — needs setup* (the missing pieces, the two guided steps with *Copy path*) · *Ready*; *Install Anki
-  Miner…* (`install_anki_miner`: Anki Miner's releases page in the browser — W3.5 part 3 swaps in its in-Surasura route
-  there) with **AM★** beside it, *Like Anki Miner? Star it on GitHub ★*; *Browse…* (`connect_anki_miner_path`, through
+  Miner…* (`install_anki_miner`: the setup wizard at its Anki Miner page, W3.5 part 3's in-Surasura route; the
+  releases page in the browser without a shell) with **AM★** beside it, *Like Anki Miner? Star it on GitHub ★*; *Browse…* (`connect_anki_miner_path`, through
   the settings service); *Open Anki Miner*; *Check again*; *Anki Miner X is out* while `status.anki_miner_update` says
   so. U6: installed, the bigger ⭐ suggestion until one click or *Not now* (kept in local data `star.json`, never
   settings.json), then the small link.
@@ -145,9 +145,14 @@ def _write_new_cards(settings, deck, value, expect, cancel, say):
                                  on_wait=lambda holder: say(anki_connect.waiting_line(holder)))
 
 
-def install_anki_miner():
-    """*Install Anki Miner…*: its releases page in the browser, as 2.x does. W3.5 part 3 replaces this one call with its
-    in-Surasura route (G1.3-2)."""
+def install_anki_miner(shell=None):
+    """*Install Anki Miner…*: the setup wizard at its Anki Miner page (W3.5 part 3: the in-Surasura route, G1.3-2 —
+    its confirm before any byte, its download, its checks, in one place). No shell (a page alone), or a wizard that
+    can't open: the releases page in the browser, as 2.x does."""
+    if shell is not None:
+        from app.qt import first_run
+        if first_run.open_again(shell, page="cards") is not None:
+            return True
     from app.connect import setup
     return windows.open_url(setup.RELEASES)
 
@@ -537,13 +542,13 @@ class MinerCard(QWidget):
 
     # the clicks
     def _install(self):
-        install_anki_miner()
+        install_anki_miner(self.page.shell)
 
     def _open_update(self):
         if self.update_url:
             windows.open_url(self.update_url)
         else:
-            install_anki_miner()
+            install_anki_miner(self.page.shell)
 
     def _open_star(self):
         windows.open_url(settings_values.STAR_URL)

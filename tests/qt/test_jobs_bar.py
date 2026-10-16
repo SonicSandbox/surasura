@@ -138,6 +138,12 @@ class QuietReader:
         return None
 
 
+def set_up(services):
+    """A profile whose setup is finished (W3.5 part 3): `start_duties` opens no setup wizard over the bar under test
+    (the wizard's own mount: tests/qt/test_shell_hookups.py)."""
+    services.settings.set({"onboarding_completed": True, "setup_seen": "3.0"})
+
+
 class World:
     def __init__(self, qapp, logs_folder=None, automation=None):
         self.log = []
@@ -149,6 +155,7 @@ class World:
         self.status = StatusService(self.registry, reader=QuietReader(), logs_folder=logs_folder)
         self.services = shell.Services(registry=self.registry, status=self.status, controller=self.controller,
                                        updates=self.updates, automation=self.automation, chores=self.chores)
+        set_up(self.services)
         self.win = shell.open_window(qapp, self.services)
         self.win.show()
         QApplication.processEvents()
@@ -519,6 +526,7 @@ def test_bar_known_count_from_a_real_known_words_file(qapp, lang):
     controller = FakeController(log)
     registry = JobRegistry()
     services = shell.Services(registry=registry, status=StatusService(registry, reader=QuietReader()))
+    set_up(services)
     automation = A.Automation(registry, controller, services.settings, lang)
     world = None
     try:

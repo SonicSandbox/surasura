@@ -2062,3 +2062,67 @@ def test_open_library_shares_one_opener_and_resyncs_the_numbers_on_every_move(li
     finally:
         reader.stop()
         numbers.close()
+
+
+# --- W3.3 P6: Settings' two store lines through the writer ---------------------------------------------------------- #
+def _meta(lib, key):
+    return lib.store.meta().get(key)
+
+
+def test_settings_store_lines_are_written_by_the_writer_and_never_go_on_the_undo_stack(lib, make_writer):
+    # *Soon starts after N files* moves the rows that cross it (the store's own rule); *Mine automatically: the top N*
+    # sets the mine line. A Ctrl+Z in Current must never take a Settings value back: the row is where it changes.
+    w, heard = make_writer()
+    now = lib.ids("now")
+    assert len(now) >= 2
+    assert w.set_options(soon_line=len(now) - 1) is not None
+    assert h.until(lambda: _meta(lib, "soon_line") == len(now) - 1)
+    assert h.until(lambda: lib.ids("now") == now[:-1])                    # the last NOW file is Soon's first now
+    assert lib.ids("soon")[0] == now[-1]
+    assert w.set_options(mine_line=7) is not None
+    assert h.until(lambda: _meta(lib, "mine_line") == 7)
+    assert heard.saved == [] and not w.can_undo()
+    assert h.until(lambda: heard.rereads >= 2)                           # the reader looks again after each
+    assert w.pending() == 0 and journal(lib.language) is None
+
+
+def test_settings_store_lines_with_nothing_to_set_or_a_negative_line_write_nothing(lib, make_writer):
+    w, heard = make_writer()
+    before = (_meta(lib, "soon_line"), _meta(lib, "mine_line"))
+    assert w.set_options() is None
+    with pytest.raises(ValueError):
+        w.set_options(soon_line=-1)
+    with pytest.raises(ValueError):
+        w.set_options(mine_line=-3)
+    assert w.pending() == 0
+    assert (_meta(lib, "soon_line"), _meta(lib, "mine_line")) == before
+    w.set_options(mine_line=_meta(lib, "mine_line") or 20)                # (written or the same: the reader looks again)
+    assert h.until(lambda: heard.rereads >= 1)
+    assert heard.notes == []
+
+
+def test_a_store_line_set_while_the_store_is_busy_is_journalled_and_replayed_after_a_crash(lib, make_writer,
+                                                                                          short_lock_wait):
+    # A busy store (a sync holding it) queues the Settings change with the moves; a crash before it lands leaves it in
+    # the journal and the next start writes it.
+    w, heard = make_writer()
+    holder = LockHolder(lib.db)
+    w.set_options(mine_line=5)
+    assert h.until(lambda: journalled(lib.language) == [("set_options", [])])
+    assert journal(lib.language)["pending"][0]["mine_line"] == 5
+    w._abandon()
+    holder.release()
+    assert _meta(lib, "mine_line") != 5
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: _meta(lib, "mine_line") == 5)
+    assert h.until(lambda: journal(lib.language) is None)
+    assert heard2.notes == [] and heard2.saved == []
+
+
+def test_a_store_line_on_a_read_only_store_is_refused_before_it_is_queued(lib, make_writer):
+    w, heard = make_writer()
+    lib.close()
+    ls.mark_damaged(lib.db, "test: a damaged store")
+    assert h.until(lambda: not w.can_write(), seconds=M.MODE_RECHECK_S * 3)
+    assert w.set_options(soon_line=1) is None and w.pending() == 0

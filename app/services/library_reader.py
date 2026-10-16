@@ -131,6 +131,11 @@ class LibraryReader:
         self._hold.clear()
         self._wake.set()
 
+    def options(self):
+        """The store's options as the last feed read gave them ({soon_line, mine_line, arrivals_on}; empty until the
+        first read): Settings' store lines show them (W3.3 P6). A copy; any thread."""
+        return dict(self._options)
+
     def view(self):
         with self._lock:
             return self._view

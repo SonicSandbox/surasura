@@ -6,7 +6,10 @@
   `end=True`, Goal's end as it stands when the write lands), `nudge`, `set_tier` (Finished is the store's `graduated`),
   `set_finished` (the store's `finish`: the Finished toast's *Keep* / *Take its new cards out*; `follows=` the drop's
   change, so that drop's Undo takes the cards' choice back too), `set_watched`, `insert_at` (an Explorer drop: the
-  content files copied into the tier's folder at once on a copier thread of its own, then queued and placed), `undo`.
+  content files copied into the tier's folder at once on a copier thread of its own, then queued and placed), `undo`,
+  `set_options` (W3.3 P6: Settings' *Soon starts after N files* — the store's `set_soon_line`, the rows crossing it
+  change tier — and *Mine automatically: the top N files* — `set_library_options(mine_line=)`; journalled, never on
+  the Undo stack: the row shows the value and is changed back there; the reader's next view carries it).
   Each
   returns at once (the window has already painted its
   own copy of the order); what happened comes back through callbacks, called on the writer's thread (the window's bridge
@@ -56,7 +59,7 @@ WAIT_S = 0.5                    # the thread looks at its queue at least this of
 MODE_RECHECK_S = 2.0            # idle, the thread asks the store's mode this often (`can_write` reads the answer)
 JOURNAL_VERSION = 1
 JOURNAL_TRIES = 10              # a journal write Windows refuses (the file held a moment) is tried this many times
-JOURNALLED = ("move", "nudge", "set_tier", "finish", "set_watched")
+JOURNALLED = ("move", "nudge", "set_tier", "finish", "set_watched", "set_options")
 #   an undo needs its Change: never journalled; nor an Explorer drop (`insert_at`: no ids yet). Its files are copied into
 #   the tier's folder at once, on the copier's thread — a busy store or a drag never holds the copy back, and the copy
 #   never holds a move back (G1) — so a quit or a crash before it lands leaves them whole in the folder, where the next
@@ -247,6 +250,22 @@ class Writer:
                 self._cond.notify_all()
             return None
         return cmd["seq"]
+
+    def set_options(self, soon_line=None, mine_line=None):
+        """Settings' two store lines (W3.3 P6): `soon_line` -> `Store.set_soon_line(n)`, `mine_line` ->
+        `Store.set_library_options(mine_line=n)` (each an int >= 0, or None to leave it). -> the command's number, or
+        None when refused (read-only) or there is nothing to set."""
+        if soon_line is None and mine_line is None:
+            return None
+        cmd = {"op": "set_options", "ids": []}
+        if soon_line is not None:
+            cmd["soon_line"] = int(soon_line)
+        if mine_line is not None:
+            cmd["mine_line"] = int(mine_line)
+        for value in (cmd.get("soon_line"), cmd.get("mine_line")):
+            if value is not None and value < 0:
+                raise ValueError("a line can't be negative")
+        return self._put(cmd)
 
     def set_watched(self, ids, on=True, label=None):
         """`Store.set_watched` on files (an episode is one file, one item)."""
@@ -480,6 +499,9 @@ class Writer:
                 change = store.finish(cmd["ids"], keep_cards=cmd["keep_cards"])
             elif op == "set_watched":
                 change = store.set_watched(cmd["ids"], cmd["on"])
+            elif op == "set_options":
+                self._set_options(store, cmd)
+                return
             elif op == "insert_at":
                 change, note = self._insert(store, cmd)
             else:
@@ -517,6 +539,20 @@ class Writer:
         if op != "set_watched" and (op != "move" or change is None or note is not None or
                                     cmd.get("numbered") not in (None, (cmd["before_id"], cmd["after_id"]))):
             self._numbers_resync()                  # (a tier's end that moved between the numbers and the write too)
+
+    def _set_options(self, store, cmd):
+        """Settings' store lines, written (never on the Undo stack: the row is where it is changed back). Nothing to
+        change (the line there already) or a write: the reader looks again, and the numbers when the Soon line moved
+        rows between NOW and Soon."""
+        moved = False
+        if cmd.get("soon_line") is not None:
+            moved = store.set_soon_line(cmd["soon_line"]) is not None
+        if cmd.get("mine_line") is not None:
+            store.set_library_options(mine_line=cmd["mine_line"])
+        self._landed(cmd)
+        self._call(self.on_reread)
+        if moved:
+            self._numbers_resync()
 
     def _nearest(self, store, cmd):
         """The anchor is gone or left the tier: the nearest neighbour the window named that is still in the tier, else
@@ -959,7 +995,8 @@ def _remove_part(path):
 
 def _entry(cmd):
     out = {k: cmd[k] for k in ("op", "ids") if k in cmd}
-    for k in ("tier", "before_id", "after_id", "near", "direction", "on", "keep_cards", "end", "seen"):
+    for k in ("tier", "before_id", "after_id", "near", "direction", "on", "keep_cards", "end", "seen", "soon_line",
+              "mine_line"):
         if k in cmd:
             out[k] = cmd[k]
     return out

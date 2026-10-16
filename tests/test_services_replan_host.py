@@ -896,3 +896,30 @@ def test_a_move_just_told_marks_a_settle_maybe_pending_read_with_no_lock(gate, m
     replan.store_moved("ja", {"order_version": 3})
     assert replan.settling() is settling
     replan.finish(time.monotonic() + 1)
+
+
+# --- W3.5 part 3 (AD-8): the setup wizard holds the keeper ---------------------------------------------------------- #
+def test_while_the_setup_wizard_is_up_the_keeper_asks_no_generate_and_its_close_asks_again(gate, fired):
+    """An upgrader's library has no journey yet: no quiet Generate before the wizard's last page sets the level. Held,
+    a focus after an outside placement asks nothing; released, the next focus (the wizard's close) asks once."""
+    up = [True]
+    replan, _registry, _c, launches, _opener = _replan(pending=lambda language: True)
+    replan.held = lambda: up[0]
+    replan.activated()
+    _quiet(replan)
+    assert fired.done(replan.keeper)
+    assert replan.keeper.asked == 0 and launches.count() == 0
+    up[0] = False
+    replan.activated()
+    _quiet(replan)
+    assert h.until(lambda: launches.count() == 1, seconds=5)
+    launches.runs[0].ended(0)
+    replan.finish(time.monotonic() + 1)
+
+
+def test_a_level_key_written_starts_the_keepers_quiet_time_again(gate):
+    """W3.3's S3: Settings' level rows (and the wizard's level page) reach the journey keeper as a level change."""
+    replan, _registry, _c, _launches, _opener = _replan()
+    replan.level_changed()
+    assert replan.keeper.reasons[-1] == "level"
+    replan.finish(time.monotonic() + 1)

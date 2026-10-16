@@ -65,6 +65,9 @@ RESOURCES = {
     # W3.4 row 4: the YouTube module's runs (a transcript download, the cue-time fill, yt-dlp's update, a preview's
     # fetch and scoring): one yt-dlp run at a time across its windows, beside everything else.
     "youtube": set(),
+    # W3.5 part 3: Anki Miner's installer downloaded and opened (the wizard's page 5, Settings' *Install Anki Miner…*):
+    # one at a time (the route holds its own lock too), beside everything — it touches no file the others write.
+    "anki-miner-install": set(),
 }
 
 Progress = namedtuple("Progress", "step done total")

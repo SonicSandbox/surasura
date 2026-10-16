@@ -7,7 +7,9 @@ Settings' *Set up again* — the same wizard, preselected from the settings as t
 
 The wizard closes onto Current: after its Generate ends, after *Skip* on its last page, or by *Finish later* (which
 keeps what was saved with *Next* and never writes `onboarding_completed`). The shell mounts it with one call in
-`start_duties` (the patch in the W3.5 part 3 notes): this module never edits the shell.
+`start_duties`; while it is up the shell's `setup_held(True)` holds the quiet Generates (AD-8), `setup_held(False)` at
+its close asks again. `open_again(shell, page="cards")`: Settings' *Install Anki Miner…* — the wizard at its Anki Miner
+page (the one place the install route, its confirm and its checks live).
 """
 from PyQt6 import sip
 from PyQt6.QtCore import QEvent, QObject, Qt
@@ -51,12 +53,15 @@ def host(shell, api=None, miner=None):
         return None
 
 
-def open_again(shell, api=None, miner=None):
-    """Settings' *Set up again*: the wizard, preselected from the settings now (finished or not). -> the wizard, or
-    None (never raises into Settings' click: a wizard that can't open leaves the window as it is, and says why in the
-    log)."""
+def open_again(shell, api=None, miner=None, page=None):
+    """Settings' *Set up again*: the wizard, preselected from the settings now (finished or not); `page` (a page id,
+    `wizard.PAGES`) shown first. -> the wizard, or None (never raises into Settings' click: a wizard that can't open
+    leaves the window as it is, and says why in the log)."""
     try:
-        return _open(shell, api, miner)
+        wiz = _open(shell, api, miner)
+        if page is not None and page in wizard_module.PAGES:
+            wiz._go(wizard_module.PAGES.index(page))
+        return wiz
     except Exception as e:
         applog.log("wizard", f"the setup wizard didn't open again: {e}")
         return None
@@ -69,10 +74,12 @@ def _open(shell, api, miner):
         return wiz
     area = shell.centralWidget()
     held = _hold(area)
+    _say_held(shell, True)
     try:
         wiz = wizard_module.SetupWizard(shell, parent=area, api=api, miner=miner)
     except Exception:
         _release(held)
+        _say_held(shell, False)
         raise
     wiz.setGeometry(area.rect())
     _Cover(wiz, area)
@@ -97,6 +104,16 @@ def _hold(area):
     return held
 
 
+def _say_held(shell, up):
+    """The shell's `setup_held(up)` (the quiet Generates wait while the wizard is up), when it has one."""
+    hold = getattr(shell, "setup_held", None)
+    if hold is not None:
+        try:
+            hold(up)
+        except Exception as e:
+            applog.log("wizard", f"the window's hold: {e}")
+
+
 def _release(held):
     for w in held:
         if not sip.isdeleted(w):
@@ -106,6 +123,7 @@ def _release(held):
 def _closed(shell, wiz, held, how):
     """The wizard closed (`how`: later · done · generated): the window's parts back, Current shown."""
     _release(held)
+    _say_held(shell, False)
     if shell.__dict__.get(ATTR) is wiz:
         shell.__dict__.pop(ATTR, None)
     if not sip.isdeleted(wiz):

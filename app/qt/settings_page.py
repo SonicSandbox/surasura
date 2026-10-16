@@ -967,6 +967,8 @@ class SettingsPage(QWidget):
             self.store.set({}, update=update)
         elif changes:
             self.store.set(changes)
+            from app.qt import settings_store
+            settings_store.resume_connect(settings, changes)             # the automation row on: Connect's marks
         else:
             return
         self._refresh_visibility(anchor=control)

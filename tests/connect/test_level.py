@@ -100,7 +100,9 @@ def test_the_same_list_again_does_nothing_and_a_lowered_level_mines_nothing():
     assert out["queued"] == [a]
 
 
-def test_beyond_the_top_20_nothing_in_2_x():
+def test_beyond_the_top_20_nothing_in_2_x(monkeypatch):
+    # P4.1 row 4.1.5: the 2.x line (`BEYOND_LINE` False) keeps the top 20 only; the 3.0 line is test_p41_level_beyond
+    monkeypatch.setattr(level, "BEYOND_LINE", False)
     items = _line(n=1)
     with c.store() as s:
         below = [i for i in s.ids("now") if i != items[0][0]]

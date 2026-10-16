@@ -2,8 +2,11 @@
 
 When the list gains words — the level raised by hand, or automatic rarity moving it — Connect mines **only the newly
 listed words**, skipping the words already mined, for the episodes it has already mined, **the top 20 first**. In 2.x
-only the top 20 (the rest of the already-mined content waits for 3.0's Connect ↔ window step (P4.1), HC-N53's "the
-rest in the background");
+only the top 20; on the 3.0 line (`BEYOND_LINE`, P4.1 C4, HC-N53's "the rest in the background") the top 20, then the
+rest of Current in its order, then Goal — never Finished (not analysed: the last Generate lists no word of it, D16 /
+D23) and never an item taken out of the learning order (`in_learning_order = 0`, D14), nor one missing from disk (the
+line's own rule, `_mine_ids`); a level job beyond the line is never dropped for being out of it (a `finished` or
+`removed` event still drops one not started, `inbox.keeps`);
 lowering the level mines nothing (N38: the words that left keep their cards, at the back); either way the deck is
 re-sorted (`resort_due`, paid by the runner's ordering step, P2.4).
 
@@ -11,11 +14,11 @@ re-sorted (`resort_due`, paid by the runner's ordering step, P2.4).
   last looked at (the ledger's `listed`). The first look records the list and mines nothing (✅ G1.1-2: from the
   moment Connect is on, never your history); switched on again, `forget` makes the next look a first look. A look at
   the same run signature does nothing.
-- **For whom:** each item of the top 20 (`library.mine_line`), in order, already mined (its receipt, or a `done` job)
-  and with no other job open: its newly listed words (the last Generate's `file_words.json` for its file), minus every
-  word Connect has ever made a card for in this language (`made_words`, N15 — G1.3-4: a card you deleted is never
-  made again automatically) → one `level` job naming just them. **One card per word, the top first:** the jobs run in
-  line order, and a job's pick skips a word that has a card by then (P2.4 refreshes the carded set between jobs) — so
+- **For whom:** each item of the top 20 (`library.mine_line`; on 3.0 the walk past it, `_walk`), in order, already
+  mined (its receipt, or a `done` job) and with no other job open: its newly listed words (the last Generate's
+  `file_words.json` for its file), minus every word Connect has ever made a card for in this language (`made_words`,
+  N15 — G1.3-4: a card you deleted is never made again automatically) → one `level` job naming just them. **One card
+  per word, the top first:** the jobs run in line order, and a job's pick skips a word that has a card by then (P2.4 refreshes the carded set between jobs) — so
   a word is never held back from a lower episode by a higher one whose job ends up making no card. A job past its
   start (picking … ordering) → the whole look waits, nothing recorded, and the next look sees the same raise.
 - **Only in the `list` mode** of *Which words become cards* (`connect_mine_words`, the default): the other two don't
@@ -28,6 +31,10 @@ import os
 
 from app.connect import library
 from app.connect.ledger import Ledger
+
+# P4.1 C4 (the 3.0 line): a level raise mines all the already-mined content, past the top 20 (2.x-dev keeps False:
+# the top 20 only, as `PINS` is kept there)
+BEYOND_LINE = True
 
 
 def check(store, language, listed, signature, file_words, mode="list", ledger=None):
@@ -86,17 +93,34 @@ def _queue(store, language, ledger, new, file_words):
         by_lemma.setdefault(word, set()).add((word, reading))
     made = library.made_words_all(store)
     queued = []
-    for item_id in library.mine_line(store):
+    for item_id in _walk(store):
         if library.mined_at(store, item_id) is None and not ledger.mined(language, item_id):
             continue                        # its first mining (when it runs) reads the list as it is now
         item = store.item(item_id)
-        if item is None:
-            continue
+        if item is None or item.get("in_learning_order") == 0:
+            continue                        # taken out of the learning order (D14): never mined again
         lemmas = set(file_words.get(os.path.basename(item.get("rel_path") or "")) or ())
         words = {key for lemma in lemmas if lemma not in made for key in by_lemma.get(lemma, ())}
         if words and ledger.queue_level(language, item_id, words, store_id=library.store_id(store)) is not None:
             queued.append(item_id)
     return queued
+
+
+def _walk(store):
+    """The items a raise looks at, in order: the top 20; on the 3.0 line (`BEYOND_LINE`) then the rest of Current
+    (NOW, then Soon) and Goal in the store's order (`store.ordered`), each available on disk — never Finished, never
+    New arrivals (not placed)."""
+    line = library.mine_line(store)
+    if not BEYOND_LINE:
+        return line
+    seen, out = set(line), list(line)
+    with store._reading():
+        for tier in ("now", "soon", "goal"):
+            for item_id, _entry, availability in store.ordered(tier):
+                if item_id not in seen and availability == "available":
+                    seen.add(item_id)
+                    out.append(item_id)
+    return out
 
 
 def restrict(listed, job):

@@ -39,7 +39,8 @@ def test_the_first_run_skips_everything_placed_before_the_watermark(lang):
         s.move([ids[-1]], "now")                    # entered the top 2 before Connect was on
         assert any(k == "entered_mine_line" for _i, k, _b in c.events(s))
     first = _consume(lang)
-    assert first == {"queued": [], "dropped": [], "reconciled": False, "read": 0, "missed": []}
+    # P4.1 row 4.1.3: the read names the asks it took too ("asked")
+    assert first == {"queued": [], "dropped": [], "reconciled": False, "read": 0, "missed": [], "asked": []}
     assert _jobs(lang) == [], "nothing placed before Connect was switched on is mined"
     assert _consume(lang)["queued"] == []
 
@@ -162,7 +163,8 @@ def test_switching_connect_on_again_reads_nothing_placed_while_it_was_off():
     with c.store() as s:
         library.place(s, s.ids("now")[-1], "now", source="user")     # while Connect is off
         library.switch_on(s)                                           # the preview's switch turned on again
-    assert _consume() == {"queued": [], "dropped": [], "reconciled": False, "read": 0, "missed": []}
+    # P4.1 row 4.1.3: the read names the asks it took too ("asked")
+    assert _consume() == {"queued": [], "dropped": [], "reconciled": False, "read": 0, "missed": [], "asked": []}
 
 
 def test_a_gap_moves_the_reader_only_as_far_as_it_read(monkeypatch):

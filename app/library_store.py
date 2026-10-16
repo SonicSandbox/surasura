@@ -205,12 +205,13 @@ def search_fold(text, language=None):
 def _below_tier(rel):
     """The folder a file sits in, below its tier folder ('HighPriority/Frieren/Season 1/x.srt' → 'Frieren/Season 1'),
     as written; '' for a loose file (directly in a tier folder, or in hato's drop folder). The content folder counts as
-    one (`Library/Frieren/x.srt` → 'Frieren': one title with a 2.x `HighPriority/Frieren`)."""
+    one (`Library/Frieren/x.srt` → 'Frieren': one title with a 2.x `HighPriority/Frieren`), in any case the file
+    system reads as it (as `take_in` and the sync compare it)."""
     folder = _rel_dir(_strip(rel))
     if not folder or path_key(folder) == path_key(HATO_FOLDER):
         return ""
     parts = folder.split("/")
-    if parts[0] in TIER_OF_FOLDER or parts[0] in (GRADUATED_FOLDER, CONTENT_FOLDER):
+    if parts[0] in TIER_OF_FOLDER or parts[0] == GRADUATED_FOLDER or path_key(parts[0]) == path_key(CONTENT_FOLDER):
         parts = parts[1:]
     return "/".join(parts)
 
@@ -7067,6 +7068,43 @@ def origin_key(path):
     return SOURCE_KEY + path_key(os.path.abspath(path))
 
 
+_LOCAL_SHARE = re.compile(r"^\\\\(?:localhost|127\.0\.0\.1)\\([A-Za-z])\$(?=\\|$)", re.IGNORECASE)
+
+
+def folder_path(path):
+    r"""A folder's one spelling (A2): absolute and normalised, with Windows' long-path prefixes (`\\?\C:\…`,
+    `\\?\UNC\server\share\…`) and this computer's own admin share (`\\localhost\C$\…`) read back as the plain
+    path."""
+    p = str(path)
+    if sys.platform == "win32":
+        p = p.replace("/", "\\")
+        if p[:8].upper() == "\\\\?\\UNC\\":
+            p = "\\\\" + p[8:]
+        elif p.startswith("\\\\?\\"):
+            p = p[4:]
+        p = _LOCAL_SHARE.sub(lambda m: m.group(1) + ":", p)
+    return os.path.normpath(os.path.abspath(p))
+
+
+def _folder_id(path):
+    """(st_dev, st_ino) of a folder, its links followed, or None (gone, unreadable, or a file system with no ids)."""
+    try:
+        st = os.stat(path)
+    except (OSError, ValueError):
+        return None
+    return (st.st_dev, st.st_ino) if st.st_ino else None
+
+
+def _ancestors(path):
+    """`path` and every folder above it, up to its drive."""
+    while True:
+        yield path
+        up = os.path.dirname(path)
+        if up == path:
+            return
+        path = up
+
+
 def skip_dir(name, path):
     """Does a look at a source folder skip this folder (B3)? Dot folders (.stversions, .trash), the recycle bins
     (Windows' and a NAS's), a NAS's @eaDir, System Volume Information, and a folder link or junction — never followed:
@@ -7100,7 +7138,8 @@ def sha256_of(path):
 def content_target(data_dir, rel, size=None, sha256=None):
     """Where a copy goes (B2): (rel, reuse). `rel` itself when free; a file already there with the same size and bytes
     is re-used (a copy a crash left between the copy and its `take_in`: never copied again as `name (2)`); else
-    `name (2).ext`, `name (3).ext`, … — moves' `_copy_whole` rule — the first free or same-bytes one."""
+    `name (2).ext`, `name (3).ext`, … — moves' `_copy_whole` rule — the first free or same-bytes one. Only "not
+    found" is free: any other stat error (access denied, a name Windows rejects) is raised, for the scan to skip the file."""
     base, ext = os.path.splitext(rel)
     n = 1
     while True:
@@ -7111,8 +7150,6 @@ def content_target(data_dir, rel, size=None, sha256=None):
             st = os.stat(full)
         except FileNotFoundError:
             return candidate, False
-        except OSError:
-            continue
         if size is not None and sha256 and st.st_size == size and sha256_of(full) == sha256:
             return candidate, True
 
@@ -7144,24 +7181,28 @@ def _store_not_a_source(self, path):
     """Why `path` can't be a source (B3), or None: not a folder; a whole drive; the user's profile folder; Surasura's own
     folders — every language's data and user files, the store's folder — a folder inside one, or one that holds one
     (its scan would bring back the data folder's .trash as new episodes and read the word lists as books)."""
-    if not isinstance(path, str) or not path.strip() or not os.path.isdir(path):
+    if not isinstance(path, str) or not path.strip() or not os.path.isdir(folder_path(path)):
         return "That isn't a folder on this computer."
-    norm = os.path.normpath(os.path.abspath(path))
+    norm = folder_path(path)                         # one spelling (A2), then one folder by its identity too
     forms = {norm, os.path.realpath(norm)}
     if any(os.path.dirname(p) == p for p in forms):
         return "A whole drive holds too much to read; choose the folder your shows and books are in."
     keys = {path_key(p).rstrip("/") for p in forms}
+    ids = {_folder_id(norm)} - {None}
     home = os.path.expanduser("~")
-    if home != "~" and path_key(os.path.normpath(home)).rstrip("/") in keys:
+    if home != "~" and (path_key(os.path.normpath(home)).rstrip("/") in keys or _folder_id(home) in ids):
         return "Your user folder holds too much to read; choose the folder your shows and books are in."
-    own = [os.path.dirname(os.path.abspath(d)) for d in (self.data_dir, self.user_files_dir, self.db_path)]
-    for folder in own:
-        for o in {path_key(folder).rstrip("/"), path_key(os.path.realpath(folder)).rstrip("/")}:
-            for k in keys:
-                if k == o or k.startswith(o + "/"):
-                    return "That folder is Surasura's own; choose the folder your shows and books are in."
-                if o.startswith(k + "/"):
-                    return "That folder holds Surasura's own; choose the folder inside it your shows and books are in."
+    own = [folder_path(os.path.dirname(os.path.abspath(d))) for d in (self.data_dir, self.user_files_dir, self.db_path)]
+    own += [os.path.realpath(o) for o in own]
+    mine, mine_ids = {path_key(o).rstrip("/") for o in own}, {_folder_id(o) for o in own} - {None}
+    for f in forms:                                  # it, or a folder above it, is one of Surasura's own
+        for up in _ancestors(f):
+            if path_key(up).rstrip("/") in mine or _folder_id(up) in mine_ids:
+                return "That folder is Surasura's own; choose the folder your shows and books are in."
+    for o in own:                                    # it is a folder above one of Surasura's own
+        for up in list(_ancestors(o))[1:]:
+            if path_key(up).rstrip("/") in keys or _folder_id(up) in ids:
+                return "That folder holds Surasura's own; choose the folder inside it your shows and books are in."
     return None
 
 
@@ -7172,16 +7213,20 @@ def _store_add_source(self, path):
     reason = self._not_a_source(path)
     if reason:
         raise NotASource(reason)
-    norm = os.path.normpath(os.path.abspath(path))
-    key = path_key(norm)
+    norm = folder_path(path)
+    key, ident = path_key(norm), _folder_id(norm)
+    sql = "SELECT id, path, kind FROM roots WHERE kind IN ('source', 'source-off') ORDER BY id"
+    with self._reading():                            # a source's folder stat'ed outside the write lock (A6)
+        rows = self.conn.execute(sql).fetchall()
+    alike = {r[0] for r in rows if r[1] and ident is not None and _folder_id(r[1]) == ident}
     with self._writing():
-        for root_id, held, kind in self.conn.execute("SELECT id, path, kind FROM roots WHERE kind IN "
-                                                     "('source', 'source-off') ORDER BY id").fetchall():
-            if held and path_key(held) == key:
-                if kind != "source":
-                    self.conn.execute("UPDATE roots SET kind = 'source' WHERE id = ?", (root_id,))
-                    self._copy_dirty()
-                return root_id
+        rows = self.conn.execute(sql).fetchall()
+        same = [r for r in rows if r[1] and path_key(folder_path(r[1])) == key] or [r for r in rows if r[0] in alike]
+        for root_id, _held, kind in same[:1]:       # its row, its path as first written: its origins' keys stay
+            if kind != "source":
+                self.conn.execute("UPDATE roots SET kind = 'source' WHERE id = ?", (root_id,))
+                self._copy_dirty()
+            return root_id
         root_id = self.conn.execute("INSERT INTO roots (kind, path, placement, catalogue_only, created_at) "
                                     "VALUES ('source', ?, NULL, 0, ?)", (norm, _now())).lastrowid
         self._copy_dirty()
@@ -7253,6 +7298,20 @@ def _store_items_of_size(self, sizes):
     return out
 
 
+def _store_item_of_video_key(self, key):
+    """K1b's check (a): the live item whose record holds this video — hato's `content_key`, or an origin's
+    `video_key` — the lowest id when several do, else None. (K5: a 'waiting' item is left out here once that state
+    exists, so a video-only show's gap is filled by `take_in` from the copy.)"""
+    if not isinstance(key, str) or not key or key.startswith(SOURCE_KEY):
+        return None
+    with self._reading():
+        row = self.conn.execute(f"SELECT MIN(p.item_id) FROM pairings p JOIN items i ON i.id = p.item_id WHERE "
+                                f"(p.content_key = ? AND NOT {_ORIGIN_ROW}) OR ({_ORIGIN_ROW} AND "
+                                f"json_valid(p.pairing) AND json_extract(p.pairing, '$.video_key') = ?)",
+                                (key, key)).fetchone()
+    return row[0] if row else None
+
+
 def _store_update_origin(self, origin, size, mtime_ns, sha256):
     """A changed original re-copied (S5, K1b): only its row's `size`, `mtime_ns` and `sha256`, bookkeeping the copy
     carries — `paired_at` and every other key kept, so Connect's pairing version never moves (B1). -> True when the
@@ -7321,9 +7380,10 @@ def _store_take_in(self, root_id, found, first=False, rules=None):
     the source still places it (D30: `source:<id>`, then `source`). Logged as `source`'s, never explicit.
 
     -> the change (kind 'take_in': never on the user's Undo, S6 — Remove takes an item out), with `added`, `attached`,
-    `placed` {item_id: tier} and `skipped` {"known", "excluded", "gone": [origins]}; None for nothing found. A copy
-    outside the content folder raises ValueError, a source not being read `NotASource`, both before anything is
-    written."""
+    `placed` {item_id: tier}, `skipped` {"known", "excluded", "gone": [origins]} and `unused` (the copies no item holds
+    — a skipped file's, or a second file with the same bytes as one earlier in the batch, whose origin is recorded on
+    that one's item (A5) — for the caller to send to the trash); None for nothing found. A copy outside the content
+    folder raises ValueError, a source not being read `NotASource`, both before anything is written."""
     found = list(found or ())
     if not found:
         return None
@@ -7358,33 +7418,46 @@ def _store_take_in(self, root_id, found, first=False, rules=None):
             for k in ("sha256", "video_key"):
                 if note.get(k):
                     out[k].add(note[k])
-        works = {}
+        works, by_bytes, spare = {}, {}, {}
         for f in order:
             origin = os.path.abspath(f["origin"])
             key = origin_key(origin)
+            p = None if f.get("item_id") is not None else prepared[library_rel(self.data_dir, str(f["rel"]))]
             # recorded already — by any source, or earlier in this batch (each record is written as it goes)
             if self.conn.execute("SELECT 1 FROM pairings WHERE content_key = ?", (key,)).fetchone():
                 change.skipped["known"].append(origin)
+                if p:
+                    spare[p[1]] = p[2]
                 continue
             if key[len(SOURCE_KEY):] in out["patterns"] or (f.get("sha256") and f["sha256"] in out["sha256"]) or \
                     (f.get("video_key") and f["video_key"] in out["video_key"]):
                 change.skipped["excluded"].append(origin)
+                if p:
+                    spare[p[1]] = p[2]
                 continue
             record = _origin_record(root_id, origin, f)
             item_id = f.get("item_id")
             if item_id is None:
-                p = prepared[library_rel(self.data_dir, str(f["rel"]))]
                 held = self.conn.execute("SELECT id FROM items WHERE rel_key = ?", (p[2],)).fetchone()
-                if held is None:
-                    self._take_new(cmd, change, p, key, record, f, first, rules, works)
+                if held is None and f.get("sha256") and f["sha256"] in by_bytes:   # the same bytes in this batch (A5)
+                    item_id = by_bytes[f["sha256"]]
+                    spare[p[1]] = p[2]
+                elif held is None:
+                    item_id = self._take_new(cmd, change, p, key, record, f, first, rules, works)
+                    by_bytes.setdefault(f.get("sha256"), item_id)
                     continue
-                item_id = held[0]
+                else:
+                    item_id = held[0]
             elif not self.conn.execute("SELECT 1 FROM items WHERE id = ?", (item_id,)).fetchone():
                 change.skipped["gone"].append(origin)
                 continue
+            by_bytes.setdefault(f.get("sha256"), item_id)
             self._write_origin(key, item_id, record)
             change.attached.append(item_id)
             cmd.touch()
+        # N1: the copies no item holds (a skipped file's, a same-bytes one's), for the caller to send to the trash
+        change.unused = [rel for rel, rel_key in spare.items() if rel and not self.conn.execute(
+            "SELECT 1 FROM items WHERE rel_key = ?", (rel_key,)).fetchone()]
         return change
 
 
@@ -7478,6 +7551,7 @@ Store.stop_source = _store_stop_source
 Store.origins = _store_origins
 Store.excluded = _store_excluded
 Store.items_of_size = _store_items_of_size
+Store.item_of_video_key = _store_item_of_video_key
 Store.update_origin = _store_update_origin
 Store._exclude_origins = _store_exclude_origins
 Store._let_origins_back = _store_let_origins_back
@@ -7691,13 +7765,14 @@ def copy_into_finished(data_dir, sources, progress=None, cancel=None):
 def trash_file(data_dir, rel):
     """A user's Remove or Undo-Add: the file to `data/<lang>/.trash/<base>_<stamp><ext>` (never
     `rmtree`), its 30-day clock restarted. Returns the trashed path relative to data/<lang>, or None
-    when there was no file. Never a file outside the data folder (SRC K1a.6): a path that leads out of it, as written
-    or through a folder link, is left alone (None) — a source folder's original is never Surasura's to move."""
+    when there was no file — or when it isn't Surasura's to move (SRC K1a.6): a path that leads out of the data folder
+    as written, or a copy under the content folder that a folder link leads out of it (the store makes every file
+    there itself: one elsewhere may be a source's original). A 2.x tier folder's links move as they always did. The
+    caller that drops the file's row checks `trash_refused` first."""
     if not rel or library_rel(data_dir, rel) is None:
         return None
     src = os.path.join(data_dir, _strip(rel))
-    real, home = path_key(os.path.realpath(src)), path_key(os.path.realpath(data_dir)).rstrip("/")
-    if not real.startswith(home + "/"):
+    if not _ours_to_move(data_dir, rel, src):
         return None
     if not os.path.isfile(src):
         return None
@@ -7714,7 +7789,22 @@ def trash_file(data_dir, rel):
     return f".trash/{name}"
 
 
-def _rename_no_overwrite(src, dst):
+def _ours_to_move(data_dir, rel, src):
+    """`trash_file`'s guard: a copy under the content folder only while its real path stays inside the data folder."""
+    first = _strip(library_rel(data_dir, rel)).split("/", 1)[0]
+    if path_key(first) != path_key(CONTENT_FOLDER):
+        return True
+    real, home = path_key(os.path.realpath(src)), path_key(os.path.realpath(data_dir)).rstrip("/")
+    return real.startswith(home + "/")
+
+
+def trash_refused(data_dir, rel):
+    """Did `trash_file` leave a row's file where it is (None, yet the file is there)? Remove and every Undo of an add
+    then refuse (`StoreConflict`) instead of dropping the row: a file left with no row is found again by the sync."""
+    return bool(rel) and library_rel(data_dir, rel) is not None and os.path.isfile(os.path.join(data_dir, _strip(rel)))
+
+
+def rename_no_overwrite(src, dst):
     """Never overwrite (§6.6): `os.rename` on Windows fails if the target exists; elsewhere a hard link
     then unlink, which fails too; without hard links (FAT, exFAT), check the target is free first."""
     if sys.platform == "win32":
@@ -7730,6 +7820,9 @@ def _rename_no_overwrite(src, dst):
         os.rename(src, dst)
         return
     os.unlink(src)
+
+
+_rename_no_overwrite = rename_no_overwrite        # the name the store's own callers use
 
 
 def put_back(data_dir, trashed_rel, rel):

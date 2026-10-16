@@ -224,6 +224,9 @@ def test_the_content_folder_groups_like_a_tier_folder_and_never_gives_a_place():
     for rel in ("Library/夜市/Season 1/x.srt", "HighPriority/夜市/Season 1/x.srt", "GoalContent/夜市/Season 1/x.srt"):
         assert ls._below_tier(rel) == "夜市/Season 1"
     assert ls.folder_key_of("Library/夜市/x.srt") == ls.folder_key_of("HighPriority/夜市/x.srt")
+    # N3: written in another case, it is the same folder where the file system says so (as take_in accepts it)
+    folded = sys.platform in ("win32", "darwin")
+    assert ls._below_tier("library/夜市/x.srt") == ("夜市" if folded else "library/夜市")
     assert ls.CONTENT_FOLDER not in ls.TIER_OF_FOLDER
     assert ls.WALK_FOLDERS == ("HighPriority", "LowPriority", "GoalContent", "Library")
 
@@ -726,3 +729,238 @@ def test_a_library_with_no_sources_copies_as_before(language):
     doc = json.loads(first.decode("utf-8"))
     tables = doc["surasura_library"]["tables"]
     assert [r[1] for r in tables["roots"]["rows"]] == ["library"] and tables["exclusions"]["rows"] == []
+
+
+# --- the review's fixes (SRC-K1a-adversary A1-A6) ------------------------------------------------------------------- #
+
+def _junction(target, link):
+    """A folder link: a junction on Windows, a symlink elsewhere (the walk follows both into a 2.x tier folder)."""
+    os.makedirs(os.path.dirname(str(link)), exist_ok=True)
+    if sys.platform == "win32":
+        import _winapi
+        _winapi.CreateJunction(str(target), str(link))
+    else:
+        os.symlink(str(target), str(link), target_is_directory=True)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_remove_trashes_a_file_in_a_linked_2x_show_folder_as_before_and_the_sync_never_brings_it_back(language,
+                                                                                                    tmp_path):
+    """A1: a 2.x tier's show folder that is a junction (the walk follows it) had its file moved to `.trash` on Remove
+    before Sources; it still does. Left in place with its row deleted, the next sync would add it again as a new item,
+    which could then be mined."""
+    from app.services import moves
+    store = migrated(language)
+    data_dir, _u = roots(language)
+    far = tmp_path / "far"
+    far.mkdir()
+    (far / "ep1.srt").write_text(_episode_text(language, 1), encoding="utf-8")
+    _junction(far, os.path.join(data_dir, "HighPriority", "Linked"))
+    with store:
+        assert store.sync_disk() is not None
+        item = store.item_id("HighPriority/Linked/ep1.srt")
+        assert item is not None
+        change = moves.Writer._remove(None, store, {"ids": [item]})
+        assert change is not None and store.item(item) is None
+        assert not (far / "ep1.srt").exists()                               # moved, as the base did
+        trashed = store.conn.execute("SELECT trashed_path FROM trash").fetchall()
+        assert len(trashed) == 1 and trashed[0][0].startswith(".trash/")
+        assert os.path.isfile(os.path.join(data_dir, *trashed[0][0].split("/")))
+        assert store.sync_disk() is None                                     # nothing to bring back
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_remove_and_undo_add_refuse_to_drop_a_row_whose_file_isnt_surasuras_to_move(language, tmp_path):
+    """A1: a copy under `Library/` that a folder link leads out of the data folder is never moved (it may be a source's
+    original); Remove and every Undo of an add (Add, Extract, the finished import) then refuse, the row kept, rather
+    than delete a row whose file stays on disk for a sync to find again."""
+    from types import SimpleNamespace
+    from app.services import moves
+    store, data_dir = _empty(language)
+    src = _source_root()
+    far = tmp_path / "far"
+    far.mkdir()
+    (far / "ep1.srt").write_text(_episode_text(language, 1), encoding="utf-8")
+    _junction(far, os.path.join(data_dir, ls.CONTENT_FOLDER, "linked"))
+    with store:
+        root = store.add_source(src)
+        f = _found(language, data_dir, src, "linked", "ep1.srt", 1, copy=False)
+        f["rel"] = f"{ls.CONTENT_FOLDER}/linked/ep1.srt"
+        item = store.take_in(root, [f], first=True).added[0]
+        before = store.versions()
+        with pytest.raises(ls.StoreConflict):
+            moves.Writer._remove(None, store, {"ids": [item]})
+        for kind in ("insert", "import_finished"):
+            added = SimpleNamespace(kind=kind, copied=[f["rel"]], added=[item], items=[item])
+            with pytest.raises(ls.StoreConflict):
+                moves.Writer._undo_added(None, store, added, [item])
+        assert store.item(item) is not None and (far / "ep1.srt").exists()
+        assert store.versions() == before and _exclusions(store) == []
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows' path spellings")
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_source_is_one_folder_whatever_its_spelling_for_the_refusals_and_for_again(language, tmp_path, monkeypatch):
+    """A2 / A6: a long-path prefix, the long UNC prefix, this computer's admin share and a junction all name one
+    folder: the data folder written so is refused like the data folder, and a source written so is that source again
+    (its row and its path as first written, so its origins' keys never change)."""
+    store, data_dir = _empty(language)
+    src = _source_root()
+
+    def spellings(path):
+        drive, rest = os.path.splitdrive(path)
+        share = drive[0] + "$" + rest
+        return {"long": "\\\\?\\" + path, "long UNC": "\\\\?\\UNC\\localhost\\" + share,
+                "admin share": "\\\\localhost\\" + share, "loopback": "\\\\127.0.0.1\\" + share,
+                "forward": "//?/" + path.replace("\\", "/")}
+    with store:
+        before = store.conn.execute("SELECT * FROM roots").fetchall()
+        own = {"the data folder": data_dir, "every language's data": os.path.dirname(data_dir),
+               "a folder holding them": os.environ["SURASURA_TEST_ROOT"],
+               "a folder inside": os.path.join(data_dir, ls.CONTENT_FOLDER)}
+        os.makedirs(own["a folder inside"], exist_ok=True)
+        for what, path in own.items():
+            for how, spelled in spellings(path).items():
+                with pytest.raises(ls.NotASource):
+                    store.add_source(spelled)
+        link = tmp_path / "to data"
+        _junction(os.path.dirname(data_dir), link)
+        with pytest.raises(ls.NotASource):
+            store.add_source(str(link))                                     # a junction to every language's data
+        link_in = tmp_path / "to inside"
+        _junction(own["a folder inside"], link_in)
+        with pytest.raises(ls.NotASource):
+            store.add_source("\\\\?\\" + str(link_in))
+        assert store.conn.execute("SELECT * FROM roots").fetchall() == before
+        first = store.add_source(src)
+        for how, spelled in spellings(src).items():
+            assert store.add_source(spelled) == first, how
+        to_src = tmp_path / "to source"
+        _junction(src, to_src)
+        assert store.add_source(str(to_src)) == first                       # across a junction
+        assert store.sources() == [{"id": first, "path": os.path.normpath(src), "on": True, "items": 0}]
+        (tmp_path / "far").mkdir()
+        new = store.add_source("\\\\?\\" + str(tmp_path / "far"))
+        assert new != first and store.sources()[-1] == {"id": new, "path": str(tmp_path / "far"), "on": True,
+                                                        "items": 0}
+        # each layer alone: the spelling read back...
+        for how, spelled in spellings(src).items():
+            assert ls.folder_path(spelled) == os.path.normpath(src), how
+        # ...and the identity, for a spelling no rule reads back (a share, a mapped drive): here this computer's own
+        share = spellings(data_dir)["admin share"]
+        if os.path.isdir(share):                                            # admin shares on (the default)
+            plain = lambda p: os.path.normpath(os.path.abspath(p))            # noqa: E731
+            with monkeypatch.context() as m:
+                m.setattr(ls, "folder_path", plain)
+                for path in own.values():
+                    with pytest.raises(ls.NotASource):
+                        store.add_source(spellings(path)["admin share"])
+                assert store.add_source(spellings(src)["admin share"]) == first
+            assert store.sources()[0]["path"] == os.path.normpath(src)
+
+
+def test_content_target_never_takes_a_name_it_couldnt_check(monkeypatch, tmp_path):
+    """A3: a stat that fails for any reason but "not found" (access denied, a name Windows rejects) is raised, never
+    read as "taken, try the next": that loops for ever and the scan never ends."""
+    data_dir = str(tmp_path)
+    os.makedirs(os.path.join(data_dir, "Library", "show"))
+    real, calls = os.stat, []
+
+    def denied(path, *a, **kw):
+        if "show" in str(path):
+            calls.append(path)
+            if len(calls) > 50:
+                raise RuntimeError("looping")
+            raise PermissionError(13, "Access is denied", str(path))
+        return real(path, *a, **kw)
+    monkeypatch.setattr(os, "stat", denied)
+    with pytest.raises(PermissionError):
+        ls.content_target(data_dir, "Library/show/ep1.srt")
+    monkeypatch.setattr(os, "stat", real)
+    if sys.platform == "win32":
+        with pytest.raises(OSError):
+            ls.content_target(data_dir, "Library/show/ep1?.srt")             # WinError 123
+    assert ls.content_target(data_dir, "Library/show/ep1.srt") == ("Library/show/ep1.srt", False)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_connects_pairing_keeps_the_first_origin_and_its_video_when_another_origin_is_attached(language):
+    """A4: among an item's origin rows, one naming a video comes first, then the oldest: a later origin without a
+    video (a moved original, a duplicate attached) never drops the video Connect mines nor moves its pairing version
+    (else a job being mined is picked again)."""
+    store, data_dir = _empty(language)
+    src = _source_root()
+    w = names(language)
+    with store:
+        root = store.add_source(src)
+        f = _found(language, data_dir, src, w[69], "ep1.srt", 1, video_path="D:/Shows/ep1.mkv", video_size=1234,
+                   video_key="v1-ep1")
+        item = store.take_in(root, [f], first=True).added[0]
+        version = fit_check.version(connect_library.pairing_of(store, item))
+        g = _found(language, data_dir, src, w[69], "ep1 moved.srt", 1, copy=False, item_id=item)
+        store.take_in(root, [g])
+        later = connect_library.pairing_of(store, item)
+        assert later["video_path"] == "D:/Shows/ep1.mkv" and later["origin"] == os.path.abspath(f["origin"])
+        assert fit_check.version(later) == version
+        # no video first, then two later origins: the one naming a video is read, and stays read
+        h = _found(language, data_dir, src, w[70], "ep2.srt", 2)
+        other = store.take_in(root, [h], first=True).added[0]
+        oldest = connect_library.pairing_of(store, other)
+        assert oldest["origin"] == os.path.abspath(h["origin"]) and "video_path" not in oldest
+        m = _found(language, data_dir, src, w[70], "ep2 b.srt", 2, copy=False, item_id=other)
+        store.take_in(root, [m])
+        assert connect_library.pairing_of(store, other)["origin"] == os.path.abspath(h["origin"])
+        k = _found(language, data_dir, src, w[70], "ep2 c.srt", 2, copy=False, item_id=other,
+                   video_path="D:/Shows/ep2.mkv")
+        store.take_in(root, [k])
+        assert connect_library.pairing_of(store, other)["video_path"] == "D:/Shows/ep2.mkv"
+        n = _found(language, data_dir, src, w[70], "ep2 d.srt", 2, copy=False, item_id=other,
+                   video_path="D:/Shows/ep2 other.mkv")
+        store.take_in(root, [n])
+        assert connect_library.pairing_of(store, other)["origin"] == os.path.abspath(k["origin"])
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_one_batch_with_the_same_bytes_twice_adds_one_item(language):
+    """A5 (SRC-7): two names for one file in one look (`ep1.srt` and its copy) are one item: the second origin is
+    recorded on the first's item, and its copy, which no item holds, is named for the caller to send to the trash."""
+    store, data_dir = _empty(language)
+    src = _source_root()
+    show = names(language)[71]
+    with store:
+        root = store.add_source(src)
+        f = _found(language, data_dir, src, show, "ep1.srt", 1)
+        twin = shutil.copyfile(f["origin"], os.path.join(src, show, "ep1 - Copy.srt"))
+        g = dict(f, origin=twin, rel=_copied(data_dir, twin, show))
+        change = store.take_in(root, [g, f], first=True)
+        assert len(change.added) == 1 and change.attached == change.added
+        assert {o.item_id for o in store.origins().values()} == set(change.added)
+        assert len(store.origins()) == 2 and len(_current(store)) == 1
+        kept = store.item(change.added[0])["rel_path"]
+        assert sorted(change.unused + [kept]) == sorted([f["rel"], g["rel"]])
+        again = store.take_in(root, [dict(f)])                              # skipped: its copy is the item's own
+        assert again.skipped["known"] and again.unused == ([] if kept == f["rel"] else [f["rel"]])
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_item_of_video_key_finds_the_live_item_holding_a_video(language):
+    """K1b's check (a): the item whose record holds a video (hato's key, or an origin's `video_key`), else None."""
+    store, data_dir = _empty(language)
+    src = _source_root()
+    show = names(language)[72]
+    with store:
+        root = store.add_source(src)
+        f = _found(language, data_dir, src, show, "ep1.srt", 1, video_key="v1-src")
+        item = store.take_in(root, [f], first=True).added[0]
+        hato_file = os.path.join(data_dir, "HighPriority", "Hato", f"{show}.srt")
+        os.makedirs(os.path.dirname(hato_file))
+        with open(hato_file, "w", encoding="utf-8") as fh:
+            fh.write(_episode_text(language, 2))
+        paired = store.register(hato_file, _hato("v1-hato", 2, show)).added[0]
+        assert store.item_of_video_key("v1-src") == item
+        assert store.item_of_video_key("v1-hato") == paired
+        assert store.item_of_video_key("v1-none") is None and store.item_of_video_key(None) is None
+        assert store.item_of_video_key(ls.origin_key(f["origin"])) is None   # an origin's own key is no video
+        store.remove([item])
+        assert store.item_of_video_key("v1-src") is None                     # live items only
+    assert ls.rename_no_overwrite is ls._rename_no_overwrite

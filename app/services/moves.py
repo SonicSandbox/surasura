@@ -11,7 +11,7 @@
   order), `import_finished` (the Finished importer's store half), `relink` / `its_new` (Needs you's *Link these*, the
   rename asks), `link_video` (Connect's *Link…*: a video, never `relink`), `remove` / `restore` (the trash, 30 days),
   `pin`, `keep_cards` (a Finished item's cards out of / back in the order), `ask_mining`, `split` / `join`,
-  `set_media_type`, `set_cover`. Each
+  `set_media_type`, `set_cover`, `forget_covers` (*Remove downloaded covers*, W3.2 Q7). Each
   returns at once (the window has already painted its
   own copy of the order); what happened comes back through callbacks, called on the writer's thread (the window's bridge
   queues them):
@@ -361,6 +361,14 @@ class Writer:
             cmd["auto"] = True
         return self._put(cmd)
 
+    # --- W3.2 Q7 ------------------------------------------------------------------------------------------------ #
+    def forget_covers(self, label=None):
+        """*Remove downloaded covers* (01 §1.3): `Store.forget_downloaded_covers` — the fetched, unlocked covers'
+        records cleared — then the cache's files those records named deleted (`covers_online.drop_cached`; a file a
+        locked record still names stays). The user's covers and the art beside their files stay; a book's cover comes
+        back with the next scan (N5). Nobody's to undo (the cache is re-fetchable): `auto`, `on_reread`."""
+        return self._put({"op": "forget_covers", "ids": [], "label": label, "auto": True})
+
     def undo(self, change=None, label=None):
         """Undo `change` (a toast's), or the newest saved change (Ctrl+Z) as it stands when the queue reaches it."""
         return self._put({"op": "undo", "ids": [], "change": change, "label": label}, check_mode=False)
@@ -689,6 +697,13 @@ class Writer:
         if op == "set_cover":
             return store.set_cover(cmd["work_id"], cmd["source"], ref=cmd["ref"], path=cmd["path"],
                                    locked=cmd["locked"])
+        if op == "forget_covers":                   # W3.2 Q7: the records first, then their files
+            from app.services import covers_online
+            sql = "SELECT cover_path FROM works WHERE cover_path LIKE 'cache:%'"
+            named = {p for (p,) in store.conn.execute(sql + " AND cover_locked = 0")}
+            store.forget_downloaded_covers()
+            covers_online.drop_cached(named - {p for (p,) in store.conn.execute(sql)})
+            return None
         raise ValueError(f"unknown command {op!r}")
 
     # --- the trash: Remove, Put back, their Undo ------------------------------------------------------------------ #
@@ -1187,7 +1202,8 @@ class Writer:
             print(f"Window writer: a listener failed: {e!r}")
 
 
-UNORDERED = ("set_watched", "pin", "keep_cards", "ask_mining", "set_cover", "set_media_type", "split")
+UNORDERED = ("set_watched", "pin", "keep_cards", "ask_mining", "set_cover", "set_media_type", "split",
+             "forget_covers")
 #   commands that never change the order: the numbers aren't asked again after them
 
 

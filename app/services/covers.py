@@ -421,6 +421,12 @@ def keep_user_image(language, work_id, source_path, writer, current=None):
             data = f.read(MAX_IMAGE + 1)
     except OSError:
         return None
+    return keep_user_bytes(language, work_id, data, writer, current)
+
+
+def keep_user_bytes(language, work_id, data, writer, current=None, source="user", ref=None):
+    """`keep_user_image` for an image already in hand (W3.2 Q7: a candidate picked, a pasted link's image): recorded
+    `set_cover(work_id, source, ref=ref, path="user:<name>", locked=True)` — the user's pick, on the Undo stack."""
     ext = image_ext(data) if len(data) <= MAX_IMAGE else None
     if ext is None:
         return None
@@ -435,6 +441,6 @@ def keep_user_image(language, work_id, source_path, writer, current=None):
             return None
     if not os.path.isfile(target) and not _write_whole(target, data):
         return None
-    if writer.set_cover(work_id, "user", path="user:" + name, locked=True) is None:
+    if writer.set_cover(work_id, source, ref=ref, path="user:" + name, locked=True) is None:
         return None
     return "user:" + name

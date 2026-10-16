@@ -229,7 +229,7 @@ class Writer:
     def reason(self):
         return "read-only"
 
-    def import_finished(self, paths, copied=(), label=None):
+    def import_finished(self, paths, copied=(), label=None, answer=None):
         self.calls.append((paths, copied))
         return 1 if self.takes else None
 
@@ -252,6 +252,50 @@ def test_a_store_that_turns_read_only_after_the_copy_gets_the_copies_sent_to_the
     assert job.outcome == "refused" and view.state == jobs.FAILED and view.message == "read-only"
     assert len(w.calls) == 1 and len(w.calls[0][1]) == 3, "it handed its three copies"
     assert lib.graduated_files() == [] and len(os.listdir(os.path.join(lib.data_dir, ".trash"))) == 3
+
+
+def _graduated_rows(db):
+    """Finished's rows, read from the file itself (the store is marked damaged: no handle opens it)."""
+    import sqlite3
+    conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    try:
+        return conn.execute("SELECT COUNT(*) FROM items WHERE tier = 'graduated'").fetchone()[0]
+    finally:
+        conn.close()
+
+
+def test_S2_a_store_that_turns_read_only_after_the_import_was_queued_keeps_no_copy_and_the_job_says_refused(
+        lib, tmp_path):
+    """S2: the writer let a queued import go on a store gone read-only, but only a drop's copies went to the trash —
+    the import's stayed in `Graduated/` (never walked: invisible, for ever) and the job had already said *imported*."""
+    folder = lib.show_folder(str(tmp_path / "Downloads"))
+    lib.writer.hold()                                   # a drag: the import queues behind it
+    job = F.ImportJob(lib.language, [folder], lib.writer, lib.registry, data_dir=lib.data_dir)
+    job.start()
+    assert h.until(lambda: lib.writer.pending() == 1)
+    assert len(lib.graduated_files()) == 3, "copied, waiting for the store"
+    lib.store.close()
+    ls.mark_damaged(lib.store.db_path, "test: a damaged store")
+    assert h.until(lambda: not lib.writer.can_write(), seconds=M.MODE_RECHECK_S * 3)
+    lib.writer.release()
+    assert job.wait(30)
+    view = job.job.view()
+    assert job.outcome == "refused" and view.state == jobs.FAILED and view.message
+    assert job.paths == [] and job.copied == []
+    assert lib.graduated_files() == [] and len(os.listdir(os.path.join(lib.data_dir, ".trash"))) == 3
+    assert _graduated_rows(lib.store.db_path) == 0 and lib.heard.saved == []
+
+
+def test_S2_an_import_the_store_fails_keeps_no_copy_and_the_job_says_failed(lib, tmp_path, monkeypatch):
+    def fails(self, paths):
+        raise ls.NotInLibrary("not in the library: a folder moved meanwhile")
+    monkeypatch.setattr(ls.Store, "import_finished", fails)
+    folder = lib.show_folder(str(tmp_path / "Downloads"))
+    job = lib.run([folder])
+    view = job.job.view()
+    assert job.outcome == "failed" and view.state == jobs.FAILED and "a folder moved meanwhile" in view.message
+    assert lib.graduated_files() == [] and len(os.listdir(os.path.join(lib.data_dir, ".trash"))) == 3
+    assert lib.finished() == {} and lib.heard.saved == [] and not lib.writer.can_undo()
 
 
 def test_a_copy_that_fails_half_way_sends_what_it_made_to_the_trash_and_says_why(lib, tmp_path, monkeypatch):

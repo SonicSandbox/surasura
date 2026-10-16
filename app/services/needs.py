@@ -31,7 +31,9 @@ callable is set. `badge(entries)` counts the unseen ones (P1.2-1: seen ones stay
 (never settings.json), written whole and atomically, on the window's worker (`mark_seen`, `answer`). An entry's key
 names what it holds (a show's key moves when another of its files goes missing, so it counts again). *Keep its words*
 and *Leave them* are answers kept in the same file (the file stays missing and counted, L2.2 05 §9b: nothing in the
-store changes); Connect's entries are seen through Connect's own `seen_at` (`status.mark_seen`, `mark_all_seen`).
+store changes); Connect's entries are seen through Connect's own `seen_at` (`status.mark_seen`, `mark_all_seen`). No
+key falls off by age or count: `prune` takes out those whose trouble is gone (a file back on disk, a drive plugged in
+again — asked again the next time it goes offline).
 
 `find_videos(language, need, settings)` (a worker; never writes, never opens a video, never a cloud placeholder): for each
 line of a *no video* card, the show's own folder, then Connect's video folders (`connect_video_folders`, their
@@ -66,7 +68,6 @@ WIRED_LATER = frozenset(("mine_text_only", "make_cards"))
 # Connect's kinds and their one action beside *Dismiss* (`connect_window.HOW`'s, as the Qt window offers them now)
 CONNECT_ACTIONS = {"not-timed": ("mine_anyway",), "no-pairing": ("ask_hato",), "repick": ("open_logs",),
                    "mine-failed": ("open_logs",), "error": ("open_logs",)}
-SEEN_KEPT = 2000                        # keys kept in the seen file, newest last (old ones fall off)
 SEEN_VERSION = 1
 _NO_VIDEO_REASON = "No video: its video isn't on this computer (or isn't downloaded yet)."   # runner.NO_VIDEO's words
 
@@ -389,7 +390,7 @@ def _add(language, field, keys):
         new = [k for k in keys if k not in set(have)]
         if not new:
             return 0                                # nothing new: nothing written (S19)
-        data[field] = (have + new)[-SEEN_KEPT:]
+        data[field] = have + new                    # never capped: a key goes only with its trouble (`prune`)
         _write(language, data)
     return len(new)
 
@@ -412,6 +413,33 @@ def read_answered(language):
 def answer(language, keys):
     """Record *Keep its words* / *Leave them* (`answer_keys`): those leave the page; nothing in the store changes."""
     return _add(language, "answered", keys)
+
+
+def prune(language, view, offline_roots=None, connect=None, asks=None):
+    """(S3, N10; a worker's call, after the reads `entries` is given.) The keys whose trouble is gone leave the seen
+    file — never by age or by count. Judged only by what the caller read (a key of a kind it didn't read stays): a
+    file's answer (`item:`) while Current holds it missing, a show's card while it is listed; with `offline_roots`, an
+    offline root's while it is still offline — back, its *Keep their words* goes, so offline again later it is asked
+    again; with `connect`, the video cards' and the gaps'; with `asks`, the rename asks'. A view that isn't the
+    store's prunes nothing. Nothing gone → nothing written. -> how many keys went."""
+    if view is None or view.mode != "store":
+        return 0
+    judged = {"item", "gone"} | ({"offline"} if offline_roots is not None else set()) | \
+        ({"video", "gap"} if connect is not None else set()) | ({"ask"} if asks is not None else set())
+    roots = [r if isinstance(r, Root) else Root(*r) for r in offline_roots or ()]
+    with _lock:
+        data = _read(language)
+        present = {item_key(e.id) for r in view.rows for e in r.episodes if e.missing}
+        present |= {e.key for e in entries(view, connect=connect, offline_roots=roots, asks=asks or (),
+                                          answered=frozenset(data["answered"]))}
+        present |= {_offline_entry(r, {}, frozenset()).key for r in roots}          # answered ones too
+        present |= {f"gap:{g.get('id')}" for g in (connect or {}).get("gaps") or ()}
+        kept = {f: [k for k in data[f] if k.split(":", 1)[0] not in judged or k in present]
+                for f in ("seen", "answered")}
+        gone = sum(len(data[f]) - len(kept[f]) for f in kept)
+        if gone:
+            _write(language, kept)
+    return gone
 
 
 def mark_all_seen(language, entries_, connect_path=None):

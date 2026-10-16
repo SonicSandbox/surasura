@@ -2666,3 +2666,120 @@ def test_B_a_quit_that_comes_while_the_records_are_read_journals_the_register(li
     w2, heard2 = make_writer()
     assert w2.replay()
     assert h.until(lambda: _tier_of(lib, a) == "arrivals")
+# --- S fix round: the journal's race, stale entries, background covers, an import let go ------------------------- #
+def test_S1_a_command_landing_while_the_timer_writes_the_journal_leaves_no_entry_behind(lib, make_writer, monkeypatch):
+    """S1 (a): the 0.3 s timer journals what waits, and only then says what the file holds. A command that landed in
+    between was never taken out of the file — it stayed there, through a quit, to be replayed over a later choice."""
+    work = lib.store.item(lib.ids("now")[0])["work_id"]
+    writing, wrote = threading.Event(), threading.Event()
+    real_cover, real_write = ls.Store.set_cover, M._write_json
+
+    def slow_cover(self, *a, **k):
+        writing.wait(5)                                 # the store answers once the timer's journal write has begun
+        return real_cover(self, *a, **k)
+
+    def slow_write(path, data):
+        if threading.current_thread().name != f"window-writer-{lib.language}" and not writing.is_set():
+            writing.set()
+            time.sleep(0.5)                             # the command lands meanwhile
+            try:
+                return real_write(path, data)
+            finally:
+                wrote.set()
+        return real_write(path, data)
+    monkeypatch.setattr(ls.Store, "set_cover", slow_cover)
+    monkeypatch.setattr(M, "_write_json", slow_write)
+    w, heard = make_writer(saving_after=0.05)
+    w.set_cover(work, "user", path="user:選んだ表紙.jpg", locked=True)
+    assert h.until(lambda: heard.saved)
+    assert writing.is_set() and wrote.wait(5), "the timer's journal write ran while the command waited"
+    assert h.until(lambda: journal(lib.language) is None and not w.pending(), seconds=3),         "the landed command's entry stayed in the file"
+    time.sleep(0.2)
+    assert journal(lib.language) is None, "the landed command's entry stayed in the file"
+
+
+def _stale(lib, w, holder, queue):
+    """A command journalled while the store is busy, the entry as the file held it, then landed: -> the entry (what a
+    journal left behind by the race looks like)."""
+    queue()
+    assert h.until(lambda: journalled(lib.language))
+    entry = journal(lib.language)
+    holder.release()
+    assert h.until(lambda: not w.pending() and journal(lib.language) is None)
+    return entry
+
+
+def test_S1_a_cover_left_in_the_journal_never_writes_over_the_cover_chosen_after_it(lib, make_writer, short_lock_wait):
+    """The review's case: cover A journalled (busy), landed, its entry left behind; B chosen later (nothing busy,
+    nothing journalled); quit, restart: A must not be written over B. A replay checks a title's fields as queued."""
+    w, heard = make_writer()
+    work = lib.store.item(lib.ids("soon")[0])["work_id"]
+    stale = _stale(lib, w, LockHolder(lib.db),
+                   lambda: w.set_cover(work, "user", path="user:表紙A.jpg", locked=True))
+    assert stale["pending"][0]["before"], "journalled with what it touches as queued"
+    w.set_cover(work, "user", path="user:表紙B.jpg", locked=True)
+    assert h.until(lambda: len(heard.saved) == 2)
+    w._abandon()
+    M._write_json(M.journal_path(lib.language), stale)
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: journal(lib.language) is None and heard2.notes)
+    assert lib.store._work_row(work)["cover_path"] == "user:表紙B.jpg"
+    assert heard2.notes == [WORDS["crash_one"]] and heard2.saved == []
+
+
+def test_S1_a_pin_left_in_the_journal_is_let_go_quietly_and_never_pins_again_what_was_unpinned(lib, make_writer,
+                                                                                            short_lock_wait):
+    """A status write moves no `changed_in`: the pin's entry replayed unchecked. Landed and nothing since → let go, no
+    note; unpinned since (*Done with its cards*, or its Undo) → listed, never pinned again."""
+    w, heard = make_writer()
+    x = lib.ids("now")[1]
+    stale = _stale(lib, w, LockHolder(lib.db), lambda: w.pin([x]))
+    pinned = lib.store.item(x)["pinned"]
+    assert pinned is not None
+    w._abandon()
+    M._write_json(M.journal_path(lib.language), stale)
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: journal(lib.language) is None and not w2.pending())
+    assert lib.store.item(x)["pinned"] == pinned and heard2.notes == [], "done before the crash: let go quietly"
+    w2.pin([x], on=False)
+    assert h.until(lambda: heard2.saved)
+    w2._abandon()
+    M._write_json(M.journal_path(lib.language), stale)
+    w3, heard3 = make_writer()
+    assert w3.replay()
+    assert h.until(lambda: journal(lib.language) is None and heard3.notes)
+    assert lib.store.item(x)["pinned"] is None and heard3.notes == [WORDS["crash_one"]]
+
+
+def test_S1_a_join_and_an_import_left_in_the_journal_are_let_go_and_a_media_type_changed_since_is_kept(
+        lib, make_writer, tmp_path, short_lock_wait):
+    """No ids to check: a join's pieces, an import's paths, the titles' types are what a replay compares."""
+    w, heard = make_writer()
+    now, soon = lib.ids("now"), lib.ids("soon")
+    piece = lib.store.item(now[0])["piece_id"]
+    lib.store.split(piece, now[2])
+    second = lib.store.item(now[2])["piece_id"]
+    copied = ls.copy_into_finished(lib.data_dir, [_outside_file(str(tmp_path / "Downloads"), lib.language)])
+    work = lib.store.item(soon[0])["work_id"]
+    holder = LockHolder(lib.db)
+    w.import_finished(copied, copied=copied)          # first: its new piece never takes the joined one's id
+    w.join([piece, second])
+    w.set_media_type([work], "drama")
+    assert h.until(lambda: [op for op, _i in journalled(lib.language)] == ["import_finished", "join",
+                                                                           "set_media_type"])
+    stale = journal(lib.language)
+    holder.release()
+    assert h.until(lambda: not w.pending() and journal(lib.language) is None)
+    row = lib.store.item_id(copied[0])
+    lib.store.set_tier([row], "now")                    # the imported file taken out of Finished since
+    lib.store.set_media_type([work], "anime")           # another window's answer to *What is it?*
+    w._abandon()
+    M._write_json(M.journal_path(lib.language), stale)
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: journal(lib.language) is None and heard2.notes)
+    assert lib.store.place_of(row)[0] == "now", "the import never puts it back in Finished"
+    assert lib.store.media_type(work)[0] == "anime" and {lib.store.item(i)["piece_id"] for i in now[:4]} == {piece}
+    assert heard2.notes == [WORDS["crash_many"].format(n=2)], "the join was done: quiet; the other two listed"

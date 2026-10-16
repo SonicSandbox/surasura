@@ -308,7 +308,8 @@ def _delete_db(path):
 
 def open_store(language, path=None):
     """Open (or create/rebuild) the SQLite token store for a language. WAL, busy-timeout, schema
-    ensured, corruption self-heals by rebuilding."""
+    ensured, corruption self-heals by rebuilding; any other database error (busy, a full disk, an I/O error) is
+    raised, the store kept (`_damaged`)."""
     db_path = path or store_path_for(language)
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
 
@@ -374,7 +375,6 @@ def open_reader(language, path=None):
 # SQLite's primary result codes (Python 3.11's sqlite3.SQLITE_*), read from an error's `sqlite_errorcode`.
 _BUSY_CODES = (5, 6, 15)        # SQLITE_BUSY, SQLITE_LOCKED, SQLITE_PROTOCOL
 _DAMAGE_CODES = (11, 26)        # SQLITE_CORRUPT, SQLITE_NOTADB
-_IOERR_CORRUPTFS = 778          # the one I/O error that is the file's: a read cut short inside it (the file damaged)
 
 
 def _code(error):
@@ -396,16 +396,18 @@ def _locked(error):
 
 
 def _damaged(error):
-    """The file itself is damaged — SQLite says it is corrupt, not a database, or cut short (SQLITE_IOERR_CORRUPTFS) —
-    the one error open_store answers by deleting the store (a cache: built again). Anything else says nothing of the
-    file and is raised, the store kept: busy or a locking protocol (another connection), a full disk (a rebuild would
-    only fill it again), any other disk I/O error (the disk's: a rebuild meets the same disk), no permission, can't
-    open. Never deleted for it: the next open tries again, and Generate runs on without the cache meanwhile."""
+    """The file itself is damaged — SQLite says it is corrupt or not a database (a file cut short or scribbled on lands
+    here too) — the one error open_store answers by deleting the store (a cache: built again). Anything else says
+    nothing of the file and is raised, the store kept: busy or a locking protocol (another connection), a full disk (a
+    rebuild would only fill it again), a disk I/O error (the disk's: a rebuild meets the same disk), no permission,
+    can't open. Never deleted for it: the next open tries again, and Generate runs on without the cache meanwhile. By
+    its text only when raised without a code: SQLite's own words for damage, never any "malformed" (JSON's is not)."""
     code = _code(error)
     if code is not None:
-        return code in _DAMAGE_CODES or error.sqlite_errorcode == _IOERR_CORRUPTFS
+        return code in _DAMAGE_CODES
     text = str(error).lower()
-    return "malformed" in text or "not a database" in text
+    return any(words in text for words in ("database disk image is malformed", "malformed database schema",
+                                           "not a database"))
 
 
 # --------------------------------------------------------------------------- #

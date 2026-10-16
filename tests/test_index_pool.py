@@ -470,6 +470,7 @@ def _store_with_a_row(db):
 
 NOT_DAMAGE = [
     pytest.param(sqlite3.OperationalError, "disk I/O error", 266, "SQLITE_IOERR_READ", id="io-error"),
+    pytest.param(sqlite3.OperationalError, "disk I/O error", 778, "SQLITE_IOERR_WRITE", id="io-write-error"),
     pytest.param(sqlite3.OperationalError, "database or disk is full", 13, "SQLITE_FULL", id="disk-full"),
     pytest.param(sqlite3.OperationalError, "locking protocol", 15, "SQLITE_PROTOCOL", id="locking-protocol"),
 ]
@@ -503,7 +504,8 @@ def test_a_disk_or_locking_error_at_the_open_is_raised_and_never_deletes_the_sto
 def test_a_full_disk_while_an_old_store_is_built_again_is_raised_and_keeps_the_file(tmp_path, monkeypatch):
     """A real SQLITE_FULL: a store from an older version is built again at the open, and the disk can't take the new
     tables (SQLite's page cap stands in for the full disk). The build rolls back and the error is raised; the file is
-    never deleted (a rebuild would only fill the disk again) and still holds what it held."""
+    not deleted — a full disk never deletes a store (the brief's rule; this one's rows are old, and the next good open
+    drops them) — and the rollback leaves it as it was."""
     db = str(tmp_path / "old.db")
     old = sqlite3.connect(db)
     old.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
@@ -556,7 +558,7 @@ def test_a_locking_protocol_answer_to_the_wal_switch_is_asked_again(tmp_path, mo
 DAMAGE = [
     pytest.param(sqlite3.DatabaseError, "database disk image is malformed", 779, "SQLITE_CORRUPT_INDEX", id="corrupt"),
     pytest.param(sqlite3.DatabaseError, "database disk image is malformed", None, None, id="corrupt-by-text"),
-    pytest.param(sqlite3.OperationalError, "disk I/O error", 778, "SQLITE_IOERR_CORRUPTFS", id="file-cut-short"),
+    pytest.param(sqlite3.DatabaseError, "malformed database schema (files)", None, None, id="schema-by-text"),
 ]
 
 
@@ -564,7 +566,7 @@ DAMAGE = [
 def test_a_corrupt_store_is_still_deleted_and_built_again(tmp_path, monkeypatch, cls, text, code, name):
     """Real damage keeps its path: SQLITE_CORRUPT ("database disk image is malformed"; here its extended code, an index
     found damaged) met at the open deletes the store and builds it again — by its code, and by its text when raised by
-    hand; and the one I/O error that is the file's own, a read cut short inside it (SQLITE_IOERR_CORRUPTFS)."""
+    hand (SQLite's own words for it)."""
     db = str(tmp_path / "corrupt.db")
     _store_with_a_row(db)
     deleted = []
@@ -579,15 +581,17 @@ def test_a_corrupt_store_is_still_deleted_and_built_again(tmp_path, monkeypatch,
         store.close()
 
 
-def test_an_error_is_read_by_its_code_before_its_text(tmp_path, monkeypatch):
+@pytest.mark.parametrize("coded", [True, False], ids=["coded", "by-text"])
+def test_an_error_is_read_by_its_code_before_its_text(tmp_path, monkeypatch, coded):
     """The code decides when SQLite gives one: "malformed JSON" is SQLITE_ERROR (a bad argument to a JSON function),
-    no damage to the file, though its text says "malformed" — raised, the store kept."""
+    no damage to the file, though its text says "malformed" — raised, the store kept. Without a code, only SQLite's own
+    words for damage count, so it is raised then too."""
     db = str(tmp_path / "current.db")
     _store_with_a_row(db)
     deleted = []
     monkeypatch.setattr(ti, "_delete_db", lambda path: deleted.append(path))
     _failing_connect(monkeypatch, "SELECT 1 FROM aggregate", _sqlite_error(
-        sqlite3.OperationalError, "malformed JSON", 1, "SQLITE_ERROR"))
+        sqlite3.OperationalError, "malformed JSON", 1 if coded else None, "SQLITE_ERROR"))
     with pytest.raises(sqlite3.OperationalError, match="malformed JSON"):
         ti.open_store("ja", path=db)
     assert deleted == []

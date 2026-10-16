@@ -216,7 +216,7 @@ def test_a_language_never_set_up_is_not_set_up(generated):
 # --------------------------------------------------------------------------- #
 # The cost model (05 §3): status on a Sonic-sized library, timed
 # --------------------------------------------------------------------------- #
-def test_status_on_a_774_file_library_is_quick(monkeypatch):
+def test_status_answers_on_a_library_and_is_quick_in_the_timed_run(monkeypatch):
     """Recorded in the step note: status (no Anki probe) and status --anki with Anki closed, on 774 files. The figure is
     a speed check, so it is taken in the timed run (SURASURA_STORE_BENCH=1: the machine is the run's own), never in a
     full run beside two others — there a call's Python start alone took 5.07 s once, where status answers in ~0.3 s on

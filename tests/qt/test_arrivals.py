@@ -541,6 +541,7 @@ def _arrive(seed, title="ぼっち・ざ・ろっく！", added="2026-10-15T23:0
 
 def test_an_arrival_parts_the_covers_drops_the_new_one_in_and_reduced_motion_jumps_it(world, test_clock):
     seed, win, _w = world()
+    test_clock.mode.set_setting("full")        # the window set its own (Follow Windows: GitHub's runner shows none)
     inset = win.arrivals_inset
     played = inset.arrivals_played
     _arrive(seed)
@@ -560,6 +561,7 @@ def test_an_arrival_parts_the_covers_drops_the_new_one_in_and_reduced_motion_jum
 
 def test_the_inset_sinks_pressed_and_lifts_released_on_its_springs(world, test_clock):
     seed, win, _w = world()
+    test_clock.mode.set_setting("full")        # the window set its own (Follow Windows: GitHub's runner shows none)
     inset = win.arrivals_inset
     c = QPointF(inset.width() / 2, inset.height() / 2)
     mouse(inset, QEvent.Type.MouseButtonPress, c)

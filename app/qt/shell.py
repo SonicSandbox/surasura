@@ -886,6 +886,12 @@ class ShellWindow(QMainWindow):
             from app.qt import finished
             self.finished = finished.FinishedActions(self)
         # --- end W3.2 Q4
+        # --- W3.2 Q8: the rest of Current's ⋯ (`item_menu.py`), the ✂ seam and drop-to-join
+        self.items = None
+        if self.moves is not None:
+            from app.qt import item_menu
+            self.items = item_menu.ItemActions(self)
+        # --- end W3.2 Q8
 
         self._restore_state(read_state(self.state_file))
 

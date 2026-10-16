@@ -86,6 +86,49 @@ FIN_IMPORT_NOTHING = "Nothing new to add: it's in Finished already"
 FIN_IMPORT_STOPPED = "Stopped: nothing was added"
 FIN_IMPORT_FAILED = "Couldn't add it to Finished: {why}"
 # --- end W3.2 Q4
+# --- W3.2 Q8: the rest of Current's ⋯ (app/qt/item_menu.py), the ✂ seam and drop-to-join -------------------------- #
+ITEM_MENU = {
+    "pin": ("Study its cards first", "Its cards come first in your Anki order"),
+    "unpin": ("Done with its cards", "Its cards go back to their place in your order"),
+    "type": ("What is it?", "Say what it is: its words, its icon and how it counts follow"),
+    "split": ("Split here…", "Make the episodes after this point a part of its own (one Undo joins them back)"),
+    "join": ("Join with…", "Join another part of the same title to this one, in episode order"),
+    "cover": ("Change cover…", "Choose the picture it shows"),
+    "folder": ("Open its folder", "Open the folder its files are in"),
+    "remove": ("Remove…", "Take it out of your library: its files go to the trash for 30 days (asks first)"),
+}
+ITEM_TYPES = {"anime": "Anime", "drama": "Drama", "movie": "Movie", "youtube": "YouTube", "podcast": "Podcast",
+              "audiobook": "Audiobook", "book": "Book", "lightnovel": "Light novel", "manga": "Manga", "game": "Game",
+              "text": "Text"}
+ITEM_TYPE_TIP = "It's a {kind}"
+ITEM_TYPE_GUESS = ("Let Surasura tell", "Surasura works it out from its files again")
+ITEM_TYPE_DONE = "{title} is now {kind}"
+ITEM_TYPE_GUESSED = "Surasura tells what {title} is again"
+ITEM_SPLIT_AFTER = "After {ep}"
+ITEM_SPLIT_AFTER_TIP = "Split it after {ep}: {rest} becomes a part of its own"
+ITEM_SPLIT_HERE = "Split here (after {ep})"
+ITEM_SPLIT_DONE = "Split {title}: {rest} is a part of its own"
+ITEM_JOIN_PART = "{range} · {where}"
+ITEM_JOIN_PART_TIP = "Join {range} to this part, in episode order"
+ITEM_JOIN_WHERE = {"now": "#{n} in Current", "soon": "#{n} in Current (Soon)", "goal": "in Goal",
+                   "graduated": "in Finished", "arrivals": "in New arrivals"}
+ITEM_JOINED = "Joined {range}"
+ITEM_RANGE = "Ep {a}–{b}"
+ITEM_RANGE_ONE = "Ep {a}"
+ITEM_RANGE_FILES = "{n} files"
+ITEM_PINNED = "{title}: its cards come first"
+ITEM_UNPINNED = "{title}: done with its cards"
+ITEM_REMOVE_ASK = "Remove {title}?"
+ITEM_REMOVE_BODY = "Its {n} files go to the trash for 30 days. Undo puts them back where they were."
+ITEM_REMOVE_BODY_ONE = "Its file goes to the trash for 30 days. Undo puts it back where it was."
+ITEM_REMOVE_YES = "Remove {n} files"
+ITEM_REMOVE_YES_ONE = "Remove 1 file"
+ITEM_REMOVE_YES_TIP = "Take it out of your library: its files go to the trash for 30 days"
+ITEM_REMOVED = "Removed {title}"
+SEAM_LABEL = "✂ Split here"
+SEAM_TIP = "✂ Split here\n• Click to make {rest} a part of its own"
+JOIN_LABEL = "Drop to join"
+# --- end W3.2 Q8
 NEEDS_HEADING = "Needs you"
 NEEDS_EMPTY = ("Nothing needs you", "When something waits on you, it shows here")
 TAB_COUNT = "{name}  {count}"                   # Finished's records, Needs you's unseen entries

@@ -1061,6 +1061,7 @@ class RowDelegate(QStyledItemDelegate):
             out.append(("title", g["title"], payload.title, None))
             if is_open:
                 out += self._episode_parts(payload, g["eps"], hero=True)
+                out += self._seam_parts(payload, g["eps"], hero=True)       # --- W3.2 Q8
             out.append(("open", g["main"], None, None))
         elif kind == ROW:
             slab = self.slab_of(rect)
@@ -1077,8 +1078,9 @@ class RowDelegate(QStyledItemDelegate):
             out.append(("title", QRect(slab.left(), slab.top(), g["main"].right() - slab.left() + 1, slab.height()),
                         payload.title + ("\n" + payload.line if payload.line else ""), None))
             if is_open:
-                out += self._episode_parts(payload, QRect(rect.left(), slab.bottom() + 1, rect.width(),
-                                                          rect.bottom() - slab.bottom()))
+                area = QRect(rect.left(), slab.bottom() + 1, rect.width(), rect.bottom() - slab.bottom())
+                out += self._episode_parts(payload, area)
+                out += self._seam_parts(payload, area)                       # --- W3.2 Q8
             out.append(("open", slab, None, None))
         elif kind == FINISHED:
             h = round(theme.SIZES["row"] * f)
@@ -1177,6 +1179,64 @@ class RowDelegate(QStyledItemDelegate):
             out.append(("stone", cols["tick"], strings.ROWS_STONE_TIP.format(
                 label=ep.label, state=state, action=strings.ROWS_STONE_ACTION[ep.watched]), ep))
         return out
+
+    # --- W3.2 Q8: the ✂ seam between two episodes of an opened row (A3 `split`), and drop-to-join's outline (G3) --- #
+    def _seam_parts(self, row, area, hero=False):
+        """An opened row's seams: one between each two of its episodes (a part of its own: a title's piece with 2+
+        files, never hato's mix), clear of the stone and the buttons; its payload the episode that would start the new
+        part."""
+        if row.piece_id is None or row.source == "hato" or len(row.episodes) < 2:
+            return []
+        eps = self._episode_rows(row, area, hero)
+        out = []
+        half = max(4, round(5 * fz()))
+        for k in range(1, len(eps)):
+            r, ep = eps[k]
+            cols = self._episode_cols(r)
+            left = r.left() + EP_LABEL_IN
+            out.append(("seam", QRect(left, r.top() - half, max(1, cols["play"].left() - 8 - left), 2 * half),
+                        strings.SEAM_TIP.format(rest=_rest_of(row, k)), ep))
+        return out
+
+    def paint_seam(self, p, r):
+        """The seam under the hand: a dashed accent line with *✂ Split here* on a chip at its left."""
+        f, mid = fz(), r.center().y() + 0.5
+        p.save()
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        pen = QPen(c("accent"), 1.5)
+        pen.setStyle(Qt.PenStyle.DashLine)
+        p.setPen(pen)
+        p.drawLine(QPointF(r.left(), mid), QPointF(r.right(), mid))
+        w = TEXT.metrics("status-pill").horizontalAdvance(strings.SEAM_LABEL) + round(16 * f)
+        h = round(20 * f)
+        chip = QRectF(r.left(), mid - h / 2, w, h)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(c("surface"))
+        p.drawRoundedRect(chip, h / 2, h / 2)
+        TEXT.draw(p, chip.left(), mid, strings.SEAM_LABEL, "status-pill", chip.width(), c("accent"), align="centre")
+        p.restore()
+
+    def paint_join(self, p, r):
+        """The part a dragged part would join (G3): a green dashed outline and *Drop to join*."""
+        f = fz()
+        p.save()
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        pen = QPen(c("ok"), max(1.5, round(2 * f)))
+        pen.setStyle(Qt.PenStyle.DashLine)
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        radius = theme.DRAG["placeholder-radius"]
+        p.drawRoundedRect(QRectF(r).adjusted(1.5, 1.5, -1.5, -1.5), radius, radius)
+        w = TEXT.metrics("status-pill").horizontalAdvance(strings.JOIN_LABEL) + round(16 * f)
+        h = round(20 * f)
+        chip = QRectF(r.right() - w - round(12 * f), r.top() + 4, w, h)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(c("bg"))
+        p.drawRoundedRect(chip, h / 2, h / 2)
+        TEXT.draw(p, chip.left(), chip.center().y(), strings.JOIN_LABEL, "status-pill", chip.width(), c("ok"),
+                  align="centre")
+        p.restore()
+    # --- end W3.2 Q8
 
     def _episode_cols(self, r):
         """An episode's parts, in a Current row's columns at the episode's height (G2.3 A1, A2): % · new in the row's
@@ -2127,6 +2187,15 @@ def whole_step(dpr):
 NO_DRAG = frozenset(("play", "more", "up", "down", "done", "mine-now", "journey", "put-back"))   # buttons (W3.2 Q4: put-back)
 
 
+def _rest_of(row, k):                                # --- W3.2 Q8: the files from episode `k` on, in words
+    eps = row.episodes[k:]
+    nums = [e.number for e in eps if e.number is not None]
+    if len(nums) == len(eps) and nums:
+        return strings.ITEM_RANGE.format(a=nums[0], b=nums[-1]) if len(nums) > 1 else \
+            strings.ITEM_RANGE_ONE.format(a=nums[0])
+    return eps[0].label if len(eps) == 1 else f"{eps[0].label} – {eps[-1].label}"
+
+
 def _same_payload(a, b):
     """A part's payload at the release is the press's: the same object, or the same episode (a refresh between)."""
     return a is b or (a is not None and b is not None and getattr(a, "id", object()) == getattr(b, "id", None))
@@ -2164,6 +2233,7 @@ class RowsView(QListView):
     menu_requested = pyqtSignal(object, object)    # (the Row, the global QPoint): its ⋯
     journey_requested = pyqtSignal(object, object)     # (the Row, the Episode): Up Next's *N new words ↗*
     put_back_requested = pyqtSignal(object)        # --- W3.2 Q4: (the Finished Row): its *Put back*
+    split_requested = pyqtSignal(object, object)   # --- W3.2 Q8: (the Row, the episode that starts the new part): ✂
 
     def __init__(self, name, tooltips=None, parent=None):
         super().__init__(parent)
@@ -2227,6 +2297,9 @@ class RowsView(QListView):
         self.parting = None                          # the running drag's parting (`drag.Parting`): offsets, the slot
         self.landing = None                          # the key a drop's ghost is gliding onto: its slot shows meanwhile
         self.saving = frozenset()                    # keys whose moves wait for a busy store (*saving…*)
+        self.seam = None                             # --- W3.2 Q8: (row key, episode id) of the ✂ seam under the hand
+        self.ep_hover = None                         # --- W3.2 Q8: (row key, episode id) the hand was last on
+        self.join_key = None                         # --- W3.2 Q8: the part a drag would join (outlined)
         stones.notifier().ready.connect(self._sheet_ready)
 
     def paintEvent(self, event):
@@ -2236,6 +2309,68 @@ class RowsView(QListView):
         super().paintEvent(event)
         if self.parting is not None:                 # a drag: the rows it moved into view, and the slot it opens
             self.parting.paint_over(self, event)
+        if self.seam is not None or self.join_key is not None:      # --- W3.2 Q8
+            self._paint_q8(event)
+
+    # --- W3.2 Q8: the seam under the hand, the part a drag would join ----------------------------------------------- #
+    def _q8_rect(self, what):
+        """The seam's rect (`what` = (key, episode id)) or the part's slot (`what` = key) as laid out now, or None."""
+        model = self.model()
+        key = what[0] if isinstance(what, tuple) else what
+        i = next((n for n, e in enumerate(model.entries) if getattr(e[1], "key", None) == key), None)
+        if i is None:
+            return None
+        rect = self.visualRect(model.index(i, 0))
+        if not isinstance(what, tuple):
+            return self.delegate.slot_rect(model.entries[i][0], rect, model.entries[i][2])
+        return next((pt[1] for pt in self.delegate.parts(model.entries[i], rect)
+                     if pt[0] == "seam" and pt[3].id == what[1]), None)
+
+    def _paint_q8(self, event):
+        p = QPainter(self.viewport())
+        p.setClipRect(event.rect())
+        if self.seam is not None:
+            r = self._q8_rect(self.seam)
+            if r is not None:
+                self.delegate.paint_seam(p, r)
+        if self.join_key is not None:
+            r = self._q8_rect(self.join_key)
+            if r is not None:
+                self.delegate.paint_join(p, r)
+        p.end()
+
+    def _q8_update(self, what):
+        r = self._q8_rect(what) if what is not None else None
+        if r is not None:
+            self.viewport().update(r.adjusted(-4, -16, 4, 16))
+
+    def set_seam(self, seam):
+        """The ✂ seam under the hand (or None): only its strip repainted, as it comes and as it goes."""
+        if seam == self.seam:
+            return
+        old, self.seam = self.seam, seam
+        self._q8_update(old)
+        self._q8_update(seam)
+
+    def set_join(self, key):
+        """The part a drag would join (or None): its outline, that row alone repainted."""
+        if key == self.join_key:
+            return
+        old, self.join_key = self.join_key, key
+        self._q8_update(old)
+        self._q8_update(key)
+
+    def _q8_hover(self, at, part):
+        """The seam under the hand lit; the episode the hand is on remembered (⋯'s *Split here* after it)."""
+        entry = self.model().entries[at.row()] if at.isValid() else None
+        key = getattr(entry[1], "key", None) if entry is not None else None
+        on_seam = part is not None and part[0] == "seam"
+        self.set_seam((key, part[3].id) if on_seam else None)
+        ep = part[3] if part is not None else None
+        if key is not None and ep is not None and entry[0] in (HERO, ROW) and \
+                any(e is ep for e in entry[1].episodes):
+            self.ep_hover = (key, ep.id)
+    # --- end W3.2 Q8
 
     # entries ---------------------------------------------------------------------------------------------------- #
     def set_entries(self, entries):
@@ -2627,6 +2762,7 @@ class RowsView(QListView):
             self._hover_warm.start()
         at, part = self.part_at(event.pos())
         self._set_line_hover((at.row(), part[0][:-5]) if part is not None and part[0].endswith("-line") else None)
+        self._q8_hover(at, part)                     # --- W3.2 Q8: the ✂ seam, the episode the hand is on
         if self.tooltips is not None:
             self.tooltips.hide_part_unless(self.viewport(), event.pos())
         super().mouseMoveEvent(event)
@@ -2647,6 +2783,7 @@ class RowsView(QListView):
         self._hover = None
         self._retouch()
         self._set_line_hover(None)
+        self.set_seam(None)                          # --- W3.2 Q8
         super().leaveEvent(event)
 
     def _show_focus(self, on):
@@ -2733,6 +2870,9 @@ class RowsView(QListView):
             self.journey_requested.emit(row, payload)
         elif name == "put-back":                     # --- W3.2 Q4
             self.put_back_requested.emit(row)
+        elif name == "seam" and payload is not None:     # --- W3.2 Q8: ✂ Split here
+            self.set_seam(None)
+            self.split_requested.emit(row, payload)
         elif name == "mine-now" and self.tooltips is not None:
             self.tooltips.request(self.viewport(), rect, strings.ROWS_MINE_NOW_LATER)
 

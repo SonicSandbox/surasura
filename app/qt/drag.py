@@ -574,6 +574,7 @@ class DragController(QObject):
         self.undo_key.setContext(Qt.ShortcutContext.WindowShortcut)
         self.undo_key.activated.connect(self.undo_last)
         self._replay_owed = False
+        self.joins = None                            # --- W3.2 Q8: drop-to-join (`item_menu.ItemActions`: target/show/drop)
 
     # --- the writer's start ----------------------------------------------------------------------------------- #
     def start(self):
@@ -850,6 +851,8 @@ class DragController(QObject):
             dock.hover(target[1] if target[0] == "well" else None)
         # over a well or the tab the slot goes back to the row's own place (from outside: none opens)
         d.parting.move_to(target[1] if target[0] == "list" else d.src)
+        if self.joins is not None:                   # --- W3.2 Q8: the part to join outlined (the rows hold still)
+            self.joins.show(target[1] if target[0] == "join" else None)
 
     def target_at(self, global_pos):
         """What the hand is over: ("well", name) · ("tab", "finished") · ("list", slot)."""
@@ -861,6 +864,10 @@ class DragController(QObject):
         tab = self.win.tab_buttons.get("finished")
         if tab is not None and tab.isVisible() and tab.rect().contains(tab.mapFromGlobal(global_pos)):
             return "tab", "finished"
+        if self.joins is not None and self.running is not None:     # --- W3.2 Q8: over another part of the same title
+            key = self.joins.target(self.running, global_pos)
+            if key is not None:
+                return "join", key
         return "list", self.slot_at(self.lst.viewport().mapFromGlobal(global_pos).y())
 
     def slot_at(self, y):
@@ -944,6 +951,8 @@ class DragController(QObject):
         dock = self.win.dock
         if dock is not None:
             dock.end_drag()
+        if self.joins is not None:                   # --- W3.2 Q8
+            self.joins.show(None)
         self.win.toasts.set_dragging(False)
         if d.holding:                                # (a lift that failed before its holds holds nothing)
             d.holding = False
@@ -987,6 +996,10 @@ class DragController(QObject):
                 self.cancel(strings.WELL_UNLIT_SPLIT)
                 return
             self._to_well(d, "finished")
+        elif kind == "join":                         # --- W3.2 Q8: dropped on another part of the same title
+            self._end(d)
+            self._glide_away()
+            self.joins.drop(d, name)
         else:
             vp = self.lst.viewport()
             if not vp.rect().contains(vp.mapFromGlobal(global_pos)):

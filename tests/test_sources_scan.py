@@ -725,6 +725,7 @@ def test_a_look_never_follows_a_file_link(monkeypatch):
     read = []
     real_sha = ls.sha256_of
     monkeypatch.setattr(ls, "sha256_of", lambda p: read.append(p) or real_sha(p))
+    monkeypatch.setattr(sources, "SETTLE_S", 0)                                  # (the link's own time is just now)
     with store:
         root = store.add_source(src)
         assert _look(store, language, root, first=True)["added"] == 0 and _items(store) == 0

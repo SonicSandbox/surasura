@@ -1101,7 +1101,11 @@ class Steps:
             return found
         if not subtitle:
             return None
-        return beside(subtitle) or self._videos(lang).find(videos.names_for(subtitle))
+        names = videos.names_for(subtitle)
+        origin = pairing.get("origin") if pairing.get("producer") == "source" else None
+        if isinstance(origin, str) and origin:
+            names += videos.names_for(origin)   # a copy renamed `name (2)` in Library/: the original's name finds it
+        return beside(subtitle) or self._videos(lang).find(names)
 
     def _videos(self, lang):
         """The language's video index, refreshed once a run, the first time a video is missing (S19: only folders

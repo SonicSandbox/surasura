@@ -60,10 +60,10 @@ def _steps(**settings):
     return runner.Steps({"connect_enabled": True, "anki_connect_url": h.CLOSED_PORT, **settings})
 
 
-def _take_in(lang, src, sub_rel, show, **record):
+def _take_in(lang, src, sub_rel, show, copy_name=None, **record):
     """The scan's work for one subtitle at `<src>/<sub_rel>`: the original written (a real subtitle + a line of its
-    own), copied into `Library/<show>/`, handed to `take_in` with `record`'s video keys -> (item id, the copy's
-    path, the root id)."""
+    own), copied into `Library/<show>/` (as `copy_name` when its own name was taken), handed to `take_in` with
+    `record`'s video keys -> (item id, the copy's path, the root id)."""
     origin = os.path.join(src, *sub_rel.split("/"))
     os.makedirs(os.path.dirname(origin), exist_ok=True)
     sub_lang, sub_name = c.SUBTITLE[lang]
@@ -72,7 +72,7 @@ def _take_in(lang, src, sub_rel, show, **record):
     with open(origin, "wb") as f:
         f.write(data)
     data_dir, _u = c.dirs(lang)
-    rel = f"{library_store.CONTENT_FOLDER}/{show}/{os.path.basename(origin)}"
+    rel = f"{library_store.CONTENT_FOLDER}/{show}/{copy_name or os.path.basename(origin)}"
     copy = os.path.join(data_dir, *rel.split("/"))
     os.makedirs(os.path.dirname(copy), exist_ok=True)
     shutil.copyfile(origin, copy)
@@ -212,3 +212,75 @@ def test_a_store_with_no_sources_gives_the_index_exactly_the_folders_it_had(monk
         store.stop_source(root)
     _steps(connect_video_folders=[added])._videos("ja")
     assert seen[-1][1] == [added], "a stopped source: as before"
+
+
+# --------------------------------------------------------------------------- #
+# The index's walk skips what a source's look skips (B3: `library_store.skip_dir`), in every folder it lists
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("bin_name", [".trash", "$RECYCLE.BIN"])
+def test_a_trashed_copy_of_the_video_in_a_source_makes_no_second_match(bin_name):
+    # why: a deleted copy in the recycle bin has the episode's name: indexed, it makes two matches and Connect (which
+    # never guesses) says No video although the real one is beside its show
+    c.library("ja")
+    src = _source()
+    video = _video(os.path.join(src, "Example Show", "Example Show - 07.mkv"))
+    _video(os.path.join(src, bin_name, "S-1-5-21", "Example Show - 07.mkv"))
+    item, _copy, _root = _take_in("ja", src, "Example Show/Subs/Example Show - 07.ja.srt", "Example Show")
+    s = _steps()
+    assert _same(s.video("ja", {"id": 1, "item_id": item}), video)
+    assert not any(bin_name.lower() in k for k in s._videos("ja").data["dirs"]), "the bin is never listed"
+
+
+@pytest.mark.parametrize("bin_name", [".trash", "$RECYCLE.BIN", "@eaDir"])
+def test_a_folder_you_added_skips_its_bins_too(tmp_path, bin_name):
+    # why: the folders you add hold the same bins; one rule for every folder the index lists
+    added = tmp_path / "Added"
+    video = _video(str(added / "Show" / "Show - 02.mkv"))
+    _video(str(added / bin_name / "Show - 02.mkv"))
+    index = videos.Index("ja", path=str(tmp_path / "videos-ja.json"))
+    index.refresh([], [str(added)])
+    assert _same(index.find(["Show - 02.mkv"]), video)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="a junction is Windows' folder link")
+def test_a_junction_inside_a_source_is_never_followed():
+    # why: a folder link can loop (a walk that never ends) or lead into another drive's folders; the index takes only
+    # what is really inside the source
+    import _winapi
+    c.library("ja")
+    src = _source()
+    outside = os.path.join(h.root(), "elsewhere", "Outside")
+    _video(os.path.join(outside, "Example Show - 08.mkv"))
+    _winapi.CreateJunction(outside, os.path.join(src, "Linked"))
+    item, _copy, _root = _take_in("ja", src, "Example Show/Subs/Example Show - 08.ja.srt", "Example Show")
+    s = _steps()
+    assert s.video("ja", {"id": 1, "item_id": item}) is None, "the video behind the junction is not taken"
+    assert not any(k.endswith(os.path.normcase(os.sep + "linked")) for k in s._videos("ja").data["dirs"])
+
+
+def test_a_source_copy_renamed_for_a_name_clash_still_finds_its_video_by_the_originals_name():
+    # why: a copy stored as `name (2).ja.srt` (its name taken in Library/) has no video of that name; the original's
+    # name, kept in its record, is the video's
+    c.library("ja")
+    src = _source()
+    video = _video(os.path.join(src, "Example Show", "Example Show - 09.mkv"))
+    item, copy, _root = _take_in("ja", src, "Example Show/Subs/Example Show - 09.ja.srt", "Example Show",
+                                 copy_name="Example Show - 09 (2).ja.srt")
+    s = _steps()
+    assert os.path.basename(s.subtitle("ja", {"id": 1, "item_id": item})) == "Example Show - 09 (2).ja.srt"
+    assert _same(s.video("ja", {"id": 1, "item_id": item}), video)
+
+
+def test_a_cloud_placeholder_of_the_video_in_a_source_is_never_a_match(monkeypatch):
+    # why: a placeholder's read would download the episode (RD-S1); listed by name, it must neither be taken nor make
+    # a second match beside the real one. The placeholder is simulated for that one path (as `test_videos` does)
+    c.library("ja")
+    src = _source()
+    video = _video(os.path.join(src, "Example Show", "Example Show - 10.mkv"))
+    cloud = _video(os.path.join(src, "Cloud", "Example Show - 10.mkv"))
+    real = runner._on_disk
+    monkeypatch.setattr(runner, "_on_disk", lambda p: not _same(p, cloud) and real(p))
+    item, _copy, _root = _take_in("ja", src, "Example Show/Subs/Example Show - 10.ja.srt", "Example Show")
+    assert _same(_steps().video("ja", {"id": 1, "item_id": item}), video)
+    os.remove(video)                                    # only the placeholder left: No video, never the cloud file
+    assert _steps().video("ja", {"id": 1, "item_id": item}) is None

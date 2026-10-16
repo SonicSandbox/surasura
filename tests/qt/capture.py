@@ -3,14 +3,24 @@ DPI; the stack pack's harness layer: a capture's units are the first suspect).
 
     python tests/qt/capture.py --scales 100,125,150,175,200 [--out DIR]
     python tests/qt/capture.py --screen [--out DIR]
+    python tests/qt/capture.py --integrated --scales 100,125,150,175,200 [--out DIR]
 
 **Scales:** each scale runs in its own process on Windows' own platform (real fonts), the window laid out and painted
 but never put on the screen (`WA_DontShowOnScreen`); Windows' scaling is stood in for by `QT_SCALE_FACTOR` over this
 desktop's own (so 150 % on a 150 % desktop is factor 1). Each theme is grabbed at the window's device-pixel ratio, and
-the picture is checked: its size is the window's × the scale (a crop is the classic false defect); the header, the
-tab bar, the page and the bottom bar hold their tokens (at least N pixels each, none of another theme's); the 1 px
-lines under the header, the tabs and above the bar are whole rows of the `line` colour, neither missing nor doubled.
-Large text at 1024 × 720 and 200 % (E16) keeps the bar and the tabs inside the window.
+the picture is checked: its size is the window's × the scale (a crop is the classic false defect); the frame band, the
+page and the footer hold their tokens (at least N pixels each, none of another theme's); the frame's two edges (W3.1a:
+the baked strips under the tabs and above the footer, where the 1 px separators were) stand where they should, at their
+height × the scale, darkest at the band and fading to the page's ground, the same at the window's side as in its middle
+(no side edge), the bottom one meeting the footer. Large text at 1024 × 720 and 200 % (E16) keeps the bar and the tabs
+inside the window.
+
+**Integrated** (W3.1a: `--integrated --scales …`): the window as it runs — the synthetic seed's library and the duties
+attached (stand-ins from `tests/qt/test_jobs_bar.py`: no Anki, no update check, no Generate) — in Medium at 1280 × 800,
+each scale in its own process: the header's level ▾ with Generate's stale mark, the footer (the status line, the
+emerald lit with *Anki · N waiting* from a backlog file under the test root, the known corner), Current's Goal dock;
+then the level's pop open, then the dock's wells as a drag shows them. Checked: the size, the level ▾ inside the header,
+the footer's corner and the dock shown and inside the window, the stones' sheet landed before the shot.
 
 **Screen:** the window shown for a moment without taking focus, captured with `PrintWindow` into a bitmap sized by
 `GetDpiForWindow / 96` (never `GetWindowRect`'s logical size): the title bar's pixels must be dark on Windows 10.
@@ -27,7 +37,6 @@ ends with `ALL CAPTURES PASS` or exits 1.
 """
 import argparse
 import json
-import math
 import os
 import subprocess
 import sys
@@ -56,17 +65,6 @@ def _isolate():
     from app import path_utils
     assert path_utils.get_local_data_path().startswith(os.environ["SURASURA_TEST_ROOT"])
     assert path_utils.get_user_file("settings.json").startswith(os.environ["SURASURA_TEST_ROOT"])
-
-
-def _seam_rows(arr, y_from, y_to, colour):
-    """Rows in [y_from, y_to) that are (≥ 95 %) the line colour."""
-    from tests.qt.pixels import count
-    rows = []
-    for y in range(max(0, y_from), min(arr.shape[0], y_to)):
-        row = arr[y:y + 1, :, :]
-        if count(row, colour, TOL + 1) >= 0.95 * row.shape[1]:
-            rows.append(y)
-    return rows
 
 
 def run_scale(scale, out_dir):
@@ -100,12 +98,15 @@ def run_scale(scale, out_dir):
         c = theme.colours(theme_name)
         others = [theme.colours(t) for t in theme.THEMES if t != theme_name]
         from PyQt6.QtCore import QPoint
-        from PyQt6.QtWidgets import QFrame
-        seps = sorted(win.centralWidget().findChildren(QFrame, "separator"), key=lambda f: f.mapTo(win, QPoint(0, 0)).y())
-        lines = [f.mapTo(win, QPoint(0, 0)).y() * dpr for f in seps]       # device rows where each 1 px line starts
+        from app.qt import frame
 
-        y2, y3 = (int(v) for v in lines[:2])          # header and tabs are one frame band: no line between them
-        regions = {"frame": arr[: y2 - 1], "page": arr[y2 + 3: y3 - 1], "footer": arr[y3 + 3:]}
+        def rows_of(widget):                          # (first device row, last device row + 1) of a widget in the grab
+            y = widget.mapTo(win, QPoint(0, 0)).y()
+            return round(y * dpr), round((y + widget.height()) * dpr)
+        top = win.edge_top                            # W3.1a: the baked edges where the separators were
+        bottom = next(s for s in win.pages.currentWidget().findChildren(frame.EdgeStrip) if s.side == "bottom")
+        (t0, t1), (b0, b1), (f0, _f1) = rows_of(top), rows_of(bottom), rows_of(win.footer)
+        regions = {"frame": arr[: t0 - 1], "page": arr[t1 + 1: b0 - 1], "footer": arr[f0 + 1:]}
         tokens = {"frame": (c["frame"],), "page": (c["bg"],), "footer": (c["frame"],)}
         problems = []
         if (arr.shape[1], arr.shape[0]) != (round(w * scale / 100), round(h * scale / 100)):
@@ -121,17 +122,30 @@ def run_scale(scale, out_dir):
                 stray = count(part, o[key], 1) > 0.005 * part.shape[0] * part.shape[1]
                 if o[key] not in [c[k] for k in ("surface", "bg", "frame", "raised")] and stray:
                     problems.append(f"{region}: another theme's {key}")
-        seams = {where: _seam_rows(arr, y - 2, y + 4, c["frame-edge"])
-                 for where, y in zip(("under the tabs", "above the bar"), (y2, y3))}
-        for where, rows in seams.items():
-            if not rows:
-                problems.append(f"the line {where} is missing")
-            elif len(rows) > math.ceil(scale / 100):          # 1 px is one row at 100 %, at most two up to 200 %
-                problems.append(f"the line {where} is {len(rows)} rows at {scale} %")
+        ground = sum(theme.parse(c["bg"])[:3])
+        edges = {}
+        for where, (y0, y1), band_first in (("under the tabs", (t0, t1), True), ("above the footer", (b0, b1), False)):
+            want = theme.FRAME["edge-strip"] * scale / 100
+            if abs((y1 - y0) - want) > 1.5:
+                problems.append(f"the edge {where} is {y1 - y0} rows, not {want:.0f} at {scale} %")
+            strip = arr[y0:y1].astype(int)
+            if strip.shape[0] < 2:
+                problems.append(f"the edge {where} is missing")
+                continue
+            mid = strip.shape[1] // 2
+            near, far = (strip[0, mid].sum(), strip[-1, mid].sum()) if band_first else (strip[-1, mid].sum(),
+                                                                                         strip[0, mid].sum())
+            if not near < far <= ground + 6:                  # a shadow: darkest at the band, fading to the ground
+                problems.append(f"the edge {where} is no shadow falling from its band ({near} → {far}, ground {ground})")
+            if (abs(strip[:, 1] - strip[:, mid]) > 3).any():   # the same at the side as in the middle: no side edge
+                problems.append(f"the edge {where} has a side edge")
+            edges[where] = [y0, y1]
+        if abs(b1 - f0) > 1:
+            problems.append(f"the bottom edge ends at row {b1}, the footer starts at {f0}: a gap or an overlap")
         if win.footer.geometry().bottom() > win.centralWidget().height() or win.footer.height() <= 0:
             problems.append("the bar is outside the window")
         results.append({"scale": scale, "theme": theme_name, "text_size": size, "window": [w, h], "dpr": dpr,
-                        "file": name, "seams": {k: len(v) for k, v in seams.items()}, "problems": problems})
+                        "file": name, "edges": edges, "problems": problems})
     win.close()
     services.shutdown(1.0)
     return results
@@ -280,6 +294,125 @@ def run_screens(scale, out_dir):
 # --- end W2.2 ----------------------------------------------------------------------------------------------------------- #
 
 
+# --- W3.1a: the integrated window — the library and the duties attached --------------------------------------------- #
+def run_integrated(scale, out_dir):
+    """One process: the window with the seed's library and the duties (stand-ins) at `scale` %, Medium, 1280 × 800 —
+    as it rests, with the level's pop open, and with the dock's wells as a drag shows them. -> result dicts."""
+    _isolate()
+    os.environ.pop("QT_QPA_PLATFORM", None)
+    import time
+    from PyQt6.QtCore import QEvent, QPoint, Qt
+    from PyQt6.QtWidgets import QApplication
+    from app import path_utils
+    from app.qt import shell, stones, style
+    from app.services import automation as A
+    from app.services import generate as G
+    from app.services import library_reader
+    from app.services import status as status_service
+    from app.services.jobs import JobRegistry
+    from tests.fixtures import window_seed
+
+    root = os.environ["SURASURA_TEST_ROOT"]
+    with open(path_utils.get_user_file("settings.json"), "w", encoding="utf-8") as f:
+        json.dump({"text_size": "M", "anki_sync_auto": True}, f)
+    seed = window_seed.build(root=root)
+    from app import anki_sync                                     # a backlog as the sync saves it: Anki · 3 waiting
+    backlog = anki_sync._backlog_path(seed.language)
+    os.makedirs(os.path.dirname(backlog), exist_ok=True)
+    with open(backlog, "w", encoding="utf-8") as f:
+        json.dump({"version": anki_sync.BACKLOG_VERSION, "synced_at": "2026-10-14T21:05:00", "decks": ["日本語::Mining"],
+                   "fields": ["Word"], "notes": {str(1700000000001 + i): {"word": w, "keys": [w], "source": "日本語::Mining",
+                                                                          "freqsort": 1000 + i}
+                                                 for i, w in enumerate(("撒く", "上層部", "一生懸命"))}}, f,
+                  ensure_ascii=False)
+
+    app = QApplication(["capture-integrated"])
+    # the duties' stand-ins, imported once the app is made on Windows' own platform: their test module's conftest asks
+    # for the offscreen one (no real fonts, no real scale) as it loads
+    from tests.qt.test_jobs_bar import FakeAutomation, FakeChores, FakeController, FakeUpdates, QuietReader
+    log = []
+    registry = JobRegistry()
+    status = status_service.StatusService(registry, reader=QuietReader(), providers={   # (the quiet marks: W31A-1)
+        "backlog": status_service.anki_backlog(seed.language), "replan": lambda: "Anki: placing tomorrow's 20 cards…",
+        "connect": lambda: "Up to date · 12 cards made today"})
+    reader = library_reader.LibraryReader(seed.opener, numbers=seed.numbers, mining=seed.mining, poll=0.02)
+    controller, automation = FakeController(log), FakeAutomation(log)
+    services = shell.Services(library=reader, registry=registry, status=status, controller=controller,
+                              updates=FakeUpdates(log), automation=automation, chores=FakeChores(log))
+    win = shell.open_window(app, services)
+    win.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    win.resize(1280, 800)
+    win.show()
+
+    def settle(n=30):
+        for _ in range(n):
+            app.processEvents()
+            time.sleep(0.005)
+
+    def until(test, seconds=10):
+        end = time.time() + seconds
+        while time.time() < end:
+            app.processEvents()
+            if test():
+                return True
+            time.sleep(0.01)
+        return False
+
+    page = win.page_widgets["current"]
+    until(lambda: page.view_model is not None and not page.view_model.loading)
+    status.refresh_soon()
+    controller.push(state=G.STALE)                                # the ▾'s mark
+    automation.push(sync=A.SYNCED, added=3, known=12345)          # the emerald lit, the known corner
+    win._show_level(("rare", False))
+    dpr = win.devicePixelRatioF()
+    sheet = until(lambda: stones.get(dpr, style.current()[1]) is not None, 20)
+    until(lambda: win.anki_mark.waiting == 3)
+    lst = page.list
+    QApplication.sendEvent(lst.viewport(), QEvent(QEvent.Type.Leave))     # no row hovered, wherever the pointer is
+    settle(40)
+    d = win.duties
+    results = []
+
+    def shot(label, extra=()):
+        settle(20)
+        pix = win.grab()
+        name = f"w31a-integrated-{label}-{scale}.png"
+        pix.save(os.path.join(out_dir, name))
+        problems = list(extra)
+        if (pix.width(), pix.height()) != (round(1280 * scale / 100), round(800 * scale / 100)):
+            problems.append(f"size {pix.width()}x{pix.height()} is not 1280x800 at {scale} %")
+        if not sheet:
+            problems.append("the stones' sheet never landed")
+        level = d.level.geometry()
+        if d.level.isHidden() or not win.header.rect().contains(level):
+            problems.append("the level ▾ is hidden or outside the header")
+        for part, what in ((win.anki_mark, "the emerald"), (win.known, "the known corner")):
+            at = part.mapTo(win, QPoint(0, 0))
+            if part.isHidden() or at.x() + part.width() > win.width() or at.y() + part.height() > win.height():
+                problems.append(f"{what} is hidden or outside the window")
+        if win.anki_mark.text() != "Anki · 3 waiting":
+            problems.append(f"the emerald says {win.anki_mark.text()!r}, not 'Anki · 3 waiting'")
+        if win.dock is None or not win.dock.isVisibleTo(win):
+            problems.append("the Goal dock is not shown")
+        results.append({"scale": scale, "integrated": label, "dpr": dpr, "file": name, "level": d.level.text(),
+                        "level_mark": d.level.mark, "problems": problems})
+
+    shot("rest", () if d.level.mark == "stale" else [f"the ▾'s mark is {d.level.mark!r}, not 'stale'"])
+    d.pop.open()
+    settle(30)
+    shot("pop", () if d.pop.isVisible() else ["the level's pop did not open"])
+    d.pop.hide()
+    win.dock.begin_drag("current")
+    settle(30)
+    win.dock.hover("goal")
+    shot("wells", () if win.dock.wells else ["the wells did not rise"])
+    win.dock.hover(None)
+    win.dock.end_drag()
+    win.close()
+    services.shutdown(1.0)
+    return results
+
+
 def run_screen(out_dir):
     """The window on screen for a moment (no focus taken), captured by PrintWindow at GetDpiForWindow / 96."""
     _isolate()
@@ -368,11 +501,14 @@ def main():
     ap.add_argument("--out", default="")
     ap.add_argument("--one", type=int, default=0, help=argparse.SUPPRESS)       # a child: one scale
     ap.add_argument("--screens", action="store_true", help="W2.2: the first screens on the seed, per scale")
+    ap.add_argument("--integrated", action="store_true",
+                    help="W3.1a: the window with the seed's library and the duties attached, per scale")
     args = ap.parse_args()
     out_dir = args.out or tempfile.mkdtemp(prefix="w21-captures-")
     os.makedirs(out_dir, exist_ok=True)
     if args.one:
-        for r in (run_screens if args.screens else run_scale)(args.one, out_dir):
+        run = run_integrated if args.integrated else run_screens if args.screens else run_scale
+        for r in run(args.one, out_dir):
             print(json.dumps(r), flush=True)
         return 0
     results = []
@@ -383,7 +519,7 @@ def main():
         env = dict(os.environ, QT_SCALE_FACTOR=f"{s / 100 / system:.6f}", QT_ENABLE_HIGHDPI_SCALING="1")
         env.pop("QT_QPA_PLATFORM", None)
         proc = subprocess.run([sys.executable, os.path.abspath(__file__), "--one", str(s), "--out", out_dir] +
-                              (["--screens"] if args.screens else []),
+                              (["--screens"] if args.screens else []) + (["--integrated"] if args.integrated else []),
                               env=env, capture_output=True, text=True, timeout=300)
         if proc.returncode != 0:
             results.append({"scale": s, "problems": [f"the capture process failed: {proc.stderr[-1500:]}"]})

@@ -79,6 +79,17 @@ GEM = MappingProxyType({
     "ruby": ("#98203a", "#e2546f", "#ffdbe3"),
 })
 KIND_GEM = MappingProxyType({"shows": "sapphire", "reading": "emerald", "videos": "ruby"})
+# The stones' fixed colours (gem-kit.js, flat: rockFaces, rawFaces, GRAPHITE, crystalStops, the unlinked trillion):
+# what a stone is made of whatever its kind (W3.1a, `app/qt/stones.py`).
+STONE = MappingProxyType({
+    "black": "#000000", "white": "#ffffff",
+    "rock-dark": "#22262c", "rock-lit": "#6a717c", "rock-rim": "#181b20",
+    "raw-pale": "#8a94a3", "raw-shade": "#2a2f37",
+    "graphite-0": "#14171b", "graphite-1": "#262a31", "graphite-2": "#434a54", "graphite-3": "#6d7581",
+    "ore-rim": "#0c0f13",
+    "crystal-0": "#0a0e14", "crystal-1": "#1e2530", "crystal-2": "#3e4858",
+    "unlinked-base": "#2a313c", "unlinked-light": "#56627a", "unlinked-edge": "#9aa6b8",
+})
 # Hard-coded, not tokens: the same whatever the theme. Tooltips and toasts are overlays: slate navy, solid (brief §4).
 FIXED = MappingProxyType({
     "tooltip": ROOM["overlay"], "toast": ROOM["overlay"], "scrim": ROOM["dim"], "on-accent": "#0b1018",
@@ -397,6 +408,25 @@ MOTION = MappingProxyType({
     # distances (px) the overlays travel as they open (M2.1; the mock's `pop` −4 px, `dlgin` +10 px)
     "pop-shift": 4, "dialog-rise": 10, "toast-bottom": 48,
 })
+# Springs on the one clock (W3.1a §3; the reference's touches, ref-extract §8): a preset is (ω rad/s, ζ). ζ 1 is
+# critically damped (home without passing it), under 1 overshoots and settles. Distances in px.
+SPRINGS = MappingProxyType({
+    "hover-lift": (13.5, 1.0),           # a row on the ground lifts under the hand (97 % at ≈ .4 s)
+    "hover-release": (13.5, 0.5),        # ... and falls with ζ .5 until it passes rest, then critically home from below
+    "hover-neighbour": (13.5, 1.0),      # its neighbours ease apart after it
+    "inset": (24.0, 1.0),                # fall into place (r5Inset): down to `inset-px` at 1/ω ≈ 42 ms, then home
+    "drag-part": (22.0, 1.0),            # neighbours parting under a drag: the reference's own parting (an arrival's
+                                         # covers, crit ω 22) — 92 % by the old tween's 190 ms, and never past the slot
+    "slot": (28.3, 0.5),                 # a well's slot opening under the hand (2π·4.5)
+    "vein-lead": (34.0, 1.0),            # the tab vein's leading end
+    "vein-tail": (22.0, 1.0),            # ... and its trailing end
+    "press": (36.0, 1.0),                # a press going down
+    "release": (26.0, 1.0),              # ... and coming back
+    "lift-px": 2, "neighbour-px": 1.5, "inset-px": 1.5,
+    "sub-step-ms": 6,                    # the physics' step: never longer, whatever the frame interval
+    "catch-up-ms": 1000,                 # a stalled clock (a sleep, a long step) catches up at most this much
+    "rest-x": 0.005, "rest-v": 0.05,     # at rest: |x − target| and |v| (per s) under these, then it snaps home
+})
 
 
 # --- W2.2: the generated cover (the fallback and the offline look, 05 §5.6; mock.html `pieceCover`) --------------- #
@@ -435,6 +465,115 @@ def tokens(theme=DEFAULT_THEME, text_size=DEFAULT_TEXT_SIZE):
         "sizes": {name: size(name, text_size) for name in SIZES}, "radii": dict(RADII), "shadows": dict(SHADOWS),
         "ease": EASE, "fast": FAST, "slow": SLOW, "motion": MOTION,
     })
+
+
+# --- W3.1a frame --------------------------------------------------------------------------------------------------- #
+# The frame (W3.1a package E, `app/qt/frame.py`; ref-extract §1–2, §8): the header + tabs band and the bottom band
+# (the Goal dock over the footer), their baked edges onto the content, the vein, the level ▾, the emerald, the known
+# corner, Goal's bar and the wells. Distances in px (× the text size only where said); alphas 0–1.
+FRAME = MappingProxyType({
+    "edge-strip": 14,               # the frame's baked shadow onto the content: its tail past 14 px is under 2 %
+    "progress-alpha": 0.7,          # Generate's share, an iris hairline along the header's foot (list-r14m :1627)
+    "progress-busy-alpha": 0.3,     # a job running with no share to show: the hairline whole, quieter (never pulsing)
+    "vein-h": 5, "vein-inset": 10, "vein-min": 6,          # under the current tab, 10 in from each side (:1853)
+    "vein-segments": 14, "vein-seeds": 8,                  # its pre-drawn shapes: 14 segments, a fixed set of 8 seeds
+    "vein-top-w": 0.45, "vein-top-alpha": 0.45, "vein-node-alpha": 0.85,       # its lit top line and nodes (:8164)
+    "chevron": 10, "mark-dot": 6,   # the level ▾'s chevron, and its mark (Generate stale / failed, the journey owed)
+    "emerald": 15,                  # the footer's emerald (14.95 high in the reference)
+    "emerald-facet-alpha": 0.55,    # its one facet highlight
+    "known-step": 2500,             # the known corner's milestone: the next multiple of this
+    "known-hairline-alpha": 0.75,
+    "dock-pad": (10, 24),           # the dock band's padding (top and bottom, the sides)
+    "goal-bar": 46,                 # Goal's bar, × the text size (52.9 at Medium)
+    "goal-bar-radius": 10,
+    "dock-cover": (26, 37), "dock-cover-overlap": 12, "dock-cover-turn": 2.0, "dock-covers": 9,
+    "dock-cover-grey": 0.62, "dock-cover-alpha": 0.8,      # the loose hand: grey at 62 % and .8, made once
+    "dock-cover-grey-generated": 0.9,   # a generated cover (already a dark gradient) greyed lighter (S4); .62: real art
+    "well-gap": 10, "well-covers": 3, "well-slot": 6, "well-cover-gap": 5, "well-wall": 2,
+    "slot-fill-alpha": 0.08,        # an open slot's fill: its gem's light at 8 %
+})
+FRAME_COLOURS = MappingProxyType({
+    "known-ink": "#a9b3c3",                 # the known number, large and dim (:1599)
+    "milestone-left": "#1c2533",            # the milestone hairline past the progress (:7656; up to it, the iris blue)
+    "vein-node": "#f2fbff",                 # the vein's three diamonds (:8170)
+    # the emerald when Anki doesn't answer (closed, failed, off): the reference's dark stone (:9273), flat
+    "emerald-dark-base": "#152019", "emerald-dark-light": "#26352d", "emerald-dark-edge": "#4a5c53",
+})
+TYPE.update({"known-number": (21, 600), "foot-chip": (11.5, 400), "level": (12.5, 400)})
+SHADOWS.update({
+    "frame-edge": (0, 12, 14, -12, "#000000f2"),      # the header + tabs band onto the content (:1743)
+    "dock-edge": (0, -12, 14, -12, "#000000f2"),      # the bottom band onto the content, upward (:1745)
+    "goal-bar": (0, 3, 6, -3, "#000000f2"),           # Goal's bar keeps its lift (:1795, L14)
+})
+
+
+# --- W3.1a rows ---------------------------------------------------------------------------------------------------- #
+# Current's one-line row, the string on it, Up Next flat, the grooves (W3.1a package D, `app/qt/rows.py`; ref-extract
+# §3–§4, §6–§7, list-r14m :655–700, :808–822, :1498–1522): px, × the text size where marked `*`; alphas 0–1. Finished's
+# rows keep today's layout (`SIZES["row"]`, C-scope §2.3).
+ROW_LINE = MappingProxyType({
+    "height": 60,                   # * a Current row (69 at Medium)
+    "gap": 4,                       # between two rows: half above the slab, half below (a lift moves inside it)
+    "line": 4,                      # a groove's own strip (the top-20 and Soon lines): its 2 px in the middle
+    "line-hit": 12,                 # ... and its hover area, at least (S10)
+    "pos": 26,                      # * the number's column
+    "art-min": 92, "art-max": 150,  # * the wide art: 10 % of the list's width, between these
+    "art-share": 0.10,
+    "art-fade": 0.45,               # the art is opaque for its first 45 %, then fades to nothing at its right edge
+    "art-focus": 0.22,              # a cover cropped to the strip from 22 % down (a banner's centre, 30 %, when there is one)
+    "gap-x": 12,                    # between the line's columns
+    "string-in": 14,                # the string starts 14 px past the gap after the title
+    "pad-right": 10,
+    "diff": 104,                    # * % · N new
+    "icon-w": 26, "icon-h": 28,     # * a status as its icon, in the hover group
+    "button": 28,                   # * ▶ and ⋯ in the hover group
+    "hover-pad": 4, "hover-gap": 2, # the hover group (over the string's end, holding no room)
+    "hover-fade": 20,               # the string fades out under it over 20 px
+    "anki-icon": 15,                # the Anki count's mark
+    "mover-w": 22, "mover-h": 18, "mover-pad": 5,      # ↑ ↓ in the number's column
+    "title-fade": 24,               # * a title that runs over fades out over its last 24 px
+    "dim": 0.45,                    # a stone that won't mine itself (not mined, not watched, below the top-20 line)
+    "shadow": 4,                    # the lifted row's baked shadow, inside its own gap
+    "shadow-alpha": 0.62, "lift-line-alpha": 0.09,     # the shadow, and the lit top line, at the lift's share
+    "open-pad": 10,                 # under an opened row's episodes
+    "hero-pad-x": 20, "hero-pad-y": 16, "hero-pad-right": 18, "hero-gap": 18, "hero-below": 8,
+    "hero-trillion": 20,            # ▶ Play's trillion, in its kind's gem
+    "hero-string": 30,              # * the Up Next string's band, under its numbers
+    "sheen-alpha": 0.05,            # an opened row's one sheen, at its brightest
+})
+ROW_COLOURS = MappingProxyType({
+    "string": "#2c3a4e",            # the string's hairline (list-r14m :675)
+    "open-row": "#0e141d",          # an opened row's ground (:705, flat)
+    "sheen": "#ffffff",             # its sheen (at `sheen-alpha`), baked into the head's picture
+    "shadow": "#000000",            # the lifted row's shadow (at `shadow-alpha`)
+    "lift-line": "#ffffff",         # ... and its lit top line (at `lift-line-alpha`)
+})
+
+
+# --- W3.1a drag ---------------------------------------------------------------------------------------------------- #
+# The drag in the window (W3.1a §2, `app/qt/drag.py`; ref-extract §8 *drag*, list-r14m :4262, :4290–4306, :4325–4331):
+# the ghost (the row's cached picture, its long shadow `SHADOWS["drag-ghost"]` and a 1 px accent ring, turned and grown a
+# little), the placeholder its slot leaves, and how long the window's own copy of the order waits for the store. Px;
+# alphas 0–1. Its times are `MOTION`'s (drag-start-px, ghost-glide, ghost-removed, click-swallow-after-drag,
+# auto-scroll-*), its springs `SPRINGS["drag-part"]`.
+DRAG = MappingProxyType({
+    "ghost-turn": 0.8,              # degrees
+    "ghost-scale": 1.015,
+    "ghost-alpha": 0.97,            # over the list
+    "ghost-alpha-well": 0.45,       # over a well or the Finished tab: it is about to leave the list
+    "ghost-radius": 10,
+    "ghost-ring": 1,                # the accent ring
+    "placeholder-ring": 1.5,        # the slot left behind: its fill and an inset accent ring at 60 %
+    "placeholder-ring-alpha": 0.6,
+    "placeholder-radius": 8,
+    "settle-ms": 300,               # the window's own order stands until the writer has been idle this long
+    "message-ms": 4000,             # a line said in the footer's slot holds it this long (over the update chip)
+    "near": 3,                      # painted neighbours on each side handed to the writer (an anchor gone meanwhile)
+    "px-rest": 0.05,                # a px spring rests once this close (L5: its drawn value no longer changes)
+})
+DRAG_COLOURS = MappingProxyType({
+    "placeholder": "#1a2a3a",       # the slot's fill (list-r14m :4330)
+})
 
 
 # --- W3.3 (Settings) ------------------------------------------------------------------------------------------------ #

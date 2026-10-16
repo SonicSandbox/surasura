@@ -10,7 +10,7 @@ scrolled to its middle), after the first paint:
   rows of text, the Goal sheet the window's width, the side panel its height, a dialog card, a scrim) with its shadow —
   each closed before the next;
 - a toast shown and closed `--rounds` times, so each one rises;
-- the bottom bar's spinner running all along;
+- the header's progress hairline shown all along (W3.1a: it replaced the bar's pulsing dot, and never pulses);
 then 3 s with nothing moving. The HUD measures every animation frame (the motion clock's work + the paint and flush
 that follow it), tagged by what moved, every GUI-thread step, and the late ticks with their causes.
 
@@ -210,7 +210,7 @@ def child(rounds):
             if not results["active"] and motion._lifted():
                 motion._in_front = lambda top: True
             results["in_front_forced"] = not results["active"] and motion._lifted()
-            window.bar_dot.set_running(True)
+            window.progress.set(True)              # W3.1a: the header's hairline (the dot is gone)
             meter.discard_current()
             run()
 
@@ -242,7 +242,7 @@ def child(rounds):
             QTimer.singleShot(wait, lambda: run(i + 1))
 
         def settle():
-            window.bar_dot.set_running(False)
+            window.progress.set(False)
             clock = motion.clock()
             QTimer.singleShot(200, lambda: idle_start(clock))
 

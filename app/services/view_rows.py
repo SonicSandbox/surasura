@@ -29,6 +29,7 @@ import re
 from collections import namedtuple
 
 from app.path_utils import infer_source_type
+from app.services import stone_plan
 
 CACHE_ROWS = 40                         # the first screen's rows kept in window_cache_<lang>.json
 LANGUAGE_NAMES = {"ja": "日本語", "zh": "中文"}
@@ -52,7 +53,9 @@ Episode = namedtuple("Episode", "id label number title watched cards mining miss
                                 "status mark rel_path play_tip can_play deleted", defaults=(False,))
 Row = namedtuple("Row", "key index tier work_id piece_id media media_word verb title title_ep line source n_files n_watched "
                         "pct pct_tone n_new status mark episodes next_index studying date cover_title accessible "
-                        "description chips more_chips play_tip can_play")
+                        "description chips more_chips play_tip can_play string", defaults=(None,))
+#   string: a Current row's (stone plan, its need at its tightest — `stone_plan`, fz 1), planned here, on the reader's
+#   thread, once per row content (W3.1a B2); None on Finished's rows and on the first screen's cached rows
 Chip = namedtuple("Chip", "text watched next mined tip")
 Line = namedtuple("Line", "kind after tip split")              # drawn after row `after` (0-based in Current);
 #                                                                 `split`: the row's first `split` files are above it
@@ -61,7 +64,8 @@ Month = namedtuple("Month", "label rows")
 Need = namedtuple("Need", "key work_id title line episodes cover_title")
 Counts = namedtuple("Counts", "current_rows current_files goal_titles goal_files finished arrivals arrival_files")
 View = namedtuple("View", "language mode reason state busy loading cached rows lines goal finished needs counts "
-                          "subline badges")
+                          "subline badges worst", defaults=(None,))
+#   worst: Current's rows below Up Next, the most-needing string per kind of Anki count beside it (`worst_needs`)
 
 STRINGS = {
     "dash": "—",
@@ -451,20 +455,25 @@ def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, 
     accessible = STRINGS["acc_row"].format(title=title, pct=acc_pct, new=acc_new, status=spoken(st)) if not finished \
         else f"{title} · {spoken(st) if st.kind in ('in_anki', 'mining') else line}"
     key = f"p{first['piece_id']}" if first.get("piece_id") is not None else f"i{first['id']}"
+    string = None
+    if not finished:                                     # its string planned here, never on the window's thread (B2)
+        plan = stone_plan.plan(eps, next_index, media, key, source_of(first, work) == "hato")
+        string = (plan, max(stone_plan.tightest(plan), stone_plan.ahead(plan)))
     return Row(key=key, index=index, tier=tier, work_id=first.get("work_id"), piece_id=first.get("piece_id"),
                media=media, media_word=word, verb=VERB[word], title=title, title_ep=nxt.label if (n > 1 or media in EPISODIC) and media != "youtube"
                else "", line=line, source=source_of(first, work), n_files=n, n_watched=n_watched, pct=pct,
                pct_tone=pct_tone(pct), n_new=n_new, status=st, mark=mark, episodes=tuple(eps), next_index=next_index,
                studying=studying, date=day_label(stamp) if finished else "", cover_title=work.get("title") or title,
                accessible=accessible, description=line, chips=chips, more_chips=more, play_tip=nxt.play_tip,
-               can_play=nxt.can_play)
+               can_play=nxt.can_play, string=string)
 
 
 class RowCache:
     """Rows kept between builds (the reader holds one): a piece whose items and work are the same objects as last time
     (the reader's copy replaces a row's dict only when the feed changed it) and whose cards, mining and place in the top
     are unchanged gives back last time's `Row` — the same object, so the window repaints nothing for it. A new numbers
-    version clears it."""
+    version clears it — or, when the numbers say which items they changed (`begin(..., changed=)`: a drop moves *N new*
+    on a few rows), only the rows holding one of them."""
 
     def __init__(self):
         self.rows = {}
@@ -478,6 +487,7 @@ class RowCache:
         # untyped title on the list never does: review 2026-10-08, the Haiku pass, four lenses); None: unknown, all
         self.guess_pending = None
         self.sections = {}                            # "goal" / "finished": what `build` made of them last (`_kept`)
+        self.worst = None                             # the last build's `worst_needs` (kept while equal: one object)
 
     def note_changed(self, changed):
         """The item ids the feed changed or let go since the last build (None: unknown — every item looked at)."""
@@ -486,9 +496,12 @@ class RowCache:
         else:
             self.guess_pending |= set(changed)
 
-    def begin(self, version, cards=None, mining=None, in_top=None, line_n=None):
+    def begin(self, version, cards=None, mining=None, in_top=None, line_n=None, changed=None):
+        """`changed`: the item ids the numbers changed since the cache's version (None: unknown — every row again)."""
         if version != self.version:
-            self.rows = {}
+            changed = None if changed is None else set(changed)
+            self.rows = {} if changed is None else \
+                {k: v for k, v in self.rows.items() if changed.isdisjoint(it["id"] for it in v[2])}
             self.version = version
         glob = (id(cards), frozenset(mining or ()), frozenset(in_top or ()), line_n)
         self.same_global = glob == self._glob and cards is self._cards
@@ -617,6 +630,33 @@ class _Guesses:
         return counts
 
 
+def stat_kind(status):
+    """What a row shows at rest right of its string, as far as its width goes: its Anki count ("in_anki", the label),
+    mining's icon ("mining"), or nothing (None)."""
+    if status is None:
+        return None
+    if status.kind == "in_anki":
+        return ("in_anki", status.label)
+    return "mining" if status.kind == "mining" else None
+
+
+def worst_needs(rows):
+    """For the one title width every Current row shares (W3.1a B2): over `rows` (Current's below Up Next, as the window
+    reads them), the string that needs the most room for each kind of Anki count shown beside it — {kind: (need, plan)},
+    kind None (no count), "mining" or ("in_anki", its label). The window adds each kind's own width (its font's) and
+    takes the largest: a few numbers, never a walk over every row on its thread."""
+    out = {}
+    for row in rows:
+        if row.string is None:
+            continue
+        kind = stat_kind(row.status)
+        plan, need = row.string
+        hit = out.get(kind)
+        if hit is None or need > hit[0]:
+            out[kind] = (need, plan)
+    return out
+
+
 def _mine_ids(current, n):
     """The store's `_mine_ids`: the top `n` available files of Current, in order."""
     out = []
@@ -649,11 +689,13 @@ def _keep(cache, name, tier_rows, work_ids, more, made):
 
 
 def build(items, works, options, numbers=None, cards=None, mining=(), language="ja", mode="store", reason=None,
-          loading=False, busy=False, cache=None, tiers=None, changed=None, changed_works=None):
+          loading=False, busy=False, cache=None, tiers=None, changed=None, changed_works=None, numbers_changed=None):
     """The window's view of the library (see the module's doc). `items` / `works`: {id: feed row}; `options`: the
     feed's {soon_line, mine_line, arrivals_on}; `numbers`: (version, {item_id: (known, counted, n_new)}) or the dict;
     `cards`: {item_id: count}; `mining`: item ids being mined now; `changed`: with `cache`, the item ids changed or gone
-    since the cache's last build (None: unknown, every item looked at); `changed_works`: the same for works."""
+    since the cache's last build (None: unknown, every item looked at); `changed_works`: the same for works;
+    `numbers_changed`: with `cache`, the item ids whose numbers changed since the version it last built with (None:
+    unknown — on a new version every row is built again)."""
     numbers_version = None
     if isinstance(numbers, tuple):
         numbers_version, numbers = numbers
@@ -676,7 +718,7 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
             if r["id"] == last:
                 break
     if cache is not None:
-        cache.begin(cache_version, cards, mining, in_top, line_n)
+        cache.begin(cache_version, cards, mining, in_top, line_n, numbers_changed)
     if cache is not None:
         cache.note_changed(changed)
     guessed = _Guesses(items, cache)
@@ -685,6 +727,11 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
         for piece in pieces(tiers[tier]):
             rows.append(_cached_row(cache, len(rows) + 1, tier, piece, works, numbers, cards, mining, in_top, line_n,
                                     False, guessed, hero=not rows))
+    worst = worst_needs(rows[1:])
+    if cache is not None:
+        if worst == cache.worst:
+            worst = cache.worst                         # the same object while equal: the window works nothing out
+        cache.worst = worst
     lines = []
     if len(top_ids) >= line_n and line_n > 0:
         last = top_ids[-1]
@@ -808,7 +855,7 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
     badges = {"needs": len(needs), "arrivals": counts.arrival_files, "finished": counts.finished}
     return View(language=language, mode=mode, reason=reason, state=state, busy=busy, loading=loading, cached=False,
                 rows=tuple(rows), lines=tuple(lines), goal=goal, finished=finished, needs=tuple(needs), counts=counts,
-                subline=subline, badges=badges)
+                subline=subline, badges=badges, worst=worst)
 
 
 # --- the first screen's cache (02 §2.1) ---------------------------------------------------------------------- #
@@ -827,7 +874,8 @@ def to_cache(view, rows=CACHE_ROWS):
     """The first `rows` rows of Current, the lines among them, the counts, the subline and the Goal strip: what the
     first frame shows before the store is read."""
     kept = view.rows[:rows]
-    return {"rows": _plain(kept), "lines": _plain([ln for ln in view.lines if ln.after < len(kept)]),
+    return {"rows": _plain([r._replace(string=None) for r in kept]),     # planned again as it's read (`_row_from`)
+            "lines": _plain([ln for ln in view.lines if ln.after < len(kept)]),
             "goal": _plain(view.goal), "counts": _plain(view.counts), "subline": view.subline,
             "badges": dict(view.badges)}
 
@@ -839,7 +887,9 @@ def _row_from(data):
     eps = tuple(Episode(*e)._replace(status=Status(*e[12]) if e[12] else None, mark=Mark(*e[13]) if e[13] else None)
                 for e in r.episodes)
     chips = tuple(Chip(*c) for c in r.chips)
-    return r._replace(status=st, mark=mk, episodes=eps, chips=chips)
+    r = r._replace(status=st, mark=mk, episodes=eps, chips=chips)
+    plan = stone_plan.plan(r.episodes, r.next_index, r.media, r.key, r.source == "hato")     # planned again, not kept
+    return r._replace(string=(plan, max(stone_plan.tightest(plan), stone_plan.ahead(plan))))
 
 
 def from_cache(data, language="ja"):
@@ -849,6 +899,6 @@ def from_cache(data, language="ja"):
         return View(language=language, mode="store", reason=None, state="loading", busy=False, loading=True,
                     cached=True, rows=rows, lines=tuple(Line(*ln) for ln in data["lines"]), goal=Goal(*data["goal"]),
                     finished=(), needs=(), counts=Counts(*data["counts"]), subline=data["subline"],
-                    badges=dict(data.get("badges") or {}))
+                    badges=dict(data.get("badges") or {}), worst=worst_needs(rows[1:]))
     except (KeyError, TypeError, ValueError):
         return None

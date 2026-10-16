@@ -661,3 +661,112 @@ def test_the_ankiweb_mark_counts_down_only_when_something_will_send_the_sync(mon
         assert said is not None and said.startswith("AnkiWeb: syncing in "), case
     else:
         assert said is None, case
+
+
+# --- W31A-2: *Anki · N waiting* — the new cards waiting in Anki, from the sync's saved backlog --------------------- #
+def _backlog(language, notes):
+    """A backlog file shaped as `anki_sync.sync_backlog` saves it (its atomic write): `notes` {note id: entry}, or a
+    whole stand-in body (`str`) written as it is."""
+    from app import anki_sync
+    path = anki_sync._backlog_path(language)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    if isinstance(notes, str):
+        body = notes
+    else:
+        import json
+        body = json.dumps({"version": anki_sync.BACKLOG_VERSION, "synced_at": "2026-10-14T21:05:00",
+                           "decks": ["日本語::Mining"], "fields": ["Word"], "notes": notes}, ensure_ascii=False)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(body)
+    return path
+
+
+def _note(word, freq):
+    return {"word": word, "keys": [word], "source": "日本語::Mining", "freqsort": freq}
+
+
+JA_NOTES = {"1700000000001": _note("撒く", 4120), "1700000000002": _note("上層部", 9870),
+            "1700000000003": _note("一生懸命", 2210)}
+
+
+def _reads(monkeypatch):
+    """`anki_sync.load_backlog` counted: one per time the provider reads the file."""
+    from app import anki_sync
+    reads, real = [], anki_sync.load_backlog
+    monkeypatch.setattr(anki_sync, "load_backlog", lambda language: reads.append(language) or real(language))
+    return reads
+
+
+def test_the_backlog_says_nothing_until_a_backlog_has_been_saved():
+    """Someone who never synced sees *Anki*, never *0 waiting*: no file, no count."""
+    provider = S.anki_backlog("ja")
+    assert provider() is None
+    assert provider.every() == S.TICKS["backlog"]
+
+
+@pytest.mark.parametrize("language, notes, n", [
+    ("ja", JA_NOTES, 3),
+    ("zh", {"1700000000101": _note("开心", 1500), "1700000000102": _note("学习", 320)}, 2),
+    ("ja", {}, 0),                                       # a read file with no notes: *Anki · 0 waiting*
+])
+def test_the_backlog_counts_the_notes_the_sync_saved(language, notes, n):
+    from app import anki_sync
+    _backlog(language, notes)
+    assert S.anki_backlog(language)() == n == anki_sync.count_backlog(language)
+
+
+@pytest.mark.parametrize("body", ["{\"version\": 3, \"notes\": {\"170", "[1, 2, 3]", "{\"version\": 3}",
+                                  "{\"notes\": [\"撒く\"]}"])
+def test_an_unreadable_or_odd_backlog_says_no_count_never_a_false_zero(body):
+    """Cut short, not a table, or with no notes table: no count to say (*Anki*), where `count_backlog`'s 0 would
+    read as *0 waiting*."""
+    _backlog("ja", body)
+    assert S.anki_backlog("ja")() is None
+
+
+def test_the_backlog_is_read_again_only_when_the_file_changed(monkeypatch):
+    """Ticking every 3 s, the provider stats the file; it reads it only when its stamp (mtime, size) moved, and keeps
+    the count between."""
+    reads = _reads(monkeypatch)
+    path = _backlog("ja", JA_NOTES)
+    provider = S.anki_backlog("ja")
+    assert provider() == 3 and len(reads) == 1
+    for _ in range(3):
+        assert provider() == 3
+    assert len(reads) == 1, "the backlog read on every tick"
+    more = dict(JA_NOTES, **{"1700000000004": _note("走り出す", 3050)})
+    _backlog("ja", more)
+    st = os.stat(path)
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))     # (a coarse clock: the stamp moves for sure)
+    assert provider() == 4 and len(reads) == 2
+    os.remove(path)                                      # the file went: no count again
+    assert provider() is None
+
+
+def test_AD8_a_backlog_read_that_fails_keeps_the_last_count_and_tries_again_at_the_next_tick(monkeypatch):
+    """The sync has just replaced the file and a scanner holds it a moment: that read fails. The footer keeps
+    *Anki · 3 waiting* (never plain *Anki* until the next sync), and the next tick reads the new count."""
+    from app import anki_sync
+    path = _backlog("ja", JA_NOTES)
+    provider = S.anki_backlog("ja")
+    assert provider() == 3
+    _backlog("ja", dict(JA_NOTES, **{"1700000000004": _note("走り出す", 3050)}))
+    st = os.stat(path)
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
+    real = anki_sync.load_backlog
+    monkeypatch.setattr(anki_sync, "load_backlog", lambda language: {})    # held: `load_backlog`'s OSError → {}
+    assert provider() == 3 and provider() == 3
+    monkeypatch.setattr(anki_sync, "load_backlog", real)
+    assert provider() == 4                                                  # read again, not left for the next sync
+
+
+def test_the_backlog_reaches_the_snapshot_through_its_tick():
+    """The window's poll asks the backlog every 3 s (a stat, on a worker); the snapshot carries the count."""
+    _backlog("ja", JA_NOTES)
+    clock = _Clock()
+    status = StatusService(JobRegistry(), reader=_QuietReader(), providers={"backlog": S.anki_backlog("ja")},
+                           clock=clock)
+    assert status.snapshot().backlog is None
+    status.poll()
+    _settle(status)
+    assert status.snapshot().backlog == 3

@@ -1,25 +1,33 @@
-"""The painted rows (W2.2; the window's spec 05 §5.3, §5.9, §5.11, A3, A4; the mock's anatomy: the planning folder's
-`tracks/window/work/w22/mock-anatomy.md`).
+"""The painted rows (W2.2, rebuilt for Current in W3.1a; the window's spec 05 §5.3, §5.9, §5.11, A3, A4; the redesign's
+reference `list-r14m.html`, extracted in the planning folder's `tracks/window/work/w31a/ref-extract.md` §3–§8).
 
 Every list in the window is a `QListView` over a `RowsModel`, painted by a `RowDelegate` — **no widget per row**
 (BRIEF: paint lists, don't build them from widgets). What a row says is `app/services/view_rows.py`'s; this file only
 paints it:
-- **the hero** (*Up next*): the list's first row, painted taller (so a screen reader reaches it like any row) — the
-  cover, the eyebrow, the title and its episode, the source, *% known · N new words*, the episode chips, ▶ *Watch* (or
-  the muted *No video*) and the next episode's status;
-- **a row**: its place, cover, title over its one line, *% · N new* in fixed tabular slots, the on-disk mark and the
-  status pill; on hover or keyboard focus ▶; open, its episodes under it (the tick, the label, the numbers, the status, ▶);
-- **the lines** in the gap after their rows: the top-20 line (dashed) and the Soon line;
-- **Finished**'s month labels and rows (a date, no numbers), **Needs you**'s cards.
+- **Up Next** (the hero): the list's first row, the old mock's card in the new flat look — a `surface` slab, the cover
+  with its watched bar, *UP NEXT*, the title and its episode, the source, *% known · N new words ↗*, **the string** of
+  stones (where the chips were), ▶ *Play* (the trillion in its kind's gem) and ✓ *Done* side by side, *N in Anki*, ⋯;
+- **a Current row**: one line at every text size (W3.1a §1 *Rows*) — its number (↑ ↓ on hover or focus), the wide art
+  fading out, the title faded at its end, **the string** (one stone per file: `app/services/stone_plan.py`'s plan,
+  blitted from the stones' sheet, `app/qt/stones.py`), the Anki count, *% · N new*. Hover and keyboard focus show the
+  same things (S7): the row lifts on a spring with its baked shadow, its neighbours ease apart, the next stone's ring
+  shows and the status, ▶ and ⋯ fade in over the string's end, holding no room. Opened, its episode lines under it,
+  each with its stone at the left;
+- **the lines** in the gap after their rows: the top-20 line and the Soon line, grooves (1 px dark, 1 px lit lip);
+- **Finished**'s month labels and rows (today's layout: a date, no numbers — C-scope §2.3), **Needs you**'s cards.
 
 Text is cached as `QStaticText` per (text, font, width) and dropped when the text size or the screen's pixel ratio
-changes; generated covers are cached pixmaps per (title, size, ratio). Tooltips on every painted part go through the
-window's bubble (`tooltip.Tooltips.request(widget, rect, text)`); each row answers `AccessibleTextRole` (title · % known
-· N new · status) and `AccessibleDescriptionRole` (its one line).
+changes; generated covers and the rows' wide art are cached pixmaps per (title, size, ratio). Tooltips on every painted
+part go through the window's bubble (`tooltip.Tooltips.request(widget, rect, text)`); each row answers
+`AccessibleTextRole` (title · % known · N new · status) and `AccessibleDescriptionRole` (its line and its string read
+as words: *8 of 12 watched, 3 in Anki*).
 
-Display only (W2.2): nothing here writes. ▶ asks the page to open a file (`play_requested`); a row opens and closes.
+Nothing here writes. ▶ asks the page to open a file (`play_requested`); a click on a stone, or Up Next's ✓ Done, asks
+for a Done (`done_requested`: one path, wherever it's clicked); ↑ ↓, ⋯ and the journey's ↗ ask too (`nudge_requested`,
+`menu_requested`, `journey_requested`); a row opens and closes.
 """
 import bisect
+import math
 import os
 import time
 from collections import OrderedDict
@@ -31,8 +39,8 @@ from PyQt6.QtGui import (QBrush, QColor, QFont, QFontMetrics, QLinearGradient, Q
 from PyQt6.QtWidgets import QAbstractItemView, QListView, QStyle, QStyledItemDelegate
 
 from app import theme
-from app.qt import strings, style
-from app.services import view_rows
+from app.qt import motion, stones, strings, style
+from app.services import stone_plan, view_rows
 
 ROW_ROLE = Qt.ItemDataRole.UserRole + 1
 KIND_ROLE = Qt.ItemDataRole.UserRole + 2
@@ -137,12 +145,25 @@ def c(name):
     q = _QCOLOURS.get(key)
     if q is None:
         colours = style.colours()
-        q = _QCOLOURS[key] = style.qcolor(colours[name] if name in colours else theme.FIXED[name])
+        q = _QCOLOURS[key] = style.qcolor(colours[name] if name in colours else theme.FIXED[name]
+                                          if name in theme.FIXED else theme.ROW_COLOURS[name])
+    return q
+
+
+def faded(name, alpha):
+    """`c(name)` at an alpha 0–1 (a new colour: the shadow, the sheen, a fade's far end)."""
+    q = QColor(c(name))
+    q.setAlphaF(max(0.0, min(1.0, alpha)))
     return q
 
 
 def fz():
     return theme.text_factor(style.current()[1])
+
+
+def rl(name):
+    """A size of Current's one-line row (`theme.ROW_LINE`)."""
+    return theme.ROW_LINE[name]
 
 
 # --- covers -------------------------------------------------------------------------------------------------------- #
@@ -198,6 +219,52 @@ def cover(title, w, h, dpr, large=False):
     _COVER_BYTES[0] += _size(pix)
     while len(_COVERS) > 1 and _COVER_BYTES[0] > COVERS_MB * 1024 * 1024:
         _COVER_BYTES[0] -= _size(_COVERS.popitem(last=False)[1])
+    return pix
+
+
+_ART = OrderedDict()
+_ART_BYTES = [0]
+ART_MB = 8                                           # the rows' wide art, by bytes (with the covers: well inside 64 MB)
+
+
+def clear_art():
+    _ART.clear()
+    _ART_BYTES[0] = 0
+
+
+def art(title, w, h, dpr):
+    """A Current row's wide art (W3.1a §1 *Rows*): its cover — the generated one, until the store holds pictures —
+    cropped to a strip from `art-focus` down, its fade to nothing **baked in** (opaque for its first `art-fade`, then out
+    at its right edge). Cached per (title, size, ratio), so a row's picture blits it."""
+    key = (title, int(w), int(h), dpr)
+    pix = _ART.get(key)
+    if pix is not None:
+        _ART.move_to_end(key)
+        return pix
+    full_h = max(int(h), round(w * 1.5))                 # the cover at the strip's width (2 : 3), cropped below
+    pix = QPixmap(max(1, round(w * dpr)), max(1, round(h * dpr)))
+    pix.setDevicePixelRatio(dpr)
+    pix.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pix)
+    # the generated cover's gradient (`cover`'s, ~160°) at the full cover's size, the strip cut from it — without its
+    # characters down the side: the title stands right beside the art
+    top, bottom = theme.generated_cover(title)
+    y0 = -round((full_h - h) * rl("art-focus"))
+    grad = QLinearGradient(QPointF(w * 0.33, y0), QPointF(w * 0.67, y0 + full_h))
+    grad.setColorAt(0, style.qcolor(top))
+    grad.setColorAt(1, style.qcolor(bottom))
+    p.fillRect(QRectF(0, 0, w, h), QBrush(grad))
+    p.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
+    fade = QLinearGradient(QPointF(0, 0), QPointF(w, 0))
+    fade.setColorAt(0, faded("shadow", 1.0))
+    fade.setColorAt(rl("art-fade"), faded("shadow", 1.0))
+    fade.setColorAt(1, faded("shadow", 0.0))
+    p.fillRect(QRectF(0, 0, w, h), QBrush(fade))
+    p.end()
+    _ART[key] = pix
+    _ART_BYTES[0] += _size(pix)
+    while len(_ART) > 1 and _ART_BYTES[0] > ART_MB * 1024 * 1024:
+        _ART_BYTES[0] -= _size(_ART.popitem(last=False)[1])
     return pix
 
 
@@ -268,6 +335,38 @@ def icon(p, kind, rect, colour, width=1.6):
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(colour)
         p.drawEllipse(r)
+    elif kind == "anki":                             # Anki's mark: a card with a star on it
+        p.drawRoundedRect(r.adjusted(w * 0.16, h * 0.06, -w * 0.16, -h * 0.06), 1.8, 1.8)
+        star = QPainterPath()
+        cx, cy, ro, ri = x + w * 0.5, y + h * 0.5, w * 0.22, w * 0.09
+        for k in range(10):
+            a = math.pi * k / 5 - math.pi / 2
+            rad = ro if k % 2 == 0 else ri
+            pt = QPointF(cx + rad * math.cos(a), cy + rad * math.sin(a))
+            star.moveTo(pt) if k == 0 else star.lineTo(pt)
+        star.closeSubpath()
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(colour)
+        p.drawPath(star)
+    elif kind == "warning":                          # a warning: a triangle, its ! inside
+        path = QPainterPath(QPointF(x + w * 0.5, y + h * 0.1))
+        path.lineTo(QPointF(x + w * 0.94, y + h * 0.88))
+        path.lineTo(QPointF(x + w * 0.06, y + h * 0.88))
+        path.closeSubpath()
+        p.drawPath(path)
+        p.drawLine(QPointF(x + w * 0.5, y + h * 0.38), QPointF(x + w * 0.5, y + h * 0.6))
+        p.drawPoint(QPointF(x + w * 0.5, y + h * 0.74))
+    elif kind == "more":                             # ⋯
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(colour)
+        for k in (0.22, 0.5, 0.78):
+            p.drawEllipse(QPointF(x + w * k, y + h * 0.5), w * 0.08, w * 0.08)
+    elif kind in ("chev-up", "chev-down"):           # ↑ ↓ in the number's column
+        a, b = (0.62, 0.36) if kind == "chev-up" else (0.38, 0.64)
+        path = QPainterPath(QPointF(x + w * 0.24, y + h * a))
+        path.lineTo(QPointF(x + w * 0.5, y + h * b))
+        path.lineTo(QPointF(x + w * 0.76, y + h * a))
+        p.drawPath(path)
     p.restore()
 
 
@@ -345,6 +444,9 @@ def paint_mark(p, mark, right, y_mid, dpr=1.0, audio=False):
     return rect
 
 
+PCT_INK = {"ok": "ok", "warn": "warn", "plain": "ink"}  # `view_rows.pct_tone` -> its ink (the brief's bands, ✅)
+
+
 def paint_diff(p, pct, tone, n_new, right, y_mid, dpr=1.0):
     """*94% · 138 new* in fixed tabular slots, right-aligned at `right` (G1.6 #3: the numbers line up row to row)."""
     f = fz()
@@ -355,7 +457,7 @@ def paint_diff(p, pct, tone, n_new, right, y_mid, dpr=1.0):
     new_txt = strings.ROWS_NEW_WORD
     new_w = fm.horizontalAdvance(" " + new_txt)
     x = right - new_w
-    pct_colour = style.qcolor(col["ok"] if tone == "ok" else col["warn"] if tone == "warn" else col["ink-dim"])
+    pct_colour = c(PCT_INK[tone])                       # the % bands: >= 97 ok, 93–96 ink (S11), < 93 warn
     dim = style.qcolor(col["ink-dim"])
     if pct is None and n_new is None:
         TEXT.draw(p, right - 60 * f, y_mid, strings.ROWS_DASH, "diff", 60 * f, dim, align="right", dpr=dpr)
@@ -408,7 +510,11 @@ class RowsModel(QAbstractListModel):
             if kind == EMPTY:
                 return payload[0]
         if role == Qt.ItemDataRole.AccessibleDescriptionRole:
-            if kind in (HERO, ROW, FINISHED):
+            if kind in (HERO, ROW):                 # its line, and its string read as words (Q6): the reader's plan
+                plan = payload.string[0] if payload.string is not None else stone_plan.plan_of(payload)
+                return strings.ROWS_ACCESSIBLE_STRING.format(line=payload.description, string=stone_plan.words(
+                    plan, strings.STRING_WORDS))
+            if kind == FINISHED:
                 return payload.description
             if kind == NEED:
                 return payload.line
@@ -432,8 +538,10 @@ class RowsModel(QAbstractListModel):
         return (kind, str(payload))
 
     def shape_of(self, entry):
-        """What decides an entry's height — the delegate's own rule (`RowDelegate._shape`): a closed row's episodes
-        decide none, so a file joining a closed row is a "same" refresh, not a relayout of every row (review D-3)."""
+        """What decides an entry's height — the delegate's own rule (`RowDelegate._shape`): its kind, its lines, open or
+        not, and an open row's episodes. A closed Current row is one line however many files it holds, so a file joining
+        it is a "same" refresh (review D-3) — and since its stones show (W3.1a B3), that row alone is painted again
+        (`looks_different`), never a relayout of every row."""
         return RowDelegate._shape(entry, self.open_key is not None and
                                   self.open_key == getattr(entry[1], "key", None))
 
@@ -447,8 +555,9 @@ class RowsModel(QAbstractListModel):
                     getattr(new[1], "key", None) != self.open_key and _same_face(old[1], new[1], new[0]))
 
     def set_entries(self, entries):
-        """-> "same" (payloads swapped in place: the changed rows repaint, `self.changed`), "relayout" (same keys,
-        another height somewhere) or "reset"."""
+        """-> "same" (payloads swapped in place: the changed rows repaint, `self.changed`), "moved" (the same rows in
+        another order, every place as tall as before: swapped in place too, `self.changed` the span the move touched —
+        no reset, no relayout: W3.1a S3, a drop), "relayout" (same keys, another height somewhere) or "reset"."""
         keys = [self.key_of(e) for e in entries]
         if keys == self.keys and entries:
             old = self.entries
@@ -457,6 +566,11 @@ class RowsModel(QAbstractListModel):
             self.before = old                       # what `looks_different` compares with
             self.entries = list(entries)
             return "same" if shapes else "relayout"
+        moved = self._moved_span(keys, entries)
+        if moved is not None:
+            self.changed, self.before = moved, self.entries
+            self.entries, self.keys = list(entries), keys
+            return "moved"
         # S19's written skip: a reset (a row added or gone, even below the screen) repaints the screen's rows — Qt's
         # QListView relays out and repaints its viewport on any reset or insert — but from their kept pixmaps (no row
         # drawn afresh: `_same_face`); an insert that repaints nothing on screen waits for W3.1's uniform rows (IK-38)
@@ -469,11 +583,30 @@ class RowsModel(QAbstractListModel):
         self.endResetModel()
         return "reset"
 
+    def _moved_span(self, keys, entries):
+        """A reorder that keeps every place's height: the same rows (by their own key — Up Next's row coming down is
+        the same row), each place the same shape as before (`shape_of`: kind, lines, open) — then the places whose row
+        changed, first to last (what a drop moved: the rows between its two ends shift by one), and any other place
+        whose entry changed as a "same" refresh would list it. Else None."""
+        old = self.keys
+        if len(keys) != len(old) or not keys:
+            return None
+        lo = next((i for i, (a, b) in enumerate(zip(old, keys)) if a != b), None)
+        if lo is None:
+            return None
+        hi = next(i for i in range(len(keys) - 1, -1, -1) if old[i] != keys[i])
+        if sorted(k[1] for k in old[lo:hi + 1]) != sorted(k[1] for k in keys[lo:hi + 1]):
+            return None                             # a row came or went: not a move
+        before = self.entries
+        if any(self.shape_of(before[i]) != self.shape_of(entries[i]) for i in range(len(entries))):
+            return None
+        return [i for i, (a, b) in enumerate(zip(before, entries))
+                if lo <= i <= hi or a[1] is not b[1] or a[2] != b[2]]
+
 
 # --- the delegate: geometry, painting, hit-testing ----------------------------------------------------------------- #
-GRIP = 12                                            # the grip's column before a Current row's number (mock `.grip`)
-EP_LABEL_IN = 12 + 20 + 12                           # an episode's label from its rule: a gap, the tick, a gap
-CHIP_DOT = 4 + 6                                     # a mined chip's dot after its number: the mock's gap, the dot
+GRIP = 12                                            # Finished: the grip's column it leaves out (`lead`)
+EP_LABEL_IN = 12 + 20 + 12                           # an episode's label from its rule: a gap, its stone, a gap
 SPRITES_KEPT = 64                                    # painted rows kept (~0.7 MB each at 150 %, a 1,280 px window)
 EPISODES_KEPT = 64                                   # painted episode rows, kept apart: opening rows never pushes rows out
 SPRITE_MB = {"row": 64, "ep": 16}                    # and by bytes, per list: a row is ~2 MB at 250 % (W2.2 review B-2)
@@ -492,12 +625,13 @@ def _size(pix):
 
 # What a closed row's or an episode's pixmap never shows: a new object that differs from the kept one only here looks
 # the same, so its pixmap is kept (Sonic's S19, 2026-10-08: nothing visible changed, nothing redrawn). A row in another
-# place (`_replace(index=…)`: its number is drawn over the pixmap, `_paint_number`), and a row leaving the top 20,
-# rebuilt as its episodes' place in the top moved yet usually showing nothing new (W2.2 speed round 5, R2). The hero
-# paints its episodes, so it is compared by identity alone.
-_UNSHOWN = {ROW: frozenset(("index", "episodes", "accessible", "description")),
+# place (`_replace(index=…)`: its number is drawn over the pixmap, `_paint_number`). A Current row's episodes **are**
+# shown since W3.1a — its string, one stone per file (B3): a file watched, in Anki, joining or removed repaints that
+# row; an episode's place in the top dims its stone. Finished's rows show no episodes (today's layout). The hero is
+# compared by identity alone.
+_UNSHOWN = {ROW: frozenset(("index", "accessible", "description")),
             FINISHED: frozenset(("index", "episodes", "accessible", "description")),
-            "ep": frozenset(("in_top", "rel_path"))}
+            "ep": frozenset(("rel_path",))}
 
 
 def _same_face(old, new, kind):
@@ -523,12 +657,19 @@ class RowDelegate(QStyledItemDelegate):
         self._model = view.model()                   # the list's own model, set before its delegate (`RowsView`)
         self._heights, self._h_entries, self._h_open, self._h_look = [], None, None, None
         self._bytes = {"row": 0, "ep": 0}
+        self._infos, self._infos_look = {}, None     # a Current row's key -> its string's plan and needs (`_info`)
+        self._stat_ws = {}                           # what shows right of a string -> its width, this look (`_info`)
+        self._tw = None                              # (the reader's needs or the entries, width, look, the one title
+        #                                              width) (`title_w`)
 
-    def _sprite(self, kind, payload, size, dpr, hovered, draw, ident=None, ground="bg", to=None, spare=False):
+    def _sprite(self, kind, payload, size, dpr, hovered, draw, ident=None, ground="bg", to=None, spare=False,
+                extra=None):
         """A closed row painted once into a pixmap (on the list's own ground, so text keeps its subpixel smoothing) and
         reused while the row object, its width and height, the screen's ratio, the look and the hover are the same.
         The reader keeps an unchanged row the same object between builds, so a refresh repaints from these. Its lines
-        (the top-20 and Soon lines) are drawn outside it, so a line that moves re-renders nothing (review B-13)."""
+        (the top-20 and Soon lines) are drawn outside it, so a line that moves re-renders nothing (review B-13).
+        `extra`: the rest of what the picture depends on (a Current row's title width; whether the stones' sheet was
+        there — a tuple whose last item says so: a picture painted before it is let go when it lands, `drop_unsheeted`)."""
         if not ROW_PIXMAPS and to is not None:      # the A/B's other arm: drawn where it stands, nothing kept
             q, at = to
             q.save()
@@ -541,7 +682,7 @@ class RowDelegate(QStyledItemDelegate):
         name = "ep" if kind == "ep" else "row"
         cache, kept = self._sprites[name], EPISODES_KEPT if kind == "ep" else SPRITES_KEPT
         key = (kind, payload.key if ident is None else ident, size.width(), size.height(), dpr, style.current(),
-               hovered)
+               hovered, extra)
         hit = cache.get(key)
         if hit is not None and (hit[0] is payload or _same_face(hit[0], payload, kind)):
             if hit[0] is not payload:
@@ -577,8 +718,10 @@ class RowDelegate(QStyledItemDelegate):
         return pix
 
     # sizes ------------------------------------------------------------------------------------------------------ #
-    def _lines_h(self, lines):
-        return len(lines) * round(15 * fz() + 6)
+    @staticmethod
+    def _lines_h(lines):
+        """The strips after a row its lines take: each a groove's own few px in the gap (W3.1a: really subtle)."""
+        return len(lines) * rl("line")
 
     def _entry(self, index):
         """The entry at `index`, read from the model's list (no trip through a QVariant: `index.data(ROW_ROLE)` costs
@@ -636,15 +779,17 @@ class RowDelegate(QStyledItemDelegate):
         f = fz()
         gap = theme.SPACING["list-gap"]
         if kind == HERO:
-            h = max(theme.SIZES["hero-cover-h"] + 32, round(self._hero_text_h()) + 32)
+            h = self._hero_head_h()
             if is_open:
                 h += self._episodes_h(payload) + 14
-            return QSize(100, h + 8 + gap + self._lines_h(lines))
-        if kind in (ROW, FINISHED):
-            h = round(theme.SIZES["row"] * f)
-            if is_open and kind == ROW:
-                h += self._episodes_h(payload) + 10
-            return QSize(100, h + gap + self._lines_h(lines))
+            return QSize(100, h + rl("hero-below") + self._lines_h(lines))
+        if kind == ROW:                              # one line at every size, its gap half above, half below
+            h = self._line_h()
+            if is_open:
+                h += self._episodes_h(payload) + rl("open-pad")
+            return QSize(100, h + rl("gap") + self._lines_h(lines))
+        if kind == FINISHED:                         # today's layout (C-scope §2.3)
+            return QSize(100, round(theme.SIZES["row"] * f) + gap + self._lines_h(lines))
         if kind == MONTH:
             return QSize(100, round(11.5 * f * 1.45 + 20))
         if kind == NEED:
@@ -660,91 +805,322 @@ class RowDelegate(QStyledItemDelegate):
         return 4 + len(row.episodes) * round(theme.SIZES["episode-row"] * fz())
 
     def _hero_text_h(self):
+        """Up Next's text column: the eyebrow, the title, the source, the numbers and the string, 5 px apart."""
         f = fz()
-        return (11 * f * 1.45 + 21 * f * 1.2 + 12.5 * f * 1.45 + 12.5 * f * 1.45 + 24 * f + 4 + 4 * 5)
+        return (11 * f * 1.45 + 21 * f * 1.2 + 12.5 * f * 1.45 + 12.5 * f * 1.45 + rl("hero-string") * f + 4 * 5)
+
+    def _hero_head_h(self):
+        return max(theme.SIZES["hero-cover-h"] + 2 * rl("hero-pad-y"), round(self._hero_text_h()) + 2 * rl("hero-pad-y"))
+
+    @staticmethod
+    def _line_h():
+        """A Current row's one line (60 × the text size)."""
+        return round(rl("height") * fz())
+
+    def slab_of(self, rect):
+        """A Current row's slab in its entry's `rect`: the gap's half above it (where its lift goes), one line tall."""
+        return QRect(rect.left(), rect.top() + rl("gap") // 2, rect.width(), self._line_h())
 
     # geometry ------------------------------------------------------------------------------------------------ #
-    def columns(self, rect, kind=ROW):
-        """The fixed right-hand columns of a row (mock `.rowline`): {name: QRect}, right to left."""
+    def columns(self, rect, kind=FINISHED):
+        """A Finished row's fixed right-hand columns (today's layout, C-scope §2.3; mock `.rowline`): {name: QRect}."""
         f = fz()
         top, h = rect.top(), round(theme.SIZES["row"] * f)
         right = rect.right() - 8
         acts = QRect(round(right - theme.SIZES["col-acts"] * f), top, round(theme.SIZES["col-acts"] * f), h)
         stat = QRect(round(acts.left() - 12 - theme.SIZES["col-stat"] * f), top, round(theme.SIZES["col-stat"] * f), h)
-        diff = QRect(round(stat.left() - 12 - theme.SIZES["col-diff"] * f), top, round(theme.SIZES["col-diff"] * f), h)
-        if kind == FINISHED:
-            date = QRect(round(stat.left() - 12 - 64 * f), top, round(64 * f), h)
-            return {"acts": acts, "stat": stat, "date": date, "text_right": date.left() -
-                    round(theme.SIZES["title-to-number"] * f)}
-        return {"acts": acts, "stat": stat, "diff": diff,
-                "text_right": diff.left() - round(theme.SIZES["title-to-number"] * f)}
+        date = QRect(round(stat.left() - 12 - 64 * f), top, round(64 * f), h)
+        return {"acts": acts, "stat": stat, "date": date,
+                "text_right": date.left() - round(theme.SIZES["title-to-number"] * f)}
 
     @staticmethod
     def lead(kind, left):
-        """The left of a row (mock `.rowline`): (its number's slot, its cover, its title) x. A Current row keeps the
-        grip's column before its number (12 px + 12, the drag's handle in W3.1) as the mock does; a Finished row has no
-        grip and an empty number slot, so its cover sits 24 px further left (G2.3: matched to the mock's captures)."""
+        """The left of a Finished row (mock `.rowline`): (its number's empty slot, its cover, its title) x — no grip and
+        no number, so its cover sits near the edge (G2.3: matched to the mock's captures)."""
         f = fz()
-        number = left + 4 + (GRIP + 12 if kind == ROW else 0)
+        number = left + 4
         cover_x = number + round(20 * f) + 12
         return number, cover_x, cover_x + round(theme.SIZES["row-cover-w"] * f) + 12      # 13 past the cover's last px
 
+    # a Current row's one line (W3.1a §1 *Rows*; list-r14m `.row.lr .rowline`) ---------------------------------------- #
+    def _art_w(self, width):
+        """The wide art: 10 % of the list's width, between `art-min` and `art-max` (× the text size)."""
+        f = fz()
+        return round(min(max(rl("art-min") * f, width * rl("art-share")), rl("art-max") * f))
+
+    def _fixed_w(self, width, stat_w):
+        """Everything on a row's line but its title and its string: the number, the art, the gaps, the Anki count, the
+        % · new column and the right padding (the flex row's items: `gap-x` between each, `string-in` before the
+        string; the hover group holds no room)."""
+        f, g = fz(), rl("gap-x")
+        return (round(rl("pos") * f) + self._art_w(width) + g + g + rl("string-in") + g + stat_w + g +
+                round(rl("diff") * f) + rl("pad-right"))
+
+    @staticmethod
+    def _stat_w(status):
+        """What a row shows at rest right of its string (list-r14m `.rt .stat`): the Anki count (its mark and N), or
+        mining's icon; nothing else, so 0 for every other status."""
+        if status is None:
+            return 0
+        if status.kind == "in_anki":
+            return round(2 + rl("anki-icon") + 5 + TEXT.metrics("status-pill", 700).horizontalAdvance(status.label) + 2)
+        if status.kind == "mining":
+            return round(rl("icon-w") * fz())
+        return 0
+
+    def _stat_w_of(self, kind):
+        """`_stat_w` by what decides it (`view_rows.stat_kind`: the Anki count's label, mining, nothing), kept per look:
+        the font is asked once per label, never once per row."""
+        look = style.current()
+        if look != self._infos_look:
+            self._infos.clear()
+            self._stat_ws.clear()
+            self._infos_look = look
+        w = self._stat_ws.get(kind)
+        if w is None:
+            status = None if kind is None else view_rows.Status("mining", "", "", "") if kind == "mining" else \
+                view_rows.Status("in_anki", kind[1], "", "")
+            w = self._stat_ws[kind] = self._stat_w(status)
+        return w
+
+    def _info(self, row):
+        """A Current row's string: (its plan, its need at its tightest now or after its next fuse — px at the string's
+        own scale —, the width of its Anki count). The plan and the need are the reader's (`Row.string`, planned off
+        this thread once per row content: W3.1a B2); a row without them (a test's own) is planned here, kept by its key
+        while its files, next file, media and source are the same."""
+        stat_w = self._stat_w_of(view_rows.stat_kind(row.status))
+        if row.string is not None:
+            return row.string[0], row.string[1], stat_w
+        hit = self._infos.get(row.key)
+        if hit is not None and hit[0] is row.episodes and hit[1] == (row.next_index, row.media, row.source):
+            return hit[2][0], hit[2][1], stat_w
+        plan = stone_plan.plan_of(row)
+        out = (plan, max(stone_plan.tightest(plan), stone_plan.ahead(plan)))
+        if len(self._infos) > 50000:
+            self._infos.clear()
+        self._infos[row.key] = (row.episodes, (row.next_index, row.media, row.source), out)
+        return out[0], out[1], stat_w
+
+    def _worst(self):
+        """The reader's answer for the one title width (`View.worst`, `view_rows.worst_needs`): read from the view the
+        list's page shows (`Page.view_model`, set before its entries) when these entries are that view's rows — else
+        None, and `title_w` walks the rows itself."""
+        view = getattr(self.view.parent(), "view_model", None)
+        table = getattr(view, "worst", None)
+        entries = self._model.entries
+        if table is None or not entries or len(view.rows) != len(entries) or entries[0][1] is not view.rows[0] or \
+                entries[-1][1] is not view.rows[-1]:
+            return None
+        return table
+
+    def title_w(self, width):
+        """The one title width every Current row shares at this list width (`stone_plan.title_width`): round(187 × the
+        text size), narrowed by the row whose string is shortest of room at its tightest (now or after its next fuse),
+        never under round(80 × the text size). The string keeps the reference's own px (`stones.FOLLOWS_TEXT_SIZE` is
+        False: `string_fz` 1.0). The rows' needs come worked out by the reader, per kind of Anki count (`View.worst`):
+        this thread adds each kind's width and takes the largest — a few numbers, never every row (W3.1a B2). Worked out
+        once per (that answer, or the list's rows when there is none; its width; the look)."""
+        model = self._model
+        look = style.current()
+        table = self._worst()
+        key = model.entries if table is None else table
+        hit = self._tw
+        if hit is not None and hit[0] is key and hit[1] == width and hit[2] == look:
+            return hit[3]
+        worst, worst_w, worst_stat = None, -1.0, 0
+        if table is not None:
+            for kind, (need, plan) in table.items():
+                stat_w = self._stat_w_of(kind)
+                if need + stat_w > worst_w:          # the row shortest of room: its need and its own Anki count
+                    worst, worst_w, worst_stat = plan, need + stat_w, stat_w
+        else:
+            for kind, row, _lines in model.entries:
+                if kind != ROW:
+                    continue
+                plan, need, stat_w = self._info(row)
+                if need + stat_w > worst_w:
+                    worst, worst_w, worst_stat = plan, need + stat_w, stat_w
+        tw = stone_plan.title_width((worst,) if worst is not None else (), width, fz(),
+                                    self._fixed_w(width, worst_stat), string_fz=1.0)
+        self._tw = (key, width, look, tw)
+        return tw
+
+    def _hover_items(self, row):
+        """What a Current row shows over its string's end on hover or keyboard focus (list-r14m `.r11-hb`), in order:
+        *Studying its cards first*, its status as its icon (the Anki count and mining show at rest instead), its on-disk
+        mark, ▶ and ⋯ -> [(name, glyph, ink, tip, payload, w, h)]. Waiting's icon is the Mine now button (A2 #44); No
+        video is a warning, amber when it's in the top 20 (A2 #5, #41)."""
+        f = fz()
+        iw, ih, b = round(rl("icon-w") * f), round(rl("icon-h") * f), round(rl("button") * f)
+        out = []
+        if row.studying:
+            out.append(("studying", "up", "accent", strings.ROWS_STUDYING_TIP, None, iw, ih))
+        st = row.status
+        if st is not None and st.kind not in ("in_anki", "mining", "none"):
+            if st.kind == "waiting":
+                out.append(("mine-now", "waiting", "ink-dim", strings.ROWS_MINE_NOW_TIP.format(tip=st.tip), None, iw, ih))
+            elif st.kind == "no_media":
+                out.append(("status", "warning", "warn" if st.tone == "warn" else "ink-faint",
+                            strings.ROWS_NO_MEDIA_LATER.format(tip=st.tip), None, iw, ih))
+            else:
+                out.append(("status", STATUS_ICON.get(st.kind, "mine"),
+                            {"ok": "ok", "faint": "ink-faint", "ink": "ink"}.get(st.tone, "ink-dim"), st.tip, None, iw,
+                            ih))
+        if row.mark is not None:
+            out.append(("mark", "no_audio" if row.media_word == "audio" else "no_media",
+                        "warn" if row.mark.tone == "warn" else "ink-faint", row.mark.tip, None, iw, ih))
+        out.append(("play", "play", "ink-dim", row.play_tip, row.episodes[row.next_index], b, b))
+        out.append(("more", "more", "ink-dim", strings.ROWS_MORE_TIP, None, b, b))
+        return out
+
+    def line_geometry(self, row, slab, tw=None, opened=False):
+        """A Current row's one line laid out in its `slab` (list-r14m's flex row: the number, the art — its number's
+        −12 margin eats the gap —, the title, the string `string-in` further on, a zero-width anchor where the hover
+        group hangs, the Anki count, % · new): {name: QRect}, `hover` [(name, QRect, glyph, ink, tip, payload)] and its
+        width `hw`. `opened`: the head of an opened row (its string has dropped into its episode lines)."""
+        f, g = fz(), rl("gap-x")
+        top, h = slab.top(), slab.height()
+        pos = QRect(slab.left(), top, round(rl("pos") * f), h)
+        art_r = QRect(pos.right() + 1, top, self._art_w(slab.width()), h)
+        if tw is None:
+            tw = self.title_w(slab.width())
+        right = slab.right() + 1 - rl("pad-right")              # the line's last px + 1
+        diff_w = round(rl("diff") * f)
+        diff = QRect(right - diff_w, top, diff_w, h)
+        stat_w = self._info(row)[2]
+        stat = QRect(diff.left() - g - stat_w, top, stat_w, h)
+        main = QRect(art_r.right() + 1 + g, top, tw, h)
+        end = stat.left() - g                                   # the string's end: the hover group hangs from it
+        left = main.right() + 1 + g + rl("string-in")
+        gstr = QRect(left, top, max(0, end - left), h)
+        mid = top + h / 2
+        hover, x = [], end
+        for name, glyph, ink, tip, payload, w, ih in reversed(self._hover_items(row)):
+            r = QRect(x - w, round(mid - ih / 2), w, ih)
+            hover.append((name, r, glyph, ink, tip, payload))
+            x = r.left() - rl("hover-gap")
+        hover.reverse()
+        hw = end - hover[0][1].left() + rl("hover-pad")
+        mw, mh, mp = rl("mover-w"), rl("mover-h"), rl("mover-pad")
+        cx = pos.left() + pos.width() // 2
+        if opened:                                              # the full title takes the string's room
+            main = QRect(main.left(), top, max(tw, end - hw - g - main.left()), h)
+        return {"slab": slab, "pos": pos, "art": art_r, "main": main, "gstr": gstr, "stat": stat, "diff": diff,
+                "hover": hover, "hw": hw, "end": end,
+                "up": QRect(cx - mw // 2, top + mp, mw, mh), "down": QRect(cx - mw // 2, top + h - mp - mh, mw, mh)}
+
+    @staticmethod
+    def _stone_what(item, gem, big=False):
+        """A plan's item as the sheet names its picture (`stones.Sheet`); `big`: every single at the next one's size (Up
+        Next's string)."""
+        if item.kind == "stone":
+            size = "next" if (item.big or big) else "watched" if item.state == "cut" else "waiting"
+            return ("stone", item.state, gem, item.variant % stones.VARIANTS, size)
+        if item.kind == "tier":
+            return ("group", gem, item.n)
+        return ("ore", gem, stones.size_bucket(item.n), item.mined_step, 1 if item.cut_points else 0)
+
+    def _stone_parts(self, row, plan, room, mid, big=False):
+        """The single stones of a string, as parts: a click on one is a Done for its file (S12; list-r14m's hit areas
+        26 × 30)."""
+        out = []
+        lay = stone_plan.layout(plan, room.width(), 1.0)
+        for item, x in zip(plan.items, lay.xs):
+            if item.kind != "stone" or room.left() + x > room.right():
+                continue
+            ep = row.episodes[item.index]
+            state = strings.ROWS_STONE_STATE[item.state].format(n=ep.cards)
+            if ep.missing:
+                state += strings.ROWS_STONE_MISSING.format(word=row.media_word)
+            tip = strings.ROWS_STONE_TIP.format(label=ep.label, state=state, action=strings.ROWS_STONE_ACTION[ep.watched])
+            out.append(("stone", QRect(round(room.left() + x - 13), round(mid - 15), 26, 30), tip, ep))
+        return out
+
     def parts(self, entry, rect):
-        """Every hit-testable part of an entry: [(name, QRect, tooltip, payload)] — the view's tooltips and clicks."""
+        """Every hit-testable part of an entry: [(name, QRect, tooltip, payload)] — the view's tooltips and clicks. A
+        part listed first wins where two overlap (the hover group over the string's end; ↑ ↓ over the number)."""
         kind, payload, lines = entry
         out = []
         f = fz()
         if kind == HERO:
             g = self._hero_geometry(payload, rect, lines)
-            out.append(("play", g["play"], payload.play_tip, payload.episodes[payload.next_index]))
-            if payload.episodes[payload.next_index].status:
-                out.append(("status", g["status"], payload.episodes[payload.next_index].status.tip, None))
-            for chip_rect, chip in g["chips"]:
-                out.append(("chip", chip_rect, chip.tip, None))
+            nxt = payload.episodes[payload.next_index]
+            out.append(("play", g["play"], payload.play_tip, nxt))
+            out.append(("done", g["done"], strings.ROWS_DONE_ALL_TIP if nxt.watched else
+                        strings.ROWS_DONE_TIP.format(ep=nxt.label), nxt))
+            out.append(("more", g["more"], strings.ROWS_MORE_TIP, None))
+            if nxt.status is not None:
+                out.append(("status", g["status"], nxt.status.tip, None))
+            if g["journey"] is not None:
+                out.append(("journey", g["journey"], strings.ROWS_JOURNEY_TIP, nxt))
+            is_open = self.view.model().open_key == payload.key
+            if not is_open and self._sheet_there():    # G16: the string hides while Up Next is open; L4: no stone
+                s = g["string"]
+                out += self._stone_parts(payload, self._info(payload)[0], s, s.top() + s.height() / 2, big=True)
             out.append(("title", g["title"], payload.title, None))
-            if self.view.model().open_key == payload.key:
+            if is_open:
                 out += self._episode_parts(payload, g["eps"], hero=True)
             out.append(("open", g["main"], None, None))
-        elif kind in (ROW, FINISHED):
+        elif kind == ROW:
+            slab = self.slab_of(rect)
+            is_open = self.view.model().open_key == payload.key
+            g = self.line_geometry(payload, slab, opened=is_open)
+            for name, r, _glyph, _ink, tip, pl in g["hover"]:
+                out.append((name, r, tip, pl))
+            out.append(("up", g["up"], strings.ROWS_MOVE_TIP["up"], None))
+            out.append(("down", g["down"], strings.ROWS_MOVE_TIP["down"], None))
+            if not is_open and self._sheet_there():    # L4: a stone is hit only where it is drawn
+                out += self._stone_parts(payload, self._info(payload)[0], g["gstr"], slab.top() + slab.height() / 2)
+            if g["stat"].width():
+                out.append(("status", g["stat"], payload.status.tip, None))
+            out.append(("title", QRect(slab.left(), slab.top(), g["main"].right() - slab.left() + 1, slab.height()),
+                        payload.title + ("\n" + payload.line if payload.line else ""), None))
+            if is_open:
+                out += self._episode_parts(payload, QRect(rect.left(), slab.bottom() + 1, rect.width(),
+                                                          rect.bottom() - slab.bottom()))
+            out.append(("open", slab, None, None))
+        elif kind == FINISHED:
             h = round(theme.SIZES["row"] * f)
-            line = QRect(rect.left(), rect.top(), rect.width(), h)
-            cols = self.columns(line, kind)
-            st_rect, mk_rect = self._status_rects(payload, cols["stat"])
-            if kind == FINISHED:                       # Finished: only Mining… / ✓ N (words in its tip), no mark
-                mk_rect = None
-                if payload.status is None or payload.status.kind not in ("in_anki", "mining"):
-                    st_rect = None
+            row_line = QRect(rect.left(), rect.top(), rect.width(), h)
+            cols = self.columns(row_line, kind)
+            st_rect, _mk = self._status_rects(payload, cols["stat"])
+            if payload.status is None or payload.status.kind not in ("in_anki", "mining"):
+                st_rect = None                         # Finished: only Mining… / ✓ N (words in its tip), no mark
             if st_rect is not None:
                 out.append(("status", st_rect, payload.status.tip, None))
-            if mk_rect is not None:
-                out.append(("mark", mk_rect, payload.mark.tip, None))
             if payload.studying:
-                x0 = self.lead(kind, line.left())[2]
-                out.append(("studying", QRect(x0, line.center().y(), self._studying_w(), round(19 * f) + 4),
+                x0 = self.lead(kind, row_line.left())[2]
+                out.append(("studying", QRect(x0, row_line.center().y(), self._studying_w(), round(19 * f) + 4),
                             strings.ROWS_STUDYING_TIP, None))
-            if kind == ROW:
-                out.append(("play", self._play_rect(cols["acts"]), payload.play_tip,
-                            payload.episodes[payload.next_index]))
-            out.append(("title", QRect(line.left(), line.top(), cols["text_right"] - line.left(), h),
+            out.append(("title", QRect(row_line.left(), row_line.top(), cols["text_right"] - row_line.left(), h),
                         payload.title + ("\n" + payload.line if payload.line else ""), None))
-            if kind == ROW and self.view.model().open_key == payload.key:
-                out += self._episode_parts(payload, QRect(rect.left(), line.bottom() + 1, rect.width(),
-                                                          rect.height() - h))
-            out.append(("open", line, None, None))
+            out.append(("open", row_line, None, None))
         elif kind == NEED:                             # its line lives in the tooltip (G2.3 N1: the card stays clean)
             out.append(("title", rect, payload.title + ("\n" + payload.line if payload.line else ""), None))
-        y = rect.bottom() + 1 - self._lines_h(lines)
-        for ln in lines:
-            strip = QRect(rect.left(), y, rect.width(), round(15 * fz() + 6))
-            out.append((ln.kind + "-line", strip, ln.tip, None))
-            y += strip.height()
+        out = self._line_parts(lines, rect) + out      # a line's hover area overlaps its rows' edges: it wins there
         return out
 
-    def _play_rect(self, acts):
-        side = round(theme.SIZES["icon-button"] * fz())
-        return QRect(acts.left() + 2, acts.center().y() - side // 2, side, side)
+    def _sheet_there(self):
+        """Whether the stones' sheet is there to draw a string from (L4: until it lands — or all session, if its build
+        failed — a row paints no stone, so none can be clicked: a click on the bare string opens the row)."""
+        return stones.get(self.view.viewport().devicePixelRatioF() or 1.0, style.current()[1]) is not None
+
+    def _line_parts(self, lines, rect):
+        """The lines after a row, as parts: each strip's hover area at least `line-hit` tall around its groove (S10),
+        reaching into the rows either side; its tip says what it is and where its setting lives."""
+        out = []
+        y = rect.bottom() + 1 - self._lines_h(lines)
+        hit = rl("line-hit")
+        for ln in lines:
+            mid = y + rl("line") // 2
+            where = strings.ROWS_TOP_LINE_WHERE if ln.kind == "top" else strings.ROWS_SOON_LINE_WHERE
+            out.append((ln.kind + "-line", QRect(rect.left(), mid - hit // 2, rect.width(), hit), where.format(tip=ln.tip),
+                        None))
+            y += rl("line")
+        return out
 
     def _status_rects(self, row, stat):
+        """A Finished row's status pill in its column (today's layout)."""
         st_rect = mk_rect = None
         y_mid = stat.center().y()
         right = stat.right()
@@ -759,15 +1135,19 @@ class RowDelegate(QStyledItemDelegate):
             mk_rect = QRect(right - w, round(y_mid - 11 * f), w, round(22 * f))
         return st_rect, mk_rect
 
+    def _title_x(self, left, width):
+        """Where a Current row's title starts (its episodes' labels start there too, G2.3 A2)."""
+        return left + round(rl("pos") * fz()) + self._art_w(width) + rl("gap-x")
+
     def _episode_rows(self, row, area, hero=False):
-        """An open row's episodes, one rect each: from its rule (a tick and a gap before the label) to the row's own
-        right edge, so an episode's label starts where its show's title does and its numbers, status and ▶ stand in
-        the list's columns — a row's own, and in the hero those of the rows under it (G2.3 A1, A2; `_episode_cols`)."""
+        """An open row's episodes, one rect each: from its stone's column (a gap, the stone, a gap before the label) to
+        the row's own right edge, so an episode's label starts where its show's title does and its numbers and status
+        stand in the list's columns (G2.3 A1, A2; `_episode_cols`)."""
         f = fz()
         if hero:
-            title_x = area.left() + 20 + theme.SIZES["hero-cover-w"] - 1 + 18      # `_hero_geometry`'s main column
+            title_x = area.left() + rl("hero-pad-x") + theme.SIZES["hero-cover-w"] - 1 + rl("hero-gap")  # its main column
         else:
-            title_x = self.lead(ROW, area.left())[2]
+            title_x = self._title_x(area.left(), area.width())
         left = title_x - EP_LABEL_IN
         right = area.right()
         h = round(theme.SIZES["episode-row"] * f)
@@ -787,42 +1167,52 @@ class RowDelegate(QStyledItemDelegate):
                 size = pill_size(ep.status)
                 out.append(("status", QRect(cols["stat"].right() - size.width(), cols["stat"].center().y() -
                                             size.height() // 2, size.width(), size.height()), ep.status.tip, None))
-            out.append(("tick", cols["tick"], strings.ROWS_TICK_WATCHED if ep.watched else strings.ROWS_TICK_NOT, None))
+            state = strings.ROWS_STONE_STATE["cut" if ep.watched else "raw" if ep.cards else "rock"].format(n=ep.cards)
+            out.append(("stone", cols["tick"], strings.ROWS_STONE_TIP.format(
+                label=ep.label, state=state, action=strings.ROWS_STONE_ACTION[ep.watched]), ep))
         return out
 
     def _episode_cols(self, r):
-        """An episode's parts: a list row's columns (`columns`, from the same right edge) at the episode's height —
-        % · new, the status and ▶ line up with its show row's (G2.3 A1, A2); in the hero, with the rows under it."""
-        cols = self.columns(r)
-        acts, stat, diff = cols["acts"], cols["stat"], cols["diff"]
-        play = self._play_rect(QRect(acts.left(), r.top(), acts.width(), r.height()))
-        stat = QRect(stat.left(), r.top(), stat.width(), r.height())
-        diff = QRect(diff.left(), r.top(), diff.width(), r.height())
+        """An episode's parts, in a Current row's columns at the episode's height (G2.3 A1, A2): % · new in the row's
+        % · new column, the status ending where the row's Anki count does, ▶ before it; in Up Next, the rows' under it."""
+        f, g = fz(), rl("gap-x")
+        right = r.right() + 1 - rl("pad-right")
+        diff_w = round(rl("diff") * f)
+        diff = QRect(right - diff_w, r.top(), diff_w, r.height())
+        stat_w = round(theme.SIZES["col-stat"] * f)
+        stat = QRect(diff.left() - g - stat_w, r.top(), stat_w, r.height())
+        side = round(theme.SIZES["icon-button"] * f)
+        play = QRect(stat.left() - g - side, r.center().y() - side // 2, side, side)
         tick = QRect(r.left() + 12, r.center().y() - 10, 20, 20)
         return {"play": play, "stat": stat, "diff": diff, "tick": tick, "text_left": r.left() + EP_LABEL_IN,
-                "text_right": diff.left() - 12}
+                "text_right": play.left() - 12}
 
     def _hero_geometry(self, row, rect, lines=()):
+        """Up Next, the old mock's card flat (W3.1a §1 *Up Next*; ref-extract §7): a slab, the cover, the text column
+        (eyebrow, title + its episode, the source, the numbers with ↗, the string), then ▶ Play and ✓ Done side by side
+        over *N in Anki* and ⋯."""
         f = fz()
-        box = QRect(rect.left(), rect.top(), rect.width(), rect.height() - 8 - theme.SPACING["list-gap"] -
-                    self._lines_h(lines))
-        is_open = self.view.model().open_key == row.key
-        head_h = max(theme.SIZES["hero-cover-h"] + 32, round(self._hero_text_h()) + 32)
+        box = QRect(rect.left(), rect.top(), rect.width(), rect.height() - rl("hero-below") - self._lines_h(lines))
+        head_h = self._hero_head_h()
+        pad_x, pad_y, pad_r, gap = rl("hero-pad-x"), rl("hero-pad-y"), rl("hero-pad-right"), rl("hero-gap")
         head = QRect(box.left(), box.top(), box.width(), head_h)
-        cov = QRect(head.left() + 20, head.top() + (head_h - theme.SIZES["hero-cover-h"]) // 2,     # centred, as the
-                    theme.SIZES["hero-cover-w"], theme.SIZES["hero-cover-h"])                      # mock's heroline
-        side_w = round(max(150 * f, 120))
-        side = QRect(head.right() - 18 - side_w, head.top() + 16, side_w, head_h - 32)
-        main = QRect(cov.right() + 18, head.top() + 16, side.left() - 18 - cov.right() - 18, head_h - 32)
+        cov = QRect(head.left() + pad_x, head.top() + (head_h - theme.SIZES["hero-cover-h"]) // 2,
+                    theme.SIZES["hero-cover-w"], theme.SIZES["hero-cover-h"])
         btn_h = round(theme.SIZES["button"] * f)
-        play_w = round(TEXT.metrics("button").horizontalAdvance(self._watch_label(row)) + 13 * 2 + 18)  # its own
-        #                                                                       label (the mock's .btn: padding 13)
-        play = QRect(side.right() - play_w, side.center().y() - btn_h - 5, play_w, btn_h)
-        status = QRect(side.left(), side.center().y() + 5, side.width(), round(theme.SIZES["status-pill"] * f))
-        if row.episodes[row.next_index].status is not None:
-            size = pill_size(row.episodes[row.next_index].status)
-            status = QRect(side.right() - size.width(), side.center().y() + 5, size.width(), size.height())
-        # the text column, top to bottom (gap 5)
+        fm = TEXT.metrics("button")
+        play_w = round(13 + rl("hero-trillion") + 7 + fm.horizontalAdvance(self._watch_label(row)) + 13)
+        done_w = round(13 + 14 + 7 + fm.horizontalAdvance(strings.ROWS_DONE) + 13)
+        side_w = play_w + 8 + done_w
+        side = QRect(head.right() - pad_r - side_w + 1, head.top() + pad_y, side_w, head_h - 2 * pad_y)
+        main = QRect(cov.right() + gap, head.top() + pad_y, side.left() - gap - cov.right() - gap, head_h - 2 * pad_y)
+        mid = side.top() + side.height() // 2
+        done = QRect(side.right() - done_w + 1, mid - btn_h - 5, done_w, btn_h)
+        play = QRect(done.left() - 8 - play_w, mid - btn_h - 5, play_w, btn_h)
+        b = round(rl("button") * f)
+        more = QRect(side.right() - b + 1, mid + 5, b, b)
+        nxt = row.episodes[row.next_index]
+        stat_w = max(self._stat_w(nxt.status), round(rl("icon-w") * f))
+        status = QRect(more.left() - 4 - stat_w, mid + 5, stat_w, b)
         y = main.top()
         eyebrow_h = round(11 * f * 1.45)
         title_h = round(21 * f * 1.25)
@@ -830,34 +1220,26 @@ class RowDelegate(QStyledItemDelegate):
         stats_h = round(12.5 * f * 1.45)
         g = {"box": box, "head": head, "cover": cov, "main": QRect(cov.left(), head.top(), main.right() - cov.left(),
                                                                    head_h),
-             "play": play, "status": status}
+             "play": play, "done": done, "more": more, "status": status, "text": main}
         g["eyebrow"] = QRect(main.left(), y, main.width(), eyebrow_h)
         y += eyebrow_h + 5
         g["title"] = QRect(main.left(), y, main.width(), title_h)
         y += title_h + 5
-        # the sub line (mock `heroSub`): *Hato* for a hato show, the channel for a video; otherwise dropped
+        # the source (mock `heroSub`): *Hato* for a hato show, the channel for a video; otherwise dropped (G16)
         g["sub"] = QRect(main.left(), y, main.width(), sub_h) if row.source == "hato" or \
             (row.media == "youtube" and row.line) else None
         if g["sub"] is not None:
             y += sub_h + 5
         g["stats"] = QRect(main.left(), y, main.width(), stats_h)
-        y += stats_h + 5 + 4
-        chips = []
-        if row.chips and not is_open:
-            cx = main.left()
-            ch_h = round(24 * f)
-            fm = TEXT.metrics("chip")
-            for chip in row.chips + ((None,) if row.more_chips else ()):
-                text = chip.text if chip is not None else strings.ROWS_MORE_CHIP.format(n=row.more_chips)
-                w = max(round(30 * f), fm.horizontalAdvance(text) + round(16 * f) + (CHIP_DOT if chip is not None and
-                                                                                      chip.mined else 0))
-                if cx + w > main.right():
-                    break
-                chips.append((QRect(cx, y, w, ch_h), chip if chip is not None else
-                              type(row.chips[0])(text, False, False, False, strings.ROWS_MORE_CHIPS.format(
-                                  n=row.more_chips))))
-                cx += w + 5
-        g["chips"] = chips
+        g["journey"] = None
+        if nxt.pct is not None:                        # *N new words ↗*: the link into the journey (A3; S6)
+            known = strings.ROWS_HERO_KNOWN.format(pct=round(nxt.pct))
+            link = strings.ROWS_HERO_NEW_LINK.format(n=nxt.n_new if nxt.n_new is not None else strings.ROWS_DASH)
+            hs = TEXT.metrics("hero-sub")
+            x0 = main.left() + hs.horizontalAdvance(known)
+            g["journey"] = QRect(x0, y, min(hs.horizontalAdvance(link) + 2, max(0, main.right() - x0)), stats_h)
+        y += stats_h + 5
+        g["string"] = QRect(main.left(), y, main.width(), round(rl("hero-string") * f))
         g["eps"] = QRect(box.left(), head.bottom() + 1, box.width(), box.bottom() - head.bottom())
         return g
 
@@ -876,31 +1258,40 @@ class RowDelegate(QStyledItemDelegate):
         p.save()
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
-        body = QRect(rect.left(), rect.top(), rect.width(), rect.height() - theme.SPACING["list-gap"] -
-                     self._lines_h(lines))
         is_open = self.view.model().open_key == getattr(payload, "key", None)
-        if kind == HERO and not is_open:
-            pix, box = self._closed(kind, payload, lines, rect, dpr, hovered, p)
+        p.save()                                     # (the body only: a drag's lines stay where they are)
+        body = True
+        if kind in (HERO, ROW):                      # W3.1a §2: a drag parts the rows; the dragged one leaves its slot
+            parting = self.view.parting
+            if parting is not None and parting.src == index.row():
+                body = False                         # its slot travels with the hand (`drag.Parting.paint_over`)
+            elif parting is not None:
+                shift = parting.offset(index.row())
+                if shift:
+                    p.translate(0, shift)
+            if self.view.landing is not None and self.view.landing == payload.key:
+                body = False                         # a drop's ghost glides onto it: its slot shows meanwhile
+                self.paint_slot(p, self.slot_rect(kind, rect, lines))
+        if not body:
+            pass
+        elif kind == HERO and not is_open:
+            pix, box = self._closed(kind, payload, lines, rect, dpr, hovered or focused, p)
             if pix is not None:
                 p.drawPixmap(box.topLeft(), pix)
             if focused:
                 self._focus_ring(p, box, theme.RADII["r-sm"])
         elif kind == HERO:
-            self._paint_open_hero(p, payload, rect, lines, hovered, focused, dpr)
-        elif kind in (ROW, FINISHED) and not is_open:
+            self._paint_open_hero(p, payload, rect, lines, hovered or focused, focused, dpr)
+        elif kind == ROW:
+            self._paint_current_entry(p, index.row(), payload, rect, lines, focused, dpr, is_open)
+        elif kind == FINISHED:
+            body = QRect(rect.left(), rect.top(), rect.width(), rect.height() - theme.SPACING["list-gap"] -
+                         self._lines_h(lines))
             pix, _box = self._closed(kind, payload, lines, rect, dpr, hovered, p)
             if pix is not None:
                 p.drawPixmap(body.topLeft(), pix)
-            if kind == ROW:
-                self._paint_number(p, payload, body, dpr)
             if focused:
                 self._focus_ring(p, body, theme.RADII["r-sm"])
-                if kind == ROW and not hovered:
-                    cols = self.columns(QRect(body.left(), body.top(), body.width(),
-                                              round(theme.SIZES["row"] * fz())), kind)
-                    self._paint_play_button(p, self._play_rect(cols["acts"]), payload.can_play)
-        elif kind in (ROW, FINISHED):
-            self._paint_open_row(p, kind, payload, body, hovered, focused, dpr, lines)
         elif kind == MONTH:
             TEXT.draw(p, rect.left() + 4, rect.bottom() - round(11.5 * fz() * 0.9) - 4, payload.upper(), "month",
                       rect.width() - 8, c("ink-dim"), dpr=dpr)
@@ -909,60 +1300,283 @@ class RowDelegate(QStyledItemDelegate):
         elif kind == FAILURE:
             self._paint_failure(p, payload, rect, dpr)
         elif kind == EMPTY:
-            title, line = payload
+            title, line_ = payload
             mid = rect.center().y()
             TEXT.draw(p, rect.left(), mid - 12 * fz(), title, "page-heading", rect.width(), c("ink"), align="centre",
                       dpr=dpr)
-            TEXT.draw(p, rect.left(), mid + 14 * fz(), line, "body", rect.width(), c("ink-dim"), weight=400,
+            TEXT.draw(p, rect.left(), mid + 14 * fz(), line_, "body", rect.width(), c("ink-dim"), weight=400,
                       align="centre", dpr=dpr)
+        if body and kind == ROW and payload.key in self.view.saving:
+            self._paint_saving(p, payload, rect, dpr)
+        p.restore()
         y = rect.bottom() + 1 - self._lines_h(lines)
+        hot = self.view.line_hover
         for ln in lines:
-            self._paint_line(p, ln, QRect(rect.left(), y, rect.width(), round(15 * fz() + 6)), dpr)
-            y += round(15 * fz() + 6)
+            self._paint_line(p, ln, QRect(rect.left(), y, rect.width(), rl("line")), dpr,
+                             hot=hot == (index.row(), ln.kind))
+            y += rl("line")
+        p.restore()
+
+    def _paint_current_entry(self, p, i, row, rect, lines, focused, dpr, is_open):
+        """A Current row where it stands: its picture at rest and, fading in over it, its hover look; lifted on its
+        spring with its baked shadow, its neighbours eased apart (`RowsView.touch`: hover and keyboard focus alike, S7);
+        its number and ↑ ↓ drawn over the picture (an arrival moves every number and draws no row afresh)."""
+        slab = self.slab_of(rect)
+        dy, lift, fade = self.view.touch(i, row.key)
+        dy = round(dy * dpr) / dpr                   # whole device px: a picture blitted never smeared
+        if is_open:
+            self._paint_open_row(p, row, slab, rect, lines, fade, focused, dpr)
+            return
+        if lift > 0:
+            self._paint_lift(p, slab, dy, lift, dpr)
+        at = QPointF(slab.left(), slab.top() + dy)
+        self._blit_faded(p, at, fade, lambda active: self._closed_row(row, slab, dpr, active, p, at))
+        p.save()
+        p.translate(0, dy)
+        if lift > 0:                                 # the lifted slab's lit top edge
+            p.fillRect(QRectF(slab.left(), slab.top(), slab.width(), 1), faded("lift-line",
+                                                                                rl("lift-line-alpha") * lift / 2))
+        self._paint_number(p, row, slab, dpr)
+        if fade > 0:
+            self._paint_movers(p, row, slab, fade)
+        if focused:
+            self._focus_ring(p, slab, theme.RADII["r-sm"])
+        p.restore()
+
+    @staticmethod
+    def _blit_faded(p, at, fade, picture):
+        """The rest picture, then the hover picture over it at `fade` (0–1): a fade costs two blits, never a paint."""
+        if fade < 1:
+            pix = picture(False)
+            if pix is not None:
+                p.drawPixmap(at, pix)
+        if fade > 0:
+            p.save()
+            p.setOpacity(fade)
+            pix = picture(True)
+            if pix is not None:
+                p.drawPixmap(at, pix)
+            p.restore()
+
+    def _closed_row(self, row, slab, dpr, active, p=None, at=None):
+        """A closed Current row's picture (painted once, `_sprite`), at rest or active (hover, keyboard focus), keyed
+        too on the one title width and on whether the stones' sheet was there to draw from."""
+        sheet = stones.get(dpr, style.current()[1])
+        tw = self.title_w(slab.width())
+        local = QRect(0, 0, slab.width(), slab.height())
+        return self._sprite(ROW, row, slab.size(), dpr, active,
+                            lambda q: self._paint_current(q, row, local, active, dpr, sheet, tw=tw),
+                            ground="row-hover" if active else "surface", to=None if p is None else (p, at),
+                            extra=(tw, sheet is not None))
+
+    def _paint_lift(self, p, slab, dy, lift, dpr):
+        """The lifted row's shadow, baked once per width and ratio, at the lift's share; inside the row's own gap."""
+        h = rl("shadow")
+        key = (slab.width(), dpr)
+        if getattr(self, "_shadow", (None,))[0] != key:
+            pix = QPixmap(max(1, round(slab.width() * dpr)), max(1, round(h * dpr)))
+            pix.setDevicePixelRatio(dpr)
+            pix.fill(Qt.GlobalColor.transparent)
+            q = QPainter(pix)
+            grad = QLinearGradient(QPointF(0, 0), QPointF(0, h))
+            grad.setColorAt(0, faded("shadow", rl("shadow-alpha")))
+            grad.setColorAt(1, faded("shadow", 0.0))
+            q.fillRect(QRectF(0, 0, slab.width(), h), QBrush(grad))
+            q.end()
+            self._shadow = (key, pix)
+        p.save()
+        p.setOpacity(min(1.0, lift / theme.SPRINGS["lift-px"]))
+        p.drawPixmap(QPointF(slab.left(), slab.bottom() + 1 + dy), self._shadow[1])
+        p.restore()
+
+    def _paint_current(self, p, row, slab, active, dpr, sheet, opened=False, tw=None):
+        """A Current row's line drawn into its picture: the art, the title (faded at its end), the string, the Anki
+        count, % · new; active (hover or keyboard focus), the next stone's ring and the hover group over the string's
+        end. Opened, its head: the full title, a baked sheen, no string."""
+        g = self.line_geometry(row, slab, tw, opened)
+        ground = "open-row" if opened else "row-hover" if active else "surface"
+        if opened:
+            self._sheen(p, slab)
+        a = g["art"]
+        p.drawPixmap(a.topLeft(), art(row.cover_title, a.width(), a.height(), dpr))
+        f = fz()
+        m = g["main"]
+        mid = slab.top() + slab.height() / 2
+        # a video's channel and hato's mix keep their line; a numbered piece's range and watched count are the string's
+        sub = row.line if row.line and (row.media == "youtube" or row.source == "hato") else ""
+        t_h, s_h = round(13.5 * f * 1.3), round(12 * f * 1.3)
+        top = mid - (t_h + 1 + s_h) / 2 if sub else mid - t_h / 2
+        self._faded_text(p, m.left(), top + t_h / 2, m.width(), row.title, "row-title", c("ink"), ground, dpr)
+        if sub:
+            self._faded_text(p, m.left(), top + t_h + 1 + s_h / 2, m.width(), sub, "row-sub", c("ink-dim"), ground,
+                             dpr)
+        if not opened:
+            self._paint_string(p, self._info(row)[0], g["gstr"], mid, sheet, ring=active)
+        self._paint_stat(p, row.status, g["stat"], mid, dpr)
+        paint_diff(p, row.pct, row.pct_tone, row.n_new, g["diff"].right(), mid, dpr)
+        if active:
+            self._paint_hover_group(p, g, ground, opened)
+
+    def _sheen(self, p, r):
+        """An opened row's one sheen (list-r14m :705, flat): a band of light across it at 112°, baked into its head."""
+        grad = QLinearGradient(QPointF(r.left(), r.top()), QPointF(r.left() + r.width() * 0.4, r.bottom() + r.width()
+                                                                    * 0.16))
+        top = rl("sheen-alpha")
+        for at, k in ((0.3, 0.0), (0.42, 0.5), (0.46, 1.0), (0.5, 0.5), (0.62, 0.0)):
+            grad.setColorAt(at, faded("sheen", top * k))
+        p.fillRect(QRectF(r), QBrush(grad))
+
+    @staticmethod
+    def _faded_text(p, x, y_mid, width, text, role, colour, ground, dpr):
+        """One line of text in `width`: whole when it fits, else cut at the width and faded out over its last
+        `title-fade` px into the row's own `ground` (the brief's one line; the full text is in the tooltip)."""
+        st, w, _cut = TEXT.static(text, role, width, dpr=dpr, elide=False)
+        fm = TEXT.metrics(role, dpr=dpr)
+        band = QRectF(x, y_mid - fm.height() / 2, max(0, width), fm.height())
+        p.save()
+        p.setClipRect(band)
+        TEXT.draw(p, x, y_mid, text, role, width, colour, dpr=dpr, elide=False)
+        p.restore()
+        if w > width > 0:
+            fw = min(rl("title-fade") * fz(), width * 0.4)
+            grad = QLinearGradient(QPointF(x + width - fw, 0), QPointF(x + width, 0))
+            grad.setColorAt(0, faded(ground, 0.0))
+            grad.setColorAt(1, faded(ground, 1.0))
+            p.fillRect(QRectF(x + width - fw, band.top(), fw, band.height()), QBrush(grad))
+
+    def _paint_string(self, p, plan, room, mid, sheet, ring=False, big=False):
+        """The string of stones in `room` (its plan laid out once per width: `stone_plan.layout`), each a blit from
+        the sheet: the hairline from the first stone's centre to the last's, a stone that won't mine itself at
+        `dim`, a file whose video is gone marked under its stone, the next stone's ring when `ring`. Nothing until the
+        sheet is there (the row is painted again once when it lands)."""
+        if sheet is None or room.width() <= 0 or not plan.items:
+            return
+        lay = stone_plan.layout(plan, room.width(), 1.0)
+        x0 = room.left()
+        p.save()
+        p.setClipRect(room)
+        if len(lay.xs) > 1:
+            p.fillRect(QRectF(x0 + lay.xs[0], mid - 0.5, lay.xs[-1] - lay.xs[0], 1), c("string"))
+        for item, x in zip(plan.items, lay.xs):
+            what = self._stone_what(item, plan.gem, big)
+            at = QPointF(x0 + x, mid)
+            single = item.kind == "stone"
+            if single and item.dim:
+                p.setOpacity(rl("dim"))
+            sheet.draw(p, at, what)
+            p.setOpacity(1.0)
+            if single and (item.missing or item.removed):
+                below = sheet.rect_of(what, at).bottom() + 2.5
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(c("ink-faint" if item.removed else "warn"))
+                p.drawEllipse(QPointF(at.x(), below), 1.5, 1.5)
+            if single and item.big and ring:
+                sheet.draw(p, at, ("ring", what[4]))
+        p.restore()
+
+    def _paint_stat(self, p, status, r, mid, dpr):
+        """What a row shows at rest right of its string: the Anki count (its mark and N in the learned green), or
+        mining's icon in the accent."""
+        if status is None or not r.width():
+            return
+        side = rl("anki-icon")
+        if status.kind == "in_anki":
+            icon(p, "anki", QRectF(r.left() + 2, mid - side / 2, side, side), c("ok"), width=1.3)
+            TEXT.draw(p, r.left() + 2 + side + 5, mid, status.label, "status-pill", r.width(), c("ok"), weight=700,
+                      dpr=dpr, elide=False)
+        elif status.kind == "mining":
+            icon(p, "mining", QRectF(r.center().x() - side / 2, mid - side / 2, side, side), c("accent"))
+
+    def _paint_hover_group(self, p, g, ground, opened=False):
+        """The hover group over the string's end (list-r14m `.r11-hb`): never a box over the stones — under it the
+        string fades out into the row's own ground — then the status icon, ▶ and ⋯."""
+        end = g["end"]
+        hx = end - g["hw"]
+        if not opened:
+            s = g["gstr"]
+            fl = hx - rl("hover-fade")
+            grad = QLinearGradient(QPointF(fl, 0), QPointF(hx + 2, 0))
+            grad.setColorAt(0, faded(ground, 0.0))
+            grad.setColorAt(1, faded(ground, 1.0))
+            p.fillRect(QRectF(fl, s.top(), hx + 2 - fl, s.height()), QBrush(grad))
+            p.fillRect(QRectF(hx + 2, s.top(), max(0, end - hx - 2), s.height()), c(ground))
+        side = rl("anki-icon")
+        for name, r, glyph, ink, _tip, payload in g["hover"]:
+            p.save()
+            if name == "play" and payload is not None and not payload.can_play:
+                p.setOpacity(0.4)
+            if name == "mine-now":                   # a button: Waiting's icon is Mine now (A2 #44)
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(c("raised"))
+                p.drawRoundedRect(QRectF(r), theme.RADII["icon-button"], theme.RADII["icon-button"])
+            icon(p, glyph, QRectF(r.center().x() - side / 2 + 0.5, r.center().y() - side / 2 + 0.5, side, side), c(ink))
+            p.restore()
+
+    def _paint_number(self, p, row, body, dpr):
+        """A row's place in Current, centred in its column, drawn over its picture (never inside it): a file arriving
+        above moves every number, and with the number inside, every row on screen was drawn again (~21 ms an arrival,
+        bench 10; review B-5). Never cut: a number wider than its column (#100 and on at Large) runs into the slab's
+        edge (G2.3 A4)."""
+        pos_w = round(rl("pos") * fz())
+        text = str(row.index)
+        w = max(pos_w, TEXT.metrics("position", dpr=dpr).horizontalAdvance(text) + 2)
+        TEXT.draw(p, body.left() + pos_w / 2 - w / 2, body.top() + self._line_h() / 2, text, "position", w,
+                  c("ink-dim"), align="centre", dpr=dpr, elide=False)
+
+    def _paint_movers(self, p, row, slab, alpha):
+        """↑ ↓ in the number's column on hover or keyboard focus (A2 #13), fading in with the hover look."""
+        g = self.line_geometry(row, slab)
+        p.save()
+        p.setOpacity(alpha)
+        for name, glyph in (("up", "chev-up"), ("down", "chev-down")):
+            r = g[name]
+            icon(p, glyph, QRectF(r.center().x() - 6.5 + 0.5, r.center().y() - 6.5 + 0.5, 13, 13), c("ink-faint"))
         p.restore()
 
     def _closed(self, kind, payload, lines, rect, dpr, hovered, p=None):
-        """A closed hero or row's pixmap (painted once, `_sprite`) and the box it fills in `rect` (pixmaps off and a
-        painter `p` given: drawn there, and no pixmap)."""
+        """A closed entry's picture (painted once, `_sprite`) and the box it fills in `rect` (pixmaps off and a painter
+        `p` given: drawn there, and no pixmap)."""
         if kind == HERO:
-            box_h = rect.height() - 8 - theme.SPACING["list-gap"] - self._lines_h(lines)
+            box_h = rect.height() - rl("hero-below") - self._lines_h(lines)
             local = QRect(0, 0, rect.width(), rect.height())
+            sheet = stones.get(dpr, style.current()[1])
             pix = self._sprite(kind, payload, QSize(rect.width(), box_h), dpr, hovered,
-                               lambda q: self._paint_hero(q, payload, local, lines, hovered, False, dpr),
-                               to=None if p is None else (p, rect.topLeft()))
+                               lambda q: self._paint_hero(q, payload, local, lines, hovered, dpr, sheet),
+                               ground="surface", to=None if p is None else (p, rect.topLeft()),
+                               extra=(sheet is not None,))
             return pix, QRect(rect.left(), rect.top(), rect.width(), box_h)
+        if kind == ROW:
+            slab = self.slab_of(rect)
+            return self._closed_row(payload, slab, dpr, False, p, QPointF(slab.topLeft())), slab
         body = QRect(rect.left(), rect.top(), rect.width(), rect.height() - theme.SPACING["list-gap"] -
                      self._lines_h(lines))
         local = QRect(0, 0, body.width(), body.height())
         pix = self._sprite(kind, payload, body.size(), dpr, hovered,
-                           lambda q: self._paint_row(q, kind, payload, local, hovered, False, dpr, lines, number=False),
+                           lambda q: self._paint_row(q, kind, payload, local, hovered, dpr),
                            to=None if p is None else (p, body.topLeft()))
         return pix, body
 
-    def _paint_open_row(self, p, kind, row, body, hovered, focused, dpr, lines):
-        """An open row: its head painted once into a pixmap, then the episodes (each its own pixmap), all on the list's
-        own ground — no box or outline (G2.3 R1, as the mock) — so opening a row costs a relayout and blits, and a
-        repaint of an open row draws no row text or cover afresh: only its number, over the head (its rule and focus
-        ring are a few strokes)."""
-        h = round(theme.SIZES["row"] * fz())
-        local = QRect(0, 0, body.width(), h)         # the head alone: its hover a whole rounded head, warmed or not
-        radius = theme.RADII["r-sm"]
-        rest = QRect(body.left(), body.top() + h, body.width(), body.height() - h)
-        pix = self._sprite(kind, row, QSize(body.width(), h), dpr, hovered,
-                           lambda q: self._paint_row(q, kind, row, local, hovered, False, dpr, lines, episodes=False,
-                                                     number=False),
-                           ident=(row.key, "open"), to=(p, body.topLeft()))
-        if pix is not None:
-            p.drawPixmap(body.topLeft(), pix)
-        if kind == ROW:
-            self._paint_number(p, row, body, dpr)
+    def _paint_open_row(self, p, row, slab, rect, lines, fade, focused, dpr):
+        """An opened row: one panel on the opened row's ground — its head painted once into a picture (the full
+        title, a baked sheen), then the episode lines, each its own picture with its stone at the left — so opening a
+        row costs a relayout and blits, and a repaint of an open row draws no text afresh: only its number."""
+        panel = QRect(slab.left(), slab.top(), slab.width(), rect.height() - rl("gap") - self._lines_h(lines))
+        p.fillRect(panel, c("open-row"))
+        local = QRect(0, 0, slab.width(), slab.height())
+        at = QPointF(slab.topLeft())
+
+        def head(active):
+            return self._sprite(ROW, row, slab.size(), dpr, active,
+                                lambda q: self._paint_current(q, row, local, active, dpr, None, opened=True),
+                                ident=(row.key, "open"), ground="open-row", to=(p, at))
+        self._blit_faded(p, at, fade, head)
+        self._paint_number(p, row, slab, dpr)
+        if fade > 0:
+            self._paint_movers(p, row, slab, fade)
         if focused:
-            self._focus_ring(p, body, radius)
-            if kind == ROW and not hovered:
-                cols = self.columns(QRect(body.left(), body.top(), body.width(), h), kind)
-                self._paint_play_button(p, self._play_rect(cols["acts"]), row.can_play)
-        if kind == ROW:
-            self._paint_episodes(p, row, rest, dpr, lines=lines)
+            self._focus_ring(p, panel, theme.RADII["r-sm"])
+        self._paint_episodes(p, row, QRect(rect.left(), slab.bottom() + 1, rect.width(), panel.bottom() -
+                                           slab.bottom()), dpr, lines=lines)
 
     def keep_only(self, entries, dpr=None, width=None):
         """At rest, a list keeps the pixmaps of these entries only (its screen and the rows ahead, or a hidden list's
@@ -989,6 +1603,19 @@ class RowDelegate(QStyledItemDelegate):
                 keep = keep and key[5] == look and (dpr is None or key[4] == dpr)
                 if not keep:
                     self._bytes[name] -= _size(cache.pop(key)[1])
+
+    def drop_unsheeted(self, dpr):
+        """The stones' sheet for `dpr` has landed: the pictures painted before it (without their stones) are let go,
+        so the next paint draws them once with their stones. -> whether any was."""
+        dropped = False
+        for name in ("row", "ep"):
+            cache = self._sprites[name]
+            for key in list(cache):
+                extra = key[7]
+                if isinstance(extra, tuple) and extra and extra[-1] is False and abs(key[4] - dpr) < 0.01:
+                    self._bytes[name] -= _size(cache.pop(key)[1])
+                    dropped = True
+        return dropped
 
     def warm(self, index, dpr, rect=None):
         """Paint a closed row's pixmap ahead of its first paint (the list's idle moments): -> whether it drew one.
@@ -1022,24 +1649,21 @@ class RowDelegate(QStyledItemDelegate):
         if self.view.model().open_key == row.key or len(row.episodes) < 1:
             return False
         rect = self.view.visualRect(index)
-        if kind == HERO:
-            head = max(theme.SIZES["hero-cover-h"] + 32, round(self._hero_text_h()) + 32)
-        else:
-            head = round(theme.SIZES["row"] * fz())
-        area = QRect(rect.left(), rect.top() + head + 1, rect.width(), 1 << 20)
         before = self.warmed
-        audio = row.media_word == "audio"
-        if kind == ROW:
-            # its open head first, as the click will show it — under the pointer, so hovered (an open row's hover
-            # lights its head only), the body's whole height below it as `_paint_open_row` lays
-            # it: opening it then draws no head afresh (speed round 5: the head was each first opening's own render)
-            local = QRect(0, 0, rect.width(), head)       # the head alone, as `_paint_open_row` draws it
+        if kind == HERO:
+            area = QRect(rect.left(), rect.top() + self._hero_head_h() + 1, rect.width(), 1 << 20)
+        else:
+            # its open head first, as the click will show it — under the pointer, so active (an open row's hover
+            # lights its head only): opening it then draws no head afresh (speed round 5: the head was each first
+            # opening's own render)
+            slab = self.slab_of(rect)
+            area = QRect(rect.left(), slab.bottom() + 1, rect.width(), 1 << 20)
+            local = QRect(0, 0, slab.width(), slab.height())
             self._warming = True
             try:
-                self._sprite(kind, row, QSize(rect.width(), head), dpr, True,
-                             lambda q: self._paint_row(q, kind, row, local, True, False, dpr, lines, episodes=False,
-                                                       number=False),
-                             ident=(row.key, "open"), spare=True)
+                self._sprite(kind, row, slab.size(), dpr, True,
+                             lambda q: self._paint_current(q, row, local, True, dpr, None, opened=True),
+                             ident=(row.key, "open"), ground="open-row", spare=True)
             finally:
                 self._warming = False
             if self.warmed != before:
@@ -1047,32 +1671,62 @@ class RowDelegate(QStyledItemDelegate):
         budget = SPRITE_MB["ep"] * 1024 * 1024 // 2    # never more than half the episodes' cache: past it, each one
         self._warming = True                            # drawn would push out one drawn before, again and again
         try:
-            for r, ep in self._episode_rows(row, area, kind == HERO):
+            for r, ep, draw, ident, extra in self._episode_pictures(row, area, kind == HERO, dpr):
                 budget -= round(r.width() * dpr) * round(r.height() * dpr) * 4
                 if r.top() - rect.top() > room or budget < 0:
                     break
-                w, h = r.width(), r.height()
-                self._sprite("ep", ep, r.size(), dpr, False,
-                             lambda q, ep=ep, w=w, h=h: self._paint_episode(q, QRect(0, 0, w, h), ep, dpr, audio),
-                             ident=(ep.id, kind == HERO, audio), ground="surface" if kind == HERO else "bg")
+                self._sprite("ep", ep, r.size(), dpr, False, draw, ident=ident,
+                             ground="surface" if kind == HERO else "open-row", extra=extra)
                 if self.warmed != before:
                     return True
         finally:
             self._warming = False
         return False
 
-    def _paint_line(self, p, ln, strip, dpr):
-        col = style.colours()
-        y = strip.center().y() + 0.5
+    def slot_rect(self, kind, rect, lines):
+        """The slot an entry leaves while it is dragged (W3.1a §2): its slab — Up Next's card, or a row with its gap's
+        halves outside — never its lines."""
+        if kind == HERO:
+            return QRect(rect.left(), rect.top(), rect.width(), rect.height() - rl("hero-below") - self._lines_h(lines))
+        half = rl("gap") // 2
+        return QRect(rect.left(), rect.top() + half, rect.width(), rect.height() - self._lines_h(lines) - rl("gap"))
+
+    @staticmethod
+    def paint_slot(p, r):
+        """The placeholder a dragged row leaves (list-r14m :4330): `placeholder` with an inset accent ring at 60 %."""
+        d = theme.DRAG
+        p.save()
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(style.qcolor(theme.DRAG_COLOURS["placeholder"]))
+        radius = d["placeholder-radius"]
+        p.drawRoundedRect(QRectF(r), radius, radius)
+        w = d["placeholder-ring"]
+        p.setPen(QPen(faded("accent", d["placeholder-ring-alpha"]), w))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRoundedRect(QRectF(r).adjusted(w / 2, w / 2, -w / 2, -w / 2), radius - w / 2, radius - w / 2)
+        p.restore()
+
+    def _paint_saving(self, p, row, rect, dpr):
+        """*saving…* over the string's end while the row's move waits for a busy store (04 §4.5, after 300 ms)."""
+        slab = self.slab_of(rect)
+        g = self.line_geometry(row, slab)
+        text = strings.ROWS_SAVING
+        fm = TEXT.metrics("row-sub", dpr=dpr)
+        w = fm.horizontalAdvance(text) + 12
+        box = QRectF(g["end"] - w, slab.top() + slab.height() / 2 - fm.height() / 2, w, fm.height())
+        p.fillRect(box, c("surface"))
+        TEXT.draw(p, box.left() + 6, box.center().y(), text, "row-sub", w, c("ink-dim"), dpr=dpr, elide=False)
+
+    def _paint_line(self, p, ln, strip, dpr, hot=False):
+        """A line after its row (W3.1a §1 *Top-20 line*, *Soon line*): a groove — 1 px dark, then 1 px lit lip —
+        across the list in its own strip, no word; Soon's quieter still (the lip only). Under the hand it lights a step
+        (its lip). Whole device pixels, so it stays crisp at every scale."""
+        k = max(1, round(dpr)) / dpr                 # one line's height: whole device px
+        y = round((strip.top() + (strip.height() - 2 * k) / 2) * dpr) / dpr
+        x0, w = strip.left() + 4, strip.width() - 8
         if ln.kind == "top":
-            pen = QPen(style.qcolor(col["top20-line"]), 1)
-            pen.setStyle(Qt.PenStyle.CustomDashLine)
-            pen.setDashPattern([3, 3])
-            p.setPen(pen)
-            p.drawLine(QPointF(strip.left() + 4, y), QPointF(strip.right() - 4, y))
-        else:                                        # Soon: no word, a hairline in the separators' colour, from the
-            p.setPen(QPen(style.qcolor(col["line"]), 1))     # covers on (G2.3 L1: quieter than the top-20 line)
-            p.drawLine(QPointF(self.lead(ROW, strip.left())[1], y), QPointF(strip.right() - 4, y))
+            p.fillRect(QRectF(x0, y, w, k), c("groove"))
+        p.fillRect(QRectF(x0, y + k, w, k), c("line-hi" if hot else "groove-lip"))
 
     def _paint_cover(self, p, title, rect, dpr, large=False):
         p.drawPixmap(rect.topLeft(), cover(title, rect.width(), rect.height(), dpr, large))
@@ -1099,76 +1753,46 @@ class RowDelegate(QStyledItemDelegate):
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawRoundedRect(QRectF(r).adjusted(1, 1, -1, -1), radius, radius)
 
-    def _paint_row(self, p, kind, row, body, hovered, focused, dpr, lines=(), episodes=True, number=True):
+    def _paint_row(self, p, kind, row, body, hovered, dpr):
+        """A Finished row (today's layout, C-scope §2.3, painted by the same delegate as Current's): its cover, its title
+        over its one line, its date, and only Mining… / ✓ N of the statuses."""
         f = fz()
         h = round(theme.SIZES["row"] * f)
-        line = QRect(body.left(), body.top(), body.width(), h)
+        line_r = QRect(body.left(), body.top(), body.width(), h)
         radius = theme.RADII["r-sm"]
-        is_open = kind == ROW and self.view.model().open_key == row.key
-        if hovered:                                  # an open row has no ground or outline of its own (G2.3 R1, as
-            p.setPen(Qt.PenStyle.NoPen)              # the mock): the pointer over it lights its head only
+        if hovered:
+            p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(c("surface"))
-            p.drawRoundedRect(QRectF(line if is_open else body), radius, radius)
-        if focused:
-            self._focus_ring(p, body, radius)
-        if kind == ROW and number:
-            self._paint_number(p, row, body, dpr)
-        _number_x, x, title_x = self.lead(kind, line.left())
+            p.drawRoundedRect(QRectF(body), radius, radius)
+        _number_x, x, title_x = self.lead(kind, line_r.left())
         cw, ch = round(theme.SIZES["row-cover-w"] * f), round(theme.SIZES["row-cover-h"] * f)
-        crect = QRect(x, line.center().y() - ch // 2, cw, ch)
+        crect = QRect(x, line_r.center().y() - ch // 2, cw, ch)
         self._paint_cover(p, row.cover_title, crect, dpr)
-        if kind == ROW:
-            self._paint_watched_bar(p, row, crect)
         x = title_x
-        cols = self.columns(line, kind)
+        cols = self.columns(line_r, kind)
         text_w = cols["text_right"] - x
         t_h = round(13.5 * f * 1.3)
         s_h = round(12 * f * 1.3)
-        top = line.center().y() - (t_h + 1 + s_h) / 2
+        top = line_r.center().y() - (t_h + 1 + s_h) / 2
         TEXT.draw(p, x, top + t_h / 2, row.title, "row-title", text_w, c("ink"), dpr=dpr)
         sx = x
         if row.studying:
             sw = self._paint_studying(p, sx, top + t_h + 1 + s_h / 2, dpr)
             sx += sw + 10
         TEXT.draw(p, sx, top + t_h + 1 + s_h / 2, row.line, "row-sub", cols["text_right"] - sx, c("ink-dim"), dpr=dpr)
-        if kind == ROW:
-            paint_diff(p, row.pct, row.pct_tone, row.n_new, cols["diff"].right(), line.center().y(), dpr)
-        else:
-            TEXT.draw(p, cols["date"].left(), line.center().y(), row.date, "date", cols["date"].width(),
-                      c("ink-dim"), dpr=dpr)
-        st_rect, mk_rect = self._status_rects(row, cols["stat"])
-        if kind == FINISHED and row.status is not None and row.status.kind not in ("in_anki", "mining"):
-            st_rect = None                                  # Finished shows only Mining… / ✓ N (words in its tip)
-        if st_rect is not None:
+        TEXT.draw(p, cols["date"].left(), line_r.center().y(), row.date, "date", cols["date"].width(), c("ink-dim"),
+                  dpr=dpr)
+        st_rect, _mk = self._status_rects(row, cols["stat"])
+        if row.status is not None and row.status.kind in ("in_anki", "mining") and st_rect is not None:
             paint_pill(p, row.status, st_rect, dpr, audio=row.media_word == "audio")
-        if mk_rect is not None and kind == ROW:
-            paint_mark(p, row.mark, mk_rect.right() + 1, line.center().y(), dpr, audio=row.media_word == "audio")
-        if kind == ROW and (hovered or focused):
-            self._paint_play_button(p, self._play_rect(cols["acts"]), row.can_play)
-        if is_open and episodes:
-            area = QRect(body.left(), line.bottom() + 1, body.width(), body.bottom() - line.bottom())
-            self._paint_episodes(p, row, area, dpr, lines=lines)
-
-    def _paint_number(self, p, row, body, dpr):
-        """A row's place in Current, drawn over its pixmap (never inside it): a file arriving above moves every number,
-        and with the number inside, every row on screen was drawn again (~21 ms an arrival, bench 10; review B-5).
-        Right-aligned in its slot and never cut: a number wider than the slot (#100 and on at a large text size) runs
-        left into the grip's column, where an elided one read as nothing (G2.3 A4); `ink-dim`, so it shows."""
-        f = fz()
-        h = round(theme.SIZES["row"] * f)
-        text = str(row.index)
-        slot_right = self.lead(ROW, body.left())[0] + round(20 * f)
-        w = max(round(20 * f), TEXT.metrics("position", dpr=dpr).horizontalAdvance(text) + 2)
-        TEXT.draw(p, slot_right - w, QRect(body.left(), body.top(), body.width(), h).center().y(), text,
-                  "position", w, c("ink-dim"), align="right", dpr=dpr, elide=False)
 
     def _studying_w(self, dpr=1.0):
         fm = TEXT.metrics("row-sub", 600, dpr)
         return round(11 * fz()) + 4 + fm.horizontalAdvance(strings.ROWS_STUDYING)
 
     def _paint_studying(self, p, x, y_mid, dpr):
-        """*Studying its cards first* before a row's line: an up arrow and the words in the accent, on the row's own
-        ground — no pill under the words (G2.3 R3: a pill with its words over it read badly). -> its width."""
+        """*Studying its cards first* before a Finished row's line: an up arrow and the words in the accent, on the
+        row's own ground — no pill under the words (G2.3 R3). -> its width. (A Current row shows it as a hover mark.)"""
         f = fz()
         side = round(11 * f)
         icon(p, "up", QRectF(x, y_mid - side / 2, side, side), c("accent"), width=1.5)
@@ -1183,41 +1807,70 @@ class RowDelegate(QStyledItemDelegate):
         icon(p, "play", QRectF(r.center().x() - 7, r.center().y() - 7, 14, 14), c("ink-dim"))
         p.restore()
 
-    def _paint_episodes(self, p, row, area, dpr, hero=False, lines=()):
-        f = fz()
+    def _episode_pictures(self, row, area, hero, dpr):
+        """Each episode line of an open row with how its picture is drawn: (rect, episode, draw, ident, extra). Its
+        stone is the file's own on the string (`stone_plan`: state, variant, the next one big and ringed, dimmed when
+        it won't mine itself)."""
         audio = row.media_word == "audio"
-        rows = self._episode_rows(row, area, hero)
-        if not rows:
+        sheet = stones.get(dpr, style.current()[1])
+        plan = self._info(row)[0]
+        out = []
+        for i, (r, ep) in enumerate(self._episode_rows(row, area, hero)):
+            big = i == plan.next
+            item = stone_plan._stone(ep, i, row.key, big)
+            what = self._stone_what(item, plan.gem)
+            w, h = r.width(), r.height()
+            stone = (what, item.dim, big)
+            out.append((r, ep, lambda q, ep=ep, w=w, h=h, stone=stone: self._paint_episode(
+                q, QRect(0, 0, w, h), ep, dpr, audio, stone, sheet), (ep.id, hero, audio, what, item.dim),
+                (sheet is not None,)))
+        return out
+
+    def _paint_episodes(self, p, row, area, dpr, hero=False, lines=()):
+        pictures = self._episode_pictures(row, area, hero, dpr)
+        if not pictures:
             return
-        rule_x = rows[0][0].left() - 0.5
-        p.setPen(QPen(c("line"), 1))
-        p.drawLine(QPointF(rule_x, rows[0][0].top()), QPointF(rule_x, rows[-1][0].bottom()))
+        rows_ = [(r, ep) for r, ep, *_rest in pictures]
+        stone_x = rows_[0][0].left() + 22             # the episodes' stones on a hairline, the string stood upright
+        p.fillRect(QRectF(stone_x - 0.5, rows_[0][0].top() + 8, 1, rows_[-1][0].bottom() - rows_[0][0].top() - 16),
+                   c("string"))
         clip = QRectF(self.view.viewport().rect()) if p.device() is self.view.viewport() else None
         split = next((ln.split for ln in (lines or ()) if ln.kind == "top" and ln.split), None)
         split_at = None
-        for i, (r, ep) in enumerate(rows):
+        for i, (r, ep, draw, ident, extra) in enumerate(pictures):
             if split is not None and i == split:       # the top-20 line runs through this row (A-12): drawn here too
-                split_at = QRect(r.left() - 8, r.top() - 3, r.width() + 8, 6)
+                split_at = QRect(r.left() - 8, r.top() - 2, r.width() + 8, 4)
             if clip is not None and not clip.intersects(QRectF(r)):
                 continue
             if clip is not None:                       # on screen: painted once into a pixmap, reused while unchanged
-                w, h = r.width(), r.height()
-                pix = self._sprite("ep", ep, r.size(), dpr, False,
-                                   lambda q, ep=ep, w=w, h=h: self._paint_episode(q, QRect(0, 0, w, h), ep, dpr,
-                                                                                  audio),
-                                   ident=(ep.id, hero, audio), ground="surface" if hero else "bg", to=(p, r.topLeft()))
+                pix = self._sprite("ep", ep, r.size(), dpr, False, draw, ident=ident,
+                                   ground="surface" if hero else "open-row", to=(p, r.topLeft()), extra=extra)
                 if pix is not None:
                     p.drawPixmap(r.topLeft(), pix)
             else:
-                self._paint_episode(p, r, ep, dpr, audio)
+                p.save()
+                p.translate(r.topLeft())
+                draw(p)
+                p.restore()
         if split_at is not None:
             self._paint_line(p, lines_top(lines), split_at, dpr)
 
-    def _paint_episode(self, p, r, ep, dpr, audio=False):
-        """One episode row (an open row's): its tick, label, numbers, status, mark and ▶ (`audio`: its show's media)."""
+    def _paint_episode(self, p, r, ep, dpr, audio=False, stone=None, sheet=None):
+        """One episode line (an open row's): its stone (the tick until the stones' sheet is there), its label, its
+        numbers, status, mark and ▶ (`audio`: its show's media)."""
         cols = self._episode_cols(r)
         tick = QRectF(cols["tick"])
-        if ep.watched:
+        if stone is not None and sheet is not None:
+            what, dim, big = stone
+            at = QPointF(tick.center())
+            p.save()
+            if dim:
+                p.setOpacity(rl("dim"))
+            sheet.draw(p, at, what)
+            p.restore()
+            if big:
+                sheet.draw(p, at, ("ring", what[4]))
+        elif ep.watched:
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(c("accent"))
             p.drawEllipse(tick)
@@ -1227,8 +1880,8 @@ class RowDelegate(QStyledItemDelegate):
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawEllipse(tick.adjusted(0.75, 0.75, -0.75, -0.75))
         text_w = cols["text_right"] - cols["text_left"]
-        lw, _ = TEXT.draw(p, cols["text_left"], r.center().y(), ep.label, "episode-label", text_w * 0.6,
-                          c("ink-dim" if ep.watched else "ink"), dpr=dpr)
+        TEXT.draw(p, cols["text_left"], r.center().y(), ep.label, "episode-label", text_w * 0.6,
+                  c("ink-dim" if ep.watched else "ink"), dpr=dpr)
         paint_diff(p, ep.pct, view_tone(ep.pct), ep.n_new, cols["diff"].right(), r.center().y(), dpr)
         right = cols["stat"].right()
         if ep.status is not None:
@@ -1241,52 +1894,32 @@ class RowDelegate(QStyledItemDelegate):
         self._paint_play_button(p, cols["play"], ep.can_play)
 
     def _paint_open_hero(self, p, row, rect, lines, hovered, focused, dpr):
-        """An open hero: its head painted once into a pixmap, the rest of its box drawn around the episodes (each its
-        own pixmap) — a repaint of the open hero draws no text or cover afresh (review B-13)."""
+        """An open Up Next: its head painted once into a pixmap, the rest of its slab drawn around the episodes (each
+        its own pixmap) — a repaint of the open hero draws no text or cover afresh (review B-13)."""
         g = self._hero_geometry(row, rect, lines)
         head = g["head"]
         local = QRect(0, 0, rect.width(), rect.height())
-        self._hero_frame(p, g, hovered)              # the frame first, whole, then the head over it: a head pixmap
-        pix = self._sprite(HERO, row, QSize(rect.width(), head.height()), dpr, hovered,    # that rounds short leaves
-                           lambda q: self._paint_hero(q, row, local, lines, hovered, False, dpr, episodes=False),
-                           ident=(row.key, "open"), to=(p, QPoint(rect.left(), head.top())))      # no ground line (C-3)
+        p.fillRect(g["box"], c("surface"))          # the slab first, whole, then the head over it (C-3)
+        pix = self._sprite(HERO, row, QSize(rect.width(), head.height()), dpr, hovered,
+                           lambda q: self._paint_hero(q, row, local, lines, hovered, dpr, None),
+                           ident=(row.key, "open"), ground="surface", to=(p, QPoint(rect.left(), head.top())))
         if pix is not None:
             p.drawPixmap(QPoint(rect.left(), head.top()), pix)
         if focused:
             self._focus_ring(p, g["box"], theme.RADII["r-sm"])
         self._paint_episodes(p, row, g["eps"], dpr, hero=True, lines=lines)
 
-    def _hero_frame(self, p, g, hovered):
-        """The hero's box: its ground, the iris edge, the border."""
-        box = QRectF(g["box"]).adjusted(0.5, 0.5, -0.5, -0.5)
-        radius = theme.RADII["r-sm"]
-        path = QPainterPath()
-        path.addRoundedRect(box, radius, radius)
-        p.fillPath(path, c("surface"))
-        p.save()
-        p.setClipPath(path, Qt.ClipOperation.IntersectClip)
-        p.fillRect(QRectF(box.left(), box.top(), 3, box.height()), self._iris(QRectF(box.left(), box.top(), 3,
-                                                                                   box.height()), vertical=True))
-        p.restore()
-        p.setPen(QPen(c("line-hi" if hovered else "line"), 1))
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawPath(path)
-
-    def _paint_hero(self, p, row, rect, lines, hovered, focused, dpr, episodes=True):
-        f = fz()
+    def _paint_hero(self, p, row, rect, lines, hovered, dpr, sheet):
+        """Up Next's head (the old mock's card, flat): no border and no iris bar (the iris is for what the hand
+        opened); while it's open, no string (G16)."""
         g = self._hero_geometry(row, rect, lines)
-        self._hero_frame(p, g, hovered)
-        if focused:
-            self._focus_ring(p, g["box"], theme.RADII["r-sm"])
         self._paint_cover(p, row.cover_title, g["cover"], dpr, large=True)
         self._paint_watched_bar(p, row, g["cover"])
         nxt = row.episodes[row.next_index]
-        # eyebrow
         e = g["eyebrow"]
         icon(p, "dot", QRectF(e.left(), e.center().y() - 3.5, 7, 7), c("accent"))
         TEXT.draw(p, e.left() + 14, e.center().y(), strings.ROWS_UP_NEXT, "eyebrow", e.width() - 14, c("accent"),
                   dpr=dpr)
-        # title + its episode
         t = g["title"]
         ep_txt = row.title_ep
         ep_w = TEXT.metrics("hero-title", 500, dpr).horizontalAdvance(ep_txt) + 8 if ep_txt else 0
@@ -1296,85 +1929,98 @@ class RowDelegate(QStyledItemDelegate):
                       dpr=dpr)
         if g["sub"] is not None:
             s = g["sub"]
-            x = s.left()
             if row.source == "hato":
-                w, _ = TEXT.draw(p, x, s.center().y(), strings.ROWS_SOURCE["hato"], "hero-sub", s.width(), c("ink"),
-                                 weight=600, dpr=dpr)
-                x += w + 8
+                TEXT.draw(p, s.left(), s.center().y(), strings.ROWS_SOURCE["hato"], "hero-sub", s.width(), c("ink"),
+                          weight=600, dpr=dpr)
             elif row.media == "youtube" and row.line:
-                TEXT.draw(p, x, s.center().y(), row.line, "hero-sub", min(s.width(),
-                                                                             theme.SIZES["channel-cap"] * f),
+                TEXT.draw(p, s.left(), s.center().y(), row.line, "hero-sub", min(s.width(),
+                                                                                    theme.SIZES["channel-cap"] * fz()),
                           c("ink-dim"), dpr=dpr)
         st = g["stats"]
-        stats = strings.ROWS_HERO_STATS_NONE if nxt.pct is None else strings.ROWS_HERO_STATS.format(
-            pct=round(nxt.pct), n=nxt.n_new if nxt.n_new is not None else strings.ROWS_DASH)
-        TEXT.draw(p, st.left(), st.center().y(), stats, "hero-sub", st.width(), c("ink-dim"), dpr=dpr)
-        for chip_rect, chip in g["chips"]:
-            self._paint_chip(p, chip_rect, chip, dpr)
-        # the side: ▶ Watch / No video, then the next episode's status
-        self._paint_watch(p, g["play"], row, nxt, dpr)
-        if nxt.status is not None:
-            paint_pill(p, nxt.status, g["status"], dpr, audio=row.media_word == "audio")
-        if episodes and self.view.model().open_key == row.key:
-            self._paint_episodes(p, row, g["eps"], dpr, hero=True, lines=lines)
-
-    def _paint_chip(self, p, r, chip, dpr):
-        f = fz()
-        rr = QRectF(r).adjusted(0.5, 0.5, -0.5, -0.5)
-        if chip.watched:
-            p.setPen(QPen(c("watched-chip-border"), 1))
-            p.setBrush(c("watched-chip-fill"))
-        elif chip.next:
-            p.setPen(QPen(c("accent"), 1.5))
-            p.setBrush(c("bg"))
+        if g["journey"] is None:
+            TEXT.draw(p, st.left(), st.center().y(), strings.ROWS_HERO_STATS_NONE, "hero-sub", st.width(),
+                      c("ink-dim"), dpr=dpr)
         else:
-            p.setPen(QPen(c("line-hi"), 1))
-            p.setBrush(c("bg"))
-        p.drawRoundedRect(rr, 6, 6)
-        ink = c("ink") if (chip.watched or chip.next) else c("ink-dim")
-        fm = TEXT.metrics("chip", dpr=dpr)
-        tw = fm.horizontalAdvance(chip.text)
-        extra = CHIP_DOT if chip.mined else 0
-        x = rr.center().x() - (tw + extra) / 2
-        # the number's figures and the dot on the chip's true midline (G2.3 A3: the dot sat above it, and a QRect's
-        # centre is half a pixel high): the text's box moved so its figures' middle (cap height) is the midline
-        mid = rr.center().y()
-        TEXT.draw(p, x, mid + fm.height() / 2 - fm.ascent() + fm.capHeight() / 2, chip.text, "chip", tw + 2, ink,
-                  dpr=dpr)
-        if chip.mined:
-            icon(p, "dot", QRectF(x + tw + CHIP_DOT - 6, mid - 3, 6, 6), c("ok"))
+            known = strings.ROWS_HERO_KNOWN.format(pct=round(nxt.pct))
+            TEXT.draw(p, st.left(), st.center().y(), known, "hero-sub", st.width(), c("ink-dim"), dpr=dpr)
+            j = g["journey"]
+            TEXT.draw(p, j.left(), st.center().y(), strings.ROWS_HERO_NEW_LINK.format(
+                n=nxt.n_new if nxt.n_new is not None else strings.ROWS_DASH), "hero-sub", j.width(), c("accent"),
+                dpr=dpr)
+        if self.view.model().open_key != row.key:   # G16: the string where the chips were, hidden while open
+            s = g["string"]
+            self._paint_string(p, self._info(row)[0], s, s.top() + s.height() / 2, sheet, ring=True, big=True)
+        self._paint_play(p, g["play"], row, nxt, dpr, sheet)
+        self._paint_done(p, g["done"], nxt, dpr)
+        mid = g["more"].center().y()
+        if nxt.status is not None and nxt.status.kind in ("in_anki", "mining"):
+            self._paint_stat(p, nxt.status, g["status"], mid, dpr)     # N in Anki at rest
+        elif nxt.status is not None and hovered:    # the other statuses on hover, as a row's
+            item = next((it for it in self._hover_items(row._replace(status=nxt.status, mark=nxt.mark, studying=False))
+                         if it[0] in ("status", "mine-now")), None)
+            if item is not None:
+                r = g["status"]
+                side = rl("anki-icon")
+                icon(p, item[1], QRectF(r.right() - side - 4, mid - side / 2, side, side), c(item[2]))
+        icon(p, "more", QRectF(g["more"].center().x() - 7, mid - 7, 14, 14), c("ink-dim"))
 
     @staticmethod
     def _watch_label(row):
-        """The hero's button's words: its verb (Watch / Listen / Read), *Online*, or *No <its media word>* (No video)."""
+        """Up Next's ▶ button's words: its verb (Watch / Listen / Read), *Online*, or *No <its media word>* (No video)."""
         if row.episodes[row.next_index].can_play:
             return row.verb
         if row.media == "youtube":
             return strings.ROWS_ONLINE_BUTTON
         return strings.ROWS_NO_MEDIA_BUTTON.format(word=row.media_word)
 
-    def _paint_watch(self, p, r, row, nxt, dpr):
-        f = fz()
+    def _paint_play(self, p, r, row, nxt, dpr, sheet):
+        """▶ Play (W3.1a §1 *Up Next*): the trillion in its kind's gem and the verb, on the kind's base colour; with
+        nothing to play, the muted *No video* (S6)."""
         rr = QRectF(r).adjusted(0.5, 0.5, -0.5, -0.5)
+        gem = stone_plan.gem_of(row.media, row.source == "hato")
+        side = rl("hero-trillion")
         if nxt.can_play:
             p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(self._iris(rr))
+            p.setBrush(style.qcolor(theme.GEM[gem][0]))
             p.drawRoundedRect(rr, theme.RADII["button"], theme.RADII["button"])
-            ink = style.qcolor(theme.FIXED["on-accent"])
-            label = row.verb
+            ink, label = c("ink"), row.verb
         else:
             pen = QPen(c("line-hi"), 1)
             pen.setStyle(Qt.PenStyle.DashLine)
             p.setPen(pen)
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawRoundedRect(rr, theme.RADII["button"], theme.RADII["button"])
-            ink = c("ink-dim")
-            label = self._watch_label(row)
-        fm = TEXT.metrics("button", dpr=dpr)
-        total = 12 + 6 + fm.horizontalAdvance(label)
-        x = r.center().x() - total / 2
-        icon(p, "play", QRectF(x, r.center().y() - 6, 12, 12), ink)
-        TEXT.draw(p, x + 18, r.center().y(), label, "button", fm.horizontalAdvance(label) + 2, ink, dpr=dpr)
+            ink, label = c("ink-dim"), self._watch_label(row)
+        x = r.left() + 13
+        box = QRectF(x, r.center().y() - side / 2, side, side)
+        what = ("trillion", gem if nxt.can_play else stones.UNLINKED)
+        if sheet is not None:                         # the trillion: a blit, shrunk into its box
+            size = sheet.size_of(what)
+            k = side / max(size.width(), size.height())
+            src = sheet.rect_of(what, QPointF(0, 0))
+            p.save()
+            p.translate(box.center())
+            p.scale(k, k)
+            p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+            sheet.draw(p, QPointF(-src.center().x(), -src.center().y()), what)
+            p.restore()
+        else:
+            icon(p, "play", box.adjusted(3, 3, -3, -3), ink)
+        TEXT.draw(p, x + side + 7, r.center().y(), label, "button", r.right() - x - side - 7, ink, dpr=dpr)
+
+    def _paint_done(self, p, r, nxt, dpr):
+        """✓ Done, quiet beside ▶ Play (A2 #1); muted once every file is watched."""
+        p.save()
+        if nxt.watched:
+            p.setOpacity(0.4)
+        rr = QRectF(r).adjusted(0.5, 0.5, -0.5, -0.5)
+        p.setPen(QPen(c("line-hi"), 1))
+        p.setBrush(c("raised"))
+        p.drawRoundedRect(rr, theme.RADII["button"], theme.RADII["button"])
+        icon(p, "check", QRectF(r.left() + 13, r.center().y() - 7, 14, 14), c("ink"))
+        TEXT.draw(p, r.left() + 13 + 14 + 7, r.center().y(), strings.ROWS_DONE, "button", r.width() - 13 - 21,
+                  c("ink"), dpr=dpr)
+        p.restore()
 
     def _paint_need(self, p, need, rect, dpr):
         f = fz()
@@ -1443,6 +2089,14 @@ def whole_step(dpr):
     return 1
 
 
+NO_DRAG = frozenset(("play", "more", "up", "down", "done", "mine-now", "journey"))     # buttons: a press there clicks
+
+
+def _same_payload(a, b):
+    """A part's payload at the release is the press's: the same object, or the same episode (a refresh between)."""
+    return a is b or (a is not None and b is not None and getattr(a, "id", object()) == getattr(b, "id", None))
+
+
 def lines_top(lines):
     return next(ln for ln in lines if ln.kind == "top")
 
@@ -1452,12 +2106,28 @@ def view_tone(pct):
 
 
 # --- the view ----------------------------------------------------------------------------------------------------------- #
+class _Touch:
+    """A Current row's hover look in motion (W3.1a §1 *Rows*, §3): its lift (px, up), how far its neighbours part (px),
+    how far its hover picture has faded in (0–1), and the springs and fade moving them."""
+    __slots__ = ("lift", "nb", "fade", "s_lift", "s_nb", "a_fade", "on")
+
+    def __init__(self):
+        self.lift = self.nb = self.fade = 0.0
+        self.s_lift = self.s_nb = self.a_fade = None
+        self.on = False
+
+
 class RowsView(QListView):
     """A painted list: hover, tooltips and clicks by the delegate's parts; a click on a row opens or closes it; ▶ asks
-    for its file (`play_requested`); Enter and Space open the current row."""
+    for its file (`play_requested`); a stone or Up Next's ✓ Done asks for a Done (`done_requested`); Enter and Space
+    open the current row."""
 
     play_requested = pyqtSignal(object)            # an Episode
     opened = pyqtSignal(object)                    # the key opened (None: closed)
+    done_requested = pyqtSignal(object, object)    # (the Row, the Episode): one path for every Done (S12)
+    nudge_requested = pyqtSignal(object, int)      # (the Row, -1 up / +1 down): ↑ ↓ in the number's column (A2 #13)
+    menu_requested = pyqtSignal(object, object)    # (the Row, the global QPoint): its ⋯
+    journey_requested = pyqtSignal(object, object)     # (the Row, the Episode): Up Next's *N new words ↗*
 
     def __init__(self, name, tooltips=None, parent=None):
         super().__init__(parent)
@@ -1509,12 +2179,27 @@ class RowsView(QListView):
         self._hover_warm.setSingleShot(True)
         self._hover_warm.setInterval(HOVER_WARM_MS)
         self._hover_warm.timeout.connect(self._warm_hovered)
+        self._touch = {}                             # a row key -> its hover look in motion (`_Touch`)
+        self._active = set()                         # the row keys showing their hover look (the hand's, the keyboard's)
+        self._key_rows = (None, {})                  # (the model's keys, key -> row) for the touches' repaints
+        self.line_hover = None                       # (row, line kind) of the line under the hand: it lights a step
+        # W3.1a §2, the drag (`app/qt/drag.py`): a press records its part and acts on its release over the same part,
+        # unless the hand travels `drag-start-px` first — then the drag has it (B1: a drag begun on a stone never marks
+        # it watched, one begun on a row never opens it)
+        self.drag = None                             # the drag controller (Current's list only)
+        self._press = None                           # (row, part name, payload, pos, key): a press waiting for release
+        self.parting = None                          # the running drag's parting (`drag.Parting`): offsets, the slot
+        self.landing = None                          # the key a drop's ghost is gliding onto: its slot shows meanwhile
+        self.saving = frozenset()                    # keys whose moves wait for a busy store (*saving…*)
+        stones.notifier().ready.connect(self._sheet_ready)
 
     def paintEvent(self, event):
         p = QPainter(self.viewport())
         p.fillRect(event.rect(), c("bg"))
         p.end()
         super().paintEvent(event)
+        if self.parting is not None:                 # a drag: the rows it moved into view, and the slot it opens
+            self.parting.paint_over(self, event)
 
     # entries ---------------------------------------------------------------------------------------------------- #
     def set_entries(self, entries):
@@ -1522,8 +2207,11 @@ class RowsView(QListView):
         model = self.model()
         anchor = self._anchor()
         before = model.entries
+        held = self._held_keys(before)
         how = model.set_entries(entries)
-        if how == "same":
+        if how == "moved":                           # AD-5: the keyboard's row and the hand's stay on their rows
+            self._follow_rows(*held)
+        if how in ("same", "moved"):                 # a move keeps every place's height: no relayout (W3.1a S3)
             self.delegate.same_heights(before, model.entries)     # equal shapes: equal heights (review D-2)
             lo, hi = self._near()
             changed = model.changed
@@ -1551,6 +2239,37 @@ class RowsView(QListView):
                 self._apply_restore()
                 self._restore = None                     # tried once: a place gone stays gone (W2.2 review A-15)
         return how
+
+    def _held_keys(self, entries):
+        """(the current row's key, the hovered row's key) in `entries`: what a reorder must keep on its row."""
+        def key(row):
+            if row is None or not 0 <= row < len(entries):
+                return None
+            return getattr(entries[row][1], "key", None)
+        cur = self.currentIndex()
+        return key(cur.row() if cur.isValid() else None), key(self._hover)
+
+    def _follow_rows(self, cur_key, hover_key):
+        """AD-5: a "moved" refresh swaps the rows in their places with no reset, so Qt's current index and the hovered
+        place still name places: put them back on the rows they were on (the focus ring, Enter / Space, the next ↑ ↓
+        act on the same title). Only the two places repaint."""
+        places = {}
+        for i, (kind, payload, _lines) in enumerate(self.model().entries):
+            k = getattr(payload, "key", None)
+            if k is not None and k in (cur_key, hover_key):
+                places[k] = i
+        cur = self.currentIndex()
+        if cur_key is not None and cur_key in places and (not cur.isValid() or cur.row() != places[cur_key]):
+            scrolls = self.hasAutoScroll()
+            self.setAutoScroll(False)                    # followed where it stands: the list doesn't jump
+            self.selectionModel().setCurrentIndex(self.model().index(places[cur_key], 0),
+                                                  QItemSelectionModel.SelectionFlag.NoUpdate)
+            self.setAutoScroll(scrolls)
+            if cur.isValid():
+                self.update(cur)
+            self.update(self.model().index(places[cur_key], 0))
+        if hover_key is not None:
+            self._hover = places.get(hover_key)
 
     def _near(self):
         """The rows on screen and those painted ahead past each edge (`WARM_AHEAD`): (first, last), by place."""
@@ -1710,13 +2429,129 @@ class RowsView(QListView):
         self.relayout()
         self.opened.emit(model.open_key)
 
+    # the hover look in motion (W3.1a §1 *Rows*, §3: springs on the one clock; S7) -------------------------------- #
+    def touch(self, row, key):
+        """(dy, lift, fade) for Current row `row` (its key `key`) as it's painted now: up by its own lift, apart from a
+        lifted neighbour by that neighbour's parting, its hover picture faded in by `fade`."""
+        touches = self._touch
+        if not touches:
+            return 0.0, 0.0, 0.0
+        t = touches.get(key)
+        lift = t.lift if t is not None else 0.0
+        dy = -lift
+        entries = self.model().entries
+        for j, sign in ((row - 1, 1.0), (row + 1, -1.0)):   # the row above lifted: this one eases down; below: up
+            if 0 <= j < len(entries) and entries[j][0] == ROW:
+                n = touches.get(entries[j][1].key)
+                if n is not None:
+                    dy += sign * n.nb
+        return dy, lift, t.fade if t is not None else 0.0
+
+    def _focus_row(self):
+        """The row the keyboard is on, while its ring shows (S7: it shows what the hand's hover shows)."""
+        idx = self.currentIndex()
+        return idx.row() if self.focus_visible and self.hasFocus() and idx.isValid() else None
+
+    def _retouch(self):
+        """The rows under the hand and the keyboard show their hover look; the others let it go — each on its springs
+        (the lift `hover-lift` and its release `hover-release`, the neighbours `hover-neighbour`) and a fade."""
+        model = self.model()
+        want = set()
+        for r in (self._hover, self._focus_row()):
+            if r is not None and r < len(model.entries) and model.entries[r][0] == ROW:
+                want.add(model.entries[r][1].key)
+        if want == self._active:
+            return
+        for key in want - self._active:
+            self._touch_to(key, True)
+        for key in self._active - want:
+            self._touch_to(key, False)
+        self._active = want
+
+    def _touch_to(self, key, on):
+        t = self._touch.get(key)
+        if t is None:
+            t = self._touch[key] = _Touch()
+        t.on = on
+        closed = self.model().open_key != key        # an opened row doesn't lift: it fades its hover look only
+        lift = theme.SPRINGS["lift-px"] if on and closed else 0.0
+        nb = theme.SPRINGS["neighbour-px"] if on and closed else 0.0
+        spring = motion.preset("hover-lift" if on else "hover-release")
+        if t.s_lift is None:
+            t.s_lift = motion.clock().spring(lambda v: self._touched(key, "lift", v), t.lift, lift, owner=self,
+                                             on_end=lambda: self._touch_end(key), **spring)
+        else:
+            t.s_lift.retarget(lift, **spring)
+        if t.s_nb is None:
+            t.s_nb = motion.clock().spring(lambda v: self._touched(key, "nb", v), t.nb, nb, owner=self,
+                                           on_end=lambda: self._touch_end(key), **motion.preset("hover-neighbour"))
+        else:
+            t.s_nb.retarget(nb, **motion.preset("hover-neighbour"))
+        if t.a_fade is not None:
+            t.a_fade.stop()
+            t.a_fade = None
+        start, target = t.fade, 1.0 if on else 0.0
+        if start != target:
+            t.a_fade = motion.clock().animate(
+                theme.MOTION["hover"], lambda k: self._touched(key, "fade", start + (target - start) * k), kind="fade",
+                points="linear", owner=self, on_end=lambda: self._touch_end(key))
+
+    def _touched(self, key, field, value):
+        """One touch value moved: the row repainted, and its two neighbours when it lifts or parts them — nothing else
+        (§3: a hover repaints three rows while their springs run)."""
+        t = self._touch.get(key)
+        if t is None:
+            return
+        setattr(t, field, value)
+        if field != "fade":                          # L5: a px spring rests once what it draws stops changing
+            s = t.s_lift if field == "lift" else t.s_nb
+            if s is not None and s.alive and abs(value - s.target) < theme.DRAG["px-rest"]:
+                s.finish()                           # (its last value comes back through here, at rest)
+                return
+        keys = self.model().keys
+        if self._key_rows[0] is not keys:
+            self._key_rows = (keys, {k[1]: i for i, k in enumerate(keys) if k[0] in (HERO, ROW)})
+        row = self._key_rows[1].get(key)
+        if self.parting is not None:                 # a drag parts the rows: a row may stand in another's place
+            self.viewport().update()
+        elif row is not None:
+            entries = self.model().entries
+            for r in ((row - 1, row, row + 1) if field != "fade" else (row,)):
+                if 0 <= r < len(entries) and (r == row or entries[r][0] == ROW):    # Up Next never eases apart
+                    self.update(self.model().index(r, 0))
+        if not t.on and not (t.lift or t.nb or t.fade):
+            self._touch.pop(key, None)               # back at rest: nothing kept
+
+    def _touch_end(self, key):
+        """A touch's spring or fade ended short (the list hidden or gone): its values go to where they were headed."""
+        t = self._touch.get(key)
+        if t is None:
+            return
+        t.lift = t.s_lift.target if t.s_lift is not None else 0.0
+        t.nb = t.s_nb.target if t.s_nb is not None else 0.0
+        t.fade = 1.0 if t.on else 0.0
+        if not t.on:
+            self._touch.pop(key, None)
+
+    def _sheet_ready(self, key):
+        """The stones' sheet landed: the pictures painted before it are drawn once more, with their stones (B3)."""
+        if self.delegate.drop_unsheeted(key[0]):
+            self.viewport().update()
+
     # hit-testing ------------------------------------------------------------------------------------------------- #
     def part_at(self, pos):
+        """(index, part) under `pos`. A line's hover area reaches into the row under it (S10: at least 12 px around a
+        2 px groove), so the row above's lines are asked first near a row's top."""
         idx = self.indexAt(pos)
         if not idx.isValid():
             return idx, None
-        entry = self.model().entries[idx.row()]
-        for part in self.delegate.parts(entry, self.visualRect(idx)):
+        entries = self.model().entries
+        if idx.row() > 0 and entries[idx.row() - 1][2]:
+            above = self.model().index(idx.row() - 1, 0)
+            for part in self.delegate._line_parts(entries[idx.row() - 1][2], self.visualRect(above)):
+                if part[1].contains(pos):
+                    return above, part
+        for part in self.delegate.parts(entries[idx.row()], self.visualRect(idx)):
             if part[1].contains(pos):
                 return idx, part
         return idx, None
@@ -1737,55 +2572,145 @@ class RowsView(QListView):
         return super().viewportEvent(event)
 
     def mouseMoveEvent(self, event):
+        press = self._press
+        if press is not None and event.buttons() & Qt.MouseButton.LeftButton and \
+                (event.pos() - press[3]).manhattanLength() >= theme.MOTION["drag-start-px"] and self.drag_from(press):
+            self._press = None                           # B1: the press is the drag's now, never a click
+            self.drag.begin(press, event.globalPosition().toPoint())
+            event.accept()
+            return
         idx = self.indexAt(event.pos())
         row = idx.row() if idx.isValid() else None
         if row != self._hover:
             old, self._hover = self._hover, row
-            for r in (old, row):
-                if r is not None and r < self.model().rowCount():
+            for r in (old, row):                     # the hero's and Finished's hover; a Current row's is its touch's
+                if r is not None and r < self.model().rowCount() and self.model().entries[r][0] != ROW:
                     self.update(self.model().index(r, 0))
+            self._retouch()
             self._hover_warm.setInterval(HOVER_WARM_MS)
             self._hover_warm.start()
+        at, part = self.part_at(event.pos())
+        self._set_line_hover((at.row(), part[0][:-5]) if part is not None and part[0].endswith("-line") else None)
         if self.tooltips is not None:
             self.tooltips.hide_part_unless(self.viewport(), event.pos())
         super().mouseMoveEvent(event)
 
+    def _set_line_hover(self, hot):
+        """A line under the hand lights a step (its row alone repainted, as it goes and as it comes)."""
+        if hot == self.line_hover:
+            return
+        old, self.line_hover = self.line_hover, hot
+        for h in (old, hot):
+            if h is not None and h[0] < self.model().rowCount():
+                self.update(self.model().index(h[0], 0))
+
     def leaveEvent(self, event):
-        if self._hover is not None and self._hover < self.model().rowCount():
-            self.update(self.model().index(self._hover, 0))
+        hover = self._hover
+        if hover is not None and hover < self.model().rowCount() and self.model().entries[hover][0] != ROW:
+            self.update(self.model().index(hover, 0))
         self._hover = None
+        self._retouch()
+        self._set_line_hover(None)
         super().leaveEvent(event)
 
     def _show_focus(self, on):
         if self.focus_visible != on:
             self.focus_visible = on
             self._update_current()
+            self._retouch()
+
+    def currentChanged(self, current, previous):
+        super().currentChanged(current, previous)
+        if getattr(self, "focus_visible", False):     # the keyboard moved: its row shows the hover look (S7)
+            self._retouch()
 
     def mousePressEvent(self, event):
+        """B1 (W3.1a): a press only records the part under it; the part acts when the button comes up over it again
+        (`mouseReleaseEvent`). A hand that travels `drag-start-px` first hands the press to the drag (`mouseMoveEvent`):
+        a drag begun on a stone never marks it watched, one begun on a row never opens it."""
         self._show_focus(False)
+        self._press = None
         if event.button() == Qt.MouseButton.LeftButton:
             idx, part = self.part_at(event.pos())
             if idx.isValid():
                 self.setCurrentIndex(idx)
-                if part is not None and part[0] == "play" and part[3] is not None:
-                    if part[3].can_play:
-                        self.play_requested.emit(part[3])
-                    event.accept()
-                    return
-                if part is not None and part[0] in ("open", "title"):
-                    self.toggle(idx)
-                    event.accept()
-                    return
-                if part is not None:                 # a pill, a mark, a chip, a tick: states, not buttons (W2.2)
+                if part is not None:
+                    entry = self.model().entries[idx.row()]
+                    self._press = (idx.row(), part[0], part[3], event.pos(), getattr(entry[1], "key", None))
                     event.accept()
                     return
         super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        press, self._press = self._press, None
+        if press is None or event.button() != Qt.MouseButton.LeftButton:
+            super().mouseReleaseEvent(event)
+            return
+        event.accept()
+        idx, part = self.part_at(event.pos())
+        row, name, payload, _pos, key = press
+        entries = self.model().entries
+        if part is None or not idx.isValid() or idx.row() != row or part[0] != name or \
+                getattr(entries[row][1], "key", None) != key or not _same_payload(part[3], payload):
+            return                                       # let go somewhere else: nothing happens
+        if name == "play" and payload is not None:
+            if payload.can_play:
+                self.play_requested.emit(payload)
+        elif name in ("open", "title"):
+            self.toggle(idx)
+        else:
+            self._act(idx, part)
+
+    def drag_from(self, press):
+        """Whether a press may become a drag (W3.1a §2): on Current's rows (Up Next's card, a row's one line — never an
+        opened row's episodes, a line, or a button: ▶, ⋯, ↑ ↓, ✓ Done, Mine now, ↗)."""
+        row, name, _payload, pos, key = press
+        entries = self.model().entries
+        if self.drag is None or not 0 <= row < len(entries) or name in NO_DRAG or name.endswith("-line"):
+            return False
+        kind, payload, lines = entries[row]
+        if getattr(payload, "key", None) != key:     # the list changed under the press (a view landed): not this row
+            return False
+        if kind not in (HERO, ROW):
+            return False
+        rect = self.visualRect(self.model().index(row, 0))
+        if kind == HERO:
+            head = QRect(rect.left(), rect.top(), rect.width(), self.delegate._hero_head_h())
+            return head.contains(pos)
+        return self.delegate.slab_of(rect).contains(pos)
+
+    def _act(self, idx, part):
+        """A click on a part that isn't ▶ or the row itself: a stone or ✓ Done asks for a Done for its file (one path,
+        S12); ↑ ↓ ask for a nudge, ⋯ for its menu, ↗ for the journey; Waiting's icon says Mine now arrives with Anki
+        Miner's step (P4.1; a tooltip, no toast); a status, a mark, a line: states, not buttons."""
+        name, rect, _tip, payload = part
+        row = self.model().entries[idx.row()][1]
+        if name == "stone" and payload is not None:
+            self.done_requested.emit(row, payload)
+        elif name == "done" and payload is not None and not payload.watched:
+            self.done_requested.emit(row, payload)
+        elif name in ("up", "down"):
+            self.nudge_requested.emit(row, -1 if name == "up" else 1)
+        elif name == "more":
+            self.menu_requested.emit(row, self.viewport().mapToGlobal(rect.bottomLeft()))
+        elif name == "journey":
+            self.journey_requested.emit(row, payload)
+        elif name == "mine-now" and self.tooltips is not None:
+            self.tooltips.request(self.viewport(), rect, strings.ROWS_MINE_NOW_LATER)
 
     MODIFIERS = frozenset({Qt.Key.Key_Control, Qt.Key.Key_Shift, Qt.Key.Key_Alt, Qt.Key.Key_Meta, Qt.Key.Key_AltGr})
 
     def keyPressEvent(self, event):
         if event.key() not in self.MODIFIERS:        # Ctrl held for a Ctrl+wheel is no navigation (D-6)
             self._show_focus(True)
+        if event.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down) and \
+                event.modifiers() & Qt.KeyboardModifier.AltModifier:     # A2 #14 (L7): Alt+↑ / ↓ moves the row
+            idx = self.currentIndex()
+            if idx.isValid() and self.model().entries[idx.row()][0] in (HERO, ROW):
+                self.nudge_requested.emit(self.model().entries[idx.row()][1],
+                                          -1 if event.key() == Qt.Key.Key_Up else 1)
+            event.accept()
+            return
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
             idx = self.currentIndex()
             if idx.isValid():
@@ -1810,6 +2735,7 @@ class RowsView(QListView):
             self.focus_visible = True                # reached by the keyboard: its ring shows (`_update_current`)
         if self.focus_visible:                       # no ring shown (focus by a click): nothing to repaint (S19)
             self._update_current()
+            self._retouch()
         event.accept()
 
     def focusOutEvent(self, event):
@@ -1820,7 +2746,27 @@ class RowsView(QListView):
             self._update_current()
             if event.reason() != Qt.FocusReason.ActiveWindowFocusReason:
                 self.focus_visible = False
+            self._retouch()
         event.accept()
+
+    # files dragged in from Windows Explorer (W3.1a §2): the drag controller places them --------------------------- #
+    def dragEnterEvent(self, event):
+        if self.drag is not None and self.drag.files_wanted(event):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        if self.drag is not None and self.drag.files_wanted(event):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        if self.drag is not None and self.drag.files_dropped(event):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
 
     def _update_current(self):
         index = self.currentIndex()

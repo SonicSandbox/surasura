@@ -185,22 +185,29 @@ def world(qapp, tmp_path):
      "failed", True, False, True),
 ])
 def test_header_generate_shows_each_state(world, changes, text, look, enabled, bar, log):
+    # W3.1a: Generate lives in the level ▾'s pop; its share while it runs is the header's hairline (no bar of its own)
     world.controller.push(**changes)
     g = world.d.generate
     assert wait_until(lambda: g.button.text() == text)
     assert g.button.property("look") == look
     assert g.button.isEnabled() == enabled
-    assert g.bar.isVisibleTo(world.win) == bar
-    assert g.log_button.isVisibleTo(world.win) == log
+    assert (world.win.progress.share is not None) == bar
+    if bar:
+        assert world.win.progress.share == g.percent and text.endswith(f"{g.percent} %")
+    assert (not g.log_button.isHidden()) == log
     assert g.button.toolTip()
 
 
-def test_header_holds_generate_the_journey_and_help_and_no_level_menu(world):
-    # Sonic's W3.5-1: the Level menu (Generate's ▾) is not built. ? holds *Online guide* only until the tours (IK-15).
+def test_header_holds_the_level_and_help_and_the_pop_holds_generate_and_the_journey(world):
+    """W3.1a (the RUNBOOK's *Level ▾*): the header holds the level ▾ and ?, no Generate of its own; Generate and *Open
+    your journey* moved into the ▾'s pop (W3.1b fills the rest of it). ? holds *Online guide* only until the tours."""
     header = world.win.header
-    texts = [b.text() for b in header.findChildren(QAbstractButton)]
-    assert strings.GENERATE in texts and strings.JOURNEY in texts and strings.HELP in texts
-    assert not any("▾" in t for t in texts)
+    in_header = header.findChildren(QAbstractButton)
+    assert world.d.level in in_header and world.d.help in in_header
+    assert world.d.generate.button not in in_header and world.d.journey not in in_header
+    pop = world.d.pop
+    assert world.d.generate.isAncestorOf(world.d.generate.button) and pop.isAncestorOf(world.d.generate)
+    assert pop.isAncestorOf(world.d.journey) and world.d.journey.text() == strings.LEVEL_JOURNEY
 
 
 def test_header_help_opens_the_online_guide_the_tk_dashboard_opens_too(world, monkeypatch):
@@ -312,11 +319,12 @@ def test_header_the_journey_waits_for_a_journey_and_opens_on_a_worker(world, mon
     journey = world.d.journey
     QTest.qWait(50)
     assert not journey.isEnabled() and journey.toolTip() == strings.JOURNEY_NONE_TIP
+    assert journey.isHidden()                            # W3.1a: in the ▾'s pop only while there is one to open
     report.write_text("<html></html>", encoding="utf-8")
     world.controller.push(state=G.RUNNING, step="Writing the journey")
     world.controller.push(state=G.CURRENT)               # a run ended: the journey is looked for again
     assert wait_until(lambda: journey.isEnabled())
-    assert journey.toolTip() == strings.JOURNEY_TIP
+    assert journey.toolTip() == strings.JOURNEY_TIP and not journey.isHidden()
     journey.click()
     assert wait_until(lambda: opened)
     assert opened[0][0] is False and opened[0][1] is not threading.main_thread()
@@ -479,21 +487,26 @@ def test_update_needs_you_cards_and_their_actions(world, monkeypatch, tmp_path):
 
 # --- the bottom bar's marks ---------------------------------------------------------------------------------------- #
 def test_bar_marks_show_the_automation_state_and_repaint_only_on_change(world):
+    # W3.1a: the emerald — lit while Anki answers, dark when off / closed / failed, the words saying which in its
+    # hover (*Anki* alone while no backlog has been saved: W31A-2's *N waiting* is tested below)
     d = world.d
-    assert wait_until(lambda: d.anki.text() == strings.BAR_ANKI["off"])            # anki_sync_auto off by default
+    assert wait_until(lambda: d.anki.key == "off" and not d.anki.isHidden())     # anki_sync_auto off by default
+    assert not d.anki.lit and strings.BAR_ANKI["off"] in d.anki.toolTip() and d.anki.text() == strings.FOOT_ANKI
     world.services.settings.set({"anki_sync_auto": True}, now=True)
     assert wait_until(lambda: d.anki.isHidden())                                  # on, nothing synced yet
     world.automation.push(sync=A.SYNCING)
-    assert wait_until(lambda: d.anki.text() == strings.BAR_ANKI["syncing"])
+    assert wait_until(lambda: d.anki.key == "syncing" and d.anki.lit)
+    assert strings.BAR_ANKI["syncing"] in d.anki.toolTip()
     world.automation.push(sync=A.SYNCED, added=3, known=12345)
-    assert wait_until(lambda: d.known.text() == "12,345 known" and d.anki.text() == strings.BAR_ANKI["synced"])
+    assert wait_until(lambda: d.known.text() == "12,345 known" and d.anki.key == "synced" and d.anki.lit)
     assert "3" in d.anki.toolTip()
     painted = (d.paints[d.known], d.paints[d.anki])
     world.automation.push(junban="順: placed 20 cards")                         # nothing the marks show changed
     QTest.qWait(30)
     assert (d.paints[d.known], d.paints[d.anki]) == painted
     world.automation.push(sync=A.CLOSED, message="Anki is closed")
-    assert wait_until(lambda: d.anki.text() == "Anki closed — work waits")
+    assert wait_until(lambda: d.anki.key == "anki-closed" and not d.anki.lit)    # the dark emerald, its hover says so
+    assert "Anki closed — work waits" in d.anki.toolTip()
     assert d.paints[d.known] == painted[0]                                        # the count didn't move: not repainted
 
 
@@ -582,6 +595,7 @@ def test_bar_replan_line_shows_the_hosts_lines_in_order_then_up_to_date_then_goe
         shown.append(label.full())
         assert line in label.toolTip() and strings.BAR_REPLAN_TIP.splitlines()[-1] in label.toolTip()
     assert shown == ["Anki: placing tomorrow's 20 cards…", rp.UP_TO_DATE]
+    assert label.text() == strings.FOOT_REPLAN_MARK                     # W31A-1: a quiet mark, the line in its hover
     assert world.win.status_paints[label] == 2
     values["replan"] = None
     _ask(world, "replan")
@@ -620,21 +634,24 @@ def test_bar_replan_connects_line_repaints_only_on_a_new_stamp(world):
     values = _provide(world, ankiweb="AnkiWeb: synced 18:42")
     label, paints = world.win.bar_connect, world.win.status_paints
     _ask(world)
-    assert wait_until(lambda: label.text() == "Up to date · 12 cards made today" and not label.isHidden())
-    assert label.toolTip() == strings.BAR_CONNECT_TIP
+    assert wait_until(lambda: label.full() == "Up to date · 12 cards made today" and not label.isHidden())
+    # W31A-1: a quiet mark — its glyph in the footer, the line and what it is in the hover
+    assert label.text() == strings.FOOT_CONNECT_MARK
+    assert label.toolTip() == strings.FOOT_CONNECT_TIP.format(line="Up to date · 12 cards made today")
+    assert strings.BAR_CONNECT_TIP in label.toolTip()
     assert paints[label] == 1 and reads == ["s1"]
     values["ankiweb"] = "AnkiWeb: syncing in 45 s"                    # another mark moves; Connect's stamp doesn't
     _ask(world, "connect", "ankiweb")
-    assert wait_until(lambda: world.win.bar_ankiweb.text() == "AnkiWeb: syncing in 45 s")
+    assert wait_until(lambda: world.win.anki_mark.ankiweb == "AnkiWeb: syncing in 45 s")
     assert paints[label] == 1 and reads == ["s1"]
     stamp[0] = "s2"
     _ask(world, "connect")
-    assert wait_until(lambda: label.text() == making)
+    assert wait_until(lambda: label.full() == making)
     assert paints[label] == 2 and reads == ["s1", "s2"]
     stamp[0] = "s3"                                                     # a new stamp, the same words: read, not repainted
     values["ankiweb"] = "AnkiWeb: syncing in 44 s"
     _ask(world, "connect", "ankiweb")
-    assert wait_until(lambda: world.win.bar_ankiweb.text() == "AnkiWeb: syncing in 44 s")
+    assert wait_until(lambda: world.win.anki_mark.ankiweb == "AnkiWeb: syncing in 44 s")
     assert reads == ["s1", "s2", "s3"] and paints[label] == 2
 
 
@@ -648,18 +665,18 @@ def test_bar_replan_ankiweb_countdown_counts_down_and_says_when_it_synced(world,
     monkeypatch.setattr(anki_sync_rule, "read_state", lambda: dict(state))
     monkeypatch.setattr(anki_sync_rule, "due_at", lambda settings, st=None: due[0])
     world.status.providers["ankiweb"] = status_service.ankiweb_line(lambda: {}, now=lambda: clock[0])
-    label = world.win.bar_ankiweb
+    mark = world.win.anki_mark                           # W3.1a: the AnkiWeb mark's words, in the emerald's hover
     for now, words in ((1000.0, "AnkiWeb: syncing in 45 s"), (1001.0, "AnkiWeb: syncing in 44 s")):
         clock[0] = now
         _ask(world, "ankiweb")
-        assert wait_until(lambda: label.text() == words and not label.isHidden())
-        assert label.toolTip() == strings.BAR_ANKIWEB_TIP
+        assert wait_until(lambda: mark.ankiweb == words and not mark.isHidden())
+        assert words in mark.toolTip()
     due[0], state["synced_at"] = None, time.mktime((2026, 10, 13, 18, 42, 0, 0, 0, -1))
     _ask(world, "ankiweb")
-    assert wait_until(lambda: label.text() == "AnkiWeb: synced 18:42")
+    assert wait_until(lambda: mark.ankiweb == "AnkiWeb: synced 18:42")
     state.clear()
     _ask(world, "ankiweb")
-    assert wait_until(lambda: label.isHidden())
+    assert wait_until(lambda: mark.ankiweb == "" and "AnkiWeb" not in mark.toolTip())
 
 
 def test_bar_replan_journey_dot_shows_while_the_sentences_are_owed_with_its_tooltip(world):
@@ -673,7 +690,7 @@ def test_bar_replan_journey_dot_shows_while_the_sentences_are_owed_with_its_tool
     _ask(world, "journey")
     assert wait_until(lambda: not dot.isHidden())
     assert dot.toolTip() == strings.JOURNEY_DOT_TIP and dot.accessibleName() == strings.JOURNEY_DOT_NAME
-    assert journey.text() == strings.JOURNEY
+    assert journey.text() == strings.LEVEL_JOURNEY
     for value in (False, True, None):
         values["journey"] = value
         _ask(world, "journey")
@@ -804,7 +821,7 @@ def test_bar_replan_a_snapshot_that_changes_nothing_they_show_repaints_none_of_t
     _provide(world, replan="Anki: placing tomorrow's 20 cards…", connect="Up to date", ankiweb="AnkiWeb: synced 18:42",
              journey=True)
     _ask(world)
-    marks = (win.bar_replan, win.bar_connect, win.bar_ankiweb, world.d.journey_dot)
+    marks = (win.bar_replan, win.bar_connect, win.anki_mark, world.d.journey_dot)
     assert wait_until(lambda: all(not m.isHidden() for m in marks))
     painted = {m: win.status_paints[m] for m in marks}
     snap = world.status.snapshot()
@@ -812,6 +829,147 @@ def test_bar_replan_a_snapshot_that_changes_nothing_they_show_repaints_none_of_t
     win.show_status(snap._replace(lines=("Generating · Counting words 1 / 2",)))
     assert win.bar_line.full() == "Generating · Counting words 1 / 2"
     assert {m: win.status_paints[m] for m in marks} == painted
+
+
+# --- W31A-1: the footer keeps every built function, quietly: one slot, quiet marks ---------------------------------- #
+def _slot(world):
+    """Which part holds the footer's one slot now: "failure" · "update" · "line" (exactly one is shown)."""
+    win, d = world.win, world.d
+    shown = [name for name, part in (("failure", win.bar_failure), ("update", d.update_mark), ("line", win.bar_line))
+             if part.isVisibleTo(win)]
+    assert len(shown) == 1, shown
+    return shown[0]
+
+
+def test_the_footers_one_slot_is_the_failure_then_the_update_chip_then_the_status_line(world):
+    """W31A-1: the update chip and the failure line (with *Open the logs folder*) take the status line's place while
+    they apply — the failure first — and when they clear the status line is back as it was."""
+    win, d = world.win, world.d
+    job = world.registry.record("anki-sync", "Updating known words from Anki", automatic=True)
+    try:
+        assert wait_until(lambda: win.bar_line.full() == "Updating known words from Anki")
+        assert _slot(world) == "line"
+        _offer(world)                                                   # an update on offer: the chip takes the slot
+        assert wait_until(lambda: _slot(world) == "update")
+        world.controller.push(state=G.FAILED, message="Generate stopped (exit code 1).", log_path="gen.log")
+        assert wait_until(lambda: _slot(world) == "failure")            # a failure wins over the chip
+        assert win.logs_button.isVisibleTo(win) and "exit code 1" in win.bar_failure.full()
+        world.controller.push(state=G.CURRENT)                          # the failure is over: the chip again
+        assert wait_until(lambda: _slot(world) == "update")
+        assert not win.logs_button.isVisibleTo(win)
+        world.updates.push(state=U.NONE)                                # nothing on offer: the status line, as it was
+        assert wait_until(lambda: _slot(world) == "line")
+        assert win.bar_line.full() == "Updating known words from Anki"
+    finally:
+        job.finish()
+
+
+def test_a_failure_with_nothing_else_takes_the_slot_and_gives_it_back(world):
+    win = world.win
+    world.controller.push(state=G.FAILED, message="Generate stopped (exit code 1).", log_path="gen.log")
+    assert wait_until(lambda: _slot(world) == "failure")
+    world.controller.push(state=G.CURRENT)
+    assert wait_until(lambda: _slot(world) == "line")
+    assert not win.bar_failure.isVisibleTo(win) and not win.logs_button.isVisibleTo(win)
+
+
+def test_while_the_close_waits_its_one_line_holds_the_slot_over_the_chip(world):
+    """E20: closing while an Anki write runs, the bar says so in one line — the chip never hides it."""
+    win = world.win
+    _offer(world)
+    assert wait_until(lambda: _slot(world) == "update")
+    win._quit = "waiting"
+    win.show_status(world.status.snapshot())
+    assert _slot(world) == "line" and win.bar_line.full() == strings.QUIT_FINISHING
+    win._quit = None
+    win.show_status(world.status.snapshot())
+    assert _slot(world) == "update"
+
+
+def test_the_slot_repaints_only_when_what_holds_it_changes(world):
+    """S19: a snapshot whose status line moved (or only its time) shows and hides nothing — the slot's parts are
+    repainted only when the part holding the slot changes."""
+    win, d = world.win, world.d
+    _offer(world)
+    assert wait_until(lambda: _slot(world) == "update")
+    parts = (win.bar_failure, win.logs_button, win.bar_line)
+    before = ({p: win.status_paints.get(p, 0) for p in parts}, d.paints.get(d.update_mark, 0))
+    snap = world.status.snapshot()
+    win.show_status(snap._replace(taken_at=snap.taken_at + 1))
+    win.show_status(snap._replace(lines=("Generating · Counting words 1 / 2",)))
+    assert ({p: win.status_paints.get(p, 0) for p in parts}, d.paints.get(d.update_mark, 0)) == before
+    assert win.bar_line.full() == "Generating · Counting words 1 / 2"   # kept for when the slot is the line's again
+
+
+def test_the_re_order_and_connect_lines_are_small_quiet_marks_with_their_words_in_the_hover(world):
+    """W31A-1: no full-width text — a glyph each, as wide as the glyph, dim, the words in the tooltip and the accessible
+    description; hidden while they have nothing to say."""
+    win = world.win
+    replan = "Anki: placing tomorrow's 20 cards…"
+    connect = "Making cards 2 of 5 — ぼっち・ざ・ろっく！ 第3話 (audio)"
+    values = _provide(world, replan=replan, connect=connect)
+    _ask(world)
+    for mark, glyph, line in ((win.bar_replan, strings.FOOT_REPLAN_MARK, replan),
+                              (win.bar_connect, strings.FOOT_CONNECT_MARK, connect)):
+        assert wait_until(lambda: not mark.isHidden())
+        assert mark.text() == glyph and line in mark.toolTip() and mark.accessibleDescription() == line
+        assert mark.accessibleName()
+        assert mark.width() < 4 * mark.fontMetrics().horizontalAdvance(glyph) + 8      # never stretched over the bar
+        assert mark.objectName() == "barmark"                                         # the footer's dim mark style
+    values.update(replan=None, connect=None)
+    _ask(world)
+    assert wait_until(lambda: win.bar_replan.isHidden() and win.bar_connect.isHidden())
+    assert not win.bar_replan.toolTip() and not win.bar_connect.toolTip()
+
+
+# --- W31A-2: *Anki · N waiting* — the new cards waiting in Anki (the sync's saved backlog) ------------------------- #
+def _write_backlog(notes, language="ja"):
+    import json
+    from app import anki_sync
+    path = anki_sync._backlog_path(language)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"version": anki_sync.BACKLOG_VERSION, "synced_at": "2026-10-14T21:05:00", "decks": ["日本語::Mining"],
+                   "fields": ["Word"], "notes": notes}, f, ensure_ascii=False)
+    return path
+
+
+WORDS = ("撒く", "上層部", "一生懸命", "走り出す", "二十歳", "可能性", "新幹線", "母さん")
+
+
+def test_anki_says_n_waiting_from_the_syncs_backlog_and_just_anki_before_one(world):
+    """The emerald's words: *Anki* while no backlog file exists, *Anki · N waiting* (thousands separated) once one is
+    read, *Anki · 0 waiting* for a read one with no notes; its hover keeps the sync's words."""
+    from app.services import status as status_service
+    world.win._poll.stop()
+    mark = world.win.anki_mark
+    world.status.providers["backlog"] = status_service.anki_backlog("ja")
+    _ask(world, "backlog")
+    assert wait_until(lambda: not world.status._refreshing)
+    assert mark.text() == strings.FOOT_ANKI and mark.waiting is None             # never synced: just *Anki*
+    notes = {str(1700000000000 + i): {"word": WORDS[i % len(WORDS)], "keys": [WORDS[i % len(WORDS)]],
+                                      "source": "日本語::Mining", "freqsort": 1000 + i} for i in range(1234)}
+    path = _write_backlog(notes)
+    _ask(world, "backlog")
+    assert wait_until(lambda: mark.text() == "Anki · 1,234 waiting" and not mark.isHidden())
+    assert strings.FOOT_ANKI_WAITING_TIP.format(n=1234) in mark.toolTip()
+    world.services.settings.set({"anki_sync_auto": True}, now=True)
+    world.automation.push(sync=A.SYNCED, added=3, known=12345)
+    assert wait_until(lambda: mark.key == "synced")
+    assert strings.BAR_ANKI["synced"] in mark.toolTip() and "1,234" in mark.toolTip()     # the hover keeps its words
+    _write_backlog({})
+    st = os.stat(path)
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
+    _ask(world, "backlog")
+    assert wait_until(lambda: mark.text() == "Anki · 0 waiting")
+    painted = world.win.status_paints.get(mark, 0)
+    _ask(world, "backlog")                                                       # unchanged: not repainted
+    assert wait_until(lambda: not world.status._refreshing)
+    QTest.qWait(30)
+    assert world.win.status_paints.get(mark, 0) == painted
+    os.remove(path)
+    _ask(world, "backlog")
+    assert wait_until(lambda: mark.text() == strings.FOOT_ANKI)
 
 
 # --- the duties' wiring: activation, settings, quit --------------------------------------------------------------- #

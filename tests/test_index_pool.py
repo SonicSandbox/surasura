@@ -351,10 +351,12 @@ def test_the_journal_switch_commits_at_synchronous_normal(monkeypatch):
     is set before the switch."""
     statements = []
     real_connect = sqlite3.connect
+    me = threading.current_thread()
 
     def connect(*args, **kwargs):
         c = real_connect(*args, **kwargs)
-        c.set_trace_callback(statements.append)
+        if threading.current_thread() is me:            # this test's open only, never a thread left by another test
+            c.set_trace_callback(statements.append)
         return c
     monkeypatch.setattr(sqlite3, "connect", connect)
     db = os.path.join(h.root(), "sync", "new.db")

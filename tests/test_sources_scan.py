@@ -1554,3 +1554,24 @@ def test_a_video_still_being_written_waits_for_the_next_look():
         t = time.time() - 10
         os.utime(path, (t, t))
         assert _look(store, language, root)["added"] == 1
+
+
+def test_a_book_that_cannot_be_read_waits_and_the_look_goes_on(monkeypatch):
+    """An EPUB locked by another program as it is read (or a Library folder that can't be listed): that book waits,
+    every other show is taken in, and the look ends normally."""
+    language = "ja"
+    store, data_dir = _empty(language)
+    src = _drive("driveA")
+    book = _epub(os.path.join(src, "Books", "星の歌.epub"), _chapters())
+    _write(os.path.join(src, _SHOWS[language][0], "ep01.srt"), _text(language, 1))
+    real = ls.sha256_of
+
+    def sha(p):
+        if os.path.abspath(p) == os.path.abspath(book):
+            raise PermissionError(13, "in use by another program", p)
+        return real(p)
+    monkeypatch.setattr(ls, "sha256_of", sha)
+    with store:
+        root = store.add_source(src)
+        result = _look(store, language, root, first=True)
+        assert (result["added"], result["waiting"]) == (1, 1) and os.path.exists(sources.cache_path(language))

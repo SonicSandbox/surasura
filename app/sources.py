@@ -526,7 +526,10 @@ class _Look:
                 if self.stopped():
                     break
                 if len(c) == 5:                              # a book: taken in on its own, all its parts at once
-                    self._book(*c)
+                    try:
+                        self._book(*c)
+                    except OSError:                          # locked, or its Library folder unreadable: next look
+                        self._wait(c[0])
                     continue
                 try:
                     f = self._new(*c) if len(c) == 6 else self._video_only(*c)

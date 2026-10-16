@@ -1272,6 +1272,7 @@ def test_main_hands_its_claim_to_the_quit_before_the_stores_close_trigger(qapp, 
 
         def start_duties(self): pass
         def show_first(self): pass
+        def deleteLater(self): pass                     # the quit's last step deletes the window
 
     monkeypatch.setattr(single, "SingleInstance", Claim)
     monkeypatch.setattr(shell, "Services", QuittingServices)

@@ -532,15 +532,16 @@ def test_a_full_disk_while_an_old_store_is_built_again_is_raised_and_keeps_the_f
         kept.close()
 
 
-def test_a_locking_protocol_answer_to_the_wal_switch_is_asked_again(tmp_path, monkeypatch):
+@pytest.mark.parametrize("coded", [True, False], ids=["coded", "by-text"])
+def test_a_locking_protocol_answer_to_the_wal_switch_is_asked_again(tmp_path, monkeypatch, coded):
     """SQLITE_PROTOCOL is SQLite's "try again" (the WAL index moved under it): the new file's switch to WAL waits on it
     as on "locked" and asks again — the open succeeds and deletes nothing. Before, the busy check missed it: the open
-    deleted the file as damaged."""
+    deleted the file as damaged. By its code, and by its text when raised by hand."""
     db = str(tmp_path / "new.db")
     deleted = []
     monkeypatch.setattr(ti, "_delete_db", lambda path: deleted.append(path))
     raised = _failing_connect(monkeypatch, "PRAGMA journal_mode=WAL", _sqlite_error(
-        sqlite3.OperationalError, "locking protocol", 15, "SQLITE_PROTOCOL"), times=2)
+        sqlite3.OperationalError, "locking protocol", 15 if coded else None, "SQLITE_PROTOCOL"), times=2)
     ti.open_store("ja", path=db).close()
     assert len(raised) == 2 and deleted == []
     monkeypatch.undo()
@@ -568,5 +569,25 @@ def test_a_corrupt_store_is_still_deleted_and_built_again(tmp_path, monkeypatch,
     try:
         assert deleted == [db] and store.get_meta("kept") is None
         assert store.conn.execute("PRAGMA user_version").fetchone()[0] == ti.SCHEMA_VERSION
+    finally:
+        store.close()
+
+
+def test_an_error_is_read_by_its_code_before_its_text(tmp_path, monkeypatch):
+    """The code decides when SQLite gives one: "malformed JSON" is SQLITE_ERROR (a bad argument to a JSON function),
+    no damage to the file, though its text says "malformed" — raised, the store kept."""
+    db = str(tmp_path / "current.db")
+    _store_with_a_row(db)
+    deleted = []
+    monkeypatch.setattr(ti, "_delete_db", lambda path: deleted.append(path))
+    _failing_connect(monkeypatch, "SELECT 1 FROM aggregate", _sqlite_error(
+        sqlite3.OperationalError, "malformed JSON", 1, "SQLITE_ERROR"))
+    with pytest.raises(sqlite3.OperationalError, match="malformed JSON"):
+        ti.open_store("ja", path=db)
+    assert deleted == []
+    monkeypatch.undo()
+    store = ti.open_store("ja", path=db)
+    try:
+        assert store.get_meta("kept") == "yes"
     finally:
         store.close()

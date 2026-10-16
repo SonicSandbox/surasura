@@ -32,6 +32,60 @@ FINISHED_HELP_TIP = ("<b>A record of what you've worked through.</b> Your list i
                      "in what you're <i>going</i> to watch and read. You won't meet a finished show again, so its words "
                      "stop pushing your list around — but its sentences can still be your examples")
 FINISHED_EMPTY = ("Nothing finished yet", "What you finish is kept here: a record, and a source of sentences")
+# --- W3.2 Q4: Finished's actions (app/qt/finished.py): Put back, ⋯, *What if I added it back?*, the importer -------- #
+FIN_PUT_BACK = "Put back"
+FIN_PUT_BACK_TIP = ("Put back: to the top of Current, its cards back in your order\n"
+                    "• Click to put it back (Undo takes it back to Finished)")
+FIN_MORE_TIP = "More\n• Click for what you can do with it (Enter on the keyboard)"
+FIN_MENU_NAME = "What you can do with {title}"
+FIN_MENU = {
+    "what-if": ("What if I added it back?", "How many new words it would bring at the top of Current — nothing moves"),
+    "put-back": ("Put back", "To the top of Current, its cards back in your order"),
+    "pin": ("Study its cards first", "Its cards come first in your Anki order"),
+    "unpin": ("Done with its cards", "Its cards go back to their place in your order"),
+    "cards": ("Its {n} cards in Anki", "What happens to its new cards"),
+    "cards-none": ("Its cards in Anki", "What happens to its new cards"),
+    "cards-out": ("Leave its new cards out of your order", "Its new cards leave your learning order; none is deleted"),
+    "cards-in": ("Put them back in the order", "Its new cards come back into your learning order"),
+    "mine": ("Mine", "Make its cards"),
+    "mine-too": ("Mine it too", "Make cards for what isn't mined yet"),
+    "folder": ("Open its folder", "Open the folder its files are in"),
+}
+FIN_REFUSED_TIP = "Your library can't be saved right now: {reason}"
+FIN_PUT_BACK_DONE = "{title} is back at the top of Current"
+FIN_PINNED = "{title}: its cards come first"
+FIN_UNPINNED = "{title}: done with its cards"
+FIN_CARDS_OUT = "{title}: its new cards are out of your order"
+FIN_CARDS_IN = "{title}: its new cards are back in your order"
+FIN_NO_FOLDER = "{title}'s folder isn't there any more"
+WHATIF_NAME = "What if you added {title} back"
+WHATIF_HEADING = "WHAT IF I ADDED IT BACK?"
+WHATIF_LINE = "At the top of Current it would bring {n} new words · {pct} known"
+WHATIF_DASH = "—"
+WHATIF_PCT = "{pct} %"
+WHATIF_WORDS = "The first new words you'd meet: {words}"
+WHATIF_NO_WORDS = "No new words in it: you know every word of it on your list"
+WHATIF_NO_PLAN = "Generate once and it can count the new words too"
+WHATIF_NONE = "Can't count it right now"
+WHATIF_PUT_BACK_TIP = "Put back: to the top of Current, its cards back in your order"
+WHATIF_JOURNEY = "Open your journey"
+WHATIF_JOURNEY_TIP = "Open your journey: your list with its sentences, in its own window"
+WHATIF_CLOSE_TIP = "Close: nothing moves (Esc)"
+WHATIF_CLOSE_NAME = "Close"
+FIN_IMPORT = "Add what you finished before…"
+FIN_IMPORT_TIP = ("Add what you finished before Surasura: copied into Finished, dated Earlier\n"
+                  "• Its words don't move your list; its sentences can be your examples")
+FIN_IMPORT_FILES = ("Files…", "Choose subtitle or text files you finished")
+FIN_IMPORT_FOLDER = ("A folder…", "Choose a folder of what you finished (it keeps its name)")
+FIN_IMPORT_PICK = "Add what you finished before"
+FIN_IMPORT_STOP = "Stop adding"
+FIN_IMPORT_STOP_TIP = "Stop adding: what was copied so far goes to the trash, nothing is added"
+FIN_IMPORTED = "Added {n} to Finished"
+FIN_IMPORTED_ONE = "Added {name} to Finished"
+FIN_IMPORT_NOTHING = "Nothing new to add: it's in Finished already"
+FIN_IMPORT_STOPPED = "Stopped: nothing was added"
+FIN_IMPORT_FAILED = "Couldn't add it to Finished: {why}"
+# --- end W3.2 Q4
 NEEDS_HEADING = "Needs you"
 NEEDS_EMPTY = ("Nothing needs you", "When something waits on you, it shows here")
 TAB_COUNT = "{name}  {count}"                   # Finished's records, Needs you's unseen entries

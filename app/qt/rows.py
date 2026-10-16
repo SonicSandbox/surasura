@@ -632,6 +632,7 @@ def _size(pix):
 _UNSHOWN = {ROW: frozenset(("index", "accessible", "description")),
             FINISHED: frozenset(("index", "episodes", "accessible", "description")),
             "ep": frozenset(("rel_path",))}
+_UNSHOWN[FINISHED] = _UNSHOWN[FINISHED] | {"cards_out"}      # --- W3.2 Q4: ⋯'s state, never painted
 
 
 def _same_face(old, new, kind):
@@ -1092,6 +1093,11 @@ class RowDelegate(QStyledItemDelegate):
                 x0 = self.lead(kind, row_line.left())[2]
                 out.append(("studying", QRect(x0, row_line.center().y(), self._studying_w(), round(19 * f) + 4),
                             strings.ROWS_STUDYING_TIP, None))
+            # --- W3.2 Q4: Put back and ⋯ in the actions' column (shown on hover and keyboard focus alike)
+            back, more = self.finished_acts(cols["acts"])
+            out.append(("put-back", back, strings.FIN_PUT_BACK_TIP, None))
+            out.append(("more", more, strings.FIN_MORE_TIP, None))
+            # --- end W3.2 Q4
             out.append(("title", QRect(row_line.left(), row_line.top(), cols["text_right"] - row_line.left(), h),
                         payload.title + ("\n" + payload.line if payload.line else ""), None))
             out.append(("open", row_line, None, None))
@@ -1287,7 +1293,7 @@ class RowDelegate(QStyledItemDelegate):
         elif kind == FINISHED:
             body = QRect(rect.left(), rect.top(), rect.width(), rect.height() - theme.SPACING["list-gap"] -
                          self._lines_h(lines))
-            pix, _box = self._closed(kind, payload, lines, rect, dpr, hovered, p)
+            pix, _box = self._closed(kind, payload, lines, rect, dpr, hovered or focused, p)   # W3.2 Q4: focus too
             if pix is not None:
                 p.drawPixmap(body.topLeft(), pix)
             if focused:
@@ -1785,6 +1791,35 @@ class RowDelegate(QStyledItemDelegate):
         st_rect, _mk = self._status_rects(row, cols["stat"])
         if row.status is not None and row.status.kind in ("in_anki", "mining") and st_rect is not None:
             paint_pill(p, row.status, st_rect, dpr, audio=row.media_word == "audio")
+        if hovered and kind == FINISHED:                 # --- W3.2 Q4: Put back · ⋯, on hover and keyboard focus
+            self._paint_finished_acts(p, cols["acts"], dpr)
+
+    # --- W3.2 Q4: a Finished row's Put back and ⋯ ------------------------------------------------------------------ #
+    @staticmethod
+    def finished_acts(acts):
+        """(Put back's rect, ⋯'s rect) in a Finished row's actions column: ⋯ at its right, Put back before it."""
+        f = fz()
+        b = round(theme.SIZES["button"] * f)
+        h = round(theme.SIZES["button-sm"] * f)
+        mid = acts.center().y()
+        more = QRect(acts.right() + 1 - b, round(mid - b / 2), b, b)
+        w = round(TEXT.metrics("button-sm", 550).horizontalAdvance(strings.FIN_PUT_BACK) + 2 * 10 * f)
+        back = QRect(more.left() - 6 - w, round(mid - h / 2), w, h)
+        return back, more
+
+    def _paint_finished_acts(self, p, acts, dpr):
+        back, more = self.finished_acts(acts)
+        p.save()
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(c("raised"))
+        p.drawRoundedRect(QRectF(back), theme.RADII["button-sm"], theme.RADII["button-sm"])
+        TEXT.draw(p, back.left(), back.center().y() + 0.5, strings.FIN_PUT_BACK, "button-sm", back.width(), c("ink"),
+                  weight=550, align="centre", dpr=dpr)
+        side = rl("anki-icon")
+        icon(p, "more", QRectF(more.center().x() - side / 2 + 0.5, more.center().y() - side / 2 + 0.5, side, side),
+             c("ink-dim"))
+        p.restore()
+    # --- end W3.2 Q4
 
     def _studying_w(self, dpr=1.0):
         fm = TEXT.metrics("row-sub", 600, dpr)
@@ -2089,7 +2124,7 @@ def whole_step(dpr):
     return 1
 
 
-NO_DRAG = frozenset(("play", "more", "up", "down", "done", "mine-now", "journey"))     # buttons: a press there clicks
+NO_DRAG = frozenset(("play", "more", "up", "down", "done", "mine-now", "journey", "put-back"))   # buttons (W3.2 Q4: put-back)
 
 
 def _same_payload(a, b):
@@ -2128,6 +2163,7 @@ class RowsView(QListView):
     nudge_requested = pyqtSignal(object, int)      # (the Row, -1 up / +1 down): ↑ ↓ in the number's column (A2 #13)
     menu_requested = pyqtSignal(object, object)    # (the Row, the global QPoint): its ⋯
     journey_requested = pyqtSignal(object, object)     # (the Row, the Episode): Up Next's *N new words ↗*
+    put_back_requested = pyqtSignal(object)        # --- W3.2 Q4: (the Finished Row): its *Put back*
 
     def __init__(self, name, tooltips=None, parent=None):
         super().__init__(parent)
@@ -2695,6 +2731,8 @@ class RowsView(QListView):
             self.menu_requested.emit(row, self.viewport().mapToGlobal(rect.bottomLeft()))
         elif name == "journey":
             self.journey_requested.emit(row, payload)
+        elif name == "put-back":                     # --- W3.2 Q4
+            self.put_back_requested.emit(row)
         elif name == "mine-now" and self.tooltips is not None:
             self.tooltips.request(self.viewport(), rect, strings.ROWS_MINE_NOW_LATER)
 
@@ -2711,6 +2749,15 @@ class RowsView(QListView):
                                           -1 if event.key() == Qt.Key.Key_Up else 1)
             event.accept()
             return
+        idx = self.currentIndex()                    # --- W3.2 Q4: Enter, Space or the menu key: a Finished row's ⋯
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space, Qt.Key.Key_Menu) and \
+                idx.isValid() and self.model().entries[idx.row()][0] == FINISHED:
+            more = next(pt for pt in self.delegate.parts(self.model().entries[idx.row()], self.visualRect(idx))
+                        if pt[0] == "more")
+            self.menu_requested.emit(self.model().entries[idx.row()][1],
+                                     self.viewport().mapToGlobal(more[1].bottomLeft()))
+            event.accept()
+            return                                   # --- end W3.2 Q4
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
             idx = self.currentIndex()
             if idx.isValid():

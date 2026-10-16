@@ -311,15 +311,23 @@ def test_a_json_mode_save_waits_for_the_copy_lock(language):
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_a_move_never_waits_for_the_copy_lock(language):
+def test_a_move_never_waits_for_the_copy_lock(language, monkeypatch):
+    """A move with the copy lock held elsewhere never asks for it (so never meets its 5 s wait). Proved by what the move
+    asks for, not by a figure: a 0.5 s bound read 0.67 s beside two other test runs. The 50 ms figure stays in the
+    timed run (SURASURA_STORE_BENCH=1); the plain run keeps only a bound well under the lock's wait."""
     store = migrated(language)
     lock = ls._copy_lock(store.db_path)
     assert lock.acquire(5, 0.01)
+    asked, real = [], ls._copy_lock
+    monkeypatch.setattr(ls, "_copy_lock", lambda db_path: asked.append(db_path) or real(db_path))
     ids = store.ids("now")
     started = time.perf_counter()
     store.move([ids[0]], "now", after_id=ids[3])
-    # never the copy lock's 5 s wait; 50 ms on this desktop's timed run, a slower test machine more
-    assert time.perf_counter() - started < (0.05 if os.environ.get("SURASURA_STORE_BENCH") == "1" else 0.5)
+    took = time.perf_counter() - started
+    assert asked == [], "the move asked for the copy lock"
+    assert store.ids("now")[3] == ids[0]
+    # 50 ms on this desktop's timed run; never the copy lock's wait (LOCK_TIMEOUT) on any machine
+    assert took < (0.05 if os.environ.get("SURASURA_STORE_BENCH") == "1" else ls.LOCK_TIMEOUT / 2)
     lock.close()
     store.close()
 

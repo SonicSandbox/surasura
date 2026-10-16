@@ -143,6 +143,12 @@ def test_with_no_library_to_write_to_the_fields_are_greyed_and_say_why(qapp, cas
     try:
         for field in rows.fields.values():
             assert not field.isEnabled() and field.toolTip() == S.STORE_NO_LIBRARY_TIP
+            assert field.edit.text() == ""                      # never a number the library doesn't hold
+        if case == "not read yet":                              # its first read lands: the values, writable
+            page.services.library._options.update(soon_line=25, mine_line=20, arrivals_on=1)
+            rows.follow()
+            assert rows.fields["soon_line"].isEnabled() and rows.fields["soon_line"].edit.text() == "25"
+            assert rows.fields["mine_line"].edit.text() == "20"
     finally:
         _close(page)
 

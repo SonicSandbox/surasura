@@ -382,6 +382,7 @@ def _route(on_progress, cancel, confirm):
 
 JOB_KIND = "anki-miner-install"     # its kind in the window's registry (`jobs.RESOURCES`)
 JOB_LABEL = "Getting Anki Miner"   # the bottom bar's words while it downloads and its installer is open
+JOB_FELL_BACK = "Anki Miner's download didn't finish: its page opened in your browser"
 
 
 def install_as_job(registry, on_progress, cancel, on_end, confirm=None):
@@ -406,7 +407,9 @@ def install_as_job(registry, on_progress, cancel, on_end, confirm=None):
         result = install(progress, cancel, on_end, confirm=asked)
     finally:
         if job:
-            job[0].finish(ok=True, cancelled=result == CANCELLED)
+            fell_back = result == OPENED_RELEASES      # the download failed: its page opened in the browser
+            job[0].finish(ok=not fell_back, message=JOB_FELL_BACK if fell_back else None,
+                          cancelled=result == CANCELLED)
     return result
 
 

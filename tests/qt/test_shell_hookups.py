@@ -188,3 +188,59 @@ def test_a_junban_thread_still_running_past_its_wait_is_said_not_waited_for_fore
 def test_main_ends_with_the_quiet_exit_after_the_services_stopped():
     source = inspect.getsource(shell.main)
     assert source.index("services.shutdown(") < source.index("quiet_exit()")
+
+
+# --- the wizard's *Make cards for me*: Connect's watermarks (W-A7) ------------------------------------------------- #
+from tests.qt.test_wizard import make  # noqa: E402,F401  (the wizard over a stand-in window)
+
+
+@pytest.mark.parametrize("was, now, asked", [(False, True, True), (True, True, False)])
+def test_make_cards_for_me_turned_on_in_the_wizard_moves_connects_watermarks(make, monkeypatch, was, now, asked):
+    # Off -> on: everything placed while Connect was off must never be mined (G1.1-2). `turned_on` decides from the
+    # before / after it is handed, so the wizard must hand the settings as they were before its own save.
+    from app.connect import resume
+    calls, done = [], threading.Event()
+    def record(before, after):
+        calls.append((before, after, not before.get("connect_enabled") and bool(after.get("connect_enabled"))))
+        done.set()
+    monkeypatch.setattr(resume, "turned_on", record)
+    wiz, _shell, _api, settings, _m = make(data={"connect_enabled": was})
+    wiz._save("cards", {"make_cards": now})
+    assert settings.calls[-1] == {"connect_enabled": now}
+    assert wait_until(done.is_set)
+    before, after, off_to_on = calls[0]
+    assert before["connect_enabled"] is was and after["connect_enabled"] is now
+    assert bool(off_to_on) is asked
+
+
+def test_settings_opens_in_the_language_the_settings_hold_now_above_its_bottom_edge(window):
+    # A switch made before the first visit (the wizard's page 1) is the page's language; the page
+    # sits above the bottom edge every page carries, never under it.
+    window.services.settings.set({"target_language": "zh"})
+    window.show_tab("settings")
+    page = window.settings_page
+    assert page.language == "zh"
+    holder = window.page_widgets["settings"].layout()
+    assert holder.indexOf(page) == 0 and holder.count() >= 2
+
+
+def test_a_wizard_that_breaks_while_it_is_hooked_up_leaves_no_hold(window, monkeypatch):
+    # The window's parts and the quiet Generates are never held under a wizard that isn't there.
+    monkeypatch.setattr(first_run, "_Cover", lambda wiz, area: (_ for _ in ()).throw(RuntimeError("broke")))
+    assert first_run.host(window, api=FakeApi(), miner=FakeMiner(miner_look("missing"))) is None
+    assert first_run.opened(window) is None
+    assert not window.services.setup_open.is_set() and window.header.isEnabled() and window.pages.isEnabled()
+
+
+def test_set_up_again_from_settings_closes_back_onto_settings(window):
+    # The learner opened it from Settings: closing it keeps their place there; a first run's wizard
+    # still closes onto Current (the contract).
+    window.show_tab("settings")
+    wiz = first_run.open_again(window, api=FakeApi(), miner=FakeMiner(miner_look("missing")))
+    wiz._close("later")
+    QApplication.processEvents()
+    assert window.current_tab() == "settings"
+    wiz = first_run.host(window, api=FakeApi(), miner=FakeMiner(miner_look("missing")))
+    wiz._close("later")
+    QApplication.processEvents()
+    assert window.current_tab() == "current"

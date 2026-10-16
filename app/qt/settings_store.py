@@ -130,13 +130,16 @@ class StoreRows(QObject):
         if view is None and reader is not None:
             view = reader.view()
         for row_id, field in self.fields.items():
-            if field.isEnabled() != writable:
+            turned = field.isEnabled() != writable
+            if turned:
                 field.setEnabled(writable)
                 field.setToolTip(catalog.ROW[row_id].tip if writable else S.STORE_NO_LIBRARY_TIP)
             if not writable:
+                if field.edit.text():
+                    field.edit.setText("")              # no number the library doesn't hold
                 continue
             value = shown(options, view, row_id)
-            if field.value() != value and not field.edit.hasFocus():
+            if (turned or field.value() != value) and not field.edit.hasFocus():
                 field.set_value(value)
 
     def _changed(self, row_id, n):

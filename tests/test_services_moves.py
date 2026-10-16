@@ -2126,3 +2126,32 @@ def test_a_store_line_on_a_read_only_store_is_refused_before_it_is_queued(lib, m
     ls.mark_damaged(lib.db, "test: a damaged store")
     assert h.until(lambda: not w.can_write(), seconds=M.MODE_RECHECK_S * 3)
     assert w.set_options(soon_line=1) is None and w.pending() == 0
+
+
+def test_a_move_queued_behind_a_soon_line_that_moved_its_row_survives_a_crash(lib, make_writer):
+    # The line moves NOW's last file into Soon; a drag of that file queued behind the line, then a crash
+    # right after the line lands: the replay must apply the learner's move, never list it as "changed since".
+    heard = Heard()
+    kw = heard.kw()
+    w = None
+
+    def crash_after_the_line():
+        with w._cond:
+            w._abandoned = True                         # the crash: the thread stops at its next look
+            w._cond.notify_all()
+    kw["on_reread"] = crash_after_the_line
+    w = M.Writer(lib.opener(), lib.language, journal_file=M.journal_path(lib.language), retry=0.05, words=WORDS, **kw)
+    w.start()
+    now, goal = lib.ids("now"), lib.ids("goal")
+    w.hold()
+    w.set_options(soon_line=len(now) - 1)
+    w.move([now[-1]], "goal", before_id=goal[0])
+    assert h.until(lambda: len(journalled(lib.language)) == 2)
+    w.release()
+    assert h.until(lambda: _meta(lib, "soon_line") == len(now) - 1)
+    assert h.until(lambda: not w._thread.is_alive())
+    assert journalled(lib.language) == [("move", [now[-1]])]
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: lib.ids("goal")[:1] == [now[-1]])
+    assert heard2.notes == []

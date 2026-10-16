@@ -453,3 +453,16 @@ def test_a_real_2x_install_is_brought_over_through_the_gate(qapp, monkeypatch, t
     assert note["complete"] is True and note["from"] == old
     assert os.path.isfile(os.path.join(library, "User Files", "ja", "KnownWord.json"))
     assert start_gate.gate(qapp) is True and not first_run.needs_run(first_run.state())
+
+
+def test_enter_on_the_welcome_step_presses_the_button_the_keyboard_is_on(qapp, monkeypatch):
+    # Tabbed to Quit, Enter quits: it never makes a library the learner didn't ask for.
+    fake = FakeRun()
+    monkeypatch.setattr(first_run, "run", fake)
+    g = _gate(qapp, _st(first_run.LIBRARY_NEW, create=True))
+    g.activateWindow()
+    g.quit_button.setFocus()
+    monkeypatch.setattr(g, "focusWidget", lambda: g.quit_button)
+    QTest.keyClick(g, Qt.Key.Key_Return)
+    assert wait_until(lambda: g.ended)
+    assert g.result is False and fake.calls == []

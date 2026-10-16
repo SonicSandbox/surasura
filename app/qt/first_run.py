@@ -5,9 +5,9 @@
 resize — and the header, tabs, pages and bottom bar under it take no focus while it is up. `open_again(shell)`:
 Settings' *Set up again* — the same wizard, preselected from the settings as they are now.
 
-The wizard closes onto Current: after its Generate ends, after *Skip* on its last page, or by *Finish later* (which
-keeps what was saved with *Next* and never writes `onboarding_completed`). The shell mounts it with one call in
-`start_duties`; while it is up the shell's `setup_held(True)` holds the quiet Generates (AD-8), `setup_held(False)` at
+The wizard closes onto Current (opened again from Settings: back onto the tab it came from): after its Generate ends,
+after *Skip* on its last page, or by *Finish later* (which keeps what was saved with *Next* and never writes
+`onboarding_completed`). The shell mounts it with one call in `start_duties`; while it is up the shell's `setup_held(True)` holds the quiet Generates (AD-8), `setup_held(False)` at
 its close asks again. `open_again(shell, page="cards")`: Settings' *Install Anki Miner…* — the wizard at its Anki Miner
 page (the one place the install route, its confirm and its checks live).
 """
@@ -58,16 +58,20 @@ def open_again(shell, api=None, miner=None, page=None):
     `wizard.PAGES`) shown first. -> the wizard, or None (never raises into Settings' click: a wizard that can't open
     leaves the window as it is, and says why in the log)."""
     try:
-        wiz = _open(shell, api, miner)
-        if page is not None and page in wizard_module.PAGES:
-            wiz._go(wizard_module.PAGES.index(page))
-        return wiz
+        back = shell.current_tab() if hasattr(shell, "current_tab") else "current"
+        wiz = _open(shell, api, miner, back=back)
     except Exception as e:
         applog.log("wizard", f"the setup wizard didn't open again: {e}")
         return None
+    if page is not None and page in wizard_module.PAGES:
+        try:
+            wiz._go(wizard_module.PAGES.index(page))
+        except Exception as e:                            # the wizard is up: it stays, on the page it shows
+            applog.log("wizard", f"the setup wizard's {page} page: {e}")
+    return wiz
 
 
-def _open(shell, api, miner):
+def _open(shell, api, miner, back="current"):
     wiz = opened(shell)
     if wiz is not None:
         wiz.raise_()
@@ -75,16 +79,19 @@ def _open(shell, api, miner):
     area = shell.centralWidget()
     held = _hold(area)
     _say_held(shell, True)
+    wiz = None
     try:
         wiz = wizard_module.SetupWizard(shell, parent=area, api=api, miner=miner)
+        wiz.setGeometry(area.rect())
+        _Cover(wiz, area)
+        wiz.finished.connect(lambda how, w=wiz: _closed(shell, w, held, how, back))
     except Exception:
-        _release(held)
+        _release(held)                                    # never a window held under a wizard that isn't there
         _say_held(shell, False)
+        if wiz is not None and not sip.isdeleted(wiz):
+            wiz.deleteLater()
         raise
-    wiz.setGeometry(area.rect())
-    _Cover(wiz, area)
     shell.__dict__[ATTR] = wiz
-    wiz.finished.connect(lambda how, w=wiz: _closed(shell, w, held, how))
     wiz.show()
     wiz.raise_()
     wiz.start_focus()
@@ -120,8 +127,9 @@ def _release(held):
             w.setEnabled(True)
 
 
-def _closed(shell, wiz, held, how):
-    """The wizard closed (`how`: later · done · generated): the window's parts back, Current shown."""
+def _closed(shell, wiz, held, how, back="current"):
+    """The wizard closed (`how`: later · done · generated): the window's parts back, `back` shown (Current at a first
+    run, the tab *Set up again* came from)."""
     _release(held)
     _say_held(shell, False)
     if shell.__dict__.get(ATTR) is wiz:
@@ -130,7 +138,7 @@ def _closed(shell, wiz, held, how):
         wiz.hide()
         wiz.deleteLater()
     try:
-        shell.show_tab("current")
+        shell.show_tab(back)                              # first run: Current; *Set up again*: where it came from
         rest = getattr(shell, "_rest", None)
         if rest is not None:
             rest.setFocus(Qt.FocusReason.OtherFocusReason)

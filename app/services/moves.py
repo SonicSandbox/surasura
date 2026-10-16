@@ -549,6 +549,10 @@ class Writer:
             moved = store.set_soon_line(cmd["soon_line"]) is not None
         if cmd.get("mine_line") is not None:
             store.set_library_options(mine_line=cmd["mine_line"])
+        if moved:                                   # the rows it moved changed tier: the moves queued behind it
+            with self._cond:                        # compare against what it left (a crash's replay keeps them)
+                later = {i for c in itertools.islice(self._pending, 1, None) for i in c.get("ids") or ()}
+            self._refresh_seen(store, later)
         self._landed(cmd)
         self._call(self.on_reread)
         if moved:
@@ -786,12 +790,13 @@ class Writer:
                     self._pending.remove(cmd)
                 except ValueError:
                     pass
-            journalled = cmd["seq"] in self._journalled
             replay_done = cmd.get("replay") and not any(c.get("replay") for c in self._pending)
             if self._saving:
                 self._saving = False
                 self._call(self.on_saving, False)
             self._cond.notify_all()
+        with self._jlock:                           # a journal write under way (the saving timer's) ends first: one
+            journalled = cmd["seq"] in self._journalled     # that took this command before it left the queue counts
         if cmd["op"] == "insert_at" and not cmd.get("saved"):
             self._trash_copies(cmd)
         if journalled:

@@ -49,7 +49,7 @@ STAGE_COUNT = "{stage} · {done:,} of {total:,}"
 MISSING_HEADING = "Your library isn't there"
 MISSING_LINE = "Surasura can't find {folder}. Connect its drive or go online, then try again."
 NEW_HEADING = "Welcome to Surasura"
-NEW_LINE = "Surasura will keep your shows, books and known words in {folder}."      # WZ-9 (c): a welcome step
+NEW_LINE = "Surasura will keep your shows, books and known words in this folder:\n{folder}"   # WZ-9 (c): welcome
 PROGRAM_HEADING = "Your library folder holds a Surasura program"
 PROGRAM_LINE = ("Move the program out of {folder}, or run Setup again to choose another folder for your library. Then "
                 "try again.")
@@ -460,11 +460,13 @@ class Gate(QWidget):
         if event.key() == Qt.Key.Key_Escape:      # the start's window: Esc closes nothing
             event.accept()
             return
-        if (event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and self.screen == "new"
-                and self.fresh_button.isVisible() and self.fresh_button.isEnabled()):
-            event.accept()                        # WZ-9 (c): Enter is *Start my library here*
-            self.fresh_button.click()
-            return
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and self.screen == "new":
+            focused = self.focusWidget()          # WZ-9 (c): Enter is *Start my library here* — or the button the
+            target = focused if isinstance(focused, QPushButton) else self.fresh_button     # keyboard is on
+            if target.isVisible() and target.isEnabled():
+                event.accept()
+                target.click()
+                return
         super().keyPressEvent(event)
 
     def closeEvent(self, event):

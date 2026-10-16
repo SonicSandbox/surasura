@@ -98,10 +98,10 @@ QPushButton {{ background: {c['raised']}; color: {c['ink']}; border: 1px solid {
   min-height: {px(30)}; padding: 0 {px(13)}; {font('button')} }}
 QPushButton:hover {{ border-color: {c['accent']}; }}
 QPushButton:pressed {{ background: {c['generate-hover']}; }}
-QPushButton:focus {{ border: 2px solid {c['accent']}; padding: 0 {round(13 * f) - 1}px; }}
+QPushButton:focus {{ border: 2px solid {c['accent']}; padding: 0 {round(13 * f) - 1}px; outline: 0; }}
 QPushButton:disabled {{ color: {c['ink-faint']}; border-color: {c['line']}; }}
 QPushButton[kind="primary"] {{ background: {iris}; color: {fixed['on-accent']}; border: 0; }}
-QPushButton[kind="primary"]:focus {{ border: 2px solid {c['ink']}; }}
+QPushButton[kind="primary"]:focus {{ border: 2px solid {c['ink']}; padding: 0 {round(13 * f) - 2}px; outline: 0; }}
 QPushButton[kind="chip"] {{ background: {c['bg']}; color: {c['ink-dim']}; border: 1px solid {c['line']}; border-radius: 7px;
   min-height: {px(22)}; padding: 0 {px(9)}; {font('status-pill')} }}
 QPushButton[kind="chip"]:hover {{ color: {c['ink']}; border-color: {c['accent']}; }}

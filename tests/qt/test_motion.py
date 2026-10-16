@@ -687,7 +687,9 @@ def _alone(widget):
     return img
 
 
-def test_the_bars_dot_runs_while_a_job_runs(clock, qapp):
+def test_the_headers_hairline_shows_a_running_job_and_never_moves_the_clock(clock, qapp):
+    # why (W3.1a): the pulsing dot went ("light never pulses"); a job running shows as the header's still hairline,
+    # whole and quiet with no share, and nothing of it runs on the motion clock
     from app.services import status as status_service
     services = shell.Services()
     win = shell.open_window(qapp, services)
@@ -696,9 +698,9 @@ def test_the_bars_dot_runs_while_a_job_runs(clock, qapp):
     try:
         snap = status_service.Snapshot((), None, (), None, None, None, 0.0)
         win.show_status(snap._replace(lines=("Generating · Reading your files 3 / 12",)))
-        assert win.bar_dot.running and win.bar_dot.property("busy") == "true"
+        assert win.progress.busy and not motion.clock().running
         win.show_status(snap)
-        assert not win.bar_dot.running and not win.bar_dot.on_clock
+        assert not win.progress.busy and not motion.clock().running
     finally:
         win.close()
         services.shutdown(0.5)
@@ -1357,3 +1359,321 @@ def test_openings_are_split_on_real_time_and_whole_on_a_tests_time(clock):
     clock.use_real_time()
     assert motion._split()
     clock.use_test_time(0.0)
+
+
+# --- W3.1a B: springs on the one clock ------------------------------------------------------------------------------ #
+# What a wrong answer would cost: a row's lift that jitters with the frame rate (physics read from GUI time), a release
+# that bounces back above the row's rest (the lift flickers as the hand leaves), a spring that never rests (the clock
+# wakes 60 times a second for ever), or Reduced motion that still bobs (G1.2-3).
+def crit(x0, to, omega, t):
+    """A critically damped spring released from rest: to + (x0 − to)(1 + ωt)e^(−ωt)."""
+    return to + (x0 - to) * (1 + omega * t) * __import__("math").exp(-omega * t)
+
+
+class Track:
+    """A spring's callbacks, recorded."""
+
+    def __init__(self):
+        self.values, self.rests, self.ends = [], 0, 0
+
+    def value(self, x):
+        self.values.append(x)
+
+    def rest(self):
+        self.rests += 1
+
+    def end(self):
+        self.ends += 1
+
+
+def _spring(clock, start, target, name, **kw):
+    t = Track()
+    s = clock.spring(t.value, start, target, on_rest=t.rest, on_end=t.end, **{**motion.preset(name), **kw})
+    return s, t
+
+
+def test_the_spring_presets_are_the_references_touches():
+    k = theme.SPRINGS
+    assert k["hover-lift"] == (13.5, 1.0) and k["hover-neighbour"] == (13.5, 1.0) and k["hover-release"] == (13.5, 0.5)
+    assert k["inset"] == (24.0, 1.0) and k["slot"] == (28.3, 0.5) and k["drag-part"][1] == 1.0
+    assert k["vein-lead"] == (34.0, 1.0) and k["vein-tail"] == (22.0, 1.0)
+    assert k["press"] == (36.0, 1.0) and k["release"] == (26.0, 1.0)
+    assert (k["lift-px"], k["neighbour-px"], k["inset-px"], k["sub-step-ms"]) == (2, 1.5, 1.5, 6)
+    assert motion.preset("hover-release")["no_overshoot_above"]
+    assert not motion.preset("hover-lift")["no_overshoot_above"]
+
+
+def test_a_critically_damped_lift_follows_the_curve_reaches_its_target_and_never_overshoots(clock):
+    # The row's lift (2 px, ω 13.5): 97 % at ≈ .4 s, at rest within ~.75 s, never above 2 px. Semi-implicit Euler is
+    # first order: early in the rise it runs up to ~0.04 px ahead of the curve (as the reference's own springs do).
+    lift = theme.SPRINGS["lift-px"]
+    s, t = _spring(clock, 0.0, lift, "hover-lift")
+    for ms in (48, 96, 208, 400):
+        clock.advance(ms - clock.now())
+        assert s.value == pytest.approx(crit(0.0, lift, 13.5, ms / 1000), abs=0.05)
+    assert s.value >= 0.96 * lift                                # ≈ 97 % at .4 s (the curve: 97.1 %)
+    clock.advance(350)
+    assert s.at_rest and t.values[-1] == lift and t.rests == 1 and t.ends == 0
+    assert max(t.values) <= lift and t.values == sorted(t.values)
+    assert not clock.active
+
+
+def test_an_under_damped_spring_overshoots_then_settles_and_leaves_the_clock(clock):
+    # A well's slot (ω 28.3, ζ .5) opening from 6 px to a cover's width overshoots, then rests on it.
+    s, t = _spring(clock, 6.0, 34.5, "slot")
+    clock.advance(1500)
+    assert max(t.values) > 34.5 + 1.0 and min(t.values[len(t.values) // 3:]) < 34.5
+    assert s.at_rest and t.values[-1] == 34.5 and t.rests == 1 and not clock.active
+
+
+def test_sub_steps_are_never_longer_than_six_ms_whatever_the_frame_interval(clock):
+    # One 50 ms frame is 9 sub-steps; 16 ms frames are 3 each — and both land where the curve does.
+    s, _t = _spring(clock, 0.0, 1.0, "press")
+    clock.advance(50, step=50)
+    assert s.steps == 9
+    clock.advance(50, step=50)
+    coarse = s.value
+    s.stop()
+    s2, _t2 = _spring(clock, 0.0, 1.0, "press")
+    clock.advance(16, step=16)
+    assert s2.steps == 3
+    clock.advance(84, step=16)
+    assert coarse == pytest.approx(s2.value, abs=0.01)
+    assert coarse == pytest.approx(crit(0.0, 1.0, 36.0, 0.1), abs=0.02)   # one 50 ms Euler step (ωh 1.8) lands far off
+
+
+def test_a_stalled_clock_catches_up_at_most_its_cap(clock):
+    s, _t = _spring(clock, 0.0, 1.0, "hover-lift")
+    clock.advance(5000, step=5000)
+    assert s.steps == theme.SPRINGS["catch-up-ms"] // theme.SPRINGS["sub-step-ms"] + 1 and s.at_rest
+
+
+def test_retarget_mid_flight_keeps_its_place_and_speed(clock):
+    # A hover that leaves mid-lift falls back from where it is: still rising for a moment, never a jump.
+    lift = theme.SPRINGS["lift-px"]
+    s, t = _spring(clock, 0.0, lift, "hover-lift")
+    clock.advance(112)
+    x, v = s.value, s.velocity
+    assert v > 0
+    s.retarget(0.0, **motion.preset("hover-release"))
+    assert (s.value, s.velocity, s.target) == (x, v, 0.0)
+    clock.advance(16)
+    assert t.values[-1] > x                                      # its speed carried it on up first
+    after = len(t.values)
+    clock.advance(2000)
+    below = next(i for i, x in enumerate(t.values[after:]) if x <= 0.0) + after
+    assert all(x <= 0.0 for x in t.values[below:])               # the release rule took over at the retarget
+    assert s.at_rest and t.values[-1] == 0.0
+
+
+def test_the_release_falls_past_rest_once_and_never_comes_back_above(clock):
+    lift = theme.SPRINGS["lift-px"]
+    s, t = _spring(clock, lift, 0.0, "hover-release")
+    clock.advance(2000)
+    below = next(i for i, x in enumerate(t.values) if x <= 0.0)
+    assert min(t.values) < -0.05                                 # ζ .5: it does fall past
+    assert all(x <= 0.0 for x in t.values[below:]) and s.at_rest
+    # past rest it is critically damped: it falls to about a tenth of the lift and creeps home, no jump at the end
+    assert min(t.values) > -0.25 and -0.01 < t.values[-2] < 0.0
+    # and the switch to critical happens inside a frame: 48 ms frames trace the same release as 16 ms ones
+    coarse, tc = _spring(clock, lift, 0.0, "hover-release")
+    clock.advance(240, step=48)
+    coarse.stop()
+    fine, tf = _spring(clock, lift, 0.0, "hover-release")
+    clock.advance(240, step=16)
+    assert tc.values == pytest.approx(tf.values[2::3], abs=0.02)
+    # without the rule the same ζ .5 bounces back above: the rule is what keeps it below
+    plain, tp = _spring(clock, lift, 0.0, "hover-release", no_overshoot_above=False)
+    clock.advance(2000)
+    first = next(i for i, x in enumerate(tp.values) if x <= 0.0)
+    assert any(x > 0.0 for x in tp.values[first:])
+
+
+def test_a_resting_spring_moves_again_on_a_retarget_and_one_already_there_wakes_nothing(clock):
+    s, t = _spring(clock, 0.0, 2.0, "hover-lift")
+    clock.advance(1000)
+    assert s.at_rest and t.rests == 1
+    s.retarget(2.0)
+    assert not clock.active and t.rests == 1                     # already there: the clock stays asleep
+    s.retarget(0.0)
+    assert clock.active == [s]
+    clock.advance(1000)
+    assert s.at_rest and s.value == 0.0 and t.rests == 2
+
+
+def test_a_stopped_spring_ends_where_it_is_once_and_a_retarget_moves_it_from_there(clock):
+    s, t = _spring(clock, 0.0, 2.0, "hover-lift")
+    clock.advance(64)
+    x = s.value
+    s.stop()
+    s.stop()
+    assert t.ends == 1 and t.rests == 0 and not s.at_rest and not clock.active
+    clock.advance(100)
+    assert s.value == x
+    s.retarget(0.0)
+    clock.advance(16)
+    assert len(clock._springs) == 1 and t.values[-1] < x
+
+
+def test_at_rest_it_calls_on_rest_once_and_the_clocks_timer_stops(clock):
+    import time
+    clock.use_real_time()
+    s, t = _spring(clock, 0.0, 2.0, "hover-lift")
+    assert clock.running
+    clock._frame(time.perf_counter() * 1000.0 + 50.0, 0.0)      # a frame mid-flight: the timer keeps running
+    assert s.alive and clock.running
+    clock._frame(time.perf_counter() * 1000.0 + 2000.0, 0.0)    # a frame long after: settled
+    assert s.at_rest and t.rests == 1 and not clock.running
+    s2, t2 = _spring(clock, 0.0, 2.0, "hover-lift")
+    assert clock.running
+    s2.finish()
+    assert t2.values == [2.0] and t2.rests == 1 and not clock.running
+
+
+def test_a_spring_already_at_its_target_rests_at_once(clock):
+    s, t = _spring(clock, 2.0, 2.0, "hover-lift")
+    assert s.at_rest and t.values == [2.0] and t.rests == 1 and not clock.active
+
+
+@pytest.mark.parametrize("how", ["reduced", "frozen"])
+def test_reduced_or_frozen_a_spring_jumps_to_rest_at_once(clock, how):
+    if how == "reduced":
+        clock.mode.set_setting("reduced")
+    else:
+        freeze.set_frozen(True)
+    s, t = _spring(clock, 0.0, 2.0, "hover-lift")
+    assert t.values == [2.0] and t.rests == 1 and s.at_rest and not clock.active
+    s.retarget(0.0, **motion.preset("hover-release"))
+    assert t.values == [2.0, 0.0] and t.rests == 2 and not clock.active
+    motion.fall_into_place(t.value)
+    assert t.values[-1] == 0.0 and not clock.active
+
+
+def test_reduced_a_fade_spring_is_kept_but_never_longer_than_fast(clock):
+    clock.mode.set_setting("reduced")
+    s, t = _spring(clock, 0.0, 1.0, "release", kind="fade")
+    assert clock.active == [s]
+    clock.advance(theme.FAST)
+    assert s.at_rest and t.rests == 1
+
+
+def test_an_owner_hidden_or_deleted_ends_its_spring_without_resting(clock, stage):
+    owner = QWidget(stage)
+    owner.show()
+    s, t = _spring(clock, 0.0, 2.0, "hover-lift", owner=owner)
+    clock.advance(48)
+    n = len(t.values)
+    owner.hide()
+    clock.advance(500)
+    assert len(t.values) == n and t.rests == 0 and t.ends == 1 and not clock.active
+    owner.show()
+    s2, t2 = _spring(clock, 0.0, 2.0, "hover-lift", owner=owner)
+    clock.advance(32)
+    sip.delete(owner)
+    clock.advance(500)
+    assert t2.ends == 1 and t2.rests == 0 and not clock.active
+
+
+def test_a_broken_spring_stops_reports_and_leaves_the_others_moving(clock, qt_errors):
+    def bad(_x):
+        raise ValueError("a painter's bug")
+    ends = []
+    clock.spring(bad, 0.0, 2.0, on_end=lambda: ends.append(1), **motion.preset("hover-lift"))
+    s, t = _spring(clock, 0.0, 2.0, "hover-lift")
+    clock.advance(1000)
+    assert ends == [1] and s.at_rest and t.rests == 1
+    assert qt_errors and qt_errors[0][0] is ValueError
+    qt_errors.clear()
+
+
+def test_fall_into_place_drops_to_its_depth_at_one_over_omega_then_home(clock):
+    # r5Inset's closed form, y = d·ωt·e^(1−ωt): the deepest (d) at 1/ω, then home, never above it, any frames.
+    t = Track()
+    motion.fall_into_place(t.value, on_rest=t.rest)
+    d, omega = theme.SPRINGS["inset-px"], theme.SPRINGS["inset"][0]
+    clock.advance(1000 / omega)                                  # 1/ω ≈ 42 ms: the deepest
+    assert t.values[-1] == pytest.approx(d, abs=1e-6)
+    clock.advance(theme.SLOW)
+    assert 0.0 < t.values[-1] < d and t.rests == 0
+    clock.advance(theme.SLOW)
+    assert max(t.values) <= d + 1e-9 and min(t.values) >= 0.0
+    assert t.values[-1] == 0.0 and t.rests == 1 and not clock.active
+    t2 = Track()
+    motion.fall_into_place(t2.value, depth=theme.SPRINGS["lift-px"])
+    clock.advance(1000 / omega, step=50)
+    assert t2.values[-1] == pytest.approx(theme.SPRINGS["lift-px"], abs=1e-6)
+
+
+def test_one_frame_reads_every_animation_and_spring_once_and_the_hud_sees_one_frame(clock):
+    frames, seen = [], []
+    clock.on_frame_done = lambda late, work: frames.append(work)
+    try:
+        clock.animate(theme.SLOW, lambda v: seen.append(("anim", clock.now())))
+        clock.spring(lambda x: seen.append(("spring", clock.now())), 0.0, 2.0, **motion.preset("hover-lift"))
+        clock.advance(48)
+    finally:
+        clock.on_frame_done = None
+    assert len(frames) == 3 and clock.stats.frames >= 3
+    assert [n for n, _ in seen] == ["anim", "spring"] * 3
+    assert seen[0][1] == seen[1][1] and seen[4][1] == seen[5][1]
+
+
+def test_no_literal_spring_constants_under_app_qt():
+    # Spring constants live in theme.SPRINGS (W3.1a §3): no ω or ζ written as a number where a spring is made.
+    folder = os.path.dirname(motion.__file__)
+    named = re.compile(r"\b(omega|zeta)\s*=\s*[\d.]")
+    positional = re.compile(r"spring\(\s*[^,()]+,\s*[^,()]+,\s*[^,()]+,\s*[\d.]+\s*,\s*[\d.]+")
+    for name in os.listdir(folder):
+        if name.endswith(".py"):
+            code = re.sub(r'"""[\s\S]*?"""', "", open(os.path.join(folder, name), encoding="utf-8").read())
+            code = re.sub(r"#.*", "", code)
+            assert not named.search(code) and not positional.search(code), name
+
+
+def test_the_physics_is_semi_implicit_euler_in_equal_sub_steps(clock):
+    # The reference's stepping (v first, then x with the new v), a 16 ms frame in three equal steps of 5.33 ms.
+    s, _t = _spring(clock, 6.0, 34.5, "slot")
+    omega, zeta = theme.SPRINGS["slot"]
+    x, v, h = 6.0, 0.0, 0.016 / 3
+    for _ in range(3):
+        v += (omega * omega * (34.5 - x) - 2 * zeta * omega * v) * h
+        x += v * h
+    clock.advance(16)
+    assert (s.value, s.velocity) == pytest.approx((x, v), rel=1e-12)
+
+
+def test_rest_needs_both_the_place_and_the_speed_under_their_thresholds(clock):
+    # Far from home but barely moving (a slow spring's first frame) is not at rest...
+    slow, ts = _spring(clock, 0.0, 2.0, "hover-lift", omega=1.0)
+    # ... nor is a spring at its place still moving (struck at rest: 0.3 px/s, inside rest-x after a frame)
+    struck, tk = _spring(clock, 0.0, 0.0, "hover-lift", velocity=0.3)
+    clock.advance(16)
+    assert abs(slow.velocity) < theme.SPRINGS["rest-v"] and slow.alive and ts.rests == 0
+    assert abs(struck.value) < theme.SPRINGS["rest-x"] and struck.alive and tk.rests == 0
+
+
+def test_the_release_rule_holds_for_a_spring_stiff_enough_that_eulers_steps_would_bounce_it(clock):
+    # ω 150 (ωh .8 at 5.33 ms): critically damped Euler swings back past rest there; the rule still keeps it below.
+    s, t = _spring(clock, 2.0, 0.0, "hover-release", omega=150.0)
+    clock.advance(1000)
+    below = next(i for i, x in enumerate(t.values) if x <= 0.0)
+    assert all(x <= 0.0 for x in t.values[below:]) and s.at_rest
+
+
+def test_a_spring_moved_again_from_its_on_rest_is_listed_once(clock):
+    # on_rest retargets it (a chain: lift, then home): one entry on the clock, stepped once a frame.
+    t = Track()
+    box = {}
+
+    def back():
+        t.rest()
+        if t.rests == 1:
+            box["s"].retarget(0.0)
+    box["s"] = s = clock.spring(t.value, 0.0, 2.0, on_rest=back, **motion.preset("hover-lift"))
+    clock.advance(1000)
+    assert t.rests == 1 and clock._springs == [s]
+    before = s.steps
+    clock.advance(16)
+    assert s.steps - before == 3
+    clock.advance(1000)
+    assert s.at_rest and s.value == 0.0 and t.rests == 2

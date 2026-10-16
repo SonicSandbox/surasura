@@ -72,6 +72,12 @@ ROWS_TICK_WATCHED = "Watched"
 ROWS_TICK_NOT = "Not watched yet"
 ROWS_MORE_CHIPS = "{n} more"
 ROWS_FAILURE_LINE = "Its details are in the logs folder (the bar's Open the logs folder)"
+# The string of stones, read out for a screen reader (W3.1a; `stone_plan.words`): "8 of 12 watched, 3 in Anki".
+STRING_WORDS = {
+    "of_watched": "{k} of {n} watched", "in_anki": "{n} in Anki",
+    "one_watched": "Watched", "one_not": "Not watched yet", "one_in_anki": "in Anki",
+    "join": ", ",
+}
 # --- end W2.2 ---------------------------------------------------------------------------------------------------------- #
 
 # The bottom bar.
@@ -113,7 +119,6 @@ GENERATE_AUTO_TIP = ("Generating by itself, because Anki brought in words you kn
 GENERATE_LOG = "Open the log"
 GENERATE_LOG_TIP = "Open the last Generate's log, to see what went wrong"
 GENERATE_PROGRESS_NAME = "Generate's progress"
-JOURNEY = "Your journey ↗"
 JOURNEY_TIP = "Your list with its sentences, in its own window\n• Click to open your journey"
 JOURNEY_NONE_TIP = "Your journey appears after your first Generate"
 JOURNEY_FAILED = "Couldn't open your journey: {why}"
@@ -149,7 +154,6 @@ BAR_LEVEL_AUTO_NONE_TIP = "Your level is chosen for you after your first Generat
 # The re-order's tip promises nothing: the line beside it may say it stands aside.
 BAR_REPLAN_TIP = "{line}\n\nAnki's new cards in your list's order: what Surasura is doing about it, or why it waits"
 BAR_CONNECT_TIP = "What Surasura Connect is doing with your cards in this language"
-BAR_ANKIWEB_TIP = "Surasura's own syncs of Anki with AnkiWeb: when the last one ran, or when the next one starts"
 JOURNEY_DOT = "●"
 JOURNEY_DOT_NAME = "Your journey's sentences are catching up"
 # The dot's tip: "by itself" only while the automation is on (D29: the journey's Generate runs), else press Generate.
@@ -204,6 +208,115 @@ QUIT_FINISHING = "Finishing with Anki first… the window closes by itself"
 QUIT_FINISHING_LIST = "Finishing your list first… the window closes by itself"
 QUIT_HELD = "Surasura is closing"
 QUIT_CLOSING_TIP = "Surasura is closing: it finishes what can't stop part-way, then closes by itself"
+
+# --- W3.1a frame (app/qt/frame.py): the level ▾ and its pop, the footer's emerald and known corner, the Goal dock and
+# its wells. The level's words are the old chip's (BAR_LEVEL_*); Generate's are the button's (GENERATE_*).
+LEVEL_WAITING = "Level"                               # the ▾ before the level is first read
+LEVEL_NAME = "Your level: {level}"
+LEVEL_TIP = "{level}\n• Click for Generate and your journey"
+LEVEL_TIP_MARK = "{level}\n{mark}\n• Click for Generate and your journey"
+LEVEL_MARKS = {
+    "failed": "⚠ The last Generate didn't finish",
+    "stale": "Something changed since your last Generate: your list is out of date",
+    "journey": "Your journey's sentences are catching up",
+}
+LEVEL_POP_NAME = "Your level, Generate and your journey"
+LEVEL_POP_HEADING = "YOUR LEVEL"
+LEVEL_POP_AUTO = {True: "Automatic: on — Surasura picks the band for you",
+                  False: "Automatic: off — the band stays where you set it"}
+LEVEL_JOURNEY = "Open your journey ↗"
+FOOT_ANKI = "Anki"
+FOOT_ANKI_NAME = "Anki: {words}"
+FOOT_ANKI_TIP = "{words}\n{tip}"
+FOOT_ANKI_ANKIWEB = "{tip}\n\n{ankiweb}"
+FOOT_KNOWN = "known"
+FOOT_KNOWN_TIP = "{tip}\n{left:,} to {next:,}"
+WELLS = {"soon": "Soon", "goal": "Goal", "finished": "Finished"}
+WELL_SUBS = {"soon": "next in line", "goal": "someday · in no order", "finished": "newest first"}
+WELL_TIPS = {"soon": "Soon: drop it here and it comes up next in line",
+             "goal": "Goal: drop it here for someday, in no order",
+             "finished": "Finished: drop it here when you're done with it"}
+WELL_UNLIT_SPLIT = "Finished: a split's first part finishes with its last part, not on its own"
+WELL_UNLIT_MIX = "Finished: hato's mix never finishes, it keeps bringing new videos"
+WELLS_NAME = "Where it can go: {wells}"
+
+# --- W3.1a rows (app/qt/rows.py): Current's one-line row, the string on it, Up Next flat, the grooves. A row's other
+# words are W2.2's (ROWS_*) and view_rows'.
+ROWS_MORE_TIP = "More\n• Click for what you can do with it"
+ROWS_MOVE_TIP = {"up": "Move up one\n• Click to move it up one place",
+                 "down": "Move down one\n• Click to move it down one place"}
+ROWS_MINE_NOW_TIP = "{tip}\n• Click to mine it now"
+ROWS_MINE_NOW_LATER = "Mine now arrives with Anki Miner's step, in a later build"
+ROWS_NO_MEDIA_LATER = "{tip}\nLink… · Mine text: in a later build"
+ROWS_STONE_TIP = "{label}{state}\n• Click to mark it {action}"
+ROWS_STONE_STATE = {"cut": " · watched", "raw": " · {n} cards in Anki", "rock": ""}
+ROWS_STONE_MISSING = " · no {word} on disk"
+ROWS_STONE_ACTION = {True: "not watched", False: "watched"}
+ROWS_DONE = "Done"
+ROWS_DONE_TIP = "Mark {ep} watched\n• Click: the one after it comes up next"
+ROWS_DONE_ALL_TIP = "Every file of it is watched"
+ROWS_HERO_KNOWN = "{pct}% known · "
+ROWS_HERO_NEW_LINK = "{n} new words ↗"
+ROWS_JOURNEY_TIP = "Your journey: your list with its sentences\n• Click to open it in its own window"
+ROWS_TOP_LINE_WHERE = "{tip}\nIts setting: Settings → Anki & mining, in a later build"
+ROWS_SOON_LINE_WHERE = "{tip}\nWhere Soon starts is a setting: Settings, in a later build"
+ROWS_ACCESSIBLE_STRING = "{line} · {string}"
+
+# --- W3.1a footer (W31A-1 / W31A-2): the re-order's and Connect's lines as quiet marks (their words in the hover), and
+# the cards waiting in Anki beside the emerald.
+FOOT_REPLAN_MARK = "⇅"
+FOOT_REPLAN_NAME = "Anki's re-order"
+FOOT_CONNECT_MARK = "⇄"
+FOOT_CONNECT_NAME = "Surasura Connect"
+FOOT_CONNECT_TIP = "{line}\n\n" + BAR_CONNECT_TIP
+FOOT_ANKI_WAITING = "Anki · {n:,} waiting"
+FOOT_ANKI_WAITING_TIP = "{n:,} new notes wait in Anki, in the decks the sync reads"   # backlog notes, not cards (AD-8)
+
+# --- W3.1a drag: the window's writer (app/services/moves.py `Writer(words=MOVE_WORDS)`, its notes: moves.WORDS's keys)
+MOVE_WORDS = {
+    "saving": "Saving your moves…",
+    "cant_undo": "Can't undo — that item changed since",
+    "nearest": "That spot changed meanwhile — placed next to the nearest item instead",
+    "top": "That spot changed meanwhile — placed at the top instead",
+    "crash_one": "1 move from before the crash couldn't be applied",
+    "crash_many": "{n} moves from before the crash couldn't be applied",
+    "read_only": "Your library can't be saved right now: {reason}",
+    "failed": "That change couldn't be saved: {error}",
+    "not_content": "Only text and subtitle files can be added — left out: {names}",
+}
+# the drag in the window (app/qt/drag.py): its toasts (A2's toast list), the ⋯ menu, the bar's lines
+DRAG_UP_NEXT = "{title} is up next"
+DRAG_PLACED = "{title} placed at #{n}"
+DRAG_PLACED_MINES = "{title} placed at #{n} · it mines itself"
+DRAG_SOON = "{title} → Soon · #{n}, after the first {files} files"
+DRAG_SOON_NO_COUNT = "{title} → Soon · #{n}"
+DRAG_GOAL = "{title} moved to Goal · its cards keep their place"
+DRAG_FINISHED = "{title} finished · its cards stay put"
+DRAG_KEEP = "Keep"
+DRAG_KEEP_TIP = "Keep its new cards in your order, as they are"
+DRAG_TAKE_OUT = "Take its new cards out"
+DRAG_TAKE_OUT_TIP = "Its new cards leave your order. None is deleted: Undo puts them back"
+DRAG_TAKEN_OUT = "{title}: its new cards are out of your order"
+DRAG_ADDED = "Added {name} at #{n} · analysed on the next Generate"
+DRAG_ADDED_N = "Added {count} files at #{n} · analysed on the next Generate"
+DRAG_GONE = "That item was removed"
+DRAG_REFUSED = "Your library can't be saved right now: {reason}"
+DONE_NEXT = "✓ {title} {ep} watched · next: {next}"
+DONE_ONE = "✓ {title} {ep} watched"
+DONE_UNDONE = "{title} {ep} marked not watched"
+DONE_ALL = "✓ All {n} watched — finished with it?"
+DONE_MOVE_FINISHED = "Move to Finished"
+DONE_MOVE_FINISHED_TIP = "Move it to Finished: a record of what you've worked through"
+MENU_NAME = "What you can do with {title}"
+MENU_ITEMS = {
+    "up-next": ("Up next", "Make it the next thing you watch or read"),
+    "soon": ("Soon", "Move it to Soon: next in line, after what's in NOW"),
+    "goal": ("Goal", "Move it to Goal: someday, in no order"),
+    "finished": ("Finished", "Move it to Finished: you're done with it"),
+    "journey": ("See it in your journey", "Open your journey (your list with its sentences) in its own window"),
+}
+MENU_REFUSED_TIP = "Your library can't be saved right now: {reason}"
+ROWS_SAVING = "saving…"
 
 # --- W3.4: the ported windows — the base (windows.py, confirm.py) and row 1 (the frequency lists, the sentence
 # dictionary). The Settings tab lists the ported windows' doors until W3.3 / W3.2 give each its row (IK-16).

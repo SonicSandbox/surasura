@@ -2,7 +2,10 @@
 
 The window, edge to edge under Windows' own title bar (n1); the header (the mark, the wordmark, the subline); the tabs
 (Current · Finished · Needs you · Settings) over one page each; the bottom bar (what runs, the newest command-line
-failure, the AnkiWeb mark and Connect's line when they exist). Given a library (`Services(library=…)`: W2.2's reader),
+failure, Connect's line when it exists). W3.1a's frame (`frame.py`): the header + tabs one band with the vein under the
+current tab and the jobs' hairline along its foot, the level ▾ and its pop (Generate, *Open your journey*), the edges
+baked onto the content, the footer's emerald (the AnkiWeb mark's words in its hover) and known corner, and Current's
+Goal dock (its wells for the drag). Given a library (`Services(library=…)`: W2.2's reader),
 Current, Finished and Needs you show it (`screens.py`, display only until W3.1 / W3.2); without one, and Settings until
 W3.3, a page shows its waiting state. The header's controls arrive with their features: no control here does nothing
 (the wiring check, tests/qt/test_wiring.py).
@@ -31,7 +34,7 @@ from PyQt6.QtWidgets import (QApplication, QButtonGroup, QDialog, QHBoxLayout, Q
                              QSizePolicy, QStackedWidget, QToolButton, QVBoxLayout, QWidget)
 
 from app import path_utils, theme
-from app.qt import applog, bridge, hud, motion, strings, style, titlebar, toast, tooltip
+from app.qt import applog, bridge, frame, hud, motion, strings, style, titlebar, toast, tooltip
 from app.services import jobs as jobs_module
 from app.services import settings as settings_service
 from app.services import status as status_service
@@ -76,11 +79,15 @@ class Services:
     then started there (`start`). Qt-free: everything here runs on a worker or after the window is gone."""
 
     def __init__(self, settings=None, registry=None, status=None, library=None, controller=None, updates=None,
-                 automation=None, chores=None, replan=None):
+                 automation=None, chores=None, replan=None, writer=None):
         self.settings = settings if settings is not None else settings_service.SettingsService()
         self.registry = registry if registry is not None else jobs_module.JobRegistry()
         self.status = status if status is not None else status_service.StatusService(self.registry)
         self.library = library            # W2.2: a library reader (app/services/library_reader.py), or None
+        # W3.1a: the window's writer (`app/services/moves.Writer`, on the reader's opener; its `numbers` the reader's),
+        # or None — then nothing in the window writes. The window starts it (and its replay) and wires its callbacks;
+        # the quit waits for its queue (`finish_moves`). The real `main()` has no library yet, so no writer either.
+        self.writer = writer
         # --- W3.5: the duties
         self.controller, self.updates, self.automation, self.chores = controller, updates, automation, chores
         # row 7: the journey keeper and the re-order host of the language open (`replan_host.Replan`), made with the
@@ -155,14 +162,16 @@ class Services:
             moves(self._store_moved)
 
     def _provide_lines(self, language):
-        """Worker B's providers (W3.5 row 7): the host's line, Connect's line, the AnkiWeb mark, the journey dot —
-        again on a language switch (Connect's line and the dot are the language's)."""
+        """Worker B's providers (W3.5 row 7): the host's line, Connect's line, the AnkiWeb mark, the journey dot — and
+        (W31A-2) the cards waiting in Anki — again on a language switch (Connect's line, the dot and the backlog are
+        the language's)."""
         providers = getattr(self.status, "providers", None)
         if providers is None:
             return
         replan, get = self.replan, self.settings.get
         providers.update(replan=replan.line, connect=status_service.connect_line(language, get),
-                         ankiweb=status_service.ankiweb_line(get), journey=status_service.journey_pending(language))
+                         ankiweb=status_service.ankiweb_line(get), journey=status_service.journey_pending(language),
+                         backlog=status_service.anki_backlog(language))
 
     def _replan_line(self, _line):
         """The host said a new line (its worker): the bar asks for it alone."""
@@ -391,6 +400,26 @@ class Services:
         return QUIT_FINISH_WAIT if began is None else max(0.0, QUIT_FINISH_WAIT - (time.monotonic() - began))
     # --- end W3.5 ------------------------------------------------------------------------------------------------ #
 
+    def finish_moves(self, deadline):
+        """(A worker, or the last call.) W3.1a, 04 §4.5: the window's moves still queued are written before the window
+        goes, until `deadline` (monotonic; *Saving your moves…* meanwhile) — what is left stays in the writer's journal for
+        the next start — then the numbers' worker closed. -> True when every move landed."""
+        writer = self.writer
+        if writer is None:
+            return True
+        try:
+            done = writer.finish(deadline)
+        except Exception as e:
+            applog.log("shell", f"the window's moves at quit: {e}")
+            done = False
+        close = getattr(getattr(writer, "numbers", None), "close", None)
+        if close is not None:
+            try:
+                close()
+            except Exception as e:
+                applog.log("shell", f"the numbers at quit: {e}")
+        return done
+
     def shutdown(self, timeout=2.0, release=None):
         """At quit, after the window is gone: nothing new starts and an update under way is cancelled first (nothing it
         held starts), the duties closed on a thread of their own (Koe's stop may wait; at most `QUIT_CLOSE_WAIT`),
@@ -403,6 +432,8 @@ class Services:
         began = time.monotonic()
         closer = threading.Thread(target=self._close_duties, name="duties-close", daemon=True)
         closer.start()
+        if self.writer is not None:                       # W3.1a: the moves still queued, then the numbers; the reader after
+            self.finish_moves(time.monotonic() + self._finish_wait_left())
         if self.library is not None:
             try:
                 self.library.stop(timeout)
@@ -742,10 +773,12 @@ class _Duties:
     def __init__(self):
         self.module = None
         self.generate = self.journey = self.help = self.known = self.anki = self.level = self.update_mark = None
-        self.sheet = self.cards = self.journey_dot = None
+        self.sheet = self.cards = self.journey_dot = self.pop = None
+        self.level_text = self.level_tip = strings.LEVEL_WAITING   # W3.1a: the ▾'s words and the level's tip
         self.update_state = self.generate_state = self.auto_state = None
         self.notice = self.junban_said = self.updated_said = None      # the lines toasted once (IK-23)
         self.update_unseen = ()             # the update's failures not looked at yet (the bar's line: HR-23)
+        self.update_applies = False         # W31A-1: the update chip has something to say (it then holds the slot)
         self.paints = {}                    # control -> how many times it was repainted (S19)
 
 
@@ -761,6 +794,10 @@ class ShellWindow(QMainWindow):
         settings = services.settings.get()
         self.language = settings.get("target_language") or "ja"
         self._first_painted = False
+        from app.qt import stones                             # W3.1a S1: no stones' sheet built before the first frame
+        self._stones_hold = object()
+        stones.hold(self._stones_hold)
+        self.destroyed.connect(lambda _obj=None, token=self._stones_hold: stones.release(token))
         self.setWindowTitle(strings.WINDOW_TITLE)
         icon = path_utils.get_icon_path()
         if os.path.exists(icon):
@@ -776,7 +813,8 @@ class ShellWindow(QMainWindow):
         root.setSpacing(0)
         root.addWidget(self._build_header())                  # header and tabs: one frame band, no line between
         root.addWidget(self._build_tabs())
-        root.addWidget(style.separator(central))
+        self.edge_top = frame.EdgeStrip("top", central)       # W3.1a: the band's baked edge onto the content
+        root.addWidget(self.edge_top)
         self.pages = QStackedWidget(central)
         self.pages.setObjectName("pages")
         self.page_widgets = {}
@@ -785,7 +823,7 @@ class ShellWindow(QMainWindow):
             self.page_widgets[name] = page
             self.pages.addWidget(page)
         root.addWidget(self.pages, 1)
-        root.addWidget(style.separator(central))
+        self.dock = self._build_bottom_band()                 # W3.1a: each page's bottom edge; Current's Goal dock
         root.addWidget(self._build_footer())
         self.setCentralWidget(central)
         self._apply_sizes()
@@ -811,7 +849,10 @@ class ShellWindow(QMainWindow):
             self.library_bridge.library_changed.connect(self.show_library)
             for page in self.page_widgets.values():
                 if hasattr(page, "message"):
-                    page.message.connect(self.bar_line.set_full)       # a file ▶ couldn't open: said in the bar
+                    page.message.connect(self.say)                     # a file ▶ couldn't open: said in the bar
+            current = self.page_widgets.get("current")
+            if hasattr(current, "on_journey"):                         # W3.1a S5: Up Next's *N new words ↗*
+                current.on_journey = lambda _row, _episode: self._open_journey(asked=True)
             services.library.start()
         # --- end W2.2 ------------------------------------------------------------------------------------------------ #
         self._poll = QTimer(self)
@@ -832,6 +873,12 @@ class ShellWindow(QMainWindow):
         for page in self.page_widgets.values():           # W2.2: painted parts' tooltips go through the bubble
             if hasattr(page, "list"):
                 page.list.tooltips = self.tooltips
+        # --- W3.1a: the drag, the moves, Done and Undo (`drag.py`), given a writer beside the library ---------------- #
+        self.moves = None
+        if services.library is not None and services.writer is not None:
+            from app.qt import drag
+            self.moves = drag.DragController(self, services.writer, services.library)
+            self.moves.start()
 
         self._restore_state(read_state(self.state_file))
 
@@ -862,6 +909,8 @@ class ShellWindow(QMainWindow):
         names.addWidget(self.subline)
         row.addLayout(names)
         row.addStretch(1)                                  # the header's controls arrive with their features (G-2):
+        self.progress = frame.Progress(header)             # W3.1a: the jobs' hairline along its foot (no pulsing dot)
+        self._busy, self._share = False, None              # ... the bar's lines running, Generate's share
         return header                                      # W3.5's with the duties (`_attach_duties`)
 
     def _build_tabs(self):
@@ -890,6 +939,9 @@ class ShellWindow(QMainWindow):
         self.tab_buttons["needs"].setVisible(False)       # shown while Needs you lists anything
         row.addStretch(1)
         self.tab_buttons["current"].setChecked(True)
+        self.vein = frame.Vein(bar)                        # W3.1a: the iris vein under the current tab, on springs
+        self.vein.track([self.tab_buttons[n] for n in TABS])
+        self.vein.go(self.tab_buttons["current"], animate=False)
         return bar
 
     # --- W2.2: the pages a library fills ----------------------------------------------------------------------- #
@@ -899,7 +951,14 @@ class ShellWindow(QMainWindow):
         return screens.make_page(name, language=self.language)
 
     def show_library(self, view):
-        """The reader's newest view: the pages, the subline's counts, the tabs' counts."""
+        """The reader's newest view: the pages, the subline's counts, the tabs' counts. W3.1a: the drag's expectation
+        asks first (`drag.DragController.view_in`) — held while a drag runs (E6), shown in the drop's order while the
+        store catches up (no flash back)."""
+        moves = getattr(self, "moves", None)
+        if moves is not None:
+            view = moves.view_in(view)
+            if view is None:
+                return
         moved = False
         for name in screens.PAGES:
             page = self.page_widgets.get(name)
@@ -913,8 +972,21 @@ class ShellWindow(QMainWindow):
         if self._library_needs != len(view.needs):
             self._library_needs = len(view.needs)
             self.show_status(self.services.status.snapshot())
+        if self.dock is not None:                   # W3.1a: Goal's bar (and the wells' covers) from the same view
+            self._show_dock(view)
         if moved:                                   # a view that changed no list paints nothing ahead
             self._warm_hidden_pages()
+
+    def _show_dock(self, view):
+        """The Goal dock takes the reader's `view.goal`, repainted only when it changed; shown while there is a Goal and
+        anything to show (Current only: it lives in the Current page)."""
+        goal = view.goal
+        if goal is not None:
+            self.dock.set_goal(goal)
+        self.dock.set_view(view)
+        shown = goal is not None and (bool(view.rows) or bool(goal.files) or not view.loading)
+        if self.dock.isHidden() == shown:
+            self.dock.setVisible(shown)
 
     def _warm_hidden_pages(self):
         """The hidden tabs' lists paint their first screen ahead, laid out as the shown list (`RowsView.warm_like`)."""
@@ -931,6 +1003,7 @@ class ShellWindow(QMainWindow):
         page = QWidget()
         page.setObjectName(f"page-{name}")
         box = QVBoxLayout(page)
+        box.setContentsMargins(0, 0, 0, 0)                     # (W3.1a: its bottom edge spans the window)
         box.addStretch(1)
         title = QLabel(strings.TABS[name][0], page)
         title.setObjectName("pagetitle")
@@ -943,30 +1016,32 @@ class ShellWindow(QMainWindow):
         box.addStretch(1)
         return page
 
+    def _build_bottom_band(self):
+        """W3.1a: the bottom band's edge onto the content, baked, at the foot of every page (in its layout: never over
+        a list), and — given a library — the Goal dock under Current's (a page of its own: no tab switch lays the
+        other pages out again). -> the dock, or None."""
+        dock = None
+        for name, page in self.page_widgets.items():
+            page.layout().addWidget(frame.EdgeStrip("bottom", page))
+            if name == "current" and self.services.library is not None:
+                dock = frame.GoalDock(page)
+                dock.setVisible(False)                         # until the reader's first view says Goal
+                page.layout().addWidget(dock)
+        return dock
+
     def _build_footer(self):
         footer = style.styled(QWidget(), "footer")
         self.footer = footer
         row = QHBoxLayout(footer)
-        row.setContentsMargins(16 - motion.GLOW, 0, 16, 0)   # the dot at 16 px, as the mock: its glow needs room
+        row.setContentsMargins(16, 0, 16, 0)
         row.setSpacing(10)
-        self.bar_dot = motion.Spinner("pulse", footer)    # M2.1: the mock's pulsing dot while a job runs (G1.5-2)
-        self.bar_dot.setObjectName("bardot")
-        self.bar_dot.setProperty("busy", "false")
-        self.bar_dot.setAccessibleName(strings.BAR_NAME)
-        # the line close to its dot (G2.3 N2): the dot's widget holds its glow's room on both sides (GLOW), so the two
-        # sit with no gap of their own — the line starts GLOW (10 px) past the dot, the mock's gap — not glow + gap
-        lead = QHBoxLayout()
-        lead.setSpacing(0)
-        lead.addWidget(self.bar_dot)
+        # W3.1a: one slot at the left (W31A-1, `_paint_slot`) — the failure line with *Open the logs folder* while it
+        # applies, else the update chip while it applies (`_attach_duties` puts it here), else the status line (the
+        # pulsing dot gave way to the header's hairline: light never pulses)
         self.bar_line = ElidingLabel(footer)
         self.bar_line.setObjectName("barline")
         self.bar_line.setAccessibleName(strings.BAR_NAME)
-        lead.addWidget(self.bar_line, 1)
-        row.addLayout(lead, 1)
-        self.bar_replan = ElidingLabel(footer)            # W3.5 row 7: the re-order host's line, while it gives one
-        self.bar_replan.setObjectName("barline")
-        self.bar_replan.setVisible(False)
-        row.addWidget(self.bar_replan, 1)
+        row.addWidget(self.bar_line, 1)
         self.bar_failure = ElidingLabel(footer)
         self.bar_failure.setObjectName("barfailure")
         self.bar_failure.setToolTip(strings.BAR_FAILURE_TIP)
@@ -980,16 +1055,17 @@ class ShellWindow(QMainWindow):
         self.logs_button.clicked.connect(self.open_logs)
         self.logs_button.setVisible(False)
         row.addWidget(self.logs_button)
-        self.bar_ankiweb = QLabel(footer)
-        self.bar_ankiweb.setObjectName("barmark")
-        self.bar_ankiweb.setTextFormat(Qt.TextFormat.PlainText)       # a provider's words, never markup
-        self.bar_ankiweb.setVisible(False)
-        row.addWidget(self.bar_ankiweb)
-        self.bar_connect = QLabel(footer)
-        self.bar_connect.setObjectName("barmark")
-        self.bar_connect.setTextFormat(Qt.TextFormat.PlainText)
-        self.bar_connect.setVisible(False)
+        row.addStretch(0)                                 # the room left of the marks while the chip holds the slot
+        # W31A-1: the re-order host's line and Connect's as quiet marks, their words in the hover, while they have any
+        self.bar_replan = frame.QuietMark(strings.FOOT_REPLAN_MARK, strings.FOOT_REPLAN_NAME, footer)
+        row.addWidget(self.bar_replan)
+        self.bar_connect = frame.QuietMark(strings.FOOT_CONNECT_MARK, strings.FOOT_CONNECT_NAME, footer)
         row.addWidget(self.bar_connect)
+        # W3.1a: the corner — the emerald and *Anki · N waiting* (the AnkiWeb mark's words in its hover), then known
+        self.anki_mark = frame.AnkiMark(footer)
+        row.addWidget(self.anki_mark)
+        self.known = frame.KnownCorner(footer)
+        row.addWidget(self.known)
         self._logs_folder = None
         self.status_paints = {}             # row 7's statuses (the bar's lines, the journey dot) -> repaints (S19)
         return footer
@@ -999,6 +1075,11 @@ class ShellWindow(QMainWindow):
         size = style.current()[1]
         self.footer.setFixedHeight(round(theme.size("footer", size)))
         self.wordmark.updateGeometry()
+        if self.dock is not None:                              # W3.1a: the dock's bar × the text size
+            self.dock.apply_size()
+        duties = getattr(self, "duties", None)                 # (none yet on the first call)
+        for part in (self.anki_mark, self.known) + ((duties.level,) if duties is not None else ()):
+            part.updateGeometry()
 
     # --- tabs ------------------------------------------------------------------------------------------------- #
     def show_tab(self, name):
@@ -1007,6 +1088,7 @@ class ShellWindow(QMainWindow):
         button = self.tab_buttons[name]
         if not button.isChecked():
             button.setChecked(True)
+        self.vein.go(button)                                   # W3.1a: the vein travels; the page is there at once
         self.pages.setCurrentWidget(self.page_widgets[name])
         if self.services.library is not None:                 # W2.2: the other tabs' first screens, ahead
             self._warm_hidden_pages()
@@ -1030,20 +1112,23 @@ class ShellWindow(QMainWindow):
 
     def show_status(self, snap):
         lines = (self._quit_line,) if self._quit == "waiting" else snap.lines     # E20: one line says so
-        busy = bool(lines)
-        self.bar_dot.setProperty("busy", "true" if busy else "false")
-        self.bar_dot.set_running(busy)
-        self.bar_line.set_full(" · ".join(lines))
+        self._busy = bool(lines)
+        self._paint_progress()
+        self._status_line = " · ".join(lines)
+        if not self._saying() or self._quit == "waiting":       # (a line just said keeps the slot: `say`)
+            self.bar_line.set_full(self._status_line)
         failure = snap.failure or ""
         self.bar_failure.set_full(strings.BAR_FAILURE_PREFIX + failure if failure else "")
-        self.bar_failure.setVisible(bool(failure))
         self.bar_failure.setToolTip(strings.BAR_FAILURE_TIP + ("\n\n" + failure if failure else ""))
         logs_before, self._logs_folder = self._logs_folder, snap.logs
         self._status_snap = snap
-        self.logs_button.setVisible(bool(failure) and bool(snap.logs))
+        self._paint_slot()
         self._status_mark(self.bar_replan, snap.replan, strings.BAR_REPLAN_TIP.format(line=snap.replan or ""))
-        self._status_mark(self.bar_ankiweb, snap.ankiweb, strings.BAR_ANKIWEB_TIP)
-        self._status_mark(self.bar_connect, snap.connect, strings.BAR_CONNECT_TIP)
+        if self.anki_mark.set_ankiweb(snap.ankiweb):           # W3.1a: the AnkiWeb mark's words, in the emerald's hover
+            self.status_paints[self.anki_mark] = self.status_paints.get(self.anki_mark, 0) + 1
+        if self.anki_mark.set_waiting(getattr(snap, "backlog", None)):     # W31A-2: *Anki · N waiting*
+            self.status_paints[self.anki_mark] = self.status_paints.get(self.anki_mark, 0) + 1
+        self._status_mark(self.bar_connect, snap.connect, strings.FOOT_CONNECT_TIP.format(line=snap.connect or ""))
         if self.duties is not None:
             self._paint_journey_dot()
         needs_page = self.page_widgets.get("needs")
@@ -1053,16 +1138,61 @@ class ShellWindow(QMainWindow):
             self._show_update(self.duties.update_state, force_cards=True)     # the cards' *Open the logs folder*
         self._paint_needs()
 
+    def _paint_progress(self):
+        """W3.1a: the header's hairline — Generate's share while it has one, else whole and quiet while any job runs."""
+        self.progress.set(self._busy, self._share)
+
+    def say(self, text):
+        """A line for the bar that answers what the user just did (a file ▶ couldn't open, the journey's absence, a
+        move the store placed elsewhere): it takes the footer's slot for `DRAG["message-ms"]`, over the update chip and
+        the failure line, then the slot is as it was (AD-7: said into a hidden line, it was never seen)."""
+        self.bar_line.set_full(text)
+        self._message_until = time.monotonic() + theme.DRAG["message-ms"] / 1000.0
+        if getattr(self, "_message_timer", None) is None:
+            self._message_timer = QTimer(self)
+            self._message_timer.setSingleShot(True)
+            self._message_timer.timeout.connect(self._paint_slot)
+        self._message_timer.start(theme.DRAG["message-ms"] + 1)
+        self._paint_slot()
+
+    def _saying(self):
+        until = getattr(self, "_message_until", None)
+        return until is not None and time.monotonic() < until
+
+    def _paint_slot(self):
+        """W31A-1: the footer's one slot — the failure line (with *Open the logs folder* when there is a folder) while
+        it applies, else the update chip while it applies, else the status line (always the line while the close
+        waits: E20's one line); each part shown or hidden only when that changed (S19). A line just said (`say`) holds
+        the slot for a few seconds over both."""
+        saying = self._saying()
+        if not saying and getattr(self, "_message_until", None) is not None:
+            self._message_until = None               # the line said has had its time: the status line is back
+            self.bar_line.set_full(getattr(self, "_status_line", ""))
+        failure = bool(self.bar_failure.full()) and self._quit != "waiting" and not saying
+        d = self.duties
+        update = d is not None and d.update_applies and not failure and self._quit != "waiting" and not saying
+        parts = [(self.bar_failure, failure, self.status_paints), (self.logs_button, failure and bool(self._logs_folder),
+                 self.status_paints), (self.bar_line, not failure and not update, self.status_paints)]
+        if d is not None:
+            parts.append((d.update_mark, update, d.paints))
+        for part, shown, paints in parts:
+            if part.isHidden() == shown:
+                part.setVisible(shown)
+                paints[part] = paints.get(part, 0) + 1
+
     def _status_mark(self, label, text, tip):
-        """One of row 7's statuses (the re-order's line, Connect's, AnkiWeb's, the journey dot): shown while it has a
-        value, repainted only when its own value (or its tooltip) changed (S19) — another field's change leaves it as it
-        is."""
+        """One of row 7's statuses (the re-order's line, Connect's — quiet marks, their words in the hover — the
+        journey dot): shown while it has a value, repainted only when its own value (or its tooltip) changed (S19) —
+        another field's change leaves it as it is."""
         text = text or ""
-        eliding = isinstance(label, ElidingLabel)
-        if ((label.full() if eliding else label.text()) == text and label.isHidden() != bool(text)
+        quiet = hasattr(label, "full")
+        if quiet and Qt.mightBeRichText(tip):       # AD-14: a provider's line in a hover is never markup (as AnkiMark)
+            import html
+            tip = "<p>" + html.escape(tip).replace("\n", "<br>") + "</p>"
+        if ((label.full() if quiet else label.text()) == text and label.isHidden() != bool(text)
                 and label.toolTip() == (tip if text else "")):
             return
-        if eliding:
+        if quiet:
             label.set_full(text)
         else:
             label.setText(text)
@@ -1123,6 +1253,7 @@ class ShellWindow(QMainWindow):
         (the keeper runs one), else says to press Generate — D29 as last read on a worker (`_read_d29`)."""
         self._status_mark(self.duties.journey_dot, strings.JOURNEY_DOT if self._status_snap.journey else "",
                           strings.JOURNEY_DOT_TIP if self._d29 else strings.JOURNEY_DOT_TIP_PRESS)
+        self._paint_level()                                    # W3.1a: the dot is a mark on the ▾ too
 
     def open_logs(self, folder=None):
         """*Open the logs folder*: `folder`, else — while the bar's failure is an update's with a report — the report's
@@ -1170,17 +1301,23 @@ class ShellWindow(QMainWindow):
         s = self.services
         d = self.duties = _Duties()
         d.module = duties_module
-        # the header: Generate, Your journey ↗, ? (no ▾ yet: the RUNBOOK's *Waits for Sonic's pages*; ? holds *Online
-        # guide* only until the tours, IK-15 / IK-24)
-        d.generate = duties_module.GenerateControl(self.header)
+        # the header (W3.1a): the level ▾ — its pop holds Generate and *Open your journey* — and ? (*Online guide*
+        # only until the tours, IK-15 / IK-24). The pop's full content (words, %, how often, the slider) is W3.1b.
+        d.level = frame.LevelButton(self.header)
+        d.pop = frame.LevelPop(self.centralWidget(), d.level)
+        d.level.clicked.connect(d.pop.toggle)
+        self.register_overlay(d.pop)
+        d.generate = duties_module.GenerateControl(d.pop)
         d.generate.pressed.connect(self._generate_pressed)
         d.generate.log_asked.connect(self._open_generate_log)
-        d.journey = QPushButton(strings.JOURNEY, self.header)
+        d.journey = QPushButton(strings.LEVEL_JOURNEY, d.pop)
+        d.journey.setObjectName("popjourney")
         d.journey.setToolTip(strings.JOURNEY_NONE_TIP)
-        d.journey.setAccessibleName(strings.JOURNEY)
+        d.journey.setAccessibleName(strings.LEVEL_JOURNEY)
         d.journey.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         d.journey.setCursor(Qt.CursorShape.PointingHandCursor)
-        d.journey.setEnabled(False)                     # until a journey is found on disk
+        d.journey.setEnabled(False)                     # until a journey is found on disk: hidden meanwhile
+        d.journey.setVisible(False)
         d.journey.clicked.connect(self._open_journey)
         d.help = QToolButton(self.header)
         d.help.setText(strings.HELP)
@@ -1192,24 +1329,26 @@ class ShellWindow(QMainWindow):
         menu = QMenu(d.help)
         menu.addAction(strings.HELP_GUIDE).triggered.connect(self._open_guide)
         d.help.setMenu(menu)
-        d.journey_dot = QLabel(self.header)               # row 7: the sentences catching up (02-state-model, G10)
+        d.journey_dot = QLabel(d.pop)                     # row 7: the sentences catching up (02-state-model, G10)
         d.journey_dot.setObjectName("journeydot")
         d.journey_dot.setTextFormat(Qt.TextFormat.PlainText)
         d.journey_dot.setAccessibleName(strings.JOURNEY_DOT_NAME)
         d.journey_dot.setVisible(False)
-        self.header.layout().addWidget(d.generate)
-        d.generate.add_beside(d.journey)
-        d.generate.add_beside(d.journey_dot)
-        d.generate.add_beside(d.help)
-        # the bar: N known, the Anki mark, the level chip (statuses: W3.3 makes them open Settings), the update mark
+        d.pop.add_action(d.generate)
+        journey_row = QHBoxLayout()
+        journey_row.setContentsMargins(0, 0, 0, 0)
+        journey_row.addWidget(d.journey)
+        journey_row.addWidget(d.journey_dot)
+        journey_row.addStretch(1)
+        d.pop.actions.addLayout(journey_row)
+        self.header.layout().addWidget(d.level)
+        self.header.layout().addWidget(d.help)
+        self._paint_level()
+        # the bar (W3.1a): the known corner and the emerald are the footer's (statuses: W3.3 makes them open
+        # Settings; the level chip gave way to the ▾); the update chip in the status line's slot while it applies
+        # (W31A-1, `_paint_slot`)
         row = self.footer.layout()
-        for name in ("known", "anki", "level"):
-            label = QLabel(self.footer)
-            label.setObjectName("barmark")
-            label.setTextFormat(Qt.TextFormat.PlainText)
-            label.setVisible(False)
-            row.addWidget(label)
-            setattr(d, name, label)
+        d.known, d.anki = self.known, self.anki_mark
         d.update_mark = QPushButton(strings.UPDATE_READY, self.footer)
         d.update_mark.setToolTip(strings.UPDATE_MARK_IDLE_TIP)
         d.update_mark.setAccessibleName(strings.UPDATE_READY)
@@ -1217,7 +1356,7 @@ class ShellWindow(QMainWindow):
         d.update_mark.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         d.update_mark.clicked.connect(self.open_update_sheet)
         d.update_mark.setVisible(False)
-        row.addWidget(d.update_mark)
+        row.insertWidget(row.indexOf(self.logs_button) + 1, d.update_mark)
         # the update sheet (an overlay: Esc and Back close it — and cancel an update under way, IK-2)
         d.sheet = duties_module.UpdateSheet(self.centralWidget())
         d.sheet.action.connect(self._update_action)
@@ -1283,6 +1422,10 @@ class ShellWindow(QMainWindow):
         d = self.duties
         before, d.generate_state = d.generate_state, state
         d.generate.show_state(state)
+        gen = d.module.gen                                 # W3.1a: its share on the header's hairline, its mark on ▾
+        self._share = gen.percent(state) if state.state == gen.RUNNING else None
+        self._paint_progress()
+        self._paint_level()
         busy = ("queued", "running", "cancelling")
         ended = before is not None and before.state in busy and state.state not in busy
         if (state.state == "failed") != (before is not None and before.state == "failed") or ended:
@@ -1301,7 +1444,7 @@ class ShellWindow(QMainWindow):
             if d.module.gen.can_cancel(state):
                 bridge.run_in_worker(s.controller.cancel)
             return
-        bridge.run_in_worker(s.generate, failed=lambda info: self.bar_line.set_full(str(info[0])))
+        bridge.run_in_worker(s.generate, failed=lambda info: self.say(str(info[0])))
 
     def _open_generate_log(self):
         path = getattr(self.duties.generate_state, "log_path", None)
@@ -1327,25 +1470,25 @@ class ShellWindow(QMainWindow):
         exists = bool(exists)
         if b.isEnabled() != exists:
             b.setEnabled(exists)
+            b.setVisible(exists)                           # W3.1a: in the pop only while there is one to open
             b.setToolTip(strings.JOURNEY_TIP if exists else strings.JOURNEY_NONE_TIP)
+            if self.duties.pop.isVisible():
+                self.duties.pop.place()
 
-    def _open_journey(self):
-        bridge.run_in_worker(self.services.open_journey, then=lambda opened: opened or self._show_journey(False),
-                             failed=lambda info: self.bar_line.set_full(strings.JOURNEY_FAILED.format(why=info[0])))
+    def _open_journey(self, *_checked, asked=False):
+        """*Open your journey ↗* in the pop — and (`asked`, W3.1a S5) Up Next's *N new words ↗*: with none on disk the
+        pop's entry goes, and a click from Up Next says why in the bar."""
+        def done(opened):
+            if opened:
+                return
+            if self.duties is not None:
+                self._show_journey(False)
+            if asked:
+                self.say(strings.JOURNEY_NONE_TIP)
+        bridge.run_in_worker(self.services.open_journey, then=done,
+                             failed=lambda info: self.say(strings.JOURNEY_FAILED.format(why=info[0])))
 
     # the bar's marks
-    def _mark(self, label, text, tip=""):
-        """A status mark set — repainted only when its words changed (S19). -> True when it changed."""
-        if label.text() == text and label.toolTip() == tip and label.isHidden() != bool(text):
-            return False
-        if label.text() != text:
-            label.setText(text)
-            label.setAccessibleName(text)
-        label.setToolTip(tip)
-        label.setVisible(bool(text))
-        self.duties.paints[label] = self.duties.paints.get(label, 0) + 1
-        return True
-
     def _show_automation(self, state):
         d = self.duties
         d.auto_state = state
@@ -1354,21 +1497,23 @@ class ShellWindow(QMainWindow):
             d.junban_said = junban
             self.toasts.show(junban)
         known = getattr(state, "known", None)
-        self._mark(d.known, strings.BAR_KNOWN.format(n=known) if known is not None else "",
-                   strings.BAR_KNOWN_TIP if known is not None else "")
+        if d.known.set_known(known, strings.BAR_KNOWN_TIP):     # W3.1a: the known corner (repainted on a change only)
+            d.paints[d.known] = d.paints.get(d.known, 0) + 1
         if not self.services.settings.get().get("anki_sync_auto"):
             key = "off"
         else:
             key = state.sync if state.sync in strings.BAR_ANKI else None
-        if key is None:
-            self._mark(d.anki, "")
-            return
-        tip = strings.BAR_ANKI_TIP[key]
-        if key == "synced" and state.added:
-            tip = strings.BAR_ANKI_TIP["synced-added"].format(n=state.added)
-        elif key == "failed":
-            tip = tip.format(message=state.message or "")
-        self._mark(d.anki, strings.BAR_ANKI[key], tip)
+        words = tip = ""
+        if key is not None:
+            words, tip = strings.BAR_ANKI[key], strings.BAR_ANKI_TIP[key]
+            if key == "synced" and state.added:
+                tip = strings.BAR_ANKI_TIP["synced-added"].format(n=state.added)
+            elif key == "failed":
+                tip = tip.format(message=state.message or "")
+        # W3.1a: the emerald, lit while Anki answers, dark when closed / failed / off — the words say which, in its
+        # hover. *N waiting* (W31A-2) comes from the status service's `backlog`, in `show_status`.
+        if d.anki.show_state(key, words, tip):
+            d.paints[d.anki] = d.paints.get(d.anki, 0) + 1
 
     def _read_level(self):
         if self.duties is not None:
@@ -1383,7 +1528,26 @@ class ShellWindow(QMainWindow):
             tip = strings.BAR_LEVEL_AUTO_TIP.format(band=name) if name else strings.BAR_LEVEL_AUTO_NONE_TIP
         else:
             text, tip = name, strings.BAR_LEVEL_TIP.format(band=name)
-        self._mark(self.duties.level, text, tip if text else "")
+        d = self.duties
+        d.level_tip = tip if text else strings.LEVEL_WAITING
+        d.level_text = text or strings.LEVEL_WAITING
+        d.pop.set_level(text, automatic)
+        self._paint_level()
+
+    def _paint_level(self):
+        """W3.1a: the level ▾ — its words, its tooltip (the level, then its mark's words) and its mark: Generate failed
+        (amber), stale, or the journey's sentences catching up (`frame.level_mark`); repainted only on a change."""
+        d = self.duties
+        gen, state = d.module.gen, d.generate_state
+        snap = self._status_snap
+        mark = frame.level_mark(state is not None and state.state == gen.FAILED,
+                                state is not None and state.state == gen.STALE,
+                                bool(snap is not None and snap.journey))
+        tip = (strings.LEVEL_TIP_MARK.format(level=d.level_tip, mark=strings.LEVEL_MARKS[mark]) if mark
+               else strings.LEVEL_TIP.format(level=d.level_tip))
+        changed = d.level.set_level(d.level_text, tip)
+        if d.level.set_mark(mark) or changed:
+            d.paints[d.level] = d.paints.get(d.level, 0) + 1
 
     def _show_chores(self, state):
         notice = getattr(state, "notice", None)
@@ -1397,16 +1561,13 @@ class ShellWindow(QMainWindow):
         d.update_state = state
         look = d.module.update_mark_look(state)
         m = d.update_mark
-        if look is None:
-            if not m.isHidden():                           # nothing to say: hidden, its last words kept
-                m.setVisible(False)
-                d.paints[m] = d.paints.get(m, 0) + 1
-        elif m.text() != look[0] or m.toolTip() != look[1] or m.isHidden():
+        d.update_applies = look is not None                # nothing to say: hidden, its last words kept
+        if look is not None and (m.text() != look[0] or m.toolTip() != look[1]):
             m.setText(look[0])
             m.setToolTip(look[1])
             m.setAccessibleName(look[0])
-            m.setVisible(True)
             d.paints[m] = d.paints.get(m, 0) + 1
+        self._paint_slot()                                 # W31A-1: it holds the slot unless a failure does
         d.sheet.show_state(state)
         if state.state in ("none", "failed") and d.sheet.isVisible():
             d.sheet.hide()                                 # nothing on offer: the sheet goes (hidden: no cancel)
@@ -1478,7 +1639,7 @@ class ShellWindow(QMainWindow):
         text_size = text_size if text_size in theme.TEXT_SIZES else current_size
         self.services.settings.set({"text_size": text_size})
         if not LIVE_LOOK:
-            self.bar_line.set_full(strings.RESTART_TO_APPLY)
+            self.say(strings.RESTART_TO_APPLY)
             return None
         ms = style.apply(QApplication.instance(), theme_name, text_size, language)
         titlebar.apply(self, theme_name)
@@ -1510,6 +1671,12 @@ class ShellWindow(QMainWindow):
 
     def _frame_flushed(self):
         self.first_frame.emit()
+        # W3.1a S1: the stones' sheet asked for now — after the first frame, never inside it (rows painted before it
+        # are painted again once, with their stones, when it lands)
+        from app.qt import stones
+        stones.release(self._stones_hold)
+        if self.services.library is not None:                 # (no library: no row, no stone to draw)
+            stones.get(self.devicePixelRatioF() or 1.0, style.current()[1])
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -1538,6 +1705,7 @@ class ShellWindow(QMainWindow):
             try:
                 self.tab_buttons[tab].setChecked(True)
                 self.pages.setCurrentWidget(self.page_widgets[tab])
+                self.vein.go(self.tab_buttons[tab], animate=False)     # W3.1a: there at once, not travelling
             finally:
                 for b in self.tab_buttons.values():
                     b.blockSignals(False)
@@ -1568,6 +1736,13 @@ class ShellWindow(QMainWindow):
         waited = jobs_module.waits_at_quit(self._jobs)
         self._quit_line = (strings.QUIT_FINISHING_LIST if waited and all(j.kind == "generate" for j in waited)
                            else strings.QUIT_FINISHING)
+        if self._moves_pending():                         # W3.1a, 04 §4.5: the moves still queued go first
+            if not waited:
+                self._quit_line = strings.MOVE_WORDS["saving"]
+            self._moves_waited = False
+            began = time.monotonic()
+            bridge.run_in_worker(lambda: self.services.finish_moves(began + QUIT_FINISH_WAIT), then=self._moves_idle,
+                                 failed=self._moves_idle)
         self.closing.emit()                               # a start from now on waits for the claim (single.py)
         if self.duties is not None:                       # no control that does nothing: nothing new starts now
             self.duties.generate.hold(strings.QUIT_CLOSING_TIP)
@@ -1590,13 +1765,18 @@ class ShellWindow(QMainWindow):
         self._replan_waited = True
         self._jobs_changed(self._jobs)
 
+    def _moves_idle(self, _ended):
+        self._moves_waited = True
+        self._jobs_changed(self._jobs)
+
     def _replan_settling(self):
         settling = getattr(self.services, "replan_settling", None)
         return settling is not None and settling()
 
     def _jobs_changed(self, views):
         self._jobs = views
-        if self._quit == "waiting" and self._replan_waited and not jobs_module.waits_at_quit(views):
+        if self._quit == "waiting" and self._replan_waited and getattr(self, "_moves_waited", True) and \
+                not jobs_module.waits_at_quit(views):
             self._close_now()
 
     def _close_now(self):
@@ -1606,9 +1786,20 @@ class ShellWindow(QMainWindow):
         self._quit_timer.stop()
         self.close()
 
+    def _moves_pending(self):
+        """W3.1a: moves the window gave that the store hasn't taken yet (04 §4.5: closing waits for them)."""
+        writer = getattr(self.services, "writer", None)
+        try:
+            return writer is not None and getattr(self, "moves", None) is not None and writer.pending() > 0
+        except Exception:
+            return False
+
     def closeEvent(self, event):
+        moves = getattr(self, "moves", None)
+        if moves is not None:
+            moves.close()                                 # a drag running at the close is let go
         if self._quit == "waiting" or (self._quit is None and (jobs_module.waits_at_quit(self._jobs)
-                                                               or self._replan_settling())):
+                                                               or self._replan_settling() or self._moves_pending())):
             event.ignore()                                # E20: what can't stop part-way ends first
             self._finish_first()
             return

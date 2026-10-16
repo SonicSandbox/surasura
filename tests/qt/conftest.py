@@ -92,6 +92,10 @@ def _per_test_window_state(request, monkeypatch):
         except RuntimeError:
             pass
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    stones = sys.modules.get("app.qt.stones")
+    if stones is not None:                        # (AD-13) a window that never painted nor went: its hold let go
+        for token in list(stones._HELD):
+            stones.release(token)
     if style.current()[:2] != ("night", "M"):
         style.apply(app, "night", "M", "ja")
     freeze.set_frozen(None)

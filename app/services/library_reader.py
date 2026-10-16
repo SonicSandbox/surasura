@@ -21,8 +21,13 @@ library store, on a plain thread of its own — never the window's thread.
   walking them holds Python's lock — every thread, the window's too — for as long as the walk takes
   (`tests/qt/bench_scroll.py` measures it, with and without).
 - **The numbers** (*% known*, *N new*) come from a provider (the plan engine from W3.1; the seed's plan here):
-  `numbers()` → (version, {item_id: (known_tokens, counted_tokens, n_new)}); a new version rebuilds the view. *Mining
-  now* comes from Connect's status (`mining()` → item ids; none until Connect's record exists, 04 §4.4 gap 9).
+  `numbers()` → (version, {item_id: (known_tokens, counted_tokens, n_new)}); a new version rebuilds the rows holding the
+  items it changed when the provider says which (`numbers.changed(since)`, W3.1a's `moves.Numbers`: a drop moves *N new*
+  on a few rows), else every row. *Mining now* comes from Connect's status (`mining()` → item ids; none until Connect's
+  record exists, 04 §4.4 gap 9).
+- **A drag holds it** (06 E6, `hold()` / `release()`): while held it still reads and merges the feed (its copy stays
+  current) but builds and publishes nothing, so nothing moves under the hand; `release()` builds and publishes once. An
+  item gone meanwhile is told at once (`subscribe_gone(cb)`: `cb(item_ids)`) — the drag of a removed item is let go.
 
 Qt-free (the import guard): the window reaches it through `app/qt/bridge.py`.
 """
@@ -71,6 +76,9 @@ class LibraryReader:
         self._stop = threading.Event()
         self._subscribers = []
         self._move_subscribers = []
+        self._gone_subscribers = []
+        self._hold = threading.Event()     # a drag holds the view (E6)
+        self._held_dirty = False           # something came in while held: built and published at the release
         self._thread = None
         self._view = None
         # the reader thread's own copy of the library (touched only there)
@@ -79,6 +87,7 @@ class LibraryReader:
         self._seen = self._epoch = None
         self._data_version = None
         self._numbers_version = None
+        self._built_numbers = None         # the numbers' version the row cache last built with (`numbers.changed`)
         self._mode = None
         self.row_cache = view_rows.RowCache()       # rows kept between builds (the reader's thread only)
         self._tiers, self._pos, self._dirty = None, {}, set()
@@ -108,9 +117,29 @@ class LibraryReader:
         with self._lock:
             self._move_subscribers.append(callback)
 
+    def subscribe_gone(self, callback):
+        """`callback(item_ids)` for the items the feed lets go of while a drag holds the view, on the reader's thread."""
+        with self._lock:
+            self._gone_subscribers.append(callback)
+
+    def hold(self):
+        """A drag starts (E6): the feed is still read, but nothing is built or published until `release()`."""
+        self._hold.set()
+
+    def release(self):
+        """The drop (or a cancel): what came in meanwhile is built and published at the next look, now."""
+        self._hold.clear()
+        self._wake.set()
+
     def view(self):
         with self._lock:
             return self._view
+
+    def republish(self):
+        """The window let go of its own order once every write landed: the next look builds and publishes the store's
+        view, changed or not (where the store placed a row otherwise than the window drew it, round 2 AD2-4)."""
+        self._held_dirty = True
+        self._wake.set()
 
     def start(self):
         if self._thread is None:
@@ -174,31 +203,47 @@ class LibraryReader:
         changed_mode = (mode, reason) != self._mode
         self._mode = (mode, reason)
         version, numbers = self.numbers()
+        held = self._hold.is_set()
+        released = self._held_dirty and not held        # the drop: what came in during the drag, built once now
         if h is None:                                   # nothing to read: the last rows stay, under the mode's bar
-            if changed_mode or self._view is None or version != self._numbers_version:
+            if changed_mode or self._view is None or version != self._numbers_version or released:
                 self._numbers_version = version         # the numbers' own version: a new one empties the row cache
+                if held:
+                    self._held_dirty = True
+                    return
+                self._held_dirty = False
                 self._publish(self._build(numbers, mode, reason, rows_known=self._seen is not None))   # (review B-12)
             return
         dv = h.data_version()
         cards_due = self._cards_stale and time.monotonic() - self._cards_all_at >= CARDS_ALL_S
         if not changed_mode and dv == self._data_version and version == self._numbers_version \
-                and self._view is not None and not self._view.busy and not cards_due:
+                and self._view is not None and not self._view.busy and not cards_due and not released:
             self._flush_cache()
             return
         feed = h.read_feed(self._seen, self._epoch)
         self.reads += 1
         options_before = dict(self._options)
+        before = set(self._items) if held and feed["full"] else None
         self._merge(feed)
+        if held:                                        # E6: the dragged item gone meanwhile lets the drag go
+            gone = [i for k, i in feed["gone"] if k == "item"] if before is None else sorted(before - set(self._items))
+            if gone:
+                self._tell_gone(gone)
         cards = self._card_counts(h)
         changed = (feed["full"] or feed["items"] or feed["works"] or feed["gone"] or changed_mode
                    or self._options != options_before or version != self._numbers_version
-                   or cards != self._cards or self._view is None or self._view.busy or self._view.cached)
+                   or cards != self._cards or self._view is None or self._view.busy or self._view.cached or released)
         self._cards = cards
         self._data_version = dv
         self._numbers_version = version
         self._moved(h)
         if self._store_id is None and hasattr(h, "meta"):
             self._store_id = h.meta().get("store_id")
+        if held:                                        # E6: merged, never built or shown under the hand; a quiet
+            if changed:                                 # look later in the drag never forgets what came in (AD-1)
+                self._held_dirty = True
+            return
+        self._held_dirty = False
         if not changed:                                 # data_version moved with nothing for the window (a checkpoint)
             self.skipped += 1
             self._flush_cache()                         # a look with nothing new: as quiet as one that read nothing
@@ -234,6 +279,15 @@ class LibraryReader:
         for cb in subscribers:
             try:
                 cb(self.language, versions)
+            except Exception:
+                pass                                # a listener's fault never stops the reader
+
+    def _tell_gone(self, ids):
+        with self._lock:
+            subscribers = list(self._gone_subscribers)
+        for cb in subscribers:
+            try:
+                cb(ids)
             except Exception:
                 pass                                # a listener's fault never stops the reader
 
@@ -335,11 +389,21 @@ class LibraryReader:
 
     def _build(self, numbers, mode, reason, rows_known):
         self.builds += 1
+        # a new numbers version rebuilds only the rows holding an item it changed, when the provider says which (a
+        # drop moves *N new* on a few rows); the seed's provider can't say: every row, as before
+        numbers_changed = None
+        changed_since = getattr(self.numbers, "changed", None)
+        if changed_since is not None and self._built_numbers is not None:
+            try:
+                numbers_changed = changed_since(self._built_numbers)
+            except Exception:
+                numbers_changed = None
         view = view_rows.build(self._items, self._works, self._options, numbers=(self._numbers_version, numbers),
                                cards=self._cards, mining=set(self.mining()), language=self.language, mode=mode,
                                reason=reason, loading=not rows_known, cache=self.row_cache,
                                tiers=self._sorted_tiers() if self._items else None, changed=self._build_changed,
-                               changed_works=self._build_works)
+                               changed_works=self._build_works, numbers_changed=numbers_changed)
+        self._built_numbers = self._numbers_version
         self._build_changed = set()                     # built: from here on, only what the feed changes
         self._build_works = set()
         return view

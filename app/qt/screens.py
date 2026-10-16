@@ -12,12 +12,12 @@ import os
 import re
 import sys
 
-from PyQt6.QtCore import QPointF, QRect, QRectF, QSize, Qt, QUrl, pyqtSignal
-from PyQt6.QtGui import QDesktopServices, QPainter, QPainterPath, QPen, QPixmap
+from PyQt6.QtCore import Qt, QUrl, pyqtSignal
+from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from app import path_utils, theme
-from app.qt import bridge, rows, strings, style
+from app.qt import bridge, rows, strings
 from app.services import view_rows
 
 VIDEO_EXTS = (".mkv", ".mp4", ".webm", ".m4v", ".avi", ".mov")
@@ -86,85 +86,6 @@ class StateBar(QLabel):
         self.setVisible(bool(text))
 
 
-def edge_room():
-    """The Goal strip's room at each edge of the window: an em of the body text at the text size (Sonic, G2.3 C2: "Not
-    miniscule but not large")."""
-    return round(theme.font("body", style.current()[1])[0])
-
-
-class GoalStrip(QWidget):
-    """Goal, docked under Current's list (mock `.goalbar`): the box mark, *Goal*, up to nine small covers, *N titles ·
-    N files*. Display only in W2.2 (the sheet it opens is W3.2's)."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setObjectName("goalstrip")
-        self.goal = None
-        self._pix = self._pix_key = None             # painted once into a pixmap, reused until it or its look changes
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.setAccessibleName(strings.GOAL_NAME)
-
-    def sizeHint(self):
-        return QSize(400, round(theme.SIZES["goal-strip"] * rows.fz()) + 18)
-
-    def minimumSizeHint(self):
-        return self.sizeHint()
-
-    def set_goal(self, goal):
-        self.goal = goal
-        self.setToolTip(goal.tip if goal else "")
-        self.setAccessibleName(strings.GOAL_ACCESSIBLE.format(name=strings.GOAL_NAME, line=goal.line) if goal
-                               else strings.GOAL_NAME)
-        self.setFixedHeight(self.sizeHint().height())
-        self.update()
-
-    def paintEvent(self, _event):
-        """Blits its pixmap: a tab switch or a window repaint draws nothing afresh here (0.4–0.5 ms a paint at 150 %,
-        W2.2 profile 2026-10-08)."""
-        if self.goal is None:
-            return
-        dpr = self.devicePixelRatioF() or 1.0
-        key = (self.goal, self.width(), self.height(), dpr, style.current())
-        if key != self._pix_key:
-            pix = QPixmap(max(1, round(self.width() * dpr)), max(1, round(self.height() * dpr)))
-            pix.setDevicePixelRatio(dpr)
-            pix.fill(rows.c("bg"))                   # the page's ground: text keeps its subpixel smoothing
-            q = QPainter(pix)
-            self._draw(q, dpr)
-            q.end()
-            self._pix, self._pix_key = pix, key
-        p = QPainter(self)
-        p.drawPixmap(0, 0, self._pix)
-        p.end()
-
-    def _draw(self, p, dpr):
-        f = rows.fz()
-        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
-        edge = edge_room()                           # about one typed letter from each edge of the window (G2.3 C2)
-        box = QRectF(edge + 0.5, 8.5, self.width() - 2 * edge - 1, theme.SIZES["goal-strip"] * f - 1)
-        p.setPen(QPen(rows.c("line"), 1))
-        p.setBrush(rows.c("surface"))
-        p.drawRoundedRect(box, 10, 10)
-        x = box.left() + 14
-        mid = box.center().y()
-        rows.icon(p, "box", QRectF(x, mid - 8.5, 17, 17), rows.c("ink-dim"))
-        x += 17 + 12
-        w, _ = rows.TEXT.draw(p, x, mid, strings.GOAL_NAME, "goal-label", 200, rows.c("ink"), dpr=dpr)
-        x += w + 12
-        if self.goal.covers:
-            cw, ch = 20 * f, 29 * f
-            for i, title in enumerate(self.goal.covers):
-                r = QRectF(x + i * (cw - 7), mid - ch / 2, cw, ch)
-                path = QPainterPath()
-                path.addRoundedRect(r.adjusted(-1.5, -1.5, 1.5, 1.5), 4, 4)
-                p.fillPath(path, rows.c("surface"))
-                p.drawPixmap(r.topLeft(), rows.cover(title, round(cw), round(ch), dpr))
-            x += len(self.goal.covers) * (cw - 7) + 7 + 12
-        rows.TEXT.draw(p, x, mid, self.goal.line, "row-sub", box.right() - x - 14, rows.c("ink-dim"), dpr=dpr)
-
-
-# --- the pages ------------------------------------------------------------------------------------------------------ #
 def same_objects(a, b):
     """Two tuples holding the same objects, in order."""
     return a is b or (len(a) == len(b) and all(x is y for x, y in zip(a, b)))
@@ -250,9 +171,28 @@ class CurrentPage(Page):
     def __init__(self, tooltips=None, language="ja", parent=None):
         super().__init__("current", strings.CURRENT_HEADING, tooltips, language, parent)
         self.heading.setToolTip(strings.CURRENT_HEADING_TIP)
-        self.goal_strip = GoalStrip(self)
-        self.layout().addWidget(self.goal_strip)
-        self.goal_strip.setVisible(False)
+        # W3.1a: what the rows ask for, handed to whoever does it (package F: the window's writer, the toasts, Undo).
+        # Until a hook is set, nothing is written.
+        self.on_done = None                         # (row, episode): the Done — watched, its toast, Undo, the finish
+        self.on_nudge = None                        # (row, -1 | +1): ↑ ↓
+        self.on_menu = None                         # (row, global QPoint): ⋯
+        self.on_journey = None                      # (row, episode): Up Next's ↗
+        self.list.done_requested.connect(self.done)
+        self.list.nudge_requested.connect(lambda row, step: self._ask(self.on_nudge, row, step))
+        self.list.menu_requested.connect(lambda row, at: self._ask(self.on_menu, row, at))
+        self.list.journey_requested.connect(lambda row, ep: self._ask(self.on_journey, row, ep))
+
+    def done(self, row, episode):
+        """**The one path for a Done** (S12), wherever it's clicked — a stone on a row, a stone or ✓ Done on Up Next,
+        an episode's stone: `on_done(row, episode)` (package F's: `set_watched` through the window's writer, the toast
+        `✓ X watched · next: Y` with Undo, and after a Done that leaves no file unwatched the signed finish toast). A
+        stone already watched is the old chip's click: the hook reads `episode.watched` and turns it back."""
+        self._ask(self.on_done, row, episode)
+
+    @staticmethod
+    def _ask(hook, *args):
+        if hook is not None:
+            hook(*args)
 
     def entries(self, view):
         if view is None:
@@ -271,13 +211,6 @@ class CurrentPage(Page):
         # the reader's row cache keeps an unchanged row the same object, so an identity walk is the whole check
         return old.lines == new.lines and same_objects(old.rows, new.rows)
 
-    def set_view(self, view):
-        how = super().set_view(view)
-        if view is not None and view.goal is not None:
-            if view.goal != self.goal_strip.goal:         # repainted only when Goal changed
-                self.goal_strip.set_goal(view.goal)
-            self.goal_strip.setVisible(bool(view.rows) or bool(view.goal.files) or not view.loading)
-        return how
 
 
 class FinishedPage(Page):

@@ -23,8 +23,8 @@ from PyQt6.QtGui import QColor, QImage, QPainter
 from PyQt6.QtWidgets import QApplication
 
 from app import theme
-from app.qt import rows, screens, shell, strings, style
-from app.services import library_reader
+from app.qt import rows, screens, shell, stones, strings, style
+from app.services import library_reader, stone_plan
 from tests.fixtures import window_seed
 from tests.qt.conftest import wait_until
 from tests.qt.pixels import count, rgb_array
@@ -51,6 +51,23 @@ def open_on(qapp, seed, size=(1280, 800)):
     for _ in range(50):                                       # the list's batched layout settles
         QApplication.processEvents()
     return win, services
+
+
+@pytest.fixture(autouse=True)
+def _stones_sheet(qapp):
+    """The stones' sheet at the tests' ratio, drawn before the window opens (W3.1a): the rows paint with their stones
+    from their first paint, so a sheet landing mid-test — and the one refresh it costs (B3, `tests/qt/test_rows_string.py`)
+    — never shifts a test's paint or render count."""
+    key = stones._key(1.0, "M")
+    if key not in stones._SHEETS:
+        stones._landed(key, stones.build(*key))
+
+
+def over(top, ground):
+    """`top` (a colour with alpha) laid over `ground`, as the painter composes it: -> #rrggbb."""
+    r, g, b, a = theme.parse(top)
+    gr, gg, gb, _ga = theme.parse(ground)
+    return "#%02x%02x%02x" % tuple(round(t * a + u * (1 - a)) for t, u in ((r, gr), (g, gg), (b, gb)))
 
 
 @pytest.fixture
@@ -187,9 +204,14 @@ def test_the_top_20_line_is_drawn_after_the_row_holding_the_20th_available_file(
     assert at == [4]                                       # the seed: the 20th available file is row 5's
     strip = part(lst, at[0], "top-line")[0]
     assert strip[2].startswith("Everything above this line mines itself")
+    assert strip[1].height() >= 12                          # S10: a 2 px groove, an easy target
     rect, arr = grab(lst, at[0])
     band = arr[strip[1].top() - rect.top():strip[1].bottom() - rect.top() + 1]
-    assert count(band, style.colours()["top20-line"], tolerance=12) > 40      # the dashed rule, across the row
+    # W3.1a: a groove across the row — 1 px dark, then 1 px lit lip over the list's ground — and no word
+    width = rect.width() - 8
+    colours = style.colours()
+    assert count(band, colours["groove"], tolerance=1) > width * 0.9
+    assert count(band, over(colours["groove-lip"], colours["bg"]), tolerance=2) > width * 0.9
 
 
 def test_the_soon_line_sits_where_soon_starts_with_its_word(seeded):
@@ -203,7 +225,8 @@ def test_the_soon_line_sits_where_soon_starts_with_its_word(seeded):
 
 
 def test_a_long_mixed_title_is_cut_once_with_the_whole_in_its_tooltip_and_accessible_text(seeded):
-    """E15: elided per paint, the full title in the tooltip and to a screen reader; never two lines."""
+    """E15 (W3.1a: faded at its end, not cut with an ellipsis): the title runs past its one shared width and fades
+    there; the full title is in the tooltip and to a screen reader; never two lines."""
     seed, win = seeded(size=(1100, 760))
     long_title = "海鳴りの聞こえる町で暮らす二人 Season 2 — 特別編 🌊 and a very long English subtitle that goes on"
     lst = current(win)
@@ -216,10 +239,13 @@ def test_a_long_mixed_title_is_cut_once_with_the_whole_in_its_tooltip_and_access
     title = part(lst, i, "title")[0]
     assert title[2].startswith(long_title)
     assert lst.model().data(idx, Qt.ItemDataRole.AccessibleTextRole).startswith(long_title)
-    cols = lst.delegate.columns(lst.visualRect(idx))
-    _st, _w, elided = rows.TEXT.static(long_title, "row-title", cols["text_right"] - 80)
-    assert elided
+    row = lst.model().entries[i][1]
+    g = lst.delegate.line_geometry(row, lst.delegate.slab_of(lst.visualRect(idx)))
+    _st, w, cut = rows.TEXT.static(long_title, "row-title", g["main"].width(), elide=False)
+    assert w > g["main"].width() and not cut           # it runs over its width (and is faded there), never "…"
     assert lst.visualRect(idx).height() == lst.delegate.sizeHint(None, idx).height()   # one line: the height holds
+    assert lst.visualRect(idx).height() == lst.delegate._line_h() + theme.ROW_LINE["gap"] + \
+        lst.delegate._lines_h(lst.model().entries[i][2])
 
 
 def test_nothing_the_screens_do_writes_to_the_library(seeded):
@@ -286,9 +312,9 @@ def test_the_subline_counts_current(seeded):
     assert win.subline.text() == f"日本語 · {pieces} in Current · {len(current_items)} files"
 
 
-def test_the_goal_strip_counts_goals_titles_and_files(seeded):
+def test_the_goal_dock_counts_goals_titles_and_files(seeded):
     seed, win = seeded()
-    strip = win.page_widgets["current"].goal_strip
+    strip = win.dock
     assert strip.isVisible() and strip.goal.line == "3 titles · 34 files"
     assert strip.toolTip() == strip.goal.tip and strip.accessibleName().startswith("Goal: 3 titles")
 
@@ -306,7 +332,7 @@ def test_e1_e2_an_empty_library_says_so_and_shows_no_zero_percent(qapp):
         cur = win.page_widgets["current"]
         assert [k for k, _p, _l in cur.list.model().entries] == [rows.EMPTY]
         assert cur.list.model().entries[0][1] == strings.CURRENT_EMPTY
-        assert cur.goal_strip.goal.line == "Goal is empty"
+        assert win.dock.goal.line == "Goal is empty"
         assert win.page_widgets["finished"].list.model().entries[0][1] == strings.FINISHED_EMPTY
         assert win.subline.text() == "日本語 · nothing added yet"
         assert win.tab_buttons["needs"].isHidden()
@@ -368,11 +394,12 @@ def test_e16_large_text_at_1024_keeps_every_column_inside_the_row(qapp, seeded):
     for i in range(min(8, lst.model().rowCount())):
         rect = lst.visualRect(lst.model().index(i, 0))
         kind, payload, lines = lst.model().entries[i]
-        if kind == rows.ROW:
-            cols = lst.delegate.columns(rect)
-            cover_right = rect.left() + 4 + round(20 * f) + 12 + round(theme.SIZES["row-cover-w"] * f)
-            assert cols["acts"].right() <= width
-            assert cols["text_right"] - cover_right >= 100            # the title keeps room to be read
+        if kind == rows.ROW:                                          # W3.1a: the one-line row's columns
+            g = lst.delegate.line_geometry(payload, lst.delegate.slab_of(rect))
+            assert g["diff"].right() <= width and g["stat"].right() < g["diff"].left()
+            assert g["main"].width() >= round(80 * f)                 # the title keeps room to be read (its floor)
+            assert g["main"].left() > g["art"].left() and g["gstr"].left() > g["main"].right()
+            assert g["gstr"].width() > 0 and g["gstr"].right() < g["stat"].left()   # the string keeps its room
         elif kind == rows.HERO:
             g = lst.delegate._hero_geometry(payload, rect, lines)
             assert g["main"].width() >= 200 and g["play"].right() <= width
@@ -397,9 +424,9 @@ def test_painted_parts_show_their_tooltip_through_the_bubble(seeded):
     assert wait_until(lambda: win.tooltips.showing() == play[2])
 
 
-def test_a_click_on_a_pill_a_mark_or_a_tick_changes_nothing(seeded):
-    """IK-10: in W2.2 a status pill, the on-disk mark, a chip and an episode's tick are states, not buttons: a click on
-    one neither opens nor closes the row."""
+def test_a_click_on_a_pill_a_mark_or_a_stone_never_opens_or_closes_the_row(seeded):
+    """IK-10: a status pill and the on-disk mark are states, not buttons: a click on one neither opens nor closes the
+    row. W3.1a S12: an episode's stone (the old tick) is a Done for its file — it asks for one, and leaves the row open."""
     seed, win = seeded(size=(1280, 1100))
     lst = current(win)
     i = next(k for k, e in enumerate(lst.model().entries) if e[0] == rows.ROW and e[1].mark is not None)
@@ -407,11 +434,14 @@ def test_a_click_on_a_pill_a_mark_or_a_tick_changes_nothing(seeded):
     assert wait_until(lambda: lst.model().open_key is not None)
     lst.scrollTo(lst.model().index(i, 0), lst.ScrollHint.PositionAtTop)
     QApplication.processEvents()
-    for name in ("status", "mark", "tick"):
+    asked = []
+    lst.done_requested.connect(lambda row, ep: asked.append(ep.id))
+    for name in ("status", "mark", "stone"):
         p = part(lst, i, name)[0]
         QTest.mouseClick(lst.viewport(), Qt.MouseButton.LeftButton, pos=p[1].center())
         QApplication.processEvents()
         assert lst.model().open_key is not None, name
+        assert asked == ([p[3].id] if name == "stone" else []), name
 
 
 def test_a_failed_migration_says_so_and_never_getting_ready_forever(seeded):
@@ -508,7 +538,7 @@ def test_a_change_on_current_leaves_finished_and_goal_untouched(seeded):
     seed, win = seeded()
     lst = current(win)
     fin = win.page_widgets["finished"].list
-    strip = win.page_widgets["current"].goal_strip
+    strip = win.dock
     fin_entries, goal = fin.model().entries, strip.goal
     i, (kind, row, _l) = next((i, e) for i, e in enumerate(lst.model().entries) if e[0] == rows.ROW)
     seed.library.commit(items=[{"id": row.episodes[0].id, "watched": 1 - int(row.episodes[0].watched)}])
@@ -535,8 +565,8 @@ def test_an_open_row_repaints_from_pixmaps_and_opening_rows_never_pushes_the_clo
     """Bench 8: every opening was a long step — the open row's head was drawn afresh on each paint, and its episodes'
     pixmaps shared one cache with the rows, so opening rows pushed the closed rows on screen out. The open row's head is
     now a pixmap too, and episodes keep a cache of their own: a repaint of an open row, and of the rows after closing
-    it again, draws nothing afresh."""
-    seed, win = seeded()
+    it again, draws nothing afresh. (W3.1a: the one-line rows stand taller — a window tall enough for six.)"""
+    seed, win = seeded(size=(1280, 1100))
     lst = current(win)
     lst.viewport().repaint()
     on_screen = lambda i: lst.visualRect(lst.model().index(i, 0)).bottom() < lst.viewport().height()
@@ -639,12 +669,12 @@ def test_the_pointer_resting_on_a_closed_row_paints_its_episodes_ahead_so_openin
     i = next(i for i, e in enumerate(lst.model().entries)
              if e[0] == rows.ROW and len(e[1].episodes) >= 2 and on_screen(i))
     row = lst.model().entries[i][1]
-    ids = {(ep.id, False, row.media_word == "audio") for ep in row.episodes}   # (id, hero, audio glyph)
-    assert not any(k[1] in ids for k in lst.delegate._sprites["ep"])     # nothing warmed before the pointer arrives
+    ids = {(ep.id, False, row.media_word == "audio") for ep in row.episodes}   # (id, hero, audio glyph, …)
+    assert not any(k[1][:3] in ids for k in lst.delegate._sprites["ep"])     # nothing warmed before the pointer arrives
     pos = QPointF(lst.visualRect(lst.model().index(i, 0)).center())
     QApplication.sendEvent(lst.viewport(), QMouseEvent(QEvent.Type.MouseMove, pos, Qt.MouseButton.NoButton,
                                                        Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier))
-    assert wait_until(lambda: any(k[1] in ids for k in lst.delegate._sprites["ep"]))
+    assert wait_until(lambda: any(k[1][:3] in ids for k in lst.delegate._sprites["ep"]))
     assert wait_until(lambda: not lst._hover_warm.isActive())            # the warm has run out of episodes in view
     drawn = []
     original = lst.delegate._paint_episode
@@ -725,22 +755,6 @@ def test_an_open_hero_keeps_its_head_as_a_pixmap_and_a_repaint_draws_nothing_afr
     assert lst.delegate.renders == renders
 
 
-def test_the_goal_strip_blits_its_pixmap_and_paints_afresh_only_for_a_new_goal(seeded):
-    """The Goal strip is painted once into `_pix` and blitted on every repaint (a tab switch, a window repaint): the
-    same goal, size and look keep the same pixmap object, and a different goal draws a new one."""
-    seed, win = seeded()
-    strip = win.page_widgets["current"].goal_strip
-    strip.repaint()
-    first = strip._pix
-    assert first is not None
-    strip.repaint()
-    assert strip._pix is first
-    other = strip.goal._replace(line="1 title · 2 files")
-    strip.set_goal(other)
-    strip.repaint()
-    assert strip._pix is not first and strip._pix_key[0] is other
-
-
 def test_an_emptied_list_lets_its_row_and_episode_pixmaps_go_once_it_rests(seeded):
     """A list emptied (a search that finds nothing, a view with no entries) must not keep the pixmaps of the rows it
     showed: idle memory should not hold on to what an empty list no longer draws. Once it rests, both caches and their
@@ -811,15 +825,15 @@ def test_a_stale_hover_warms_nothing_while_the_list_is_still_moving_and_warms_on
     i = next(i for i, e in enumerate(lst.model().entries)
              if e[0] == rows.ROW and len(e[1].episodes) >= 2 and on_screen(i))
     row = lst.model().entries[i][1]
-    ids = {(ep.id, False, row.media_word == "audio") for ep in row.episodes}   # (id, hero, audio glyph)
+    ids = {(ep.id, False, row.media_word == "audio") for ep in row.episodes}   # (id, hero, audio glyph, …)
     before = lst.delegate.warmed
     lst._hover = i
     lst._rest()                                          # the list has just moved
     lst._warm_hovered()                                  # at once: still moving, so nothing is painted
     assert lst.delegate.warmed == before
-    assert not any(k[1] in ids for k in lst.delegate._sprites["ep"])
+    assert not any(k[1][:3] in ids for k in lst.delegate._sprites["ep"])
     assert lst._hover_warm.isActive()                    # re-armed for when the list rests
-    assert wait_until(lambda: any(k[1] in ids for k in lst.delegate._sprites["ep"]), 10)
+    assert wait_until(lambda: any(k[1][:3] in ids for k in lst.delegate._sprites["ep"]), 10)
 
 
 def test_a_user_scroll_step_lands_on_a_whole_device_pixel_so_the_drawn_rows_move(seeded, monkeypatch):
@@ -881,13 +895,13 @@ def test_a_stale_hover_scrolled_off_screen_warms_no_episodes_once_the_list_rests
         QApplication.processEvents()
     assert not lst.visualRect(index).intersects(vp.rect())              # precondition: the row is off screen
     assert wait_until(lambda: not lst._warm.isActive())                 # the list's own warm has run out
-    assert not any(k[1] in ids for k in lst.delegate._sprites["ep"])    # nothing of this row painted so far
+    assert not any(k[1][:3] in ids for k in lst.delegate._sprites["ep"])    # nothing of this row painted so far
     before = lst.delegate.warmed
     lst._hover = i                                                      # the pointer's hover, left behind by the wheel
     lst._moved = 0.0                                                    # the list rested long ago
     lst._warm_hovered()
     assert lst.delegate.warmed == before
-    assert not any(k[1] in ids for k in lst.delegate._sprites["ep"])
+    assert not any(k[1][:3] in ids for k in lst.delegate._sprites["ep"])
 
 
 def _ground_strip_below_last_row(lst):
@@ -904,8 +918,8 @@ def test_the_list_ground_shows_under_the_last_row_before_and_after_it_is_opened_
     """The list's viewport is opaque (it paints no ground of its own), so the list paints its ground itself: the space
     under the last row must show the list's ground, not black or leftover pixels, or a learner sees a torn window at
     the foot of his list. Checked before a row is opened and again after the last row is opened and closed (review
-    C-10: a grab after closing the last row)."""
-    seed, win = seeded(size=(1280, 1400))
+    C-10: a grab after closing the last row). (W3.1a: the one-line rows stand taller — a window taller than them all.)"""
+    seed, win = seeded(size=(1280, 2000))
     lst = current(win)
     for _ in range(20):
         QApplication.processEvents()
@@ -1090,19 +1104,21 @@ def test_a_goal_only_change_leaves_current_and_finished_entries_and_paint_alone(
     assert lst.delegate.paints == cur_paints and fin.delegate.paints == fin_paints
 
 
-def test_the_pointer_leaving_a_row_repaints_that_row_alone_from_its_kept_pixmap(seeded):
+def test_the_pointer_leaving_a_row_repaints_that_row_and_its_neighbours_alone_from_their_kept_pixmaps(seeded):
     """A learner moving the pointer down the list sees each row light up and go back. Leaving a row must repaint only
-    that row, from the pixmap it kept before the hover: repainting the whole list (or drawing rows afresh) on every
-    pointer move is what makes a long list stutter."""
+    that row — and, since W3.1a, the two neighbours its lift had eased apart (§3: three rows while the springs run) —
+    from the pixmaps they kept: repainting the whole list (or drawing rows afresh) on every pointer move is what makes
+    a long list stutter. (The freeze switch jumps the springs: each of the three is painted once.)"""
     from PyQt6.QtCore import QEvent, QPointF
     from PyQt6.QtGui import QMouseEvent
-    seed, win = seeded()
+    seed, win = seeded(size=(1280, 1100))
     lst = current(win)
     lst.viewport().repaint()                                             # every row on screen: its unhovered pixmap
     on_screen = lambda i: lst.visualRect(lst.model().index(i, 0)).bottom() < lst.viewport().height()
     shown = [i for i, e in enumerate(lst.model().entries) if e[0] == rows.ROW and on_screen(i)]
     assert len(shown) > 3, shown
     i = shown[len(shown) // 2]
+    assert i - 1 in shown and i + 1 in shown                             # both neighbours are rows, on screen
     pos = QPointF(lst.visualRect(lst.model().index(i, 0)).center())
     QApplication.sendEvent(lst.viewport(), QMouseEvent(QEvent.Type.MouseMove, pos, Qt.MouseButton.NoButton,
                                                        Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier))
@@ -1115,7 +1131,7 @@ def test_the_pointer_leaving_a_row_repaints_that_row_alone_from_its_kept_pixmap(
     for _ in range(5):
         QApplication.processEvents()
     assert lst._hover is None
-    assert lst.delegate.paints - paints == 1, (lst.delegate.paints - paints, len(shown))   # exactly the row left
+    assert lst.delegate.paints - paints == 3, (lst.delegate.paints - paints, len(shown))   # the row left, its 2 neighbours
     assert lst.delegate.renders == renders                               # from its kept pixmap: nothing drawn afresh
 
 
@@ -1204,16 +1220,20 @@ def test_a_look_that_finds_the_store_unchanged_reads_builds_and_paints_nothing(s
     assert wait_until(lambda: lst.model().entries[i][1] is not row)
 
 
-def test_focus_in_and_out_repaints_only_the_current_row(seeded):
-    """Qt repaints a whole list when it gains or loses focus, but only the current row's ring changes. Each focus change
-    paints that one row and no other: a learner tabbing between his list and the tabs sees no needless redraw."""
+def test_focus_in_and_out_repaints_only_the_current_row_and_its_neighbours(seeded):
+    """Qt repaints a whole list when it gains or loses focus, but only the current row's ring changes — and, since
+    W3.1a, its hover look (S7: keyboard focus shows what the hand's hover shows), which lifts it and eases its two
+    neighbours apart. Each focus change paints those three rows and no other: a learner tabbing between his list and
+    the tabs sees no needless redraw."""
     seed, win = seeded()
     lst = current(win)
     win.tab_buttons["current"].setFocus(Qt.FocusReason.TabFocusReason)
     for _ in range(5):
         QApplication.processEvents()
-    i = next(n for n, e in enumerate(lst.model().entries)          # a closed row on screen (the hero is not one)
-             if e[0] == rows.ROW and lst.visualRect(lst.model().index(n, 0)).intersects(lst.viewport().rect()))
+    entries = lst.model().entries
+    i = next(n for n, e in enumerate(entries)                      # a closed row on screen (the hero is not one), its
+             if e[0] == rows.ROW and entries[n - 1][0] == rows.ROW and entries[n + 1][0] == rows.ROW   # neighbours too
+             and lst.visualRect(lst.model().index(n + 1, 0)).bottom() < lst.viewport().height())
     lst.setCurrentIndex(lst.model().index(i, 0))                  # made current while the list has no focus
     for _ in range(5):
         QApplication.processEvents()
@@ -1223,14 +1243,14 @@ def test_focus_in_and_out_repaints_only_the_current_row(seeded):
     for _ in range(5):
         QApplication.processEvents()
     assert lst.hasFocus()
-    assert lst.delegate.paints == before + 1, lst.delegate.paints - before  # focus in: the current row alone
+    assert lst.delegate.paints == before + 3, lst.delegate.paints - before  # focus in: the current row and its 2
 
     before = lst.delegate.paints
     win.tab_buttons["current"].setFocus(Qt.FocusReason.TabFocusReason)
     for _ in range(5):
         QApplication.processEvents()
     assert not lst.hasFocus()
-    assert lst.delegate.paints == before + 1, lst.delegate.paints - before  # focus out: the current row alone
+    assert lst.delegate.paints == before + 3, lst.delegate.paints - before  # focus out: the same three
 
 
 def test_keyboard_focus_in_makes_the_first_row_current_without_scrolling(seeded):
@@ -1309,8 +1329,8 @@ def _rows_on_screen(lst):
 def test_a_file_arriving_on_screen_draws_exactly_one_row_afresh_and_only_moves_the_numbers_below_it(seeded):
     """A file that lands where the learner is reading gets a row of its own, and that row is the only one drawn: the rows
     below it stay on their pixmaps and only their numbers move down one, so a new file never makes the list stutter
-    under his eyes."""
-    seed, win = seeded(files=2000)
+    under his eyes. (W3.1a: the one-line rows stand taller — a window tall enough for six.)"""
+    seed, win = seeded(files=2000, size=(1280, 1100))
     lst = current(win)
     lst.viewport().repaint()
     on = _rows_on_screen(lst)
@@ -1366,18 +1386,20 @@ def test_a_refresh_that_changes_nothing_starts_no_paint_ahead_and_paints_nothing
 
 
 _FACE = ("title", "line", "pct", "pct_tone", "n_new", "status", "mark", "can_play", "cover_title", "studying",
-         "n_files", "n_watched", "chips", "date")
+         "n_files", "n_watched", "next_index", "date")
 
 
 def _face(row):
-    """What the learner would see of a closed row: the shown fields as one tuple."""
-    return tuple(getattr(row, name) for name in _FACE)
+    """What the learner would see of a closed row: the shown fields, and its string (W3.1a: one stone per file, as
+    `stone_plan` plans it — its state, its size, dimmed or not) as one tuple."""
+    return tuple(getattr(row, name) for name in _FACE) + (stone_plan.plan_of(row),)
 
 
 def test_an_available_file_arriving_on_screen_draws_afresh_only_the_new_row_and_the_rows_whose_face_changed(seeded):
-    """A file that lands where the learner is reading pushes one row past the top-20 line. That row is rebuilt because
-    its episodes moved, but usually it looks the same, so it keeps its picture: only the new row and the rows whose
-    look really changed are drawn again, and the list never redraws what the learner cannot see change."""
+    """A file that lands where the learner is reading pushes one row past the top-20 line, and moves every row below it
+    one place. Those rows are rebuilt, but most look the same, so they keep their pictures: only the new row and the
+    rows whose look really changed (W3.1a: a stone dimmed as its file left the top 20 is a change) are drawn again,
+    and the list never redraws what the learner cannot see change."""
     seed, win = seeded(files=2000)
     lst = current(win)
     line_at = next(i for i, e in enumerate(lst.model().entries) if any(ln.kind == "top" for ln in e[2]))
@@ -1406,8 +1428,8 @@ def test_an_available_file_arriving_on_screen_draws_afresh_only_the_new_row_and_
     after = {r.key: r for _i, r in shown}
     assert [r.key for _i, r in shown][1] == new_key, [r.key for _i, r in shown][:4]   # it landed just above the target
     changed = [k for k in before if k in after and _face(before[k]) != _face(after[k])]
-    crossed = [k for k in before if k in after and after[k] is not before[k] and _face(after[k]) == _face(before[k])
-               and after[k].episodes != before[k].episodes]        # rebuilt (its episodes moved), same look: kept
+    crossed = [k for k in before if k in after and after[k] is not before[k] and _face(after[k]) == _face(before[k])]
+    #                                                                rebuilt (its place moved), same look: kept
     assert crossed, "no on-screen row was rebuilt with an unchanged face, so the test would prove nothing"
     assert lst.delegate.renders == renders + 1 + len(changed)      # the new row, and each row whose look changed
 
@@ -1468,36 +1490,44 @@ def test_a_setting_no_screen_reads_paints_no_widget_and_no_row(seeded, qapp):
     assert [lst.delegate.paints for lst in lists] == before_paints
 
 
-def test_a_closed_rows_picture_never_shows_its_number_its_episode_count_or_its_descriptions(seeded):
-    """A closed row's picture shows its title, cover, line, status and the diff, never its place in Current, how many
-    episodes it has, or its screen-reader and tooltip text. So when a rebuilt row differs only there, its picture is
-    kept and nothing is redrawn: the learner sees the same row either way (Sonic's S19)."""
+def test_a_closed_rows_picture_never_shows_its_number_or_its_descriptions_but_shows_its_files(seeded):
+    """A closed row's picture shows its title, art, string, Anki count and the diff, never its place in Current or its
+    screen-reader and tooltip text. So when a rebuilt row differs only there, its picture is kept and nothing is
+    redrawn: the learner sees the same row either way (Sonic's S19). Since W3.1a its files **are** on it — the string,
+    one stone per file (B3) — so a row with a file fewer is a new picture (it used to be the hidden episode count)."""
     seed, win = seeded()
     lst = current(win)
     i, (kind, row, lines) = next(
         (n, e) for n, e in enumerate(lst.model().entries)
         if e[0] == rows.ROW and len(e[1].episodes) >= 2 and len(e[1].title) <= 12 and e[1].key != lst.model().open_key)
-    row = row._replace(title="霧の町")      # short: a title one character longer must still fit, not be cut to the same "…"
-    other = row._replace(episodes=row.episodes[:1], accessible="別の説明", description="別の説明", index=row.index + 7)
-    assert other != row and len(other.episodes) != len(row.episodes)
-    size = lst.visualRect(lst.model().index(i, 0)).size()
-    size.setWidth(1100)            # a narrower picture elides the title away, and then no title change can show
+    row = row._replace(title="霧の町")      # short: a title one character longer must still fit, not be cut the same
+    other = row._replace(accessible="別の説明", description="別の説明", index=row.index + 7)
+    fewer = row._replace(episodes=row.episodes[:1], next_index=0, string=None)   # its plan isn't the reader's now
+    assert other != row
+    slab = lst.delegate.slab_of(lst.visualRect(lst.model().index(i, 0)))
+    size = slab.size()
+    sheet = stones.get(1.0, style.current()[1])
+    assert sheet is not None
+    tw = lst.delegate.title_w(size.width())
 
     def paint(payload):
         img = QImage(size, QImage.Format.Format_RGB32)
-        img.fill(QColor("#1e1e1e"))
+        img.fill(rows.c("surface"))
         p = QPainter(img)
-        lst.delegate._paint_row(p, rows.ROW, payload, QRect(0, 0, size.width(), size.height()), False, False,
-                                1.0, lines, number=False)
-        p.end()
+        try:
+            lst.delegate._paint_current(p, payload, QRect(0, 0, size.width(), size.height()), False, 1.0, sheet, tw=tw)
+        finally:
+            p.end()                    # a painter left open on a failure is freed under its image later: a crash
         return rgb_array(img)
 
     before, after = paint(row), paint(other)
     assert (before != before[0, 0]).any(), "the closed row painted nothing, so the test would prove nothing"
     retitled = paint(row._replace(title=row.title + "改"))
     assert (retitled != before).any(), "a changed title left the picture as it was, so the comparison could not see text"
-    assert before.shape == after.shape and (before == after).all()     # the number, the count and the text stay off the picture
+    assert before.shape == after.shape and (before == after).all()     # the number and the text stay off the picture
     assert rows._same_face(row, other, rows.ROW)
+    assert (paint(fewer) != before).any()                              # its string shows its files
+    assert not rows._same_face(row, fewer, rows.ROW)
 
 
 def test_a_numbers_refresh_compares_only_the_rows_near_the_screen_and_repaints_none(seeded, monkeypatch):

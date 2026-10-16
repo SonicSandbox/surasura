@@ -15,8 +15,13 @@ tokens, the overlay animator, the spinner, and reduced motion.
   jumps, a fade is kept but no longer than `FAST`, a spinner is a static mark. *Follow* reads Windows' *Show animations*
   (`SPI_GETCLIENTAREAANIMATION`) at start and again when Windows says it changed (`WM_SETTINGCHANGE`): Qt 6.11 can't see
   it (05 §5.11); off Windows it answers "animations on".
+- **Springs** (W3.1a §3; `clock().spring(...)`, `Spring`): physics on the same clock, stepped from its own time in
+  sub-steps of at most `theme.SPRINGS["sub-step-ms"]` (semi-implicit Euler, as the reference), never from how often a
+  frame comes; at rest a spring snaps to its target and leaves the clock. Presets (ω, ζ) and the rest thresholds live in
+  `theme.SPRINGS` (`preset(name)`). Reduced motion and the freeze switch put a spring at rest at once, as a move.
 - **Tests drive time** (`clock().use_test_time()`, `advance(ms)`): no test waits on real time for a motion.
 """
+import math
 import sys
 import time
 from collections import deque
@@ -183,6 +188,73 @@ class Animation:
         self.clock._end(self, finish=False)
 
 
+CRITICAL = 1.0                                  # ζ of a critically damped spring: a release's way home from below
+
+
+def preset(name):
+    """A spring preset's keywords from `theme.SPRINGS`: `clock().spring(f, x, to, **preset("hover-lift"))`, or
+    `spring.retarget(to, **preset("hover-release"))`. Only the release falls once past rest (`no_overshoot_above`)."""
+    omega, zeta = theme.SPRINGS[name]
+    return {"omega": omega, "zeta": zeta, "no_overshoot_above": name == "hover-release"}
+
+
+class Spring:
+    """One spring on the clock (W3.1a §3): `on_value(x)` once a frame, its physics stepped from the clock's own time in
+    sub-steps of at most `theme.SPRINGS["sub-step-ms"]` (semi-implicit Euler). At rest (|x − target| and |v| under
+    `rest-x` / `rest-v`) it snaps to its target, calls `on_value(target)` once and `on_rest()`, and leaves the clock.
+    `retarget(target)` keeps its place and speed (a hover that leaves mid-lift falls back from where it is) and moves a
+    resting or stopped spring again. `stop()` ends it where it is (its speed dropped); `finish()` puts it at rest now.
+    Every end but a rest — `stop()`, its owner hidden or deleted, an error in `on_value` — calls `on_end()` once, as an
+    `Animation`'s does.
+    `no_overshoot_above`: it moves with its ζ until it passes its target, then critically damped home from the far side,
+    never back to the side it set out from (a lift's release: never back above)."""
+    __slots__ = ("clock", "on_value", "on_rest", "on_end", "owner", "kind", "omega", "zeta", "target", "value",
+                 "velocity", "no_overshoot_above", "side", "crossed", "alive", "t", "started", "steps")
+
+    def __init__(self, clock, on_value, start, target, omega, zeta, owner, on_rest, velocity, kind, no_overshoot_above,
+                 on_end):
+        self.clock, self.on_value, self.on_rest, self.on_end = clock, on_value, on_rest, on_end
+        self.owner, self.kind, self.omega, self.zeta = owner, kind, float(omega), float(zeta)
+        self.value, self.velocity, self.target = float(start), float(velocity), float(target)
+        self.no_overshoot_above = bool(no_overshoot_above)
+        self.alive = False
+        self.t = self.started = 0.0
+        self.steps = 0                             # physics sub-steps taken
+        self._aim()
+
+    def _aim(self):
+        """The side it sets out from (for `no_overshoot_above`): each new target starts afresh."""
+        d = self.value - self.target
+        self.side = ((d > 0) - (d < 0)) if self.no_overshoot_above else 0
+        self.crossed = False
+
+    @property
+    def at_rest(self):
+        """Resting at its target (settled, jumped or finished) — not moving, nor stopped short of it."""
+        return not self.alive and self.value == self.target and self.velocity == 0.0
+
+    def retarget(self, target, omega=None, zeta=None, no_overshoot_above=None):
+        """A new target from where it is, at the speed it has (a new ω / ζ / release rule too, when named)."""
+        target = float(target)
+        if self.at_rest and target == self.target:
+            return                                 # already there: nothing moves, the clock stays asleep
+        if omega is not None:
+            self.omega = float(omega)
+        if zeta is not None:
+            self.zeta = float(zeta)
+        if no_overshoot_above is not None:
+            self.no_overshoot_above = bool(no_overshoot_above)
+        self.target = target
+        self._aim()
+        self.clock._start_spring(self)
+
+    def stop(self):
+        self.clock._end_spring(self, rest=False)
+
+    def finish(self):
+        self.clock._end_spring(self, rest=True)
+
+
 class Stats:
     """Each frame's lateness (how long after it was due it came) and work (the clock's own callbacks), ms."""
 
@@ -205,6 +277,7 @@ class Clock(QObject):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._anims = []
+        self._springs = []
         self._timer = QTimer(self)
         self._timer.setTimerType(Qt.TimerType.PreciseTimer)
         self._timer.setInterval(FRAME_MS)
@@ -230,7 +303,7 @@ class Clock(QObject):
 
     def use_real_time(self):
         self._test_now = None
-        if self._anims:
+        if self._anims or self._springs:
             self._start_timer()
 
     @property
@@ -252,7 +325,7 @@ class Clock(QObject):
 
     @property
     def active(self):
-        return [a for a in self._anims if a.alive]
+        return [a for a in self._anims + self._springs if a.alive]
 
     # --- animating ------------------------------------------------------------------------------------------ #
     def animate(self, duration_ms, on_frame, on_done=None, kind="move", points=None, owner=None, repeat=False,
@@ -277,6 +350,77 @@ class Clock(QObject):
         if self._test_now is None:
             self._start_timer()
         return anim
+
+    def spring(self, on_value, start, target, omega, zeta, owner=None, on_rest=None, velocity=0.0, kind="move",
+               no_overshoot_above=False, on_end=None):
+        """Start one spring from `start` (moving at `velocity` per second) to `target`, ω rad/s and ζ (presets:
+        `preset(name)`). `kind` "move" jumps to rest when motion is reduced; "fade" is kept then, at most FAST.
+        `owner`: a widget whose deletion or hiding ends it (checked each frame). -> Spring."""
+        s = Spring(self, on_value, start, target, omega, zeta, owner, on_rest, velocity, kind, no_overshoot_above,
+                   on_end)
+        self._start_spring(s)
+        return s
+
+    def _start_spring(self, s):
+        """A spring onto the clock — or at rest at once: frozen, reduced (a move), or already resting at its target."""
+        if s.alive:
+            return                                 # moving already: its next frame reads the new target
+        if freeze.frozen() or (self.mode.reduced and s.kind != "fade") or (s.value == s.target and s.velocity == 0.0):
+            self._rest(s)
+            return
+        s.alive = True
+        s.t = s.started = self.now()
+        if s not in self._springs:                 # (stopped and moved again within one frame: still listed)
+            self._springs.append(s)
+        if self._test_now is None:
+            self._start_timer()
+
+    def _rest(self, s):
+        """At its target: `on_value(target)` once, then `on_rest()`; off the clock."""
+        s.alive = False
+        s.value, s.velocity = s.target, 0.0
+        self._call(s, s.on_value, s.target)
+        if s.on_rest is not None:
+            self._call(s, s.on_rest)
+
+    def _end_spring(self, s, rest):
+        if not s.alive:
+            return
+        if rest:
+            self._rest(s)
+        else:
+            s.alive, s.velocity = False, 0.0       # still where it stopped: a retarget later sets out from rest
+            self._ended(s)
+        self._prune()
+
+    def _step_spring(self, s, now):
+        """One frame of a spring: the time since its last frame in equal sub-steps of at most `sub-step-ms`."""
+        k = theme.SPRINGS
+        elapsed = min(now - s.t, float(k["catch-up-ms"]))
+        s.t = now
+        if s.kind == "fade" and self.mode.reduced and now - s.started >= theme.FAST:
+            self._rest(s)                          # a fade kept when reduced, never longer than FAST
+            return
+        if elapsed > 0.0:
+            n = max(1, math.ceil(elapsed / k["sub-step-ms"] - 1e-9))
+            h = elapsed / n / 1000.0
+            x, v, to, w = s.value, s.velocity, s.target, s.omega
+            z = CRITICAL if s.crossed else s.zeta
+            for _ in range(n):
+                v += (w * w * (to - x) - 2.0 * z * w * v) * h      # semi-implicit Euler: the speed, then the place
+                x += v * h
+                if s.side:
+                    past = (x - to) * s.side           # > 0: on the side it set out from
+                    if not s.crossed and past <= 0.0:
+                        s.crossed, z = True, CRITICAL  # passed rest: critically damped home from the far side
+                    elif s.crossed and past > 0.0:
+                        x, v = to, 0.0                 # never back to the side it set out from
+            s.value, s.velocity = x, v
+            s.steps += n
+        if abs(s.value - s.target) < k["rest-x"] and abs(s.velocity) < k["rest-v"]:
+            self._rest(s)
+            return
+        self._call(s, s.on_value, s.value)
 
     def _start_timer(self):
         if not self._timer.isActive():
@@ -306,7 +450,8 @@ class Clock(QObject):
 
     def _prune(self):
         self._anims = [a for a in self._anims if a.alive]
-        if not self._anims:
+        self._springs = [s for s in self._springs if s.alive]
+        if not self._anims and not self._springs:
             self._timer.stop()
 
     def _call(self, anim, fn, *args):
@@ -354,6 +499,14 @@ class Clock(QObject):
                         self._call(anim, anim.on_done)
                 else:
                     self._call(anim, anim.on_frame, anim.curve.valueForProgress(p) if anim.curve is not None else p)
+            for s in list(self._springs):            # the springs read the same frame time
+                if not s.alive:
+                    continue
+                if self._gone(s.owner):
+                    s.alive, s.velocity = False, 0.0
+                    self._ended(s)
+                    continue
+                self._step_spring(s, now)
         finally:
             self._frame_now = None
         self._prune()
@@ -374,6 +527,25 @@ def clock():
     if _clock is None or sip.isdeleted(_clock):
         _clock = Clock(QApplication.instance())
     return _clock
+
+
+def fall_into_place(on_value, depth=None, owner=None, on_rest=None):
+    """The reference's `r5Inset`: down to `depth` px (default `inset-px`) at 1/ω, then home — y = d·ωt·e^(1−ωt), a
+    critically damped spring resting at 0 struck with the speed d·ω·e. Drawn from that closed form on the clock (a
+    "move": Reduced motion and the freeze switch leave it at 0), not stepped: Euler's first step takes 2ωh of an
+    impulse's speed (the drop would come up ~27 % short at 6 ms sub-steps). Ends when it is within `rest-x` of home.
+    Positive is down. `on_value(y)` each frame, 0 last; then `on_rest()`. -> Animation."""
+    omega = theme.SPRINGS["inset"][0]
+    depth = float(theme.SPRINGS["inset-px"] if depth is None else depth)
+    near = theme.SPRINGS["rest-x"] / depth if depth else 1.0
+    u = 1.0                                        # ωt at the end: past the deepest point, within rest-x of home
+    while u * math.exp(1.0 - u) >= near:
+        u += 0.05
+    end_ms = u / omega * 1000.0
+
+    def frame(p):
+        on_value(0.0 if p >= 1.0 else depth * u * p * math.exp(1.0 - u * p))
+    return clock().animate(end_ms, frame, on_rest, points="linear", owner=owner)
 
 
 def install_mode_filter(app=None):

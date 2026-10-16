@@ -196,11 +196,10 @@ def _decode_tokens(blob):
 # --------------------------------------------------------------------------- #
 # Schema
 # --------------------------------------------------------------------------- #
-# IF NOT EXISTS on every object, deliberately — a second guard: the build runs in the write lock with the version
-# looked at again inside it (_ensure_schema). Two processes can both read a stale `user_version`
-# (the background indexer and a Generate run race routinely), both decide the schema is missing, and
-# both execute this script; without the guard the loser dies on "table files already exists". The
-# work is idempotent either way — the winner's tables are the ones everybody ends up using.
+# IF NOT EXISTS on every object, kept as a second guard. Two processes can both read a stale `user_version` (the
+# background indexer and a Generate run race routinely) and both decide the schema is missing; what keeps them apart is
+# the write lock: _ensure_schema builds inside BEGIN IMMEDIATE and looks at the version again inside it, so the second
+# finds the first's build done and runs nothing.
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS files (
     path   TEXT PRIMARY KEY,   -- normcase abspath
@@ -242,14 +241,19 @@ _REBUILD = [f"DROP TABLE IF EXISTS {t}" for t in ("files", "aggregate", "bound",
 
 
 def _schema_ready(conn):
+    """The store is this schema, every table there. A table or column missing (a half-built DB) is "not ready"; any other
+    error — busy, a disk error, damage — is raised, never read as "build it again" (the build drops every table)."""
     if conn.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION:
         return False
-    try:  # verify tables actually exist (guard a half-built DB)
+    try:
         conn.execute("SELECT names, bound FROM files LIMIT 1")
         conn.execute("SELECT 1 FROM aggregate LIMIT 1")
         conn.execute("SELECT 1 FROM bound LIMIT 1")
-    except sqlite3.DatabaseError:
-        return False
+        conn.execute("SELECT 1 FROM meta LIMIT 1")
+    except sqlite3.OperationalError as e:
+        if "no such" in str(e).lower():
+            return False
+        raise
     return True
 
 
@@ -257,7 +261,8 @@ def _ensure_schema(conn):
     """The schema, built when it is missing or old — inside BEGIN IMMEDIATE, the version looked at again inside the lock:
     two first opens (Generate and the indexer) both read user_version 0, and the second's drops, landing between the
     first's statements, gave it "no such table" (read as damage: open_store deleted the store) or took tables it was
-    already writing to. Now the second waits for the first's build and finds it done. Statement by statement, never
+    already writing to. Now the second waits for the first's build (up to the busy timeout; past it, "database is
+    locked", which open_store raises and never deletes on) and finds it done. Statement by statement, never
     executescript (it COMMITs the open transaction first); a build cut short leaves nothing (rolled back)."""
     if not _schema_ready(conn):
         conn.execute("BEGIN IMMEDIATE")

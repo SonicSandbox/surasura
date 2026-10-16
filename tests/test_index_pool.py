@@ -279,12 +279,14 @@ def test_two_first_opens_at_once_never_delete_the_store(monkeypatch):
     assert errors == [] and deleted == []
 
 
-def test_a_second_first_open_mid_rebuild_never_drops_the_firsts_tables(monkeypatch):
-    """The load-flakes review's row 3, stepped by hand (no sleeps): A's first open is held mid-build, after its CREATE
-    TABLE aggregate and before its CREATE INDEX on it; B's first open then runs. Before the fix B read user_version 0
+@pytest.mark.parametrize("hold_at", ["CREATE INDEX", "PRAGMA user_version ="])
+def test_a_second_first_open_mid_rebuild_never_drops_the_firsts_tables(monkeypatch, hold_at):
+    """The load-flakes review's row 3, stepped by hand (no sleeps): A's first open is held mid-build — after its CREATE
+    TABLE aggregate and before its CREATE INDEX on it, or before it writes the version — and B's first open then runs. Before the fix B read user_version 0
     too and ran the drops, A's CREATE INDEX met "no such table: main.aggregate", and open_store deleted the store as
     damaged. Now the build runs inside BEGIN IMMEDIATE and user_version is read again inside the lock: B waits, then
-    finds A's finished store and builds nothing. Both opens succeed, nothing is deleted, the store is whole."""
+    finds A's finished store and builds nothing (the version written after the lock is let go would let B build again).
+    Both opens succeed, nothing is deleted, the store is whole."""
     db = os.path.join(h.root(), "stepped", "shared.db")
     os.makedirs(os.path.dirname(db))
     deleted = []
@@ -300,7 +302,7 @@ def test_a_second_first_open_mid_rebuild_never_drops_the_firsts_tables(monkeypat
         if who not in seen:
             return
         seen[who].append(sql)
-        if who == "A" and "CREATE INDEX" in sql and not a_held.is_set():
+        if who == "A" and hold_at in sql and not a_held.is_set():
             a_held.set()
             b_asked.wait(30)                    # B has asked for the write lock (fixed) or dropped A's tables (bug)
         elif who == "B" and ("BEGIN IMMEDIATE" in sql or "DROP TABLE IF EXISTS bound" in sql):
@@ -326,7 +328,7 @@ def test_a_second_first_open_mid_rebuild_never_drops_the_firsts_tables(monkeypat
                 a_done.set()
     a = threading.Thread(target=opener, name="A")
     a.start()
-    assert a_held.wait(30), "A never reached its CREATE INDEX"
+    assert a_held.wait(30), f"A never reached {hold_at}"
     b = threading.Thread(target=opener, name="B")
     b.start()
     a.join(60)
@@ -362,20 +364,49 @@ def test_the_journal_switch_commits_at_synchronous_normal(monkeypatch):
     assert pragmas[:2] == ["PRAGMA synchronous=NORMAL", "PRAGMA journal_mode=WAL"]
 
 
-def test_a_store_at_the_version_missing_a_table_is_built_again(tmp_path):
+@pytest.mark.parametrize("table", ["files", "aggregate", "bound", "meta"])
+def test_a_store_at_the_version_missing_a_table_is_built_again(tmp_path, table):
     """The half-built guard, looked at outside the lock and again inside it: user_version says this schema, but a table
     is gone (a build cut short by an older copy, or a hand edit) — the open builds the schema again instead of handing
     out a store whose first read fails."""
     db = str(tmp_path / "half.db")
     ti.open_store("ja", path=db).close()
     conn = sqlite3.connect(db)
-    conn.execute("DROP TABLE aggregate")
+    conn.execute(f"DROP TABLE {table}")
     conn.commit()
     conn.close()
     store = ti.open_store("ja", path=db)
     try:
-        assert store.conn.execute("SELECT COUNT(*) FROM aggregate").fetchone()[0] == 0
+        assert store.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
         assert store.conn.execute("PRAGMA user_version").fetchone()[0] == ti.SCHEMA_VERSION
+    finally:
+        store.close()
+
+
+def test_a_busy_look_at_a_current_store_is_raised_and_never_builds_it_again(tmp_path, monkeypatch):
+    """The half-built check reads "no such table" as not ready, and nothing else: a busy answer to its look at a store
+    at this version is raised (open_store never deletes on it) — never read as "build it again", which drops every
+    table and its rows."""
+    db = str(tmp_path / "current.db")
+    store = ti.open_store("ja", path=db)
+    store.set_meta("kept", "yes")
+    store.close()
+    real_connect = sqlite3.connect
+
+    class Busy(sqlite3.Connection):
+        def execute(self, sql, *args):
+            if sql.startswith("SELECT 1 FROM aggregate"):
+                raise sqlite3.OperationalError("database is locked")
+            return super().execute(sql, *args)
+    monkeypatch.setattr(sqlite3, "connect", lambda *a, **kw: real_connect(*a, factory=Busy, **kw))
+    deleted = []
+    monkeypatch.setattr(ti, "_delete_db", deleted.append)
+    with pytest.raises(sqlite3.OperationalError, match="locked"):
+        ti.open_store("ja", path=db)
+    monkeypatch.setattr(sqlite3, "connect", real_connect)
+    store = ti.open_store("ja", path=db)
+    try:
+        assert deleted == [] and store.get_meta("kept") == "yes"
     finally:
         store.close()
 

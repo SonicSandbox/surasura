@@ -1371,3 +1371,186 @@ def test_a_cloud_placeholder_folder_is_never_listed(monkeypatch):
         spy = _ScandirSpy(monkeypatch)
         assert _look(store, language, root, first=True)["added"] == 1
         assert not spy.saw(os.path.join(src, "Cloud"))
+
+
+# --- K5: a video-only show waits, its subtitle fills the gap (end to end) ------------------------------------------- #
+
+def _events(store):
+    return [tuple(r) for r in store.conn.execute("SELECT item_id, kind, by, explicit FROM placement_log ORDER BY id")]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("first", (True, False))
+def test_a_folder_of_videos_waits_in_new_arrivals_and_a_subtitle_later_fills_the_gap_silently(language, first,
+                                                                                              monkeypatch):
+    """SRC-2 (video), end to end: a show folder of videos and no subtitle — one item per video, waiting in New arrivals
+    (even on setup's first scan), no file made, nothing counted; a look again reads no video twice; its subtitle comes
+    later — the same item takes the copy in place (its id and place kept), silently, and counts from then."""
+    store, data_dir = _empty(language)
+    a = _SHOWS[language][0]
+    src = _drive("driveA")
+    folder = os.path.join(src, a)
+    for n in (2, 1):
+        _video(os.path.join(folder, f"{a} - {n:02d}.mkv"), body=b"\x1a\x45\xdf\xa3 fake matroska %d " % n)
+    with store:
+        root = store.add_source(src)
+        result = _look(store, language, root, first=first)
+        assert result["added"] == 2 and _items(store) == 2
+        arrivals = store.ordered("arrivals")
+        assert [e["physical_path"] for _i, e, _a in arrivals] == [f"Library/{a}/{a} - 01.mkv",
+                                                                  f"Library/{a}/{a} - 02.mkv"]
+        assert {av for _i, _e, av in arrivals} == {"waiting"}
+        assert not os.path.exists(os.path.join(data_dir, "Library"))             # no file made
+        assert all(not entries for entries in store.schedule().values())        # nothing counted
+        keyed = []
+        real_key = videos.content_key
+        monkeypatch.setattr(videos, "content_key", lambda p: keyed.append(p) or real_key(p))
+        again = _look(store, language, root, full=True)
+        assert (again["added"], keyed) == (0, []) and _items(store) == 2      # recorded: never read again
+        monkeypatch.setattr(videos, "content_key", real_key)
+        ep1 = arrivals[0][0]
+        events = _events(store)
+        sub = _write(os.path.join(folder, f"{a} - 01.{_OURS[language]}.srt"), _text(language, 1))
+        filled = _look(store, language, root)
+        assert (filled["added"], filled["attached"]) == (0, 1) and _items(store) == 2
+        item = store.item(ep1)
+        assert (item["tier"], item["availability"]) == ("arrivals", "available")
+        assert item["rel_path"] == f"Library/{a}/{a} - 01.{_OURS[language]}.srt"
+        assert _sha(os.path.join(data_dir, item["rel_path"])) == _sha(sub)
+        assert [i for i, _e, _a in store.ordered("arrivals")] == [i for i, _e, _a in arrivals]   # in place
+        assert _events(store) == events                                          # silent: no event at all
+        assert store.item(arrivals[1][0])["availability"] == "waiting"           # its neighbour still waits
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_videos_of_a_show_already_shown_never_wait(language):
+    """Only a show never shown waits: a video-only folder of a show that already has an item (its subtitles came by
+    another folder, a 2.x folder or hato) adds nothing; its subtitles join that show when they come."""
+    store, data_dir = _empty(language)
+    a = _SHOWS[language][0]
+    src = _drive("driveA")
+    _write(os.path.join(src, a, "ep01.srt"), _text(language, 1))
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        other = _drive("driveB")
+        _video(os.path.join(other, a, "ep02.mkv"))
+        result = _look(store, language, store.add_source(other), full=True)
+        assert result["added"] == 0 and _items(store) == 1 and store.ordered("arrivals") == []
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_video_already_paired_never_waits(language):
+    """A video hato (or any producer) already paired is that episode: no waiting row for it (check a)."""
+    store, data_dir = _empty(language)
+    a, b = _SHOWS[language]
+    src = _drive("driveA")
+    _video(os.path.join(src, a, "ep01.mkv"))
+    _write(os.path.join(src, a, "ep01.srt"), _text(language, 1))
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        other = _drive("driveB")
+        _video(os.path.join(other, b, "ep01.mkv"))                               # the same video, another show name
+        result = _look(store, language, store.add_source(other), full=True)
+        assert result["added"] == 0 and _items(store) == 1
+
+
+def test_a_removed_waiting_video_stays_out():
+    language = "ja"
+    store, data_dir = _empty(language)
+    a = _SHOWS[language][0]
+    src = _drive("driveA")
+    _video(os.path.join(src, a, "ep01.mkv"))
+    with store:
+        root = store.add_source(src)
+        item = _look(store, language, root, first=True)["ids"][0]
+        store.remove([item])
+        assert _look(store, language, root, full=True)["added"] == 0 and _items(store) == 0
+        _write(os.path.join(src, a, "ep01.srt"), _text(language, 1))           # its subtitle: kept out too (S6)
+        assert _look(store, language, root, full=True)["added"] == 0 and _items(store) == 0
+
+
+def test_a_waiting_video_is_no_release_of_its_episode():
+    """The v2 rule reads text origins only: a subtitle `- 05v2` beside a waiting `- 05.mkv` is taken in (never read as
+    a re-copy over the video's name, which holds no file)."""
+    language = "ja"
+    store, data_dir = _empty(language)
+    show = _SHOWS[language][1]
+    src = _drive("driveA")
+    _video(os.path.join(src, show, f"[Grp] {show} - 05 (1080p).mkv"))
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        _write(os.path.join(src, show, f"[Grp] {show} - 05v2 (1080p).ja.srt"), _text(language, 1))
+        assert _look(store, language, root, full=True)["added"] == 1
+
+
+def test_a_removed_waiting_videos_key_is_never_read_again(monkeypatch):
+    """S6, S19: the Remove keeps the video out by its path: a later look skips it before reading its key."""
+    language = "ja"
+    store, data_dir = _empty(language)
+    a = _SHOWS[language][0]
+    src = _drive("driveA")
+    _video(os.path.join(src, a, "ep01.mkv"))
+    with store:
+        root = store.add_source(src)
+        store.remove(_look(store, language, root, first=True)["ids"])
+        keyed = []
+        real_key = videos.content_key
+        monkeypatch.setattr(videos, "content_key", lambda p: keyed.append(p) or real_key(p))
+        assert _look(store, language, root, full=True)["added"] == 0 and keyed == []
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_new_video_of_a_show_that_only_waits_waits_beside_it(language):
+    """A show shown only by its waiting videos is still a show with no text: its next video waits there too."""
+    store, data_dir = _empty(language)
+    a = _SHOWS[language][0]
+    src = _drive("driveA")
+    _video(os.path.join(src, a, "ep01.mkv"), body=b"\x1a\x45\xdf\xa3 fake matroska 1 ")
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        _video(os.path.join(src, a, "ep02.mkv"), body=b"\x1a\x45\xdf\xa3 fake matroska 2 ")
+        assert _look(store, language, root, full=True)["added"] == 1
+        assert [(e["physical_path"], av) for _i, e, av in store.ordered("arrivals")] == \
+            [(f"Library/{a}/ep01.mkv", "waiting"), (f"Library/{a}/ep02.mkv", "waiting")]
+
+
+def test_a_placeholder_video_waits_by_its_path_its_key_never_read(monkeypatch):
+    """B3: a cloud placeholder video is never read, not even for its key: it waits by its path alone (its subtitle,
+    found beside it, fills the gap by that path)."""
+    language = "ja"
+    store, data_dir = _empty(language)
+    a = _SHOWS[language][0]
+    src = _drive("driveA")
+    ghost = _video(os.path.join(src, a, "ep01.mkv"), body=b"\x1a\x45\xdf\xa3 not downloaded yet   ")
+    size = os.path.getsize(ghost)
+    monkeypatch.setattr(ls, "is_placeholder", lambda st: st.st_size == size)
+    keyed = []
+    real_key = videos.content_key
+    monkeypatch.setattr(videos, "content_key", lambda p: keyed.append(p) or real_key(p))
+    with store:
+        root = store.add_source(src)
+        item = _look(store, language, root, first=True)["ids"][0]
+        assert keyed == [] and store.item(item)["availability"] == "waiting"
+        record = json.loads(store.conn.execute("SELECT pairing FROM pairings").fetchone()[0])
+        assert "video_key" not in record and record["video_path"] == os.path.abspath(ghost)
+        _write(os.path.join(src, a, "ep01.srt"), _text(language, 1))
+        assert _look(store, language, root)["attached"] == 1 and store.item(item)["availability"] == "available"
+
+
+def test_a_video_still_being_written_waits_for_the_next_look():
+    language = "ja"
+    store, data_dir = _empty(language)
+    a = _SHOWS[language][0]
+    src = _drive("driveA")
+    path = _video(os.path.join(src, a, "ep01.mkv"), age=0)
+    with store:
+        root = store.add_source(src)
+        result = _look(store, language, root, first=True)
+        assert (result["added"], result["waiting"]) == (0, 1) and _items(store) == 0
+        t = time.time() - 10
+        os.utime(path, (t, t))
+        assert _look(store, language, root)["added"] == 1

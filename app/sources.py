@@ -308,6 +308,7 @@ class _Look:
         self.video_items = None
         self.by_folder = None        # {folder key: {(show, episode): (version, Origin)}}: the releases already in
         self.books_in = None         # {an EPUB's sha256: {part: (item_id, rel)}}: the books already in
+        self.shown = None            # the folder keys of the shows with an item that isn't waiting
         self.hashes = {}
 
     # --- the look ------------------------------------------------------------------------------------------------- #
@@ -356,7 +357,7 @@ class _Look:
                         self._changed(*item)
                     except OSError:                          # gone or locked meanwhile: the next look
                         self._wait(item[0])
-            self.sizes = self.store.items_of_size([c[2].st_size for c in new])
+            self.sizes = self.store.items_of_size([c[2].st_size for c in new if len(c) == 6])
             self._take(new, books)
         self._say(final=True)
         self.out["shows"] = len(self.shows)
@@ -432,7 +433,8 @@ class _Look:
             self.out["skipped"] += ghosts
             rel = os.path.relpath(folder, self.base)
             parts = [] if rel == "." else rel.replace("\\", "/").split("/")
-            for name, path, st, show, kind in self._episodes(self.base, parts, texts, epubs):
+            episodes = self._episodes(self.base, parts, texts, epubs)
+            for name, path, st, show, kind in episodes:
                 self.out["found"] += 1
                 self.shows.add(ls.search_fold(show, self.language))
                 if kind == "known":
@@ -441,6 +443,12 @@ class _Look:
                     books.append((folder, name, path, st, show))
                 else:
                     new.append((folder, path, st, name, show, vids))
+            if vids and not episodes and not epubs:          # videos and none of our text yet: they wait (K5)
+                for path, st in sorted(vids.values()):
+                    show = _show_of(self.base, parts, os.path.basename(path))
+                    self.out["found"] += 1
+                    self.shows.add(ls.search_fold(show, self.language))
+                    new.append((folder, path, st, show))
             self._say()
         return seen, new, known, books
 
@@ -508,8 +516,8 @@ class _Look:
         taken in."""
         from app.extract import clean_name
         by_show = {}
-        for c in new:
-            by_show.setdefault(c[4], []).append(c)
+        for c in new:                                        # a text (6), a video waiting for its text (4)
+            by_show.setdefault(c[4] if len(c) == 6 else c[3], []).append(c)
         for b in books:
             by_show.setdefault(clean_name(os.path.splitext(b[1])[0]) or "Book", []).append(b)
         for show in sorted(by_show, key=lambda s: (ls.search_fold(s, self.language), s)):
@@ -521,7 +529,7 @@ class _Look:
                     self._book(*c)
                     continue
                 try:
-                    f = self._new(*c)
+                    f = self._new(*c) if len(c) == 6 else self._video_only(*c)
                 except OSError:                              # gone or locked meanwhile: the next look
                     self._wait(c[0])
                     f = None
@@ -640,6 +648,52 @@ class _Look:
             self.this_videos.add(track)
         return f
 
+    def _video_only(self, folder, path, st, show):
+        """A video in a folder with none of our text yet (K5, SRC-2 (video)) -> its found-record for `take_in`: one
+        item per video, waiting in New arrivals (*no subtitles yet*) at `Library/<show>/<video name>`, no file made,
+        until its subtitle fills the gap in place — or None: recorded already, paired already (hato's), of a show
+        already shown (its subtitles will join it), kept out (S6), or waiting for the next look."""
+        from app.connect import videos
+        if _key(path) in self.origins:
+            return None
+        if _key(path) in self.ex_paths:
+            self.out["skipped"] += 1
+            return None
+        if self._is_shown(show):
+            return None
+        name = os.path.basename(path)
+        f = {"origin": os.path.abspath(path), "size": st.st_size, "mtime_ns": st.st_mtime_ns, "show": show,
+             "rel": f"{ls.CONTENT_FOLDER}/{show}/{name}", "video_path": os.path.abspath(path), "video_size": st.st_size}
+        if not ls.is_placeholder(st):                        # a placeholder's key is never read (B3): by its path
+            if self._recent(st):
+                self._wait(folder)
+                return None
+            vkey = videos.content_key(path)
+            if vkey is None:                                 # changed while read
+                self._wait(folder)
+                return None
+            if vkey in self.ex_videos:
+                self.out["skipped"] += 1
+                return None
+            if self._video_item(vkey) is not None:
+                return None
+            f["video_key"] = vkey
+        episode, _version = _episode_of(name)
+        if episode is not None:
+            f["episode"] = episode
+        return f
+
+    def _is_shown(self, show):
+        """Has this show an item that isn't waiting (any place)? Its folder key, as the store groups a show's title
+        (`Library/<show>` and a 2.x `HighPriority/<show>` are one). One read of the items per look, when needed."""
+        if self.shown is None:
+            self.shown = set()
+            for tier in ls.TIERS:
+                for _i, entry, availability in self.store.ordered(tier):
+                    if availability != "waiting":
+                        self.shown.add(ls.folder_key_of(str(entry.get("physical_path") or "")))
+        return ls.folder_key_of(f"{ls.CONTENT_FOLDER}/{show}/x") in self.shown
+
     def _same(self, path, st):
         """The original as listed still (its size and time): else it is being written."""
         try:
@@ -682,9 +736,9 @@ class _Look:
         if self.by_folder is None:
             self.by_folder = {}
             for o in self.origins.values():
-                if not o.origin or "#" in os.path.basename(o.origin):
+                name = os.path.basename(o.origin or "")
+                if not ls.is_content_name(name.lower()):     # a book's part, or a video waiting for its text (K5)
                     continue
-                name = os.path.basename(o.origin)
                 episode, version = _episode_of(name)
                 if episode is None:
                     continue

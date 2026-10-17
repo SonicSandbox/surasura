@@ -617,6 +617,7 @@ class Host:
                 self._tell(PRESS_GENERATE)          # the Generate just ran (and failed): none is asked for again (R10)
                 return False
             report = self._write(settings, spaced.Job(automatic=True, cards=self._card_map()), kind)
+            _record_cards_out(store, report)             # P4.1 L2
             if report is not None and report.get("ok") and not report.get("left") and not report.get("failures"):
                 store.record_planned(versions["order_version"], versions["pins_version"])
                 return True
@@ -647,6 +648,7 @@ class Host:
         rows = result.rows(mode if mode in ("content", "priority") else "content")
         job = spaced.Job(automatic=True, rows=rows, cards=self._card_map(), places=places(self._plan, ids, result))
         report = self._write(settings, job, kind)
+        _record_cards_out(store, report)                 # P4.1 L2
         done = bool(report is not None and report.get("ok") and not report.get("left") and not report.get("failures"))
         if done:
             store.record_planned(versions["order_version"], versions["pins_version"])
@@ -704,6 +706,7 @@ class Host:
         from modules.junban import auto, reposition
         auto.decide_actions(settings)
         job.actions = True
+        job.cards_out = True        # P4.1 L2: the host records what *Take its new cards out* changes (`_replan`)
         job.probe, self._probe = self._probe, None    # `_may_write`'s, this job's: the run asks Anki nothing again
         self._working(True)
         try:
@@ -924,6 +927,20 @@ class Host:
 
 _HELPERS = []                   # every helper this process started (`helper_processes`: those still running)
 _HELPERS_LOCK = threading.Lock()
+
+
+# --- P4.1 L2: *Take its new cards out* (05 §5.7, D14) — the record Put back restores from ------------------------ #
+def _record_cards_out(store, report):
+    """A job's *Take its new cards out* changes into the store's `anki_changes`, and the records its Put back restored
+    closed (`pins.record`), whatever the run's outcome (what landed is recorded). Never raises: logged."""
+    if not (report or {}).get("cards_out") and not (report or {}).get("put_back"):
+        return
+    try:
+        from modules.junban import pins
+        pins.record(store, report)
+    except Exception as e:
+        _log_shadow(f"the cards Junban took out of the order weren't recorded: {e}")
+# --- end P4.1 L2 ---
 
 
 def helper_processes():

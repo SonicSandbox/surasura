@@ -1441,7 +1441,7 @@ def test_real_store_files_dropped_from_explorer_are_copied_and_placed(real, tmp_
     rs = rows_of(win)
     rect = lst.visualRect(lst.model().index(2, 0))
     _drop_files(lst, [str(src)], QPoint(rect.center().x(), rect.top() + 3))
-    copy = os.path.join(store.data_dir, ls.FOLDER_OF_TIER[rs[1].tier], src.name)
+    copy = os.path.join(store.data_dir, ls.CONTENT_FOLDER, ls.show_of_name(src.name), src.name)   # (SRC K3)
     assert wait_until(lambda: os.path.exists(copy) and writer.pending() == 0, 10)
     ids_now = store.ids(rs[1].tier)
     after = ids_now[ids_now.index(rs[1].episodes[-1].id) + 1]

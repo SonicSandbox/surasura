@@ -627,7 +627,8 @@ def test_connect_reads_hatos_record_before_a_source_and_a_recopy_never_moves_its
         # hato's record first, whichever is newer
         hato_file = os.path.join(data_dir, "HighPriority", "Hato", f"{show}.srt")
         os.makedirs(os.path.dirname(hato_file))
-        shutil.copyfile(f["origin"], hato_file)
+        with open(hato_file, "w", encoding="utf-8") as fh:      # hato's own text (the same bytes would be the
+            fh.write(_episode_text(language, 5))                # source's episode: K3, no item of its own)
         paired = store.register(hato_file, _hato("v1-hh", 5, show)).added[0]
         g = _found(language, data_dir, src, show, "hato copy.srt", 2, copy=False, item_id=paired)
         store.take_in(root, [g])

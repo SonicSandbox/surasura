@@ -404,6 +404,7 @@ MOVE_WORDS = {
     "read_only": "Your library can't be saved right now: {reason}",
     "failed": "That change couldn't be saved: {error}",
     "not_content": "Only text and subtitle files can be added — left out: {names}",
+    "already_in": "Already in your library: {titles}",   # SRC K3: a drop whose bytes are an item's
 }
 # --- W3.2 S2: the writer's new commands (moves.WORDS) --------------------------------------------------------------- #
 MOVE_WORDS.update({
@@ -784,6 +785,7 @@ EXTRACT_DONE = "Extracted {parts:,} parts into {section}: “{name}”"
 EXTRACT_DONE_PROCESSED = "Extracted {parts:,} parts into Processed › {name}"
 EXTRACT_PROCESSED_ONLY = ("Extracted {parts:,} parts into Processed › {name}: the library didn't take them, so "
                           "nothing was added to {section}")
+EXTRACT_ALREADY = "Already in your library: “{title}” · the {parts:,} parts stay in Processed › {name}"   # SRC K3
 EXTRACT_EMPTY = "No text was found in it: nothing was saved"
 
 # --- W3.4 row 3: the Anki window (app/qt/anki_window.py; its rules in app/anki_window.py) ---------------------------

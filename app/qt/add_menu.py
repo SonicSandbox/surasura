@@ -53,9 +53,9 @@ def _fold(text):
 
 def show_folder(row):
     """A Current row's own folder, relative to the data folder (`HighPriority/<show>`), when its files sit in one
-    folder below NOW's or Soon's — else None (loose files, hato's drop folder, another root)."""
+    folder below NOW's or Soon's (or `Library`'s) — else None (loose files, hato's drop folder, another root)."""
     from app import library_store as ls
-    tops = {ls.FOLDER_OF_TIER[t] for t in CURRENT}
+    tops = {ls.FOLDER_OF_TIER[t] for t in CURRENT} | {ls.CONTENT_FOLDER}     # SRC K3: new copies' folder too
     folders = {e.rel_path.rsplit("/", 1)[0] for e in row.episodes if e.rel_path and "/" in e.rel_path}
     if len(folders) != 1:
         return None

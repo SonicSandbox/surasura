@@ -68,10 +68,11 @@ def clean_name(name):
 
 
 def _folders(language):
-    """The folders a name may not be taken in: Processed, and each section's folder (Finished's too)."""
+    """The folders a name may not be taken in: Processed, the content folder (Library: every new copy, 3.0's
+    Sources), and each section's folder (Finished's too)."""
     from app import library_store
     data_dir = get_data_path(language)
-    names = ["Processed"] + [library_store.FOLDER_OF_TIER[t] for t in SECTIONS] + [library_store.GRADUATED_FOLDER]
+    names = ["Processed", "Library"] + [library_store.FOLDER_OF_TIER[t] for t in SECTIONS] + [library_store.GRADUATED_FOLDER]
     return data_dir, names
 
 

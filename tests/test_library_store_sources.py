@@ -1292,6 +1292,92 @@ def test_take_in_keeps_the_waiting_videos_between_its_batches_while_nothing_else
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("then", ("alone", "after_a_new_item", "after_a_new_waiting_video"))
+def test_a_take_in_rolled_back_inside_an_outer_write_leaves_no_waiting_video_behind(language, then):
+    """P1 (perf review): take_in kept its copy of the waiting videos for the next batch even inside an outer write. A
+    rollback moves neither of the copy's stamps and the ids come round again, so the copy named a row that no longer
+    existed: every later take-in of that video failed — or a new item that took the id in the same batch was 'filled'
+    with the subtitle, its own copy no longer held. Now the copy is kept only when take_in is the outermost write, and a
+    gap whose row is no longer a waiting one is no gap: the subtitle is an item of its own, every item its own copy."""
+    store, data_dir = _empty(language)
+    src = _source_root()
+    show = names(language)[130]
+
+    def video(n, **more):
+        path = os.path.join(src, show, f"ep{n}.mkv")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as fh:
+            fh.write(b"\x1aE\xdf\xa3" + bytes([n]) * 60)
+        return dict({"origin": path, "size": 64, "mtime_ns": 1, "show": show, "video_path": path, "video_size": 64,
+                     "video_key": f"v1-p1w{n}", "rel": f"Library/{show}/ep{n}.mkv"}, **more)
+    with store:
+        root = store.add_source(src)
+        waiting = store.take_in(root, [video(1)]).added
+        with pytest.raises(RuntimeError):
+            with store._writing():
+                store.take_in(root, [video(2)])
+                raise RuntimeError("the outer write fails: all of it rolled back")
+        assert [r[0] for r in store.conn.execute("SELECT id FROM items")] == waiting
+        batch = [_found(language, data_dir, src, show, "ep2.srt", 2, video_key="v1-p1w2", episode=2)]
+        if then == "after_a_new_item":                      # sorted first: it takes the id the rolled-back row had
+            batch.insert(0, _found(language, data_dir, src, show, "x1.srt", 9, episode=1))
+        elif then == "after_a_new_waiting_video":           # the same id, and a waiting row: never filled for ep2
+            batch.insert(0, video(5, episode=1))
+        change = store.take_in(root, batch)
+        assert len(change.added) == len(batch) and change.attached == []
+        rows = dict(store.conn.execute("SELECT id, rel_path FROM items").fetchall())
+        assert sorted(rows[i] for i in change.added) == sorted(f["rel"] for f in batch)
+        if then == "after_a_new_waiting_video":
+            assert store.conn.execute("SELECT availability FROM items WHERE rel_path = ?",
+                                      (batch[0]["rel"],)).fetchone()[0] == "waiting"
+        assert store.conn.execute("SELECT availability FROM items WHERE id = ?", (waiting[0],)).fetchone()[0] == \
+            "waiting"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("named", ("gone", "not_waiting"))
+def test_a_waiting_videos_copy_naming_a_row_that_is_no_gap_any_more_fills_nothing(language, named):
+    """P1, the fill itself: a waiting videos' copy that names a row gone, or one no longer waiting (another item's),
+    fills nothing — the subtitle is an item of its own, the other item untouched."""
+    store, data_dir = _empty(language)
+    src = _source_root()
+    show = names(language)[132]
+    with store:
+        root = store.add_source(src)
+        other = store.take_in(root, [_found(language, data_dir, src, show, "ep1.srt", 1, episode=1)]).added[0]
+        stale = other if named == "not_waiting" else other + 50
+        store._gaps = ((store.conn.total_changes, store.conn.execute("PRAGMA data_version").fetchone()[0]),
+                       {"v1-p1stale": stale})
+        change = store.take_in(root, [_found(language, data_dir, src, show, "ep2.srt", 2, episode=2,
+                                             video_key="v1-p1stale")])
+        assert len(change.added) == 1 and change.attached == []
+        assert store.item(other)["rel_path"] == f"Library/{show}/ep1.srt"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_origin_whose_record_is_not_a_json_object_reads_as_one_with_no_fields(language):
+    """`origins()` reads the records' fields in SQLite now (F13): a record that is not JSON, or not an object, still
+    reads as an origin with no fields — never an error that would end every look."""
+    store, data_dir = _empty(language)
+    src = _source_root()
+    show = names(language)[133]
+    with store:
+        root = store.add_source(src)
+        ids = store.take_in(root, [_found(language, data_dir, src, show, f"ep{n}.srt", n) for n in (1, 2, 3)]).added
+        keys = [k for (k,) in store.conn.execute("SELECT content_key FROM pairings ORDER BY content_key")]
+        good = store.origins()
+        with store._writing():
+            store.conn.execute("UPDATE pairings SET pairing = 'not json' WHERE content_key = ?", (keys[0],))
+            store.conn.execute("UPDATE pairings SET pairing = '[1, 2]' WHERE content_key = ?", (keys[1],))
+        read = store.origins()
+        assert set(read) == set(good) and sorted(o.item_id for o in read.values()) == sorted(ids)
+        for k in keys[:2]:
+            o = read[k[len(ls.SOURCE_KEY):]]
+            assert (o.root, o.origin, o.size, o.mtime_ns, o.sha256) == (None,) * 5 and o.rel_path
+        assert read[keys[2][len(ls.SOURCE_KEY):]] == good[keys[2][len(ls.SOURCE_KEY):]]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 def test_a_later_file_of_a_show_still_waiting_reads_none_of_its_records(language):
     """The folders' rule (after-show) placed each later file by reading every record of its show first — under
     the write lock, per file — even for a show with nothing in Current, Finished or 6+ Months, which it never

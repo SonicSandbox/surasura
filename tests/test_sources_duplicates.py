@@ -527,3 +527,294 @@ def test_R1_a_sync_before_hatos_register_of_a_new_episode_keeps_the_syncs_row(la
         assert store.item(synced) is not None and _items(store) == 2 and _duplicates(store) == []
         assert store.conn.execute("SELECT item_id FROM pairings WHERE content_key = 'v1-k3-new'").fetchone()[0] == synced
         assert change.pairing_item == synced
+
+
+# --- batch 2 final fix round: the twin found before the write lock (F12) ---------------------------------------- #
+
+class _InLock:
+    """What this store does while it holds the write lock: each SQL statement it sends, and each file hashed (whether
+    the lock was held then)."""
+
+    def __init__(self, monkeypatch, store):
+        self.sql, self.hashed = [], []
+        real = ls.sha256_of
+        lock = store._wlock
+        monkeypatch.setattr(ls, "sha256_of", lambda path: self.hashed.append((lock.depth > 0, path)) or real(path))
+        store.conn.set_trace_callback(lambda s: self.sql.append(s) if lock.depth else None)
+
+    def scans(self):
+        """The reads of every record's video, every waiting row's records or every item of a size, held in the lock."""
+        return [s for s in self.sql if "$.video_key" in s or "CROSS JOIN" in s or "i.size IN" in s]
+
+    def hashed_inside(self):
+        return [p for inside, p in self.hashed if inside]
+
+
+def _same_size(text, n):
+    """Real text told apart by a two-digit line: every one the same size, no two the same bytes."""
+    return text + f"\n{n:02d}\n"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("kind", ("video", "bytes", "new", "waiting"))
+def test_F12_hatos_hand_off_reads_no_record_and_hashes_no_file_while_it_holds_the_write_lock(monkeypatch, language,
+                                                                                            kind):
+    """F12 (B): `register` looked for the episode inside its command — every record's video read and decoded, every
+    waiting row's records, every file of hato's size hashed — 0.1 s of write lock at 20k origins on every hand-off, and
+    seconds when sizes repeat (a move refused as busy). Now the twin is found before the lock and only its one item is
+    checked again inside: the same answers (a take-over, a kept-out twin, a new item, a gap filled), no scan and no
+    hash while the lock is held."""
+    store, data_dir = _empty(language)
+    show = _SHOWS[language][0]
+    with store:
+        if kind == "waiting":
+            item, key, show = _waiting_episode(store, language)
+            path, pairing = _hato_file(data_dir, f"{show} - 03.srt", _text(language, 3)), _hato(key, show, 3)
+        else:
+            item, key, sub = _source_episode(store, language, data_dir, video=kind == "video")
+            with open(sub, encoding="utf-8") as f:
+                text = f.read()
+            if kind == "video":
+                path, pairing = _hato_file(data_dir, f"{show} - 01.ja.srt", _text(language, 7)), _hato(key, show)
+            elif kind == "bytes":
+                path, pairing = _hato_file(data_dir, f"{show} - 01.srt", like=sub), _hato("v1-f12-bytes", show)
+            else:                                     # the same size as the source's copy, other bytes: hashed, new
+                flipped = text[:-2] + ("8" if text[-2] != "8" else "9") + text[-1:]
+                path, pairing = _hato_file(data_dir, f"{show} - 02.srt", flipped), _hato("v1-f12-new", show, 2)
+                assert os.path.getsize(path) == os.path.getsize(sub)
+        seen = _InLock(monkeypatch, store)
+        change = store.register(path, pairing)
+        store.conn.set_trace_callback(None)
+        if kind == "new":
+            assert len(change.added) == 1 and _items(store) == 2
+        else:
+            assert change.added == [] and change.pairing_item == item and _items(store) == 1
+        assert seen.scans() == [] and seen.hashed_inside() == []
+        if kind in ("bytes", "new"):
+            assert seen.hashed, "its bytes were still checked, before the lock"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_F12_a_hand_off_whose_size_many_items_share_is_checked_by_its_video_alone(monkeypatch, language):
+    """F12: with many items of hato's size the twin check hashed each of them (2,942 of one size at 20k: 7 s). Up to
+    TWIN_HASHES items of that size the bytes still decide; more, and no file is hashed — the hand-off is checked by its
+    video alone (the same bytes then make a new item, as before K3; the same video still finds its item)."""
+    store, data_dir = _empty(language)
+    show = _SHOWS[language][0]
+    src = _drive("driveA")
+    base = _text(language, 1)
+    many = ls.TWIN_HASHES + 1
+    subs = [_write(os.path.join(src, show, f"{show} - {n:02d}.srt"), _same_size(base, n)) for n in range(1, many + 1)]
+    key = videos.content_key(_video(os.path.join(src, show, f"{show} - 01.mkv")))
+    with store:
+        root = store.add_source(src)
+        ids = _look(store, language, root, first=True)["ids"]
+        assert len(ids) == many and len({os.path.getsize(s) for s in subs}) == 1
+        holder = store.item_of_video_key(key)
+        seen = _InLock(monkeypatch, store)
+        by_bytes = store.register(_hato_file(data_dir, f"{show} - 05.srt", like=subs[4]), _hato("v1-f12-many", show, 5))
+        assert len(by_bytes.added) == 1 and seen.hashed == []                 # more than TWIN_HASHES: none hashed
+        by_video = store.register(_hato_file(data_dir, f"{show} - 01.ja.srt", _same_size(base, 99)), _hato(key, show))
+        assert by_video.added == [] and by_video.pairing_item == holder       # its video still finds its item
+        assert seen.hashed == []
+        store.conn.set_trace_callback(None)
+        second = store.item_id(f"{ls.CONTENT_FOLDER}/{show}/{show} - 02.srt")
+        store.remove(by_bytes.added + [i for i in ids if i not in (holder, second)])     # two of the size left
+        hato = _hato_file(data_dir, f"{show} - 02.srt", like=subs[1])
+        change = store.register(hato, _hato("v1-f12-few", show, 2))
+        assert change.added == [] and change.pairing_item == second           # few enough: the bytes decide
+        assert seen.hashed and seen.hashed_inside() == []
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("kind", ("video", "bytes"))
+def test_F12_a_twin_removed_between_the_check_and_the_command_is_never_the_hand_offs_item(monkeypatch, language,
+                                                                                         kind):
+    """F12: the twin is found before the write lock, so a Remove can come in between: the item found is checked again
+    inside the command, and when it is gone the check runs again there — hato's file is an item of its own, never a
+    record on a removed one. The episode removed here is not the newest record or item, so only that check sees it."""
+    store, data_dir = _empty(language)
+    _d, user_files_dir = roots(language)
+    show = _SHOWS[language][0]
+    with store:
+        item, key, sub = _source_episode(store, language, data_dir, video=kind == "video")
+        src = os.path.dirname(os.path.dirname(sub))
+        _write(os.path.join(src, show, f"{show} - 02.srt"), _text(language, 2))
+        if kind == "video":
+            _video(os.path.join(src, show, f"{show} - 02.mkv"), body=b"\x1a\x45\xdf\xa3 the second episode")
+        assert len(_look(store, language, store.sources()[0]["id"])["ids"]) == 1     # a newer record and item
+        real = ls.Store._twin_seen
+
+        def then_removed(self, *a):
+            out = real(self, *a)
+            if item in (out[2], (out[3] or (None,))[0]):
+                other = ls.open_store(language, data_dir, user_files_dir)
+                with other:
+                    other.remove([item])
+            return out
+        monkeypatch.setattr(ls.Store, "_twin_seen", then_removed)
+        if kind == "video":
+            hato_path, pairing = _hato_file(data_dir, f"{show} - 01.ja.srt", _text(language, 7)), _hato(key, show)
+        else:
+            hato_path, pairing = _hato_file(data_dir, f"{show} - 01.srt", like=sub), _hato("v1-f12-gone", show)
+        change = store.register(hato_path, pairing)
+        assert len(change.added) == 1 and store.item(item) is None and _items(store) == 2
+        assert store.conn.execute("SELECT item_id FROM pairings WHERE content_key = ?",
+                                  (pairing["content_key"],)).fetchone()[0] == change.added[0]
+        assert _duplicates(store) == []
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_F12_the_syncs_own_row_never_counts_against_the_hashing_bound(language):
+    """F12: hato's file is checked by its bytes against TWIN_HASHES items of its size at most — never counting the row
+    the disk sync made for that very file a moment before (it is never its own twin): with TWIN_HASHES other items of
+    the size, the bytes still decide."""
+    store, data_dir = _empty(language)
+    show = _SHOWS[language][0]
+    src = _drive("driveA")
+    base = _text(language, 1)
+    subs = [_write(os.path.join(src, show, f"{show} - {n:02d}.srt"), _same_size(base, n))
+            for n in range(1, ls.TWIN_HASHES + 1)]
+    with store:
+        ids = _look(store, language, store.add_source(src), first=True)["ids"]
+        assert len(ids) == ls.TWIN_HASHES
+        hato_path = _hato_file(data_dir, f"{show} - 03.srt", like=subs[2])
+        synced = _sync_first(store, data_dir, hato_path)
+        change = store.register(hato_path, _hato("v1-f12-bound", show, 3))
+        third = store.item_id(f"{ls.CONTENT_FOLDER}/{show}/{show} - 03.srt")
+        assert change.added == [] and change.pairing_item == third and store.item(synced) is None
+        assert _items(store) == ls.TWIN_HASHES
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_F12_a_twin_taken_in_between_the_check_and_the_command_is_still_found(monkeypatch, language):
+    """F12: a look on another handle can take the same episode in between the check and the command: anything a twin
+    would move (a record, an item, an availability) has moved, so the check runs again inside — one item, hato's file
+    taking the folder's copy over as when the look came first."""
+    store, data_dir = _empty(language)
+    _d, user_files_dir = roots(language)
+    show = _SHOWS[language][0]
+    src = _drive("driveA")
+    _write(os.path.join(src, show, f"{show} - 01.srt"), _text(language, 1))
+    key = videos.content_key(_video(os.path.join(src, show, f"{show} - 01.mkv")))
+    with store:
+        root = store.add_source(src)
+        real = ls.Store._twin_seen
+        looked = []
+
+        def then_taken(self, *a):
+            out = real(self, *a)
+            if not looked:
+                looked.append(out)
+                other = ls.open_store(language, data_dir, user_files_dir)
+                with other:
+                    assert _look(other, language, root, first=True)["added"] == 1
+            return out
+        monkeypatch.setattr(ls.Store, "_twin_seen", then_taken)
+        hato_path = _hato_file(data_dir, f"{show} - 01.ja.srt", _text(language, 7))
+        change = store.register(hato_path, _hato(key, show))
+        assert looked[0][1:] == (None, None, None)                            # nothing there at the check
+        assert change.added == [] and _items(store) == 1
+        assert store.item(change.pairing_item)["rel_path"] == ls.library_rel(data_dir, hato_path)
+
+
+def test_F12_a_hand_off_at_20k_origins_holds_the_write_lock_briefly_and_a_move_beside_it_waits_little(monkeypatch):
+    """F12 (G1): at 20,000 origins every hato hand-off held the write lock 0.1 s (and seconds when sizes repeat), so
+    a window's move beside it waited that long. In the timed run (SURASURA_STORE_BENCH=1), at 20k origins whose copies
+    share a few sizes: a take-over by video, a file of a size thousands of items share and a new file each hold the
+    lock within MOVE_BUDGET, and no move waits longer; elsewhere a short functional pass at 600."""
+    from tests.test_sources_scan import BENCH, MOVE_BUDGET, _Holds, _seed
+    import threading
+    import time
+    language = "ja"
+    store, data_dir = _empty(language)
+    _d, user_files_dir = roots(language)
+    src = _drive("driveA")
+    count = 20_000 if BENCH else 600
+    with store:
+        root = store.add_source(src)
+        _seed(store, root, data_dir, language, src, count)
+        line = _text(language, 0).splitlines()[-2] or "x"
+        common = _hato_file(data_dir, "Seeded - 01.srt", "")
+        with open(common, "w", encoding="utf-8") as f:                         # written as the seeded copies are
+            f.write(f"{line} {'z' * len(str(count - 1))}\n")
+        sizes = store.items_of_size([os.path.getsize(common)])
+        assert len(sizes[os.path.getsize(common)]) > ls.TWIN_HASHES
+        twin_key = "v1-seed00000123"
+        twin = store.item_of_video_key(twin_key)
+        cases = [(_hato_file(data_dir, "Bench Show - 01.srt", _text(language, 7)), _hato(twin_key, "Bench Show")),
+                 (common, _hato("v1-f12-common", "Seeded")),
+                 (_hato_file(data_dir, "New Show - 01.srt", _text(language, 2)), _hato("v1-f12-new", "New Show"))]
+        tier = "now" if store.ordered("now") else "soon"
+        ids = [i for i, _e, _a in store.ordered(tier)][:6]
+        holds = _Holds(monkeypatch, store.db_path)
+        done, errors = threading.Event(), []
+
+        def mover():
+            other = ls.open_store(language, data_dir, user_files_dir)
+            n = 0
+            with other:
+                while not done.is_set():
+                    try:
+                        other.move([ids[n % len(ids)]], tier, before_id=ids[(n + 3) % len(ids)])
+                    except ls.StoreError as e:
+                        errors.append(repr(e))
+                    n += 1
+                    done.wait(0.005)
+        thread = threading.Thread(target=mover, name="mover")
+        thread.start()
+        changes = []
+        try:
+            for path, pairing in cases:
+                time.sleep(0.05)
+                changes.append(store.register(path, pairing))
+            time.sleep(0.05)
+        finally:
+            done.set()
+            thread.join()
+        assert changes[0].added == [] and changes[0].pairing_item == twin
+        assert len(changes[1].added) == 1 and len(changes[2].added) == 1
+        assert errors == []
+        mine = holds.of(threading.current_thread().name)
+        assert mine
+        if BENCH:
+            assert max(mine) <= MOVE_BUDGET, sorted(mine)[-5:]
+            assert max(holds.of("mover", "waits")) <= MOVE_BUDGET, sorted(holds.of("mover", "waits"))[-5:]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("twin", ("video", "bytes"))
+def test_R1_with_new_arrivals_off_a_sync_before_hatos_register_still_leaves_one_item(language, twin):
+    """K3 fix, left open: with New arrivals off the sync puts hato's file at the top of NOW, not in New arrivals, so
+    its row was never taken out and the everyday race still gave the episode two items there. The sync's own row (no
+    record, link, pin, watch, mining or placement by a person) is taken out wherever the sync put it."""
+    store, data_dir = _empty(language)
+    show = _SHOWS[language][0]
+    with store:
+        store.set_library_options(arrivals_on=False)
+        item, key, sub = _source_episode(store, language, data_dir, video=twin == "video")
+        if twin == "video":
+            hato_path, pairing = _hato_file(data_dir, f"{show} - 01.ja.srt", _text(language, 7)), _hato(key, show)
+        else:
+            hato_path, pairing = _hato_file(data_dir, f"{show} - 01.srt", like=sub), _hato("v1-r1-off", show)
+        synced = _sync_first(store, data_dir, hato_path)
+        assert store.item(synced)["tier"] == "now" and _items(store) == 2
+        change = store.register(hato_path, pairing)
+        assert _items(store) == 1 and store.item(synced) is None and change.pairing_item == item
+        assert os.path.isfile(hato_path) and store.sync_disk() is None and _items(store) == 1
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_R1_with_new_arrivals_off_a_synced_row_the_user_moved_is_never_taken_out(language):
+    """The user's own placement of the sync's row (a drag in NOW) makes it his: kept, as in New arrivals."""
+    store, data_dir = _empty(language)
+    show = _SHOWS[language][0]
+    with store:
+        store.set_library_options(arrivals_on=False)
+        item, key, _sub = _source_episode(store, language, data_dir)
+        hato_path = _hato_file(data_dir, f"{show} - 01.ja.srt", _text(language, 7))
+        synced = _sync_first(store, data_dir, hato_path)
+        assert store.item(item)["tier"] == "now"
+        assert store.move([synced], "now", after_id=item) is not None             # a drag below the episode
+        store.register(hato_path, _hato(key, show))
+        assert store.item(synced) is not None and _items(store) == 2

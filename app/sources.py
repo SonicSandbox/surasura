@@ -32,12 +32,14 @@ folder, `Library/<show>/<file>` (SRC-4). One look (`scan`):
 `due` is the cadence the shell asks (SRC-9); `local_or_network` tells it which folders a watch can follow (D5).
 Nothing is ever written under a source folder. Standard library only.
 """
+import bisect
 import hashlib
 import json
 import logging
 import os
 import re
 import shutil
+import sqlite3
 import sys
 import threading
 import time
@@ -242,16 +244,20 @@ def _show_of(root, parts, name):
     return clean_name(ls.show_of_name(name) or "") or root_name
 
 
-def _copy_part(origin, part):
-    """The original's bytes into `part` (ours: a `.part` in the data folder) -> their sha256."""
+def _copy_part(origin, part, size=None):
+    """The original's bytes into `part` (ours: a `.part` in the data folder) -> their sha256; None when `size` is given
+    and the bytes read are not that many (the record names the listing's size: a copy of another length never matches
+    it)."""
     h = hashlib.sha256()
+    count = 0
     with open(origin, "rb") as src, open(part, "wb") as dst:
         for block in iter(lambda: src.read(1 << 20), b""):
             h.update(block)
             dst.write(block)
+            count += len(block)
         dst.flush()
         os.fsync(dst.fileno())
-    return h.hexdigest()
+    return None if size is not None and count != size else h.hexdigest()
 
 
 def _lost(root):
@@ -260,11 +266,14 @@ def _lost(root):
 
 
 def _read_text(path, st):
-    """(the new text's bytes when it is small enough to keep in memory, else None; its sha256): read once."""
+    """(the new text's bytes when it is small enough to keep in memory, else None; its sha256): read once. (None, None)
+    when the bytes read are not as many as the listing's size (the record names that size): it waits."""
     if st.st_size > IN_MEMORY:
         return None, ls.sha256_of(path)
     with open(path, "rb") as f:
         data = f.read()
+    if len(data) != st.st_size:
+        return None, None
     return data, hashlib.sha256(data).hexdigest()
 
 
@@ -718,6 +727,8 @@ class _Look:
                 self.store.checkpoint(wait=0.1)
             except ls.StoreError:                            # busy: the next one
                 pass
+            except sqlite3.Error as e:                       # housekeeping: never the end of the look (the next retries)
+                log.warning("A checkpoint of the library failed (the look goes on): %r", e)
         self.out["added"] += len(change.added)
         self.out["ids"].extend(change.added)
         self.out["attached"] += len(change.attached)
@@ -805,7 +816,7 @@ class _Look:
             self._wait(folder)
             return None
         data, sha = _read_text(path, st)                     # read once: hashed now, copied from memory
-        if not self._same(path, st):
+        if sha is None or not self._same(path, st):
             self._wait(folder)
             return None
         if sha in self.ex_shas:
@@ -921,22 +932,33 @@ class _Look:
 
     def _held(self, folder):
         """S7: the releases already in from this folder -> {(K4's show of the name, episode): (version, Origin)}, the
-        latest of each — a `v2` found is that episode (followed, S5), an earlier one found later is skipped. One
-        pass over the origins per look."""
+        latest of each — a `v2` found is that episode (followed, S5), an earlier one found later is skipped. Worked
+        out per folder, once a look, from that folder's origins alone (F13: a look that found one new file read the
+        names of every origin, 1.3 s at 20k, stretching a window's save meanwhile): the origins' keys sorted once, the
+        folder's found by its prefix."""
+        fkey = ls.path_key(os.path.abspath(folder))
         if self.by_folder is None:
-            self.by_folder = {}
-            for o in self.origins.values():
-                name = os.path.basename(o.origin or "")
-                if not ls.is_content_name(name.lower()):     # a book's part, or a video waiting for its text (K5)
-                    continue
-                episode, version = _episode_of(name)
-                if episode is None:
-                    continue
-                releases = self.by_folder.setdefault(ls.path_key(os.path.dirname(os.path.abspath(o.origin))), {})
-                k = (self._name_show(name), episode)
-                if k not in releases or releases[k][0] < version:
-                    releases[k] = (version, o)
-        return self.by_folder.get(ls.path_key(os.path.abspath(folder)), {})
+            self.by_folder, self.keys = {}, sorted(self.origins)
+        if fkey in self.by_folder:
+            return self.by_folder[fkey]
+        releases = self.by_folder[fkey] = {}
+        prefix = fkey.rstrip("/") + "/"
+        at = bisect.bisect_left(self.keys, prefix)
+        while at < len(self.keys) and self.keys[at].startswith(prefix):
+            o = self.origins[self.keys[at]]
+            at += 1
+            name = os.path.basename(o.origin or "")
+            if not ls.is_content_name(name.lower()):         # a book's part, or a video waiting for its text (K5)
+                continue
+            if ls.path_key(os.path.dirname(os.path.abspath(o.origin))) != fkey:   # a subfolder's
+                continue
+            episode, version = _episode_of(name)
+            if episode is None:
+                continue
+            k = (self._name_show(name), episode)
+            if k not in releases or releases[k][0] < version:
+                releases[k] = (version, o)
+        return releases
 
     # --- writing into Library -------------------------------------------------------------------------------------- #
 
@@ -959,7 +981,7 @@ class _Look:
     def _checked_copy(self, path, st, part):
         """The original into `part`, as listed: its sha256, or None (it changed while copied: `part` removed)."""
         try:
-            digest = _copy_part(path, part)
+            digest = _copy_part(path, part, st.st_size)
         except OSError:
             _drop(part)
             return None

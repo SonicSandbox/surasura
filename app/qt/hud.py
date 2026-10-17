@@ -253,23 +253,25 @@ class Hud(QObject):
             if self._open is not None:
                 self._close(now)
             if t in _FRAME_EVENTS:
-                kind = self._kind(obj, t)
-                if kind is not None:
-                    self._begin(kind, obj, now)
+                found = self._kind(obj, t)
+                if found is not None:
+                    self._begin(found[0], found[1], now)
         return False
 
     def _kind(self, obj, t):
-        """The kind of window a frame event paints, or None (not a window's frame)."""
+        """(the kind of window a frame event paints, what the frame is named by) or None (not a window's frame). A
+        widget window's expose is named by its widget, as its updates are (Qt names the window `<objectName>Window`,
+        or `<class>Window`): one window, one name, however its frame came."""
         if obj is self.window:
-            return "main"
+            return "main", obj
         if isinstance(obj, QWidget):
-            return self.window_kind(obj) if t == _E.UpdateRequest and obj.isWindow() else None
+            return (self.window_kind(obj), obj) if t == _E.UpdateRequest and obj.isWindow() else None
         if isinstance(obj, QWindow):
             if obj.objectName() == "motionLift":
-                return "lift"
+                return "lift", obj
             if t == _E.Expose and obj.isExposed():     # a widget window's first paint (its show) comes as an expose
                 w = _widget_of(obj)
-                return self.window_kind(w) if w is not None else "window"
+                return (self.window_kind(w), w) if w is not None else ("window", obj)
         return None
 
     def window_kind(self, w):

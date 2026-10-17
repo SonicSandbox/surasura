@@ -53,6 +53,20 @@ class _Popup(QLabel):
         super().paintEvent(event)
 
 
+def _settle(meter, quiet_ms=80, most_ms=2000):
+    """The loop run until no frame has come for `quiet_ms`: a window's exposes after its show can come late (after
+    other suites, offscreen, seen: the main window's and the popup's), and a late one would take the next clock frame's
+    work or be read as the frame under test."""
+    end = time.perf_counter() + most_ms / 1000.0
+    n = len(meter.explain_frames())
+    while time.perf_counter() < end:
+        _run_loop(quiet_ms)
+        m = len(meter.explain_frames())
+        if m == n:
+            return
+        n = m
+
+
 def _frames(meter, kind):
     return [f for f in meter.explain_frames() if f["window"] == kind]
 
@@ -62,7 +76,7 @@ def test_a_frame_in_a_second_window_is_counted_and_tagged_with_its_window(qapp, 
     pop = _Popup(window)
     try:
         pop.show()
-        _run_loop(30)
+        _settle(meter)
         n = len(_frames(meter, "popup"))
         meter.tag = "menu"
         pop.update()
@@ -88,9 +102,10 @@ def test_a_lift_window_frame_and_a_paintless_clock_frame_count_as_the_lift(qapp,
     lift.resize(60, 40)
     try:
         lift.show()
-        _run_loop(30)
+        _settle(meter)
         lift.requestUpdate()
         assert wait_until(lambda: _frames(meter, "lift"), 3)
+        _settle(meter)
         before = len(_frames(meter, "lift"))
         meter.tag = "tray"
         meter._clock_frame(0.4, 1.5)               # the clock moved the lift; no widget repaints
@@ -110,7 +125,7 @@ def test_a_clock_frames_work_lands_in_the_frame_that_paints_it_not_the_main_wind
     pop = _Popup(window)
     try:
         pop.show()
-        _run_loop(30)
+        _settle(meter)
         n_pop, n_main = len(_frames(meter, "popup")), len(_frames(meter, "main"))
         meter._clock_frame(0.2, 3.0)
         pop.update()
@@ -136,7 +151,7 @@ def test_a_window_painted_inside_the_clocks_frame_is_that_one_frame_not_two(qapp
     clock = motion.clock()
     try:
         pop.show()
-        _run_loop(30)
+        _settle(meter)
         freeze.set_frozen(False)
         clock.use_test_time(0.0)
         n = len(meter.explain_frames())
@@ -158,7 +173,7 @@ def test_a_slow_frame_names_a_cause(qapp, window):
     pop = _Popup(window, spin_ms=9.0)
     try:
         pop.show()
-        _run_loop(60)
+        _settle(meter)
         pop.update()
         _run_loop(80)
         slow = [f for f in _frames(meter, "popup") if f["ms"] > hud.SLOW_MS]

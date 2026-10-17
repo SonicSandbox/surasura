@@ -151,7 +151,7 @@ def looks_world():
     def make(kind="network", watch=FakeWatch):
         opener, data_dir, user_files_dir = _library()
         clock = Clock()
-        looks = source_looks.SourceLooks(opener, "ja", clock=clock, watch=watch, kind=lambda _p: kind)
+        looks = source_looks.SourceLooks(opener, "ja", clock=clock, watch=watch, kind=lambda _p: kind, quiet=0.2)
         seen = []
         looks.on_result = seen.append
         made.append(looks)
@@ -427,9 +427,10 @@ def test_settings_lists_the_folders_and_stop_reading_keeps_every_episode(window)
         store.close()
 
 
-def test_a_folder_offline_shows_one_quiet_line_that_goes_when_it_is_back(window):
+def test_a_folder_offline_shows_one_quiet_line_that_goes_when_it_is_back(window, monkeypatch):
     opener, data_dir, user_files_dir = _library()
-    looks = source_looks.SourceLooks(opener, "ja", kind=lambda _p: "network")
+    clock = Clock()
+    looks = source_looks.SourceLooks(opener, "ja", kind=lambda _p: "network", clock=clock)
     seed, win = window(looks)
     folder = _source()
     _added(looks, folder)
@@ -448,7 +449,9 @@ def test_a_folder_offline_shows_one_quiet_line_that_goes_when_it_is_back(window)
         assert {r[0] for r in store.conn.execute("SELECT availability FROM items")} == {"available"}
     finally:
         store.close()
-    win.refresh_sources()                                     # back again
+    monkeypatch.setattr(win, "in_front", lambda: True)
+    clock.t += sources.HOURLY_S + 1                           # back again: the hourly look finds it
+    win._look_tick.timeout.emit()
     assert wait_until(lambda: win.offline_line.isHidden(), 10)
     assert win.offline_line.text() == ""
 
@@ -537,3 +540,160 @@ def test_the_offline_words_name_each_folder_and_its_count():
              {"id": 3, "path": "E:\\Old", "on": False, "items": 9, "reachable": False},
              {"id": 4, "path": "F:\\New", "on": True, "items": 3, "reachable": None}]
     assert source_looks.offline(rows_) == [("S:\\Video", 412)]
+
+
+# --- the review's rows (reviews/SRC-W1b-adversary.md) -------------------------------------------------------------- #
+@pytest.mark.skipif(not __import__("app.library_watch", fromlist=["x"]).watchable(), reason="Windows' change reports")
+def test_B1_a_just_downloaded_episode_is_taken_in_by_the_watch_without_waiting_for_the_cadence(looks_world):
+    # a real watch on a real folder: the file lands fresh (younger than the scan's half-written wait), and the watch's
+    # one look comes once the folder has been quiet past that wait — never at the next focus or the hourly look
+    from app import library_watch
+    looks, _clock, _seen, (data_dir, user_files_dir) = looks_world(
+        kind="local", watch=lambda p, w: library_watch.TreeWatch(p, wake=w))
+    folder = _source()
+    _added(looks, folder)
+    looks._quiet = sources.SETTLE_S + 0.5
+    path = os.path.join(folder, SHOW, f"{SHOW} - 03.ja.srt")
+    with open(os.path.join(h.RESOURCES, "ja", "phrases_sample.srt"), encoding="utf-8") as f:
+        text = f.read()
+    with open(path, "w", encoding="utf-8", newline="\n") as f:      # just downloaded: its time is now
+        f.write(text + "\n3\n")
+
+    def items():
+        store = _read_store(data_dir, user_files_dir)
+        try:
+            return store.conn.execute("SELECT COUNT(*) FROM items").fetchone()[0]
+        finally:
+            store.close()
+    assert wait_until(lambda: items() == 3, sources.SETTLE_S + 8)
+
+
+def test_B1_S7_a_long_download_is_one_look_at_its_end_never_one_per_burst(looks_world, scans):
+    looks, _clock, _seen, _dirs = looks_world(kind="local")
+    _added(looks, _source())
+    looks._quiet = 0.4
+    scans.clear()
+    for _ in range(5):                                        # five bursts, each inside the quiet spell
+        FakeWatch.made[0].report()
+        time.sleep(0.15)
+    assert scans == []
+    assert wait_until(lambda: len(scans) == 1, 5)
+    time.sleep(0.6)
+    assert len(scans) == 1
+
+
+def test_B2_after_a_language_switch_settings_shows_that_librarys_folders_and_a_stale_stop_is_refused(window):
+    old = RecordingLooks()
+    seed, win = window(old)
+    page, row = _sources_row(win)
+    win._sources_looked({"language": win.language, "sources": [{"id": 2, "path": r"D:\アニメ", "on": True,
+                                                                  "items": 5, "reachable": True}]})
+    assert 2 in row.lines
+    new = RecordingLooks()
+    win.services.source_looks = new
+    win.language = "zh"
+    win._follow_looks(None)
+    assert row.lines == {} and not row.none.isHidden()        # the zh library's folders, none yet
+    win._sources_looked({"language": "ja", "sources": [{"id": 2, "path": r"D:\アニメ", "on": True, "items": 5,
+                                                        "reachable": False}]})
+    assert row.lines == {} and win.offline_line.isHidden()     # the language left's late answer: dropped
+    opener, _d, _u = _library()
+    looks = source_looks.SourceLooks(opener, "zh", kind=lambda _p: "network")
+    try:
+        assert looks.stop(2, language="ja") is False           # a ja line's id never reaches the zh store
+    finally:
+        looks.close()
+
+
+def test_B2_a_closed_looks_tells_no_one_what_it_still_finds():
+    opener, _d, _u = _library()
+    looks = source_looks.SourceLooks(opener, "ja", kind=lambda _p: "network")
+    told = []
+    looks.on_result = told.append
+    looks.close()
+    looks._publish(None, {})
+    assert told == []
+
+
+def test_S3_a_library_with_no_store_copies_the_folder_in(window, monkeypatch):
+    class NoStore(RecordingLooks):
+        def add(self, path, then, first=False):
+            then({"path": path, "refused": "no-library"})
+            return True
+    seed, win = window(NoStore())
+    copied = []
+    monkeypatch.setattr(win.adder, "add_folder", copied.append)
+    folder = os.path.join(os.environ["SURASURA_TEST_ROOT"], "elsewhere", "Anime")
+    win.adder.read_folder(folder)
+    assert wait_until(lambda: copied == [folder], 5)
+
+
+def test_S4_a_video_waiting_for_its_subtitle_never_takes_a_place_on_the_mine_line():
+    items, works = _waiting_items()
+    from tests.test_view_rows import items_of
+    more = items_of([("now", 2, 3, [f"{OTHER} - {n:02d}.srt" for n in (2, 3)], {})])
+    for k, row_ in more.items():
+        row_["id"] = 100 + k
+    items.update({r["id"]: r for r in more.values()})
+    view = vr.build(items, works, {"mine_line": 1})
+    other = next(r for r in view.rows if r.title == OTHER)
+    assert other.episodes[0].in_top                           # the first available file is the one mined
+
+
+def test_S5_a_paired_episode_still_names_its_folder(looks_world):
+    looks, _clock, _seen, (data_dir, user_files_dir) = looks_world()
+    folder = _source()
+    _added(looks, folder)
+    store = ls.open_store("ja", data_dir, user_files_dir, role="window")
+    try:
+        item_id = store.conn.execute("SELECT MIN(id) FROM items").fetchone()[0]
+        with store._writing():                                # hato pairs it afterwards: its record comes first
+            store.conn.execute("INSERT INTO pairings (item_id, content_key, pairing, paired_at) VALUES (?, ?, ?, ?)",
+                               (item_id, "v1-made-up-key", '{"producer": "hato"}', "2026-10-16T00:00:00Z"))
+    finally:
+        store.close()
+    found = []
+    looks.folders([item_id], found.append)
+    assert looks.idle(10)
+    assert found == [{item_id: ls.folder_path(folder)}]
+
+
+def test_S6_stop_reading_lets_a_running_look_go_between_files(looks_world, monkeypatch):
+    looks, _clock, _seen, _dirs = looks_world()
+    answer = _added(looks, _source())
+    gate, started, asked_stop = threading.Event(), threading.Event(), []
+    real = sources.scan
+
+    def slow(store, language, root, **kw):
+        started.set()
+        gate.wait(10)
+        asked_stop.append(kw["stop"]())
+        return real(store, language, root, **kw)
+    monkeypatch.setattr(sources, "scan", slow)
+    assert looks.asked(focused=True)
+    assert started.wait(10) and looks.busy()                  # the look is reading the folder now
+    assert looks.stop(answer["root"], language="ja")
+    gate.set()
+    assert looks.idle(20)
+    assert asked_stop == [True]
+
+
+def test_S15_an_equal_summary_repaints_no_line(window):
+    seed, win = window(RecordingLooks())
+    page, row = _sources_row(win)
+    summary = {"language": win.language, "sources": [{"id": 3, "path": r"D:\Shows", "on": True, "items": 9,
+                                                       "reachable": True}]}
+    win._sources_looked(summary)
+    reads = row.reads
+    win._sources_looked(dict(summary, sources=[dict(s) for s in summary["sources"]]))
+    assert row.reads == reads
+    win._sources_looked(dict(summary, sources=[dict(summary["sources"][0], items=10)]))
+    assert row.reads == reads + 1 and row.lines[3].count.text() == S.SOURCES_COUNT.format(n=10)
+
+
+def test_settings_waits_for_the_first_listing_before_saying_no_folders(window):
+    seed, win = window(RecordingLooks())
+    page, row = _sources_row(win)
+    assert row.none.text() == S.SOURCES_LISTING
+    win._sources_looked({"language": win.language, "sources": []})
+    assert row.none.text() == S.SOURCES_NONE and not row.none.isHidden()

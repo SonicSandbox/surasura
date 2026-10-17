@@ -269,14 +269,23 @@ class Adder(QObject):
             return False                                  # S4 (E4): said in the bar, nothing written
         name = os.path.basename(os.path.normpath(folder)) or folder
         relay = bridge.Relay(self)
-        relay.said.connect(lambda answer: self._read(name, answer, relay))
-        return bool(looks.add(os.path.normpath(folder), relay.call, first=first))
+        relay.said.connect(lambda answer: self._read(name, answer, relay, folder))
+        busy = looks.busy() if hasattr(looks, "busy") else False
+        asked = bool(looks.add(os.path.normpath(folder), relay.call, first=first))
+        if asked and busy:                                # queued behind a look under way: said, never silent
+            windows.say_in_bar(self.shell, strings.SOURCES_QUEUED.format(name=name))
+        return asked
 
-    def _read(self, name, answer, relay):
+    def _read(self, name, answer, relay, folder=None):
         relay.deleteLater()
         refused = answer.get("refused")
         result = answer.get("result") or {}
-        if refused:
+        if refused == "no-library" and folder:
+            self.add_folder(folder)                       # a 2.x library (no store): copied in, as before (S3)
+            return
+        if answer.get("later"):
+            text = strings.SOURCES_READ_LATER.format(name=name)
+        elif refused:
             reason = strings.SOURCES_NO_LIBRARY if refused == "no-library" else refused
             text = strings.SOURCES_REFUSED.format(name=name, reason=reason)
         elif not result.get("reachable", True):

@@ -2346,7 +2346,9 @@ class ShellWindow(QMainWindow):
         self._folders_of.clear()
         self._folders_asked.clear()
         self._named.clear()
+        self._named_groups = None
         self._show_offline()
+        self.sources_seen.emit({"language": self.language, "sources": []})     # Settings' lines: the language open's
         if self._first_painted:
             self.look_at_sources(focused=True)
 
@@ -2367,8 +2369,8 @@ class ShellWindow(QMainWindow):
 
     def _sources_looked(self, summary):
         """A look's (an add's, a stop's) summary: the offline line, and Settings' row (`sources_seen`)."""
-        if not isinstance(summary, dict):
-            return
+        if not isinstance(summary, dict) or summary.get("language", self.language) != self.language:
+            return                                        # B2: a language left never paints over the one open
         self.sources = tuple(summary.get("sources") or ())
         self._show_offline()
         self.sources_seen.emit(summary)
@@ -2409,7 +2411,8 @@ class ShellWindow(QMainWindow):
         want = [a.item_ids[0] for g in groups for a in g.rows if a.item_ids and a.item_ids[0] not in self._folders_asked]
         if want:
             self._folders_asked.update(want)
-            self.looks.folders(want, self._folders_relay.call)
+            language = self.language
+            self.looks.folders(want, lambda found: self._folders_relay.call((language, found)))
         held = self._named_groups
         if held is not None and held[0] is groups and held[1] == self._folders_version:
             return held[2]
@@ -2433,13 +2436,16 @@ class ShellWindow(QMainWindow):
             return kept[2]
         name = os.path.basename(os.path.normpath(folder)) or folder
         chip = name if len(name) <= CHIP_MAX else name[:CHIP_MAX - 1] + "…"
-        ours = a._replace(chip=chip, accessible=f"{a.accessible} · {strings.SOURCES_FROM.format(name=name)}")
+        ours = a._replace(chip=chip, source="disk",                  # a folder's chip in the disk's ink, never hato's
+                          accessible=f"{a.accessible} · {strings.SOURCES_FROM.format(name=name)}")
         self._named[a.key] = (a, folder, ours)
         return ours
 
-    def _folders_landed(self, found):
-        """The arrivals' folders read: the tray shown again when one was named."""
-        if not isinstance(found, dict):
+    def _folders_landed(self, said):
+        """The arrivals' folders read: the tray shown again when one was named (another language's answer dropped:
+        item ids repeat across stores)."""
+        language, found = said if isinstance(said, tuple) else (None, said)
+        if not isinstance(found, dict) or language != self.language:
             return
         named = {k: v for k, v in found.items() if v}
         self._folders_of.update(found)

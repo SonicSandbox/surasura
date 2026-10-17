@@ -976,6 +976,8 @@ SOURCES_READING = "Reading {name}: {found:,} found in {shows:,} shows…"
 SOURCES_READ = "Reading {name} where it is: {added:,} new"
 SOURCES_READ_ARRIVALS = "Reading {name} where it is: {added:,} new · the shows you haven't seen wait in New " \
                         "arrivals"
+SOURCES_QUEUED = "Reading {name} where it is, after the look under way…"
+SOURCES_READ_LATER = "Reading {name} where it is: its first look comes with the next one"
 SOURCES_READ_NOTHING = "Reading {name} where it is: nothing new in it yet"
 SOURCES_UNREACHABLE = "Reading {name} where it is: it can't be reached now · Surasura looks again later"
 SOURCES_REFUSED = "{name} can't be read where it is: {reason}"

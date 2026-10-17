@@ -12,6 +12,8 @@ rows' packages — never by the page itself.
   (`ShellWindow.refresh_sources`: every folder, in full).
 - **Shown from the shell's looks** (`ShellWindow.sources`, `sources_seen`): asked once as the row is made, repainted
   when a look, an add or a stop lands — only the lines that changed (S19), inside the page's hold (it never moves).
+  Each line belongs to its language's library: another language's summary replaces every line, and *Stop reading*
+  names its language, so a root id another store also holds is never stopped there (ids repeat across stores).
   Without a library (no looks), the buttons are greyed and say why.
 
 GUI_Design_Guidelines_Qt: the page's controls and label styles (no new rules), a tooltip on every button.
@@ -92,6 +94,7 @@ class SourcesRow(QObject):
         self.page = page
         self.shell = page.shell
         self.lines = {}
+        self.language = getattr(self.shell, "language", None)     # the library the lines are of
         slot = page.custom_row(ROW_ID)
         self.box = QWidget(slot)
         self.box.setObjectName("settingssources")
@@ -100,6 +103,7 @@ class SourcesRow(QObject):
         column.setSpacing(round(6 * _f()))
         foot = QHBoxLayout()
         foot.setContentsMargins(0, 0, 0, 0)
+        self.known = bool(getattr(self.shell, "sources", ()))    # a listing has landed (until then: the waiting words)
         self.none = QLabel(S.SOURCES_NONE, self.box)
         self.none.setObjectName("settingsaffix")
         self.none.setVisible(False)
@@ -115,10 +119,9 @@ class SourcesRow(QObject):
         slot.layout().addWidget(self.box)
         self.reads = 0                                    # the sources shown (tests: repainted only when they moved)
         looks = self._looks()
-        for button in (self.look, self.add):
-            if looks is None:
-                button.setEnabled(False)
-                button.setToolTip(S.STORE_NO_LIBRARY_TIP)
+        self._enable(looks is not None)
+        if looks is not None and not self.known:
+            self.none.setText(S.SOURCES_LISTING)            # waiting for the first listing, never "No folders yet"
         seen = getattr(self.shell, "sources_seen", None)
         if seen is not None:
             seen.connect(self._seen)
@@ -132,20 +135,38 @@ class SourcesRow(QObject):
     def _looks(self):
         return getattr(self.shell, "looks", None) if self.shell is not None else None
 
+    def _enable(self, on):
+        """*Look again* and *Add a folder…* act while there are looks (a library open); greyed with why when not."""
+        for button, tip in ((self.look, S.SOURCES_LOOK_TIP), (self.add, S.SOURCES_ADD_TIP)):
+            if button.isEnabled() != on:
+                button.setEnabled(on)
+                button.setToolTip(tip if on else S.STORE_NO_LIBRARY_TIP)
+
     # --- showing ---------------------------------------------------------------------------------------------- #
     def _seen(self, summary):
-        if self.alive() and isinstance(summary, dict):
-            self.show_sources(summary.get("sources") or ())
+        if not self.alive() or not isinstance(summary, dict):
+            return
+        language = summary.get("language", self.language)
+        if language != getattr(self.shell, "language", language):
+            return                                        # a language left's late answer
+        self._enable(self._looks() is not None)
+        reset = language != self.language
+        self.language = language
+        if not self.known:
+            self.known = True
+            self.none.setText(S.SOURCES_NONE)
+        self.show_sources(summary.get("sources") or (), reset=reset)
 
-    def show_sources(self, sources):
-        """The lines made to match `sources` (being read): only a line that changed is touched."""
+    def show_sources(self, sources, reset=False):
+        """The lines made to match `sources` (being read): only a line that changed is touched; `reset` (another
+        language's library): every line made again."""
         if not self.alive():
             return
         wanted = [s for s in sources if s.get("on", True)]
         ids = [s["id"] for s in wanted]
-        gone = [r for r in self.lines if r not in ids]
-        moved = [s for s in wanted if s["id"] in self.lines and self.lines[s["id"]].source != s]
-        added = [s for s in wanted if s["id"] not in self.lines]
+        gone = [r for r in self.lines if reset or r not in ids]
+        moved = [s for s in wanted if s["id"] in self.lines and s["id"] not in gone and self.lines[s["id"]].source != s]
+        added = [s for s in wanted if s["id"] not in self.lines or s["id"] in gone]
         empty = not wanted
         if not (gone or moved or added) and self.none.isHidden() != empty:
             return
@@ -177,7 +198,7 @@ class SourcesRow(QObject):
         if adder is None:
             return False
         if folder is None:
-            folder = QFileDialog.getExistingDirectory(self.page, S.FOLDER_PICK_TITLE)
+            folder = QFileDialog.getExistingDirectory(self.page, S.SOURCES_PICK_TITLE)
         return adder.read_folder(folder) if folder else False
 
     def look_again(self):
@@ -191,7 +212,6 @@ class SourcesRow(QObject):
         if looks is None or line is None:
             return False
         source = dict(line.source)
-        line.stop.setEnabled(False)                       # one stop per click
         from app.qt import bridge
         relay = bridge.Relay(self)
 
@@ -205,4 +225,11 @@ class SourcesRow(QObject):
             elif _alive(line):
                 line.stop.setEnabled(True)
         relay.said.connect(stopped)
-        return bool(looks.stop(root_id, relay.call))
+        busy = looks.busy() if hasattr(looks, "busy") else False
+        if not looks.stop(root_id, relay.call, language=self.language):
+            relay.deleteLater()                           # refused (closed, another language): nothing stopped
+            return False
+        line.stop.setEnabled(False)                       # one stop per click
+        if busy and self.shell is not None:               # S6: a look under way lets it go after the file it's on
+            windows.say_in_bar(self.shell, S.SOURCES_STOPPING.format(path=source["path"]))
+        return True

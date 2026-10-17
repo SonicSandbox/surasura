@@ -5,7 +5,10 @@ on which thread, and what the window is told. Qt-free; the shell (`app/qt/shell.
   look), on the window's tick (hourly) — never while the window is behind or minimized. The first look after start and
   every Refresh list everything (`full`, S4); the others list only the folders whose time moved.
 - **A local folder is watched** (S10 / D5, `sources.local_or_network`): a `library_watch.TreeWatch` on it, whose
-  settled reports ask for a look of that folder alone — held while the window is behind, looked at when it comes back.
+  reports ask for a look of that folder alone once it has been quiet past the scan's half-written wait
+  (`sources.SETTLE_S` + `AGAIN_S`: a file younger than SETTLE_S is never taken; every later report pushes the look back,
+  so a long download is one look at its end, never one per burst) — held while the window is behind, looked at when it
+  comes back. A watch that ends (the drive went) asks for a look at once (the offline line).
   A network folder, or one whose watch can't start or ended, gets the cadence only (the watch is tried again at the
   next look that reaches it). One thread waits on every watch (blocked inside Windows: nothing while nothing happens).
 - **One look at a time** (`sources.scan` never two at once): every look, add and stop runs on one worker thread of its
@@ -27,6 +30,9 @@ from app import sources
 from app.services.automation import Worker
 
 
+AGAIN_S = 1.0                   # a watch report's look: this long after the scan's half-written wait (SETTLE_S)
+
+
 def _nothing(*_args):
     pass
 
@@ -44,10 +50,11 @@ def _make_watch(path, wake):
 class SourceLooks:
     """`opener`: the window's store opener (its writer's); `rules()`: the placing rules a later look's arrivals obey
     (settings.json's `placing_rules`, read at each look); `on_result(summary)` / `on_progress(path, found, shows)`:
-    the window's (any thread). `clock`, `watch(path, wake)`, `kind(path)`: a test's."""
+    the window's (any thread). `clock`, `watch(path, wake)`, `kind(path)`, `quiet` (seconds a watched folder stays quiet
+    before its look): a test's."""
 
     def __init__(self, opener, language="ja", rules=None, on_result=None, on_progress=None, clock=time.monotonic,
-                 watch=_make_watch, kind=sources.local_or_network):
+                 watch=_make_watch, kind=sources.local_or_network, quiet=None):
         self.opener = opener
         self.language = language
         self._rules = rules
@@ -56,6 +63,7 @@ class SourceLooks:
         self._clock = clock
         self._make_watch = watch
         self._kind = kind
+        self._quiet = sources.SETTLE_S + AGAIN_S if quiet is None else quiet   # a watch's look, after its last report
         self._worker = Worker(f"window-sources-{language}")
         self._lock = threading.Lock()
         self._closing = threading.Event()             # the window closes: a look under way stops between files
@@ -65,6 +73,8 @@ class SourceLooks:
         self._again = None                            # asked meanwhile: (full, roots or None) — one more after it
         self._shown = True                            # the window in front (watch reports wait while it isn't)
         self._dirty = set()                           # roots a watch reported while the window was behind
+        self._again_at = {}                           # root -> when its reports' look is due (B1 / S7: quiet, settled)
+        self._stopping = set()                        # roots *Stop reading* was pressed on (a running look lets go: S6)
         self._watches = {}                            # root id -> TreeWatch (local folders being read)
         self._wake = threading.Event()                # every watch's reports wake the one watch thread
         self._watcher = None
@@ -103,9 +113,19 @@ class SourceLooks:
         """*Read it where it is*: `then({"path", "root", "refused", "result"})` on the worker. -> False once closed."""
         return self._worker.put(self._add, path, then or _nothing, first) if not self._closing.is_set() else False
 
-    def stop(self, root_id, then=None):
-        """*Stop reading*: `then({"root", "stopped"})` on the worker."""
-        return self._worker.put(self._stop, root_id, then or _nothing) if not self._closing.is_set() else False
+    def stop(self, root_id, then=None, language=None):
+        """*Stop reading*: `then({"root", "stopped"})` on the worker. `language`: the language the root was listed in
+        — another's (ids repeat across stores) is refused (B2)."""
+        if self._closing.is_set() or (language is not None and language != self.language):
+            return False
+        with self._lock:
+            self._stopping.add(root_id)               # a look reading it now stops between files (S6)
+        return self._worker.put(self._stop, root_id, then or _nothing)
+
+    def busy(self):
+        """A look is queued or running (Settings says *Stop reading* waits for the file it is on)."""
+        with self._lock:
+            return self._running
 
     def listing(self):
         """The sources as they stand, to `on_result` (Settings' row as it opens): one read on the worker."""
@@ -118,14 +138,14 @@ class SourceLooks:
 
     def close(self):
         """The window closes (or another language opens): the look under way stops between files, every watch closes,
-        the worker's store handle closes after what was queued."""
+        the worker's store handle closes after what was queued — and nothing it still finds is told (B2: a language
+        left never paints over the one open)."""
         self._closing.set()
+        self.on_result = self.on_progress = _nothing
         with self._lock:
             watches, self._watches = list(self._watches.values()), {}
-        for w in watches:
-            _close(w)
         self._wake.set()
-        self._worker.put(self._let_go)
+        self._worker.put(self._let_go, watches)
         self._worker.close()
 
     def idle(self, timeout=None):
@@ -168,7 +188,7 @@ class SourceLooks:
             for row in rows:
                 if self._closing.is_set():
                     break
-                if roots is not None and row["id"] not in roots:
+                if (roots is not None and row["id"] not in roots) or row["id"] in self._stopping:
                     continue
                 result = self._scan(store, row, full=full)
                 if result is not None:
@@ -189,7 +209,7 @@ class SourceLooks:
         path = row["path"]
         try:
             result = sources.scan(store, self.language, row["id"], first=first, full=full, rules=self._rules_now(),
-                                  progress=progress, stop=self._closing.is_set)
+                                  progress=progress, stop=lambda: self._closing.is_set() or row["id"] in self._stopping)
         except Exception as e:                        # one folder's fault never stops the others
             print(f"Sources: {path} wasn't looked at: {e!r}")
             return None
@@ -207,7 +227,8 @@ class SourceLooks:
         return dict(rules) if isinstance(rules, dict) and rules else None
 
     def _add(self, path, then, first):
-        answer = {"path": path, "root": None, "refused": None, "result": None, "arrivals": 0}
+        answer = {"path": path, "root": None, "refused": None, "result": None, "arrivals": 0,
+                  "language": self.language}
         store = None
         try:
             store = self._store()
@@ -224,6 +245,8 @@ class SourceLooks:
                     row = next((r for r in store.sources() if r["id"] == root), {"id": root, "path": path})
                     answer["result"] = self._scan(store, row, full=True, first=first, progress=lambda found, shows:
                                                   self.on_progress(row["path"], found, shows))
+                    if answer["result"] is None or answer["result"].get("busy"):
+                        answer["later"] = True        # read from now on; its first look comes with the next one
                     for item_id in (answer["result"] or {}).get("ids") or ():
                         item = store.item(item_id)
                         if item is not None and item["tier"] == "arrivals":
@@ -236,12 +259,13 @@ class SourceLooks:
             self._publish(store, {})
 
     def _stop(self, root_id, then):
-        answer = {"root": root_id, "stopped": False}
+        answer = {"root": root_id, "stopped": False, "language": self.language}
         store = None
         try:
             store = self._store()
             if store is not None:
                 answer["stopped"] = bool(store.stop_source(root_id))
+                self._again_at.pop(root_id, None)
                 with self._lock:
                     w = self._watches.pop(root_id, None)
                 if w is not None:
@@ -249,6 +273,8 @@ class SourceLooks:
                 self._reachable.pop(root_id, None)
         except Exception as e:
             answer["refused"] = str(e) or repr(e)
+        with self._lock:
+            self._stopping.discard(root_id)
         then(answer)
         if store is not None:
             self._publish(store, {})
@@ -263,7 +289,7 @@ class SourceLooks:
         except Exception as e:
             print(f"Sources: the folders couldn't be read: {e!r}")
             return
-        summary = dict(totals)
+        summary = dict(totals, language=self.language)
         summary["sources"] = [dict(r, reachable=self._reachable.get(r["id"])) for r in rows]
         self.on_result(summary)
 
@@ -272,17 +298,25 @@ class SourceLooks:
         try:
             store = self._store()
             if store is not None:
-                from app.connect.library import pairing_of
+                import json
+                from app import library_store as ls
                 paths = {r["id"]: r["path"] for r in store.sources(all=True)}
-                for item_id in ids:
-                    record = pairing_of(store, item_id)
-                    if isinstance(record, dict) and record.get("producer") == "source":
+                for item_id in ids:                   # its origin row (B1's key), never hato's record before it
+                    row = store.conn.execute(f"SELECT p.pairing FROM pairings p WHERE p.item_id = ? AND "
+                                             f"{ls._ORIGIN_ROW} ORDER BY p.rowid LIMIT 1", (item_id,)).fetchone()
+                    try:
+                        record = json.loads(row[0]) if row else None
+                    except ValueError:
+                        record = None
+                    if isinstance(record, dict):
                         out[item_id] = paths.get(record.get("root"))
         except Exception as e:
             print(f"Sources: the arrivals' folders couldn't be read: {e!r}")
         then(out)
 
-    def _let_go(self):
+    def _let_go(self, watches=()):
+        for w in watches:
+            _close(w)
         close = getattr(self.opener, "close", None)   # this thread's handle (a store handle belongs to its thread)
         if close is not None:
             close()
@@ -334,14 +368,28 @@ class SourceLooks:
             with self._lock:
                 watches = list(self._watches.items())
             dues = [d for d in (w.due() for _r, w in watches) if d is not None]
+            now = time.monotonic()                    # (the watches' own time: real, never the cadence's clock)
+            dues += [max(0.0, at - now) for at in self._again_at.values()]
             self._wake.wait(min(dues) if dues else None)
             self._wake.clear()
             if self._closing.is_set():
                 return
+            now = time.monotonic()
             changed = set()
             for root, w in watches:
+                if getattr(w, "state", "watching") != "watching":
+                    with self._lock:                  # ended (the drive went): looked at now, the cadence after
+                        if self._watches.get(root) is w:
+                            del self._watches[root]
+                    self._again_at.pop(root, None)
+                    changed.add(root)
+                    continue
                 folders, whole = w.take()
                 if folders or whole:
+                    self._again_at[root] = now + self._quiet        # pushed back by every later report
+            for root, at in list(self._again_at.items()):
+                if at <= now:
+                    del self._again_at[root]
                     changed.add(root)
             if not changed:
                 continue

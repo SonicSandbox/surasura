@@ -736,12 +736,13 @@ def worst_needs(rows):
 
 
 def _mine_ids(current, n):
-    """The store's `_mine_ids`: the top `n` available files of Current, in order."""
+    """The store's `_mine_ids`: the top `n` available files of Current, in order (a video waiting for its subtitle is
+    never one: SRC W1b)."""
     out = []
     for r in current:
         if len(out) >= n:
             break
-        if r.get("availability") != "missing":
+        if r.get("availability") not in ("missing", "waiting"):
             out.append(r["id"])
     return out
 

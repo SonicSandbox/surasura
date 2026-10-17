@@ -88,6 +88,7 @@ QWidget#footer {{ background: {c['frame']}; }}
 QLabel#barline {{ color: {c['ink-dim']}; {font('footer')} font-weight: 400; }}
 QLabel#barfailure {{ color: {c['warn']}; {font('footer')} font-weight: 400; }}
 QLabel#barmark {{ color: {c['ink-dim']}; {font('footer')} font-weight: 400; }}
+QLabel#sourcesline {{ color: {c['ink-dim']}; {font('footer')} font-weight: 400; }}
 QLabel#journeydot {{ color: {c['accent']}; {font('badge')} }}
 QLabel#pagewaiting {{ color: {c['ink-dim']}; {font('body')} font-weight: 400; }}
 QLabel#pagetitle {{ color: {c['ink']}; {font('page-heading')} }}

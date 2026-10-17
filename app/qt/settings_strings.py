@@ -330,6 +330,10 @@ ROWS = {
     "soon_line": ("Soon starts after",
                   "For now a count · later worked out from how much you watch a day, about 3 weeks in",
                   "How many files of Current come before Soon", "soon weeks after soon line"),
+    "library_folders": ("Library folders", "Read where they are: Surasura keeps its own copy of their text and "
+                                           "looks in them again for new episodes",
+                        "The folders Surasura reads where they are", "library folders source read where they are "
+                                                                     "stop reading look again"),
     "split_length": ("Split books into parts of", "EPUBs and Anki decks, when you extract them",
                      "The character limit for each part when a file is split", "split epub length"),
     "enable_youtube_transcripts": ("YouTube transcripts", "Download a video’s captions straight into your library",
@@ -610,6 +614,25 @@ STORE_FILES = "files"
 STORE_NO_LIBRARY_TIP = "Opens with your library"
 STORE_NOT_SAVED = "Not saved: {reason}"
 SET_UP_AGAIN_OPEN = "Start ›"
+
+# --- SRC W1b: *Library folders* (settings_sources.py) ------------------------------------------------------------ #
+SOURCES_ADD = "Add a folder…"
+SOURCES_ADD_TIP = "Read another folder where it is\nA show Surasura hasn't shown you yet waits in New arrivals"
+SOURCES_LOOK = "Look again"
+SOURCES_LOOK_TIP = "Look in every folder for new episodes now (the Refresh key does the same)"
+SOURCES_STOP = "Stop reading"
+SOURCES_STOP_TIP = ("Stop looking in {path} for new episodes\nIts {n:,} episodes stay in your library; adding the folder "
+                    "again reads it on from where it was")
+SOURCES_STOP_NAME = "Stop reading {path}"
+SOURCES_STOPPING = "Stopping reading {path} after the file it's on…"
+SOURCES_PICK_TITLE = "A folder for Surasura to read where it is"
+SOURCES_COUNT = "{n:,} episodes"
+SOURCES_COUNT_ONE = "1 episode"
+SOURCES_AWAY = "{count} · not reachable now"
+SOURCES_LISTING = "Looking at your folders…"
+SOURCES_NONE = "No folders yet: Surasura reads only what you add"
+SOURCES_STOPPED = "Stopped reading {path}: its {n:,} episodes stay in your library"
+SOURCES_STOPPED_ONE = "Stopped reading {path}: its episode stays in your library"
 
 # --- PR: *Where new arrivals go* — the placing rules' lines (settings_rules.py; RULE_FROM, RULE_ADD, its tip above) -- #
 RULE_LINE_TIP = "Where arrivals from {source} go. Wait here: they wait in New arrivals for you"

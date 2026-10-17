@@ -36,6 +36,7 @@ from PyQt6.QtWidgets import QApplication, QHBoxLayout, QLabel, QSizePolicy, QToo
 
 from app import theme
 from app.qt import motion, rows, shadow, strings, style
+from app.qt import covers as qcovers                 # --- W3.2 Q6: the titles' own pictures
 
 F = theme.FRAME
 WELLS = ("soon", "goal", "finished")
@@ -1003,6 +1004,10 @@ class GoalDock(QWidget):
         self._pix = self._key = None
         self._hand = self._hand_key = None
         self.pictures = self.hands = self.paints = 0
+        # --- W3.2 Q6: each cover's record by title (the wells'), a title's picture landing repaints the dock
+        self._refs = {}
+        qcovers.notifier().ready.connect(self._cover_ready)
+        # --- end W3.2 Q6
         self.apply_size()
 
     # --- size and the goal -------------------------------------------------------------------------------------- #
@@ -1033,6 +1038,26 @@ class GoalDock(QWidget):
     def set_view(self, view):
         """The covers the wells show, from the reader's newest view (kept for the next drag; nothing repaints)."""
         self._covers = well_covers(view)
+        # --- W3.2 Q6: the wells' covers' records, by title (`well_covers` keeps titles)
+        refs = {}
+        for r in tuple(getattr(view, "rows", ()) or ()) + tuple(r for m in getattr(view, "finished", ()) or ()
+                                                              for r in m.rows):
+            refs.setdefault(_title(r), getattr(r, "cover", None))
+        goal = getattr(view, "goal", None)
+        if goal is not None:
+            for title, ref in zip(goal.covers, getattr(goal, "cover_refs", ())):
+                refs.setdefault(title, ref)
+        self._refs = refs
+
+    def _cover_ready(self, work_id):
+        """A title's picture landed: the bar's picture drawn again when its hand shows it, the wells when they do."""
+        goal_refs = getattr(self.goal, "cover_refs", ()) if self.goal is not None else ()
+        if any(ref and tuple(ref)[0] == work_id for ref in goal_refs):
+            self._key = self._hand_key = None
+            self.update()
+        elif self.wells and any(ref and tuple(ref)[0] == work_id for ref in self._refs.values()):
+            self.update()
+        # --- end W3.2 Q6
 
     def bar_rect(self):
         top, side = F["dock-pad"]
@@ -1058,6 +1083,7 @@ class GoalDock(QWidget):
         self.source = source
         self.wells = wells_for(source)
         self.lit = None
+        self._unlit = {}                         # a drag begun while the last one's wells fell: never its dark wells
         self._slot_w = {w: float(F["well-slot"]) for w in self.wells}
         for s in self._slots.values():
             s.stop()
@@ -1212,10 +1238,15 @@ class GoalDock(QWidget):
     def _hand_picture(self, dpr):
         """The loose hand, greyed once: (pixmap, the room around it for the turned covers)."""
         covers = tuple(self.goal.covers[:F["dock-covers"]])
-        key = (covers, dpr, style.current())
+        cw, ch = F["dock-cover"]
+        # --- W3.2 Q6: each title's own picture once decoded (greyed darker: real art at .62), the generated meanwhile
+        refs = tuple(getattr(self.goal, "cover_refs", ()))[:len(covers)]
+        refs += (None,) * (len(covers) - len(refs))
+        real = tuple(qcovers.decoded(ref, cw, ch, dpr, "stack") is not None for ref in refs)
+        key = (covers, refs, real, dpr, style.current())
+        # --- end W3.2 Q6
         if key == self._hand_key:
             return self._hand
-        cw, ch = F["dock-cover"]
         step = cw - F["dock-cover-overlap"]
         room = math.ceil(ch * math.sin(math.radians(4 * F["dock-cover-turn"]))) + 2
         w = step * (len(covers) - 1) + cw + 2 * room
@@ -1239,7 +1270,10 @@ class GoalDock(QWidget):
             clip = QPainterPath()
             clip.addRoundedRect(r, radius, radius)
             q.setClipPath(clip)
-            q.drawPixmap(r.topLeft(), rows.cover(title, cw, ch, dpr))
+            q.drawPixmap(r.topLeft(), qcovers.pixmap_for(refs[i], title, cw, ch, dpr, "stack"))      # W3.2 Q6
+            if real[i]:                                     # --- W3.2 Q6: real art to .62 (the generated .9 below)
+                q.fillRect(r, _alpha(style.qcolor(theme.STONE["black"]),
+                                     1 - cover_grey(generated=False) / cover_grey(generated=True)))
             q.restore()
         q.end()
         grey = img.convertToFormat(QImage.Format.Format_Grayscale8).convertToFormat(
@@ -1249,8 +1283,8 @@ class GoalDock(QWidget):
         q.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
         q.drawImage(0, 0, img)                              # the covers' own shape back (grey has no alpha)
         q.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceAtop)
-        # every cover in the hand is generated today (`rows.cover`: real art arrives with AniList's covers): greyed
-        # lighter, or its dark gradient goes black (S4)
+        # every cover greyed as a generated one is — lighter, or its dark gradient goes black (S4); a real picture was
+        # darkened in the loop above, so it ends at the reference's .62 (W3.2 Q6)
         q.fillRect(QRectF(0, 0, w, h), _alpha(style.qcolor(theme.STONE["black"]), 1 - cover_grey(generated=True)))
         q.end()
         pix = QPixmap.fromImage(grey)
@@ -1301,7 +1335,8 @@ class GoalDock(QWidget):
                     p.setClipPath(clip, Qt.ClipOperation.IntersectClip)
                     if name == "goal":
                         p.setOpacity(F["dock-cover-alpha"])
-                    p.drawPixmap(cover.topLeft(), rows.cover(title, cw, ch, dpr))
+                    p.drawPixmap(cover.topLeft(), qcovers.pixmap_for(self._refs.get(title), title, cw, ch, dpr,
+                                                                     "stack"))                      # W3.2 Q6
                     p.restore()
                 cx += width + gap
         p.restore()

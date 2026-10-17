@@ -493,10 +493,28 @@ def test_the_known_words_road_starts_on_anki_with_decks_and_the_page_can_turn_it
 
 
 def test_rows_waiting_for_their_owner_and_the_anki_label_without_decks_stay_hidden():
-    assert "covers_download" not in _shown({}, "ja")
     assert "set_up_again" in _shown({}, "ja")               # its owner landed (W3.5 part 3: `settings_store`)
     assert "anki_backlog_on_generate" not in _shown({}, "ja")
     assert "anki_backlog_on_generate" in _shown({"anki_sync_decks": {"zh": ["中文::挖矿"]}}, "ja")
+
+
+# --- W3.2 L3: the covers' switch in Connections -------------------------------------------------------------------- #
+def test_download_covers_is_a_connections_toggle_writing_only_its_key_and_remove_is_an_action_under_it():
+    """The window's spec 01 §1.3 C1: Settings → Connections holds *Download covers* (its own key, nothing else) with
+    *Remove downloaded covers* under it — shown in both languages, the switch off or on (old covers can be removed)."""
+    row, remove = catalog.ROW["covers_download"], catalog.ROW["remove_downloaded_covers"]
+    assert (row.section, row.kind, row.keys) == ("connect", "toggle", ("covers_download",))
+    assert (remove.section, remove.kind, remove.keys, remove.sub) == ("connect", "action", (), True)
+    ids = [r.id for r in catalog.ROWS]
+    assert ids.index("remove_downloaded_covers") == ids.index("covers_download") + 1
+    for language in ("ja", "zh"):
+        for on in (False, True):
+            assert {"covers_download", "remove_downloaded_covers"} <= _shown({"covers_download": on}, language)
+    assert catalog.change(row, {"covers_download": False}, "ja", True) == ({"covers_download": True}, None)
+    assert catalog.FILLED_BY["remove_downloaded_covers"] == "app.qt.settings_live"
+    assert "covers_download" not in catalog.NOT_SHOWN and "covers_download" not in catalog.FILLED_BY
+    assert row.help == ("Sends each show's AniList id or name to AniList, and a video's id to YouTube. "
+                        "Nothing else.")                                                # what is sent, in one line
 
 
 # --- find() ------------------------------------------------------------------------------------------------------------ #

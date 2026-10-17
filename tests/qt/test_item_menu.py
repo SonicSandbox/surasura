@@ -136,7 +136,7 @@ def test_the_menu_lists_the_moves_then_study_type_split_join_folder_and_remove_l
     _seed, win, _w = world()
     a, _b = split_parts(win)
     row = rows_of(win)[a]
-    assert names(win.items.entries(row)) == ["pin", "type", "split", "join", "folder", "remove"]
+    assert names(win.items.entries(row)) == ["pin", "type", "split", "join", "cover", "folder", "remove"]   # W3.2 L3
     m = win.items.menu(row, win.mapToGlobal(QPoint(300, 300)))
     acts = m.actions()
     texts = [x.text() for x in acts]
@@ -496,7 +496,10 @@ def test_E4_a_drag_never_starts_so_nothing_can_be_joined(world):
 def test_change_cover_shows_once_covers_offer_their_entries(world):
     _seed, win, _w = world()
     row = rows_of(win)[4]
-    assert "cover" not in names(win.items.entries(row))              # Q6 not here yet: no entry
+    # --- W3.2 L3: Q6's entries through the hook (Download covers off: no online ones), in the hook's shape
+    cover = next(e for e in win.items.entries(row) if e.name == "cover")
+    assert [c.label for c in cover.children] == [strings.COVER_MENU["choose"][0], strings.COVER_MENU["generated"][0]]
+    assert all(c.tip and callable(c.payload) for c in cover.children)
     picked = []
     win.items.cover_entries = lambda r: [("Choose an image…", "Pick a picture of your own", True,
                                           lambda: picked.append(r.key))]

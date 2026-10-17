@@ -485,8 +485,8 @@ class FakeAdder(QObject):
     def entries(self, names=()):
         return [(n, n, n) for n in names if n in self.names]
 
-    def run(self, name):
-        self.ran.append(name)
+    def run(self, name, first=False):
+        self.ran.append(f"{name}:first" if first else name)        # first: setup's own first look (Current, SRC-1)
         self.given.emit("Added 進撃の巨人 at #1 · analysed on the next Generate")
 
 
@@ -506,7 +506,7 @@ def test_page_three_takes_add_actions_and_never_opens_the_content_manager(make):
     reads = api.calls.count(("library_rows", "ja"))
     QTest.mouseClick(page.add_buttons["files"], Qt.MouseButton.LeftButton)
     QTest.mouseClick(page.add_buttons["folder"], Qt.MouseButton.LeftButton)
-    assert adder.ran == ["files", "folder"]
+    assert adder.ran == ["files", "folder:first"], "page 3's folder: setup's first look (SRC W1 fix, Decision 2)"
     assert wait_until(lambda: api.calls.count(("library_rows", "ja")) >= reads + 2)
     QTest.mouseClick(page.add_buttons["extract"], Qt.MouseButton.LeftButton)
     assert wiz.launched[-1] == "extract"

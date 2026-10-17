@@ -356,6 +356,39 @@ def test_no_look_ever_runs_on_the_windows_thread(window, scans, monkeypatch):
     assert all(thread is not threading.main_thread() for thread, _r, _kw in scans)
 
 
+@pytest.mark.parametrize("held, handed", [
+    ({"source": "wait"}, {"hato": "after-show", "source": "wait"}),       # the user's own Wait for folders reaches it
+    ({}, {"hato": "after-show", "source": "after-show"}),                 # {}: the defaults, merged per key
+    ({"hato": "top"}, {"hato": "top", "source": "after-show"}),           # partial: the folders' default kept
+])
+def test_a_look_hands_take_in_the_windows_frozen_rules_merged_per_key(monkeypatch, held, handed):
+    """SRC W1 fix (the lead's call 3): the window hands the looks its settings service's `placing_rules`, which are
+    frozen (a mapping, never a dict). The look read only a dict, so a user's own rule — folders set to *Wait here* —
+    never reached `take_in` (its default placed them); now every look hands the rules merged per key."""
+    from app.services.settings import freeze
+    opener, _d, _u = _library()
+    got = []
+    real = sources.scan
+
+    def scan(store, language, root, **kw):
+        got.append(kw.get("rules"))
+        return real(store, language, root, **kw)
+    monkeypatch.setattr(sources, "scan", scan)
+    looks = source_looks.SourceLooks(opener, "ja", rules=lambda: freeze(held), kind=lambda _p: "network")
+    try:
+        answers = []
+        assert looks.add(_source(), answers.append)
+        assert wait_until(lambda: answers, 30)
+        assert got == [handed] and not answers[0].get("refused")
+    finally:
+        looks.close()
+    bare = source_looks.SourceLooks(opener, "ja", kind=lambda _p: "network")
+    try:
+        assert bare._rules_now() is None, "no rules reader: take_in's own default"
+    finally:
+        bare.close()
+
+
 def test_add_a_folder_reads_it_where_it_is_and_its_shows_wait_in_new_arrivals(window, monkeypatch):
     # D6: a folder added after setup lands as a later look does: shows never shown wait in New arrivals
     opener, data_dir, user_files_dir = _library()

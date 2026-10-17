@@ -257,7 +257,7 @@ ROWS = (
     _row("enable_youtube_preview", "content", "toggle", ("enable_youtube_preview",), when=_YOUTUBE),
     _row("content_doors", "content", "door", door=("extract", "youtube-downloader", "youtube-preview")),
 
-    # New arrivals: one line per source, a line set to Wait leaves the dict (D30, RD-S16)
+    # New arrivals: one line per source, merged per key with the defaults (D30, RD-S16; a default's Wait is kept)
     _row("placing_rules", "arrivals", "custom", ("placing_rules",),
          options=("wait", "top", "after-show", "soon", "goal", "finished")),
 
@@ -405,6 +405,9 @@ def _one(settings, key, language):
     found = plain(value_of(settings, key))
     if key == "known_from_anki" and isinstance(found, str):
         found = [found]
+    if key == "placing_rules":                  # merged per key: a source not named keeps its default (SRC W1 fix)
+        from app import settings_manager
+        found = settings_manager.placing_rules(found)
     return found
 
 
@@ -557,7 +560,7 @@ def change(row, settings, language, new):
     write time. `new` by kind: a bool, a value, a number; `range` a (low, high) pair; `tablets` the picks (a list
     value's values, or several bool keys' keys on — a {key: bool} dict too); `list` the items; the level a band name (a hand
     pick: Automatic goes off with it, S2) or {"logic.selection.auto": bool}; the placing rules (source, target) — Wait
-    removes the source — or the whole {source: target} dict."""
+    removes a source that has no default — or the whole {source: target} dict."""
     if not row.keys:
         return {}, None
     if row.keys[0] in PER_LANGUAGE:
@@ -590,11 +593,12 @@ def _wanted(row, settings, language, new):
             return {key: settings_values.known_value(picked)}
         return {key: [v for v in row.options if v in picked]}
     if row.id == "placing_rules":
-        held = plain(value_of(settings, key))
-        rules = dict(held) if isinstance(held, Mapping) else {}       # a hand-edited non-dict: the pick starts afresh
+        from app import settings_manager
+        rules = _one(settings, key, language)       # merged per key; a hand-edited non-dict: the defaults
+        defaults = settings_manager.placing_rules()
         if isinstance(new, Mapping):
-            rules = {source: target for source, target in new.items()}
-            picked = list(rules.values())
+            rules = settings_manager.placing_rules(new)        # the whole dict, a source it leaves out its default
+            picked = list(new.values())
         else:
             source, target = new
             if not isinstance(source, str) or not source.strip():
@@ -604,7 +608,8 @@ def _wanted(row, settings, language, new):
         unknown = [t for t in picked if t not in row.options]
         if unknown:
             raise ValueError(f"not a place: {unknown[0]!r}")
-        return {key: {source: target for source, target in rules.items() if target != "wait"}}
+        # Wait takes a source out — but a source with a default keeps its Wait written, or its default comes back
+        return {key: {source: target for source, target in rules.items() if target != "wait" or source in defaults}}
     if row.kind == "toggle" or key == "connect_enabled":
         return {key: bool(new)}
     if row.kind == "number" or key == "words_per_day":

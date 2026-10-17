@@ -26,7 +26,7 @@ on which thread, and what the window is told. Qt-free; the shell (`app/qt/shell.
 import threading
 import time
 
-from app import sources
+from app import settings_manager, sources
 from app.services.automation import Worker
 
 
@@ -218,13 +218,15 @@ class SourceLooks:
         return result
 
     def _rules_now(self):
+        """The rules for this look, merged per key with their defaults (`settings_manager.placing_rules`) — the window's
+        settings are frozen (a mapping, not a dict): a user's own rule, a folders' Wait too, reaches `take_in`."""
         if self._rules is None:
             return None
         try:
             rules = self._rules()
         except Exception:
             return None
-        return dict(rules) if isinstance(rules, dict) and rules else None
+        return settings_manager.placing_rules(rules)
 
     def _add(self, path, then, first):
         answer = {"path": path, "root": None, "refused": None, "result": None, "arrivals": 0,

@@ -145,11 +145,12 @@ def item_key(item_id):
 
 # --- the entries ----------------------------------------------------------------------------------------------------- #
 def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(), asks=(), answered=frozenset(),
-            mine_line=20, offers=frozenset()):
+            mine_line=20, offers=frozenset(), cards_on=False):
     """The page's entries in order (see the module's doc). `view`: the reader's `View` (None: no library); `failures`:
     `status` Entries (text, at, seen); `connect`: one language's Connect record (`read_connect`; None: Connect off);
     `seen` / `answered`: `read_seen` / `read_answered`; `offline_roots`: `find_offline`'s Roots; `asks`: `asks_of`'s
-    (or `Store.rename_asks()` as it is: candidates by id); `offers`: `read_offers` (D1's line)."""
+    (or `Store.rename_asks()` as it is: candidates by id); `offers`: `read_offers` (D1's line); `cards_on`: Connect's
+    switch (`connect_enabled`, setup's page 5) — on, D1's line asks only about these episodes (its `_on` actions)."""
     seen, answered = frozenset(seen or ()), frozenset(answered or ())
     rows = tuple(view.rows) if view is not None and view.mode == "store" else ()
     by_id = {e.id: (r, e) for r in rows for e in r.episodes}
@@ -186,7 +187,7 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
             shows.append(_video_entry(group, novideo[group], seen, mine_line))
     out = []
     if FIRST_CARDS in frozenset(offers or ()) and FIRST_CARDS not in answered:
-        out.append(_first_cards_entry(rows, seen, mine_line))
+        out.append(_first_cards_entry(rows, seen, mine_line, cards_on))
     bulk = _bulk(shows)
     if bulk is not None:
         out.append(bulk)
@@ -345,12 +346,15 @@ def _gap_entry(gap, seen):
                  unseen=key not in seen, say="", data={"gap_id": gap.get("id"), "item_ids": tuple(items)})
 
 
-def _first_cards_entry(rows, seen, mine_line):
-    """D1's one line: the first `mine_line` episodes of Current (fewer while Current holds fewer)."""
+def _first_cards_entry(rows, seen, mine_line, cards_on=False):
+    """D1's one line: the first `mine_line` episodes of Current (fewer while Current holds fewer). `cards_on` (Connect's
+    switch already on, setup's page 5 said yes): the same question, its actions' words never offering to turn it on
+    (SRC W1 fix, Decision 1)."""
     have = sum(1 for r in rows if r.tier in ("now", "soon") for e in r.episodes if not e.missing)
     n = min(mine_line, have) if have else mine_line
     title = STRINGS["first_title_one"] if n == 1 else STRINGS["first_title"].format(n=n)
-    return Entry(key=FIRST_CARDS, kind=FIRST_CARDS, title=title, lines=(), actions=("first_cards", "not_now"),
+    actions = ("first_cards_on", "not_now_on") if cards_on else ("first_cards", "not_now")
+    return Entry(key=FIRST_CARDS, kind=FIRST_CARDS, title=title, lines=(), actions=actions,
                  unseen=FIRST_CARDS not in seen, say=STRINGS["first_say"], data={"n": n})
 
 

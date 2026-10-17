@@ -7705,8 +7705,8 @@ def _store_take_in(self, root_id, found, first=False, rules=None):
     if not found:
         return None
     if rules is None:
-        from app.settings_manager import DEFAULT_SETTINGS
-        rules = DEFAULT_SETTINGS["placing_rules"]
+        from app.settings_manager import placing_rules
+        rules = placing_rules()
     rels = []
     for f in found:
         origin = f.get("origin")

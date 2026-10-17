@@ -345,7 +345,7 @@ ROWS = {
                       "extract youtube download preview"),
 
     # New arrivals
-    "placing_rules": ("Where new arrivals go", "Empty: every arrival waits here, in New arrivals",
+    "placing_rules": ("Where new arrivals go", "A show's next episode joins it; the rest wait here, in New arrivals",
                       "A source, and where its arrivals go", "where new arrivals go rules source hato youtube channel "
                       "wait top"),
 

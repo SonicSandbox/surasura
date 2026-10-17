@@ -994,6 +994,32 @@ def test_a_later_episode_is_placed_by_the_folders_rule_after_show_by_default_and
         assert _tier(store, "arrivals")[-1] == f"Library/{show}/ep7.srt" and len(_current(store)) == 4
 
 
+@pytest.mark.parametrize("held, joins", [({}, True), ({"hato": "top"}, True), ({"source": "wait"}, False)])
+def test_the_folders_look_reads_the_rules_merged_so_an_empty_or_partial_dict_keeps_after_show(held, joins):
+    """SRC W1 fix (the lead's call 3): the folders' look hands `take_in` the rules as the window's settings service
+    reads them (`SourceLooks(rules=lambda: settings.get().get("placing_rules"))`). A settings.json holding {} or
+    naming only hato used to hand the store a dict without `source`: a later episode waited in New arrivals though
+    Settings showed *After its show*. Merged per key, only an explicit `wait` keeps it waiting."""
+    from app.services.settings import SettingsService, thaw
+    language = "ja"
+    with open(os.path.join(os.environ["SURASURA_TEST_ROOT"], "settings.json"), "w", encoding="utf-8") as f:
+        json.dump({"target_language": language, "placing_rules": held}, f)
+    rules = thaw(SettingsService(load=True).get()).get("placing_rules")
+    store, data_dir = _empty(language)
+    src = _source_root()
+    show = names(language)[113]
+    ep = lambda n: _found(language, data_dir, src, show, f"ep{n}.srt", n)      # noqa: E731
+    with store:
+        root = store.add_source(src)
+        store.take_in(root, [ep(1), ep(2)], first=True)
+        store.take_in(root, [ep(3)], rules=rules)
+        if joins:
+            assert _current(store) == [f"Library/{show}/ep{n}.srt" for n in (1, 2, 3)]
+            assert _tier(store, "arrivals") == []
+        else:
+            assert _tier(store, "arrivals") == [f"Library/{show}/ep3.srt"] and len(_current(store)) == 2
+
+
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_item_of_video_key_reads_the_pairings_once_while_nothing_is_written(language):
     """Review H17: K1b asks once per video it finds (2,000 on a big first scan); each ask scanning every origin's

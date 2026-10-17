@@ -209,9 +209,9 @@ def test_the_menu_shows_the_state_the_store_holds_pin_and_cards(fin):
     assert [c[0] for c in cards[4]] == ["cards-out"]
     assert [c[0] for c in next(e for e in fa.menu_entries(plain._replace(cards_out=True))
                                if e[0] == "cards")[4]] == ["cards-in"]
-    assert "mine" not in names_of(plain) and "mine-too" not in names_of(plain)      # P4.1's, hidden until wired
-    fa.on_mine_too = lambda r: None
-    assert "mine-too" in names_of(plain)
+    assert "mine-too" in names_of(plain)          # P4.1 4.1.11: the window's routing sets it (and Mine, for no cards)
+    fa.on_mine_too = None
+    assert "mine" not in names_of(plain) and "mine-too" not in names_of(plain)      # unset: hidden
 
 
 def test_each_menu_entry_reaches_the_writer_with_its_op(fin):

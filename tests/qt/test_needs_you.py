@@ -326,7 +326,7 @@ def test_G7_a_line_with_no_match_offers_choose_file_and_remove_episode_mine_text
     assert wait_until(lambda: card.key in ny.found and not ny.looking, 10)
     names = [b.property("action") for b in ny.cards.buttons(card.key)]
     assert "choose_video" in names and "remove_episode" in names
-    assert "mine_text_only" not in names                       # P4.1's: hidden until its callable is set
+    assert "mine_text_only" in names                           # P4.1 4.1.12: the window's routing sets its callable
     elsewhere = tmp_path / f"{row.title} 第{eps[0].number}話.mp4"
     elsewhere.write_bytes(b"\x00\x00\x00\x18ftypmp42")
     asked = []

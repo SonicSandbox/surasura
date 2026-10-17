@@ -148,7 +148,8 @@ def test_three_missing_in_the_top_20_are_amber_on_the_open_rows_episodes(seeded)
     assert wait_until(lambda: lst.visualRect(lst.model().index(i, 0)).height() > 200)
     lst.scrollTo(lst.model().index(i, 0), lst.ScrollHint.PositionAtTop)
     QApplication.processEvents()
-    statuses = part(lst, i, "status")
+    statuses = [p for p in lst.delegate.parts(lst.model().entries[i], lst.visualRect(lst.model().index(i, 0)))
+                if p[0] == "status" or p[0] in rows.ACTION_NAMES]     # P4.1 4.1.11: No video's pill is a button now
     rect, arr = grab(lst, i)
     warn = 0
     for name, r, tip, _p in statuses:
@@ -445,10 +446,15 @@ def test_a_click_on_a_pill_a_mark_or_a_stone_never_opens_or_closes_the_row(seede
     QApplication.processEvents()
     asked = []
     lst.done_requested.connect(lambda row, ep: asked.append(ep.id))
-    for name in ("status", "mark", "stone"):
-        p = part(lst, i, name)[0]
+    entry = lst.model().entries[i]
+    pill = next(p for p in lst.delegate.parts(entry, lst.visualRect(lst.model().index(i, 0)))
+                if p[0] == "status" or p[0] in rows.ACTION_NAMES)     # P4.1 4.1.11: a pill may be a button now —
+    for name in ("pill", "mark", "stone"):                            # it asks, and still never opens or closes the row
+        p = pill if name == "pill" else part(lst, i, name)[0]
         QTest.mouseClick(lst.viewport(), Qt.MouseButton.LeftButton, pos=p[1].center())
         QApplication.processEvents()
+        if lst.action_menu is not None:
+            lst.action_menu.close()
         assert lst.model().open_key is not None, name
         assert asked == ([p[3].id] if name == "stone" else []), name
 

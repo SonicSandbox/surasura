@@ -1076,6 +1076,13 @@ class ShellWindow(QMainWindow):
         self._fetcher = None
         self.cover_fetcher()
         # --- end W3.2 L3
+        # --- P4.1 L2: Connect's actions — the stones' Mine now / Mine this / Link… / Mine text, Finished's Mine and Mine
+        # it too, the arrivals' Mine them too, Needs you's Mine the text only (`mine_actions.py`), given a writer
+        self.mine = None
+        if self.moves is not None:
+            from app.qt import mine_actions
+            self.mine = mine_actions.MineActions(self)
+        # --- end P4.1 L2
 
         self._restore_state(read_state(self.state_file))
 
@@ -2529,7 +2536,8 @@ def library_for(language, settings, freeze_gc=False):
         cache_file=library_reader.cache_path(language), freeze_gc=freeze_gc,
         watch=library_lookout)                              # W3.2 B: woken by the bell + the tree watch (IK0-5)
     writer = moves.Writer(_opener, language, journal_file=moves.journal_path(language), numbers=numbers,
-                          words=strings.MOVE_WORDS)
+                          words=strings.MOVE_WORDS,      # --- P4.1 L2: Connect's look after each commit
+                          after_commit=after_commit_kick(language, lambda: settings_service.thaw(settings.get())))
     return reader, writer
 
 
@@ -2545,6 +2553,26 @@ def open_services(settings=None, freeze_gc=False, **kw):
     services.library_after_frame = True      # its first-screen cache read and first feed read never in the first frame
     return services
 # --- end W3.2 P0 ---------------------------------------------------------------------------------------------------- #
+
+
+# --- P4.1 L2: after_commit kick ---
+def after_commit_kick(language, settings_get):
+    """The writer's after-commit hook (W-A2): after every change the store committed — a move into the top 20, an ask
+    for mining (*Mine now*, *Mine this*, *Mine it too*), an undo — Connect's look (`window_link.Link.after_change`):
+    kicked once when it has an event or an ask unread and may run. On the writer's thread (two read-only looks and at
+    most one process started); a look that fails never stops the writer."""
+    link = []
+
+    def after(_change, _op):
+        try:
+            if not link:
+                from app.connect import window_link
+                link.append(window_link.Link(language, settings_get))
+            link[0].after_change()
+        except Exception as e:                      # Connect's look is best-effort: the next change looks again
+            print(f"Connect wasn't kicked after a change: {e!r}")
+    return after
+# --- end P4.1 L2
 
 
 def _log_unhandled(kind, value, tb):

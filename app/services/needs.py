@@ -23,6 +23,9 @@ Tk-free, pandas-free (the import guard); nothing here reads or writes the store.
   and its kind's action — `not-timed` *Mine anyway* (`connect.actions.mine_anyway`), `no-pairing` *Ask hato again*
   (`connect.hato.backfill`), a failure Connect logged *Open the logs folder*; every one *Dismiss* (`status.dismiss`). A
   gap (*lost track*) offers *Make their cards* (no callable yet: hidden, `WIRED_LATER`) and *Leave them* (answered here).
+- **setup's first cards** (SRC S1 + D1, Sonic ✅ 2026-10-16): setup's first scan of the folders the shows and books are in
+  logs nothing, so Connect makes no card for them by itself; once it took something in, it offers ONE line (`offer`,
+  kept in the seen file): *Make cards for your first 20 episodes?* · *Not now* — either answer takes it off for good.
 
 An entry's `actions` are names only; the window maps each to its call and hides the names in `WIRED_LATER` until a
 callable is set. `badge(entries)` counts the unseen ones (P1.2-1: seen ones stay listed and stop counting).
@@ -62,7 +65,8 @@ Root = namedtuple("Root", "path rel label files", defaults=(None,))
 
 BULK, GONE, NO_VIDEO, ASK, OFFLINE, FAILURE, GAP = ("bulk", "file-gone", "no-video", "rename-ask", "offline", "failure",
                                                     "gap")
-KINDS = (BULK, GONE, NO_VIDEO, ASK, OFFLINE, FAILURE, GAP)
+FIRST_CARDS = "first-cards"         # D1: setup's first scan took shows in; their cards are made only if you say so
+KINDS = (BULK, GONE, NO_VIDEO, ASK, OFFLINE, FAILURE, GAP, FIRST_CARDS)
 # action names the window hides until P4.1 sets their callable (RUNBOOK §2; IK-2: *Mine the text only*)
 WIRED_LATER = frozenset(("mine_text_only", "make_cards"))
 # Connect's kinds and their one action beside *Dismiss* (`connect_window.HOW`'s, as the Qt window offers them now)
@@ -91,6 +95,8 @@ STRINGS = {
     "drive": "Drive {d}", "folder": "The folder {p}",
     "gap_title": "Connect lost track of your moves {span}: {n} {noun} in the top 20 {have} no cards",
     "gap_span": "from {a} to {b}", "gap_until": "until {b}",
+    "first_title": "Make cards for your first {n} episodes?", "first_title_one": "Make cards for your first episode?",
+    "first_say": "Your shows came in from your folders without cards: Surasura asks before it makes any.",
     "why_found": "→ …\\{name} ✓ found", "why_found_own": "→ …\\{name} ✓ found in its own folder ({k} more in your "
                                                          "video folders)",
     "why_found_named": "→ …\\{name} ✓ found: the one in a folder named like the show",
@@ -139,11 +145,11 @@ def item_key(item_id):
 
 # --- the entries ----------------------------------------------------------------------------------------------------- #
 def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(), asks=(), answered=frozenset(),
-            mine_line=20):
+            mine_line=20, offers=frozenset()):
     """The page's entries in order (see the module's doc). `view`: the reader's `View` (None: no library); `failures`:
     `status` Entries (text, at, seen); `connect`: one language's Connect record (`read_connect`; None: Connect off);
     `seen` / `answered`: `read_seen` / `read_answered`; `offline_roots`: `find_offline`'s Roots; `asks`: `asks_of`'s
-    (or `Store.rename_asks()` as it is: candidates by id)."""
+    (or `Store.rename_asks()` as it is: candidates by id); `offers`: `read_offers` (D1's line)."""
     seen, answered = frozenset(seen or ()), frozenset(answered or ())
     rows = tuple(view.rows) if view is not None and view.mode == "store" else ()
     by_id = {e.id: (r, e) for r in rows for e in r.episodes}
@@ -179,6 +185,8 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
         if group in novideo:
             shows.append(_video_entry(group, novideo[group], seen, mine_line))
     out = []
+    if FIRST_CARDS in frozenset(offers or ()) and FIRST_CARDS not in answered:
+        out.append(_first_cards_entry(rows, seen, mine_line))
     bulk = _bulk(shows)
     if bulk is not None:
         out.append(bulk)
@@ -337,6 +345,15 @@ def _gap_entry(gap, seen):
                  unseen=key not in seen, say="", data={"gap_id": gap.get("id"), "item_ids": tuple(items)})
 
 
+def _first_cards_entry(rows, seen, mine_line):
+    """D1's one line: the first `mine_line` episodes of Current (fewer while Current holds fewer)."""
+    have = sum(1 for r in rows if r.tier in ("now", "soon") for e in r.episodes if not e.missing)
+    n = min(mine_line, have) if have else mine_line
+    title = STRINGS["first_title_one"] if n == 1 else STRINGS["first_title"].format(n=n)
+    return Entry(key=FIRST_CARDS, kind=FIRST_CARDS, title=title, lines=(), actions=("first_cards", "not_now"),
+                 unseen=FIRST_CARDS not in seen, say=STRINGS["first_say"], data={"n": n})
+
+
 def badge(entries_):
     """The tab's number: the unseen entries (P1.2-1: a seen one stays listed and stops counting)."""
     return sum(1 for e in entries_ if e.unseen)
@@ -353,6 +370,7 @@ def answer_keys(thing):
 
 # --- seen and answered (the local data folder; never settings.json) ------------------------------------------------- #
 _lock = threading.Lock()
+_FIELDS = ("seen", "answered", "offered")       # `offered`: the lines a step asked for (D1's), until answered
 
 
 def seen_path(language):
@@ -363,25 +381,27 @@ def _read(language, strict=False):
     """The seen file's two lists. `strict` (a write-back's read, W3.2 H W5): only a file that isn't there reads as
     empty — one that can't be read, isn't JSON or is another version raises, so a write never goes over earlier answers
     (a held file, a newer Surasura's)."""
+    empty = {k: [] for k in _FIELDS}
     try:
         with open(seen_path(language), encoding="utf-8") as f:
             data = json.load(f)
     except FileNotFoundError:
-        return {"seen": [], "answered": []}
+        return empty
     except (OSError, ValueError):
         if strict:
             raise
-        return {"seen": [], "answered": []}
+        return empty
     if not isinstance(data, dict) or data.get("version") != SEEN_VERSION:
         if strict:
             raise ValueError(f"the seen file isn't version {SEEN_VERSION}: left as it is")
-        return {"seen": [], "answered": []}
-    return {k: [x for x in data.get(k) or () if isinstance(x, str)] for k in ("seen", "answered")}
+        return empty
+    return {k: [x for x in data.get(k) or () if isinstance(x, str)] for k in _FIELDS}
 
 
 def _write(language, data):
     path = seen_path(language)
     tmp = path + ".tmp"
+    data = {k: v for k, v in data.items() if k != "offered" or v}     # no offer: the file as it always was
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump({"version": SEEN_VERSION, **data}, f, ensure_ascii=False)
         f.flush()
@@ -424,6 +444,17 @@ def answer(language, keys):
     return _add(language, "answered", keys)
 
 
+def read_offers(language):
+    """The lines a step offered (`offer`) -> frozenset of their keys."""
+    return frozenset(_read(language)["offered"])
+
+
+def offer(language, key=FIRST_CARDS):
+    """(A worker: a file write.) A step's one line offered (D1: setup's first scan took something in): listed until it
+    is answered, then never again (never pruned) -> 1 when it was new."""
+    return _add(language, "offered", [key])
+
+
 def prune(language, view, offline_roots=None, connect=None, asks=None):
     """(S3, N10; a worker's call, after the reads `entries` is given.) The keys whose trouble is gone leave the seen
     file — never by age or by count. Judged only by what the caller read (a key of a kind it didn't read stays): a
@@ -446,6 +477,7 @@ def prune(language, view, offline_roots=None, connect=None, asks=None):
         kept = {f: [k for k in data[f] if k.split(":", 1)[0] not in judged or k in present]
                 for f in ("seen", "answered")}
         gone = sum(len(data[f]) - len(kept[f]) for f in kept)
+        kept["offered"] = data["offered"]
         if gone:
             _write(language, kept)
     return gone

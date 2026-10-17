@@ -995,6 +995,10 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
     "dismiss": ("Dismiss", "Take this off the list"),
     "leave_them": ("Leave them", "Make no cards for them: they stop asking"),
     "make_cards": ("Make their cards", "Make the cards Connect missed"),
+    "first_cards": ("Make cards", "Make cards for these episodes now, and for what comes into your top 20 from now on.\n"
+                                  "• Change it any time: Settings › Anki"),
+    "not_now": ("Not now", "Make no cards for them now. Nothing else changes.\n"
+                           "• Turn it on any time: Settings › Anki"),
     "mine_text_only": ("Mine the text only", "Make its cards from the subtitles alone, with no picture or audio"),
     "open_logs": ("Open the logs folder", "Open the folder where Surasura keeps its logs, to look at them or send them"),
     "save_logs": ("Save logs to a file…", "Save the last week's logs into one zip file you can send"),
@@ -1016,6 +1020,10 @@ NEEDS_RELINKED_NONE = "Nothing in that folder has these files' names or episode 
 NEEDS_LINKING = "Linking {n} videos to their episodes"
 NEEDS_LINKING_ONE = "Linking {label}'s video"
 NEEDS_KEPT = "Kept: their words still count"
+NEEDS_FIRST_CARDS_MADE = "Cards are made by themselves from now on · change it in Settings › Anki"
+NEEDS_FIRST_CARDS_LATER = "Turn it on any time in Settings › Anki"
+NEEDS_FIRST_CARDS_NOT_ON = "No cards were made: {why}"
+NEEDS_FIRST_CARDS_AUTOMATION_OFF = "automatic actions are off in Settings; turn them on, then ask again"
 NEEDS_ITS_NEW = "{name} joins your library as a new file"
 NEEDS_ASKED_HATO = "Asked hato for its videos"
 NEEDS_MINE_ANYWAY = "It mines without timing, in turn"

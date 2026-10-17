@@ -472,8 +472,9 @@ class AnchorFinder:
         return ""
 
 
-# Tier folders are plumbing, not something the learner thinks in — they think in books and series.
-_TIER_BUCKETS = ("HighPriority", "LowPriority", "GoalContent", "Graduated", "Processed")
+# Tier folders are plumbing, not something the learner thinks in — they think in books and series. So is the
+# content folder every new copy goes into whatever its place (`Library/<show>/…`, 3.0's Sources).
+_TIER_BUCKETS = ("HighPriority", "LowPriority", "GoalContent", "Graduated", "Processed", "Library")
 
 
 # The 11-char video id ends the filename, allowing for the `_<timestamp>` suffixes Graduate/Demote

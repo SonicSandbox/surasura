@@ -2475,7 +2475,7 @@ def library_lookout(store, wake):
     no hourly round (the Content Manager's). Closed with the reader (its stop: the window's close, a library switch).
     -> an opened `library_watch.Lookout`."""
     from app import library_store, library_watch
-    return library_watch.Lookout(store.data_dir, under=[library_store.FOLDER_OF_TIER[t] for t in library_store.ANALYSED],
+    return library_watch.Lookout(store.data_dir, under=list(library_store.WALK_FOLDERS),   # + the content folder (SRC)
                                  db_path=store.db_path, wake=wake).open()
 # --- end W3.2 B
 

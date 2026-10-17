@@ -503,7 +503,7 @@ def _dashboard_saved():
 
 
 VALUE_DICTS = {"bands_ppm", "anki_sync_decks", "anki_sync_fields", "junban_word_fields", "junban_backfill_fields",
-               "junban_backfill_note_languages"}
+               "junban_backfill_note_languages", "placing_rules"}
 
 
 def _paths(settings, prefix=""):

@@ -86,6 +86,17 @@ TIER_LABELS = {"now": "NOW", "soon": "Soon", "goal": "6+ Months", "graduated": "
 CURRENT = ("now", "soon")        # Current = NOW then Soon; the Soon line is their boundary
 HATO_FOLDER = "HighPriority/Hato"  # hato's drop folder: its files land at the top of NOW through 2.x
 GRADUATED_FOLDER = "Graduated"
+# 3.0's Sources (SRC): every new text copy goes into one content folder of Surasura's own, `Library/<show>/<file>`,
+# whatever its place; grouping only (`_below_tier` strips it), never a place (a place is the store's alone)
+CONTENT_FOLDER = "Library"
+WALK_FOLDERS = tuple(TIERS[t][1] for t in ANALYSED) + (CONTENT_FOLDER,)   # what the disk sync walks and watches
+SOURCE_PRODUCER = "source"       # an origin record's producer, and the placement log's name for a scan's take-in
+SOURCE_KEY = "src:"              # an origin row's `pairings.content_key`: "src:" + path_key(<absolute origin>) (B1)
+SOURCE_STATS = ("size", "mtime_ns", "sha256")      # what a re-copy rewrites in its row (never what Connect reads)
+# B1: a `pairings` row that is an origin's, and a source row read only when its item has no other (`p` = the row)
+_ORIGIN_ROW = "(p.content_key >= 'src:' AND p.content_key < 'src;')"
+_PREFERRED_ROW = (f"NOT ({_ORIGIN_ROW} AND EXISTS (SELECT 1 FROM pairings q WHERE q.item_id = p.item_id AND NOT "
+                  "(q.content_key >= 'src:' AND q.content_key < 'src;')))")
 MINE_LINE_DEFAULT = 20           # a lean owned by Connect's spec and the window (settled at G2.2)
 SOON_LINE_NEW = 25               # a library 3.0 builds new: the Soon line after 25 rows of Current (Q2-4)
 SEARCH_FOLD_VERSION = 1          # meta.search_fold: the version of `search_fold` the stored keys were made with
@@ -148,6 +159,14 @@ class NotInLibrary(StoreError):
     """`register` was handed a path outside the library's data folder: refused before anything is written."""
 
 
+class NotASource(StoreError):
+    """`add_source` / `take_in` refused a folder (SRC B3): `reason` says why in plain words, for the window."""
+
+    def __init__(self, reason):
+        super().__init__(reason)
+        self.reason = reason
+
+
 # ------------------------------------------------------------------------------------------------ #
 # Paths and keys (spec §6.1, §6.4)
 # ------------------------------------------------------------------------------------------------ #
@@ -185,12 +204,14 @@ def search_fold(text, language=None):
 
 def _below_tier(rel):
     """The folder a file sits in, below its tier folder ('HighPriority/Frieren/Season 1/x.srt' → 'Frieren/Season 1'),
-    as written; '' for a loose file (directly in a tier folder, or in hato's drop folder)."""
+    as written; '' for a loose file (directly in a tier folder, or in hato's drop folder). The content folder counts as
+    one (`Library/Frieren/x.srt` → 'Frieren': one title with a 2.x `HighPriority/Frieren`), in any case the file
+    system reads as it (as `take_in` and the sync compare it)."""
     folder = _rel_dir(_strip(rel))
     if not folder or path_key(folder) == path_key(HATO_FOLDER):
         return ""
     parts = folder.split("/")
-    if parts[0] in TIER_OF_FOLDER or parts[0] == GRADUATED_FOLDER:
+    if parts[0] in TIER_OF_FOLDER or parts[0] == GRADUATED_FOLDER or path_key(parts[0]) == path_key(CONTENT_FOLDER):
         parts = parts[1:]
     return "/".join(parts)
 
@@ -206,6 +227,44 @@ def folder_key_of(rel):
     in NOW and in 6+ Months is one title while `A/Season 1` and `B/Season 1` stay apart; None for a loose file."""
     below = _below_tier(rel)
     return path_key(below) if below else None
+
+
+_NAME_EXT = re.compile(r"\.[A-Za-z0-9]{1,5}$")
+_NAME_LANG = re.compile(r"\.(?:ja|jp|jpn|japanese|zh|zho|chi|chs|cht|sc|tc|en|eng|"
+                        r"ja-jp|zh-cn|zh-tw|zh-hk|zh-hans|zh-hant)$", re.I)
+_NAME_TAGS = re.compile(r"\[[^\]]*\]|\([^)]*\)")                 # [group], [ABCD1234], (1080p): never the show
+_NAME_JUNK = re.compile(r"\b(?:\d{3,4}[pi]|\d{3,4}x\d{3,4}|(?=[0-9A-F]*\d)[0-9A-F]{8})\b")
+_NAME_SEASON_EP = re.compile(r"\bS(\d{1,2})[ ._-]?E\d{1,4}", re.I)     # S01E13: season 1 is the show, S02 is " S2"
+_NAME_EPISODE = re.compile(r"(?:\s[-–~]\s*|\b(?:EP?\.?\s?)|#\s?)\d{1,4}(?:\.\d)?(?:v\d+)?\b"   # - 16, E13, #13
+                           r"|第\s?\d{1,4}\s?[話话集回]", re.I)                              # 第13話, 第13集
+_NAME_VERSION = re.compile(r"(?:(?<=\d)|\s)v\d+$", re.I)
+
+
+def show_of_name(file_name):
+    """A stranded episode's show, read from its file name (SRC-11): a leading `[group]`, every `[…]` / `(…)` tag, the
+    extension and a language tag (`.ja`), resolution and hash tags, a version (`v2`), and the episode marker with all
+    after it (` - 16`, `S01E13`, `E13`, `#13`, `第13話`) come off. A season stays part of the name, as `_work_by_record`
+    keeps seasons apart (`S2`, `Season 2`, `II`, `2期`; `S02E05` reads as `… S2`). As written (NFKC), never folded:
+    compare two with `search_fold`. None when nothing, or only digits and marks, is left. Pure."""
+    name = unicodedata.normalize("NFKC", str(file_name or "")).replace("\\", "/").rsplit("/", 1)[-1]
+    name = _NAME_EXT.sub("", name)
+    while _NAME_LANG.search(name):
+        name = _NAME_LANG.sub("", name)
+    name = _NAME_TAGS.sub(" ", name).replace("_", " ")
+    if " " not in name.strip() and name.count(".") >= 2:        # Show.Name.S01E13.1080p: dots are the spaces
+        name = name.replace(".", " ")
+    season = ""
+    m = _NAME_SEASON_EP.search(name)
+    if m:
+        season = "" if int(m.group(1)) <= 1 else f" S{int(m.group(1))}"
+        name = name[:m.start()]
+    m = _NAME_EPISODE.search(name)
+    if m:
+        name = name[:m.start()]
+    name = _NAME_JUNK.sub(" ", name)
+    name = _NAME_VERSION.sub("", name.strip())
+    name = _SPACES.sub(" ", name).strip(" -–~._")
+    return None if re.fullmatch(r"[\W\d_]*", name) else name + season
 
 
 def _test_root():
@@ -1657,8 +1716,8 @@ class Store:
 
     def schedule(self, with_versions=False):
         """{phase_key: [entries]} for the analysed tiers in (ord, id) order — what `resolve_found_files`
-        loads — each entry {physical_path, source_type, title, parent_folder} straight from the columns.
-        With `with_versions`, also the versions, read in the same transaction."""
+        loads — each entry {physical_path, source_type, title, parent_folder} straight from the columns; a video
+        waiting for its subtitle (K5) is never in it. With `with_versions`, also the versions, read in the same transaction."""
         out = {}
         with self._reading():
             for tier in ANALYSED:
@@ -1666,7 +1725,7 @@ class Store:
                     {"physical_path": p, "source_type": s, "title": t, "parent_folder": f}
                     for p, s, t, f in self.conn.execute(
                         "SELECT rel_path, source_type, title, parent_folder FROM items WHERE tier = ? "
-                        "ORDER BY ord, id", (tier,))]
+                        "AND availability != 'waiting' ORDER BY ord, id", (tier,))]
             versions = self._versions() if with_versions else None
         return (out, versions) if with_versions else out
 
@@ -2383,7 +2442,9 @@ class Store:
         """Rows → the trash table, each with its neighbours just before the removal (removed ones
         included), its entry, its state, its pairings and Anki links, and where its file went
         (`trashed_paths`: {id: path relative to data/<lang>}, the caller's file work). The trash rows are
-        written first, then the item rows deleted; their pairings and links follow by ON DELETE CASCADE."""
+        written first, then the item rows deleted; their pairings and links follow by ON DELETE CASCADE. An item that
+        came from a source folder leaves an exclusion per origin (SRC-8 / S6: `_exclude_origins`); its Put back or
+        Undo deletes them."""
         trashed_paths = trashed_paths or {}
         with self._command(kind, by) as cmd:
             self._recheck(check)
@@ -2419,6 +2480,7 @@ class Store:
                 "INSERT INTO trash (item_id, root_id, rel_path, tier, prev_id, next_id, entry, item_state, "
                 "trashed_path, removed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", trash_rows)
             change.trash_ids = list(range(first, first + len(trash_rows)))
+            change.excluded = self._exclude_origins(pairs, now)        # SRC-8: a scan never takes it in again
             self.conn.execute(f"DELETE FROM items WHERE id IN ({marks})", list(rows))
             cmd.gone += [("item", i) for i in rows]
             cmd.pieces_left.update(full[i]["piece_id"] for i in rows if full[i]["piece_id"] is not None)
@@ -2469,7 +2531,8 @@ class Store:
                     st = os.stat(full)
                     size, mtime_ns, availability = st.st_size, st.st_mtime_ns, "available"
                 except OSError:
-                    size, mtime_ns, availability = cols.get("size"), cols.get("mtime_ns"), "missing"
+                    size, mtime_ns, availability = cols.get("size"), cols.get("mtime_ns"), \
+                        "waiting" if cols.get("availability") == "waiting" else "missing"
                 title, folder, source_type = _columns(entry)
                 # an undo restores the `changed_in` the removal replaced (§6.11), so a second undo in a row
                 # still finds its own version; Put back is a new change
@@ -2491,6 +2554,7 @@ class Store:
                 self._put(r["tier"], [r["item_id"]], self._restore_where(r), changed_in)
                 self.conn.executemany("INSERT OR IGNORE INTO pairings (content_key, item_id, pairing, paired_at) "
                                       "VALUES (?, ?, ?, ?)", [(k, r["item_id"], p, at) for k, p, at in state["pairings"]])
+                self._let_origins_back([k for k, _p, _at in state["pairings"]])       # its exclusions go (SRC-8)
                 self.conn.executemany("INSERT OR IGNORE INTO anki_links (item_id, note_id, source, linked_at) "
                                       "VALUES (?, ?, ?, ?)", [(r["item_id"], n, s, at) for n, s, at in state["anki_links"]])
                 self.conn.execute("UPDATE trash SET restored_at = ? WHERE id = ?", (now, r["id"]))
@@ -2556,7 +2620,7 @@ class Store:
     def _folder_work(self, rel, title, cmd, cache=None):
         """A new file's work by its folder (05 §5.3 (3)–(4)): the work holding its folder key; else the work of the
         files beside it (a folder whose work was merged into another keeps going there); else a new work, titled by
-        its folder below the tier folder, or by its own title when it is loose."""
+        its folder below the tier folder. A loose file's work is its show's, read from its name (`_stranded_work`)."""
         fk = folder_key_of(rel)
         if cache is not None and fk is not None and fk in cache:
             return cache[fk]
@@ -2572,10 +2636,30 @@ class Store:
                     "AND instr(substr(rel_key, ?), '/') = 0 ORDER BY ord DESC LIMIT 1",
                     (base, base[:-1] + "0", len(base) + 1)).fetchone()
                 wid = row[0] if row else None
+        if wid is None and fk is None:
+            return self._stranded_work(rel, title, cmd, cache)
         if wid is None:
-            wid = self._new_work(_below_tier(rel) if fk is not None else (title or rel.rsplit("/", 1)[-1]), fk, cmd)
-        if cache is not None and fk is not None:
+            wid = self._new_work(_below_tier(rel), fk, cmd)
+        if cache is not None:
             cache[fk] = wid
+        return wid
+
+    def _stranded_work(self, rel, title, cmd, cache=None):
+        """A loose file's work (SRC-11): one in hato's drop folder or directly in a tier folder has no show folder, so
+        its show is read from its file name (`show_of_name`): the work whose title (or another title) folds the same,
+        else a new work titled by that show; a name no show is read from stays a title of its own, by its title. Only a
+        new item comes here (`_settle_works`): an existing work is never regrouped and never renamed."""
+        show = show_of_name(rel.rsplit("/", 1)[-1])
+        if show is None:
+            return self._new_work(title or rel.rsplit("/", 1)[-1], None, cmd)
+        key = search_fold(show, self.language)
+        if cache is not None and ("show", key) in cache:
+            return cache[("show", key)]
+        row = self.conn.execute("SELECT id FROM works WHERE instr(char(10) || search_key || char(10), ?) > 0 "
+                                "ORDER BY id LIMIT 1", ("\n" + key + "\n",)).fetchone()
+        wid = row[0] if row else self._new_work(show, None, cmd)
+        if cache is not None:
+            cache[("show", key)] = wid
         return wid
 
     def _work_by_record(self, record):
@@ -2596,8 +2680,9 @@ class Store:
             for (work,) in self.conn.execute("SELECT id FROM works WHERE instr(char(10) || search_key || char(10), ?) "
                                              "> 0 ORDER BY id", ("\n" + key + "\n",)).fetchall():
                 seasons = set()
-                for (text,) in self.conn.execute("SELECT pairing FROM pairings WHERE item_id IN "
-                                                 "(SELECT id FROM items WHERE work_id = ?)", (work,)):
+                for (text,) in self.conn.execute(f"SELECT pairing FROM pairings p WHERE item_id IN "
+                                                 f"(SELECT id FROM items WHERE work_id = ?) AND {_PREFERRED_ROW}",
+                                                 (work,)):
                     try:
                         ep = _episode(json.loads(text))
                     except ValueError:
@@ -2610,16 +2695,17 @@ class Store:
 
     def _title_scanned_drop(self, cmd, item_id, rel, record):
         """A loose drop the folder scan found before hato's hand-off (✅ L3.1 call b; the intent review #2) sits in a
-        title of its own, named by its file: on the first hand-off the record's title takes it, as `register` places a
-        new drop (`_work_by_record`, else a new title named by its show). Only that title: alone, never paired, no id,
-        nothing of the user's in it. The emptied title goes in the helper's run (`tidy_works`)."""
+        title of its own, named by its file (or the show read from it, SRC-11): on the first hand-off the record's title
+        takes it, as `register` places a new drop (`_work_by_record`, else a new title named by its show). Only that
+        title: alone, never paired, no id, nothing of the user's in it. The emptied title goes in the helper's run
+        (`tidy_works`)."""
         if folder_key_of(rel) is not None or \
                 self.conn.execute("SELECT 1 FROM pairings WHERE item_id = ?", (item_id,)).fetchone():
             return
         cur, title = self.conn.execute("SELECT work_id, title FROM items WHERE id = ?", (item_id,)).fetchone()
         w = self._work_row(cur) if cur is not None else None
-        if w is None or w["title"] != title or w["title_by_user"] or w["media_type_by"] == "user" or \
-                w["cover_locked"] or w["cover_source"] == "user" or \
+        if w is None or w["title"] not in (title, show_of_name(rel)) or w["title_by_user"] or \
+                w["media_type_by"] == "user" or w["cover_locked"] or w["cover_source"] == "user" or \
                 any(w[c] is not None for c in ("anilist_id", "tmdb_id", "youtube_channel")) or \
                 self.conn.execute("SELECT COUNT(*) FROM items WHERE work_id = ?", (cur,)).fetchone()[0] != 1:
             return
@@ -3445,8 +3531,8 @@ class Store:
         with self._command("place", by) as cmd:
             record = None
             if where == "after-show":
-                row = self.conn.execute("SELECT pairing FROM pairings WHERE item_id = ? ORDER BY paired_at DESC "
-                                        "LIMIT 1", (ids[0],)).fetchone()
+                row = self.conn.execute(f"SELECT pairing FROM pairings p WHERE item_id = ? ORDER BY {_ORIGIN_ROW}, "
+                                        "paired_at DESC LIMIT 1", (ids[0],)).fetchone()     # B1: hato's first
                 record = json.loads(row[0]) if row else None
                 spot = self._after_show(ids[0], record, excl=set(ids))
                 if spot is None:
@@ -3462,30 +3548,43 @@ class Store:
 
     def _after_show(self, item_id, record, excl=()):
         """Where `after-show` puts an item (HC-N6, ✅ P2.1-2, Q4-9): (tier, before_id, after_id), or None (it stays).
-        Its title's other items, by the episode numbers their records name (the same season); without numbers, after
-        the title's last item in Current."""
+        Its title's other items, by the episode numbers their records name (the same season: an item whose record
+        names another season is another show's, as `connect/rules.py` read it before Decision 1); without numbers,
+        after the title's last item in Current."""
         work = self.conn.execute("SELECT work_id FROM items WHERE id = ?", (item_id,)).fetchone()
         if work is None or work[0] is None:
             return None
         mine = _episode(record)
         others = [r for r in self.conn.execute("SELECT id, tier, ord FROM items WHERE work_id = ? AND id != ?",
                                                (work[0], item_id)) if r[0] not in excl]
-        if not others:
-            return None
-        episodes = {}
-        for other, text in self.conn.execute("SELECT item_id, pairing FROM pairings WHERE item_id IN "
-                                             "(SELECT id FROM items WHERE work_id = ?)", (work[0],)):
+        episodes, apart = {}, set()
+        for other, text in self.conn.execute(f"SELECT item_id, pairing FROM pairings p WHERE item_id IN "
+                                             f"(SELECT id FROM items WHERE work_id = ?) AND {_PREFERRED_ROW}",
+                                             (work[0],)):
             try:
                 ep = _episode(json.loads(text))
             except ValueError:
                 continue
             if ep is not None and (mine is None or ep[0] == mine[0]):
                 episodes[other] = ep[1]
+            elif ep is not None:
+                apart.add(other)
+        others = [r for r in others if r[0] not in apart]
+        if not others:
+            return None
         current = [r for r in others if r[1] in CURRENT]
         if not current:
             if all(r[1] in ("graduated", "goal") for r in others):
                 return ("now", None, None)                      # Q4-9: a finished title's new episode leads Current
             return None
+        if isinstance(record, dict) and record.get("producer") == SOURCE_PRODUCER:
+            # a folder's file goes in its show's run in order (S3: K4's number or its natural-order name)
+            rels = dict(self.conn.execute(f"SELECT id, rel_path FROM items WHERE id IN "
+                                          f"({','.join('?' * (len(current) + 1))})", [r[0] for r in current] +
+                                          [item_id]).fetchall())
+            ep = record.get("episode") if isinstance(record.get("episode"), (int, float)) else None
+            tier, (how, anchor) = self._in_run([r + (rels[r[0]],) for r in current], rels[item_id], ep)
+            return (tier, anchor, None) if how == "before" else (tier, None, anchor)
         order = lambda r: (TIERS[r[1]][3], r[2], r[0])           # noqa: E731
         if mine is not None and all(r[0] in episodes for r in current):
             earlier = [r for r in current if episodes[r[0]] < mine[1]]
@@ -4234,6 +4333,8 @@ class Store:
         if change.epoch != meta["epoch"]:
             raise UndoRefused("the library was rebuilt since; that change can't be undone")
         kind = change.kind
+        if kind == "take_in":                     # SRC S6: a scan's take-in is not on the user's Undo; Remove is
+            raise UndoRefused("what a folder's look took in is taken out with Remove")
         with self._command("undo", "undo") as cmd:
             if kind in ("insert", "insert_at", "restore") or (kind == "register" and change.added):
                 ok, skipped = self.undo_check(change)
@@ -4471,8 +4572,13 @@ class Store:
             log_seq = self._log_seq()
         rows.sort(key=lambda r: (TIERS[r["tier"]][3], r["ord"], r["id"]))
         by_tier = {t: [] for t in TIERS}
+        waiting = []                                   # K5: an analysed tier's video-only rows, never in the schedule
         for r in rows:
-            by_tier[r["tier"]].append(json.loads(r["entry"]))
+            entry = json.loads(r["entry"])
+            if r["availability"] == "waiting" and r["tier"] in ANALYSED:
+                waiting.append(entry)
+            else:
+                by_tier[r["tier"]].append(entry)
         doc = {}
         if "manifest_metadata" in meta:
             doc["metadata"] = json.loads(meta["manifest_metadata"])
@@ -4495,6 +4601,8 @@ class Store:
             "graduated": by_tier["graduated"], "arrivals": by_tier["arrivals"], "meta": lib_meta,
             "items": {"fields": list(ITEM_FIELDS), "rows": [[r[f] for f in ITEM_FIELDS] for r in rows]},
             "tables": tables}
+        if waiting:
+            doc["surasura_library"]["waiting"] = waiting
         return doc, meta["state_version"], meta.get("copy_dirty", 0)
 
 
@@ -5240,8 +5348,15 @@ def _image_from_copy(norm, data_dir, by_records=False):
     now = _now()
     recs = _records(norm.lib)
     items = []
+    # K5 (S9): a waiting row of an analysed tier is in no list, so the records give the order (the lists' own when
+    # the copy is whole) and the copy's `waiting` list its entry
+    by_records = by_records or any(r.get("availability") == "waiting" and r.get("tier") in ANALYSED
+                                   for r in recs.values())
     if by_records:
         entries = {path_key(e["physical_path"]): e for t in TIERS for e in norm.tiers[t]}
+        for e in norm.lib.get("waiting") or []:
+            if isinstance(e, dict) and isinstance(e.get("physical_path"), str):
+                entries.setdefault(path_key(e["physical_path"]), e)
         listing = [(rec.get("tier"), entries.get(key) or make_entry(rec["rel_path"], "Rebuild", with_source_type=False))
                    for key, rec in recs.items() if rec.get("tier") in TIERS]
         listing.sort(key=lambda p: TIERS[p[0]][3])
@@ -5256,6 +5371,8 @@ def _image_from_copy(norm, data_dir, by_records=False):
                         item[field] = rec[field]
                 if item["availability"] == "missing" and rec.get("size") is not None:
                     item["size"], item["mtime_ns"] = rec.get("size"), rec.get("mtime_ns")
+                if rec.get("availability") == "waiting" and not is_content_name(item["rel_path"]):
+                    item["availability"], item["size"], item["mtime_ns"] = "waiting", None, None
             items.append(item)
     tables = {}
     for name, table in ((norm.lib.get("tables") or {}).items()):
@@ -6236,11 +6353,11 @@ def _outside_idle(language, data_dir, user_files_dir, key, at_exit=False):
 # ------------------------------------------------------------------------------------------------ #
 
 def walk_library(data_dir):
-    """The walk, outside any transaction: the three tier folders, content files only, fingerprints
-    from the listing. Returns {"files": [(rel, size, mtime_ns)], "bad": [names that can't be encoded]}."""
+    """The walk, outside any transaction: the three tier folders and the content folder (`WALK_FOLDERS`), content
+    files only, fingerprints from the listing. Returns {"files": [(rel, size, mtime_ns)], "bad": [names that can't be
+    encoded]}."""
     files, bad = [], []
-    for tier in ANALYSED:
-        folder = FOLDER_OF_TIER[tier]
+    for folder in WALK_FOLDERS:
         f, b = walk_tree(os.path.join(data_dir, folder), folder)
         files += f
         bad += b
@@ -6249,7 +6366,7 @@ def walk_library(data_dir):
 
 def reset_walk(data_dir):
     """Today's Reset order: each folder listed, sorted by `name.lower()`, subfolders recursed where they
-    fall, the three tier folders in turn."""
+    fall, the three tier folders in turn, then the content folder."""
     out = []
 
     def level(directory, rel):
@@ -6270,8 +6387,7 @@ def reset_walk(data_dir):
                     continue
                 out.append(child)
 
-    for tier in ANALYSED:
-        folder = FOLDER_OF_TIER[tier]
+    for folder in WALK_FOLDERS:
         level(os.path.join(data_dir, folder), folder)
     return out
 
@@ -6312,16 +6428,21 @@ def walk_folders(data_dir, folders):
 
 def _sync_delta(store, walk, known, scope=None):
     """What a sync would change, computed outside any transaction (§6.10); with `scope`, only within those folders
-    (`known` read with the same scope): an item outside them is never looked at."""
+    (`known` read with the same scope): an item outside them is never looked at. An untracked file in the content
+    folder is never the sync's (SRC B2: every copy there comes in through `take_in` or K3; went / came / refresh for
+    the known ones as anywhere), nor one a `duplicate` exclusion keeps out (another item's episode, K3)."""
     data_dir = store.data_dir
-    walked_tops = _scope_tops(scope) if scope is not None else [path_key(FOLDER_OF_TIER[t]) + "/" for t in ANALYSED]
+    walked_tops = _scope_tops(scope) if scope is not None else [path_key(f) + "/" for f in WALK_FOLDERS]
+    content = path_key(CONTENT_FOLDER) + "/"
+    kept_out = {r[0] for r in store.conn.execute("SELECT pattern FROM exclusions WHERE kind = 'duplicate'")}
     seen, fresh, respell, refresh = set(), [], [], []
     for rel, size, mtime_ns in walk["files"]:
         key = path_key(rel)
         seen.add(key)
         k = known.get(key)
         if k is None:
-            fresh.append((rel, key, size, mtime_ns))
+            if not key.startswith(content) and key not in kept_out:
+                fresh.append((rel, key, size, mtime_ns))
             continue
         item_id, stored, _tier, availability, s, m = k
         if stored != rel:
@@ -6530,7 +6651,9 @@ def _store_reset_order(self, walk=None):
         known = {r[0] for r in self.conn.execute("SELECT rel_key FROM items")}
         known |= {path_key(str(a.get("rel", ""))) for a in _rename_asks(self)}       # held out: the question waits
         arrivals = cmd.meta.get("arrivals_on")
-        untracked = [rel for rel in order if path_key(rel) not in known and not (arrivals and _in_hato(rel))]
+        content = path_key(CONTENT_FOLDER) + "/"           # the content folder's copies come in by `take_in` only (B2)
+        untracked = [rel for rel in order if path_key(rel) not in known and not (arrivals and _in_hato(rel))
+                     and not path_key(rel).startswith(content)]
         prepared = [(rel, rel, path_key(rel), make_entry(rel, "Reset", with_source_type=False),
                      _fingerprint(self.data_dir, rel), TIER_OF_FOLDER[rel.split("/", 1)[0]]) for rel in untracked]
         new_ids = self._add_rows(prepared, cmd.version) if prepared else []
@@ -6617,7 +6740,7 @@ ROUND_BATCH_S = 0.05             # or this long, whichever comes first (one batc
 
 class Round:
     """The hourly safety round (L3.2; the user's L3.1-4, "let windows handle it but with the fallback"): every folder
-    under the tier folders — folders that hold no item included, which the old poll never looked at — listed a batch
+    under the tier folders and the content folder — folders that hold no item included, which the old poll never looked at — listed a batch
     at a time (`step`), each folder's content files compared with the items the store holds directly in it.
     Listings, sizes and times only; a folder whose listing differs is handed back for a scoped sync. Nothing is kept
     between rounds: one a close interrupts starts over (the next open's full look covers it)."""
@@ -6625,7 +6748,7 @@ class Round:
     def __init__(self, store):
         from collections import deque
         self.store = store
-        self.queue = deque(FOLDER_OF_TIER[t] for t in ANALYSED)
+        self.queue = deque(WALK_FOLDERS)
         self.listed = 0                  # folders listed so far
         self.batches = []                # (folders, seconds) of each batch, for the figures
 
@@ -6807,9 +6930,10 @@ def read_only_schedule(language, data_dir, user_files_dir):
     tops = {t: 0 for t in ANALYSED}
     marker_cache = {}
     hato = path_key(HATO_FOLDER)
+    content = path_key(CONTENT_FOLDER) + "/"
     for rel, _size, _mtime in walk_library(data_dir)["files"]:
         key = path_key(rel)
-        if key in known:
+        if key in known or key.startswith(content):    # the content folder's copies are the store's only (B2)
             continue
         known.add(key)
         entry = make_entry(rel, "Disk Sync", _detect_source_type(os.path.join(data_dir, rel), marker_cache))
@@ -7018,6 +7142,603 @@ Store._undo_reset = _store_undo_reset
 
 
 # ------------------------------------------------------------------------------------------------ #
+# Sources (3.0, SRC K1a): folders read where they are, their text copied into the content folder
+# ------------------------------------------------------------------------------------------------ #
+#
+# A source is a `roots` row (`kind` 'source', 'source-off' once *Stop reading*, its `path` absolute and normalised).
+# The scan (`app/sources.py`, K1b) copies each new text file into `Library/<show>/` outside any lock and hands the batch
+# to `take_in`; every origin is one `pairings` row keyed "src:" + its path key (B1), so a file is read once whichever
+# source found it. Remove keeps an origin out for good (an `exclusions` row); Finish keeps its records.
+
+SKIP_DIRS = ("$recycle.bin", "#recycle", "@eadir", ".stversions", ".trash", "system volume information", "@recycle",
+             "#snapshot", "@recently-snapshot", "~snapshot", ".snapshot")   # + QNAP's / Synology's bins and snapshots
+PLACEHOLDER_ATTRS = 0x1000 | 0x40000 | 0x400000   # OFFLINE · RECALL_ON_OPEN · RECALL_ON_DATA_ACCESS (Connect's `_on_disk`)
+_LINK_TAGS = (0xA000000C, 0xA0000003)              # IO_REPARSE_TAG_SYMLINK, IO_REPARSE_TAG_MOUNT_POINT (a junction)
+_DIGITS = re.compile(r"(\d+)")
+_EPUB_PART = re.compile(r"\.epub#\d+$", re.I)    # an EPUB's part's origin (`<book>.epub#3`)
+Origin = namedtuple("Origin", "item_id root origin size mtime_ns sha256 rel_path")
+
+
+def origin_key(path):
+    """An origin's `pairings.content_key` (B1): "src:" + the path key of its absolute, normalised path."""
+    return SOURCE_KEY + path_key(os.path.abspath(path))
+
+
+_LOCAL_SHARE = re.compile(r"^\\\\(?:localhost|127\.0\.0\.1)\\([A-Za-z])\$(?=\\|$)", re.IGNORECASE)
+
+
+def folder_path(path):
+    r"""A folder's one spelling (A2): absolute and normalised, with Windows' long-path prefixes (`\\?\C:\…`,
+    `\\?\UNC\server\share\…`) and this computer's own admin share (`\\localhost\C$\…`) read back as the plain
+    path."""
+    p = str(path)
+    if sys.platform == "win32":
+        p = p.replace("/", "\\")
+        if p[:8].upper() == "\\\\?\\UNC\\":
+            p = "\\\\" + p[8:]
+        elif p.startswith("\\\\?\\"):
+            p = p[4:]
+        p = _LOCAL_SHARE.sub(lambda m: m.group(1) + ":", p)
+    return os.path.normpath(os.path.abspath(p))
+
+
+def _folder_id(path):
+    """(st_dev, st_ino) of a folder, its links followed, or None (gone, unreadable, or a file system with no ids)."""
+    try:
+        st = os.stat(path)
+    except (OSError, ValueError):
+        return None
+    return (st.st_dev, st.st_ino) if st.st_ino else None
+
+
+def _ancestors(path):
+    """`path` and every folder above it, up to its drive."""
+    while True:
+        yield path
+        up = os.path.dirname(path)
+        if up == path:
+            return
+        path = up
+
+
+def skip_dir(name, path):
+    """Does a look at a source folder skip this folder (B3)? Dot folders (.stversions, .trash), the recycle bins
+    (Windows' and a NAS's), a NAS's @eaDir, System Volume Information, and a folder link or junction — never followed:
+    one that loops never ends, one into the data folder brings it back. `path`: the folder's path, or its `os.DirEntry`
+    (the listing's own stat: no call)."""
+    if name.startswith(".") or name.casefold() in SKIP_DIRS:
+        return True
+    import stat
+    try:
+        st = path.stat(follow_symlinks=False) if isinstance(path, os.DirEntry) else os.lstat(path)
+    except OSError:
+        return True
+    return stat.S_ISLNK(st.st_mode) or getattr(st, "st_reparse_tag", 0) in _LINK_TAGS
+
+
+def is_placeholder(st):
+    """A cloud placeholder (B3, RD-S1): its read would download it, so neither its text nor a video's key is read. A
+    stat with no attributes (POSIX) is an ordinary file (S17)."""
+    return bool(getattr(st, "st_file_attributes", 0) & PLACEHOLDER_ATTRS)
+
+
+def sha256_of(path):
+    """The sha256 of a file's bytes, as an origin record and an exclusion's note hold it."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def content_target(data_dir, rel, size=None, sha256=None):
+    """Where a copy goes (B2): (rel, reuse). `rel` itself when free; a file already there with the same size and bytes
+    is re-used (a copy a crash left between the copy and its `take_in`: never copied again as `name (2)`); else
+    `name (2).ext`, `name (3).ext`, … — moves' `_copy_whole` rule — the first free or same-bytes one. Only "not
+    found" is free: any other stat error (access denied, a name Windows rejects) is raised, for the scan to skip the file."""
+    base, ext = os.path.splitext(rel)
+    n = 1
+    while True:
+        candidate = rel if n == 1 else f"{base} ({n}){ext}"
+        n += 1
+        full = os.path.join(data_dir, *candidate.split("/"))
+        try:
+            st = os.stat(full)
+        except FileNotFoundError:
+            return candidate, False
+        if size is not None and sha256 and st.st_size == size and sha256_of(full) == sha256:
+            return candidate, True
+
+
+def _natural(name):
+    """A file name's natural order key: `ep2` before `ep10`, full-width digits as digits, case folded."""
+    parts = _DIGITS.split(unicodedata.normalize("NFKC", name).casefold())
+    return [int(p) if n % 2 else p for n, p in enumerate(parts)]
+
+
+def _origin_record(root_id, origin, f):
+    """An origin's record (B1): hato's shape, so Connect's `video()` and the video index read it as they read hato's;
+    `channel_id` is the source's id (S13: a `source:<id>` placing rule needs no code)."""
+    record = {"producer": SOURCE_PRODUCER, "channel_id": root_id, "root": root_id, "origin": origin,
+              "size": f.get("size"), "mtime_ns": f.get("mtime_ns"), "sha256": f.get("sha256"),
+              "show": {"title": str(f.get("show") or "")}}
+    for key in ("video_path", "video_size", "video_key", "episode"):
+        if f.get(key) is not None:
+            record[key] = f[key]
+    return record
+
+
+def _store_copy_dirty(self):
+    """Bookkeeping the copy carries (§6.6): no version moves, the next export writes it."""
+    self._set_meta({"copy_dirty": self._meta().get("copy_dirty", 0) + 1})
+
+
+def _store_not_a_source(self, path):
+    """Why `path` can't be a source (B3), or None: not a folder; a whole drive; the user's profile folder; Surasura's own
+    folders — every language's data and user files, the store's folder — a folder inside one, or one that holds one
+    (its scan would bring back the data folder's .trash as new episodes and read the word lists as books)."""
+    if not isinstance(path, str) or not path.strip() or not os.path.isdir(folder_path(path)):
+        return "That isn't a folder on this computer."
+    norm = folder_path(path)                         # one spelling (A2), then one folder by its identity too
+    forms = {norm, os.path.realpath(norm)}
+    if any(os.path.dirname(p) == p for p in forms):
+        return "A whole drive holds too much to read; choose the folder your shows and books are in."
+    keys = {path_key(p).rstrip("/") for p in forms}
+    ids = {_folder_id(norm)} - {None}
+    home = os.path.expanduser("~")
+    if home != "~" and (path_key(os.path.normpath(home)).rstrip("/") in keys or _folder_id(home) in ids):
+        return "Your user folder holds too much to read; choose the folder your shows and books are in."
+    own = [folder_path(os.path.dirname(os.path.abspath(d))) for d in (self.data_dir, self.user_files_dir, self.db_path)]
+    own += [os.path.realpath(o) for o in own]
+    mine, mine_ids = {path_key(o).rstrip("/") for o in own}, {_folder_id(o) for o in own} - {None}
+    for f in forms:                                  # it, or a folder above it, is one of Surasura's own
+        for up in _ancestors(f):
+            if path_key(up).rstrip("/") in mine or _folder_id(up) in mine_ids:
+                return "That folder is Surasura's own; choose the folder your shows and books are in."
+    for o in own:                                    # it is a folder above one of Surasura's own
+        for up in list(_ancestors(o))[1:]:
+            if path_key(up).rstrip("/") in keys or _folder_id(up) in ids:
+                return "That folder holds Surasura's own; choose the folder inside it your shows and books are in."
+    return None
+
+
+def _store_add_source(self, path):
+    """A folder Surasura reads where it is (SRC-10) -> its root id. Refused with `NotASource` (its `reason` for the
+    window) before anything is written (`_not_a_source`). The same folder again, however written, is its row — turned
+    back on when it was stopped, so it is never copied in a second time."""
+    reason = self._not_a_source(path)
+    if reason:
+        raise NotASource(reason)
+    norm = folder_path(path)
+    key, ident = path_key(norm), _folder_id(norm)
+    sql = "SELECT id, path, kind FROM roots WHERE kind IN ('source', 'source-off') ORDER BY id"
+    with self._reading():                            # a source's folder stat'ed outside the write lock (A6)
+        rows = self.conn.execute(sql).fetchall()
+    alike = {r[0] for r in rows if r[1] and ident is not None and _folder_id(r[1]) == ident}
+    with self._writing():
+        rows = self.conn.execute(sql).fetchall()
+        same = [r for r in rows if r[1] and path_key(folder_path(r[1])) == key] or [r for r in rows if r[0] in alike]
+        for root_id, _held, kind in same[:1]:       # its row, its path as first written: its origins' keys stay
+            if kind != "source":
+                self.conn.execute("UPDATE roots SET kind = 'source' WHERE id = ?", (root_id,))
+                self._copy_dirty()
+            return root_id
+        root_id = self.conn.execute("INSERT INTO roots (kind, path, placement, catalogue_only, created_at) "
+                                    "VALUES ('source', ?, NULL, 0, ?)", (norm, _now())).lastrowid
+        self._copy_dirty()
+    return root_id
+
+
+def _store_sources(self, all=False):
+    """[{id, path, on, items}] of the sources being read (`all`: the stopped ones too), in the order added; `items` =
+    the items with an origin in it (the offline line's count: *its 412 episodes are kept*)."""
+    kinds = ("source", "source-off") if all else ("source",)
+    with self._reading():
+        rows = self.conn.execute(f"SELECT id, path, kind FROM roots WHERE kind IN ({','.join('?' * len(kinds))}) "
+                                 "ORDER BY id", kinds).fetchall()
+        counts = dict(self.conn.execute(f"SELECT json_extract(p.pairing, '$.root'), COUNT(DISTINCT p.item_id) "
+                                        f"FROM pairings p WHERE {_ORIGIN_ROW} GROUP BY 1").fetchall())
+    return [{"id": i, "path": p, "on": k == "source", "items": counts.get(i, 0)} for i, p, k in rows]
+
+
+def _store_stop_source(self, root_id):
+    """*Stop reading* a folder: its row kept as 'source-off' (adding it again turns it back on); its items and their
+    records stay. -> True when it was being read."""
+    with self._writing():
+        if not self.conn.execute("UPDATE roots SET kind = 'source-off' WHERE id = ? AND kind = 'source'",
+                                 (root_id,)).rowcount:
+            return False
+        self._copy_dirty()
+    return True
+
+
+def _store_origins(self):
+    """{path_key(origin): Origin(item_id, root, origin, size, mtime_ns, sha256, rel_path)} for every origin recorded,
+    in any tier (a finished item is never taken in again): one read per look."""
+    with self._reading():
+        rows = self.conn.execute(f"SELECT p.content_key, p.item_id, p.pairing, i.rel_path FROM pairings p "
+                                 f"JOIN items i ON i.id = p.item_id WHERE {_ORIGIN_ROW}").fetchall()
+    out = {}
+    for key, item_id, text, rel in rows:
+        record = _json_dict(text) or {}
+        out[key[len(SOURCE_KEY):]] = Origin(item_id, record.get("root"), record.get("origin"), record.get("size"),
+                                            record.get("mtime_ns"), record.get("sha256"), rel)
+    return out
+
+
+def _store_excluded(self, root_ids=None):
+    """{path_key(origin): {"size", "sha256", "video_key"?}} of the origins Remove keeps out (`root_ids`: only those
+    sources'); a look checks a new file's path, bytes and video against them (S6; `take_in` checks them again)."""
+    sql, params = "SELECT pattern, note FROM exclusions WHERE kind = 'removed'", []
+    if root_ids is not None:
+        root_ids = list(root_ids)
+        if not root_ids:
+            return {}
+        sql += f" AND root_id IN ({','.join('?' * len(root_ids))})"
+        params = root_ids
+    with self._reading():
+        return {pattern: (_json_dict(note) or {}) for pattern, note in self.conn.execute(sql, params).fetchall()}
+
+
+def _store_items_of_size(self, sizes):
+    """{size: [(item_id, rel_path)]} of the available items of these sizes: K1b's check (b), an item whose copy may
+    hold the same bytes (size first, then the bytes)."""
+    sizes = [s for s in dict.fromkeys(sizes) if isinstance(s, int)]
+    out = {}
+    with self._reading():
+        for chunk in _chunks(sizes, 500):
+            for size, item_id, rel in self.conn.execute(
+                    f"SELECT size, id, rel_path FROM items WHERE availability = 'available' AND size IN "
+                    f"({','.join('?' * len(chunk))}) ORDER BY id", chunk):
+                out.setdefault(size, []).append((item_id, rel))
+    return out
+
+
+def _store_item_of_video_key(self, key):
+    """K1b's check (a): the live item whose record holds this video — hato's `content_key`, or an origin's
+    `video_key` — the lowest id when several do, else None. A 'waiting' item (K5) is left out, so a video-only show's
+    gap is filled by `take_in` from the copy.
+
+    Asked once per video a look finds (review H17): the answers come from one read of every record's video, kept
+    while nothing is written — stamped with this connection's changes and SQLite's `data_version` (another
+    connection's commit, read before the records) — and never kept inside a write (one rolled back would leave it
+    wrong)."""
+    if not isinstance(key, str) or not key or key.startswith(SOURCE_KEY):
+        return None
+    stamp = None if self._depth else (self.conn.total_changes, self.conn.execute("PRAGMA data_version").fetchone()[0])
+    with self._reading():
+        held = getattr(self, "_video_items", None)
+        if stamp is None or held is None or held[0] != stamp:
+            found = {}
+            for vkey, item_id in self.conn.execute(
+                    f"SELECT CASE WHEN {_ORIGIN_ROW} THEN json_extract(p.pairing, '$.video_key') ELSE p.content_key "
+                    f"END, p.item_id FROM pairings p JOIN items i ON i.id = p.item_id WHERE i.availability != "
+                    f"'waiting' AND (NOT {_ORIGIN_ROW} OR json_valid(p.pairing))"):
+                if isinstance(vkey, str) and vkey and (vkey not in found or item_id < found[vkey]):
+                    found[vkey] = item_id
+            held = (stamp, found)
+            if stamp is not None:
+                self._video_items = held
+    return held[1].get(key)
+
+
+def _store_update_origin(self, origin, size, mtime_ns, sha256):
+    """A changed original re-copied (S5, K1b): only its row's `size`, `mtime_ns` and `sha256`, bookkeeping the copy
+    carries — `paired_at` and every other key kept, so Connect's pairing version never moves (B1). -> True when the
+    row changed."""
+    key = origin_key(origin)
+    with self._writing():
+        row = self.conn.execute("SELECT pairing FROM pairings WHERE content_key = ?", (key,)).fetchone()
+        if row is None:
+            return False
+        record = _json_dict(row[0]) or {}
+        new = dict(record, size=size, mtime_ns=mtime_ns, sha256=sha256)
+        if new == record:
+            return False
+        self.conn.execute("UPDATE pairings SET pairing = ? WHERE content_key = ?",
+                          (json.dumps(new, sort_keys=True, ensure_ascii=False), key))
+        self._copy_dirty()
+    return True
+
+
+def _store_exclude_origins(self, pairs, now):
+    """Inside `remove`: an exclusion per origin of the removed items (`pairs`: {item_id: [[content_key, the record's
+    JSON text, paired_at]]}, as `remove` read them) — its path key, `kind` 'removed', the note {size, sha256,
+    video_key?, show?, episode?} (S6: the same bytes or video found elsewhere stay out too, and K1b keeps a v2 of that
+    show's episode out). -> the exclusion ids written."""
+    rows = []
+    for records in pairs.values():
+        for key, text, _at in records:
+            if not key.startswith(SOURCE_KEY):
+                continue
+            record = _json_dict(text) or {}
+            note = {"size": record.get("size"), "sha256": record.get("sha256")}
+            if record.get("video_key"):
+                note["video_key"] = record["video_key"]
+            show = record.get("show") if isinstance(record.get("show"), dict) else {}
+            if show.get("title") and isinstance(record.get("episode"), (int, float)):
+                note["show"], note["episode"] = show["title"], record["episode"]    # its re-release (v2) stays out
+            rows.append((record.get("root"), key[len(SOURCE_KEY):], "removed", now, _dumps(note)))
+    if not rows:
+        return []
+    first = self.conn.execute("SELECT COALESCE(MAX(id), 0) FROM exclusions").fetchone()[0] + 1
+    self.conn.executemany("INSERT INTO exclusions (root_id, pattern, kind, created_at, note) VALUES (?, ?, ?, ?, ?)",
+                          rows)
+    return list(range(first, first + len(rows)))
+
+
+def _store_let_origins_back(self, keys):
+    """Inside `restore` (Put back, an Undo of a Remove): the item's origins are its own again — their exclusions go."""
+    patterns = [k[len(SOURCE_KEY):] for k in keys if k.startswith(SOURCE_KEY)]
+    for chunk in _chunks(patterns, 500):
+        self.conn.execute(f"DELETE FROM exclusions WHERE kind = 'removed' AND pattern IN ({','.join('?' * len(chunk))})",
+                          chunk)
+
+
+def _store_take_in(self, root_id, found, first=False, rules=None):
+    """A look's files taken in, as ONE command per batch (the scan calls it per show, ≤ 200 files; an EPUB's parts all
+    in one). Each copy is already on disk under `Library/` (the caller copied it outside the lock, as moves' drop does).
+
+    `found`: [{origin (absolute), size, mtime_ns (the origin's), sha256 (the text's bytes), show (its title), rel (the
+    copy, relative to the data folder, under `Library/`), video_path?, video_size?, video_key?, episode? (K4's number),
+    item_id? (K1b's checks (a) / (b): the item the origin belongs to; no copy, no `rel`)}].
+
+    Per file: an origin already recorded (by any source), or one Remove keeps out — its path, its bytes or its video
+    (S6) — is skipped; an `item_id` gets the origin recorded and nothing else; a copy that is already an item is that
+    item; else the item is added and placed. `first` (setup's own first scan, SRC-1): the end of Current, shows in name
+    order, episodes in natural order (`ep2` before `ep10`), logged quiet like a back-fill — no placement event, so
+    nothing is mined by itself (S1). Later (SRC-2, S2, S3, S14; Decision 1, lean): it lands in New arrivals (in its
+    show's run there, in order) and the placing rule for the source takes it on (D30: `source:<id>`, then `source`;
+    `rules` None = settings.json's default, `source: after-show`): after-show puts a show with rows in Current in its
+    run, before the first episode whose number (K4's, or hato's) or natural-order name is higher, else after the last;
+    a show only in 6+ Months or Finished at the top of Current (Q4-9); a show never shown, or one still waiting, waits.
+    With New arrivals off (`arrivals_on`; no rule runs): its show's run in Current, else the top of Current. Logged as
+    `source`'s: the landing never explicit, the rule's move explicit (the user's own setting, D30).
+
+    -> the change (kind 'take_in': never on the user's Undo, S6 — Remove takes an item out), with `added`, `attached`,
+    `placed` {item_id: tier}, `skipped` {"known", "excluded", "gone": [origins]} and `unused` (the copies no item holds
+    — a skipped file's, or a second file with the same bytes as one earlier in the batch, whose origin is recorded on
+    that one's item (A5) — for the caller to send to the trash); None for nothing found. A copy outside the content
+    folder raises ValueError, a source not being read `NotASource`, both before anything is written."""
+    found = list(found or ())
+    if not found:
+        return None
+    if rules is None:
+        from app.settings_manager import DEFAULT_SETTINGS
+        rules = DEFAULT_SETTINGS["placing_rules"]
+    rels = []
+    for f in found:
+        origin = f.get("origin")
+        if not isinstance(origin, str) or not os.path.isabs(origin):
+            raise ValueError(f"an origin must be an absolute path: {origin!r}")
+        if f.get("item_id") is not None:
+            continue
+        rel = library_rel(self.data_dir, str(f.get("rel") or ""))
+        parts = rel.split("/") if rel else []
+        if len(parts) < 2 or path_key(parts[0]) != path_key(CONTENT_FOLDER):
+            raise ValueError(f"a copy outside the content folder: {f.get('rel')!r}")
+        rels.append((rel, origin_key(origin)))
+    known = set()                    # H19: a file recorded already is never read (its stat, its mark) to be skipped
+    with self._reading():
+        for chunk in _chunks(list({k for _r, k in rels}), 500):
+            known.update(k for (k,) in self.conn.execute(f"SELECT content_key FROM pairings WHERE content_key IN "
+                                                         f"({','.join('?' * len(chunk))})", chunk))
+    rels = list(dict.fromkeys(rel for rel, k in rels if k not in known))
+    prepared = dict(zip(rels, self._prepare(rels, None, "Source")))
+    fold = lambda f: search_fold(str(f.get("show") or ""), self.language)                     # noqa: E731
+    ep = lambda f: f.get("episode") if isinstance(f.get("episode"), (int, float)) else None    # noqa: E731
+    order = sorted(found, key=lambda f: (fold(f), ep(f) is None, ep(f) or 0,
+                                         _natural(os.path.basename(str(f.get("rel") or f["origin"])))))
+    with self._command("take_in", SOURCE_PRODUCER) as cmd:
+        row = self.conn.execute("SELECT kind FROM roots WHERE id = ?", (root_id,)).fetchone()
+        if row is None or row[0] != "source":
+            raise NotASource("That folder isn't being read any more.")
+        change = self._change(cmd, "take_in")
+        change.attached, change.placed = [], {}
+        change.skipped = {"known": [], "excluded": [], "gone": []}
+        out = {"patterns": set(), "sha256": set(), "video_key": set()}
+        for pattern, note in self.conn.execute("SELECT pattern, note FROM exclusions WHERE kind = 'removed'"):
+            note = _json_dict(note) or {}
+            out["patterns"].add(pattern)
+            for k in ("sha256", "video_key"):
+                if note.get(k):
+                    out[k].add(note[k])
+        works, by_bytes, spare, taken = {}, {}, {}, {}
+        gaps = self._waiting_videos() if any(_video_keys(f) for f in found) else {}
+        for f in order:
+            origin = os.path.abspath(f["origin"])
+            key = origin_key(origin)
+            rel = None if f.get("item_id") is not None else library_rel(self.data_dir, str(f["rel"]))
+            p = prepared.get(rel) if rel is not None else None
+            # recorded already — by any source, or earlier in this batch (each record is written as it goes)
+            if self.conn.execute("SELECT 1 FROM pairings WHERE content_key = ?", (key,)).fetchone():
+                change.skipped["known"].append(origin)
+                if rel is not None:
+                    spare[rel] = path_key(rel)
+                continue
+            if rel is not None and p is None:        # recorded at the look, its record gone since: read it now
+                p = prepared[rel] = self._prepare([rel], None, "Source")[0]
+            if key[len(SOURCE_KEY):] in out["patterns"] or (f.get("sha256") and f["sha256"] in out["sha256"]) or \
+                    any(k in out["video_key"] or k in out["patterns"] for k in _video_keys(f)):
+                change.skipped["excluded"].append(origin)
+                if p:
+                    spare[p[1]] = p[2]
+                continue
+            record = _origin_record(root_id, origin, f)
+            # an EPUB's part records its book's sha256 (K1b, K4): two parts of one book are never "the same bytes"
+            same = None if _EPUB_PART.search(origin) else f.get("sha256")
+            item_id = f.get("item_id")
+            if item_id is None and not is_content_name(p[1]):  # H9: a video whose subtitle came earlier in this batch
+                item_id = next((taken[k] for k in _video_keys(f) if k in taken), None)
+            if item_id is None:
+                held = self.conn.execute("SELECT id FROM items WHERE rel_key = ?", (p[2],)).fetchone()
+                gap = next((gaps[k] for k in _video_keys(f) if k in gaps), None) if is_content_name(p[1]) else None
+                if held is None and gap is None and same and same in by_bytes:   # the same bytes in this batch (A5)
+                    item_id = by_bytes[same]
+                    spare[p[1]] = p[2]
+                elif held is None and gap is None:
+                    item_id = self._take_new(cmd, change, p, key, record, f, first, rules, works)
+                    by_bytes.setdefault(same, item_id)
+                    for k in _video_keys(f):                 # H9: the same video later in this batch finds it
+                        (taken if is_content_name(p[1]) else gaps)[k] = item_id
+                    continue
+                else:                                        # its copy is an item, or a waiting video's (K5)
+                    item_id = held[0] if held else self._fill_gap(cmd, gap, p, gaps)
+            elif not self.conn.execute("SELECT 1 FROM items WHERE id = ?", (item_id,)).fetchone():
+                change.skipped["gone"].append(origin)
+                continue
+            by_bytes.setdefault(same, item_id)
+            self._write_origin(key, item_id, record)
+            change.attached.append(item_id)
+            if p is None or is_content_name(p[1]):
+                taken.update(dict.fromkeys(_video_keys(f), item_id))
+            cmd.touch()
+        # N1: the copies no item holds (a skipped file's, a same-bytes one's), for the caller to send to the trash
+        change.unused = [rel for rel, rel_key in spare.items() if rel and not self.conn.execute(
+            "SELECT 1 FROM items WHERE rel_key = ?", (rel_key,)).fetchone()]
+        return change
+
+
+def _store_write_origin(self, key, item_id, record):
+    self.conn.execute("INSERT INTO pairings (content_key, item_id, pairing, paired_at) VALUES (?, ?, ?, ?)",
+                      (key, item_id, json.dumps(record, sort_keys=True, ensure_ascii=False), _now()))
+
+
+def _store_take_new(self, cmd, change, prepared, key, record, f, first, rules, works):
+    """One new item of `take_in`: its title (the folder's — `Library/<show>` and a 2.x `HighPriority/<show>` are one —
+    else the record's show, else a new one), its place (`_source_spot`), its origin record, its events. A video with
+    no text copy (K5: its `rel` the video's name, no file made) is 'waiting': in New arrivals even on setup's scan,
+    never placed by a rule, never counted."""
+    rel = prepared[1]
+    waiting = record.get("video_path") is not None and not is_content_name(rel)
+    if waiting:
+        prepared = prepared[:4] + ((None, None, "waiting"),)
+    work = self._source_work(rel, record, cmd, works)
+    tier, where = self._source_spot(cmd, work, rel, f.get("episode"), first and not waiting, waiting)
+    item_id = self._add_rows([prepared + (tier,)], cmd.version)[0]
+    self.conn.execute("UPDATE items SET work_id = ? WHERE id = ?", (work, item_id))
+    self._write_origin(key, item_id, record)
+    self._put(tier, [item_id], where, cmd.version)
+    cmd.touch({tier}, availability=prepared[4][2] == "missing")
+    change.added.append(item_id)
+    if first:
+        cmd.quiet.add(item_id)                       # S1: setup's scan logs nothing (a back-fill's rule)
+    else:
+        cmd.event(item_id, "placed", 0)              # SRC-2: silent, the source's, never explicit
+        if tier == "arrivals" and not waiting:       # Decision 1: the rule places it (after-show by default)
+            self._apply_rule(item_id, record, rules)
+    change.placed[item_id] = self.conn.execute("SELECT tier FROM items WHERE id = ?", (item_id,)).fetchone()[0]
+    return item_id
+
+
+def _video_keys(record):
+    """A record's video as K5 matches it: its key, and its path's key (the pattern a waiting item's Remove writes)."""
+    path = record.get("video_path")
+    return [k for k in (record.get("video_key"), path and path_key(os.path.abspath(path))) if k]
+
+
+def _store_waiting_videos(self):
+    """{video key or path key: item id} of the items waiting for their subtitle (K5)."""
+    out = {}
+    for item_id, text in self.conn.execute(f"SELECT p.item_id, p.pairing FROM pairings p JOIN items i ON "
+                                           f"i.id = p.item_id WHERE i.availability = 'waiting' AND {_ORIGIN_ROW}"):
+        for k in _video_keys(_json_dict(text) or {}):
+            out[k] = item_id
+    return out
+
+
+def _store_fill_gap(self, cmd, item_id, prepared, gaps):
+    """A waiting item's subtitle came (K5): the item takes the copy in place — its id, place and records kept, no
+    event (it was shown already) — and counts from now. -> its id."""
+    self.conn.execute("UPDATE items SET entry = ? WHERE id = ?", (_dumps(prepared[3]), item_id))
+    self._repoint(item_id, prepared[1], prepared[4][0], prepared[4][1])
+    cmd.touch({self.conn.execute("SELECT tier FROM items WHERE id = ?", (item_id,)).fetchone()[0]}, availability=True)
+    for k in [k for k, v in gaps.items() if v == item_id]:
+        del gaps[k]
+    return item_id
+
+
+def _store_source_work(self, rel, record, cmd, cache):
+    """A new copy's title: the work holding its folder key (one title with the 2.x folder of that show), else the one
+    its record's show names (`_work_by_record`: a show hato brought in first), else its folder's (`_folder_work`)."""
+    fk = folder_key_of(rel)
+    if fk is not None:
+        row = self.conn.execute("SELECT id FROM works WHERE folder_key = ? ORDER BY id LIMIT 1", (fk,)).fetchone()
+        if row:
+            return row[0]
+    return self._work_by_record(record) or self._folder_work(rel, None, cmd, cache)
+
+
+def _store_source_spot(self, cmd, work, rel, episode, first, waiting=False):
+    """(tier, where) for a new copy of `work` (see `take_in`). Setup's scan: its show's run in Current, else Current's
+    end. Later: New arrivals — its show's run there, else the end — and the placing rule takes it on from there
+    (`_take_new`, Decision 1); with New arrivals off (no rule runs) its show's run in Current, else the top of it.
+    `waiting` (K5, review H3): New arrivals always, whatever its show's rows (nothing to read or mine)."""
+    rows = self.conn.execute("SELECT id, tier, ord, rel_path FROM items WHERE work_id = ?", (work,)).fetchall()
+    current = [r for r in rows if r[1] in CURRENT]
+    if first:
+        if current:
+            return self._in_run(current, rel, episode)
+        return ("soon", ("end",)) if self._soon_line() is not None else ("now", ("end",))   # the line takes it up
+    if not (waiting or cmd.meta.get("arrivals_on")):
+        return self._in_run(current, rel, episode) if current else ("now", ("top",))
+    run = [r for r in rows if r[1] == "arrivals"]
+    return self._in_run(run, rel, episode) if run else ("arrivals", ("end",))
+
+
+def _store_in_run(self, run, rel, episode):
+    """Within a show's run (S3): before the first row whose episode number (when both have one) or natural-order
+    name is higher, else after the last."""
+    order = sorted(run, key=lambda r: (TIERS[r[1]][3], r[2], r[0]))
+    numbers = self._episodes_of([r[0] for r in order]) if episode is not None else {}
+    name = _natural(rel.rsplit("/", 1)[-1])
+    for r in order:
+        theirs = numbers.get(r[0])
+        later = theirs > episode if theirs is not None else _natural(r[3].rsplit("/", 1)[-1]) > name
+        if later:
+            return (r[1], ("before", r[0]))
+    return (order[-1][1], ("after", order[-1][0]))
+
+
+def _store_episodes_of(self, ids):
+    """{item_id: episode number} from each item's record (hato's `show.episode`, else an origin's K4 `episode`; B1:
+    an origin row only when the item has no other)."""
+    out = {}
+    for chunk in _chunks(list(ids), 500):
+        for item_id, text in self.conn.execute(f"SELECT p.item_id, p.pairing FROM pairings p WHERE p.item_id IN "
+                                               f"({','.join('?' * len(chunk))}) AND {_PREFERRED_ROW}", chunk):
+            record = _json_dict(text) or {}
+            number = record.get("episode") if record.get("producer") == SOURCE_PRODUCER else \
+                (_episode(record) or (None, None))[1]
+            if isinstance(number, (int, float)) and not isinstance(number, bool):
+                out[item_id] = number
+    return out
+
+
+Store._copy_dirty = _store_copy_dirty
+Store._not_a_source = _store_not_a_source
+Store.add_source = _store_add_source
+Store.sources = _store_sources
+Store.stop_source = _store_stop_source
+Store.origins = _store_origins
+Store.excluded = _store_excluded
+Store.items_of_size = _store_items_of_size
+Store.item_of_video_key = _store_item_of_video_key
+Store.update_origin = _store_update_origin
+Store._exclude_origins = _store_exclude_origins
+Store._let_origins_back = _store_let_origins_back
+Store.take_in = _store_take_in
+Store._write_origin = _store_write_origin
+Store._take_new = _store_take_new
+Store._waiting_videos = _store_waiting_videos
+Store._fill_gap = _store_fill_gap
+Store._source_work = _store_source_work
+Store._source_spot = _store_source_spot
+Store._in_run = _store_in_run
+Store._episodes_of = _store_episodes_of
+
+
+# ------------------------------------------------------------------------------------------------ #
 # Repair (§6.9)
 # ------------------------------------------------------------------------------------------------ #
 
@@ -7218,8 +7939,15 @@ def copy_into_finished(data_dir, sources, progress=None, cancel=None):
 def trash_file(data_dir, rel):
     """A user's Remove or Undo-Add: the file to `data/<lang>/.trash/<base>_<stamp><ext>` (never
     `rmtree`), its 30-day clock restarted. Returns the trashed path relative to data/<lang>, or None
-    when there was no file."""
+    when there was no file — or when it isn't Surasura's to move (SRC K1a.6): a path that leads out of the data folder
+    as written, or a copy under the content folder that a folder link leads out of it (the store makes every file
+    there itself: one elsewhere may be a source's original). A 2.x tier folder's links move as they always did. The
+    caller that drops the file's row checks `trash_refused` first."""
+    if not rel or library_rel(data_dir, rel) is None:
+        return None
     src = os.path.join(data_dir, _strip(rel))
+    if not _ours_to_move(data_dir, rel, src):
+        return None
     if not os.path.isfile(src):
         return None
     trash = os.path.join(data_dir, ".trash")
@@ -7235,7 +7963,22 @@ def trash_file(data_dir, rel):
     return f".trash/{name}"
 
 
-def _rename_no_overwrite(src, dst):
+def _ours_to_move(data_dir, rel, src):
+    """`trash_file`'s guard: a copy under the content folder only while its real path stays inside the data folder."""
+    first = _strip(library_rel(data_dir, rel)).split("/", 1)[0]
+    if path_key(first) != path_key(CONTENT_FOLDER):
+        return True
+    real, home = path_key(os.path.realpath(src)), path_key(os.path.realpath(data_dir)).rstrip("/")
+    return real.startswith(home + "/")
+
+
+def trash_refused(data_dir, rel):
+    """Did `trash_file` leave a row's file where it is (None, yet the file is there)? Remove and every Undo of an add
+    then refuse (`StoreConflict`) instead of dropping the row: a file left with no row is found again by the sync."""
+    return bool(rel) and library_rel(data_dir, rel) is not None and os.path.isfile(os.path.join(data_dir, _strip(rel)))
+
+
+def rename_no_overwrite(src, dst):
     """Never overwrite (§6.6): `os.rename` on Windows fails if the target exists; elsewhere a hard link
     then unlink, which fails too; without hard links (FAT, exFAT), check the target is free first."""
     if sys.platform == "win32":
@@ -7251,6 +7994,9 @@ def _rename_no_overwrite(src, dst):
         os.rename(src, dst)
         return
     os.unlink(src)
+
+
+_rename_no_overwrite = rename_no_overwrite        # the name the store's own callers use
 
 
 def put_back(data_dir, trashed_rel, rel):

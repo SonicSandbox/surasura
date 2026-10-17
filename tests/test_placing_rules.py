@@ -1,6 +1,6 @@
 """New arrivals' placing rules (P2.1 row 2.1.6; ✅ Q2-3, HC-N6, Q4-9, ✅ P2.1-2, D30): `placing_rules` = {source:
-target}, empty by default, and only where New arrivals exist (3.0: the store's `arrivals_on`). The shape is the
-store's (L2.2 05 §5.12, agreed with Kura).
+target}, `after-show` for hato and folders by default (Decision 1, lean), and only where New arrivals exist (3.0: the
+store's `arrivals_on`). The shape is the store's (L2.2 05 §5.12, agreed with Kura).
 
 What a wrong answer would cost: an arrival that placed itself without a rule the user turned on would be mined
 (RD-S16: never); a next episode placed anywhere but after its previous one breaks the order the user watches in; a
@@ -37,7 +37,7 @@ def _tier_ids(tier):
 
 
 def test_with_no_rule_arrivals_wait():
-    c.library(arrivals=True)
+    c.library(arrivals=True, placing_rules={})
     first = _arrive(4)
     _place(first["file_id"], "--to", "now")
     second = _arrive(5)
@@ -158,3 +158,61 @@ def test_a_channel_set_to_wait_waits_though_its_program_has_a_place_and_a_place_
     assert rules.rule_for(record, {"placing_rules": {"youtube": "soon", f"youtube:{channel}": "goal"}}) == \
         (f"youtube:{channel}", "goal")
     assert rules.rule_for({"producer": "hato"}, {"placing_rules": {"hato": "graduated"}}) is None
+
+
+# --------------------------------------------------------------------------- #
+# Decision 1 (lean): hato's next episode joins its show, by the rule on by default
+# --------------------------------------------------------------------------- #
+def test_by_default_hatos_next_episode_joins_its_show_and_a_show_never_shown_waits():
+    # why (SRC-2, Decision 1): "if the show exists, it should just pair and be able to be mined": with no
+    # rule written (settings.json without `placing_rules`) a drop of a show in Current goes right after its episode
+    # there; a show never shown still waits in New arrivals; a show only in Finished leads Current (Q4-9)
+    c.library(arrivals=True)
+    four = _arrive(4)
+    assert four["tier"] == "arrivals" and "rule" not in four, "a show never shown: it waits"
+    _place(four["file_id"], "--to", "now", "--position", "2")
+    five = _arrive(5)
+    assert (five["rule"], five["tier"]) == ("after-show", "now")
+    now = _tier_ids("now")
+    assert now.index(five["file_id"]) == now.index(four["file_id"]) + 1
+    other = _arrive(1, show="Another Show", anilist_id=None, tmdb_id=None)    # its own show (the fixture's ids are one)
+    assert other["tier"] == "arrivals" and "rule" not in other
+    _place(other["file_id"], "--to", "now")
+    _ok(h.call("finish", "--file", str(other["file_id"]), "--source", "tester"))
+    two = _arrive(2, show="Another Show", anilist_id=None, tmdb_id=None)
+    assert (two["rule"], two["tier"], two["position"]) == ("after-show", "now", 1)
+
+
+def test_hatos_next_episode_joins_a_show_a_folder_scan_brought_in():
+    # why ("one rule, both channels"): the show's episodes in Current came from a source folder, so their records
+    # name no episode number; hato's drop of that show still joins it (the store's after-show, by its title), right
+    # after its last episode there, as the folder's own next file would
+    import hashlib
+    import os
+    import shutil
+    from app import library_store
+    c.library(arrivals=True)
+    data_dir, _u = c.dirs("ja")
+    src = os.path.join(h.root(), "elsewhere", "Shows")
+    found = []
+    for n in (1, 2):
+        origin = os.path.join(src, "Example Show", f"Example Show - {n:02d}.ja.srt")
+        os.makedirs(os.path.dirname(origin), exist_ok=True)
+        sub_lang, sub_name = c.SUBTITLE["ja"]
+        with open(os.path.join(h.RESOURCES, sub_lang, sub_name), "rb") as f, open(origin, "wb") as out:
+            out.write(f.read() + f"\nscan {n}\n".encode("utf-8"))       # a real subtitle, each its own bytes
+        rel = f"{library_store.CONTENT_FOLDER}/Example Show/{os.path.basename(origin)}"
+        os.makedirs(os.path.join(data_dir, library_store.CONTENT_FOLDER, "Example Show"), exist_ok=True)
+        shutil.copyfile(origin, os.path.join(data_dir, *rel.split("/")))
+        with open(origin, "rb") as f:
+            sha = hashlib.sha256(f.read()).hexdigest()
+        st = os.stat(origin)
+        found.append({"origin": origin, "size": st.st_size, "mtime_ns": st.st_mtime_ns, "sha256": sha,
+                      "show": "Example Show", "rel": rel})
+    with c.store() as s:
+        root = s.add_source(src)
+        scanned = s.take_in(root, found, first=True).added
+    three = _arrive(3)
+    assert three["rule"] == "after-show" and three["tier"] in ("now", "soon")
+    current = _tier_ids("now") + _tier_ids("soon")
+    assert current.index(three["file_id"]) == max(current.index(i) for i in scanned) + 1

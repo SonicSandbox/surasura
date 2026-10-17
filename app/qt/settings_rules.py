@@ -4,14 +4,15 @@ the intent keeper's B2): the placing rules' row, drawn into the slot the page le
 `attach(page)` -> `RulesRow`: called once by whoever mounts the page (P7), after the page is made, beside
 `settings_connect.attach(page)` — never by the page itself.
 
-- **One line per source:** hato's always (at *Wait here* while it has no rule), then each source `placing_rules` names
-  (`<producer>` or `<producer>:<channel id>`, `app/connect/rules.py`), sorted. Each is a `Select` over `rules.TARGETS`
-  in the catalog's words (Wait here · Top of Current · After its show · Soon · Goal · Finished). A target the file
-  holds that is no place (hand-edited) shows as itself and stays until the user picks; a value that is not a
-  {source: target} dict shows hato's line alone. Nothing is written by showing.
+- **One line per source:** hato's and your folders' (`source`) always — `placing_rules` is merged per key with its
+  defaults (`settings_manager.placing_rules`: after its show, unless the file names another place, Wait too) — then
+  each other source it names (`<producer>` or `<producer>:<channel id>`, `app/connect/rules.py`), sorted. Each is a
+  `Select` over `rules.TARGETS` in the catalog's words (Wait here · Top of Current · After its show · Soon · Goal ·
+  Finished). A target the file holds that is no place (hand-edited) shows as itself and stays until the user picks; a
+  value that is not a {source: target} dict shows the defaults. Nothing is written by showing.
 - **A pick** -> `catalog.change(row, settings, language, (source, target))` -> `services.settings.set(changes)`: the one
-  key, only when it moved. *Wait here* takes the source out of the dict (empty = every arrival waits, RD-S16), and its
-  line goes (hato's stays at Wait).
+  key, only when it moved. *Wait here* takes the source out of the dict and its line goes — but hato's and your
+  folders' Wait is written (`"hato": "wait"`: left out, the default would place them) and their lines stay.
 - ***+ rule*** reads, on a worker, the sources the language stores have seen (each pairing's `producer`, and
   `<producer>:<channel id>` where the record names its channel — the store's own rule, `library_store._rule_for`) and
   offers those without a line (hato's is always there), then *Another source…* (typed). A source picked adds a line at
@@ -27,7 +28,7 @@ from PyQt6 import sip
 from PyQt6.QtCore import QEvent, QObject, QPoint, QSize, Qt, QTimer
 from PyQt6.QtWidgets import QHBoxLayout, QLabel, QMenu, QVBoxLayout, QWidget
 
-from app import theme
+from app import settings_manager, theme
 from app.qt import applog, bridge, style
 from app.qt import settings_catalog as catalog
 from app.qt import settings_controls as sc
@@ -36,6 +37,7 @@ from app.qt import settings_strings as S
 ROW_ID = "placing_rules"
 HATO = "hato"
 WAIT = "wait"
+DEFAULTS = tuple(settings_manager.placing_rules())      # the sources with a default (hato, your folders): always a line
 
 
 def _f():
@@ -53,13 +55,12 @@ def attach(page):
 
 # --- reading (pure, or a worker's) ------------------------------------------------------------------------------- #
 def held_rules(settings):
-    """{source: target} as the row shows it: a dict's non-empty string sources, a Wait left out (it is no line);
-    anything else held there (a list, a number, nothing) -> {}."""
-    held = catalog.value_of(settings, ROW_ID)
-    if not isinstance(held, Mapping):
-        return {}
+    """{source: target} as the row shows it: the rules merged per key with the defaults (anything held there that is
+    no dict: the defaults), their non-empty string sources; a Wait left out (it is no line) but a default's (its line
+    stays, at Wait)."""
+    held = catalog.value(catalog.ROW[ROW_ID], settings, "ja")
     return {source: target for source, target in held.items()
-            if isinstance(source, str) and source.strip() and target != WAIT}
+            if isinstance(source, str) and source.strip() and (target != WAIT or source in DEFAULTS)}
 
 
 def sources_of(records):
@@ -246,10 +247,12 @@ class RulesRow(QObject):
 
     # --- showing ------------------------------------------------------------------------------------------------- #
     def _wanted(self):
-        """source -> target the lines should show: hato's, each rule's, and each new line still at Wait."""
+        """source -> target the lines should show: hato's, your folders', each rule's, and each new line still at
+        Wait."""
         rules = held_rules(self.page._settings())
         wanted = {HATO: rules.get(HATO, WAIT)}
-        for source in sorted(s for s in rules if s != HATO):
+        firsts = [s for s in DEFAULTS if s != HATO and s in rules]               # the defaults' lines first
+        for source in firsts + sorted(s for s in rules if s != HATO and s not in firsts):
             wanted[source] = rules[source]
         for source, line in self.lines.items():
             if line.new and source not in wanted:
@@ -323,7 +326,7 @@ class RulesRow(QObject):
     # --- changing ------------------------------------------------------------------------------------------------ #
     def pick(self, source, target):
         """A line's place picked: the one key through the service, only when it moved; *Wait here* takes the source
-        out (its line goes, hato's stays)."""
+        out (its line goes; hato's and your folders' stay, their Wait written)."""
         if not self.alive():
             return
         line = self.lines.get(source)
@@ -341,7 +344,7 @@ class RulesRow(QObject):
             line.retip()
         if changes:
             self.store.set(changes)
-        goes = target == WAIT and source != HATO          # its line leaves: the row's top is what stays put
+        goes = target == WAIT and source not in DEFAULTS   # its line leaves: the row's top is what stays put
         self._sync(anchor=self.page.row(ROW_ID) if goes else control)
 
     def ask_sources(self):

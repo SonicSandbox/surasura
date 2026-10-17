@@ -2432,9 +2432,11 @@ class SetupWizard(QWidget):
 
     def can_add(self, name):
         """Whether page 3's `name` (`ADD_ACTIONS`) acts now: a door while it is available; Files and Folder while the
-        window can copy into its library (+ Add's own rule)."""
+        window can copy into its library (+ Add's own rule); Folder also while the page reads folders itself."""
         if name in ADD_DOORS:
             return self.door(ADD_DOORS[name]) is not None
+        if name == "folder" and self.can_read_folders():
+            return True
         adder = self._adder()
         return adder is not None and bool(adder.entries((name,)))
 
@@ -2442,9 +2444,15 @@ class SetupWizard(QWidget):
         if name in ADD_DOORS:
             self.open_door(ADD_DOORS[name])
             return
+        if name == "folder" and self.can_read_folders():
+            self.pick_folder()          # SRC W1 fix (Decision 2): as *Choose a folder…*, setup's own: Current (SRC-1)
+            return
         adder = self._adder()
         if adder is not None:
-            adder.run(name)
+            if name == "folder":
+                adder.run(name, first=True)       # no folders part: still setup's first look
+            else:
+                adder.run(name)
 
     def _added(self, _text=None):
         """+ Add handed something to the writer: the rows read again (now, and as the library's view moves)."""

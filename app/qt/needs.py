@@ -360,8 +360,16 @@ class NeedsYou(QObject):
         self.cards = page.cards
         self.cards.shown = self.available
         self.cards.action.connect(self.act)
+        heard = getattr(win, "bridge", None)
+        if heard is not None and hasattr(heard, "settings_written"):
+            heard.settings_written.connect(self._settings_written)
 
     # --- what comes in ------------------------------------------------------------------------------------------- #
+    def _settings_written(self, keys):
+        """Connect's switch written (setup's page 5, Settings › Anki): D1's line asks again in its words."""
+        if "connect_enabled" in tuple(keys or ()) and self._alive():
+            self.refresh()
+
     def view_in(self, view):
         old, self.view = self.view, view
         if view is None:
@@ -424,7 +432,8 @@ class NeedsYou(QObject):
             except Exception as e:                  # (a file that can't be read is left as it is: the gather goes on)
                 print(f"Needs you: the seen file wasn't pruned: {e!r}")
             out = service.entries(view, failures, connect, service.read_seen(lang), roots, asks,
-                                  service.read_answered(lang), offers=service.read_offers(lang))
+                                  service.read_answered(lang), offers=service.read_offers(lang),
+                                  cards_on=bool(settings.get("connect_enabled")))
             return asked, tuple(out)
         bridge.run_in_worker(gather, then=self._got, failed=self._gather_failed)
 
@@ -750,20 +759,30 @@ class NeedsYou(QObject):
             self._first_running = False
             ok, why = answer
             told()
-            self._say(strings.NEEDS_FIRST_CARDS_MADE if ok else strings.NEEDS_FIRST_CARDS_NOT_ON.format(why=why))
+            made = strings.NEEDS_FIRST_CARDS_MADE_ON if was_on else strings.NEEDS_FIRST_CARDS_MADE
+            self._say(made if ok else strings.NEEDS_FIRST_CARDS_NOT_ON.format(why=why))
             self.refresh()
         bridge.run_in_worker(run, then=done, failed=failed)
 
+    def _do_first_cards_on(self, entry, line):
+        """*Make cards* with Connect already on (setup's page 5): the same, only the first 20 logged."""
+        self._do_first_cards(entry, line)
+
     def _do_not_now(self, entry, _line):
-        """*Not now*: nothing but the answer (Connect left as it is); never while *Make cards* runs."""
+        """*Not now*: nothing but the answer (Connect left as it is); never while *Make cards* runs. Its line as
+        Connect is: off, where to turn it on; on, that later episodes still get their cards."""
         if self._first_running:
             return
         lang = self.language
+        on = bool((self.win.services.settings.get() or {}).get("connect_enabled"))
 
         def done(_n):
-            self._say(strings.NEEDS_FIRST_CARDS_LATER)
+            self._say(strings.NEEDS_FIRST_CARDS_LATER_ON if on else strings.NEEDS_FIRST_CARDS_LATER)
             self.refresh()
         bridge.run_in_worker(service.answer, lang, [entry.key], then=done, failed=self._failed)
+
+    def _do_not_now_on(self, entry, line):
+        self._do_not_now(entry, line)
 
     # the failures (W3.5's)
     def _do_open_logs(self, _entry, _line):

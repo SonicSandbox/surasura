@@ -201,11 +201,13 @@ class Adder(QObject):
             out.append((name, label, tip))
         return out
 
-    def run(self, name):
+    def run(self, name, first=False):
+        """`name`'s action. `first`: a folder read by setup's own first look (Current, SRC-1) — setup's page 3; + Add
+        outside setup never (D6: a show never shown waits in New arrivals)."""
         if name == "files":
             self.add_files(pick_files(self.shell))
         elif name == "folder":
-            self.read_folder(pick_folder(self.shell))
+            self.read_folder(pick_folder(self.shell), first=first)
         elif name == "paste":
             self.paste()
         elif name in DOORS:

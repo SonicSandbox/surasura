@@ -34,7 +34,7 @@ from app.qt import wizard_strings as S
 from app.services import needs as service
 from app.services import setup_wizard
 from tests.qt.conftest import wait_until
-from tests.qt.test_wizard import FakeApi, go_to, make  # noqa: F401  (`make`: the wizard over a stand-in window)
+from tests.qt.test_wizard import FakeAdder, FakeApi, go_to, make  # noqa: F401  (`make`: the wizard, a stand-in window)
 from tests.test_library_store_support import library, write_manifest
 from tests.test_sources_scan import _drive, _text, _write
 
@@ -354,7 +354,7 @@ def line(qapp):
     """Needs you holding only D1's line, over a window stand-in -> (needs, window, settings, written)."""
     made = []
 
-    def build(on):
+    def build(on, cards_on=False):
         settings = SpySettings(on)
         win = LineWindow(settings)
         area, cards = needs_ui.make_area(win)
@@ -362,7 +362,7 @@ def line(qapp):
         ny = needs_ui.NeedsYou(win, page, "ja")
         written = []
         win.bridge.settings_written.connect(written.append)
-        ny.entries = tuple(service.entries(None, offers={service.FIRST_CARDS}))
+        ny.entries = tuple(service.entries(None, offers={service.FIRST_CARDS}, cards_on=cards_on))
         ny._paint()
         win.show()
         made.append(win)
@@ -496,6 +496,136 @@ def test_connect_not_turned_on_makes_no_cards_and_the_line_stays(line, empty_lib
     assert wait_until(lambda: win.said, 30)
     assert win.said == [strings.NEEDS_FIRST_CARDS_NOT_ON.format(why="the library is busy; try again in a moment")]
     assert logged == [] and _log() == [] and service.read_answered("ja") == frozenset()
+
+
+# --- SRC W1 fix: setup asks about cards once (Decision 1) --------------------------------------------------------- #
+def _tips(entry):
+    return [strings.NEEDS_ACTIONS[name][1] for name in entry.actions]
+
+
+def test_with_cards_already_on_the_line_asks_only_about_these_episodes_and_never_offers_the_switch():
+    """Page 5's *Make cards for me as I watch* said yes (Connect's switch on): the line is the same question, *Make
+    cards for your first 20 episodes? · Not now*, but neither button's words offer to turn cards on — they are on.
+    Page 5 said no (or was skipped): the line offers both, as built."""
+    on = service.entries(_view(25), offers={service.FIRST_CARDS}, cards_on=True)[0]
+    off = service.entries(_view(25), offers={service.FIRST_CARDS})[0]
+    assert on.title == off.title == "Make cards for your first 20 episodes?" and on.key == off.key
+    assert [strings.NEEDS_ACTIONS[a][0] for a in on.actions] == ["Make cards", "Not now"]
+    assert [strings.NEEDS_ACTIONS[a][0] for a in off.actions] == ["Make cards", "Not now"]
+    assert off.actions == ("first_cards", "not_now")
+    assert on.actions != off.actions
+    for tip in _tips(on):
+        assert "from now on" not in tip and "Turn it on" not in tip, tip       # the switch is on: no offer of it
+    assert "from now on" in _tips(off)[0] and "Turn it on" in _tips(off)[1]  # off: the 20 and the switch
+    assert service.entries(_view(25), offers={service.FIRST_CARDS}, answered={service.FIRST_CARDS},
+                           cards_on=True) == []
+
+
+def test_make_cards_with_cards_already_on_logs_the_twenty_and_says_nothing_about_turning_on(line, empty_library,
+                                                                                              monkeypatch):
+    _first_scan(n_shows=1, episodes=6)
+    from app.connect import switch
+    turned = []
+    monkeypatch.setattr(switch, "turn_on", lambda *a, **kw: turned.append(a))
+    ny, win, settings, written = line(on=True, cards_on=True)
+    _answer(ny, "first_cards_on")
+    assert wait_until(lambda: win.said, 30)
+    assert win.said == [strings.NEEDS_FIRST_CARDS_MADE_ON]
+    assert turned == [] and settings.calls == [] and written == []          # Connect left as it was: no write
+    assert [(k, b, e) for _n, _i, k, b, e in _log()] == [("entered_mine_line", "user", 1)] * 6
+    assert service.read_answered("ja") == {service.FIRST_CARDS}
+
+
+def test_not_now_with_cards_already_on_writes_only_its_answer_and_never_says_turn_it_on(line, empty_library):
+    before = _first_scan(n_shows=1, episodes=4)
+    ny, win, settings, written = line(on=True, cards_on=True)
+    calls = []
+    ny.switch_on = lambda *a: calls.append("switch_on")
+    ny.first_cards = lambda *a: calls.append("first_cards")
+    _answer(ny, "not_now_on")
+    assert wait_until(lambda: win.said, 30)
+    assert win.said == [strings.NEEDS_FIRST_CARDS_LATER_ON] and "Turn it on" not in win.said[0]
+    assert calls == [] and settings.calls == [] and written == []
+    assert _log() == [] and _items() == before
+    assert service.read_answered("ja") == {service.FIRST_CARDS}
+
+
+def test_the_line_follows_connects_switch_as_page_five_writes_it(line, empty_library):
+    """The line is offered by page 3's read, before page 5 is answered: once page 5's yes (or Settings › Anki) writes
+    `connect_enabled`, Needs you works the line out again in the switch's words — and back when it goes off."""
+    service.offer("ja")
+    ny, win, settings, _written = line(on=False)
+    ny.read_connect = lambda _lang: None
+    ny.find_offline = lambda *a: []
+    ny.read_asks = lambda: ()
+
+    def actions():
+        return next((e.actions for e in ny.entries if e.kind == service.FIRST_CARDS), None)
+    ny.view_in(_view(25))
+    assert wait_until(lambda: actions() == ("first_cards", "not_now"), 10)
+    settings.data["connect_enabled"] = True                     # page 5's yes, landed
+    win.bridge.settings_written.emit(("connect_enabled",))
+    assert wait_until(lambda: actions() == ("first_cards_on", "not_now_on"), 10)
+    b = next(b for b in ny.cards.buttons(service.FIRST_CARDS) if b.property("action") == "first_cards_on")
+    assert b.toolTip() == strings.NEEDS_ACTIONS["first_cards_on"][1] and not b.isHidden()
+    gathers = ny.gathers
+    win.bridge.settings_written.emit(("words_per_day",))        # another key: nothing worked out again
+    wait_until(lambda: False, 0.3)
+    assert ny.gathers == gathers
+    settings.data["connect_enabled"] = False
+    win.bridge.settings_written.emit(("connect_enabled",))
+    assert wait_until(lambda: actions() == ("first_cards", "not_now"), 10)
+
+
+# --- SRC W1 fix: page 3's two folder buttons land alike (Decision 2) -------------------------------------------- #
+def test_page_threes_add_row_folder_is_setups_own_and_lands_in_current_on_set_up_again(make, monkeypatch):
+    """*Set up again* over a library already in use (New arrivals on): page 3's add row *A folder…* is setup's own
+    picker, as *Choose a folder…* — listed, then read on *Next* by setup's first look — so its shows land at the end of
+    Current, grouped by show (SRC-1), never in New arrivals (+ Add's later look outside setup, D6). + Add's own
+    folder action is never asked."""
+    data_dir, user_files_dir, doc = library("ja", shows=2, episodes=3, loose=0, tiers=("now",))
+    write_manifest(user_files_dir, doc)
+    assert ls.maintain("ja", data_dir, user_files_dir) == ls.EXIT_DONE
+    store = _store()
+    try:
+        store.set_library_options(arrivals_on=True)
+        assert store.meta().get("arrivals_on")
+        had = [rel for _i, _t, _o, rel in store.conn.execute("SELECT id, tier, ord, rel_path FROM items")]
+    finally:
+        store.close()
+    folder = _folder("anime", SHOWS)
+    looks = []
+    real_scan = sources.scan
+
+    def scan(store, language, root, **kw):
+        looks.append(kw.get("first"))
+        return real_scan(store, language, root, **kw)
+    monkeypatch.setattr(sources, "scan", scan)
+    wiz, shell, *_ = make(api=SourcesApi())
+    adder = shell.adder = FakeAdder()
+    go_to(wiz, "shows")
+    page = wiz.page
+    page.entered()
+    button = page.add_buttons["folder"]
+    assert not button.isHidden() and button.toolTip()
+    wiz.pick_dialog = lambda _title, _start: folder
+    QTest.mouseClick(button, Qt.MouseButton.LeftButton)
+    assert wait_until(lambda: page.folders == [os.path.normpath(folder)], 10)
+    assert adder.ran == [], "setup's own picker, never + Add's later look"
+    wiz.next()
+    assert wait_until(lambda: wiz.reading is None, 30)
+    assert looks == [True]                                          # setup's first look
+    items = _items()
+    new = [(tier, ord_, rel) for _i, tier, ord_, rel in items if rel not in had]
+    assert len(new) == sum(SHOWS.values())
+    assert {tier for tier, _o, _r in new} <= {"now", "soon"}, "Current, never New arrivals"
+    rank = {"now": 0, "soon": 1}
+    current = [rel for tier, _o, rel in sorted(((t, o, r) for _i, t, o, r in items if t in rank),
+                                               key=lambda n: (rank[n[0]], n[1]))]
+    assert set(current[-len(new):]) == {rel for _t, _o, rel in new}, "at the end of Current"
+    shows = [rel.split("/")[1] for rel in current[-len(new):]]
+    runs = [s for i, s in enumerate(shows) if i == 0 or shows[i - 1] != s]
+    assert sorted(runs) == sorted(SHOWS), "grouped by show: one run each"
 
 
 def test_the_folders_and_the_cards_line_never_touch_the_network(empty_library, monkeypatch):

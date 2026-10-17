@@ -1018,6 +1018,11 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
                                   "• Change it any time: Settings › Anki"),
     "not_now": ("Not now", "Make no cards for them now. Nothing else changes.\n"
                            "• Turn it on any time: Settings › Anki"),
+    # … the same line once setup's page 5 turned *Make cards for me as I watch* on: it asks only about these episodes
+    "first_cards_on": ("Make cards", "Make cards for these episodes now.\n"
+                                     "• What comes into your top 20 later gets its cards already: Settings › Anki"),
+    "not_now_on": ("Not now", "Make no cards for these episodes. Nothing else changes:\n"
+                              "• What comes into your top 20 later still gets its cards"),
     "mine_text_only": ("Mine the text only", "Make its cards from the subtitles alone, with no picture or audio"),
     "open_logs": ("Open the logs folder", "Open the folder where Surasura keeps its logs, to look at them or send them"),
     "save_logs": ("Save logs to a file…", "Save the last week's logs into one zip file you can send"),
@@ -1041,6 +1046,8 @@ NEEDS_LINKING_ONE = "Linking {label}'s video"
 NEEDS_KEPT = "Kept: their words still count"
 NEEDS_FIRST_CARDS_MADE = "Cards are made by themselves from now on · change it in Settings › Anki"
 NEEDS_FIRST_CARDS_LATER = "Turn it on any time in Settings › Anki"
+NEEDS_FIRST_CARDS_MADE_ON = "Cards are being made for them"
+NEEDS_FIRST_CARDS_LATER_ON = "No cards for them · what comes into your top 20 later still gets its cards"
 NEEDS_FIRST_CARDS_NOT_ON = "No cards were made: {why}"
 NEEDS_FIRST_CARDS_AUTOMATION_OFF = "automatic actions are off in Settings; turn them on, then ask again"
 NEEDS_ITS_NEW = "{name} joins your library as a new file"

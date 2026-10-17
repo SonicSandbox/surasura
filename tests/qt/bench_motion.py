@@ -1,6 +1,6 @@
 """The motion's budgets on this machine (M2.1 row 7; the window's spec 07 §7.1 *Budgets*, BRIEF rule 12).
 
-    python tests/qt/bench_motion.py [--rounds 12] [--scale 150] [--json OUT]
+    python tests/qt/bench_motion.py [--rounds 12] [--scales 100,125,150,175,200,250] [--reduced] [--json OUT]
 
 The shell, on screen without taking the keyboard, at `--scale` % (`QT_SCALE_FACTOR` over this desktop's own scaling),
 in a fresh process under a temp `SURASURA_TEST_ROOT` (set and checked: the shell writes `window_state.json` at close).
@@ -14,6 +14,13 @@ scrolled to its middle), after the first paint:
 then 3 s with nothing moving. The HUD measures every animation frame (the motion clock's work + the paint and flush
 that follow it), tagged by what moved, every GUI-thread step, and the late ticks with their causes.
 
+**M4.1 row 2:** the HUD now sees every window's frames — the lift's own window above the main one (M2.1-3), whose
+frames move in Windows' compositor and paint nothing — so the per-kind tags come back at every scale (W3.1a timed-1
+found them empty at 125-200 %). Each kind's openings run one after another as one moment (`open-<kind>`, the toast
+`toast-rise`), the clock's wake-ups counted once it is still after each; per moment the frames by window, the slow
+frames with their causes, the steps' typical worst (`bench_moments`). `--scales` runs each scale in its own child at
+true scale (a fresh test root with its own APPDATA / LOCALAPPDATA); `--reduced` sets `app_motion` = reduced there.
+
 **This desktop's targets** are the laptop's budgets ÷ 2.5 (charter S8, as W2.1): an overlay opening ≤ 3.2 ms a frame
 (p95), never over 6.4 ms; no GUI-thread step over 1.6 ms; no clock wake-up while nothing moves. The laptop's own budget
 (≤ 8 / 16 / 4 ms at 150 %) is proven only by its own run, with Sonic's go. Run under `locks/with-lock.sh timed`.
@@ -21,12 +28,15 @@ that follow it), tagged by what moved, every GUI-thread step, and the late ticks
 import argparse
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+from tests.qt import bench_moments                                    # noqa: E402
+
 DESKTOP = {"frame_p95": 3.2, "frame_max": 6.4, "step": 1.6}          # the laptop's 8 / 16 / 4 ÷ 2.5
 ROWS = 2000
 JA = ["進撃の巨人", "鬼滅の刃", "葬送のフリーレン", "薬屋のひとりごと", "ぼっち・ざ・ろっく！", "チェンソーマン", "呪術廻戦",
@@ -141,6 +151,8 @@ def child(rounds):
     def exercise(probe):
         window, meter = probe.window, probe.hud
         meters.append(meter)
+        bench_moments.apply_reduced()
+        moments = bench_moments.Moments(meter, tag=False)      # (the tags stay the kinds, as M2.1 read them)
         # where a frame's time goes: the ghost's own paint and the list's, as spans (the rest is the flush and the rest
         # of the window repainted under the ghost)
         ghost_paint = motion._Ghost.paintEvent
@@ -192,12 +204,15 @@ def child(rounds):
             "fade": (StandIn(central, "fade", 0), QRect(0, 0, w, h)),
         }
         steps = []
-        for _round in range(rounds):
-            for kind, (widget, rect) in stands.items():
+        for kind, (widget, rect) in stands.items():              # M4.1: a kind's openings together, one moment
+            for _round in range(rounds):
                 steps.append(("open", kind, widget, rect))
                 steps.append(("close", kind, widget, None))
+            steps.append(("still", f"open-{kind}", None, None))
+        for _round in range(rounds):
             steps.append(("toast", "rise", None, None))
             steps.append(("toast-close", "rise", None, None))
+        steps.append(("still", "toast-rise", None, None))
         # a person clicks in the window in front: the lift is used only then (the final adversary's first finding).
         # The bench shows it without activation; Windows may refuse a background process the foreground, so the bench
         # then says so and takes the lifted path as in front (the lift paints and moves the same; only its stacking
@@ -218,17 +233,23 @@ def child(rounds):
             if i >= len(steps):
                 return settle()
             what, kind, widget, rect = steps[i]
+            if what == "still":
+                moments.still(kind, lambda: run(i + 1))
+                return
             if what == "open":
                 widget.setGeometry(rect)
+                moments.begin(f"open-{kind}")
                 meter.tag = kind
                 motion.open_overlay(widget, kind, widget.shadow_name, on_done=lambda: setattr(meter, "tag", None))
                 wait = motion.duration(motion.HOW[kind][0]) + 120
             elif what == "close":
+                moments.end()
                 meter.tag = None
                 with meter.span("close"):
                     widget.hide()
                 wait = 80
             elif what == "toast":
+                moments.begin("toast-rise")
                 meter.tag = "toast"
                 window.toasts.show("進撃の巨人 → Soon · #26, after the first 25 files", undo=lambda: None)
                 op = motion.opening_of(window.toasts.card)
@@ -236,6 +257,7 @@ def child(rounds):
                     op.on_done = lambda: setattr(meter, "tag", None)
                 wait = motion.duration("toast-rise") + 120
             else:
+                moments.end()
                 meter.tag = None
                 window.toasts.close()
                 wait = 80
@@ -262,6 +284,7 @@ def child(rounds):
             results["speed_ms"] = speed
             results["speed_ms_after"] = speed_ms()
             probe.result["bench"] = results
+            probe.result["moments"] = moments.summary()
             probe._finish()
 
         QTimer.singleShot(300, begin)                # (activation comes through the loop)
@@ -270,14 +293,16 @@ def child(rounds):
 
 
 # --- the parent: one fresh process per scale ------------------------------------------------------------------------ #
-def one_scale(scale, rounds):
-    root = tempfile.mkdtemp(prefix="m21-bench-")
-    shutil.copytree(os.path.join(ROOT, "app", "assets"), os.path.join(root, "app", "assets"))
+def one_scale(scale, rounds, root=None, env=None):
+    """One child at `scale` %: in `root` (with its env from `bench_moments.scaled_runs`), or a temp root of its own."""
+    if root is None:
+        work = tempfile.mkdtemp(prefix="m21-bench-")
+        root, extra = bench_moments.fresh_root(work, assets=True)
+        env = bench_moments.child_env(scale, extra)
     probe = os.path.join(root, "probe.json")
-    system = _system_scale()
-    env = dict(os.environ, SURASURA_TEST_ROOT=root, SURASURA_SHELL_PROBE=probe, SURASURA_SHELL_PROBE_IDLE="900",
-               SURASURA_HUD="1", SURASURA_INSTANCE_NAME=f"surasura-bench-{os.getpid()}-{os.path.basename(root)}",
-               QT_SCALE_FACTOR=f"{scale / 100 / system:.6f}", QT_ENABLE_HIGHDPI_SCALING="1")
+    env = dict(env, SURASURA_SHELL_PROBE=probe, SURASURA_SHELL_PROBE_IDLE="900", SURASURA_HUD="1",
+               SURASURA_INSTANCE_NAME=f"surasura-bench-{os.getpid()}-{os.path.basename(os.path.dirname(root))}",
+               QT_ENABLE_HIGHDPI_SCALING="1")
     for k in ("QT_QPA_PLATFORM", "SURASURA_FREEZE_MOTION", "SURASURA_SHELL_PROBE_EXERCISE", "SURASURA_GC_FREEZE"):
         env.pop(k, None)
     proc = subprocess.run([sys.executable, os.path.abspath(__file__), "--child", "--rounds", str(rounds)], cwd=root,
@@ -313,27 +338,28 @@ def verdict(r):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--rounds", type=int, default=12)
-    ap.add_argument("--scale", default="150", help="one or more, comma-separated: 150,200")
-    ap.add_argument("--json", default="")
+    ap.add_argument("--scale", default=None, help="the old flag: one or more, comma-separated (as --scales)")
     ap.add_argument("--repeat", type=int, default=1, help="runs per scale (this desktop's processes differ in speed)")
+    bench_moments.add_arguments(ap)
     ap.add_argument("--child", action="store_true", help=argparse.SUPPRESS)
     args = ap.parse_args()
     if args.child:
         return child(args.rounds)
-    out = []
-    for s in [int(x) for x in args.scale.split(",") if x.strip()] * args.repeat:
-        r = one_scale(s, args.rounds)
+
+    def one_run(scale, root, env, i):
+        r = one_scale(scale, args.rounds, root, env)
         if "error" in r:
             print(json.dumps(r))
-            out.append(r)
-            continue
+            return r
         v = verdict(r)
         print("SCALE " + json.dumps(v), flush=True)
-        out.append({"verdict": v, "raw": r})
-    if args.json:
-        with open(args.json, "w", encoding="utf-8") as f:
-            json.dump(out, f, indent=1)
-    ok = all("verdict" in o and o["verdict"]["desktop_targets_met"] for o in out)
+        return {"verdict": v, "raw": r, "dpr": v["dpr"], "moments": r.get("moments"),
+                "extra": {"frames_by_kind": {k: [x["n"], x["p95_ms"], x["max_ms"]] for k, x in v["frames_by_kind"].items()},
+                          "windows": r.get("hud", {}).get("windows")}}
+    scales = bench_moments.parse_scales(args.scale or args.scales)
+    out = bench_moments.scaled_runs("bench_motion", scales, args.repeat, args.reduced, one_run, args.out,
+                                    meta={"rounds": args.rounds})
+    ok = all("verdict" in o and o["verdict"]["desktop_targets_met"] for o in out["results"])
     print("BENCH " + ("MEETS THE DESKTOP TARGETS" if ok else "MISSES A DESKTOP TARGET"))
     return 0 if ok else 1
 

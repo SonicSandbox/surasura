@@ -3,7 +3,14 @@ takes, measured in the running window.
 
 - **Steps:** every stretch the GUI thread spends between waking and going back to wait (the event dispatcher's *awake*
   → *aboutToBlock*): one stretch holds every event it handled, so "no stretch over 4 ms" is "no step over 4 ms".
-- **Frames:** each update of the window (its update request, painted and flushed).
+- **Frames:** each update of a window (its update request or expose, painted and flushed) — **every window's (M4.1):**
+  the main window's, the lift's (`motion._Lift`), the drag ghost's and every top-level popup's, each frame tagged with
+  its window's kind (`main` · `lift` · `ghost` · `popup` · `window`). Seen through one application-wide event filter
+  (about 1.5 µs an event on this desktop while the HUD is on); a frame ends where the next event that can never come
+  inside a paint begins (a timer, a queued call, input, another frame), or where the loop goes back to wait. **A frame
+  over `SLOW_MS` is given a cause** (`frame_cause`): Python's collector, or the late tick over it explained by
+  `classify` (another thread, the machine, the timer, unexplained), else its own paint / flush (`paint`) or the clock's
+  work in it (`step`).
 - **Spans:** anything a view wraps in `hud.span(name)` (W2.2's painters), by name.
 - **Late ticks:** a precise 2 ms timer, and how late each tick came. A step's own clock starts only once the GUI thread
   holds Python's lock again, so a wait *for* the lock (a busy worker thread) never shows as a long step; a tick that
@@ -11,6 +18,10 @@ takes, measured in the running window.
   Python's collector, the GUI thread, the other threads and the machine did in that gap — and given a cause (`classify`).
 - **Animation frames (M2.1):** the motion clock's frames — how late each came and its work — and, added to the paint
   that follows it, each animation frame's whole cost; a measuring script can tag them (`tag`) to read one motion apart.
+  M4.1: the work lands in the frame that paints it, in whichever window — the first frame to begin before the clock's
+  next one, or the one painted inside it (a `repaint()`: its paint is in the work); a clock frame that paints in no
+  widget (the lift and a top-level popup move and fade in Windows' compositor,
+  the ghost glides as a window) is a frame of its own, of the window that moved.
 - **Start-up phases (M2.1 row D):** with the probe on, `mark(name)` records where the first frame's time goes (each
   phase's wall time, the process's CPU, page faults, bytes read, the machine's idle share).
 
@@ -27,8 +38,10 @@ import threading
 import time
 from contextlib import contextmanager
 
+from PyQt6 import sip
 from PyQt6.QtCore import QAbstractEventDispatcher, QAbstractNativeEventFilter, QEvent, QObject, Qt, QTimer
-from PyQt6.QtWidgets import QApplication, QLabel
+from PyQt6.QtGui import QGuiApplication, QWindow
+from PyQt6.QtWidgets import QApplication, QLabel, QWidget
 
 from app import theme
 from app.qt import strings, style
@@ -36,6 +49,16 @@ from app.qt import strings, style
 STEP_BUDGET_MS = 4.0
 TICK_MS = 2
 LONG_MS = 20.0                                   # a stretch this long is explained (row D)
+SLOW_MS = 6.4                                    # M4.1's bar on this desktop: the laptop's 16 ms ÷ 2.5 — a frame over it
+                                                 # is given a cause
+KEEP = 20000                                     # frames and steps kept with their times (a bench may keep more)
+_E = QEvent.Type
+_FRAME_EVENTS = (_E.UpdateRequest, _E.Expose)
+# events that never come inside a paint: one beginning ends the frame being painted (its paint and flush are done)
+_ENDS = frozenset((_E.UpdateRequest, _E.Expose, _E.Timer, _E.MetaCall, _E.MouseMove, _E.MouseButtonPress,
+                   _E.MouseButtonRelease, _E.MouseButtonDblClick, _E.Wheel, _E.KeyPress, _E.KeyRelease,
+                   _E.DeferredDelete))
+_POPUPS = (Qt.WindowType.Popup, Qt.WindowType.ToolTip, Qt.WindowType.Tool, Qt.WindowType.SplashScreen)
 
 
 def p95(values):
@@ -57,7 +80,6 @@ class Hud(QObject):
         self._tick_at = None
         self._discard = False
         self._awake_at = None
-        self._frame_at = None
         self.started = False
         self.label = None
         self._overlay = overlay
@@ -68,18 +90,30 @@ class Hud(QObject):
         self._tick_sample = None
         self.anim_ticks = []                       # (late, work) of each motion-clock frame, ms
         self.anim_frames = []                      # each animation frame's whole cost: the clock's work + its paint
-        self._pending_work = None
         self.tag = None                            # a measuring script's label for the frames now (e.g. "pop")
         self.tagged = {}
         self.long = []                             # row D: each stretch over LONG_MS — its messages and sampled stacks
         self.sampler = None
+        # M4.1: every window's frames, with their times — {"window", "name", "t0", "t1", "paint_ms", "work_ms", "ms",
+        # "tag", "cause"} (t0 the clock frame's start when it carried one; "cause" set for a slow frame by
+        # `explain_frames`) — and each counted step's (start, ms); a bench reads them by time
+        self.frame_log = []
+        self.step_log = []
+        self.keep = KEEP
+        self.late_spans = []                       # (before, now, record) of each explained late tick
+        self._open = None                          # the frame being painted now
+        self._pending = None                       # a clock frame not yet painted: (work, late, tag, start, end)
+        self._sync = None                          # a window painted inside the clock's frame (a `repaint()`)
+        self._clock = None
+        self._app = None
 
     # --- on / off ----------------------------------------------------------------------------------------------- #
     def start(self):
         dispatcher = QAbstractEventDispatcher.instance()
         dispatcher.awake.connect(self._awake)
         dispatcher.aboutToBlock.connect(self._block)
-        self.window.installEventFilter(self)
+        self._app = QApplication.instance()
+        self._app.installEventFilter(self)         # every window's frames (M4.1), not the main window's alone
         self._ticker = QTimer(self)
         self._ticker.setTimerType(Qt.TimerType.PreciseTimer)
         self._ticker.setInterval(TICK_MS)
@@ -90,7 +124,8 @@ class Hud(QObject):
         if os.environ.get("SURASURA_HUD_SAMPLE") == "1":
             self.sampler = StallSampler(self).start()
         from app.qt import motion
-        motion.clock().on_frame_done = self._clock_frame
+        self._clock = motion.clock()
+        self._clock.on_frame_done = self._clock_frame
         self._ticker.start()
         if self._overlay:
             self.label = QLabel(self.window)
@@ -115,7 +150,9 @@ class Hud(QObject):
             dispatcher.aboutToBlock.disconnect(self._block)
         except (TypeError, RuntimeError):
             pass
-        self.window.removeEventFilter(self)
+        if self._app is not None:
+            self._app.removeEventFilter(self)
+            self._app = None
         self._ticker.stop()
         if self.gcwatch is not None:
             self.gcwatch.remove()
@@ -155,11 +192,22 @@ class Hud(QObject):
         rec["cause"] = classify(rec)
         self.explained.append(rec)
         del self.explained[:-500]
+        self.late_spans.append((before, now, rec))      # M4.1: a slow frame under it reads its counters
+        del self.late_spans[:-self.keep]
 
     def _clock_frame(self, late, work):
         self.anim_ticks.append((late, work))
         del self.anim_ticks[:-5000]
-        self._pending_work = (self._pending_work or 0.0) + work
+        now = time.perf_counter()
+        if self._pending is not None:              # the clock's last frame painted nowhere before this one came
+            self._paintless()
+        if self._sync is not None:                 # it painted inside itself (`repaint()`): that window's frame, now —
+            kind, name, p0 = self._sync            # its paint and flush are inside the work
+            self._sync = None
+            paint = min(work, (now - p0) * 1000)
+            self._record(kind, name, now - work / 1000.0, now, paint, work - paint, self.tag)
+            return
+        self._pending = (work, late, self.tag, now - work / 1000.0, now)
 
     # --- measuring ---------------------------------------------------------------------------------------------- #
     def _awake(self):
@@ -169,9 +217,13 @@ class Hud(QObject):
             self._awake_at = time.perf_counter()
 
     def _block(self):
+        now = time.perf_counter()
+        if self._open is not None:                 # the loop goes back to wait: the frame painted is done
+            self._close(now)
+        if self._pending is not None and self._moving() is not None:
+            self._paintless()                      # the lift, the ghost or a popup moved in Windows: nothing to paint
         if self._awake_at is None:
             return
-        now = time.perf_counter()
         started = self._awake_at
         ms = (now - started) * 1000
         self._awake_at = None
@@ -183,6 +235,8 @@ class Hud(QObject):
             if ms > STEP_BUDGET_MS:
                 self.over.append((round(ms, 2), now))
             del self.steps[:-5000]
+            self.step_log.append((started, ms))
+            del self.step_log[:-self.keep]
             if ms > LONG_MS and len(self.long) < 60:
                 rec = {"at_ms": round((started - self.ignore_before) * 1000), "ms": round(ms, 1)}
                 if getattr(self, "messages", None) is not None:
@@ -191,25 +245,135 @@ class Hud(QObject):
                     rec["stacks"] = self.sampler.take(started)
                 self.long.append(rec)
 
+    # --- every window's frames (M4.1) -------------------------------------------------------------------------- #
     def eventFilter(self, obj, event):
-        if obj is self.window and event.type() == QEvent.Type.UpdateRequest:
-            self._frame_at = time.perf_counter()
-            QTimer.singleShot(0, self._frame_done)
+        t = event.type()
+        if t in _ENDS:                             # (one test a call: this filter sees every event of the app)
+            now = time.perf_counter()
+            if self._open is not None:
+                self._close(now)
+            if t in _FRAME_EVENTS:
+                kind = self._kind(obj, t)
+                if kind is not None:
+                    self._begin(kind, obj, now)
         return False
 
+    def _kind(self, obj, t):
+        """The kind of window a frame event paints, or None (not a window's frame)."""
+        if obj is self.window:
+            return "main"
+        if isinstance(obj, QWidget):
+            return self.window_kind(obj) if t == _E.UpdateRequest and obj.isWindow() else None
+        if isinstance(obj, QWindow):
+            if obj.objectName() == "motionLift":
+                return "lift"
+            if t == _E.Expose and obj.isExposed():     # a widget window's first paint (its show) comes as an expose
+                w = _widget_of(obj)
+                return self.window_kind(w) if w is not None else "window"
+        return None
+
+    def window_kind(self, w):
+        """main · ghost (the drag's lifted row) · popup (menus, tooltips, any popup or tool window) · window."""
+        if w is self.window or _same(w, self.window):
+            return "main"
+        if w.objectName() == "dragghost":
+            return "ghost"
+        return "popup" if w.windowType() in _POPUPS else "window"
+
+    def _begin(self, kind, obj, now):
+        if self._clock is not None and self._clock._frame_now is not None:
+            if self._sync is None:                 # inside the clock's frame: part of its work (closed with it)
+                self._sync = (kind, _name(obj), now)
+            return
+        work = None
+        t0, tag = now, self.tag
+        if self._pending is not None:              # the clock's frame lands in the frame that paints it, any window's
+            work, _late, tag, t0, _end = self._pending
+            self._pending = None
+        self._open = (kind, _name(obj), now, t0, work, tag)
+        QTimer.singleShot(0, self._frame_done)     # (a loop that never waits: its next turn ends it)
+
     def _frame_done(self):
-        if self._frame_at is not None:
-            ms = (time.perf_counter() - self._frame_at) * 1000
-            self.frames.append(ms)
-            self._frame_at = None
-            del self.frames[:-5000]
-            if self._pending_work is not None:            # a motion-clock frame painted: its whole cost
-                total = ms + self._pending_work
-                self._pending_work = None
-                self.anim_frames.append(total)
-                del self.anim_frames[:-5000]
-                if self.tag:
-                    self.tagged.setdefault(self.tag, []).append(total)
+        if self._open is not None:
+            self._close(time.perf_counter())
+
+    def _close(self, now):
+        kind, name, p0, t0, work, tag = self._open
+        self._open = None
+        self._record(kind, name, t0, now, (now - p0) * 1000, work, tag)
+
+    def _paintless(self):
+        """The pending clock frame as a frame of its own: what it moved was a window (Windows composes it)."""
+        work, _late, tag, t0, t1 = self._pending
+        self._pending = None
+        self._record(self._moving() or "none", "", t0, t1, 0.0, work, tag)
+
+    def _moving(self):
+        """The kind of window a paintless clock frame moved — a lift, the drag ghost or a popup shown — else None."""
+        found = None
+        for w in QGuiApplication.topLevelWindows():
+            if not w.isVisible():
+                continue
+            name = w.objectName()
+            if name == "motionLift":
+                return "lift"
+            if name == "dragghostWindow":
+                found = "ghost"
+            elif found is None and w.type() in _POPUPS:
+                found = "popup"
+        return found
+
+    def _record(self, kind, name, t0, t1, paint, work, tag):
+        total = paint + (work or 0.0)
+        self.frame_log.append({"window": kind, "name": name, "t0": t0, "t1": t1, "paint_ms": round(paint, 3),
+                               "work_ms": None if work is None else round(work, 3), "ms": round(total, 3), "tag": tag,
+                               "cause": None})
+        del self.frame_log[:-self.keep]
+        if t0 < self.ignore_before:
+            return
+        self.frames.append(total)
+        del self.frames[:-5000]
+        if work is not None:                       # a motion-clock frame: its whole cost
+            self.anim_frames.append(total)
+            del self.anim_frames[:-5000]
+            if tag:
+                self.tagged.setdefault(tag, []).append(total)
+
+    def frame_cause(self, rec):
+        """Why a frame over SLOW_MS took its time (M4.1's bar): `gc` when Python's collector ran for half of it; else the
+        late tick over it as `classify` reads its counters — `other-thread`, `machine`, `timer` or `unexplained` (the
+        tick's wait behind this very frame set aside: that wait is the frame itself); else the frame's own — `paint` (its
+        paint and flush) or `step` (the clock's work in it). None for a frame within the bar."""
+        ms = rec["ms"]
+        if ms <= SLOW_MS:
+            return None
+        t0, t1 = rec["t0"], rec["t1"]
+        if self.gcwatch is not None and self.gcwatch.within(t0, t1)[0] >= 0.5 * ms:
+            return "gc"
+        best, overlap = None, 0.0
+        for before, now, tick in reversed(self.late_spans):
+            if now < t0:
+                break
+            o = min(now, t1) - max(before, t0)
+            if o > overlap:
+                best, overlap = tick, o
+        if best is not None:
+            cause = classify(dict(best, in_stretch_ms=0.0, gc_ms=0.0))
+            if cause in ("other-thread", "machine", "timer", "unexplained"):
+                return cause
+        return "paint" if rec["paint_ms"] >= (rec["work_ms"] or 0.0) else "step"
+
+    def explain_frames(self):
+        """Each slow frame given its cause (once the late tick after it has come: a bench calls it before it reads).
+        -> the frame log."""
+        if self._open is not None:
+            self._close(time.perf_counter())
+        if self._pending is not None:
+            self._paintless()
+        for rec in self.frame_log:
+            if rec["cause"] is None and rec["ms"] > SLOW_MS:
+                rec["cause"] = self.frame_cause(rec)
+        return self.frame_log
 
     def discard_current(self):
         """Leave the stretch running now out of the count (the measuring script calls it around its own set-up)."""
@@ -251,6 +415,18 @@ class Hud(QObject):
         out["tagged"] = {k: {"n": len(v), "p95_ms": round(p95(v), 2), "max_ms": round(max(v), 2)}
                          for k, v in self.tagged.items()}
         out["long"] = self.long[-30:]
+        frames = [f for f in self.explain_frames() if f["t0"] >= self.ignore_before]
+        windows = {}
+        for f in frames:
+            windows.setdefault(f["window"], []).append(f["ms"])
+        out["windows"] = {k: {"n": len(v), "p95_ms": round(p95(v), 2), "max_ms": round(max(v), 2)}
+                          for k, v in windows.items()}
+        slow = sorted((f for f in frames if f["ms"] > SLOW_MS), key=lambda f: -f["ms"])
+        by_cause = {}
+        for f in slow:
+            by_cause[f["cause"]] = by_cause.get(f["cause"], 0) + 1
+        out["slow_frames"] = {"over_ms": SLOW_MS, "n": len(slow), "causes": by_cause,
+                              "worst": [slow_line(f, self.ignore_before) for f in slow[:20]]}
         return out
 
     def _show(self):
@@ -264,6 +440,37 @@ class Hud(QObject):
         self.label.move(self.window.width() - self.label.width() - 8, 8)
         self.label.raise_()
         self.label.show()
+
+
+def slow_line(f, since=0.0):
+    """One slow frame for a report: its time, window, cause, what moved (the tag) and where its time went."""
+    return {"ms": round(f["ms"], 2), "window": f["window"], "name": f["name"], "cause": f["cause"], "tag": f["tag"],
+            "paint_ms": round(f["paint_ms"], 2), "work_ms": None if f["work_ms"] is None else round(f["work_ms"], 2),
+            "at_ms": round((f["t0"] - since) * 1000)}
+
+
+def _name(obj):
+    try:
+        return obj.objectName()
+    except RuntimeError:
+        return ""
+
+
+def _same(a, b):
+    """The same Qt object (a wrapper made afresh for an object Qt made is another Python object)."""
+    try:
+        return a is b or (a is not None and b is not None and sip.unwrapinstance(a) == sip.unwrapinstance(b))
+    except (TypeError, RuntimeError):
+        return False
+
+
+def _widget_of(window):
+    """The top-level widget a widget window (`QWidgetWindow`) shows, or None."""
+    for w in QApplication.topLevelWidgets():
+        handle = w.windowHandle()
+        if handle is not None and _same(handle, window):
+            return w
+    return None
 
 
 def wanted(argv=None):

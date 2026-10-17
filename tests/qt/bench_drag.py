@@ -1,28 +1,40 @@
-"""The drag's budgets on this machine (W3.1a; ORDER W3.1a: a frame <= 8 ms at p95 and never over 16 ms, no GUI-thread
-step over 4 ms, drop -> numbers <= 50 ms; RP-6).
+"""The drag's moments and the other moves on this machine (W3.1a; ORDER W3.1a: a frame <= 8 ms at p95 and never over
+16 ms, no GUI-thread step over 4 ms, drop -> numbers <= 50 ms; RP-6) — and, since M4.1 row 2, every moment of the
+RUNBOOK's list that a move, an arrival or a toast makes, judged against the bar on this desktop (`bench_moments.BAR`).
 
-    python tests/qt/bench_drag.py [--files 20000] [--runs 2] [--cycles 4] [--scale 150] [--out OUT.json]
+    python tests/qt/bench_drag.py [--files 20000] [--runs 2] [--cycles 10] [--scales 100,125,150,175,200,250]
+                                  [--reduced] [--json OUT.json]
 
 Not collected by pytest (no `test_` prefix). A timed run: start it through `locks/with-lock.sh timed …` from the copy.
 
-The parent builds the window's synthetic seed (`bench_scroll.save_seed`) and a Generate-shaped plan for it; each run is
-a child process on Windows' own platform, shown without taking the keyboard, in a temp `SURASURA_TEST_ROOT`, at the
-TRUE `--scale` % (`QT_SCALE_FACTOR` = scale / this desktop's own scaling; each run records its `dpr`). Motion runs (not
-frozen). The child's store is the stand-in, with the real `moves.Numbers` over the plan and a writer that, like the
-real one, works out the numbers on its own thread before it writes (into the stand-in). The HUD watches every
-GUI-thread step and frame after the first paint while, `--cycles` times, a drag goes through the window's own mouse
-path (the events `tests/qt/test_drag.py` sends):
-  1. pick-up: a press on a row's title, then the 6 px that lift it (the ghost made and shown), the hand drifting;
-  2. gap slide: the hand moves down ~7 rows at 60 Hz, the rows part under it;
-  3. auto-scroll: the hand rests at the list's bottom edge 1.5 s (the list scrolls under it), then comes back up;
-  4. drop: the release over a row; then the drop's glide home and the numbers (the moved row's *N new* in the window).
-Printed per run and as the median of the runs, each phase on its own.
+The parent builds the window's synthetic seed (`bench_scroll.save_seed`) and a Generate-shaped plan for it; each scale
+× run is a child process on Windows' own platform, shown without taking the keyboard, in a fresh temp
+`SURASURA_TEST_ROOT` with its own APPDATA / LOCALAPPDATA (`bench_moments.scaled_runs`), at the TRUE scale (each run
+records its `dpr`). Motion runs (not frozen; `--reduced`: `app_motion` = reduced in the run's own settings). The
+child's store is the stand-in, with the real `moves.Numbers` over the plan and a writer that, like the real one, works
+out the numbers on its own thread before it writes (into the stand-in). The HUD watches every window's frames (the
+main window, the drag's ghost, the ⋯ menu) and every GUI-thread step after the first paint while, `--cycles` times
+each (>= 10 for a timed run), the moments run through the window's own paths:
+  - **a drag** (the events `tests/qt/test_drag.py` sends): `pickup` (a press on a row's title, the 6 px that lift it,
+    the hand drifting), `slide` (~7 rows down at 60 Hz, the rows part), `autoscroll` (1.5 s at the list's bottom edge,
+    then back up), `drop` (the release, the glide home, the numbers);
+  - **a drop across the top-20 line** (`drop-top20`) and **across the Soon line** (`drop-soon`) — R3-S6, the list's
+    reset — a row dragged two rows over the line, down and up in turn;
+  - **a move by the item menu**: `menu-open` (⋯'s popup), then its *Up next* / *Soon* / *Goal* action triggered as a
+    click does (the menu hidden, the action's own `triggered`): `menu-top`, `menu-soon`, `menu-goal` — the rows slide,
+    the wells rise;
+  - **a move by key**: Alt+↑ (`key-up`) and Alt+↓ (`key-down`) on the current row (`RowsView.keyPressEvent`);
+  - **the arrival moment** (`arrival`): a show never shown before lands in New arrivals (the store write the reader
+    feeds as an arrival); the inset's covers part, the new one drops in, the count lifts (no toast exists: none added);
+  - **the finish toasts**: `toast-done-all` — the last unwatched episode's Done (`done_requested`, drag.py's
+    `DONE_ALL`); `toast-finished` — New arrivals' *Finished* (the tray's `act`: the Finished choice toast,
+    arrivals.py); `toast-connect` — Connect's notice toast (`ShellWindow._show_chores`, its one line; Connect not run).
+After each moment's last repetition the clock's wake-ups are counted once it is still. Timed beside, never judged
+here: drop / move -> numbers (the moved row's *N new* in the window) and -> saved (the writer's `on_saved`; the
+stand-in's — the real store's is the timed hold's own script, IK-7).
 """
 import argparse
-import gzip
-import json
 import os
-import statistics
 import subprocess
 import sys
 import tempfile
@@ -33,8 +45,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-PHASES = ("pickup", "slide", "autoscroll", "drop")
-BUDGET = {"frame_p95": 8.0, "frame_max": 16.0, "step": 4.0, "numbers": 50.0}
+from tests.qt import bench_moments                                    # noqa: E402
+
+DRAG = ("pickup", "slide", "autoscroll", "drop")
 
 
 # --- the parent ------------------------------------------------------------------------------------------------------ #
@@ -49,90 +62,43 @@ def save_plan(seed_path, plan_path):
     write_plan(plan_path, [r["rel_path"] for r in analysed], [r["tier"] for r in analysed])
 
 
-def run_child(seed_path, plan_path, out_path, scale, root, cycles):
-    from tests.qt.bench_scroll import system_scale
-    env = dict(os.environ)
-    for k in ("QT_QPA_PLATFORM", "SURASURA_FREEZE_MOTION"):
-        env.pop(k, None)
-    env["SURASURA_TEST_ROOT"] = root
-    env["SURASURA_ROW_PIXMAPS"] = "1"
-    if scale:
-        env["QT_SCALE_FACTOR"] = f"{scale / 100 / system_scale():.6f}"
-    else:
-        env.pop("QT_SCALE_FACTOR", None)
-    cmd = [sys.executable, os.path.abspath(__file__), "--child", seed_path, "--plan", plan_path, "--out", out_path,
-           "--cycles", str(cycles)]
-    subprocess.run(cmd, env=env, cwd=ROOT, timeout=600, check=False)
-    with open(out_path, encoding="utf-8") as f:
-        return json.load(f)
-
-
-def _med(vals):
-    vals = [v for v in vals if isinstance(v, (int, float))]
-    return round(statistics.median(vals), 2) if vals else None
-
-
-def summary(results):
-    out = {}
-    for ph in PHASES + ("all",):
-        rows = [r.get("phases", {}).get(ph, {}) for r in results]
-        out[ph] = {k: _med([x.get(k) for x in rows]) for k in
-                   ("frames_p95_ms", "frames_max_ms", "clock_p95_ms", "clock_max_ms", "steps_max_ms", "steps_over_4ms")}
-    out["drop_numbers_ms"] = {k: _med([r.get("drop_numbers", {}).get(k) for r in results]) for k in ("median", "max")}
-    out["drop_step_ms"] = _med([r.get("drop_step_max_ms") for r in results])
-    out["lift_step_ms"] = _med([r.get("lift_step_max_ms") for r in results])
-    return out
-
-
 def main_parent(a):
-    from tests.qt.bench_scroll import save_seed, system_scale
-    work = tempfile.mkdtemp(prefix="surasura-bench-drag-")
+    import json
+    from tests.qt.bench_scroll import save_seed
+    work = tempfile.mkdtemp(prefix="surasura-bench-drag-seed-")
     seed_path, plan_path = os.path.join(work, "seed.pkl"), os.path.join(work, "plan.json.gz")
     t = time.perf_counter()
     files = save_seed(a.files, None, seed_path)
     save_plan(seed_path, plan_path)
-    print(f"seed + plan: {files} files ({time.perf_counter() - t:.1f} s); this desktop's own scale {system_scale()}",
-          flush=True)
-    results = []
-    for i in range(a.runs):
-        root = tempfile.mkdtemp(prefix="surasura-bench-root-", dir=work)
-        r = run_child(seed_path, plan_path, os.path.join(work, f"run{i}.json"), a.scale, root, a.cycles)
-        results.append(r)
-        ph = r.get("phases", {})
-        print(f"run {i + 1}: dpr {r.get('dpr')} · " + " · ".join(
-            f"{k} frames p95 {v.get('frames_p95_ms')} max {v.get('frames_max_ms')} clock p95 {v.get('clock_p95_ms')} "
-            f"max {v.get('clock_max_ms')} steps max {v.get('steps_max_ms')} (>4 ms: {v.get('steps_over_4ms')})"
-            for k, v in ph.items()) + f" · drop->numbers {r.get('drop_numbers')} · lift step {r.get('lift_step_max_ms')}"
-            f" · drop step {r.get('drop_step_max_ms')}", flush=True)
-        if a.scale and r.get("dpr") and abs(r["dpr"] - a.scale / 100) > 0.01:
-            r["scale_mismatch"] = True
-            print(f"WARNING: run {i + 1} ran at dpr {r['dpr']}, not {a.scale / 100}", flush=True)
-    out = {"files": files, "scale": a.scale, "runs": results, "median": summary(results)}
-    if a.out:
-        with open(a.out, "w", encoding="utf-8") as f:
-            json.dump(out, f, indent=1)
-    print("median:", json.dumps(out["median"]), flush=True)
+    print(f"seed + plan: {files} files ({time.perf_counter() - t:.1f} s); this desktop's own scale "
+          f"{bench_moments.system_scale()}", flush=True)
+
+    def one_run(scale, root, env, i):
+        env["SURASURA_ROW_PIXMAPS"] = "1"
+        out_path = os.path.join(os.path.dirname(root), "result.json")
+        cmd = [sys.executable, os.path.abspath(__file__), "--child", seed_path, "--plan", plan_path, "--out", out_path,
+               "--cycles", str(a.cycles)]
+        proc = subprocess.run(cmd, env=env, cwd=ROOT, timeout=1800, check=False, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace")
+        if not os.path.exists(out_path):
+            return {"error": f"no result (exit {proc.returncode}): {proc.stderr[-1500:]}"}
+        with open(out_path, encoding="utf-8") as f:
+            r = json.load(f)
+        if proc.returncode:
+            r["exit"] = proc.returncode
+        return r
+    bench_moments.scaled_runs("bench_drag", a.scales_list, a.runs, a.reduced, one_run, a.out,
+                              meta={"files": files, "cycles": a.cycles})
 
 
 # --- the child ------------------------------------------------------------------------------------------------------- #
-class _Stamped(list):
-    """The HUD's list of steps / frames, each append also stamped (so a phase reads its own)."""
-
-    def __init__(self, log):
-        super().__init__()
-        self.log = log
-
-    def append(self, ms):
-        super().append(ms)
-        self.log.append((ms, time.perf_counter()))
-
-
 def main_child(a):
+    from types import SimpleNamespace
     from PyQt6.QtCore import QEvent, QPoint, QPointF, Qt, QTimer
-    from PyQt6.QtGui import QMouseEvent
-    from PyQt6.QtWidgets import QApplication
+    from PyQt6.QtGui import QKeyEvent, QMouseEvent
+    from PyQt6.QtWidgets import QApplication, QListView
     from app import theme
-    from app.qt import hud as hud_module, rows, shell
+    from app.qt import drag as drag_module, hud as hud_module, rows, shell, strings
     from app.services import library_reader, moves
     from tests.qt.bench_scroll import _LazyOpener
 
@@ -147,10 +113,12 @@ def main_child(a):
     numbers.idle(300)
     reader = library_reader.LibraryReader(opener, numbers=numbers, mining=lambda: opener.mining_ids)
     held.append(reader)
+    moments = None                                       # (made with the HUD, below)
 
     class Writer:
-        """The window's writer as the drag calls it: the numbers worked out on its own thread before the write (as
-        `moves.Writer._numbers_move`), then the move written into the stand-in and its callbacks on that thread."""
+        """The window's writer as the moves call it: the numbers worked out on its own thread before the write (as
+        `moves.Writer._numbers_move`), then the change written into the stand-in and its callbacks on that thread.
+        Each command's time to `on_saved` noted on the moment it came from."""
         from app.qt.strings import MOVE_WORDS as words
 
         def __init__(self):
@@ -185,45 +153,88 @@ def main_child(a):
         def finish(self, deadline):
             return True
 
-        def move(self, ids, tier, before_id=None, after_id=None, near=(), label=None, end=False):
+        def _run(self, ids, label, write):
             self._pending += 1
+            t0 = time.perf_counter()
+            name = moments.reps[-1][0] if moments is not None and moments.reps else None
 
             def run():
-                numbers.after_move(ids, tier, before_id=before_id, after_id=after_id)
-                items = {r["id"]: r for r in library.items()}
-                rest = sorted((r for r in items.values() if r["tier"] == tier and r["id"] not in ids),
-                              key=lambda r: (r["ord"], r["id"]))
-                if before_id is not None:
-                    k = next(i for i, r in enumerate(rest) if r["id"] == before_id)
-                    hi = rest[k]["ord"]
-                    lo = rest[k - 1]["ord"] if k else hi - 1024
-                elif after_id is not None:
-                    k = next(i for i, r in enumerate(rest) if r["id"] == after_id)
-                    lo = rest[k]["ord"]
-                    hi = rest[k + 1]["ord"] if k + 1 < len(rest) else lo + 1024
-                else:
-                    hi = rest[0]["ord"] if rest else 1024.0
-                    lo = hi - 1024
-                step = (hi - lo) / (len(ids) + 1)
-                library.commit(items=[{"id": i, "tier": tier, "ord": lo + step * (n + 1)} for n, i in enumerate(ids)],
-                               order=True)
+                write()
                 self._pending -= 1
+                if name is not None:
+                    moments.note(name, "saved_ms", round((time.perf_counter() - t0) * 1000, 2))
                 self.on_saved(_Change(ids), label)
             threading.Thread(target=run, daemon=True).start()
             return 1
 
-        def nudge(self, *a, **k):
+        def move(self, ids, tier, before_id=None, after_id=None, near=(), label=None, end=False):
+            def write():
+                numbers.after_move(ids, tier, before_id=before_id, after_id=after_id)
+                _place(ids, tier, before_id, after_id)
+            return self._run(ids, label, write)
+
+        def nudge(self, ids, direction, label=None):
+            """One place up or down in its tier: before the run of the row above, or after the run of the row below."""
+            items = {r["id"]: r for r in library.items()}
+            tier = items[ids[0]]["tier"]
+            line = sorted((r for r in items.values() if r["tier"] == tier), key=lambda r: (r["ord"], r["id"]))
+            at = [i for i, r in enumerate(line) if r["id"] in set(ids)]
+            if direction == "up":
+                k = at[0] - 1
+                if k < 0:
+                    return None
+                piece = line[k]["piece_id"]
+                while k > 0 and line[k - 1]["piece_id"] == piece:
+                    k -= 1
+                return self.move(ids, tier, before_id=line[k]["id"], label=label)
+            k = at[-1] + 1
+            if k >= len(line):
+                return None
+            piece = line[k]["piece_id"]
+            while k + 1 < len(line) and line[k + 1]["piece_id"] == piece:
+                k += 1
+            return self.move(ids, tier, after_id=line[k]["id"], label=label)
+
+        def set_watched(self, ids, on=True, label=None):
+            return self._run(ids, label, lambda: library.commit(items=[{"id": i, "watched": int(bool(on))} for i in ids]))
+
+        def place(self, ids, where, label=None):
+            if where == "finished":
+                return self._run(ids, label, lambda: library.commit(
+                    items=[{"id": i, "tier": "graduated", "graduated_at": "2026-10-16T21:00:00Z"} for i in ids],
+                    order=True))
+            return self.move(ids, "soon" if where == "soon" else "goal" if where == "goal" else "now", label=label)
+
+        def _nothing(self, *a, **k):
             return None
 
-        set_tier = set_finished = set_watched = insert_at = undo = nudge
+        set_finished = insert_at = undo = _nothing
+
+    def _place(ids, tier, before_id, after_id):
+        items = {r["id"]: r for r in library.items()}
+        rest = sorted((r for r in items.values() if r["tier"] == tier and r["id"] not in ids),
+                      key=lambda r: (r["ord"], r["id"]))
+        if before_id is not None:
+            k = next(i for i, r in enumerate(rest) if r["id"] == before_id)
+            hi = rest[k]["ord"]
+            lo = rest[k - 1]["ord"] if k else hi - 1024
+        elif after_id is not None:
+            k = next(i for i, r in enumerate(rest) if r["id"] == after_id)
+            lo = rest[k]["ord"]
+            hi = rest[k + 1]["ord"] if k + 1 < len(rest) else lo + 1024
+        else:
+            hi = rest[0]["ord"] if rest else 1024.0
+            lo = hi - 1024
+        step = (hi - lo) / (len(ids) + 1)
+        library.commit(items=[{"id": i, "tier": tier, "ord": lo + step * (n + 1)} for n, i in enumerate(ids)],
+                       order=True)
 
     class _Change:
         def __init__(self, ids):
             self.ids, self.kind = list(ids), "move"
 
-    result = {"lift_steps": [], "drop_steps": [], "numbers_ms": []}
     real_show = shell.ShellWindow.show_library
-    watch = {}                                           # the drop being watched: key, t0, version before
+    watch = {}                                           # the move being watched: key, t0, version before, moment
     page_of = {}
 
     def show_library(self_, view):                       # (on the class, before the window opens: its first view
@@ -240,24 +251,22 @@ def main_child(a):
         news = [n for n in news if n is not None]
         want = sum(news) if news else None
         if want is not None and row.n_new == want:
-            result["numbers_ms"].append(round((time.perf_counter() - watch["t0"]) * 1000, 2))
+            moments.note(watch["moment"], "numbers_ms", round((time.perf_counter() - watch["t0"]) * 1000, 2))
             watch.clear()
     shell.ShellWindow.show_library = show_library
     writer = Writer()
     services = shell.Services(library=reader, writer=writer)
     window = shell.open_window(app, services)
     window.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+    bench_moments.apply_reduced()
     hud = hud_module.Hud(window, overlay=False).start()
-    step_log, frame_log = [], []
-    hud.steps, hud.frames = _Stamped(step_log), _Stamped(frame_log)
-    tagged_log = []                                      # the motion clock's frames (its work + the paint after)
-    hud.anim_frames = _Stamped(tagged_log)
+    moments = bench_moments.Moments(hud)
     page = window.page_widgets["current"]
     page_of["page"] = page
     lst = page.list
     central = window.centralWidget()
-    phases = []                                          # (name, t0, t1)
     LEFT, NONE = Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton
+    result = {"skipped": {}}
 
     def send(widget, kind, pos, button, buttons):
         pos = QPointF(pos)
@@ -285,28 +294,53 @@ def main_child(a):
                 out.append(i)
         return out
 
+    def entry_of(key):
+        return next((i for i, e in enumerate(lst.model().entries)
+                     if e[0] in (rows.HERO, rows.ROW) and getattr(e[1], "key", None) == key), None)
 
     def first_frame():
         hud.ignore_before = time.perf_counter()
     window.first_frame.connect(first_frame)
 
-    # the plan: a list of (delay ms, action) run one after another off the event loop
+    # the plan: (delay ms, action) run one after another off the event loop — the action, then the delay before the
+    # next; an action that returns a callable is a wait of its own (it calls its argument when done)
     plan = []
 
     def at(ms, fn):
         plan.append((ms, fn))
 
-    def phase(name):
-        def go():
-            if phases and phases[-1][2] is None:
-                phases[-1] = (phases[-1][0], phases[-1][1], time.perf_counter())
-            if name:
-                phases.append((name, time.perf_counter(), None))
-            hud.tag = name
+    def begin(name):
+        return lambda: moments.begin(name)
+
+    def end_after(ms):
+        """A wait of `ms`, then the moment's repetition ends (the glide, the slide, the toast's rise inside it)."""
+        return lambda: (lambda then: QTimer.singleShot(ms, lambda: (moments.end(), then())))
+
+    def still(name):
+        return lambda: (lambda then: moments.still(name, then))
+
+    def until(pred, timeout_ms=4000, why=""):
+        """A wait until `pred()` (polled every 20 ms); a timeout is noted, never fatal."""
+        def go(then):
+            deadline = time.perf_counter() + timeout_ms / 1000.0
+
+            def poll():
+                if pred():
+                    then()
+                elif time.perf_counter() > deadline:
+                    result["skipped"][why] = result["skipped"].get(why, 0) + 1
+                    then()
+                else:
+                    QTimer.singleShot(20, poll)
+            poll()
         return go
 
     state = {}
 
+    def watch_numbers(key, name):
+        watch.update(key=key, v0=numbers.version, t0=time.perf_counter(), moment=name)
+
+    # --- a drag (W3.1a's four phases) ---------------------------------------------------------------------------- #
     def cycle(c):
         def pick():
             vis = visible_rows()
@@ -315,25 +349,23 @@ def main_child(a):
             state["key"] = lst.model().entries[i][1].key
             state["at"] = lst.viewport().mapToGlobal(title_point(i))
             send(lst.viewport(), QEvent.Type.MouseButtonPress, lst.viewport().mapFromGlobal(state["at"]), LEFT, LEFT)
-        at(16, phase("pickup"))
+        at(16, begin("pickup"))
         at(0, pick)
 
         def lift():
-            t0 = time.perf_counter()
             p = state["at"] + QPoint(0, theme.MOTION["drag-start-px"])
             send(lst.viewport(), QEvent.Type.MouseMove, lst.viewport().mapFromGlobal(p), NONE, LEFT)
-            result["lift_steps"].append(round((time.perf_counter() - t0) * 1000, 2))
             state["hand"] = p
         at(16, lift)
         for k in range(18):                              # the hand drifts while the ghost settles
             at(16, lambda k=k: move_global(state["hand"] + QPoint(k % 3, k // 6)))
-        at(16, phase("slide"))
+        at(16, begin("slide"))
         for k in range(90):                              # ~7 rows down at 60 Hz
             def down(k=k):
                 state["hand"] = state["hand"] + QPoint(0, 4)
                 move_global(state["hand"])
             at(16, down)
-        at(16, phase("autoscroll"))
+        at(16, begin("autoscroll"))
         for k in range(90):                              # rests at the bottom edge (the list scrolls under it)
             def edge(k=k):
                 vp = lst.viewport()
@@ -348,25 +380,260 @@ def main_child(a):
                 state["hand"] = p
                 move_global(p)
             at(16, up)
-        at(16, phase("drop"))
+        at(16, begin("drop"))
+        at(16, let_go("drop"))
+        at(0, end_after(900))                                   # the glide home and the numbers
+        at(400, lambda: None)
 
-        def let_go():
+    def let_go(name):
+        def go():
             if window.moves.running is None:
                 return
-            watch.update(key=state["key"], v0=numbers.version, t0=time.perf_counter())
-            t0 = time.perf_counter()
+            watch_numbers(state["key"], name)
             send(central, QEvent.Type.MouseButtonRelease, central.mapFromGlobal(state["hand"]), LEFT, NONE)
-            result["drop_steps"].append(round((time.perf_counter() - t0) * 1000, 2))
-        at(16, let_go)
-        at(900, phase(None))                             # the glide home and the numbers
-        at(400, lambda: None)
+        return go
+
+    # --- a drop across the top-20 line or the Soon line (R3-S6) ----------------------------------------------------- #
+    def line_cycle(kind, c):
+        name = f"drop-{'top20' if kind == 'top' else 'soon'}"
+
+        def prep():
+            v = page.view_model
+            ln = next((x for x in (v.lines if v is not None else ()) if x.kind == kind), None)
+            state["line_ok"] = False
+            if ln is None or ln.after + 2 >= len(v.rows) or ln.after < 1:
+                result["skipped"][f"{name}: no line"] = result["skipped"].get(f"{name}: no line", 0) + 1
+                return
+            down = c % 2 == 0                            # down over the line, then back up over it
+            src = v.rows[ln.after] if down else v.rows[ln.after + 1]
+            dst = v.rows[ln.after + 2] if down else v.rows[ln.after - 1]
+            si = entry_of(src.key)
+            if si is None or entry_of(dst.key) is None:
+                return
+            lst.scrollTo(lst.model().index(si, 0), QListView.ScrollHint.PositionAtCenter)
+            state.update(line_ok=True, key=src.key, dst=dst.key, down=down)
+        at(300, prep)
+
+        def press():
+            if not state["line_ok"]:
+                return
+            si, di = entry_of(state["key"]), entry_of(state["dst"])
+            state["at"] = lst.viewport().mapToGlobal(title_point(si))
+            r = lst.visualRect(lst.model().index(di, 0))
+            y = r.top() + r.height() * (0.8 if state["down"] else 0.2)
+            state["to"] = lst.viewport().mapToGlobal(QPoint(title_point(si).x(), round(y)))
+            send(lst.viewport(), QEvent.Type.MouseButtonPress, lst.viewport().mapFromGlobal(state["at"]), LEFT, LEFT)
+        at(0, begin(name))
+        at(0, press)
+
+        def lift():
+            if state["line_ok"]:
+                p = state["at"] + QPoint(0, theme.MOTION["drag-start-px"] * (1 if state["down"] else -1))
+                send(lst.viewport(), QEvent.Type.MouseMove, lst.viewport().mapFromGlobal(p), NONE, LEFT)
+                state["hand"] = state["from"] = p
+        at(16, lift)
+        for k in range(1, 31):                           # to the far row at 60 Hz
+            def go(k=k):
+                if state["line_ok"]:
+                    a_, b_ = state["from"], state["to"]
+                    state["hand"] = QPoint(a_.x(), round(a_.y() + (b_.y() - a_.y()) * k / 30))
+                    move_global(state["hand"])
+            at(16, go)
+        at(120, lambda: None)                            # a rest over the slot, then the release
+        at(0, let_go(name))
+        at(0, end_after(900))
+        at(200, lambda: None)
+
+    # --- a move by the item menu ------------------------------------------------------------------------------------ #
+    def menu_cycle(which, c):
+        name = {"up-next": "menu-top", "soon": "menu-soon", "goal": "menu-goal"}[which]
+
+        def prep():
+            vis = visible_rows()
+            cands = [i for i in vis if lst.model().entries[i][1].tier == "now"] if which == "soon" else vis
+            if not cands:
+                lst.verticalScrollBar().setValue(0)
+                vis = visible_rows()
+                cands = [i for i in vis if lst.model().entries[i][1].tier == "now"] if which == "soon" else vis
+            state["menu_row"] = lst.model().entries[cands[min(len(cands) - 1, 2 + c % 3)]][1] if cands else None
+        at(250, prep)
+
+        def open_menu():
+            row = state["menu_row"]
+            if row is None:
+                return
+            i = entry_of(row.key)
+            rect = lst.visualRect(lst.model().index(i, 0))
+            lst.menu_requested.emit(row, lst.viewport().mapToGlobal(rect.bottomLeft()))
+        at(0, begin("menu-open"))
+        at(0, open_menu)
+        at(0, end_after(350))
+
+        def pick():
+            row = state["menu_row"]
+            menus = [m for m in (getattr(getattr(window, "items", None), "last_menu", None),
+                                 getattr(window.moves, "last_menu", None)) if m is not None]
+            menu = next((m for m in menus if m.isVisible()), menus[0] if menus else None)
+            label = strings.MENU_ITEMS[which][0]
+            act = next((x for x in (menu.actions() if menu is not None else ()) if x.text() == label), None)
+            if row is None or act is None:
+                result["skipped"][f"{name}: no action"] = result["skipped"].get(f"{name}: no action", 0) + 1
+                if menu is not None:
+                    menu.hide()
+                return
+            if which != "goal":
+                watch_numbers(row.key, name)
+            menu.hide()                                  # as QMenu does on a click: hidden, then the action triggered
+            act.trigger()
+        at(0, begin(name))
+        at(0, pick)
+        at(0, end_after(800))
+        at(150, lambda: None)
+
+    # --- a move by key (Alt+↑ / Alt+↓) ------------------------------------------------------------------------------ #
+    def key_cycle(step, c):
+        name = "key-up" if step < 0 else "key-down"
+
+        def prep():
+            vis = visible_rows()
+            i = vis[min(len(vis) - 1, 3 + c % 3)] if vis else None
+            state["key_row"] = i
+            if i is not None:
+                lst.setCurrentIndex(lst.model().index(i, 0))
+        at(250, prep)
+
+        def press():
+            i = state["key_row"]
+            if i is None:
+                return
+            watch_numbers(lst.model().entries[i][1].key, name)
+            key = Qt.Key.Key_Up if step < 0 else Qt.Key.Key_Down
+            QApplication.sendEvent(lst, QKeyEvent(QEvent.Type.KeyPress, key, Qt.KeyboardModifier.AltModifier))
+            QApplication.sendEvent(lst, QKeyEvent(QEvent.Type.KeyRelease, key, Qt.KeyboardModifier.AltModifier))
+        at(0, begin(name))
+        at(0, press)
+        at(0, end_after(700))
+
+    # --- the arrival moment ----------------------------------------------------------------------------------------- #
+    arrival_ids = []
+
+    def arrival_cycle(c):
+        def land():
+            inset = window.arrivals_inset
+            state["played"] = inset.arrivals_played if inset is not None else 0
+            items = library.items()
+            temp = next((r for r in items if r["tier"] == "arrivals"), None) or next(r for r in items if r["tier"] == "now")
+            work = dict(library._works[temp["work_id"]]) if temp.get("work_id") in library._works else None
+            new_id = max(r["id"] for r in items) + 1
+            new_work = max(library._works) + 1
+            title = f"新着の物語 {c + 1}"
+            row = dict(temp, id=new_id, tier="arrivals", ord=temp["ord"] - 512 * (c + 1), piece_id=2 * 10 ** 9 + c,
+                       work_id=new_work, rel_path=f"HighPriority/Hato/{title}/{title} - 01.srt",
+                       title=f"{title} - 01.srt", watched=0, added_at=f"2026-10-16T21:{c // 60:02d}:{c % 60:02d}Z")
+            works = [dict(work or {}, id=new_work, title=title)]
+            arrival_ids.append(new_id)
+            opener.pending.append({"items": [row], "works": works, "order": True})
+            state["arrival_t0"] = time.perf_counter()
+        at(0, begin("arrival"))
+        at(0, land)
+
+        def played():
+            inset = window.arrivals_inset
+            return inset is not None and inset.arrivals_played > state["played"]
+        at(0, lambda: until(played, 4000, "arrival: never played"))
+        at(0, lambda: moments.note("arrival", "landed_ms", round((time.perf_counter() - state["arrival_t0"]) * 1000, 1)))
+        at(0, end_after(700))
+        at(200, lambda: None)
+
+    # --- the finish toasts ------------------------------------------------------------------------------------------ #
+    used = set()
+
+    def done_cycle(c):
+        def prep():
+            v = page.view_model
+            rows_ = v.rows if v is not None else ()
+            cands = [r for r in rows_[1:] if r.tier == "now" and r.key not in used and len(r.episodes) >= 2
+                     and drag_module.finishes(r) and not drag_module.split_first(rows_, r)
+                     and not all(e.watched for e in r.episodes)]
+            row = cands[0] if cands else None
+            state["done_row"] = row.key if row is not None else None
+            if row is None:
+                return
+            used.add(row.key)
+            others = [e.id for e in row.episodes[:-1] if not e.watched]
+            if others:                                   # another program marks the rest watched first
+                opener.pending.append({"items": [{"id": i, "watched": 1} for i in others]})
+
+        def ready():
+            key = state["done_row"]
+            v = page.view_model
+            row = next((r for r in (v.rows if v is not None else ()) if r.key == key), None)
+            return key is None or (row is not None and all(e.watched for e in row.episodes[:-1]))
+        at(0, prep)
+        at(0, lambda: until(ready, 4000, "toast-done-all: rest not watched"))
+
+        def done():
+            key = state["done_row"]
+            v = page.view_model
+            row = next((r for r in (v.rows if v is not None else ()) if r.key == key), None)
+            if row is None:
+                return
+            window.toasts.close()
+            lst.done_requested.emit(row, row.episodes[-1])
+        at(200, lambda: None)
+        at(0, begin("toast-done-all"))
+        at(0, done)
+        at(0, end_after(700))
+        at(0, window.toasts.close)
+        at(150, lambda: None)
+
+    def finished_cycle(c):
+        def choose():
+            tray = getattr(window, "arrivals_tray", None)
+            v = page.view_model
+            arrivals = [x for x in (getattr(v, "arrivals", ()) or ()) if x.key not in used]
+            state["arrival"] = arrivals[0] if arrivals and tray is not None else None
+            if state["arrival"] is not None:
+                used.add(state["arrival"].key)
+
+        def finish():
+            arrival = state["arrival"]
+            if arrival is None:
+                result["skipped"]["toast-finished: no arrival"] = result["skipped"].get(
+                    "toast-finished: no arrival", 0) + 1
+                return
+            window.toasts.close()
+            window.arrivals_tray.act(arrival, "finished")
+        at(250, choose)
+        at(0, begin("toast-finished"))
+        at(0, finish)
+        at(0, end_after(700))
+        at(0, window.toasts.close)
+        at(150, lambda: None)
+
+    chores = SimpleNamespace(duties=SimpleNamespace(notice=None), toasts=window.toasts)
+
+    def connect_cycle(c):
+        def notice():
+            window.toasts.close()
+            shell.ShellWindow._show_chores(chores, SimpleNamespace(
+                notice=f"Connect: 3 new cards from 進撃の巨人 are in Anki ({c + 1})"))
+        at(250, lambda: None)
+        at(0, begin("toast-connect"))
+        at(0, notice)
+        at(0, end_after(700))
+        at(0, window.toasts.close)
 
     def run(i=0):
         if i >= len(plan):
             return finish()
         ms, fn = plan[i]
-        fn()
-        QTimer.singleShot(ms, lambda: run(i + 1))
+        r = fn()
+        nxt = (lambda: QTimer.singleShot(ms, lambda: run(i + 1)))
+        if callable(r):
+            r(nxt)
+        else:
+            nxt()
 
     def start(tries=[0]):
         v = page.view_model
@@ -377,43 +644,65 @@ def main_child(a):
                       flush=True)
             QTimer.singleShot(50, start)
             return
-        print(f"bench_drag: {len(v.rows)} rows live; {a.cycles} cycles", flush=True)
+        print(f"bench_drag: {len(v.rows)} rows live; {a.cycles} cycles a moment", flush=True)
         lst.verticalScrollBar().setValue(lst.verticalScrollBar().maximum() // 3)
-        for c in range(a.cycles):
+        n = a.cycles
+        for c in range(n):
             cycle(c)
+        at(0, still("drop"))
+        for kind in ("top", "soon"):
+            at(0, lambda: lst.verticalScrollBar().setValue(0))
+            for c in range(n):
+                line_cycle(kind, c)
+            at(0, still(f"drop-{'top20' if kind == 'top' else 'soon'}"))
+        for which in ("up-next", "soon", "goal"):
+            at(0, lambda: lst.verticalScrollBar().setValue(0))
+            for c in range(n):
+                menu_cycle(which, c)
+            at(0, still({"up-next": "menu-top", "soon": "menu-soon", "goal": "menu-goal"}[which]))
+        at(0, still("menu-open"))
+        for step in (-1, 1):
+            at(0, lambda: lst.verticalScrollBar().setValue(0))
+            for c in range(n):
+                key_cycle(step, c)
+            at(0, still("key-up" if step < 0 else "key-down"))
+        for c in range(n):
+            arrival_cycle(c)
+        at(0, still("arrival"))
+        at(0, lambda: lst.verticalScrollBar().setValue(0))
+        for c in range(n):
+            done_cycle(c)
+        at(0, still("toast-done-all"))
+        for c in range(n):
+            finished_cycle(c)
+        at(0, still("toast-finished"))
+        for c in range(n):
+            connect_cycle(c)
+        at(0, still("toast-connect"))
         QTimer.singleShot(1500, run)
 
     def finish():
-        def slice_(log, t0, t1):
-            return [ms for ms, t in log if t0 <= t <= t1]
-        per = {}
-        spans = [(n, t0, t1) for n, t0, t1 in phases if t1 is not None]
-        for name in PHASES + ("all",):
-            ss = [(t0, t1) for n, t0, t1 in spans if n == name or name == "all"]
-            fr = [x for t0, t1 in ss for x in slice_(frame_log, t0, t1)]
-            ck = [x for t0, t1 in ss for x in slice_(tagged_log, t0, t1)]
-            st = [x for t0, t1 in ss for x in slice_(step_log, t0, t1)]
-            per[name] = {"frames_n": len(fr), "frames_p95_ms": round(hud_module.p95(fr), 2) if fr else None,
-                         "frames_max_ms": round(max(fr), 2) if fr else None,
-                         "clock_n": len(ck), "clock_p95_ms": round(hud_module.p95(ck), 2) if ck else None,
-                         "clock_max_ms": round(max(ck), 2) if ck else None,
-                         "steps_max_ms": round(max(st), 2) if st else None,
-                         "steps_over_4ms": sum(1 for x in st if x > BUDGET["step"])}
-        nums = sorted(result["numbers_ms"])
-        result["drop_numbers"] = {"n": len(nums), "of": a.cycles, "median": _med(nums),
-                                  "max": nums[-1] if nums else None}
-        result["lift_step_max_ms"] = max(result["lift_steps"], default=None)
-        result["drop_step_max_ms"] = max(result["drop_steps"], default=None)
-        result["phases"] = per
-        result["hud"] = hud.report()
+        for name in DRAG[:-1]:
+            moments.wakes.setdefault(name, "with drop")   # a drag's phases end in its drop: counted after it
+        result["moments"] = moments.summary()
+        result["hud"] = {k: v for k, v in hud.report().items() if k in ("steps", "frames", "windows", "slow_frames",
+                                                                         "late", "anim")}
+        result["hud"]["late"].pop("explained", None)
         result["memory"] = hud_module._memory_mb()
         result["dpr"] = lst.viewport().devicePixelRatioF()
         result["drops"] = window.moves.drops
+        result["reduced"] = motion_reduced()
+        result["extra"] = {"skipped": result["skipped"], "drops": result["drops"]}
+        import json
         with open(a.out, "w", encoding="utf-8") as f:
             json.dump(result, f)
         app.quit()
 
-    QTimer.singleShot(240000, finish)                   # never longer than 4 min
+    def motion_reduced():
+        from app.qt import motion
+        return bool(motion.clock().mode.reduced)
+
+    QTimer.singleShot(120000 + a.cycles * 40000, finish)   # never longer than this
     window.show_first()
     QTimer.singleShot(800, start)
     try:
@@ -427,15 +716,16 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--files", type=int, default=20000)
     ap.add_argument("--runs", type=int, default=2)
-    ap.add_argument("--cycles", type=int, default=4)
-    ap.add_argument("--scale", type=int, default=0, help="the screen's scaling in % (0: Windows' own)")
-    ap.add_argument("--out", default=None)
+    ap.add_argument("--cycles", type=int, default=10, help="repetitions of each moment (>= 10 for a timed run)")
+    ap.add_argument("--scale", type=int, default=None, help="one scale in % (the old flag: --scales takes a list)")
+    bench_moments.add_arguments(ap)
     ap.add_argument("--plan", default=None)
     ap.add_argument("--child", default=None)
     a = ap.parse_args()
     if a.child:
         main_child(a)
     else:
+        a.scales_list = [a.scale] if a.scale is not None else bench_moments.parse_scales(a.scales)
         main_parent(a)
 
 

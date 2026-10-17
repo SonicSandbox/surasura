@@ -279,3 +279,27 @@ def test_a_library_with_no_waiting_item_copies_as_before(language):
     assert ls.maintain(language, data_dir, user_files_dir) in (ls.EXIT_DONE, ls.EXIT_NOTHING)
     with open(ls.manifest_path(user_files_dir), "rb") as f:
         assert f.read() == first
+
+
+# --- fix round A (batch 1's Haiku register, H9) --------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("subtitle", ("ep1.srt", "ep1.ass"))
+def test_a_waiting_video_and_its_subtitle_in_one_batch_are_one_item(language, subtitle):
+    """H9: a video's waiting record and its subtitle handed over in ONE batch — the video sorted first (`ep1.mkv`
+    before `ep1.srt`) or the subtitle first (`ep1.ass` before `ep1.mkv`) — are one item, available at the copy, both
+    origins on it; never a waiting row beside the episode it is."""
+    store, data_dir = _empty(language)
+    src = _source_root()
+    show = names(language)[79]
+    with store:
+        root = store.add_source(src)
+        video = _video(src, show, "ep1.mkv", "v1-one-batch")
+        sub = _subtitle(language, data_dir, src, video, subtitle, 1)
+        change = store.take_in(root, [video, sub])
+        assert len(change.added) == 1
+        assert store.conn.execute("SELECT COUNT(*) FROM items").fetchone()[0] == 1
+        item = store.item(change.added[0])
+        assert (item["availability"], item["rel_path"]) == ("available", sub["rel"])
+        keys = {r[0] for r in store.conn.execute("SELECT content_key FROM pairings WHERE item_id = ?", (item["id"],))}
+        assert keys == {ls.origin_key(video["video_path"]), ls.origin_key(sub["origin"])}

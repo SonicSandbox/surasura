@@ -7500,7 +7500,7 @@ def _store_take_in(self, root_id, found, first=False, rules=None):
             for k in ("sha256", "video_key"):
                 if note.get(k):
                     out[k].add(note[k])
-        works, by_bytes, spare = {}, {}, {}
+        works, by_bytes, spare, taken = {}, {}, {}, {}
         gaps = self._waiting_videos() if any(_video_keys(f) for f in found) else {}
         for f in order:
             origin = os.path.abspath(f["origin"])
@@ -7522,6 +7522,8 @@ def _store_take_in(self, root_id, found, first=False, rules=None):
             # an EPUB's part records its book's sha256 (K1b, K4): two parts of one book are never "the same bytes"
             same = None if _EPUB_PART.search(origin) else f.get("sha256")
             item_id = f.get("item_id")
+            if item_id is None and not is_content_name(p[1]):  # H9: a video whose subtitle came earlier in this batch
+                item_id = next((taken[k] for k in _video_keys(f) if k in taken), None)
             if item_id is None:
                 held = self.conn.execute("SELECT id FROM items WHERE rel_key = ?", (p[2],)).fetchone()
                 gap = next((gaps[k] for k in _video_keys(f) if k in gaps), None) if is_content_name(p[1]) else None
@@ -7531,6 +7533,8 @@ def _store_take_in(self, root_id, found, first=False, rules=None):
                 elif held is None and gap is None:
                     item_id = self._take_new(cmd, change, p, key, record, f, first, rules, works)
                     by_bytes.setdefault(same, item_id)
+                    for k in _video_keys(f):                 # H9: the same video later in this batch finds it
+                        (taken if is_content_name(p[1]) else gaps)[k] = item_id
                     continue
                 else:                                        # its copy is an item, or a waiting video's (K5)
                     item_id = held[0] if held else self._fill_gap(cmd, gap, p, gaps)
@@ -7540,6 +7544,8 @@ def _store_take_in(self, root_id, found, first=False, rules=None):
             by_bytes.setdefault(same, item_id)
             self._write_origin(key, item_id, record)
             change.attached.append(item_id)
+            if p is None or is_content_name(p[1]):
+                taken.update(dict.fromkeys(_video_keys(f), item_id))
             cmd.touch()
         # N1: the copies no item holds (a skipped file's, a same-bytes one's), for the caller to send to the trash
         change.unused = [rel for rel, rel_key in spare.items() if rel and not self.conn.execute(

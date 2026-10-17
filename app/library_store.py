@@ -2389,7 +2389,18 @@ class Store:
             _p, rel, key, entry, fp = prepared[0]
             row = self.conn.execute("SELECT id FROM items WHERE rel_key = ?", (key,)).fetchone()
             change = None
-            if row is None:
+            # K3: in the command's own transaction (a file hashed only when a source's item has its size)
+            twin = self._duplicate_of(os.path.join(self.data_dir, *rel.split("/")), content_key) if row is None else None
+            if twin is not None:
+                item_id = twin                             # K3 (SRC-7): a source's episode already — no item for it
+                change = self._change(cmd, "register")
+                change.duplicate, change.pairing_item = rel, item_id
+                if not self.conn.execute("SELECT 1 FROM exclusions WHERE kind = 'duplicate' AND pattern = ?",
+                                         (key,)).fetchone():
+                    self.conn.execute("INSERT INTO exclusions (root_id, pattern, kind, created_at) "
+                                      "VALUES (?, ?, 'duplicate', ?)", (self._root_id(), key, _now()))
+                    cmd.touch()
+            elif row is None:
                 if meta.get("arrivals_on"):
                     change = self._add(prepared, "arrivals", "end", None, None, None, "register", by, 0)
                 else:
@@ -4338,6 +4349,8 @@ class Store:
                         self.conn.execute("INSERT OR IGNORE INTO pairings (content_key, item_id, pairing, paired_at) "
                                           "VALUES (?, ?, ?, ?)", (content_key,) + tuple(old))
             elif kind == "register":
+                if getattr(change, "pairing_before", None) is None:     # K3: a duplicate's hand-off that wrote none
+                    return self._skipped(cmd, 1)
                 content_key, old = change.pairing_before
                 now = self.conn.execute("SELECT item_id FROM pairings WHERE content_key = ?",
                                         (content_key,)).fetchone()
@@ -6914,6 +6927,7 @@ def read_only_schedule(language, data_dir, user_files_dir):
     except (TypeError, ValueError, AttributeError):
         waits = False
     known = {path_key(_strip(str(e.get("physical_path") or ""))) for e in held + others}
+    known |= _copy_duplicates(lib)                     # another item's episode (K3): never added, as the sync's rule
     with_items = {path_key(_rel_dir(_strip(str(e.get("physical_path") or "")))) for e in held + others}
     tops = {t: 0 for t in ANALYSED}
     marker_cache = {}
@@ -6959,6 +6973,20 @@ def read_only_schedule(language, data_dir, user_files_dir):
                 tops[where[1]] += 1
         with_items.add(dkey)
     return schedule
+
+
+def _copy_duplicates(lib):
+    """The patterns of the copy's `duplicate` exclusions (K3; K1a's N9): files read-only mode never adds. A table the
+    copy lacks or can't be read as one: none."""
+    table = (lib.get("tables") or {}).get("exclusions") if isinstance(lib.get("tables"), dict) else None
+    if not isinstance(table, dict) or not isinstance(table.get("fields"), list):
+        return set()
+    fields = table["fields"]
+    if "pattern" not in fields or "kind" not in fields:
+        return set()
+    p, k = fields.index("pattern"), fields.index("kind")
+    return {r[p] for r in table.get("rows") or () if isinstance(r, list) and len(r) == len(fields) and
+            r[k] == "duplicate" and isinstance(r[p], str)}
 
 
 SYNC_IN_PROCESS_AT = 20_000      # items: from here a window's process syncs in a process of its own (§12.1)
@@ -7217,6 +7245,79 @@ def sha256_of(path):
         for block in iter(lambda: f.read(1 << 20), b""):
             h.update(block)
     return h.hexdigest()
+
+
+def same_size_items(conn, sizes, sources_only=False):
+    """Never a duplicate (SRC-7, K3), its first half: {size: [(item_id, rel_path, title)]} of the live items whose file
+    is one of these sizes, in id order; the title its work's, else its own. `sources_only`: only the items a source
+    folder's origin is recorded on (hato after a source). One read: `conn` is a store's (inside its read) or a
+    `mode=ro` look's. The second half, the bytes, is `holding`."""
+    sizes = [s for s in dict.fromkeys(sizes) if isinstance(s, int)]
+    only = f" AND EXISTS (SELECT 1 FROM pairings p WHERE p.item_id = i.id AND {_ORIGIN_ROW})" if sources_only else ""
+    out = {}
+    for chunk in _chunks(sizes, 500):
+        for size, item_id, rel, title in conn.execute(
+                f"SELECT i.size, i.id, i.rel_path, COALESCE(w.title, i.title) FROM items i LEFT JOIN works w ON "
+                f"w.id = i.work_id WHERE i.availability = 'available' AND i.size IN ({','.join('?' * len(chunk))})"
+                f"{only} ORDER BY i.id", chunk):
+            out.setdefault(size, []).append((item_id, rel, title or ""))
+    return out
+
+
+def holding(data_dir, files, rows):
+    """K3: {path: (item_id, title)} for each `(path, size)` of `files` whose bytes are an item's file's (`rows` from
+    `same_size_items`), the lowest id — a file read only when its size matches one, each file once. A file that can't
+    be read holds nothing."""
+    hashes, out = {}, {}
+    for path, size in files:
+        for item_id, rel, title in rows.get(size, ()):
+            mine = _sha_once(hashes, path)
+            if mine is not None and mine == _sha_once(hashes, os.path.join(data_dir, *rel.split("/"))):
+                out[path] = (item_id, title)
+                break
+    return out
+
+
+def _sha_once(hashes, path):
+    if path not in hashes:
+        try:
+            hashes[path] = sha256_of(path)
+        except OSError:
+            hashes[path] = None
+    return hashes[path]
+
+
+def _store_items_holding(self, paths, sources_only=False):
+    """K3: {path: (item_id, title)} of the files in `paths` whose bytes a live item's file holds (size first, then the
+    sha256: `same_size_items`, `holding`) — the sizes read in one short read, the files hashed after it."""
+    files = []
+    for p in paths:
+        try:
+            files.append((p, os.stat(p).st_size))
+        except OSError:
+            continue
+    if not files:
+        return {}
+    with self._reading():
+        rows = same_size_items(self.conn, [s for _p, s in files], sources_only)
+    return holding(self.data_dir, files, rows)
+
+
+def _store_duplicate_of(self, path, content_key):
+    """K3 (1), inside `register`'s command: the live source item hato's file at `path` is another copy of — the one
+    holding its video (`item_of_video_key`: an origin's `video_key`, or hato's key on an item a source attached to),
+    else one whose file holds the same bytes — or None. Only a source's items: a library with no sources registers as
+    before (no file read: no source item has its size)."""
+    item = self.item_of_video_key(content_key)
+    if item is not None:
+        with self._reading():
+            if not self.conn.execute(f"SELECT 1 FROM pairings p WHERE p.item_id = ? AND {_ORIGIN_ROW}",
+                                     (item,)).fetchone():
+                item = None
+    if item is None:
+        held = self.items_holding([path], sources_only=True)
+        item = held[path][0] if path in held else None
+    return item
 
 
 def content_target(data_dir, rel, size=None, sha256=None):
@@ -7675,6 +7776,8 @@ Store.origins = _store_origins
 Store.excluded = _store_excluded
 Store.items_of_size = _store_items_of_size
 Store.item_of_video_key = _store_item_of_video_key
+Store.items_holding = _store_items_holding
+Store._duplicate_of = _store_duplicate_of
 Store.update_origin = _store_update_origin
 Store._exclude_origins = _store_exclude_origins
 Store._let_origins_back = _store_let_origins_back

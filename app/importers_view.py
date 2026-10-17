@@ -136,13 +136,15 @@ def expect_arg(plan):
 
 def extract_outcome(code, result, why):
     """Extract's end -> (key, values): 'done' (in the library), 'processed' (no section asked), 'processed-only' (the
-    library didn't take them), 'taken', 'name', 'empty', or 'failed'."""
+    library didn't take them), 'already' (its parts are in the library already: `title`, SRC K3), 'taken', 'name',
+    'empty', or 'failed'."""
     if result is not None:
-        values = {"parts": result.parts, "name": result.folder or "", "section": result.section}
+        values = {"parts": result.parts, "name": result.folder or "", "section": result.section,
+                  "title": result.title or ""}
         if result.code == extract.EXIT_DONE:
             return ("done" if result.in_library else "processed"), values
         if result.code == extract.EXIT_PROCESSED_ONLY:
-            return "processed-only", values
+            return ("already" if result.note == "already" else "processed-only"), values
         if result.code == extract.EXIT_REFUSED:
             return ("taken" if result.note == "taken" else "name"), values
         if result.note == "empty":

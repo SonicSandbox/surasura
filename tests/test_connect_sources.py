@@ -16,6 +16,7 @@ second temp "drive" under the test root; its subtitle is a real one with a line 
 made-up files (bytes only). Names are made up.
 """
 import hashlib
+import json
 import os
 import shutil
 import struct
@@ -192,7 +193,8 @@ def test_a_store_with_no_sources_gives_the_index_exactly_the_folders_it_had(monk
     # alone and the folders you added. A stopped source is no longer read, by the index either
     c.library("ja")
     seen = []
-    monkeypatch.setattr(videos.Index, "refresh", lambda self, shallow, deep, budget=None: seen.append((shallow, deep)))
+    monkeypatch.setattr(videos.Index, "refresh",
+                        lambda self, shallow, deep, budget=None, sources=(): seen.append((shallow, deep, sources)))
     added = os.path.join(h.root(), "Added videos")
     s = _steps(connect_video_folders=[added])
     s._videos("ja")
@@ -201,17 +203,17 @@ def test_a_store_with_no_sources_gives_the_index_exactly_the_folders_it_had(monk
         shallow = sorted({os.path.dirname(r["video_path"]) for records in library.pairings(store).values()
                           for r in records if isinstance(r, dict) and r.get("video_path")})
         assert store.sources() == []
-    assert seen == [(shallow, [added])]
+    assert seen == [(shallow, [added], [])]
 
     src = _source()
     with c.store("ja") as store:
         root = store.add_source(src)
     _steps(connect_video_folders=[added])._videos("ja")
-    assert seen[-1][1] == [added, os.path.normpath(os.path.abspath(src))], "a source on: indexed after your folders"
+    assert seen[-1][1:] == ([added], [os.path.normpath(os.path.abspath(src))]), "a source on: beside your folders"
     with c.store("ja") as store:
         store.stop_source(root)
     _steps(connect_video_folders=[added])._videos("ja")
-    assert seen[-1][1] == [added], "a stopped source: as before"
+    assert seen[-1][1:] == ([added], []), "a stopped source: as before"
 
 
 # --------------------------------------------------------------------------- #
@@ -232,14 +234,59 @@ def test_a_trashed_copy_of_the_video_in_a_source_makes_no_second_match(bin_name)
 
 
 @pytest.mark.parametrize("bin_name", [".trash", "$RECYCLE.BIN", "@eaDir"])
-def test_a_folder_you_added_skips_its_bins_too(tmp_path, bin_name):
-    # why: the folders you add hold the same bins; one rule for every folder the index lists
+def test_a_folder_you_added_is_listed_as_before_its_bins_included(tmp_path, bin_name):
+    # why (the batch 1 intent review): the skip rule is a source's (B3: Surasura reads that folder for you); the
+    # folders you added to Connect are listed exactly as before Sources, so a copy in its bin still counts and
+    # Connect, which never guesses, says No video for the two — as it always did
     added = tmp_path / "Added"
-    video = _video(str(added / "Show" / "Show - 02.mkv"))
+    _video(str(added / "Show" / "Show - 02.mkv"))
     _video(str(added / bin_name / "Show - 02.mkv"))
     index = videos.Index("ja", path=str(tmp_path / "videos-ja.json"))
     index.refresh([], [str(added)])
-    assert _same(index.find(["Show - 02.mkv"]), video)
+    assert index.find(["Show - 02.mkv"]) is None
+    assert os.path.normcase(str(added / bin_name)) in index.data["dirs"]
+
+
+def test_a_library_with_no_sources_indexes_its_folders_as_before_sources(tmp_path):
+    # why (the batch 1 intent review): a library with no source folder (every library today) must get the index 3.0-dev
+    # wrote: its version (2), every subfolder of a folder you added listed (dot folders, the bins, a folder link
+    # followed as before), no entry marked, and so the same file
+    c.library("ja")
+    added = os.path.join(h.root(), "Added videos")
+    expected = {added}
+    for sub in ("Show", ".hidden", "$RECYCLE.BIN", ".trash", "@eaDir"):
+        _video(os.path.join(added, sub, f"{sub.strip('.$@')} - 01.mkv"))
+        expected.add(os.path.join(added, sub))
+    if os.name == "nt":
+        import _winapi
+        outside = os.path.join(h.root(), "elsewhere", "Linked target")
+        _video(os.path.join(outside, "Linked - 01.mkv"))
+        _winapi.CreateJunction(outside, os.path.join(added, "Linked"))
+        expected.add(os.path.join(added, "Linked"))
+    s = _steps(connect_video_folders=[added])
+    index = s._videos("ja")
+    with c.store("ja") as store:
+        assert store.sources() == []
+    deep = {k for k, v in index.data["dirs"].items() if v.get("deep")}
+    assert deep == {os.path.normcase(os.path.abspath(p)) for p in expected}
+    assert all("skip" not in v for v in index.data["dirs"].values()), "no entry marked as a source's"
+    with open(videos.index_path("ja"), encoding="utf-8") as f:
+        assert json.load(f)["version"] == videos.INDEX_VERSION == 2
+    if os.name == "nt":
+        assert _same(index.find(["Linked - 01.mkv"]), os.path.join(added, "Linked", "Linked - 01.mkv")), "followed"
+
+
+def test_a_source_inside_a_folder_you_added_is_listed_as_your_folder(tmp_path):
+    # why (the intent review): where a folder you added holds a source (or is one), your folder's listing wins, as
+    # before Sources
+    added = tmp_path / "Videos"
+    _video(str(added / "Anime" / "$RECYCLE.BIN" / "Show - 03.mkv"))
+    index = videos.Index("ja", path=str(tmp_path / "videos-ja.json"))
+    index.refresh([], [str(added)], sources=[str(added / "Anime")])
+    assert os.path.normcase(str(added / "Anime" / "$RECYCLE.BIN")) in index.data["dirs"]
+    alone = videos.Index("ja", path=str(tmp_path / "videos-ja-2.json"))
+    alone.refresh([], [], sources=[str(added / "Anime")])
+    assert os.path.normcase(str(added / "Anime" / "$RECYCLE.BIN")) not in alone.data["dirs"], "a source alone skips it"
 
 
 @pytest.mark.skipif(os.name != "nt", reason="a junction is Windows' folder link")
@@ -284,3 +331,33 @@ def test_a_cloud_placeholder_of_the_video_in_a_source_is_never_a_match(monkeypat
     assert _same(_steps().video("ja", {"id": 1, "item_id": item}), video)
     os.remove(video)                                    # only the placeholder left: No video, never the cloud file
     assert _steps().video("ja", {"id": 1, "item_id": item}) is None
+
+
+# --------------------------------------------------------------------------- #
+# A moved video: hato's records judged exactly as before Sources (batch 1 review H14)
+# --------------------------------------------------------------------------- #
+class _Found:
+    """The index's stand-in: a file of the name and size found away from the named path."""
+
+    def __init__(self, path):
+        self.path = path
+
+    def find(self, names, size=None):
+        return self.path
+
+
+@pytest.mark.parametrize("found_key, used", [(None, True), ("v1-other", False)])
+def test_a_moved_hato_video_is_judged_by_its_content_key_as_before_sources(monkeypatch, tmp_path, found_key, used):
+    # why (H14): the sources' rule (no key to compare: never taken) is a source record's alone; a hato record is
+    # judged as in 3.0-dev, the found file's key against the record's `content_key` — the same (both unread
+    # included) is used, another is refused
+    moved = _video(str(tmp_path / "New" / "Example Show - 11.mkv"))
+    record = {"producer": "hato", "video_path": str(tmp_path / "Old" / "Example Show - 11.mkv"), "video_size": 120}
+    monkeypatch.setattr(runner.Steps, "pairing", lambda self, lang, job: dict(record))
+    monkeypatch.setattr(runner.Steps, "_videos", lambda self, lang: _Found(moved))
+    monkeypatch.setattr(videos, "content_key", lambda path: found_key)
+    got = _steps().video("ja", {"id": 1, "item_id": 1})
+    assert (got == moved) is used
+    source = dict(record, producer="source")             # a source record with no video key: never a guess
+    monkeypatch.setattr(runner.Steps, "pairing", lambda self, lang, job: dict(source))
+    assert _steps().video("ja", {"id": 1, "item_id": 1}) is None

@@ -964,3 +964,64 @@ def test_item_of_video_key_finds_the_live_item_holding_a_video(language):
         store.remove([item])
         assert store.item_of_video_key("v1-src") is None                     # live items only
     assert ls.rename_no_overwrite is ls._rename_no_overwrite
+
+
+# --- batch 1's fix round B ------------------------------------------------------------------------------------------ #
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_item_of_video_key_reads_the_pairings_once_while_nothing_is_written(language):
+    """Review H17: K1b asks once per video it finds (2,000 on a big first scan); each ask scanning every origin's
+    record made a first scan quadratic. The answers come from one read, read again after any write, its contract
+    kept: the lowest live id, a waiting item left out, a removed one gone, another connection's write seen."""
+    store, data_dir = _empty(language)
+    _d, user_files_dir = roots(language)
+    src = _source_root()
+    w = names(language)
+    with store:
+        root = store.add_source(src)
+        a = store.take_in(root, [_found(language, data_dir, src, w[113], "ep1.srt", 1, video_key="v1-h17a")],
+                          first=True).added[0]
+        twin = store.take_in(root, [_found(language, data_dir, src, w[113], "ep1b.srt", 2, video_key="v1-h17a")],
+                             first=True).added[0]
+        video = os.path.join(src, w[114], "ep1.mkv")
+        os.makedirs(os.path.dirname(video))
+        with open(video, "wb") as fh:
+            fh.write(b"\x1aE\xdf\xa3" + bytes(60))
+        store.take_in(root, [{"origin": video, "size": 64, "mtime_ns": 1, "show": w[114], "video_path": video,
+                              "video_size": 64, "video_key": "v1-h17w", "rel": f"Library/{w[114]}/ep1.mkv"}])
+        reads = []
+        store.conn.set_trace_callback(lambda sql: reads.append(sql) if "pairings" in sql else None)
+        try:
+            for _ in range(50):
+                assert store.item_of_video_key("v1-h17a") == min(a, twin)
+                assert store.item_of_video_key("v1-h17w") is None                   # waiting: left out
+                assert store.item_of_video_key("v1-none") is None
+        finally:
+            store.conn.set_trace_callback(None)
+        assert len(reads) == 1, reads
+        store.remove([min(a, twin)])
+        assert store.item_of_video_key("v1-h17a") == max(a, twin), "a write in between is seen"
+        other = ls.open_store(language, data_dir, user_files_dir)
+        with other:
+            other.remove([max(a, twin)])
+        assert store.item_of_video_key("v1-h17a") is None, "another connection's write is seen"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_take_in_never_reads_a_file_whose_origin_is_already_recorded(language, monkeypatch):
+    """Review H19: a file the look hands over again is skipped as known; preparing it first (its stat, and the read
+    of its source mark) was waste on every such file. Known origins are skipped before anything is read."""
+    store, data_dir = _empty(language)
+    src = _source_root()
+    show = names(language)[115]
+    with store:
+        root = store.add_source(src)
+        f = _found(language, data_dir, src, show, "ep1.srt", 1)
+        store.take_in(root, [f], first=True)
+        g = _found(language, data_dir, src, show, "ep2.srt", 2)
+        read = []
+        real = ls._detect_source_type
+        monkeypatch.setattr(ls, "_detect_source_type", lambda path, cache=None: read.append(path) or real(path, cache))
+        change = store.take_in(root, [dict(f), g])
+        assert change.skipped["known"] == [os.path.abspath(f["origin"])] and change.unused == []
+        assert [os.path.basename(p) for p in read] == ["ep2.srt"], "only the new file is read"

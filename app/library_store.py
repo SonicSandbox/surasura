@@ -7379,16 +7379,29 @@ def _store_items_of_size(self, sizes):
 def _store_item_of_video_key(self, key):
     """K1b's check (a): the live item whose record holds this video — hato's `content_key`, or an origin's
     `video_key` — the lowest id when several do, else None. A 'waiting' item (K5) is left out, so a video-only show's
-    gap is filled by `take_in` from the copy."""
+    gap is filled by `take_in` from the copy.
+
+    Asked once per video a look finds (review H17): the answers come from one read of every record's video, kept
+    while nothing is written — stamped with this connection's changes and SQLite's `data_version` (another
+    connection's commit, read before the records) — and never kept inside a write (one rolled back would leave it
+    wrong)."""
     if not isinstance(key, str) or not key or key.startswith(SOURCE_KEY):
         return None
+    stamp = None if self._depth else (self.conn.total_changes, self.conn.execute("PRAGMA data_version").fetchone()[0])
     with self._reading():
-        row = self.conn.execute(f"SELECT MIN(p.item_id) FROM pairings p JOIN items i ON i.id = p.item_id WHERE "
-                                f"i.availability != 'waiting' AND ((p.content_key = ? AND NOT {_ORIGIN_ROW}) OR ("
-                                f"{_ORIGIN_ROW} AND "
-                                f"json_valid(p.pairing) AND json_extract(p.pairing, '$.video_key') = ?))",
-                                (key, key)).fetchone()
-    return row[0] if row else None
+        held = getattr(self, "_video_items", None)
+        if stamp is None or held is None or held[0] != stamp:
+            found = {}
+            for vkey, item_id in self.conn.execute(
+                    f"SELECT CASE WHEN {_ORIGIN_ROW} THEN json_extract(p.pairing, '$.video_key') ELSE p.content_key "
+                    f"END, p.item_id FROM pairings p JOIN items i ON i.id = p.item_id WHERE i.availability != "
+                    f"'waiting' AND (NOT {_ORIGIN_ROW} OR json_valid(p.pairing))"):
+                if isinstance(vkey, str) and vkey and (vkey not in found or item_id < found[vkey]):
+                    found[vkey] = item_id
+            held = (stamp, found)
+            if stamp is not None:
+                self._video_items = held
+    return held[1].get(key)
 
 
 def _store_update_origin(self, origin, size, mtime_ns, sha256):
@@ -7411,9 +7424,10 @@ def _store_update_origin(self, origin, size, mtime_ns, sha256):
 
 
 def _store_exclude_origins(self, pairs, now):
-    """Inside `remove`: an exclusion per origin of the removed items (`pairs`: {item_id: [[key, record, at]]}) — its
-    path key, `kind` 'removed', the note {size, sha256, video_key?, show?, episode?} (S6: the same bytes or video found
-    elsewhere stay out too, and K1b keeps a v2 of that show's episode out). -> the exclusion ids written."""
+    """Inside `remove`: an exclusion per origin of the removed items (`pairs`: {item_id: [[content_key, the record's
+    JSON text, paired_at]]}, as `remove` read them) — its path key, `kind` 'removed', the note {size, sha256,
+    video_key?, show?, episode?} (S6: the same bytes or video found elsewhere stay out too, and K1b keeps a v2 of that
+    show's episode out). -> the exclusion ids written."""
     rows = []
     for records in pairs.values():
         for key, text, _at in records:
@@ -7480,7 +7494,13 @@ def _store_take_in(self, root_id, found, first=False, rules=None):
         parts = rel.split("/") if rel else []
         if len(parts) < 2 or path_key(parts[0]) != path_key(CONTENT_FOLDER):
             raise ValueError(f"a copy outside the content folder: {f.get('rel')!r}")
-        rels.append(rel)
+        rels.append((rel, origin_key(origin)))
+    known = set()                    # H19: a file recorded already is never read (its stat, its mark) to be skipped
+    with self._reading():
+        for chunk in _chunks(list({k for _r, k in rels}), 500):
+            known.update(k for (k,) in self.conn.execute(f"SELECT content_key FROM pairings WHERE content_key IN "
+                                                         f"({','.join('?' * len(chunk))})", chunk))
+    rels = list(dict.fromkeys(rel for rel, k in rels if k not in known))
     prepared = dict(zip(rels, self._prepare(rels, None, "Source")))
     fold = lambda f: search_fold(str(f.get("show") or ""), self.language)                     # noqa: E731
     ep = lambda f: f.get("episode") if isinstance(f.get("episode"), (int, float)) else None    # noqa: E731
@@ -7505,13 +7525,16 @@ def _store_take_in(self, root_id, found, first=False, rules=None):
         for f in order:
             origin = os.path.abspath(f["origin"])
             key = origin_key(origin)
-            p = None if f.get("item_id") is not None else prepared[library_rel(self.data_dir, str(f["rel"]))]
+            rel = None if f.get("item_id") is not None else library_rel(self.data_dir, str(f["rel"]))
+            p = prepared.get(rel) if rel is not None else None
             # recorded already — by any source, or earlier in this batch (each record is written as it goes)
             if self.conn.execute("SELECT 1 FROM pairings WHERE content_key = ?", (key,)).fetchone():
                 change.skipped["known"].append(origin)
-                if p:
-                    spare[p[1]] = p[2]
+                if rel is not None:
+                    spare[rel] = path_key(rel)
                 continue
+            if rel is not None and p is None:        # recorded at the look, its record gone since: read it now
+                p = prepared[rel] = self._prepare([rel], None, "Source")[0]
             if key[len(SOURCE_KEY):] in out["patterns"] or (f.get("sha256") and f["sha256"] in out["sha256"]) or \
                     any(k in out["video_key"] or k in out["patterns"] for k in _video_keys(f)):
                 change.skipped["excluded"].append(origin)
@@ -7618,8 +7641,12 @@ def _store_source_work(self, rel, record, cmd, cache):
 
 
 def _store_source_spot(self, cmd, work, rel, episode, first, waiting=False):
-    """(tier, where) for a new copy of `work` (see `take_in`); `waiting` (K5): New arrivals even when it is off."""
+    """(tier, where) for a new copy of `work` (see `take_in`); `waiting` (K5): New arrivals even when it is off, and
+    whatever its show's rows (review H3: nothing to read or mine), in its show's run there."""
     rows = self.conn.execute("SELECT id, tier, ord, rel_path FROM items WHERE work_id = ?", (work,)).fetchall()
+    if waiting:
+        run = [r for r in rows if r[1] == "arrivals"]
+        return self._in_run(run, rel, episode) if run else ("arrivals", ("end",))
     current = [r for r in rows if r[1] in CURRENT]
     run = current or ([] if first else [r for r in rows if r[1] == "arrivals"])
     if run:

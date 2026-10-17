@@ -3548,17 +3548,16 @@ class Store:
 
     def _after_show(self, item_id, record, excl=()):
         """Where `after-show` puts an item (HC-N6, ✅ P2.1-2, Q4-9): (tier, before_id, after_id), or None (it stays).
-        Its title's other items, by the episode numbers their records name (the same season); without numbers, after
-        the title's last item in Current."""
+        Its title's other items, by the episode numbers their records name (the same season: an item whose record
+        names another season is another show's, as `connect/rules.py` read it before Decision 1); without numbers,
+        after the title's last item in Current."""
         work = self.conn.execute("SELECT work_id FROM items WHERE id = ?", (item_id,)).fetchone()
         if work is None or work[0] is None:
             return None
         mine = _episode(record)
         others = [r for r in self.conn.execute("SELECT id, tier, ord FROM items WHERE work_id = ? AND id != ?",
                                                (work[0], item_id)) if r[0] not in excl]
-        if not others:
-            return None
-        episodes = {}
+        episodes, apart = {}, set()
         for other, text in self.conn.execute(f"SELECT item_id, pairing FROM pairings p WHERE item_id IN "
                                              f"(SELECT id FROM items WHERE work_id = ?) AND {_PREFERRED_ROW}",
                                              (work[0],)):
@@ -3568,11 +3567,24 @@ class Store:
                 continue
             if ep is not None and (mine is None or ep[0] == mine[0]):
                 episodes[other] = ep[1]
+            elif ep is not None:
+                apart.add(other)
+        others = [r for r in others if r[0] not in apart]
+        if not others:
+            return None
         current = [r for r in others if r[1] in CURRENT]
         if not current:
             if all(r[1] in ("graduated", "goal") for r in others):
                 return ("now", None, None)                      # Q4-9: a finished title's new episode leads Current
             return None
+        if isinstance(record, dict) and record.get("producer") == SOURCE_PRODUCER:
+            # a folder's file goes in its show's run in order (S3: K4's number or its natural-order name)
+            rels = dict(self.conn.execute(f"SELECT id, rel_path FROM items WHERE id IN "
+                                          f"({','.join('?' * (len(current) + 1))})", [r[0] for r in current] +
+                                          [item_id]).fetchall())
+            ep = record.get("episode") if isinstance(record.get("episode"), (int, float)) else None
+            tier, (how, anchor) = self._in_run([r + (rels[r[0]],) for r in current], rels[item_id], ep)
+            return (tier, anchor, None) if how == "before" else (tier, None, anchor)
         order = lambda r: (TIERS[r[1]][3], r[2], r[0])           # noqa: E731
         if mine is not None and all(r[0] in episodes for r in current):
             earlier = [r for r in current if episodes[r[0]] < mine[1]]
@@ -7469,11 +7481,13 @@ def _store_take_in(self, root_id, found, first=False, rules=None):
     (S6) — is skipped; an `item_id` gets the origin recorded and nothing else; a copy that is already an item is that
     item; else the item is added and placed. `first` (setup's own first scan, SRC-1): the end of Current, shows in name
     order, episodes in natural order (`ep2` before `ep10`), logged quiet like a back-fill — no placement event, so
-    nothing is mined by itself (S1). Later (SRC-2, S2, S3, S14): a show with rows in Current takes it in its run, before
-    the first episode whose number (K4's, or hato's) or natural-order name is higher, else after the last; a show
-    waiting in New arrivals the same there; a show only in 6+ Months or Finished at the top of Current (Q4-9, as
-    built); a show never shown waits in New arrivals (`arrivals_on`; off: the top of Current), where a placing rule for
-    the source still places it (D30: `source:<id>`, then `source`). Logged as `source`'s, never explicit.
+    nothing is mined by itself (S1). Later (SRC-2, S2, S3, S14; Decision 1, lean): it lands in New arrivals (in its
+    show's run there, in order) and the placing rule for the source takes it on (D30: `source:<id>`, then `source`;
+    `rules` None = settings.json's default, `source: after-show`): after-show puts a show with rows in Current in its
+    run, before the first episode whose number (K4's, or hato's) or natural-order name is higher, else after the last;
+    a show only in 6+ Months or Finished at the top of Current (Q4-9); a show never shown, or one still waiting, waits.
+    With New arrivals off (`arrivals_on`; no rule runs): its show's run in Current, else the top of Current. Logged as
+    `source`'s: the landing never explicit, the rule's move explicit (the user's own setting, D30).
 
     -> the change (kind 'take_in': never on the user's Undo, S6 — Remove takes an item out), with `added`, `attached`,
     `placed` {item_id: tier}, `skipped` {"known", "excluded", "gone": [origins]} and `unused` (the copies no item holds
@@ -7483,6 +7497,9 @@ def _store_take_in(self, root_id, found, first=False, rules=None):
     found = list(found or ())
     if not found:
         return None
+    if rules is None:
+        from app.settings_manager import DEFAULT_SETTINGS
+        rules = DEFAULT_SETTINGS["placing_rules"]
     rels = []
     for f in found:
         origin = f.get("origin")
@@ -7596,7 +7613,7 @@ def _store_take_new(self, cmd, change, prepared, key, record, f, first, rules, w
         cmd.quiet.add(item_id)                       # S1: setup's scan logs nothing (a back-fill's rule)
     else:
         cmd.event(item_id, "placed", 0)              # SRC-2: silent, the source's, never explicit
-        if tier == "arrivals" and rules and not waiting:
+        if tier == "arrivals" and not waiting:       # Decision 1: the rule places it (after-show by default)
             self._apply_rule(item_id, record, rules)
     change.placed[item_id] = self.conn.execute("SELECT tier FROM items WHERE id = ?", (item_id,)).fetchone()[0]
     return item_id
@@ -7641,21 +7658,20 @@ def _store_source_work(self, rel, record, cmd, cache):
 
 
 def _store_source_spot(self, cmd, work, rel, episode, first, waiting=False):
-    """(tier, where) for a new copy of `work` (see `take_in`); `waiting` (K5): New arrivals even when it is off, and
-    whatever its show's rows (review H3: nothing to read or mine), in its show's run there."""
+    """(tier, where) for a new copy of `work` (see `take_in`). Setup's scan: its show's run in Current, else Current's
+    end. Later: New arrivals — its show's run there, else the end — and the placing rule takes it on from there
+    (`_take_new`, Decision 1); with New arrivals off (no rule runs) its show's run in Current, else the top of it.
+    `waiting` (K5, review H3): New arrivals always, whatever its show's rows (nothing to read or mine)."""
     rows = self.conn.execute("SELECT id, tier, ord, rel_path FROM items WHERE work_id = ?", (work,)).fetchall()
-    if waiting:
-        run = [r for r in rows if r[1] == "arrivals"]
-        return self._in_run(run, rel, episode) if run else ("arrivals", ("end",))
     current = [r for r in rows if r[1] in CURRENT]
-    run = current or ([] if first else [r for r in rows if r[1] == "arrivals"])
-    if run:
-        return self._in_run(run, rel, episode)
-    if first:                                        # the end of Current: Soon's end, which the line then takes up
-        return ("soon", ("end",)) if self._soon_line() is not None else ("now", ("end",))
-    if rows or not (waiting or cmd.meta.get("arrivals_on")):    # only in 6+ Months / Finished (S2), or arrivals off
-        return ("now", ("top",))
-    return ("arrivals", ("end",))
+    if first:
+        if current:
+            return self._in_run(current, rel, episode)
+        return ("soon", ("end",)) if self._soon_line() is not None else ("now", ("end",))   # the line takes it up
+    if not (waiting or cmd.meta.get("arrivals_on")):
+        return self._in_run(current, rel, episode) if current else ("now", ("top",))
+    run = [r for r in rows if r[1] == "arrivals"]
+    return self._in_run(run, rel, episode) if run else ("arrivals", ("end",))
 
 
 def _store_in_run(self, run, rel, episode):

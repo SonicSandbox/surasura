@@ -969,6 +969,31 @@ def test_item_of_video_key_finds_the_live_item_holding_a_video(language):
 # --- batch 1's fix round B ------------------------------------------------------------------------------------------ #
 
 @pytest.mark.parametrize("language", LANGUAGES)
+def test_a_later_episode_is_placed_by_the_folders_rule_after_show_by_default_and_waits_when_it_says_wait(language):
+    """Decision 1 (lean): a later file's place is `placing_rules`' — on by default for folders and hato alike
+    (`after-show`, Sonic's Q2-3 setting): handed no rules, a file of a show in Current joins it in order (S3); the
+    user who sets folders to Wait (or has no rule at all) sees it in New arrivals; a rule for this folder wins over
+    the folders' line (S13)."""
+    from app import settings_manager
+    assert settings_manager.DEFAULT_SETTINGS["placing_rules"] == {"hato": "after-show", "source": "after-show"}
+    store, data_dir = _empty(language)
+    src = _source_root()
+    show = names(language)[112]
+    ep = lambda n: _found(language, data_dir, src, show, f"ep{n}.srt", n)      # noqa: E731
+    with store:
+        root = store.add_source(src)
+        store.take_in(root, [ep(1), ep(2), ep(4)], first=True)
+        store.take_in(root, [ep(3)])                                          # no rules handed in: the default
+        assert _current(store) == [f"Library/{show}/ep{n}.srt" for n in (1, 2, 3, 4)]
+        waited = store.take_in(root, [ep(5)], rules={"source": "wait"})
+        assert list(waited.placed.values()) == ["arrivals"] and _tier(store, "arrivals") == [f"Library/{show}/ep5.srt"]
+        store.take_in(root, [ep(6)], rules={})                                # every rule off: it waits too
+        assert _tier(store, "arrivals") == [f"Library/{show}/ep{n}.srt" for n in (5, 6)]
+        store.take_in(root, [ep(7)], rules={f"source:{root}": "wait", "source": "after-show"})
+        assert _tier(store, "arrivals")[-1] == f"Library/{show}/ep7.srt" and len(_current(store)) == 4
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 def test_item_of_video_key_reads_the_pairings_once_while_nothing_is_written(language):
     """Review H17: K1b asks once per video it finds (2,000 on a big first scan); each ask scanning every origin's
     record made a first scan quadratic. The answers come from one read, read again after any write, its contract

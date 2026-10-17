@@ -317,7 +317,9 @@ def test_placing_rules_wait_removes_the_source_and_keeps_the_others():
         {"placing_rules": {"youtube:UCgx8nPpXp9c0Kv4bUk1D3ng": "soon"}}
     assert catalog.change(row, settings, "ja", ("hato", "after-show"))[0] == \
         {"placing_rules": {"hato": "after-show", "youtube:UCgx8nPpXp9c0Kv4bUk1D3ng": "soon"}}
-    assert catalog.change(row, {}, "ja", ("hato", "wait")) == ({}, None)
+    assert catalog.change(row, {"placing_rules": {}}, "ja", ("hato", "wait")) == ({}, None)
+    # no rule written: the default's lines (Decision 1, lean): hato's Wait leaves the folders' after-show
+    assert catalog.change(row, {}, "ja", ("hato", "wait"))[0] == {"placing_rules": {"source": "after-show"}}
     with pytest.raises(ValueError):
         catalog.change(row, settings, "ja", ("hato", "graduated"))
 

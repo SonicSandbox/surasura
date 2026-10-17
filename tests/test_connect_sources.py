@@ -289,6 +289,24 @@ def test_a_source_inside_a_folder_you_added_is_listed_as_your_folder(tmp_path):
     assert os.path.normcase(str(added / "Anime" / "$RECYCLE.BIN")) not in alone.data["dirs"], "a source alone skips it"
 
 
+def test_a_folder_that_turns_from_yours_into_a_source_is_listed_again_by_the_sources_rule(tmp_path):
+    # why (the intent review): the index keeps each folder as last listed while its time holds; a folder listed as
+    # yours (its bin included) that is now only a source must be listed again by the source's rule, and back
+    added = tmp_path / "Videos"
+    _video(str(added / "Show" / "Show - 04.mkv"))
+    _video(str(added / "$RECYCLE.BIN" / "Show - 04.mkv"))
+    path = str(tmp_path / "videos-ja.json")
+    binned = os.path.normcase(str(added / "$RECYCLE.BIN"))
+    videos.Index("ja", path=path).refresh([], [str(added)])
+    as_source = videos.Index("ja", path=path)
+    as_source.refresh([], [], sources=[str(added)])
+    assert binned not in as_source.data["dirs"] and as_source.listed >= 1
+    assert _same(as_source.find(["Show - 04.mkv"]), str(added / "Show" / "Show - 04.mkv"))
+    yours = videos.Index("ja", path=path)
+    yours.refresh([], [str(added)])
+    assert binned in yours.data["dirs"], "yours again: listed as before"
+
+
 @pytest.mark.skipif(os.name != "nt", reason="a junction is Windows' folder link")
 def test_a_junction_inside_a_source_is_never_followed():
     # why: a folder link can loop (a walk that never ends) or lead into another drive's folders; the index takes only

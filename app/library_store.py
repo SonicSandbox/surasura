@@ -1678,8 +1678,8 @@ class Store:
 
     def schedule(self, with_versions=False):
         """{phase_key: [entries]} for the analysed tiers in (ord, id) order — what `resolve_found_files`
-        loads — each entry {physical_path, source_type, title, parent_folder} straight from the columns.
-        With `with_versions`, also the versions, read in the same transaction."""
+        loads — each entry {physical_path, source_type, title, parent_folder} straight from the columns; a video
+        waiting for its subtitle (K5) is never in it. With `with_versions`, also the versions, read in the same transaction."""
         out = {}
         with self._reading():
             for tier in ANALYSED:
@@ -1687,7 +1687,7 @@ class Store:
                     {"physical_path": p, "source_type": s, "title": t, "parent_folder": f}
                     for p, s, t, f in self.conn.execute(
                         "SELECT rel_path, source_type, title, parent_folder FROM items WHERE tier = ? "
-                        "ORDER BY ord, id", (tier,))]
+                        "AND availability != 'waiting' ORDER BY ord, id", (tier,))]
             versions = self._versions() if with_versions else None
         return (out, versions) if with_versions else out
 
@@ -2493,7 +2493,8 @@ class Store:
                     st = os.stat(full)
                     size, mtime_ns, availability = st.st_size, st.st_mtime_ns, "available"
                 except OSError:
-                    size, mtime_ns, availability = cols.get("size"), cols.get("mtime_ns"), "missing"
+                    size, mtime_ns, availability = cols.get("size"), cols.get("mtime_ns"), \
+                        "waiting" if cols.get("availability") == "waiting" else "missing"
                 title, folder, source_type = _columns(entry)
                 # an undo restores the `changed_in` the removal replaced (§6.11), so a second undo in a row
                 # still finds its own version; Put back is a new change
@@ -4494,8 +4495,13 @@ class Store:
             log_seq = self._log_seq()
         rows.sort(key=lambda r: (TIERS[r["tier"]][3], r["ord"], r["id"]))
         by_tier = {t: [] for t in TIERS}
+        waiting = []                                   # K5: an analysed tier's video-only rows, never in the schedule
         for r in rows:
-            by_tier[r["tier"]].append(json.loads(r["entry"]))
+            entry = json.loads(r["entry"])
+            if r["availability"] == "waiting" and r["tier"] in ANALYSED:
+                waiting.append(entry)
+            else:
+                by_tier[r["tier"]].append(entry)
         doc = {}
         if "manifest_metadata" in meta:
             doc["metadata"] = json.loads(meta["manifest_metadata"])
@@ -4518,6 +4524,8 @@ class Store:
             "graduated": by_tier["graduated"], "arrivals": by_tier["arrivals"], "meta": lib_meta,
             "items": {"fields": list(ITEM_FIELDS), "rows": [[r[f] for f in ITEM_FIELDS] for r in rows]},
             "tables": tables}
+        if waiting:
+            doc["surasura_library"]["waiting"] = waiting
         return doc, meta["state_version"], meta.get("copy_dirty", 0)
 
 
@@ -5263,8 +5271,15 @@ def _image_from_copy(norm, data_dir, by_records=False):
     now = _now()
     recs = _records(norm.lib)
     items = []
+    # K5 (S9): a waiting row of an analysed tier is in no list, so the records give the order (the lists' own when
+    # the copy is whole) and the copy's `waiting` list its entry
+    by_records = by_records or any(r.get("availability") == "waiting" and r.get("tier") in ANALYSED
+                                   for r in recs.values())
     if by_records:
         entries = {path_key(e["physical_path"]): e for t in TIERS for e in norm.tiers[t]}
+        for e in norm.lib.get("waiting") or []:
+            if isinstance(e, dict) and isinstance(e.get("physical_path"), str):
+                entries.setdefault(path_key(e["physical_path"]), e)
         listing = [(rec.get("tier"), entries.get(key) or make_entry(rec["rel_path"], "Rebuild", with_source_type=False))
                    for key, rec in recs.items() if rec.get("tier") in TIERS]
         listing.sort(key=lambda p: TIERS[p[0]][3])
@@ -5279,6 +5294,8 @@ def _image_from_copy(norm, data_dir, by_records=False):
                         item[field] = rec[field]
                 if item["availability"] == "missing" and rec.get("size") is not None:
                     item["size"], item["mtime_ns"] = rec.get("size"), rec.get("mtime_ns")
+                if rec.get("availability") == "waiting" and not is_content_name(item["rel_path"]):
+                    item["availability"], item["size"], item["mtime_ns"] = "waiting", None, None
             items.append(item)
     tables = {}
     for name, table in ((norm.lib.get("tables") or {}).items()):
@@ -7419,6 +7436,7 @@ def _store_take_in(self, root_id, found, first=False, rules=None):
                 if note.get(k):
                     out[k].add(note[k])
         works, by_bytes, spare = {}, {}, {}
+        gaps = self._waiting_videos() if any(_video_keys(f) for f in found) else {}
         for f in order:
             origin = os.path.abspath(f["origin"])
             key = origin_key(origin)
@@ -7430,7 +7448,7 @@ def _store_take_in(self, root_id, found, first=False, rules=None):
                     spare[p[1]] = p[2]
                 continue
             if key[len(SOURCE_KEY):] in out["patterns"] or (f.get("sha256") and f["sha256"] in out["sha256"]) or \
-                    (f.get("video_key") and f["video_key"] in out["video_key"]):
+                    any(k in out["video_key"] or k in out["patterns"] for k in _video_keys(f)):
                 change.skipped["excluded"].append(origin)
                 if p:
                     spare[p[1]] = p[2]
@@ -7439,15 +7457,16 @@ def _store_take_in(self, root_id, found, first=False, rules=None):
             item_id = f.get("item_id")
             if item_id is None:
                 held = self.conn.execute("SELECT id FROM items WHERE rel_key = ?", (p[2],)).fetchone()
-                if held is None and f.get("sha256") and f["sha256"] in by_bytes:   # the same bytes in this batch (A5)
+                gap = next((gaps[k] for k in _video_keys(f) if k in gaps), None) if is_content_name(p[1]) else None
+                if held is None and gap is None and f.get("sha256") and f["sha256"] in by_bytes:   # the same bytes in this batch (A5)
                     item_id = by_bytes[f["sha256"]]
                     spare[p[1]] = p[2]
-                elif held is None:
+                elif held is None and gap is None:
                     item_id = self._take_new(cmd, change, p, key, record, f, first, rules, works)
                     by_bytes.setdefault(f.get("sha256"), item_id)
                     continue
                 else:
-                    item_id = held[0]
+                    item_id = held[0] if held else self._fill_gap(cmd, gap, p, gaps)
             elif not self.conn.execute("SELECT 1 FROM items WHERE id = ?", (item_id,)).fetchone():
                 change.skipped["gone"].append(origin)
                 continue
@@ -7468,11 +7487,15 @@ def _store_write_origin(self, key, item_id, record):
 
 def _store_take_new(self, cmd, change, prepared, key, record, f, first, rules, works):
     """One new item of `take_in`: its title (the folder's — `Library/<show>` and a 2.x `HighPriority/<show>` are one —
-    else the record's show, else a new one), its place (`_source_spot`), its origin record, its events. K5 adds a
-    video-only show's 'waiting' rows here."""
+    else the record's show, else a new one), its place (`_source_spot`), its origin record, its events. A video with
+    no text copy (K5: its `rel` the video's name, no file made) is 'waiting': in New arrivals even on setup's scan,
+    never placed by a rule, never counted."""
     rel = prepared[1]
+    waiting = record.get("video_path") is not None and not is_content_name(rel)
+    if waiting:
+        prepared = prepared[:4] + ((None, None, "waiting"),)
     work = self._source_work(rel, record, cmd, works)
-    tier, where = self._source_spot(cmd, work, rel, f.get("episode"), first)
+    tier, where = self._source_spot(cmd, work, rel, f.get("episode"), first and not waiting, waiting)
     item_id = self._add_rows([prepared + (tier,)], cmd.version)[0]
     self.conn.execute("UPDATE items SET work_id = ? WHERE id = ?", (work, item_id))
     self._write_origin(key, item_id, record)
@@ -7483,9 +7506,36 @@ def _store_take_new(self, cmd, change, prepared, key, record, f, first, rules, w
         cmd.quiet.add(item_id)                       # S1: setup's scan logs nothing (a back-fill's rule)
     else:
         cmd.event(item_id, "placed", 0)              # SRC-2: silent, the source's, never explicit
-        if tier == "arrivals" and rules:
+        if tier == "arrivals" and rules and not waiting:
             self._apply_rule(item_id, record, rules)
     change.placed[item_id] = self.conn.execute("SELECT tier FROM items WHERE id = ?", (item_id,)).fetchone()[0]
+    return item_id
+
+
+def _video_keys(record):
+    """A record's video as K5 matches it: its key, and its path's key (the pattern a waiting item's Remove writes)."""
+    path = record.get("video_path")
+    return [k for k in (record.get("video_key"), path and path_key(os.path.abspath(path))) if k]
+
+
+def _store_waiting_videos(self):
+    """{video key or path key: item id} of the items waiting for their subtitle (K5)."""
+    out = {}
+    for item_id, text in self.conn.execute(f"SELECT p.item_id, p.pairing FROM pairings p JOIN items i ON "
+                                           f"i.id = p.item_id WHERE i.availability = 'waiting' AND {_ORIGIN_ROW}"):
+        for k in _video_keys(_json_dict(text) or {}):
+            out[k] = item_id
+    return out
+
+
+def _store_fill_gap(self, cmd, item_id, prepared, gaps):
+    """A waiting item's subtitle came (K5): the item takes the copy in place — its id, place and records kept, no
+    event (it was shown already) — and counts from now. -> its id."""
+    self.conn.execute("UPDATE items SET entry = ? WHERE id = ?", (_dumps(prepared[3]), item_id))
+    self._repoint(item_id, prepared[1], prepared[4][0], prepared[4][1])
+    cmd.touch({self.conn.execute("SELECT tier FROM items WHERE id = ?", (item_id,)).fetchone()[0]}, availability=True)
+    for k in [k for k, v in gaps.items() if v == item_id]:
+        del gaps[k]
     return item_id
 
 
@@ -7500,8 +7550,8 @@ def _store_source_work(self, rel, record, cmd, cache):
     return self._work_by_record(record) or self._folder_work(rel, None, cmd, cache)
 
 
-def _store_source_spot(self, cmd, work, rel, episode, first):
-    """(tier, where) for a new copy of `work` (see `take_in`)."""
+def _store_source_spot(self, cmd, work, rel, episode, first, waiting=False):
+    """(tier, where) for a new copy of `work` (see `take_in`); `waiting` (K5): New arrivals even when it is off."""
     rows = self.conn.execute("SELECT id, tier, ord, rel_path FROM items WHERE work_id = ?", (work,)).fetchall()
     current = [r for r in rows if r[1] in CURRENT]
     run = current or ([] if first else [r for r in rows if r[1] == "arrivals"])
@@ -7509,7 +7559,7 @@ def _store_source_spot(self, cmd, work, rel, episode, first):
         return self._in_run(run, rel, episode)
     if first:                                        # the end of Current: Soon's end, which the line then takes up
         return ("soon", ("end",)) if self._soon_line() is not None else ("now", ("end",))
-    if rows or not cmd.meta.get("arrivals_on"):      # only in 6+ Months / Finished (S2), or New arrivals off
+    if rows or not (waiting or cmd.meta.get("arrivals_on")):    # only in 6+ Months / Finished (S2), or arrivals off
         return ("now", ("top",))
     return ("arrivals", ("end",))
 
@@ -7558,6 +7608,8 @@ Store._let_origins_back = _store_let_origins_back
 Store.take_in = _store_take_in
 Store._write_origin = _store_write_origin
 Store._take_new = _store_take_new
+Store._waiting_videos = _store_waiting_videos
+Store._fill_gap = _store_fill_gap
 Store._source_work = _store_source_work
 Store._source_spot = _store_source_spot
 Store._in_run = _store_in_run

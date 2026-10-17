@@ -18,6 +18,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 
 import pytest
@@ -25,7 +26,7 @@ import pytest
 from app import library_store as ls
 from app import sources
 from app.connect import videos
-from tests.test_library_store_support import LANGUAGES, RESOURCES, library, write_manifest
+from tests.test_library_store_support import LANGUAGES, RESOURCES, library, roots, write_manifest
 
 # Real text per language (each episode told apart by a numbered line appended)
 _TEXTS = {"ja": ("placed_episode.srt", "library_episode.ass", "phrases_sample.srt", "context_test.txt"),
@@ -134,6 +135,13 @@ def _items(store):
 def _sha(path):
     with open(path, "rb") as f:
         return hashlib.sha256(f.read()).hexdigest()
+
+
+def _spy_reads(monkeypatch, read):
+    """Every source file the look reads for its bytes (a new text, read once; a book's EPUB) goes into `read`."""
+    real_sha, real_text = ls.sha256_of, sources._read_text
+    monkeypatch.setattr(ls, "sha256_of", lambda p: read.append(p) or real_sha(p))
+    monkeypatch.setattr(sources, "_read_text", lambda p, st: read.append(p) or real_text(p, st))
 
 
 def _cache(language):
@@ -299,26 +307,27 @@ def test_a_file_written_in_the_last_seconds_waits_for_the_next_look(language):
 
 
 def test_a_file_that_changes_while_copied_is_not_taken_and_leaves_no_part(monkeypatch):
+    """A text is read once (hashed, then copied from what was read): one that changes as it is read waits."""
     language = "ja"
     store, data_dir = _empty(language)
     a = _SHOWS[language][0]
     src = _drive("driveA")
     path = _write(os.path.join(src, a, "ep01.srt"), _text(language, 1))
     _settle(src)
-    real = sources._copy_part
+    real = sources._read_text
 
-    def growing(origin, part):
-        digest = real(origin, part)
+    def growing(origin, st):
+        digest = real(origin, st)
         with open(origin, "a", encoding="utf-8") as f:                         # the downloader writes more
             f.write("続き\n")
         return digest
-    monkeypatch.setattr(sources, "_copy_part", growing)
+    monkeypatch.setattr(sources, "_read_text", growing)
     with store:
         root = store.add_source(src)
         result = sources.scan(store, language, root, first=True)                # (the test itself writes the source)
         assert result["added"] == 0 and result["waiting"] == 1
         assert _library_files(data_dir) == [] and _items(store) == 0
-        monkeypatch.setattr(sources, "_copy_part", real)
+        monkeypatch.setattr(sources, "_read_text", real)
         t = time.time() - 10
         os.utime(path, (t, t))
         result = _look(store, language, root)
@@ -335,19 +344,19 @@ def test_a_file_that_cannot_be_read_waits_and_the_look_goes_on(monkeypatch):
     locked = _write(os.path.join(src, a, "ep01.srt"), _text(language, 1))
     _write(os.path.join(src, a, "ep02.srt"), _text(language, 2))
     _settle(src)
-    real = ls.sha256_of
+    real = sources._read_text
 
-    def sha(p):
+    def read(p, st):
         if os.path.abspath(p) == os.path.abspath(locked):
             raise PermissionError(13, "in use by another program", p)
-        return real(p)
-    monkeypatch.setattr(ls, "sha256_of", sha)
+        return real(p, st)
+    monkeypatch.setattr(sources, "_read_text", read)
     with store:
         root = store.add_source(src)
         result = _look(store, language, root, first=True)
         assert (result["added"], result["waiting"]) == (1, 1)
         assert _library_files(data_dir) == [f"Library/{a}/ep02.srt"]
-        monkeypatch.setattr(ls, "sha256_of", real)
+        monkeypatch.setattr(sources, "_read_text", real)
         assert _look(store, language, root)["added"] == 1                     # its folder is listed again
 
 
@@ -726,8 +735,7 @@ def test_a_look_never_follows_a_file_link(monkeypatch):
     except OSError:
         pytest.skip("this system makes no file links for this user")
     read = []
-    real_sha = ls.sha256_of
-    monkeypatch.setattr(ls, "sha256_of", lambda p: read.append(p) or real_sha(p))
+    _spy_reads(monkeypatch, read)
     monkeypatch.setattr(sources, "SETTLE_S", 0)                                  # (the link's own time is just now)
     with store:
         root = store.add_source(src)
@@ -746,9 +754,9 @@ def test_a_cloud_placeholder_is_never_read_text_or_video(monkeypatch):
     sizes = {os.path.getsize(ghost_text), os.path.getsize(ghost_video)}
     monkeypatch.setattr(ls, "is_placeholder", lambda st: st.st_size in sizes)
     read = []
-    real_key, real_sha = videos.content_key, ls.sha256_of
+    real_key = videos.content_key
     monkeypatch.setattr(videos, "content_key", lambda p: read.append(p) or real_key(p))
-    monkeypatch.setattr(ls, "sha256_of", lambda p: read.append(p) or real_sha(p))
+    _spy_reads(monkeypatch, read)
     with store:
         root = store.add_source(src)
         result = _look(store, language, root, first=True)
@@ -830,8 +838,8 @@ def test_stop_ends_the_look_between_files_with_what_it_took_in_whole(monkeypatch
         _write(os.path.join(src, a, f"ep{n:02d}.srt"), _text(language, n))
         _write(os.path.join(src, b, f"ep{n:02d}.srt"), _text(language, n + 10))
     copied = []
-    real = sources._copy_part
-    monkeypatch.setattr(sources, "_copy_part", lambda o, p: copied.append(o) or real(o, p))
+    real = sources._write_part
+    monkeypatch.setattr(sources, "_write_part", lambda p, data: copied.append(p) or real(p, data))
     with store:
         root = store.add_source(src)
         result = _look(store, language, root, first=True, stop=lambda: len(copied) >= 2)
@@ -2069,3 +2077,311 @@ def test_a_subs_folder_of_another_language_leaves_the_videos_waiting(language):
         assert [(e["physical_path"], av) for _i, e, av in store.ordered("arrivals")] == \
             [(f"Library/{a}/{a} - 01.mkv", "waiting")]
         assert _current(store) == [f"Library/{b}/{b} - 01.srt"]
+
+
+# --- the performance round (batch 1's smoothness register) ---------------------------------------------------------- #
+
+BENCH = os.environ.get("SURASURA_STORE_BENCH") == "1"
+MOVE_BUDGET = 0.05             # s: a window move made while a look takes files in waits no longer for the write lock
+
+
+def test_a_look_that_finds_nothing_changed_reads_no_record_and_writes_nothing():
+    """SRC-9, S19: a look finding every folder as it was reads the sources' rows once — no origin, no count (the
+    counts' grouped read spilled a temporary table to disk: 29 MB written a look at 20k origins) — and writes
+    nothing: no change in the store, the folder times' file untouched."""
+    language = "ja"
+    store, data_dir = _empty(language)
+    a, b = _SHOWS[language]
+    src = _drive("driveA")
+    for n in (1, 2):
+        _write(os.path.join(src, a, f"ep{n:02d}.srt"), _text(language, n))
+        _write(os.path.join(src, b, f"ep{n:02d}.srt"), _text(language, n + 10))
+    _settle(src)
+    with store:
+        root = store.add_source(src)
+        assert _look(store, language, root, first=True)["added"] == 4
+        cache = sources.cache_path(language)
+        with open(cache, "rb") as f:
+            held = f.read()
+        st, changes, versions = os.stat(cache), store.conn.total_changes, store.versions()
+        sql = []
+        store.conn.set_trace_callback(sql.append)
+        try:
+            result = _look(store, language, root)
+        finally:
+            store.conn.set_trace_callback(None)
+        assert result["added"] == result["recopied"] == 0
+        assert not [s for s in sql if "pairings" in s or "exclusions" in s], sql
+        assert len([s for s in sql if "FROM roots" in s]) == 1, sql
+        assert store.conn.total_changes == changes and store.versions() == versions
+        with open(cache, "rb") as f:
+            assert f.read() == held
+        assert os.stat(cache).st_mtime_ns == st.st_mtime_ns
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_new_text_is_read_once_its_video_once_and_each_copy_flushed(language, monkeypatch):
+    """SRC-9: a new text was read twice from the source (hashed, then copied); now once — hashed and copied
+    from what was read (a subtitle is a few KB). Its video's key is read once (the record names it: Connect's check
+    of a moved video), and every copy is still flushed to the disk before its record is written."""
+    import builtins
+    store, data_dir = _empty(language)
+    a = _SHOWS[language][0]
+    src = _drive("driveA")
+    texts = [_write(os.path.join(src, a, f"ep{n:02d}.srt"), _text(language, n)) for n in (1, 2, 3)]
+    vids = [_video(os.path.join(src, a, f"ep{n:02d}.mkv"), body=b"\x1a\x45\xdf\xa3 " + bytes([n]) * 40)
+            for n in (1, 2, 3)]
+    _settle(src)
+    opened, flushed = [], []
+    real_open, real_fsync = builtins.open, os.fsync
+    top = os.path.normcase(os.path.abspath(src))
+
+    def spy_open(file, *a, **k):
+        if isinstance(file, str) and os.path.normcase(os.path.abspath(file)).startswith(top + os.sep):
+            opened.append(os.path.normcase(os.path.abspath(file)))
+        return real_open(file, *a, **k)
+    monkeypatch.setattr(builtins, "open", spy_open)
+    monkeypatch.setattr(os, "fsync", lambda fd: flushed.append(fd) or real_fsync(fd))
+    with store:
+        root = store.add_source(src)
+        result = sources.scan(store, language, root, first=True)
+    monkeypatch.setattr(builtins, "open", real_open)
+    assert result["added"] == 3
+    for path in texts + vids:
+        assert opened.count(os.path.normcase(os.path.abspath(path))) == 1, (path, opened)
+    assert len(flushed) == 3                                                  # one per copy, before its record
+    for n, path in enumerate(texts, 1):
+        assert _sha(os.path.join(data_dir, "Library", a, f"ep{n:02d}.srt")) == _sha(path)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("at", [3, 5])                                       # before its last folder; at it
+def test_a_source_that_goes_mid_look_is_unreachable_and_its_folder_times_are_kept(language, at, monkeypatch):
+    """SRC-3: a source unplugged (or renamed away) while a look lists it is unreachable for that look, as one
+    gone at its start: nothing taken in, nothing written, and the folder times kept whole — so the next look lists
+    only what changed, not every folder it hadn't reached."""
+    store, data_dir = _empty(language)
+    src = _drive("driveA")
+    shows = [f"{_SHOWS[language][0]} {n}" for n in range(1, 5)]
+    for n, show in enumerate(shows):
+        _write(os.path.join(src, show, "ep01.srt"), _text(language, n))
+    _settle(src)
+    with store:
+        root = store.add_source(src)
+        assert _look(store, language, root, first=True)["added"] == 4
+        for n, show in enumerate(shows):
+            _write(os.path.join(src, show, "ep02.srt"), _text(language, n + 10))
+        _settle(src)
+        with open(sources.cache_path(language), "rb") as f:
+            held = f.read()
+        items, versions = _items(store), store.versions()
+        away = src + "_away"
+        listed, real = [], sources._listing
+
+        def unplugged(folder):
+            listed.append(folder)
+            if len(listed) == at:
+                os.rename(src, away)                                          # the drive goes mid-look
+            return real(folder)
+        monkeypatch.setattr(sources, "_listing", unplugged)
+        result = sources.scan(store, language, root, full=True)
+        monkeypatch.setattr(sources, "_listing", real)
+        assert result["reachable"] is False and result["added"] == 0
+        assert _items(store) == items and store.versions() == versions
+        with open(sources.cache_path(language), "rb") as f:
+            assert f.read() == held
+        assert _library_files(data_dir) == [f"Library/{s}/ep01.srt" for s in sorted(shows)]
+        os.rename(away, src)
+        assert _look(store, language, root)["added"] == 4
+
+
+def test_a_long_look_checkpoints_every_so_many_take_ins_and_a_busy_one_waits(monkeypatch):
+    """The window's handle never checkpoints by itself, so a first scan's write-ahead log grew to 122 MB at 20k.
+    A look checkpoints (PASSIVE, under the write lock, never waiting for it) every CHECKPOINT_EVERY take-ins; one
+    refused as busy is the next one's."""
+    language = "ja"
+    store, data_dir = _empty(language)
+    a = _SHOWS[language][0]
+    src = _drive("driveA")
+    for n in range(1, 6):
+        _write(os.path.join(src, a, f"ep{n:02d}.srt"), _text(language, n))
+    monkeypatch.setattr(sources, "BATCH", 1)
+    monkeypatch.setattr(sources, "CHECKPOINT_EVERY", 2)
+    with store:
+        asked, real = [], store.checkpoint
+        monkeypatch.setattr(store, "checkpoint", lambda wait=None: asked.append(wait) or real(wait=wait))
+        root = store.add_source(src)
+        assert _look(store, language, root, first=True)["added"] == 5
+        assert asked == [0.1, 0.1]
+        for n in range(6, 9):
+            _write(os.path.join(src, a, f"ep{n:02d}.srt"), _text(language, n))
+
+        def busy(wait=None):
+            raise ls.StoreBusy("the library is busy; try again")
+        monkeypatch.setattr(store, "checkpoint", busy)
+        assert _look(store, language, root)["added"] == 3
+
+
+def test_a_look_reads_the_origins_videos_once_whatever_its_take_ins(monkeypatch):
+    """K1b's check (a) asks for each video a look finds; after every take-in (a write) the store read every
+    record's video again — once a batch, so a first scan was quadratic. A look reads them once and keeps them up
+    to date itself; the same video found in another source is still that episode."""
+    language = "ja"
+    store, data_dir = _empty(language)
+    a = _SHOWS[language][0]
+    src, other = _drive("driveA"), _drive("driveB")
+    for n in range(1, 5):
+        _write(os.path.join(src, a, f"ep{n:02d}.srt"), _text(language, n))
+        _video(os.path.join(src, a, f"ep{n:02d}.mkv"), body=b"\x1a\x45\xdf\xa3 " + bytes([n]) * 40)
+    _video(os.path.join(other, a, "ep04.mkv"), body=b"\x1a\x45\xdf\xa3 " + bytes([4]) * 40)   # ep04's bytes
+    _write(os.path.join(other, a, "ep04.srt"), _text(language, 4, extra=" 別の訳"))
+    monkeypatch.setattr(sources, "BATCH", 1)
+    with store:
+        root = store.add_source(src)
+        sql = []
+        store.conn.set_trace_callback(lambda s: sql.append(s) if "$.video_key" in s else None)
+        try:
+            first = _look(store, language, root, first=True)
+        finally:
+            store.conn.set_trace_callback(None)
+        assert first["added"] == 4 and len(sql) == 1, sql
+        result = _look(store, language, store.add_source(other))
+        assert (result["added"], result["attached"]) == (0, 1) and _items(store) == 4
+
+
+def test_a_video_taken_earlier_in_a_look_is_known_to_it_later():
+    """The look's own video map is kept up to date as it takes files in — a video whose subtitle an earlier show
+    brought in is that item's for the rest of the look (here a copy of it in a folder of videos alone: no waiting
+    row for it)."""
+    language = "ja"
+    store, data_dir = _empty(language)
+    src = _drive("driveA")
+    body = b"\x1a\x45\xdf\xa3 the same episode"
+    _write(os.path.join(src, "Aoi", "ep01.srt"), _text(language, 1))
+    _video(os.path.join(src, "Aoi", "ep01.mkv"), body=body)
+    _video(os.path.join(src, "Zen", "ep01.mkv"), body=body)                      # the same video, a folder of its own
+    with store:
+        root = store.add_source(src)
+        result = _look(store, language, root, first=True)
+        assert result["added"] == 1 and _items(store) == 1
+        assert not store.conn.execute("SELECT 1 FROM items WHERE availability = 'waiting'").fetchone()
+
+
+def test_a_subtitle_of_a_video_waiting_elsewhere_in_the_same_look_fills_its_gap():
+    """The look's video map never names a waiting row (K5): a subtitle found later in the look beside the same
+    video fills that row with its text — never recorded on it as an item already in, which would leave it waiting with
+    no text."""
+    language = "ja"
+    store, data_dir = _empty(language)
+    src = _drive("driveA")
+    body = b"\x1a\x45\xdf\xa3 one episode, two copies"
+    _video(os.path.join(src, "Aoi", "ep01.mkv"), body=body)                      # a folder of videos alone: it waits
+    _video(os.path.join(src, "Zen", "ep01.mkv"), body=body)
+    _write(os.path.join(src, "Zen", "ep01.srt"), _text(language, 1))
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        assert _items(store) == 1
+        assert not store.conn.execute("SELECT 1 FROM items WHERE availability = 'waiting'").fetchone()
+        assert len(_library_files(data_dir)) == 1
+
+
+class _Holds:
+    """Each outermost hold of the store's write lock (this process), and each wait for it, by thread."""
+
+    def __init__(self, monkeypatch, db_path):
+        self.lock = ls._write_lock_for(db_path)
+        self.holds, self.waits = [], []
+        acquire, release = self.lock.acquire, self.lock.release
+        me = self
+
+        def timed_acquire(timeout=ls.LOCK_TIMEOUT):
+            t0 = time.perf_counter()
+            acquire(timeout)
+            if me.lock.depth == 1:
+                me.lock.since = time.perf_counter()
+                me.waits.append((threading.current_thread().name, me.lock.since - t0))
+
+        def timed_release():
+            if me.lock.depth == 1:
+                me.holds.append((threading.current_thread().name, time.perf_counter() - me.lock.since))
+            release()
+        monkeypatch.setattr(self.lock, "acquire", timed_acquire)
+        monkeypatch.setattr(self.lock, "release", timed_release)
+
+    def of(self, name, what="holds"):
+        return [s for n, s in getattr(self, what) if n == name]
+
+
+def _seed(store, root, data_dir, language, src, count, per_show=50):
+    """`count` origins already in (what a big first scan left): tiny copies in Library, taken in in big batches."""
+    line = _text(language, 0).splitlines()[-2] or "x"
+    found = []
+    for n in range(count):
+        show = f"既存{n // per_show:04d}"
+        rel = f"Library/{show}/e{n % per_show:03d}.srt"
+        full = os.path.join(data_dir, *rel.split("/"))
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        with open(full, "w", encoding="utf-8") as f:
+            f.write(f"{line} {n}\n")
+        found.append({"origin": os.path.join(src, "seeded", show, f"e{n % per_show:03d}.srt"), "size": 10,
+                      "mtime_ns": 1, "sha256": f"{n:064x}", "show": show, "rel": rel, "episode": n % per_show + 1,
+                      "video_key": f"v1-seed{n:08d}"})
+    for k in range(0, count, 1000):
+        store.take_in(root, found[k:k + 1000], first=True)
+    store.checkpoint()               # a library at rest: the helper (or a close) has checkpointed its log since
+
+
+def test_a_window_move_during_a_look_lands_within_the_budget(monkeypatch):
+    """G1: a window move waits for the write lock while a look takes files in. As built, a take-in of 200
+    files at 2,000 origins held it for seconds (each file placed by scanning every origin per row of its show), so a
+    drag waited — up to 5 s and then refused as busy. Now each take-in is small and indexed: in the timed run
+    (SURASURA_STORE_BENCH=1), at 20,000 origins, no take-in holds the lock over MOVE_BUDGET and no move waits longer;
+    elsewhere, a short functional pass at 600 (every move lands, none refused)."""
+    language = "ja"
+    store, data_dir = _empty(language)
+    _d, user_files_dir = roots(language)
+    src = _drive("driveA")
+    with store:
+        root = store.add_source(src)
+        _seed(store, root, data_dir, language, src, 20_000 if BENCH else 600)
+        shows, per = (2, 250) if BENCH else (2, 30)
+        for s in range(shows):
+            for n in range(1, per + 1):
+                stem = os.path.join(src, f"{_SHOWS[language][0]} {s}", f"[Grp] Show {s} - {n:03d}")
+                _write(stem + ".ja.srt", _text(language, n, extra=f" {s}"))
+                _video(stem + ".mkv", body=b"\x1a\x45\xdf\xa3 " + f"{s}-{n}".encode())
+        _settle(src)
+        tier = "now" if store.ordered("now") else "soon"
+        ids = [i for i, _e, _a in store.ordered(tier)][:6]
+        holds = _Holds(monkeypatch, store.db_path)
+        done, moves, errors = threading.Event(), [], []
+
+        def mover():
+            other = ls.open_store(language, data_dir, user_files_dir)
+            n = 0
+            with other:
+                while not done.is_set():
+                    t0 = time.perf_counter()
+                    try:
+                        other.move([ids[n % len(ids)]], tier, before_id=ids[(n + 3) % len(ids)])
+                        moves.append(time.perf_counter() - t0)
+                    except ls.StoreError as e:
+                        errors.append(repr(e))
+                    n += 1
+                    done.wait(0.02)
+        thread = threading.Thread(target=mover, name="mover")
+        thread.start()
+        try:
+            result = sources.scan(store, language, root)
+        finally:
+            done.set()
+            thread.join()
+        assert result["added"] == shows * per
+        assert errors == [] and moves, errors
+        scan = holds.of(threading.current_thread().name)
+        assert scan
+        if BENCH:
+            waits = holds.of("mover", "waits")
+            assert max(scan) <= MOVE_BUDGET, sorted(scan)[-5:]
+            assert max(waits) <= MOVE_BUDGET, sorted(waits)[-5:]

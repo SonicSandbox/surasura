@@ -1050,3 +1050,242 @@ def test_take_in_never_reads_a_file_whose_origin_is_already_recorded(language, m
         change = store.take_in(root, [dict(f), g])
         assert change.skipped["known"] == [os.path.abspath(f["origin"])] and change.unused == []
         assert [os.path.basename(p) for p in read] == ["ep2.srt"], "only the new file is read"
+
+
+# --- the performance round (SRC batch 1, the smoothness register) --------------------------------------------------- #
+
+def _all_rows(conn):
+    """Every row of every table, in a fixed order: what an index may never change."""
+    out = {}
+    for (name,) in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").fetchall():
+        out[name] = conn.execute(f"SELECT * FROM {name} ORDER BY rowid").fetchall()
+    return out
+
+
+def _has_pairings_index(conn):
+    return bool(conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'pairings_item'").fetchone())
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_store_made_before_the_pairings_index_gets_it_at_open_and_nothing_else_changes(language):
+    """An item's records are read by `pairings(item_id)`; without it, every take-in placed each file by scanning
+    every origin once per row of its show (a first scan's batch held the write lock for seconds, a window move waited
+    behind it). The index changes no data and no schema version (an older Surasura reads the store as it was): a new
+    store is made with it, one made before gets it at its first open by a writer — and comes out the same otherwise:
+    the same rows, the same copy, byte for byte, the same version, integrity ok."""
+    import sqlite3
+    store, data_dir = _empty(language)
+    _d, user_files_dir = roots(language)
+    src = _source_root()
+    show = names(language)[120]
+    with store:
+        assert _has_pairings_index(store.conn), "a new store has it"
+        root = store.add_source(src)
+        store.take_in(root, [_found(language, data_dir, src, show, f"ep{n}.srt", n, episode=n) for n in (1, 2, 3)],
+                      first=True)
+        ls.export_copy(store)
+    db = ls.library_db_path(language, data_dir)
+    raw = sqlite3.connect(db)
+    raw.execute("DROP INDEX pairings_item")                                   # the store as an older build made it
+    raw.commit()
+    rows, version = _all_rows(raw), raw.execute("PRAGMA user_version").fetchone()[0]
+    raw.close()
+    with open(ls.manifest_path(user_files_dir), "rb") as f:
+        copy = f.read()
+    reader = ls.Store(db, language, data_dir, user_files_dir, role="reader")
+    try:
+        assert not _has_pairings_index(reader.conn), "a reader never writes, not even the index"
+    finally:
+        reader.close()
+    store = ls.open_store(language, data_dir, user_files_dir)
+    with store:
+        assert _has_pairings_index(store.conn)
+        assert _all_rows(store.conn) == rows
+        assert store.conn.execute("PRAGMA user_version").fetchone()[0] == version == ls.STORE_SCHEMA
+        assert store.conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert ls.export_copy(store) is False, "nothing for the copy to say"
+        doc, _version, _dirty = store.export_snapshot()
+    with open(ls.manifest_path(user_files_dir), "rb") as f:
+        assert f.read() == copy
+    held = json.loads(copy.decode("utf-8"))["surasura_library"]
+    assert doc["surasura_library"]["tables"] == held["tables"], "the copy written again holds the same rows"
+    assert ls.maintain(language, data_dir, user_files_dir) in (ls.EXIT_DONE, ls.EXIT_NOTHING)
+    with open(ls.manifest_path(user_files_dir), "rb") as f:
+        assert f.read() == copy
+    rang = []                                                                 # every commit rings the windows
+    real = ls.library_watch.ring
+    ls.library_watch.ring = lambda db: rang.append(db) or real(db)
+    try:
+        ls.open_store(language, data_dir, user_files_dir).close()
+    finally:
+        ls.library_watch.ring = real
+    assert rang == [], "an open of a store that has it writes nothing"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_items_records_are_read_through_the_pairings_index(language):
+    """The reads that place a file in its show's run (`_episodes_of`, `_PREFERRED_ROW`'s check for another
+    record) look an item's records up by the index — never a scan of every record per row."""
+    store, _data_dir = _empty(language)
+    with store:
+        sql = f"SELECT p.item_id, p.pairing FROM pairings p WHERE p.item_id IN (?, ?) AND {ls._PREFERRED_ROW}"
+        plan = " | ".join(r[-1] for r in store.conn.execute("EXPLAIN QUERY PLAN " + sql, (1, 2)).fetchall())
+        assert "pairings_item" in plan and "SCAN q" not in plan and "SCAN p" not in plan, plan
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_take_in_reads_a_shows_episode_numbers_once_a_batch(language):
+    """Placing each file of a batch in its show's run read the episode number of every row of the run again —
+    per file, so a long show's batch was quadratic. Now once a batch (a new item's number is its record's), the
+    order the same: K4's numbers decide where names don't sort, and an item given an origin in the batch is read
+    again."""
+    store, data_dir = _empty(language)
+    src = _source_root()
+    show = names(language)[121]
+    ep = lambda n: _found(language, data_dir, src, show, f"x{9 - n}.srt", n, episode=n)   # noqa: E731
+    with store:
+        root = store.add_source(src)
+        store.take_in(root, [ep(n) for n in (2, 4, 6)], first=True)
+        reads, runs = [], []
+        store.conn.set_trace_callback(lambda s: reads.append(s) if "p.item_id IN" in s else
+                                      runs.append(s) if "rel_path FROM items WHERE work_id" in s else None)
+        try:
+            store.take_in(root, [ep(n) for n in (1, 3, 5, 7, 8)], first=True)
+        finally:
+            store.conn.set_trace_callback(None)
+        assert len(reads) == 1, reads                                          # the three rows there before, once
+        assert len(runs) == 1, runs                                            # and the show's run, once
+        assert _current(store) == [f"Library/{show}/x{9 - n}.srt" for n in range(1, 9)]
+        other = names(language)[122]
+        store.take_in(root, [_found(language, data_dir, src, other, "z.srt", 11),            # no number yet
+                             _found(language, data_dir, src, other, "d.srt", 13, episode=3)], first=True)
+        z = store.conn.execute("SELECT id FROM items WHERE rel_path = ?", (f"Library/{other}/z.srt",)).fetchone()[0]
+        # one batch: c (ep 2) placed, ep 4 recorded on z's item (its number now 4), then h (ep 5) placed after it
+        store.take_in(root, [_found(language, data_dir, src, other, "c.srt", 12, episode=2),
+                             dict(_found(language, data_dir, src, other, "z4.srt", 14, copy=False), episode=4,
+                                  item_id=z),
+                             _found(language, data_dir, src, other, "h.srt", 15, episode=5)], first=True)
+        assert [p for p in _current(store) if f"/{other}/" in p] == [f"Library/{other}/{n}.srt" for n in "cdzh"]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_looks_video_map_is_read_once_and_hatos_pairing_is_asked_at_its_row(language):
+    """A look asks for every video it finds; the origins' videos come from one read it keeps up to date, and a
+    video hato pairs meanwhile is found at its own row — the lowest live id either way, a waiting item never."""
+    store, data_dir = _empty(language)
+    src = _source_root()
+    w = names(language)
+    with store:
+        root = store.add_source(src)
+        a = store.take_in(root, [_found(language, data_dir, src, w[123], "ep1.srt", 1, video_key="v1-f2a")],
+                          first=True).added[0]
+        video = os.path.join(src, w[124], "ep1.mkv")
+        os.makedirs(os.path.dirname(video))
+        with open(video, "wb") as fh:
+            fh.write(b"\x1aE\xdf\xa3" + bytes(60))
+        store.take_in(root, [{"origin": video, "size": 64, "mtime_ns": 1, "show": w[124], "video_path": video,
+                              "video_size": 64, "video_key": "v1-f2w", "rel": f"Library/{w[124]}/ep1.mkv"}])
+        held = store.origin_videos()
+        assert held == {"v1-f2a": a}, "the waiting video is no item's"
+        assert store.item_of_video_key("v1-f2a", origins=held) == a
+        assert store.item_of_video_key("v1-f2w", origins=held) is None
+        hato_file = os.path.join(data_dir, "HighPriority", "Hato", f"{w[125]}.srt")
+        os.makedirs(os.path.dirname(hato_file))
+        with open(hato_file, "w", encoding="utf-8") as fh:
+            fh.write(_episode_text(language, 3))
+        paired = store.register(hato_file, _hato("v1-f2h", 3, w[125])).added[0]
+        assert store.item_of_video_key("v1-f2h", origins=held) == paired, "hato's pairing, made after the read"
+        assert store.item_of_video_key("v1-f2h", origins={"v1-f2h": paired + 10}) == paired, "the lowest id"
+        assert store.item_of_video_key("v1-f2h", origins={"v1-f2h": a}) == min(a, paired)
+        assert store.item_of_video_key(ls.origin_key(video), origins=held) is None
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_sources_counts_their_items_without_a_grouped_read_and_a_look_asks_for_none(language):
+    """`sources()` counts each source's items (the offline line) — an item with two origins in one source once,
+    one in two sources in each; `counts=False` (a look, Connect's index) reads the roots alone."""
+    store, data_dir = _empty(language)
+    src, other = _source_root("a"), _source_root("b")
+    show = names(language)[126]
+    with store:
+        one, two = store.add_source(src), store.add_source(other)
+        item = store.take_in(one, [_found(language, data_dir, src, show, "ep1.srt", 1),
+                                   _found(language, data_dir, src, show, "ep2.srt", 2)], first=True).added[0]
+        store.take_in(one, [dict(_found(language, data_dir, src, show, "ep1b.srt", 1, copy=False), item_id=item)])
+        store.take_in(two, [dict(_found(language, data_dir, other, show, "ep1.srt", 1, copy=False), item_id=item)])
+        assert [(s["id"], s["items"]) for s in store.sources()] == [(one, 2), (two, 1)]
+        reads = []
+        store.conn.set_trace_callback(reads.append)
+        try:
+            listed = store.sources(all=True, counts=False)
+        finally:
+            store.conn.set_trace_callback(None)
+        assert [s["id"] for s in listed] == [one, two] and not [s for s in reads if "pairings" in s]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_take_in_keeps_the_waiting_videos_between_its_batches_while_nothing_else_writes(language):
+    """Every batch of a look read every origin's record for the videos still waiting for their subtitle (22 ms a
+    batch, under the write lock, at 20k origins). Now one read, kept by take_in itself from batch to batch — and read
+    again after anyone else's write: a video another handle's look left waiting meanwhile is filled by its subtitle,
+    never a second item."""
+    store, data_dir = _empty(language)
+    _d, user_files_dir = roots(language)
+    src = _source_root()
+    show = names(language)[127]
+
+    def video(n):
+        path = os.path.join(src, show, f"ep{n}.mkv")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as fh:
+            fh.write(b"\x1aE\xdf\xa3" + bytes([n]) * 60)
+        return {"origin": path, "size": 64, "mtime_ns": 1, "show": show, "video_path": path, "video_size": 64,
+                "video_key": f"v1-f4w{n}", "rel": f"Library/{show}/ep{n}.mkv"}
+    with store:
+        root = store.add_source(src)
+        waiting = store.take_in(root, [video(n) for n in (1, 2, 3)]).added
+        reads = []
+        store.conn.set_trace_callback(lambda s: reads.append(s) if "availability = 'waiting'" in s else None)
+        try:
+            one = store.take_in(root, [_found(language, data_dir, src, show, "ep1.srt", 1, video_key="v1-f4w1")])
+            assert one.attached == [waiting[0]] and not one.added and reads == [], "the videos' own batch left them"
+            two = store.take_in(root, [_found(language, data_dir, src, show, "ep2.srt", 2, video_key="v1-f4w2")])
+            assert two.attached == [waiting[1]] and reads == [], "nor the next"
+            other = ls.open_store(language, data_dir, user_files_dir)
+            with other:
+                four = other.take_in(root, [video(4)]).added                  # another handle's look meanwhile
+            three = store.take_in(root, [_found(language, data_dir, src, show, "ep4.srt", 4, video_key="v1-f4w4")])
+        finally:
+            store.conn.set_trace_callback(None)
+        assert len(reads) == 1, "read again after another connection's write"
+        assert three.attached == four and not three.added, "its waiting row filled, never a second item"
+        avail = dict(store.conn.execute("SELECT id, availability FROM items").fetchall())
+        assert avail[waiting[0]] == avail[waiting[1]] == avail[four[0]] == "available"
+        assert avail[waiting[2]] == "waiting"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_later_file_of_a_show_still_waiting_reads_none_of_its_records(language):
+    """The folders' rule (after-show) placed each later file by reading every record of its show first — under
+    the write lock, per file — even for a show with nothing in Current, Finished or 6+ Months, which it never
+    places. Such a file waits in New arrivals as before, its show's records unread; a show in Current is still read
+    and placed in order."""
+    store, data_dir = _empty(language)
+    src = _source_root()
+    show = names(language)[128]
+    ep = lambda n: _found(language, data_dir, src, show, f"ep{n}.srt", n, episode=n)   # noqa: E731
+    with store:
+        root = store.add_source(src)
+        store.take_in(root, [ep(1), ep(2)])                                   # never shown: they wait
+        reads = []
+        store.conn.set_trace_callback(lambda s: reads.append(s) if "SELECT id FROM items WHERE work_id" in s else None)
+        try:
+            store.take_in(root, [ep(3), ep(4)])
+        finally:
+            store.conn.set_trace_callback(None)
+        assert reads == [] and _tier(store, "arrivals") == [f"Library/{show}/ep{n}.srt" for n in (1, 2, 3, 4)]
+        other = names(language)[129]
+        store.take_in(root, [_found(language, data_dir, src, other, f"ep{n}.srt", n + 20, episode=n)
+                             for n in (1, 3)], first=True)
+        store.take_in(root, [_found(language, data_dir, src, other, "ep2.srt", 22, episode=2)])
+        assert [p for p in _current(store) if f"/{other}/" in p] == [f"Library/{other}/ep{n}.srt" for n in (1, 2, 3)]

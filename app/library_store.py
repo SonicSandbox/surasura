@@ -568,6 +568,7 @@ SCHEMA_SQL = (
       item_id INTEGER REFERENCES items(id) ON DELETE CASCADE,
       pairing TEXT NOT NULL,
       paired_at TEXT NOT NULL)""",
+    "CREATE INDEX pairings_item ON pairings (item_id)",   # an item's records (`_PREFERRED_ROW`, a show's episodes)
     """CREATE TABLE placement_log (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       item_id INTEGER NOT NULL,
@@ -600,6 +601,13 @@ ADDED_TABLES_SQL = (
       made_at  TEXT NOT NULL)""",
     "CREATE INDEX IF NOT EXISTS made_lines_item ON made_lines (item_id)",
 )
+
+# Indexes added without a schema change (SRC perf): an index changes no row and an older Surasura reads the store as it
+# was; a new store makes them in SCHEMA_SQL, an existing one at its first open by a writer (`_added_indexes`)
+ADDED_INDEXES_SQL = (
+    "CREATE INDEX IF NOT EXISTS pairings_item ON pairings (item_id)",
+)
+ADDED_INDEXES = ("pairings_item",)
 
 # Schema 2 (L3.1, the L2.2 pack 02 §2.3–2.4): works (a title: a season, a film, a book, a channel), the feed's
 # tombstones, and the items' work, search key, feed version and *Mine it too*. A fresh store runs SCHEMA_SQL and then
@@ -1505,6 +1513,26 @@ class Store:
         self._cmd = None
         self._repairing = False          # Repair writes past the damage marker it is about to clear
         self._held = False               # inside `held()`: closed at the span's end
+        if role != "reader":
+            self._added_indexes()
+
+    def _added_indexes(self):
+        """ADDED_INDEXES, made at the first open by a writer of a store made before them, under the write lock: one
+        read of the schema at every other open. A store not made yet, a newer one, a damaged or busy one (or this
+        process inside a write already) is left as it is: a later open makes them. Never a version or data change."""
+        names = ("pairings",) + ADDED_INDEXES
+        try:
+            have = {r[0] for r in self.conn.execute(f"SELECT name FROM sqlite_master WHERE name IN "
+                                                    f"({','.join('?' * len(names))})", names)}
+            if "pairings" not in have or have.issuperset(ADDED_INDEXES) or self._wlock.depth:
+                return
+            if self.conn.execute("PRAGMA user_version").fetchone()[0] > STORE_SCHEMA:
+                return
+            with self._writing(wait=BUSY_AT_OPEN):
+                for sql in ADDED_INDEXES_SQL:
+                    self.conn.execute(sql)
+        except (StoreError, sqlite3.Error):
+            pass
 
     def close(self):
         """Close the handle, never checkpointing outside the write lock (`_close`, §6.12). Inside `held()`, nothing
@@ -3557,6 +3585,8 @@ class Store:
         mine = _episode(record)
         others = [r for r in self.conn.execute("SELECT id, tier, ord FROM items WHERE work_id = ? AND id != ?",
                                                (work[0], item_id)) if r[0] not in excl]
+        if not any(r[1] in CURRENT or r[1] in ("graduated", "goal") for r in others):
+            return None              # it stays whatever their records say (a show still waiting): none read
         episodes, apart = {}, set()
         for other, text in self.conn.execute(f"SELECT item_id, pairing FROM pairings p WHERE item_id IN "
                                              f"(SELECT id FROM items WHERE work_id = ?) AND {_PREFERRED_ROW}",
@@ -7329,16 +7359,21 @@ def _store_add_source(self, path):
     return root_id
 
 
-def _store_sources(self, all=False):
+def _store_sources(self, all=False, counts=True):
     """[{id, path, on, items}] of the sources being read (`all`: the stopped ones too), in the order added; `items` =
-    the items with an origin in it (the offline line's count: *its 412 episodes are kept*)."""
+    the items with an origin in it (the offline line's count: *its 412 episodes are kept*). `counts=False` (a look,
+    Connect's video index): the roots' rows alone, no origin read; the counts are gathered here, never in
+    a GROUP BY (its temporary B-tree went to disk: 14 MB written per call at 20k origins)."""
     kinds = ("source", "source-off") if all else ("source",)
+    held = {}
     with self._reading():
         rows = self.conn.execute(f"SELECT id, path, kind FROM roots WHERE kind IN ({','.join('?' * len(kinds))}) "
                                  "ORDER BY id", kinds).fetchall()
-        counts = dict(self.conn.execute(f"SELECT json_extract(p.pairing, '$.root'), COUNT(DISTINCT p.item_id) "
-                                        f"FROM pairings p WHERE {_ORIGIN_ROW} GROUP BY 1").fetchall())
-    return [{"id": i, "path": p, "on": k == "source", "items": counts.get(i, 0)} for i, p, k in rows]
+        if counts and rows:
+            for root, item_id in self.conn.execute(f"SELECT json_extract(p.pairing, '$.root'), p.item_id "
+                                                   f"FROM pairings p WHERE {_ORIGIN_ROW}"):
+                held.setdefault(root, set()).add(item_id)
+    return [{"id": i, "path": p, "on": k == "source", "items": len(held.get(i, ()))} for i, p, k in rows]
 
 
 def _store_stop_source(self, root_id):
@@ -7394,7 +7429,21 @@ def _store_items_of_size(self, sizes):
     return out
 
 
-def _store_item_of_video_key(self, key):
+def _store_origin_videos(self):
+    """{video_key: the lowest live item id} of the origins' records (K1b's check (a), its origin half; a 'waiting'
+    item left out): one read, which a look keeps up to date as it takes files in (`item_of_video_key(...,
+    origins=)`; only a look writes an origin's video)."""
+    found = {}
+    with self._reading():
+        for vkey, item_id in self.conn.execute(
+                f"SELECT json_extract(p.pairing, '$.video_key'), p.item_id FROM pairings p JOIN items i ON "
+                f"i.id = p.item_id WHERE {_ORIGIN_ROW} AND i.availability != 'waiting' AND json_valid(p.pairing)"):
+            if isinstance(vkey, str) and vkey and (vkey not in found or item_id < found[vkey]):
+                found[vkey] = item_id
+    return found
+
+
+def _store_item_of_video_key(self, key, origins=None):
     """K1b's check (a): the live item whose record holds this video — hato's `content_key`, or an origin's
     `video_key` — the lowest id when several do, else None. A 'waiting' item (K5) is left out, so a video-only show's
     gap is filled by `take_in` from the copy.
@@ -7402,9 +7451,16 @@ def _store_item_of_video_key(self, key):
     Asked once per video a look finds (review H17): the answers come from one read of every record's video, kept
     while nothing is written — stamped with this connection's changes and SQLite's `data_version` (another
     connection's commit, read before the records) — and never kept inside a write (one rolled back would leave it
-    wrong)."""
+    wrong). `origins` (a look's `origin_videos()`, kept up to date by it): the origin half from it, hato's from its
+    row (a key lookup, so a drop paired meanwhile counts) — no read of every record per batch."""
     if not isinstance(key, str) or not key or key.startswith(SOURCE_KEY):
         return None
+    if origins is not None:
+        with self._reading():
+            row = self.conn.execute("SELECT MIN(p.item_id) FROM pairings p JOIN items i ON i.id = p.item_id WHERE "
+                                    "p.content_key = ? AND i.availability != 'waiting'", (key,)).fetchone()
+        ids = [i for i in ((row[0] if row else None), origins.get(key)) if i is not None]
+        return min(ids) if ids else None
     stamp = None if self._depth else (self.conn.total_changes, self.conn.execute("PRAGMA data_version").fetchone()[0])
     with self._reading():
         held = getattr(self, "_video_items", None)
@@ -7496,9 +7552,10 @@ def _store_take_in(self, root_id, found, first=False, rules=None):
     `source`'s: the landing never explicit, the rule's move explicit (the user's own setting, D30).
 
     -> the change (kind 'take_in': never on the user's Undo, S6 — Remove takes an item out), with `added`, `attached`,
-    `placed` {item_id: tier}, `skipped` {"known", "excluded", "gone": [origins]} and `unused` (the copies no item holds
-    — a skipped file's, or a second file with the same bytes as one earlier in the batch, whose origin is recorded on
-    that one's item (A5) — for the caller to send to the trash); None for nothing found. A copy outside the content
+    `recorded` {origin (absolute): item_id}, `placed` {item_id: tier}, `skipped` {"known", "excluded", "gone":
+    [origins]} and `unused` (the copies no item holds — a skipped file's, or a second file with the same bytes as one
+    earlier in the batch, whose origin is recorded on that one's item (A5) — for the caller to send to the trash);
+    None for nothing found. A copy outside the content
     folder raises ValueError, a source not being read `NotASource`, both before anything is written."""
     found = list(found or ())
     if not found:
@@ -7534,7 +7591,7 @@ def _store_take_in(self, root_id, found, first=False, rules=None):
         if row is None or row[0] != "source":
             raise NotASource("That folder isn't being read any more.")
         change = self._change(cmd, "take_in")
-        change.attached, change.placed = [], {}
+        change.attached, change.placed, change.recorded = [], {}, {}    # recorded: {origin: item_id}
         change.skipped = {"known": [], "excluded": [], "gone": []}
         out = {"patterns": set(), "sha256": set(), "video_key": set()}
         for pattern, note in self.conn.execute("SELECT pattern, note FROM exclusions WHERE kind = 'removed'"):
@@ -7544,7 +7601,11 @@ def _store_take_in(self, root_id, found, first=False, rules=None):
                 if note.get(k):
                     out[k].add(note[k])
         works, by_bytes, spare, taken = {}, {}, {}, {}
-        gaps = self._waiting_videos() if any(_video_keys(f) for f in found) else {}
+        episodes = {}                # {item_id: its episode number or None}: each show's read once a batch (`_in_run`)
+        runs = {} if first else None  # {work: its rows in Current, in order}: setup's scan reads a show's run once
+        gaps = self._waiting_videos() if any(_video_keys(f) for f in found) else None
+        stamp, exact = (self.conn.execute("PRAGMA data_version").fetchone()[0], gaps is not None)
+        gaps = {} if gaps is None else gaps
         for f in order:
             origin = os.path.abspath(f["origin"])
             key = origin_key(origin)
@@ -7577,18 +7638,23 @@ def _store_take_in(self, root_id, found, first=False, rules=None):
                     item_id = by_bytes[same]
                     spare[p[1]] = p[2]
                 elif held is None and gap is None:
-                    item_id = self._take_new(cmd, change, p, key, record, f, first, rules, works)
+                    item_id = self._take_new(cmd, change, p, key, record, f, first, rules, works, episodes, runs)
+                    change.recorded[origin] = item_id
                     by_bytes.setdefault(same, item_id)
                     for k in _video_keys(f):                 # H9: the same video later in this batch finds it
                         (taken if is_content_name(p[1]) else gaps)[k] = item_id
                     continue
                 else:                                        # its copy is an item, or a waiting video's (K5)
                     item_id = held[0] if held else self._fill_gap(cmd, gap, p, gaps)
+                    if held is not None and not is_content_name(p[1]):
+                        exact = False                        # a video's record on a waiting row: read them again
             elif not self.conn.execute("SELECT 1 FROM items WHERE id = ?", (item_id,)).fetchone():
                 change.skipped["gone"].append(origin)
                 continue
             by_bytes.setdefault(same, item_id)
             self._write_origin(key, item_id, record)
+            change.recorded[origin] = item_id
+            episodes.pop(item_id, None)                      # its preferred record may be this one now
             change.attached.append(item_id)
             if p is None or is_content_name(p[1]):
                 taken.update(dict.fromkeys(_video_keys(f), item_id))
@@ -7596,7 +7662,10 @@ def _store_take_in(self, root_id, found, first=False, rules=None):
         # N1: the copies no item holds (a skipped file's, a same-bytes one's), for the caller to send to the trash
         change.unused = [rel for rel, rel_key in spare.items() if rel and not self.conn.execute(
             "SELECT 1 FROM items WHERE rel_key = ?", (rel_key,)).fetchone()]
-        return change
+    # the waiting videos as this batch left them, kept for the next while nothing else writes (this connection's
+    # changes after the commit, and SQLite's data_version as read inside it: another connection's commit since moves it)
+    self._gaps = ((self.conn.total_changes, stamp), gaps) if exact else None
+    return change
 
 
 def _store_write_origin(self, key, item_id, record):
@@ -7604,7 +7673,7 @@ def _store_write_origin(self, key, item_id, record):
                       (key, item_id, json.dumps(record, sort_keys=True, ensure_ascii=False), _now()))
 
 
-def _store_take_new(self, cmd, change, prepared, key, record, f, first, rules, works):
+def _store_take_new(self, cmd, change, prepared, key, record, f, first, rules, works, episodes=None, runs=None):
     """One new item of `take_in`: its title (the folder's — `Library/<show>` and a 2.x `HighPriority/<show>` are one —
     else the record's show, else a new one), its place (`_source_spot`), its origin record, its events. A video with
     no text copy (K5: its `rel` the video's name, no file made) is 'waiting': in New arrivals even on setup's scan,
@@ -7614,11 +7683,17 @@ def _store_take_new(self, cmd, change, prepared, key, record, f, first, rules, w
     if waiting:
         prepared = prepared[:4] + ((None, None, "waiting"),)
     work = self._source_work(rel, record, cmd, works)
-    tier, where = self._source_spot(cmd, work, rel, f.get("episode"), first and not waiting, waiting)
+    runs = runs if first and not waiting else None
+    tier, where = self._source_spot(cmd, work, rel, f.get("episode"), first and not waiting, waiting, episodes, runs)
     item_id = self._add_rows([prepared + (tier,)], cmd.version)[0]
     self.conn.execute("UPDATE items SET work_id = ? WHERE id = ?", (work, item_id))
     self._write_origin(key, item_id, record)
+    if episodes is not None:                         # its one record, so its number is the record's (`_episodes_of`)
+        number = record.get("episode")
+        episodes[item_id] = number if isinstance(number, (int, float)) and not isinstance(number, bool) else None
     self._put(tier, [item_id], where, cmd.version)
+    if runs is not None:                             # the batch's copy of its show's run, as it now stands
+        _run_insert(runs[work], (item_id, tier, None, rel), where)
     cmd.touch({tier}, availability=prepared[4][2] == "missing")
     change.added.append(item_id)
     if first:
@@ -7638,10 +7713,18 @@ def _video_keys(record):
 
 
 def _store_waiting_videos(self):
-    """{video key or path key: item id} of the items waiting for their subtitle (K5)."""
+    """{video key or path key: item id} of the items waiting for their subtitle (K5). Inside `take_in`: read once, then
+    the copy the last batch left while nothing else was written (`_gaps`: every batch read every origin)."""
+    held = getattr(self, "_gaps", None)
+    if held is not None and held[0] == (self.conn.total_changes,
+                                        self.conn.execute("PRAGMA data_version").fetchone()[0]):
+        return dict(held[1])
     out = {}
-    for item_id, text in self.conn.execute(f"SELECT p.item_id, p.pairing FROM pairings p JOIN items i ON "
-                                           f"i.id = p.item_id WHERE i.availability = 'waiting' AND {_ORIGIN_ROW}"):
+    # the items first, each one's records by `pairings_item` (13 ms at 20k origins, against 34 ms reading every
+    # origin's row); in the records' order, as before
+    for item_id, text in self.conn.execute(f"SELECT p.item_id, p.pairing FROM items i CROSS JOIN pairings p ON "
+                                           f"p.item_id = i.id WHERE i.availability = 'waiting' AND {_ORIGIN_ROW} "
+                                           f"ORDER BY p.content_key"):
         for k in _video_keys(_json_dict(text) or {}):
             out[k] = item_id
     return out
@@ -7669,28 +7752,52 @@ def _store_source_work(self, rel, record, cmd, cache):
     return self._work_by_record(record) or self._folder_work(rel, None, cmd, cache)
 
 
-def _store_source_spot(self, cmd, work, rel, episode, first, waiting=False):
+def _run_insert(run, row, where):
+    """A show's run (in order) with `row` put where `_put` put it: ('before', id), ('after', id), ('top',), ('end',)."""
+    if where[0] in ("before", "after"):
+        at = next(n for n, r in enumerate(run) if r[0] == where[1]) + (where[0] == "after")
+    else:
+        at = 0 if where[0] == "top" else len(run)
+    run.insert(at, row)
+
+
+def _store_source_spot(self, cmd, work, rel, episode, first, waiting=False, episodes=None, runs=None):
     """(tier, where) for a new copy of `work` (see `take_in`). Setup's scan: its show's run in Current, else Current's
     end. Later: New arrivals — its show's run there, else the end — and the placing rule takes it on from there
     (`_take_new`, Decision 1); with New arrivals off (no rule runs) its show's run in Current, else the top of it.
-    `waiting` (K5, review H3): New arrivals always, whatever its show's rows (nothing to read or mine)."""
+    `waiting` (K5, review H3): New arrivals always, whatever its show's rows (nothing to read or mine). `episodes`:
+    `_in_run`'s cache of the batch; `runs` (setup's scan): each show's run in Current read once a batch, kept in
+    order by `_take_new` (a long show's file is never placed by reading and sorting its whole run again)."""
+    if first and runs is not None and work in runs:
+        current = runs[work]
+        return self._in_run(current, rel, episode, episodes, ordered=True) if current else \
+            (("soon", ("end",)) if self._soon_line() is not None else ("now", ("end",)))
     rows = self.conn.execute("SELECT id, tier, ord, rel_path FROM items WHERE work_id = ?", (work,)).fetchall()
     current = [r for r in rows if r[1] in CURRENT]
     if first:
+        if runs is not None:
+            current = runs[work] = sorted(current, key=lambda r: (TIERS[r[1]][3], r[2], r[0]))
         if current:
-            return self._in_run(current, rel, episode)
+            return self._in_run(current, rel, episode, episodes)
         return ("soon", ("end",)) if self._soon_line() is not None else ("now", ("end",))   # the line takes it up
     if not (waiting or cmd.meta.get("arrivals_on")):
-        return self._in_run(current, rel, episode) if current else ("now", ("top",))
+        return self._in_run(current, rel, episode, episodes) if current else ("now", ("top",))
     run = [r for r in rows if r[1] == "arrivals"]
-    return self._in_run(run, rel, episode) if run else ("arrivals", ("end",))
+    return self._in_run(run, rel, episode, episodes) if run else ("arrivals", ("end",))
 
 
-def _store_in_run(self, run, rel, episode):
+def _store_in_run(self, run, rel, episode, episodes=None, ordered=False):
     """Within a show's run (S3): before the first row whose episode number (when both have one) or natural-order
-    name is higher, else after the last."""
-    order = sorted(run, key=lambda r: (TIERS[r[1]][3], r[2], r[0]))
-    numbers = self._episodes_of([r[0] for r in order]) if episode is not None else {}
+    name is higher, else after the last. `episodes`: a batch's cache of the numbers (`_episodes_of`); `ordered`: the
+    run is in order already."""
+    order = run if ordered else sorted(run, key=lambda r: (TIERS[r[1]][3], r[2], r[0]))
+    if episode is None:
+        numbers = {}
+    elif episodes is not None:
+        self._episodes_of([r[0] for r in order], episodes)
+        numbers = episodes
+    else:
+        numbers = self._episodes_of([r[0] for r in order])
     name = _natural(rel.rsplit("/", 1)[-1])
     for r in order:
         theirs = numbers.get(r[0])
@@ -7700,9 +7807,16 @@ def _store_in_run(self, run, rel, episode):
     return (order[-1][1], ("after", order[-1][0]))
 
 
-def _store_episodes_of(self, ids):
+def _store_episodes_of(self, ids, cache=None):
     """{item_id: episode number} from each item's record (hato's `show.episode`, else an origin's K4 `episode`; B1:
-    an origin row only when the item has no other)."""
+    an origin row only when the item has no other). `cache` ({item_id: number or None}, one `take_in` batch's): only
+    the ids it doesn't hold are read, and each one read is kept in it (a show's run read once a batch, not per file)."""
+    if cache is not None:
+        todo = [i for i in dict.fromkeys(ids) if i not in cache]
+        found = self._episodes_of(todo) if todo else {}
+        for i in todo:
+            cache[i] = found.get(i)
+        return {i: cache[i] for i in ids if cache[i] is not None}
     out = {}
     for chunk in _chunks(list(ids), 500):
         for item_id, text in self.conn.execute(f"SELECT p.item_id, p.pairing FROM pairings p WHERE p.item_id IN "
@@ -7723,6 +7837,7 @@ Store.stop_source = _store_stop_source
 Store.origins = _store_origins
 Store.excluded = _store_excluded
 Store.items_of_size = _store_items_of_size
+Store.origin_videos = _store_origin_videos
 Store.item_of_video_key = _store_item_of_video_key
 Store.update_origin = _store_update_origin
 Store._exclude_origins = _store_exclude_origins

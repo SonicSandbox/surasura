@@ -967,3 +967,103 @@ def test_the_seeds_tray_holds_every_state_the_mock_draws(language):
     assert video.added_at > show.added_at > watched.added_at
     assert len({r["added_at"] for r in seed.items if r["tier"] == "arrivals"}) == 4
     assert {r["added_at"] for r in seed.items if r["tier"] != "arrivals"} == {window_seed.ADDED_AT}
+
+
+# --- P4.1 L2 (row 4.1.10, W-A1): Connect's feed in the view --------------------------------------------------------- #
+def _feed(jobs, needs=(), running=True, language="ja"):
+    """Connect's feed as the window gets it: `feed.build` over a status record holding these jobs (the runner's own
+    reason lines and states), so the kinds are told as Connect tells them."""
+    from app.connect import feed
+    return feed.build({"running": running, "languages": {language: {"line": "Up to date", "state": "idle",
+                                                                    "jobs": list(jobs), "needs": list(needs)}}},
+                      language)
+
+
+def _job(item, state="waiting", reason=None, kind="mine", made=0, words=0):
+    return {"item": item, "job": 100 + item, "state": state, "reason": reason, "kind": kind, "made": made,
+            "words": words}
+
+
+def test_no_feed_or_an_off_feed_builds_todays_view_byte_for_byte():
+    """`connect=None` (no Connect in this window) and Connect off (`Feed.on` False: IK S7) leave every row, episode
+    and line as they are without the feed — a learner without Connect sees nothing new."""
+    from app.connect import feed
+    items = items_of([("now", 1, 1, eps("星降る街の小さな工房", 1, 4), {2: {"availability": "missing"}}),
+                      ("soon", 2, 2, eps("雲の上の郵便屋さん", 1, 3), {}),
+                      ("graduated", 3, 3, ["白銀の書庫番 01 雨の街角.txt"], {})])
+    plain = vr.build(items, WORKS, {"mine_line": 3})
+    off = feed._off({"connect_enabled": True, "logic": {"automation": False}})
+    assert vr.build(items, WORKS, {"mine_line": 3}, connect=None) == plain
+    assert vr.build(items, WORKS, {"mine_line": 3}, connect=off)._replace(connect=None) == plain
+    assert plain.connect is None
+
+
+def test_each_of_connects_kinds_is_a_stone_with_its_own_words():
+    """Row 4.1.10: Connect's *No video* (its video not found) is the amber *No video* with the runner's reason; *Not
+    timed* waits on *Mine anyway* in Needs you; a job waiting on Anki, on battery or its turn is *Waiting* with the
+    job's own reason as its tip (C7); an ask below the line is *Waiting* (no longer *Mine*); *Mining* counts the
+    cards made of the words picked. What a wrong answer would cost: a top-20 episode that reads *Waiting — it mines by
+    itself* while Connect can't find its video or Anki is closed, so the learner never knows to act."""
+    from app.connect import feed, runner
+    items = items_of([("now", 1, 1, eps("星降る街の小さな工房", 1, 6), {}),
+                      ("now", 2, 2, eps("雲の上の郵便屋さん", 1, 2), {})])
+    connect = _feed([_job(1, state="mining", made=3, words=12), _job(2, reason=runner.NO_VIDEO),
+                     _job(3, reason="not timed to its video"), _job(4, reason=runner.ANKI_CLOSED),
+                     _job(5, reason=runner.ON_BATTERY), _job(6),
+                     _job(8, kind="asked", state="queued")],
+                    needs=[{"kind": "not-timed", "item": 3}])
+    view = vr.build(items, WORKS, {"mine_line": 6}, connect=connect)
+    st = {e.id: e.status for r in view.rows for e in r.episodes}
+    assert (st[1].kind, st[1].label, st[1].tone) == ("mining", "Mining · 3/12", "accent")
+    assert (st[2].kind, st[2].label, st[2].tone) == ("no_media", "No video", "warn") and runner.NO_VIDEO in st[2].tip
+    assert (st[3].kind, st[3].label, st[3].tone) == ("waiting", "Not timed", "warn")
+    assert "Mine anyway" in st[3].tip and "Needs you" in st[3].tip and feed.WORDS[feed.NOT_TIMED] in st[3].tip
+    assert (st[4].kind, st[4].tip) == ("waiting", runner.ANKI_CLOSED)
+    assert (st[5].kind, st[5].tip) == ("waiting", runner.ON_BATTERY)
+    assert (st[6].kind, st[6].tip) == ("waiting", feed.WORDS[feed.WAITING])
+    assert (st[7].kind, st[7].label) == ("mine", "Mine"), "no job: as without Connect"
+    assert (st[8].kind, st[8].tip) == ("waiting", feed.WORDS[feed.ASKED]), "an ask below the line waits, first"
+    first, second = view.rows
+    assert (first.status.kind, first.status.label) == ("mining", "Mining · 3/12"), "the row: its first job's"
+    assert first.accessible.endswith("Mining · 3/12")
+    assert (second.status.kind, second.status.tip) == ("waiting", feed.WORDS[feed.ASKED])
+    assert view.connect is connect
+
+
+def test_a_job_on_an_item_with_its_cards_in_anki_or_no_file_keeps_its_own_status():
+    """A level job (new words for an item already mined) leaves ✓ *N in Anki*; an item whose file is gone from disk
+    keeps the disk's *No video* (Connect's own reason would be the same want, said less exactly)."""
+    from app.connect import runner
+    items = items_of([("now", 1, 1, eps("星降る街の小さな工房", 1, 2), {1: {"availability": "missing"}})])
+    connect = _feed([_job(1, reason=runner.ANKI_CLOSED, kind="level"), _job(2, reason=runner.NO_VIDEO)])
+    plain = vr.build(items, WORKS, {"mine_line": 20}, cards={1: 4})
+    view = vr.build(items, WORKS, {"mine_line": 20}, cards={1: 4}, connect=connect)
+    assert [e.status for e in view.rows[0].episodes] == [e.status for e in plain.rows[0].episodes]
+    assert view.rows[0].episodes[0].status.kind == "in_anki"
+
+
+def test_a_chinese_row_reads_its_wait_from_connects_feed():
+    """zh: Connect waits on a Chinese episode (Anki Miner's Chinese support) with its reason — the same rule."""
+    from app.connect import runner
+    WORKS[5] = dict(WORKS[1], id=5, title="雷鸣之剑与见习魔女")
+    items = items_of([("now", 5, 5, ["雷鸣之剑与见习魔女 第3集.srt", "雷鸣之剑与见习魔女 第4集.srt"], {})])
+    connect = _feed([_job(1, reason=runner.CHINESE)], language="zh")
+    view = vr.build(items, WORKS, {"mine_line": 20}, language="zh", connect=connect)
+    assert (view.rows[0].status.kind, view.rows[0].status.tip) == ("waiting", runner.CHINESE)
+
+
+def test_the_same_feed_gives_back_the_same_rows_and_a_new_one_rebuilds_only_the_rows_it_changed():
+    """S19 with the reader's RowCache: the Provider hands back the same Feed object while Connect is unchanged, so
+    every row is the same object (nothing repainted); a new Feed that changes one item's job rebuilds that row alone."""
+    from app.connect import runner
+    items = items_of([("now", 1, 1, eps("星降る街の小さな工房", 1, 3), {}),
+                      ("now", 2, 2, eps("雲の上の郵便屋さん", 1, 3), {})])
+    cache = vr.RowCache()
+    one = _feed([_job(1, reason=runner.ANKI_CLOSED)])
+    first = vr.build(items, WORKS, {"mine_line": 20}, numbers=(1, {}), cache=cache, connect=one)
+    again = vr.build(items, WORKS, {"mine_line": 20}, numbers=(1, {}), cache=cache, connect=one)
+    assert all(a is b for a, b in zip(first.rows, again.rows))
+    two = _feed([_job(1, reason=runner.ANKI_CLOSED), _job(4, reason=runner.NO_VIDEO)])
+    moved = vr.build(items, WORKS, {"mine_line": 20}, numbers=(1, {}), cache=cache, connect=two)
+    assert moved.rows[0] is again.rows[0] and moved.rows[1] is not again.rows[1]
+    assert moved.rows[1].episodes[0].status.kind == "no_media"

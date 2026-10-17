@@ -214,6 +214,27 @@ def test_the_top_20_line_is_drawn_after_the_row_holding_the_20th_available_file(
     assert count(band, over(colours["groove-lip"], colours["bg"]), tolerance=2) > width * 0.9
 
 
+def test_a_click_on_the_top_20_line_opens_its_setting_and_its_hover_keeps_its_words(seeded):
+    """P4.1 L2 row 4.1.14 (Gap 1: the line stays, really subtle): the groove is where the learner finds *how many mine
+    themselves* — a click opens Settings at *Mine automatically: the top N* (`open_setting("mine_line")`); its hover
+    still says what it is (`top_tip`) and now that a click changes it. The Soon line asks nothing."""
+    seed, win = seeded()
+    lst = current(win)
+    asked = []
+    win.open_setting = lambda target: asked.append(target)
+    at = [i for i, e in enumerate(lst.model().entries) if any(ln.kind == "top" for ln in e[2])][0]
+    strip = part(lst, at, "top-line")[0]
+    assert strip[2].startswith("Everything above this line mines itself") and "Click to change it" in strip[2]
+    QTest.mouseClick(lst.viewport(), Qt.MouseButton.LeftButton, pos=strip[1].center())
+    QApplication.processEvents()
+    assert asked == ["mine_line"]
+    entries = lst.model().entries
+    soon_at = next(i for i, e in enumerate(entries) if e[0] == rows.ROW and e[1].tier == "soon") - 1
+    QTest.mouseClick(lst.viewport(), Qt.MouseButton.LeftButton, pos=part(lst, soon_at, "soon-line")[0][1].center())
+    QApplication.processEvents()
+    assert asked == ["mine_line"]
+
+
 def test_the_soon_line_sits_where_soon_starts_with_its_word(seeded):
     seed, win = seeded()
     lst = current(win)

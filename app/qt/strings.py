@@ -379,7 +379,7 @@ ROWS_DONE_ALL_MIX_TIP = "Every file of it is watched"         # hato's mix never
 ROWS_HERO_KNOWN = "{pct}% known · "
 ROWS_HERO_NEW_LINK = "{n} new words ↗"
 ROWS_JOURNEY_TIP = "Your journey: your list with its sentences\n• Click to open it in its own window"
-ROWS_TOP_LINE_WHERE = "{tip}\nIts setting: Settings → Anki & mining"
+ROWS_TOP_LINE_WHERE = "{tip}\n• Click to change it: Settings → Anki & mining"     # P4.1 L2 (row 4.1.14)
 ROWS_SOON_LINE_WHERE = "{tip}\nWhere Soon starts is a setting: Settings → Content"
 ROWS_ACCESSIBLE_STRING = "{line} · {string}"
 

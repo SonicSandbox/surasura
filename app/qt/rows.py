@@ -2282,6 +2282,7 @@ class RowsView(QListView):
     journey_requested = pyqtSignal(object, object)     # (the Row, the Episode): Up Next's *N new words ↗*
     put_back_requested = pyqtSignal(object)        # --- W3.2 Q4: (the Finished Row): its *Put back*
     split_requested = pyqtSignal(object, object)   # --- W3.2 Q8: (the Row, the episode that starts the new part): ✂
+    line_requested = pyqtSignal(str)               # --- P4.1 L2 (row 4.1.14): a line clicked ("top"): its setting
 
     def __init__(self, name, tooltips=None, parent=None):
         super().__init__(parent)
@@ -2927,6 +2928,8 @@ class RowsView(QListView):
             self.menu_requested.emit(row, self.viewport().mapToGlobal(rect.bottomLeft()))
         elif name == "journey":
             self.journey_requested.emit(row, payload)
+        elif name == "top-line":                     # --- P4.1 L2 (row 4.1.14): the top-20 line opens its setting
+            self.line_requested.emit("top")
         elif name == "put-back":                     # --- W3.2 Q4
             self.put_back_requested.emit(row)
         elif name == "seam" and payload is not None:     # --- W3.2 Q8: ✂ Split here

@@ -31,6 +31,7 @@ Every user-facing word is here or in the window's strings; nothing here imports 
 import re
 from collections import namedtuple
 
+from app.connect import feed as connect_feed     # P4.1 L2: Connect's kinds (a light module: no Qt, no Tk)
 from app.path_utils import infer_source_type
 from app.services import stone_plan
 
@@ -85,6 +86,10 @@ ArrivalGroup = namedtuple("ArrivalGroup", "kind label rows")
 Counts = namedtuple("Counts", "current_rows current_files goal_titles goal_files finished arrivals arrival_files")
 View = namedtuple("View", "language mode reason state busy loading cached rows lines goal finished needs counts "
                           "subline badges worst arrivals arrival_groups", defaults=(None, (), ()))
+# --- P4.1 L2: `connect`, the Connect feed the view was built with (`app/connect/feed.Feed`, or None: no Connect) —
+# its `on` tells the stones whether they may act (IK S7). Never in the first screen's cache
+View = namedtuple("View", View._fields + ("connect",), defaults=tuple(View._field_defaults.values()) + (None,))
+# --- end P4.1 L2
 #   worst: Current's rows below Up Next, the most-needing string per kind of Anki count beside it (`worst_needs`)
 #   arrivals: the tray's rows as it shows them (New, then Already watched; each newest first); arrival_groups: the
 #   groups that hold any, in that order. Neither is in the first screen's cache (the first frame shows no tray)
@@ -128,6 +133,11 @@ STRINGS = {
     "tip_no_media": "No {word} on disk{top}\n• Link one for pictures and audio, or mine the text on its own",
     "tip_no_media_top": " — it's in your top {line}, so it's waiting for one",
     "tip_removed": "Its {word} was removed after it was mined. The cards keep their pictures and audio",
+    # --- P4.1 L2: what Connect's feed says of an item (row 4.1.10; the reason lines are the runner's)
+    "tip_connect_no_media": "{tip}\n• Link one for pictures and audio, or mine the text on its own",
+    "not_timed": "Not timed", "tip_not_timed": "{words}: its cards wait for you\n• Check it plays in time, then "
+                                                "Mine anyway: in Needs you",
+    # --- end P4.1 L2
     # a tooltip's action on a line of its own, as a bullet (G2.3 T1); never a "( … )" a line break can cut
     "mark_missing": "No {word} on disk for {eps}\n• Link one, or mine the text on its own",
     "mark_removed": "{Word} deleted after mining: {eps}\nThe cards keep their pictures and audio; only ▶ can't play it",
@@ -408,7 +418,7 @@ def status_of(eps, word, line_n):
 
 
 # --- building ------------------------------------------------------------------------------------------------------ #
-def _episode(item, work, media, numbers, cards, mining, in_top, line_n):
+def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=None):
     name = item.get("title") or (item.get("rel_path") or "").rsplit("/", 1)[-1]
     number = None if media == "youtube" else episode_number(name)
     if media == "youtube":
@@ -437,6 +447,8 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n):
     deleted = bool(item.get("mined_at")) and not mined and not (asked and str(asked) > str(item["mined_at"]))
     ep = ep._replace(deleted=deleted)
     st, mark = status_of([_Shim(ep, mined)], word, line_n)
+    if connect is not None:                          # --- P4.1 L2: what Connect says of it (row 4.1.10)
+        st = _connected(st, connect.get(item["id"]), word)
     online = item.get("source_type") in ("youtube", "bilibili")
     if online:                                       # its video is online; the window holds no address for it yet
         ep = ep._replace(can_play=False)
@@ -450,6 +462,38 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n):
     return ep._replace(status=st, mark=mark, play_tip=tip)
 
 
+# --- P4.1 L2: Connect's feed in the statuses (row 4.1.10, W-A1) -------------------------------------------------- #
+def _connected(st, item, word):
+    """A status as Connect's feed tells it (`feed.Item`, or None: as it was). An item with its cards in Anki, or with
+    no file on disk (the disk's *No video*), keeps its own; *Mining* gives way only to *Mining*. Connect's *Mining*
+    counts its cards made of the words picked (*Mining · 3/12*); its *No video* (the subtitle's video not found) is
+    the amber warning; *Not timed* waits on *Mine anyway* in Needs you; a job waiting (on Anki, on battery, its turn,
+    or asked for) is *Waiting* with the job's own reason as its tip (C7)."""
+    if item is None or st.kind in ("in_anki", "no_media") or (st.kind == "mining" and item.kind != connect_feed.MINING):
+        return st
+    if item.kind == connect_feed.MINING:
+        label = STRINGS["mining_kn"].format(k=item.made, n=item.total) if item.total else STRINGS["mining"]
+        return Status("mining", label, STRINGS["tip_mining"], "accent")
+    if item.kind == connect_feed.NO_VIDEO:
+        return Status("no_media", STRINGS["no_media"].format(word=word),
+                      STRINGS["tip_connect_no_media"].format(tip=item.tip), "warn")
+    if item.kind == connect_feed.NOT_TIMED:
+        return Status("waiting", STRINGS["not_timed"], STRINGS["tip_not_timed"].format(words=item.words), "warn")
+    return Status("waiting", st.label if st.kind == "waiting" else STRINGS["waiting"], item.tip, "dim")
+
+
+def _row_connected(st, eps, connect, word):
+    """A row's status as Connect tells it: its first episode (in order) whose status Connect's feed changes."""
+    for e in eps:
+        item = connect.get(e.id)
+        if item is not None:
+            new = _connected(st, item, word)
+            if new is not st:
+                return new
+    return st
+# --- end P4.1 L2
+
+
 class _Shim:
     """An episode as `status_of` reads it (`mined`: its cards are in Anki — never the receipt alone)."""
     __slots__ = ("label", "cards", "mined", "missing", "removed", "in_top", "mining", "deleted")
@@ -459,7 +503,8 @@ class _Shim:
         self.missing, self.removed, self.in_top, self.mining = ep.missing, ep.removed, ep.in_top, ep.mining
 
 
-def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, finished=False, guessed=None):
+def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, finished=False, guessed=None,
+         connect=None):
     first = piece[0]
     work = works.get(first.get("work_id")) or {}
     media = work.get("media_type")
@@ -474,9 +519,11 @@ def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, 
     if media is None and first.get("source_type") in ("youtube", "bilibili"):
         media = "youtube"
     word = MEDIA_WORD.get(media, "video")
-    eps = [_episode(it, work, media, numbers, cards, mining, it["id"] in in_top_ids, line_n) for it in piece]
+    eps = [_episode(it, work, media, numbers, cards, mining, it["id"] in in_top_ids, line_n, connect) for it in piece]
     shims = [_Shim(e, bool(e.cards)) for e in eps]
     st, mark = status_of(shims, word, line_n)
+    if connect is not None:                          # --- P4.1 L2
+        st = _row_connected(st, eps, connect, word)
     n = len(eps)
     n_watched = sum(1 for e in eps if e.watched)
     known = sum(numbers.get(it["id"], (0, 0, 0))[0] for it in piece)
@@ -543,6 +590,7 @@ class RowCache:
         self.hits = self.misses = 0
         self.same_global = False                      # set by `begin`: nothing global moved since the last build
         self._glob = self._cards = None
+        self._connect = None                          # P4.1 L2: the Connect feed's items the last build read
         self._next = {}
         self.guess_seen, self.guess_counts = {}, {}   # `_Guesses`: each row counted once, kept while it is the same object
         # the ids changed since the counts were last brought up to date, kept until a build counts (a build with no
@@ -558,7 +606,7 @@ class RowCache:
         else:
             self.guess_pending |= set(changed)
 
-    def begin(self, version, cards=None, mining=None, in_top=None, line_n=None, changed=None):
+    def begin(self, version, cards=None, mining=None, in_top=None, line_n=None, changed=None, connect=None):
         """`changed`: the item ids the numbers changed since the cache's version (None: unknown — every row again)."""
         if version != self.version:
             changed = None if changed is None else set(changed)
@@ -566,17 +614,18 @@ class RowCache:
                 {k: v for k, v in self.rows.items() if changed.isdisjoint(it["id"] for it in v[2])}
             self.version = version
         glob = (id(cards), frozenset(mining or ()), frozenset(in_top or ()), line_n)
-        self.same_global = glob == self._glob and cards is self._cards
-        self._glob, self._cards = glob, cards
+        self.same_global = glob == self._glob and cards is self._cards and connect is self._connect   # P4.1 L2
+        self._glob, self._cards, self._connect = glob, cards, connect
         self._next = {}
 
     def end(self):
         self.rows = self._next
 
 
-def _cached_row(cache, index, tier, piece, works, numbers, cards, mining, in_top, line_n, finished, guessed, hero):
+def _cached_row(cache, index, tier, piece, works, numbers, cards, mining, in_top, line_n, finished, guessed, hero,
+                connect=None):
     if cache is None:
-        row = _row(index, tier, piece, works, numbers, cards, mining, in_top, line_n, finished, guessed)
+        row = _row(index, tier, piece, works, numbers, cards, mining, in_top, line_n, finished, guessed, connect)
         return _as_hero(row) if hero else row
     first = piece[0]
     work = works.get(first.get("work_id"))
@@ -591,14 +640,15 @@ def _cached_row(cache, index, tier, piece, works, numbers, cards, mining, in_top
         sig = hit[0]                                 # nothing global moved: the same objects are the same row
     else:
         sig = (len(piece), line_n, hero, tuple(cards.get(it["id"], 0) for it in piece),
-               tuple(it["id"] in mining for it in piece), tuple(it["id"] in in_top for it in piece), guess)
+               tuple(it["id"] in mining for it in piece), tuple(it["id"] in in_top for it in piece), guess,
+               None if connect is None else tuple(connect.get(it["id"]) for it in piece))     # --- P4.1 L2
     if same_items and hit[0] == sig:
         row = hit[3]
         if row.index != index:
             row = row._replace(index=index)
         cache.hits += 1
     else:
-        row = _row(index, tier, piece, works, numbers, cards, mining, in_top, line_n, finished, guessed)
+        row = _row(index, tier, piece, works, numbers, cards, mining, in_top, line_n, finished, guessed, connect)
         if hero:
             row = _as_hero(row)
         cache.misses += 1
@@ -920,14 +970,16 @@ def goal_tiles(goal_items, works, guessed=None, before=None):
 
 def build(items, works, options, numbers=None, cards=None, mining=(), language="ja", mode="store", reason=None,
           loading=False, busy=False, cache=None, tiers=None, changed=None, changed_works=None, numbers_changed=None,
-          estimates=None):
+          estimates=None, connect=None):
     """The window's view of the library (see the module's doc). `items` / `works`: {id: feed row}; `options`: the
     feed's {soon_line, mine_line, arrivals_on}; `numbers`: (version, {item_id: (known, counted, n_new)}) or the dict;
     `cards`: {item_id: count}; `mining`: item ids being mined now; `changed`: with `cache`, the item ids changed or gone
     since the cache's last build (None: unknown, every item looked at); `changed_works`: the same for works;
     `numbers_changed`: with `cache`, the item ids whose numbers changed since the version it last built with (None:
     unknown — on a new version every row is built again); `estimates`: {item_id: *N new* at the top} for New arrivals'
-    files, as the arrivals worker answers (W3.2 S1: a missing one leaves its row's number None)."""
+    files, as the arrivals worker answers (W3.2 S1: a missing one leaves its row's number None); `connect`: Connect's
+    feed (`app/connect/feed.Feed`, P4.1 L2 row 4.1.10) — its items' statuses on the rows and episodes (`_connected`)
+    and its mining set beside `mining`; None (or a Feed that is off): as without Connect."""
     numbers_version = None
     if isinstance(numbers, tuple):
         numbers_version, numbers = numbers
@@ -935,6 +987,11 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
     cache_version = numbers_version if numbers_version is not None else id(numbers)
     cards = cards or {}
     mining = set(mining or ())
+    # --- P4.1 L2: Connect's feed (row 4.1.10): its items by id; off or none → None, every row as without it
+    feed_items = connect.items if connect is not None and connect.on else None
+    if feed_items is not None:
+        mining |= set(connect.mining)
+    # --- end P4.1 L2
     options = options or {}
     line_n = options.get("mine_line")
     line_n = 20 if line_n is None else int(line_n)
@@ -950,7 +1007,7 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
             if r["id"] == last:
                 break
     if cache is not None:
-        cache.begin(cache_version, cards, mining, in_top, line_n, numbers_changed)
+        cache.begin(cache_version, cards, mining, in_top, line_n, numbers_changed, feed_items)
     if cache is not None:
         cache.note_changed(changed)
     guessed = _Guesses(items, cache)
@@ -958,7 +1015,7 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
     for tier in ("now", "soon"):
         for piece in pieces(tiers[tier]):
             rows.append(_cached_row(cache, len(rows) + 1, tier, piece, works, numbers, cards, mining, in_top, line_n,
-                                    False, guessed, hero=not rows))
+                                    False, guessed, hero=not rows, connect=feed_items))
     worst = worst_needs(rows[1:])
     if cache is not None:
         if worst == cache.worst:
@@ -1028,7 +1085,7 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
         fin_pieces = pieces(fin_items)
         before = set(cache._next) if cache is not None else None
         fin_rows = [_cached_row(cache, 0, "graduated", p, works, numbers, cards, mining, (), line_n, True, guessed,
-                                False) for p in fin_pieces]
+                                False, feed_items) for p in fin_pieces]
         stamp_of = {}
         for p in fin_pieces:
             key = f"p{p[0]['piece_id']}" if p[0].get("piece_id") is not None else f"i{p[0]['id']}"
@@ -1104,7 +1161,8 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
     badges = {"needs": len(needs), "arrivals": counts.arrival_files, "finished": counts.finished}
     return View(language=language, mode=mode, reason=reason, state=state, busy=busy, loading=loading, cached=False,
                 rows=tuple(rows), lines=tuple(lines), goal=goal, finished=finished, needs=tuple(needs), counts=counts,
-                subline=subline, badges=badges, worst=worst, arrivals=arrival_rows, arrival_groups=arrival_groups)
+                subline=subline, badges=badges, worst=worst, arrivals=arrival_rows, arrival_groups=arrival_groups,
+                connect=connect)                    # --- P4.1 L2
 
 
 # --- the first screen's cache (02 §2.1) ---------------------------------------------------------------------- #

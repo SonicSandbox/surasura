@@ -806,3 +806,52 @@ def test_a_stale_switch_running_last_follows_the_language_asked_last(opened):
     assert services.library is first and first._thread.is_alive()   # nothing to switch: the same library, still live
     ja.close()
     zh.close()
+
+
+# --- P4.1 L2 (W1: rows 4.1.10, 4.1.13; W-A1, W-A2, W-A5): Connect hung on the window's library ------------------- #
+def test_connect_is_hung_on_the_library_one_feed_a_language_for_the_line_and_the_stones_and_a_kick_after_writes(
+        opened):
+    """The window as main makes it, its duties attached (the status line's providers): one Connect feed per language,
+    ticked by the status line and read by the reader's stones; the writer's after-commit hook kicks Connect once for a
+    move into the top 20 (row 4.1.6's rule); Connect's look then queues it and the next tick shows it *Waiting* on
+    its row. What a wrong answer would cost: a placed episode that never gets cards until the next start (no kick), a
+    status line and stones that disagree, or the Japanese feed's stones on the Chinese rows after a switch."""
+    from app.connect import feed as connect_feed_module
+    from app.connect import inbox
+    from app.connect.ledger import Ledger
+    from tests.qt.test_jobs_bar import FakeAutomation, FakeChores, FakeController, FakeUpdates
+    from tests.qt.test_shell_replan import _Replan
+    ja, zh = migrated("ja"), migrated("zh")
+    _settings(target_language="ja", connect_enabled=True)
+    ja.bookkeeping({"mine_line": 2}, copy_carries=True)     # a top 2: the last NOW file is below the line
+    with Ledger() as ledger:
+        inbox.consume(ja, "ja", ledger)                     # Connect's first look: its reader and watermark
+    log = []
+    services, win = opened(controller=FakeController(log), updates=FakeUpdates(log), automation=FakeAutomation(log),
+                           chores=FakeChores(log), replan=_Replan())
+    assert wait_until(lambda: _state(win) == "full", 15)
+    feed = shell.connect_feed("ja", services.settings)
+    assert shell.connect_feed("ja", services.settings) is feed and shell.connect_feed("zh", services.settings) is not feed
+    assert services.library.connect == feed.latest, "the stones read the status line's feed"
+    kicks = []
+    link = services.writer.after_commit.link
+    link._kick, link._running = (lambda settings: kicks.append(1) or object()), (lambda: False)
+    now = ja.ids("now")
+    assert services.writer.move([now[-1]], "now", before_id=now[0]) is not None
+    assert wait_until(lambda: services.writer.pending() == 0 and kicks == [1], 10), "one kick after the move"
+    with Ledger() as ledger:
+        got = inbox.consume(ja, "ja", ledger)
+        assert now[-1] in got["queued"]                 # what the kicked Connect does first
+    line = services.status.providers["connect"]()                       # the status line's tick (a worker's call)
+    got = feed.latest()
+    assert line == got.line and got.items[now[-1]].kind == connect_feed_module.WAITING
+
+    def tip():
+        view = _page(win).view_model
+        return next((e.status.tip for r in view.rows for e in r.episodes if e.id == now[-1]), None)
+    assert wait_until(lambda: tip() == connect_feed_module.WORDS[connect_feed_module.WAITING], 10)
+    _ask(services, win, "zh")
+    assert _switched_to(win, services, "zh")
+    assert services.library.connect == shell.connect_feed("zh", services.settings).latest
+    ja.close()
+    zh.close()

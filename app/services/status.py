@@ -275,30 +275,27 @@ def _content(snap):
 
 
 # --- the window's providers (W3.5 row 7): plain functions, each made once per window and language ---------------- #
-def connect_line(language, settings, stamp=None, read=None):
+def connect_line(language, settings, stamp=None, read=None, feed=None):
     """Connect's line for `language` (gap 9; the Tk `status_row.StatusRow`'s look) -> a provider. `settings()`: the
-    settings now (the settings service's `get`). None while Connect is off (`connect_enabled`, today's switch). Each
-    look takes Connect's `stamp` (two stats and a look at its lock) and reads the record only when the stamp moved —
-    keyed on the stamp the read itself took — so an unchanged Connect reads nothing (S19). `stamp` / `read`: Connect's
-    `status.stamp` / `status.read` (a test's stand-ins). A worker's call, one at a time (the service's refresh).
-    `provider.every()`: its tick, 3 s — none once a look found Connect off (the window asks for it by name when the
-    switch lands; any full refresh asks it too)."""
-    last = {"stamp": None, "line": None, "on": True}
+    settings now (the settings service's `get`). P4.1 L2 (row 4.1.13, W-A5): it is the window's Connect feed's
+    (`app/connect/feed.Provider`, `feed`: the one the library reader's stones are built from, else one made here) —
+    one stamp a tick for the line and the stones: each look takes Connect's `stamp` (two stats and a look at its lock)
+    and reads the record only when it moved, so an unchanged Connect reads nothing (S19), and a new Feed wakes the
+    reader (`Provider.on_change`). None while Connect isn't set up (`connect_enabled` off: no mark, as before); with
+    it set up but D29's automation off (`settings_manager.connect_on`, F-7) the feed's line says why nothing runs (IK
+    N4). `stamp` / `read`: Connect's `status.stamp` / `status.read` (a test's stand-ins). A worker's call, one at a
+    time (the service's refresh). `provider.every()`: its tick, 3 s — none once a look found Connect off (the window
+    asks for it by name when the switch lands; any full refresh asks it too)."""
+    from app.connect import feed as connect_feed
+    if feed is None:
+        feed = connect_feed.Provider(language, settings, stamp=stamp, read=read)
 
     def provider():
-        if not (settings() or {}).get("connect_enabled"):
-            last["stamp"] = None                        # switched on again: its first look reads
-            last["on"] = False
-            return None
-        last["on"] = True
-        from app.connect import status as connect_status
-        now = (stamp or connect_status.stamp)(languages=[language])
-        if now != last["stamp"]:
-            record = (read or connect_status.read)(languages=[language]) or {}
-            last["line"] = ((record.get("languages") or {}).get(language) or {}).get("line")
-            last["stamp"] = record.get("stamp", now)
-        return last["line"]
-    provider.every = lambda: TICKS["connect"] if last["on"] else None
+        got = feed.feed()
+        if not got.on and got.line == connect_feed.OFF_CONNECT:
+            return None                                 # not set up (`connect_enabled` off): no Connect mark at all
+        return got.line
+    provider.every = lambda: TICKS["connect"] if feed.every() else None
     return provider
 
 

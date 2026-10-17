@@ -30,7 +30,8 @@ P4.1 (still SCHEMA 4: one added column and one meta key, both read as absent by 
 reads an asked job as a first mining, never a wrong write): a job's `asked_at`, the ask it answers (C2 / C3: the
 store's `mine_asked` — *Mine now*, *Mine this*, *Mine it too*), kept whatever way the job ends so an ask is used up
 once (IK S4); a job an ask made is of kind `asked`. `asks_from:<lang>` in meta: the asks watermark (asks made before it
-— while Connect was off — are never mined; written by `resume.turned_on`, else at the first look).
+— while Connect was off — are never mined; written by `resume.turned_on` at every off → on, never by a look: none
+set, every unanswered ask counts, F-2).
 Also P4.1: `generating:<lang>` in meta, set while Connect's own Generate runs (F9: the status line's
 *Connect is updating your list*), cleared when it ends and by the next run when a crash left it.
 """

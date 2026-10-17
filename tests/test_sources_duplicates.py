@@ -489,3 +489,41 @@ def test_R2_a_second_hato_file_for_a_video_taken_over_is_kept_out_and_hatos_firs
         assert change.added == [] and getattr(change, "unused", None) is None and _items(store) == 1
         assert store.item(item)["rel_path"] == ls.library_rel(data_dir, first) and os.path.isfile(first)
         assert [p for _r, p in _duplicates(store)] == [ls.path_key(ls.library_rel(data_dir, second))]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_R2_a_folder_video_on_an_item_whose_file_is_not_a_library_copy_never_moves_that_file(language):
+    """Only a `Library` copy is ever taken over: a folder's origin (with its video) attached by its bytes to hato's own
+    item leaves that item's file hato's — hato's later subtitle for the folder's video is kept out, hato's first file
+    neither repointed away from nor sent to the trash."""
+    store, data_dir = _empty(language)
+    show = _SHOWS[language][0]
+    src = _drive("driveA")
+    with store:
+        first = _hato_file(data_dir, f"{show} - 01.srt", _text(language, 1))
+        item = store.register(first, _hato("v1-k3-unrelated", show)).added[0]
+        _write(os.path.join(src, show, f"{show} - 01.srt"), _text(language, 1))      # hato's bytes, beside a video
+        key = videos.content_key(_video(os.path.join(src, show, f"{show} - 01.mkv")))
+        result = _look(store, language, store.add_source(src), first=True)
+        assert result["attached"] == 1 and store.item_of_video_key(key) == item
+        second = _hato_file(data_dir, f"{show} - 01 v2.srt", _text(language, 9))
+        change = store.register(second, _hato(key, show))
+        assert change.added == [] and getattr(change, "unused", None) is None and _items(store) == 1
+        assert store.item(item)["rel_path"] == ls.library_rel(data_dir, first) and os.path.isfile(first)
+        assert [p for _r, p in _duplicates(store)] == [ls.path_key(ls.library_rel(data_dir, second))]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_R1_a_sync_before_hatos_register_of_a_new_episode_keeps_the_syncs_row(language):
+    """The everyday race with nothing already in: the sync's row for hato's file is that episode's row — never its own
+    twin by its bytes — kept, titled and paired by hato's hand-off, as before K3."""
+    store, data_dir = _empty(language)
+    show = _SHOWS[language][0]
+    with store:
+        _source_episode(store, language, data_dir)
+        hato_path = _hato_file(data_dir, f"{show} - 02.srt", _text(language, 2))
+        synced = _sync_first(store, data_dir, hato_path)
+        change = store.register(hato_path, _hato("v1-k3-new", show, 2))
+        assert store.item(synced) is not None and _items(store) == 2 and _duplicates(store) == []
+        assert store.conn.execute("SELECT item_id FROM pairings WHERE content_key = 'v1-k3-new'").fetchone()[0] == synced
+        assert change.pairing_item == synced

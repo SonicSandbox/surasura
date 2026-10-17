@@ -303,3 +303,23 @@ def test_a_waiting_video_and_its_subtitle_in_one_batch_are_one_item(language, su
         assert (item["availability"], item["rel_path"]) == ("available", sub["rel"])
         keys = {r[0] for r in store.conn.execute("SELECT content_key FROM pairings WHERE item_id = ?", (item["id"],))}
         assert keys == {ls.origin_key(video["video_path"]), ls.origin_key(sub["origin"])}
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_waiting_video_of_a_show_already_shown_still_waits_in_new_arrivals(language):
+    """Batch 1 review H3: a video with no subtitle has nothing to read or mine, so it waits in New arrivals whatever
+    its show's rows: one in Current would take a Current slot (and Soon's line) with nothing to read, one at the top
+    of Current would lead it with nothing to watch. Its show in Current, and its show only in 6+ Months."""
+    store, data_dir = _empty(language)
+    src = _source_root()
+    w = names(language)
+    with store:
+        root = store.add_source(src)
+        store.take_in(root, [_found(language, data_dir, src, w[110], "ep1.srt", 1)], first=True)
+        joined = store.take_in(root, [_video(src, w[110], "ep2.mkv", "v1-h3a")])
+        assert list(joined.placed.values()) == ["arrivals"], "its show in Current: it still waits"
+        parked = store.take_in(root, [_found(language, data_dir, src, w[111], "ep1.srt", 2)], first=True).added
+        store.move(parked, "goal")
+        led = store.take_in(root, [_video(src, w[111], "ep2.mkv", "v1-h3b")])
+        assert list(led.placed.values()) == ["arrivals"], "its show only in 6+ Months: it still waits"
+        assert _tier(store, "arrivals") == [f"Library/{w[110]}/ep2.mkv", f"Library/{w[111]}/ep2.mkv"]
+        assert {store.item(i)["availability"] for i in joined.added + led.added} == {"waiting"}

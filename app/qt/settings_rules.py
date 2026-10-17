@@ -110,8 +110,11 @@ def _read_seen():
 
 
 def source_words(source):
-    """A source as the line names it: `youtube:UC…` -> *youtube · channel UC…*."""
+    """A source as the line names it: `youtube:UC…` -> *youtube · channel UC…*; `source` (the folders Surasura
+    reads, SRC) -> *your folders*, `source:<id>` -> *folder <id>*."""
     producer, sep, channel = source.partition(":")
+    if producer == "source":
+        return S.RULE_FOLDER.format(folder=channel) if sep and channel else S.RULE_FOLDERS
     return S.RULE_CHANNEL.format(producer=producer, channel=channel) if sep and channel else source
 
 

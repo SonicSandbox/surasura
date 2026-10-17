@@ -1091,11 +1091,14 @@ class Steps:
                                             size if isinstance(size, int) and size > 0 else None)
             # away from its named path, a file of that name and size is the paired video only when its bytes say so
             # (09-hato-layer v2 §1.1): another episode under the same name is never mined as this one. A source
-            # folder's record keeps the video's key as `video_key` (its row is keyed by the origin: SRC B1)
-            key = pairing.get("content_key")
-            if key is None and pairing.get("producer") == "source":
+            # folder's record keeps the video's key as `video_key` (its row is keyed by the origin: SRC B1), and one
+            # with no key takes no moved video; every other record is judged as before Sources (review H14)
+            if pairing.get("producer") == "source":
                 key = pairing.get("video_key")
-            if found is not None and (key is None or videos.content_key(found) != key):
+                refused = found is not None and (key is None or videos.content_key(found) != key)
+            else:
+                refused = found is not None and videos.content_key(found) != pairing.get("content_key")
+            if refused:
                 log.info("Connect: %s has the paired video's name and size but not its content; not used", found)
                 return None
             return found
@@ -1121,7 +1124,7 @@ class Steps:
                                   and r["video_path"]})
                 sources = [s["path"] for s in store.sources()]
             index = videos.Index(lang)
-            index.refresh(shallow, videos.configured(self.loaded, lang) + sources)
+            index.refresh(shallow, videos.configured(self.loaded, lang), sources=sources)
             made[lang] = index
             self._video_index = made
         return made[lang]

@@ -68,7 +68,7 @@ FILLED_BY = {
     "new_cards_a_day": _CONNECT_ROWS, "connect_enabled": _CONNECT_ROWS, "anki_miner": _CONNECT_ROWS,
     "placing_rules": _RULES,
     "mine_line": _STORE, "soon_line": _STORE, "set_up_again": _STORE,
-    "covers_download": "pending: the covers owner (G1.2-19)",
+    "remove_downloaded_covers": _LIVE,          # --- W3.2 L3
 }
 
 
@@ -264,6 +264,10 @@ ROWS = (
     _row("hato", "connect", "status", group="houseki"),
     _row("jimaku", "connect", "status"),
     _row("anilist", "connect", "status"),
+    # --- W3.2 L3: the covers' switch (01 §1.3 C1: off until the user says yes) and *Remove downloaded covers*
+    _row("covers_download", "connect", "toggle", ("covers_download",)),
+    _row("remove_downloaded_covers", "connect", "action", sub=True),
+    # --- end W3.2 L3
     _row("more_from_houseki", "connect", "status"),
 
     # Journey
@@ -307,7 +311,6 @@ ROWS = (
     _row("data_credits", "app", "custom"),
     _row("version", "app", "custom"),
     _row("set_up_again", "app", "custom"),                       # S10: the wizard (W3.5 part 3), `settings_store`
-    _row("covers_download", "app", "custom", when=_never),       # S10: shown once the covers owner lands (G1.2-19)
 )
 ROW = {row.id: row for row in ROWS}
 
@@ -317,7 +320,6 @@ NOT_SHOWN = {
     "onboarding_completed": "state: the first start's",
     "setup_seen": "state: the version whose setup pages were seen (the wizard, WZ-8)",
     "setup_passed": "state: the setup pages saved before setup finished (the wizard)",
-    "covers_download": "the wizard's *Your shows* page; its row here shows once the covers owner lands (G1.2-19)",
     "open_count": "state: a launch counter",
     "skipped_version": "state: its way back is App's *Offer <version> again*",
     "youtube_risk_acknowledged": "the downloader's own one-time ask",

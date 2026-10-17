@@ -261,7 +261,7 @@ def test_tab_goes_round_the_tiles_and_close_and_enter_opens_a_tiles_menu(world):
     QTest.keyClick(sheet.order[0], Qt.Key.Key_Return)
     assert sheet.last_menu is not None and wait_until(sheet.last_menu.isVisible, 2)
     assert [a.text() for a in sheet.last_menu.actions() if a.text()] == \
-        [strings.GOAL_MENU_ITEMS[k][0] for k in ("top", "soon", "finished", "folder", "remove")]
+        [strings.GOAL_MENU_ITEMS[k][0] for k in ("top", "soon", "finished")] + [strings.ITEM_MENU["cover"][0]] +         [strings.GOAL_MENU_ITEMS[k][0] for k in ("folder", "remove")]          # W3.2 L3: *Change cover…* (a submenu)
     sheet.last_menu.close()
 
 
@@ -357,7 +357,7 @@ def test_a_store_that_cant_be_saved_refuses_every_move_and_says_why(world):
     writer.writable = False
     show = two_part(win)
     menu = sheet.menu(sheet.order[0])
-    assert [a.isEnabled() for a in menu.actions() if a.text()] == [False, False, False, True, False]
+    assert [a.isEnabled() for a in menu.actions() if a.text()] == [False, False, False, False, True, False]   # L3: cover
     menu.close()
     for name in ("top", "soon", "finished", "remove"):
         sheet.pick(show, name)

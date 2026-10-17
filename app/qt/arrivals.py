@@ -38,6 +38,7 @@ from PyQt6.QtWidgets import (QApplication, QHBoxLayout, QLabel, QMenu, QScrollAr
 
 from app import theme
 from app.qt import motion, rows, shadow, strings, style
+from app.qt import covers as qcovers                 # --- W3.2 L3: the titles' own pictures (Q6's door)
 from app.services import view_rows
 
 COVERS = 3                                  # tiny covers in the inset
@@ -261,6 +262,7 @@ class ArrivalsInset(QToolButton):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.count = 0
         self.titles = ()
+        self.refs = ()                       # --- W3.2 L3: the covers' records, beside `titles`
         self.keys = ()
         self.lit = False                     # its tray is open
         self.press = 0.0                     # 0 at rest, 1 sunk
@@ -272,15 +274,25 @@ class ArrivalsInset(QToolButton):
         self.paints = 0                      # repaints asked (S19)
         self.arrivals_played = 0             # arrival motions started (tests)
         self.setVisible(False)
+        qcovers.notifier().ready.connect(self._cover_ready)        # --- W3.2 L3
+
+    # --- W3.2 L3: a picture landing repaints the inset only when it shows that title
+    def _cover_ready(self, work_id):
+        if any(r is not None and r[0] == work_id for r in self.refs):
+            self.update()
+    # --- end W3.2 L3
 
     # --- what it shows ----------------------------------------------------------------------------------------- #
     def set_arrivals(self, arrivals, count):
         """The reader's arrivals and their file count. -> True when anything it shows changed (repainted only then)."""
         titles = inset_titles(arrivals)
         keys = tuple(a.key for a in arrivals)
-        if count == self.count and titles == self.titles and set(keys) == set(self.keys):
+        refs = tuple(getattr(a, "cover", None) for a in               # --- W3.2 L3: the newest's records, in order
+                     sorted(arrivals, key=lambda a: a.added_at or "", reverse=True)[:COVERS])
+        if count == self.count and titles == self.titles and set(keys) == set(self.keys) and refs == self.refs:
             self.keys = keys
             return False
+        self.refs = refs                                                # --- end W3.2 L3
         new = [k for k in keys if k not in set(self.keys)]
         moved = self._had and count > 0 and bool(new) and self.window().isVisible()
         self.count, self.titles, self.keys = count, titles, keys
@@ -421,7 +433,8 @@ class ArrivalsInset(QToolButton):
                     alpha = t
                 else:                                  # the others part: from a step to the left of where they rest
                     cx -= self.fresh * step * (1 - t)
-            pix = rows.cover(title, m["cw"], m["ch"], dpr)
+            ref = self.refs[i] if i < len(self.refs) else None     # --- W3.2 L3: its own picture once decoded
+            pix = qcovers.pixmap_for(ref, title, m["cw"], m["ch"], dpr, "stack")
             ring = QRectF(cx - 1.5, cy - 1.5, m["cw"] + 3, m["ch"] + 3)
             p.setOpacity(alpha)
             p.setPen(Qt.PenStyle.NoPen)
@@ -604,7 +617,8 @@ class TrayRow(QWidget):
             p.drawRoundedRect(r.adjusted(1, 1, -1, -1), theme.RADII["r-sm"], theme.RADII["r-sm"])
         x = m["h"]
         cy = (self.height() - m["ch"]) / 2
-        p.drawPixmap(QPointF(x, cy), rows.cover(a.cover_title or a.title, m["cw"], m["ch"], dpr))
+        p.drawPixmap(QPointF(x, cy), qcovers.pixmap_for(getattr(a, "cover", None), a.cover_title or a.title,   # W3.2 L3
+                                                        m["cw"], m["ch"], dpr, "row"))
         x += m["cw"] + m["gap"]
         right = self.text_right()
         width = max(0, right - x)
@@ -796,7 +810,15 @@ class ArrivalsTray(motion.Overlay):
         self.shadow = shadow.Follower(self, self.shadow_name)
         self._away = _Away(self)
         parent.installEventFilter(self)
+        qcovers.notifier().ready.connect(self._cover_ready)        # --- W3.2 L3
         self.hide()
+
+    # --- W3.2 L3: a picture landing repaints only the rows of that title
+    def _cover_ready(self, work_id):
+        for row in self.rows.values():
+            if row.arrival is not None and row.arrival.work_id == work_id:
+                row.update()
+    # --- end W3.2 L3
 
     # --- what it shows ------------------------------------------------------------------------------------------- #
     def set_groups(self, groups):
@@ -1059,6 +1081,8 @@ class ArrivalsTray(motion.Overlay):
         m.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)         # N4: gone once hidden
         m.setAccessibleName(strings.TRAY_MENU_NAME.format(title=a.title))
         for name, label, tip, ok in menu_entries(a, writable, reason, self._has_show(a)):
+            if name == "folder":                                    # --- W3.2 L3: Change cover… after the moves
+                qcovers.add_cover_menu(m, a, writable, reason)
             if name in ("folder", "remove"):
                 m.addSeparator()
             act = QAction(label, m)

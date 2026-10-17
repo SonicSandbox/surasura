@@ -3764,15 +3764,21 @@ class Store:
         written, no error — when the user's choice is locked; the user's *Change cover…* / *Use a generated cover*
         (`locked=True`) always writes. `path`: 'cache:<name>' (a fetched image, re-fetchable) or 'user:<name>' (the
         user's, in User Files/<lang>/covers/, kept by the window with a dated backup on replace). Undo by the value
-        check. Returns the change, or None (refused, or nothing new)."""
+        check. Returns the change, or None (refused, or nothing new). An unlocked online cover (AniList, TMDB,
+        YouTube: a background fetch) is written only over none, the generated one, or its own source's cache record —
+        never over the art beside the files nor another source's, checked here, at write time (W3.2 L3 B2)."""
         if source not in COVER_SOURCES:
             raise ValueError(f"unknown cover source {source!r}")
         if path is not None and not str(path).startswith(("cache:", "user:")):
             raise ValueError("a cover's path is 'cache:<name>' or 'user:<name>'")
         with self._command("set_cover") as cmd:
-            row = self.conn.execute("SELECT cover_locked FROM works WHERE id = ?", (work_id,)).fetchone()
+            row = self.conn.execute("SELECT cover_locked, cover_source, cover_path FROM works WHERE id = ?",
+                                    (work_id,)).fetchone()
             if row is None or (row[0] and not locked):
                 return None
+            if (not locked and source in ("anilist", "tmdb", "youtube") and row[1] not in (None, "generated")
+                    and not (row[1] == source and (row[2] is None or str(row[2]).startswith("cache:")))):
+                return None                             # a fetch never over disk art or another source (B2)
             change = self._change(cmd, "set_cover")
             fetched = _now() if not locked and path and str(path).startswith("cache:") else None
             done = self._set_work_fields(cmd, change, work_id, {

@@ -431,8 +431,14 @@ ROWS = {
     "version": ("Version {version}", "", "Opens the data folder", "version data folder"),
     "set_up_again": ("Set up again", "Walks through the first steps again", "Opens the setup again",
                      "set up again wizard setup"),
-    "covers_download": ("Download covers", "Pictures for your shows and books", "Download covers",
-                        "covers download pictures"),
+    # --- W3.2 L3: Connections' covers (the window's spec 01 §1.3: the switch says in one line what is sent)
+    "covers_download": ("Download covers", "Sends each show's AniList id or name to AniList, and a video's id to "
+                        "YouTube. Nothing else.", "Fetch your shows' covers from AniList (YouTube videos: their own thumbnail)",
+                        "covers download pictures anilist thumbnails posters"),
+    "remove_downloaded_covers": ("Remove downloaded covers", "The pictures you chose and those beside your files stay",
+                                 "Delete every cover Surasura downloaded; pictures beside your files come back by "
+                                 "themselves", "remove delete downloaded covers cache pictures"),
+    # --- end W3.2 L3
 }
 
 # --- the choices: row id -> {value: label}; choice cards also have a line under each -------------------------------- #
@@ -519,6 +525,7 @@ CREDITS_README_ALSO = "README's Data Credits also names: {names}"
 OFFER_AGAIN_NAME = "Offer the skipped version again"
 # Export: the format pop, the outcome in the bar
 EXPORT = "Export"
+COVERS_REMOVE = "Remove"                    # --- W3.2 L3: *Remove downloaded covers*' button
 EXPORT_NEXT = "Save as…"
 EXPORT_NEXT_TIP = "Choose where the file goes"
 EXPORT_FORMAT_NAME = "Format"

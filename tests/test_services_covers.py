@@ -286,17 +286,21 @@ def test_a_book_at_its_import_keeps_its_cover_from_wherever_the_user_keeps_it(li
 
 
 # --- never over a better or the user's cover --------------------------------------------------------------------- #
-def test_a_locked_user_cover_and_a_fetched_anilist_cover_are_never_written_over_by_disk_art(lib, tmp_path):
+def test_a_locked_user_cover_is_never_written_over_by_disk_art_but_a_downloaded_one_is(lib, tmp_path):
+    """W3.2 L3 B2, the lean D-1 *disk art first*: the art beside the files beats a downloaded cover (even one found by
+    its AniList id); the user's own choice stays."""
     mine, fetched = lib.work_of(lib.store.ids("now")[0]), lib.work_of(lib.store.ids("soon")[0])
     picked = write(str(tmp_path / "Pictures" / "お気に入り.png"), png())
     kept = C.keep_user_image(lib.language, mine, picked, lib.writer)
     lib.writer.set_cover(fetched, "anilist", ref="16498", path="cache:anilist_16498.jpg")
+    write(os.path.join(path_utils.get_covers_cache_path(), "anilist_16498.jpg"), jpeg())   # its file there too
     assert h.until(lambda: len(lib.heard.saved) == 2)
     for item in (lib.store.ids("now")[0], lib.store.ids("soon")[0]):
         write(os.path.join(lib.folder_of(item), "poster.jpg"), jpeg())
-    assert lib.scan() == 0
+    assert lib.scan() == 1
     assert lib.row(mine) == ("user", None, kept, 1)
-    assert lib.row(fetched) == ("anilist", "16498", "cache:anilist_16498.jpg", 0)
+    poster = lib.rel(os.path.join(lib.folder_of(lib.store.ids("soon")[0]), "poster.jpg"))
+    assert lib.row(fetched) == ("file", poster, None, 0)
 
 
 def test_use_a_generated_cover_is_the_users_choice_too_and_no_poster_replaces_it(lib):
@@ -414,6 +418,24 @@ def test_a_chosen_file_that_isnt_an_image_records_nothing(lib, tmp_path):
     assert C.keep_user_image(lib.language, work, text, lib.writer) is None
     assert C.keep_user_image(lib.language, work, str(tmp_path / "無い.png"), lib.writer) is None
     assert lib.row(work)[0] is None and not lib.writer.pending()
+
+
+def test_a_backup_that_cant_be_made_records_nothing_and_the_users_old_image_stays_their_cover(lib, tmp_path,
+                                                                                               monkeypatch):
+    # Why: the dated backup comes before the replace (user data): when it can't be made (a full disk, a .trash that
+    # can't be written) no new image is written and nothing is recorded — the user's first pick stays their cover.
+    work = lib.work_of(lib.store.ids("now")[0])
+    first = C.keep_user_image(lib.language, work, write(str(tmp_path / "一枚目.jpg"), jpeg()), lib.writer)
+    assert h.until(lambda: len(lib.heard.saved) == 1)
+    folder = os.path.join(path_utils.get_user_files_path(lib.language), "covers")
+
+    def refused(path, move=False):
+        raise OSError("the trash can't be written")
+    monkeypatch.setattr(C.path_utils, "backup_to_trash", refused)
+    second = C.keep_user_image(lib.language, work, write(str(tmp_path / "二枚目.png"), png()), lib.writer,
+                               current=lib.row(work)[2])
+    assert second is None and os.listdir(folder) == [first[len("user:"):]], "no new image beside the old one"
+    assert not lib.writer.pending() and lib.row(work) == ("user", None, first, 1)
 
 
 # --- the scan's own rules ---------------------------------------------------------------------------------------- #

@@ -3300,7 +3300,8 @@ def test_H_F2_a_replayed_import_the_store_refuses_trashes_its_copies_never_leave
     assert h.until(lambda: not w2.can_write(), seconds=M.MODE_RECHECK_S * 3)
     w2.release()
     assert h.until(lambda: w2.pending() == 0)
-    assert not os.path.exists(path), "its copy went to the trash"
+    # (the command leaves the queue first, then its copies go: on a loaded machine that can be a moment later)
+    assert h.until(lambda: not os.path.exists(path)), "its copy went to the trash"
     assert any(n.startswith(os.path.splitext(os.path.basename(path))[0]) for n in
                os.listdir(os.path.join(lib.data_dir, ".trash")))
 

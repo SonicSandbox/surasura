@@ -92,7 +92,7 @@ ROW_FILES = ("1 file", "{n:,} files")
 ROW_LINE = "{count} · {folder}"
 ROWS_MORE = "and {n:,} more"
 COVERS = "Show covers"
-COVERS_LINE = "Sends each show's name to AniList or TMDB. Nothing else."
+COVERS_LINE = "Sends each show's AniList id or name to AniList, and a video's id to YouTube. Nothing else."
 COVERS_TIP = ("Covers for your shows, looked up by each show's name.\n"
               "• Turn it off any time: Settings")
 COVERS_PICTURE_NAME = "A plain tile becomes the show's cover"

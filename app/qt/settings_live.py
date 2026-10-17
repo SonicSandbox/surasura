@@ -590,6 +590,11 @@ class Live(QObject):
             door.clicked.connect(lambda _c=False, r=row_id: self.export(r))
             self._slot(row_id).layout().addWidget(door)
             self.parts[row_id] = {"export": door}
+        elif row_id == "remove_downloaded_covers":                 # --- W3.2 L3
+            door = sc.Door(S.COVERS_REMOVE, tooltip=row.tip, name=row.label)
+            door.clicked.connect(lambda _c=False: self.remove_covers())
+            self._slot(row_id).layout().addWidget(door)
+            self.parts[row_id] = {"remove": door}                  # --- end W3.2 L3
         if row_id in self.lines and row_id not in SETUP and row_id != "level":
             self._words(row_id, self.lines[row_id], keep=False)
 
@@ -840,6 +845,25 @@ class Live(QObject):
 
     def _credits_closed(self):
         self.card = None
+
+    # --- W3.2 L3: *Remove downloaded covers* — the shell's fetcher (Q7's `remove_downloaded`: the writer's
+    # `forget_covers`, on a worker); the user's covers and the art beside the files stay
+    def remove_covers(self):
+        make = getattr(self.shell, "cover_fetcher", None)
+        fetcher = make() if make is not None else None
+        if fetcher is None:
+            self.say(strings.COVERS_REMOVE_NONE, "remove_downloaded_covers")
+            return None
+
+        def done(number):
+            from app.qt import covers as qcovers
+            if number is None:
+                self.say(strings.COVER_CANT, "remove_downloaded_covers")
+                return
+            qcovers.ask_again()
+            self.say(strings.COVERS_REMOVED, "remove_downloaded_covers")
+        return self._run(fetcher.remove_downloaded, then=done)
+    # --- end W3.2 L3
 
     # --- Export ---------------------------------------------------------------------------------------------------- #
     def export(self, row_id):

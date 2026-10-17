@@ -612,6 +612,54 @@ def test_A2_21_the_finished_tab_takes_a_drop_too(world):
     assert calls(writer, "set_tier")[0][1] == drag.ids_of(moved)
 
 
+def tab_point(win):
+    tab = win.tab_buttons["finished"]
+    return tab.mapToGlobal(tab.rect().center())
+
+
+def test_G3_2_the_finished_tab_lights_under_a_drag_and_its_drop_lands_in_finished(world):
+    """A running drag swallows hover, so the tab's own hover look never showed: he had no sign the tab takes a drop.
+    It lights while the drop would land on it (reduced motion too: the light is a state, not an animation), goes out
+    when the hand leaves and when the drop lands, and the drop finishes the item through the writer."""
+    seed, win, writer = world()
+    tab = win.tab_buttons["finished"]
+    moved = rows_of(win)[5]
+    fin = win.page_widgets["current"].view_model.counts.finished
+    lift(win, 5)
+    assert not tab.drop_lit
+    move_global(win, tab_point(win))
+    assert tab.drop_lit
+    move_global(win, row_point(win, 2))
+    assert not tab.drop_lit                                           # the hand left: out
+    move_global(win, tab_point(win))
+    assert tab.drop_lit
+    release_global(win, tab_point(win))
+    assert not tab.drop_lit                                           # the drop landed: out
+    op = calls(writer, "set_tier")[0]
+    assert op[1] == drag.ids_of(moved) and op[2]["tier"] == "graduated"
+    view = win.page_widgets["current"].view_model
+    assert moved.key not in [r.key for r in view.rows] and view.counts.finished == fin + 1
+
+
+def test_G3_2_the_finished_tab_goes_out_on_esc_and_never_lights_for_hatos_mix(world):
+    """Esc puts everything back, the tab's light too; hato's mix never finishes, so the tab stays dark as the well does
+    (a light would promise a drop that goes back)."""
+    seed, win, writer = world()
+    tab = win.tab_buttons["finished"]
+    lift(win, 5)
+    move_global(win, tab_point(win))
+    assert tab.drop_lit
+    QApplication.sendEvent(lst_of(win), QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Escape,
+                                                  Qt.KeyboardModifier.NoModifier))
+    assert win.moves.running is None and not tab.drop_lit and calls(writer) == []
+    QTest.qWait(theme.MOTION["click-swallow-after-drag"] + 30)
+    assert drag.is_mix(rows_of(win)[0])
+    lift(win, 0)
+    move_global(win, tab_point(win))
+    assert win.moves.running.target == ("tab", "finished") and not tab.drop_lit
+    win.moves.cancel()
+
+
 def test_a_splits_first_part_leaves_the_finished_well_unlit_and_its_drop_goes_back(world):
     seed, win, writer = world()
     rs = rows_of(win)
@@ -1071,6 +1119,89 @@ def test_the_finish_toast_is_skipped_for_a_splits_first_part_and_hatos_mix(world
     row = _all_but_one(seed, win, 0)
     win.moves.done(row, row.episodes[-1])
     assert win.toasts.card.message == strings.DONE_ONE.format(title=row.title, ep=row.episodes[-1].label)
+
+
+def click_hero_done(win):
+    lst = lst_of(win)
+    done = part_rect(lst, 0, "done")
+    press(lst, done[1].center())
+    release(lst, done[1].center())
+    return done
+
+
+def test_G3_2_up_next_done_with_every_file_watched_offers_move_to_finished_and_undo_takes_it_back(world):
+    """Up Next's ✓ Done did nothing once every file was watched (the click was swallowed). Now it offers the finish,
+    as the last file's Done does: nothing is marked (every file is watched already), *Move to Finished* finishes it
+    through the writer, and the Finished toast's Undo takes it back."""
+    seed, win, writer = world()
+    moved = rows_of(win)[3]
+    assert not drag.is_mix(moved) and not drag.split_first(rows_of(win), moved)
+    lift(win, 3)
+    move_global(win, row_point(win, 0))
+    release_global(win, row_point(win, 0))                            # it is Up Next now
+    assert rows_of(win)[0].key == moved.key
+    seed.library.commit(items=[{"id": e.id, "watched": 1} for e in moved.episodes])
+    assert wait_until(lambda: all(e.watched for e in rows_of(win)[0].episodes), 3)
+    QTest.qWait(theme.MOTION["click-swallow-after-drag"] + 30)
+    writer.calls.clear()
+    done = click_hero_done(win)
+    assert done[2] == strings.ROWS_DONE_ALL_TIP
+    assert calls(writer) == []                                        # nothing marked: an offer
+    card = win.toasts.card
+    assert card.message == strings.DONE_ALL.format(n=len(moved.episodes))
+    assert [b.text() for b in card.buttons if not b.isHidden()] == [strings.DONE_MOVE_FINISHED]
+    settle()
+    next(b for b in card.buttons if b.text() == strings.DONE_MOVE_FINISHED).click()
+    op = calls(writer, "set_tier")[0]
+    assert op[1] == drag.ids_of(moved) and op[2]["tier"] == "graduated"
+    assert moved.key not in [r.key for r in rows_of(win)]
+    assert win.toasts.card.message == strings.DRAG_FINISHED.format(title=moved.title)
+    assert wait_until(lambda: any(c.op == "set_tier" for c in writer.saved) and win.moves.tickets == [], 3)
+    change = next(c for c in writer.saved if c.op == "set_tier")
+    win.toasts.card.buttons[0].click()                                # the Finished toast's Undo
+    assert writer.undone == [change]
+
+
+def test_G3_2_up_next_done_with_a_file_left_still_marks_it_watched_and_hatos_mix_all_watched_says_why(world):
+    """The fix touches only the all-watched Done: with a file left, Done marks Up Next's next file watched as before.
+    hato's mix never finishes, so its all-watched Done offers nothing and the bar says why."""
+    seed, win, writer = world()
+    hero = rows_of(win)[0]
+    nxt = hero.episodes[hero.next_index]
+    assert not nxt.watched
+    click_hero_done(win)
+    assert calls(writer, "set_watched")[0] == ("set_watched", [nxt.id], {"on": True})
+    settle()
+    seed.library.commit(items=[{"id": e.id, "watched": 1} for e in hero.episodes])
+    assert wait_until(lambda: all(e.watched for e in rows_of(win)[0].episodes), 3)
+    writer.calls.clear()
+    done = click_hero_done(win)
+    assert done[2] == strings.ROWS_DONE_ALL_MIX_TIP                   # its tip never promises Finished
+    assert calls(writer) == []
+    assert win.bar_line.full() == strings.WELL_UNLIT_MIX
+
+
+def test_G3_2_up_next_done_on_a_splits_first_part_all_watched_says_why_and_offers_no_finish(world):
+    """A split's first part never finishes while a later part is in Current (its parts stay together): with every
+    file watched, Up Next's Done writes nothing, shows no finish toast, and the bar says why."""
+    seed, win, writer = world()
+    rs = rows_of(win)
+    i = next(n for n, r in enumerate(rs) if drag.split_first(rs, r))
+    moved = rs[i]
+    lift(win, i)
+    move_global(win, row_point(win, 0))
+    release_global(win, row_point(win, 0))                            # the first part is Up Next now
+    assert rows_of(win)[0].key == moved.key and drag.split_first(rows_of(win), rows_of(win)[0])
+    seed.library.commit(items=[{"id": e.id, "watched": 1} for e in moved.episodes])
+    assert wait_until(lambda: all(e.watched for e in rows_of(win)[0].episodes), 3)
+    QTest.qWait(theme.MOTION["click-swallow-after-drag"] + 30)
+    settle()
+    writer.calls.clear()
+    click_hero_done(win)
+    assert calls(writer) == []
+    assert win.bar_line.full() == strings.WELL_UNLIT_SPLIT
+    shown = win.toasts.card.message if win.toasts.card is not None else None
+    assert shown != strings.DONE_ALL.format(n=len(moved.episodes))   # no finish offered
 
 
 def test_split_first_is_a_part_with_a_later_part_in_current(world):

@@ -29,6 +29,7 @@ from PyQt6.QtWidgets import QAbstractItemView, QApplication, QMenu, QScrollArea,
 
 from app import path_utils, theme
 from app.qt import confirm, frame, motion, rows, shadow, strings, style, windows
+from app.qt import covers as qcovers                 # --- W3.2 L3: the titles' own pictures (Q6's door)
 from app.qt.drag import Ticket, is_mix, soon_slot
 
 # The sheet's sizes (px at text size S; × the text size): the RUNBOOK's 62 % of the column, the mock's tile
@@ -172,7 +173,8 @@ class Tile(QWidget):
         clip.addRoundedRect(cover, radius, radius)
         p.save()
         p.setClipPath(clip)
-        p.drawPixmap(cover.topLeft(), rows.cover(self.work.cover_title, cw, ch, dpr, large=True))
+        p.drawPixmap(cover.topLeft(), qcovers.pixmap_for(getattr(self.work, "cover", None),      # --- W3.2 L3
+                                                         self.work.cover_title, cw, ch, dpr, "tile"))
         p.restore()
         y = pad + ch + round(8 * _f())
         th = rows.TEXT.metrics("row-title").height()
@@ -298,10 +300,18 @@ class GoalSheet(motion.Overlay):
         self.shadow = shadow.Follower(self, self.shadow_name)
         self._away = _Away(self)
         self.wash = Wash(page.list)
+        qcovers.notifier().ready.connect(self._cover_ready)        # --- W3.2 L3
         page.installEventFilter(self)
         if dock is not None:
             dock.installEventFilter(self)
         self.hide()
+
+    # --- W3.2 L3: a picture landing repaints only the tiles of that title
+    def _cover_ready(self, work_id):
+        for tile in self.tiles.values():
+            if tile.work is not None and tile.work.work_id == work_id:
+                tile.update()
+    # --- end W3.2 L3
 
     # --- the goal ----------------------------------------------------------------------------------------------- #
     def set_goal(self, goal):
@@ -491,6 +501,8 @@ class GoalSheet(motion.Overlay):
         m.setToolTipsVisible(True)
         m.setAccessibleName(strings.MENU_NAME.format(title=work.title))
         for name, label, tip, ok in menu_entries(work, writable, reason):
+            if name == "folder":                                    # --- W3.2 L3: Change cover… after the moves
+                qcovers.add_cover_menu(m, work, writable, reason)
             if name == "remove":
                 m.addSeparator()
             act = QAction(label, m)

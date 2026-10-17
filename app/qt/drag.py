@@ -875,6 +875,9 @@ class DragController(QObject):
         dock = self.win.dock
         if dock is not None:
             dock.hover(target[1] if target[0] == "well" else None)
+        tab = self.win.tab_buttons.get("finished")   # G3.2: the Finished tab lit as the well lights, by its rule
+        if tab is not None:
+            tab.set_drop_lit(target == ("tab", "finished") and not (dock is not None and dock.unlit_tip("finished")))
         # over a well or the tab the slot goes back to the row's own place (from outside: none opens)
         d.parting.move_to(target[1] if target[0] == "list" else d.src)
         if self.joins is not None:                   # --- W3.2 Q8: the part to join outlined (the rows hold still)
@@ -977,6 +980,9 @@ class DragController(QObject):
         dock = self.win.dock
         if dock is not None:
             dock.end_drag()
+        tab = self.win.tab_buttons.get("finished")   # G3.2
+        if tab is not None:
+            tab.set_drop_lit(False)
         if self.joins is not None:                   # --- W3.2 Q8
             self.joins.show(None)
         self.win.toasts.set_dragging(False)
@@ -1335,10 +1341,21 @@ class DragController(QObject):
     def done(self, row, ep):
         """A stone or ✓ Done (the one path, S12): watched (its toast and Undo) — a stone already watched turns back —
         and, when no file of the row is left unwatched, the finish toast (A2 #2; not for a split's first part or hato's
-        mix)."""
+        mix). `ep` None: Up Next's ✓ Done with every file already watched — nothing to mark, the finish toast offered
+        (G3.2; a split's first part or hato's mix: the bar says why it can't)."""
         if self.refused() is not None:
             return
         title = row.title
+        if ep is None:
+            view = self.page.view_model
+            if not finishes(row):
+                self.say(strings.WELL_UNLIT_MIX)
+            elif split_first(view.rows if view is not None else (), row):
+                self.say(strings.WELL_UNLIT_SPLIT)
+            else:
+                self.win.toasts.show(strings.DONE_ALL.format(n=len(row.episodes)), buttons=[
+                    (strings.DONE_MOVE_FINISHED, strings.DONE_MOVE_FINISHED_TIP, lambda: self.to_finished(row))])
+            return
         if ep.watched:
             ticket = Ticket(strings.DONE_UNDONE.format(title=title, ep=ep.label), (row.key,), (ep.id,))
             self._give(ticket, lambda t: self.writer.set_watched([ep.id], False, label=t))

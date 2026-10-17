@@ -238,6 +238,10 @@ by their surnames, and the Traditional spellings it reads as their Simplified pa
 only spellings are kept, in `app/cedict_data.py` and among `app/zh_script_data.py`'s phrases, shared under the same
 licence.
 
+With *Download covers* on (off until you say yes), the 3.0 window shows each show's cover from
+[AniList](https://anilist.co) (asked by the show's AniList id, or its cleaned name), and a video's own thumbnail from
+[YouTube](https://www.youtube.com); nothing is shipped, and *Remove downloaded covers* deletes them.
+
 The same credits, with the frequency lists and the tokenizers' dictionaries (UniDic, jieba, OpenCC), are in the app:
 Settings → Data & System → Data credits.
 

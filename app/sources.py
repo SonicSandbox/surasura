@@ -305,7 +305,6 @@ class _Look:
         self.this_videos = set()     # the videos a subtitle was taken for this look (S7: one per video per language)
         self.made = set()            # the copies this look wrote (rels): trashed when take_in can't take them (N3)
         self.said = 0.0
-        self.video_items = None
         self.by_folder = None        # {folder key: {(show, episode): (version, Origin)}}: the releases already in
         self.books_in = None         # {an EPUB's sha256: {part: (item_id, rel)}}: the books already in
         self.shown = None            # the folder keys of the shows with an item that isn't waiting
@@ -546,16 +545,17 @@ class _Look:
                 return
 
     def _commit(self, found):
-        """`take_in` of one batch; a copy this look made that it didn't take (the source stopped meanwhile, or the
-        file known or kept out after all) goes to the trash, never left in Library untracked (N3)."""
+        """`take_in` of one batch; a copy no item holds (the source stopped meanwhile — this batch's copies — or the
+        store's `unused`: a file known or kept out after all, a second file of the same bytes) goes to the trash, never
+        left in Library untracked (N3)."""
         if not found:
             return
-        made = {os.path.abspath(f["origin"]): f["rel"] for f in found if f.get("rel") in self.made}
+        made = [f["rel"] for f in found if f.get("rel") in self.made]
         try:
             change = self.store.take_in(self.root_id, found, first=self.first, rules=self.rules)
         except ls.NotASource:
             self.out["stopped"] = True                       # stopped reading meanwhile
-            for rel in made.values():
+            for rel in made:
                 ls.trash_file(self.data_dir, rel)
             return
         if change is None:
@@ -564,9 +564,8 @@ class _Look:
         self.out["ids"].extend(change.added)
         self.out["attached"] += len(change.attached)
         self.out["skipped"] += sum(len(v) for v in change.skipped.values())
-        for origin in change.skipped.get("known", []) + change.skipped.get("excluded", []):
-            if origin in made:
-                ls.trash_file(self.data_dir, made[origin])
+        for rel in change.unused:
+            ls.trash_file(self.data_dir, rel)
 
     def _new(self, folder, path, st, name, show, vids):
         """One new text file -> its `found` entry for `take_in` (an `item_id` for an episode already in, else the
@@ -707,18 +706,8 @@ class _Look:
 
     def _video_item(self, vkey):
         """(a) The live item whose record holds this video (hato's key, or an origin's `video_key`) — never a waiting
-        one (K5: its gap is filled by `take_in` from the copy) — or None. One read per look."""
-        if self.video_items is None:
-            self.video_items = {}
-            with self.store._reading():
-                rows = self.store.conn.execute(
-                    "SELECT p.content_key, json_extract(p.pairing, '$.video_key'), p.item_id FROM pairings p "
-                    "JOIN items i ON i.id = p.item_id WHERE i.availability != 'waiting' ORDER BY p.item_id").fetchall()
-            for content_key, video_key, item_id in rows:
-                for k in (content_key, video_key):
-                    if isinstance(k, str) and not k.startswith(ls.SOURCE_KEY):
-                        self.video_items.setdefault(k, item_id)
-        return self.video_items.get(vkey)
+        one (K5: its gap is filled by `take_in` from the copy) — or None."""
+        return self.store.item_of_video_key(vkey)
 
     def _same_bytes(self, size, sha, sizes=None):
         """(b) An item of this size whose file holds these bytes, or None."""
@@ -799,7 +788,7 @@ class _Look:
             _drop(part)
             return None
         try:
-            ls._rename_no_overwrite(part, full)
+            ls.rename_no_overwrite(part, full)
         except OSError:
             _drop(part)
             return None
@@ -939,7 +928,7 @@ class _Look:
                     f.flush()
                     os.fsync(f.fileno())
             for p in parts:
-                ls._rename_no_overwrite(p, p[:-len(".part")])
+                ls.rename_no_overwrite(p, p[:-len(".part")])
                 written.append(p[:-len(".part")])
         except OSError:
             for p in parts:

@@ -879,7 +879,7 @@ class Writer:
                     row = store.item(item_id)
                     if row is None:
                         continue
-                    to = lib.trash_file(store.data_dir, row["rel_path"])
+                    to = _trash(lib, store, row["rel_path"])
                     if to:
                         trashed[item_id] = to
                         moved.append((_full(store, to), _full(store, row["rel_path"])))
@@ -1103,7 +1103,7 @@ class Writer:
                 if row is None or lib.path_key(row["rel_path"]) not in copied:
                     continue                        # a file it didn't copy keeps its row: a sync would add it back
                 mine.append(item_id)
-                to = lib.trash_file(store.data_dir, row["rel_path"])
+                to = _trash(lib, store, row["rel_path"])
                 if to:
                     trashed[item_id] = to
                     moved.append((_full(store, to), _full(store, row["rel_path"])))
@@ -1615,6 +1615,16 @@ def _into(sub, folder, walked, lib):
 
 def _full(store, rel):
     return os.path.join(store.data_dir, *rel.split("/"))
+
+
+def _trash(lib, store, rel):
+    """A row's file to the trash before its row goes (`trash_file`), or StoreConflict when the file is there but isn't
+    Surasura's to move (SRC K1a.6: a copy a folder link leads out of the data folder) — never a row dropped with its
+    file left for the next sync to add again."""
+    to = lib.trash_file(store.data_dir, rel)
+    if to is None and lib.trash_refused(store.data_dir, rel):
+        raise lib.StoreConflict(f"that file isn't Surasura's to move: {rel}")
+    return to
 
 
 def _move_back(moved):

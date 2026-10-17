@@ -46,7 +46,7 @@ Added content lands at the **top** of the tab you're on — or, when it joins a 
 ## 4. Choose How to Generate
 Two modes drive the word list:
 
-1.  **By Commonness** *(RECOMMENDED)* — a slider from **Core** (only the most common words) to **Native** (everything but one-offs). Slide to include rarer words; a live preview shows the word count and coverage % you'd reach. Rather not choose? Turn on **Automatic rarity** in **Settings → 🧠 Sentences & Logic**: it picks the rarest band that still has 850 words or fewer, moves on by itself as you learn, and keeps the slider locked on its choice (it reads **Rarity (auto)**).
+1.  **By Commonness** *(RECOMMENDED)* — a slider from **Core** (only the most common words) to **Native** (everything but one-offs). Slide to include rarer words; a live preview shows the word count and coverage % you'd reach. Rather not choose? Turn on **Automatic rarity** in **Settings → 🧠 Sentences & Logic**: it picks the commonest band that has at least 850 words (the rarest, if none has), moves on by itself as you learn, and keeps the slider locked on its choice (it reads **Rarity (auto)**).
 
 2.  **Target % Coverage** — include enough words to hit a coverage % of your content. *(Still ordered by leverage.)*
 

@@ -4660,7 +4660,7 @@ def main():
     SELECT_BANDS_PPM = _sel.get("bands_ppm") or word_selection.DEFAULT_BANDS_PPM
     SELECT_MIN_COUNT = _sel.get("min_count", word_selection.DEFAULT_MIN_COUNT)
     # Automatic rarity (logic.selection.auto, off by default): the band is picked at the cut below —
-    # the rarest band with auto_max_words words or fewer — in place of SELECT_BAND.
+    # the commonest band with auto_max_words words or more — in place of SELECT_BAND.
     SELECT_AUTO = _sel.get("auto") is True
     SELECT_AUTO_MAX_WORDS = _sel.get("auto_max_words", word_selection.DEFAULT_AUTO_MAX_WORDS)
 
@@ -4954,7 +4954,7 @@ def main():
             return SELECT_MIN_COUNT
         band, why = SELECT_BAND, ""
         if SELECT_AUTO:
-            # Automatic rarity: the RAREST band whose list holds auto_max_words words or fewer
+            # Automatic rarity: the COMMONEST band whose list holds auto_max_words words or more
             # (word_selection.auto_band), decided on the numbers the Rarity slider shows —
             # token_index.preview_frequencies, the dashboard's own recipe, over this run's store — so
             # the band the dashboard shows is the band this run uses. It picks the band only: the list
@@ -4981,9 +4981,9 @@ def main():
                 print(f"Warning: automatic rarity could not pick a band ({e}); keeping '{SELECT_BAND}'.")
                 auto = None
             if auto is not None:
-                band, why = auto, f" (automatic: the rarest band with {SELECT_AUTO_MAX_WORDS} words or fewer)"
+                band, why = auto, f" (automatic: the commonest band with {SELECT_AUTO_MAX_WORDS} words or more)"
                 if auto != plain:
-                    why = f" (automatic: kept until its list passes {word_selection.DEFAULT_AUTO_STEP_BACK_WORDS} words)"
+                    why = f" (automatic: kept until a commoner band passes {word_selection.DEFAULT_AUTO_STEP_BACK_WORDS} words)"
                 _auto_pick.update(band=auto, words=previews[auto]["word_count"])
         floor = word_selection.band_floor_count(band, total_tokens, SELECT_BANDS_PPM, SELECT_MIN_COUNT)
         print(f"Configuration: Selection band '{band}'{why} -> keep count >= {floor:.2f} "

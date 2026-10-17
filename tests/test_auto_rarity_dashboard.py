@@ -28,13 +28,14 @@ def _ladder(*counts):
             for i, (b, n) in enumerate(zip(word_selection.BANDS_ORDER, counts))}
 
 
-# The user's Japanese library as measured on 2026-09-28: at 850 words the automatic band is Uncommon
-# (756); the user's own pick is Very Rare (4,541 words).
-MEASURED_LIBRARY = _ladder(0, 5, 193, 756, 2_474, 4_541, 9_978)
-# A few weeks of learning later: Rare is down to 840, so the automatic band moves on to Rare.
-AFTER_LEARNING = _ladder(0, 4, 150, 598, 840, 4_020, 9_310)
-# A Chinese library of its own, in its own store: at 850 words its automatic band is Rare (830).
-CHINESE_LIBRARY = _ladder(3, 40, 260, 610, 830, 2_950, 7_400)
+# The user's Japanese library at the G3.2 try (2026-10-16; Common, Occasional and Uncommon as counted there): at
+# 850 words the automatic band is Uncommon (1,093, the commonest band with 850 or more; G3.2); the user's own
+# pick is Very Rare (4,900 words).
+MEASURED_LIBRARY = _ladder(0, 14, 318, 1_093, 2_600, 4_900, 10_400)
+# A few weeks of learning later: Uncommon is down to 840, so the automatic band moves on to Rare.
+AFTER_LEARNING = _ladder(0, 10, 260, 840, 2_300, 4_400, 9_900)
+# A Chinese library of its own, in its own store: at 850 words its automatic band is Rare (1,230).
+CHINESE_LIBRARY = _ladder(3, 40, 260, 610, 1_230, 2_950, 7_400)
 INDEX = {band: i for i, band in enumerate(word_selection.BANDS_ORDER)}
 
 
@@ -89,14 +90,14 @@ class TestTheLockedSlider(_Dashboard):
         self.assertEqual(self.app.lbl_rarity.cget("text"), "Rarity (auto):")
 
     def test_the_locked_slider_sits_on_the_automatic_band_and_the_label_shows_it(self):
-        """D2: greyed and locked ON the band (Uncommon, 756 words under 850), so "where am I between
+        """D2: greyed and locked ON the band (Uncommon, 1,093 words, the first band of 850 or more), so "where am I between
         Core and Native" stays visible; the line shows that band's numbers."""
         self._preview_lands()
         self.assertEqual(str(self.app.band_slider.cget("state")), "disabled")
         self.assertEqual(int(self.app.band_slider.get()), INDEX["uncommon"])
         self.assertEqual(self.app.var_band_name.get(), "Uncommon")
         self.assertEqual(self.app.lbl_rarity.cget("text"), "Rarity (auto):")
-        self.assertIn("756 words", self.app.var_band_coverage.get())
+        self.assertIn("1,093 words", self.app.var_band_coverage.get())
         self.assertEqual(str(self.app.band_slider.cget("sliderrelief")), "flat")   # greyed, not raised
 
     def test_a_preview_refresh_never_writes_your_band_or_saves(self):
@@ -186,7 +187,7 @@ class TestALanguageSwitch(_Dashboard):
         self.root.update()
 
     def test_a_switch_locks_the_slider_on_the_new_languages_automatic_band(self):
-        """Japanese sits on Uncommon (756); the Chinese store's own numbers put it on Rare (830). And
+        """Japanese sits on Uncommon (1,093); the Chinese store's own numbers put it on Rare (1,230). And
         turned off there, the band that becomes yours is Chinese's, the one on screen."""
         stores = {"ja": MEASURED_LIBRARY, "zh": CHINESE_LIBRARY}
         asked = []
@@ -203,7 +204,7 @@ class TestALanguageSwitch(_Dashboard):
         self.assertEqual(str(self.app.band_slider.cget("state")), "disabled")
         self.assertEqual(int(self.app.band_slider.get()), INDEX["rare"])
         self.assertEqual(self.app.var_band_name.get(), "Rare")
-        self.assertIn("830 words", self.app.var_band_coverage.get())
+        self.assertIn("1,230 words", self.app.var_band_coverage.get())
         self.assertEqual(self.band_writes, [])       # I2: the switch shows the band, never saves it
 
         self.app.var_auto_band.set(False)           # D3, on the numbers now on screen
@@ -248,7 +249,7 @@ class TestALineThatIsNotANumber(_Dashboard):
         self.assertEqual(str(self.app.band_slider.cget("state")), "disabled")
         self.assertEqual(int(self.app.band_slider.get()), INDEX["very_rare"])
         self.assertEqual(self.app.var_band_name.get(), "Very Rare")
-        self.assertIn("4,541 words", self.app.var_band_coverage.get())
+        self.assertIn("4,900 words", self.app.var_band_coverage.get())
         self.assertEqual(self.app.lbl_rarity.cget("text"), "Rarity (auto):")
         self.assertEqual(self.band_writes, [])
 
@@ -266,7 +267,7 @@ class TestALineThatIsNotANumber(_Dashboard):
                       if isinstance(w, ttk.Checkbutton) and w.cget("text") == "Automatic rarity"]
         for widget in (self.app.band_slider, checkbox):
             with self.subTest(tooltip=widget.winfo_class()):     # each on its own: one raising hid the other
-                self.assertIn("the rarest band with 850 words or fewer", self.tips[str(widget)]())
+                self.assertIn("the commonest band with 850 words or more", self.tips[str(widget)]())
 
 
 if __name__ == '__main__':

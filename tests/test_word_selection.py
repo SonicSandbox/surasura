@@ -146,7 +146,7 @@ def test_custom_bands_ppm_override(freqs):
     assert strict == 0    # an absurdly high floor selects nothing
 
 
-# --- Automatic rarity: the rarest band with auto_max_words words or fewer ----------------------- #
+# --- Automatic rarity: the commonest band with auto_max_words words or more (G3.2) ------------ #
 def _ladder(*counts):
     """Band previews holding these word counts, Core -> Native. The rule reads only word_count —
     the same "N words" the slider's line shows for each band."""
@@ -154,86 +154,140 @@ def _ladder(*counts):
                 "hours_between": None} for b, n in zip(ws.BANDS_ORDER, counts)}
 
 
-# The user's Japanese library as measured on 2026-09-28 (1,987 files, 4.35M tokens; known words and
-# the three lists applied, no single characters): the numbers the ratified rule was chosen on.
-MEASURED_LIBRARY = _ladder(0, 5, 193, 756, 2_474, 4_541, 9_978)
+# Sonic's Japanese library at the G3.2 try (2026-10-16, 3,847,221 tokens): Common 14, Occasional 318, Uncommon
+# 1,093 words. The bands past Uncommon weren't counted there; these only grow.
+G32_LIBRARY = _ladder(0, 14, 318, 1_093, 2_600, 4_900, 10_400)
 
 
-def test_automatic_rarity_picks_uncommon_at_850_and_occasional_at_750_on_the_measured_library():
-    """The ratified rule (D1: A with 850): the RAREST band whose list fits under the line. Uncommon's
-    756 fits under 850 and Rare's 2,474 doesn't. Under the scope's first number, 750, Uncommon is 6
-    over — which is why 850 was chosen: 94 words of room instead of a flip every few episodes."""
-    assert ws.auto_band(MEASURED_LIBRARY, 850) == "uncommon"
-    assert ws.auto_band(MEASURED_LIBRARY, 750) == "occasional"
-
-
-def test_automatic_rarity_uses_the_settings_850_when_no_number_is_given():
-    """No magic number in code: the default line is logic.selection.auto_max_words."""
+def test_automatic_takes_uncommon_on_sonics_library_where_the_old_rule_left_him_318_words():
+    # Why: G3.2. The old rule took the rarest band at or under 850 (Occasional, 318 words: a list too short to
+    # learn from); Sonic: "it will pick the next highest if the current would be less than 850".
+    assert ws.auto_band(G32_LIBRARY, 850) == "uncommon"
+    assert ws.auto_band(G32_LIBRARY) == "uncommon", "the default line is logic.selection.auto_max_words"
     assert ws.DEFAULT_AUTO_MAX_WORDS == 850
-    assert ws.auto_band(MEASURED_LIBRARY) == "uncommon"
 
 
-def test_automatic_rarity_counts_850_words_as_fitting_and_851_as_not():
-    """'850 words or fewer' is inclusive: a band of exactly 850 is the list; one word more and the
-    rule steps back to the band before it."""
+def test_a_band_of_exactly_850_words_is_taken_and_849_steps_on():
+    # Why: "at least 850" is inclusive: exactly 850 is enough; one word fewer and the next band is taken.
     assert ws.auto_band(_ladder(0, 5, 193, 850, 2_474, 4_541, 9_978), 850) == "uncommon"
-    assert ws.auto_band(_ladder(0, 5, 193, 851, 2_474, 4_541, 9_978), 850) == "occasional"
+    assert ws.auto_band(_ladder(0, 5, 193, 849, 2_474, 4_541, 9_978), 850) == "rare"
 
 
-def test_automatic_rarity_goes_all_the_way_to_native_when_every_band_fits():
-    """An advanced learner: even Native (everything but one-offs) is under the line."""
+def test_when_no_band_reaches_the_line_automatic_takes_native_everything_on_offer():
+    # Why: an advanced learner (or a small library): even Native holds fewer than 850, so the longest list there is.
     assert ws.auto_band(_ladder(0, 3, 12, 40, 118, 305, 640), 850) == "native"
 
 
-def test_automatic_rarity_stays_on_core_when_even_core_is_over_the_line():
-    """A beginner: the commonest words alone are more than 850. The list can't be smaller than Core,
-    so it stays there rather than picking nothing."""
+def test_an_empty_library_lands_on_native_not_on_nothing():
+    # Why: every band at 0 words (a first start, nothing indexed with words in it): a band, never None or an error.
+    assert ws.auto_band(_ladder(0, 0, 0, 0, 0, 0, 0), 850) == "native"
+
+
+def test_when_core_already_holds_the_line_automatic_stays_on_core():
+    # Why: a beginner: the commonest words alone are 850 or more, so the shortest list that is long enough is Core.
     assert ws.auto_band(_ladder(1_204, 3_010, 5_122, 6_030, 8_415, 9_120, 9_561), 850) == "core"
 
 
-def test_automatic_rarity_on_a_collapsed_tail_picks_native_the_band_the_slider_still_shows():
-    """On a small library Very Rare selects exactly what Native does, and the slider hides Very Rare.
-    The rule must land on the band that is still on the slider."""
+def test_a_collapsed_tail_lands_on_native_the_band_the_slider_still_shows():
+    # Why: on a small library Very Rare selects exactly what Native does and the slider hides Very Rare; whether the
+    # tail is under the line or reaches it, the pick is the band still on the slider.
     assert ws.auto_band(_ladder(0, 5, 193, 300, 520, 610, 610), 850) == "native"
+    assert ws.auto_band(_ladder(0, 5, 193, 300, 520, 910, 910), 850) == "native"
 
 
-def test_automatic_rarity_without_a_preview_says_none_so_the_caller_keeps_its_band():
-    """Before the first Generate there are no numbers: None, never a guess."""
+def test_without_a_preview_automatic_says_none_so_the_caller_keeps_its_band():
+    # Why: before the first Generate there are no numbers: None, never a guess.
     assert ws.auto_band(None, 850) is None
     assert ws.auto_band({}, 850) is None
 
 
-def test_automatic_rarity_steps_back_a_band_when_new_content_grows_one_past_the_line():
-    """D4: worked out fresh every time. Learning brought Rare down to 840, so it moved on; a new
-    season then grows Rare past the line again, and the rule steps back rather than keep a list
-    that is no longer 850 words or fewer."""
-    assert ws.auto_band(_ladder(0, 5, 193, 756, 840, 4_541, 9_978), 850) == "rare"
-    assert ws.auto_band(_ladder(0, 6, 210, 790, 1_020, 5_100, 11_000), 850) == "uncommon"
+def test_a_line_that_is_not_a_number_raises_so_the_callers_keep_your_band():
+    # Why: auto_max_words is hand-edited in settings.json; "850" in quotes can't be compared, and every caller
+    # (Generate, the dashboard, the window, arrivals) catches the error and keeps the user's own band.
+    with pytest.raises(TypeError):
+        ws.auto_band(G32_LIBRARY, "850")
 
 
-# --- Q4-3: the second threshold (a band Automatic chose is kept until its list passes ~1,100) -------- #
-
-def test_the_second_threshold_keeps_the_remembered_band_until_its_list_passes_1100():
-    # Why: a band hovering around 850 flipped back and forth with every episode added or word learned, each flip
-    # reshuffling the list and Anki's order. The remembered band now stays while it holds 1,100 words or fewer.
-    ladder = _ladder(0, 5, 193, 756, 900, 4_541, 9_978)          # Rare (900) is past the 850 line
-    assert ws.auto_band(ladder, 850) == "uncommon", "nothing remembered: today's rule"
-    assert ws.auto_band(ladder, 850, remembered="rare") == "rare", "remembered, 900 <= 1,100: kept"
-    assert ws.auto_band(_ladder(0, 5, 193, 756, 1_100, 4_541, 9_978), 850, remembered="rare") == "rare"
-    assert ws.auto_band(_ladder(0, 5, 193, 756, 1_101, 4_541, 9_978), 850, remembered="rare") == "uncommon", \
-        "past 1,100: steps back to the rarest band at or under the line"
+def test_learning_moves_the_band_on_and_new_content_steps_it_back():
+    # Why: worked out fresh every time. Learning brings Uncommon under the line, so Rare is taken; a new season then
+    # grows Uncommon to the line again, and the shorter list that is long enough comes back.
+    assert ws.auto_band(_ladder(0, 5, 150, 840, 2_300, 4_541, 9_978), 850) == "rare"
+    assert ws.auto_band(_ladder(0, 6, 210, 900, 2_600, 5_100, 11_000), 850) == "uncommon"
 
 
-def test_a_rarer_band_under_the_line_is_still_taken_over_the_remembered_one():
-    # Why: the threshold only slows stepping BACK; learning that brings a rarer band under 850 still moves on.
-    assert ws.auto_band(_ladder(0, 5, 193, 300, 520, 840, 9_978), 850, remembered="rare") == "very_rare"
+# --- Q4-3: the second threshold (a band Automatic left is taken back only once it holds over ~1,100) ------ #
+
+def test_the_second_threshold_keeps_the_remembered_band_until_the_commoner_one_passes_1100():
+    # Why: a band hovering around 850 flipped the list back and forth with every episode added or word learned, each
+    # flip reshuffling the list and Anki's order. Learning took Uncommon under 850, so Automatic moved on to Rare (and
+    # remembers it); an episode then brings Uncommon back to 860. Rare stays until Uncommon holds more than 1,100.
+    # (Bands far apart, as in a real library: Rare holds thousands, so its own size can't be the test.)
+    ladder = _ladder(0, 14, 318, 860, 2_600, 4_900, 10_400)
+    assert ws.auto_band(ladder, 850) == "uncommon", "nothing remembered: the plain rule"
+    assert ws.auto_band(ladder, 850, remembered="rare") == "rare", "Uncommon at 860 <= 1,100: Rare kept"
+    assert ws.auto_band(_ladder(0, 14, 318, 1_100, 2_600, 4_900, 10_400), 850, remembered="rare") == "rare"
+    assert ws.auto_band(_ladder(0, 14, 318, 1_101, 2_600, 4_900, 10_400), 850, remembered="rare") ==         "uncommon", "past 1,100: steps back to the commonest band at or over the line"
+
+
+def test_a_remembered_band_that_falls_under_the_line_gives_way_to_a_rarer_one():
+    # Why: the threshold only slows stepping BACK; learning that brings the remembered band under 850 moves on.
+    assert ws.auto_band(_ladder(0, 5, 150, 840, 2_300, 4_541, 9_978), 850, remembered="uncommon") == "rare"
+
+
+def test_the_list_no_longer_flips_with_each_episode_and_each_word_learned():
+    # Why: the flip Q4-3 was built to stop, walked through: Uncommon at 849 / 860 / 849 / 860 as words are learned and
+    # episodes added. Each pick is remembered, as Generate records it; the list stays on Rare all the way.
+    remembered = None
+    picks = []
+    for uncommon in (849, 860, 849, 860, 1_050):
+        remembered = ws.auto_band(_ladder(0, 14, 318, uncommon, 2_600, 4_900, 10_400), 850, remembered=remembered)
+        picks.append(remembered)
+    assert picks == ["rare"] * 5, picks
 
 
 def test_a_remembered_band_the_preview_lacks_or_a_line_above_1100_behaves():
     # Why: a collapsed tail can drop a band from the preview; a hand-edited line above 1,100 is never undercut.
-    ladder = _ladder(0, 5, 193, 756, 900, 4_541, 9_978)
+    ladder = _ladder(0, 14, 318, 860, 2_600, 4_900, 10_400)
     assert ws.auto_band({b: p for b, p in ladder.items() if b != "rare"}, 850, remembered="rare") == "uncommon"
     assert ws.auto_band(ladder, 850, remembered="no-such-band") == "uncommon"
-    assert ws.auto_band(_ladder(0, 5, 193, 756, 1_400, 4_541, 9_978), 1_500) == "rare"
-    # A line above 1,100 is its own step-back point: a remembered band past it steps back.
-    assert ws.auto_band(_ladder(0, 5, 193, 756, 1_400, 1_600, 9_978), 1_500, remembered="very_rare") == "rare"
+    assert ws.auto_band(_ladder(0, 5, 193, 756, 1_400, 4_541, 9_978), 1_500) == "very_rare"
+    # A line above 1,100 is its own step-back point: a commoner band at the line is still kept off, one past it isn't.
+    assert ws.auto_band(_ladder(0, 5, 193, 1_500, 2_600, 4_541, 9_978), 1_500, remembered="rare") == "rare"
+    assert ws.auto_band(_ladder(0, 5, 193, 1_501, 2_600, 4_541, 9_978), 1_500, remembered="rare") == "uncommon"
+
+
+# --- The rule over real text, both languages ------------------------------------------------------ #
+
+# A ladder for a few real files (the shipped floors collapse to min_count on a library this small).
+REAL_TEXT_BANDS_PPM = {"core": 20_000, "common": 10_000, "occasional": 6_000, "uncommon": 4_000, "rare": 2_500,
+                       "very_rare": 1_500, "native": 1}
+REAL_TEXT = {"ja": ["library_episode.ass", "phrases_sample.srt", "tv_captions.ass", "runaway_transcript.txt",
+                    "placed_episode.srt", "context_test.txt"],
+             "zh": ["chinese_text_1.txt", "patterns_zh_sample.txt", "traditional_news.txt", "night_market.srt",
+                    "mixed_script_transcript.txt", "context_test.txt"]}
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_over_real_text_automatic_takes_the_first_band_whose_list_reaches_the_line(
+        tmp_path, language, ja_resources_dir, zh_resources_dir):
+    # Why: the rule reads the slider's own numbers (band_previews over the token store), Japanese and Chinese alike.
+    # For a line at each band's own count and one word past it, the pick holds at least that many words and every
+    # commoner band (one with a different list) fewer; a line past Native's count lands on Native.
+    import os
+    folder = ja_resources_dir if language == "ja" else zh_resources_dir
+    store = ti.open_store(language, path=str(tmp_path / "s.db"))
+    try:
+        store.reconcile([os.path.join(folder, name) for name in REAL_TEXT[language]], ti.make_tokenizer(language))
+        previews = ws.band_previews(store.unknown_frequencies(skip_singles=language == "ja"), REAL_TEXT_BANDS_PPM)
+    finally:
+        store.close()
+    counts = [previews[b]["word_count"] for b in ws.BANDS_ORDER]
+    assert len(set(counts)) >= 4, (language, counts)              # a real ladder to draw lines on
+    for line in sorted({c + step for c in counts[:-1] for step in (0, 1)} - {0}):
+        if line > counts[-1]:
+            continue
+        pick = ws.auto_band(previews, line)
+        at = ws.BANDS_ORDER.index(pick)
+        assert counts[at] >= line, (language, line, pick, counts)
+        assert all(c < line for c in counts[:at] if c != counts[at]), (language, line, pick, counts)
+    assert ws.auto_band(previews, counts[-1] + 1) == "native", (language, counts)

@@ -566,7 +566,7 @@ def test_the_level_of_a_hand_edited_line_is_your_own_band(monkeypatch):
     monkeypatch.setattr(word_selection, "band_previews", lambda *a, **k: {
         band: {"word_count": 100 * (n + 1)} for n, band in enumerate(word_selection.BANDS_ORDER)})
     monkeypatch.setattr(library_store, "read_auto_band", lambda *a, **k: None)
-    selection = {"auto": True, "band": "uncommon", "auto_max_words": 350}
+    selection = {"auto": True, "band": "uncommon", "auto_max_words": 300}
     assert A.level({"logic": {"selection": selection}}, "ja") == ("occasional", True)
     selection["auto_max_words"] = "850"
     assert A.level({"logic": {"selection": selection}}, "ja") == ("uncommon", True)

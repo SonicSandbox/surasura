@@ -29,7 +29,8 @@ import time
 import traceback
 
 from PyQt6.QtCore import QEvent, QObject, QPointF, QRect, QSize, Qt, QTimer, QUrl, pyqtSignal
-from PyQt6.QtGui import QDesktopServices, QFontMetrics, QFontMetricsF, QGuiApplication, QIcon, QLinearGradient, QPainter
+from PyQt6.QtGui import (QDesktopServices, QFontMetrics, QFontMetricsF, QGuiApplication, QIcon, QKeySequence,
+                         QLinearGradient, QPainter, QShortcut)
 from PyQt6.QtWidgets import (QApplication, QButtonGroup, QDialog, QHBoxLayout, QLabel, QMainWindow, QMenu, QPushButton,
                              QSizePolicy, QStackedWidget, QToolButton, QVBoxLayout, QWidget)
 
@@ -46,6 +47,8 @@ STATE_FILE = "window_state.json"
 STATE_VERSION = 1
 DEFAULT_SIZE = (1280, 800)
 POLL_MS = 500
+LOOK_TICK_MS = 5 * 60 * 1000    # SRC W1b: the source folders' tick (`sources.due` says when it's an hour: FOCUS_S apart)
+CHIP_MAX = 24                   # SRC W1b: an arrival's folder name on its chip, at most this long
 JOURNEY_FILE = "reading_list_static.html"   # the report's file in `results` (`static_html_generator.OUTPUT_FILE`)
 # E20 (IK-22): at quit, what can't stop part-way — an Anki write the window started (finishing its batch: Anki
 # finishes a request it received), Generate writing your list — is waited for up to this long ("≤ a few seconds"), with
@@ -915,6 +918,7 @@ class _Duties:
 class ShellWindow(QMainWindow):
     first_frame = pyqtSignal()
     closing = pyqtSignal()                                # before the window hides (single instance stops listening)
+    sources_seen = pyqtSignal(object)                     # SRC W1b: a look's summary (Settings' *Library folders*)
 
     def __init__(self, services, state_file=None, parent=None):
         super().__init__(parent)
@@ -955,6 +959,15 @@ class ShellWindow(QMainWindow):
             self.pages.addWidget(page)
         root.addWidget(self.pages, 1)
         self.dock = self._build_bottom_band()                 # W3.1a: each page's bottom edge; Current's Goal dock
+        # --- SRC W1b: the offline line, quiet, under the library: a source folder a look couldn't reach (SRC-3)
+        self.offline_line = QLabel(central)
+        self.offline_line.setObjectName("sourcesline")
+        self.offline_line.setTextFormat(Qt.TextFormat.PlainText)
+        self.offline_line.setToolTip(strings.SOURCES_OFFLINE_TIP)
+        self.offline_line.setContentsMargins(16, 2, 16, 2)
+        self.offline_line.setVisible(False)
+        root.addWidget(self.offline_line)
+        # --- end SRC W1b
         root.addWidget(self._build_footer())
         self.setCentralWidget(central)
         self._apply_sizes()
@@ -1050,6 +1063,30 @@ class ShellWindow(QMainWindow):
             from app.qt import item_menu
             self.items = item_menu.ItemActions(self)
         # --- end W3.2 Q8
+        # --- SRC W1b: the source folders Surasura reads where they are, looked at on focus, Refresh (its key) and the tick
+        # (`sources.due`) on the looks' own worker, a local one watched (`app/services/source_looks.py`); made after
+        # the first frame (`_start_looks`: the store's module stays off the first paint)
+        self.looks = None
+        self.sources = ()                                 # the last look's sources ({id, path, on, items, reachable})
+        self._folders_of = {}                             # an arrival's first item -> its source folder (None: none)
+        self._folders_asked = set()
+        self._folders_version = 0
+        self._named = {}                                  # an arrival's key -> (the view's arrival, folder, ours)
+        self._named_groups = None                         # (the view's groups, version, the groups shown)
+        self._arrivals_view = None
+        self._sources_relay = bridge.Relay(self)
+        self._sources_relay.said.connect(self._sources_looked)
+        self._progress_relay = bridge.Relay(self)
+        self._progress_relay.said.connect(self._sources_progress)
+        self._folders_relay = bridge.Relay(self)
+        self._folders_relay.said.connect(self._folders_landed)
+        self.look_key = QShortcut(QKeySequence(QKeySequence.StandardKey.Refresh), self)
+        self.look_key.setContext(Qt.ShortcutContext.WindowShortcut)
+        self.look_key.activated.connect(self.refresh_sources)
+        self._look_tick = QTimer(self)
+        self._look_tick.timeout.connect(self.look_at_sources)
+        self._look_tick.start(LOOK_TICK_MS)
+        # --- end SRC W1b
         # --- W3.2 Q1: the tray under the inset, and the arrivals' numbers (the warm worker, asked once per file). The
         # worker's client is the services' `arrivals` (a test's), else made for a real library (P0's `library_for`)
         self.arrivals_tray = self.arrival_numbers = None
@@ -1186,13 +1223,14 @@ class ShellWindow(QMainWindow):
         placing rules, the store's two lines and *Set up again* (`settings_store`). -> the page."""
         if self.settings_page is not None:
             return self.settings_page
-        from app.qt import settings_connect, settings_page, settings_rules, settings_store
+        from app.qt import settings_connect, settings_page, settings_rules, settings_sources, settings_store
         holder = self.page_widgets["settings"]
         language = self.services.settings.get().get("target_language") or self.language
         page = settings_page.SettingsPage(self, language, parent=holder)
         holder.layout().insertWidget(0, page, 1)          # above the bottom edge every page carries
         self.settings_page = page
-        for attach in (settings_connect.attach, settings_rules.attach, settings_store.attach):
+        for attach in (settings_connect.attach, settings_rules.attach, settings_store.attach,
+                       settings_sources.attach):                       # --- SRC W1b: *Library folders*
             try:
                 attach(page)
             except Exception as e:                        # one package's rows never keep the page from opening
@@ -1282,7 +1320,8 @@ class ShellWindow(QMainWindow):
         tray = getattr(self, "arrivals_tray", None)
         if tray is None:
             return
-        tray.set_groups(getattr(view, "arrival_groups", ()) or ())
+        self._arrivals_view = view                        # --- SRC W1b: each arrival names its folder
+        tray.set_groups(self._named_arrivals(getattr(view, "arrival_groups", ()) or ()))
         if not arrivals and (tray.isVisible() or motion.opening_of(tray) is not None):
             tray.close()
         if self.arrival_numbers is not None and getattr(view, "language", self.language) == self.language:
@@ -1386,6 +1425,7 @@ class ShellWindow(QMainWindow):
             self.moves.start(on_worker=True)        # its first look at the store and its replay off this thread
         self._follow_covers(reader, writer)
         reader.start()
+        self._follow_looks(writer)                  # --- SRC W1b: that language's source folders
 
     def _follow_covers(self, reader, writer):
         """W3.2 L3: the covers follow the library shown — its data folder, its writer and its drag controller (never the
@@ -1913,6 +1953,12 @@ class ShellWindow(QMainWindow):
 
     def changeEvent(self, event):
         super().changeEvent(event)
+        if event.type() in (QEvent.Type.ActivationChange, QEvent.Type.WindowStateChange) and \
+                getattr(self, "looks", None) is not None:                  # --- SRC W1b: a look on focus (throttled)
+            if event.type() == QEvent.Type.ActivationChange and self.in_front():
+                self.look_at_sources(focused=True)
+            else:
+                self.looks.set_shown(self.in_front())    # behind / minimized: nothing looked at, watches' reports held
         if (event.type() == QEvent.Type.ActivationChange and self.isActiveWindow() and self.duties is not None
                 and self.services.started):
             bridge.run_in_worker(self.services.activated)   # the Tk <FocusIn>: the services keep their throttles
@@ -2268,6 +2314,140 @@ class ShellWindow(QMainWindow):
         """An in-window overlay (tray, sheet, panel, popover): Esc, Back and a click outside close it (05 §5.4)."""
         self.router.register(overlay)
 
+    # --- SRC W1b: the source folders (app/services/source_looks.py; the RUNBOOK §1b S4, S10 / D5, S14 / D6) -------- #
+    def _start_looks(self):
+        """After the first frame: the looks made for the library open, and the first look after start (a full one)."""
+        if self.looks is None:
+            self._open_looks(self.services.writer)
+        self.look_at_sources(focused=True)
+
+    def _open_looks(self, writer):
+        """The looks for `writer`'s library (its opener: a store handle of their own, on their own worker) — a test's
+        `services.source_looks` first; the previous ones closed. None without an opener (no library)."""
+        looks = getattr(self.services, "source_looks", None)
+        if looks is None:
+            opener = getattr(writer, "opener", None)
+            if opener is not None:
+                from app.services.source_looks import SourceLooks
+                settings = self.services.settings
+                looks = SourceLooks(opener, self.language, rules=lambda: settings.get().get("placing_rules"))
+        old, self.looks = self.looks, looks
+        if old is not None and old is not looks:
+            old.close()
+        if looks is not None:
+            looks.on_result = self._sources_relay.call
+            looks.on_progress = lambda path, found, shows: self._progress_relay.call((path, found, shows))
+        return looks
+
+    def _follow_looks(self, writer):
+        """A language switch: that library's folders, looked at once (its own cadence); the last one's line goes."""
+        self._open_looks(writer)
+        self.sources = ()
+        self._folders_of.clear()
+        self._folders_asked.clear()
+        self._named.clear()
+        self._show_offline()
+        if self._first_painted:
+            self.look_at_sources(focused=True)
+
+    def in_front(self):
+        """The window shown, not minimized and the active one (SRC-9: no look while it is behind or minimized)."""
+        return self.isVisible() and self.isActiveWindow() and not self.isMinimized()
+
+    def look_at_sources(self, focused=False, refreshed=False):
+        """On focus (`focused`), Refresh (`refreshed`) or the tick: a look when `sources.due` says so, on the looks'
+        worker (never this thread). -> True when one was asked."""
+        if self.looks is None or self._quit is not None:
+            return False
+        return self.looks.asked(focused=bool(focused), refreshed=bool(refreshed), shown=self.in_front())
+
+    def refresh_sources(self):
+        """Refresh (the Refresh key; Settings' *Look again*): every folder looked at in full, now."""
+        return self.look_at_sources(refreshed=True)
+
+    def _sources_looked(self, summary):
+        """A look's (an add's, a stop's) summary: the offline line, and Settings' row (`sources_seen`)."""
+        if not isinstance(summary, dict):
+            return
+        self.sources = tuple(summary.get("sources") or ())
+        self._show_offline()
+        self.sources_seen.emit(summary)
+
+    def offline_text(self):
+        """The offline line's words for `sources` (empty: every folder reachable, or not looked at yet)."""
+        from app.services.source_looks import offline
+        lines = []
+        for path, n in offline(self.sources):
+            if n == 1:
+                lines.append(strings.SOURCES_OFFLINE_ONE.format(path=path))
+            elif n:
+                lines.append(strings.SOURCES_OFFLINE.format(path=path, n=n))
+            else:
+                lines.append(strings.SOURCES_OFFLINE_NONE.format(path=path))
+        return " · ".join(lines)
+
+    def _show_offline(self):
+        """Repainted only when its words moved (S19); shown while there are any."""
+        text = self.offline_text() if self.sources else ""
+        if self.offline_line.text() != text:
+            self.offline_line.setText(text)
+            self.offline_line.setAccessibleName(text)
+        if self.offline_line.isHidden() == bool(text):
+            self.offline_line.setVisible(bool(text))
+
+    def _sources_progress(self, said):
+        """A folder being read for the first time (+ Add): its count so far, in the bar."""
+        path, found, shows = said
+        name = os.path.basename(os.path.normpath(path)) or path
+        self.say(strings.SOURCES_READING.format(name=name, found=found, shows=shows))
+
+    def _named_arrivals(self, groups):
+        """Each arrival from a source folder names its folder on its chip, its first item's asked once on the looks'
+        worker; the view's own objects back while nothing is named (the tray repaints only what moved, S19)."""
+        if self.looks is None or not groups:
+            return groups
+        want = [a.item_ids[0] for g in groups for a in g.rows if a.item_ids and a.item_ids[0] not in self._folders_asked]
+        if want:
+            self._folders_asked.update(want)
+            self.looks.folders(want, self._folders_relay.call)
+        held = self._named_groups
+        if held is not None and held[0] is groups and held[1] == self._folders_version:
+            return held[2]
+        out, moved = [], False
+        for g in groups:
+            rows = tuple(self._named_arrival(a) for a in g.rows)
+            if any(r is not a for r, a in zip(rows, g.rows)):
+                moved = True
+                g = g._replace(rows=rows)
+            out.append(g)
+        shown = tuple(out) if moved else groups
+        self._named_groups = (groups, self._folders_version, shown)
+        return shown
+
+    def _named_arrival(self, a):
+        folder = self._folders_of.get(a.item_ids[0]) if a.item_ids else None
+        if not folder:
+            return a
+        kept = self._named.get(a.key)
+        if kept is not None and kept[0] is a and kept[1] == folder:
+            return kept[2]
+        name = os.path.basename(os.path.normpath(folder)) or folder
+        chip = name if len(name) <= CHIP_MAX else name[:CHIP_MAX - 1] + "…"
+        ours = a._replace(chip=chip, accessible=f"{a.accessible} · {strings.SOURCES_FROM.format(name=name)}")
+        self._named[a.key] = (a, folder, ours)
+        return ours
+
+    def _folders_landed(self, found):
+        """The arrivals' folders read: the tray shown again when one was named."""
+        if not isinstance(found, dict):
+            return
+        named = {k: v for k, v in found.items() if v}
+        self._folders_of.update(found)
+        if named and self._arrivals_view is not None:
+            self._folders_version += 1
+            self._show_arrivals(self._arrivals_view)
+    # --- end SRC W1b
+
     # --- showing, closing, remembering -------------------------------------------------------------------- #
     def bring_to_front(self, _args=None):
         """A second start handed over: show this window, un-minimised (still maximised if it was), in front."""
@@ -2300,6 +2480,7 @@ class ShellWindow(QMainWindow):
         # --- W3.2 Q6: the covers asked for meanwhile decode now; the disk scan once per open
         qcovers.release(self._stones_hold)
         self.scan_covers()
+        self._start_looks()                                    # --- SRC W1b: the first look after start (full)
 
     def scan_covers(self):
         """W3.2 Q6: the library's covers from disk (`covers.start_scan`), on a thread of its own — after the first
@@ -2444,6 +2625,9 @@ class ShellWindow(QMainWindow):
         from app.qt import windows
         windows.close_all(self)                           # W3.4 AD4-4: the ported windows' own closes run (their clean-up)
         self._poll.stop()
+        self._look_tick.stop()                            # --- SRC W1b: a look under way stops between files
+        if self.looks is not None:
+            self.looks.close()
         self.bridge.stop()                                # the quit's service callbacks reach no slot from here
         state = self.state_now()
         self.hide()

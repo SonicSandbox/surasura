@@ -382,7 +382,7 @@ def icon(p, kind, rect, colour, width=1.6):
 
 
 STATUS_ICON = {"in_anki": "check", "mining": "mining", "waiting": "waiting", "mine_rest": "check", "mine": "mine",
-               "no_media": "no_media"}
+               "no_media": "no_media", "no_subs": "waiting"}           # SRC W1b: a video waiting for its subtitle
 
 
 def pill_size(status, dpr=1.0):
@@ -419,7 +419,7 @@ def paint_pill(p, status, rect, dpr=1.0, audio=False):
         p.setPen(QPen(style.qcolor(col["status-part-ring"]), 1))
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawRoundedRect(r, radius, radius)
-    elif status.kind in ("mine", "deleted"):
+    elif status.kind in ("mine", "deleted", "no_subs"):
         p.setPen(QPen(style.qcolor(col["line-hi"]), 1))
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawRoundedRect(r, radius, radius)

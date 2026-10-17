@@ -941,8 +941,8 @@ ADD_TIP = "Add: files, a folder, a book or deck, a video's subtitles, or pasted 
 ADD_MENU_NAME = "What you can add to your library"
 ADD_ITEMS = {
     "files": ("Files…", "Add subtitle or text files: with their show when it's in Current, else at the top of Current"),
-    "folder": ("A folder…", "Add a folder: every subtitle and text file in it, its folders kept, at the top of Current "
-                            "(or with its show)"),
+    "folder": ("A folder…", "Read a folder where it is: Surasura keeps its own copy of the text and looks there again "
+                            "for new episodes\nA show it hasn't shown you yet waits in New arrivals"),
     "extract": ("EPUB or Anki deck…", "Turn an EPUB or an Anki deck into text you can add"),
     "youtube": ("YouTube or bilibili…", "Bring in a YouTube or bilibili.tv video's subtitles from its link"),
     "paste": ("Paste text…", "Paste text and give it a title: it's added as one text file"),
@@ -967,6 +967,21 @@ PASTE_CANCEL_TIP = "Close without adding anything (Esc does the same)"
 PASTE_FAILED = "The pasted text couldn't be saved: {why}"
 PASTE_KEPT = "The pasted text wasn't added. It is kept in {folder}"                     # W3.2 fix round (N7)
 # --- end W3.2 Q3
+# --- SRC W1b: the source folders Surasura reads where they are (app/services/source_looks.py, app/qt/shell.py) ------ #
+SOURCES_OFFLINE = "{path} isn't reachable; its {n:,} episodes are kept"
+SOURCES_OFFLINE_ONE = "{path} isn't reachable; its episode is kept"
+SOURCES_OFFLINE_NONE = "{path} isn't reachable"
+SOURCES_OFFLINE_TIP = "Nothing is moved or marked while a folder is away: Surasura looks again when it's back"
+SOURCES_READING = "Reading {name}: {found:,} found in {shows:,} shows…"
+SOURCES_READ = "Reading {name} where it is: {added:,} new"
+SOURCES_READ_ARRIVALS = "Reading {name} where it is: {added:,} new · the shows you haven't seen wait in New " \
+                        "arrivals"
+SOURCES_READ_NOTHING = "Reading {name} where it is: nothing new in it yet"
+SOURCES_UNREACHABLE = "Reading {name} where it is: it can't be reached now · Surasura looks again later"
+SOURCES_REFUSED = "{name} can't be read where it is: {reason}"
+SOURCES_NO_LIBRARY = "your library isn't open"
+SOURCES_FROM = "from {name}"
+# --- end SRC W1b
 # --- W3.2 Q5: Needs you's cards, their buttons and what they say (app/qt/needs.py; the entries' own words are
 # `app/services/needs.STRINGS`) ------------------------------------------------------------------------------------- #
 NEEDS_EMPTY_TEXT = "\n".join(NEEDS_EMPTY)

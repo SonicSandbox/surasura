@@ -180,18 +180,69 @@ def test_a_loop_turns_through_its_phase_until_stopped(clock):
     assert not clock.active
 
 
+def _window_sources():
+    """The window's code: `app/qt/*.py` and each module's `modules/*/qt_*.py` (none without `modules/`: RD-S10)."""
+    folder = os.path.dirname(motion.__file__)
+    paths = [os.path.join(folder, n) for n in sorted(os.listdir(folder)) if n.endswith(".py")]
+    root = os.path.join(os.path.dirname(os.path.dirname(folder)), "modules")
+    if os.path.isdir(root):
+        for mod in sorted(os.listdir(root)):
+            here = os.path.join(root, mod)
+            if os.path.isdir(here):
+                paths += [os.path.join(here, n) for n in sorted(os.listdir(here))
+                          if n.startswith("qt_") and n.endswith(".py")]
+    return paths
+
+
+# Timers with a literal interval of a frame's pace (under 100 ms) that drive no look: (file, timer) -> why. Anything
+# else at that pace would be a view's own timer driving a look (the one allowed, a drag's auto-scroll, takes its
+# interval from `theme.MOTION["auto-scroll-tick"]`).
+NOT_A_LOOK = {
+    ("arrivals.py", "_drag_watch"): "polls whether the tray's drag has ended: a state, nothing drawn",
+    ("hud.py", None): "the frame meter's own script and refresh (a measuring tool, never a look)",
+    ("qt_junban.py", None): "asks Anki again a beat after a change: a state, nothing drawn",
+}
+
+
+def _frame_paced_timers(path):
+    """(timer name or None, line) for each timer started with a literal interval of 1-99 ms in `path`."""
+    import ast
+    out = []
+    for node in ast.walk(ast.parse(open(path, encoding="utf-8").read())):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr in ("setInterval", "start", "singleShot") and node.args):
+            continue
+        first = node.args[0]
+        if not (isinstance(first, ast.Constant) and type(first.value) is int and 0 < first.value < 100):
+            continue
+        owner = node.func.value
+        name = owner.attr if isinstance(owner, ast.Attribute) else getattr(owner, "id", None)
+        out.append((None if name == "QTimer" else name, node.lineno))
+    return out
+
+
 def test_no_other_animation_engine_and_no_motion_literals_under_app_qt():
-    # One clock (row 1): Qt's own animation classes and graphics effects stay out of the window (05 §5.3).
-    folder = os.path.join(os.path.dirname(motion.__file__))
-    banned = re.compile(r"QPropertyAnimation|QVariantAnimation|QTimeLine|QGraphics\w*Effect|setGraphicsEffect")
+    # One clock (row 1; M4.1 widened it): Qt's own animation classes, kinetic scrolling and graphics effects stay out
+    # of the window and its modules' windows (05 §5.3); a window's opacity is set by the overlay animator only; a timer
+    # at a frame's pace drives no look (the drag's auto-scroll is the one named exception, its interval a token).
+    banned = re.compile(r"QPropertyAnimation|QVariantAnimation|QTimeLine|QScroller|QGraphics\w*Effect"
+                        r"|setGraphicsEffect")
     literal = re.compile(r"animate\(\s*\d")
-    for name in os.listdir(folder):
-        if name.endswith(".py"):
-            text = open(os.path.join(folder, name), encoding="utf-8").read()
-            code = re.sub(r'"""[\s\S]*?"""', "", text)           # docstrings may name what's banned
-            code = re.sub(r"#.*", "", code)
-            assert not banned.search(code), name
-            assert not literal.search(code), name
+    paths = _window_sources()
+    assert any(p.endswith(os.path.join("qt", "drag.py")) for p in paths)
+    for path in paths:
+        name = os.path.basename(path)
+        text = open(path, encoding="utf-8").read()
+        code = re.sub(r'"""[\s\S]*?"""', "", text)           # docstrings may name what's banned
+        code = re.sub(r"#.*", "", code)
+        assert not banned.search(code), name
+        assert not literal.search(code), name
+        if name != "motion.py":
+            assert "setWindowOpacity" not in code, name
+        for timer, line in _frame_paced_timers(path):
+            assert (name, timer) in NOT_A_LOOK or (name, None) in NOT_A_LOOK, f"{name}:{line} {timer}"
+    drag_code = open(os.path.join(os.path.dirname(motion.__file__), "drag.py"), encoding="utf-8").read()
+    assert 'setInterval(theme.MOTION["auto-scroll-tick"])' in drag_code
 
 
 # --- row 2: reduced motion ------------------------------------------------------------------------------------------ #

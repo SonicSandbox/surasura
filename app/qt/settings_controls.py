@@ -1100,7 +1100,8 @@ class LevelSlider(_Control):
             self.update()
         self._anims["lift"] = motion.clock().animate(M["slider-lift"], lift, kind="move", points="linear", owner=self)
         self._last = motion.clock().now()
-        follow = motion.clock().animate(M["vein-travel"], self._follow, kind="loop", repeat=True, owner=self)
+        follow = motion.clock().animate(M["vein-travel"], self._follow, kind="loop", repeat=True, owner=self,
+                                        on_end=self._followed)
         if follow.alive:
             self._anims["follow"] = follow
         else:
@@ -1122,6 +1123,12 @@ class LevelSlider(_Control):
         self._last = now
         if self._held:
             self._t += (self._goal() - self._t) * min(1.0, dt * M["slider-follow"])
+            self.update()
+
+    def _followed(self):
+        """The follow loop stopped while the gem is held (Reduced motion turned on mid-drag): at the hand now."""
+        if self._held:
+            self._t = self._goal()
             self.update()
 
     def _move(self, x):

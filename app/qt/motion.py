@@ -12,7 +12,9 @@ tokens, the overlay animator, the spinner, and reduced motion.
 - **The spinner** (`Spinner`) is on the clock only while it runs, is shown and its window isn't minimised.
 - **The freeze switch** (`app/qt/freeze.py`, tests and captures) jumps every animation to its end and leaves spinners
   still. **Reduced motion** (`app_motion`: Follow Windows · Full · Reduced, the user's; 05 §5.10) is separate: a move
-  jumps, a fade is kept but no longer than `FAST`, a spinner is a static mark. *Follow* reads Windows' *Show animations*
+  jumps, a fade is kept but no longer than `FAST`, a spinner is a static mark — live, mid-motion too (M4.1: a running
+  move lands, a running fade ends within `FAST`, a loop stops; back to Full nothing restarts). Direct manipulation is
+  not motion: auto-scroll during a drag and the ghost under the hand go on. *Follow* reads Windows' *Show animations*
   (`SPI_GETCLIENTAREAANIMATION`) at start and again when Windows says it changed (`WM_SETTINGCHANGE`): Qt 6.11 can't see
   it (05 §5.11); off Windows it answers "animations on".
 - **Springs** (W3.1a §3; `clock().spring(...)`, `Spring`): physics on the same clock, stepped from its own time in
@@ -287,7 +289,40 @@ class Clock(QObject):
         self._frame_now = None
         self.stats = Stats()
         self.mode = Mode(parent=self)
+        self.mode.changed.connect(self._mode_changed)
         self.on_frame_done = None                # the HUD's hook: called with (late_ms, work_ms) after each frame
+
+    def _mode_changed(self, reduced):
+        """Reduced motion turned on mid-motion (05 §5.10, M4.1 row 1): every running move — an animation or a spring —
+        lands at once (its last frame, then its end), every running fade ends within FAST from now, every loop stops
+        (`on_end`), and an overlay still being prepared lands. Turned off: nothing restarts (what landed stays put)."""
+        if not reduced:
+            return
+        now = self.now()
+        for anim in list(self._anims):
+            if not anim.alive:
+                continue
+            if self._gone(anim.owner):
+                anim.alive = False
+                self._ended(anim)
+            elif anim.repeat:
+                self._end(anim, finish=False)
+            elif anim.kind == "fade":
+                anim.duration = max(1.0, min(anim.duration, now - anim.start + theme.FAST))
+            else:
+                self._end(anim, finish=True)
+        for s in list(self._springs):              # (a fade spring is capped by `_step_spring` from here on)
+            if not s.alive or s.kind == "fade":
+                continue
+            if self._gone(s.owner):
+                s.alive, s.velocity = False, 0.0
+                self._ended(s)
+            else:
+                self._end_spring(s, rest=True)
+        for opening in list(_OPENINGS.values()):
+            if not opening.ended and opening._pieces is not None:
+                opening.finish()                   # still being prepared: shown at its place now
+        self._prune()
 
     # --- time -------------------------------------------------------------------------------------------------- #
     def now(self):
@@ -555,12 +590,15 @@ def install_mode_filter(app=None):
     app = app or QApplication.instance()
     state = getattr(app, "_surasura_motion", None)
     if state is None:
-        state = {"filter": SettingChangeFilter(), "installed": False}
+        state = {"filter": SettingChangeFilter(), "installed": False, "mode": None}
         app._surasura_motion = state
         app.applicationStateChanged.connect(
             lambda st: clock().mode.system_changed() if st == Qt.ApplicationState.ApplicationActive else None)
-        clock().mode.changed.connect(lambda _r: _sync_mode_filter(app))
-        clock().mode.setting_changed.connect(lambda: _sync_mode_filter(app))
+    mode = clock().mode
+    if state.get("mode") is not mode:              # (a clock made again — tests — is followed too)
+        state["mode"] = mode
+        mode.changed.connect(lambda _r: _sync_mode_filter(app))
+        mode.setting_changed.connect(lambda: _sync_mode_filter(app))
     _sync_mode_filter(app)
     return state["filter"]
 

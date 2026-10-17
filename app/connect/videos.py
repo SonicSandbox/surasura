@@ -5,9 +5,10 @@ are in, plus any you add in Settings; checked when Connect starts; never downloa
   never opened, RD-S1).
 - **Else the index:** the folders the library's paired videos are in (that folder only) and the ones you add
   (`connect_video_folders`: a list, or `{lang: list}`; their subfolders too, 4 deep — both limits are defaults this
-  step chose, not rulings), each video file by its name — and by its size when the pairing gives one (`video_size`),
-  so another file of the same name is never taken. Two on this computer that fit → *No video*: Connect never
-  guesses (a cloud placeholder of the same name doesn't count: it is never taken).
+  step chose, not rulings; the source folders the store reads are indexed as these, SRC M1), each video file by its
+  name — and by its size when the pairing gives one (`video_size`), so another file of the same name is never taken.
+  Two on this computer that fit → *No video*: Connect never guesses (a cloud placeholder of the same name doesn't
+  count: it is never taken).
   Without a pairing (a subtitle you added), a video named like the subtitle (`beside`'s names) anywhere in them.
 - **Only what changed** (S19): the index is kept in `<local data>/connect/videos-<lang>.json`, each folder with its
   modified time; a folder whose time hasn't moved is never listed again (one `stat`). Built once a run, the first
@@ -34,7 +35,7 @@ from app.connect import runner
 
 log = logging.getLogger("surasura-cli")
 
-INDEX_VERSION = 2               # 2: each folder keeps its own spelling (`path`)
+INDEX_VERSION = 3               # 2: each folder keeps its own spelling (`path`); 3: bins and folder links skipped
 DEPTH = 4                       # the folders you add: their subfolders this deep
 RELIST_MAX = 2000               # a missing video's re-list (once a run): at most this many folder entries read
 KEY_PART = 65536                # the content key: a file over 2 × this is read as its first and last KEY_PART bytes
@@ -72,7 +73,10 @@ class _Full(Exception):
 
 def _list(folder, limit=None):
     """(videos {name lower: [name, size]}, subfolders [path], entries read) of one folder (names and sizes: nothing
-    is opened); None when it can't be read (gone, offline). Raises _Full past `limit` entries."""
+    is opened); None when it can't be read (gone, offline). Raises _Full past `limit` entries. A subfolder a source's
+    look skips is never listed (`library_store.skip_dir`, SRC B3: dot folders, the recycle bins, a folder link or
+    junction): a trashed copy is no second match, a link is never followed."""
+    from app.library_store import skip_dir
     videos, subs, seen = {}, [], 0
     try:
         with os.scandir(folder) as found:
@@ -82,7 +86,8 @@ def _list(folder, limit=None):
                     raise _Full()
                 try:
                     if entry.is_dir(follow_symlinks=False):
-                        subs.append(entry.path)
+                        if not skip_dir(entry.name, entry):
+                            subs.append(entry.path)
                         continue
                     if not entry.name.lower().endswith(runner.VIDEO_EXTENSIONS):
                         continue

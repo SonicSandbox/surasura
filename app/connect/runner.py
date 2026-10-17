@@ -1122,7 +1122,7 @@ class Steps:
                 shallow = sorted({os.path.dirname(r["video_path"]) for records in library.pairings(store).values()
                                   for r in records if isinstance(r, dict) and isinstance(r.get("video_path"), str)
                                   and r["video_path"]})
-                sources = [s["path"] for s in store.sources()]
+                sources = [s["path"] for s in store.sources(counts=False)]
             index = videos.Index(lang)
             index.refresh(shallow, videos.configured(self.loaded, lang), sources=sources)
             made[lang] = index

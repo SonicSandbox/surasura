@@ -19,12 +19,15 @@ folder, `Library/<show>/<file>` (SRC-4). One look (`scan`):
   item, its copy followed (S5), else (c) a copy (`.part`, then renamed; a file changed in the last SETTLE_S seconds, or
   while copied, waits for the next look). A removed item's path, bytes, video, or its episode's re-release stay out
   (S6).
-- **Hands each show's files to `Store.take_in`**, at most BATCH at a time (an EPUB's parts all in one: S11).
+- **Hands each show's files to `Store.take_in`**, at most BATCH at a time (an EPUB's parts all in one: S11): each
+  take-in holds the write lock briefly, so a window's move waits little (G1); a PASSIVE checkpoint every
+  CHECKPOINT_EVERY of them keeps the write-ahead log short.
 - **A changed original** (in a folder listed): copied again over Surasura's copy — only a copy in `Library`, never
   from an empty file, one under half the copy's size or one that changed while read; the old copy *copied* into the
   data folder's `.trash` first (its clock restarted), then the new one put in its place at once (`os.replace`, S5);
   a `v2`'s text only once `take_in` recorded it on its episode.
-- **An unreachable folder** (SRC-3): `{"reachable": False}`, nothing written or marked.
+- **An unreachable folder** (SRC-3): `{"reachable": False}`, nothing written or marked — one that goes while it is
+  listed too (its folder times kept as they were).
 
 `due` is the cadence the shell asks (SRC-9); `local_or_network` tells it which folders a watch can follow (D5).
 Nothing is ever written under a source folder. Standard library only.
@@ -47,7 +50,9 @@ log = logging.getLogger("surasura-cli")
 
 SETTLE_S = 5                    # a file (or the video beside it) modified this recently may still be being written
 PROGRESS_S = 0.2                # `progress` at most this often
-BATCH = 200                     # files per `take_in`, per show
+BATCH = 25                      # files per `take_in`, per show: a take-in holds the write lock ~50 ms at most
+CHECKPOINT_EVERY = 5            # take-ins between a look's PASSIVE checkpoints (a window never checkpoints by itself)
+IN_MEMORY = 16 << 20            # a new text up to this size is read once: hashed and copied from memory
 FOCUS_S = 5 * 60                # a look on the window's focus: at most this often
 HOURLY_S = 60 * 60              # else, while a window is in front
 CACHE_VERSION = 2               # 2: a folder's subtitle folders are listed with it
@@ -249,6 +254,28 @@ def _copy_part(origin, part):
     return h.hexdigest()
 
 
+def _lost(root):
+    """Is the source folder itself gone (offline, renamed away)? Asked when a folder below it can't be read."""
+    return not os.path.isdir(root)
+
+
+def _read_text(path, st):
+    """(the new text's bytes when it is small enough to keep in memory, else None; its sha256): read once."""
+    if st.st_size > IN_MEMORY:
+        return None, ls.sha256_of(path)
+    with open(path, "rb") as f:
+        data = f.read()
+    return data, hashlib.sha256(data).hexdigest()
+
+
+def _write_part(part, data):
+    """`data` into `part` (ours: a `.part` in the data folder), flushed to the disk before it is renamed."""
+    with open(part, "wb") as dst:
+        dst.write(data)
+        dst.flush()
+        os.fsync(dst.fileno())
+
+
 def _drop(part):
     """Our own unfinished `.part`, or the trash copy of a copy never replaced (never anything else): removed."""
     try:
@@ -339,12 +366,15 @@ class _Look:
         self.shown = None            # the folder keys of the shows with an item that isn't waiting
         self.follow = {}             # {a v2's origin: (its episode's Origin, path, stat, folder)}: copied after take_in
         self.origins = None          # read when a folder is listed (`_load`)
+        self.videos = None           # {video key: item id} of the origins' records, read once a look
+        self.batches = 0             # take-ins this look (a checkpoint every CHECKPOINT_EVERY)
         self.hashes = {}
 
     # --- the look ------------------------------------------------------------------------------------------------- #
 
     def run(self):
-        path = next((s["path"] for s in self.store.sources() if s["id"] == self.root_id), None)
+        held_sources = self.store.sources(all=True, counts=False)   # one read of the roots, no origin read
+        path = next((s["path"] for s in held_sources if s["id"] == self.root_id and s["on"]), None)
         if path is None:
             raise ls.NotASource("That folder isn't being read any more.")
         meta = self.store.meta()
@@ -364,7 +394,7 @@ class _Look:
         self.shown_kept = {} if self.full else dict(self.shown_videos)
         # A folder's show is read below the outermost source holding it, so overlapping sources never split it (K6)
         self.base = path
-        for s in self.store.sources(all=True):
+        for s in held_sources:
             k = ls.path_key(os.path.abspath(s["path"])).rstrip("/")
             if len(k) < len(ls.path_key(os.path.abspath(self.base)).rstrip("/")) and \
                     ls.path_key(os.path.abspath(path)).startswith(k + "/"):
@@ -455,8 +485,8 @@ class _Look:
             try:
                 st = os.stat(folder)
             except OSError:
-                if folder == root:
-                    return None
+                if folder == root or _lost(root):            # the source went mid-look: unreachable, as at its
+                    return None                              # start; the cache kept as it was
                 continue
             mtime = st.st_mtime_ns
             if st.st_ino:                                    # a loop no link shows (a share following links): once
@@ -470,7 +500,7 @@ class _Look:
                 continue
             listed = _listing(folder)
             if listed is None:
-                if folder == root:
+                if folder == root or _lost(root):
                     return None
                 continue
             self._load()
@@ -681,6 +711,13 @@ class _Look:
             return
         if change is None:
             return
+        self._videos_taken(found, change)
+        self.batches += 1
+        if self.batches % CHECKPOINT_EVERY == 0:             # the WAL kept short over a long look
+            try:
+                self.store.checkpoint(wait=0.1)
+            except ls.StoreError:                            # busy: the next one
+                pass
         self.out["added"] += len(change.added)
         self.out["ids"].extend(change.added)
         self.out["attached"] += len(change.attached)
@@ -691,6 +728,20 @@ class _Look:
         for origin, held in follow.items():
             if origin not in skipped:
                 self._follow(origin, *held)
+
+    def _videos_taken(self, found, change):
+        """The look's video map (`_video_item`) after a take-in: each recorded text's video is its item's (the lowest
+        id); a video waiting for its text is no item's yet (K5)."""
+        if self.videos is None:
+            return
+        for f in found:
+            item, vkey = change.recorded.get(os.path.abspath(f["origin"])), f.get("video_key")
+            if item is None or not vkey:
+                continue
+            if f.get("item_id") is None and not ls.is_content_name(str(f.get("rel") or "").lower()):
+                continue
+            if vkey not in self.videos or item < self.videos[vkey]:
+                self.videos[vkey] = item
 
     def _trash(self, rel):
         """A copy no item holds, to the trash; one the trash can't take (held open) is left as it is, logged — never
@@ -753,7 +804,7 @@ class _Look:
         if track is not None and track in self.this_videos:  # one subtitle per video per language: the next look's
             self._wait(folder)
             return None
-        sha = ls.sha256_of(path)
+        data, sha = _read_text(path, st)                     # read once: hashed now, copied from memory
         if not self._same(path, st):
             self._wait(folder)
             return None
@@ -782,7 +833,7 @@ class _Look:
         if item is not None:
             f["item_id"] = item
         else:
-            rel = self._copy(path, st, show, name, sha)
+            rel = self._copy(path, st, show, name, sha, data)
             if rel is None:
                 self._wait(folder)
                 return None
@@ -850,8 +901,11 @@ class _Look:
 
     def _video_item(self, vkey):
         """(a) The live item whose record holds this video (hato's key, or an origin's `video_key`) — never a waiting
-        one (K5: its gap is filled by `take_in` from the copy) — or None."""
-        return self.store.item_of_video_key(vkey)
+        one (K5: its gap is filled by `take_in` from the copy) — or None. The origins' videos are read once a look and
+        kept up to date by its take-ins (`_commit`); hato's by their row, at each ask."""
+        if self.videos is None:
+            self.videos = self.store.origin_videos()
+        return self.store.item_of_video_key(vkey, origins=self.videos)
 
     def _same_bytes(self, size, sha, sizes=None):
         """(b) An item of this size whose file holds these bytes, or None."""
@@ -914,9 +968,10 @@ class _Look:
             return None
         return digest
 
-    def _copy(self, path, st, show, name, sha):
+    def _copy(self, path, st, show, name, sha, data=None):
         """(c) The original copied into `Library/<show>/` (`.part`, then renamed; never over another file: a free
-        `name (2)` or, after a crash, the same bytes already there re-used) -> the copy's rel, or None."""
+        `name (2)` or, after a crash, the same bytes already there re-used) -> the copy's rel, or None. `data`: its
+        bytes as read for `sha` (checked unchanged since: `_new`), written as they are; else read again here."""
         rel, reuse = ls.content_target(self.data_dir, f"{ls.CONTENT_FOLDER}/{show}/{name}", st.st_size, sha)
         if reuse:
             return rel
@@ -928,7 +983,13 @@ class _Look:
         except OSError:
             return None
         part = full + ".part"
-        if self._checked_copy(path, st, part) != sha:
+        if data is not None:
+            try:
+                _write_part(part, data)
+            except OSError:
+                _drop(part)
+                return None
+        elif self._checked_copy(path, st, part) != sha:
             _drop(part)
             return None
         try:

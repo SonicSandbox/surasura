@@ -2377,7 +2377,27 @@ class Store:
         3.0 (L3.1): the record names its title first (`_work_by_record`: its ids, then its show), and an item that
         waits in New arrivals is placed by the user's rule for its source in the same command (`placing_rules`,
         05 §5.12: logged as the source's, explicit — D30); `rules` = {source: target} as the caller read them from
-        settings.json (`placing_rules`; None or empty: it waits); a back-fill places by no rule."""
+        settings.json (`placing_rules`; None or empty: it waits); a back-fill places by no rule.
+
+        3.0 (SRC K3, SRC-7, never a duplicate): an episode already in is never a second item — see `_register`. A
+        source's `Library` copy hato's file took over (`change.unused`) goes to the trash after the commit (inside an
+        outer command: the caller's)."""
+        outer = self._cmd is not None
+        change = self._register(path, pairing, backfill, rules)
+        for rel in () if outer else getattr(change, "unused", None) or ():
+            try:
+                trash_file(self.data_dir, rel)
+            except OSError as e:                   # held open: left in `Library`, where the sync never adopts it (B2)
+                print(f"Warning: a copy no item holds couldn't go to the trash ({rel}): {e!r}")
+        return change
+
+    def _register(self, path, pairing, backfill, rules):
+        """`register`'s command. K3: when hato's path has no row — or only the row the disk sync made for it a moment
+        before (`_sync_drop`: taken out in this command, R1) — the episode may be in already: a folder's video waiting
+        for its subtitle takes hato's file in place (`_waiting_video`, K5's fill, R3); a source's `Library` copy
+        holding the video is pointed at hato's file (the one hato timed: both orders end alike, R2), the copy left
+        unused; any other live item holding the video or the same bytes (`_duplicate_of`) keeps it, hato's file kept
+        out by a `duplicate` exclusion. hato's record goes on that item; hato's file is never deleted or moved."""
         content_key = pairing["content_key"]
         rel = library_rel(self.data_dir, path)
         if rel is None:
@@ -2389,17 +2409,36 @@ class Store:
             _p, rel, key, entry, fp = prepared[0]
             row = self.conn.execute("SELECT id FROM items WHERE rel_key = ?", (key,)).fetchone()
             change = None
-            # K3: in the command's own transaction (a file hashed only when a source's item has its size)
-            twin = self._duplicate_of(os.path.join(self.data_dir, *rel.split("/")), content_key) if row is None else None
-            if twin is not None:
-                item_id = twin                             # K3 (SRC-7): a source's episode already — no item for it
+            # K3: in the command's own transaction (a file hashed only when a live item has its size)
+            gap = twin = None
+            if row is None or self._sync_drop(row[0], rel, pairing):
+                gap = self._waiting_video(content_key, pairing)
+                if gap is None:
+                    twin = self._duplicate_of(os.path.join(self.data_dir, *rel.split("/")), content_key)
+                if (gap is not None or twin is not None) and row is not None:
+                    self._take_out(cmd, row[0])            # R1: the sync's row for a file that is an episode already
+                    row = None
+            if gap is not None:                            # R3: the folder's waiting video takes hato's subtitle
+                item_id = self._fill_gap(cmd, gap, prepared[0], {})
                 change = self._change(cmd, "register")
-                change.duplicate, change.pairing_item = rel, item_id
-                if not self.conn.execute("SELECT 1 FROM exclusions WHERE kind = 'duplicate' AND pattern = ?",
-                                         (key,)).fetchone():
-                    self.conn.execute("INSERT INTO exclusions (root_id, pattern, kind, created_at) "
-                                      "VALUES (?, ?, 'duplicate', ?)", (self._root_id(), key, _now()))
-                    cmd.touch()
+                change.took_over = change.pairing_item = item_id
+            elif twin is not None:
+                item_id, copy = twin                       # K3 (SRC-7): the episode is in already — no item for it
+                change = self._change(cmd, "register")
+                change.pairing_item = item_id
+                if copy is not None:                       # R2: the source item reads hato's file; its copy unused
+                    self._repoint(item_id, rel, fp[0], fp[1])
+                    cmd.touch({self.conn.execute("SELECT tier FROM items WHERE id = ?", (item_id,)).fetchone()[0]},
+                              availability=True)
+                    change.took_over, change.unused = item_id, [copy]
+                else:
+                    change.duplicate = rel
+                    if not self.conn.execute("SELECT 1 FROM exclusions WHERE kind = 'duplicate' AND pattern = ?",
+                                             (key,)).fetchone():
+                        self.conn.execute("INSERT INTO exclusions (root_id, pattern, kind, created_at) "
+                                          "VALUES (?, ?, 'duplicate', ?)", (self._root_id(), key, _now()))
+                        change.excluded_key = key          # N1: its Undo takes the exclusion back too
+                        cmd.touch()
             elif row is None:
                 if meta.get("arrivals_on"):
                     change = self._add(prepared, "arrivals", "end", None, None, None, "register", by, 0)
@@ -4362,6 +4401,8 @@ class Store:
         kind = change.kind
         if kind == "take_in":                     # SRC S6: a scan's take-in is not on the user's Undo; Remove is
             raise UndoRefused("what a folder's look took in is taken out with Remove")
+        if kind == "register" and getattr(change, "took_over", None) is not None:   # K3 R2 / R3: the text moved
+            raise UndoRefused("hato's subtitle is that episode's text now; remove the episode to take it out")
         with self._command("undo", "undo") as cmd:
             if kind in ("insert", "insert_at", "restore") or (kind == "register" and change.added):
                 ok, skipped = self.undo_check(change)
@@ -4389,6 +4430,9 @@ class Store:
                 else:
                     self.conn.execute("INSERT OR REPLACE INTO pairings (content_key, item_id, pairing, paired_at) "
                                       "VALUES (?, ?, ?, ?)", (content_key,) + tuple(old))
+                if getattr(change, "excluded_key", None):              # N1: hato's file is no one's: the sync's again
+                    self.conn.execute("DELETE FROM exclusions WHERE kind = 'duplicate' AND pattern = ?",
+                                      (change.excluded_key,))
                 cmd.touch()
                 out, skipped = self._change(cmd, "undo"), []
             elif kind == "remove" or kind == "undo_add":
@@ -6679,6 +6723,7 @@ def _store_reset_order(self, walk=None):
                                  "FROM items WHERE tier IN ('now', 'soon', 'goal') ORDER BY ord, id").fetchall()
         known = {r[0] for r in self.conn.execute("SELECT rel_key FROM items")}
         known |= {path_key(str(a.get("rel", ""))) for a in _rename_asks(self)}       # held out: the question waits
+        known |= {r[0] for r in self.conn.execute("SELECT pattern FROM exclusions WHERE kind = 'duplicate'")}  # K3
         arrivals = cmd.meta.get("arrivals_on")
         content = path_key(CONTENT_FOLDER) + "/"           # the content folder's copies come in by `take_in` only (B2)
         untracked = [rel for rel in order if path_key(rel) not in known and not (arrivals and _in_hato(rel))
@@ -7293,12 +7338,14 @@ def same_size_items(conn, sizes, sources_only=False):
 
 
 def holding(data_dir, files, rows):
-    """K3: {path: (item_id, title)} for each `(path, size)` of `files` whose bytes are an item's file's (`rows` from
-    `same_size_items`), the lowest id — a file read only when its size matches one, each file once. A file that can't
-    be read holds nothing."""
+    """K3: {path: (item_id, title)} for each `(path, size)` of `files` whose bytes are another item's file's (`rows` from
+    `same_size_items`; never the row of the file itself), the lowest id — a file read only when its size matches one,
+    each file once. A file that can't be read holds nothing."""
     hashes, out = {}, {}
     for path, size in files:
         for item_id, rel, title in rows.get(size, ()):
+            if path_key(os.path.abspath(os.path.join(data_dir, *rel.split("/")))) == path_key(os.path.abspath(path)):
+                continue                           # the file's own row: never its own twin
             mine = _sha_once(hashes, path)
             if mine is not None and mine == _sha_once(hashes, os.path.join(data_dir, *rel.split("/"))):
                 out[path] = (item_id, title)
@@ -7332,20 +7379,57 @@ def _store_items_holding(self, paths, sources_only=False):
 
 
 def _store_duplicate_of(self, path, content_key):
-    """K3 (1), inside `register`'s command: the live source item hato's file at `path` is another copy of — the one
-    holding its video (`item_of_video_key`: an origin's `video_key`, or hato's key on an item a source attached to),
-    else one whose file holds the same bytes — or None. Only a source's items: a library with no sources registers as
-    before (no file read: no source item has its size)."""
+    """K3 (1), inside `register`'s command: (the live item hato's file at `path` is another copy of, the `Library` copy
+    hato's file takes over or None) — the item holding its video (`item_of_video_key`: hato's key, an origin's
+    `video_key`, any item's record: SRC-7, every channel), else one whose file holds the same bytes (any live item but
+    `path`'s own row) — or None. The copy (R2) only for a source's item found by its own video (not by hato's record
+    already on it: a retry of a kept-out file stays kept out) whose file is in `Library`: any other item's file
+    (hato's, a 2.x file) is never left untracked. A file is read only when an item has its size."""
     item = self.item_of_video_key(content_key)
     if item is not None:
         with self._reading():
-            if not self.conn.execute(f"SELECT 1 FROM pairings p WHERE p.item_id = ? AND {_ORIGIN_ROW}",
-                                     (item,)).fetchone():
-                item = None
-    if item is None:
-        held = self.items_holding([path], sources_only=True)
-        item = held[path][0] if path in held else None
-    return item
+            rel = self.conn.execute("SELECT rel_path FROM items WHERE id = ?", (item,)).fetchone()[0]
+            source = self.conn.execute(f"SELECT 1 FROM pairings p WHERE p.item_id = ? AND {_ORIGIN_ROW}",
+                                       (item,)).fetchone() and not self.conn.execute(
+                "SELECT 1 FROM pairings WHERE item_id = ? AND content_key = ?", (item, content_key)).fetchone()
+        inside = path_key(rel.split("/", 1)[0]) == path_key(CONTENT_FOLDER)
+        return item, rel if source and inside else None
+    held = self.items_holding([path])
+    return (held[path][0], None) if path in held else None
+
+
+def _store_sync_drop(self, item_id, rel, pairing):
+    """K3 R1: is this the row the disk sync made for hato's file a moment before hato's hand-off — hato's drop folder,
+    waiting in New arrivals, hato's record, nothing of anyone's on it yet (no record, link, pin, watch, mining or
+    placement by a person)? Only such a row is taken out when the file is an episode already in."""
+    if _producer(pairing) != "hato" or not _in_hato(rel):
+        return False
+    row = self.conn.execute("SELECT tier, pinned, watched, mined_at FROM items WHERE id = ?", (item_id,)).fetchone()
+    if row is None or row[0] != "arrivals" or row[1] is not None or row[2] or row[3] is not None:
+        return False
+    return not any(self.conn.execute(sql, (item_id,)).fetchone() for sql in (
+        "SELECT 1 FROM pairings WHERE item_id = ?", "SELECT 1 FROM anki_links WHERE item_id = ?",
+        "SELECT 1 FROM placement_log WHERE item_id = ? AND (explicit = 1 OR by = 'user')"))
+
+
+def _store_take_out(self, cmd, item_id):
+    """K3 R1: the sync's row for hato's file leaves without a trash row (nothing to put back: its episode is another
+    item's); the feed's tombstone written, its piece and title tidied as a Remove's are. The file stays."""
+    tier, piece = self.conn.execute("SELECT tier, piece_id FROM items WHERE id = ?", (item_id,)).fetchone()
+    self.conn.execute("DELETE FROM items WHERE id = ?", (item_id,))
+    cmd.gone.append(("item", item_id))
+    if piece is not None:
+        cmd.pieces_left.add(piece)
+    cmd.touch({tier})
+
+
+def _store_waiting_video(self, content_key, pairing):
+    """K3 R3: the item waiting for this video's subtitle (K5) — by hato's key, or the record's video path — or None."""
+    gaps = self._waiting_videos()
+    for k in [content_key] + _video_keys(pairing):
+        if k in gaps:
+            return gaps[k]
+    return None
 
 
 def content_target(data_dir, rel, size=None, sha256=None):
@@ -7843,6 +7927,9 @@ Store.items_of_size = _store_items_of_size
 Store.item_of_video_key = _store_item_of_video_key
 Store.items_holding = _store_items_holding
 Store._duplicate_of = _store_duplicate_of
+Store._sync_drop = _store_sync_drop
+Store._take_out = _store_take_out
+Store._waiting_video = _store_waiting_video
 Store.update_origin = _store_update_origin
 Store._exclude_origins = _store_exclude_origins
 Store._let_origins_back = _store_let_origins_back

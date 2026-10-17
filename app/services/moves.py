@@ -1048,20 +1048,33 @@ class Writer:
         out, made, left, already = [], [], [], []
         into = cmd.get("into") or [None] * len(cmd["files"])          # --- W3.2 Q3: + Add's folders
         rels = {p: lib.library_rel(data_dir, p) for p in cmd["files"]}
-        held = _held_bytes(self.language, data_dir, [p for p, r in rels.items() if r is None or
-                                                     lib.path_key(r.split("/", 1)[0]) not in walked])   # K3
+        inside = {p: r for p, r in rels.items() if r is not None and lib.path_key(r.split("/", 1)[0]) in walked}
+        own = (_rows_held(self.language, data_dir, list(inside.values())) or {}) if inside else {}
+        # K3: an outside file, or one under a walked folder that is no item's own (K3 fix N3: the kept-out hato file,
+        # an unused copy) — its bytes checked; an item's own file (or any, when the store can't be read) is placed
+        held = _held_bytes(self.language, data_dir, [p for p in rels if p not in inside or
+                                                     not own.get(lib.path_key(inside[p]), True)])
+        firsts, sizes = {}, {}                      # N4: one file of two with the same bytes in this drop
+        for p in cmd["files"]:
+            if p not in inside and p not in held and os.path.isfile(p):
+                sizes.setdefault(os.path.getsize(p), []).append(p)
         try:
             for path, sub in zip(cmd["files"], into):
                 if not os.path.isfile(path) or not lib.is_content_name(path):
                     left.append(os.path.basename(os.path.normpath(path)))       # (AD-4)
                     continue
+                if path in held:                    # K3: already in the library, by its bytes
+                    already.append(held[path][1] or os.path.basename(path))
+                    continue
                 rel = lib.library_rel(data_dir, path)
                 if rel is not None and lib.path_key(rel.split("/", 1)[0]) in walked:   # (AD-11: not the trash)
                     out.append(path)
                     continue
-                if path in held:                    # K3: already in the library, by its bytes
-                    already.append(held[path][1] or os.path.basename(path))
-                    continue
+                if len(sizes.get(os.path.getsize(path), ())) > 1:
+                    first = firsts.setdefault(lib.sha256_of(path), path)
+                    if first != path:
+                        already.append(os.path.basename(first))
+                        continue
                 parts = _in_library(_into(sub, folder, walked, lib), path, lib)
                 dest = os.path.join(data_dir, *parts, os.path.basename(path))
                 if os.path.exists(dest) and filecmp.cmp(path, dest, shallow=False):
@@ -1680,16 +1693,15 @@ def _into(sub, folder, walked, lib):
 def _in_library(parts, path, lib):
     """(SRC K3) Where a new copy goes: the content folder, never a tier's — `parts` from `_into` with its tier folder
     swapped for `Library` (a show's folder there is the same show: the store groups `Library/<show>` with its tier
-    twin); a tier folder alone (loose files) gives the file's show (`show_of_name`), else its folder's name, else its
-    own name."""
+    twin); a tier folder alone (loose files) gives the file's show (`show_of_name`), else the content folder itself —
+    never the name of the folder it was dragged from (K3 fix R5: `01.srt` from Downloads is no show "Downloads"); the
+    store's rule (K4) makes such a loose file a title of its own."""
     if lib.path_key(parts[0]) == lib.path_key(lib.CONTENT_FOLDER):
         return parts
     if len(parts) > 1:
         return [lib.CONTENT_FOLDER] + parts[1:]
     from app.extract import clean_name
-    name = os.path.normpath(path)
-    show = clean_name(lib.show_of_name(os.path.basename(name)) or "") or \
-        clean_name(os.path.basename(os.path.dirname(name))) or clean_name(os.path.splitext(os.path.basename(name))[0])
+    show = clean_name(lib.show_of_name(os.path.basename(os.path.normpath(path))) or "")
     return [lib.CONTENT_FOLDER, show] if show else [lib.CONTENT_FOLDER]
 
 

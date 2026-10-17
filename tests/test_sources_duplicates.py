@@ -1,14 +1,18 @@
-"""3.0's Sources, never a duplicate (SRC K3, SRC-7): an episode a source folder brought in and the same episode handed
-over by hato are one item, whichever came first — hato's hand-off of a video a source item already holds (or of the
-same bytes as one) makes no item: its file is kept out by a `duplicate` exclusion (the disk sync and read-only mode
-never add it), hato's record goes on the existing item (its video-keyed row wins for Connect, B1), and its file stays
-where hato wrote it.
+"""3.0's Sources, never a duplicate (SRC K3, SRC-7): an episode already in and the same episode handed over by hato are
+one item, whichever came first. hato's hand-off of a video a source item holds takes that item over: the item reads
+hato's file (the one hato timed), Surasura's `Library` copy goes to the trash and the folder's origin record stays —
+the same end as when hato came first (K3 fix R2). hato's hand-off of the same bytes as any live item, or of a video
+another item (a drop's, hato's own) holds, makes no item: its file is kept out by a `duplicate` exclusion (the disk
+sync, Reset and read-only mode never add it) and hato's record goes on the existing item (SRC-7, every channel). A row the
+disk sync made for hato's file a moment before the hand-off is taken out in the same command (R1); a folder's video
+waiting for its subtitle takes hato's in place (R3). hato's file is never deleted or moved.
 
 Why these matter: two items for one episode split its sentences, mine its cards twice and show it twice in Current; a
 file deleted from hato's folder is hato's to keep or delete, never Surasura's. A library with no source folders must
 register hato's files exactly as before. Every test runs for Japanese and Chinese with real subtitles from
 tests/Test Resources/, made-up show names and a few bytes as a fake video, under the per-test SURASURA_TEST_ROOT.
 """
+import hashlib
 import json
 import os
 import shutil
@@ -17,6 +21,7 @@ import pytest
 
 from app import library_store as ls
 from app import sources
+from app.connect import fit_check
 from app.connect import library as connect_library
 from app.connect import videos
 from tests.test_library_store_support import LANGUAGES, migrated, roots
@@ -55,6 +60,23 @@ def _duplicates(store):
         "SELECT root_id, pattern FROM exclusions WHERE kind = 'duplicate' ORDER BY id")]
 
 
+def _trashed(data_dir, like):
+    """Whether `.trash` holds a file with `like`'s bytes (the trash names it `<base>_<stamp><ext>`)."""
+    trash = os.path.join(data_dir, ".trash")
+    with open(like, "rb") as f:
+        want = f.read()
+    for name in os.listdir(trash) if os.path.isdir(trash) else ():
+        with open(os.path.join(trash, name), "rb") as f:
+            if f.read() == want:
+                return True
+    return False
+
+
+def _library_files(data_dir):
+    top = os.path.join(data_dir, ls.CONTENT_FOLDER)
+    return sorted(os.path.relpath(os.path.join(d, n), top) for d, _s, files in os.walk(top) for n in files)
+
+
 def _source_episode(store, language, data_dir, video=True):
     """A source folder with one episode (its subtitle, and a fake video beside it), taken in by setup's first look ->
     (item id, the video's key or None, the source's subtitle path)."""
@@ -73,25 +95,33 @@ def _source_episode(store, language, data_dir, video=True):
 # --- hato after a source (K3 (1)) ------------------------------------------------------------------------------- #
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_hato_after_a_source_with_the_same_video_makes_no_item_and_its_record_goes_on_the_source_item(language):
-    """The video's key is the episode: hato's own subtitle (other bytes) of a video a source item holds is that item.
-    The change is that item's; hato's file stays where hato wrote it, kept out of the disk sync by its exclusion."""
+def test_hato_after_a_source_with_the_same_video_takes_the_source_item_over_with_its_own_file(language):
+    """The video's key is the episode: hato's own subtitle (other bytes) of a video a source item holds is that item —
+    no item added, the change that item's; the item now reads hato's file (R2: hato's is the one Connect's timing
+    trusts), Surasura's `Library` copy is in `.trash`, the origin record stays on the item, no exclusion is written
+    (hato's file is the item's), and hato's file stays where hato wrote it."""
     store, data_dir = _empty(language)
     show = _SHOWS[language][0]
     with store:
-        item, key, _sub = _source_episode(store, language, data_dir)
+        item, key, sub = _source_episode(store, language, data_dir)
+        copy = store.item(item)["rel_path"]
         hato_path = _hato_file(data_dir, f"{show} - 01.ja.srt", _text(language, 7))
         change = store.register(hato_path, _hato(key, show))
         assert change.added == [] and change.pairing_item == item
         assert _items(store) == 1
         rel = ls.library_rel(data_dir, hato_path)
-        assert _duplicates(store) == [(store._root_id(), ls.path_key(rel))]
+        assert store.item(item)["rel_path"] == rel and store.item(item)["availability"] == "available"
+        assert store.item(item)["size"] == os.path.getsize(hato_path)
+        assert _duplicates(store) == []
+        assert change.unused == [copy] and not os.path.exists(os.path.join(data_dir, *copy.split("/")))
+        assert _trashed(data_dir, sub)                                                # the copy, in the trash
         row = store.conn.execute("SELECT item_id FROM pairings WHERE content_key = ?", (key,)).fetchone()
         assert row[0] == item
+        assert [o.item_id for o in store.origins().values()] == [item]                # the origin stays
         assert connect_library.pairing_of(store, item)["content_key"] == key         # hato's row wins (B1)
         assert os.path.isfile(hato_path)                                              # never deleted
-        assert store.sync_disk() is None and _items(store) == 1                       # the sync keeps it out
-        assert store.item_id(rel) is None
+        assert store.sync_disk() is None and _items(store) == 1                       # the sync adds nothing
+        assert store.item_id(rel) == item
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
@@ -128,8 +158,9 @@ def test_hato_handing_over_the_same_duplicate_again_writes_one_exclusion_and_ans
     _d, user_files_dir = roots(language)
     show = _SHOWS[language][0]
     with store:
-        item, key, _sub = _source_episode(store, language, data_dir)
-        hato_path = _hato_file(data_dir, f"{show} - 01.srt", _text(language, 7))
+        item, _key, sub = _source_episode(store, language, data_dir, video=False)
+        key = "v1-k3-retry"
+        hato_path = _hato_file(data_dir, f"{show} - 01.srt", like=sub)
         store.register(hato_path, _hato(key, show))
         versions = store.versions()
         again = store.register(hato_path, _hato(key, show))
@@ -158,18 +189,27 @@ def test_a_removed_source_item_no_longer_holds_its_episode_for_hato(language):
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_a_library_with_no_sources_registers_hatos_files_as_before(language):
-    """No source folder: the same bytes as a 2.x item, or a video hato already paired on another of its own items,
-    still make an item each as before (K3 is about a source's episodes only)."""
+def test_a_library_with_no_sources_never_gets_a_second_item_for_an_episode_already_in(language):
+    """No source folder (SRC-7 "never a duplicate", every channel): the same bytes as a 2.x item, or
+    a video hato already paired on another of its own items, make no second item either — the file kept out by its
+    exclusion, hato's record on the item already holding the episode. Other bytes of another video: a new item."""
     store = migrated(language)
     data_dir, _u = roots(language)
     with store:
-        first = store.ordered("now")[0][1]["physical_path"]
+        before = _items(store)
+        first_id, first_entry = store.ordered("now")[0][:2]
+        first = first_entry["physical_path"]
         twin = _hato_file(data_dir, "twin.srt", like=os.path.join(data_dir, *first.split("/")))
-        assert len(store.register(twin, _hato("v1-k3-twin", "Twin")).added) == 1
+        change = store.register(twin, _hato("v1-k3-twin", "Twin"))
+        assert change.added == [] and change.pairing_item == first_id and _items(store) == before
         again = _hato_file(data_dir, "twin again.srt", _text(language, 5))
-        assert len(store.register(again, _hato("v1-k3-twin", "Twin")).added) == 1    # the key moves, as before
-        assert _duplicates(store) == []
+        change = store.register(again, _hato("v1-k3-twin", "Twin"))                 # hato's video, on that item
+        assert change.added == [] and change.pairing_item == first_id and _items(store) == before
+        assert [p for _r, p in _duplicates(store)] == [ls.path_key(ls.library_rel(data_dir, f)) for f in (twin, again)]
+        assert os.path.isfile(twin) and os.path.isfile(again)
+        other = _hato_file(data_dir, "other.srt", _text(language, 6))
+        assert len(store.register(other, _hato("v1-k3-other", "Other")).added) == 1
+        assert store.sync_disk() is None and _items(store) == before + 1
 
 
 # --- a source after hato: the scan's check (a) ------------------------------------------------------------------ #
@@ -205,9 +245,9 @@ def test_the_read_only_schedule_never_lists_a_file_kept_out_as_a_duplicate(langu
     show = _SHOWS[language][0]
     with store:
         store.set_library_options(arrivals_on=False)
-        _item, key, _sub = _source_episode(store, language, data_dir)
-        hato_path = _hato_file(data_dir, f"{show} - 01.srt", _text(language, 7))
-        store.register(hato_path, _hato(key, show))
+        _item, _key, sub = _source_episode(store, language, data_dir, video=False)
+        hato_path = _hato_file(data_dir, f"{show} - 01.srt", like=sub)
+        store.register(hato_path, _hato("v1-k3-ro", show))
         loose = _hato_file(data_dir, "unpaired.srt", _text(language, 3))           # never handed over: listed
     assert ls.maintain(language, data_dir, user_files_dir) in (ls.EXIT_DONE, ls.EXIT_NOTHING)
     with open(ls.manifest_path(user_files_dir), encoding="utf-8") as f:
@@ -216,3 +256,236 @@ def test_the_read_only_schedule_never_lists_a_file_kept_out_as_a_duplicate(langu
     listed = [e["physical_path"] for rows in schedule.values() if isinstance(rows, list) for e in rows]
     assert ls.library_rel(data_dir, hato_path) not in listed
     assert ls.library_rel(data_dir, loose) in listed
+
+
+# --- the K3 fix round (reviews/SRC-K3-adversary.md R1-R4, N1, N2) ---------------------------------------------- #
+
+def _timed(record, path):
+    """hato's record as hato hands over a subtitle it timed: Connect trusts it only on the file it timed."""
+    out = dict(record, verdict="timed", timing={"segments": 1, "reference": "text-track"})
+    with open(path, "rb") as f:
+        out["subtitle_sha256"] = hashlib.sha256(f.read()).hexdigest()
+    return out
+
+
+def _sync_first(store, data_dir, hato_path):
+    """The window's Lookout: hato's file lands, the folder settles, the disk sync adds it as a New arrival before
+    hato's own `register` process comes (the normal case while the window is open)."""
+    summary = store.sync_disk(folders=[ls.HATO_FOLDER])
+    assert summary and len(summary["added"]) == 1
+    assert store.item_id(ls.library_rel(data_dir, hato_path)) == summary["added"][0]
+    return summary["added"][0]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_R1_a_sync_before_hatos_register_still_leaves_one_item_by_video(language):
+    """R1 (B): the sync's own row for hato's file (in New arrivals, no pairing) is taken out in the register's command;
+    the source item takes hato's file over (R2) — one item, hato's file never deleted or moved."""
+    store, data_dir = _empty(language)
+    show = _SHOWS[language][0]
+    with store:
+        item, key, _sub = _source_episode(store, language, data_dir)
+        hato_path = _hato_file(data_dir, f"{show} - 01.srt", _text(language, 7))
+        synced = _sync_first(store, data_dir, hato_path)
+        assert _items(store) == 2
+        change = store.register(hato_path, _hato(key, show))
+        assert _items(store) == 1 and store.item(synced) is None
+        assert store.conn.execute("SELECT 1 FROM gone WHERE kind = 'item' AND id = ?", (synced,)).fetchone()  # the feed
+        assert change.pairing_item == item and change.added == []
+        assert store.item(item)["rel_path"] == ls.library_rel(data_dir, hato_path)
+        assert os.path.isfile(hato_path) and _duplicates(store) == []
+        assert not store.trash_rows()                                     # not a Remove: nothing to Put back
+        assert store.sync_disk() is None and _items(store) == 1
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_R1_a_sync_before_hatos_register_still_leaves_one_item_by_bytes(language):
+    """R1 (B), the same bytes: the sync's row taken out, the `duplicate` exclusion written, hato's record on the twin;
+    the next sync keeps the file out."""
+    store, data_dir = _empty(language)
+    show = _SHOWS[language][0]
+    with store:
+        item, _key, sub = _source_episode(store, language, data_dir, video=False)
+        hato_path = _hato_file(data_dir, f"{show} - 01.srt", like=sub)
+        synced = _sync_first(store, data_dir, hato_path)
+        change = store.register(hato_path, _hato("v1-k3-race", show))
+        assert _items(store) == 1 and store.item(synced) is None and change.pairing_item == item
+        assert _duplicates(store) == [(store._root_id(), ls.path_key(ls.library_rel(data_dir, hato_path)))]
+        assert connect_library.pairing_of(store, item)["content_key"] == "v1-k3-race"
+        assert os.path.isfile(hato_path)
+        assert store.sync_disk() is None and _items(store) == 1
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_R1_a_synced_row_the_user_touched_is_never_taken_out(language):
+    """Only the sync's own row is taken out: one the user moved out of New arrivals is the user's, and a record that
+    isn't hato's (Connect's *Link…* of that file) never takes a row out — both kept and paired as before."""
+    store, data_dir = _empty(language)
+    show = _SHOWS[language][0]
+    with store:
+        _item, key, _sub = _source_episode(store, language, data_dir)
+        hato_path = _hato_file(data_dir, f"{show} - 01.srt", _text(language, 7))
+        synced = _sync_first(store, data_dir, hato_path)
+        store.move([synced], "now")
+        change = store.register(hato_path, _hato(key, show))
+        assert store.item(synced) is not None and change.pairing_item == synced and _items(store) == 2
+        linked = _hato_file(data_dir, f"{show} - 01 linked.srt", _text(language, 8))
+        synced = _sync_first(store, data_dir, linked)
+        change = store.register(linked, {"content_key": key, "producer": "surasura"})
+        assert store.item(synced) is not None and change.pairing_item == synced and _items(store) == 3
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("hato_first", (False, True))
+def test_R2_both_orders_end_alike_one_item_reading_hatos_timed_file(language, hato_first):
+    """R2: hato then the folder, or the folder then hato, end the same — one item reading hato's file (so hato's
+    `timed` verdict holds for Connect), hato's record and the folder's origin record on it, no copy left in `Library`,
+    no exclusion — and a later look (the original changed meanwhile) copies nothing again (S5: an origin on hato's file
+    never rewrites it)."""
+    store, data_dir = _empty(language)
+    show = _SHOWS[language][0]
+    src = _drive("driveA")
+    sub = _write(os.path.join(src, show, f"{show} - 01.srt"), _text(language, 1))
+    key = videos.content_key(_video(os.path.join(src, show, f"{show} - 01.mkv")))
+    hato_path = _hato_file(data_dir, f"{show} - 01.ja.srt", _text(language, 7))
+    record = _timed(_hato(key, show), hato_path)
+    with store:
+        if hato_first:
+            store.register(hato_path, record)
+            root = store.add_source(src)
+            _look(store, language, root, first=True)
+        else:
+            root = store.add_source(src)
+            _look(store, language, root, first=True)
+            store.register(hato_path, record)
+        rows = store.conn.execute("SELECT id, rel_path, availability FROM items").fetchall()
+        assert len(rows) == 1
+        item, rel, availability = rows[0]
+        assert rel == ls.library_rel(data_dir, hato_path) and availability == "available"
+        assert fit_check.hato_timed(connect_library.pairing_of(store, item), os.path.join(data_dir, *rel.split("/")))
+        keys = sorted(k if not k.startswith(ls.SOURCE_KEY) else ls.SOURCE_KEY for (k,) in store.conn.execute(
+            "SELECT content_key FROM pairings WHERE item_id = ?", (item,)))
+        assert keys == sorted([key, ls.SOURCE_KEY])
+        assert _library_files(data_dir) == [] and _duplicates(store) == []
+        assert _trashed(data_dir, sub) is (not hato_first)                 # source first: its copy went to the trash
+        _write(sub, _text(language, 1, extra=" v2"))
+        sources._LOOKED.clear()
+        _look(store, language, root)
+        assert _items(store) == 1 and _library_files(data_dir) == []
+        assert store.item(item)["rel_path"] == rel
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_R2_a_missing_source_item_takes_hatos_file_and_is_back(language):
+    """N2 with R2: the source item's copy deleted in Explorer (missing) still holds its video; hato's file is that
+    episode's text now — the item available again, nothing added, no exclusion."""
+    store, data_dir = _empty(language)
+    show = _SHOWS[language][0]
+    with store:
+        item, key, _sub = _source_episode(store, language, data_dir)
+        os.remove(os.path.join(data_dir, *store.item(item)["rel_path"].split("/")))
+        store.sync_disk()
+        assert store.item(item)["availability"] == "missing"
+        hato_path = _hato_file(data_dir, f"{show} - 01.srt", _text(language, 7))
+        change = store.register(hato_path, _hato(key, show))
+        assert change.added == [] and _items(store) == 1 and _duplicates(store) == []
+        assert store.item(item)["availability"] == "available"
+        assert store.item(item)["rel_path"] == ls.library_rel(data_dir, hato_path)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_R2_a_take_over_is_not_on_undo(language):
+    """The episode's text moved to hato's file and the copy went to the trash: an Undo can't put that back, so it is
+    refused (as a scan's take-in is), and nothing changes."""
+    store, data_dir = _empty(language)
+    show = _SHOWS[language][0]
+    with store:
+        item, key, _sub = _source_episode(store, language, data_dir)
+        hato_path = _hato_file(data_dir, f"{show} - 01.srt", _text(language, 7))
+        change = store.register(hato_path, _hato(key, show))
+        versions = store.versions()
+        with pytest.raises(ls.UndoRefused):
+            store.undo(change)
+        assert store.versions() == versions and store.item(item)["rel_path"] == ls.library_rel(data_dir, hato_path)
+
+
+def _waiting_episode(store, language):
+    """A source folder holding one video and no subtitle yet: the look leaves it waiting in New arrivals (K5) ->
+    (item id, the video's key)."""
+    show = _SHOWS[language][1]
+    src = _drive("driveW")
+    key = videos.content_key(_video(os.path.join(src, show, f"{show} - 03.mkv")))
+    _look(store, language, store.add_source(src), first=True)
+    rows = store.conn.execute("SELECT id, availability, tier FROM items").fetchall()
+    assert [(r[1], r[2]) for r in rows] == [("waiting", "arrivals")]
+    return rows[0][0], key, show
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("sync_first", (False, True))
+def test_R3_hatos_subtitle_fills_a_waiting_video_in_place(language, sync_first):
+    """R3: hato's subtitle for a folder's waiting video is that row's text — the waiting item takes hato's file, its
+    id and place kept, `available`, hato's record on it; no second row, no exclusion (also when the sync added hato's
+    file first)."""
+    store, data_dir = _empty(language)
+    with store:
+        item, key, show = _waiting_episode(store, language)
+        place = store.place_of(item)
+        hato_path = _hato_file(data_dir, f"{show} - 03.srt", _text(language, 3))
+        if sync_first:
+            _sync_first(store, data_dir, hato_path)
+        change = store.register(hato_path, _hato(key, show, 3))
+        assert _items(store) == 1 and change.pairing_item == item and change.added == []
+        row = store.item(item)
+        assert row["availability"] == "available" and row["rel_path"] == ls.library_rel(data_dir, hato_path)
+        assert store.place_of(item) == place
+        assert connect_library.pairing_of(store, item)["content_key"] == key and _duplicates(store) == []
+        assert store.sync_disk() is None and _items(store) == 1
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_R4_reset_with_new_arrivals_off_never_adds_a_kept_out_file(language):
+    """R4: with New arrivals off Reset walks hato's folder too; a file kept out as another item's episode stays out."""
+    store, data_dir = _empty(language)
+    show = _SHOWS[language][0]
+    with store:
+        store.set_library_options(arrivals_on=False)
+        _item, _key, sub = _source_episode(store, language, data_dir, video=False)
+        hato_path = _hato_file(data_dir, f"{show} - 01.srt", like=sub)
+        store.register(hato_path, _hato("v1-k3-reset", show))
+        assert len(_duplicates(store)) == 1
+        store.reset_order()
+        assert _items(store) == 1 and store.item_id(ls.library_rel(data_dir, hato_path)) is None
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_N1_undo_of_a_duplicate_hand_off_takes_its_exclusion_back_too(language):
+    """N1: an Undo of the hand-off that put hato's record on the twin deletes the record and the exclusion it wrote,
+    so hato's file is never left neither an item nor anyone's record: the next sync takes it in."""
+    store, data_dir = _empty(language)
+    show = _SHOWS[language][0]
+    with store:
+        _item, _key, sub = _source_episode(store, language, data_dir, video=False)
+        hato_path = _hato_file(data_dir, f"{show} - 01.srt", like=sub)
+        change = store.register(hato_path, _hato("v1-k3-undo", show))
+        store.undo(change)
+        assert _duplicates(store) == []
+        assert store.conn.execute("SELECT 1 FROM pairings WHERE content_key = 'v1-k3-undo'").fetchone() is None
+        assert store.sync_disk() is not None and _items(store) == 2
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_R2_a_second_hato_file_for_a_video_taken_over_is_kept_out_and_hatos_first_file_stays(language):
+    """After the take-over the item reads hato's file, which is hato's: another subtitle hato hands over for the same
+    video is kept out (a `duplicate` exclusion) — the item, its file and hato's first file never moved or trashed."""
+    store, data_dir = _empty(language)
+    show = _SHOWS[language][0]
+    with store:
+        item, key, _sub = _source_episode(store, language, data_dir)
+        first = _hato_file(data_dir, f"{show} - 01.srt", _text(language, 7))
+        store.register(first, _hato(key, show))
+        second = _hato_file(data_dir, f"{show} - 01 v2.srt", _text(language, 9))
+        change = store.register(second, _hato(key, show))
+        assert change.added == [] and getattr(change, "unused", None) is None and _items(store) == 1
+        assert store.item(item)["rel_path"] == ls.library_rel(data_dir, first) and os.path.isfile(first)
+        assert [p for _r, p in _duplicates(store)] == [ls.path_key(ls.library_rel(data_dir, second))]

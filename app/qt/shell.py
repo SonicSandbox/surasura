@@ -39,6 +39,7 @@ from app.services import jobs as jobs_module
 from app.services import settings as settings_service
 from app.services import status as status_service
 from app.qt import screens                                # W2.2: the pages a library fills
+from app.qt import covers as qcovers                      # --- W3.2 Q6: the titles' own pictures
 
 TABS = ("current", "finished", "needs", "settings")
 STATE_FILE = "window_state.json"
@@ -746,6 +747,14 @@ class TabButton(QToolButton):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.name, self.count, self.badge = "", 0, False
+        self.drop_lit = False                             # G3.2: a drag's hand over it (a drag swallows hover)
+
+    def set_drop_lit(self, on):
+        """Lit as on a hover while a drag's drop would land on it (`DragController._follow`; `underMouse` never reads
+        a running drag's hand)."""
+        if on != self.drop_lit:
+            self.drop_lit = on
+            self.update()
 
     def set_name(self, name, count=0, badge=False):
         self.name, self.count, self.badge = name, count, badge
@@ -792,7 +801,7 @@ class TabButton(QToolButton):
         p.drawComplexControl(QStyle.ComplexControl.CC_ToolButton, opt)
         top, side, bottom, f = self._pads()
         c = style.colours()
-        lit = self.isChecked() or self.underMouse() or self.hasFocus()
+        lit = self.isChecked() or self.underMouse() or self.hasFocus() or self.drop_lit
         fm = QFontMetricsF(self.font())
         mid = (top + self.height() - bottom - 2) / 2
         dpr = self.devicePixelRatioF()
@@ -918,6 +927,8 @@ class ShellWindow(QMainWindow):
         self._stones_hold = object()
         stones.hold(self._stones_hold)
         self.destroyed.connect(lambda _obj=None, token=self._stones_hold: stones.release(token))
+        qcovers.hold(self._stones_hold)                       # --- W3.2 Q6: no cover decoded before the first frame
+        self.destroyed.connect(lambda _obj=None, token=self._stones_hold: qcovers.release(token))
         self.setWindowTitle(strings.WINDOW_TITLE)
         icon = path_utils.get_icon_path()
         if os.path.exists(icon):
@@ -1056,6 +1067,15 @@ class ShellWindow(QMainWindow):
                         services.library, estimates),
                     plan_token=lambda: _plan_key(getattr(services.library, "numbers", None)))
         # --- end W3.2 Q1
+        # --- W3.2 Q6: the covers' library — its data folder (the opener's), its writer (Change cover…, the disk scan)
+        if services.library is not None:
+            qcovers.use_library(self.language, getattr(getattr(services.library, "opener", None), "data_dir", None),
+                                services.writer, self, self.moves)
+        # --- end W3.2 Q6
+        # --- W3.2 L3: online covers — Q7's fetcher made with the library (`cover_fetcher`), asked for what shows
+        self._fetcher = None
+        self.cover_fetcher()
+        # --- end W3.2 L3
 
         self._restore_state(read_state(self.state_file))
 
@@ -1213,6 +1233,8 @@ class ShellWindow(QMainWindow):
             self.show_status(self.services.status.snapshot())
         if self.dock is not None:                   # W3.1a: Goal's bar (and the wells' covers) from the same view
             self._show_dock(view)
+        if self.cover_fetcher() is not None:        # --- W3.2 L3: the arrivals' covers asked online as they arrive
+            qcovers.ask([getattr(a, "cover", None) for a in getattr(view, "arrivals", ()) or ()])
         self._show_arrivals(view)                   # W3.2 Q1: the inset, the tray, the numbers asked
         sheet = getattr(self, "goal_sheet", None)   # --- W3.2 Q2: the sheet's tiles; a piece it moved, scrolled to
         if sheet is not None:
@@ -1362,7 +1384,23 @@ class ShellWindow(QMainWindow):
             from app.qt import drag
             self.moves = drag.DragController(self, writer, reader)
             self.moves.start(on_worker=True)        # its first look at the store and its replay off this thread
+        self._follow_covers(reader, writer)
         reader.start()
+
+    def _follow_covers(self, reader, writer):
+        """W3.2 L3: the covers follow the library shown — its data folder, its writer and its drag controller (never the
+        language left's: held there, they kept its reader and writer alive past the switch), its own fetcher (the old
+        one stopped) and its disk scan (once the first frame is out: until then the frame's own scan runs)."""
+        qcovers.stop_scan()
+        qcovers.use_library(self.language, getattr(getattr(reader, "opener", None), "data_dir", None), writer, self,
+                            self.moves)
+        if self._fetcher_for(reader, writer) is None and self._fetcher is not None:
+            self._fetcher.stop(timeout=0)           # (no writer: nothing to record with, so no fetcher)
+            if qcovers.fetcher() is self._fetcher:
+                qcovers.use_fetcher(None)
+            self._fetcher = None
+        if self._first_painted and writer is not None:
+            qcovers.start_scan(getattr(reader, "opener", None), self.language, writer)
 
     def _follow_language_look(self):
         """AD0-11: the application's font for the language open (the CJK face), the theme and size as they are."""
@@ -1383,6 +1421,53 @@ class ShellWindow(QMainWindow):
             self.duties.pop.set_previews(None)             # W3.1b: never the last language's numbers
             self._previews_moved()
     # --- end W3.2 P0 ------------------------------------------------------------------------------------------------ #
+
+    # --- W3.2 L3: online covers ------------------------------------------------------------------------------------ #
+    def cover_fetcher(self):
+        """The library's online covers (Q7's `covers_online.Fetcher`) for the window's language and writer as they stand:
+        made again when either moved (a library or language switch; the old one stopped), None without a library or a
+        writer. It reads `covers_download` from the settings in memory before every request: off, nothing leaves."""
+        return self._fetcher_for(self.services.library, getattr(self.services, "writer", None))
+
+    def _fetcher_for(self, library, writer):
+        if library is None or writer is None:
+            return None
+        services = self.services
+        f = getattr(self, "_fetcher", None)
+        if f is not None and f.language == self.language and f.writer is writer:
+            return f
+        if f is not None:
+            f.stop(timeout=0)
+        from app.services import covers_online
+        make = getattr(services, "cover_fetcher_factory", None) or covers_online.Fetcher
+        f = self._fetcher = make(self.language, writer, settings=services.settings.get)
+        f.data_dir = getattr(getattr(library, "opener", None), "data_dir", None) or f.data_dir   # disk first
+        qcovers.use_fetcher(f, qcovers.resolver(getattr(library, "opener", None)))
+        return f
+
+    def ask_shown_covers(self):
+        """The titles on screen now (the rows in view of Current, Finished and Needs you — whichever page shows: the
+        switch lives on Settings — New arrivals, Goal's hand) asked online — after the switch is turned on, since rows
+        already painted aren't painted again by it. -> how many were asked."""
+        if self.cover_fetcher() is None:
+            return 0
+        refs = []
+        for name in ("current", "finished", "needs"):
+            lst = getattr(self.page_widgets.get(name), "list", None)
+            model = lst.model() if lst is not None else None
+            entries = getattr(model, "entries", None)
+            if entries:
+                vp = lst.viewport().rect()
+                top, bottom = lst.indexAt(vp.topLeft()).row(), lst.indexAt(vp.bottomLeft()).row()
+                top = max(0, top)
+                bottom = len(entries) - 1 if bottom < 0 else bottom
+                refs += [getattr(entries[i][1], "cover", None) for i in range(top, bottom + 1)]
+        view = getattr(self.page_widgets.get("current"), "view_model", None)
+        if view is not None:
+            refs += [getattr(a, "cover", None) for a in getattr(view, "arrivals", ()) or ()]
+            refs += list(getattr(view.goal, "cover_refs", ()) or ()) if view.goal is not None else []
+        return qcovers.ask(refs)
+    # --- end W3.2 L3
 
     def _warm_hidden_pages(self):
         """The hidden tabs' lists paint their first screen ahead, laid out as the shown list (`RowsView.warm_like`)."""
@@ -1628,6 +1713,9 @@ class ShellWindow(QMainWindow):
     def _settings_written(self, keys):
         if "app_motion" in keys:
             motion.clock().mode.set_setting(self.services.settings.get().get("app_motion"))
+        if "covers_download" in keys:                   # --- W3.2 L3: turned on, what is on screen now is asked
+            qcovers.ask_again()                         # (titles dropped while it was off too: N1)
+            self.ask_shown_covers()
         if "connect_enabled" in keys:                   # Connect's tick is skipped while off: its line asked now
             refresh = getattr(self.services.status, "refresh_soon", None)
             if refresh is not None:
@@ -2209,6 +2297,18 @@ class ShellWindow(QMainWindow):
             self._reader_shown.start()                         # W3.2 P0: the first screen's cache read off the frame
             if self.moves is not None:
                 self.moves.start(on_worker=True)               # ... and the writer's first look at the store, its replay
+        # --- W3.2 Q6: the covers asked for meanwhile decode now; the disk scan once per open
+        qcovers.release(self._stones_hold)
+        self.scan_covers()
+
+    def scan_covers(self):
+        """W3.2 Q6: the library's covers from disk (`covers.start_scan`), on a thread of its own — after the first
+        frame, and again when another library opens. -> the scan's thread, or None (no library or no writer)."""
+        library, writer = self.services.library, self.services.writer
+        if library is None or writer is None:
+            return None
+        return qcovers.start_scan(getattr(library, "opener", None), self.language, writer)
+        # --- end W3.2 Q6
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -2330,6 +2430,11 @@ class ShellWindow(QMainWindow):
         moves = getattr(self, "moves", None)
         if moves is not None:
             moves.close()                                 # a drag running at the close is let go
+        qcovers.stop_scan()                               # --- W3.2 Q6: the disk scan stops between titles
+        if getattr(self, "_fetcher", None) is not None:  # --- W3.2 L3: the online covers stop (between requests)
+            self._fetcher.stop(timeout=0)
+            if qcovers.fetcher() is self._fetcher:
+                qcovers.use_fetcher(None)
         if self._quit == "waiting" or (self._quit is None and (jobs_module.waits_at_quit(self._jobs)
                                                                or self._replan_settling() or self._moves_pending())):
             event.ignore()                                # E20: what can't stop part-way ends first

@@ -58,9 +58,17 @@ LOGO_CREDITS = """Logos
 • This application uses TMDB and the TMDB APIs but is not endorsed, certified, or otherwise approved by TMDB."""
 
 
+# The covers the 3.0 window downloads with *Download covers* on (W3.2 Q7, `app/services/covers_online.py`): never
+# shipped, fetched on the user's machine. Kept apart from DATA_CREDITS (2.4's text: the Tk dashboard downloads none).
+COVER_CREDITS = """Covers (only with Download covers on)
+
+• AniList (https://anilist.co) — anime covers, fetched from AniList's API and image server.
+• YouTube — a video's own thumbnail (i.ytimg.com)."""
+
+
 def all_credits():
-    """`data_credits()` followed by the logos' credits: what the 3.0 window's Data credits shows."""
-    return data_credits() + "\n\n" + LOGO_CREDITS
+    """`data_credits()` followed by the logos' and the covers' credits: what the 3.0 window's Data credits shows."""
+    return data_credits() + "\n\n" + LOGO_CREDITS + "\n\n" + COVER_CREDITS
 
 
 # --- Surasura's own licence (the `LICENSE` file: its first line and its copyright line) --------------------------- #
@@ -121,5 +129,7 @@ def readme_sources(readme_text):
 
 
 def missing_from_credits(readme_text):
-    """README's Data Credits sources DATA_CREDITS doesn't name: [] when the in-app credits cover README's."""
-    return [name for name in readme_sources(readme_text) if README_ALIASES.get(name, name) not in DATA_CREDITS]
+    """README's Data Credits sources DATA_CREDITS (or the covers' credits) doesn't name: [] when the in-app credits
+    cover README's."""
+    named = DATA_CREDITS + "\n" + COVER_CREDITS
+    return [name for name in readme_sources(readme_text) if README_ALIASES.get(name, name) not in named]

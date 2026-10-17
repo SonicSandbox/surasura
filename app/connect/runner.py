@@ -1090,18 +1090,31 @@ class Steps:
             found = self._videos(lang).find([os.path.basename(named)],
                                             size if isinstance(size, int) and size > 0 else None)
             # away from its named path, a file of that name and size is the paired video only when its bytes say so
-            # (09-hato-layer v2 §1.1): another episode under the same name is never mined as this one
-            if found is not None and videos.content_key(found) != pairing.get("content_key"):
+            # (09-hato-layer v2 §1.1): another episode under the same name is never mined as this one. A source
+            # folder's record keeps the video's key as `video_key` (its row is keyed by the origin: SRC B1), and one
+            # with no key takes no moved video; every other record is judged as before Sources (review H14)
+            if pairing.get("producer") == "source":
+                key = pairing.get("video_key")
+                refused = found is not None and (key is None or videos.content_key(found) != key)
+            else:
+                refused = found is not None and videos.content_key(found) != pairing.get("content_key")
+            if refused:
                 log.info("Connect: %s has the paired video's name and size but not its content; not used", found)
                 return None
             return found
         if not subtitle:
             return None
-        return beside(subtitle) or self._videos(lang).find(videos.names_for(subtitle))
+        names = videos.names_for(subtitle)
+        origin = pairing.get("origin") if pairing.get("producer") == "source" else None
+        if isinstance(origin, str) and origin:
+            names += videos.names_for(origin)   # a copy renamed `name (2)` in Library/: the original's name finds it
+        return beside(subtitle) or self._videos(lang).find(names)
 
     def _videos(self, lang):
         """The language's video index, refreshed once a run, the first time a video is missing (S19: only folders
-        whose time moved are listed again)."""
+        whose time moved are listed again). The folders the store reads as sources (SRC M1: the ones on) are indexed
+        as the folders you added are, as deep: a subtitle in `Show/Subs/` finds `Show/ep.mkv`, and a video that came
+        after its subtitle is found by name. A source offline keeps what it last listed (the index's own rule)."""
         from app.connect import library, videos
         made = getattr(self, "_video_index", {})
         if lang not in made:
@@ -1109,8 +1122,9 @@ class Steps:
                 shallow = sorted({os.path.dirname(r["video_path"]) for records in library.pairings(store).values()
                                   for r in records if isinstance(r, dict) and isinstance(r.get("video_path"), str)
                                   and r["video_path"]})
+                sources = [s["path"] for s in store.sources(counts=False)]
             index = videos.Index(lang)
-            index.refresh(shallow, videos.configured(self.loaded, lang))
+            index.refresh(shallow, videos.configured(self.loaded, lang), sources=sources)
             made[lang] = index
             self._video_index = made
         return made[lang]

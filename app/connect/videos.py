@@ -5,9 +5,10 @@ are in, plus any you add in Settings; checked when Connect starts; never downloa
   never opened, RD-S1).
 - **Else the index:** the folders the library's paired videos are in (that folder only) and the ones you add
   (`connect_video_folders`: a list, or `{lang: list}`; their subfolders too, 4 deep — both limits are defaults this
-  step chose, not rulings), each video file by its name — and by its size when the pairing gives one (`video_size`),
-  so another file of the same name is never taken. Two on this computer that fit → *No video*: Connect never
-  guesses (a cloud placeholder of the same name doesn't count: it is never taken).
+  step chose, not rulings; the source folders the store reads are indexed as these, SRC M1), each video file by its
+  name — and by its size when the pairing gives one (`video_size`), so another file of the same name is never taken.
+  Two on this computer that fit → *No video*: Connect never guesses (a cloud placeholder of the same name doesn't
+  count: it is never taken).
   Without a pairing (a subtitle you added), a video named like the subtitle (`beside`'s names) anywhere in them.
 - **Only what changed** (S19): the index is kept in `<local data>/connect/videos-<lang>.json`, each folder with its
   modified time; a folder whose time hasn't moved is never listed again (one `stat`). Built once a run, the first
@@ -70,9 +71,13 @@ class _Full(Exception):
     """The re-list's cap reached inside a folder: that folder keeps what it had."""
 
 
-def _list(folder, limit=None):
+def _list(folder, limit=None, skip=False):
     """(videos {name lower: [name, size]}, subfolders [path], entries read) of one folder (names and sizes: nothing
-    is opened); None when it can't be read (gone, offline). Raises _Full past `limit` entries."""
+    is opened); None when it can't be read (gone, offline). Raises _Full past `limit` entries. `skip` (a source
+    folder's own, SRC B3; never a folder you added: the batch 1 intent review): a subfolder a source's look skips is not
+    listed (`library_store.skip_dir`: dot folders, the recycle bins, a folder link or junction), so a trashed copy is
+    no second match and a link is never followed."""
+    from app.library_store import skip_dir
     videos, subs, seen = {}, [], 0
     try:
         with os.scandir(folder) as found:
@@ -82,7 +87,8 @@ def _list(folder, limit=None):
                     raise _Full()
                 try:
                     if entry.is_dir(follow_symlinks=False):
-                        subs.append(entry.path)
+                        if not (skip and skip_dir(entry.name, entry)):
+                            subs.append(entry.path)
                         continue
                     if not entry.name.lower().endswith(runner.VIDEO_EXTENSIONS):
                         continue
@@ -104,19 +110,26 @@ class Index:
         self.path = path or index_path(lang)
         self.data = _load(self.path)
         self.listed = 0             # folders listed again this refresh (the rest: one stat each)
-        self.roots = None           # the last refresh's folders (shallow, deep): what a missing video's re-list walks
+        self.roots = None           # the last refresh's folders (shallow, deep, sources): what a re-list walks
         self.relisted = False       # the re-list ran (once a run: this index lives one run)
 
-    def refresh(self, shallow, deep, budget=None):
+    def refresh(self, shallow, deep, budget=None, sources=()):
         """Every folder of `shallow` (alone) and `deep` (with subfolders, DEPTH deep), listed again only when its
         modified time moved; folders no longer looked at are dropped from the file. `budget` (a missing video's
         re-list): the folders whose time didn't move are listed again too, at most `budget` entries kept in all — a
-        folder with more entries than are left keeps what it had, and what's left goes on to the folders after it."""
-        self.roots = (list(shallow), list(deep))
+        folder with more entries than are left keeps what it had, and what's left goes on to the folders after it.
+        `sources` (SRC M1): the folders the store reads, walked as `deep` ones but by a source's skip rule (`_list`'s
+        `skip`, marked `"skip"` on their entries) — except inside a folder of `deep`, which is listed as before."""
+        self.roots = (list(shallow), list(deep), list(sources))
         old, new = self.data["dirs"], {}
         self.listed = 0
         left = budget
-        todo = [(os.path.abspath(f), 0, False) for f in shallow] + [(os.path.abspath(f), 0, True) for f in deep]
+        own = [os.path.normcase(os.path.abspath(f)) for f in deep]
+        theirs = [os.path.normcase(os.path.abspath(f)) for f in sources]
+        under = lambda folder, tops: any(folder == t or folder.startswith(t.rstrip(os.sep) + os.sep)  # noqa: E731
+                                         for t in tops)
+        todo = [(os.path.abspath(f), 0, False) for f in shallow] + \
+            [(os.path.abspath(f), 0, True) for f in list(deep) + list(sources)]
         reached = {}                # folder -> the shallowest depth it was walked at with its subfolders
         while todo:
             where, depth, recurse = todo.pop()
@@ -126,18 +139,20 @@ class Index:
             if recurse:
                 reached[folder] = depth
             had = old.get(folder)
+            skip = bool(theirs) and under(folder, theirs) and not under(folder, own)
             try:
                 mtime = os.stat(where).st_mtime_ns
             except OSError:
                 mtime = None
             again = bool(left) and mtime is not None    # the re-list, under its cap: listed whatever its time says
-            if had and (mtime is None or had.get("mtime_ns") == mtime) and not again:
+            if had and (mtime is None or (had.get("mtime_ns") == mtime and bool(had.get("skip")) == skip)) \
+                    and not again:
                 entry = dict(had)           # unchanged, or offline now: kept as listed (never listed again for it)
             elif mtime is None:
                 continue                    # never listed and not there: looked at again next run
             else:
                 try:
-                    got = _list(where, left)
+                    got = _list(where, left, skip=True) if skip else _list(where, left)
                 except _Full:
                     got = None              # over what's left of the cap: it keeps what it had, the rest goes on
                 if got is not None and left is not None:
@@ -149,6 +164,8 @@ class Index:
                 else:
                     self.listed += 1
                     entry = {"mtime_ns": mtime, "path": where, "videos": got[0], "subs": got[1]}
+                    if skip:
+                        entry["skip"] = True
             entry["deep"] = bool(recurse) or bool((new.get(folder) or {}).get("deep"))
             new[folder] = entry
             if recurse and depth < DEPTH:
@@ -179,7 +196,8 @@ class Index:
         found = self._find(names, size)
         if found is None and not self.relisted and self.roots is not None:
             self.relisted = True
-            self.refresh(*self.roots, budget=RELIST_MAX)
+            shallow, deep, sources = self.roots
+            self.refresh(shallow, deep, budget=RELIST_MAX, sources=sources)
             found = self._find(names, size)
         return found
 

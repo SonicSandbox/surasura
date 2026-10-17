@@ -101,8 +101,14 @@ def test_one_line_per_rule_hato_first_then_each_source_in_order(qapp):
     assert store.calls == [], "showing the rules writes nothing"
 
 
-def test_no_rule_shows_hatos_line_at_wait(qapp):
+def test_no_rule_written_shows_the_defaults_and_an_empty_dict_shows_hatos_line_at_wait(qapp):
+    # Decision 1 (lean): settings.json without `placing_rules` reads its default, a next episode after its show from
+    # hato and from your folders; a file that holds {} (every rule taken out) shows hato's line at Wait
     page, store, rows = rules_page()
+    assert shown(rows) == [("hato", "after-show"), ("source", "after-show")]
+    assert rows.lines["source"].words.text() == "From your folders"
+    assert sr.source_words("source:3") == "folder 3"
+    page, store, rows = rules_page({"placing_rules": {}})
     assert shown(rows) == [("hato", "wait")]
     assert store.calls == []
 
@@ -210,7 +216,7 @@ def test_esc_closes_plus_rules_menu_adding_and_writing_nothing(qapp, seen):
     assert wait_until(menu.isVisible, 2)
     QTest.keyClick(menu, Qt.Key.Key_Escape)
     assert wait_until(lambda: not menu.isVisible(), 2)
-    assert list(rows.lines) == ["hato"] and store.calls == []
+    assert list(rows.lines) == ["hato", "source"] and store.calls == []           # the default's two lines
 
 
 def test_a_store_that_cannot_be_read_still_offers_typing(qapp, monkeypatch):

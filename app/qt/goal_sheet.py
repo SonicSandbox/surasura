@@ -23,7 +23,7 @@ writer (`drag.DragController._give`: its toast, Undo and E4's refusal).
 import os
 import time
 
-from PyQt6.QtCore import QEvent, QObject, QRect, QRectF, Qt
+from PyQt6.QtCore import QEvent, QObject, QRect, QRectF, Qt, QTimer
 from PyQt6.QtGui import QAction, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import QAbstractItemView, QApplication, QMenu, QScrollArea, QToolButton, QWidget
 
@@ -190,8 +190,9 @@ class Tile(QWidget):
 
 
 class Wash(QWidget):
-    """The wash over a row the sheet just brought up (G2's scroll): the accent, fading over `row-flash`; it goes as
-    the list scrolls. Never takes the mouse."""
+    """The wash over a row the sheet just brought up (G2's scroll): the accent, fading over `row-flash` (Reduced motion:
+    steady for `row-wash-steady`, 1 s, as search's and Settings' washes); it goes as the list scrolls. Never takes the
+    mouse."""
 
     def __init__(self, lst):
         super().__init__(lst.viewport())
@@ -200,16 +201,25 @@ class Wash(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         self.alpha = 0.0
         self._anim = None
+        self._steady = QTimer(self)                      # Reduced motion: the steady wash's one second
+        self._steady.setSingleShot(True)
+        self._steady.setInterval(theme.SETTINGS_MOTION["row-wash-steady"])
+        self._steady.timeout.connect(self.hide)
         lst.verticalScrollBar().valueChanged.connect(lambda _v: self.hide())
         self.hide()
 
     def flash(self, rect):
         if self._anim is not None and self._anim.alive:
             self._anim.stop()
+        self._steady.stop()
         self.setGeometry(rect)
         self.alpha = SHEET["wash-alpha"]
         self.show()
         self.raise_()
+        if motion.clock().mode.reduced:
+            self.update()
+            self._steady.start()
+            return
 
         def frame_(k):
             self.alpha = SHEET["wash-alpha"] * (1 - k)

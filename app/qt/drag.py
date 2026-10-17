@@ -567,8 +567,10 @@ class DragController(QObject):
         self._settle.setSingleShot(True)
         self._settle.setInterval(D["settle-ms"])
         self._settle.timeout.connect(self._settled)
+        # Auto-scroll is the hand's, not motion (M4.1, the lead's call IK-4): it runs under Reduced motion too, on a
+        # timer of its own (never the clock, whose Reduced would stop it) — the one view timer named as allowed.
         self._scroll = QTimer(self)
-        self._scroll.setInterval(16)
+        self._scroll.setInterval(theme.MOTION["auto-scroll-tick"])
         self._scroll.timeout.connect(self._auto_scroll)
         self.lst.verticalScrollBar().valueChanged.connect(self._scrolled)
         self.undo_key = QShortcut(QKeySequence(QKeySequence.StandardKey.Undo), win)
@@ -1193,7 +1195,8 @@ class DragController(QObject):
                 self.lst.update(model.index(at, 0))
 
     def _glide_away(self):
-        """Into a well (or from outside): the ghost fades out (`ghost-removed`; Reduced motion: at once)."""
+        """Into a well (or from outside): the ghost fades out (`ghost-removed`; Reduced motion: a fade kept, no longer
+        than FAST)."""
         ghost = self.ghost
         if ghost is None:
             return

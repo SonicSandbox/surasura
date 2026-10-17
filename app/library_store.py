@@ -3700,6 +3700,22 @@ class Store:
         reads it and its receipt answers it. Undo by the value check."""
         return self._status("ask_mining", list(item_ids), "mine_asked", _now() if asked else None)
 
+    def enter_mine_line(self, by="user"):
+        """*Make cards for your first 20 episodes?* (SRC S1 + D1): the mine line's items, there since setup's first scan
+        put them there quietly (it logs nothing), logged as entering it by `by`'s own choice — `entered_mine_line`,
+        explicit: the event Connect's inbox makes a job of. Nothing moves; only the log is written (and the state
+        version). With no reader set nothing is logged (the caller sets Connect's first: `connect.library.
+        ensure_reader`). Not on the Undo (a job is Connect's to drop). -> the ids logged."""
+        with self._command("enter_mine_line", by=by) as cmd:
+            if not cmd.logging:
+                return []
+            ids = self._mine_ids(cmd.mine_n)
+            for item_id in ids:
+                cmd.event(item_id, "entered_mine_line", 1)
+            if ids:
+                cmd.touch()
+            return ids
+
     def import_finished(self, paths):
         """The Finished importer's command (05 §5.8), after its copying job: each file — one the job copied into
         `Graduated/`, or one already in the library — lands in Finished dated *Earlier* (`graduated_at` NULL), its work

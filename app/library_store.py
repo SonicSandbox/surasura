@@ -2442,16 +2442,17 @@ class Store:
             change = None
             # K3: the twin found before the command, its one item checked again in it (F12)
             gap = twin = None
-            if row is None or self._sync_drop(row[0], rel, pairing):
+            if row is None or (not backfill and self._sync_drop(row[0], rel, pairing)):   # a back-fill's row is old
                 gap, twin = self._twin_now(seen, full, content_key, pairing)
                 if (gap is not None or twin is not None) and row is not None:
                     self._take_out(cmd, row[0])            # R1: the sync's row for a file that is an episode already
                     row = None
-            if gap is not None:                            # R3: the folder's waiting video takes hato's subtitle
-                item_id = self._fill_gap(cmd, gap, prepared[0], {})
+            filled = self._fill_gap(cmd, gap, prepared[0], {}) if gap is not None else None
+            if filled is not None:                         # R3: the folder's waiting video takes hato's subtitle
+                item_id = filled
                 change = self._change(cmd, "register")
                 change.took_over = change.pairing_item = item_id
-            elif twin is not None:
+            elif twin is not None:                         # (a gap no longer waiting fills nothing: a new item below)
                 item_id, copy = twin                       # K3 (SRC-7): the episode is in already — no item for it
                 change = self._change(cmd, "register")
                 change.pairing_item = item_id
@@ -7442,10 +7443,12 @@ def _store_twin_seen(self, path, content_key, pairing):
 
 def _store_twin_stamp(self):
     """What a twin found before `register`'s command would have moved since (F12): a record or an item added (a record's
-    rowid grows with every insert or replace; an item's id is AUTOINCREMENT's) or an item's availability changed. A
-    move, a pin or a title moves none of them."""
+    rowid grows with every insert or replace; an item's id is AUTOINCREMENT's), an item's availability changed, or an
+    item put back (Put back and Undo bring an item back under its old id, with no record when it had none: the trash's
+    restored rows count them). A move, a pin or a title moves none of them."""
     return self.conn.execute("SELECT (SELECT MAX(rowid) FROM pairings), (SELECT seq FROM sqlite_sequence WHERE name = "
-                             "'items'), (SELECT value FROM meta WHERE key = 'availability_version')").fetchone()
+                             "'items'), (SELECT value FROM meta WHERE key = 'availability_version'), "
+                             "(SELECT COUNT(restored_at) FROM trash)").fetchone()
 
 
 def _store_video_holder(self, key):

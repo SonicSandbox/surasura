@@ -818,3 +818,71 @@ def test_R1_with_new_arrivals_off_a_synced_row_the_user_moved_is_never_taken_out
         assert store.move([synced], "now", after_id=item) is not None             # a drag below the episode
         store.register(hato_path, _hato(key, show))
         assert store.item(synced) is not None and _items(store) == 2
+
+
+# --- b2fix review (A1, A3, A4) ------------------------------------------------------------------------------------ #
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_F12_an_item_put_back_between_the_check_and_the_command_is_still_found(monkeypatch, language):
+    """b2fix review A1: Undo of a Remove (and Put back) brings an item back under its old id, and a 2.x item has no
+    record, so neither a record, an item id nor an availability moves: the stamp counts the trash's restored rows, so
+    the check runs again inside the command — hato's file with that item's bytes is kept out, never a second item."""
+    store = migrated(language)
+    data_dir, _u = roots(language)
+    with store:
+        first_id = next(i for i, _e, _a in store.ordered("now") if not store.conn.execute(
+            "SELECT 1 FROM pairings WHERE item_id = ?", (i,)).fetchone())
+        before = _items(store)
+        twin = _hato_file(data_dir, "twin.srt", like=os.path.join(data_dir, *store.item(first_id)["rel_path"].split("/")))
+        removed = store.remove([first_id])
+        real = ls.Store._twin_seen
+        looked = []
+
+        def then_put_back(self, *a):
+            out = real(self, *a)
+            if not looked:
+                looked.append(out)
+                assert self.undo(removed) is not None and self.item(first_id) is not None
+            return out
+        monkeypatch.setattr(ls.Store, "_twin_seen", then_put_back)
+        change = store.register(twin, _hato("v1-a1-back", "Twin"))
+        assert looked[0][1:] == (None, None, None)                            # nothing there at the check
+        assert change.added == [] and change.pairing_item == first_id and _items(store) == before
+        assert [p for _r, p in _duplicates(store)] == [ls.path_key(ls.library_rel(data_dir, twin))]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_R1_a_back_fill_never_takes_out_an_old_row_of_hatos(language):
+    """b2fix review A3: a back-fill registers hato's old drops, rows the sync made long ago with no record yet — with
+    New arrivals off, the whole top of NOW. Such a row is the user's episode, not the sync's row of a moment ago: it is
+    never taken out (no trash row, no Put back); the record goes on it as before K3."""
+    store, data_dir = _empty(language)
+    show = _SHOWS[language][0]
+    with store:
+        store.set_library_options(arrivals_on=False)
+        item, key, _sub = _source_episode(store, language, data_dir)
+        hato_path = _hato_file(data_dir, f"{show} - 01.ja.srt", _text(language, 7))
+        synced = _sync_first(store, data_dir, hato_path)
+        change = store.register(hato_path, _hato(key, show), backfill=True)
+        assert store.item(synced) is not None and change.pairing_item == synced and _items(store) == 2
+        assert store.item(item) is not None and _duplicates(store) == []
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_R3_a_gap_that_no_longer_waits_inside_the_command_fills_nothing_and_hatos_file_is_its_own_item(monkeypatch,
+                                                                                                       language):
+    """b2fix review A4: `_fill_gap` refuses a row that is no longer a waiting one (P1). `register` then went on with no
+    item and failed (a TypeError, the command rolled back, the hand-off lost); now hato's file is an item of its own."""
+    store, data_dir = _empty(language)
+    show = _SHOWS[language][0]
+    src = _drive("driveA")
+    key = videos.content_key(_video(os.path.join(src, show, f"{show} - 01.mkv")))
+    with store:
+        root = store.add_source(src)
+        waiting = _look(store, language, root, first=True)["ids"]
+        assert len(waiting) == 1 and store.item(waiting[0])["availability"] == "waiting"
+        monkeypatch.setattr(ls.Store, "_fill_gap", lambda self, *a: None)
+        hato_path = _hato_file(data_dir, f"{show} - 01.ja.srt", _text(language, 7))
+        change = store.register(hato_path, _hato(key, show))
+        assert len(change.added) == 1 and store.item_id(ls.library_rel(data_dir, hato_path)) == change.added[0]
+        assert store.conn.execute("SELECT item_id FROM pairings WHERE content_key = ?", (key,)).fetchone()[0] ==             change.added[0]

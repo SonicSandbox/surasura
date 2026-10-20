@@ -2486,6 +2486,34 @@ def test_a_text_read_shorter_than_its_listing_waits_and_its_copy_checks_its_leng
     assert sources._copy_part(path, part, size) == _sha(path)
 
 
+def test_a_changed_original_whose_copy_reads_another_length_waits_and_leaves_no_part_file(monkeypatch):
+    """b2fix review A2: a recopy whose byte count isn't the listing's (`_copy_part` -> None) while the original still
+    looks as listed waits for the next look — and its `.part` is removed, never left beside the copy in `Library`."""
+    language = "ja"
+    store, data_dir = _empty(language)
+    a = _SHOWS[language][0]
+    src = _drive("driveA")
+    path = _write(os.path.join(src, a, "ep01.srt"), _text(language, 1))
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        copy = os.path.join(data_dir, "Library", a, "ep01.srt")
+        old = _sha(copy)
+        _write(path, _text(language, 1, extra="、修正版の字幕"), age=30)       # a corrected subtitle
+        real = sources._copy_part
+
+        def counted_short(origin, part, size=None):
+            real(origin, part)                                                  # the bytes written, the count off
+            return None
+        monkeypatch.setattr(sources, "_copy_part", counted_short)
+        assert _look(store, language, root, full=True)["recopied"] == 0
+        assert not [n for n in os.listdir(os.path.dirname(copy)) if n.endswith(".part")]
+        assert _sha(copy) == old and _trash(data_dir) == []
+        monkeypatch.setattr(sources, "_copy_part", real)
+        assert _look(store, language, root, full=True)["recopied"] == 1        # the next look follows it
+        assert _sha(copy) == _sha(path)
+
+
 def test_a_checkpoint_that_fails_with_a_database_error_never_ends_the_look(monkeypatch, caplog):
     """A checkpoint is housekeeping: one failing with SQLite's own error (disk I/O, a full disk), not only busy, is
     logged and the look goes on — every file taken in (perf review P6)."""

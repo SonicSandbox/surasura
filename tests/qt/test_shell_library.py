@@ -223,7 +223,7 @@ def test_a_store_being_migrated_says_getting_ready_then_shows_its_rows_once_it_i
     with sqlite3.connect(_db("ja")) as conn:                     # the helper finishes (never the window)
         conn.execute("INSERT INTO meta (key, value) VALUES ('migrated_at', ?)", (stamp,))
     assert wait_until(lambda: _state(win) == "full", 15)         # the reader's mode recheck: no restart needed
-    assert services.writer.can_write()
+    assert wait_until(services.writer.can_write, 5)               # the writer's thread asks again (R3-L4)
 
 
 @pytest.mark.parametrize("why", ["damaged", "made by a newer Surasura"])

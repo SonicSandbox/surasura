@@ -29,7 +29,7 @@
   - `ValueError` (the anchor gone or out of the tier meanwhile) → placed again by id beside the nearest neighbour the
     window named (`near`) that is still in that tier, else at the top of the tier, with one note and `on_reread()`;
   - `StoreConflict` / a refused undo → *Can't undo — that item changed since* (E21), the change let go, nothing written;
-  - read-only → refused before it is painted: `can_write()` answers from the opener's mode (asked at the press, E4); a
+  - read-only → refused before it is painted: `can_write()` answers from the opener's mode as the thread last asked it (E4); a
     command that meets read-only anyway says the store's reason (`on_note`) and is let go.
   Never a dialog; the thread never dies of an error (a raw error → a logged note, the queue goes on).
 - **`hold()` / `release()`** (E6): while a drag runs nothing new is applied; the window's moves queue, in order, and land
@@ -213,15 +213,17 @@ class Writer:
     # --- the window's side (any thread; each returns at once) ------------------------------------------------------ #
     def can_write(self):
         """Whether a drag may start (E4), from the opener's mode as last checked (the thread asks it every
-        `MODE_RECHECK_S` and before each write) — asked again here when that says no (the opener's `check()` never
-        waits on the window's thread): a store that is only busy takes moves (they queue)."""
+        `MODE_RECHECK_S` and before each write): a store that is only busy takes moves (they queue). When that says no,
+        the thread is told to ask again at once and the next press reads its answer (R3-L4: the opener's `check()`
+        never runs on the caller's thread)."""
         if self._writable():
             return True
-        try:
-            self.opener.check()
-        except Exception:
-            return False
-        return self._writable()
+        with self._cond:
+            self._mode_at = 0.0
+            if not self._stop:
+                self._start()
+            self._cond.notify_all()
+        return False
 
     def _writable(self):
         return self.opener.mode == "store" or getattr(self.opener, "reason", None) == "busy"
@@ -573,9 +575,15 @@ class Writer:
 
     def replay(self):
         """At start: the journal's moves (a crash, or a quit that ran out of time) go first in the queue, applied by id;
-        those whose items changed meanwhile are listed once. Nothing while the store can't be written (ask again)."""
-        if not self.can_write():
-            return False
+        those whose items changed meanwhile are listed once. Nothing while the store can't be written (ask again: the
+        mode is asked here when the kept one says no — once at the start, never per press)."""
+        if not self._writable():
+            try:
+                self.opener.check()
+            except Exception:
+                return False
+            if not self._writable():
+                return False
         with self._cond:
             self._replay_due = True
             self._start()

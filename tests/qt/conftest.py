@@ -73,6 +73,13 @@ def _per_test_window_state(request, monkeypatch):
     from app.qt import freeze, style
     freeze.set_frozen(None)
     _errors.clear()
+    from app.services import source_looks
+    looks, made = source_looks.SourceLooks.__init__, []
+
+    def made_looks(self, *a, **k):                # each window's source-folder looks (SRC W1b), waited for after
+        looks(self, *a, **k)
+        made.append(self)
+    monkeypatch.setattr(source_looks.SourceLooks, "__init__", made_looks)
     before = list(app.children())                 # (some children aren't hashable: compared by identity)
     yield
     for w in app.topLevelWidgets():
@@ -80,6 +87,11 @@ def _per_test_window_state(request, monkeypatch):
         w.deleteLater()
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     app.processEvents()
+    # A closed window's looks end on their own thread once the look under way lets go: one still opening its store
+    # after the test's root was gone wrote the run's own local data folder (a later test's guard failed). Waited for
+    # here, while the root is still set; an idle one returns at once.
+    for one in made:
+        one.idle(10)
     # A test's own filters and helpers parented to the app: only objects of classes written in Python (a test's or the
     # window's). Qt parents its own objects to the app as it goes (an input device on the first click, …); deleting
     # one of those corrupts Qt and crashes a later test (seen: a window made 80 tests on died in its constructor).

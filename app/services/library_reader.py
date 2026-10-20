@@ -88,6 +88,7 @@ class LibraryReader:
         self._gone_subscribers = []
         self._hold = threading.Event()     # a drag holds the view (E6)
         self._held_dirty = False           # something came in while held: built and published at the release
+        self._republish = False            # the drag's settle asked for the store's view (`republish`)
         self._thread = None
         self._view = None
         # the reader thread's own copy of the library (touched only there)
@@ -178,8 +179,9 @@ class LibraryReader:
 
     def republish(self):
         """The window let go of its own order once every write landed: the next look builds and publishes the store's
-        view, changed or not (where the store placed a row otherwise than the window drew it, round 2 AD2-4)."""
-        self._held_dirty = True
+        view, changed or not (where the store placed a row otherwise than the window drew it, round 2 AD2-4): the last
+        one built, the same object, when nothing changed since (M4.1 B1: no build)."""
+        self._republish = True
         self._wake.set()
 
     def start(self):
@@ -268,8 +270,11 @@ class LibraryReader:
         version, numbers = self.numbers()
         held = self._hold.is_set()
         released = self._held_dirty and not held        # the drop: what came in during the drag, built once now
+        again = self._republish and not held            # M4.1 B1: the settle's ask, taken before the store is read
+        if again:
+            self._republish = False
         if h is None:                                   # nothing to read: the last rows stay, under the mode's bar
-            if changed_mode or self._view is None or version != self._numbers_version or released:
+            if changed_mode or self._view is None or version != self._numbers_version or released or again:
                 self._numbers_version = version         # the numbers' own version: a new one empties the row cache
                 if held:
                     self._held_dirty = True
@@ -284,6 +289,8 @@ class LibraryReader:
         if not changed_mode and dv == self._data_version and version == self._numbers_version \
                 and self._view is not None and not self._view.busy and not cards_due and not released \
                 and not estimates_new:                  # W3.2 Q1
+            if again:                                   # M4.1 B1: nothing changed since the last build
+                self._publish(self._view)
             self._flush_cache()
             return
         feed = h.read_feed(self._seen, self._epoch)
@@ -313,6 +320,8 @@ class LibraryReader:
         self._held_dirty = False
         if not changed:                                 # data_version moved with nothing for the window (a checkpoint)
             self.skipped += 1
+            if again:                                   # M4.1 B1
+                self._publish(self._view)
             self._flush_cache()                         # a look with nothing new: as quiet as one that read nothing
             return
         view = self._build(numbers, mode, reason, rows_known=True)

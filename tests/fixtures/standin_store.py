@@ -54,6 +54,7 @@ class StandinLibrary:
     def __init__(self, items, works, meta=None, cards=None, mode="store", reason=None):
         self._lock = threading.RLock()
         self._items = {}
+        self._tiers = {}                               # tier -> the ids in it (a writer's placement reads its tier only)
         self._works = {}
         self._gone = []                                # (feed_in, kind, id)
         self._cards = dict(cards or {})
@@ -68,6 +69,7 @@ class StandinLibrary:
             r = {k: row.get(k) for k in FEED_ITEM_FIELDS}
             r["feed_in"] = r["feed_in"] or 1
             self._items[r["id"]] = r
+            self._tiers.setdefault(r["tier"], set()).add(r["id"])
         for row in works:
             w = {k: row.get(k) for k in FEED_WORK_FIELDS}
             w["feed_in"] = w["feed_in"] or 1
@@ -109,6 +111,9 @@ class StandinLibrary:
                 r.update({k: row[k] for k in row if k in FEED_ITEM_FIELDS})
                 r["feed_in"] = v
                 self._items[r["id"]] = r
+                if cur is not None:
+                    self._tiers[cur["tier"]].discard(r["id"])
+                self._tiers.setdefault(r["tier"], set()).add(r["id"])
             for row in works:
                 cur = self._works.get(row["id"])
                 w = dict(cur) if cur else {k: None for k in FEED_WORK_FIELDS}
@@ -116,7 +121,9 @@ class StandinLibrary:
                 w["feed_in"] = v
                 self._works[w["id"]] = w
             for kind, ident in gone:
-                (self._items if kind == "item" else self._works).pop(ident, None)
+                was = (self._items if kind == "item" else self._works).pop(ident, None)
+                if kind == "item" and was is not None:
+                    self._tiers[was["tier"]].discard(ident)
                 self._gone.append((v, kind, ident))
             for key, value in (meta or {}).items():
                 m[key] = value
@@ -136,6 +143,14 @@ class StandinLibrary:
     def items(self):
         with self._lock:
             return [dict(r) for r in self._items.values()]
+
+    def tier_keys(self, tier):
+        """[(ord, id, piece_id)] of the tier's items, unsorted, from the per-tier index: what a writer's placement
+        reads, without a copy of every item (M4.1 A4: the bench's stand-in writer copied the whole library on every
+        move)."""
+        with self._lock:
+            items = self._items
+            return [(items[i]["ord"], i, items[i]["piece_id"]) for i in self._tiers.get(tier, ())]
 
 
 class StandinOpener:

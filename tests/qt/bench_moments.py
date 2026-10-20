@@ -10,8 +10,9 @@ every-window frames and timed steps (`app/qt/hud.py`):
 - **the slow frames** (over `hud.SLOW_MS`, 6.4 ms: the laptop's 16 ÷ 2.5) by cause (`hud.frame_cause`), the worst
   few listed with their window and where their time went;
 - **the steps**: the typical worst — the p95 over the moment's repetitions of each repetition's worst GUI-thread step
-  (every step overlapping it) — and the slowest, and how many went over 4 ms (a bench may time a moment's pieces
-  itself: `own_steps`, said in `steps_from`);
+  (every step overlapping it, but one that holds a later repetition's begin: that is the later one's) — with the
+  median of those worsts beside it (at 10 repetitions the p95 is the slowest), and the slowest, and how many went over
+  4 ms (a bench may time a moment's pieces itself: `own_steps`, said in `steps_from`);
 - **wakes after**: the clock's wake-ups once still (None: it never stopped within `STILL_WAIT_MS`).
 
 **The parent's side** (`scaled_runs`): each `--scales` value its own child process at TRUE scale (`QT_SCALE_FACTOR` =
@@ -44,6 +45,15 @@ def _p95(values):
         return None
     ordered = sorted(values)
     return round(ordered[min(len(ordered) - 1, int(round(0.95 * (len(ordered) - 1))))], 2)
+
+
+def _holds_later_begin(begins, t0, s, ms):
+    """Whether the step (`s`, `ms`) holds the begin of a repetition later than the one begun at `t0`: the step is then
+    that one's, never this one's (M4.1 A1: a step runs from the loop's waking to its next wait, and the timer that ends
+    one repetition goes on into the next one's begin and action in that one stretch — menu-open was given the menu
+    move's whole cost). `begins`: every repetition's begin, sorted."""
+    k = bisect.bisect_right(begins, max(t0, s))
+    return k < len(begins) and begins[k] <= s + ms / 1000.0
 
 
 # --- the child's side ------------------------------------------------------------------------------------------------ #
@@ -116,15 +126,17 @@ class Moments:
         f_at = [f["t0"] for f in frames]
         steps = sorted(self.hud.step_log)
         s_at = [s for s, _ms in steps]
+        begins = sorted(t0 for _n, t0, _t1 in self.reps)
         out = {}
         for name in self.order:
             reps = [(t0, t1) for n, t0, t1 in self.reps if n == name and t1 is not None]
             fr, worsts, over = [], [], 0
             for t0, t1 in reps:
                 fr.extend(frames[bisect.bisect_left(f_at, t0):bisect.bisect_right(f_at, t1)])
-                # the steps that overlap it (the one holding its click began before it)
+                # the steps that overlap it (the one holding its click began before it), but one holding a later
+                # repetition's begin
                 st = [ms for s, ms in steps[bisect.bisect_left(s_at, t0 - LONGEST_S):bisect.bisect_right(s_at, t1)]
-                      if s + ms / 1000.0 > t0]
+                      if s + ms / 1000.0 > t0 and not _holds_later_begin(begins, t0, s, ms)]
                 worsts.append(max(st, default=0.0))
                 over += sum(1 for ms in st if ms > 4.0)
             own = self.rep_worst.get(name)
@@ -143,7 +155,9 @@ class Moments:
                          "clock_frames": sum(1 for f in fr if f["work_ms"] is not None),
                          "slow_n": len(slow), "slow_causes": causes,
                          "slow": [hud_module.slow_line(f, self.hud.ignore_before) for f in slow[:8]],
-                         "step_worst_p95_ms": _p95(worsts), "step_slowest_ms": round(max(worsts), 2) if worsts else None,
+                         "step_worst_p95_ms": _p95(worsts),
+                         "step_worst_median_ms": round(statistics.median(worsts), 2) if worsts else None,
+                         "step_slowest_ms": round(max(worsts), 2) if worsts else None,
                          "steps_over_4ms": over, "wakes_after": self.wakes.get(name, "not counted")}
             if own:
                 out[name]["steps_from"] = self.rep_worst_from.get(name)
@@ -255,13 +269,14 @@ def markdown(out):
     for r in out["results"]:
         lines += [f"## {r.get('scale')} % · run {r.get('run')} · dpr {r.get('dpr')}"
                   + (f" · ERROR {r['error']}" if r.get("error") else ""), "",
-                  "| moment | reps | frames | p95 | max | windows | slow > 6.4 by cause | step typ. worst | slowest | "
-                  ">4 ms | wakes after |", "|---|---|---|---|---|---|---|---|---|---|---|"]
+                  "| moment | reps | frames | p95 | max | windows | slow > 6.4 by cause | step typ. worst | "
+                  "median worst | slowest | >4 ms | wakes after |", "|---|---|---|---|---|---|---|---|---|---|---|---|"]
         for name, m in (r.get("moments") or {}).items():
             win = " ".join(f"{k} {v}" for k, v in m.get("windows", {}).items()) or "–"
             lines.append(f"| {name} | {m['reps']} | {m['frames_n']} | {m['frames_p95_ms']} | {m['frames_max_ms']} | "
                          f"{win} | {m['slow_n']}: {_causes(m['slow_causes'])} | {m['step_worst_p95_ms']} | "
-                         f"{m['step_slowest_ms']} | {m['steps_over_4ms']} | {m['wakes_after']} |")
+                         f"{m.get('step_worst_median_ms')} | {m['step_slowest_ms']} | {m['steps_over_4ms']} | "
+                         f"{m['wakes_after']} |")
         extra = r.get("extra")
         if extra:
             lines += ["", "```", json.dumps(extra)[:1500], "```"]

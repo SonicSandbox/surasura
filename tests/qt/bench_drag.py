@@ -86,9 +86,195 @@ def main_parent(a):
             r = json.load(f)
         if proc.returncode:
             r["exit"] = proc.returncode
+        if proc.stderr.strip():                          # (M4.1 A5) kept whatever the exit: a raise in a slot isn't one
+            r.setdefault("extra", {})["stderr"] = proc.stderr[-1500:]
         return r
     bench_moments.scaled_runs("bench_drag", a.scales_list, a.runs, a.reduced, one_run, a.out,
                               meta={"files": files, "cycles": a.cycles})
+
+
+# --- the child's stand-in writer (out here so its rules are tested: tests/qt/test_bench_drag.py) --------------------- #
+class StandinWriter:
+    """The window's writer as the moves call it, over the stand-in library and the real `moves.Numbers`: each command
+    worked out and written on a thread of its own, where `moves.Writer` only queues on the caller's (M4.1 A3: a nudge
+    worked out where it was called copied the whole library on the GUI thread) — the numbers worked out before the
+    write (as `moves.Writer._numbers_move`), then the change written into the stand-in and its callbacks on that thread.
+    Each command's time to `on_saved` noted on the moment it came from (`moments`, set once the HUD is up)."""
+    from app.qt.strings import MOVE_WORDS as words
+
+    def __init__(self, library, numbers):
+        self.library, self.numbers, self.moments = library, numbers, None
+        self.on_saved = self.on_saving = self.on_reread = self.on_note = self.on_undone = None
+        self._pending = 0
+
+    def start(self):
+        return self
+
+    def replay(self):
+        return True
+
+    def can_write(self):
+        return True
+
+    def reason(self):
+        return None
+
+    def hold(self):
+        pass
+
+    def release(self):
+        pass
+
+    def pending(self):
+        return self._pending
+
+    def can_undo(self):
+        return False
+
+    def finish(self, deadline):
+        return True
+
+    def _run(self, ids, label, write):
+        self._pending += 1
+        t0 = time.perf_counter()
+        moments = self.moments
+        name = moments.reps[-1][0] if moments is not None and moments.reps else None
+
+        def run():
+            write()
+            self._pending -= 1
+            if name is not None:
+                moments.note(name, "saved_ms", round((time.perf_counter() - t0) * 1000, 2))
+            self.on_saved(_Change(ids), label)
+        threading.Thread(target=run, daemon=True).start()
+        return 1
+
+    def _move_now(self, ids, tier, before_id=None, after_id=None, piece_id=None):
+        """(The writer's thread.) The numbers, then the write."""
+        self.numbers.after_move(ids, tier, before_id=before_id, after_id=after_id)
+        _place(self.library, ids, tier, before_id, after_id, piece_id)
+
+    def move(self, ids, tier, before_id=None, after_id=None, near=(), label=None, end=False):
+        return self._run(ids, label, lambda: self._move_now(ids, tier, before_id, after_id))
+
+    def nudge(self, ids, direction, label=None):
+        """One place up or down in its tier (the store's `nudge`), worked out on the writer's thread: nothing at the
+        tier's end."""
+        def write():
+            to = nudge_anchor(self.library, ids, direction)
+            if to is not None:
+                self._move_now(ids, *to)
+        return self._run(ids, label, write)
+
+    def join(self, piece_ids, label=None, ahead=False):
+        """`Store.join` (W3.2 Q8: a drop on another part of the same title, `item_menu.join`): the other parts' items
+        into the first part's piece and tier, after its last item (`ahead`: before its first). (M4.1 A5: the stand-in
+        had no `join`, and such a drop raised in the child.)"""
+        first, ids = piece_ids[0], []
+
+        def write():
+            lib = self.library
+            with lib._lock:                              # (the writer's thread; a join is rare)
+                parts = sorted((r["ord"], r["id"], r["piece_id"], r["tier"]) for r in lib._items.values()
+                               if r["piece_id"] in piece_ids)
+            target = [k for k in parts if k[2] == first]
+            moving = [k[1] for k in parts if k[2] != first]
+            if not target or not moving:
+                return
+            ids.extend([k[1] for k in target] + moving)
+            before_id, after_id = (target[0][1], None) if ahead else (None, target[-1][1])
+            self._move_now(moving, target[0][3], before_id, after_id, piece_id=first)
+        return self._run(ids, label, write)
+
+    def set_watched(self, ids, on=True, label=None):
+        return self._run(ids, label, lambda: self.library.commit(
+            items=[{"id": i, "watched": int(bool(on))} for i in ids]))
+
+    def place(self, ids, where, label=None):
+        if where == "finished":
+            return self._run(ids, label, lambda: self.library.commit(
+                items=[{"id": i, "tier": "graduated", "graduated_at": "2026-10-16T21:00:00Z"} for i in ids],
+                order=True))
+        return self.move(ids, "soon" if where == "soon" else "goal" if where == "goal" else "now", label=label)
+
+    def _nothing(self, *a, **k):
+        return None
+
+    set_finished = insert_at = undo = _nothing
+
+
+class _Change:
+    def __init__(self, ids):
+        self.ids, self.kind = list(ids), "move"
+
+
+def nudge_anchor(library, ids, direction):
+    """(tier, before_id, after_id) for `ids` one place up or down in their tier: before the run (piece) of the row
+    above, or after the run of the row below; None at the tier's end. Only the tier's keys read."""
+    tier = library._items[ids[0]]["tier"]
+    line = sorted(library.tier_keys(tier))               # (ord, id, piece_id): the tier's order
+    mine = set(ids)
+    at = [k for k, key in enumerate(line) if key[1] in mine]
+    if direction == "up":
+        k = at[0] - 1
+        if k < 0:
+            return None
+        piece = line[k][2]
+        while k > 0 and line[k - 1][2] == piece:
+            k -= 1
+        return tier, line[k][1], None
+    k = at[-1] + 1
+    if k >= len(line):
+        return None
+    piece = line[k][2]
+    while k + 1 < len(line) and line[k + 1][2] == piece:
+        k += 1
+    return tier, None, line[k][1]
+
+
+def _place(library, ids, tier, before_id, after_id, piece_id=None):
+    """`ids` written into `tier` before `before_id`, after `after_id`, or at its top (an anchor not in the tier: its
+    top), spaced between their neighbours' `ord`s; `piece_id` too when given. Only the tier's keys read (M4.1 A4: every
+    item was copied and the tier sorted, 6–60 ms a move at 20,000 files, holding Python's lock under the window)."""
+    mine = set(ids)
+    rest = [(o, i) for o, i, _p in library.tier_keys(tier) if i not in mine]
+    anchor = before_id if before_id is not None else after_id
+    at = next((k for k in rest if k[1] == anchor), None) if anchor is not None else None
+    if at is not None and before_id is not None:
+        hi = at[0]
+        below = max((k for k in rest if k < at), default=None)
+        lo = below[0] if below is not None else hi - 1024
+    elif at is not None:
+        lo = at[0]
+        above = min((k for k in rest if k > at), default=None)
+        hi = above[0] if above is not None else lo + 1024
+    else:
+        hi = min(rest)[0] if rest else 1024.0
+        lo = hi - 1024
+    step = (hi - lo) / (len(ids) + 1)
+    extra = {} if piece_id is None else {"piece_id": piece_id}
+    library.commit(items=[dict(extra, id=i, tier=tier, ord=lo + step * (n + 1)) for n, i in enumerate(ids)],
+                   order=True)
+
+
+def done_candidates(rows_, used):
+    """toast-done-all's rows: a Current row below Up Next — NOW or Soon: a Done finishes any Current row (`drag.py`'s
+    `done` has no tier rule; M4.1 A2: NOW's rows ran out after the menu moves, and the moment ran with no toast and no
+    skip noted) — of 2+ episodes, not all watched, Finished offered for it, not a split's first part, not used yet."""
+    from app.qt import drag as drag_module
+    return [r for r in rows_[1:] if r.tier in ("now", "soon") and r.key not in used and len(r.episodes) >= 2
+            and drag_module.finishes(r) and not drag_module.split_first(rows_, r)
+            and not all(e.watched for e in r.episodes)]
+
+
+def arrival_template(library):
+    """The arrival moment's template, read once before the moments (M4.1 A3: each arrival's `max` over every item was
+    the whole of the moment at 20,000 files): (a row to copy, its work, the first new item id, the first new work
+    id)."""
+    items = library.items()
+    temp = next((r for r in items if r["tier"] == "arrivals"), None) or next(r for r in items if r["tier"] == "now")
+    work = dict(library._works[temp["work_id"]]) if temp.get("work_id") in library._works else None
+    return temp, work, max(r["id"] for r in items) + 1, max(library._works) + 1
 
 
 # --- the child ------------------------------------------------------------------------------------------------------- #
@@ -98,7 +284,7 @@ def main_child(a):
     from PyQt6.QtGui import QKeyEvent, QMouseEvent
     from PyQt6.QtWidgets import QApplication, QListView
     from app import theme
-    from app.qt import drag as drag_module, hud as hud_module, rows, shell, strings
+    from app.qt import hud as hud_module, rows, shell, strings
     from app.services import library_reader, moves
     from tests.qt.bench_scroll import _LazyOpener
 
@@ -115,124 +301,6 @@ def main_child(a):
     held.append(reader)
     moments = None                                       # (made with the HUD, below)
 
-    class Writer:
-        """The window's writer as the moves call it: the numbers worked out on its own thread before the write (as
-        `moves.Writer._numbers_move`), then the change written into the stand-in and its callbacks on that thread.
-        Each command's time to `on_saved` noted on the moment it came from."""
-        from app.qt.strings import MOVE_WORDS as words
-
-        def __init__(self):
-            self.on_saved = self.on_saving = self.on_reread = self.on_note = self.on_undone = None
-            self.numbers = numbers
-            self._pending = 0
-
-        def start(self):
-            return self
-
-        def replay(self):
-            return True
-
-        def can_write(self):
-            return True
-
-        def reason(self):
-            return None
-
-        def hold(self):
-            pass
-
-        def release(self):
-            pass
-
-        def pending(self):
-            return self._pending
-
-        def can_undo(self):
-            return False
-
-        def finish(self, deadline):
-            return True
-
-        def _run(self, ids, label, write):
-            self._pending += 1
-            t0 = time.perf_counter()
-            name = moments.reps[-1][0] if moments is not None and moments.reps else None
-
-            def run():
-                write()
-                self._pending -= 1
-                if name is not None:
-                    moments.note(name, "saved_ms", round((time.perf_counter() - t0) * 1000, 2))
-                self.on_saved(_Change(ids), label)
-            threading.Thread(target=run, daemon=True).start()
-            return 1
-
-        def move(self, ids, tier, before_id=None, after_id=None, near=(), label=None, end=False):
-            def write():
-                numbers.after_move(ids, tier, before_id=before_id, after_id=after_id)
-                _place(ids, tier, before_id, after_id)
-            return self._run(ids, label, write)
-
-        def nudge(self, ids, direction, label=None):
-            """One place up or down in its tier: before the run of the row above, or after the run of the row below."""
-            items = {r["id"]: r for r in library.items()}
-            tier = items[ids[0]]["tier"]
-            line = sorted((r for r in items.values() if r["tier"] == tier), key=lambda r: (r["ord"], r["id"]))
-            at = [i for i, r in enumerate(line) if r["id"] in set(ids)]
-            if direction == "up":
-                k = at[0] - 1
-                if k < 0:
-                    return None
-                piece = line[k]["piece_id"]
-                while k > 0 and line[k - 1]["piece_id"] == piece:
-                    k -= 1
-                return self.move(ids, tier, before_id=line[k]["id"], label=label)
-            k = at[-1] + 1
-            if k >= len(line):
-                return None
-            piece = line[k]["piece_id"]
-            while k + 1 < len(line) and line[k + 1]["piece_id"] == piece:
-                k += 1
-            return self.move(ids, tier, after_id=line[k]["id"], label=label)
-
-        def set_watched(self, ids, on=True, label=None):
-            return self._run(ids, label, lambda: library.commit(items=[{"id": i, "watched": int(bool(on))} for i in ids]))
-
-        def place(self, ids, where, label=None):
-            if where == "finished":
-                return self._run(ids, label, lambda: library.commit(
-                    items=[{"id": i, "tier": "graduated", "graduated_at": "2026-10-16T21:00:00Z"} for i in ids],
-                    order=True))
-            return self.move(ids, "soon" if where == "soon" else "goal" if where == "goal" else "now", label=label)
-
-        def _nothing(self, *a, **k):
-            return None
-
-        set_finished = insert_at = undo = _nothing
-
-    def _place(ids, tier, before_id, after_id):
-        items = {r["id"]: r for r in library.items()}
-        rest = sorted((r for r in items.values() if r["tier"] == tier and r["id"] not in ids),
-                      key=lambda r: (r["ord"], r["id"]))
-        if before_id is not None:
-            k = next(i for i, r in enumerate(rest) if r["id"] == before_id)
-            hi = rest[k]["ord"]
-            lo = rest[k - 1]["ord"] if k else hi - 1024
-        elif after_id is not None:
-            k = next(i for i, r in enumerate(rest) if r["id"] == after_id)
-            lo = rest[k]["ord"]
-            hi = rest[k + 1]["ord"] if k + 1 < len(rest) else lo + 1024
-        else:
-            hi = rest[0]["ord"] if rest else 1024.0
-            lo = hi - 1024
-        step = (hi - lo) / (len(ids) + 1)
-        library.commit(items=[{"id": i, "tier": tier, "ord": lo + step * (n + 1)} for n, i in enumerate(ids)],
-                       order=True)
-
-    class _Change:
-        def __init__(self, ids):
-            self.ids, self.kind = list(ids), "move"
-
     real_show = shell.ShellWindow.show_library
     watch = {}                                           # the move being watched: key, t0, version before, moment
     page_of = {}
@@ -243,7 +311,9 @@ def main_child(a):
         w = watch.get("key")
         if page is None or w is None or numbers.version <= watch["v0"]:
             return
-        table = numbers()[1]
+        # the table read without `numbers()`'s lock, which the writer's `after_move` holds 4–10 ms a move (M4.1 A6; the
+        # app never takes it on the GUI thread): it is replaced whole, never changed in place
+        table = numbers._table
         row = next((r for r in page.view_model.rows if r.key == w), None) if page.view_model is not None else None
         if row is None:
             return
@@ -254,13 +324,14 @@ def main_child(a):
             moments.note(watch["moment"], "numbers_ms", round((time.perf_counter() - watch["t0"]) * 1000, 2))
             watch.clear()
     shell.ShellWindow.show_library = show_library
-    writer = Writer()
+    writer = StandinWriter(library, numbers)
     services = shell.Services(library=reader, writer=writer)
     window = shell.open_window(app, services)
     window.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
     bench_moments.apply_reduced()
     hud = hud_module.Hud(window, overlay=False).start()
     moments = bench_moments.Moments(hud)
+    writer.moments = moments
     page = window.page_widgets["current"]
     page_of["page"] = page
     lst = page.list
@@ -342,13 +413,16 @@ def main_child(a):
 
     # --- a drag (W3.1a's four phases) ---------------------------------------------------------------------------- #
     def cycle(c):
-        def pick():
+        def choose():                                    # (before the repetition: M4.1 A3, the bench's own row scan)
             vis = visible_rows()
             i = vis[min(len(vis) - 1, 2 + c % 3)]
             state["src"] = i
             state["key"] = lst.model().entries[i][1].key
             state["at"] = lst.viewport().mapToGlobal(title_point(i))
+
+        def pick():
             send(lst.viewport(), QEvent.Type.MouseButtonPress, lst.viewport().mapFromGlobal(state["at"]), LEFT, LEFT)
+        at(16, choose)
         at(16, begin("pickup"))
         at(0, pick)
 
@@ -516,16 +590,14 @@ def main_child(a):
 
     # --- the arrival moment ----------------------------------------------------------------------------------------- #
     arrival_ids = []
+    arrival_from = []                                    # arrival_template's, read in start() (never in a moment)
 
     def arrival_cycle(c):
         def land():
             inset = window.arrivals_inset
             state["played"] = inset.arrivals_played if inset is not None else 0
-            items = library.items()
-            temp = next((r for r in items if r["tier"] == "arrivals"), None) or next(r for r in items if r["tier"] == "now")
-            work = dict(library._works[temp["work_id"]]) if temp.get("work_id") in library._works else None
-            new_id = max(r["id"] for r in items) + 1
-            new_work = max(library._works) + 1
+            temp, work, first_id, first_work = arrival_from[0]
+            new_id, new_work = first_id + c, first_work + c
             title = f"新着の物語 {c + 1}"
             row = dict(temp, id=new_id, tier="arrivals", ord=temp["ord"] - 512 * (c + 1), piece_id=2 * 10 ** 9 + c,
                        work_id=new_work, rel_path=f"HighPriority/Hato/{title}/{title} - 01.srt",
@@ -551,13 +623,11 @@ def main_child(a):
     def done_cycle(c):
         def prep():
             v = page.view_model
-            rows_ = v.rows if v is not None else ()
-            cands = [r for r in rows_[1:] if r.tier == "now" and r.key not in used and len(r.episodes) >= 2
-                     and drag_module.finishes(r) and not drag_module.split_first(rows_, r)
-                     and not all(e.watched for e in r.episodes)]
+            cands = done_candidates(v.rows if v is not None else (), used)
             row = cands[0] if cands else None
             state["done_row"] = row.key if row is not None else None
             if row is None:
+                result["skipped"]["toast-done-all: no row"] = result["skipped"].get("toast-done-all: no row", 0) + 1
                 return
             used.add(row.key)
             others = [e.id for e in row.episodes[:-1] if not e.watched]
@@ -645,6 +715,7 @@ def main_child(a):
             QTimer.singleShot(50, start)
             return
         print(f"bench_drag: {len(v.rows)} rows live; {a.cycles} cycles a moment", flush=True)
+        arrival_from.append(arrival_template(library))
         lst.verticalScrollBar().setValue(lst.verticalScrollBar().maximum() // 3)
         n = a.cycles
         for c in range(n):

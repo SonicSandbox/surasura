@@ -501,7 +501,7 @@ def test_connects_kinds_call_their_callables_on_a_worker_and_a_missing_one_is_hi
     assert opened == [None]
     gap = next(e for e in ny.entries if e.kind == service.GAP)
     names = {b.property("action") for b in ny.cards.buttons(gap.key)}
-    assert names == {"leave_them"}                               # *Make their cards*: P4.1's, hidden
+    assert names == {"leave_them", "make_cards"}                 # P4.1 L2 (4.1.12): *Make their cards* is set now
     # Connect without its *Mine anyway*: the button isn't there (never one that does nothing)
     ny.connect_calls["mine_anyway"] = None
     ny.rewire()

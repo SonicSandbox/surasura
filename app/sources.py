@@ -985,7 +985,7 @@ class _Look:
         except OSError:
             _drop(part)
             return None
-        if not self._same(path, st):
+        if digest is None or not self._same(path, st):   # a short or long read, or changed while copied
             _drop(part)
             return None
         return digest

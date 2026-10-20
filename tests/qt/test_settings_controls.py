@@ -336,6 +336,26 @@ def test_released_between_two_the_gem_falls_into_the_nearest_and_stops_hard(cloc
     assert clock.active == []                               # stopped hard: nothing left moving
 
 
+def test_gap2_the_slider_chooses_at_the_release_and_its_glide_and_fall_are_a_look_only(clock):
+    """Gap 2 (M4.1 P3): the band was chosen (and saved) only once the gem had glided and fallen in, up to ~205 ms
+    after the release. Now at the release: the value, its signal, its description — the gem still settling."""
+    s = shown(sc.LevelSlider(BANDS, value="common"), width=640)
+    got = spy(s)
+    a, b = s.chamber(3), s.chamber(4)
+    x = a.x() + 0.38 * (b.x() - a.x())
+    mouse(s, QEvent.Type.MouseButtonPress, s.chamber(1).x(), a.y())
+    clock.advance(theme.SETTINGS_MOTION["slider-lift"])
+    mouse(s, QEvent.Type.MouseMove, x, a.y())
+    clock.advance(300)
+    mouse(s, QEvent.Type.MouseButtonRelease, x, a.y(), Qt.MouseButton.NoButton)
+    assert got == ["uncommon"] and s.value() == "uncommon"           # at the release, before any frame
+    assert s.accessibleDescription() == BANDS[3][1]
+    assert s.busy() and s.gem() != (s._at_t(3), 0.0)                 # the gem still to settle (a shown value waits)
+    clock.advance(400)
+    assert s.gem() == (s._at_t(3), 0.0) and got == ["uncommon"]      # seated; chosen once
+    assert clock.active == []
+
+
 def test_held_near_a_chamber_the_gem_is_held_back(clock):
     s = shown(sc.LevelSlider(BANDS, value="core"), width=640)
     c = s.chamber(2)

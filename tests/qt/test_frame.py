@@ -440,6 +440,26 @@ def test_the_wells_rise_on_the_clock_and_jump_under_reduced_motion(dock, test_cl
     assert dock.rise == 0 and dock.wells
 
 
+def test_gap2_the_bars_new_count_and_name_come_at_the_drop_under_the_falling_wells(dock, test_clock):
+    """Gap 2 (M4.1 P3): the bar's new count showed only once the wells had fallen (260 ms after the drop), its
+    accessible name too. Now both come at the drop; the wells fall over the bar as a look only."""
+    dock.begin_drag("current")
+    test_clock.advance(theme.MOTION["buckets"] + 16)                 # risen
+    dock.end_drag()                                                  # the drop: the wells begin to fall
+    new = _goal(13, 140)
+    dock.set_goal(new)                                               # the drop's numbers (drag.without → the shell)
+    assert dock.wells                                                # still falling
+    assert dock.accessibleName() == strings.GOAL_ACCESSIBLE.format(name=strings.GOAL_NAME, line=new.line)
+    assert dock.toolTip() == new.tip
+    test_clock.advance(theme.MOTION["buckets"] / 2)
+    assert dock.wells and 0 < dock.rise < theme.MOTION["buckets-rise"]
+    arr = rgb_array(dock.grab())
+    assert dock._key[0] == frame._bar_of(new)                       # the bar drawn for the new count, mid-fall
+    assert count(arr, theme.colours()["goal-bar"], 2) > 500          # and seen above the falling wells
+    test_clock.advance(theme.MOTION["buckets"])
+    assert dock.wells == () and dock.accessibleName().endswith(new.line)
+
+
 def test_a_dock_hover_repaints_the_dock_only(qapp, dock):
     host = dock.parentWidget()
     other = QWidget(host)

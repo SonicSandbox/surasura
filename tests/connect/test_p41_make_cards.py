@@ -50,6 +50,8 @@ def test_make_their_cards_writes_nothing_for_another_languages_gap_no_gap_no_led
     gap = _gap([1, 2])
     zh_gap = _gap([1, 2], language="zh")
     assert actions.make_cards("zh", gap) is False, "a Japanese gap is never made in Chinese"
+    # P4.1 L2 mutants (W04): even with a library identity in hand, another language's gap is no gap here
+    assert actions.make_cards("zh", gap, store_id="zh-library") is False
     assert actions.make_cards("ja", gap + zh_gap + 10) is False
     assert actions.make_cards("zh", zh_gap) is False, "no Chinese library: its identity can't be read"
     assert actions.make_cards("ja", gap, path=str(tmp_path / "no-ledger.sqlite")) is False

@@ -276,6 +276,10 @@ def test_while_connect_is_off_the_buttons_ask_nothing_and_say_why(act):
     assert "Enter" not in desc
     win.mine.mine_ids([row.episodes[0].id])                   # the arrivals' Mine them too: refused, said in the bar
     assert asks(writer) == [] and win.bar_line.full() == feed.OFF_CONNECT
+    # P4.1 L2 mutants (W10): Finished's *Mine* goes through the same ask, refused while off (no row button gates it)
+    win.bar_line.set_full("")
+    win.mine.mine_row(row, [e.id for e in row.episodes])
+    assert asks(writer) == [] and win.bar_line.full() == feed.OFF_CONNECT
 
 
 def test_the_switch_is_read_again_when_connect_or_automation_is_written(act):

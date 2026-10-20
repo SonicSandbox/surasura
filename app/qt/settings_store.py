@@ -57,7 +57,8 @@ def resume_connect(before, changes):
 
 
 def _turned_on(before, after):
-    """(A worker.) `resume.turned_on`, its failures in the log (the next look sets the marks again)."""
+    """(A worker.) `resume.turned_on`, its failures in the log. A mark that failed stays as it was until Connect is
+    turned on again (P4.1 WF, adversary N3: since F-2 no look sets the asks watermark)."""
     from app.connect import resume
     failed = resume.turned_on(before, after)
     if failed:

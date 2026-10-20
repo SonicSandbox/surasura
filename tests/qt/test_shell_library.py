@@ -855,3 +855,77 @@ def test_connect_is_hung_on_the_library_one_feed_a_language_for_the_line_and_the
     assert services.library.connect == shell.connect_feed("zh", services.settings).latest
     ja.close()
     zh.close()
+
+
+# --- P4.1 WF (review B1): Connect's line and stones tick again once Connect may run again ------------------------- #
+def _duties():
+    from tests.qt.test_jobs_bar import FakeAutomation, FakeChores, FakeController, FakeUpdates
+    from tests.qt.test_shell_replan import _Replan
+    log = []
+    return dict(controller=FakeController(log), updates=FakeUpdates(log), automation=FakeAutomation(log),
+                chores=FakeChores(log), replan=_Replan())
+
+
+def test_automation_turned_back_on_brings_connects_line_and_feed_back_through_the_status_poll(opened):
+    """B1 (a): a look that found D29's automation off stops Connect's tick (`Provider.every` None); the window's own
+    status poll asks nothing more of it. Automation turned back on in Settings asks the line by name, so the bar leaves
+    *Automation is off…* and the stones' feed is an on Feed again, ticking. What a wrong answer would cost: Connect
+    making cards while the bar says it makes none, and no row ever showing *Mining* / *Waiting*."""
+    from app.connect import feed as connect_feed_module
+    ja = migrated("ja")
+    _settings(target_language="ja", connect_enabled=True, logic={"automation": False})
+    services, win = opened(**_duties())
+    feed = shell.connect_feed("ja", services.settings)
+    assert wait_until(lambda: services.status.snapshot().connect == connect_feed_module.OFF_AUTOMATION, 15)
+    assert feed.latest() is not None and not feed.latest().on and feed.every() is None
+    services.settings.set({"logic.automation": True}, now=True)
+    assert wait_until(lambda: services.status.snapshot().connect not in (None, connect_feed_module.OFF_AUTOMATION),
+                      10), services.status.snapshot().connect
+    assert feed.latest().on and services.status.providers["connect"].every() == 3.0   # the poll ticks it again
+    ja.close()
+
+
+def test_a_language_whose_feed_last_found_connect_off_looks_again_when_switched_back_to(opened):
+    """B1 (b), the adversary's case: Connect off in Japanese, switch to Chinese, turn *Make cards for me* on there,
+    switch back. The Japanese feed (kept across switches) last found Connect off: the switch asks the line by name, so
+    it looks again and is on. What a wrong answer would cost: the Japanese rows never showing Connect, the bar holding
+    the Chinese library's last Connect line."""
+    ja, zh = migrated("ja"), migrated("zh")
+    _settings(target_language="ja", connect_enabled=False)
+    services, win = opened(**_duties())
+    assert wait_until(lambda: _state(win) == "full", 15)
+    feed_ja = shell.connect_feed("ja", services.settings)
+    assert wait_until(lambda: feed_ja.latest() is not None and not feed_ja.latest().on, 15)
+    _ask(services, win, "zh")
+    assert _switched_to(win, services, "zh")
+    feed_zh = shell.connect_feed("zh", services.settings)
+    services.settings.set({"connect_enabled": True}, now=True)
+    assert wait_until(lambda: feed_zh.latest() is not None and feed_zh.latest().on, 10)
+    assert not feed_ja.latest().on                          # (not asked while Chinese is open)
+    _ask(services, win, "ja")
+    assert _switched_to(win, services, "ja")
+    assert wait_until(lambda: feed_ja.latest().on and feed_ja.every() is not None, 10), feed_ja.latest()
+    assert services.status.snapshot().connect == feed_ja.latest().line
+    ja.close()
+    zh.close()
+
+
+def test_a_window_with_no_connect_actions_gets_them_with_a_switchs_writer(opened):
+    """WF fix 9 (adversary N7): Connect's actions are made with a writer; a window that had none gets them at the
+    switch that brings one (its buttons wired to someone), and one made already is kept (it follows `win.moves` and
+    the language at each call: a second would ask twice)."""
+    ja, zh = migrated("ja"), migrated("zh")
+    services, win = opened()
+    assert wait_until(lambda: _state(win) == "full", 15)
+    first = win.mine
+    assert first is not None
+    win.mine = None                                         # as a window opened with no writer holds it
+    _ask(services, win, "zh")
+    assert _switched_to(win, services, "zh")
+    made = win.mine
+    assert made is not None and made is not first and made.win is win
+    _ask(services, win, "ja")
+    assert _switched_to(win, services, "ja")
+    assert win.mine is made
+    ja.close()
+    zh.close()

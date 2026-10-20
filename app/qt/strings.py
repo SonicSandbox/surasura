@@ -379,7 +379,18 @@ ROWS_MINE_TEXT = "Mine text"
 ROWS_MINE_TEXT_TIP = "Open Anki Miner to mine its text by hand: its file's path is copied for you"
 MINE_ASKED = "{title}: its cards come next"
 MINE_ASKED_N = "{n} files: their cards come next"
-MINE_TEXT_COPIED = "Anki Miner is opening · {name}'s path is copied: paste it there to mine its text"
+# --- P4.1 WF (the reviews' word fixes, IK S5): one file said as one; a book's button opens Anki Miner (never "mine it
+# now"); C6's toast says Connect waits while Anki Miner's window is open (the N1 disposition); a bulk ask with nothing
+# left to ask for; a gap's *Make their cards* as Connect's ordinary work (D-1 lean (a)), counted, no title pasted
+MINE_ASKED_ONE = "1 file: its cards come next"
+MINE_NOTHING = "Nothing to ask for: their cards are in Anki already, being made, or were deleted"
+ROWS_MINE_TEXT_THIS_TIP = "{tip}\n• Click to mine its text by hand in Anki Miner"
+MAKE_CARDS_QUEUED = {True: "1 episode's cards come next", False: "{n} episodes' cards come next"}
+MAKE_CARDS_NONE = "Nothing left to make: Connect has each of those episodes already"
+MAKE_CARDS_GONE = "Connect has no record of those episodes now: nothing was made"
+# --- end P4.1 WF
+MINE_TEXT_COPIED = ("Anki Miner is opening · {name}'s path is copied: paste it there to mine its text. Connect waits "
+                    "while Anki Miner's window is open")
 MINE_TEXT_NO_MINER = "Anki Miner isn't installed: set it up in Settings, then Mine text"
 MINE_TEXT_NOT_OPENED = "Couldn't open Anki Miner: {path}"
 LINK_TITLE = "Choose the video for {label}"

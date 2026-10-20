@@ -268,7 +268,9 @@ def test_while_connect_is_off_the_buttons_ask_nothing_and_say_why(act):
     QTest.keyClick(lst, Qt.Key.Key_Return)
     k = row_with(lst, "no_media", None)
     click(lst, action(lst, k))
-    assert lst.action_menu is None                             # no Link… · Mine text menu either
+    # P4.1 WF (IK N2): *Link…* · *Mine text* need no Connect — the menu opens while it is off (was: no menu)
+    assert lst.action_menu is not None and lst.action_menu.isVisible()
+    lst.action_menu.close()
     assert asks(writer) == [] and [c for c in writer.calls if c[0] == "link_video"] == []
     desc = lst.model().data(lst.model().index(i, 0), Qt.ItemDataRole.AccessibleDescriptionRole)
     assert "Enter" not in desc
@@ -320,9 +322,14 @@ def test_finished_mine_and_mine_it_too_and_the_arrivals_mine_them_too_ask_throug
     assert "mine" in [e[0] for e in fa.menu_entries(none)]
     fa.menu_pick(none, "mine")
     assert asks(writer)[-1][1] == [e.id for e in none.episodes]
+    # P4.1 WF (S5): the arrivals' *Mine them too* asks by the rows' rule, told by the tray's own rows (was: any ids)
+    tray = win.arrivals_tray
+    assert wait_until(lambda: tray.watched(), 10)
+    want = [e.id for a in tray.watched() for e in rows.asked_files("mine", a.episodes)]
+    assert want, "the seed's watched arrivals hold a file still to mine"
     n = len(asks(writer))
-    win.arrivals_tray.mine_too([7, 7, 8])
-    assert len(asks(writer)) == n + 1 and asks(writer)[-1][1] == [7, 8]
+    tray.mine_too([i for a in tray.watched() for i in a.item_ids] + [want[0], 999999])   # 999999: no tray row has it
+    assert len(asks(writer)) == n + 1 and asks(writer)[-1][1] == want
 
 
 def test_needs_you_mine_the_text_only_is_set_and_opens_anki_miner_with_the_lines_file(act, monkeypatch):
@@ -345,26 +352,47 @@ def test_needs_you_mine_the_text_only_is_set_and_opens_anki_miner_with_the_lines
     assert QApplication.clipboard().text().endswith(os.path.join("葬送のフリーレン", "葬送のフリーレン 第3話.srt"))
 
 
-def test_needs_you_make_their_cards_asks_for_the_gaps_files_and_answers_the_entry(act, monkeypatch):
-    """4.1.12 (Michi 🧭 2026-10-16: an explicit press is an ask, C2; P2.1-3 still holds for automatic mining): a gap's
-    *Make their cards* is one `ask_mining` for the gap's files (toast + Undo), then the entry answered as *Leave them*
-    answers it; while Connect is off, refused in the bar and nothing answered."""
+def test_needs_you_make_their_cards_is_connects_ordinary_work_in_the_gaps_language_then_answers_the_entry(
+        act, monkeypatch):
+    """4.1.12, moved to P4.1 WF (IK D-1 lean (a); adversary S3, S4): a gap's *Make their cards* is no ask (was: one
+    `ask_mining`) — `actions.make_cards` in the entry's own language (here Chinese, while the window's writer is the
+    Japanese one), Connect kicked once it queued any, and only then the entry answered as *Leave them* answers it; the
+    bar counts the episodes, no title pasted. What a wrong answer would cost: deleted cards made again in bulk, a
+    gap answered with no cards coming, or Japanese titles mined for a Chinese gap. While Connect is off, or when the
+    gap is gone, nothing is answered."""
     from app.services import needs as service
     _seed, win, writer = act()
     ny = win.needs_you
     assert ny.available("make_cards")
-    answered = []
-    monkeypatch.setattr(service, "answer", lambda lang, keys: answered.append((lang, list(keys))) or len(keys))
+    order = []
+    monkeypatch.setattr(service, "answer", lambda lang, keys: order.append(("answer", lang, list(keys))) or len(keys))
+    ny.connect_calls["kick"] = lambda settings: order.append(("kick",)) or object()
+    made = [2]
+    win.mine.make_cards = lambda lang, gap_id: order.append(("make", lang, gap_id)) or made[0]
+    ny.language = "zh"                                       # the gap came from Chinese; the writer is Japanese
     entry = service._gap_entry({"id": 3, "since": "2026-10-10T08:00:00Z", "until": "2026-10-12T21:00:00Z",
                                 "items": [11, 12, 12]}, set())
     ny.act("make_cards", entry, None)
-    assert asks(writer) == [("ask_mining", [11, 12], {"on": True})]
-    assert win.toasts.card.message == strings.MINE_ASKED.format(title=entry.title)
-    assert wait_until(lambda: answered == [("ja", service.answer_keys(entry))], 5)
+    assert wait_until(lambda: len(order) == 3, 5), order
+    assert order == [("make", "zh", 3), ("kick",), ("answer", "zh", service.answer_keys(entry))]
+    assert asks(writer) == [] and writer.calls == [], "no store ask, nothing to undo"
+    assert wait_until(lambda: win.bar_line.full() == strings.MAKE_CARDS_QUEUED[False].format(n=2), 5)
+    assert entry.title not in win.bar_line.full()
+    del order[:]
+    made[0] = 0                                              # every episode has its job already: answered, no kick
+    ny.act("make_cards", entry, None)
+    assert wait_until(lambda: win.bar_line.full() == strings.MAKE_CARDS_NONE, 5)
+    assert [o[0] for o in order] == ["make", "answer"]
+    del order[:]
+    made[0] = False                                          # no ledger, or the gap gone: nothing answered
+    ny.act("make_cards", entry, None)
+    assert wait_until(lambda: win.bar_line.full() == strings.MAKE_CARDS_GONE, 5)
+    assert order == [("make", "zh", 3)]
+    del order[:]
     win.mine._off_read(feed.OFF_AUTOMATION)
     ny.act("make_cards", entry, None)
     settle(100)
-    assert len(asks(writer)) == 1 and len(answered) == 1 and win.bar_line.full() == feed.OFF_AUTOMATION
+    assert order == [] and win.bar_line.full() == feed.OFF_AUTOMATION
 
 
 # --- the kick after a commit ------------------------------------------------------------------------------------------ #
@@ -382,8 +410,12 @@ def test_the_after_commit_hook_looks_once_per_commit_and_never_stops_the_writer(
 
 def test_library_for_hangs_the_kick_on_the_writer(qapp, monkeypatch):
     from app.services import settings as settings_service
-    _reader, writer = shell.library_for("ja", settings_service.SettingsService())
-    assert writer.after_commit.__qualname__.startswith("connect_after_commit")
+    reader, writer = shell.library_for("ja", settings_service.SettingsService())
+    try:
+        assert writer.after_commit.__qualname__.startswith("connect_after_commit")
+    finally:                                                 # P4.1 WF (adversary N8): nothing of it left open
+        reader.stop()
+        writer.opener.close()
 
 
 def test_a_click_on_mine_this_on_a_real_store_asks_once_and_kicks_connect_once(real, monkeypatch):
@@ -407,3 +439,154 @@ def test_a_click_on_mine_this_on_a_real_store_asks_once_and_kicks_connect_once(r
     assert wait_until(lambda: all(store.item(k).get("mine_asked") for k in p[3].ids) and looked, 10)
     settle(200)
     assert looked == ["ja"]
+
+
+# --- P4.1 WF: the reviews' fixes ------------------------------------------------------------------------------------ #
+def _ep(st, n=5):
+    from app.services import view_rows
+    return view_rows.Episode(id=n, label=f"第{n}話", number=n, title="葬送のフリーレン", watched=False, cards=0,
+                             mining=False, missing=False, removed=False, in_top=True, pct=0, n_new=0, status=st,
+                             mark=None, rel_path=f"HighPriority/葬送のフリーレン/葬送のフリーレン 第{n}話.srt",
+                             play_tip="", can_play=True)
+
+
+def test_a_wait_is_no_mine_now_button_and_its_tip_names_the_wait_not_a_click():
+    """WF fix 3 (adversary S2 / IK S1, C3: an ask never overrides a wait): *Not timed* and a wait on Anki or on the
+    battery are warn *Waiting* stones with no *Mine now* — the tip is the wait's own, never "Click to mine it now"
+    (an ask there only stamps the job, which keeps waiting, and the toast would promise cards that don't come). A
+    *Waiting* for its turn stays the *Mine now* button."""
+    from app.connect import runner
+    from app.services import view_rows
+    plain = view_rows.Status("waiting", "Waiting", "In your top 20: it mines by itself, in turn", "dim")
+    for kind, reason in ((feed.NOT_TIMED, "not timed to its video"), (feed.ANKI, runner.ANKI_CLOSED),
+                         (feed.BATTERY, runner.ON_BATTERY)):
+        st = view_rows._connected(plain, feed.Item(kind, feed.WORDS[kind], reason, 1, 0, 0), "video")
+        assert (st.kind, st.tone) == ("waiting", "warn"), kind
+        name, tip, ask = rows.action_of(st, (_ep(st),))
+        assert (name, ask) == ("status", None) and tip == st.tip and "Click to mine it now" not in tip, kind
+    turn = view_rows._connected(plain, feed.Item(feed.WAITING, feed.WORDS[feed.WAITING], "", 1, 0, 0), "video")
+    assert turn.tone == "dim" and rows.action_of(turn, (_ep(turn),))[0] == "mine-now"
+
+
+def test_a_books_button_says_it_opens_anki_miner_and_works_while_connect_is_off():
+    """WF fixes 6 and 7 (IK S5, N2; K67): a book's *Mine this* opens Anki Miner — its tip says so, never "mine it now"
+    — and, needing no Connect, it is no refused ask while Connect is off; a video's *Mine this* is."""
+    from app.services import view_rows
+    st = view_rows.Status("mine", "Mine", "Not in your top 20: it isn't mined yet", "ink")
+    name, tip, _ask = rows.action_of(st, (_ep(st),), None, "text")
+    assert name == "mine-this" and tip == strings.ROWS_MINE_TEXT_THIS_TIP.format(tip=st.tip)
+    assert "mine it now" not in tip and "Anki Miner" in tip
+    assert rows.action_of(st, (_ep(st),), feed.OFF_CONNECT, "text")[1] == tip
+    assert rows.action_of(st, (_ep(st),), feed.OFF_CONNECT, "video")[1] == strings.ROWS_ACTION_OFF.format(
+        tip=st.tip, why=feed.OFF_CONNECT)
+    assert not rows.asks_connect("no-media") and not rows.asks_connect("mine-this", "text")
+    assert rows.asks_connect("mine-now") and rows.asks_connect("mine-this", "video")
+
+
+def test_while_connect_is_off_link_still_links_and_a_video_ask_is_still_refused(act):
+    """WF fix 7 (IK N2): *Link…* needs no Connect — chosen while Connect is off, the writer links the video; *Mine
+    now* on a video stays refused (nothing asked)."""
+    _seed, win, writer = act(connect_off=feed.OFF_CONNECT)
+    lst = lst_of(win)
+    i = row_with(lst, "no_media", None)
+    p = action(lst, i)
+    click(lst, p)
+    assert lst.action_menu is not None
+    win.mine.pick_file = lambda title, folder, patterns: r"D:\Videos\第1話.mkv"
+    lst.action_menu.actions()[0].trigger()
+    assert wait_until(lambda: [c for c in writer.calls if c[0] == "link_video"], 5)
+    lst.action_menu.close()
+    click(lst, action(lst, row_with(lst, "waiting")))
+    assert asks(writer) == []
+
+
+def test_one_file_is_said_as_one_and_mine_text_says_connect_waits_while_anki_miner_is_open(act):
+    """WF fix 6 (IK S5; the N1 disposition): "1 file", never "1 files"; C6's toast says Connect waits while Anki
+    Miner's window is open."""
+    assert strings.MINE_ASKED_ONE == "1 file: its cards come next"
+    assert "Connect waits while Anki Miner's window is open" in strings.MINE_TEXT_COPIED
+    _seed, win, writer = act()
+    tray = win.arrivals_tray
+    assert wait_until(lambda: tray.watched(), 10)
+    open_ = [e for a in tray.watched() for e in rows.asked_files("mine", a.episodes)]
+    assert open_, "the seed's watched arrivals hold a file still to mine"
+    win.mine.mine_ids([open_[0].id])
+    assert asks(writer)[-1][1] == [open_[0].id] and win.toasts.card.message == strings.MINE_ASKED_ONE
+
+
+def test_the_bulk_asks_never_name_a_file_in_anki_being_mined_or_whose_cards_were_deleted(act):
+    """WF fix 5 (adversary S5; C3 / N15): Finished's *Mine* / *Mine it too* and the arrivals' *Mine them too* ask by
+    the rows' rule — an ask makes a job that re-makes every word whose note is gone, so a file whose cards the learner
+    deleted is never in it, nor one in Anki or being mined. Nothing left: nothing asked, and the bar says so."""
+    _seed, win, writer = act()
+    page = win.page_widgets["finished"]
+    win.show_tab("finished")
+    assert wait_until(lambda: page.view_model is not None and page.view_model.finished, 10)
+    row = next(r for m in page.view_model.finished for r in m.rows if r.media_word == "video" and len(r.episodes) >= 4)
+    eps = [e._replace(cards=0, mining=False, deleted=False, missing=False) for e in row.episodes]
+    eps[0], eps[1], eps[2] = eps[0]._replace(cards=3), eps[1]._replace(deleted=True), eps[2]._replace(mining=True)
+    some = row._replace(episodes=tuple(eps))
+    win.finished.on_mine_too(some)
+    assert asks(writer) == [("ask_mining", [e.id for e in eps[3:]], {"on": True})]
+    win.finished.on_mine(some)
+    assert asks(writer)[-1][1] == [e.id for e in eps[3:]]
+    gone = row._replace(episodes=tuple(eps[:3]))             # in Anki, deleted, being mined: nothing to ask
+    win.finished.on_mine_too(gone)
+    assert len(asks(writer)) == 2 and win.bar_line.full() == strings.MINE_NOTHING
+    tray = win.arrivals_tray
+    assert wait_until(lambda: tray.watched(), 10)
+    arrival = tray.watched()[0]
+    held = [e._replace(cards=0, mining=False, deleted=False, missing=False) for e in arrival.episodes]
+    held[0] = held[0]._replace(deleted=True)
+    tray.groups = tuple(g._replace(rows=(arrival._replace(episodes=tuple(held)),)) if g.kind == "watched" else g
+                        for g in tray.groups)
+    tray.mine_them_too()
+    assert asks(writer)[-1][1] == [e.id for e in held[1:]] and held[0].id not in asks(writer)[-1][1]
+    n = len(asks(writer))
+    win.mine.mine_ids([held[0].id])                          # only the deleted one: nothing asked, said in the bar
+    assert len(asks(writer)) == n and win.bar_line.full() == strings.MINE_NOTHING
+
+
+def test_a_double_click_on_mine_now_asks_once(act):
+    """WF fix 8 (adversary N1): a double-click on a part acts once — Qt turned the second click into a press whose
+    release asked again (a second toast and Undo)."""
+    from PyQt6.QtCore import QPointF
+    from PyQt6.QtGui import QMouseEvent
+    _seed, win, writer = act()
+    lst = lst_of(win)
+    p = action(lst, row_with(lst, "waiting"))
+    pos = QPointF(p[1].center())
+    glob = QPointF(lst.viewport().mapToGlobal(p[1].center()))
+    left, none = Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton
+    for kind, buttons in ((QEvent.Type.MouseButtonPress, left), (QEvent.Type.MouseButtonRelease, none),
+                          (QEvent.Type.MouseButtonDblClick, left), (QEvent.Type.MouseButtonRelease, none)):
+        QApplication.sendEvent(lst.viewport(), QMouseEvent(kind, pos, glob, left, buttons,
+                                                           Qt.KeyboardModifier.NoModifier))
+        QApplication.processEvents()
+    assert len(asks(writer)) == 1
+
+
+def test_two_switch_workers_asking_for_one_languages_feed_get_one_feed(monkeypatch):
+    """WF fix 9 (adversary N5): `connect_feed`'s look-then-make is under a lock — two workers of a quick ja → zh → ja
+    never make two Chinese feeds (the reader would read one, the line tick the other)."""
+    import threading
+    import time
+    from app.services import settings as settings_service
+    real_init = feed.Provider.__init__
+
+    def slow(self, *a, **k):
+        time.sleep(0.05)                                     # the race widened: both workers inside the look at once
+        real_init(self, *a, **k)
+    monkeypatch.setattr(feed.Provider, "__init__", slow)
+    settings = settings_service.SettingsService()
+    got, start = [], threading.Barrier(2)
+
+    def ask():
+        start.wait()
+        got.append(shell.connect_feed("zh", settings))
+    workers = [threading.Thread(target=ask) for _ in range(2)]
+    for w in workers:
+        w.start()
+    for w in workers:
+        w.join(5)
+    assert len(got) == 2 and got[0] is got[1]

@@ -300,7 +300,9 @@ class Services:
         self._provide_lines(self.language)
         refresh = getattr(self.status, "refresh_soon", None)
         if refresh is not None:
-            refresh("journey", "replan")                  # the new language's dot and line at once
+            # the new language's dot and line at once; and Connect's (P4.1 WF, review B1: the language's feed is kept
+            # across switches, so one whose last look found Connect off ticks again only once it is asked by name)
+            refresh("journey", "replan", "connect")
 
     def generate(self):
         """(A worker.) The header's Generate: the newest settings written first (the analyzer reads settings.json), the
@@ -1397,6 +1399,9 @@ class ShellWindow(QMainWindow):
             from app.qt import drag
             self.moves = drag.DragController(self, writer, reader)
             self.moves.start(on_worker=True)        # its first look at the store and its replay off this thread
+            if getattr(self, "mine", None) is None:     # P4.1 WF (adversary N7): a window opened with no writer gets
+                from app.qt import mine_actions         # Connect's actions with its first; one made already follows
+                self.mine = mine_actions.MineActions(self)     # `win.moves` and the language at each call
         self._follow_covers(reader, writer)
         reader.start()
 
@@ -1729,7 +1734,8 @@ class ShellWindow(QMainWindow):
         if "covers_download" in keys:                   # --- W3.2 L3: turned on, what is on screen now is asked
             qcovers.ask_again()                         # (titles dropped while it was off too: N1)
             self.ask_shown_covers()
-        if "connect_enabled" in keys:                   # Connect's tick is skipped while off: its line asked now
+        if "connect_enabled" in keys or "logic.automation" in keys:     # Connect's tick is skipped while off (its
+            # switch or D29's automation, `connect_on`: P4.1 WF, review B1): its line asked now
             refresh = getattr(self.services.status, "refresh_soon", None)
             if refresh is not None:
                 refresh("connect")
@@ -2552,6 +2558,7 @@ def library_for(language, settings, freeze_gc=False):
 
 # --- P4.1 L2: Connect in the window (W1: rows 4.1.10, 4.1.13; W-A1, W-A2, W-A5) ------------------------------------ #
 _CONNECT_FEEDS = {}             # id(settings service) -> (a weak reference to it, {language: feed.Provider})
+_CONNECT_FEEDS_LOCK = threading.Lock()      # P4.1 WF (adversary N5): two switch workers make one feed a language
 
 
 def connect_feed(language, settings):
@@ -2561,22 +2568,23 @@ def connect_feed(language, settings):
     same one; it holds the settings service weakly (a test's windows let theirs go)."""
     import weakref
     from app.connect import feed as connect_feed_module
-    hit = _CONNECT_FEEDS.get(id(settings))
-    if hit is None or hit[0]() is not settings:
-        try:
-            ref = weakref.ref(settings)
-        except TypeError:                                   # a stand-in that can't be held weakly: its own feed
-            return connect_feed_module.Provider(language, settings.get)
-        for k in [k for k, (r, _f) in _CONNECT_FEEDS.items() if r() is None]:
-            del _CONNECT_FEEDS[k]                           # the windows gone
-        hit = _CONNECT_FEEDS[id(settings)] = (ref, {})
-    ref, feeds = hit
-    if language not in feeds:
-        def get():
-            held = ref()
-            return held.get() if held is not None else {}
-        feeds[language] = connect_feed_module.Provider(language, get)
-    return feeds[language]
+    with _CONNECT_FEEDS_LOCK:
+        hit = _CONNECT_FEEDS.get(id(settings))
+        if hit is None or hit[0]() is not settings:
+            try:
+                ref = weakref.ref(settings)
+            except TypeError:                               # a stand-in that can't be held weakly: its own feed
+                return connect_feed_module.Provider(language, settings.get)
+            for k in [k for k, (r, _f) in _CONNECT_FEEDS.items() if r() is None]:
+                del _CONNECT_FEEDS[k]                       # the windows gone
+            hit = _CONNECT_FEEDS[id(settings)] = (ref, {})
+        ref, feeds = hit
+        if language not in feeds:
+            def get():
+                held = ref()
+                return held.get() if held is not None else {}
+            feeds[language] = connect_feed_module.Provider(language, get)
+        return feeds[language]
 
 
 def _wake_on_feed(feed, reader):

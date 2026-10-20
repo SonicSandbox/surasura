@@ -411,16 +411,31 @@ def asked_files(kind, episodes):
     return with_status or open_
 
 
-def action_of(status, episodes, off=None):
+def asks_connect(name, word="video"):
+    """Whether a status's button is an ask for Connect (refused while Connect is off): *Mine now* / *Mine this* on a
+    video. *No video*'s *Link…* · *Mine text* and a non-video item's *Mine this* (Anki Miner's own window, K67) need no
+    Connect, so they work while it is off (P4.1 WF, review IK N2)."""
+    return name in ("mine-now", "mine-this") and word == "video"
+
+
+def action_of(status, episodes, off=None, word="video"):
     """(part name, tip, payload) for a status shown as an icon: a button while Connect may run, its tip naming the
-    click; Connect off (`off`: why, `feed.OFF_*`) the same part, its tip saying why nothing happens. Not a button:
-    ("status", its tip, None)."""
+    click; Connect off (`off`: why, `feed.OFF_*`) the same part, its tip saying why nothing happens (an ask only:
+    `asks_connect`). `word`: the row's media word — a non-video item's button opens Anki Miner, and its tip says so.
+    Not a button: ("status", its tip, None) — a warn *Waiting* too (*Not timed*, a wait on Anki or on the battery):
+    an ask never overrides a wait (C3; P4.1 WF, reviews S2 / IK S1), so its tip names the wait, never a click."""
     name = ACTIONS.get(status.kind)
+    if status.kind == "waiting" and status.tone == "warn":
+        name = None
     files = asked_files(status.kind, episodes) if name is not None else ()
     if not files:
         return "status", status.tip, None
-    tip = strings.ROWS_ACTION_OFF.format(tip=status.tip, why=off) if off else \
-        getattr(strings, _ACTION_TIPS[name]).format(tip=status.tip)
+    if off and asks_connect(name, word):
+        tip = strings.ROWS_ACTION_OFF.format(tip=status.tip, why=off)
+    elif word != "video" and name != "no-media":
+        tip = strings.ROWS_MINE_TEXT_THIS_TIP.format(tip=status.tip)
+    else:
+        tip = getattr(strings, _ACTION_TIPS[name]).format(tip=status.tip)
     return name, tip, Ask(files[0].id, tuple(e.id for e in files), files[0])
 # --- end P4.1 L2
 
@@ -568,9 +583,10 @@ class RowsModel(QAbstractListModel):
                 # --- P4.1 L2: a status that is a button says how the keyboard presses it (none while Connect is off)
                 nxt = payload.episodes[payload.next_index] if kind == HERO else None
                 st = nxt.status if nxt is not None else payload.status
-                if st is not None and not getattr(self.parent(), "connect_off", None):
-                    name = action_of(st, (nxt,) if nxt is not None else payload.episodes)[0]
-                    if name in ACTION_NAMES:
+                if st is not None:
+                    name = action_of(st, (nxt,) if nxt is not None else payload.episodes, None, payload.media_word)[0]
+                    off = getattr(self.parent(), "connect_off", None) and asks_connect(name, payload.media_word)
+                    if name in ACTION_NAMES and not off:
                         text += " · " + strings.ROWS_ACTION_KEY.format(action=strings.ROWS_ACTION_NAMES[name])
                 return text                                 # --- end P4.1 L2
             if kind == FINISHED:
@@ -1021,7 +1037,7 @@ class RowDelegate(QStyledItemDelegate):
             out.append(("studying", "up", "accent", strings.ROWS_STUDYING_TIP, None, iw, ih))
         st = row.status
         if st is not None and st.kind not in ("in_anki", "mining", "none"):
-            name, tip, ask = action_of(st, row.episodes, self.view.connect_off)     # --- P4.1 L2 (4.1.11)
+            name, tip, ask = action_of(st, row.episodes, self.view.connect_off, row.media_word)    # --- P4.1 L2
             if st.kind == "waiting":
                 out.append((name, "waiting", "ink-dim", tip, ask, iw, ih))
             elif st.kind == "no_media":
@@ -1115,7 +1131,7 @@ class RowDelegate(QStyledItemDelegate):
                         strings.ROWS_DONE_TIP.format(ep=nxt.label), nxt))
             out.append(("more", g["more"], strings.ROWS_MORE_TIP, None))
             if nxt.status is not None:                     # --- P4.1 L2: Up Next's status, a button as a row's
-                name, tip, ask = action_of(nxt.status, (nxt,), self.view.connect_off)
+                name, tip, ask = action_of(nxt.status, (nxt,), self.view.connect_off, payload.media_word)
                 out.append((name, g["status"], tip, ask))
             if g["journey"] is not None:
                 out.append(("journey", g["journey"], strings.ROWS_JOURNEY_TIP, nxt))
@@ -1238,7 +1254,7 @@ class RowDelegate(QStyledItemDelegate):
             out.append(("play", cols["play"], ep.play_tip, ep))
             if ep.status is not None:
                 size = pill_size(ep.status)
-                name, tip, ask = action_of(ep.status, (ep,), self.view.connect_off)   # --- P4.1 L2: its own button
+                name, tip, ask = action_of(ep.status, (ep,), self.view.connect_off, row.media_word)   # --- P4.1 L2
                 out.append((name, QRect(cols["stat"].right() - size.width(), cols["stat"].center().y() -
                                         size.height() // 2, size.width(), size.height()), tip, ask))
             state = strings.ROWS_STONE_STATE["cut" if ep.watched else "raw" if ep.cards else "rock"].format(n=ep.cards)
@@ -2935,6 +2951,17 @@ class RowsView(QListView):
                     return
         super().mousePressEvent(event)
 
+    def mouseDoubleClickEvent(self, event):
+        """P4.1 WF (adversary N1): a double-click on a part acts once. The press records no `pressedIndex` for Qt (it
+        never reaches `super`), so Qt would turn the second click into a second press, whose release acts again — a
+        second ask, toast and Undo. Swallowed; a double-click off the parts is Qt's as before."""
+        if event.button() == Qt.MouseButton.LeftButton:
+            idx, part = self.part_at(event.pos())
+            if idx.isValid() and part is not None:
+                event.accept()
+                return
+        super().mouseDoubleClickEvent(event)
+
     def mouseReleaseEvent(self, event):
         press, self._press = self._press, None
         if press is None or event.button() != Qt.MouseButton.LeftButton:
@@ -2976,8 +3003,8 @@ class RowsView(QListView):
     def _act(self, idx, part):
         """A click on a part that isn't ▶ or the row itself: a stone or ✓ Done asks for a Done for its file (one path,
         S12); ↑ ↓ ask for a nudge, ⋯ for its menu, ↗ for the journey; Waiting's icon (*Mine now*), Mine (*Mine this*) and No
-        video (*Link…* · *Mine text*) ask P4.1's routing (`mine_requested` …); any other status, a mark, a line: states,
-        not buttons."""
+        video (*Link…* · *Mine text*) ask P4.1's routing (`mine_requested` …); the top-20 line opens its setting; any
+        other status, a mark, the Soon line: states, not buttons."""
         name, rect, _tip, payload = part
         row = self.model().entries[idx.row()][1]
         if name == "stone" and payload is not None:
@@ -3003,8 +3030,8 @@ class RowsView(QListView):
     # --- P4.1 L2: the statuses' buttons (4.1.11) ------------------------------------------------------------------ #
     def _press_action(self, name, rect, row, ask, tip):
         """*Mine now* / *Mine this* ask for the files; *No video* offers *Link…* · *Mine text* in a small menu. Connect
-        off: nothing happens, its tip (saying why) is shown (IK S7)."""
-        if self.connect_off:
+        off: an ask does nothing, its tip (saying why) is shown (IK S7); *Link…* · *Mine text* still work."""
+        if self.connect_off and asks_connect(name, getattr(row, "media_word", "video")):    # P4.1 WF: asks only
             if self.tooltips is not None:
                 self.tooltips.request(self.viewport(), rect, tip)
             return
@@ -3052,7 +3079,9 @@ class RowsView(QListView):
             return True
         if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
             held, self.action_focus = self.action_focus, None
-            part = next((pt for pt in self.delegate.parts(entry, self.visualRect(idx)) if pt[0] == held[1]), None)                 if getattr(entry[1], "key", None) == held[0] else None
+            part = None
+            if getattr(entry[1], "key", None) == held[0]:         # the row the keyboard went to (P4.1 WF, N8)
+                part = next((pt for pt in self.delegate.parts(entry, self.visualRect(idx)) if pt[0] == held[1]), None)
             if part is not None:
                 self._act(idx, part)
                 return True

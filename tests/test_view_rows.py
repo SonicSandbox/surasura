@@ -1042,6 +1042,24 @@ def test_a_job_on_an_item_with_its_cards_in_anki_or_no_file_keeps_its_own_status
     assert view.rows[0].episodes[0].status.kind == "in_anki"
 
 
+def test_a_level_job_on_an_episode_in_anki_or_one_whose_cards_were_deleted_never_takes_the_rows_status():
+    """P4.1 WF (adversary S1): a level raise queues a job for every episode already mined; one waiting on Anki left the
+    row's *Mine rest* as it was only if the row skips episodes in Anki — else the row read *Waiting*, whose *Mine now*
+    asked for every file below the line. An episode whose cards the learner deleted is skipped the same way; a job on
+    an episode still to mine (an ask below the line) is the row's, as before."""
+    from app.connect import feed, runner
+    items = items_of([("now", 1, 1, eps("星降る街の小さな工房", 1, 6), {2: {"mined_at": "2026-10-02T00:00:00Z"}})])
+    cards = {1: 4}                      # the top 1: mined; 3: its cards deleted
+    plain = vr.build(items, WORKS, {"mine_line": 1}, cards=cards)
+    assert plain.rows[0].status.kind == "mine_rest"
+    connect = _feed([_job(1, reason=runner.ANKI_CLOSED, kind="level"), _job(3, reason=runner.ON_BATTERY)])
+    view = vr.build(items, WORKS, {"mine_line": 1}, cards=cards, connect=connect)
+    assert view.rows[0].status == plain.rows[0].status, "the row keeps its own: Mine rest"
+    asked = _feed([_job(1, reason=runner.ANKI_CLOSED, kind="level"), _job(5, kind="asked", state="queued")])
+    view = vr.build(items, WORKS, {"mine_line": 1}, cards=cards, connect=asked)
+    assert (view.rows[0].status.kind, view.rows[0].status.tip) == ("waiting", feed.WORDS[feed.ASKED])
+
+
 def test_a_chinese_row_reads_its_wait_from_connects_feed():
     """zh: Connect waits on a Chinese episode (Anki Miner's Chinese support) with its reason — the same rule."""
     from app.connect import runner

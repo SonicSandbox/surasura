@@ -100,6 +100,9 @@ Row = namedtuple("Row", Row._fields[:Row._fields.index("string")] + ("cover",) +
 #   before `string`, which stays last (the first screen's cache writes it None; a cache from before reads cover None)
 Need = namedtuple("Need", Need._fields + ("cover",), defaults=(None,))
 Arrival = namedtuple("Arrival", Arrival._fields + ("cover",), defaults=(None,))
+# --- P4.1 WF (adversary S5): a tray row's files as Current's rows hold them (`Episode`), so *Mine them too* asks by the
+# rows' rule (never a file in Anki or whose cards were deleted). Never in the first screen's cache (the tray isn't)
+Arrival = namedtuple("Arrival", Arrival._fields + ("episodes",), defaults=((),))
 Goal = namedtuple("Goal", Goal._fields + ("cover_refs",), defaults=tuple(Goal._field_defaults.values()) + ((),))    # beside `covers`, the first nine works'
 # --- W3.2 L3: a Goal tile's cover record (the sheet paints its picture)
 GoalWork = namedtuple("GoalWork", GoalWork._fields + ("cover",), defaults=(None,))
@@ -479,12 +482,19 @@ def _connected(st, item, word):
                       STRINGS["tip_connect_no_media"].format(tip=item.tip), "warn")
     if item.kind == connect_feed.NOT_TIMED:
         return Status("waiting", STRINGS["not_timed"], STRINGS["tip_not_timed"].format(words=item.words), "warn")
-    return Status("waiting", st.label if st.kind == "waiting" else STRINGS["waiting"], item.tip, "dim")
+    # a wait on Anki or on the battery is a warn *Waiting*, as *Not timed* is: an ask can't hurry it (P4.1 WF, C3:
+    # an ask never overrides a wait — the rows offer no *Mine now* on it)
+    tone = "warn" if item.kind in (connect_feed.ANKI, connect_feed.BATTERY) else "dim"
+    return Status("waiting", st.label if st.kind == "waiting" else STRINGS["waiting"], item.tip, tone)
 
 
 def _row_connected(st, eps, connect, word):
-    """A row's status as Connect tells it: its first episode (in order) whose status Connect's feed changes."""
+    """A row's status as Connect tells it: its first episode (in order) whose status Connect's feed changes — never
+    one with its cards in Anki or whose cards were deleted (P4.1 WF, adversary S1: a level job on an episode already
+    mined is no reason to turn the row's *Mine rest* into *Waiting*, whose *Mine now* asks for its other files)."""
     for e in eps:
+        if e.cards or e.deleted:
+            continue
         item = connect.get(e.id)
         if item is not None:
             new = _connected(st, item, word)
@@ -856,6 +866,7 @@ def _arrival(piece, works, cards, estimates, guessed):
                    group="watched" if watched else "new",
                    added_at=max((it.get("added_at") or "" for it in piece), default="") or None,
                    cover_title=row.cover_title, per_ep=per_ep, tip=tip, cover=row.cover,     # W3.2 Q6
+                   episodes=eps,                                                            # P4.1 WF
                    accessible=STRINGS["acc_arrival"].format(title=row.title, line=" · ".join(t for t, _ in parts),
                                                             number=number).replace(" ·  · ", " · "))
 

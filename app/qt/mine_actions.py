@@ -13,9 +13,11 @@ IK S3, S7). What the rows, Finished, the arrivals and *Needs you* ask for, route
   ask nothing and their tips say why; the other asks say it in the bar. Read on a worker when the window opens and when
   Connect's switch or D29's automation is written.
 
-- ***Make their cards*** (a gap in *Needs you*): an explicit press is an ask (Michi 🧭 2026-10-16, C2; P2.1-3 — "a gap
-  reconciles, never mines" — still holds for Connect's automatic mining): the gap's files asked for, then the entry
-  answered as *Leave them* answers it.
+- ***Make their cards*** (a gap in *Needs you*): Connect's ordinary work, never an ask (P4.1 WF, IK D-1 lean (a);
+  P2.1-3): `connect.actions.make_cards` queues the gap's episodes as Connect's own jobs — nothing you deleted comes
+  back — in the gap's own language, Connect is kicked, then the entry is answered as *Leave them* answers it.
+- **The bulk asks** (Finished's *Mine* / *Mine it too*, the arrivals' *Mine them too*) ask by the rows' rule
+  (`rows.asked_files`): never a file in Anki, being mined, or whose cards were deleted (P4.1 WF, adversary S5).
 Nothing here reads the store or the settings on the window's thread: the writes are the writer's, the looks a worker's.
 """
 import os
@@ -24,7 +26,7 @@ from PyQt6.QtCore import QObject
 from PyQt6.QtWidgets import QApplication, QFileDialog
 
 from app import path_utils
-from app.qt import bridge, drag, strings, windows
+from app.qt import bridge, drag, rows, strings, windows
 
 OFF_KEYS = frozenset(("connect_enabled", "logic.automation", "automation"))
 
@@ -42,6 +44,12 @@ def _video_patterns():
     """(A worker.) The picker's filter: the videos Connect can make cards from."""
     from app.connect import runner
     return " ".join("*" + ext for ext in runner.VIDEO_EXTENSIONS)
+
+
+def _make_cards(language, gap_id):
+    """(A worker.) Connect's `actions.make_cards`: the gap's episodes queued -> how many, or False."""
+    from app.connect import actions
+    return actions.make_cards(language, gap_id)
 
 
 def _miner_and_file(settings, path):
@@ -62,14 +70,15 @@ class MineActions(QObject):
             self.win, title, folder, strings.LINK_FILTER.format(patterns=patterns))[0]     # (tests replace it)
         self.lists = [page.list for page in win.page_widgets.values() if hasattr(getattr(page, "list", None),
                                                                                   "mine_requested")]
+        self.make_cards = _make_cards                # (tests replace it)
         for lst in self.lists:
             lst.mine_requested.connect(self.mine_row)
             lst.link_requested.connect(self.link)
             lst.mine_text_requested.connect(lambda row, ep: self.mine_text(ep.label, ep.rel_path))
         fin = getattr(win, "finished", None)
         if fin is not None:
-            fin.on_mine = lambda row: self.mine_row(row, [e.id for e in row.episodes])
-            fin.on_mine_too = lambda row: self.mine_row(row, [e.id for e in row.episodes if not e.cards])
+            fin.on_mine = lambda row: self.mine_row(row, self._askable(row.episodes))      # P4.1 WF (S5)
+            fin.on_mine_too = lambda row: self.mine_row(row, self._askable(row.episodes))
         tray = getattr(win, "arrivals_tray", None)
         if tray is not None:
             tray.mine_too = self.mine_ids
@@ -97,10 +106,18 @@ class MineActions(QObject):
             self.read_off()
 
     # --- asking for mining (C2) ------------------------------------------------------------------------------ #
+    @staticmethod
+    def _askable(episodes):
+        """The files of `episodes` an ask may name (`rows.asked_files`' *Mine this* rule: not in Anki, not being mined,
+        their cards not deleted, on disk) -> their ids."""
+        return [e.id for e in rows.asked_files("mine", episodes)]
+
     def mine_row(self, row, ids):
-        """*Mine now* / *Mine this* / Finished's *Mine* and *Mine it too*: the ask, or a non-video item's *Mine text*."""
+        """*Mine now* / *Mine this* / Finished's *Mine* and *Mine it too*: the ask, or a non-video item's *Mine text*.
+        Nothing left to ask for: the bar says so."""
         ids = list(dict.fromkeys(ids))
         if not ids:
+            self.win.say(strings.MINE_NOTHING)
             return None
         if getattr(row, "media_word", "video") != "video":         # K67: Anki Miner mines video only
             ep = next((e for e in row.episodes if e.id == ids[0]), row.episodes[0])
@@ -108,9 +125,19 @@ class MineActions(QObject):
         return self._ask(strings.MINE_ASKED.format(title=row.title), (row.key,), ids)
 
     def mine_ids(self, ids):
-        """The arrivals' *Mine them too*."""
-        ids = list(dict.fromkeys(ids))
-        return self._ask(strings.MINE_ASKED_N.format(n=len(ids)), (), ids) if ids else None
+        """The arrivals' *Mine them too*: of `ids`, the files the rows' rule may ask for (P4.1 WF, S5), told by the
+        tray's own rows' episodes (a file the tray doesn't show isn't asked for); none left: the bar says so."""
+        if self.off:                                 # Connect off: that is why nothing is asked, said first
+            self.win.say(self.off)
+            return None
+        tray = getattr(self.win, "arrivals_tray", None)
+        known = {e.id: e for g in (getattr(tray, "groups", None) or ()) for a in g.rows for e in a.episodes}
+        ids = self._askable([known[i] for i in dict.fromkeys(ids) if i in known])
+        if not ids:
+            self.win.say(strings.MINE_NOTHING)
+            return None
+        text = strings.MINE_ASKED_ONE if len(ids) == 1 else strings.MINE_ASKED_N.format(n=len(ids))
+        return self._ask(text, (), ids)
 
     def _ask(self, text, keys, ids):
         """-> the writer's number, or None (Connect off: said in the bar; the store refused: the controller says)."""
@@ -167,12 +194,40 @@ class MineActions(QObject):
             self.mine_text(line.label, line.rel_path)
 
     def _needs_make_cards(self, entry, _line=None):
-        """A gap's *Make their cards*: one ask for its files (toast + Undo); once given, the entry answered as *Leave them*
-        answers it (on a worker), and *Needs you* read again."""
-        ids = list(dict.fromkeys((entry.data or {}).get("item_ids") or ()))
-        if not ids or self._ask(strings.MINE_ASKED.format(title=entry.title), (), ids) is None:
+        """A gap's *Make their cards* (P4.1 WF, IK D-1 lean (a)): Connect's ordinary work, not an ask — so no store
+        write to refuse or undo later (adversary S3). On a worker: `actions.make_cards` in the entry's own language
+        (*Needs you*'s, the language the gap came from — never the writer's of the language open now, adversary S4),
+        Connect kicked when it queued any (as *Mine anyway* is), and only then the entry answered as *Leave them*
+        answers it; the bar says how many episodes' cards come next, and *Needs you* is read again. Connect off:
+        refused in the bar, nothing answered."""
+        if self.off:
+            self.win.say(self.off)
+            return
+        needs = self.win.needs_you
+        gap_id = (entry.data or {}).get("gap_id")
+        if needs is None or gap_id is None:
             return
         from app.services import needs as service
-        needs, keys = self.win.needs_you, service.answer_keys(entry)
-        bridge.run_in_worker(service.answer, needs.language, keys, then=lambda _n: needs.refresh(),
-                             failed=needs._failed)
+        make, kick, read_settings = self.make_cards, needs.connect_calls.get("kick"), needs.read_settings
+        language, keys = needs.language, service.answer_keys(entry)
+
+        def run():
+            made = make(language, gap_id)
+            if made is False:
+                return made                         # no such gap, no ledger: nothing written, nothing answered
+            if made and kick is not None:
+                try:
+                    kick(read_settings() or {})
+                except Exception as e:              # a kick that fails leaves the jobs queued: the next start runs them
+                    print(f"Connect wasn't kicked: {e}")
+            service.answer(language, keys)
+            return made
+        bridge.run_in_worker(run, then=lambda made: needs._connect_done(_made_words(made)), failed=needs._failed)
+
+
+def _made_words(made):
+    if made is False:
+        return strings.MAKE_CARDS_GONE
+    if not made:
+        return strings.MAKE_CARDS_NONE
+    return strings.MAKE_CARDS_QUEUED[made == 1].format(n=made)

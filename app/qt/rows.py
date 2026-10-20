@@ -24,13 +24,16 @@ as words: *8 of 12 watched, 3 in Anki*).
 
 Nothing here writes. ▶ asks the page to open a file (`play_requested`); a click on a stone, or Up Next's ✓ Done, asks
 for a Done (`done_requested`: one path, wherever it's clicked); ↑ ↓, ⋯ and the journey's ↗ ask too (`nudge_requested`,
-`menu_requested`, `journey_requested`); a row opens and closes.
+`menu_requested`, `journey_requested`); a row opens and closes. P4.1 L2: a status that is a button — *Mine now* (Waiting's
+icon), *Mine this* (Mine), *No video*'s *Link…* · *Mine text* — asks too (`mine_requested`, `link_requested`,
+`mine_text_requested`), by a click or, with the keyboard, → then Enter / Space; while Connect is off (`connect_off`, set
+by the window) it asks nothing and its tip says why.
 """
 import bisect
 import math
 import os
 import time
-from collections import OrderedDict
+from collections import OrderedDict, namedtuple
 
 from PyQt6.QtCore import (QAbstractListModel, QItemSelectionModel, QModelIndex, QPoint, QPointF, QRect, QRectF, QSize,
                           Qt, QTimer, pyqtSignal)
@@ -384,6 +387,43 @@ def icon(p, kind, rect, colour, width=1.6):
 STATUS_ICON = {"in_anki": "check", "mining": "mining", "waiting": "waiting", "mine_rest": "check", "mine": "mine",
                "no_media": "no_media"}
 
+# --- P4.1 L2: the stones' actions (4.1.11; RUNBOOK C2, C3, C6, IK S7). A status that is a button: Waiting's icon is
+# *Mine now*, Mine is *Mine this*, No video offers *Link…* · *Mine text*. Its part's payload is an `Ask` (`id`: its first
+# file's, so a press and its release match as an episode's do; `ids`: the files it asks for; `episode`: the first).
+ACTIONS = {"waiting": "mine-now", "mine": "mine-this", "no_media": "no-media"}
+ACTION_NAMES = frozenset(ACTIONS.values())
+_ACTION_TIPS = {"mine-now": "ROWS_MINE_NOW_TIP", "mine-this": "ROWS_MINE_THIS_TIP", "no-media": "ROWS_NO_MEDIA_TIP"}
+
+
+Ask = namedtuple("Ask", "id ids episode")
+
+
+def asked_files(kind, episodes):
+    """The files a status's button stands for: *Mine now* the unmined ones in the top waiting on nothing but their
+    turn, *Mine this* every unmined one that can be mined, *No video* the unmined ones with none (never one being mined,
+    one in Anki, or one whose cards the learner deleted)."""
+    open_ = [e for e in episodes if not (e.cards or e.mining or getattr(e, "deleted", False))]
+    if kind == "waiting":                           # (an asked one below the line waits too: it goes first again)
+        return [e for e in open_ if e.in_top and not e.missing] or [e for e in open_ if not e.missing]
+    if kind == "mine":
+        return [e for e in open_ if not e.missing]
+    with_status = [e for e in open_ if e.status is not None and e.status.kind == "no_media"]
+    return with_status or open_
+
+
+def action_of(status, episodes, off=None):
+    """(part name, tip, payload) for a status shown as an icon: a button while Connect may run, its tip naming the
+    click; Connect off (`off`: why, `feed.OFF_*`) the same part, its tip saying why nothing happens. Not a button:
+    ("status", its tip, None)."""
+    name = ACTIONS.get(status.kind)
+    files = asked_files(status.kind, episodes) if name is not None else ()
+    if not files:
+        return "status", status.tip, None
+    tip = strings.ROWS_ACTION_OFF.format(tip=status.tip, why=off) if off else \
+        getattr(strings, _ACTION_TIPS[name]).format(tip=status.tip)
+    return name, tip, Ask(files[0].id, tuple(e.id for e in files), files[0])
+# --- end P4.1 L2
+
 
 def pill_size(status, dpr=1.0):
     f = fz()
@@ -523,8 +563,16 @@ class RowsModel(QAbstractListModel):
         if role == Qt.ItemDataRole.AccessibleDescriptionRole:
             if kind in (HERO, ROW):                 # its line, and its string read as words (Q6): the reader's plan
                 plan = payload.string[0] if payload.string is not None else stone_plan.plan_of(payload)
-                return strings.ROWS_ACCESSIBLE_STRING.format(line=payload.description, string=stone_plan.words(
+                text = strings.ROWS_ACCESSIBLE_STRING.format(line=payload.description, string=stone_plan.words(
                     plan, strings.STRING_WORDS))
+                # --- P4.1 L2: a status that is a button says how the keyboard presses it (none while Connect is off)
+                nxt = payload.episodes[payload.next_index] if kind == HERO else None
+                st = nxt.status if nxt is not None else payload.status
+                if st is not None and not getattr(self.parent(), "connect_off", None):
+                    name = action_of(st, (nxt,) if nxt is not None else payload.episodes)[0]
+                    if name in ACTION_NAMES:
+                        text += " · " + strings.ROWS_ACTION_KEY.format(action=strings.ROWS_ACTION_NAMES[name])
+                return text                                 # --- end P4.1 L2
             if kind == FINISHED:
                 return payload.description
             if kind == NEED:
@@ -973,14 +1021,14 @@ class RowDelegate(QStyledItemDelegate):
             out.append(("studying", "up", "accent", strings.ROWS_STUDYING_TIP, None, iw, ih))
         st = row.status
         if st is not None and st.kind not in ("in_anki", "mining", "none"):
+            name, tip, ask = action_of(st, row.episodes, self.view.connect_off)     # --- P4.1 L2 (4.1.11)
             if st.kind == "waiting":
-                out.append(("mine-now", "waiting", "ink-dim", strings.ROWS_MINE_NOW_TIP.format(tip=st.tip), None, iw, ih))
+                out.append((name, "waiting", "ink-dim", tip, ask, iw, ih))
             elif st.kind == "no_media":
-                out.append(("status", "warning", "warn" if st.tone == "warn" else "ink-faint",
-                            strings.ROWS_NO_MEDIA_LATER.format(tip=st.tip), None, iw, ih))
+                out.append((name, "warning", "warn" if st.tone == "warn" else "ink-faint", tip, ask, iw, ih))
             else:
-                out.append(("status", STATUS_ICON.get(st.kind, "mine"),
-                            {"ok": "ok", "faint": "ink-faint", "ink": "ink"}.get(st.tone, "ink-dim"), st.tip, None, iw,
+                out.append((name, STATUS_ICON.get(st.kind, "mine"),
+                            {"ok": "ok", "faint": "ink-faint", "ink": "ink"}.get(st.tone, "ink-dim"), tip, ask, iw,
                             ih))
         if row.mark is not None:
             out.append(("mark", "no_audio" if row.media_word == "audio" else "no_media",
@@ -1066,8 +1114,9 @@ class RowDelegate(QStyledItemDelegate):
             out.append(("done", g["done"], all_tip if nxt.watched else
                         strings.ROWS_DONE_TIP.format(ep=nxt.label), nxt))
             out.append(("more", g["more"], strings.ROWS_MORE_TIP, None))
-            if nxt.status is not None:
-                out.append(("status", g["status"], nxt.status.tip, None))
+            if nxt.status is not None:                     # --- P4.1 L2: Up Next's status, a button as a row's
+                name, tip, ask = action_of(nxt.status, (nxt,), self.view.connect_off)
+                out.append((name, g["status"], tip, ask))
             if g["journey"] is not None:
                 out.append(("journey", g["journey"], strings.ROWS_JOURNEY_TIP, nxt))
             is_open = self.view.model().open_key == payload.key
@@ -1189,8 +1238,9 @@ class RowDelegate(QStyledItemDelegate):
             out.append(("play", cols["play"], ep.play_tip, ep))
             if ep.status is not None:
                 size = pill_size(ep.status)
-                out.append(("status", QRect(cols["stat"].right() - size.width(), cols["stat"].center().y() -
-                                            size.height() // 2, size.width(), size.height()), ep.status.tip, None))
+                name, tip, ask = action_of(ep.status, (ep,), self.view.connect_off)   # --- P4.1 L2: its own button
+                out.append((name, QRect(cols["stat"].right() - size.width(), cols["stat"].center().y() -
+                                        size.height() // 2, size.width(), size.height()), tip, ask))
             state = strings.ROWS_STONE_STATE["cut" if ep.watched else "raw" if ep.cards else "rock"].format(n=ep.cards)
             out.append(("stone", cols["tick"], strings.ROWS_STONE_TIP.format(
                 label=ep.label, state=state, action=strings.ROWS_STONE_ACTION[ep.watched]), ep))
@@ -2101,7 +2151,7 @@ class RowDelegate(QStyledItemDelegate):
             self._paint_stat(p, nxt.status, g["status"], mid, dpr)     # N in Anki at rest
         elif nxt.status is not None and hovered:    # the other statuses on hover, as a row's
             item = next((it for it in self._hover_items(row._replace(status=nxt.status, mark=nxt.mark, studying=False))
-                         if it[0] in ("status", "mine-now")), None)
+                         if it[0] == "status" or it[0] in ACTION_NAMES), None)
             if item is not None:
                 r = g["status"]
                 side = rl("anki-icon")
@@ -2232,7 +2282,8 @@ def whole_step(dpr):
     return 1
 
 
-NO_DRAG = frozenset(("play", "more", "up", "down", "done", "mine-now", "journey", "put-back"))   # buttons (W3.2 Q4: put-back)
+NO_DRAG = frozenset(("play", "more", "up", "down", "done", "journey", "put-back")) | ACTION_NAMES   # buttons (W3.2 Q4:
+#                                                                                       put-back; P4.1 L2: the statuses')
 
 
 def _rest_of(row, k):                                # --- W3.2 Q8: the files from episode `k` on, in words
@@ -2283,6 +2334,12 @@ class RowsView(QListView):
     put_back_requested = pyqtSignal(object)        # --- W3.2 Q4: (the Finished Row): its *Put back*
     split_requested = pyqtSignal(object, object)   # --- W3.2 Q8: (the Row, the episode that starts the new part): ✂
     line_requested = pyqtSignal(str)               # --- P4.1 L2 (row 4.1.14): a line clicked ("top"): its setting
+    # --- P4.1 L2 (4.1.11): the statuses' buttons — (the Row, the item ids) *Mine now* / *Mine this*; (the Row, the
+    # Episode) No video's *Link…* and *Mine text*
+    mine_requested = pyqtSignal(object, object)
+    link_requested = pyqtSignal(object, object)
+    mine_text_requested = pyqtSignal(object, object)
+    # --- end P4.1 L2
 
     def __init__(self, name, tooltips=None, parent=None):
         super().__init__(parent)
@@ -2317,6 +2374,9 @@ class RowsView(QListView):
         self.verticalScrollBar().actionTriggered.connect(self._snap_step)
         self._hover = None
         self.focus_visible = False                   # CSS's :focus-visible: the ring after a key, never after a click
+        self.connect_off = None                      # --- P4.1 L2: why Connect may not run (`feed.OFF_*`), or None
+        self.action_focus = None                     # --- P4.1 L2: (row key, part name) the keyboard is on (→)
+        self.action_menu = None                      # --- P4.1 L2: No video's last menu (tests)
         self.looks_changed = False                   # the last set_entries changed what the list shows
         self._restore = None
         self.warm_like = None                        # the shown list, while this one is hidden (its width and height)
@@ -2854,6 +2914,7 @@ class RowsView(QListView):
 
     def currentChanged(self, current, previous):
         super().currentChanged(current, previous)
+        self.action_focus = None                     # --- P4.1 L2: another row: its button lets the keyboard go
         if getattr(self, "focus_visible", False):     # the keyboard moved: its row shows the hover look (S7)
             self._retouch()
 
@@ -2914,8 +2975,9 @@ class RowsView(QListView):
 
     def _act(self, idx, part):
         """A click on a part that isn't ▶ or the row itself: a stone or ✓ Done asks for a Done for its file (one path,
-        S12); ↑ ↓ ask for a nudge, ⋯ for its menu, ↗ for the journey; Waiting's icon says Mine now arrives with Anki
-        Miner's step (P4.1; a tooltip, no toast); a status, a mark, a line: states, not buttons."""
+        S12); ↑ ↓ ask for a nudge, ⋯ for its menu, ↗ for the journey; Waiting's icon (*Mine now*), Mine (*Mine this*) and No
+        video (*Link…* · *Mine text*) ask P4.1's routing (`mine_requested` …); any other status, a mark, a line: states,
+        not buttons."""
         name, rect, _tip, payload = part
         row = self.model().entries[idx.row()][1]
         if name == "stone" and payload is not None:
@@ -2935,8 +2997,67 @@ class RowsView(QListView):
         elif name == "seam" and payload is not None:     # --- W3.2 Q8: ✂ Split here
             self.set_seam(None)
             self.split_requested.emit(row, payload)
-        elif name == "mine-now" and self.tooltips is not None:
-            self.tooltips.request(self.viewport(), rect, strings.ROWS_MINE_NOW_LATER)
+        elif name in ACTION_NAMES and payload is not None:     # --- P4.1 L2 (4.1.11): a status's button
+            self._press_action(name, rect, row, payload, _tip)
+
+    # --- P4.1 L2: the statuses' buttons (4.1.11) ------------------------------------------------------------------ #
+    def _press_action(self, name, rect, row, ask, tip):
+        """*Mine now* / *Mine this* ask for the files; *No video* offers *Link…* · *Mine text* in a small menu. Connect
+        off: nothing happens, its tip (saying why) is shown (IK S7)."""
+        if self.connect_off:
+            if self.tooltips is not None:
+                self.tooltips.request(self.viewport(), rect, tip)
+            return
+        if name != "no-media":
+            self.mine_requested.emit(row, ask.ids)
+            return
+        from PyQt6.QtGui import QAction
+        from PyQt6.QtWidgets import QMenu
+        m = QMenu(self)
+        m.aboutToHide.connect(m.deleteLater)            # one menu per press, gone once it closes
+        m.setObjectName("rowmenu")
+        m.setToolTipsVisible(True)
+        for words, tip, signal in ((strings.ROWS_LINK, strings.ROWS_LINK_TIP, self.link_requested),
+                                   (strings.ROWS_MINE_TEXT, strings.ROWS_MINE_TEXT_TIP, self.mine_text_requested)):
+            act = QAction(words, m)
+            act.setToolTip(tip)
+            act.triggered.connect(lambda _c=False, s=signal: s.emit(row, ask.episode))
+            m.addAction(act)
+        self.action_menu = m
+        m.popup(self.viewport().mapToGlobal(rect.bottomLeft()))
+
+    def _action_key(self, event):
+        """→ takes the keyboard to the current row's status button (its tip shown, as on hover: the same words on
+        focus); Enter / Space press it; ← leaves it. -> handled."""
+        idx = self.currentIndex()
+        if not idx.isValid():
+            return False
+        entry = self.model().entries[idx.row()]
+        key = event.key()
+        if key == Qt.Key.Key_Right and entry[0] in (HERO, ROW):
+            part = next((pt for pt in self.delegate.parts(entry, self.visualRect(idx)) if pt[0] in ACTION_NAMES),
+                        None)
+            if part is None:
+                return False
+            self.action_focus = (entry[1].key, part[0])
+            if self.tooltips is not None:
+                self.tooltips.request(self.viewport(), part[1], part[2])
+            return True
+        if self.action_focus is None:
+            return False
+        if key == Qt.Key.Key_Left:
+            self.action_focus = None
+            if self.tooltips is not None:
+                self.tooltips.hide()
+            return True
+        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
+            held, self.action_focus = self.action_focus, None
+            part = next((pt for pt in self.delegate.parts(entry, self.visualRect(idx)) if pt[0] == held[1]), None)                 if getattr(entry[1], "key", None) == held[0] else None
+            if part is not None:
+                self._act(idx, part)
+                return True
+        return False
+    # --- end P4.1 L2
 
     MODIFIERS = frozenset({Qt.Key.Key_Control, Qt.Key.Key_Shift, Qt.Key.Key_Alt, Qt.Key.Key_Meta, Qt.Key.Key_AltGr})
 
@@ -2960,6 +3081,9 @@ class RowsView(QListView):
                                      self.viewport().mapToGlobal(more[1].bottomLeft()))
             event.accept()
             return                                   # --- end W3.2 Q4
+        if self._action_key(event):                  # --- P4.1 L2: → to a status's button, Enter / Space press it
+            event.accept()
+            return
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
             idx = self.currentIndex()
             if idx.isValid():

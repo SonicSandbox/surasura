@@ -113,7 +113,8 @@ def test_a_screen_reader_reading_a_row_never_plans_its_string_again(seeded, monk
     for n in (0, 1, 2):
         text = model.data(model.index(n, 0), Qt.ItemDataRole.AccessibleDescriptionRole)
         row = model.entries[n][1]
-        assert text.endswith(stone_plan.words(row.string[0], rows.strings.STRING_WORDS))
+        assert text.split(" · →")[0].endswith(stone_plan.words(row.string[0], rows.strings.STRING_WORDS))  # P4.1 4.1.11:
+        #                                                                   a button's key may follow the string's words
 
 
 # --- S3: a drop moves rows, never a reset ----------------------------------------------------------------------------- #

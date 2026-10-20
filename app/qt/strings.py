@@ -366,8 +366,26 @@ ROWS_MORE_TIP = "More\n• Click for what you can do with it"
 ROWS_MOVE_TIP = {"up": "Move up one\n• Click to move it up one place",
                  "down": "Move down one\n• Click to move it down one place"}
 ROWS_MINE_NOW_TIP = "{tip}\n• Click to mine it now"
-ROWS_MINE_NOW_LATER = "Mine now arrives with Anki Miner's step, in a later build"
-ROWS_NO_MEDIA_LATER = "{tip}\nLink… · Mine text: in a later build"
+# --- P4.1 L2: the stones' actions (4.1.11): Mine this, No video's Link… · Mine text, and why nothing happens while
+# Connect is off (IK S7); the window's routing (`app/qt/mine_actions.py`)
+ROWS_MINE_THIS_TIP = "{tip}\n• Click to mine it now"
+ROWS_NO_MEDIA_TIP = "{tip}\n• Click to link its video, or to mine its text in Anki Miner"
+ROWS_ACTION_OFF = "{tip}\n{why}"
+ROWS_ACTION_KEY = "→ then Enter: {action}"
+ROWS_ACTION_NAMES = {"mine-now": "Mine now", "mine-this": "Mine this", "no-media": "Link… or Mine text"}
+ROWS_LINK = "Link…"
+ROWS_LINK_TIP = "Choose its video: its cards get their pictures and audio from it"
+ROWS_MINE_TEXT = "Mine text"
+ROWS_MINE_TEXT_TIP = "Open Anki Miner to mine its text by hand: its file's path is copied for you"
+MINE_ASKED = "{title}: its cards come next"
+MINE_ASKED_N = "{n} files: their cards come next"
+MINE_TEXT_COPIED = "Anki Miner is opening · {name}'s path is copied: paste it there to mine its text"
+MINE_TEXT_NO_MINER = "Anki Miner isn't installed: set it up in Settings, then Mine text"
+MINE_TEXT_NOT_OPENED = "Couldn't open Anki Miner: {path}"
+LINK_TITLE = "Choose the video for {label}"
+LINK_FILTER = "Videos ({patterns})"
+LINKING_ONE = "Linking {label}'s video"
+# --- end P4.1 L2
 ROWS_STONE_TIP = "{label}{state}\n• Click to mark it {action}"
 ROWS_STONE_STATE = {"cut": " · watched", "raw": " · {n} cards in Anki", "rock": ""}
 ROWS_STONE_MISSING = " · no {word} on disk"

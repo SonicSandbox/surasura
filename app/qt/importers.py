@@ -789,6 +789,8 @@ class ExtractWindow(ToolWindow):
             line = strings.EXTRACT_DONE_PROCESSED.format(parts=values["parts"], name=values["name"])
         elif key == "processed-only":
             line = strings.EXTRACT_PROCESSED_ONLY.format(parts=values["parts"], name=values["name"], section=section)
+        elif key == "already":                          # SRC K3: never a duplicate
+            line = strings.EXTRACT_ALREADY.format(title=values["title"], parts=values["parts"], name=values["name"])
         elif key == "taken":
             line = strings.EXTRACT_TAKEN.format(name=values["name"], proposal=values["name"] + " 2")
         elif key == "name":

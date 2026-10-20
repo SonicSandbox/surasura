@@ -309,30 +309,45 @@ def test_a_hand_picked_level_turns_automatic_off_in_the_same_change():
         catalog.change(row, manual, "ja", "Very Rare")                                   # a label, not a band
 
 
-def test_placing_rules_wait_removes_the_source_and_keeps_the_others():
-    """D30 / RD-S16: a line set to Wait leaves the dict (empty = every arrival waits); another source's rule stays."""
+def test_placing_rules_wait_removes_a_source_without_a_default_and_writes_a_defaults_wait():
+    """D30: a line set to Wait leaves the dict, another source's rule stays — but the rules merge per key (SRC W1
+    fix), so hato's and the folders' Wait is written (left out, after-show would come back), and what is written is
+    the merged dict: a file's {} reads as the defaults, so hato's Wait there moves it."""
     row = catalog.ROW["placing_rules"]
-    settings = {"placing_rules": {"hato": "top", "youtube:UCgx8nPpXp9c0Kv4bUk1D3ng": "soon"}}
+    channel = "youtube:UCgx8nPpXp9c0Kv4bUk1D3ng"
+    settings = {"placing_rules": {"hato": "top", channel: "soon"}}
     assert catalog.change(row, settings, "ja", ("hato", "wait"))[0] == \
-        {"placing_rules": {"youtube:UCgx8nPpXp9c0Kv4bUk1D3ng": "soon"}}
+        {"placing_rules": {"hato": "wait", "source": "after-show", channel: "soon"}}
+    assert catalog.change(row, settings, "ja", (channel, "wait"))[0] == \
+        {"placing_rules": {"hato": "top", "source": "after-show"}}
     assert catalog.change(row, settings, "ja", ("hato", "after-show"))[0] == \
-        {"placing_rules": {"hato": "after-show", "youtube:UCgx8nPpXp9c0Kv4bUk1D3ng": "soon"}}
-    assert catalog.change(row, {"placing_rules": {}}, "ja", ("hato", "wait")) == ({}, None)
-    # no rule written: the default's lines (Decision 1, lean): hato's Wait leaves the folders' after-show
-    assert catalog.change(row, {}, "ja", ("hato", "wait"))[0] == {"placing_rules": {"source": "after-show"}}
+        {"placing_rules": {"hato": "after-show", "source": "after-show", channel: "soon"}}
+    for empty in ({"placing_rules": {}}, {}):                                   # {} and no key: the defaults
+        assert catalog.change(row, empty, "ja", ("hato", "after-show")) == ({}, None), "nothing moved"
+        assert catalog.change(row, empty, "ja", ("hato", "wait"))[0] == \
+            {"placing_rules": {"hato": "wait", "source": "after-show"}}
+        assert catalog.change(row, empty, "ja", ("source", "wait"))[0] == \
+            {"placing_rules": {"hato": "after-show", "source": "wait"}}
+    waiting = {"placing_rules": {"hato": "wait", "source": "after-show"}}
+    assert catalog.change(row, waiting, "ja", ("hato", "wait")) == ({}, None)
+    # the whole dict handed in is merged too: one naming only a default's own place moved nothing
+    assert catalog.change(row, {}, "ja", {"hato": "after-show"}) == ({}, None)
+    assert catalog.change(row, {}, "ja", {"hato": "top"})[0] == {"placing_rules": {"hato": "top", "source": "after-show"}}
+    assert catalog.value(row, {"placing_rules": {"hato": "top"}}, "ja") == {"hato": "top", "source": "after-show"}
     with pytest.raises(ValueError):
         catalog.change(row, settings, "ja", ("hato", "graduated"))
 
 
 def test_placing_rules_a_hand_edited_value_never_blocks_a_pick_and_another_lines_target_stays_as_written():
     """A target no place names on one line (hand-edited; `rules.py` skips it) doesn't refuse a pick on another line,
-    and stays; a `placing_rules` that isn't a dict is started afresh by the pick; a source that is no text is refused."""
+    and stays; a `placing_rules` that isn't a dict reads as the defaults, the pick laid over them; a source that is no
+    text is refused."""
     row = catalog.ROW["placing_rules"]
     edited = {"placing_rules": {"youtube:UCgx8nPpXp9c0Kv4bUk1D3ng": "graduated"}}
     assert catalog.change(row, edited, "ja", ("hato", "finished"))[0] == \
-        {"placing_rules": {"youtube:UCgx8nPpXp9c0Kv4bUk1D3ng": "graduated", "hato": "finished"}}
+        {"placing_rules": {"hato": "finished", "source": "after-show", "youtube:UCgx8nPpXp9c0Kv4bUk1D3ng": "graduated"}}
     assert catalog.change(row, {"placing_rules": ["hato", "top"]}, "ja", ("hato", "top"))[0] == \
-        {"placing_rules": {"hato": "top"}}
+        {"placing_rules": {"hato": "top", "source": "after-show"}}
     for source in ("", "  ", None, 3):
         with pytest.raises(ValueError):
             catalog.change(row, {}, "ja", (source, "top"))

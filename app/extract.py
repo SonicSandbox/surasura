@@ -54,7 +54,8 @@ _RESERVED = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _DEVICE = re.compile(r"^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?$", re.IGNORECASE)
 
 Name = namedtuple("Name", "name taken proposal")
-Result = namedtuple("Result", "code parts folder section in_library note")
+# `title`: the item an 'already' names (SRC K3)
+Result = namedtuple("Result", "code parts folder section in_library note title", defaults=(None,))
 
 
 # --- the name ------------------------------------------------------------------------------------------------- #
@@ -402,8 +403,8 @@ def extract(file_path, name, language, section=None, method="length", value=DEFA
         return Result(EXIT_FAILED, 0, clean, section, False, "save")
     if section is None:
         return Result(EXIT_DONE, len(rels), clean, None, False, None)
-    added, note = add_to_library(final, clean, rels, language, section, spawn=spawn)
-    return Result(EXIT_DONE if added else EXIT_PROCESSED_ONLY, len(rels), clean, section, added, note)
+    added, note, title = add_to_library(final, clean, rels, language, section, spawn=spawn)
+    return Result(EXIT_DONE if added else EXIT_PROCESSED_ONLY, len(rels), clean, section, added, note, title)
 
 
 def _drop(staging):
@@ -412,41 +413,52 @@ def _drop(staging):
 
 
 def add_to_library(source, name, rels, language, section, spawn=True):
-    """Copy `source` (Processed/<name>) into `section`'s folder and add its files with one `Store.insert` -> (added,
-    why not: 'store' — the store isn't there or can't be written; 'taken' — the name was taken meanwhile; 'insert' —
-    the store refused the files, their copies sent to the trash). The parts always stay in Processed."""
+    """Copy `source` (Processed/<name>) into the content folder, `Library/<name>` (SRC K3: the place is `section`, the
+    store's alone), and add its files with one `Store.insert` into `section` -> (added, why not, title): 'store' — the
+    store isn't there or can't be written; 'taken' — the name was taken meanwhile; 'already' — every part's bytes are a
+    live item's file's already (SRC-7: never a duplicate; `title` names it); 'insert' — the store refused the files,
+    their copies sent to the trash. A part already in is never copied (the rest are). The parts always stay in
+    Processed."""
     from app import library_store
     data_dir, user_files_dir = get_data_path(language), get_user_files_path(language)
     store = library_store.open_store(language, data_dir, user_files_dir, role="window")
     if store is None:
         print("The library isn't taking new files right now, so the parts stay in Processed.")
-        return False, "store"
+        return False, "store", None
     with store:
-        folder = library_store.FOLDER_OF_TIER[section]
+        folder = library_store.CONTENT_FOLDER
         dest = os.path.join(data_dir, folder, name)
         if os.path.exists(dest) or _store_holds(store, [f"{folder}/{name}"]):
-            return False, "taken"
+            return False, "taken", None
+        held = store.items_holding([os.path.join(source, *rel.split("/")) for rel in rels])
+        held = {os.path.relpath(p, source).replace("\\", "/"): t for p, (_i, t) in held.items()}
+        new = [rel for rel in rels if rel not in held]
+        if not new:
+            title = held[rels[0]]
+            print(f"Already in your library: {title} — the parts stay in Processed.")
+            return False, "already", title
         started_at = library_store._now()
         try:
-            shutil.copytree(source, dest)
+            shutil.copytree(source, dest, ignore=lambda where, names: {
+                n for n in names if os.path.relpath(os.path.join(where, n), source).replace("\\", "/") in held})
         except OSError as e:
             print(f"The parts couldn't be copied into the library ({e}), so they stay in Processed.")
             _trash_copies(data_dir, dest)
-            return False, "insert"
-        files = [os.path.join(dest, *rel.split("/")) for rel in rels]
+            return False, "insert", None
+        files = [os.path.join(dest, *rel.split("/")) for rel in new]
         try:
             change = store.insert(files, section, "show", started_at=started_at)
         except Exception as e:
             print(f"The library didn't take the parts ({e}), so they stay in Processed.")
             _trash_copies(data_dir, dest)
-            return False, "insert"
+            return False, "insert", None
     if change is None or not change.added:
         print("The library didn't take the parts, so they stay in Processed.")
         _trash_copies(data_dir, dest)
-        return False, "insert"
+        return False, "insert", None
     if spawn:
         library_store.spawn_maintain(language)             # the copy, written by the helper
-    return True, None
+    return True, None, None
 
 
 def _trash_copies(data_dir, dest):

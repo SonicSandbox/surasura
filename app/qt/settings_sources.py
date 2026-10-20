@@ -1,0 +1,235 @@
+"""Settings › Content › *Library folders* (SRC W1b; the RUNBOOK §3 W1): the folders Surasura reads where they are, drawn
+into the slot the page leaves for them (`custom_row`), as *Where new arrivals go*'s lines are (`settings_rules.py`).
+
+`attach(page)` -> `SourcesRow`: called once by whoever mounts the page (the shell's `mount_settings`), beside the other
+rows' packages — never by the page itself.
+
+- **One line per folder being read**, in the order added: its path (cut in the middle when the row is narrow, whole on
+  hover), how many episodes came from it (*not reachable now* when the last look couldn't reach it) and *Stop reading*
+  (`Store.stop_source` on the looks' worker: its items and their records stay — the tooltip says so, and the bar
+  after). No folder yet: the line saying so, and *Add a folder…* beside it (the button that fixes it).
+- ***Add a folder…*** is + Add's *A folder…* (`Adder.read_folder`: read it where it is); ***Look again*** is Refresh
+  (`ShellWindow.refresh_sources`: every folder, in full).
+- **Shown from the shell's looks** (`ShellWindow.sources`, `sources_seen`): asked once as the row is made, repainted
+  when a look, an add or a stop lands — only the lines that changed (S19), inside the page's hold (it never moves).
+  Each line belongs to its language's library: another language's summary replaces every line, and *Stop reading*
+  names its language, so a root id another store also holds is never stopped there (ids repeat across stores).
+  Without a library (no looks), the buttons are greyed and say why.
+
+GUI_Design_Guidelines_Qt: the page's controls and label styles (no new rules), a tooltip on every button.
+"""
+from PyQt6 import sip
+from PyQt6.QtCore import QObject
+from PyQt6.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QVBoxLayout, QWidget
+
+from app import theme
+from app.qt import style, windows
+from app.qt import settings_controls as sc
+from app.qt import settings_strings as S
+from app.qt.settings_rules import _SourceWords
+
+ROW_ID = "library_folders"
+
+
+def _f():
+    return theme.text_factor(style.current()[1])
+
+
+def _alive(w):
+    return w is not None and not sip.isdeleted(w)
+
+
+def attach(page):
+    """The *Library folders* row filled into `page`'s slot -> its `SourcesRow` (kept by the page as a child)."""
+    return SourcesRow(page)
+
+
+def count_words(source):
+    """A folder's line: *412 episodes*, and *not reachable now* when the last look couldn't reach it."""
+    n = source.get("items") or 0
+    words = S.SOURCES_COUNT_ONE if n == 1 else S.SOURCES_COUNT.format(n=n)
+    return S.SOURCES_AWAY.format(count=words) if source.get("reachable") is False else words
+
+
+class SourceLine(QWidget):
+    """One folder's line: its path, its count and *Stop reading* (`on_stop(root_id)`)."""
+
+    def __init__(self, source, on_stop, parent=None):
+        super().__init__(parent)
+        self.setObjectName("settingssource")
+        self.root = source["id"]
+        self.source = None
+        line = QHBoxLayout(self)
+        line.setContentsMargins(0, 0, 0, 0)
+        line.setSpacing(round(8 * _f()))
+        self.words = _SourceWords(source["path"], self)
+        self.words.setObjectName("settingsaffix")
+        line.addWidget(self.words, 1)
+        self.count = QLabel(self)
+        self.count.setObjectName("settingsvalue")
+        line.addWidget(self.count)
+        self.stop = sc.Door(S.SOURCES_STOP, name=S.SOURCES_STOP_NAME.format(path=source["path"]), parent=self)
+        self.stop.clicked.connect(lambda _c=False: on_stop(self.root))
+        line.addWidget(self.stop)
+        self.show_source(source)
+
+    def show_source(self, source):
+        """-> True when anything it shows moved (repainted only then)."""
+        if source == self.source:
+            return False
+        self.source = dict(source)
+        words = count_words(source)
+        if self.count.text() != words:
+            self.count.setText(words)
+        self.stop.setToolTip(S.SOURCES_STOP_TIP.format(path=source["path"], n=source.get("items") or 0))
+        return True
+
+
+class SourcesRow(QObject):
+    """The row's lines (`lines`: root id -> SourceLine), the empty state's words (`none`), *Add a folder…* (`add`) and
+    *Look again* (`look`)."""
+
+    def __init__(self, page):
+        super().__init__(page)
+        self.page = page
+        self.shell = page.shell
+        self.lines = {}
+        self.language = getattr(self.shell, "language", None)     # the library the lines are of
+        slot = page.custom_row(ROW_ID)
+        self.box = QWidget(slot)
+        self.box.setObjectName("settingssources")
+        column = QVBoxLayout(self.box)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(round(6 * _f()))
+        foot = QHBoxLayout()
+        foot.setContentsMargins(0, 0, 0, 0)
+        self.known = bool(getattr(self.shell, "sources", ()))    # a listing has landed (until then: the waiting words)
+        self.none = QLabel(S.SOURCES_NONE, self.box)
+        self.none.setObjectName("settingsaffix")
+        self.none.setVisible(False)
+        foot.addWidget(self.none)
+        foot.addStretch(1)
+        self.look = sc.Door(S.SOURCES_LOOK, tooltip=S.SOURCES_LOOK_TIP, parent=self.box)
+        self.look.clicked.connect(lambda _c=False: self.look_again())
+        foot.addWidget(self.look)
+        self.add = sc.Door(S.SOURCES_ADD, tooltip=S.SOURCES_ADD_TIP, parent=self.box)
+        self.add.clicked.connect(lambda _c=False: self.add_folder())
+        foot.addWidget(self.add)
+        column.addLayout(foot)
+        slot.layout().addWidget(self.box)
+        self.reads = 0                                    # the sources shown (tests: repainted only when they moved)
+        looks = self._looks()
+        self._enable(looks is not None)
+        if looks is not None and not self.known:
+            self.none.setText(S.SOURCES_LISTING)            # waiting for the first listing, never "No folders yet"
+        seen = getattr(self.shell, "sources_seen", None)
+        if seen is not None:
+            seen.connect(self._seen)
+        self.show_sources(getattr(self.shell, "sources", ()) or ())
+        if looks is not None:
+            looks.listing()                               # the counts as they stand, read on the looks' worker
+
+    def alive(self):
+        return _alive(self.page)
+
+    def _looks(self):
+        return getattr(self.shell, "looks", None) if self.shell is not None else None
+
+    def _enable(self, on):
+        """*Look again* and *Add a folder…* act while there are looks (a library open); greyed with why when not."""
+        for button, tip in ((self.look, S.SOURCES_LOOK_TIP), (self.add, S.SOURCES_ADD_TIP)):
+            if button.isEnabled() != on:
+                button.setEnabled(on)
+                button.setToolTip(tip if on else S.STORE_NO_LIBRARY_TIP)
+
+    # --- showing ---------------------------------------------------------------------------------------------- #
+    def _seen(self, summary):
+        if not self.alive() or not isinstance(summary, dict):
+            return
+        language = summary.get("language", self.language)
+        if language != getattr(self.shell, "language", language):
+            return                                        # a language left's late answer
+        self._enable(self._looks() is not None)
+        reset = language != self.language
+        self.language = language
+        if not self.known:
+            self.known = True
+            self.none.setText(S.SOURCES_NONE)
+        self.show_sources(summary.get("sources") or (), reset=reset)
+
+    def show_sources(self, sources, reset=False):
+        """The lines made to match `sources` (being read): only a line that changed is touched; `reset` (another
+        language's library): every line made again."""
+        if not self.alive():
+            return
+        wanted = [s for s in sources if s.get("on", True)]
+        ids = [s["id"] for s in wanted]
+        gone = [r for r in self.lines if reset or r not in ids]
+        moved = [s for s in wanted if s["id"] in self.lines and s["id"] not in gone and self.lines[s["id"]].source != s]
+        added = [s for s in wanted if s["id"] not in self.lines or s["id"] in gone]
+        empty = not wanted
+        if not (gone or moved or added) and self.none.isHidden() != empty:
+            return
+        self.reads += 1
+        with self.page.hold(self.page.row(ROW_ID)):
+            column = self.box.layout()
+            for root in gone:
+                line = self.lines.pop(root)
+                column.removeWidget(line)
+                line.hide()
+                line.deleteLater()
+            for source in moved:
+                self.lines[source["id"]].show_source(source)
+            for source in added:
+                line = SourceLine(source, self.stop, parent=self.box)
+                column.insertWidget(ids.index(source["id"]), line)
+                self.lines[source["id"]] = line
+                if self.box.isVisible():
+                    line.show()
+            if self.none.isHidden() == empty:
+                self.none.setVisible(empty)
+        if added and getattr(self.page, "built", False):
+            self.page._tab_order()
+
+    # --- acting ----------------------------------------------------------------------------------------------- #
+    def add_folder(self, folder=None):
+        """*Add a folder…*: the picker (or `folder`, tests), then + Add's *read it where it is*."""
+        adder = getattr(self.shell, "adder", None)
+        if adder is None:
+            return False
+        if folder is None:
+            folder = QFileDialog.getExistingDirectory(self.page, S.SOURCES_PICK_TITLE)
+        return adder.read_folder(folder) if folder else False
+
+    def look_again(self):
+        refresh = getattr(self.shell, "refresh_sources", None)
+        return refresh() if refresh is not None else False
+
+    def stop(self, root_id):
+        """*Stop reading*: on the looks' worker; the bar says its episodes stay; the line goes once the stop landed."""
+        looks = self._looks()
+        line = self.lines.get(root_id)
+        if looks is None or line is None:
+            return False
+        source = dict(line.source)
+        from app.qt import bridge
+        relay = bridge.Relay(self)
+
+        def stopped(answer):
+            relay.deleteLater()
+            n = source.get("items") or 0
+            text = S.SOURCES_STOPPED_ONE.format(path=source["path"]) if n == 1 else \
+                S.SOURCES_STOPPED.format(path=source["path"], n=n)
+            if answer.get("stopped") and self.shell is not None:
+                windows.say_in_bar(self.shell, text)
+            elif _alive(line):
+                line.stop.setEnabled(True)
+        relay.said.connect(stopped)
+        busy = looks.busy() if hasattr(looks, "busy") else False
+        if not looks.stop(root_id, relay.call, language=self.language):
+            relay.deleteLater()                           # refused (closed, another language): nothing stopped
+            return False
+        line.stop.setEnabled(False)                       # one stop per click
+        if busy and self.shell is not None:               # S6: a look under way lets it go after the file it's on
+            windows.say_in_bar(self.shell, S.SOURCES_STOPPING.format(path=source["path"]))
+        return True

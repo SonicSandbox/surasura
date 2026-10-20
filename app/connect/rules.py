@@ -1,8 +1,9 @@
 """New arrivals' placing rules (P2.1 row 2.1.6; ✅ Q2-3, D30): an arrival waits in *New arrivals* unless a rule the
 user turned on places it. The rules are one setting, `placing_rules` = {source: target}, `after-show` for hato and the
-folders Surasura reads by default (Decision 1, lean: SRC-2's "if the show exists, it should just pair"; empty, every
-arrival waits), and they exist only where New arrivals do (3.0: the store's `arrivals_on`). Through 2.x hato's drops
-keep landing at the top of NOW (✅ Q4-11) and nothing here runs. The shape is the store's (L2.2 05 §5.12, agreed
+folders Surasura reads by default (Decision 1, lean: SRC-2's "if the show exists, it should just pair"), merged per
+key (a source the file doesn't name keeps its default; only an explicit `wait` makes it wait), and they exist only
+where New arrivals do (3.0: the store's `arrivals_on`). Through 2.x hato's drops keep landing at the top of NOW (✅
+Q4-11) and nothing here runs. The shape is the store's (L2.2 05 §5.12, agreed
 with Kura): from L3.1 `register` reads it itself and this step goes.
 
 - **Sources:** the record's `producer` (`hato`, any other program's name); `<producer>:<channel id>` for a record that
@@ -21,10 +22,10 @@ TARGETS = ("wait", "top", "after-show", "soon", "goal", "finished")
 
 
 def rule_for(record, settings):
-    """(source, target) of the rule for this record's arrival, or None: wait."""
-    rules = settings.get("placing_rules")
-    if not isinstance(rules, dict):
-        return None
+    """(source, target) of the rule for this record's arrival, or None: wait. The rules merged per key
+    (`settings_manager.placing_rules`): a source `settings` doesn't name keeps its default."""
+    from app.settings_manager import placing_rules
+    rules = placing_rules((settings or {}).get("placing_rules"))
     producer = str((record or {}).get("producer") or "hato").strip()   # no producer: hato's (as the store reads it)
     channel = (record or {}).get("channel_id")
     for source in ([f"{producer}:{channel}"] if channel else []) + [producer]:

@@ -6,7 +6,8 @@ the window's spec A2 #69–70, G4–G7, 06 E8, E10, E11, P1.2-1).
   is shown only while something waits; empty, it hides and the window goes back to Current (A2 #70).
 - **The entries** are `app/services/needs.entries`' (S3), worked out on a worker (`NeedsYou.refresh`) from the reader's
   view, the bar's failures, Connect's record, the seen file, the offline roots and the store's rename questions —
-  never on the window's thread; an answer equal to the last one repaints nothing (N9, S19).
+  never on the window's thread; an answer equal to the last one repaints nothing (N9, S19), and a view whose rows
+  hold the same things in another order (a move) works nothing out (C1).
 - **The cards** (`NeedsCards`): one per entry in S3's order, a 3 px amber left edge, its words and its buttons. Each
   action name maps to one call (`NeedsYou.act`); a name with no callable (P4.1's *Mine the text only*, *Make their
   cards*; Connect's when Connect isn't installed; the writer's with no library) is hidden. Writes go through the
@@ -129,7 +130,8 @@ def _label(text, name, parent, wrap=True):
 
 class NeedsCards(QWidget):
     """The page's cards, in the entries' order; a card is rebuilt only when its own entry (or its find results, or its
-    look running) changed (S19). `action(name, entry, line)`: a button pressed (`line` None for the card's own)."""
+    look running) changed (S19), and only while the page shows (C1: entries given while it is hidden are built when it
+    shows, or when a card is asked for). `action(name, entry, line)`: a button pressed (`line` None for the card's own)."""
     action = pyqtSignal(str, object, object)
 
     def __init__(self, parent=None):
@@ -143,9 +145,27 @@ class NeedsCards(QWidget):
         self.builds = 0                         # cards built (tests: S19)
         self.epoch = 0                          # bumped when the callables change (`NeedsYou.rewire`): every card again
         self.shown = lambda name, entry, line=None: True
+        self._owed = None                       # C1: the entries given while the page is hidden, built when it shows
         self.box.addStretch(1)
 
     def show_entries(self, entries, found=None, looking=()):
+        if not self.isVisible():
+            self._owed = (entries, found, looking)
+            return                              # C1: no card is made under the style sheet for a page nobody sees
+        self._owed = None
+        self._build(entries, found, looking)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.flush()
+
+    def flush(self):
+        """The cards the entries given while hidden owe, built now (the page shown, or a card asked for)."""
+        owed, self._owed = self._owed, None
+        if owed is not None:
+            self._build(*owed)
+
+    def _build(self, entries, found, looking):
         found = found or {}
         keep, order = {}, []
         for e in entries:
@@ -177,11 +197,13 @@ class NeedsCards(QWidget):
                 w.show()
 
     def card(self, key):
+        self.flush()
         got = self.cards.get(key)
         return got[1] if got is not None else None
 
     def buttons(self, key=None):
         """The shown buttons (of one card, or all) -> [QPushButton]."""
+        self.flush()
         cards = [self.card(key)] if key is not None else [w for _s, w in self.cards.values()]
         return [b for c in cards if c is not None for b in c.findChildren(QPushButton)]
 
@@ -358,10 +380,21 @@ class NeedsYou(QObject):
         old, self.view = self.view, view
         if view is None:
             return
-        if old is not None and old.mode == view.mode and old.loading == view.loading and \
-                _same(old.rows, view.rows):
-            return                                   # another tab's change: these entries can't have moved
+        if old is not None and old.mode == view.mode and old.loading == view.loading:
+            if _same(old.rows, view.rows):
+                return                               # another tab's change: these entries can't have moved
+            if not self._running and _reads_same(old.rows, view.rows) and self._in_order(view.rows):
+                return                               # C1: a reorder (a move's four views) — nothing they read moved
         self.refresh()
+
+    def _in_order(self, rows):
+        """Whether the cards that follow Current's order (a show's *file gone*, *no video*) stand in `rows`' order."""
+        shown = list(dict.fromkeys((e.data or {}).get("group") for e in self.entries
+                                   if e.kind in (service.GONE, service.NO_VIDEO)))
+        if len(shown) < 2:
+            return True
+        wanted = set(shown)
+        return [g for g in dict.fromkeys(service._group(r) for r in rows) if g in wanted] == shown
 
     def failures_in(self, failures):
         failures = tuple(failures or ())
@@ -709,6 +742,28 @@ class NeedsYou(QObject):
 
 def _same(a, b):
     return a is b or (len(a) == len(b) and all(x is y for x, y in zip(a, b)))
+
+
+def _reads_same(a, b):
+    """Whether rows `b` hold what the entries read of rows `a` (`service.entries`: a row's group, title and kind, each
+    episode's id, label, number, file and whether it is missing), in any order (C1). A row kept by the reader's cache
+    is the same object, or its copy with a new place number and the same episodes: no episode is read then."""
+    if len(a) != len(b):
+        return False
+    was = {r.key: r for r in a}
+    for r in b:
+        o = was.get(r.key)
+        if o is r:
+            continue
+        if o is None or (o.work_id, o.title, o.media) != (r.work_id, r.title, r.media):
+            return False
+        if o.episodes is not r.episodes and [_read(e) for e in o.episodes] != [_read(e) for e in r.episodes]:
+            return False
+    return True
+
+
+def _read(e):
+    return e.id, e.label, e.number, e.rel_path, e.missing
 
 
 def make_area(parent):

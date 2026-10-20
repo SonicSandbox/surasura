@@ -572,6 +572,7 @@ DRAG = MappingProxyType({
     "message-ms": 4000,             # a line said in the footer's slot holds it this long (over the update chip)
     "near": 3,                      # painted neighbours on each side handed to the writer (an anchor gone meanwhile)
     "px-rest": 0.05,                # a px spring rests once this close (L5: its drawn value no longer changes)
+    "ghosts-kept": 4,               # ghosts baked as the pointer rested on a row, kept (C5: the newest rows')
 })
 DRAG_COLOURS = MappingProxyType({
     "placeholder": "#1a2a3a",       # the slot's fill (list-r14m :4330)

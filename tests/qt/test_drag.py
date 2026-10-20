@@ -1233,6 +1233,98 @@ def test_gap2_a_drop_on_goal_shows_goals_new_count_and_its_name_at_the_drop_whil
         undo()
 
 
+# --- M4.1 row 4, package C: the window's own work at a move and a pickup ---------------------------------------- #
+def test_C2_a_moves_next_view_of_the_same_rows_walks_nothing_in_the_dock(world):
+    """C2: each of a move's views walked every Current and Finished row in the dock for the wells' cover records
+    (3–5 ms a view at 20,000 files). A view holding the same rows, Finished and Goal walks nothing; new rows walk
+    once, their records the same."""
+    seed, win, writer = world(apply=True)
+    dock = win.dock
+    rs = rows_of(win)
+    win.moves.menu_pick(rs[4], "up-next")                             # a reorder: the window's view, the store's
+    assert wait_until(lambda: win.moves.expect is None and not win.moves.tickets
+                      and win.services.library.view().rows[0].key == rs[4].key, 10)
+    view = win.services.library.view()
+    win.show_library(view)
+    walks, refs = dock.walks, dict(dock._refs)
+    for _ in range(3):                                                # the move's next views: the same rows
+        win.show_library(view._replace(subline=view.subline + " "))
+    assert dock.walks == walks and dock._refs == refs
+    keys = [r.key for r in view.rows]
+    keys[1], keys[2] = keys[2], keys[1]
+    win.show_library(drag.reordered(view, keys))                      # other rows: walked once, the same titles
+    assert dock.walks == walks + 1 and dock._refs == refs
+
+
+def test_C5_a_lift_right_after_the_pointer_rested_on_a_row_bakes_no_ghost_and_shows_that_rows_picture(world):
+    """C5: the pickup baked the ghost (its shadow, ring, turn: 9 pictures drawn) and showed its window for the first
+    time on the press's frame. The pointer resting on the row bakes it ahead; the lift only shows it. What it could
+    break: a stale ghost — the row's picture changed since is baked again."""
+    seed, win, writer = world(apply=False)
+    lst, moves = lst_of(win), win.moves
+    assert moves.ghost is not None and not moves.ghost.isVisible()     # made once, at the window's open, hidden
+    i = 4
+    at = title_point(lst, i)
+    baked = moves.ghost_bakes
+    move(lst, at, buttons=NONE)                                       # the pointer comes to rest on row 4
+    assert wait_until(lambda: moves.ghost_bakes == baked + 1, 3)
+    lift(win, i)
+    assert moves.ghost_bakes == baked + 1, "the lift baked its ghost again"
+    kind, row, lines = lst.model().entries[i]
+    rect = lst.visualRect(lst.model().index(i, 0))
+    slot = lst.delegate.slot_rect(kind, rect, lines)
+    dpr = lst.viewport().devicePixelRatioF() or 1.0
+    fresh = drag.ghost_picture(moves._row_picture(kind, row, lines, rect, slot), slot.width(), slot.height(), dpr)[0]
+    assert moves.ghost.isVisible() and moves.ghost.pix.toImage() == fresh.toImage()     # the row's own picture
+    moves.cancel()
+    assert wait_until(lambda: time.monotonic() >= moves._swallow_until, 3)      # (a press right after is swallowed)
+    k = next(iter(moves._ghosts))
+    moves._ghosts[k] = (-1,) + moves._ghosts[k][1:]                   # as if the row were painted anew since
+    lift(win, i)
+    assert moves.ghost_bakes == baked + 2
+    moves.cancel()
+
+
+def test_C6_a_slide_frame_asks_one_repaint_its_rows_rects_worked_out_once(world, monkeypatch):
+    """C6: each moving row's spring frame worked the screen out again (two `indexAt`) and walked the parted rows'
+    `visualRect`s while its band widened — ~220 calls a frame with six rows moving. Now a frame's bands are asked
+    for once, at its end, every rect worked out once (the gap2 tests above hold what repaints)."""
+    seed, win, writer = world(apply=False, size=(1280, 1200))
+    clock, undo = _on_test_time()
+    try:
+        lst = lst_of(win)
+        lift(win, 8)
+        move_global(win, row_point(win, 2))                           # rows 2–7 make room: six springs
+        p = lst.parting
+        assert len(p.springs) == 6
+        _flushed(lst)
+        lo, hi = p._screen()
+        rects, updates = [0], [0]
+        real_rect, real_update = lst.visualRect, lst.viewport().update
+
+        def visual_rect(index):
+            rects[0] += 1
+            return real_rect(index)
+
+        def update(*args):
+            updates[0] += 1
+            return real_update(*args)
+        monkeypatch.setattr(lst, "visualRect", visual_rect)
+        monkeypatch.setattr(lst.viewport(), "update", update)
+        painted = _paint_spy(lst, monkeypatch)
+        clock.advance(motion.FRAME_MS)                                # one frame of the slide
+        assert 0 < p.offset(2) < p.h
+        assert updates[0] == 1, updates[0]
+        assert rects[0] <= hi - lo + 1, (rects[0], hi - lo + 1)
+        QApplication.processEvents()
+        assert painted and set(painted) <= set(range(1, 10)), sorted(set(painted))
+        clock.advance(1000)
+        assert p.springs == {}
+        win.moves.cancel()
+    finally:
+        undo()
+
+
 # --- hover springs rest when what they draw stops changing (L5) -------------------------------------------------- #
 def test_L5_a_hover_spring_rests_once_its_drawn_value_stops_changing(world):
     seed, win, writer = world()

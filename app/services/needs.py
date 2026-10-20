@@ -223,7 +223,7 @@ def _gone_entry(group, hits, seen):
     return Entry(key=key, kind=GONE, title=title, lines=lines, actions=("choose_folder", "keep_words", "remove"),
                  unseen=key not in seen, say=STRINGS["gone_say"],
                  data={"work_id": row.work_id, "title": row.title, "media_word": word, "item_ids": tuple(ids),
-                       "folder": _folder(hits[0][1].rel_path)})
+                       "folder": _folder(hits[0][1].rel_path), "group": group})
 
 
 def _video_entry(group, hits, seen, mine_line):
@@ -245,7 +245,7 @@ def _video_entry(group, hits, seen, mine_line):
                                                                            "mine_text_only"),
                  unseen=key not in seen, say=say,
                  data={"work_id": row.work_id, "title": row.title, "media_word": word, "item_ids": tuple(ids),
-                       "folder": _folder(hits[0][1].rel_path)})
+                       "folder": _folder(hits[0][1].rel_path), "group": group})
 
 
 def _folder(rel):
@@ -279,7 +279,7 @@ def _bulk(shows):
         title = STRINGS["bulk_title_videos"].format(n=n_video, m=len(video))
     data = {"labels": labels, "videos": (n_video, len(video)), "files": (n_gone, len(gone)),
             "video_keys": tuple(e.key for e in video),
-            "item_ids": tuple(i for e in gone for i in e.data["item_ids"]) if len(gone) >= 2 else ()}
+            "item_ids": tuple(sorted(i for e in gone for i in e.data["item_ids"])) if len(gone) >= 2 else ()}
     return Entry(key="bulk", kind=BULK, title=title, lines=(), actions=tuple(actions), unseen=False,
                  say=STRINGS["bulk_say"], data=data)
 
@@ -315,7 +315,8 @@ def _ask_entry(ask, by_id, seen):
 
 
 def _offline_entry(root, by_id, seen):
-    ids = tuple(i for i, (_r, e) in by_id.items() if _under(e.rel_path, root.rel))
+    ids = tuple(sorted(i for i, (_r, e) in by_id.items() if _under(e.rel_path, root.rel)))   # order-free (C1: a
+    #                                                                     reorder of Current rebuilds no card)
     n = root.files if root.files is not None else len(ids)
     title = STRINGS["offline_title_one"].format(label=root.label) if n == 1 else \
         STRINGS["offline_title"].format(label=root.label, n=view_rows.thousands(n))

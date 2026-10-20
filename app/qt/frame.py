@@ -1008,6 +1008,8 @@ class GoalDock(QWidget):
         self.pictures = self.hands = self.paints = 0
         # --- W3.2 Q6: each cover's record by title (the wells'), a title's picture landing repaints the dock
         self._refs = {}
+        self._seen = None                # (rows, finished, goal) the refs were walked from (C2)
+        self.walks = 0                   # walks of the view's rows (tests)
         qcovers.notifier().ready.connect(self._cover_ready)
         # --- end W3.2 Q6
         self.apply_size()
@@ -1047,6 +1049,11 @@ class GoalDock(QWidget):
         """The covers the wells show, from the reader's newest view (kept for the next drag; nothing repaints)."""
         self._covers = well_covers(view)
         # --- W3.2 Q6: the wells' covers' records, by title (`well_covers` keeps titles)
+        seen = (getattr(view, "rows", None), getattr(view, "finished", None), getattr(view, "goal", None))
+        if self._seen is not None and all(a is b for a, b in zip(seen, self._seen)):
+            return                       # C2: a move's next view of the same rows: nothing walked again
+        self._seen = seen
+        self.walks += 1
         refs = {}
         for r in tuple(getattr(view, "rows", ()) or ()) + tuple(r for m in getattr(view, "finished", ()) or ()
                                                               for r in m.rows):

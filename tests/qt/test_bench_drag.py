@@ -6,7 +6,9 @@ Hold 1 found the stand-in writer working a nudge out where it was called (a copy
 GUI thread inside key-up / key-down), its placement copying every item on every move (6–60 ms on its thread, holding
 Python's lock under the window), a drop on another part of the same title raising in the child (the stand-in had no
 `join`; the hold keeps a child's stderr only when it fails), and toast-done-all running 10 repetitions with no toast and
-no skip noted (its rows were NOW's only, and the menu moves before it had used them).
+no skip noted (its rows were NOW's only, and the menu moves before it had used them). Once the stand-in could join, the
+key case at 20,000 files and 150 % ran menu-soon, menu-goal, key-up and key-down with no frame: the join opened its
+result (as the window does), the open row filled the list, and no row was whole on screen for the moments after it.
 """
 import threading
 from types import SimpleNamespace
@@ -17,6 +19,8 @@ pytest.importorskip("PyQt6")
 
 from tests.fixtures.standin_store import StandinLibrary
 from tests.qt import bench_drag
+from tests.qt.test_drag import lift, move_global, release_global, settle
+from tests.qt.test_item_menu import lst_of, middle_point, rows_of, split_parts, world  # noqa: F401
 
 TITLES = ("進撃の巨人", "葬送のフリーレン", "薬屋のひとりごと", "ぼっち・ざ・ろっく！")
 
@@ -166,3 +170,35 @@ def test_the_finish_toast_takes_a_soon_row_once_nows_rows_are_used():
 def test_the_finish_toast_never_plays_on_up_next_or_a_goal_row():
     rows_ = [_row(1, "now"), _row(2, "goal"), _row(3, "now")]
     assert [r.key for r in bench_drag.done_candidates(rows_, used=set())] == [3]
+
+
+# --- a row a join opened is closed before the next moment's row is chosen ---------------------------------------- #
+def test_a_row_the_join_opened_is_closed_and_the_list_laid_out_before_the_next_moment(world):  # noqa: F811
+    _seed, win, _writer = world()
+    lst = lst_of(win)
+    a, b = split_parts(win)
+    lift(win, b)
+    to = middle_point(win, a)
+    move_global(win, to)
+    release_global(win, to)
+    settle()
+    assert lst.model().open_key == rows_of(win)[a].key           # the window opens the joined part
+    under = lst.model().index(a + 1, 0)                           # the row under it, pushed down by its episodes
+    opened_top = lst.visualRect(under).top()
+    told = []
+    lst.opened.connect(told.append)
+    assert bench_drag.close_open_row(lst) is True
+    assert lst.model().open_key is None and told == [None]
+    closed = lst.visualRect(under)
+    assert closed.top() < opened_top                              # back in its place when the next row is chosen
+    settle()
+    assert lst.visualRect(under) == closed
+    assert bench_drag.close_open_row(lst) is False and told == [None]
+
+
+def test_a_moment_that_drew_no_frame_is_named_whatever_was_noted():
+    # the key case's shape: the key moves noted nothing, menu-goal noted "no action"; each drew no frame
+    moments = {"menu-top": {"reps": 10, "frames_n": 21}, "menu-goal": {"reps": 10, "frames_n": 0},
+               "key-up": {"reps": 10, "frames_n": 0}, "key-down": {"reps": 10, "frames_n": 0},
+               "toast-connect": {"reps": 10, "frames_n": 183}, "idle": {"reps": 0, "frames_n": 0}}
+    assert bench_drag.unplayed(moments) == {"menu-goal": 10, "key-up": 10, "key-down": 10}

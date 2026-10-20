@@ -267,6 +267,25 @@ def done_candidates(rows_, used):
             and not all(e.watched for e in r.episodes)]
 
 
+def close_open_row(lst):
+    """A row left open closed, as a click on it closes it (`RowsView.toggle`) — before a moment's row is chosen, never
+    inside a repetition (the rows' places are read through `visualRect`, which lays the list out first). A drop on another part of the same title joins them and opens
+    the result (`item_menu.join`); left open at 150 % it filled the list, no row was whole on screen, and the menu and
+    key moments after it found none (M4.1 A, the key case at 11ff1bc). -> whether one was open."""
+    model = lst.model()
+    if model.open_key is None:
+        return False
+    model.open_key = None
+    lst.relayout()
+    lst.opened.emit(None)
+    return True
+
+
+def unplayed(moments):
+    """The moments that ran their repetitions and drew no frame: a moment that never played, whatever was noted."""
+    return {name: m["reps"] for name, m in moments.items() if m.get("reps") and not m.get("frames_n")}
+
+
 def arrival_template(library):
     """The arrival moment's template, read once before the moments (M4.1 A3: each arrival's `max` over every item was
     the whole of the moment at 20,000 files): (a row to copy, its work, the first new item id, the first new work
@@ -414,6 +433,7 @@ def main_child(a):
     # --- a drag (W3.1a's four phases) ---------------------------------------------------------------------------- #
     def cycle(c):
         def choose():                                    # (before the repetition: M4.1 A3, the bench's own row scan)
+            close_open_row(lst)
             vis = visible_rows()
             i = vis[min(len(vis) - 1, 2 + c % 3)]
             state["src"] = i
@@ -472,6 +492,7 @@ def main_child(a):
         name = f"drop-{'top20' if kind == 'top' else 'soon'}"
 
         def prep():
+            close_open_row(lst)
             v = page.view_model
             ln = next((x for x in (v.lines if v is not None else ()) if x.kind == kind), None)
             state["line_ok"] = False
@@ -523,6 +544,7 @@ def main_child(a):
         name = {"up-next": "menu-top", "soon": "menu-soon", "goal": "menu-goal"}[which]
 
         def prep():
+            close_open_row(lst)
             vis = visible_rows()
             cands = [i for i in vis if lst.model().entries[i][1].tier == "now"] if which == "soon" else vis
             if not cands:
@@ -569,9 +591,12 @@ def main_child(a):
         name = "key-up" if step < 0 else "key-down"
 
         def prep():
+            close_open_row(lst)
             vis = visible_rows()
             i = vis[min(len(vis) - 1, 3 + c % 3)] if vis else None
             state["key_row"] = i
+            if i is None:
+                result["skipped"][f"{name}: no row"] = result["skipped"].get(f"{name}: no row", 0) + 1
             if i is not None:
                 lst.setCurrentIndex(lst.model().index(i, 0))
         at(250, prep)
@@ -756,6 +781,8 @@ def main_child(a):
         for name in DRAG[:-1]:
             moments.wakes.setdefault(name, "with drop")   # a drag's phases end in its drop: counted after it
         result["moments"] = moments.summary()
+        for name, n in unplayed(result["moments"]).items():
+            result["skipped"][f"{name}: no frames"] = n
         result["hud"] = {k: v for k, v in hud.report().items() if k in ("steps", "frames", "windows", "slow_frames",
                                                                          "late", "anim")}
         result["hud"]["late"].pop("explained", None)

@@ -36,12 +36,27 @@ def _tier_ids(tier):
         return s.ids(tier)
 
 
-def test_with_no_rule_arrivals_wait():
-    c.library(arrivals=True, placing_rules={})
+def test_hato_set_to_wait_makes_its_arrivals_wait():
+    # only an explicit target changes a default (SRC W1 fix): {"hato": "wait"} keeps a next episode in New arrivals
+    c.library(arrivals=True, placing_rules={"hato": "wait"})
     first = _arrive(4)
     _place(first["file_id"], "--to", "now")
     second = _arrive(5)
     assert (second["tier"], second["landed"]) == ("arrivals", "arrivals") and "rule" not in second
+
+
+@pytest.mark.parametrize("held", [{}, {"another-tool": "top"}, {"source": "wait"}])
+def test_an_empty_or_partial_rules_dict_keeps_hatos_default_after_show(held):
+    # why (SRC W1 fix, the lead's call 3): `placing_rules` merges per key as `logic` does. A file holding {} — what the
+    # Settings row wrote when its last rule was set to Wait, before after-show was the default — or naming only other
+    # sources quietly turned the after-show default off: hato's next episode waited instead of joining its show
+    c.library(arrivals=True, placing_rules=held)
+    first = _arrive(4)
+    _place(first["file_id"], "--to", "now")
+    second = _arrive(5)
+    assert (second["rule"], second["tier"]) == ("after-show", "now")
+    now = _tier_ids("now")
+    assert now.index(second["file_id"]) == now.index(first["file_id"]) + 1
 
 
 def test_top_places_only_the_named_programs_drops_and_logs_it_as_theirs():
@@ -216,3 +231,50 @@ def test_hatos_next_episode_joins_a_show_a_folder_scan_brought_in():
     assert three["rule"] == "after-show" and three["tier"] in ("now", "soon")
     current = _tier_ids("now") + _tier_ids("soon")
     assert current.index(three["file_id"]) == max(current.index(i) for i in scanned) + 1
+
+
+# --------------------------------------------------------------------------- #
+# SRC W1 fix (the lead's call 3): `placing_rules` merges per key, as `logic` does
+# --------------------------------------------------------------------------- #
+DEFAULT_RULES = {"hato": "after-show", "source": "after-show"}
+
+
+@pytest.mark.parametrize("held, merged", [
+    (None, DEFAULT_RULES),                                                       # absent: the defaults
+    ({}, DEFAULT_RULES),                                                         # empty: still the defaults
+    ({"hato": "top"}, {"hato": "top", "source": "after-show"}),                  # partial: the rest default
+    ({"source": "wait"}, {"hato": "after-show", "source": "wait"}),              # an explicit Wait is kept
+    ({"hato": "wait", "youtube:UCgx8nPpXp9c0Kv4bUk1D3ng": "goal"},
+     {"hato": "wait", "source": "after-show", "youtube:UCgx8nPpXp9c0Kv4bUk1D3ng": "goal"}),
+    (["hato", "top"], DEFAULT_RULES),                                            # hand-edited, no dict: the defaults
+])
+def test_every_reader_gets_the_rules_merged_per_key_with_their_defaults(held, merged):
+    # why: a missing key quietly turning the after-show default off (the next episode never joining its show) while
+    # Settings shows it on; only an explicit target changes one. The one rule (`settings_manager.placing_rules`), read
+    # through settings.json by load_settings (the window, the command line, the folders' looks) and by Connect's rules
+    import json
+    import os
+    from app import settings_manager
+    from app.connect import rules
+    assert settings_manager.placing_rules(held) == merged
+    path = os.path.join(h.root(), "settings.json")
+    values = {"target_language": "ja"} if held is None else {"target_language": "ja", "placing_rules": held}
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(values, f)
+    assert settings_manager.load_settings()["placing_rules"] == merged
+    assert settings_manager.load_settings(strict=True)["placing_rules"] == merged
+    with open(path, encoding="utf-8") as f:
+        assert json.load(f) == values, "reading never writes the defaults into the file"
+    raw = {} if held is None else {"placing_rules": held}                       # Connect handed the file as it is
+    want = None if merged["hato"] == "wait" else ("hato", merged["hato"])
+    assert rules.rule_for({"producer": "hato"}, raw) == want
+    assert rules.rule_for({"producer": "hato"}, settings_manager.load_settings()) == want
+
+
+def test_the_merged_rules_are_a_new_dict_each_time():
+    # a caller changing its copy (the Settings row builds its pick on it) never changes the defaults themselves
+    from app import settings_manager
+    mine = settings_manager.placing_rules({"hato": "top"})
+    mine["source"] = "wait"
+    assert settings_manager.placing_rules() == DEFAULT_RULES
+    assert settings_manager.DEFAULT_SETTINGS["placing_rules"] == DEFAULT_RULES

@@ -3,9 +3,10 @@ keeper's B2).
 
 What a wrong answer would cost: the placing rules are the user's own settings (D30), and a rule places hato's drops
 unattended — a pick that writes the whole settings file, or another key, puts back what another window just saved
-(CLAUDE.md §6); a Wait that leaves its source in the dict keeps placing arrivals the user asked to wait (RD-S16: empty =
-every arrival waits); an Esc or an unchanged pick that writes is a write the user never made; a hand-edited value that
-breaks the page takes every other setting with it; a store read on the GUI thread freezes the window; a line added that
+(CLAUDE.md §6); a Wait that leaves its source in the dict keeps placing arrivals the user asked to wait, and a Wait on
+hato or the folders not written brings their after-show default back (the rules merge per key); an Esc or an
+unchanged pick that writes is a write the user never made; a hand-edited value that breaks the page takes every other
+setting with it; a store read on the GUI thread freezes the window; a line added that
 slides the page loses the reader's place (brief §2: "It shouldn't move").
 
 The page is P3's, over the page tests' recorder (`Recorder`: every `set` kept, `land()` / `outside()` tell the
@@ -92,7 +93,7 @@ def action(menu, text):
 # --- the lines -------------------------------------------------------------------------------------------------------- #
 def test_one_line_per_rule_hato_first_then_each_source_in_order(qapp):
     page, store, rows = rules_page({"placing_rules": RULES})
-    assert shown(rows) == [("hato", "top"), ("bilibili", "finished"), (CHANNEL, "soon")]
+    assert shown(rows) == [("hato", "top"), ("source", "after-show"), ("bilibili", "finished"), (CHANNEL, "soon")]
     words = rows.lines[CHANNEL].words                  # cut in the middle when the line is short of room: whole on hover
     assert words.text().startswith("From ") and words.text().endswith("v4bUk1D3ng")
     assert words.toolTip() == words.accessibleName() == "From youtube · channel UCgx8nPpXp9c0Kv4bUk1D3ng"
@@ -101,15 +102,18 @@ def test_one_line_per_rule_hato_first_then_each_source_in_order(qapp):
     assert store.calls == [], "showing the rules writes nothing"
 
 
-def test_no_rule_written_shows_the_defaults_and_an_empty_dict_shows_hatos_line_at_wait(qapp):
+def test_no_rule_written_and_an_empty_dict_both_show_the_defaults(qapp):
     # Decision 1 (lean): settings.json without `placing_rules` reads its default, a next episode after its show from
-    # hato and from your folders; a file that holds {} (every rule taken out) shows hato's line at Wait
+    # hato and from your folders; the rules merge per key (SRC W1 fix), so a file that holds {} — what this row wrote
+    # once its last rule was set to Wait — reads the same, and a partial dict keeps the folders' line
     page, store, rows = rules_page()
     assert shown(rows) == [("hato", "after-show"), ("source", "after-show")]
     assert rows.lines["source"].words.text() == "From your folders"
     assert sr.source_words("source:3") == "folder 3"
     page, store, rows = rules_page({"placing_rules": {}})
-    assert shown(rows) == [("hato", "wait")]
+    assert shown(rows) == [("hato", "after-show"), ("source", "after-show")]
+    page, store, rows = rules_page({"placing_rules": {"source": "wait"}})
+    assert shown(rows) == [("hato", "after-show"), ("source", "wait")], "a default's Wait is a line, at Wait"
     assert store.calls == []
 
 
@@ -117,31 +121,41 @@ def test_no_rule_written_shows_the_defaults_and_an_empty_dict_shows_hatos_line_a
 def test_a_pick_writes_only_placing_rules_with_the_new_dict(qapp):
     page, store, rows = rules_page({"placing_rules": RULES, "words_per_day": 15})
     pick(rows, CHANNEL, "after-show")
-    assert store.calls == [({"placing_rules": {"hato": "top", CHANNEL: "after-show", "bilibili": "finished"}}, None)]
+    written = {"hato": "top", "source": "after-show", CHANNEL: "after-show", "bilibili": "finished"}
+    assert store.calls == [({"placing_rules": written}, None)]
     store.land()
     QApplication.processEvents()
-    assert store.file["placing_rules"] == {"hato": "top", CHANNEL: "after-show", "bilibili": "finished"}
+    assert store.file["placing_rules"] == written
     assert store.file["words_per_day"] == 15 and len(store.calls) == 1
 
 
 def test_wait_takes_the_source_out_of_the_dict_and_its_line_goes(qapp):
     page, store, rows = rules_page({"placing_rules": RULES})
     pick(rows, CHANNEL, "wait")
-    assert store.calls == [({"placing_rules": {"hato": "top", "bilibili": "finished"}}, None)]
+    assert store.calls == [({"placing_rules": {"hato": "top", "source": "after-show", "bilibili": "finished"}}, None)]
     QApplication.processEvents()
-    assert CHANNEL not in rows.lines and [s for s, _t in shown(rows)] == ["hato", "bilibili"]
+    assert CHANNEL not in rows.lines and [s for s, _t in shown(rows)] == ["hato", "source", "bilibili"]
     store.land()
     QApplication.processEvents()
     assert CHANNEL not in store.file["placing_rules"] and CHANNEL not in rows.lines
 
 
-def test_wait_on_hato_leaves_its_line_at_wait_and_an_empty_dict_means_every_arrival_waits(qapp):
+def test_wait_on_hato_or_the_folders_is_written_and_their_lines_stay_at_wait(qapp):
+    # SRC W1 fix: the rules merge per key, so a default's Wait left out of the dict would read as after-show again —
+    # the user who picks *Wait here* for hato gets "wait" written, and the line stays
     page, store, rows = rules_page({"placing_rules": {"hato": "top"}})
     pick(rows, "hato", "wait")
-    assert store.calls == [({"placing_rules": {}}, None)]
+    assert store.calls == [({"placing_rules": {"hato": "wait", "source": "after-show"}}, None)]
     store.land()
     QApplication.processEvents()
-    assert shown(rows) == [("hato", "wait")] and store.file["placing_rules"] == {}
+    assert shown(rows) == [("hato", "wait"), ("source", "after-show")]
+    assert store.file["placing_rules"] == {"hato": "wait", "source": "after-show"}
+    pick(rows, "source", "wait")
+    assert store.calls[-1] == ({"placing_rules": {"hato": "wait", "source": "wait"}}, None)
+    store.land()
+    QApplication.processEvents()
+    assert shown(rows) == [("hato", "wait"), ("source", "wait")]
+    assert settings_manager.placing_rules(store.file["placing_rules"]) == {"hato": "wait", "source": "wait"}
 
 
 def test_an_unchanged_pick_writes_nothing(qapp):
@@ -162,7 +176,8 @@ def test_another_windows_write_repaints_only_the_line_that_changed(qapp, monkeyp
     QApplication.processEvents()
     assert painted == ["hato", "nicovideo"], "only hato's place moved (and the new source's line was made)"
     assert all(rows.lines[s] is line for s, line in kept.items()), "the other lines are the same widgets"
-    assert shown(rows) == [("hato", "goal"), ("bilibili", "finished"), ("nicovideo", "top"), (CHANNEL, "soon")]
+    assert shown(rows) == [("hato", "goal"), ("source", "after-show"), ("bilibili", "finished"), ("nicovideo", "top"),
+                           (CHANNEL, "soon")]
     assert store.calls == []
     store.outside({"words_per_day": 30})          # a write of another key: no line touched
     QApplication.processEvents()
@@ -182,11 +197,12 @@ def test_a_source_picked_from_plus_rule_waits_until_a_place_is_picked(qapp, seen
     page, store, rows = rules_page({"placing_rules": {"hato": "top"}})
     action(open_menu(rows), "bilibili").trigger()
     QApplication.processEvents()
-    assert shown(rows) == [("hato", "top"), ("bilibili", "wait")] and rows.lines["bilibili"].new
+    assert shown(rows) == [("hato", "top"), ("source", "after-show"), ("bilibili", "wait")]
+    assert rows.lines["bilibili"].new
     assert store.calls == [], "a line at Wait is no rule: nothing saved"
     assert S.RULE_NEW_TIP.split("{")[0] in rows.lines["bilibili"].select.toolTip()
     pick(rows, "bilibili", "soon")
-    assert store.calls == [({"placing_rules": {"hato": "top", "bilibili": "soon"}}, None)]
+    assert store.calls == [({"placing_rules": {"hato": "top", "source": "after-show", "bilibili": "soon"}}, None)]
     assert not rows.lines["bilibili"].new
     assert "bilibili" not in menu_words(open_menu(rows)), "a source with a line is offered no more"
 
@@ -241,28 +257,30 @@ def test_tooltips_on_every_line_button_field_and_offer(qapp, seen):
 
 # --- what the file holds, hand-edited --------------------------------------------------------------------------------- #
 @pytest.mark.parametrize("held", [["hato", "top"], "finished", 7, None])
-def test_a_placing_rules_that_is_no_dict_shows_hatos_line_and_a_pick_starts_it_afresh(qapp, held):
+def test_a_placing_rules_that_is_no_dict_shows_the_defaults_and_a_pick_lays_over_them(qapp, held):
     page, store, rows = rules_page({"placing_rules": held})
-    assert page.built and shown(rows) == [("hato", "wait")]
+    assert page.built and shown(rows) == [("hato", "after-show"), ("source", "after-show")]
     pick(rows, "hato", "top")
-    assert store.calls == [({"placing_rules": {"hato": "top"}}, None)]
+    assert store.calls == [({"placing_rules": {"hato": "top", "source": "after-show"}}, None)]
 
 
 def test_a_target_no_place_names_shows_as_itself_and_stays_when_another_line_is_picked(qapp):
     page, store, rows = rules_page({"placing_rules": {"hato": "graduated", CHANNEL: 3, "": "top", "bilibili": "wait"}})
-    assert shown(rows) == [("hato", "graduated"), (CHANNEL, 3)], "an empty source and an explicit Wait are no line"
+    assert shown(rows) == [("hato", "graduated"), ("source", "after-show"), (CHANNEL, 3)], \
+        "an empty source and an explicit Wait (no default) are no line"
     assert "graduated" in rows.lines["hato"].select._options[-1][1]
     pick(rows, CHANNEL, "goal")
-    assert store.calls == [({"placing_rules": {"hato": "graduated", CHANNEL: "goal", "": "top"}}, None)]
+    assert store.calls == [({"placing_rules": {"hato": "graduated", "source": "after-show", CHANNEL: "goal",
+                                               "": "top"}}, None)]
     pick(rows, "hato", "finished")
     assert store.calls[-1][0]["placing_rules"]["hato"] == "finished"
 
 
-def test_a_missing_key_shows_hatos_line_and_the_whole_page_builds(qapp):
+def test_a_garbled_value_shows_the_defaults_and_the_whole_page_builds(qapp):
     page, store, rows = rules_page({"placing_rules": {"hato": "top"}})
     store.outside({"placing_rules": "garbage"})
     QApplication.processEvents()
-    assert shown(rows) == [("hato", "wait")] and store.calls == []
+    assert shown(rows) == [("hato", "after-show"), ("source", "after-show")] and store.calls == []
     assert page.rows["telemetry_enabled"] is not None
 
 
@@ -346,7 +364,7 @@ def test_the_rows_lines_hold_the_page_at_200_percent_and_text_size_large(scale, 
     y0, y1, y2, fits, dpr, last = json.loads(line[len("RESULT "):])
     assert abs(dpr - float(scale)) < 0.01
     assert y0 == y1 == y2 and fits
-    assert last == {"placing_rules": {"hato": "top", "bilibili": "finished"}}
+    assert last == {"placing_rules": {"hato": "top", "source": "after-show", "bilibili": "finished"}}
 
 
 # --- the sources a real store has seen ------------------------------------------------------------------------------- #

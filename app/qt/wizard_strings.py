@@ -97,6 +97,30 @@ COVERS_TIP = ("Covers for your shows, looked up by each show's name.\n"
               "• Turn it off any time: Settings")
 COVERS_PICTURE_NAME = "A plain tile becomes the show's cover"
 UPGRADE_SHOWS_LINE = "Your library came over from Surasura 2."
+# the folders your shows and books are in (SRC W1a): read where they are, each text copied into your library
+FOLDERS = "Where are your shows and books?"
+FOLDERS_NAME = "The folders your shows and books are in"
+PICK_FOLDER = "Choose a folder…"
+PICK_ANOTHER = "Add another folder…"
+PICK_FOLDER_TIP = ("Choose a folder your shows and books are in: Surasura reads them where they are.\n"
+                   "• Nothing in it is changed; each new episode joins your library by itself")
+PICK_TITLE = "Where are your shows and books?"
+FOLDER_REMOVE = "Remove"
+FOLDER_REMOVE_NAME = "Remove {folder}"
+FOLDER_REMOVE_TIP = "Leave this folder out: nothing is read from it."
+FOLDER_REFUSED = "{folder}: {why}"
+READING = "Found {episodes} in {shows}…"
+READ_DONE = "Found {episodes} in {shows}."
+READ_STOPPED = "Stopped: {episodes} in {shows} came in, and they're kept."
+READ_UNREACHABLE = "{folder} isn't reachable: nothing was read from it."
+READ_FAILED = "{folder} couldn't be read: {why}"
+READ_BUSY = "Surasura is already reading your folders: try again in a moment."
+READ_NOT_READY = "Your library isn't ready yet: try again in a moment."
+EPISODES = ("1 episode", "{n:,} episodes")
+SHOWS_N = ("1 show", "{n:,} shows")
+STOP = "Stop"
+STOP_TIP = "Stop reading now. What came in so far is kept."
+STOPPING = "Stopping…"
 
 # --- 4 · card order --------------------------------------------------------------------------------------------------- #
 ORDER_TITLE = "Your cards, in the order you'll meet the words"

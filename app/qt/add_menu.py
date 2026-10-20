@@ -15,6 +15,11 @@ header's right and its menu — and the same actions on the setup wizard's page 
   placed after its last episode. A folder no show in Current holds comes in as a folder of its own at the top of
   Current, its own folders kept. A folder is walked for content files on a worker, by the disk sync's own walk
   (`library_store.walk_tree`).
+- **A folder…** (SRC W1b, D6): *read it where it is* — the folder becomes a source of the library open
+  (`Store.add_source`, then its first look on the looks' worker: `app/services/source_looks.py`): Surasura keeps its own
+  copy of each text and looks there again for new episodes; a show it never showed waits in New arrivals (S14 / D6), an
+  episode of a show it holds joins its show. A folder it can't read there says why (`NotASource.reason`). Without the
+  looks (no store open), the folder is copied in as before (`add_folder`).
 - **Paste text…** (`PasteCard`): a small slate card — a title and the text — whose *Add* writes one UTF-8 `.txt`
   into a temporary folder (on a worker), then adds it like a file. Esc, Back and a click outside close it.
 
@@ -53,9 +58,9 @@ def _fold(text):
 
 def show_folder(row):
     """A Current row's own folder, relative to the data folder (`HighPriority/<show>`), when its files sit in one
-    folder below NOW's or Soon's — else None (loose files, hato's drop folder, another root)."""
+    folder below NOW's or Soon's (or `Library`'s) — else None (loose files, hato's drop folder, another root)."""
     from app import library_store as ls
-    tops = {ls.FOLDER_OF_TIER[t] for t in CURRENT}
+    tops = {ls.FOLDER_OF_TIER[t] for t in CURRENT} | {ls.CONTENT_FOLDER}     # SRC K3: new copies' folder too
     folders = {e.rel_path.rsplit("/", 1)[0] for e in row.episodes if e.rel_path and "/" in e.rel_path}
     if len(folders) != 1:
         return None
@@ -196,11 +201,13 @@ class Adder(QObject):
             out.append((name, label, tip))
         return out
 
-    def run(self, name):
+    def run(self, name, first=False):
+        """`name`'s action. `first`: a folder read by setup's own first look (Current, SRC-1) — setup's page 3; + Add
+        outside setup never (D6: a show never shown waits in New arrivals)."""
         if name == "files":
             self.add_files(pick_files(self.shell))
         elif name == "folder":
-            self.add_folder(pick_folder(self.shell))
+            self.read_folder(pick_folder(self.shell), first=first)
         elif name == "paste":
             self.paste()
         elif name in DOORS:
@@ -247,6 +254,56 @@ class Adder(QObject):
         bridge.run_in_worker(walk_folder, folder, then=walked,
                              failed=lambda info: windows.say_in_bar(self.shell, strings.ADD_FOLDER_FAILED.format(
                                  name=name, why=info[0])))
+
+    # --- SRC W1b: *Read it where it is* ------------------------------------------------------------------------- #
+    def read_folder(self, folder, first=False):
+        """`folder` becomes a source: `add_source` and its first look, on the looks' worker; what it found (or why it
+        can't be read there) said in the bar, `given` once it landed. `first`: setup's own first scan (Current, SRC-1).
+        Without the looks, copied in (`add_folder`). -> True when it was asked."""
+        if not folder:
+            return False
+        looks = getattr(self.shell, "looks", None)
+        if looks is None:
+            self.add_folder(folder)
+            return False
+        moves = self._moves()
+        if moves is not None and moves.refused() is not None:
+            return False                                  # S4 (E4): said in the bar, nothing written
+        name = os.path.basename(os.path.normpath(folder)) or folder
+        relay = bridge.Relay(self)
+        relay.said.connect(lambda answer: self._read(name, answer, relay, folder))
+        busy = looks.busy() if hasattr(looks, "busy") else False
+        asked = bool(looks.add(os.path.normpath(folder), relay.call, first=first))
+        if asked and busy:                                # queued behind a look under way: said, never silent
+            windows.say_in_bar(self.shell, strings.SOURCES_QUEUED.format(name=name))
+        return asked
+
+    def _read(self, name, answer, relay, folder=None):
+        relay.deleteLater()
+        refused = answer.get("refused")
+        result = answer.get("result") or {}
+        if refused == "no-library" and folder:
+            self.add_folder(folder)                       # a 2.x library (no store): copied in, as before (S3)
+            return
+        if answer.get("later"):
+            text = strings.SOURCES_READ_LATER.format(name=name)
+        elif refused:
+            reason = strings.SOURCES_NO_LIBRARY if refused == "no-library" else refused
+            text = strings.SOURCES_REFUSED.format(name=name, reason=reason)
+        elif not result.get("reachable", True):
+            text = strings.SOURCES_UNREACHABLE.format(name=name)
+        elif result.get("added"):
+            line = strings.SOURCES_READ_ARRIVALS if answer.get("arrivals") else strings.SOURCES_READ
+            text = line.format(name=name, added=result["added"])
+        else:
+            text = strings.SOURCES_READ_NOTHING.format(name=name)
+        say = getattr(self.shell, "say", None)
+        if say is not None:
+            say(text)
+        else:
+            windows.say_in_bar(self.shell, text)
+        if not refused:
+            self.given.emit(text)
 
     def paste(self):
         if self.card is not None and _alive(self.card) and self.card.isVisible():

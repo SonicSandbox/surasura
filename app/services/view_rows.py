@@ -54,7 +54,8 @@ EPISODIC = ("anime", "drama", "movie", None)
 Status = namedtuple("Status", "kind label tip tone")          # tone: ok · accent · dim · ink · faint · warn
 Mark = namedtuple("Mark", "count tone tip")                    # the on-disk mark (⌀ N)
 Episode = namedtuple("Episode", "id label number title watched cards mining missing removed in_top pct n_new "
-                                "status mark rel_path play_tip can_play deleted", defaults=(False,))
+                                "status mark rel_path play_tip can_play deleted waiting", defaults=(False, False))
+#   waiting (SRC K5 / W1b): a video found in a source folder with no subtitle yet — never played, read or mined
 Row = namedtuple("Row", "key index tier work_id piece_id media media_word verb title title_ep line source n_files n_watched "
                         "pct pct_tone n_new status mark episodes next_index studying date cover_title accessible "
                         "description chips more_chips play_tip can_play cards_out string", defaults=(False, None))
@@ -99,7 +100,7 @@ Row = namedtuple("Row", Row._fields[:Row._fields.index("string")] + ("cover",) +
                  defaults=(None,) + tuple(Row._field_defaults.values()))
 #   before `string`, which stays last (the first screen's cache writes it None; a cache from before reads cover None)
 Need = namedtuple("Need", Need._fields + ("cover",), defaults=(None,))
-Arrival = namedtuple("Arrival", Arrival._fields + ("cover",), defaults=(None,))
+Arrival = namedtuple("Arrival", Arrival._fields + ("cover", "waiting"), defaults=(None, 0))   # SRC W1b: no subtitles
 # --- P4.1 WF (adversary S5): a tray row's files as Current's rows hold them (`Episode`), so *Mine them too* asks by the
 # rows' rule (never a file in Anki or whose cards were deleted). Never in the first screen's cache (the tray isn't)
 Arrival = namedtuple("Arrival", Arrival._fields + ("episodes",), defaults=((),))
@@ -150,6 +151,13 @@ STRINGS = {
     "play_missing": "Its file is gone from your library folder\n• Point it at its file in Needs you",
     "play_missing_plain": "Its file is gone from your library folder, so it can't {verb_l} from here",
     "play_removed": "Its {word} was removed\n• Link it to {verb_l} it from here: Needs you, in a later build",
+    # --- SRC W1b: a video found in a source folder, its subtitle not there yet (K5's `waiting`)
+    "play_waiting": "No subtitles yet: its {word} is in your folder, its subtitle file isn't\nIt can be watched and "
+                    "mined once one arrives there",
+    "no_subs": "No subtitles yet", "no_subs_n": "No subtitles yet · {n}",
+    "tip_no_subs": "Its {word} is in your folder, its subtitle file isn't yet: nothing to read or mine until one "
+                   "arrives. Surasura fills it in by itself",
+    "arr_no_subs": "no subtitles yet",
     "eps_more": " and {n} more",
     "player": {"video": "video player", "audio": "audio player", "EPUB": "e-book reader", "file": "default app"},
     "ep": "Ep {n}", "part": "Part {n}", "num": "#{n}", "eps": "Ep {a}–{b}", "parts": "Parts {a}–{b}",
@@ -377,7 +385,8 @@ def status_of(eps, word, line_n):
     # mined, then its cards deleted by the learner: never made again unless asked (Sonic, 2026-10-07), so not Waiting
     deleted = [e for e in eps if getattr(e, "deleted", False) and not (e.cards or e.mined)]
     unmined = [e for e in eps if not (e.cards or e.mined or getattr(e, "deleted", False))]
-    ready = [e for e in unmined if not e.missing]
+    ready = [e for e in unmined if not e.missing and not getattr(e, "waiting", False)]
+    no_subs = [e for e in unmined if getattr(e, "waiting", False)]     # SRC W1b: nothing to mine until one arrives
     missing = [e for e in eps if e.missing and not e.removed and not getattr(e, "deleted", False)]   # waits on nothing
     removed = [e for e in eps if e.removed]
     top_missing = [e for e in missing if e.in_top]
@@ -401,6 +410,9 @@ def status_of(eps, word, line_n):
                     STRINGS["tip_mine_rest"].format(k=k, n=n, line=line_n), "ok")
     elif ready:
         st = Status("mine", STRINGS["mine"], STRINGS["tip_mine"].format(line=line_n), "ink")
+    elif no_subs and len(no_subs) == len(unmined):                  # SRC W1b: only videos waiting for subtitles
+        label = STRINGS["no_subs"] if len(no_subs) == 1 else STRINGS["no_subs_n"].format(n=len(no_subs))
+        return Status("no_subs", label, STRINGS["tip_no_subs"].format(word=word), "faint"), None
     else:                                                          # nothing left that could be mined
         top = any(e.in_top for e in unmined)
         label = STRINGS["no_media"].format(word=word) if len(unmined) == 1 else \
@@ -436,6 +448,7 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=
         label = STRINGS["part"].format(n=number)
     known, counted, n_new = numbers.get(item["id"], (0, 0, None))
     missing = item.get("availability") == "missing"
+    waiting = item.get("availability") == "waiting"          # SRC W1b: a video with no subtitle yet
     c = cards.get(item["id"], 0)
     # in Anki only while its cards are there (Sonic, 2026-10-07): the receipt `mined_at` outlives a card the learner
     # deleted, so it never shows ✓, a mined chip or "the cards keep their pictures and audio" on its own
@@ -445,7 +458,7 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=
     ep = Episode(id=item["id"], label=label, number=number, title=stem(name), watched=bool(item.get("watched")),
                  cards=c, mining=item["id"] in mining and not mined, missing=missing, removed=missing and mined,
                  in_top=in_top, pct=pct_of(known, counted), n_new=n_new, status=None, mark=None,
-                 rel_path=item.get("rel_path"), play_tip="", can_play=not missing)
+                 rel_path=item.get("rel_path"), play_tip="", can_play=not missing and not waiting, waiting=waiting)
     asked = item.get("mine_asked")                    # asked again after it was mined: it mines again (Sonic's "unless asked")
     deleted = bool(item.get("mined_at")) and not mined and not (asked and str(asked) > str(item["mined_at"]))
     ep = ep._replace(deleted=deleted)
@@ -457,6 +470,8 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=
         ep = ep._replace(can_play=False)
     if online:
         tip = STRINGS["play_online"]
+    elif waiting:
+        tip = STRINGS["play_waiting"].format(word=word)
     elif missing:
         tip = (STRINGS["play_removed"] if mined else STRINGS["play_missing_plain"] if deleted else
                STRINGS["play_missing"]).format(word=word, verb_l=verb.lower())
@@ -506,11 +521,12 @@ def _row_connected(st, eps, connect, word):
 
 class _Shim:
     """An episode as `status_of` reads it (`mined`: its cards are in Anki — never the receipt alone)."""
-    __slots__ = ("label", "cards", "mined", "missing", "removed", "in_top", "mining", "deleted")
+    __slots__ = ("label", "cards", "mined", "missing", "removed", "in_top", "mining", "deleted", "waiting")
 
     def __init__(self, ep, mined):
         self.label, self.cards, self.mined, self.deleted = ep.label, ep.cards, mined, ep.deleted
         self.missing, self.removed, self.in_top, self.mining = ep.missing, ep.removed, ep.in_top, ep.mining
+        self.waiting = getattr(ep, "waiting", False)
 
 
 def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, finished=False, guessed=None,
@@ -780,12 +796,13 @@ def worst_needs(rows):
 
 
 def _mine_ids(current, n):
-    """The store's `_mine_ids`: the top `n` available files of Current, in order."""
+    """The store's `_mine_ids`: the top `n` available files of Current, in order (a video waiting for its subtitle is
+    never one: SRC W1b)."""
     out = []
     for r in current:
         if len(out) >= n:
             break
-        if r.get("availability") != "missing":
+        if r.get("availability") not in ("missing", "waiting"):
             out.append(r["id"])
     return out
 
@@ -848,6 +865,9 @@ def _arrival(piece, works, cards, estimates, guessed):
         parts += ((STRINGS["arr_cards"].format(n=n_cards), "ok"),)
     if no_media:
         parts += ((STRINGS["arr_no_media_one" if no_media == 1 else "arr_no_media"].format(n=no_media), "warn"),)
+    waiting = sum(1 for e in eps if e.waiting)                      # SRC W1b: K5's videos with no subtitle yet
+    if waiting:
+        parts += ((STRINGS["arr_no_subs"], "dim"),)
     watched = all(e.watched for e in eps)
     unit = _arrival_unit(media)
     one, many = STRINGS["arr_units"][unit]
@@ -865,7 +885,7 @@ def _arrival(piece, works, cards, estimates, guessed):
                    cards=n_cards, no_media=no_media, parts=parts, n_files=n, watched=watched,
                    group="watched" if watched else "new",
                    added_at=max((it.get("added_at") or "" for it in piece), default="") or None,
-                   cover_title=row.cover_title, per_ep=per_ep, tip=tip, cover=row.cover,     # W3.2 Q6
+                   cover_title=row.cover_title, per_ep=per_ep, tip=tip, cover=row.cover, waiting=waiting,  # Q6, W1b
                    episodes=eps,                                                            # P4.1 WF
                    accessible=STRINGS["acc_arrival"].format(title=row.title, line=" · ".join(t for t, _ in parts),
                                                             number=number).replace(" ·  · ", " · "))

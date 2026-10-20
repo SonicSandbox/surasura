@@ -6,7 +6,7 @@
   `end=True`, Goal's end as it stands when the write lands), `nudge`, `set_tier` (Finished is the store's `graduated`),
   `set_finished` (the store's `finish`: the Finished toast's *Keep* / *Take its new cards out*; `follows=` the drop's
   change, so that drop's Undo takes the cards' choice back too), `set_watched`, `insert_at` (an Explorer drop: the
-  content files copied into the tier's folder at once on a copier thread of its own, then queued and placed), `undo`;
+  content files copied into `Library/<name>/` at once on a copier thread of its own, then queued and placed), `undo`;
   W3.2's: `place` (New arrivals' icons and ⋯), `put_back` (Finished → the top of Current, its cards back in the
   order), `import_finished` (the Finished importer's store half), `relink` / `its_new` (Needs you's *Link these*, the
   rename asks), `link_video` (Connect's *Link…*: a video, never `relink`), `remove` / `restore` (the trash, 30 days),
@@ -68,9 +68,10 @@ JOURNALLED = ("move", "nudge", "set_tier", "finish", "set_watched",
               "place", "put_back", "import_finished", "relink", "its_new", "link_video", "remove", "restore", "pin",
               "keep_cards", "ask_mining", "split", "join", "set_media_type", "set_cover", "set_options")
 #   an undo needs its Change: never journalled; nor an Explorer drop (`insert_at`: no ids yet). Its files are copied into
-#   the tier's folder at once, on the copier's thread — a busy store or a drag never holds the copy back, and the copy
-#   never holds a move back (G1) — so a quit or a crash before it lands leaves them whole in the folder, where the next
-#   disk sync adds them (AD-2); nor a background cover (`auto`: the scan runs again)
+#   the content folder at once, on the copier's thread — a busy store or a drag never holds the copy back, and the copy
+#   never holds a move back (G1) — so a quit or a crash before it lands leaves them whole in the folder (AD-2; since SRC
+#   K3 the disk sync never adds an untracked file there — B2 — so they wait for the same drop again, which takes the
+#   identical copy as its file); nor a background cover (`auto`: the scan runs again)
 GUARDED = ("pin", "keep_cards", "ask_mining", "set_cover", "set_media_type", "join", "import_finished")
 #   a replay checks these against what they touch as queued (`_as_queued`): their writes move no `changed_in` (a
 #   status, a title's fields) or they hold no ids (a join's pieces, an import's paths)
@@ -79,9 +80,10 @@ PLAN_FILE = "plan.json.gz"      # `analyzer.PLAN_FILE` (not imported: the analyz
 CHANGED_KEPT = 64               # `Numbers.changed` remembers this many versions back
 
 WORDS = ("saving", "cant_undo", "nearest", "top", "crash_one", "crash_many", "read_only", "failed", "put_back_as")
-#   the keys `words` must hold (`strings.MOVE_WORDS`); "not_content" ({names}: the files an Explorer drop left out) may
-#   be held too — without it that note is `failed`'s, with the names. "put_back_as" ({names}): files a Put back brought
-#   back under a new name (theirs was taken)
+#   the keys `words` must hold (`strings.MOVE_WORDS`); "not_content" ({names}: the files an Explorer drop left out) and
+#   "already_in" ({titles}: the items whose bytes a dropped file holds, SRC K3) may be held too — without one, its note
+#   is `failed`'s, with the names. "put_back_as" ({names}): files a Put back brought back under a new name (theirs was
+#   taken)
 PLACES = ("top", "after-show", "soon", "goal", "finished")  # `place`'s targets (`Store.place`)
 KEPT = ("tier", "before_id", "after_id", "near", "direction", "on", "keep_cards", "end", "seen",
         "where", "paths", "copied", "path", "trash_ids", "piece_id", "piece_ids", "work_ids", "media_type",
@@ -257,16 +259,17 @@ class Writer:
                           "follows": follows})
 
     def insert_at(self, paths, tier, before_id=None, after_id=None, near=(), label=None, into=None):
-        """An Explorer drop: `paths` (files from anywhere) copied at once, on the copier's own thread, into `tier`'s
-        folder of the data folder (never over a file: an identical one is already there, another comes in under a new
-        name; a file already in a tier's folder stays where it is), then queued and placed by `Store.insert_at` before
+        """An Explorer drop: `paths` (files from anywhere) copied at once, on the copier's own thread, into the data
+        folder's `Library/<name>/` (SRC K3; never over a file: an identical one is already there, another comes in
+        under a new name; a file already in a tier's folder or `Library` stays where it is; one whose bytes are an
+        item's isn't added, its title in a note), then queued and placed by `Store.insert_at` before
         `before_id` / after `after_id`, or at the top of `tier` with neither. The anchor gone or out of the tier when
         the write lands → beside the nearest surviving `near` neighbour, else the top of the tier, with a note. Content
         files only (the disk sync's `is_content_name`): the rest are left out, with a note. The moves given meanwhile
         never wait for the copy (G1): the drop joins the queue once its files are in place, so it may land after them.
-        Not journalled: a quit or a crash before it lands leaves the copies whole in the folder, where the next disk
-        sync places them (AD-2). Its Undo sends the files it copied to the trash and takes their rows out; a drop that
-        copied nothing (its files were in the tiers' folders already) isn't put on the Undo stack.
+        Not journalled: a quit or a crash before it lands leaves the copies whole in the folder (AD-2), where the same
+        drop again finds them (see JOURNALLED). Its Undo sends the files it copied to the trash and takes their rows
+        out; a drop that copied nothing (its files were in the tiers' folders already) isn't put on the Undo stack.
         # --- W3.2 Q3: `into` (+ Add): the folder each file is copied into instead of the tier's own, relative to the
         # data folder and inside one of the folders the disk sync walks — one for every file, or a list beside `paths`
         # (a show's folder, so the file joins its show; a folder added, its own folders kept)."""
@@ -823,6 +826,10 @@ class Writer:
             names = ", ".join(cmd["left_out"])
             self._call(self.on_note, self.words["not_content"].format(names=names) if "not_content" in self.words
                        else self.words["failed"].format(error=names))
+        if cmd.get("already"):                      # SRC K3: never a duplicate, and never a silent one
+            titles = ", ".join(dict.fromkeys(cmd["already"]))
+            self._call(self.on_note, self.words["already_in"].format(titles=titles) if "already_in" in self.words
+                       else self.words["failed"].format(error=titles))
         if change is not None:
             self._call(self.after_commit, change, op)
         if cmd.get("renamed"):                      # a Put back that couldn't take its own name
@@ -1007,8 +1014,8 @@ class Writer:
 
     # --- an Explorer drop ----------------------------------------------------------------------------------------- #
     def _copy_then_queue(self, cmd):
-        """(The copier's thread.) The drop's files into the tier's folder, then the drop into the writer's queue — not
-        once the writer has stopped (the quit): its copies stay whole in the folder for the next disk sync. A copy that
+        """(The copier's thread.) The drop's files into the content folder, then the drop into the writer's queue — not
+        once the writer has stopped (the quit): its copies stay whole in the folder (AD-2, see JOURNALLED). A copy that
         fails lets the drop go with a note, its copies to the trash."""
         try:
             data_dir = getattr(self.opener, "data_dir", None)
@@ -1032,10 +1039,13 @@ class Writer:
             self._cond.notify_all()
 
     def _copy_in(self, data_dir, cmd):
-        """The dropped files into the tier's folder, once, before the drop is queued: content files only (the disk sync's rule; a shortcut, a video, a folder are left out and named in a note); never
-        over a file (an identical one is the file already there; another comes in as `name (2).ext`); one already in a
-        tier's folder left where it is (one elsewhere in the data folder — its trash — is copied in). `copied`: the
-        files made here (the trash's, if the command is let go)."""
+        """The dropped files into the content folder, `Library/<name>/` (SRC K3: a place is the store's alone; + Add's
+        tier folder of a show becomes the same show's folder there), once, before the drop is queued: content files
+        only (the disk sync's rule; a shortcut, a video, a folder are left out and named in a note); never over a file
+        (an identical one is the file already there; another comes in as `name (2).ext`); one already in a
+        tier's folder or the content folder left where it is (one elsewhere in the data folder — its trash — is copied
+        in); one whose bytes are a live item's file's (size first, then sha256) not added, its title in `already` (K3,
+        SRC-7: never a duplicate). `copied`: the files made here (the trash's, if the command is let go)."""
         import filecmp
         lib = _ls()
         folder = lib.FOLDER_OF_TIER.get(cmd["tier"])
@@ -1043,19 +1053,39 @@ class Writer:
             raise ValueError(f"files can't be dropped into {cmd['tier']!r}")
         cmd["data_dir"] = data_dir
         cmd["started_at"] = lib._now()              # a sync that meets a copy made: the command takes the row over
-        walked = {lib.path_key(f) for f in lib.FOLDER_OF_TIER.values()}    # the folders the disk sync walks
-        out, made, left = [], [], []
+        walked = {lib.path_key(f) for f in lib.WALK_FOLDERS}               # the folders the disk sync walks
+        out, made, left, already = [], [], [], []
         into = cmd.get("into") or [None] * len(cmd["files"])          # --- W3.2 Q3: + Add's folders
+        rels = {p: lib.library_rel(data_dir, p) for p in cmd["files"]}
+        inside = {p: r for p, r in rels.items() if r is not None and lib.path_key(r.split("/", 1)[0]) in walked}
+        own = (_rows_held(self.language, data_dir, list(inside.values())) or {}) if inside else {}
+        # K3: an outside file, or one under a walked folder that is no item's own (K3 fix N3: the kept-out hato file,
+        # an unused copy) — its bytes checked; an item's own file (or any, when the store can't be read) is placed
+        held = _held_bytes(self.language, data_dir, [p for p in rels if p not in inside or
+                                                     not own.get(lib.path_key(inside[p]), True)])
+        firsts, sizes = {}, {}                      # N4: one file of two with the same bytes in this drop
+        for p in cmd["files"]:
+            if p not in inside and p not in held and os.path.isfile(p):
+                sizes.setdefault(os.path.getsize(p), []).append(p)
         try:
             for path, sub in zip(cmd["files"], into):
                 if not os.path.isfile(path) or not lib.is_content_name(path):
                     left.append(os.path.basename(os.path.normpath(path)))       # (AD-4)
                     continue
+                if path in held:                    # K3: already in the library, by its bytes
+                    already.append(held[path][1] or os.path.basename(path))
+                    continue
                 rel = lib.library_rel(data_dir, path)
                 if rel is not None and lib.path_key(rel.split("/", 1)[0]) in walked:   # (AD-11: not the trash)
                     out.append(path)
                     continue
-                dest = os.path.join(data_dir, *_into(sub, folder, walked, lib), os.path.basename(path))
+                if len(sizes.get(os.path.getsize(path), ())) > 1:
+                    first = firsts.setdefault(lib.sha256_of(path), path)
+                    if first != path:
+                        already.append(os.path.basename(first))
+                        continue
+                parts = _in_library(_into(sub, folder, walked, lib), path, lib)
+                dest = os.path.join(data_dir, *parts, os.path.basename(path))
                 if os.path.exists(dest) and filecmp.cmp(path, dest, shallow=False):
                     out.append(dest)
                     continue
@@ -1067,6 +1097,7 @@ class Writer:
             cmd["copied"] = made
         cmd["files"] = out
         cmd["left_out"] = left
+        cmd["already"] = already
 
     def _insert(self, store, cmd):
         """`Store.insert_at` beside the anchor; gone or out of the tier → beside the nearest surviving `near`
@@ -1572,6 +1603,37 @@ def _rows_held(language, data_dir, rels):
         conn.close()
 
 
+def _held_bytes(language, data_dir, paths):
+    """K3 (SRC-7): {path: (item_id, title)} for each of `paths` whose bytes a live item's file holds — the sizes read
+    through a `mode=ro` look (as `_rows_held`), the files hashed after it (`library_store.holding`). {} when the store
+    can't be read: the drop goes on as before (a duplicate then is the user's to remove)."""
+    import pathlib
+    import sqlite3
+    lib = _ls()
+    files = []
+    for p in paths:
+        try:
+            files.append((p, os.stat(p).st_size))
+        except OSError:
+            continue
+    if not files:
+        return {}
+    try:
+        db_path = lib.library_db_path(language, data_dir)
+        if not os.path.exists(db_path):
+            return {}
+        conn = sqlite3.connect(pathlib.Path(db_path).as_uri() + "?mode=ro", uri=True, timeout=1.0)
+    except (sqlite3.Error, OSError, ValueError):
+        return {}
+    try:
+        rows = lib.same_size_items(conn, [s for _p, s in files])
+    except sqlite3.Error:
+        return {}
+    finally:
+        conn.close()
+    return lib.holding(data_dir, files, rows)
+
+
 def _works_as_set(store, fields):
     """Whether every title value a change set still holds it. The store's value check (`_undo_works`) goes field by
     field, silently: a cover chosen again since would come back half (another's path, the old source) — so a title's
@@ -1635,6 +1697,21 @@ def _into(sub, folder, walked, lib):
             lib.path_key("/".join(parts) + "/").startswith(lib.path_key(lib.HATO_FOLDER + "/")):
         raise ValueError(f"files can't be copied into {sub!r}")
     return parts
+
+
+def _in_library(parts, path, lib):
+    """(SRC K3) Where a new copy goes: the content folder, never a tier's — `parts` from `_into` with its tier folder
+    swapped for `Library` (a show's folder there is the same show: the store groups `Library/<show>` with its tier
+    twin); a tier folder alone (loose files) gives the file's show (`show_of_name`), else the content folder itself —
+    never the name of the folder it was dragged from (K3 fix R5: `01.srt` from Downloads is no show "Downloads"); the
+    store's rule (K4) makes such a loose file a title of its own."""
+    if lib.path_key(parts[0]) == lib.path_key(lib.CONTENT_FOLDER):
+        return parts
+    if len(parts) > 1:
+        return [lib.CONTENT_FOLDER] + parts[1:]
+    from app.extract import clean_name
+    show = clean_name(lib.show_of_name(os.path.basename(os.path.normpath(path))) or "")
+    return [lib.CONTENT_FOLDER, show] if show else [lib.CONTENT_FOLDER]
 
 
 def _full(store, rel):

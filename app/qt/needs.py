@@ -15,6 +15,10 @@ the window's spec A2 #69–70, G4–G7, 06 E8, E10, E11, P1.2-1).
   `hato.backfill`, `status.dismiss`) and the seen file's (*Keep its words*, *Leave them*) run on a worker.
 - **Remove** asks first, naming the count (`confirm.ask`: Esc, Back, a click outside are No); an offline root never
   offers it and *Remove all* never counts its files (IK-8).
+- **Setup's first cards** (SRC D1): *Make cards* turns Connect on if it's off — Settings › Anki's own switch on a
+  worker (`settings_connect`: the watermarks, the save, hato's back-fill, the service's reload), the write told on the
+  bridge — then logs the first 20 of Current as entering the mine line by your choice (`setup_wizard.first_cards`);
+  *Not now* writes nothing but its answer. Either answer's line says where the switch lives.
 - **Opening the page** marks its entries seen (`needs.mark_all_seen`, on a worker): they stay listed and stop
   counting (P1.2-1).
 """
@@ -344,6 +348,10 @@ class NeedsYou(QObject):
         self.pick_save = lambda title, name: QFileDialog.getSaveFileName(self.win, title, name, "Zip (*.zip)")[0]
         # P4.1's hooks (`mine_text_only(entry, line)`, `make_cards(entry)`): hidden until set
         self.hooks = {}
+        # D1's *Make cards* (each on a worker; tests replace them): Settings › Anki's switch, then the store's log
+        self.switch_on = _settings_switch_on
+        self.first_cards = _first_cards
+        self._first_running = False
         self.connect_calls = {"mine_anyway": _connect_callable("actions", "mine_anyway"),
                               "ask_hato": _connect_callable("hato", "backfill"),
                               "dismiss": _connect_callable("status", "dismiss"),
@@ -352,8 +360,16 @@ class NeedsYou(QObject):
         self.cards = page.cards
         self.cards.shown = self.available
         self.cards.action.connect(self.act)
+        heard = getattr(win, "bridge", None)
+        if heard is not None and hasattr(heard, "settings_written"):
+            heard.settings_written.connect(self._settings_written)
 
     # --- what comes in ------------------------------------------------------------------------------------------- #
+    def _settings_written(self, keys):
+        """Connect's switch written (setup's page 5, Settings › Anki): D1's line asks again in its words."""
+        if "connect_enabled" in tuple(keys or ()) and self._alive():
+            self.refresh()
+
     def view_in(self, view):
         old, self.view = self.view, view
         if view is None:
@@ -416,7 +432,8 @@ class NeedsYou(QObject):
             except Exception as e:                  # (a file that can't be read is left as it is: the gather goes on)
                 print(f"Needs you: the seen file wasn't pruned: {e!r}")
             out = service.entries(view, failures, connect, service.read_seen(lang), roots, asks,
-                                  service.read_answered(lang))
+                                  service.read_answered(lang), offers=service.read_offers(lang),
+                                  cards_on=bool(settings.get("connect_enabled")))
             return asked, tuple(out)
         bridge.run_in_worker(gather, then=self._got, failed=self._gather_failed)
 
@@ -488,8 +505,11 @@ class NeedsYou(QObject):
 
     def _failed(self, info):
         from app.qt import applog
-        applog.log("needs", f"{info[0].__name__ if info and info[0] else ''}: {info[1] if info else ''}")
-        self._say(strings.NEEDS_FAILED.format(why=info[1] if info else ""))
+        # `act`'s (type, exception, None) or a worker's (exception, its traceback's text: `bridge.run_in_worker`)
+        error = info[0] if info and isinstance(info[0], BaseException) else (info[1] if info else "")
+        name = type(error).__name__ if isinstance(error, BaseException) else ""
+        applog.log("needs", f"{name}: {error}")
+        self._say(strings.NEEDS_FAILED.format(why=error))
 
     def _data(self):
         return self.data_dir or path_utils.get_data_path(self.language)
@@ -694,6 +714,76 @@ class NeedsYou(QObject):
     def _do_make_cards(self, entry, _line):
         self.hooks["make_cards"](entry)
 
+    # setup's first cards (SRC D1)
+    def _do_first_cards(self, entry, _line):
+        """*Make cards*: Connect on if it's off (as Settings › Anki's switch turns it on), then the first 20 of Current
+        logged as entering the mine line by your choice, then the answer kept — all on a worker. D29's automatic
+        actions off: nothing written and said why (Connect couldn't read them, and turning automation on later moves
+        its watermark past them). That, or Connect not turned on: the reason said, and the line stays."""
+        if self._first_running:
+            return                                   # one answer at a time: a second click while it goes does nothing
+        services_settings = self.win.services.settings
+        now = services_settings.get() or {}
+        from app import settings_manager
+        if not settings_manager.automation(now):
+            self._say(strings.NEEDS_FIRST_CARDS_NOT_ON.format(why=strings.NEEDS_FIRST_CARDS_AUTOMATION_OFF))
+            return
+        self._first_running = True
+        lang, data = self.language, self.data_dir
+        switch_on, first_cards = self.switch_on, self.first_cards
+        was_on = bool(now.get("connect_enabled"))
+        switched = []                                # Connect saved on here: told on the bridge, whatever comes next
+
+        def run():
+            if not was_on:
+                ok, why = switch_on(services_settings, lambda _text: None)
+                if not ok:
+                    return False, why
+                switched.append(True)
+            from app.services.settings import thaw
+            first_cards(lang, thaw(services_settings.get()), data)
+            service.answer(lang, [entry.key])
+            return True, None
+
+        def told():
+            heard = getattr(self.win, "bridge", None)
+            if switched and heard is not None and hasattr(heard, "settings_written"):
+                heard.settings_written.emit(("connect_enabled",))           # the shell's Connect line, Settings' row
+
+        def failed(info):
+            self._first_running = False
+            told()
+            self._failed(info)
+
+        def done(answer):
+            self._first_running = False
+            ok, why = answer
+            told()
+            made = strings.NEEDS_FIRST_CARDS_MADE_ON if was_on else strings.NEEDS_FIRST_CARDS_MADE
+            self._say(made if ok else strings.NEEDS_FIRST_CARDS_NOT_ON.format(why=why))
+            self.refresh()
+        bridge.run_in_worker(run, then=done, failed=failed)
+
+    def _do_first_cards_on(self, entry, line):
+        """*Make cards* with Connect already on (setup's page 5): the same, only the first 20 logged."""
+        self._do_first_cards(entry, line)
+
+    def _do_not_now(self, entry, _line):
+        """*Not now*: nothing but the answer (Connect left as it is); never while *Make cards* runs. Its line as
+        Connect is: off, where to turn it on; on, that later episodes still get their cards."""
+        if self._first_running:
+            return
+        lang = self.language
+        on = bool((self.win.services.settings.get() or {}).get("connect_enabled"))
+
+        def done(_n):
+            self._say(strings.NEEDS_FIRST_CARDS_LATER_ON if on else strings.NEEDS_FIRST_CARDS_LATER)
+            self.refresh()
+        bridge.run_in_worker(service.answer, lang, [entry.key], then=done, failed=self._failed)
+
+    def _do_not_now_on(self, entry, line):
+        self._do_not_now(entry, line)
+
     # the failures (W3.5's)
     def _do_open_logs(self, _entry, _line):
         self.win.open_logs()
@@ -705,6 +795,18 @@ class NeedsYou(QObject):
         save = self.connect_calls["save_logs"]
         bridge.run_in_worker(save, dest, then=lambda _n: self._say(strings.NEEDS_SAVED_LOGS.format(path=dest)),
                              failed=self._failed)
+
+
+def _settings_switch_on(settings, log):
+    """(A worker.) Connect's switch turned on as Settings › Anki turns it on -> (ok, why)."""
+    from app.qt import settings_connect
+    return settings_connect._switch_on(settings, log)
+
+
+def _first_cards(language, settings, data_dir=None):
+    """(A worker.) The first 20 of Current logged as entering the mine line by your choice -> the ids logged."""
+    from app.services import setup_wizard
+    return setup_wizard.first_cards(language, settings, data_dir)
 
 
 def _same(a, b):

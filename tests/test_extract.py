@@ -171,7 +171,7 @@ def test_the_parts_land_in_processed_and_enter_the_library_through_the_store_in_
     assert result.code == extract.EXIT_DONE and result.in_library and result.parts > 1
     processed = os.path.join(data_dir, "Processed", "旅の本")
     assert sorted(os.listdir(processed))[0] == "旅の本_01.txt"
-    folder = ls.FOLDER_OF_TIER[section]
+    folder = ls.CONTENT_FOLDER                              # every new copy's folder (SRC K3); the place is the section
     # Current is NOW then Soon: the store's Soon line may carry the last of them past it (its own rule)
     tiers = ("now", "soon") if section == "now" else (section,)
     listed = [p for t in tiers for p in _paths(language, t) if p.startswith(f"{folder}/旅の本/")]
@@ -195,7 +195,7 @@ def test_a_store_that_cannot_take_files_leaves_the_parts_in_processed_and_says_s
     result = extract.extract(_text_file(tmp_path, "ja"), "旅の本", "ja", section="soon", spawn=False)
     assert result.code == extract.EXIT_PROCESSED_ONLY and result.note == "store" and not result.in_library
     assert os.path.isdir(os.path.join(data_dir, "Processed", "旅の本"))
-    assert not os.path.exists(os.path.join(data_dir, "LowPriority", "旅の本"))   # never copied behind the store
+    assert not os.path.exists(os.path.join(data_dir, ls.CONTENT_FOLDER, "旅の本"))   # never copied behind the store
 
 
 def test_a_refused_insert_sends_the_copies_to_the_trash_and_keeps_the_parts_in_processed(tmp_path, monkeypatch):
@@ -206,7 +206,7 @@ def test_a_refused_insert_sends_the_copies_to_the_trash_and_keeps_the_parts_in_p
     monkeypatch.setattr(ls.Store, "insert", refuse)
     result = extract.extract(_text_file(tmp_path, "ja"), "旅の本", "ja", section="soon", value="300", spawn=False)
     assert result.code == extract.EXIT_PROCESSED_ONLY and result.note == "insert"
-    left = os.path.join(data_dir, "LowPriority", "旅の本")
+    left = os.path.join(data_dir, ls.CONTENT_FOLDER, "旅の本")
     assert not os.path.exists(left)                        # its files trashed and the folders it made removed
     trashed = [n for n in os.listdir(os.path.join(data_dir, ".trash")) if n.startswith("旅の本_")]
     assert len(trashed) == result.parts                    # moved to the trash (its clock restarted), never deleted
@@ -220,7 +220,7 @@ def test_an_insert_that_adds_nothing_sends_the_copies_to_the_trash_too(tmp_path,
     monkeypatch.setattr(ls.Store, "insert", lambda self, *a, **k: None)
     result = extract.extract(_text_file(tmp_path, "ja"), "旅の本", "ja", section="soon", value="300", spawn=False)
     assert result.code == extract.EXIT_PROCESSED_ONLY and result.note == "insert"
-    assert not os.path.exists(os.path.join(data_dir, "LowPriority", "旅の本"))
+    assert not os.path.exists(os.path.join(data_dir, ls.CONTENT_FOLDER, "旅の本"))
     trashed = [n for n in os.listdir(os.path.join(data_dir, ".trash")) if n.startswith("旅の本_")]
     assert len(trashed) == result.parts
 
@@ -333,10 +333,10 @@ def test_the_section_folder_is_checked_again_just_before_the_copy(tmp_path):
     source = tmp_path / "旅の本"
     source.mkdir()
     (source / "旅の本_01.txt").write_text("朝早く駅に着いた。", encoding="utf-8")
-    os.makedirs(os.path.join(data_dir, "LowPriority", "旅の本"))          # taken meanwhile (another program)
-    added, why = extract.add_to_library(str(source), "旅の本", ["旅の本_01.txt"], "ja", "soon", spawn=False)
+    os.makedirs(os.path.join(data_dir, ls.CONTENT_FOLDER, "旅の本"))      # taken meanwhile (another program)
+    added, why, _title = extract.add_to_library(str(source), "旅の本", ["旅の本_01.txt"], "ja", "soon", spawn=False)
     assert (added, why) == (False, "taken")
-    assert os.listdir(os.path.join(data_dir, "LowPriority", "旅の本")) == []
+    assert os.listdir(os.path.join(data_dir, ls.CONTENT_FOLDER, "旅の本")) == []
 
 
 def test_a_good_insert_asks_the_helper_to_write_the_librarys_copy(tmp_path, monkeypatch):
@@ -429,12 +429,12 @@ def test_an_epub_extracted_into_a_section_enters_the_library_as_a_book(tmp_path)
                                              "<h1>第二章</h1><p>どこで生れたかとんと見当がつかぬ。</p>" * 40])
     result = extract.extract(src, "旅の記録", "ja", section="goal", value="300", spawn=False)
     assert result.code == extract.EXIT_DONE and result.in_library
-    copy = os.path.join(data_dir, ls.FOLDER_OF_TIER["goal"], "旅の記録")
+    copy = os.path.join(data_dir, ls.CONTENT_FOLDER, "旅の記録")
     with open(os.path.join(copy, SOURCE_MARKER), encoding="utf-8") as f:
         assert json.load(f)["source_type"] == "epub"
     store = _open("ja")
     try:
-        rows = [e for _i, e, _a in store.ordered("goal") if e["physical_path"].startswith("GoalContent/旅の記録/")]
+        rows = [e for _i, e, _a in store.ordered("goal") if e["physical_path"].startswith("Library/旅の記録/")]
     finally:
         store.close()
     assert len(rows) == result.parts and {e.get("source_type") for e in rows} == {"epub"}
@@ -458,3 +458,53 @@ def test_a_copy_that_cant_go_to_the_trash_never_stops_the_others_or_the_answer(t
     assert result.code == extract.EXIT_PROCESSED_ONLY and result.note == "insert"
     trashed = [n for n in os.listdir(os.path.join(data_dir, ".trash")) if n.startswith("旅の本_")]
     assert len(trashed) == result.parts - 1 and held
+
+
+# --- SRC K3: never a duplicate --------------------------------------------------------------------------------- #
+def _items(language):
+    store = _open(language)
+    try:
+        return store.conn.execute("SELECT COUNT(*) FROM items").fetchone()[0]
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_K3_an_extract_of_a_book_already_in_adds_nothing_and_names_it(tmp_path, language):
+    """The same book split the same way again (another name, so the name check lets it by): every part's bytes are
+    an item's already — nothing copied, nothing added, the parts kept in Processed, and the answer names the book."""
+    from app import importers_view
+    data_dir, _uf = _store_library(language)
+    src = _text_file(tmp_path, language)
+    first = extract.extract(src, "旅の本", language, section="now", value="300", spawn=False)
+    assert first.in_library
+    count = _items(language)
+    again = extract.extract(src, "旅の本 2", language, section="soon", value="300", spawn=False)
+    assert again.code == extract.EXIT_PROCESSED_ONLY and again.note == "already" and not again.in_library
+    assert again.title == "旅の本" and _items(language) == count
+    assert not os.path.exists(os.path.join(data_dir, ls.CONTENT_FOLDER, "旅の本 2"))
+    assert len(os.listdir(os.path.join(data_dir, "Processed", "旅の本 2"))) == again.parts
+    assert importers_view.extract_outcome(again.code, again, "why") == (
+        "already", {"parts": again.parts, "name": "旅の本 2", "section": "soon", "title": "旅の本"})
+    line = extract.result_line(again)                      # the child's line carries the title to the window
+    assert extract.parse_result(line).title == "旅の本"
+
+
+def test_K3_a_split_with_one_part_already_in_copies_and_adds_only_the_new_parts(tmp_path):
+    """A part whose bytes an item holds is never copied again; the others come in, in the section asked."""
+    data_dir, _uf = _store_library("ja")
+    source = tmp_path / "旅の本"
+    source.mkdir()
+    store = _open("ja")
+    try:
+        rel = store.ordered("now")[0][1]["physical_path"]
+    finally:
+        store.close()
+    with open(os.path.join(data_dir, *rel.split("/")), "rb") as f:
+        (source / "旅の本_01.txt").write_bytes(f.read())
+    (source / "旅の本_02.txt").write_text("朝早く駅に着いた。", encoding="utf-8")
+    added, why, _t = extract.add_to_library(str(source), "旅の本", ["旅の本_01.txt", "旅の本_02.txt"], "ja", "soon",
+                                            spawn=False)
+    assert (added, why) == (True, None)
+    assert os.listdir(os.path.join(data_dir, ls.CONTENT_FOLDER, "旅の本")) == ["旅の本_02.txt"]
+    assert "Library/旅の本/旅の本_02.txt" in _paths("ja", "soon") + _paths("ja", "now")

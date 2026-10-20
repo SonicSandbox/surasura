@@ -785,7 +785,8 @@ def test_the_real_extract_child_adds_its_parts_to_the_library(main, tmp_path, mo
     assert w.status.text().startswith("Extracted") and "Goal" in w.status.text(), w.status.text()
     store = ls.open_store("ja", data_dir, user_files_dir)
     try:
-        assert any(e["physical_path"].startswith("GoalContent/旅の記録/") for _i, e, _a in store.ordered("goal"))
+        assert any(e["physical_path"].startswith(f"{ls.CONTENT_FOLDER}/旅の記録/")      # SRC K3: every new copy in Library
+                   for _i, e, _a in store.ordered("goal"))
     finally:
         store.close()
 

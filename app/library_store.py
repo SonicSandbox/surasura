@@ -122,6 +122,7 @@ BAK_KEEP = 10                    # the store's own .bak files kept (R-5)
 OUTSIDE_ROLES = ("connect",)     # a writer with no window of its own and a life long enough to batch (§6.12)
 OUTSIDE_IDLE_WAIT = 1.0          # its checkpoint waits this long for the write lock (a writer then has it: skipped)
 OUTSIDE_IDLE_S = 2.0             # its copy trigger fires this long after its last commit (a burst, one export)
+TWIN_HASHES = 8                  # hato's file is checked by its bytes against this many items of its size at most (F12)
 
 # Integer meta keys, and what a fresh store holds (spec §6.3, §6.8 step 3)
 INT_META = ("epoch", "state_version", "order_version", "availability_version", "pins_version",
@@ -2405,19 +2406,70 @@ class Store:
         3.0 (L3.1): the record names its title first (`_work_by_record`: its ids, then its show), and an item that
         waits in New arrivals is placed by the user's rule for its source in the same command (`placing_rules`,
         05 §5.12: logged as the source's, explicit — D30); `rules` = {source: target} as the caller read them from
-        settings.json (`placing_rules`; None or empty: it waits); a back-fill places by no rule."""
+        settings.json (`placing_rules`; None or empty: it waits); a back-fill places by no rule.
+
+        3.0 (SRC K3, SRC-7, never a duplicate): an episode already in is never a second item — see `_register`. A
+        source's `Library` copy hato's file took over (`change.unused`) goes to the trash after the commit (inside an
+        outer command: the caller's)."""
+        outer = self._cmd is not None
+        change = self._register(path, pairing, backfill, rules)
+        for rel in () if outer else getattr(change, "unused", None) or ():
+            try:
+                trash_file(self.data_dir, rel)
+            except OSError as e:                   # held open: left in `Library`, where the sync never adopts it (B2)
+                print(f"Warning: a copy no item holds couldn't go to the trash ({rel}): {e!r}")
+        return change
+
+    def _register(self, path, pairing, backfill, rules):
+        """`register`'s command. K3: when hato's path has no row — or only the row the disk sync made for it a moment
+        before (`_sync_drop`: taken out in this command, R1) — the episode may be in already: a folder's video waiting
+        for its subtitle takes hato's file in place (`_waiting_video`, K5's fill, R3); a source's `Library` copy
+        holding the video is pointed at hato's file (the one hato timed: both orders end alike, R2), the copy left
+        unused; any other live item holding the video or the same bytes (`_duplicate_of`) keeps it, hato's file kept
+        out by a `duplicate` exclusion. hato's record goes on that item; hato's file is never deleted or moved."""
         content_key = pairing["content_key"]
         rel = library_rel(self.data_dir, path)
         if rel is None:
             raise NotInLibrary(f"not in the library: {path}")
         prepared = self._prepare([rel], None, "hato")     # normalised: one key per file (a/../b.srt is b.srt)
         by = _producer(pairing)
+        full = os.path.join(self.data_dir, *prepared[0][1].split("/"))
+        seen = self._twin_seen(full, content_key, pairing)    # F12: read and hashed before the write lock
         with self._command("register", by) as cmd:
             meta = cmd.meta
             _p, rel, key, entry, fp = prepared[0]
             row = self.conn.execute("SELECT id FROM items WHERE rel_key = ?", (key,)).fetchone()
             change = None
-            if row is None:
+            # K3: the twin found before the command, its one item checked again in it (F12)
+            gap = twin = None
+            if row is None or (not backfill and self._sync_drop(row[0], rel, pairing)):   # a back-fill's row is old
+                gap, twin = self._twin_now(seen, full, content_key, pairing)
+                if (gap is not None or twin is not None) and row is not None:
+                    self._take_out(cmd, row[0])            # R1: the sync's row for a file that is an episode already
+                    row = None
+            filled = self._fill_gap(cmd, gap, prepared[0], {}) if gap is not None else None
+            if filled is not None:                         # R3: the folder's waiting video takes hato's subtitle
+                item_id = filled
+                change = self._change(cmd, "register")
+                change.took_over = change.pairing_item = item_id
+            elif twin is not None:                         # (a gap no longer waiting fills nothing: a new item below)
+                item_id, copy = twin                       # K3 (SRC-7): the episode is in already — no item for it
+                change = self._change(cmd, "register")
+                change.pairing_item = item_id
+                if copy is not None:                       # R2: the source item reads hato's file; its copy unused
+                    self._repoint(item_id, rel, fp[0], fp[1])
+                    cmd.touch({self.conn.execute("SELECT tier FROM items WHERE id = ?", (item_id,)).fetchone()[0]},
+                              availability=True)
+                    change.took_over, change.unused = item_id, [copy]
+                else:
+                    change.duplicate = rel
+                    if not self.conn.execute("SELECT 1 FROM exclusions WHERE kind = 'duplicate' AND pattern = ?",
+                                             (key,)).fetchone():
+                        self.conn.execute("INSERT INTO exclusions (root_id, pattern, kind, created_at) "
+                                          "VALUES (?, ?, 'duplicate', ?)", (self._root_id(), key, _now()))
+                        change.excluded_key = key          # N1: its Undo takes the exclusion back too
+                        cmd.touch()
+            elif row is None:
                 if meta.get("arrivals_on"):
                     change = self._add(prepared, "arrivals", "end", None, None, None, "register", by, 0)
                 else:
@@ -3719,6 +3771,22 @@ class Store:
         reads it and its receipt answers it. Undo by the value check."""
         return self._status("ask_mining", list(item_ids), "mine_asked", _now() if asked else None)
 
+    def enter_mine_line(self, by="user"):
+        """*Make cards for your first 20 episodes?* (SRC S1 + D1): the mine line's items, there since setup's first scan
+        put them there quietly (it logs nothing), logged as entering it by `by`'s own choice — `entered_mine_line`,
+        explicit: the event Connect's inbox makes a job of. Nothing moves; only the log is written (and the state
+        version). With no reader set nothing is logged (the caller sets Connect's first: `connect.library.
+        ensure_reader`). Not on the Undo (a job is Connect's to drop). -> the ids logged."""
+        with self._command("enter_mine_line", by=by) as cmd:
+            if not cmd.logging:
+                return []
+            ids = self._mine_ids(cmd.mine_n)
+            for item_id in ids:
+                cmd.event(item_id, "entered_mine_line", 1)
+            if ids:
+                cmd.touch()
+            return ids
+
     def import_finished(self, paths):
         """The Finished importer's command (05 §5.8), after its copying job: each file — one the job copied into
         `Graduated/`, or one already in the library — lands in Finished dated *Earlier* (`graduated_at` NULL), its work
@@ -4365,6 +4433,8 @@ class Store:
         kind = change.kind
         if kind == "take_in":                     # SRC S6: a scan's take-in is not on the user's Undo; Remove is
             raise UndoRefused("what a folder's look took in is taken out with Remove")
+        if kind == "register" and getattr(change, "took_over", None) is not None:   # K3 R2 / R3: the text moved
+            raise UndoRefused("hato's subtitle is that episode's text now; remove the episode to take it out")
         with self._command("undo", "undo") as cmd:
             if kind in ("insert", "insert_at", "restore") or (kind == "register" and change.added):
                 ok, skipped = self.undo_check(change)
@@ -4380,6 +4450,8 @@ class Store:
                         self.conn.execute("INSERT OR IGNORE INTO pairings (content_key, item_id, pairing, paired_at) "
                                           "VALUES (?, ?, ?, ?)", (content_key,) + tuple(old))
             elif kind == "register":
+                if getattr(change, "pairing_before", None) is None:     # K3: a duplicate's hand-off that wrote none
+                    return self._skipped(cmd, 1)
                 content_key, old = change.pairing_before
                 now = self.conn.execute("SELECT item_id FROM pairings WHERE content_key = ?",
                                         (content_key,)).fetchone()
@@ -4390,6 +4462,9 @@ class Store:
                 else:
                     self.conn.execute("INSERT OR REPLACE INTO pairings (content_key, item_id, pairing, paired_at) "
                                       "VALUES (?, ?, ?, ?)", (content_key,) + tuple(old))
+                if getattr(change, "excluded_key", None):              # N1: hato's file is no one's: the sync's again
+                    self.conn.execute("DELETE FROM exclusions WHERE kind = 'duplicate' AND pattern = ?",
+                                      (change.excluded_key,))
                 cmd.touch()
                 out, skipped = self._change(cmd, "undo"), []
             elif kind == "remove" or kind == "undo_add":
@@ -6680,6 +6755,7 @@ def _store_reset_order(self, walk=None):
                                  "FROM items WHERE tier IN ('now', 'soon', 'goal') ORDER BY ord, id").fetchall()
         known = {r[0] for r in self.conn.execute("SELECT rel_key FROM items")}
         known |= {path_key(str(a.get("rel", ""))) for a in _rename_asks(self)}       # held out: the question waits
+        known |= {r[0] for r in self.conn.execute("SELECT pattern FROM exclusions WHERE kind = 'duplicate'")}  # K3
         arrivals = cmd.meta.get("arrivals_on")
         content = path_key(CONTENT_FOLDER) + "/"           # the content folder's copies come in by `take_in` only (B2)
         untracked = [rel for rel in order if path_key(rel) not in known and not (arrivals and _in_hato(rel))
@@ -6956,6 +7032,7 @@ def read_only_schedule(language, data_dir, user_files_dir):
     except (TypeError, ValueError, AttributeError):
         waits = False
     known = {path_key(_strip(str(e.get("physical_path") or ""))) for e in held + others}
+    known |= _copy_duplicates(lib)                     # another item's episode (K3): never added, as the sync's rule
     with_items = {path_key(_rel_dir(_strip(str(e.get("physical_path") or "")))) for e in held + others}
     tops = {t: 0 for t in ANALYSED}
     marker_cache = {}
@@ -7001,6 +7078,20 @@ def read_only_schedule(language, data_dir, user_files_dir):
                 tops[where[1]] += 1
         with_items.add(dkey)
     return schedule
+
+
+def _copy_duplicates(lib):
+    """The patterns of the copy's `duplicate` exclusions (K3; K1a's N9): files read-only mode never adds. A table the
+    copy lacks or can't be read as one: none."""
+    table = (lib.get("tables") or {}).get("exclusions") if isinstance(lib.get("tables"), dict) else None
+    if not isinstance(table, dict) or not isinstance(table.get("fields"), list):
+        return set()
+    fields = table["fields"]
+    if "pattern" not in fields or "kind" not in fields:
+        return set()
+    p, k = fields.index("pattern"), fields.index("kind")
+    return {r[p] for r in table.get("rows") or () if isinstance(r, list) and len(r) == len(fields) and
+            r[k] == "duplicate" and isinstance(r[p], str)}
 
 
 SYNC_IN_PROCESS_AT = 20_000      # items: from here a window's process syncs in a process of its own (§12.1)
@@ -7261,6 +7352,203 @@ def sha256_of(path):
     return h.hexdigest()
 
 
+def same_size_items(conn, sizes, sources_only=False):
+    """Never a duplicate (SRC-7, K3), its first half: {size: [(item_id, rel_path, title)]} of the live items whose file
+    is one of these sizes, in id order; the title its work's, else its own. `sources_only`: only the items a source
+    folder's origin is recorded on (hato after a source). One read: `conn` is a store's (inside its read) or a
+    `mode=ro` look's. The second half, the bytes, is `holding`."""
+    sizes = [s for s in dict.fromkeys(sizes) if isinstance(s, int)]
+    only = f" AND EXISTS (SELECT 1 FROM pairings p WHERE p.item_id = i.id AND {_ORIGIN_ROW})" if sources_only else ""
+    out = {}
+    for chunk in _chunks(sizes, 500):
+        for size, item_id, rel, title in conn.execute(
+                f"SELECT i.size, i.id, i.rel_path, COALESCE(w.title, i.title) FROM items i LEFT JOIN works w ON "
+                f"w.id = i.work_id WHERE i.availability = 'available' AND i.size IN ({','.join('?' * len(chunk))})"
+                f"{only} ORDER BY i.id", chunk):
+            out.setdefault(size, []).append((item_id, rel, title or ""))
+    return out
+
+
+def holding(data_dir, files, rows):
+    """K3: {path: (item_id, title)} for each `(path, size)` of `files` whose bytes are another item's file's (`rows` from
+    `same_size_items`; never the row of the file itself), the lowest id — a file read only when its size matches one,
+    each file once. A file that can't be read holds nothing."""
+    hashes, out = {}, {}
+    for path, size in files:
+        for item_id, rel, title in rows.get(size, ()):
+            if path_key(os.path.abspath(os.path.join(data_dir, *rel.split("/")))) == path_key(os.path.abspath(path)):
+                continue                           # the file's own row: never its own twin
+            mine = _sha_once(hashes, path)
+            if mine is not None and mine == _sha_once(hashes, os.path.join(data_dir, *rel.split("/"))):
+                out[path] = (item_id, title)
+                break
+    return out
+
+
+def _sha_once(hashes, path):
+    if path not in hashes:
+        try:
+            hashes[path] = sha256_of(path)
+        except OSError:
+            hashes[path] = None
+    return hashes[path]
+
+
+def _store_items_holding(self, paths, sources_only=False):
+    """K3: {path: (item_id, title)} of the files in `paths` whose bytes a live item's file holds (size first, then the
+    sha256: `same_size_items`, `holding`) — the sizes read in one short read, the files hashed after it."""
+    files = []
+    for p in paths:
+        try:
+            files.append((p, os.stat(p).st_size))
+        except OSError:
+            continue
+    if not files:
+        return {}
+    with self._reading():
+        rows = same_size_items(self.conn, [s for _p, s in files], sources_only)
+    return holding(self.data_dir, files, rows)
+
+
+def _store_twin_seen(self, path, content_key, pairing):
+    """K3 (1), before `register`'s command (F12: inside it, every record read and every file of the size hashed held the
+    write lock 0.1 s at 20k origins, and seconds when sizes repeat): what hato's file at `path` may be already —
+    (stamp, the waiting item of its video, the live item holding its video, (the item holding its bytes, its rel, its
+    size)), each None when none — in one short read; the bytes hashed after it. Checked in this order: a folder's
+    video waiting for its subtitle (`_waiting_video`, R3), the item holding the video (`_video_holder`: hato's key, an
+    origin's `video_key`, any item's record: SRC-7, every channel), any live item but `path`'s own row whose file holds
+    the same bytes (size first, then the sha256) — only when TWIN_HASHES items or fewer have its size; more, and the
+    file is checked by its video alone. `stamp` (`_twin_stamp`): what a twin found since would have moved."""
+    try:
+        size = os.stat(path).st_size
+    except OSError:
+        size = None
+    rows = {}
+    with self._reading():
+        stamp = self._twin_stamp()
+        gap = self._waiting_video(content_key, pairing)
+        video = self._video_holder(content_key) if gap is None else None
+        if gap is None and video is None and size is not None:
+            rows = same_size_items(self.conn, [size])
+    mine = path_key(os.path.abspath(path))
+    rows = [r for r in rows.get(size, ()) if path_key(os.path.abspath(os.path.join(
+        self.data_dir, *r[1].split("/")))) != mine]                  # the file's own row: never its own twin
+    same = None
+    if rows and len(rows) <= TWIN_HASHES:
+        held = holding(self.data_dir, [(path, size)], {size: rows})
+        if path in held:
+            same = (held[path][0], next(r[1] for r in rows if r[0] == held[path][0]), size)
+    return stamp, gap, video, same
+
+
+def _store_twin_stamp(self):
+    """What a twin found before `register`'s command would have moved since (F12): a record or an item added (a record's
+    rowid grows with every insert or replace; an item's id is AUTOINCREMENT's), an item's availability changed, or an
+    item put back (Put back and Undo bring an item back under its old id, with no record when it had none: the trash's
+    restored rows count them). A move, a pin or a title moves none of them."""
+    return self.conn.execute("SELECT (SELECT MAX(rowid) FROM pairings), (SELECT seq FROM sqlite_sequence WHERE name = "
+                             "'items'), (SELECT value FROM meta WHERE key = 'availability_version'), "
+                             "(SELECT COUNT(restored_at) FROM trash)").fetchone()
+
+
+def _store_video_holder(self, key):
+    """The lowest live (not waiting) item whose record holds this video — hato's `content_key`, or an origin's
+    `video_key` — or None: one read, the records' video read by SQLite (no copy of every record in Python)."""
+    if not isinstance(key, str) or not key or key.startswith(SOURCE_KEY):
+        return None
+    return self.conn.execute(
+        f"SELECT MIN(p.item_id) FROM pairings p JOIN items i ON i.id = p.item_id WHERE i.availability != 'waiting' AND "
+        f"((p.content_key = ? AND NOT {_ORIGIN_ROW}) OR ({_ORIGIN_ROW} AND json_valid(p.pairing) AND "
+        f"json_extract(p.pairing, '$.video_key') = ?))", (key, key)).fetchone()[0]
+
+
+def _store_twin_now(self, seen, path, content_key, pairing):
+    """K3 (1), inside `register`'s command: (the waiting item hato's file fills, (the live item it is another copy of,
+    the `Library` copy hato's file takes over or None)) — None each when none. The item `_twin_seen` found is checked
+    again, alone; when anything a twin would move has moved since (`_twin_stamp`), or that item is no longer what it
+    was, the whole check runs again here (bounded as before: TWIN_HASHES files at most). The copy (R2) only for a
+    source's item found by its own video (not by hato's record already on it: a retry of a kept-out file stays kept
+    out) whose file is in `Library`: any other item's file (hato's, a 2.x file) is never left untracked."""
+    stamp, gap, video, same = seen
+    if tuple(stamp) != tuple(self._twin_stamp()) or not self._still_twin(gap, video, same, content_key, pairing):
+        _stamp, gap, video, same = self._twin_seen(path, content_key, pairing)
+    if gap is not None:
+        return gap, None
+    if video is not None:
+        rel = self.conn.execute("SELECT rel_path FROM items WHERE id = ?", (video,)).fetchone()[0]
+        source = self.conn.execute(f"SELECT 1 FROM pairings p WHERE p.item_id = ? AND {_ORIGIN_ROW}",
+                                   (video,)).fetchone() and not self.conn.execute(
+            "SELECT 1 FROM pairings WHERE item_id = ? AND content_key = ?", (video, content_key)).fetchone()
+        inside = path_key(rel.split("/", 1)[0]) == path_key(CONTENT_FOLDER)
+        return None, (video, rel if source and inside else None)
+    return None, ((same[0], None) if same is not None else None)
+
+
+def _store_still_twin(self, gap, video, same, content_key, pairing):
+    """F12: is the one item `_twin_seen` found still that (read by its id: its row and its own records)?"""
+    if gap is not None:
+        row = self.conn.execute("SELECT availability FROM items WHERE id = ?", (gap,)).fetchone()
+        keys = {content_key, *_video_keys(pairing)}
+        return row is not None and row[0] == "waiting" and any(keys & set(_video_keys(_json_dict(t) or {})) for (t,) in
+                                                                self.conn.execute(
+            f"SELECT p.pairing FROM pairings p WHERE p.item_id = ? AND {_ORIGIN_ROW}", (gap,)))
+    if video is not None:
+        row = self.conn.execute("SELECT availability FROM items WHERE id = ?", (video,)).fetchone()
+        if row is None or row[0] == "waiting":
+            return False
+        return any((k == content_key and not k.startswith(SOURCE_KEY)) or
+                   (k.startswith(SOURCE_KEY) and (_json_dict(t) or {}).get("video_key") == content_key)
+                   for k, t in self.conn.execute("SELECT content_key, pairing FROM pairings WHERE item_id = ?", (video,)))
+    if same is not None:
+        row = self.conn.execute("SELECT availability, rel_path, size FROM items WHERE id = ?", (same[0],)).fetchone()
+        return row is not None and tuple(row) == ("available", same[1], same[2])
+    return True
+
+
+def _store_sync_drop(self, item_id, rel, pairing):
+    """K3 R1: is this the row the disk sync made for hato's file a moment before hato's hand-off — hato's drop folder,
+    waiting in New arrivals (with New arrivals off: still at the top of NOW, where the sync puts hato's files — only
+    hato's drops above it), hato's record, nothing of anyone's on it yet (no record, link, pin, watch, mining or
+    placement by a person)? Only such a row is taken out when the file is an episode already in."""
+    if _producer(pairing) != "hato" or not _in_hato(rel):
+        return False
+    row = self.conn.execute("SELECT tier, pinned, watched, mined_at, ord FROM items WHERE id = ?",
+                            (item_id,)).fetchone()
+    meta = self._cmd.meta if self._cmd is not None else self._meta()
+    tiers = ("arrivals",) if meta.get("arrivals_on") else ("arrivals", "now")
+    if row is None or row[0] not in tiers or row[1] is not None or row[2] or row[3] is not None:
+        return False
+    if row[0] == "now":                    # a drag elsewhere in NOW leaves no event unless a reader logs: its place
+        hato = path_key(HATO_FOLDER) + "/"
+        if self.conn.execute("SELECT 1 FROM items WHERE tier = 'now' AND (ord < ? OR (ord = ? AND id < ?)) AND "
+                             "substr(rel_key, 1, ?) != ? LIMIT 1",
+                             (row[4], row[4], item_id, len(hato), hato)).fetchone():
+            return False
+    return not any(self.conn.execute(sql, (item_id,)).fetchone() for sql in (
+        "SELECT 1 FROM pairings WHERE item_id = ?", "SELECT 1 FROM anki_links WHERE item_id = ?",
+        "SELECT 1 FROM placement_log WHERE item_id = ? AND (explicit = 1 OR by = 'user')"))
+
+
+def _store_take_out(self, cmd, item_id):
+    """K3 R1: the sync's row for hato's file leaves without a trash row (nothing to put back: its episode is another
+    item's); the feed's tombstone written, its piece and title tidied as a Remove's are. The file stays."""
+    tier, piece = self.conn.execute("SELECT tier, piece_id FROM items WHERE id = ?", (item_id,)).fetchone()
+    self.conn.execute("DELETE FROM items WHERE id = ?", (item_id,))
+    cmd.gone.append(("item", item_id))
+    if piece is not None:
+        cmd.pieces_left.add(piece)
+    cmd.touch({tier})
+
+
+def _store_waiting_video(self, content_key, pairing):
+    """K3 R3: the item waiting for this video's subtitle (K5) — by hato's key, or the record's video path — or None."""
+    gaps = self._waiting_videos()
+    for k in [content_key] + _video_keys(pairing):
+        if k in gaps:
+            return gaps[k]
+    return None
+
+
 def content_target(data_dir, rel, size=None, sha256=None):
     """Where a copy goes (B2): (rel, reuse). `rel` itself when free; a file already there with the same size and bytes
     is re-used (a copy a crash left between the copy and its `take_in`: never copied again as `name (2)`); else
@@ -7389,16 +7677,17 @@ def _store_stop_source(self, root_id):
 
 def _store_origins(self):
     """{path_key(origin): Origin(item_id, root, origin, size, mtime_ns, sha256, rel_path)} for every origin recorded,
-    in any tier (a finished item is never taken in again): one read per look."""
+    in any tier (a finished item is never taken in again): one read per look. The records' fields are read by SQLite
+    (F13: decoding every record in Python held the interpreter 0.25 s at 20k, stretching a window's save meanwhile); a
+    record that isn't a JSON object reads as one with no fields."""
+    field = lambda name: (f"CASE WHEN json_valid(p.pairing) THEN CASE WHEN json_type(p.pairing) = 'object' THEN "  # noqa
+                          f"json_extract(p.pairing, '$.{name}') END END")
     with self._reading():
-        rows = self.conn.execute(f"SELECT p.content_key, p.item_id, p.pairing, i.rel_path FROM pairings p "
-                                 f"JOIN items i ON i.id = p.item_id WHERE {_ORIGIN_ROW}").fetchall()
-    out = {}
-    for key, item_id, text, rel in rows:
-        record = _json_dict(text) or {}
-        out[key[len(SOURCE_KEY):]] = Origin(item_id, record.get("root"), record.get("origin"), record.get("size"),
-                                            record.get("mtime_ns"), record.get("sha256"), rel)
-    return out
+        rows = self.conn.execute(
+            f"SELECT substr(p.content_key, {len(SOURCE_KEY) + 1}), p.item_id, {field('root')}, {field('origin')}, "
+            f"{field('size')}, {field('mtime_ns')}, {field('sha256')}, i.rel_path FROM pairings p JOIN items i ON "
+            f"i.id = p.item_id WHERE {_ORIGIN_ROW} ORDER BY p.content_key").fetchall()
+    return {r[0]: Origin._make(r[1:]) for r in rows}         # in key order (a look finds a folder's by its prefix)
 
 
 def _store_excluded(self, root_ids=None):
@@ -7561,8 +7850,8 @@ def _store_take_in(self, root_id, found, first=False, rules=None):
     if not found:
         return None
     if rules is None:
-        from app.settings_manager import DEFAULT_SETTINGS
-        rules = DEFAULT_SETTINGS["placing_rules"]
+        from app.settings_manager import placing_rules
+        rules = placing_rules()
     rels = []
     for f in found:
         origin = f.get("origin")
@@ -7586,6 +7875,7 @@ def _store_take_in(self, root_id, found, first=False, rules=None):
     ep = lambda f: f.get("episode") if isinstance(f.get("episode"), (int, float)) else None    # noqa: E731
     order = sorted(found, key=lambda f: (fold(f), ep(f) is None, ep(f) or 0,
                                          _natural(os.path.basename(str(f.get("rel") or f["origin"])))))
+    nested = self._depth > 0          # inside an outer write (P1): its rollback would leave the waiting videos' copy wrong
     with self._command("take_in", SOURCE_PRODUCER) as cmd:
         row = self.conn.execute("SELECT kind FROM roots WHERE id = ?", (root_id,)).fetchone()
         if row is None or row[0] != "source":
@@ -7634,6 +7924,9 @@ def _store_take_in(self, root_id, found, first=False, rules=None):
             if item_id is None:
                 held = self.conn.execute("SELECT id FROM items WHERE rel_key = ?", (p[2],)).fetchone()
                 gap = next((gaps[k] for k in _video_keys(f) if k in gaps), None) if is_content_name(p[1]) else None
+                if held is None and gap is not None:         # a waiting video's (K5): its row takes the copy in place
+                    gap = self._fill_gap(cmd, gap, p, gaps)
+                    exact = exact and gap is not None        # its row gone (P1): a new item, the videos read again
                 if held is None and gap is None and same and same in by_bytes:   # the same bytes in this batch (A5)
                     item_id = by_bytes[same]
                     spare[p[1]] = p[2]
@@ -7645,7 +7938,7 @@ def _store_take_in(self, root_id, found, first=False, rules=None):
                         (taken if is_content_name(p[1]) else gaps)[k] = item_id
                     continue
                 else:                                        # its copy is an item, or a waiting video's (K5)
-                    item_id = held[0] if held else self._fill_gap(cmd, gap, p, gaps)
+                    item_id = held[0] if held else gap
                     if held is not None and not is_content_name(p[1]):
                         exact = False                        # a video's record on a waiting row: read them again
             elif not self.conn.execute("SELECT 1 FROM items WHERE id = ?", (item_id,)).fetchone():
@@ -7664,7 +7957,7 @@ def _store_take_in(self, root_id, found, first=False, rules=None):
             "SELECT 1 FROM items WHERE rel_key = ?", (rel_key,)).fetchone()]
     # the waiting videos as this batch left them, kept for the next while nothing else writes (this connection's
     # changes after the commit, and SQLite's data_version as read inside it: another connection's commit since moves it)
-    self._gaps = ((self.conn.total_changes, stamp), gaps) if exact else None
+    self._gaps = ((self.conn.total_changes, stamp), gaps) if exact and not nested else None
     return change
 
 
@@ -7732,7 +8025,12 @@ def _store_waiting_videos(self):
 
 def _store_fill_gap(self, cmd, item_id, prepared, gaps):
     """A waiting item's subtitle came (K5): the item takes the copy in place — its id, place and records kept, no
-    event (it was shown already) — and counts from now. -> its id."""
+    event (it was shown already) — and counts from now. -> its id; None, and its keys out of `gaps`, when its row is no
+    longer a waiting one (P1: a copy of the waiting videos a rolled-back write left — never another item filled)."""
+    if self.conn.execute("SELECT availability FROM items WHERE id = ?", (item_id,)).fetchone() != ("waiting",):
+        for k in [k for k, v in gaps.items() if v == item_id]:
+            del gaps[k]
+        return None
     self.conn.execute("UPDATE items SET entry = ? WHERE id = ?", (_dumps(prepared[3]), item_id))
     self._repoint(item_id, prepared[1], prepared[4][0], prepared[4][1])
     cmd.touch({self.conn.execute("SELECT tier FROM items WHERE id = ?", (item_id,)).fetchone()[0]}, availability=True)
@@ -7839,6 +8137,15 @@ Store.excluded = _store_excluded
 Store.items_of_size = _store_items_of_size
 Store.origin_videos = _store_origin_videos
 Store.item_of_video_key = _store_item_of_video_key
+Store.items_holding = _store_items_holding
+Store._twin_seen = _store_twin_seen
+Store._twin_stamp = _store_twin_stamp
+Store._video_holder = _store_video_holder
+Store._twin_now = _store_twin_now
+Store._still_twin = _store_still_twin
+Store._sync_drop = _store_sync_drop
+Store._take_out = _store_take_out
+Store._waiting_video = _store_waiting_video
 Store.update_origin = _store_update_origin
 Store._exclude_origins = _store_exclude_origins
 Store._let_origins_back = _store_let_origins_back

@@ -2313,18 +2313,20 @@ class _Holds:
         return [s for n, s in getattr(self, what) if n == name]
 
 
-def _seed(store, root, data_dir, language, src, count, per_show=50):
-    """`count` origins already in (what a big first scan left): tiny copies in Library, taken in in big batches."""
+def _seed(store, root, data_dir, language, src, count, per_show=50, name="e{e:03d}.srt"):
+    """`count` origins already in (what a big first scan left): tiny copies in Library, taken in in big batches.
+    `name`: each file's name ({show}, {e}: its number in its show from 0)."""
     line = _text(language, 0).splitlines()[-2] or "x"
     found = []
     for n in range(count):
         show = f"既存{n // per_show:04d}"
-        rel = f"Library/{show}/e{n % per_show:03d}.srt"
+        file_name = name.format(show=show, e=n % per_show)
+        rel = f"Library/{show}/{file_name}"
         full = os.path.join(data_dir, *rel.split("/"))
         os.makedirs(os.path.dirname(full), exist_ok=True)
         with open(full, "w", encoding="utf-8") as f:
             f.write(f"{line} {n}\n")
-        found.append({"origin": os.path.join(src, "seeded", show, f"e{n % per_show:03d}.srt"), "size": 10,
+        found.append({"origin": os.path.join(src, "seeded", show, file_name), "size": 10,
                       "mtime_ns": 1, "sha256": f"{n:064x}", "show": show, "rel": rel, "episode": n % per_show + 1,
                       "video_key": f"v1-seed{n:08d}"})
     for k in range(0, count, 1000):
@@ -2385,3 +2387,190 @@ def test_a_window_move_during_a_look_lands_within_the_budget(monkeypatch):
             waits = holds.of("mover", "waits")
             assert max(scan) <= MOVE_BUDGET, sorted(scan)[-5:]
             assert max(waits) <= MOVE_BUDGET, sorted(waits)[-5:]
+
+
+# --- batch 2 final fix round: the look per folder (F13) and the perf review's N rows ------------------------------- #
+
+def test_a_look_that_finds_one_new_file_reads_only_its_own_folders_origins(monkeypatch):
+    """F13: the releases already in (S7) were worked out from every origin's name — at 20k, 1.3 s of a look that found
+    one new file, the interpreter held all along, so a window's save made meanwhile took up to 0.5 s. Now only the
+    folder of the new file is read; a v2 there still follows its episode and an earlier release is still skipped."""
+    language = "ja"
+    store, data_dir = _empty(language)
+    src = _drive("driveA")
+    shows = [f"{_SHOWS[language][0]} {n}" for n in range(1, 6)]
+    for s, show in enumerate(shows):
+        for e in (1, 2, 3):
+            _write(os.path.join(src, show, f"[Grp] {show} - {e:02d}.srt"), _text(language, s * 10 + e))
+    _settle(src)
+    with store:
+        root = store.add_source(src)
+        assert _look(store, language, root, first=True)["added"] == 15
+        _write(os.path.join(src, shows[2], f"[Grp] {shows[2]} - 04.srt"), _text(language, 24))  # not the first folder
+        _write(os.path.join(src, shows[2], f"[Grp] {shows[2]} - 02v2.srt"), _text(language, 22, " v2"))
+        _settle(os.path.join(src, shows[2]))                                 # only its folder listed again
+        names, real = [], sources._episode_of
+        monkeypatch.setattr(sources, "_episode_of", lambda name: names.append(name) or real(name))
+        result = _look(store, language, root)
+        assert result["added"] == 1 and result["attached"] == 1, result      # ep 4 new; the v2 is episode 2's
+        assert names and not [n for n in names if shows[2] not in n], names   # no other show's origin was read
+
+
+def test_a_show_folder_gone_mid_look_leaves_the_source_reachable_and_the_others_taken_in(monkeypatch):
+    """A show's folder deleted while a look lists the source (the source itself still there) is that folder alone:
+    the source stays reachable, the other shows are taken in, and the gone folder leaves the folder times (perf
+    review P3: nothing told this from a source gone whole)."""
+    language = "ja"
+    store, data_dir = _empty(language)
+    src = _drive("driveA")
+    shows = [f"{_SHOWS[language][1]} {n}" for n in range(1, 5)]
+    for n, show in enumerate(shows):
+        _write(os.path.join(src, show, "ep01.srt"), _text(language, n))
+    _settle(src)
+    listed, real = [], sources._listing
+
+    def one_goes(folder):
+        listed.append(folder)
+        if len(listed) == 2:
+            shutil.rmtree(os.path.join(src, shows[2]))                       # a show's folder deleted mid-look
+        return real(folder)
+    monkeypatch.setattr(sources, "_listing", one_goes)
+    with store:
+        root = store.add_source(src)
+        result = sources.scan(store, language, root, first=True)
+        assert result["reachable"] is True and result["added"] == 3
+        assert _library_files(data_dir) == sorted(f"Library/{s}/ep01.srt" for s in shows if s != shows[2])
+    with open(sources.cache_path(language), encoding="utf-8") as f:
+        dirs = json.load(f)["roots"][str(root)]["dirs"]
+    assert ls.path_key(os.path.join(src, shows[2])) not in dirs and ls.path_key(os.path.join(src, shows[1])) in dirs
+
+
+def test_a_text_read_shorter_than_its_listing_waits_and_its_copy_checks_its_length(monkeypatch):
+    """The read-once copy recorded the listing's size whatever it read (perf review P5): a read of another length now
+    waits for the next look — nothing copied or recorded — and a copy read whole checks its byte count too."""
+    import builtins
+    language = "ja"
+    store, data_dir = _empty(language)
+    src = _drive("driveA")
+    path = _write(os.path.join(src, _SHOWS[language][0], "ep01.srt"), _text(language, 1))
+    _settle(src)
+    real_open = builtins.open
+
+    class Short:
+        def __init__(self, f):
+            self.f = f
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.f.close()
+
+        def read(self, *a):
+            return self.f.read(*a)[:-1]
+
+    def short_open(file, mode="r", *a, **k):
+        f = real_open(file, mode, *a, **k)
+        return Short(f) if isinstance(file, str) and os.path.abspath(file) == os.path.abspath(path) else f
+    with store:
+        root = store.add_source(src)
+        monkeypatch.setattr(sources, "open", short_open, raising=False)
+        result = sources.scan(store, language, root, first=True)
+        monkeypatch.delattr(sources, "open")
+        assert result["added"] == 0 and result["waiting"] == 1 and _items(store) == 0
+        assert _library_files(data_dir) == []
+        assert _look(store, language, root)["added"] == 1
+    part = os.path.join(data_dir, "check.part")
+    size = os.path.getsize(path)
+    assert sources._copy_part(path, part, size + 1) is None
+    assert sources._copy_part(path, part, size) == _sha(path)
+
+
+def test_a_checkpoint_that_fails_with_a_database_error_never_ends_the_look(monkeypatch, caplog):
+    """A checkpoint is housekeeping: one failing with SQLite's own error (disk I/O, a full disk), not only busy, is
+    logged and the look goes on — every file taken in (perf review P6)."""
+    import sqlite3
+    language = "ja"
+    store, data_dir = _empty(language)
+    a = _SHOWS[language][0]
+    src = _drive("driveA")
+    for n in range(1, 5):
+        _write(os.path.join(src, a, f"ep{n:02d}.srt"), _text(language, n))
+    monkeypatch.setattr(sources, "BATCH", 1)
+    monkeypatch.setattr(sources, "CHECKPOINT_EVERY", 1)
+    with store:
+        def broken(wait=None):
+            raise sqlite3.OperationalError("disk I/O error")
+        monkeypatch.setattr(store, "checkpoint", broken)
+        root = store.add_source(src)
+        with caplog.at_level("WARNING", logger="surasura-cli"):
+            assert _look(store, language, root, first=True)["added"] == 4
+        assert "checkpoint" in caplog.text
+
+
+def test_a_window_move_during_a_look_that_finds_one_new_file_saves_within_the_budget():
+    """F13 (G1): a window's move made while a look takes one new file in waited 5 ms for the lock, but its whole save
+    took up to 0.5 s at 20k origins: the look's Python pass over every origin (their names, their records decoded)
+    held the interpreter, and each of the move's SQLite calls waited for it again. In the timed run
+    (SURASURA_STORE_BENCH=1), at 20,000 origins in 400 shows, every move made during such a look saves within
+    MOVE_BUDGET, whole; elsewhere a short functional pass at 600."""
+    language = "ja"
+    store, data_dir = _empty(language)
+    _d, user_files_dir = roots(language)
+    src = _drive("driveA")
+    with store:
+        root = store.add_source(src)
+        _seed(store, root, data_dir, language, src, 20_000 if BENCH else 600,
+              name="[Grp] {show} - {e:02d} (1080p).ja.srt")
+        show = "既存0003"
+        _write(os.path.join(src, "seeded", show, f"[Grp] {show} - 77 (1080p).ja.srt"), _text(language, 77))
+        _settle(src)
+        tier = "now" if store.ordered("now") else "soon"
+        ids = [i for i, _e, _a in store.ordered(tier)][:6]
+        moving, done, moves, errors = threading.Event(), threading.Event(), [], []
+
+        def mover():
+            other = ls.open_store(language, data_dir, user_files_dir)
+            n = 0
+            with other:
+                while not done.is_set():
+                    t0 = time.perf_counter()
+                    try:
+                        other.move([ids[n % len(ids)]], tier, before_id=ids[(n + 3) % len(ids)])
+                        if moving.is_set():
+                            moves.append(time.perf_counter() - t0)
+                    except ls.StoreError as e:
+                        errors.append(repr(e))
+                    n += 1
+                    done.wait(0.01)
+        thread = threading.Thread(target=mover, name="mover")
+        thread.start()
+        try:
+            time.sleep(0.05)
+            moving.set()
+            result = sources.scan(store, language, root)
+            moving.clear()
+        finally:
+            done.set()
+            thread.join()
+        assert result["added"] == 1 and result["reachable"]
+        assert errors == [] and moves, errors
+        if BENCH:
+            assert max(moves) <= MOVE_BUDGET, sorted(moves)[-5:]
+
+
+def test_the_releases_already_in_are_a_folders_own_never_its_subfolders():
+    """S7 is per folder: worked out from the origins whose keys start with the folder's (F13), a subfolder's release
+    (`Show/Season 1/… - 01`) is never the folder's own — a `… - 01` found beside it is an episode of its own."""
+    language = "ja"
+    store, data_dir = _empty(language)
+    src = _drive("driveA")
+    show = _SHOWS[language][1]
+    _write(os.path.join(src, show, "Season 1", f"[Grp] {show} - 01.srt"), _text(language, 1))
+    _settle(src)
+    with store:
+        root = store.add_source(src)
+        assert _look(store, language, root, first=True)["added"] == 1
+        _write(os.path.join(src, show, f"[Grp] {show} - 01.srt"), _text(language, 5))
+        _settle(os.path.join(src, show))
+        assert _look(store, language, root)["added"] == 1 and _items(store) == 2

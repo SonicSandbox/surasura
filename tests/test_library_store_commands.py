@@ -1056,20 +1056,19 @@ def test_register_finds_a_synced_row_or_adds_one(language):
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_undo_register_restores_the_keys_previous_pairing(language):
-    """Review R6: hato re-registering a content key against a new file, then Undo: the new item went (as an
-    Add) and its pairing with it, but the key's earlier pairing was never put back, so the key mapped to
-    nothing."""
+    """Review R6: hato re-registering a content key against another file, then Undo: the key's earlier pairing must be
+    put back, never left mapping to nothing. Since SRC K3 (SRC-7, every channel) a NEW file for a key another item holds
+    makes no item (that episode is in already: the file is kept out, `tests/test_sources_duplicates.py`), so the key
+    moves only onto a file that is an item already — here another of the user's items."""
     store = migrated(language)
     data_dir, _u = roots(language)
-    w = names(language)
-    paired = store.ids("soon")[2]
+    paired, other = store.ids("soon")[2:4]
     store.register(os.path.join(data_dir, store.item(paired)["rel_path"]), {"content_key": "k-moved"})
-    change = store.register(touch(data_dir, f"{ls.HATO_FOLDER}/{w[94]}.srt"), {"content_key": "k-moved"})
-    assert change.added
+    change = store.register(os.path.join(data_dir, store.item(other)["rel_path"]), {"content_key": "k-moved"})
+    assert not change.added
     key = "SELECT item_id FROM pairings WHERE content_key = 'k-moved'"
-    assert store.conn.execute(key).fetchone()[0] == change.added[0]
+    assert store.conn.execute(key).fetchone()[0] == other
     store.undo(change)
-    assert change.added[0] not in store.ids("now")
     assert store.conn.execute(key).fetchone()[0] == paired
     store.close()
 

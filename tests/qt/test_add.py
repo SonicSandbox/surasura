@@ -21,6 +21,7 @@ from PyQt6.QtGui import QEnterEvent
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication
 
+from app import library_store as ls
 from app.qt import add_menu, strings, windows
 from tests import services_helpers as h
 from tests.fixtures import window_seed
@@ -248,6 +249,17 @@ def test_S3_season_1_of_another_show_lands_at_the_top_never_in_a_show_with_a_sea
         assert add_menu.show_in_current(_view_of(("黒鉄の剣士", leaf, [1])), leaf) is None
 
 
+def test_K3_a_show_whose_episodes_sit_in_the_content_folder_takes_its_new_episode_there(tmp_path):
+    """SRC K3: a show a source folder (or an earlier drop) brought into `Library/<show>` is a show's folder like a
+    tier's: + Add puts its next episode beside the others, never in a folder of its own."""
+    from types import SimpleNamespace as N
+    eps = [N(id=i, rel_path=f"Library/月影の旅人/月影の旅人 - {k:02d}.srt") for k, i in enumerate((21, 22), 1)]
+    view = N(rows=[N(tier="now", episodes=eps, title="月影の旅人", cover_title="月影の旅人", index=1)])
+    assert add_menu.show_folder(view.rows[0]) == "Library/月影の旅人"
+    new = os.path.join(str(tmp_path), "dl", "月影の旅人", "月影の旅人 - 03.srt")
+    assert add_menu.placement(view, [new]) == ("now", 22, "Library/月影の旅人", 1)
+
+
 def test_S3_a_folder_named_like_hatos_is_never_placed_in_hatos_drop_folder(tmp_path):
     view = _view_of(("黒鉄の剣士", "Season 1", [11]))
     folder = os.path.join(str(tmp_path), "Hato")
@@ -392,19 +404,20 @@ def test_a_real_add_copies_into_the_shows_folder_after_its_last_episode_never_ov
     assert h.until(lambda: heard.saved)
     new = heard.saved[0][0].added[0]
     name = os.path.basename(src)
-    assert lib.store.item(new)["rel_path"] == f"{folder}/{name}"
+    copies = f"{ls.CONTENT_FOLDER}/{folder.split('/', 1)[1]}"           # the show's folder in Library (SRC K3)
+    assert lib.store.item(new)["rel_path"] == f"{copies}/{name}"
     now = lib.ids("now")
     assert now[now.index(ids[-1]) + 1] == new                          # right after the show's last episode
     other = _outside_file(tmp_path / "Explorer2", lib.language, extra="\n")
     w.insert_at([other], "now", after_id=new, into=folder)
     assert h.until(lambda: len(heard.saved) == 2)
     base, ext = os.path.splitext(name)
-    listing = os.listdir(os.path.join(lib.data_dir, *folder.split("/")))
+    listing = os.listdir(os.path.join(lib.data_dir, *copies.split("/")))
     assert name in listing and f"{base} (2){ext}" in listing          # never over the learner's file
     assert not [n for n in listing if n.endswith(".part")]            # no half copy left
     w.undo()
     assert h.until(lambda: heard.undone)
-    assert f"{base} (2){ext}" not in os.listdir(os.path.join(lib.data_dir, *folder.split("/")))   # to the trash
+    assert f"{base} (2){ext}" not in os.listdir(os.path.join(lib.data_dir, *copies.split("/")))   # to the trash
 
 
 def test_a_real_add_keeps_a_folders_own_folders_and_refuses_a_place_outside_the_library(lib, make_writer, tmp_path):
@@ -413,7 +426,7 @@ def test_a_real_add_keeps_a_folders_own_folders_and_refuses_a_place_outside_the_
     w.insert_at([src], "now", into=["HighPriority/春風の配達人/Season 2"])
     assert h.until(lambda: heard.saved)
     new = heard.saved[0][0].added[0]
-    assert lib.store.item(new)["rel_path"] == f"HighPriority/春風の配達人/Season 2/{os.path.basename(src)}"
+    assert lib.store.item(new)["rel_path"] == f"Library/春風の配達人/Season 2/{os.path.basename(src)}"   # (SRC K3)
     assert lib.ids("now")[0] == new
     for outside in ("../Elsewhere", "Graduated/Old", "C:/Windows", ""):
         if not outside:

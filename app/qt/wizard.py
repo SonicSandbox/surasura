@@ -33,6 +33,7 @@ GUI thread never waits.
   it jumps).
 """
 import math
+import os
 import threading
 import time
 from functools import lru_cache
@@ -40,8 +41,8 @@ from functools import lru_cache
 from PyQt6 import sip
 from PyQt6.QtCore import QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont, QFontMetricsF, QLinearGradient, QPainter, QPen, QRadialGradient
-from PyQt6.QtWidgets import (QAbstractButton, QApplication, QComboBox, QHBoxLayout, QLabel, QLayout, QProgressBar,
-                             QPushButton, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget)
+from PyQt6.QtWidgets import (QAbstractButton, QApplication, QComboBox, QFileDialog, QHBoxLayout, QLabel, QLayout,
+                             QProgressBar, QPushButton, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget)
 
 from app import path_utils, settings_manager, theme
 from app.qt import applog, bridge, confirm, motion, strings, style, windows
@@ -580,6 +581,22 @@ def _show(widget, on):
 def _enable(widget, on):
     if widget.isEnabled() != bool(on):
         widget.setEnabled(bool(on))
+
+
+def _tabular(font):
+    """Tabular figures (Qt 6.7+): a count that grows doesn't jiggle (the window's rule for numbers)."""
+    if hasattr(QFont, "Tag"):
+        try:
+            font.setFeature(QFont.Tag("tnum"), 1)
+        except (TypeError, AttributeError):
+            pass
+    return font
+
+
+def _count(pair, n):
+    """(one, many) for `n`: *1 episode*, *412 episodes*."""
+    n = int(n or 0)
+    return pair[0] if n == 1 else pair[1].format(n=n)
 
 
 class FlowLayout(QLayout):
@@ -1280,6 +1297,40 @@ class ShowsPage(_Page):
 
     def __init__(self, wiz):
         super().__init__(wiz, S.SHOWS_TITLE, S.UPGRADE_SHOWS_LINE if wiz.upgrading else "")
+        # --- SRC W1a: the folders your shows and books are in, read where they are (added and looked at on *Next*)
+        self.folders = []                   # the folders picked, not read yet (as the dialog gave them)
+        self.folders_part = QWidget(self)
+        self.folders_part.setAccessibleName(S.FOLDERS_NAME)
+        fbox = QVBoxLayout(self.folders_part)
+        fbox.setContentsMargins(0, 0, 0, _px(4))
+        fbox.setSpacing(_px(8))
+        fbox.addWidget(_label("wizgroup", S.FOLDERS, self.folders_part))
+        self.folder_list = QVBoxLayout()
+        self.folder_list.setSpacing(_px(6))
+        fbox.addLayout(self.folder_list)
+        pick = QHBoxLayout()
+        pick.setSpacing(_px(14))
+        self.btn_pick = _button(S.PICK_FOLDER, S.PICK_FOLDER_TIP, self.wiz.pick_folder, self.folders_part)
+        pick.addWidget(self.btn_pick)
+        self.reading_line = _label("wizsub", "", self.folders_part)
+        f = self.reading_line.font()
+        _tabular(f)
+        self.reading_line.setFont(f)
+        self.reading_line.setVisible(False)
+        pick.addWidget(self.reading_line)
+        self.btn_stop = _button(S.STOP, S.STOP_TIP, self.wiz.stop_reading, self.folders_part)
+        self.btn_stop.setVisible(False)
+        pick.addWidget(self.btn_stop)
+        pick.addStretch(1)
+        fbox.addLayout(pick)
+        self.refused_line = _label("wizclosed", "", self.folders_part, wrap=True)
+        self.refused_line.setVisible(False)
+        fbox.addWidget(self.refused_line)
+        self.box.addWidget(self.folders_part)
+        self.folders_part.setVisible(wiz.can_read_folders())
+        self._folders_key = None
+        self.folder_paints = 0
+        # --- end SRC W1a
         # --- W3.2 Q3: + Add's own actions (Files / Folder / EPUB / YouTube), each shown while it can act (IK-12)
         adds = QHBoxLayout()
         adds.setSpacing(_px(10))
@@ -1321,6 +1372,101 @@ class ShowsPage(_Page):
         for name, b in self.add_buttons.items():          # --- W3.2 Q3: an action that can't act now isn't shown
             _show(b, self.wiz.can_add(name))
         self.wiz.read_rows()
+
+    # --- SRC W1a: the folders picked, and their first look ------------------------------------------------------- #
+    def has_folder(self, path):
+        key = os.path.normcase(os.path.normpath(path))
+        return any(os.path.normcase(os.path.normpath(p)) == key for p in self.folders)
+
+    def add_folder(self, path):
+        """A folder the store's rule accepted: listed, with *Remove*; the refusal said before goes."""
+        if not self.has_folder(path):
+            self.folders.append(path)
+        self.refuse(None)
+        self._paint_folders()
+
+    def remove_folder(self, path):
+        """*Remove* beside a folder: left out before going on (nothing was added: that happens on *Next*)."""
+        self.folders = [p for p in self.folders if p != path]
+        self._paint_folders()
+
+    def refuse(self, text):
+        _set_text(self.refused_line, text or "")
+        _show(self.refused_line, bool(text))
+
+    def _paint_folders(self):
+        """The picked folders, each a row with *Remove* (rebuilt only when the list changed, S19)."""
+        key = (tuple(self.folders), self.wiz.reading is not None)
+        if key == self._folders_key:
+            return
+        self._folders_key = key
+        self.folder_paints += 1
+        while self.folder_list.count():
+            item = self.folder_list.takeAt(0)
+            if item.widget() is not None:
+                item.widget().hide()                      # never painted again while its delete waits for the loop
+                item.widget().deleteLater()
+        for path in self.folders:
+            w = QWidget(self.folders_part)
+            line = QHBoxLayout(w)
+            line.setContentsMargins(0, 0, 0, 0)
+            line.setSpacing(_px(14))
+            name = _label("wizrowline", path, w)
+            f = name.font()
+            f.setFamilies(list(theme.path_font_families(self.wiz.language)))      # a path's ¥ is a backslash again
+            name.setFont(f)
+            line.addWidget(name)
+            b = _button(S.FOLDER_REMOVE, S.FOLDER_REMOVE_TIP, lambda p=path: self.remove_folder(p), w, name="wizlink")
+            b.setAccessibleName(S.FOLDER_REMOVE_NAME.format(folder=path))
+            _enable(b, self.wiz.reading is None)
+            line.addWidget(b)
+            line.addStretch(1)
+            self.folder_list.addWidget(w)
+        text = S.PICK_ANOTHER if self.folders else S.PICK_FOLDER
+        if self.btn_pick.text() != text:
+            self.btn_pick.setText(text)
+            self.btn_pick.setAccessibleName(text)
+        _enable(self.btn_pick, self.wiz.reading is None)
+
+    def show_reading(self, found, shows):
+        """The first look's progress line, *Found 412 episodes in 37 shows…*, with *Stop*."""
+        _set_text(self.reading_line, S.READING.format(episodes=_count(S.EPISODES, found), shows=_count(S.SHOWS_N,
+                                                                                                         shows)))
+        _show(self.reading_line, True)
+        _show(self.btn_stop, True)
+        self._paint_folders()
+
+    def stopping(self):
+        _enable(self.btn_stop, False)
+        _set_text(self.btn_stop, S.STOPPING)
+
+    def show_read(self, result):
+        """The look ended: what it found (or that it stopped, keeping what came in), and why a folder wasn't read. The
+        folders it dealt with leave the list (the next *Next* goes on); one it never reached — after a Stop, no library
+        yet, a look already running — stays listed, to read or remove (never dropped unsaid); one picked meanwhile
+        too."""
+        result = result or {}
+        _show(self.btn_stop, False)
+        _enable(self.btn_stop, True)
+        _set_text(self.btn_stop, S.STOP)
+        if not result.get("ready", True):
+            text = S.READ_NOT_READY
+        elif result.get("busy"):
+            text = S.READ_BUSY
+        else:
+            counts = dict(episodes=_count(S.EPISODES, result.get("found", 0)),
+                          shows=_count(S.SHOWS_N, result.get("shows", 0)))
+            text = (S.READ_STOPPED if result.get("stopped") else S.READ_DONE).format(**counts)
+        _set_text(self.reading_line, text)
+        _show(self.reading_line, True)
+        problems = [S.FOLDER_REFUSED.format(folder=p, why=why) for p, why in result.get("refused") or ()]
+        problems += [S.READ_UNREACHABLE.format(folder=p) for p in result.get("unreachable") or ()]
+        problems += [S.READ_FAILED.format(folder=p, why=why) for p, why in result.get("failed") or ()]
+        self.refuse("\n".join(problems))
+        read = set(result.get("read") or ())
+        self.folders = [p for p in self.folders if p not in read]
+        self._paint_folders()
+    # --- end SRC W1a
 
     def show_rows(self, rows):
         rows = list(rows or [])
@@ -1839,6 +1985,10 @@ class SetupWizard(QWidget):
         self._junban_found = None           # modules/junban looked for on a worker (None: not known yet)
         self.saves = []                     # (page, answers) as each *Next* saved them (what the wizard asked)
         self._finished = False              # `finish` written (Generate, or *Skip* on the last page)
+        self.reading = None                 # SRC W1a: page 3's first look running (its Stop: a threading.Event)
+        self._read_seq = 0
+        # the folder picker (the system's own dialog; tests replace it)
+        self.pick_dialog = lambda title, start: QFileDialog.getExistingDirectory(self, title, start)
         self.upgrading = self._upgrading(settings)      # brought over from 2.x: shown once, its choices picked (WZ-8)
         answers = self._preselect(self.language)
         self._build()
@@ -2002,9 +2152,10 @@ class SetupWizard(QWidget):
         if not hasattr(self, "btn_next"):
             return
         last = self.index == len(PAGES) - 1
+        busy = self.generating or self.reading is not None       # Generate, or page 3's first look (its Stop)
         _show(self.btn_back, self.index > 0)
         _show(self.btn_skip, self.index > 0)
-        offered = self.page.next_offered() or self.generating
+        offered = self.page.next_offered() or busy
         if offered and self._offered is False:
             self._rearm()                                 # *Next* just came up: its first press waits (R2-1)
         self._offered = offered
@@ -2015,9 +2166,9 @@ class SetupWizard(QWidget):
             self.btn_next.setAccessibleName(text)
             self.btn_next.setToolTip(tip)
         for b in (self.btn_back, self.btn_skip, self.btn_next):
-            if b.isEnabled() == self.generating:
-                b.setEnabled(not self.generating)
-        _show(self.btn_next.key, not self.generating)      # the key's hint only while Enter does something
+            if b.isEnabled() == busy:
+                b.setEnabled(not busy)
+        _show(self.btn_next.key, not busy)                 # the key's hint only while Enter does something
 
     def say(self, text):
         text = text or ""
@@ -2048,7 +2199,7 @@ class SetupWizard(QWidget):
     def enter(self):
         """Enter: *Next* (or **Generate**); *Skip* on a page that can't go on (never while Anki is being looked
         for: the answer may yet let it go on)."""
-        if self.generating or (self._anki_looking and self.page.id in ("known", "order")):
+        if self.generating or self.reading is not None or (self._anki_looking and self.page.id in ("known", "order")):
             return
         if self.page.next_offered():
             self.next()
@@ -2056,10 +2207,13 @@ class SetupWizard(QWidget):
             self.skip()
 
     def next(self):
-        if self.generating or self._gone:
+        if self.generating or self._gone or self.reading is not None:
             return
         page = self.page
         if not page.next_offered():
+            return
+        if page.id == "shows" and page.folders:
+            self._read_folders(list(page.folders))         # SRC W1a: the folders read first; the page stays for the rows
             return
         answers = page.answers()
         if page.id == "level":
@@ -2081,7 +2235,7 @@ class SetupWizard(QWidget):
 
     def skip(self):
         """Nothing written; on the last page, setup finishes without Generate."""
-        if self.generating or self.index == 0:
+        if self.generating or self.reading is not None or self.index == 0:
             return
         if self.index == len(PAGES) - 1:
             self._finish()
@@ -2090,7 +2244,7 @@ class SetupWizard(QWidget):
         self._advance()
 
     def back(self):
-        if self.generating or self.index == 0:
+        if self.generating or self.reading is not None or self.index == 0:
             return
         self._go(self.index - 1)                          # the pages keep their choices
 
@@ -2139,6 +2293,7 @@ class SetupWizard(QWidget):
         still open is answered No at once, its card gone with it."""
         self._stopped = True
         self.cancel_install()
+        self.stop_reading()                               # page 3's look stops between files, keeping what came in
         for ask in self.findChildren(_AskFromWorker):
             ask.answer_now(False)
             if ask.card is not None and not sip.isdeleted(ask.card):
@@ -2277,9 +2432,11 @@ class SetupWizard(QWidget):
 
     def can_add(self, name):
         """Whether page 3's `name` (`ADD_ACTIONS`) acts now: a door while it is available; Files and Folder while the
-        window can copy into its library (+ Add's own rule)."""
+        window can copy into its library (+ Add's own rule); Folder also while the page reads folders itself."""
         if name in ADD_DOORS:
             return self.door(ADD_DOORS[name]) is not None
+        if name == "folder" and self.can_read_folders():
+            return True
         adder = self._adder()
         return adder is not None and bool(adder.entries((name,)))
 
@@ -2287,9 +2444,15 @@ class SetupWizard(QWidget):
         if name in ADD_DOORS:
             self.open_door(ADD_DOORS[name])
             return
+        if name == "folder" and self.can_read_folders():
+            self.pick_folder()          # SRC W1 fix (Decision 2): as *Choose a folder…*, setup's own: Current (SRC-1)
+            return
         adder = self._adder()
         if adder is not None:
-            adder.run(name)
+            if name == "folder":
+                adder.run(name, first=True)       # no folders part: still setup's first look
+            else:
+                adder.run(name)
 
     def _added(self, _text=None):
         """+ Add handed something to the writer: the rows read again (now, and as the library's view moves)."""
@@ -2311,6 +2474,89 @@ class SetupWizard(QWidget):
                              failed=self.alive(lambda info: (_enable(self.pages[2].btn_samples, True),
                                                              self.say(str(info[0])))))
     # --- end W3.2 Q3
+
+    # --- SRC W1a: the folders your shows and books are in (page 3) ---------------------------------------------- #
+    def can_read_folders(self):
+        """Page 3 offers its folders when the services can read them (`folder_refused`, `read_folders`)."""
+        return callable(getattr(self.api, "read_folders", None))
+
+    def pick_folder(self):
+        """*Choose a folder…*: the system's folder dialog; the folder picked is checked by the store's own rule on a
+        worker (`folder_refused`) — refused, its reason in plain words; else listed."""
+        if self.reading is not None or self._gone:
+            return
+        page = self.pages[2]
+        start = page.folders[-1] if page.folders else os.path.expanduser("~")
+        path = self.pick_dialog(S.PICK_TITLE, start)
+        if not path:
+            return
+        path = os.path.normpath(path)
+        if page.has_folder(path):
+            return
+        refused = getattr(self.api, "folder_refused", None)
+        if refused is None:
+            page.add_folder(path)
+            return
+        language = self.language
+
+        def checked(why):
+            if language != self.language:
+                return
+            if why:
+                page.refuse(S.FOLDER_REFUSED.format(folder=path, why=why))
+            else:
+                page.add_folder(path)
+        bridge.run_in_worker(refused, language, path, then=self.alive(checked),
+                             failed=self.alive(lambda info: page.refuse(S.FOLDER_REFUSED.format(folder=path,
+                                                                                                why=info[1]))))
+
+    def _read_folders(self, paths):
+        """*Next* with folders picked: each added and given setup's first look (`read_folders`) on a worker — never the
+        window's thread — its progress on the page with *Stop*; then the rows read again, and Needs you looks for its
+        line (D1). The page stays: the next *Next* goes on."""
+        page = self.pages[2]
+        stop = threading.Event()
+        self.reading = stop
+        self._read_seq += 1
+        seq, language = self._read_seq, self.language
+        progress = bridge.Relay(self)
+        progress.said.connect(lambda counts: self.alive(page.show_reading)(*counts))
+        page.refuse(None)
+        page.show_reading(0, 0)
+        self.paint_footer()
+
+        def ended(result):
+            if not sip.isdeleted(progress):
+                progress.deleteLater()
+            if seq != self._read_seq:
+                return
+            self.reading = None
+            self._rearm()                                     # the page changed under the learner: a press waits
+            page.show_read(result)
+            self.paint_footer()
+            self.read_rows()
+        shell = self.shell
+
+        def needs_look():
+            """D1's line, offered by the look: Needs you reads again — the wizard closed meanwhile (*Finish later*
+            mid-look) or not."""
+            needs = getattr(shell, "needs_you", None)
+            if needs is not None and not sip.isdeleted(needs):
+                needs.refresh()
+
+        def failed(info):
+            ended({"failed": [(p, str(info[1])) for p in paths], "read": list(paths)})
+        bridge.run_in_worker(self.api.read_folders, language, paths, lambda found, shows: progress.call((found, shows)),
+                             stop.is_set, then=lambda result: (self.alive(ended)(result), needs_look()),
+                             failed=lambda info: (self.alive(failed)(info), needs_look()))
+
+    def stop_reading(self):
+        """*Stop*: the look stops between files; what it took in is kept."""
+        if self.reading is not None and not self.reading.is_set():
+            self.reading.set()
+            if not self._gone and not sip.isdeleted(self):
+                self.pages[2].stopping()
+    # --- end SRC W1a
 
     def read_rows(self):
         self._rows_seq += 1

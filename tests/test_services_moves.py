@@ -1482,8 +1482,8 @@ def _in_folder(lib, folder):
     return sorted(n for n in os.listdir(where) if n.startswith(base)) if os.path.isdir(where) else []
 
 
-def test_an_explorer_drop_copies_the_file_into_the_tiers_folder_and_places_it_at_the_drop(lib, make_writer,
-                                                                                          tmp_path):
+def test_an_explorer_drop_copies_the_file_into_the_content_folder_and_places_it_at_the_drop(lib, make_writer,
+                                                                                            tmp_path):
     w, heard = make_writer()
     now = lib.ids("now")
     src = _outside_file(tmp_path / "Explorer", lib.language)
@@ -1493,18 +1493,18 @@ def test_an_explorer_drop_copies_the_file_into_the_tiers_folder_and_places_it_at
     assert label == "added" and len(change.added) == 1 and heard.notes == []
     new = change.added[0]
     assert lib.ids("now")[:3] == [now[0], new, now[1]]
-    assert lib.store.item(new)["rel_path"] == f"HighPriority/{_DROPPED[lib.language]}"
-    assert _in_folder(lib, "HighPriority") == [_DROPPED[lib.language]] and os.path.isfile(src)
+    assert lib.store.item(new)["rel_path"] == f"{_library_show(lib.language)}/{_DROPPED[lib.language]}"
+    assert _in_folder(lib, _library_show(lib.language)) == [_DROPPED[lib.language]] and os.path.isfile(src)
     assert journal(lib.language) is None                # never journalled
 
 
-def test_an_explorer_drop_after_a_soon_row_lands_in_soons_folder_after_it(lib, make_writer, tmp_path):
+def test_an_explorer_drop_after_a_soon_row_lands_after_it_in_the_content_folder(lib, make_writer, tmp_path):
     w, heard = make_writer()
     soon = lib.ids("soon")
     w.insert_at([_outside_file(tmp_path / "Explorer", lib.language)], "soon", after_id=soon[2])
     assert h.until(lambda: heard.saved)
     new = heard.saved[0][0].added[0]
-    assert lib.ids("soon")[3] == new and lib.store.item(new)["rel_path"].startswith("LowPriority/")
+    assert lib.ids("soon")[3] == new and lib.store.item(new)["rel_path"].startswith(_library_show(lib.language) + "/")
 
 
 def test_an_explorer_drop_at_no_row_goes_to_the_top_of_its_tier_without_a_note(lib, make_writer, tmp_path):
@@ -1527,13 +1527,13 @@ def test_an_explorer_drop_never_copies_over_a_file(lib, make_writer, tmp_path):
     w.insert_at([same], "now", before_id=now[0])         # the same file again: already in the library (AD-9)
     assert h.until(lambda: heard.rereads > rereads)      # the window drops its ghost row …
     assert len(heard.saved) == 1 and list(w._undo) == [heard.saved[0][0]]  # … and nothing joins the Undo stack
-    assert lib.ids("now").count(first) == 1 and _in_folder(lib, "HighPriority") == [_DROPPED[lib.language]]
+    assert lib.ids("now").count(first) == 1 and _in_folder(lib, _library_show(lib.language)) == [_DROPPED[lib.language]]
     differing = _outside_file(tmp_path / "Explorer2", lib.language, extra="\n")
     w.insert_at([differing], "now", before_id=now[0])
     assert h.until(lambda: len(heard.saved) == 2)
     base, ext = os.path.splitext(_DROPPED[lib.language])
-    assert _in_folder(lib, "HighPriority") == sorted([_DROPPED[lib.language], f"{base} (2){ext}"])
-    assert lib.store.item(heard.saved[1][0].added[0])["rel_path"] == f"HighPriority/{base} (2){ext}"
+    assert _in_folder(lib, _library_show(lib.language)) == sorted([_DROPPED[lib.language], f"{base} (2){ext}"])
+    assert lib.store.item(heard.saved[1][0].added[0])["rel_path"] == f"{_library_show(lib.language)}/{base} (2){ext}"
 
 
 def test_an_explorer_drop_of_a_file_in_the_library_folder_places_it_without_a_copy(lib, make_writer):
@@ -1554,6 +1554,156 @@ def test_an_explorer_drop_of_a_file_in_the_library_folder_places_it_without_a_co
     assert h.until(lambda: heard.rereads) and heard.saved == [] and not w.can_undo()
 
 
+# --- SRC K3: never a duplicate; new copies in the content folder ------------------------------------------------ #
+def _library_show(language):
+    """The folder a loose drop of `_DROPPED` is copied into: its show, read from its name (K4's `show_of_name`)."""
+    return f"{ls.CONTENT_FOLDER}/{ls.show_of_name(_DROPPED[language])}"
+
+
+def test_K3_a_drop_of_a_file_already_in_the_library_adds_nothing_and_names_the_item(lib, make_writer, tmp_path):
+    """The same bytes as an item's file (dragged in again from elsewhere, under another name): not copied, not added,
+    and the note names the item — never a silent nothing, never a second item for one episode (SRC-7)."""
+    w, heard = make_writer()
+    now = lib.ids("now")
+    item = lib.store.item(now[0])
+    outside = tmp_path / "Explorer" / "renamed copy.srt"
+    os.makedirs(outside.parent)
+    with open(os.path.join(lib.data_dir, *item["rel_path"].split("/")), "rb") as f, open(outside, "wb") as g:
+        g.write(f.read())
+    count = sum(len(lib.ids(t)) for t in ("now", "soon", "goal", "arrivals"))
+    title = lib.store.conn.execute("SELECT w.title FROM items i JOIN works w ON w.id = i.work_id WHERE i.id = ?",
+                                   (now[0],)).fetchone()[0]
+    w.insert_at([str(outside)], "now", before_id=now[1])
+    assert h.until(lambda: heard.notes)
+    assert heard.notes == [WORDS["already_in"].format(titles=title)] and heard.saved == [] and not w.can_undo()
+    assert sum(len(lib.ids(t)) for t in ("now", "soon", "goal", "arrivals")) == count and lib.ids("now") == now
+    assert not os.path.exists(os.path.join(lib.data_dir, ls.CONTENT_FOLDER))          # nothing copied
+    # one of two: the new file comes in, the one already in is named
+    new = _outside_file(tmp_path / "Explorer2", lib.language)
+    w.insert_at([str(outside), new], "now", before_id=now[1])
+    assert h.until(lambda: heard.saved)
+    assert len(heard.saved[0][0].added) == 1 and heard.notes[-1] == WORDS["already_in"].format(titles=title)
+
+
+def test_K3_a_new_drop_is_copied_into_the_content_folder_at_the_same_place(lib, make_writer, tmp_path):
+    """A library with no sources: a new file's place is the drop's (the store's command), as before; only its folder
+    is `Library/<show>/` instead of the tier's."""
+    w, heard = make_writer()
+    soon = lib.ids("soon")
+    w.insert_at([_outside_file(tmp_path / "Explorer", lib.language)], "soon", after_id=soon[2])
+    assert h.until(lambda: heard.saved)
+    new = heard.saved[0][0].added[0]
+    assert lib.ids("soon")[3] == new and heard.notes == []
+    assert lib.store.item(new)["rel_path"] == f"{_library_show(lib.language)}/{_DROPPED[lib.language]}"
+    assert _in_folder(lib, "LowPriority") == [] and _in_folder(lib, "HighPriority") == []
+    assert lib.store.sync_disk() is None                                              # the sync knows it
+
+
+def test_K3_a_drop_of_a_file_already_in_the_content_folder_places_it_without_a_copy(lib, make_writer):
+    """A file that sits in `Library` already (a copy no item holds yet) is left where it is, as a tier folder's is."""
+    w, heard = make_writer()
+    inside = os.path.join(lib.data_dir, ls.CONTENT_FOLDER, "別の棚", _DROPPED[lib.language])
+    os.makedirs(os.path.dirname(inside))
+    with open(os.path.join(h.RESOURCES, lib.language, h.LIBRARY[lib.language][0]), encoding="utf-8") as f:
+        text = f.read()
+    with open(inside, "w", encoding="utf-8") as f:
+        f.write(text + " 別の棚")
+    now = lib.ids("now")
+    w.insert_at([inside], "now", before_id=now[0])
+    assert h.until(lambda: lib.ids("now")[0] not in now)
+    assert lib.store.item(lib.ids("now")[0])["rel_path"] == f"{ls.CONTENT_FOLDER}/別の棚/{_DROPPED[lib.language]}"
+    assert not os.path.exists(os.path.join(lib.data_dir, _library_show(lib.language)))
+
+
+def test_K3_plus_adds_show_folder_in_a_tier_becomes_the_same_shows_folder_in_the_content_folder(lib, make_writer,
+                                                                                                 tmp_path):
+    """+ Add names a 2.x show's folder (`HighPriority/<show>`): the copy goes to `Library/<show>/`, one title with it
+    (the store groups the two folders as one show), at the drop's place."""
+    w, heard = make_writer()
+    now = lib.ids("now")
+    show_rel = lib.store.item(now[0])["rel_path"].rsplit("/", 1)[0]
+    work = lib.store.item(now[0])["work_id"]
+    w.insert_at([_outside_file(tmp_path / "Explorer", lib.language)], "now", after_id=now[0], into=show_rel)
+    assert h.until(lambda: heard.saved)
+    new = heard.saved[0][0].added[0]
+    show = show_rel.split("/", 1)[1]
+    assert lib.store.item(new)["rel_path"] == f"{ls.CONTENT_FOLDER}/{show}/{_DROPPED[lib.language]}"
+    assert lib.ids("now")[1] == new and lib.store.item(new)["work_id"] == work
+
+
+def _episode_only(folder, name, language, extra):
+    """A file dragged from a shell folder whose name gives no show (`01.srt`, `第1話.srt`): real text, its own ending."""
+    os.makedirs(folder, exist_ok=True)
+    path = os.path.join(folder, name)
+    with open(os.path.join(h.RESOURCES, language, h.LIBRARY[language][0]), encoding="utf-8") as f:
+        text = f.read()
+    with open(path, "w", encoding="utf-8") as g:
+        g.write(text + extra)
+    return path
+
+
+@pytest.mark.parametrize("name", ("01.srt", "第1話.srt"))
+def test_K3_R5_a_loose_drop_whose_name_gives_no_show_is_never_filed_under_its_folders_name(lib, make_writer, tmp_path,
+                                                                                         name):
+    """R5: `01.srt` dragged from Downloads goes loose into `Library/` itself, never `Library/Downloads/`; a second
+    `01.srt` from another folder is `01 (2).srt` there, and each is a title of its own (K4) — never one title named
+    after the folder they came from."""
+    w, heard = make_writer()
+    now = lib.ids("now")
+    a = _episode_only(tmp_path / "Downloads", name, lib.language, " 一つ目")
+    b = _episode_only(tmp_path / "Desktop", name, lib.language, " 二つ目")
+    w.insert_at([a], "now", before_id=now[0])
+    assert h.until(lambda: len(heard.saved) == 1)
+    w.insert_at([b], "now", before_id=now[0])
+    assert h.until(lambda: len(heard.saved) == 2)
+    first, second = heard.saved[0][0].added[0], heard.saved[1][0].added[0]
+    stem, ext = os.path.splitext(name)
+    assert lib.store.item(first)["rel_path"] == f"{ls.CONTENT_FOLDER}/{name}"
+    assert lib.store.item(second)["rel_path"] == f"{ls.CONTENT_FOLDER}/{stem} (2){ext}"
+    assert not os.path.exists(os.path.join(lib.data_dir, ls.CONTENT_FOLDER, "Downloads"))
+    assert lib.store.item(first)["work_id"] != lib.store.item(second)["work_id"]
+    assert lib.store.sync_disk() is None
+
+
+def test_K3_N3_a_drop_of_an_untracked_file_in_a_walked_folder_with_an_items_bytes_adds_nothing(lib, make_writer,
+                                                                                              tmp_path):
+    """N3: a file under a folder the sync walks that is no item's (hato's kept-out file, an unused copy) but holds an
+    item's bytes is that item: not added, named in the note. An item's own file dragged from Explorer is never its own
+    twin: no note for it (the store leaves it where it is, as before)."""
+    w, heard = make_writer()
+    now = lib.ids("now")
+    item = lib.store.item(now[0])
+    kept_out = os.path.join(lib.data_dir, "LowPriority", "kept out copy.srt")
+    with open(os.path.join(lib.data_dir, *item["rel_path"].split("/")), "rb") as f, open(kept_out, "wb") as g:
+        g.write(f.read())
+    title = lib.store.conn.execute("SELECT w.title FROM items i JOIN works w ON w.id = i.work_id WHERE i.id = ?",
+                                   (now[0],)).fetchone()[0]
+    w.insert_at([kept_out], "now", before_id=now[1])
+    assert h.until(lambda: heard.notes)
+    assert heard.notes == [WORDS["already_in"].format(titles=title)] and heard.saved == []
+    assert lib.store.item_id(ls.library_rel(lib.data_dir, kept_out)) is None and os.path.isfile(kept_out)
+    own = os.path.join(lib.data_dir, *lib.store.item(now[2])["rel_path"].split("/"))       # never its own twin
+    w.insert_at([own, _outside_file(tmp_path / "Explorer", lib.language)], "now", before_id=now[0])
+    assert h.until(lambda: heard.saved)
+    assert len(heard.saved[0][0].added) == 1 and heard.notes == [WORDS["already_in"].format(titles=title)]
+    assert lib.store.item(now[2]) is not None
+
+
+def test_K3_N4_two_files_with_the_same_bytes_in_one_drop_come_in_once(lib, make_writer, tmp_path):
+    """N4: the same file twice in one drop (from two folders): one copy, one item; the other named as already in."""
+    w, heard = make_writer()
+    a = _outside_file(tmp_path / "Explorer", lib.language)
+    b = os.path.join(str(tmp_path / "Explorer2"), "同じ中身.txt")
+    os.makedirs(os.path.dirname(b))
+    with open(a, "rb") as f, open(b, "wb") as g:
+        g.write(f.read())
+    w.insert_at([a, b], "now", before_id=lib.ids("now")[0])
+    assert h.until(lambda: heard.saved)
+    assert len(heard.saved[0][0].added) == 1
+    assert heard.notes == [WORDS["already_in"].format(titles=_DROPPED[lib.language])]
+    assert _in_folder(lib, _library_show(lib.language)) == [_DROPPED[lib.language]]
+
+
 def test_AD10_undoing_a_drop_takes_out_only_the_rows_of_the_files_it_copied(lib, make_writer, tmp_path):
     """A drop of an outside file and a file already in a tier's folder: its Undo trashes the copy and takes its row
     out; the learner's own file keeps its file and its row (a sync would only add it back)."""
@@ -1568,11 +1718,11 @@ def test_AD10_undoing_a_drop_takes_out_only_the_rows_of_the_files_it_copied(lib,
     assert h.until(lambda: heard.saved)
     added = heard.saved[0][0].added
     assert len(added) == 2
-    copied = [i for i in added if lib.store.item(i)["rel_path"].startswith("HighPriority/")]
+    copied = [i for i in added if lib.store.item(i)["rel_path"].startswith(_library_show(lib.language) + "/")]
     kept = [i for i in added if i not in copied]
     w.undo()
     assert h.until(lambda: heard.undone)
-    assert lib.store.item(copied[0]) is None and _in_folder(lib, "HighPriority") == []
+    assert lib.store.item(copied[0]) is None and _in_folder(lib, _library_show(lib.language)) == []
     assert lib.store.item(kept[0]) is not None and os.path.isfile(inside) and heard.notes == []
 
 
@@ -1630,7 +1780,7 @@ def test_an_explorer_drops_undo_sends_its_copy_to_the_trash_and_takes_its_row_ou
     w.undo()
     assert h.until(lambda: heard.undone)
     assert lib.ids("now") == now and lib.store.item(new) is None and heard.notes == []
-    assert _in_folder(lib, "HighPriority") == []
+    assert _in_folder(lib, _library_show(lib.language)) == []
     assert any(n.startswith(os.path.splitext(_DROPPED[lib.language])[0])
                for n in os.listdir(os.path.join(lib.data_dir, ".trash")))
 
@@ -1646,7 +1796,8 @@ def test_an_explorer_drops_undo_the_store_refuses_puts_its_file_back(lib, make_w
     monkeypatch.setattr(ls.Store, "undo", refuse)
     w.undo()
     assert h.until(lambda: heard.notes)
-    assert heard.notes == [WORDS["cant_undo"]] and _in_folder(lib, "HighPriority") == [_DROPPED[lib.language]]
+    assert heard.notes == [WORDS["cant_undo"]]
+    assert _in_folder(lib, _library_show(lib.language)) == [_DROPPED[lib.language]]
 
 
 def test_an_explorer_drop_the_store_refuses_sends_its_copy_to_the_trash(lib, make_writer, tmp_path, monkeypatch):
@@ -1658,7 +1809,7 @@ def test_an_explorer_drop_the_store_refuses_sends_its_copy_to_the_trash(lib, mak
     w.insert_at([_outside_file(tmp_path / "Explorer", lib.language)], "now", before_id=lib.ids("now")[0])
     assert h.until(lambda: heard.notes)
     assert heard.notes == [WORDS["failed"].format(error="disk I/O error")] and heard.saved == []
-    assert _in_folder(lib, "HighPriority") == []
+    assert _in_folder(lib, _library_show(lib.language)) == [] and _in_folder(lib, "HighPriority") == []   # N7
 
 
 def test_an_explorer_drop_on_a_busy_store_is_copied_once_and_lands_when_freed(lib, make_writer, tmp_path,
@@ -1673,10 +1824,10 @@ def test_an_explorer_drop_on_a_busy_store_is_copied_once_and_lands_when_freed(li
     finally:
         holder.release()
     assert h.until(lambda: heard.saved)
-    assert _in_folder(lib, "HighPriority") == [_DROPPED[lib.language]]
+    assert _in_folder(lib, _library_show(lib.language)) == [_DROPPED[lib.language]]
     w.undo()                                            # (X06) the copy made at the first try is still its own
     assert h.until(lambda: heard.undone)
-    assert _in_folder(lib, "HighPriority") == []
+    assert _in_folder(lib, _library_show(lib.language)) == []
 
 
 def test_an_explorer_drop_cant_go_to_finished(stub_writer):
@@ -1735,23 +1886,26 @@ def test_R2B1_a_move_behind_a_slow_copy_on_a_busy_store_is_journalled_before_the
     assert h.until(lambda: len(heard.saved) == 2)
 
 
-def test_AD2_a_drop_on_a_busy_store_at_quit_leaves_its_copy_whole_for_the_next_disk_sync(lib, make_writer, tmp_path,
+def test_AD2_a_drop_on_a_busy_store_at_quit_leaves_its_copy_whole_for_the_same_drop_again(lib, make_writer, tmp_path,
                                                                                           short_lock_wait):
-    """The quit runs out of time while the store is busy: the drop's file is already whole in the tier's folder, so
-    the next start's disk sync takes it in — never lost, never half a file, no stray `.part`."""
+    """The quit runs out of time while the store is busy: the drop's file is already whole in the content folder —
+    never half a file, no stray `.part`. The disk sync never adds a copy there (SRC B2), so the same drop again takes
+    that copy as its file (never `name (2)`): one item, one file. ACCEPTED for 3.0 (K3 fix R6; on the 3.1 list:
+    journal the drop once copied): when the quit's last try didn't land it, the copy waits unplaced in `Library` until
+    that same drop again — the `if not landed` branch below — where 2.x's next sync placed it from the tier folder."""
     w, heard = make_writer()
     goal = lib.ids("goal")
     holder = LockHolder(lib.db)
     try:
         w.move([goal[4]], "goal")                       # a move waiting ahead of it
         w.insert_at([_outside_file(tmp_path / "Explorer", lib.language)], "now")
-        assert h.until(lambda: _in_folder(lib, "HighPriority") == [_DROPPED[lib.language]])
+        assert h.until(lambda: _in_folder(lib, _library_show(lib.language)) == [_DROPPED[lib.language]])
         assert not w.finish(time.monotonic() + 0.5)     # the quit: the store never freed
         assert journalled(lib.language) == [("move", [goal[4]])]
     finally:
         holder.release()
-    folder = os.path.join(lib.data_dir, "HighPriority")
-    assert _in_folder(lib, "HighPriority") == [_DROPPED[lib.language]]
+    folder = os.path.join(lib.data_dir, _library_show(lib.language))
+    assert _in_folder(lib, _library_show(lib.language)) == [_DROPPED[lib.language]]
     assert not [n for n in os.listdir(folder) if n.endswith(M.PART)]
     with open(os.path.join(folder, _DROPPED[lib.language]), encoding="utf-8") as f, \
             open(os.path.join(tmp_path, "Explorer", _DROPPED[lib.language]), encoding="utf-8") as g:
@@ -1759,19 +1913,27 @@ def test_AD2_a_drop_on_a_busy_store_at_quit_leaves_its_copy_whole_for_the_next_d
     if w._thread is not None:                           # the quit's process ends: its worker's last try (it may take
         w._thread.join(5)                               # the lock the holder just freed) is over before the next start
     lib.store.sync_disk()                               # the next start
-    rel = f"HighPriority/{_DROPPED[lib.language]}"
-    assert any(lib.store.item(i)["rel_path"] == rel for t in ("now", "soon", "goal", "arrivals") for i in lib.ids(t))
-    w2, _heard2 = make_writer()
+    rel = f"{_library_show(lib.language)}/{_DROPPED[lib.language]}"
+
+    def holding():
+        return [i for t in ("now", "soon", "goal", "arrivals") for i in lib.ids(t)
+                if lib.store.item(i)["rel_path"] == rel]
+    landed = holding()                                  # the quit's last try may have landed it after all
+    w2, heard2 = make_writer()
     assert w2.replay()
     assert h.until(lambda: journal(lib.language) is None)
     assert lib.ids("goal")[0] == goal[4]
+    if not landed:
+        w2.insert_at([os.path.join(tmp_path, "Explorer", _DROPPED[lib.language])], "now")
+        assert h.until(lambda: holding())
+    assert len(holding()) == 1 and _in_folder(lib, _library_show(lib.language)) == [_DROPPED[lib.language]]
 
 
 def test_AD2_a_drop_given_during_a_drag_is_copied_at_once_and_lands_after_the_release(lib, make_writer, tmp_path):
     w, heard = make_writer()
     w.hold()
     w.insert_at([_outside_file(tmp_path / "Explorer", lib.language)], "now")
-    assert h.until(lambda: _in_folder(lib, "HighPriority") == [_DROPPED[lib.language]])
+    assert h.until(lambda: _in_folder(lib, _library_show(lib.language)) == [_DROPPED[lib.language]])
     time.sleep(0.1)
     assert heard.saved == [] and w.pending() == 1
     w.release()
@@ -1790,7 +1952,8 @@ def test_AD3_a_copy_that_fails_part_way_leaves_no_file_and_no_part(lib, make_wri
     w.insert_at([_outside_file(tmp_path / "Explorer", lib.language)], "now", before_id=now[0])
     assert h.until(lambda: heard.notes)
     assert heard.notes[0].startswith(WORDS["failed"].split("{")[0]) and heard.saved == []
-    assert _in_folder(lib, "HighPriority") == []        # neither the half file nor its part
+    assert _in_folder(lib, _library_show(lib.language)) == []        # neither the half file nor its part
+    assert _in_folder(lib, "HighPriority") == []                     # N7: nor in the old tier folder
     assert lib.ids("now") == now
 
 
@@ -1816,7 +1979,8 @@ def test_a_drop_whose_second_copy_fails_sends_its_first_copy_to_the_trash(lib, m
     w.insert_at([first, second], "now", before_id=now[0])
     assert h.until(lambda: heard.notes)
     assert heard.saved == [] and len(made) == 1 and not os.path.exists(made[0])
-    assert _in_folder(lib, "HighPriority") == [] and lib.ids("now") == now
+    assert _in_folder(lib, _library_show(lib.language)) == [] and lib.ids("now") == now
+    assert _in_folder(lib, "HighPriority") == []                     # N7
 
 
 def test_AD3_a_whole_copy_carries_the_files_bytes_and_leaves_no_part(lib, make_writer, tmp_path):
@@ -1824,7 +1988,7 @@ def test_AD3_a_whole_copy_carries_the_files_bytes_and_leaves_no_part(lib, make_w
     src = _outside_file(tmp_path / "Explorer", lib.language)
     w.insert_at([src], "now")
     assert h.until(lambda: heard.saved)
-    folder = os.path.join(lib.data_dir, "HighPriority")
+    folder = os.path.join(lib.data_dir, _library_show(lib.language))
     with open(src, "rb") as a, open(os.path.join(folder, _DROPPED[lib.language]), "rb") as b:
         assert a.read() == b.read()
     assert not [n for n in os.listdir(folder) if n.endswith(M.PART)]
@@ -1835,7 +1999,7 @@ def test_AD12_a_file_another_program_writes_under_the_same_name_meanwhile_is_nev
     """The name was free when looked at; another program (an importer, the YouTube module) writes it before the copy
     is renamed: the copy steps to `name (2)`, the other file is left as it was."""
     real = ls._rename_no_overwrite
-    folder = os.path.join(lib.data_dir, "HighPriority")
+    folder = os.path.join(lib.data_dir, _library_show(lib.language))
     theirs = os.path.join(folder, _DROPPED[lib.language])
 
     def racing(src, dst):
@@ -1851,7 +2015,7 @@ def test_AD12_a_file_another_program_writes_under_the_same_name_meanwhile_is_nev
     base, ext = os.path.splitext(_DROPPED[lib.language])
     with open(theirs, encoding="utf-8") as f:
         assert f.read() == "別のプログラムのファイル"
-    assert lib.store.item(heard.saved[0][0].added[0])["rel_path"] == f"HighPriority/{base} (2){ext}"
+    assert lib.store.item(heard.saved[0][0].added[0])["rel_path"] == f"{_library_show(lib.language)}/{base} (2){ext}"
     assert not [n for n in os.listdir(folder) if n.endswith(M.PART)]
 
 
@@ -1876,8 +2040,9 @@ def test_AD4_only_content_files_are_taken_and_the_rest_are_named_in_a_note(lib, 
     expected = words["not_content"].format(names=names) if named else WORDS["failed"].format(error=names)
     assert heard.notes == [expected]
     assert len(heard.saved[0][0].added) == 1
-    assert _in_folder(lib, "HighPriority") == [_DROPPED[lib.language]]
-    assert not set(os.listdir(os.path.join(lib.data_dir, "HighPriority"))) & {os.path.basename(p) for p in others}
+    assert _in_folder(lib, _library_show(lib.language)) == [_DROPPED[lib.language]]
+    copies = os.listdir(os.path.join(lib.data_dir, _library_show(lib.language)))
+    assert not set(copies) & {os.path.basename(p) for p in others}
 
 
 def test_AD4_a_drop_of_nothing_but_other_files_places_nothing_and_says_so(lib, make_writer, tmp_path):
@@ -1888,7 +2053,8 @@ def test_AD4_a_drop_of_nothing_but_other_files_places_nothing_and_says_so(lib, m
     w.insert_at([str(tmp_path / "Explorer" / "第1話.mkv")], "now")
     assert h.until(lambda: heard.notes and heard.rereads)
     assert heard.notes == [WORDS["not_content"].format(names="第1話.mkv")] and heard.saved == []
-    assert lib.ids("now") == now and not os.path.exists(os.path.join(lib.data_dir, "HighPriority", "第1話.mkv"))
+    assert lib.ids("now") == now
+    assert not os.path.exists(os.path.join(lib.data_dir, _library_show(lib.language), "第1話.mkv"))
 
 
 def test_AD11_a_file_dragged_out_of_the_trash_is_copied_in_never_placed_where_the_purge_deletes_it(
@@ -1904,11 +2070,11 @@ def test_AD11_a_file_dragged_out_of_the_trash_is_copied_in_never_placed_where_th
     w.insert_at([gone], "now")
     assert h.until(lambda: heard.saved)
     new = heard.saved[0][0].added[0]
-    assert lib.store.item(new)["rel_path"] == f"HighPriority/{_DROPPED[lib.language]}"
+    assert lib.store.item(new)["rel_path"] == f"{_library_show(lib.language)}/{_DROPPED[lib.language]}"
     assert os.path.isfile(gone)                         # the trash's copy is left as it is
     w.undo()                                            # a copy it made: its Undo takes it back
     assert h.until(lambda: heard.undone)
-    assert lib.store.item(new) is None and _in_folder(lib, "HighPriority") == []
+    assert lib.store.item(new) is None and _in_folder(lib, _library_show(lib.language)) == []
 
 
 # AD-6: the Finished toast's Undo takes its cards' choice back too ----------------------------------------------- #

@@ -4,6 +4,7 @@ import copy
 import importlib
 import threading
 import time
+from collections.abc import Mapping
 from typing import Any, Callable, Dict, Optional
 from app import locks
 from app.path_utils import get_settings_path, read_text
@@ -66,8 +67,10 @@ DEFAULT_SETTINGS = {
     # folders Surasura reads, "source:<root id>" one of them); targets: wait · top · after-show · soon · goal ·
     # finished (app/connect/rules.py; the store's L2.2 05 §5.12). By default a next episode of a show in Current joins
     # it, from hato and from a folder alike (Decision 1, lean; SRC-2: "if the show exists, it should just pair"); a
-    # show never shown still waits. Read by the command line, Connect and the folders' look (handed to `take_in`):
-    # never in a signature (analyzer._NON_ANALYSIS_SETTINGS).
+    # show never shown still waits. Merged per key, as `logic` is (`placing_rules()`, applied by load_settings): a
+    # source the file doesn't name takes its default, so {} or {"hato": "top"} keeps the folders' after-show; only an
+    # explicit target ("wait" too) changes one. Read by the command line, Connect and the folders' look (handed to
+    # `take_in`): never in a signature (analyzer._NON_ANALYSIS_SETTINGS).
     "connect_enabled": False,
     "placing_rules": {"hato": "after-show", "source": "after-show"},
     # Live Anki -> known words (app/anki_sync.py). Loopback AnkiConnect only. Decks and fields are
@@ -305,6 +308,7 @@ def load_settings(strict: bool = False) -> Dict[str, Any]:
             for key, value in user_settings.items():
                 if key != "logic":
                     settings[key] = value
+            settings["placing_rules"] = placing_rules(settings.get("placing_rules"))     # per key, as `logic`
         except Exception as e:
             if strict:
                 raise SettingsError(f"settings.json can't be read: {e}") from e
@@ -640,6 +644,17 @@ def automation(settings) -> bool:
     on. Takes a settings dict or a window's frozen copy of one."""
     logic = settings.get("logic") if hasattr(settings, "get") else None
     return not (hasattr(logic, "get") and logic.get("automation") is False)
+
+
+def placing_rules(held=None) -> Dict[str, Any]:
+    """`placing_rules` as every reader reads it: the defaults ({"hato": "after-show", "source": "after-show"}) with each
+    source `held` names laid over them — a missing source takes its default, the way `logic` deep-merges; only an
+    explicit target ("wait" too) changes one. `held` that is no {source: target} mapping (absent, hand-edited) reads as
+    the defaults. A new dict each call."""
+    rules = copy.deepcopy(DEFAULT_SETTINGS["placing_rules"])
+    if isinstance(held, Mapping):
+        rules.update(held)
+    return rules
 
 
 def connect_on(settings) -> bool:

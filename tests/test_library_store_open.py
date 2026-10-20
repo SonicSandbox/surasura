@@ -410,7 +410,9 @@ def test_nested_commands_share_one_transaction(language):
     touch(data_dir, rel)
     store.register(os.path.join(data_dir, rel), {"content_key": "k1", "video": "x"})
     store.conn.set_trace_callback(None)
-    assert [s for s in statements if s.startswith(("BEGIN", "COMMIT"))] == ["BEGIN IMMEDIATE", "COMMIT"]
+    # one write transaction; before it, the short read that looks for the file's twin outside the write lock (F12)
+    assert [s for s in statements if s.startswith(("BEGIN", "COMMIT"))] == ["BEGIN", "COMMIT", "BEGIN IMMEDIATE",
+                                                                            "COMMIT"]
     store.close()
     errors = []
 

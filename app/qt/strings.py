@@ -404,6 +404,7 @@ MOVE_WORDS = {
     "read_only": "Your library can't be saved right now: {reason}",
     "failed": "That change couldn't be saved: {error}",
     "not_content": "Only text and subtitle files can be added — left out: {names}",
+    "already_in": "Already in your library: {titles}",   # SRC K3: a drop whose bytes are an item's
 }
 # --- W3.2 S2: the writer's new commands (moves.WORDS) --------------------------------------------------------------- #
 MOVE_WORDS.update({
@@ -784,6 +785,7 @@ EXTRACT_DONE = "Extracted {parts:,} parts into {section}: “{name}”"
 EXTRACT_DONE_PROCESSED = "Extracted {parts:,} parts into Processed › {name}"
 EXTRACT_PROCESSED_ONLY = ("Extracted {parts:,} parts into Processed › {name}: the library didn't take them, so "
                           "nothing was added to {section}")
+EXTRACT_ALREADY = "Already in your library: “{title}” · the {parts:,} parts stay in Processed › {name}"   # SRC K3
 EXTRACT_EMPTY = "No text was found in it: nothing was saved"
 
 # --- W3.4 row 3: the Anki window (app/qt/anki_window.py; its rules in app/anki_window.py) ---------------------------
@@ -941,8 +943,8 @@ ADD_TIP = "Add: files, a folder, a book or deck, a video's subtitles, or pasted 
 ADD_MENU_NAME = "What you can add to your library"
 ADD_ITEMS = {
     "files": ("Files…", "Add subtitle or text files: with their show when it's in Current, else at the top of Current"),
-    "folder": ("A folder…", "Add a folder: every subtitle and text file in it, its folders kept, at the top of Current "
-                            "(or with its show)"),
+    "folder": ("A folder…", "Read a folder where it is: Surasura keeps its own copy of the text and looks there again "
+                            "for new episodes\nA show it hasn't shown you yet waits in New arrivals"),
     "extract": ("EPUB or Anki deck…", "Turn an EPUB or an Anki deck into text you can add"),
     "youtube": ("YouTube or bilibili…", "Bring in a YouTube or bilibili.tv video's subtitles from its link"),
     "paste": ("Paste text…", "Paste text and give it a title: it's added as one text file"),
@@ -967,6 +969,23 @@ PASTE_CANCEL_TIP = "Close without adding anything (Esc does the same)"
 PASTE_FAILED = "The pasted text couldn't be saved: {why}"
 PASTE_KEPT = "The pasted text wasn't added. It is kept in {folder}"                     # W3.2 fix round (N7)
 # --- end W3.2 Q3
+# --- SRC W1b: the source folders Surasura reads where they are (app/services/source_looks.py, app/qt/shell.py) ------ #
+SOURCES_OFFLINE = "{path} isn't reachable; its {n:,} episodes are kept"
+SOURCES_OFFLINE_ONE = "{path} isn't reachable; its episode is kept"
+SOURCES_OFFLINE_NONE = "{path} isn't reachable"
+SOURCES_OFFLINE_TIP = "Nothing is moved or marked while a folder is away: Surasura looks again when it's back"
+SOURCES_READING = "Reading {name}: {found:,} found in {shows:,} shows…"
+SOURCES_READ = "Reading {name} where it is: {added:,} new"
+SOURCES_READ_ARRIVALS = "Reading {name} where it is: {added:,} new · the shows you haven't seen wait in New " \
+                        "arrivals"
+SOURCES_QUEUED = "Reading {name} where it is, after the look under way…"
+SOURCES_READ_LATER = "Reading {name} where it is: its first look comes with the next one"
+SOURCES_READ_NOTHING = "Reading {name} where it is: nothing new in it yet"
+SOURCES_UNREACHABLE = "Reading {name} where it is: it can't be reached now · Surasura looks again later"
+SOURCES_REFUSED = "{name} can't be read where it is: {reason}"
+SOURCES_NO_LIBRARY = "your library isn't open"
+SOURCES_FROM = "from {name}"
+# --- end SRC W1b
 # --- W3.2 Q5: Needs you's cards, their buttons and what they say (app/qt/needs.py; the entries' own words are
 # `app/services/needs.STRINGS`) ------------------------------------------------------------------------------------- #
 NEEDS_EMPTY_TEXT = "\n".join(NEEDS_EMPTY)
@@ -995,6 +1014,15 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
     "dismiss": ("Dismiss", "Take this off the list"),
     "leave_them": ("Leave them", "Make no cards for them: they stop asking"),
     "make_cards": ("Make their cards", "Make the cards Connect missed"),
+    "first_cards": ("Make cards", "Make cards for these episodes now, and for what comes into your top 20 from now on.\n"
+                                  "• Change it any time: Settings › Anki"),
+    "not_now": ("Not now", "Make no cards for them now. Nothing else changes.\n"
+                           "• Turn it on any time: Settings › Anki"),
+    # … the same line once setup's page 5 turned *Make cards for me as I watch* on: it asks only about these episodes
+    "first_cards_on": ("Make cards", "Make cards for these episodes now.\n"
+                                     "• What comes into your top 20 later gets its cards already: Settings › Anki"),
+    "not_now_on": ("Not now", "Make no cards for these episodes. Nothing else changes:\n"
+                              "• What comes into your top 20 later still gets its cards"),
     "mine_text_only": ("Mine the text only", "Make its cards from the subtitles alone, with no picture or audio"),
     "open_logs": ("Open the logs folder", "Open the folder where Surasura keeps its logs, to look at them or send them"),
     "save_logs": ("Save logs to a file…", "Save the last week's logs into one zip file you can send"),
@@ -1016,6 +1044,12 @@ NEEDS_RELINKED_NONE = "Nothing in that folder has these files' names or episode 
 NEEDS_LINKING = "Linking {n} videos to their episodes"
 NEEDS_LINKING_ONE = "Linking {label}'s video"
 NEEDS_KEPT = "Kept: their words still count"
+NEEDS_FIRST_CARDS_MADE = "Cards are made by themselves from now on · change it in Settings › Anki"
+NEEDS_FIRST_CARDS_LATER = "Turn it on any time in Settings › Anki"
+NEEDS_FIRST_CARDS_MADE_ON = "Cards are being made for them"
+NEEDS_FIRST_CARDS_LATER_ON = "No cards for them · what comes into your top 20 later still gets its cards"
+NEEDS_FIRST_CARDS_NOT_ON = "No cards were made: {why}"
+NEEDS_FIRST_CARDS_AUTOMATION_OFF = "automatic actions are off in Settings; turn them on, then ask again"
 NEEDS_ITS_NEW = "{name} joins your library as a new file"
 NEEDS_ASKED_HATO = "Asked hato for its videos"
 NEEDS_MINE_ANYWAY = "It mines without timing, in turn"

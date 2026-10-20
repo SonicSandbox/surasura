@@ -22,6 +22,11 @@ each of the six pages starts with, what it writes on *Next*, and the reads and j
   window's `anki-sync` job (the user's own first sync — `anki_sync.may_sync`'s "never-synced" gate — the wizard's *Next*
   is that act; append-only; refused while an update holds Surasura's children); the Content Manager is the 2.x window
   as a child (`tools.run`), until W3.2's *+ Add*.
+- **The folders your shows and books are in** (SRC W1a; RUNBOOK §1b S1 + D1): page 3's picks are checked by the store's
+  own rule (`folder_refused`), then on *Next* added and given setup's first look (`read_folders`: `Store.add_source`,
+  `sources.scan(first=True)` — Current, quietly), a worker's; anything taken in offers *Needs you*'s one line, *Make
+  cards for your first 20 episodes?*, whose *Make cards* logs them as entering the mine line by the user's choice
+  (`first_cards`, after Connect's switch is on).
 
 Nothing here waits on the caller's thread except the calls named as a worker's.
 """
@@ -400,6 +405,121 @@ def add_samples(language):
         except Exception as e:
             print(f"Setup: the samples' folders couldn't be synced now ({e}); the next sync takes them in")
     return n
+
+
+def _window_store(language, role="window"):
+    from app import library_store
+    from app.path_utils import get_data_path, get_user_files_path
+    return library_store.open_store(language, get_data_path(language), get_user_files_path(language), role=role)
+
+
+def folder_refused(language, path):
+    """(A worker; SRC W1a.) Why page 3 can't read `path` as a folder of shows and books — the store's own rule (B3,
+    `NotASource`'s plain words: Surasura's own folders, a whole drive, the user folder, not a folder) — or None. No
+    library yet: None (going on says so). Nothing is written."""
+    store = _window_store(_language(language), role="reader")
+    if store is None:
+        return None
+    try:
+        return store._not_a_source(path)
+    finally:
+        store.close()
+
+
+def read_folders(language, paths, progress=None, stop=None):
+    """(A worker; SRC W1a.) *Next* on page 3 with folders picked: each one added (`Store.add_source`) and given its first
+    look (`sources.scan(first=True)`: SRC-1 — Current, by show, quietly: no card is made for them by itself, S1) ->
+    {"ready", "found", "shows", "added", "stopped", "busy", "read" [path], "refused" [(path, why)], "unreachable"
+    [path], "failed" [(path, why)], "offered"}. `read`: the folders this call dealt with (taken in, refused,
+    unreachable, failed); the others — after a Stop, or a look already running — weren't looked at, to read later.
+    `progress(found, shows)`: every folder's so far; `stop()` is asked between files — a stopped look keeps what it
+    took in. `ready` False: no library yet (nothing done). Episodes taken into the mine line → the one *Needs you* line,
+    *Make cards for your first 20 episodes?* (D1); none there (Current was already full: *Set up again*, an upgrade)
+    → no line."""
+    from app import library_store, sources
+    from app.connect import library
+    from app.services import needs
+    language = _language(language)
+    out = {"ready": True, "found": 0, "shows": 0, "added": 0, "stopped": False, "busy": False, "read": [],
+           "refused": [], "unreachable": [], "failed": [], "offered": False}
+    store = _window_store(language)
+    if store is None:
+        return dict(out, ready=False)
+    taken = []
+    with store:
+        for path in paths:
+            if stop is not None and stop():
+                out["stopped"] = True
+                break
+            try:
+                root = store.add_source(path)
+            except library_store.NotASource as e:
+                out["refused"].append((path, e.reason))
+                out["read"].append(path)
+                continue
+            except Exception as e:                       # a busy or damaged store: this folder's, never the others'
+                out["failed"].append((path, str(e)))
+                out["read"].append(path)
+                continue
+            before = (out["found"], out["shows"])
+
+            def told(found, shows, before=before):
+                if progress is not None:
+                    progress(before[0] + found, before[1] + shows)
+            try:
+                got = sources.scan(store, language, root, first=True, progress=told, stop=stop)
+            except Exception as e:                       # one folder's failure never ends the others' looks
+                out["failed"].append((path, str(e)))
+                out["read"].append(path)
+                continue
+            if got.get("busy"):
+                out["busy"] = True
+                break
+            out["read"].append(path)
+            if not got.get("reachable", True):
+                out["unreachable"].append(path)
+                continue
+            for key in ("found", "shows", "added"):
+                out[key] += int(got.get(key) or 0)
+            taken += list(got.get("ids") or ())
+            if got.get("stopped"):
+                out["stopped"] = True
+                break
+        try:
+            in_line = bool(set(taken) & set(library.mine_line(store))) if taken else False
+        except Exception as e:
+            print(f"Setup: the mine line couldn't be read ({e})")
+            in_line = False
+    if in_line:
+        try:
+            needs.offer(language, needs.FIRST_CARDS)
+            out["offered"] = True
+        except Exception as e:                           # the seen file held or newer: the line isn't offered
+            print(f"Setup: the cards line couldn't be offered ({e})")
+    return out
+
+
+def first_cards(language, settings, data_dir=None):
+    """(A worker; D1's *Make cards*, once Connect is on.) The mine line's episodes — the first 20 of Current, there since
+    setup's first scan, which logs nothing — logged as entering it by the user's own choice (`Store.enter_mine_line`,
+    explicit, by "user"): Connect's inbox makes their jobs; then Connect kicked (`kick.kick`: nothing while it's off)
+    -> the ids logged ([]: no library)."""
+    from app import library_store
+    from app.connect import kick, library
+    from app.path_utils import get_data_path, get_user_files_path
+    language = _language(language)
+    store = library_store.open_store(language, data_dir or get_data_path(language), get_user_files_path(language),
+                                     role="window")
+    if store is None:
+        return []
+    with store:
+        library.ensure_reader(store)                     # Connect's watermark first: what is logged next is read
+        ids = store.enter_mine_line(by="user")
+    try:
+        kick.kick(settings or {})
+    except Exception as e:                               # its next start reads the log anyway
+        print(f"Setup: Connect wasn't started now ({e})")
+    return ids
 
 
 def level_numbers(settings, language):

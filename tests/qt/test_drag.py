@@ -22,13 +22,13 @@ import time
 import pytest
 
 pytest.importorskip("PyQt6")
-from PyQt6.QtCore import QEvent, QMimeData, QPoint, QPointF, Qt, QUrl
+from PyQt6.QtCore import QEvent, QMimeData, QObject, QPoint, QPointF, Qt, QUrl
 from PyQt6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent, QKeyEvent, QMouseEvent
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication
 
 from app import theme
-from app.qt import drag, freeze, motion, rows, shell, stones, strings
+from app.qt import drag, frame, freeze, motion, rows, shell, stones, strings
 from app.services import library_reader
 from app.services import moves as moves_module
 from tests.fixtures import window_seed
@@ -966,6 +966,271 @@ def test_S3_a_drop_at_2000_files_moves_the_rows_in_place(world, monkeypatch):
     QApplication.processEvents()
     assert layouts == [] and set(painted) - _under_toast(win, lst) <= set(range(to, src + 1)), sorted(set(painted))
     print(f"a drop at {len(rs)} Current rows took {took:.1f} ms on the window's thread")
+
+
+# --- Gap 2 (M4.1 P3): a frame repaints only what moved; the numbers at the drop, never after ------------------- #
+class _PaintRects(QObject):
+    """The rects of the paint events a widget gets (Qt hands one paint the union of every update asked since the
+    last)."""
+
+    def __init__(self, widget):
+        super().__init__()
+        self.seen = []
+        widget.installEventFilter(self)
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.Paint:
+            self.seen.append(event.rect())
+        return False
+
+
+def _on_test_time():
+    """Motion unfrozen and Full, the clock on test time (a frame moves only when the test says): -> its undo."""
+    freeze.set_frozen(False)
+    restore = _full_motion()
+    clock = motion.clock()
+    clock.use_test_time()
+
+    def undo():
+        clock.use_real_time()
+        restore()
+    return clock, undo
+
+
+def _flushed(lst):
+    """Every paint owed so far painted (the hand's own move asks for some): what is painted next is the frame's."""
+    QApplication.processEvents()
+    lst.viewport().repaint()
+
+
+def test_gap2_a_gap_slide_frame_repaints_only_the_rows_that_moved_never_the_whole_list(world, monkeypatch):
+    """R3-S5: each frame of the slide repainted the whole list (every row on screen, ~20 at this size) for the two
+    rows making room. Now a frame repaints the band those rows were and are painted in, and the slot's."""
+    seed, win, writer = world(apply=False, size=(1280, 1200))
+    clock, undo = _on_test_time()
+    try:
+        lst = lst_of(win)
+        lift(win, 8)
+        move_global(win, row_point(win, 6))                           # before row 6: rows 6 and 7 make room
+        p = lst.parting
+        assert set(p.springs) == {6, 7}
+        _flushed(lst)
+        painted = _paint_spy(lst, monkeypatch)
+        rects = _PaintRects(lst.viewport())
+        clock.advance(motion.FRAME_MS)                                # one frame of the slide
+        QApplication.processEvents()
+        assert 0 < p.offset(6) < p.h                                  # mid-slide
+        assert painted and set(painted) <= {5, 6, 7, 8, 9}, sorted(set(painted))
+        assert rects.seen and all(r.height() < lst.viewport().height() // 2 for r in rects.seen), rects.seen
+        clock.advance(1000)                                           # at rest: the rows made room, as before
+        assert p.springs == {} and [p.offset(r) for r in range(5, 10)] == [0, p.h, p.h, 0, 0]
+        win.moves.cancel()
+    finally:
+        undo()
+
+
+def _on_screen_vs_whole(win, lst):
+    """The list as the screen shows it (the window's painted pixels: what the partial repaints left) and as one whole
+    repaint draws it, the ghost's box blanked in both (it floats over the list). -> (shown, whole) RGB arrays."""
+    from tests.qt.pixels import rgb_array
+    vp = lst.viewport()
+    at = vp.mapTo(win, QPoint(0, 0))
+    shown = rgb_array(win.screen().grabWindow(win.winId(), at.x(), at.y(), vp.width(), vp.height()))
+    whole = rgb_array(vp.grab())
+    ghost = win.moves.ghost
+    if ghost is not None and ghost.isVisible():
+        box = ghost.geometry()
+        box.moveTopLeft(vp.mapFrom(win, box.topLeft()))
+        r = box.adjusted(-2, -2, 2, 2).intersected(vp.rect())
+        for arr in (shown, whole):
+            arr[max(0, r.top()):r.bottom() + 1, max(0, r.left()):r.right() + 1] = 0
+    return shown, whole
+
+
+def test_gap2_the_slides_partial_repaints_leave_the_list_as_a_whole_repaint_draws_it(world):
+    """What the partial repaints could break: a row left half-drawn where it was, or a slot's ghost of itself. Frame
+    by frame through a slide, a slide turned back mid-way and a slide past the row's own place, the screen's pixels
+    over the list are a whole repaint's."""
+    seed, win, writer = world(apply=False, size=(1280, 1200))
+    clock, undo = _on_test_time()
+    try:
+        lst = lst_of(win)
+
+        def same(where):
+            shown, whole = _on_screen_vs_whole(win, lst)
+            bad = (abs(shown.astype(int) - whole.astype(int)) > 2).any(axis=2)
+            assert not bad.any(), (where, int(bad.sum()), [int(v) for v in bad.nonzero()[0][[0, -1]]])
+        _flushed(lst)
+        lift(win, 8)                                                  # the lift: the row leaves its place for the slot
+        QApplication.processEvents()
+        same("lift")
+        for to, lower, frames in ((5, False, 6), (7, True, 40), (11, True, 40)):
+            move_global(win, row_point(win, to, lower))
+            for i in range(frames):
+                clock.advance(motion.FRAME_MS)
+                QApplication.processEvents()
+                same((to, i))
+        win.moves.cancel()
+    finally:
+        undo()
+
+
+def test_gap2_a_slot_glide_frame_repaints_only_the_slots_old_and_new_place(world, monkeypatch):
+    """The slot's glide repainted the whole list each frame too. Now a frame of it repaints where the slot was and
+    is — nothing else (the rows at rest here)."""
+    seed, win, writer = world(apply=False, size=(1280, 1200))
+    clock, undo = _on_test_time()
+    try:
+        lst = lst_of(win)
+        lift(win, 8)
+        move_global(win, row_point(win, 6))
+        clock.advance(1000)                                           # the rows and the slot at rest
+        p = lst.parting
+        assert p.springs == {} and not p._slot_spring.alive
+        _flushed(lst)
+        rects = _PaintRects(lst.viewport())
+        was = p._slot_box()
+        p._slot_spring.retarget(p.slot_y + 30, **motion.preset("drag-part"))   # the slot alone glides, its own spring
+        clock.advance(motion.FRAME_MS)
+        QApplication.processEvents()
+        now = p._slot_box()
+        assert now.top() > was.top()
+        band = was.united(now).adjusted(0, -2, 0, 2)
+        assert rects.seen and all(band.contains(r) for r in rects.seen), (band, rects.seen)
+        win.moves.cancel()
+    finally:
+        undo()
+
+
+def test_gap2_an_auto_scroll_tick_repaints_what_scrolled_in_never_the_whole_list_and_runs_under_reduced(
+        world, monkeypatch):
+    """Each auto-scroll tick asked the whole list to repaint on top of the scroll (Qt moves what was painted and asks
+    only for what scrolled in). The hand's, not motion (IK-4): it keeps running under Reduced motion."""
+    seed, win, writer = world(apply=False)
+    freeze.set_frozen(False)
+    mode = motion.clock().mode
+    was = mode.setting
+    mode.set_setting("reduced")
+    try:
+        lst = lst_of(win)
+        bar = lst.verticalScrollBar()
+        assert bar.maximum() > 400
+        bar.setValue(bar.maximum() // 2)
+        QApplication.processEvents()
+        vp = lst.viewport()
+        first = lst.indexAt(QPoint(4, vp.height() // 2)).row()
+        lift(win, first)
+        move_global(win, vp.mapToGlobal(QPoint(vp.width() // 2, 10)))     # the hand at the list's top edge
+        _flushed(lst)
+        win.moves._scroll.stop()                                      # the test steps the ticks itself
+        painted = _paint_spy(lst, monkeypatch)
+        rects = _PaintRects(vp)
+        before = bar.value()
+        for _ in range(3):
+            win.moves._auto_scroll()
+            QApplication.processEvents()
+        assert bar.value() < before                                   # it scrolled, under Reduced motion
+        model = lst.model()
+        assert painted and all(lst.visualRect(model.index(r, 0)).top() < vp.height() // 3 for r in set(painted)),             sorted(set(painted))
+        assert rects.seen and all(r.height() < vp.height() // 2 for r in rects.seen), rects.seen
+        win.moves.cancel()
+    finally:
+        mode.set_setting(was)
+
+
+def test_gap2_auto_scroll_through_a_parted_list_leaves_it_as_a_whole_repaint_draws_it(world):
+    """What a scroll's partial repaint could break: Qt paints only the strip that scrolled in, and only the rows whose
+    places lie in it — a parted row standing in that strip from a place outside it was left unpainted. Tick by tick,
+    the slide still moving, both ways, the screen's pixels over the list are a whole repaint's."""
+    seed, win, writer = world(apply=False)
+    clock, undo = _on_test_time()
+    try:
+        lst = lst_of(win)
+        vp = lst.viewport()
+        bar = lst.verticalScrollBar()
+        assert bar.maximum() > 400
+        bar.setValue(bar.maximum() // 2)
+        QApplication.processEvents()
+
+        def same(where):
+            shown, whole = _on_screen_vs_whole(win, lst)
+            bad = (abs(shown.astype(int) - whole.astype(int)) > 2).any(axis=2)
+            assert not bad.any(), (where, int(bad.sum()), [int(v) for v in bad.nonzero()[0][[0, -1]]])
+        first = lst.indexAt(QPoint(4, vp.height() // 2)).row()
+        lift(win, first)
+        win.moves._scroll.stop()                                      # the test steps the ticks itself
+        for edge, name in ((10, "up"), (vp.height() - 10, "down")):
+            move_global(win, vp.mapToGlobal(QPoint(vp.width() // 2, edge)))
+            win.moves._scroll.stop()
+            _flushed(lst)
+            before = bar.value()
+            for i in range(8):
+                win.moves._auto_scroll()
+                clock.advance(motion.FRAME_MS)                        # the rows still sliding as the list scrolls
+                QApplication.processEvents()
+                same((name, i))
+            assert bar.value() != before, name
+        win.moves.cancel()
+    finally:
+        undo()
+
+
+def test_gap2_auto_scroll_while_rows_spring_back_into_the_strip_leaves_no_row_unpainted(world):
+    """The hand from below to the top edge: rows just under the strip that scrolls in still spring back up into it
+    from places outside it — Qt alone would paint only the rows whose places lie in the strip."""
+    seed, win, writer = world(apply=False)
+    clock, undo = _on_test_time()
+    try:
+        lst = lst_of(win)
+        vp = lst.viewport()
+        bar = lst.verticalScrollBar()
+        bar.setValue(bar.maximum() // 2)
+        QApplication.processEvents()
+
+        def same(where):
+            shown, whole = _on_screen_vs_whole(win, lst)
+            bad = (abs(shown.astype(int) - whole.astype(int)) > 2).any(axis=2)
+            assert not bad.any(), (where, int(bad.sum()), [int(v) for v in bad.nonzero()[0][[0, -1]]])
+        top = lst.indexAt(QPoint(4, vp.height() // 6)).row()
+        lift(win, top)
+        win.moves._scroll.stop()
+        move_global(win, row_point(win, top + 4))
+        clock.advance(1000)                                           # the rows under it parted up, at rest
+        move_global(win, vp.mapToGlobal(QPoint(vp.width() // 2, 10)))
+        win.moves._scroll.stop()
+        _flushed(lst)
+        for i in range(8):
+            win.moves._auto_scroll()
+            clock.advance(motion.FRAME_MS)
+            QApplication.processEvents()
+            same(("jump", i))
+        win.moves.cancel()
+    finally:
+        undo()
+
+
+def test_gap2_a_drop_on_goal_shows_goals_new_count_and_its_name_at_the_drop_while_the_wells_fall(world):
+    """The bar's new count (and the dock's accessible name) waited for the wells' 260 ms fall; now they come at the
+    drop, the bar shown under the wells falling away from it."""
+    seed, win, writer = world()
+    clock, undo = _on_test_time()
+    try:
+        lift(win, 5)
+        clock.advance(theme.MOTION["buckets"] + 16)                   # the wells have risen
+        at = well_point(win, "goal")
+        move_global(win, at)
+        release_global(win, at)
+        dock = win.dock
+        goal = win.page_widgets["current"].view_model.goal
+        assert dock.wells                                             # the clock hasn't moved: the fall not begun
+        assert dock.accessibleName() == strings.GOAL_ACCESSIBLE.format(name=strings.GOAL_NAME, line=goal.line)
+        clock.advance(theme.MOTION["buckets"] / 2)
+        dock.repaint()
+        assert dock.wells and dock._key is not None and dock._key[0] == frame._bar_of(goal)   # drawn mid-fall
+        clock.advance(theme.MOTION["buckets"])
+        assert dock.wells == ()
+    finally:
+        undo()
 
 
 # --- hover springs rest when what they draw stops changing (L5) -------------------------------------------------- #

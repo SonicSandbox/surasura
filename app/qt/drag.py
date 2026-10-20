@@ -320,7 +320,9 @@ class Ghost(QWidget):
 class Parting:
     """What the list paints while a drag runs (`rows.RowsView.parting`): each row's offset as the slot travels (the
     rows between the dragged row's place and its slot moved by the slot's height, on `drag-part` springs while on
-    screen), the dragged row's own place left empty (`src`), and the slot painted where it would land."""
+    screen), the dragged row's own place left empty (`src`), and the slot painted where it would land.
+    Only what moved repaints (R3-S5, Gap 2): each frame, the band a moving row was and is painted in, and the slot's
+    old and new places — never the whole list."""
 
     def __init__(self, lst, src, height):
         self.lst = lst
@@ -330,6 +332,8 @@ class Parting:
         self.springs = {}                            # place -> its offset's spring (only while it moves)
         self.slot_y = None                           # the slot's top, in the list's content (a spring)
         self._slot_spring = None
+        self._shown = {}                             # place -> the offset its row was last asked to paint at
+        self._slot_shown = None                      # the slot's box as last asked to paint (the list's content y)
         self.alive = True
 
     def target(self, r):
@@ -378,7 +382,11 @@ class Parting:
         else:
             changed = range(min(old, slot) - 1, max(old, slot) + 2)
         for r in changed:
-            if not lo <= r <= hi or r == self.src:
+            if r == self.src:
+                continue
+            if not lo <= r <= hi:                    # off screen: at its place at once (seen if it reaches in)
+                if r not in self.springs:
+                    self._row_moved(r, self.target(r), self._shown.get(r, self._was(r, old)))
                 continue
             to = self.target(r)
             spring = self.springs.get(r)
@@ -386,7 +394,8 @@ class Parting:
             if spring is not None:
                 spring.retarget(to, **motion.preset("drag-part"))
             elif start != to:
-                spring = motion.clock().spring(lambda v, r=r: self._frame(), start, to, owner=lst.viewport(),
+                self._shown[r] = start
+                spring = motion.clock().spring(lambda v, r=r: self._row_moved(r, v), start, to, owner=lst.viewport(),
                                                on_rest=lambda r=r: self._rested(r),
                                                on_end=lambda r=r: self.springs.pop(r, None),
                                                **motion.preset("drag-part"))
@@ -396,16 +405,18 @@ class Parting:
             if self._slot_spring is not None:
                 self._slot_spring.stop()
             self._slot_spring, self.slot_y = None, None
-            lst.viewport().update()
+            self._slot_moved(None)
             return
         top = self.slot_top()
         if self._slot_spring is None or self.slot_y is None:
+            if self.src is not None and self._slot_shown is None:     # the lift: the dragged row leaves its place
+                place = lst.visualRect(lst.model().index(self.src, 0))
+                self._repaint_band(place.top() - 1, place.bottom() + 1)
             self.slot_y = top
             self._slot_spring = motion.clock().spring(self._slot_moved, top, top, owner=lst.viewport(),
                                                       **motion.preset("drag-part"))
         else:
             self._slot_spring.retarget(top, **motion.preset("drag-part"))
-        lst.viewport().update()
 
     def _was(self, r, old_slot):
         keep, self.slot = self.slot, old_slot
@@ -415,12 +426,50 @@ class Parting:
             self.slot = keep
 
     def _slot_moved(self, v):
+        """The slot at `v` (None: gone): its old box and its new one repaint."""
         self.slot_y = v
-        self._frame()
+        bar = self.lst.verticalScrollBar().value()
+        was, box = self._slot_shown, self._slot_box()
+        self._slot_shown = box.translated(0, bar) if box is not None else None
+        if not self.alive or was == self._slot_shown:
+            return
+        for b in (was, self._slot_shown):
+            if b is not None:
+                self._repaint_band(b.top() - bar - 1, b.bottom() - bar + 1)
 
-    def _frame(self):
-        if self.alive:
-            self.lst.viewport().update()
+    def _row_moved(self, r, v, was=None):
+        """Place `r`'s row now paints at offset `v` (a spring's frame, or a jump from `was`): the band it was and is
+        painted in repaints, its own place too (the list paints a row only where its place is asked)."""
+        was = self._shown.get(r, v) if was is None else was
+        self._shown[r] = v
+        if not self.alive or was == v:
+            return
+        rect = self.lst.visualRect(self.lst.model().index(r, 0))
+        if rect.isValid():
+            self._repaint_band(rect.top() + math.floor(min(0.0, was, v)) - 1,
+                               rect.bottom() + math.ceil(max(0.0, was, v)) + 1)
+
+    def _repaint_band(self, top, bottom):
+        """The viewport's rows `top` … `bottom` repaint — widened to a parted row whose place lies outside it but whose
+        picture reaches into it (so the list paints that row too)."""
+        lst = self.lst
+        vp = lst.viewport()
+        if bottom < 0 or top > vp.height():
+            return
+        model = lst.model()
+        lo, hi = self._screen()
+        grew = True
+        while grew:
+            grew = False
+            for q in range(lo, hi + 1):
+                off = self.offset(q) if q != self.src else 0.0
+                if not off:
+                    continue
+                rq = lst.visualRect(model.index(q, 0))
+                if (rq.bottom() < top or rq.top() > bottom) and \
+                        rq.bottom() + math.ceil(off) + 1 >= top and rq.top() + math.floor(off) - 1 <= bottom:
+                    top, bottom, grew = min(top, rq.top()), max(bottom, rq.bottom()), True
+        vp.update(QRect(0, top, vp.width(), bottom - top + 1))
 
     def _rested(self, r):
         self.springs.pop(r, None)
@@ -464,19 +513,26 @@ class Parting:
             option.rect = lst.visualRect(idx)
             option.state = option.state & ~rows.QStyle.StateFlag.State_MouseOver
             lst.delegate.paint(p, option, idx)
-        if self.slot_y is not None:
-            src = self.src if self.src is not None else None
-            if src is not None:
-                kind, _payload, lines = model.entries[src]
-                rect = lst.visualRect(model.index(src, 0))
-            else:
-                kind, lines = rows.ROW, ()
-                rect = QRect(0, 0, lst.viewport().width(), self.h)
-            y = round(self.slot_y - lst.verticalScrollBar().value())
-            slot = lst.delegate.slot_rect(kind, QRect(rect.left(), y, rect.width(), self.h + lst.delegate._lines_h(
-                lines)), lines)
+        slot = self._slot_box()
+        if slot is not None:
             lst.delegate.paint_slot(p, slot)
         p.end()
+
+    def _slot_box(self):
+        """The slot's box in the viewport now, or None (no slot)."""
+        if self.slot_y is None:
+            return None
+        lst, model = self.lst, self.lst.model()
+        src = self.src
+        if src is not None and 0 <= src < model.rowCount():
+            kind, _payload, lines = model.entries[src]
+            rect = lst.visualRect(model.index(src, 0))
+        else:
+            kind, lines = rows.ROW, ()
+            rect = QRect(0, 0, lst.viewport().width(), self.h)
+        y = round(self.slot_y - lst.verticalScrollBar().value())
+        return lst.delegate.slot_rect(kind, QRect(rect.left(), y, rect.width(), self.h + lst.delegate._lines_h(lines)),
+                                      lines)
 
 
 # --- the writer's callbacks, on the window's thread -------------------------------------------------------------- #
@@ -572,7 +628,8 @@ class DragController(QObject):
         self._scroll = QTimer(self)
         self._scroll.setInterval(theme.MOTION["auto-scroll-tick"])
         self._scroll.timeout.connect(self._auto_scroll)
-        self.lst.verticalScrollBar().valueChanged.connect(self._scrolled)
+        # A scroll during a drag asks for no repaint of its own (Gap 2): Qt moves what was painted and paints the strip
+        # that scrolled in — a row whose place is in it, and (`Parting.paint_over`) a parted row from off screen.
         self.undo_key = QShortcut(QKeySequence(QKeySequence.StandardKey.Undo), win)
         self.undo_key.setContext(Qt.ShortcutContext.WindowShortcut)
         self.undo_key.activated.connect(self.undo_last)
@@ -948,10 +1005,6 @@ class DragController(QObject):
             bar.setValue(before + dy)
             if bar.value() != before:
                 self._follow(d.at)
-
-    def _scrolled(self, _value):
-        if self.running is not None or self.lst.parting is not None:
-            self.lst.viewport().update()             # a parted row may stand where the scroll exposed
 
     # --- the end of a drag ------------------------------------------------------------------------------------- #
     def cancel(self, why=None):

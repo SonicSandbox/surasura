@@ -975,7 +975,8 @@ class GoalDock(QWidget):
     - `hover(name or None)`: that well lit (`well-lit`) and its slot opening on a spring (`slot`, ω 28.3, ζ .5);
     - `set_unlit(name, tip or None)`: that well never lights (a split's first part, hato's mix on Finished), its
       tooltip says why (`unlit_tip(name)`);
-    - `end_drag()`: the wells fall, the bar comes back, the unlit wells are lit again.
+    - `end_drag()`: the wells fall, the bar comes back, the unlit wells are lit again. The bar is back at once, under
+      the falling wells — its new count (and the dock's accessible name) at the drop, never after the fall (Gap 2).
 
     Only the dock repaints, and only for what moved.
 
@@ -996,6 +997,7 @@ class GoalDock(QWidget):
         self.source = None
         self.lit = None                  # the well under the hand
         self.rise = 0.0                  # how far below their place the wells are (rising, falling)
+        self.falling = False             # the drag ended: the wells fall over the bar, shown again under them
         self._covers = {"soon": ((), ()), "goal": (), "finished": ()}
         self._unlit = {}
         self._slots = {}                 # well -> its slot's spring
@@ -1029,11 +1031,17 @@ class GoalDock(QWidget):
             return False
         self.goal = goal
         self.setToolTip(goal.tip if goal is not None else "")
-        if not self.wells:
-            self.setAccessibleName(strings.GOAL_ACCESSIBLE.format(name=strings.GOAL_NAME, line=goal.line)
-                                   if goal is not None else strings.GOAL_NAME)
+        if not self.wells or self.falling:
+            self._name_bar()
         self.update()
         return True
+
+    def _name_bar(self):
+        """The bar's tooltip and accessible name, for the goal it shows."""
+        goal = self.goal
+        self.setToolTip(goal.tip if goal is not None else "")
+        self.setAccessibleName(strings.GOAL_ACCESSIBLE.format(name=strings.GOAL_NAME, line=goal.line)
+                               if goal is not None else strings.GOAL_NAME)
 
     def set_view(self, view):
         """The covers the wells show, from the reader's newest view (kept for the next drag; nothing repaints)."""
@@ -1081,6 +1089,7 @@ class GoalDock(QWidget):
     # --- the wells' API (package F drives it) ------------------------------------------------------------------- #
     def begin_drag(self, source):
         self.source = source
+        self.falling = False
         self.wells = wells_for(source)
         self.lit = None
         self._unlit = {}                         # a drag begun while the last one's wells fell: never its dark wells
@@ -1096,12 +1105,11 @@ class GoalDock(QWidget):
         if not self.wells:
             return
         self.hover(None)
+        self.falling = True                      # the bar (and its name) back now; the wells' fall is a look only
+        self._name_bar()
 
         def gone():
-            self.wells, self.source, self._unlit = (), None, {}
-            self.setToolTip(self.goal.tip if self.goal is not None else "")
-            self.setAccessibleName(strings.GOAL_ACCESSIBLE.format(name=strings.GOAL_NAME, line=self.goal.line)
-                                   if self.goal is not None else strings.GOAL_NAME)
+            self.wells, self.source, self._unlit, self.falling = (), None, {}, False
             self.update()
         self._move(float(theme.MOTION["buckets-rise"]), done=gone)
 
@@ -1187,16 +1195,25 @@ class GoalDock(QWidget):
         self.paints += 1
         p = QPainter(self)
         if self.wells:
-            p.fillRect(self.rect(), rows.c("frame"))
+            if self.falling:                     # the bar under the wells falling away from it
+                p.drawPixmap(0, 0, self._bar_pixmap())
+                band = self.bar_rect().adjusted(-1, -1, 1, 1)           # (the wells' clip)
+                p.fillRect(band.translated(0, self.rise).intersected(band), rows.c("frame"))
+            else:
+                p.fillRect(self.rect(), rows.c("frame"))
             self._paint_wells(p)
         else:
-            dpr = self.devicePixelRatioF() or 1.0
-            key = (_bar_of(self.goal), self.width(), self.height(), dpr, style.current())     # (W3.2 Q2)
-            if key != self._key:
-                self._pix, self._key = self._bar_picture(dpr), key
-                self.pictures += 1
-            p.drawPixmap(0, 0, self._pix)
+            p.drawPixmap(0, 0, self._bar_pixmap())
         p.end()
+
+    def _bar_pixmap(self):
+        """The bar's picture, drawn again only when the goal, the size, the ratio or the look changed."""
+        dpr = self.devicePixelRatioF() or 1.0
+        key = (_bar_of(self.goal), self.width(), self.height(), dpr, style.current())     # (W3.2 Q2)
+        if key != self._key:
+            self._pix, self._key = self._bar_picture(dpr), key
+            self.pictures += 1
+        return self._pix
 
     def _bar_picture(self, dpr):
         pix = QPixmap(max(1, math.ceil(self.width() * dpr)), max(1, math.ceil(self.height() * dpr)))

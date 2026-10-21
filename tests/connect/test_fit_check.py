@@ -171,6 +171,10 @@ def test_trust_is_off_by_default():
     # The signed rule (K16 / G1.3-6) holds until the switch is turned on: no checker, no pairing → not timed.
     assert fit_check.fit(None, VIDEO, SUBTITLE, tsubasa="")[0] == fit_check.NOT_TIMED
     assert fit_check.fit(None, VIDEO, SUBTITLE, tsubasa="", trust=False)[0] == fit_check.NOT_TIMED
+    # and Settings saves it off for everyone who never touched it (mutant LF9-B30: a True default would mine every
+    # unchecked episode unattended)
+    from app import settings_manager
+    assert settings_manager.get_default_settings()["connect_trust_timing"] is False
 
 
 def test_trust_never_overrules_hatos_own_untimed_or_extracted_verdict(tmp_path):
@@ -271,7 +275,9 @@ def test_trust_mines_a_raw_video_tsubasa_has_nothing_to_time_against():
 def test_trust_never_mines_past_tsubasas_refusal_or_another_error():
     # REFUSED is tsubasa finding the subtitle doesn't fit (the wrong cut, the wrong episode); any other ERROR isn't
     # "no track". Both still wait with the switch on, and neither points at it.
+    # (mutant LF9-B11: a REFUSED whose reason happens to hold the raw's words is still a refusal)
     for answer in ({"outcome": "REFUSED", "reason": "no speech match", "segments": []},
+                   {"outcome": "REFUSED", "reason": "no subtitle track matched its speech", "segments": []},
                    {"outcome": "ERROR", "reason": "the video could not be read", "segments": []}):
         got = fit_check.fit(None, VIDEO, SUBTITLE, tsubasa="tsubasa", run=_tsubasa(answer), trust=True)
         assert got[0] == fit_check.NOT_TIMED and fit_check.TRUST_LABEL not in got[2], answer

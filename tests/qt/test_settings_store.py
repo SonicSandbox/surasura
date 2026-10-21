@@ -268,10 +268,15 @@ def test_trust_waits_for_its_settings_write_before_starting_connect(qapp, kicked
     class Store:
         def flush(self, timeout=None):
             order.append("flush")
+            waited.append(timeout)
             return True
+
+    waited = []
 
     from app.connect import kick
     kick.kick = lambda settings: (order.append("kick"), done.set())
     assert store_rows.kick_on_trust({}, {"connect_trust_timing": True}, store=Store()) is True
     assert wait_until(done.is_set)
     assert order == ["flush", "kick"]
+    # it gives the write time to land behind another program's lock (mutant LF9-B28: a zero wait starts Connect at once)
+    assert waited == [store_rows.FLUSH_S] and store_rows.FLUSH_S >= 5

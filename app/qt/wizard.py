@@ -48,6 +48,7 @@ from PyQt6.QtWidgets import (QAbstractButton, QApplication, QComboBox, QFileDial
 from app import path_utils, settings_manager, theme
 from app.qt import applog, bridge, confirm, motion, strings, style, windows
 from app.qt import wizard_strings as S
+from app.services import tools_found
 
 PAGES = ("language", "known", "shows", "order", "cards", "level")      # the contract's ids, in order
 BUSY = ("queued", "running", "cancelling")      # a Generate under way (`generate.QUEUED` / `RUNNING` / `CANCELLING`)
@@ -1904,9 +1905,14 @@ class CardsPage(_Page):
     def ready(self):
         return bool(self.look) and self.look.get("state") == "ready"
 
+    def offered(self):
+        """Whether *Make cards for me* is shown: the one answer Settings and *Needs you* give too
+        (`services.tools_found.make_cards_shown`, IK2-3: Anki Miner installed; what it still needs is said above)."""
+        return bool(self.look) and tools_found.make_cards_shown(tools_found.miner_level(self.look.get("state")))
+
     def answers(self):
         """The switch's answer; None while it isn't shown (a False would turn Connect off on *Set up again*)."""
-        return {"make_cards": self.make.isChecked() if self.ready() else None}
+        return {"make_cards": self.make.isChecked() if self.offered() else None}
 
     def kept(self):
         return {"make_cards": self.make.isChecked()}      # the switch as left, shown or not (a language switch)
@@ -1970,7 +1976,7 @@ class CardsPage(_Page):
         self.head.setStretchFactor(self.name, 0 if ready else 1)     # *Recommended* beside the name, not far right
         self.dot.set_state(dot, S.MINER_FIX_TIP if dot == "warn" else "")
         _show(self.rec, ready)
-        _show(self.make, ready)                           # absent unless Anki Miner is ready (WZ-4)
+        _show(self.make, self.offered())                  # absent until Anki Miner is installed (WZ-4, IK2-3)
         _show(self.btn_star, look is not None and not ready)
         _show(self.star_quiet, ready)                     # the star line stays, quieter, once it's ready
         _show(self.btn_install, state in ("missing", "too-old") or update)

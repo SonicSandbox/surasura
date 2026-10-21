@@ -1406,23 +1406,11 @@ def _look_for(wanted, settings=None):
 
 
 def _tools_found(settings):
-    """(A worker.) Row 13: hato (its usable entry in the shared tools folder, as its Connections row reads it) and Anki
-    Miner (`anki_miner.find`: the path chosen, else where its installer puts it) -> their ctx tokens. A look that fails
-    leaves its tool out: its rows stay hidden, nothing written."""
-    found = set()
-    try:
-        from app import tools_entry
-        if tools_entry.read("hato") is not None:
-            found.add("hato_found")
-    except Exception as e:
-        applog.log("settings", f"looking for hato: {e}")
-    try:
-        from app.connect import anki_miner
-        if anki_miner.find(settings or {}):
-            found.add("miner_found")
-    except Exception as e:
-        applog.log("settings", f"looking for Anki Miner: {e}")
-    return found
+    """(A worker.) Row 13: hato and Anki Miner as the one look finds them (`services.tools_found`) -> their ctx
+    tokens. A look that fails leaves its tool out: its rows stay hidden, nothing written."""
+    from app.services import tools_found
+    found = tools_found.tools_found(settings, log=lambda text: applog.log("settings", text))
+    return ({"hato_found"} if found.hato else set()) | ({"miner_found"} if found.miner != tools_found.MISSING else set())
 
 
 def _live(text):

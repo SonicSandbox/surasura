@@ -683,3 +683,21 @@ def test_needs_you_asks_for_anki_miner_on_its_worker_and_shows_the_line_by_it(li
     assert asked == [False] * len(asked), "Anki Miner was looked for on the window's thread"
     kinds = [e.kind for e in ny.entries]
     assert (service.FIRST_CARDS in kinds) is here
+
+
+@pytest.mark.parametrize("automation", [False, True], ids=["automation-off", "automation-on"])
+def test_needs_you_reads_connect_on_as_the_rows_do_the_switch_and_automation(line, empty_library, automation):
+    """B2-8 (Michi's call): "is Connect on" is one rule — `settings_manager.connect_on`, the switch and D29's
+    automation, as the rows' `Feed.on` and Connect's own gates read it. With the switch on but the automation off,
+    D1's line no longer says later episodes "get their cards already": its actions are the off ones."""
+    service.offer("ja")
+    ny, win, settings, _written = line(on=True)
+    settings.data["logic"] = {"automation": automation}
+    ny.read_connect = lambda _lang: None
+    ny.find_offline = lambda *a: []
+    ny.read_asks = lambda: ()
+    ny.entries = ()
+    ny.view_in(_view(25))
+    assert wait_until(lambda: ny.entries and not ny._running, 10)
+    entry = next(e for e in ny.entries if e.kind == service.FIRST_CARDS)
+    assert entry.actions == (("first_cards_on", "not_now_on") if automation else ("first_cards", "not_now"))

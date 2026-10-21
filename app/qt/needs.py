@@ -30,7 +30,7 @@ from PyQt6.QtGui import QPainter, QPainterPath, QPen, QPixmap, QPolygonF
 from PyQt6.QtWidgets import (QFileDialog, QHBoxLayout, QLabel, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout,
                              QWidget)
 
-from app import path_utils, theme
+from app import path_utils, settings_manager, theme
 from app.qt import bridge, strings, style, toast
 from app.services import needs as service
 from app.services import view_rows
@@ -295,12 +295,10 @@ def _connect_callable(module, name):
 
 
 def _find_miner(settings):
-    """(A worker.) Row 13: Anki Miner's program (`anki_miner.find`), or None — setup's *Make cards* waits for it."""
-    try:
-        from app.connect import anki_miner
-        return anki_miner.find(settings)
-    except Exception:
-        return None
+    """(A worker.) Row 13: whether setup's *Make cards* can be offered — Anki Miner as the one look finds it
+    (`services.tools_found`, B2-7)."""
+    from app.services import tools_found
+    return tools_found.make_cards_shown(tools_found.tools_found(settings).miner)
 
 
 def _default_asks(opener):
@@ -477,7 +475,7 @@ class NeedsYou(QObject):
                 print(f"Needs you: the seen file wasn't pruned: {e!r}")
             out = service.entries(view, failures, connect, service.read_seen(lang), roots, asks,
                                   service.read_answered(lang), offers=service.read_offers(lang),
-                                  cards_on=bool(settings.get("connect_enabled")),
+                                  cards_on=settings_manager.connect_on(settings),    # B2-8: the one rule
                                   miner_found=bool(find_miner(settings)))     # row 13: D1's line waits for it
             return asked, tuple(out)
         bridge.run_in_worker(gather, then=self._got, failed=self._gather_failed)
@@ -769,7 +767,6 @@ class NeedsYou(QObject):
             return                                   # one answer at a time: a second click while it goes does nothing
         services_settings = self.win.services.settings
         now = services_settings.get() or {}
-        from app import settings_manager
         if not settings_manager.automation(now):
             self._say(strings.NEEDS_FIRST_CARDS_NOT_ON.format(why=strings.NEEDS_FIRST_CARDS_AUTOMATION_OFF))
             return
@@ -819,7 +816,7 @@ class NeedsYou(QObject):
         if self._first_running:
             return
         lang = self.language
-        on = bool((self.win.services.settings.get() or {}).get("connect_enabled"))
+        on = settings_manager.connect_on(self.win.services.settings.get() or {})     # B2-8: the one rule
 
         def done(_n):
             self._say(strings.NEEDS_FIRST_CARDS_LATER_ON if on else strings.NEEDS_FIRST_CARDS_LATER)

@@ -36,7 +36,7 @@ from PyQt6.QtCore import QObject, QPoint, QRectF, Qt
 from PyQt6.QtGui import QPainter
 from PyQt6.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QPlainTextEdit, QVBoxLayout
 
-from app import theme
+from app import settings_manager, theme
 from app.qt import applog, bridge, confirm, motion, shadow, strings, style, windows
 from app.qt import settings_catalog as catalog
 from app.qt import settings_controls as sc
@@ -115,13 +115,10 @@ def probe_anki(settings):
 
 
 def read_hato():
-    """hato's version from its entry in the shared tools folder ("" when it names none), or None: not installed."""
-    from app import tools_entry
-    entry = tools_entry.read("hato")
-    if entry is None:
-        return None
-    version = entry.get("version")
-    return str(version) if isinstance(version, (str, int, float)) and not isinstance(version, bool) else ""
+    """hato's version from its entry in the shared tools folder ("" when it names none), or None: not installed — the
+    one look (`services.tools_found`, B2-7)."""
+    from app.services import tools_found
+    return tools_found.hato_version()
 
 
 def read_skipped(updates):
@@ -224,7 +221,7 @@ def setup_lines(settings, language, facts):
     lines["setup_known"] = S.SEP.join(parts)
     anki = facts.get("anki")
     lines["setup_anki"] = S.ANKI_WORDS[anki] if anki else ""
-    if not value("connect_enabled"):
+    if not settings_manager.connect_on(settings):       # B2-8: "is Connect on" is one rule (the switch and D29)
         lines["setup_mining"] = S.SETUP_CONNECT_OFF
     else:
         mine = S.OPTIONS["connect_mine_words"].get(value("connect_mine_words"), "")
@@ -798,17 +795,24 @@ class Live(QObject):
         the shell's `restart` — the page's save is queued already and the quit writes it; the window state (size,
         place, the Settings tab) is saved by the close and read by the next start. *Later*, or a shell with no
         `restart` (a page alone): *Restart to apply* in the bar, as before. The size the window shows now chosen
-        again: nothing to apply, nothing asked."""
+        again: nothing to apply, nothing asked. While a Generate runs (or when one starts before the answer) nothing
+        restarts: the quit would stop it and nothing starts it again (B2-3) — the bar says to restart once it ends."""
         if size == style.current()[1]:
             return
         restart = getattr(self.shell, "restart", None)
         if restart is None:
             self.say(strings.RESTART_TO_APPLY)
             return
+        generating = getattr(self.shell, "generating", lambda: False)
+        if generating():
+            self.say(S.TEXT_SIZE_AFTER_GENERATE)
+            return
 
         def answered(yes):
             self.asking = None
-            if yes:
+            if yes and generating():
+                self.say(S.TEXT_SIZE_AFTER_GENERATE)
+            elif yes:
                 restart()
             else:
                 self.say(strings.RESTART_TO_APPLY)

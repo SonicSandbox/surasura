@@ -205,11 +205,11 @@ SEEDED = dict(ALL_ON, connect_mine_words="i1", junban_order="content", junban_ba
 
 def test_your_setup_says_what_the_settings_and_the_reads_say(qapp, fakes):
     fakes.known = (2468, "synced")
-    page, store, shell = make(fakes, SEEDED, connect="Mining 3 words from ぼっち・ざ・ろっく！")
-    assert wait_until(lambda: help_of(page, "setup_mining").endswith("ぼっち・ざ・ろっく！"))
+    page, store, shell = make(fakes, SEEDED, connect="Mining 3 words from ひとり・で・ぽっぷ！")
+    assert wait_until(lambda: help_of(page, "setup_mining").endswith("ひとり・で・ぽっぷ！"))
     assert help_of(page, "setup_known") == "2,468 known · from Anki (日本語::コア2k, アニメ)"
     assert help_of(page, "setup_anki") == "connected"
-    assert help_of(page, "setup_mining") == "Only i+1 · Mining 3 words from ぼっち・ざ・ろっく！"
+    assert help_of(page, "setup_mining") == "Only i+1 · Mining 3 words from ひとり・で・ぽっぷ！"
     assert help_of(page, "setup_level") == "Common · ≈1,234 words · 91.3% of your content"
     assert help_of(page, "setup_cards") == "ordered as you’ll meet them · パターン + 例文 filled automatically"
     # each Change › goes to its section
@@ -513,6 +513,38 @@ def test_choosing_the_size_already_shown_asks_nothing(qapp, fakes):
     page.row("text_size").controls[0].changed.emit(shown)      # back to the size on screen: nothing to apply
     assert page.live.asking is None and shell.restarts == [] and shell.bar_line.lines == []
     assert store.calls[-1] == ({"text_size": shown}, None)
+
+
+def test_B2_3_while_a_generate_runs_nothing_restarts_and_the_bar_says_after_it_finishes(qapp, fakes):
+    """B2-3: a quit cancels a Generate that can still stop, and nothing starts it again — so *Restart now* is never
+    offered while one waits or runs (the bar says to restart once it ends), and one starting before the answer keeps
+    *Restart now* from restarting. The size is saved either way. The ask's words promise nothing the quit won't do."""
+    page, store, shell = make(fakes)
+    _with_restart(shell)
+    running = [True]
+    shell.generating = lambda: running[0]
+    page.row("text_size").controls[0].changed.emit("L")
+    assert page.live.asking is None and shell.restarts == []
+    assert shell.bar_line.lines == [S.TEXT_SIZE_AFTER_GENERATE] and store.calls == [({"text_size": "L"}, None)]
+    running[0] = False
+    shell.bar_line.lines.clear()
+    page.row("text_size").controls[0].changed.emit("S")
+    card = page.live.asking
+    assert card is not None and "finishes first" not in card.body.text()
+    running[0] = True                                            # a Generate started while the card was open
+    card.yes.click()
+    assert shell.restarts == [] and shell.bar_line.lines == [S.TEXT_SIZE_AFTER_GENERATE]
+
+
+def test_B2_3_the_window_says_whether_a_generate_waits_or_runs_by_the_registrys_snapshot(qapp):
+    from app.services import jobs
+    view = jobs.JobView
+
+    def job(kind, state):
+        return view(1, kind, "", state, None, None, None, None, None, False, "cancel", False, False)
+    assert not jobs.generating(()) and not jobs.generating([job("generate", jobs.DONE), job("mine", jobs.RUNNING)])
+    for state in (jobs.QUEUED, jobs.WAITING, jobs.RUNNING, jobs.CANCELLING):
+        assert jobs.generating([job("generate", state)])
 
 
 def test_motion_is_saved_and_set_on_the_clock(qapp, fakes, monkeypatch):

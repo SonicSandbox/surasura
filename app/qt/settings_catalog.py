@@ -35,6 +35,7 @@ from collections.abc import Mapping
 
 from app.connect import settings_values
 from app.qt import settings_strings as S
+from app.services import tools_found
 
 Section = namedtuple("Section", "id icon name")
 Row = namedtuple("Row",
@@ -140,13 +141,13 @@ _JUNBAN_ON = _all(_JUNBAN, _on("enable_junban"))
 _CONNECT = _on("connect_enabled")
 _KOE = _all(_module("modules.koe"), lambda settings, language, ctx: "koe_revealed" in ctx)
 _YOUTUBE = _module("modules.youtube_downloader")
-# Row 13 (laptop fixes): a tool's rows wait until the page's look finds it. *Make cards for me* stays while Connect
-# is on (its way off); without Anki Miner and off, one line says what it needs (the wizard's ORDER_OFF, IK-14)
-_MINER = _module("miner_found")
-
-
+# Row 13 (laptop fixes): a tool's rows wait until the page's look finds it. *Make cards for me* by the one answer the
+# wizard, *Needs you* and Anki Miner's card share (`services.tools_found.make_cards_shown`, B2-7): Anki Miner found, or
+# the switch on already (its way off; the switch's own value, `connect_enabled`); without Anki Miner and off, one line
+# says what it needs (the wizard's ORDER_OFF, IK-14)
 def _connect_switch(settings, language, ctx):
-    return _MINER(settings, language, ctx) or _CONNECT(settings, language, ctx)
+    level = tools_found.INSTALLED if "miner_found" in ctx else tools_found.MISSING
+    return tools_found.make_cards_shown(level, _CONNECT(settings, language, ctx))
 
 
 def _needs_miner(settings, language, ctx):

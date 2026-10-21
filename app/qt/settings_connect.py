@@ -47,6 +47,7 @@ from app.qt import settings_controls as sc
 from app.qt import settings_strings as S
 from app.qt.wizard import FlowLayout
 from app.services import settings as settings_service
+from app.services import tools_found
 
 CARD_W = 380                    # the Anki Miner card's widest (px at text size M): its lines wrap inside it
 MAX_PER_DAY = 9999              # Anki's own ceiling for New cards a day (`anki_deck_options.MAX_PER_DAY`)
@@ -505,9 +506,10 @@ class MinerCard(QWidget):
             self.update_note.setText(S.MINER_UPDATE.format(version=update["version"]) if update else "")
             self.update_note.setVisible(bool(update))
             self._buttons(state["state"], answered)
-        # row 13: installed or browsed since the look → its gate opens (only opens: the look alone says it's absent)
+        # row 13: installed or browsed since the look → its gate opens (only opens: the look alone says it's absent),
+        # by the one answer (`services.tools_found`, B2-7)
         seen = getattr(self.page, "set_found", None)
-        if seen is not None and state["state"] != "missing":
+        if seen is not None and tools_found.make_cards_shown(tools_found.miner_level(state["state"])):
             seen("miner_found", True)
 
     def _broke(self, info):

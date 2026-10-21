@@ -487,7 +487,7 @@ class FakeAdder(QObject):
 
     def run(self, name, first=False):
         self.ran.append(f"{name}:first" if first else name)        # first: setup's own first look (Current, SRC-1)
-        self.given.emit("Added 進撃の巨人 at #1 · analysed on the next Generate")
+        self.given.emit("Added 嵐壁の巨兵 at #1 · analysed on the next Generate")
 
 
 def test_page_three_takes_add_actions_and_never_opens_the_content_manager(make):
@@ -712,8 +712,11 @@ def test_anki_miner_needing_a_fix_shows_its_amber_dot_its_sentence_and_check_aga
     page = wiz.page
     assert wait_until(lambda: page.look is not None)
     assert page.dot.state == "warn" and page.name.text() == fix["say"] and page.sub.text() == fix["do"]
-    assert page.dots[3].state == "warn" and page.make.isHidden() and not page.btn_check.isHidden()
+    assert page.dots[3].state == "warn" and not page.btn_check.isHidden()
     assert page.btn_install.isHidden()
+    # IK2-3: *Make cards for me* by the one answer Settings and Needs you give (`services.tools_found`): installed is
+    # enough, its fix said above it; the switch's answer is saved as Settings' would be
+    assert not page.make.isHidden() and page.offered() and page.answers() == {"make_cards": True}
 
 
 # --- 6 · your list ----------------------------------------------------------------------------------------------------------- #

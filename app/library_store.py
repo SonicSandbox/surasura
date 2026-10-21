@@ -2347,21 +2347,23 @@ class Store:
         entry = json.loads(row[1])
         return row[0] if entry.get("origin_source") == "Disk Sync" else None
 
-    def insert(self, files, tier, placement="show", started_at=None, entries=None, check=None):
+    def insert(self, files, tier, placement="show", started_at=None, entries=None, check=None, origins=None):
         """Add the files the command itself copied (Add Files, Add Folder, the preview), as one command:
         a, b, c lands a, b, c (L-Q6). `placement` "show" follows §6.10 rule 3 with `tier` (the tab
         chosen) for a directory that holds no item yet; "top" puts them at the top of `tier` (the
-        preview). A file already an item is left where it is and reported in `change.existing`."""
+        preview). A file already an item is left where it is and reported in `change.existing`.
+        `origins` (K21: + Add / a drop): {file as given: where it was copied from} — see `_add_origins`."""
         prepared = self._prepare(files, entries, "Manual Import")
-        return self._add(prepared, tier, placement, None, started_at, check, "insert")
+        return self._add(prepared, tier, placement, None, started_at, check, "insert", origins=origins)
 
-    def insert_at(self, files, anchor_id, before=True, started_at=None, entries=None, check=None):
+    def insert_at(self, files, anchor_id, before=True, started_at=None, entries=None, check=None, origins=None):
         """`insert` at an anchor item: the files land contiguous, in the order given, before or after it,
         in its tier (the user chose the place, so Q4-9 doesn't apply)."""
         prepared = self._prepare(files, entries, "Manual Import")
-        return self._add(prepared, None, "anchor", (anchor_id, before), started_at, check, "insert_at")
+        return self._add(prepared, None, "anchor", (anchor_id, before), started_at, check, "insert_at",
+                         origins=origins)
 
-    def _add(self, prepared, tier, placement, anchor, started_at, check, kind, by="user", explicit=1):
+    def _add(self, prepared, tier, placement, anchor, started_at, check, kind, by="user", explicit=1, origins=None):
         with self._command(kind, by) as cmd:
             self._recheck(check, takeover_ok=lambda i: self._takeover_id(i, started_at))
             change = self._change(cmd, kind)
@@ -2408,10 +2410,28 @@ class Store:
             for (t, where), group in groups.items():
                 self._put(t, group, where, cmd.version)
             change.added = ids
+            if origins:
+                self._add_origins(zip(ids, [t[1] for t in taken] + new), origins)
             cmd.touch(set(dest_tier), availability=any(it[4][2] == "missing" for it in new))
             for item_id in ids:
                 cmd.event(item_id, "placed", explicit)
             return change
+
+    def _add_origins(self, added, origins):
+        """K21 (laptop fixes): inside `_add`'s command, an origin record (B1's row, `_origin_record`'s shape) on each
+        item it added from a file + Add or a drop copied in from outside the data folder (`origins` {file as given:
+        {origin, size, mtime_ns, sha256, show, video_path?, video_size?}}, `moves._copy_in`'s): no source holds it
+        (`root` None), `via` "add". So a folder read later takes the original as known (SRC-7: never a second item; a
+        Remove's exclusion keeps it out, SRC-8) and Connect looks beside the original for its video. One origin, one
+        row: the same original added again (changed since: other bytes, a new item) moves its row to the new item."""
+        for item_id, item in added:
+            f = origins.get(item[0])
+            if not f:
+                continue
+            record = dict(_origin_record(None, f["origin"], f), via="add")
+            self.conn.execute("INSERT OR REPLACE INTO pairings (content_key, item_id, pairing, paired_at) "
+                              "VALUES (?, ?, ?, ?)", (origin_key(f["origin"]), item_id,
+                                                      json.dumps(record, sort_keys=True, ensure_ascii=False), _now()))
 
     def _takeover_id(self, item_id, started_at):
         row = self.conn.execute("SELECT rel_key FROM items WHERE id = ?", (item_id,)).fetchone()
@@ -2545,13 +2565,14 @@ class Store:
 
     # --- remove and put back ------------------------------------------------------------------- #
 
-    def remove(self, ids, trashed_paths=None, check=None, by="user", kind="remove"):
+    def remove(self, ids, trashed_paths=None, check=None, by="user", kind="remove", exclude=True):
         """Rows → the trash table, each with its neighbours just before the removal (removed ones
         included), its entry, its state, its pairings and Anki links, and where its file went
         (`trashed_paths`: {id: path relative to data/<lang>}, the caller's file work). The trash rows are
         written first, then the item rows deleted; their pairings and links follow by ON DELETE CASCADE. An item that
         came from a source folder leaves an exclusion per origin (SRC-8 / S6: `_exclude_origins`); its Put back or
-        Undo deletes them."""
+        Undo deletes them. `exclude=False` (K21: the Undo of an add — + Add's origins) leaves none: an Undo is no
+        Remove, so a folder read later brings the file in as any new one."""
         trashed_paths = trashed_paths or {}
         with self._command(kind, by) as cmd:
             self._recheck(check)
@@ -2587,7 +2608,7 @@ class Store:
                 "INSERT INTO trash (item_id, root_id, rel_path, tier, prev_id, next_id, entry, item_state, "
                 "trashed_path, removed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", trash_rows)
             change.trash_ids = list(range(first, first + len(trash_rows)))
-            change.excluded = self._exclude_origins(pairs, now)        # SRC-8: a scan never takes it in again
+            change.excluded = self._exclude_origins(pairs, now) if exclude else []   # SRC-8: never taken in again
             self.conn.execute(f"DELETE FROM items WHERE id IN ({marks})", list(rows))
             cmd.gone += [("item", i) for i in rows]
             cmd.pieces_left.update(full[i]["piece_id"] for i in rows if full[i]["piece_id"] is not None)
@@ -4495,7 +4516,7 @@ class Store:
                 if not ok:
                     return self._skipped(cmd, len(skipped))
                 explicit = 0 if kind == "register" else 1
-                out = self._remove_as(ok, trashed_paths, explicit)
+                out = self._remove_as(ok, trashed_paths, explicit, exclude=kind not in ("insert", "insert_at"))
                 if kind == "register" and getattr(change, "pairing_before", (None, None))[1] is not None:
                     content_key, old = change.pairing_before          # the key's pairing before hato moved it
                     if self.conn.execute("SELECT 1 FROM items WHERE id = ?", (old[0],)).fetchone():
@@ -4581,12 +4602,12 @@ class Store:
                          f"{'were' if n != 1 else 'was'} left as {'they are' if n != 1 else 'it is'}")
         return out
 
-    def _remove_as(self, ids, trashed_paths, explicit):
+    def _remove_as(self, ids, trashed_paths, explicit, exclude=True):
         """Undo-Add: the rows go to the trash table, as `remove` does (pairings and links included, so
-        Put back works); the files went to `.trash` by the caller's file code."""
+        Put back works); the files went to `.trash` by the caller's file code. `exclude`: `remove`'s."""
         cmd = self._cmd
         events_before = len(cmd.events)
-        out = self.remove(ids, trashed_paths, by="undo", kind="undo_add")
+        out = self.remove(ids, trashed_paths, by="undo", kind="undo_add", exclude=exclude)
         cmd.events[events_before:] = [(i, k, explicit, b) for i, k, _e, b in cmd.events[events_before:]]
         for item in out.items:
             item["explicit"] = explicit

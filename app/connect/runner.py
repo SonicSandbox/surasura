@@ -1074,7 +1074,8 @@ class Steps:
 
     def video(self, lang, job):
         """The episode's video on this computer: hato's pairing names it; else a video beside the subtitle with its
-        name; else the video index (P2.5 row 2.5.8, G1.3-12: the paired videos' folders and the ones you added — by
+        name; else one beside the original it was copied from (K21: a folder's or + Add's origin, `beside_origin`);
+        else the video index (P2.5 row 2.5.8, G1.3-12: the paired videos' folders and the ones you added — by
         name, and size when the pairing gives one). None when there's none, or only a cloud placeholder (never
         opened, RD-S1)."""
         with _held():                       # the store's two reads, one open; the disk is looked at after
@@ -1108,7 +1109,7 @@ class Steps:
         origin = pairing.get("origin") if pairing.get("producer") == "source" else None
         if isinstance(origin, str) and origin:
             names += videos.names_for(origin)   # a copy renamed `name (2)` in Library/: the original's name finds it
-        return beside(subtitle) or self._videos(lang).find(names)
+        return beside(subtitle) or beside_origin(pairing) or self._videos(lang).find(names)
 
     def _videos(self, lang):
         """The language's video index, refreshed once a run, the first time a video is missing (S19: only folders
@@ -1701,6 +1702,15 @@ def _on_disk(path):
     except OSError:
         return False
     return not (getattr(st, "st_file_attributes", 0) & _PLACEHOLDER)
+
+
+def beside_origin(pairing):
+    """K21 (laptop fixes): the video beside the original an item's text was copied from — its origin record (`producer`
+    "source": a folder's look, or + Add's / a drop's, `via` "add") names it as `origin` — with its name, on disk -> its
+    path; else None (no record, another producer's, none there, a placeholder). A listing and a stat, never a read.
+    Qt-free: Connect's `video()` asks it after `beside(subtitle)`, and ▶ may ask it with `library.pairing_of`."""
+    origin = (pairing or {}).get("origin") if (pairing or {}).get("producer") == "source" else None
+    return beside(origin) if isinstance(origin, str) and origin else None
 
 
 def beside(subtitle):

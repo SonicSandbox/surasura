@@ -260,7 +260,7 @@ class Writer:
         return self._put({"op": "finish", "ids": list(ids), "keep_cards": bool(keep_cards), "label": label,
                           "follows": follows})
 
-    def insert_at(self, paths, tier, before_id=None, after_id=None, near=(), label=None, into=None):
+    def insert_at(self, paths, tier, before_id=None, after_id=None, near=(), label=None, into=None, origin=True):
         """An Explorer drop: `paths` (files from anywhere) copied at once, on the copier's own thread, into the data
         folder's `Library/<name>/` (SRC K3; never over a file: an identical one is already there, another comes in
         under a new name; a file already in a tier's folder or `Library` stays where it is; one whose bytes are an
@@ -274,11 +274,15 @@ class Writer:
         out; a drop that copied nothing (its files were in the tiers' folders already) isn't put on the Undo stack.
         # --- W3.2 Q3: `into` (+ Add): the folder each file is copied into instead of the tier's own, relative to the
         # data folder and inside one of the folders the disk sync walks — one for every file, or a list beside `paths`
-        # (a show's folder, so the file joins its show; a folder added, its own folders kept)."""
+        # (a show's folder, so the file joins its show; a folder added, its own folders kept).
+        # --- K21 (laptop fixes): each file copied in from outside the data folder gets an origin record on its new item,
+        # in the same command (`Store._add_origins`: where it came from, the video beside it); `origin=False` (a pasted
+        # text: its temporary file is removed once it lands) records none."""
         if not self._writable():
             return None                             # E4
         cmd = {"op": "insert_at", "ids": [], "files": [os.fspath(p) for p in paths], "tier": tier,
-               "before_id": before_id, "after_id": after_id, "near": [list(n) for n in near or ()], "label": label}
+               "before_id": before_id, "after_id": after_id, "near": [list(n) for n in near or ()], "label": label,
+               "origin": bool(origin)}
         if into is not None:                        # --- W3.2 Q3
             cmd["into"] = [into] * len(cmd["files"]) if isinstance(into, str) else list(into)
             if len(cmd["into"]) != len(cmd["files"]):
@@ -1053,7 +1057,9 @@ class Writer:
         (an identical one is the file already there; another comes in as `name (2).ext`); one already in a
         tier's folder or the content folder left where it is (one elsewhere in the data folder — its trash — is copied
         in); one whose bytes are a live item's file's (size first, then sha256) not added, its title in `already` (K3,
-        SRC-7: never a duplicate). `copied`: the files made here (the trash's, if the command is let go)."""
+        SRC-7: never a duplicate). `copied`: the files made here (the trash's, if the command is let go). `origins`
+        (K21): {copy: where it came from} for each file from outside the data folder (`_origin_of`), unless the
+        command's `origin` is off (a pasted text)."""
         import filecmp
         lib = _ls()
         folder = lib.FOLDER_OF_TIER.get(cmd["tier"])
@@ -1062,7 +1068,7 @@ class Writer:
         cmd["data_dir"] = data_dir
         cmd["started_at"] = lib._now()              # a sync that meets a copy made: the command takes the row over
         walked = {lib.path_key(f) for f in lib.WALK_FOLDERS}               # the folders the disk sync walks
-        out, made, left, already = [], [], [], []
+        out, made, left, already, origins = [], [], [], [], {}
         into = cmd.get("into") or [None] * len(cmd["files"])          # --- W3.2 Q3: + Add's folders
         rels = {p: lib.library_rel(data_dir, p) for p in cmd["files"]}
         inside = {p: r for p, r in rels.items() if r is not None and lib.path_key(r.split("/", 1)[0]) in walked}
@@ -1094,16 +1100,20 @@ class Writer:
                         continue
                 parts = _in_library(_into(sub, folder, walked, lib), path, lib)
                 dest = os.path.join(data_dir, *parts, os.path.basename(path))
+                st = os.stat(path) if rel is None and cmd.get("origin", True) else None   # K21: before it is read
                 if os.path.exists(dest) and filecmp.cmp(path, dest, shallow=False):
                     out.append(dest)
-                    continue
-                os.makedirs(os.path.dirname(dest), exist_ok=True)
-                dest = _copy_whole(path, dest)
-                made.append(dest)
-                out.append(dest)
+                else:
+                    os.makedirs(os.path.dirname(dest), exist_ok=True)
+                    dest = _copy_whole(path, dest)
+                    made.append(dest)
+                    out.append(dest)
+                if st is not None:
+                    origins[dest] = _origin_of(path, st, dest, parts, lib)
         finally:
             cmd["copied"] = made
         cmd["files"] = out
+        cmd["origins"] = origins
         cmd["left_out"] = left
         cmd["already"] = already
 
@@ -1122,10 +1132,11 @@ class Writer:
                 if item is None or item["tier"] != cmd["tier"]:
                     continue
                 try:
-                    return store.insert_at(cmd["files"], a, before=before, started_at=cmd["started_at"]), note
+                    return store.insert_at(cmd["files"], a, before=before, started_at=cmd["started_at"],
+                                           origins=cmd.get("origins")), note
                 except lib.StoreConflict:           # gone between the look and the write
                     continue
-        change = store.insert(cmd["files"], cmd["tier"], "top", started_at=cmd["started_at"])
+        change = store.insert(cmd["files"], cmd["tier"], "top", started_at=cmd["started_at"], origins=cmd.get("origins"))
         return change, None if anchor is None else "top"
 
     def _trash_copies(self, cmd, unlisted=False):
@@ -1705,6 +1716,20 @@ def _into(sub, folder, walked, lib):
             lib.path_key("/".join(parts) + "/").startswith(lib.path_key(lib.HATO_FOLDER + "/")):
         raise ValueError(f"files can't be copied into {sub!r}")
     return parts
+
+
+def _origin_of(path, st, copy, parts, lib):
+    """(K21) Where a file + Add or a drop copied in came from, for its origin record (`Store._add_origins`): the
+    original's absolute path, its size and time (`st`, taken before it was read), the sha256 of the bytes copied (the
+    copy's), the show its `Library` folder names, and the video beside the original with its name, found as Connect's
+    `runner.beside` finds it (a listing and a stat: the video is never opened)."""
+    from app.connect import runner
+    f = {"origin": os.path.abspath(path), "size": st.st_size, "mtime_ns": st.st_mtime_ns,
+         "sha256": lib.sha256_of(copy), "show": "/".join(parts[1:])}
+    video = runner.beside(path)
+    if video:
+        f.update(video_path=os.path.abspath(video), video_size=os.path.getsize(video))
+    return f
 
 
 def _in_library(parts, path, lib):

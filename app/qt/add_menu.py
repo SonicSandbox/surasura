@@ -219,9 +219,10 @@ class Adder(QObject):
         page = getattr(self.shell, "page_widgets", {}).get("current")
         return getattr(page, "view_model", None)
 
-    def add_files(self, paths, name=None, folder=None, rel_dirs=None, then=None):
+    def add_files(self, paths, name=None, folder=None, rel_dirs=None, then=None, origin=True):
         """`paths` in, where lean 2 says (see the module's doc) -> the writer's number, or None (nothing, or refused).
-        `then()`: once the command landed (the pasted text's temporary folder removed, N7)."""
+        `then()`: once the command landed (the pasted text's temporary folder removed, N7). `origin` (K21): each file's
+        origin recorded on its item (where it came from, the video beside it); off for a pasted text."""
         moves = self._moves()
         if not paths or moves is None or moves.refused() is not None:
             return None
@@ -235,7 +236,7 @@ class Adder(QObject):
         ticket = drag.Ticket(text)
         ticket.then = then
         seq = moves._give(ticket, lambda t: writer.insert_at(list(paths), tier, after_id=after_id, label=t,
-                                                                         into=into))
+                                                                         into=into, origin=origin))
         if seq is not None:
             self.given.emit(text)
         return seq
@@ -323,7 +324,7 @@ class Adder(QObject):
 
         def written(path):
             folder = os.path.dirname(path)
-            if self.add_files([path], name=title, then=lambda: bridge.run_in_worker(
+            if self.add_files([path], name=title, origin=False, then=lambda: bridge.run_in_worker(
                     shutil.rmtree, folder, True)) is None:  # N7: removed once it landed; refused: where it is, said
                 windows.say_in_bar(self.shell, strings.PASTE_KEPT.format(folder=folder))
         bridge.run_in_worker(write_pasted, title, text, then=written,

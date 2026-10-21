@@ -11,8 +11,8 @@
     *Its setup* (its profile, its own `check`); a dot is `ok`, `warn` (only you can fix it) or `off` (closed, waiting
     by itself, not checked yet), the worst of its checks; the tip names the state in words and Connect's sentence
     (status is never colour alone);
-  - `fix`: Connect's own `{"say", "do"}` for the first of those checks only you can fix (one that stops Connect
-    first), else None. The known-words sync is page 2's, never this page's fix.
+  - `fix`: Connect's own `{"say", "do", "update"}` for the first of those checks only you can fix (one that stops
+    Connect first), else None; `update` when updating Anki Miner is the fix it leads with. The known-words sync is page 2's, never this page's fix.
   Never raises: a look that fails is every dot off and the state from whether Anki Miner is found.
 
 - `install(on_progress, cancel, on_end, confirm=None) -> str` — **G1.3-2 option b**, the in-Surasura install.
@@ -167,7 +167,8 @@ def look(settings, language):
         mine = [by_id[i] for ids in _DOT_CHECKS for i in ids if i in by_id]
         yours = [c for c in mine if c.get("state") == "needs-you"]
         first = next((c for c in yours if c.get("blocks")), None) or (yours[0] if yours else None)
-        fix = {"say": first.get("say"), "do": first.get("do")} if first else None
+        fix = ({"say": first.get("say"), "do": first.get("do"), "update": bool(first.get("update"))}
+               if first else None)
         return {"state": state, "version": version, "dots": dots, "fix": fix}
     except Exception:
         return _off(settings)

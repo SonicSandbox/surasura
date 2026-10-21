@@ -34,15 +34,16 @@ GUI thread never waits.
 """
 import math
 import os
+import re
 import threading
 import time
 from functools import lru_cache
 
 from PyQt6 import sip
-from PyQt6.QtCore import QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont, QFontMetricsF, QLinearGradient, QPainter, QPen, QRadialGradient
 from PyQt6.QtWidgets import (QAbstractButton, QApplication, QComboBox, QFileDialog, QHBoxLayout, QLabel, QLayout,
-                             QProgressBar, QPushButton, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget)
+                             QBoxLayout, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget)
 
 from app import path_utils, settings_manager, theme
 from app.qt import applog, bridge, confirm, motion, strings, style, windows
@@ -142,12 +143,14 @@ def sheet(text_size):
     return f"""
 QWidget#wizard {{ background: {c['bg']}; }}
 QWidget#wizhead, QWidget#wizfoot {{ background: {c['frame']}; }}
+QScrollArea#wizscroll {{ background: transparent; border: 0; }}
 QLabel#wiztitle {{ color: {c['ink']}; {font('first-run-heading', 600, TITLE_SCALE)} }}
 QLabel#wizline {{ color: {c['ink-dim']}; {font('hero-sub')} }}
 QLabel#wizhint {{ color: {c['ink-dim']}; {font('footer')} }}
 QLabel#wizlabel {{ color: {c['ink']}; {font('body', 400)} }}
 QLabel#wizgroup {{ color: {c['ink']}; {font('body', 600)} }}
 QLabel#wizsub {{ color: {c['ink-dim']}; {font('row-sub')} }}
+QLabel#wizpath {{ color: {c['ink']}; {font('row-sub')} }}
 QLabel#wizrec {{ color: {c['accent']}; {font('eyebrow')} letter-spacing: 1px; }}
 QLabel#wizsay {{ color: {c['ink-dim']}; {font('footer')} }}
 QLabel#wizclosed {{ color: {c['warn']}; {font('body', 600)} }}
@@ -296,10 +299,30 @@ class Choice(QAbstractButton):
                self.dot if dot is False else dot)
         if new != (self.line, self.recommended, self.dot):
             self.line, self.recommended, self.dot = new
+            self.updateGeometry()                         # its words' width moved (`minimumSizeHint`)
+            if self.channel is not None:
+                self.channel.updateGeometry()
+                self.channel.fit()
             self.update()
 
     def sizeHint(self):
         return QSize(_px(150), _px(42 if self.small else 76))
+
+    def minimumSizeHint(self):
+        return QSize(self.needed_width(), self.sizeHint().height())     # never narrower than its words
+
+    def needed_width(self):
+        """The width its words are drawn in (`paintEvent`): the dot, the title and *Recommended*; the line."""
+        pad = _px(16 if not self.small else 12)
+        title = QFontMetricsF(_font("body", 600)).horizontalAdvance(self.title)
+        if self.dot:
+            title += _px(10) + _px(10)
+        if self.recommended:
+            rec = _font("eyebrow")
+            rec.setLetterSpacing(QFont.SpacingType.PercentageSpacing, 110)
+            title += _px(12) + QFontMetricsF(rec).horizontalAdvance(S.RECOMMENDED)
+        line = QFontMetricsF(_font("row-sub")).horizontalAdvance(self.line) if self.line and not self.small else 0
+        return math.ceil(2 * pad + max(title, line)) + 1
 
     def focusInEvent(self, event):
         self._keyed = event.reason() != Qt.FocusReason.MouseFocusReason
@@ -376,6 +399,11 @@ class GlyphChoice(Choice):
     def sizeHint(self):
         return QSize(_px(430), _px(250))
 
+    def needed_width(self):
+        glyph = QFontMetricsF(_font("first-run-heading", 700, GLYPH_SCALE, theme.font_families(self.key)))
+        name = QFontMetricsF(_font("body", 400))
+        return math.ceil(2 * _px(30) + max(glyph.horizontalAdvance(self.glyph), name.horizontalAdvance(self.title))) + 1
+
     def paintEvent(self, _event):
         self.paints += 1
         p = QPainter(self)
@@ -418,6 +446,26 @@ class Channel(QWidget):
         self.row = QHBoxLayout(self)
         self.row.setContentsMargins(0, 0, 0, 0)
         self.row.setSpacing(gap)
+
+    def _needed(self):
+        """The width its choices' words take side by side (each at least its own: `Choice.minimumSizeHint`)."""
+        return sum(ch.needed_width() for ch in self.choices) + self.row.spacing() * max(0, len(self.choices) - 1)
+
+    def minimumSizeHint(self):
+        # as narrow as one choice: narrower than all side by side, they stack (`resizeEvent`)
+        least = self.row.minimumSize()
+        return QSize(max((ch.needed_width() for ch in self.choices), default=0), least.height())
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.fit()
+
+    def fit(self):
+        way = (QBoxLayout.Direction.LeftToRight if self.width() >= self._needed()
+               else QBoxLayout.Direction.TopToBottom)
+        if self.row.direction() != way:                   # the words never cut: one above another when narrow
+            self.row.setDirection(way)
+            self.updateGeometry()
 
     def add(self, choice):
         choice.channel = self
@@ -529,14 +577,13 @@ class SwitchRow(QWidget):
         words.setSpacing(_px(2))
         head = QHBoxLayout()
         head.setSpacing(_px(10))
-        self.name = _label("wizlabel", name, self)
-        head.addWidget(self.name)
+        self.name = _label("wizlabel", name, self, wrap=True)
+        head.addWidget(self.name, 1)
         self.rec = _label("wizrec", S.RECOMMENDED, self)
         self.rec.setVisible(recommended)
         head.addWidget(self.rec)
-        head.addStretch(1)
         words.addLayout(head)
-        self.line = _label("wizsub", line, self)
+        self.line = _label("wizsub", line, self, wrap=True)
         self.line.setVisible(bool(line))
         words.addWidget(self.line)
         row.addLayout(words, 1)
@@ -566,6 +613,57 @@ def _button(text, tip, slot, parent=None, name=None, kind=None):
         b.setProperty("kind", kind)
     b.clicked.connect(lambda _c=False: slot())
     return b
+
+
+class _PageScroll(QScrollArea):
+    """Scrolls up and down only, so it asks for its page's least width (never a page cut at the right)."""
+
+    def minimumSizeHint(self):
+        page = self.widget()
+        least = super().minimumSizeHint()
+        if page is None:
+            return least
+        return QSize(page.minimumSizeHint().width() + self.verticalScrollBar().sizeHint().width(), least.height())
+
+    def eventFilter(self, obj, event):
+        # (QScrollArea watches its page) the page's layout changed — decks or rows came in: its least width is asked
+        # again, never left cut at the right until another page shows
+        if obj is self.widget() and event.type() == QEvent.Type.LayoutRequest:
+            self.updateGeometry()
+        return super().eventFilter(obj, event)
+
+
+def _scrolled(page):
+    """`page` in a frameless scroll area: at its full height when the window is shorter than it (the text, the
+    pictures and the buttons are never squeezed into each other), the window's height otherwise; never sideways."""
+    area = _PageScroll()
+    area.setObjectName("wizscroll")
+    area.setFrameShape(QScrollArea.Shape.NoFrame)
+    area.setWidgetResizable(True)
+    area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    area.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+    area.setWidget(page)
+    area.viewport().setAutoFillBackground(False)
+    page.setAutoFillBackground(False)
+    return area
+
+
+def _breakable(text):
+    """`text` as drawn: a line may break after a path's backslash (a zero-width space there), so a long path wraps
+    instead of widening the window past the screen. Only in labels nobody selects (the breaks would be copied)."""
+    return text.replace("\\", "\\​")
+
+
+def _split_path(text):
+    """(the words, a Windows path that ends them) — a fix's steps end in the file to pick (*…choose file: C:\\…*): the
+    path goes on its own line, whole and copyable. ("", "") for nothing; (text, "") when no path ends it."""
+    found = _PATH_AT_END.search(text or "")
+    if not found:
+        return text or "", ""
+    return text[:found.start()].rstrip(), found.group(0).strip()
+
+
+_PATH_AT_END = re.compile(r"(?<!\S)[A-Za-z]:\\\S(?:.*\S)?\.\w+\s*$", re.S)
 
 
 def _set_text(label, text):
@@ -600,7 +698,7 @@ def _count(pair, n):
 
 
 class FlowLayout(QLayout):
-    """Items left to right, wrapping to the next line (page 2's decks)."""
+    """Items left to right, wrapping to the next line (page 2's decks, page 5's buttons, Settings' Anki Miner card)."""
 
     def __init__(self, parent=None, spacing=8):
         super().__init__(parent)
@@ -647,11 +745,14 @@ class FlowLayout(QLayout):
             hint = item.sizeHint()
             if x + hint.width() > rect.right() + 1 and line > 0:
                 x, y, line = rect.x(), y + line + self._gap, 0
-            if move:
-                item.setGeometry(QRect(QPoint(x, y), hint))
+            if move:                                      # never past the line's end (a button wider than it)
+                item.setGeometry(QRect(QPoint(x, y), QSize(min(hint.width(), rect.right() + 1 - x), hint.height())))
             x += hint.width() + self._gap
             line = max(line, hint.height())
         return y + line - rect.y()
+
+
+DECK_CHIP_MAX = 420                 # a deck chip's widest (px × the text size): inside the least window's page
 
 
 class DeckChip(QAbstractButton):
@@ -675,7 +776,7 @@ class DeckChip(QAbstractButton):
         name_f, count_f = self._parts()
         w = (_px(36) + QFontMetricsF(name_f).horizontalAdvance(self.name)
              + QFontMetricsF(count_f).horizontalAdvance(S.DECK_CARDS.format(n=self.count or 0)) + _px(14))
-        return QSize(math.ceil(w), _px(34))
+        return QSize(min(math.ceil(w), _px(DECK_CHIP_MAX)), _px(34))   # a long name shortened (`paintEvent`)
 
     def focusInEvent(self, event):
         self._keyed = event.reason() != Qt.FocusReason.MouseFocusReason
@@ -697,8 +798,11 @@ class DeckChip(QAbstractButton):
         x += _px(20)
         p.setFont(name_f)
         p.setPen(_c("ink") if on else _c("ink-dim"))
-        p.drawText(QPointF(x, base), self.name)
-        x += QFontMetricsF(name_f).horizontalAdvance(self.name) + _px(8)
+        count = QFontMetricsF(count_f).horizontalAdvance(S.DECK_CARDS.format(n=self.count or 0))
+        name = QFontMetricsF(name_f).elidedText(self.name, Qt.TextElideMode.ElideMiddle,
+                                                max(0.0, self.width() - x - _px(8) - count - _px(14)))
+        p.drawText(QPointF(x, base), name)                # (whole in its tooltip and its name for a reader)
+        x += QFontMetricsF(name_f).horizontalAdvance(name) + _px(8)
         p.setFont(count_f)
         p.setPen(_c("ink-dim"))
         p.drawText(QPointF(x, base), S.DECK_CARDS.format(n=self.count or 0))
@@ -774,6 +878,10 @@ class FadedSentence(QWidget):
         bright = _font("first-run-heading", 700, SENTENCE_SCALE, theme.font_families(self.language))
         gap = _px(18)
         fm = QFontMetricsF(faded)
+        drawn = sum(QFontMetricsF(bright if i == new else faded).horizontalAdvance(w) for i, w in enumerate(words))
+        k = min(1.0, self.width() / max(1.0, drawn + gap * (len(words) - 1)))   # narrower than the line: smaller
+        if k < 1.0:
+            p.scale(k, k)
         base = fm.ascent() + _px(6)
         x = 0.0
         dim = style.qcolor(theme.mix(style.colours()["ink-faint"], 70, style.colours()["bg"]))
@@ -814,6 +922,9 @@ class CardsPicture(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
         label_w, card_w, card_h, gap = _px(70), _px(96), _px(58), _px(10)
+        k = min(1.0, self.width() / max(1, label_w + len(words) * (card_w + gap)))   # narrower: all of it, smaller
+        if k < 1.0:
+            p.scale(k, k)
         word_f = _font("body", 700, 1.25, theme.font_families(self.language))
         small = _font("mini", 400)
         rows = ((S.ORDER_TODAY, words, False), (S.ORDER_WITH, tuple(reversed(words)), True))
@@ -872,7 +983,10 @@ class MinePicture(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
-        h = self.height()
+        k = min(1.0, self.width() / max(1, self.sizeHint().width()))   # narrower than drawn: all of it, smaller
+        if k < 1.0:
+            p.scale(k, k)
+        h = self.height() / k
         scene = QRectF(0, 0, _px(300), h)
         sky = QLinearGradient(QPointF(0, 0), QPointF(0, h))
         sky.setColorAt(0.0, style.qcolor(theme.mix(theme.GEM["sapphire"][0], 40, c["bg"])))
@@ -1071,7 +1185,7 @@ class _Page(QWidget):
         self.box = QVBoxLayout(self)
         self.box.setContentsMargins(0, _px(36), 0, _px(20))
         self.box.setSpacing(_px(14))
-        self.title = _label("wiztitle", title, self)
+        self.title = _label("wiztitle", title, self, wrap=True)
         self.box.addWidget(self.title)
         self.line = _label("wizline", line, self, wrap=True)
         self.line.setVisible(bool(line))
@@ -1498,7 +1612,9 @@ class ShowsPage(_Page):
         line.addWidget(title)
         count = row_count(r)
         folder = str(r.get("folder") or "")
-        sub = _label("wizrowline", S.ROW_LINE.format(count=count, folder=folder) if folder else count, w)
+        # wraps, a long folder after a backslash too (it widened the page past the window: the review's B1)
+        sub = _label("wizrowline", _breakable(S.ROW_LINE.format(count=count, folder=folder)) if folder else count, w,
+                     wrap=True)
         f = sub.font()
         f.setFamilies(list(theme.path_font_families(self.wiz.language)))      # a path's ¥ is a backslash again
         sub.setFont(f)
@@ -1534,6 +1650,22 @@ class _Tile(QWidget):
         p.end()
 
 
+class _Combo(QComboBox):
+    """A menu that takes the wheel only once focused (the page scrolls under it otherwise), and never asks for a long
+    deck name's width."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.setMinimumContentsLength(16)
+
+    def wheelEvent(self, event):
+        if self.hasFocus():
+            super().wheelEvent(event)
+        else:
+            event.ignore()
+
+
 class OrderPage(_Page):
     id = "order"
 
@@ -1551,7 +1683,7 @@ class OrderPage(_Page):
         closed.addStretch(1)
         self.box.addWidget(self.closed_part)
         # 順 switched off or not in this Surasura: no control that does nothing (the intent keeper's IK-14)
-        self.off_line = _label("wizclosed", S.ORDER_OFF, self)
+        self.off_line = _label("wizclosed", S.ORDER_OFF, self, wrap=True)
         self.off_line.setVisible(False)
         self.box.addWidget(self.off_line)
         self.controls = QWidget(self)
@@ -1568,7 +1700,7 @@ class OrderPage(_Page):
         deck = QHBoxLayout()
         deck.setSpacing(_px(14))
         deck.addWidget(_label("wizlabel", S.DECK, self.controls))
-        self.deck_box = QComboBox(self.controls)
+        self.deck_box = _Combo(self.controls)
         self.deck_box.setToolTip(S.DECK_PICK_TIP)
         self.deck_box.setAccessibleName(S.DECK)
         self.deck_box.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -1578,13 +1710,14 @@ class OrderPage(_Page):
         deck.addStretch(1)
         rows.addLayout(deck)
         rows.addWidget(style.separator(self.controls))
-        later = QHBoxLayout()
-        later.addWidget(_label("wizlabel", S.LATER, self.controls), 1)
+        later = QVBoxLayout()                             # the words above the three (beside them they were wider
+        later.setSpacing(_px(6))                          # than the least window at Large text)
+        later.addWidget(_label("wizlabel", S.LATER, self.controls, wrap=True))
         self.later = Channel(S.LATER_NAME, self.controls)
         for key in ("leave", "mark", "aside"):
             self.later.add(Choice(key, S.LATER_CHOICES[key], S.LATER_TIPS[key], self.later, small=True))
-        self.later.setFixedWidth(_px(430))
-        later.addWidget(self.later)
+        self.later.setMaximumWidth(_px(430))              # (narrower only in a window narrower than it)
+        later.addWidget(self.later, 0, Qt.AlignmentFlag.AlignLeft)
         rows.addLayout(later)
         rows.addWidget(style.separator(self.controls))
         self.open_anki = SwitchRow(S.OPEN_ANKI, S.OPEN_ANKI_LINE, S.OPEN_ANKI_TIP, self.controls)
@@ -1673,26 +1806,58 @@ class CardsPage(_Page):
         self.dot = Dot("", self)
         self.dot.setFixedWidth(_px(14))
         state.addWidget(self.dot, 0, Qt.AlignmentFlag.AlignTop)
+        # the words take the row's whole width and wrap (a fix's sentence and its steps run long: they were squeezed
+        # beside the buttons into one line's height, Sonic's first try); the buttons go under them; steps by hand
+        # (a fix that leads with the update, or ends in a file to pick) go last, the path on its own line, copyable
         words = QVBoxLayout()
         words.setSpacing(_px(2))
-        head = QHBoxLayout()
-        head.setSpacing(_px(10))
-        self.name = _label("wizlabel", S.MINER_LOOKING, self)
-        head.addWidget(self.name)
+        self.head = QHBoxLayout()
+        self.head.setSpacing(_px(10))
+        self.name = _label("wizlabel", S.MINER_LOOKING, self, wrap=True)
+        self.head.addWidget(self.name, 1)
         self.rec = _label("wizrec", S.RECOMMENDED, self)
-        head.addWidget(self.rec)
-        head.addStretch(1)
-        words.addLayout(head)
+        self.head.addWidget(self.rec)
+        self.head.addStretch(0)
+        words.addLayout(self.head)
         self.sub = _label("wizsub", "", self, wrap=True)
         words.addWidget(self.sub)
-        state.addLayout(words, 1)
-        self.btn_star = _button(f"{S.STAR}  {S.STAR_ASK} {S.STAR_LINK}", S.STAR_TIP, self.wiz.open_star, self,
+        self.acts = QWidget(self)                         # the buttons, wrapping to a second line when narrow
+        acts_box = QVBoxLayout(self.acts)
+        acts_box.setContentsMargins(0, _px(6), 0, 0)
+        acts = FlowLayout(None, _px(12))
+        acts_box.addLayout(acts)
+        self.btn_install = _button(S.INSTALL, S.INSTALL_TIP, self.wiz.install_miner, self.acts)
+        acts.addWidget(self.btn_install)
+        self.btn_check = _button(S.CHECK_AGAIN, S.MINER_CHECK_TIP, self.wiz.look_miner, self.acts)
+        acts.addWidget(self.btn_check)
+        self.btn_star = _button(f"{S.STAR}  {S.STAR_ASK} {S.STAR_LINK}", S.STAR_TIP, self.wiz.open_star, self.acts,
                                 name="wizstar")
-        state.addWidget(self.btn_star, 0, Qt.AlignmentFlag.AlignVCenter)
-        self.btn_install = _button(S.INSTALL, S.INSTALL_TIP, self.wiz.install_miner, self)
-        state.addWidget(self.btn_install, 0, Qt.AlignmentFlag.AlignVCenter)
-        self.btn_check = _button(S.CHECK_AGAIN, S.MINER_CHECK_TIP, self.wiz.look_miner, self)
-        state.addWidget(self.btn_check, 0, Qt.AlignmentFlag.AlignVCenter)
+        acts.addWidget(self.btn_star)
+        words.addWidget(self.acts)
+        self.steps = _label("wizsub", "", self, wrap=True)
+        self.steps.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.steps.setContentsMargins(0, _px(10), 0, 0)
+        self.steps.setVisible(False)
+        words.addWidget(self.steps)
+        path_row = QHBoxLayout()
+        path_row.setContentsMargins(0, _px(4), 0, 0)
+        path_row.setSpacing(_px(10))
+        # the path whole, wrapping at its backslashes; never mouse-selected (the breaks drawn there would be copied
+        # with it): *Copy path* copies it as it is
+        self.path = _label("wizpath", "", self, wrap=True)
+        self.path.setAccessibleName(S.PATH_NAME)
+        self.path.setToolTip(S.PATH_NAME)
+        self.path_text = ""
+        f = self.path.font()
+        f.setFamilies(list(theme.path_font_families(wiz.language)))           # a path's ¥ is a backslash again
+        self.path.setFont(f)
+        self.path.setVisible(False)
+        path_row.addWidget(self.path, 1)
+        self.btn_copy = _button(S.COPY_PATH, S.COPY_PATH_TIP, self._copy_path, self)
+        self.btn_copy.setVisible(False)
+        path_row.addWidget(self.btn_copy, 0, Qt.AlignmentFlag.AlignTop)
+        words.addLayout(path_row)
+        state.addLayout(words, 1)
         self.make = Switch(S.MINER_READY, S.MINER_READY_TIP, self)
         state.addWidget(self.make, 0, Qt.AlignmentFlag.AlignVCenter)
         self.box.addLayout(state)
@@ -1786,29 +1951,52 @@ class CardsPage(_Page):
             name = (fix or {}).get("say") or S.MINER_MISSING
             sub = (fix or {}).get("do") or ""
             dot = "warn"
-        _set_text(self.name, name)
-        _set_text(self.sub, sub)
-        _show(self.sub, bool(sub))
+        update = bool((fix or {}).get("update")) and not ready      # before 3.7: the update first (option A)
+        sub, path = _split_path(sub)
+        by_hand = update or bool(path)                    # the steps go under the buttons, the path on its own line
+        if update:
+            name = S.MINER_UPDATE_FIRST
+            sub = f"{S.MINER_BY_HAND}\n{sub}" if sub else ""
+        _set_text(self.name, _breakable(name))            # (neither is selected: a path in them may break)
+        _set_text(self.sub, "" if by_hand else _breakable(sub))
+        _show(self.sub, bool(sub) and not by_hand)
+        _set_text(self.steps, sub if by_hand else "")
+        _show(self.steps, bool(sub) and by_hand)
+        self.path_text = path
+        _set_text(self.path, _breakable(path))
+        self.path.setAccessibleDescription(path)          # a reader hears the path, not its break marks
+        _show(self.path, bool(path))
+        _show(self.btn_copy, bool(path))
+        self.head.setStretchFactor(self.name, 0 if ready else 1)     # *Recommended* beside the name, not far right
         self.dot.set_state(dot, S.MINER_FIX_TIP if dot == "warn" else "")
         _show(self.rec, ready)
         _show(self.make, ready)                           # absent unless Anki Miner is ready (WZ-4)
         _show(self.btn_star, look is not None and not ready)
         _show(self.star_quiet, ready)                     # the star line stays, quieter, once it's ready
-        _show(self.btn_install, state in ("missing", "too-old"))
-        text, tip = (S.UPDATE_MINER, S.UPDATE_MINER_TIP) if state == "too-old" else (S.INSTALL, S.INSTALL_TIP)
+        _show(self.btn_install, state in ("missing", "too-old") or update)
+        older = state == "too-old" or update
+        text, tip = (S.UPDATE_MINER, S.UPDATE_MINER_TIP) if older else (S.INSTALL, S.INSTALL_TIP)
         if self.btn_install.text() != text or self.btn_install.toolTip() != tip:      # only what changed (S19)
             self.btn_install.setText(text)
             self.btn_install.setToolTip(tip)
             self.btn_install.setAccessibleName(text)
         _show(self.btn_check, look is not None and not ready and (state != "missing" or self.wiz.install_opened))
+        _show(self.acts, any(not b.isHidden() for b in (self.btn_install, self.btn_check, self.btn_star)))
         dots = (look or {}).get("dots") or []
         for i, d in enumerate(self.dots):
             _name, st, tip = dots[i] if i < len(dots) else (None, "off", "")
             d.set_state(st, tip or S.DOT_NAME.format(name=d.name, state=S.DOT_STATE.get(st, S.DOT_STATE["off"])))
         self.wiz.paint_footer()
 
+    def _copy_path(self):
+        QApplication.clipboard().setText(self.path_text)
+        self.wiz.say(S.PATH_COPIED)
+
     def language_changed(self, language):
         self.picture.set_language(language)
+        f = self.path.font()
+        f.setFamilies(list(theme.path_font_families(language)))
+        self.path.setFont(f)
         self.look = None
         self._paint(None)
 
@@ -1839,7 +2027,7 @@ class LevelPage(_Page):
             col.setSpacing(0)
             big = _label("wizbig", S.NONE_YET, self)
             col.addWidget(big)
-            col.addWidget(_label("wizbigsub", sub, self))
+            col.addWidget(_label("wizbigsub", sub, self, wrap=True))
             numbers.addLayout(col)
             self.big[key] = big
         numbers.addStretch(1)
@@ -1847,7 +2035,7 @@ class LevelPage(_Page):
         self.numbers_part = QWidget(self)
         self.numbers_part.setLayout(numbers)
         self.box.addWidget(self.numbers_part)
-        self.counting = _label("wizsub", S.COUNTING, self)
+        self.counting = _label("wizsub", S.COUNTING, self, wrap=True)
         self.box.addWidget(self.counting)
         self.box.addStretch(1)
         self.numbers = None
@@ -2081,22 +2269,23 @@ class SetupWizard(QWidget):
         self.stack = QStackedWidget(self)
         self.pages = [LanguagePage(self), KnownPage(self), ShowsPage(self), OrderPage(self), CardsPage(self),
                       LevelPage(self)]
-        for page in self.pages:
-            self.stack.addWidget(page)
+        for page in self.pages:                           # a page taller than the window scrolls, never squeezed
+            self.stack.addWidget(_scrolled(page))
         middle.addWidget(self.stack, 1)
         middle.addSpacing(_px(70))
         root.addLayout(middle, 1)
         foot = style.styled(QWidget(self), "wizfoot")
-        foot.setFixedHeight(_px(66))
+        foot.setMinimumHeight(_px(66))                    # (taller only for a line that wraps to a third line)
         row = QHBoxLayout(foot)
         row.setContentsMargins(_px(36), 0, _px(28), 0)
         row.setSpacing(_px(14))
         self.btn_back = _button(S.BACK, S.BACK_TIP, self.back, foot, name="wizquiet")
         row.addWidget(self.btn_back)
-        row.addStretch(1)
-        self.say_line = _label("wizsay", "", foot)
+        row.addStretch(0)                                 # (the line, when shown, takes the room: it wraps there)
+        self.say_line = _label("wizsay", "", foot, wrap=True)      # a long line wraps, never pushes or is cut
+        self.say_line.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.say_line.setVisible(False)
-        row.addWidget(self.say_line)
+        row.addWidget(self.say_line, 1)
         self.btn_skip = _button(S.SKIP, S.SKIP_TIP, lambda: self._pressed_through(self.btn_skip, self.skip), foot,
                                 name="wizquiet")
         row.addWidget(self.btn_skip)
@@ -2134,7 +2323,7 @@ class SetupWizard(QWidget):
         self._fresh.clear()
 
     def page_painted(self, page):
-        if page is self.stack.currentWidget():
+        if page is self.pages[self.index]:
             self._painted = True
 
     def _pressed_through(self, button, act):
@@ -2172,7 +2361,8 @@ class SetupWizard(QWidget):
 
     def say(self, text):
         text = text or ""
-        _set_text(self.say_line, text)
+        _set_text(self.say_line, _breakable(text))
+        self.say_line.setAccessibleName(text)             # a reader hears the words, not the break marks
         _show(self.say_line, bool(text))
 
     # --- moving between pages ------------------------------------------------------------------------------------- #

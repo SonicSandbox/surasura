@@ -460,7 +460,7 @@ def test_shows_lists_the_library_with_paths_in_a_backslash_font_and_covers_on_by
     go_to(wiz, "shows")
     page = wiz.page
     assert wait_until(lambda: page.row_paints == 1)
-    texts = [w.text() for w in page.rows_part.findChildren(W.QLabel)]
+    texts = [w.text().replace("​", "") for w in page.rows_part.findChildren(W.QLabel)]   # (a path may break)
     assert "星空ダイナー" in texts and "12 episodes · E:\\Shows\\Hoshizora Diner" in texts and \
         "a book · E:\\Books\\yoru-no-toshokan.epub" in texts
     line = next(w for w in page.rows_part.findChildren(W.QLabel) if w.text().startswith("24 episodes"))
@@ -557,7 +557,7 @@ def test_a_rows_kind_names_its_count_a_book_in_parts_and_files_without_a_title(m
     go_to(wiz, "shows")
     page = wiz.page
     assert wait_until(lambda: page.row_paints == 1)
-    texts = [w.text() for w in page.rows_part.findChildren(W.QLabel)]
+    texts = [w.text().replace("​", "") for w in page.rows_part.findChildren(W.QLabel)]   # (a path may break)
     assert r"a book · 12 parts · E:\Books\Yoru" in texts
     assert r"3 videos · E:\Videos\Clips" in texts and r"2 files · E:\Downloads" in texts
 

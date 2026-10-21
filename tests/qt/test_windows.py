@@ -166,6 +166,10 @@ def test_a_door_shows_only_while_its_rule_and_its_module_say_so(main, monkeypatc
                             lambda s: None, "no_such_module_w34")
     present = windows.Opener("koe", "Koe", "A module that is there", lambda s, lang: True, lambda s: None, "junban")
     monkeypatch.setattr(windows, "OPENERS", windows.OPENERS + [probe, absent, present])
+    # Looked for afresh: an earlier test's look may still be in `_LOOKING` (its window closed before the worker
+    # answered), and this one would then never ask for its modules (GitHub's core shard, 2026-10-20).
+    monkeypatch.setattr(windows, "_FOUND", {})
+    monkeypatch.setattr(windows, "_LOOKING", set())
     page = main.page_widgets["settings"]
     row = windows.launchers(main, page)
     assert row.buttons["probe"].isHidden() and row.buttons["ghost"].isHidden()

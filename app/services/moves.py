@@ -65,8 +65,9 @@ MODE_RECHECK_S = 2.0            # idle, the thread asks the store's mode this of
 JOURNAL_VERSION = 1
 JOURNAL_TRIES = 10              # a journal write Windows refuses (the file held a moment) is tried this many times
 JOURNALLED = ("move", "nudge", "set_tier", "finish", "set_watched",
-              "place", "put_back", "import_finished", "relink", "its_new", "link_video", "remove", "restore", "pin",
-              "keep_cards", "ask_mining", "split", "join", "set_media_type", "set_cover", "set_options")
+              "place", "put_back", "import_finished", "relink", "its_new", "link_video", "remove", "skip_folder",
+              "restore", "pin", "keep_cards", "ask_mining", "split", "join", "set_media_type", "set_cover",
+              "set_options")
 #   an undo needs its Change: never journalled; nor an Explorer drop (`insert_at`: no ids yet). Its files are copied into
 #   the content folder at once, on the copier's thread — a busy store or a drag never holds the copy back, and the copy
 #   never holds a move back (G1) — so a quit or a crash before it lands leaves them whole in the folder (AD-2; since SRC
@@ -368,6 +369,15 @@ class Writer:
         the files back if anything fails. Undo puts the files back (never over a
         file: a taken name comes back as `name_1.ext`, named in a note) and the rows where they stood."""
         return self._put({"op": "remove", "ids": list(ids), "label": label})
+
+    def skip_folder(self, path, label=None):
+        """*Never read this folder* (K6): `Store.skip_folder` — the folder's row, and the items whose every origin lies
+        under it removed as *Remove…* removes them (their copies to the data folder's trash, under the store's write
+        lock; nothing in the learner's own folders is touched), one change: Undo puts them back and reads the folder
+        again. Refused (`NotASource`: outside every source, a source itself) → `failed`'s note, nothing written.
+        Journalled as Remove is (its copies' trash moves): a crash before it lands replays it at the next start, one
+        that landed before the crash is let go quietly (`_changed_since`)."""
+        return self._put({"op": "skip_folder", "ids": [], "path": os.fspath(path), "label": label})
 
     def restore(self, trash_ids, label=None):
         """Put back from the trash (`Store.restore` by trash ids, the files first, as Undo of a remove does). Undo sends
@@ -798,6 +808,8 @@ class Writer:
                 change, note = self._insert(store, cmd)
             elif op in ("remove", "restore"):
                 change = self._remove(store, cmd) if op == "remove" else self._restore(store, cmd)
+            elif op == "skip_folder":
+                change = self._skip_folder(store, cmd)
             elif op == "register":                  # --- W3.2 B
                 change = self._register(store, cmd)
             else:
@@ -917,6 +929,29 @@ class Writer:
                         trashed[item_id] = to
                         moved.append((_full(store, to), _full(store, row["rel_path"])))
                 return store.remove(cmd["ids"], trashed)
+        except BaseException:
+            _move_back(moved)
+            raise
+
+    def _skip_folder(self, store, cmd):
+        """K6: under the store's write lock, the refusal asked first (no file moves for a refused folder), then each
+        item's copy under the folder to the trash, as `_remove` does, then `Store.skip_folder` in the same transaction;
+        the files back where they were if anything fails."""
+        lib = _ls()
+        moved = []
+        try:
+            with store._writing():
+                reason = store.skip_refused(cmd["path"])
+                if reason:
+                    raise lib.NotASource(reason)
+                trashed = {}
+                for item_id in store.items_under(cmd["path"]):
+                    row = store.item(item_id)
+                    to = _trash(lib, store, row["rel_path"]) if row is not None else None
+                    if to:
+                        trashed[item_id] = to
+                        moved.append((_full(store, to), _full(store, row["rel_path"])))
+                return store.skip_folder(cmd["path"], trashed)
         except BaseException:
             _move_back(moved)
             raise
@@ -1446,6 +1481,8 @@ class Writer:
                 return True
         if cmd["op"] == "remove" and _removed(store, cmd["ids"]):
             return "done"                           # W3.2 H (C3): its rows in the trash already, as it leaves them
+        if cmd["op"] == "skip_folder" and store.skip_refused(cmd["path"]) == _ls().SKIP_ALREADY:
+            return "done"                           # K6: the folder (or one holding it) skipped already, as it leaves
         seen = cmd.get("seen")
         if seen is not None:
             now = store.check([i for i, _v in seen]).items      # `changed_in` is never NULL: None is gone
@@ -1493,8 +1530,8 @@ def _refused(change, out):
         return True
     if change.kind in ("finish", "put_back_finished") or (change.kind == "set_tier" and change.status):
         return not out.items and _skips(out) - len(change.items) >= len(change.status)
-    if change.kind == "remove":
-        return not out.restored                     # every row put back meanwhile
+    if change.kind == "remove":                     # every row put back meanwhile (a skip's folder row: read again)
+        return not out.restored and not getattr(out, "folder_dropped", False)
     if change.kind == "restore":
         return not out.trash_ids                    # every row it put back changed since
     if change.kind == "import_finished":

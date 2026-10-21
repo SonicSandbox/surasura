@@ -637,6 +637,13 @@ SOURCES_LISTING = "Looking at your folders…"
 SOURCES_NONE = "No folders yet: Surasura reads only what you add"
 SOURCES_STOPPED = "Stopped reading {path}: its {n:,} episodes stay in your library"
 SOURCES_STOPPED_ONE = "Stopped reading {path}: its episode stays in your library"
+# K6: the folders inside them Surasura never reads (⋯ › *Never read this folder*, setup's *Skip a folder…*)
+SOURCES_SKIPPED = "Skipped folders"
+SOURCES_READ_AGAIN = "Read again"
+SOURCES_READ_AGAIN_NAME = "Read {path} again"
+SOURCES_READ_AGAIN_TIP = ("Read {path} again\nIts files come back into your library at once; a show you haven't had "
+                          "yet waits in New arrivals")
+SOURCES_READ_AGAIN_DONE = "{path} is read again: its files come back into your library"
 
 # --- K7: *Start a fresh library…* (settings_sources.py: FreshRow; the store's `start_fresh`) ------------------------ #
 FRESH_OPEN = "Start a fresh library…"

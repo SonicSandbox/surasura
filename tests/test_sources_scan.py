@@ -61,6 +61,14 @@ def _text(language, n, extra=""):
         return f.read() + f"\n{n}{extra}\n"
 
 
+def _book_text(language):
+    """A loose `.txt` worth reading (T2-B4: BOOK_MIN_CHARS characters of the script or more): the app's own sample."""
+    path = os.path.join(os.path.dirname(RESOURCES), os.pardir, "samples", language, "HighPriority",
+                        "H_priority_sample_1.txt")
+    with open(path, encoding="utf-8-sig") as f:
+        return f.read()
+
+
 def _write(path, text, age=60):
     """A file in a source folder, its time `age` seconds back (settled: older than the half-written wait)."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -176,7 +184,7 @@ def test_a_first_scan_copies_each_episode_into_library_by_show_and_lands_it_in_c
     src = _drive("driveA")
     for n in (2, 1, 10):
         _write(os.path.join(src, a, f"{a} - {n:02d}.srt"), _text(language, n))
-    _write(os.path.join(src, b, "notes.txt"), _text(language, 3))
+    _write(os.path.join(src, b, "notes.txt"), _book_text(language))
     calls = []
     with store:
         root = store.add_source(src)
@@ -2664,7 +2672,7 @@ def test_after_the_data_folder_is_lost_the_next_look_copies_each_live_item_back_
         root = store.add_source(src)
         ids = _look(store, language, root, first=True)["ids"]
         assert len(ids) == 4
-        later = _write(os.path.join(src, b, "notes.txt"), _text(language, 3))
+        later = _write(os.path.join(src, b, f"{b} - 01.srt"), _text(language, 3))   # (a loose .txt this short: K6 skips it)
         _settle(src)
         assert _look(store, language, root, full=True)["added"] == 1                   # New arrivals (SRC-2)
         store.finish([ids[0]])
@@ -3097,3 +3105,4 @@ def test_of_one_episodes_subtitles_listed_together_the_order_picks_the_one_taken
         _write(os.path.join(folder, f"[Third] {show} - 05 (720p).{tag}.srt"), _text(language, 5, "！"))
         later = _look(store, language, root)
         assert (later["added"], later["attached"]) == (0, 0) and _items(store) == 1
+

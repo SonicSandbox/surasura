@@ -632,7 +632,8 @@ class RowsModel(QAbstractListModel):
     def set_entries(self, entries):
         """-> "same" (payloads swapped in place: the changed rows repaint, `self.changed`), "moved" (the same rows in
         another order, every place as tall as before: swapped in place too, `self.changed` the span the move touched —
-        no reset, no relayout: W3.1a S3, a drop), "relayout" (same keys, another height somewhere) or "reset"."""
+        no reset, no relayout: W3.1a S3, a drop), "relayout" (same keys, another height somewhere — or a move whose lines
+        moved inside its span, C3: swapped in place, `self.changed` its span) or "reset"."""
         keys = [self.key_of(e) for e in entries]
         if keys == self.keys and entries:
             old = self.entries
@@ -643,9 +644,9 @@ class RowsModel(QAbstractListModel):
             return "same" if shapes else "relayout"
         moved = self._moved_span(keys, entries)
         if moved is not None:
-            self.changed, self.before = moved, self.entries
+            (self.changed, relaid), self.before = moved, self.entries
             self.entries, self.keys = list(entries), keys
-            return "moved"
+            return "relayout" if relaid else "moved"
         # S19's written skip: a reset (a row added or gone, even below the screen) repaints the screen's rows — Qt's
         # QListView relays out and repaints its viewport on any reset or insert — but from their kept pixmaps (no row
         # drawn afresh: `_same_face`); an insert that repaints nothing on screen waits for W3.1's uniform rows (IK-38)
@@ -662,7 +663,8 @@ class RowsModel(QAbstractListModel):
         """A reorder that keeps every place's height: the same rows (by their own key — Up Next's row coming down is
         the same row), each place the same shape as before (`shape_of`: kind, lines, open) — then the places whose row
         changed, first to last (what a drop moved: the rows between its two ends shift by one), and any other place
-        whose entry changed as a "same" refresh would list it. Else None."""
+        whose entry changed as a "same" refresh would list it, and whether lines moved (C3, R3-S6: a drop across the
+        top-20 or Soon line moves that line inside the span — the places relaid out, never a reset). Else None."""
         old = self.keys
         if len(keys) != len(old) or not keys:
             return None
@@ -673,10 +675,17 @@ class RowsModel(QAbstractListModel):
         if sorted(k[1] for k in old[lo:hi + 1]) != sorted(k[1] for k in keys[lo:hi + 1]):
             return None                             # a row came or went: not a move
         before = self.entries
-        if any(self.shape_of(before[i]) != self.shape_of(entries[i]) for i in range(len(entries))):
-            return None
+        relaid = False
+        for i in range(len(entries)):
+            a, b = self.shape_of(before[i]), self.shape_of(entries[i])
+            if a != b:                              # (kind, lines, open, episodes): only the lines may differ, inside
+                if not lo <= i <= hi or a[0] != b[0] or a[2:] != b[2:]:
+                    return None
+                relaid = True
+        if relaid and sum(len(e[2]) for e in before[lo:hi + 1]) != sum(len(e[2]) for e in entries[lo:hi + 1]):
+            return None                             # a line came or went: not lines moving
         return [i for i, (a, b) in enumerate(zip(before, entries))
-                if lo <= i <= hi or a[1] is not b[1] or a[2] != b[2]]
+                if lo <= i <= hi or a[1] is not b[1] or a[2] != b[2]], relaid
 
 
 # --- the delegate: geometry, painting, hit-testing ----------------------------------------------------------------- #
@@ -2505,9 +2514,10 @@ class RowsView(QListView):
         anchor = self._anchor()
         before = model.entries
         held = self._held_keys(before)
+        keys = model.keys
         how = model.set_entries(entries)
-        if how == "moved":                           # AD-5: the keyboard's row and the hand's stay on their rows
-            self._follow_rows(*held)
+        if how == "moved" or how == "relayout" and model.keys is not keys:     # AD-5 (C3: lines moved too): the
+            self._follow_rows(*held)                 # keyboard's row and the hand's stay on their rows
         if how in ("same", "moved"):                 # a move keeps every place's height: no relayout (W3.1a S3)
             self.delegate.same_heights(before, model.entries)     # equal shapes: equal heights (review D-2)
             lo, hi = self._near()
@@ -2523,6 +2533,11 @@ class RowsView(QListView):
                 for i in looks:                          # only the rows that look different (dirty rows, never all)
                     self.update(model.index(i, 0))
         elif how == "relayout":
+            # S19's written skip: a relayout (a row opened, or C3's lines moving inside a drop's span) repaints the whole
+            # viewport — Qt's QListView repaints it on its delayed layout (`doItemsLayout`) whatever is asked here, so a
+            # narrower update would change nothing; every row comes from its kept picture (`_same_face`). Only lines that
+            # take no row height (a groove drawn in the gap) would let the span alone repaint: a look change, W4.1's.
+            # The scroll value is kept, never the top row's anchor (IKB-8): a drop moved that row a place, as it painted.
             self.looks_changed = True
             self._rest()
             self.relayout()
@@ -2624,9 +2639,12 @@ class RowsView(QListView):
         if not n:
             self.delegate.keep_only(())                  # an emptied list lets its pixmaps go
             return
+        if self.parting is not None:                 # C6: a drag parts the rows: nothing painted ahead under it, again
+            self._rest()                             # once the list rests after it
+            return
         if not self.isVisible():
             like = self.warm_like
-            if like is not None and like.isVisible() and (like._warm.isActive() or
+            if like is not None and like.isVisible() and (like._warm.isActive() or like.parting is not None or
                                                           time.monotonic() - like._moved < WARM_IDLE_MS / 1000):
                 self._rest()                         # the shown list first: it is moving, or warming its own rows (B-3)
                 return
@@ -2809,12 +2827,14 @@ class RowsView(QListView):
         if self._key_rows[0] is not keys:
             self._key_rows = (keys, {k[1]: i for i, k in enumerate(keys) if k[0] in (HERO, ROW)})
         row = self._key_rows[1].get(key)
-        if self.parting is not None:                 # a drag parts the rows: a row may stand in another's place
-            self.viewport().update()
-        elif row is not None:
+        if row is not None:
             entries = self.model().entries
-            for r in ((row - 1, row, row + 1) if field != "fade" else (row,)):
-                if 0 <= r < len(entries) and (r == row or entries[r][0] == ROW):    # Up Next never eases apart
+            near = [r for r in ((row - 1, row, row + 1) if field != "fade" else (row,))
+                    if 0 <= r < len(entries) and (r == row or entries[r][0] == ROW)]    # Up Next never eases apart
+            if self.parting is not None:             # a drag parts the rows: each where the parting paints it (Gap 2)
+                self.parting.repaint_rows(near)
+            else:
+                for r in near:
                     self.update(self.model().index(r, 0))
         if not t.on and not (t.lift or t.nb or t.fade):
             self._touch.pop(key, None)               # back at rest: nothing kept

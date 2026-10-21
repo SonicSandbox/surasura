@@ -1100,7 +1100,8 @@ class LevelSlider(_Control):
             self.update()
         self._anims["lift"] = motion.clock().animate(M["slider-lift"], lift, kind="move", points="linear", owner=self)
         self._last = motion.clock().now()
-        follow = motion.clock().animate(M["vein-travel"], self._follow, kind="loop", repeat=True, owner=self)
+        follow = motion.clock().animate(M["vein-travel"], self._follow, kind="loop", repeat=True, owner=self,
+                                        on_end=self._followed)
         if follow.alive:
             self._anims["follow"] = follow
         else:
@@ -1124,6 +1125,12 @@ class LevelSlider(_Control):
             self._t += (self._goal() - self._t) * min(1.0, dt * M["slider-follow"])
             self.update()
 
+    def _followed(self):
+        """The follow loop stopped while the gem is held (Reduced motion turned on mid-drag): at the hand now."""
+        if self._held:
+            self._t = self._goal()
+            self.update()
+
     def _move(self, x):
         self._hand = self._t_of(x)
         if "follow" not in self._anims or not self._anims["follow"].alive:
@@ -1136,8 +1143,11 @@ class LevelSlider(_Control):
         self._settle(self._nearest(self._hand))
 
     def _settle(self, target):
-        """The gem glides over its chamber (if it isn't there) and falls in — 85 ms, falling faster as it goes, never
-        rising back — and stops hard; then the band is chosen."""
+        """The band is chosen at the release (Gap 2: the choice and its save at the action, never after the motion);
+        then the gem glides over its chamber (if it isn't there) and falls in — 85 ms, falling faster as it goes,
+        never rising back — and stops hard: a look only."""
+        was, self._index = self._index, target
+        self._describe()
         t0, l0, tt = self._t, self._lift, self._at_t(target)
         glide = M["slider-glide"] if abs(tt - t0) * self._channel()[1] > 0.5 else 0
         fall = M["slider-fall"] if l0 > 0 else 0
@@ -1157,16 +1167,15 @@ class LevelSlider(_Control):
         def seated():
             self._anims.pop("settle", None)
             self._t, self._lift = tt, 0.0
-            was, self._index = self._index, target
-            self._describe()
             self.update()
-            if target != was:
-                self.changed.emit(self.value())
         if total <= 0:
             seated()
-            return
-        self._anims["settle"] = motion.clock().animate(total, frame, seated, kind="move", points="linear", owner=self,
-                                                       on_end=seated)
+        else:
+            self._anims["settle"] = motion.clock().animate(total, frame, seated, kind="move", points="linear",
+                                                           owner=self, on_end=seated)
+        self.update()                                # the chosen name lit now
+        if target != was:                            # (after the settle starts: a shown value waits for it, `busy`)
+            self.changed.emit(self.value())
 
     def _key_to(self, i):
         i = max(0, min(len(self._bands) - 1, i))

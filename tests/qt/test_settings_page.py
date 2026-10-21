@@ -323,6 +323,40 @@ def test_the_level_slider_writes_band_and_automatic_off_and_automatic_alone_writ
     assert store.calls[-1] == ({"logic.selection.auto": True}, None)
 
 
+def test_gap2_a_level_dragged_by_hand_is_saved_at_the_release_not_after_the_gems_settle(qapp):
+    """Gap 2 (M4.1 P3): the band's write waited for the gem's glide and fall (up to ~205 ms after the release). Now
+    the service has it at the release; the gem settles after, a look only."""
+    from PyQt6.QtCore import QEvent, QPointF
+    from PyQt6.QtGui import QMouseEvent
+    page, store = make_page(dict(ALL_ON, logic={"selection": {"band": "core", "auto": False}}), "ja")
+    slider = page.rows["level"].controls[0]
+    clock = motion.clock()
+    freeze.set_frozen(False)
+    clock.use_test_time()
+    try:
+        def send(kind, x, buttons):
+            pos = QPointF(x, slider.chamber(0).y())
+            button = Qt.MouseButton.LeftButton if kind != QEvent.Type.MouseMove else Qt.MouseButton.NoButton
+            QApplication.sendEvent(slider, QMouseEvent(kind, pos, QPointF(slider.mapToGlobal(pos.toPoint())), button,
+                                                       buttons, Qt.KeyboardModifier.NoModifier))
+        a, b = slider.chamber(2), slider.chamber(3)
+        x = a.x() + 0.35 * (b.x() - a.x())
+        send(QEvent.Type.MouseButtonPress, slider.chamber(0).x(), Qt.MouseButton.LeftButton)
+        clock.advance(200)
+        send(QEvent.Type.MouseMove, x, Qt.MouseButton.LeftButton)
+        clock.advance(300)
+        calls = len(store.calls)
+        send(QEvent.Type.MouseButtonRelease, x, Qt.MouseButton.NoButton)
+        band = slider.value()
+        assert band != "core" and slider.busy()                        # chosen, the gem still settling
+        assert store.calls[calls:] == [({"logic.selection.band": band}, None)]     # (Automatic already off)
+        clock.advance(400)
+        assert len(store.calls) == calls + 1                           # the settle writes nothing more
+    finally:
+        clock.use_real_time()
+        freeze.set_frozen(None)
+
+
 # --- a choice never moves the page (brief §2; S7: 100 %, 150 %, 175 %, text size L, a language switch) --------------- #
 def never_moves(text_size="M", language="ja"):
     """Every visible control changed with the page scrolled to put it in the middle: its y in the viewport and the

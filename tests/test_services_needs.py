@@ -184,6 +184,26 @@ def test_a_drive_offline_is_one_entry_without_remove_and_remove_all_never_counts
     assert [e.title for e in one if e.kind == needs.OFFLINE] == ["Drive E: is offline — 3 files"]
 
 
+def test_C1_a_reorder_of_current_keeps_the_offline_and_bulk_entries_equal_so_their_cards_stay():
+    """C1 (M4.1 row 4): the offline entry's files (and the bulk answer's) followed Current's order, so every move made
+    a "new" entry and the window built its card again under the style sheet. The same files are the same entry."""
+    spec = [(1, "E-drive/Anime/" + FRIEREN, frieren_eps(1, 2), {}),
+            (2, f"HighPriority/{YUUSHA}", [f"{YUUSHA} 第{n}話.srt" for n in (1, 2)], {0: MISSING}),
+            (3, f"HighPriority/{KUSURI}", [f"{KUSURI} - {n:02d}.srt" for n in (5, 6)], {1: MISSING}),
+            (4, "E-drive/Anime/" + KUSURI, [f"{KUSURI} - {n:02d}.srt" for n in (8, 9)], {})]
+    items = items_of(spec)
+    upside_down = {i: dict(r, ord=-r["ord"]) for i, r in items.items()}       # Current turned upside down
+    before = vr.build(items, WORKS, {"mine_line": 20, "soon_line": None})
+    after = vr.build(upside_down, WORKS, {"mine_line": 20, "soon_line": None})
+    assert [r.work_id for r in after.rows] == [r.work_id for r in reversed(before.rows)]
+    root = needs.Root(path="C:\\Surasura\\data\\ja\\E-drive", rel="E-drive", label="Drive E:")
+    a, b = (needs.entries(v, offline_roots=[root]) for v in (before, after))
+    for kind in (needs.OFFLINE, needs.BULK):
+        assert next(e for e in a if e.kind == kind) == next(e for e in b if e.kind == kind), kind
+    # the shows' cards still follow Current's order (the window moves them; none is built again)
+    assert [e.data["work_id"] for e in b if e.kind == needs.GONE] == [3, 2]
+
+
 def test_an_offline_drive_the_user_kept_leaves_the_page_and_stays_off_it(tmp_path):
     """Its *Keep its words* is answered by its key: the card goes, and a later look never brings it back."""
     view = view_of([(1, "E-drive/Anime/" + FRIEREN, frieren_eps(1, 2), {0: MISSING, 1: MISSING})])

@@ -278,3 +278,30 @@ def test_AD2_4_republish_shows_the_stores_view_again_though_nothing_changed(tmp_
         assert quiet and len(views) == before + 1
     finally:
         reader.stop()
+
+
+def test_M41_B1_republish_with_nothing_new_publishes_the_last_view_again_and_builds_nothing(tmp_path):
+    """The settle's ask once the reader has built since the last write: the same rows built again held Python's lock
+    under the window for 6–23 ms at 20,000 files. The last view, the same object, goes out once more (the window's
+    diff of an unchanged page costs nothing); a change since is built, once."""
+    seed = window_seed.build()
+    reader, views = _started(seed)
+    try:
+        quiet, _ = _quiet(reader, views)
+        assert quiet
+        before, builds = len(views), reader.builds
+        reader.republish()
+        assert _wait(lambda: len(views) == before + 1)
+        assert views[-1][1] is views[-2][1] and reader.builds == builds
+        row = views[-1][1].rows[3]
+        reader.hold()                                                                # a drag, and a sync meanwhile
+        reader.republish()
+        seed.library.commit(items=[{"id": row.episodes[0].id, "watched": 1}])
+        assert _wait(lambda: reader._held_dirty)
+        reader.release()
+        assert _wait(lambda: len(views) == before + 2)
+        assert views[-1][1].rows[3].episodes[0].watched and reader.builds == builds + 1
+        quiet, _ = _quiet(reader, views)
+        assert quiet and len(views) == before + 2                                    # once, not again for the ask
+    finally:
+        reader.stop()

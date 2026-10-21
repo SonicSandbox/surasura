@@ -44,6 +44,7 @@ library store, on a plain thread of its own — never the window's thread.
 
 Qt-free (the import guard): the window reaches it through `app/qt/bridge.py`.
 """
+import bisect
 import gc
 import json
 import os
@@ -63,6 +64,13 @@ CACHE_VERSION = 4                # 2: keyed (store id, epoch, state version, pla
 def cache_path(language):
     from app import path_utils
     return os.path.join(path_utils.get_local_data_path(), f"window_cache_{language}.json")
+
+
+FEW_SORTED = 64                  # a tier with at most this many ids touched: they are put in place, never a full sort
+
+
+def _sort_key(r):
+    return (r.get("ord") or 0.0, r["id"])       # `view_rows._by_tier`'s order
 
 
 def _no_numbers():
@@ -98,6 +106,7 @@ class LibraryReader:
         self._gone_subscribers = []
         self._hold = threading.Event()     # a drag holds the view (E6)
         self._held_dirty = False           # something came in while held: built and published at the release
+        self._republish = False            # the drag's settle asked for the store's view (`republish`)
         self._thread = None
         self._view = None
         # the reader thread's own copy of the library (touched only there)
@@ -110,7 +119,7 @@ class LibraryReader:
         self._mode = None
         self.row_cache = view_rows.RowCache()       # rows kept between builds (the reader's thread only)
         self._tiers, self._pos, self._dirty = None, {}, set()
-        self._moved_in = {}                # tier -> ids that came into it or moved in it since it was last sorted
+        self._moved_in = {}                # tier -> ids that came into it, moved in it or left it since it was last sorted
         self._changed_ids = None
         self._build_changed = None         # ids changed or gone since the last build (None: a full read, all looked at)
         self._build_works = None           # ... and the works (`view_rows.build`'s `changed_works`)
@@ -188,8 +197,9 @@ class LibraryReader:
 
     def republish(self):
         """The window let go of its own order once every write landed: the next look builds and publishes the store's
-        view, changed or not (where the store placed a row otherwise than the window drew it, round 2 AD2-4)."""
-        self._held_dirty = True
+        view, changed or not (where the store placed a row otherwise than the window drew it, round 2 AD2-4): the last
+        one built, the same object, when nothing changed since (M4.1 B1: no build)."""
+        self._republish = True
         self._wake.set()
 
     def start(self):
@@ -278,8 +288,11 @@ class LibraryReader:
         version, numbers = self.numbers()
         held = self._hold.is_set()
         released = self._held_dirty and not held        # the drop: what came in during the drag, built once now
+        again = self._republish and not held            # M4.1 B1: the settle's ask, taken before the store is read
+        if again:
+            self._republish = False
         if h is None:                                   # nothing to read: the last rows stay, under the mode's bar
-            if changed_mode or self._view is None or version != self._numbers_version or released:
+            if changed_mode or self._view is None or version != self._numbers_version or released or again:
                 self._numbers_version = version         # the numbers' own version: a new one empties the row cache
                 if held:
                     self._held_dirty = True
@@ -291,10 +304,12 @@ class LibraryReader:
             estimates_new, self._estimates_new = self._estimates_new, False
         estimates_new = estimates_new or self._connect_moved()      # P4.1 L2: a new Connect feed rebuilds the same way
         dv = h.data_version()
-        cards_due = self._cards_stale and time.monotonic() - self._cards_all_at >= CARDS_ALL_S
+        cards_due = self._cards_stale and not held and time.monotonic() - self._cards_all_at >= CARDS_ALL_S
         if not changed_mode and dv == self._data_version and version == self._numbers_version \
                 and self._view is not None and not self._view.busy and not cards_due and not released \
                 and not estimates_new:                  # W3.2 Q1
+            if again:                                   # M4.1 B1: nothing changed since the last build
+                self._publish(self._view)
             self._flush_cache()
             return
         feed = h.read_feed(self._seen, self._epoch)
@@ -324,6 +339,8 @@ class LibraryReader:
         self._held_dirty = False
         if not changed:                                 # data_version moved with nothing for the window (a checkpoint)
             self.skipped += 1
+            if again:                                   # M4.1 B1
+                self._publish(self._view)
             self._flush_cache()                         # a look with nothing new: as quiet as one that read nothing
             return
         view = self._build(numbers, mode, reason, rows_known=True)
@@ -361,7 +378,8 @@ class LibraryReader:
             if owed or self._cache_due is not None or self._recheck or self._held_dirty or \
                     (view is not None and view.busy):
                 timeout = min(timeout, self.poll)       # a sync, a read or the cache's quiet look to try again
-            if self._cards_stale:                       # a card made elsewhere moves no row: asked again when due
+            if self._cards_stale and not self._hold.is_set():   # a card made elsewhere moves no row: asked again when
+                #                                                 due (M4.1 B2: after a drag, which `release` wakes)
                 timeout = min(timeout, max(0.0, self._cards_all_at + CARDS_ALL_S - time.monotonic()))
             if self._mode is not None and self._mode[0] != "store":
                 timeout = max(self.poll, min(timeout, MODE_RECHECK_S))
@@ -489,12 +507,14 @@ class LibraryReader:
     def _card_counts(self, h):
         """{item_id: cards} for the items whose rows show cards (Current, Finished). A card made for an item doesn't
         move its row in the feed (`record_made`), so every item is asked again at most every CARDS_ALL_S; between, only
-        the items the feed changed. The same dict object comes back when nothing changed (the row cache reads that)."""
+        the items the feed changed — and not while a drag holds the view (nothing is built then; asked at the next look
+        after it). The same dict object comes back when nothing changed (the row cache reads that)."""
         if not hasattr(h, "cards_of"):
             return {}
         now = time.monotonic()
-        if self._changed_ids is None or now - self._cards_all_at >= CARDS_ALL_S:
-            ids = [i for i, r in self._items.items() if r.get("tier") in ("now", "soon", "graduated")]
+        if self._changed_ids is None or (now - self._cards_all_at >= CARDS_ALL_S and not self._hold.is_set()):
+            tiers = self._sorted_tiers()                # M4.1 B2: the three tiers' ids, not a scan of every item
+            ids = [r["id"] for t in ("now", "soon", "graduated") for r in tiers.get(t, ())]
             self._cards_all_at = now
             self._cards_stale = False
             got = h.cards_of(ids)
@@ -534,6 +554,7 @@ class LibraryReader:
                     self._moved_in.setdefault(r.get("tier"), set()).add(r["id"])
                     if old is not None:
                         self._dirty.add(old.get("tier"))
+                        self._moved_in.setdefault(old.get("tier"), set()).add(r["id"])     # M4.1 B3: left it
                 else:                                   # the same place: swapped in, no sort
                     at = self._pos.get(r["id"])
                     if at is not None:
@@ -554,6 +575,7 @@ class LibraryReader:
                     old = self._items.pop(ident, None)
                     if old is not None and self._tiers is not None:
                         self._dirty.add(old.get("tier"))
+                        self._moved_in.setdefault(old.get("tier"), set()).add(ident)       # M4.1 B3
                 else:
                     self._works.pop(ident, None)
             self._changed_ids = changed
@@ -567,18 +589,32 @@ class LibraryReader:
             self._dirty, self._moved_in = set(), {}
             self._pos = {r["id"]: (t, i) for t, rows in self._tiers.items() for i, r in enumerate(rows)}
         elif self._dirty:
+            items = self._items
             for t in self._dirty:
                 if t is None:
                     continue
-                # the tier's own items and those that came into it, not all 20,000 (speed round 5: an arrival's
-                # sort walked every item on the reader's thread); one gone or moved out drops out here
-                ids = {r["id"] for r in self._tiers.get(t, ())} | self._moved_in.pop(t, set())
-                items = self._items
-                rows = [items[i] for i in ids if i in items and items[i].get("tier") == t]
-                rows.sort(key=lambda r: (r.get("ord") or 0.0, r["id"]))
+                touched, old = self._moved_in.pop(t, set()), self._tiers.get(t)
+                if old is not None and len(touched) <= FEW_SORTED:
+                    # M4.1 B3: a few ids (a menu's move into Goal's ~16,000): taken out, those still in the tier put
+                    # back in place; the rest keep their order (a full sort was up to 28 ms at 20,000 files)
+                    lo = next((k for k, r in enumerate(old) if r["id"] in touched), len(old))
+                    rows = old[:lo] + [r for r in old[lo:] if r["id"] not in touched]
+                    for i in touched:
+                        r = items.get(i)
+                        if r is not None and r.get("tier") == t:
+                            k = bisect.bisect_right(rows, _sort_key(r), key=_sort_key)
+                            rows.insert(k, r)
+                            lo = min(lo, k)
+                else:
+                    # the tier's own items and those that came into it, not all 20,000 (speed round 5: an arrival's
+                    # sort walked every item on the reader's thread); one gone or moved out drops out here
+                    ids = {r["id"] for r in old or ()} | touched
+                    rows = [items[i] for i in ids if i in items and items[i].get("tier") == t]
+                    rows.sort(key=_sort_key)
+                    lo = 0
                 self._tiers[t] = rows
-                for i, r in enumerate(rows):
-                    self._pos[r["id"]] = (t, i)
+                for i in range(lo, len(rows)):
+                    self._pos[rows[i]["id"]] = (t, i)
             self._dirty, self._moved_in = set(), {}
         return self._tiers
 

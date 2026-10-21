@@ -172,6 +172,56 @@ def test_a_menu_closed_is_gone_so_the_windows_wiring_walk_never_meets_its_separa
     assert not [x for x in win.findChildren(QAction) if x.isSeparator()]
 
 
+def test_C4_two_opens_make_one_native_window_its_actions_the_entries_and_a_pick_through_it_still_lands(world):
+    """C4 (M4.1 row 4): every ⋯ made a new menu — a new native window, its first show most of the 15–30 ms an open
+    took. The list keeps one, emptied as it hides. What it could break: an open showing the last one's entries, or a
+    pick lost because its action went with the hide."""
+    _seed, win, writer = world()
+    rs = rows_of(win)
+    at = win.mapToGlobal(QPoint(300, 300))
+    first = win.items.menu(rs[5], at)
+    native = int(first.winId())
+    first.close()
+    QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    m = win.items.menu(rs[4], at)
+    assert m is first and int(m.winId()) == native                    # one native window, opened again
+    want = [label for _n, label, _t, _ok in win.moves.menu_entries(rs[4])] +         [e.label for e in win.items.entries(rs[4])]
+    assert [a.text() for a in m.actions() if not a.isSeparator()] == want
+    assert wait_until(m.isVisible, 2)
+    pin = next(a for a in m.actions() if a.text() == strings.ITEM_MENU["pin"][0])
+    m.setActiveAction(pin)
+    QTest.keyClick(m, Qt.Key.Key_Return)                              # the menu hides, then its action triggers
+    assert wait_until(lambda: calls(writer, "pin"), 5)
+    assert calls(writer, "pin")[-1][1] == drag.ids_of(rs[4])
+    assert not m.isVisible() and m.actions() == []                    # closed, it holds nothing
+    assert win.moves.menu(rs[4], at) is m                             # the moves' own ⋯ is the same list's one
+    m.close()
+
+
+def test_IKB10_esc_closes_the_kept_menu_and_it_opens_again_with_the_next_rows_entries(world):
+    """IKB-10 (C4's kept menu): it only hides on a close, so Esc must still close it (every window closes on Esc), it
+    must hold nothing once closed, and the next ⋯ must open the same menu with that row's entries, not the last
+    row's."""
+    _seed, win, writer = world()
+    rs = rows_of(win)
+    at = win.mapToGlobal(QPoint(300, 300))
+    m = win.items.menu(rs[5], at)
+    native = int(m.winId())
+    assert wait_until(m.isVisible, 2)
+    QTest.keyClick(m, Qt.Key.Key_Escape)
+    assert wait_until(lambda: not m.isVisible(), 2)                   # Esc closed it
+    assert m.actions() == []                                          # and nothing of rs[5]'s open is left in it
+    QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    again = win.items.menu(rs[4], at)
+    assert again is m and int(again.winId()) == native               # the same kept menu, its native window kept
+    want = [label for _n, label, _t, _ok in win.moves.menu_entries(rs[4])] + [e.label for e in win.items.entries(rs[4])]
+    assert [a.text() for a in again.actions() if not a.isSeparator()] == want     # fresh: rs[4]'s entries
+    assert wait_until(again.isVisible, 2)
+    QTest.keyClick(again, Qt.Key.Key_Escape)                          # and Esc closes it again, writing nothing
+    assert wait_until(lambda: not again.isVisible(), 2)
+    assert again.actions() == [] and calls(writer) == []
+
+
 def test_the_hovered_ellipsis_of_a_current_row_opens_this_menu(world):
     _seed, win, _w = world()
     lst = lst_of(win)

@@ -405,6 +405,7 @@ MOTION = MappingProxyType({
     "mining-spin": 1200, "footer-pulse": 1400, "generate-bar": 300, "tooltip-delay": 380, "tooltip-again": 60,
     "tooltip-again-within": 500, "fit-debounce": 80, "drag-start-px": 6, "click-swallow-after-drag": 50,
     "auto-scroll-px-per-frame": 12, "auto-scroll-edge": 50, "auto-scroll-dock": 48,
+    "auto-scroll-tick": 16,              # ms between a drag's auto-scroll steps (the hand's, kept under Reduced motion)
     # distances (px) the overlays travel as they open (M2.1; the mock's `pop` −4 px, `dlgin` +10 px)
     "pop-shift": 4, "dialog-rise": 10, "toast-bottom": 48,
 })
@@ -571,6 +572,7 @@ DRAG = MappingProxyType({
     "message-ms": 4000,             # a line said in the footer's slot holds it this long (over the update chip)
     "near": 3,                      # painted neighbours on each side handed to the writer (an anchor gone meanwhile)
     "px-rest": 0.05,                # a px spring rests once this close (L5: its drawn value no longer changes)
+    "ghosts-kept": 4,               # ghosts baked as the pointer rested on a row, kept (C5: the newest rows')
 })
 DRAG_COLOURS = MappingProxyType({
     "placeholder": "#1a2a3a",       # the slot's fill (list-r14m :4330)

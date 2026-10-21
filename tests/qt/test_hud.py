@@ -199,6 +199,14 @@ def test_a_motion_frame_is_counted_with_the_paint_that_follows_it(qapp, window):
         meter.stop()
 
 
+def _unquit(app):
+    """`shell.main` ends with the application quit, and Qt keeps that: every later `QEventLoop.exec()` returned -1 at
+    once (M4.1 P2: the HUD's window tests after this file waited on loops that never ran). An `exec()` ended by `exit()`
+    clears it."""
+    QTimer.singleShot(0, lambda: app.exit(0))
+    app.exec()
+
+
 def test_the_probe_start_runs_main_and_writes_every_phase(qapp, monkeypatch, tmp_path):
     # M2.1 row D: shell.main() with the probe on — the measuring scripts' way in — marks each phase of the start and
     # writes them (a name clash in main() once crashed every measured start before its first frame).
@@ -215,7 +223,11 @@ def test_the_probe_start_runs_main_and_writes_every_phase(qapp, monkeypatch, tmp
     finally:
         sys.excepthook, _ = hook, sys.setswitchinterval(interval)
         hud.MARKS.clear()
+        _unquit(qapp)
     data = json.loads(probe.read_text(encoding="utf-8"))
+    loop = QEventLoop()                                  # the loop runs again after it (the quit cleared)
+    QTimer.singleShot(20, loop.quit)
+    assert loop.exec() == 0
     names = [p["phase"] for p in data["phases"]]
     assert code == 0 and data["first_frame_ms"] is not None
     assert {"qapp", "claimed", "services", "look", "window", "shown", "painted", "flushed"} <= set(names)

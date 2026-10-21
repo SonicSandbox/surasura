@@ -448,6 +448,36 @@ def test_E5_replay_waits_while_the_store_cant_be_written(lib, make_writer, short
     assert lib.ids("goal")[0] == goal[7] and heard2.notes == []
 
 
+def test_E5_a_replay_whose_mode_check_raises_waits_and_keeps_the_journal(lib, make_writer, short_lock_wait):
+    # M4.1 D: a store that can't be written is asked its mode again at the replay; a check that raises there (a probe
+    # that failed) is no answer — the replay waits (the window's `_replay_owed` stays set: it is `not replay()`), the
+    # crash's moves stay in the journal, and the next replay, once the store answers and can be written, lands them.
+    w, heard = make_writer()
+    goal = lib.ids("goal")
+    holder = LockHolder(lib.db)
+    w.move([goal[7]], "goal")
+    assert h.until(lambda: journalled(lib.language))
+    w._abandon()
+    holder.release()
+    ls.mark_damaged(lib.db, "test")
+    w2, heard2 = make_writer()
+    real, asked = w2.opener.check, []
+
+    def check():
+        asked.append(threading.current_thread())
+        raise OSError("the probe failed")
+    w2.opener.check = check
+    assert not w2.replay()
+    assert threading.current_thread() in asked          # the replay asked, and its error was no answer
+    assert journalled(lib.language) == [("move", [goal[7]])]
+    assert lib.ids("goal") == goal and heard2.notes == []
+    w2.opener.check = real
+    os.remove(ls.damaged_marker(lib.db))
+    assert w2.replay()
+    assert h.until(lambda: journal(lib.language) is None)
+    assert lib.ids("goal")[0] == goal[7] and heard2.notes == []
+
+
 # --- E6: a drag holds the writer ----------------------------------------------------------------------------------- #
 def test_E6_a_move_given_during_a_drag_waits_and_lands_after_release(lib, make_writer):
     # A held move's wait never reads *saving…*: held longer than saving_after, then each save gets a second of its
@@ -770,6 +800,42 @@ def test_a_json_mode_store_is_not_writable_and_says_not_ready(stub_writer):
     assert not w.can_write() and w.reason() == "not ready"
     assert w.move([1], "goal") is None
     assert w.undo() is not None                          # an undo is never refused at the press (it may have nothing)
+
+
+def test_R3_L4_a_refused_press_never_asks_the_store_on_the_callers_thread(stub_writer):
+    # The window's thread holds no handle: asking the mode there opens a connection and probes the store on every
+    # refused press and twice per ⋯ menu. The writer's thread is told to ask instead.
+    w, heard, store, opener = stub_writer(mode="read-only", reason="damaged")
+    asked, real = [], opener.check
+
+    def check():
+        asked.append(threading.current_thread())
+        return real()
+    opener.check = check
+    for _ in range(3):
+        assert not w.can_write() and w.reason() == "damaged"
+    assert h.until(lambda: asked, seconds=5)            # the writer's thread asked
+    assert threading.current_thread() not in asked
+
+
+def test_R3_L4_a_store_writable_again_takes_the_next_press_after_one_writer_check(stub_writer, monkeypatch):
+    # The idle recheck pushed far out: only the press's poke can make the thread ask again. The first press after the
+    # store is writable is refused once (the kept mode); the next, a moment later, is taken.
+    monkeypatch.setattr(M, "MODE_RECHECK_S", 60.0)
+    w, heard, store, opener = stub_writer(mode="read-only", reason="damaged")
+    truth = {"mode": "read-only", "reason": "damaged"}  # the opener's mode moves only at a check() (`StoreOpener`)
+
+    def check():
+        opener.mode, opener.reason = truth["mode"], truth["reason"]
+        return opener.mode
+    opener.check = check
+    assert h.until(lambda: w._mode_at > 0, seconds=5)   # the thread's own first look is over
+    time.sleep(0.05)
+    truth.update(mode="store", reason=None)             # the store repaired
+    assert not w.can_write()
+    assert h.until(w.can_write, seconds=2)
+    assert w.move([1], "goal") is not None
+    assert h.until(lambda: heard.saved)
 
 
 def test_a_listener_that_raises_never_stops_the_writer(stub_writer):

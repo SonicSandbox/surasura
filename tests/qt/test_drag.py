@@ -22,13 +22,13 @@ import time
 import pytest
 
 pytest.importorskip("PyQt6")
-from PyQt6.QtCore import QEvent, QMimeData, QPoint, QPointF, Qt, QUrl
-from PyQt6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent, QKeyEvent, QMouseEvent
+from PyQt6.QtCore import QEvent, QMimeData, QObject, QPoint, QPointF, Qt, QUrl
+from PyQt6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent, QKeyEvent, QMouseEvent, QRegion
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication
 
 from app import theme
-from app.qt import drag, freeze, motion, rows, shell, stones, strings
+from app.qt import drag, frame, freeze, motion, rows, shell, stones, strings
 from app.services import library_reader
 from app.services import moves as moves_module
 from tests.fixtures import window_seed
@@ -966,6 +966,667 @@ def test_S3_a_drop_at_2000_files_moves_the_rows_in_place(world, monkeypatch):
     QApplication.processEvents()
     assert layouts == [] and set(painted) - _under_toast(win, lst) <= set(range(to, src + 1)), sorted(set(painted))
     print(f"a drop at {len(rs)} Current rows took {took:.1f} ms on the window's thread")
+
+
+# --- Gap 2 (M4.1 P3): a frame repaints only what moved; the numbers at the drop, never after ------------------- #
+class _PaintRects(QObject):
+    """The rects of the paint events a widget gets (Qt hands one paint the union of every update asked since the
+    last)."""
+
+    def __init__(self, widget):
+        super().__init__()
+        self.seen = []
+        widget.installEventFilter(self)
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.Paint:
+            self.seen.append(event.rect())
+        return False
+
+
+def _on_test_time():
+    """Motion unfrozen and Full, the clock on test time (a frame moves only when the test says): -> its undo."""
+    freeze.set_frozen(False)
+    restore = _full_motion()
+    clock = motion.clock()
+    clock.use_test_time()
+
+    def undo():
+        clock.use_real_time()
+        restore()
+    return clock, undo
+
+
+def _flushed(lst):
+    """Every paint owed so far painted (the hand's own move asks for some): what is painted next is the frame's."""
+    QApplication.processEvents()
+    lst.viewport().repaint()
+
+
+def test_gap2_a_gap_slide_frame_repaints_only_the_rows_that_moved_never_the_whole_list(world, monkeypatch):
+    """R3-S5: each frame of the slide repainted the whole list (every row on screen, ~20 at this size) for the two
+    rows making room. Now a frame repaints the band those rows were and are painted in, and the slot's."""
+    seed, win, writer = world(apply=False, size=(1280, 1200))
+    clock, undo = _on_test_time()
+    try:
+        lst = lst_of(win)
+        lift(win, 8)
+        move_global(win, row_point(win, 6))                           # before row 6: rows 6 and 7 make room
+        p = lst.parting
+        assert set(p.springs) == {6, 7}
+        _flushed(lst)
+        painted = _paint_spy(lst, monkeypatch)
+        rects = _PaintRects(lst.viewport())
+        clock.advance(motion.FRAME_MS)                                # one frame of the slide
+        QApplication.processEvents()
+        assert 0 < p.offset(6) < p.h                                  # mid-slide
+        assert painted and set(painted) <= {5, 6, 7, 8, 9}, sorted(set(painted))
+        assert rects.seen and all(r.height() < lst.viewport().height() // 2 for r in rects.seen), rects.seen
+        clock.advance(1000)                                           # at rest: the rows made room, as before
+        assert p.springs == {} and [p.offset(r) for r in range(5, 10)] == [0, p.h, p.h, 0, 0]
+        win.moves.cancel()
+    finally:
+        undo()
+
+
+def _on_screen_vs_whole(win, lst):
+    """The list as the screen shows it (the window's painted pixels: what the partial repaints left) and as one whole
+    repaint draws it, the ghost's box blanked in both (it floats over the list). -> (shown, whole) RGB arrays."""
+    from tests.qt.pixels import rgb_array
+    vp = lst.viewport()
+    at = vp.mapTo(win, QPoint(0, 0))
+    shown = rgb_array(win.screen().grabWindow(win.winId(), at.x(), at.y(), vp.width(), vp.height()))
+    whole = rgb_array(vp.grab())
+    ghost = win.moves.ghost
+    if ghost is not None and ghost.isVisible():
+        box = ghost.geometry()
+        box.moveTopLeft(vp.mapFrom(win, box.topLeft()))
+        r = box.adjusted(-2, -2, 2, 2).intersected(vp.rect())
+        for arr in (shown, whole):
+            arr[max(0, r.top()):r.bottom() + 1, max(0, r.left()):r.right() + 1] = 0
+    return shown, whole
+
+
+def test_gap2_the_slides_partial_repaints_leave_the_list_as_a_whole_repaint_draws_it(world):
+    """What the partial repaints could break: a row left half-drawn where it was, or a slot's ghost of itself. Frame
+    by frame through a slide, a slide turned back mid-way and a slide past the row's own place, the screen's pixels
+    over the list are a whole repaint's."""
+    seed, win, writer = world(apply=False, size=(1280, 1200))
+    clock, undo = _on_test_time()
+    try:
+        lst = lst_of(win)
+
+        def same(where):
+            shown, whole = _on_screen_vs_whole(win, lst)
+            bad = (abs(shown.astype(int) - whole.astype(int)) > 2).any(axis=2)
+            assert not bad.any(), (where, int(bad.sum()), [int(v) for v in bad.nonzero()[0][[0, -1]]])
+        _flushed(lst)
+        lift(win, 8)                                                  # the lift: the row leaves its place for the slot
+        QApplication.processEvents()
+        same("lift")
+        for to, lower, frames in ((5, False, 6), (7, True, 40), (11, True, 40)):
+            move_global(win, row_point(win, to, lower))
+            for i in range(frames):
+                clock.advance(motion.FRAME_MS)
+                QApplication.processEvents()
+                same((to, i))
+        win.moves.cancel()
+    finally:
+        undo()
+
+
+def test_gap2_a_slot_glide_frame_repaints_only_the_slots_old_and_new_place(world, monkeypatch):
+    """The slot's glide repainted the whole list each frame too. Now a frame of it repaints where the slot was and
+    is — nothing else (the rows at rest here)."""
+    seed, win, writer = world(apply=False, size=(1280, 1200))
+    clock, undo = _on_test_time()
+    try:
+        lst = lst_of(win)
+        lift(win, 8)
+        move_global(win, row_point(win, 6))
+        clock.advance(1000)                                           # the rows and the slot at rest
+        p = lst.parting
+        assert p.springs == {} and not p._slot_spring.alive
+        _flushed(lst)
+        rects = _PaintRects(lst.viewport())
+        was = p._slot_box()
+        p._slot_spring.retarget(p.slot_y + 30, **motion.preset("drag-part"))   # the slot alone glides, its own spring
+        clock.advance(motion.FRAME_MS)
+        QApplication.processEvents()
+        now = p._slot_box()
+        assert now.top() > was.top()
+        band = was.united(now).adjusted(0, -2, 0, 2)
+        assert rects.seen and all(band.contains(r) for r in rects.seen), (band, rects.seen)
+        win.moves.cancel()
+    finally:
+        undo()
+
+
+def test_gap2_an_auto_scroll_tick_repaints_what_scrolled_in_never_the_whole_list_and_runs_under_reduced(
+        world, monkeypatch):
+    """Each auto-scroll tick asked the whole list to repaint on top of the scroll (Qt moves what was painted and asks
+    only for what scrolled in). The hand's, not motion (IK-4): it keeps running under Reduced motion."""
+    seed, win, writer = world(apply=False)
+    freeze.set_frozen(False)
+    mode = motion.clock().mode
+    was = mode.setting
+    mode.set_setting("reduced")
+    try:
+        lst = lst_of(win)
+        bar = lst.verticalScrollBar()
+        assert bar.maximum() > 400
+        bar.setValue(bar.maximum() // 2)
+        QApplication.processEvents()
+        vp = lst.viewport()
+        first = lst.indexAt(QPoint(4, vp.height() // 2)).row()
+        lift(win, first)
+        move_global(win, vp.mapToGlobal(QPoint(vp.width() // 2, 10)))     # the hand at the list's top edge
+        _flushed(lst)
+        win.moves._scroll.stop()                                      # the test steps the ticks itself
+        painted = _paint_spy(lst, monkeypatch)
+        rects = _PaintRects(vp)
+        before = bar.value()
+        for _ in range(3):
+            win.moves._auto_scroll()
+            QApplication.processEvents()
+        assert bar.value() < before                                   # it scrolled, under Reduced motion
+        model = lst.model()
+        assert painted and all(lst.visualRect(model.index(r, 0)).top() < vp.height() // 3 for r in set(painted)),             sorted(set(painted))
+        assert rects.seen and all(r.height() < vp.height() // 2 for r in rects.seen), rects.seen
+        win.moves.cancel()
+    finally:
+        mode.set_setting(was)
+
+
+def test_gap2_auto_scroll_through_a_parted_list_leaves_it_as_a_whole_repaint_draws_it(world):
+    """What a scroll's partial repaint could break: Qt paints only the strip that scrolled in, and only the rows whose
+    places lie in it — a parted row standing in that strip from a place outside it was left unpainted. Tick by tick,
+    the slide still moving, both ways, the screen's pixels over the list are a whole repaint's."""
+    seed, win, writer = world(apply=False)
+    clock, undo = _on_test_time()
+    try:
+        lst = lst_of(win)
+        vp = lst.viewport()
+        bar = lst.verticalScrollBar()
+        assert bar.maximum() > 400
+        bar.setValue(bar.maximum() // 2)
+        QApplication.processEvents()
+
+        def same(where):
+            shown, whole = _on_screen_vs_whole(win, lst)
+            bad = (abs(shown.astype(int) - whole.astype(int)) > 2).any(axis=2)
+            assert not bad.any(), (where, int(bad.sum()), [int(v) for v in bad.nonzero()[0][[0, -1]]])
+        first = lst.indexAt(QPoint(4, vp.height() // 2)).row()
+        lift(win, first)
+        win.moves._scroll.stop()                                      # the test steps the ticks itself
+        for edge, name in ((10, "up"), (vp.height() - 10, "down")):
+            move_global(win, vp.mapToGlobal(QPoint(vp.width() // 2, edge)))
+            win.moves._scroll.stop()
+            _flushed(lst)
+            before = bar.value()
+            for i in range(8):
+                win.moves._auto_scroll()
+                clock.advance(motion.FRAME_MS)                        # the rows still sliding as the list scrolls
+                QApplication.processEvents()
+                same((name, i))
+            assert bar.value() != before, name
+        win.moves.cancel()
+    finally:
+        undo()
+
+
+def test_gap2_auto_scroll_while_rows_spring_back_into_the_strip_leaves_no_row_unpainted(world):
+    """The hand from below to the top edge: rows just under the strip that scrolls in still spring back up into it
+    from places outside it — Qt alone would paint only the rows whose places lie in the strip."""
+    seed, win, writer = world(apply=False)
+    clock, undo = _on_test_time()
+    try:
+        lst = lst_of(win)
+        vp = lst.viewport()
+        bar = lst.verticalScrollBar()
+        bar.setValue(bar.maximum() // 2)
+        QApplication.processEvents()
+
+        def same(where):
+            shown, whole = _on_screen_vs_whole(win, lst)
+            bad = (abs(shown.astype(int) - whole.astype(int)) > 2).any(axis=2)
+            assert not bad.any(), (where, int(bad.sum()), [int(v) for v in bad.nonzero()[0][[0, -1]]])
+        top = lst.indexAt(QPoint(4, vp.height() // 6)).row()
+        lift(win, top)
+        win.moves._scroll.stop()
+        move_global(win, row_point(win, top + 4))
+        clock.advance(1000)                                           # the rows under it parted up, at rest
+        move_global(win, vp.mapToGlobal(QPoint(vp.width() // 2, 10)))
+        win.moves._scroll.stop()
+        _flushed(lst)
+        for i in range(8):
+            win.moves._auto_scroll()
+            clock.advance(motion.FRAME_MS)
+            QApplication.processEvents()
+            same(("jump", i))
+        win.moves.cancel()
+    finally:
+        undo()
+
+
+def _strip_shown_as_whole(win, lst, where):
+    shown, whole = _on_screen_vs_whole(win, lst)
+    bad = (abs(shown.astype(int) - whole.astype(int)) > 2).any(axis=2)
+    assert not bad.any(), (where, int(bad.sum()), [int(v) for v in bad.nonzero()[0][[0, -1]]])
+
+
+def _edge_row(win, lst, band, upper):
+    """A scroll place and a point in the edge band (`band`: its viewport rows, tried in order — its inner end scrolls
+    1 px a tick, so the slot stays put for a few ticks) on a row's upper (or lower) half, the row's place clear of the
+    viewport's edge by more than a few pixels: -> (scroll value, y), the list scrolled there."""
+    bar, h = lst.verticalScrollBar(), lst.viewport().height()
+    for v in range(bar.maximum() // 2, bar.maximum() // 2 + 200):
+        bar.setValue(v)
+        QApplication.processEvents()
+        for y in band:
+            idx = lst.indexAt(QPoint(4, y))
+            if not idx.isValid():
+                continue
+            r = lst.visualRect(idx)
+            if upper and y < r.center().y() and r.bottom() < h - 6:
+                return v, y
+            if not upper and y >= r.center().y() + 4 and r.top() > 2:     # (the list comes down under the hand)
+                return v, y
+    raise AssertionError("no such geometry in the seed")
+
+
+def test_S1_auto_scroll_down_paints_the_strip_under_rows_parted_down_from_places_outside_it(world):
+    """M4.1 adversary S1: a drag from outside the list (the Goal sheet, the tray) pushes every row past the slot down.
+    The hand in the bottom band on a row's upper half leaves the slot's box short of the edge, so the strip each tick
+    scrolls in shows the slot's row, pushed down into it from a place outside it — Qt alone paints only the rows whose
+    places lie in the strip, and a background band grew a pixel row a tick. The scroll asks for that strip, widened
+    to the parted rows whose pictures reach into it."""
+    seed, win, writer = world(apply=False)
+    clock, undo = _on_test_time()
+    try:
+        lst = lst_of(win)
+        vp = lst.viewport()
+        bar = lst.verticalScrollBar()
+        h, edge = vp.height(), theme.MOTION["auto-scroll-edge"]
+        v, y = _edge_row(win, lst, range(h - edge + 1, h - 1), upper=True)
+        goal_ids = [r["id"] for r in seed.items if r["tier"] == "goal"][:3]
+        first = lst.indexAt(QPoint(4, h // 2)).row()
+        assert win.moves.begin_by_id(goal_ids, "goal", "海辺の図書室", row_point(win, first))
+        win.moves._scroll.stop()                                      # the test steps the ticks itself
+        move_global(win, vp.mapToGlobal(QPoint(vp.width() // 2, y)))
+        win.moves._scroll.stop()
+        clock.advance(1000)                                           # parted, at rest
+        _flushed(lst)
+        _strip_shown_as_whole(win, lst, "at rest")
+        for i in range(6):
+            win.moves._auto_scroll()
+            clock.advance(motion.FRAME_MS)
+            QApplication.processEvents()
+            _strip_shown_as_whole(win, lst, ("down", i, bar.value(), lst.parting.slot))
+        assert bar.value() > v
+        win.moves.cancel()
+    finally:
+        undo()
+
+
+def test_S1_auto_scroll_up_paints_the_strip_under_rows_parted_up_from_places_outside_it(world):
+    """S1's mirror: a row lifted from above the screen pulls the rows up to its slot; the hand in the top band on a
+    row's lower half leaves the slot's box short of the top edge, so the slot's row, pulled up, stands in the strip
+    each tick scrolls in from a place below it. (A shorter window: the lifted row a screen above the scroll place.)"""
+    seed, win, writer = world(apply=False, size=(1280, 560))
+    clock, undo = _on_test_time()
+    try:
+        lst = lst_of(win)
+        vp = lst.viewport()
+        bar = lst.verticalScrollBar()
+        h, edge = vp.height(), theme.MOTION["auto-scroll-edge"]
+        v, y = _edge_row(win, lst, range(edge - 1, 0, -1), upper=False)     # the band's inner end: 1 px a tick
+        assert v >= h
+        bar.setValue(v - h)                                           # the row to lift: half a screen above v's top
+        QApplication.processEvents()
+        lift(win, lst.indexAt(QPoint(4, h // 2)).row())
+        win.moves._scroll.stop()
+        bar.setValue(v)
+        QApplication.processEvents()
+        move_global(win, vp.mapToGlobal(QPoint(vp.width() // 2, y)))
+        win.moves._scroll.stop()
+        clock.advance(1000)                                           # parted up, at rest
+        p = lst.parting
+        assert p.slot > p.src and p._slot_box().top() > 2             # the slot's box short of the top edge
+        _flushed(lst)
+        _strip_shown_as_whole(win, lst, "at rest")
+        for i in range(6):
+            win.moves._auto_scroll()
+            clock.advance(motion.FRAME_MS)
+            QApplication.processEvents()
+            _strip_shown_as_whole(win, lst, ("up", i, bar.value(), p.slot))
+        assert bar.value() < v
+        win.moves.cancel()
+    finally:
+        undo()
+
+
+def test_gap2_a_drop_on_goal_shows_goals_new_count_and_its_name_at_the_drop_while_the_wells_fall(world):
+    """The bar's new count (and the dock's accessible name) waited for the wells' 260 ms fall; now they come at the
+    drop, the bar shown under the wells falling away from it."""
+    seed, win, writer = world()
+    clock, undo = _on_test_time()
+    try:
+        lift(win, 5)
+        clock.advance(theme.MOTION["buckets"] + 16)                   # the wells have risen
+        at = well_point(win, "goal")
+        move_global(win, at)
+        release_global(win, at)
+        dock = win.dock
+        goal = win.page_widgets["current"].view_model.goal
+        assert dock.wells                                             # the clock hasn't moved: the fall not begun
+        assert dock.accessibleName() == strings.GOAL_ACCESSIBLE.format(name=strings.GOAL_NAME, line=goal.line)
+        clock.advance(theme.MOTION["buckets"] / 2)
+        dock.repaint()
+        assert dock.wells and dock._key is not None and dock._key[0] == frame._bar_of(goal)   # drawn mid-fall
+        clock.advance(theme.MOTION["buckets"])
+        assert dock.wells == ()
+    finally:
+        undo()
+
+
+# --- M4.1 row 4, package C: the window's own work at a move and a pickup ---------------------------------------- #
+def test_C2_a_moves_next_view_of_the_same_rows_walks_nothing_in_the_dock(world):
+    """C2: each of a move's views walked every Current and Finished row in the dock for the wells' cover records
+    (3–5 ms a view at 20,000 files). A view holding the same rows, Finished and Goal walks nothing; new rows walk
+    once, their records the same."""
+    seed, win, writer = world(apply=True)
+    dock = win.dock
+    rs = rows_of(win)
+    win.moves.menu_pick(rs[4], "up-next")                             # a reorder: the window's view, the store's
+    assert wait_until(lambda: win.moves.expect is None and not win.moves.tickets
+                      and win.services.library.view().rows[0].key == rs[4].key, 10)
+    view = win.services.library.view()
+    win.show_library(view)
+    walks, refs = dock.walks, dict(dock._refs)
+    for _ in range(3):                                                # the move's next views: the same rows
+        win.show_library(view._replace(subline=view.subline + " "))
+    assert dock.walks == walks and dock._refs == refs
+    keys = [r.key for r in view.rows]
+    keys[1], keys[2] = keys[2], keys[1]
+    win.show_library(drag.reordered(view, keys))                      # other rows: walked once, the same titles
+    assert dock.walks == walks + 1 and dock._refs == refs
+
+
+def test_C2_a_moves_settle_view_its_rows_the_same_objects_in_a_new_tuple_walks_nothing_again(world):
+    """C2's shell half, as measured (C2.md): none of a move's views is the view shown before or holds its rows' tuple,
+    so a skip on those in `show_library` would never fire. The view that walked unchanged data again is the last: the
+    same rows (and Finished) in a new tuple, which the dock walked once more. Now it walks nothing; a row changed (a new
+    object: its numbers) walks once."""
+    seed, win, writer = world(apply=True)
+    dock = win.dock
+    rs = rows_of(win)
+    win.moves.menu_pick(rs[4], "up-next")                             # a reorder: the window's view, the store's
+    assert wait_until(lambda: win.moves.expect is None and not win.moves.tickets
+                      and win.services.library.view().rows[0].key == rs[4].key, 10)
+    view = win.services.library.view()
+    win.show_library(view)
+    walks, refs = dock.walks, dict(dock._refs)
+    win.show_library(view._replace(rows=tuple(list(view.rows)), finished=tuple(list(view.finished))))
+    assert dock.walks == walks and dock._refs == refs
+    other = list(view.rows)
+    other[2] = other[2]._replace(n_new=other[2].n_new + 1)
+    win.show_library(view._replace(rows=tuple(other)))
+    assert dock.walks == walks + 1 and dock._refs == refs
+
+
+def test_C5_a_lift_right_after_the_pointer_rested_on_a_row_bakes_no_ghost_and_shows_that_rows_picture(world):
+    """C5: the pickup baked the ghost (its shadow, ring, turn: 9 pictures drawn) and showed its window for the first
+    time on the press's frame. The pointer resting on the row bakes it ahead; the lift only shows it. What it could
+    break: a stale ghost — the row's picture changed since is baked again."""
+    seed, win, writer = world(apply=False)
+    lst, moves = lst_of(win), win.moves
+    assert moves.ghost is not None and not moves.ghost.isVisible()     # made once, at the window's open, hidden
+    i = 4
+    at = title_point(lst, i)
+    baked = moves.ghost_bakes
+    move(lst, at, buttons=NONE)                                       # the pointer comes to rest on row 4
+    assert wait_until(lambda: moves.ghost_bakes == baked + 1, 3)
+    lift(win, i)
+    assert moves.ghost_bakes == baked + 1, "the lift baked its ghost again"
+    kind, row, lines = lst.model().entries[i]
+    rect = lst.visualRect(lst.model().index(i, 0))
+    slot = lst.delegate.slot_rect(kind, rect, lines)
+    dpr = lst.viewport().devicePixelRatioF() or 1.0
+    fresh = drag.ghost_picture(moves._row_picture(kind, row, lines, rect, slot), slot.width(), slot.height(), dpr)[0]
+    assert moves.ghost.isVisible() and moves.ghost.pix.toImage() == fresh.toImage()     # the row's own picture
+    moves.cancel()
+    assert wait_until(lambda: time.monotonic() >= moves._swallow_until, 3)      # (a press right after is swallowed)
+    k = next(iter(moves._ghosts))
+    moves._ghosts[k] = (-1,) + moves._ghosts[k][1:]                   # as if the row were painted anew since
+    lift(win, i)
+    assert moves.ghost_bakes == baked + 2
+    moves.cancel()
+
+
+def test_C6_a_slide_frame_asks_one_repaint_its_rows_rects_worked_out_once(world, monkeypatch):
+    """C6: each moving row's spring frame worked the screen out again (two `indexAt`) and walked the parted rows'
+    `visualRect`s while its band widened — ~220 calls a frame with six rows moving. Now a frame's bands are asked
+    for once, at its end, every rect worked out once (the gap2 tests above hold what repaints)."""
+    seed, win, writer = world(apply=False, size=(1280, 1200))
+    clock, undo = _on_test_time()
+    try:
+        lst = lst_of(win)
+        lift(win, 8)
+        move_global(win, row_point(win, 2))                           # rows 2–7 make room: six springs
+        p = lst.parting
+        assert len(p.springs) == 6
+        _flushed(lst)
+        lo, hi = p._screen()
+        rects, updates = [0], [0]
+        real_rect, real_update = lst.visualRect, lst.viewport().update
+
+        def visual_rect(index):
+            rects[0] += 1
+            return real_rect(index)
+
+        def update(*args):
+            updates[0] += 1
+            return real_update(*args)
+        monkeypatch.setattr(lst, "visualRect", visual_rect)
+        monkeypatch.setattr(lst.viewport(), "update", update)
+        painted = _paint_spy(lst, monkeypatch)
+        clock.advance(motion.FRAME_MS)                                # one frame of the slide
+        assert 0 < p.offset(2) < p.h
+        assert updates[0] == 1, updates[0]
+        assert rects[0] <= hi - lo + 1, (rects[0], hi - lo + 1)
+        QApplication.processEvents()
+        assert painted and set(painted) <= set(range(1, 10)), sorted(set(painted))
+        clock.advance(1000)
+        assert p.springs == {}
+        win.moves.cancel()
+    finally:
+        undo()
+
+
+def test_gap2_a_hover_letting_go_during_a_drag_repaints_its_rows_never_the_whole_list(world, monkeypatch):
+    """Gap 2 item 4: the row under the hand lets its hover look go as it is lifted (it and its neighbours on their
+    springs), and each of those frames repainted the whole list while the rows parted. Now a frame repaints the rows
+    the hover moved, each where the parting paints it."""
+    seed, win, writer = world(apply=False, size=(1280, 1200))
+    clock, undo = _on_test_time()
+    try:
+        lst = lst_of(win)
+        move(lst, title_point(lst, 8), buttons=NONE)                  # the hand rests on row 8: it lifts
+        clock.advance(1000)
+        key = lst.model().entries[8][1].key
+        assert lst._touch[key].lift == theme.SPRINGS["lift-px"]
+        lift(win, 8)                                                  # its hover look lets go, on its springs
+        move_global(win, row_point(win, 6))                           # rows 6 and 7 make room
+        p = lst.parting
+        assert lst._touch[key].s_lift.alive and set(p.springs) == {6, 7}
+        _flushed(lst)
+        painted = _paint_spy(lst, monkeypatch)
+        rects = _PaintRects(lst.viewport())
+        clock.advance(motion.FRAME_MS)
+        QApplication.processEvents()
+        assert key in lst._touch and 0 < p.offset(6) < p.h            # both mid-way
+        assert painted and set(painted) <= set(range(5, 11)), sorted(set(painted))
+        assert rects.seen and all(r.height() < lst.viewport().height() // 2 for r in rects.seen), rects.seen
+        win.moves.cancel()
+    finally:
+        undo()
+
+
+def test_gap2_a_hover_spring_on_a_parted_row_repaints_where_it_is_painted_now(world, monkeypatch):
+    """What item 4's partial repaint could break: a parted row's hover moving where the parting paints it (its place
+    moved by the slot's height) while only its own place repaints — its old picture left on the screen. Frame by
+    frame, the screen's pixels over the list are a whole repaint's."""
+    seed, win, writer = world(apply=False, size=(1280, 1200))
+    clock, undo = _on_test_time()
+    try:
+        lst = lst_of(win)
+        lift(win, 8)
+        move_global(win, row_point(win, 6))
+        clock.advance(1000)                                           # rows 6 and 7 at rest, a slot's height down
+        p = lst.parting
+        assert p.springs == {} and p.offset(7) == p.h
+        _flushed(lst)
+        asked = []
+        vp = lst.viewport()
+        with monkeypatch.context() as m:
+            m.setattr(vp, "update", lambda *a, real=vp.update: asked.append(a[0]) or real(*a))
+            p.repaint_rows([7])                                       # (outside a frame: asked at once)
+        place = lst.visualRect(lst.model().index(7, 0))
+        painted_at = QRegion(place.translated(0, round(p.h)))           # where row 7 is painted now (its place moved)
+        assert asked and painted_at.subtracted(QRegion(asked[0])).isEmpty(), asked
+        key = lst.model().entries[7][1].key
+        for on in (True, False):                                      # its hover look lifts, then lets go
+            lst._touch_to(key, on)
+            for i in range(30):
+                clock.advance(motion.FRAME_MS)
+                QApplication.processEvents()
+                shown, whole = _on_screen_vs_whole(win, lst)
+                bad = (abs(shown.astype(int) - whole.astype(int)) > 2).any(axis=2)
+                assert not bad.any(), (on, i, int(bad.sum()))
+        win.moves.cancel()
+    finally:
+        undo()
+
+
+@pytest.mark.parametrize("line", ["top", "soon"])
+def test_C3_a_drop_across_a_line_relays_the_rows_out_never_resets_and_keeps_the_keyboards_row(world, line):
+    """C3 (R3-S6): a drop across the top-20 or the Soon line moves that line to another place, so places change height
+    and the list was reset — Qt's whole relayout, the keyboard's row and the hand's let go, the scroll put back from
+    its anchor. Now the same rows in their new places are relaid out: no reset, the keyboard's row (the press made it
+    the dragged row's) still on its title, every row painted from its kept picture."""
+    seed, win, writer = world(apply=False, size=(1280, 1200))
+    lst = lst_of(win)
+    model = lst.model()
+
+    def line_at():
+        return next(i for i, e in enumerate(model.entries) if any(ln.kind == line for ln in e[2]))
+    at = line_at()
+    view = win.page_widgets["current"].view_model
+    keys = [r.key for r in view.rows]
+    by = {r.key: r for r in view.rows}
+
+    def after(order):
+        return next(ln.after for ln in drag.lines_for(view, [by[k] for k in order]) if ln.kind == line)
+    to = at - 1                                                       # from under the line to above it: the line moves
+    src = next(s for s in range(at + 1, at + 6) if after(drag.order_after(keys, keys[s], to)) != at)
+    lst.scrollTo(model.index(src, 0), lst.ScrollHint.PositionAtCenter)
+    moved_key = model.entries[src][1].key
+    QApplication.processEvents()
+    lst.viewport().repaint()
+    hows, real = [], model.set_entries
+    model.set_entries = lambda entries: hows.append(real(entries)) or hows[-1]
+    resets = []
+    model.modelReset.connect(lambda: resets.append(1))
+    lift(win, src)
+    target = row_point(win, to)
+    move_global(win, target)
+    QApplication.processEvents()
+    renders = lst.delegate.renders                                    # (the lift draws the ghost's picture)
+    release_global(win, target)
+    QApplication.processEvents()
+    assert model.entries[to][1].key == moved_key and line_at() != at  # the drop crossed the line: it moved
+    assert "relayout" in hows and "reset" not in hows and resets == [], hows
+    assert lst.currentIndex().row() == to                             # the keyboard's row (the press's) on its title
+    lst.viewport().repaint()
+    QApplication.processEvents()
+    drawn = lst.delegate.renders - renders
+    assert drawn == (1 if line == "soon" else 0), drawn               # none drawn afresh but the row now in NOW
+    assert calls(writer, "move")
+
+
+def test_IKB8_a_drop_across_a_line_above_the_screen_moves_no_row_on_screen(world):
+    """IKB-8: a drop across the Soon line relays the rows out (C3) and keeps the scroll value, where a reset put the top
+    row back from its anchor. With the line's old place above the screen, no row on screen may shift by the line's
+    height at the drop: each sits where the parting painted it just before. (An anchor kept by the top row's key, as
+    the reset's, would be wrong here: that row moved up a place with the drop, so the list would jump by a row.)"""
+    seed, win, writer = world(files=2000, apply=False, size=(1280, 900))
+    clock, undo = _on_test_time()
+    try:
+        lst = lst_of(win)
+        model = lst.model()
+        bar = lst.verticalScrollBar()
+
+        def line_at():
+            return next(i for i, e in enumerate(model.entries) if any(ln.kind == "soon" for ln in e[2]))
+        at = line_at()
+        src = 2
+        assert model.entries[src][1].tier == "now" and src < at
+        moved_key = model.entries[src][1].key
+        hows, real = [], model.set_entries
+        model.set_entries = lambda entries: hows.append(real(entries)) or hows[-1]
+        lift(win, src)                                                # a NOW row above both lines
+        top = at + 3
+        bar.setValue(lst.visualRect(model.index(top, 0)).top() + bar.value() + 20)   # scrolled past the Soon line
+        QApplication.processEvents()
+        to = top + 4
+        target = row_point(win, to)
+        move_global(win, target)
+        clock.advance(1000)                                           # the rows have parted and rest
+        QApplication.processEvents()
+        p = lst.parting
+        assert lst.visualRect(model.index(at, 0)).bottom() < 0        # the line's old place is above the screen
+        vh = lst.viewport().height()
+        before = {}
+        for i in range(model.rowCount()):
+            r = lst.visualRect(model.index(i, 0))
+            if i != p.src and r.bottom() >= 0 and r.top() < vh:
+                before[model.entries[i][1].key] = r.top() + int(round(p.offset(i)))
+        assert len(before) >= 6
+        release_global(win, target)
+        clock.advance(1000)                                           # the ghost home, the rows at rest
+        QApplication.processEvents()
+        assert "relayout" in hows and "reset" not in hows, hows       # C3's branch, not the reset
+        assert line_at() == at - 1                                    # the drop crossed the Soon line: it moved
+        after = {model.entries[i][1].key: lst.visualRect(model.index(i, 0)).top() for i in range(model.rowCount())}
+        moved = {k: (y, after[k]) for k, y in before.items() if k != moved_key and after[k] != y}
+        assert moved == {}, moved                                     # no row on screen shifted at the drop
+    finally:
+        undo()
+
+
+def test_C6_no_row_is_painted_ahead_while_a_drag_parts_the_rows_and_it_resumes_after(world, monkeypatch):
+    """C6: the list's painting ahead (`_warm_one`, a row a turn) ran under a drag, 51 rows in one 15 ms chain during
+    auto-scroll. While the rows part it waits — the shown list and a hidden one laid out like it — and starts again
+    once the drag is over."""
+    seed, win, writer = world(apply=False)
+    lst = lst_of(win)
+    fin = win.page_widgets["finished"].list
+    warmed = []
+    for view in (lst, fin):
+        real = view.delegate.warm
+        monkeypatch.setattr(view.delegate, "warm", lambda *a, real=real, v=view, **k: warmed.append(v) or real(*a, **k))
+    lift(win, 4)
+    lst._warm.stop()
+    lst._moved = 0.0                                                  # the shown list at rest: only the drag holds
+    fin.warm_like = lst
+    fin._warm_one()                                                   # a hidden list laid out like the dragged one
+    lst._warm_one()
+    assert warmed == [] and lst._warm.isActive() and fin._warm.isActive()     # each asked again once it rests
+    QTest.qWait(rows.WARM_IDLE_MS + 150)
+    assert warmed == []
+    win.moves.cancel()
+    assert wait_until(lambda: lst in warmed, 3)
 
 
 # --- hover springs rest when what they draw stops changing (L5) -------------------------------------------------- #

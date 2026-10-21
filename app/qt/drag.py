@@ -38,7 +38,7 @@ import os
 import time
 
 from PyQt6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QAction, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QShortcut
+from PyQt6.QtGui import QAction, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QRegion, QShortcut
 from PyQt6.QtWidgets import QApplication, QMenu, QStyleOptionViewItem, QWidget
 
 from app import theme
@@ -316,11 +316,32 @@ class Ghost(QWidget):
         p.end()
 
 
+class _Resting(QObject):
+    """The pointer moving over the list with no button down starts `timer` again, so it fires once the pointer rests
+    there (C5); leaving the list stops it."""
+
+    def __init__(self, viewport, timer):
+        super().__init__(timer)
+        self.timer = timer
+        viewport.installEventFilter(self)
+
+    def eventFilter(self, _obj, event):
+        t = event.type()
+        if t == QEvent.Type.MouseMove and not event.buttons():
+            self.timer.start()
+        elif t == QEvent.Type.Leave:
+            self.timer.stop()
+        return False
+
+
 # --- the parting rows ------------------------------------------------------------------------------------------ #
 class Parting:
     """What the list paints while a drag runs (`rows.RowsView.parting`): each row's offset as the slot travels (the
     rows between the dragged row's place and its slot moved by the slot's height, on `drag-part` springs while on
-    screen), the dragged row's own place left empty (`src`), and the slot painted where it would land."""
+    screen), the dragged row's own place left empty (`src`), and the slot painted where it would land.
+    Only what moved repaints (R3-S5, Gap 2): each frame, the band a moving row was and is painted in, and the slot's
+    old and new places — never the whole list; a frame's bands asked for once, at its end, the rows' rects worked out
+    once a frame (C6)."""
 
     def __init__(self, lst, src, height):
         self.lst = lst
@@ -330,6 +351,10 @@ class Parting:
         self.springs = {}                            # place -> its offset's spring (only while it moves)
         self.slot_y = None                           # the slot's top, in the list's content (a spring)
         self._slot_spring = None
+        self._shown = {}                             # place -> the offset its row was last asked to paint at
+        self._slot_shown = None                      # the slot's box as last asked to paint (the list's content y)
+        self._rects = None                           # C6: place -> its rect, for the clock frame running now
+        self._bands = []                             # C6: the bands this frame asked to repaint
         self.alive = True
 
     def target(self, r):
@@ -378,7 +403,11 @@ class Parting:
         else:
             changed = range(min(old, slot) - 1, max(old, slot) + 2)
         for r in changed:
-            if not lo <= r <= hi or r == self.src:
+            if r == self.src:
+                continue
+            if not lo <= r <= hi:                    # off screen: at its place at once (seen if it reaches in)
+                if r not in self.springs:
+                    self._row_moved(r, self.target(r), self._shown.get(r, self._was(r, old)))
                 continue
             to = self.target(r)
             spring = self.springs.get(r)
@@ -386,7 +415,8 @@ class Parting:
             if spring is not None:
                 spring.retarget(to, **motion.preset("drag-part"))
             elif start != to:
-                spring = motion.clock().spring(lambda v, r=r: self._frame(), start, to, owner=lst.viewport(),
+                self._shown[r] = start
+                spring = motion.clock().spring(lambda v, r=r: self._row_moved(r, v), start, to, owner=lst.viewport(),
                                                on_rest=lambda r=r: self._rested(r),
                                                on_end=lambda r=r: self.springs.pop(r, None),
                                                **motion.preset("drag-part"))
@@ -396,16 +426,18 @@ class Parting:
             if self._slot_spring is not None:
                 self._slot_spring.stop()
             self._slot_spring, self.slot_y = None, None
-            lst.viewport().update()
+            self._slot_moved(None)
             return
         top = self.slot_top()
         if self._slot_spring is None or self.slot_y is None:
+            if self.src is not None and self._slot_shown is None:     # the lift: the dragged row leaves its place
+                place = lst.visualRect(lst.model().index(self.src, 0))
+                self._repaint_band(place.top() - 1, place.bottom() + 1)
             self.slot_y = top
             self._slot_spring = motion.clock().spring(self._slot_moved, top, top, owner=lst.viewport(),
                                                       **motion.preset("drag-part"))
         else:
             self._slot_spring.retarget(top, **motion.preset("drag-part"))
-        lst.viewport().update()
 
     def _was(self, r, old_slot):
         keep, self.slot = self.slot, old_slot
@@ -415,12 +447,112 @@ class Parting:
             self.slot = keep
 
     def _slot_moved(self, v):
+        """The slot at `v` (None: gone): its old box and its new one repaint."""
         self.slot_y = v
-        self._frame()
+        bar = self.lst.verticalScrollBar().value()
+        was, box = self._slot_shown, self._slot_box()
+        self._slot_shown = box.translated(0, bar) if box is not None else None
+        if not self.alive or was == self._slot_shown:
+            return
+        for b in (was, self._slot_shown):
+            if b is not None:
+                self._repaint_band(b.top() - bar - 1, b.bottom() - bar + 1)
 
-    def _frame(self):
-        if self.alive:
-            self.lst.viewport().update()
+    def _row_moved(self, r, v, was=None):
+        """Place `r`'s row now paints at offset `v` (a spring's frame, or a jump from `was`): the band it was and is
+        painted in repaints, its own place too (the list paints a row only where its place is asked)."""
+        was = self._shown.get(r, v) if was is None else was
+        self._shown[r] = v
+        if not self.alive or was == v:
+            return
+        rect = self._rect(r)
+        if rect.isValid():
+            self._repaint_band(rect.top() + math.floor(min(0.0, was, v)) - 1,
+                               rect.bottom() + math.ceil(max(0.0, was, v)) + 1)
+
+    def repaint_rows(self, places):
+        """(The list's hover look in motion, during a drag: Gap 2 item 4.) Each place's row repaints where it is painted
+        now — the band from its place to its place moved by its offset — never the whole list."""
+        for r in places:
+            rect = self._rect(r)
+            if rect.isValid():
+                off = self.offset(r) if r != self.src else 0.0
+                self._repaint_band(rect.top() + math.floor(min(0.0, off)) - 1,
+                                   rect.bottom() + math.ceil(max(0.0, off)) + 1)
+
+    def _collect(self):
+        """Inside a clock frame (C6): True, and the frame's collection begun — the rows' rects kept for the frame, its
+        bands asked for at its end, in one update."""
+        if self._rects is not None:
+            return True
+        if not motion.clock().in_frame:
+            return False
+        self._rects = {}
+        motion.clock().after_frame(self._frame_done)
+        return True
+
+    def _rect(self, r):
+        """Place `r`'s rect in the viewport — worked out once a clock frame (C6)."""
+        if not self._collect():
+            return self.lst.visualRect(self.lst.model().index(r, 0))
+        got = self._rects.get(r)
+        if got is None:
+            got = self._rects[r] = self.lst.visualRect(self.lst.model().index(r, 0))
+        return got
+
+    def _repaint_band(self, top, bottom):
+        """The viewport's rows `top` … `bottom` repaint — inside a clock frame, with the frame's other bands at its end
+        (C6: one update of their union)."""
+        if self._collect():
+            self._bands.append((top, bottom))
+        else:
+            self._update_bands([(top, bottom)])
+
+    def _frame_done(self):
+        bands, self._bands = self._bands, []
+        try:
+            self._update_bands(bands)
+        finally:
+            self._rects = None
+
+    def _update_bands(self, bands):
+        """Each band repaints — widened to a parted row whose place lies outside it but whose picture reaches into it
+        (so the list paints that row too) — in one update of their union."""
+        lst = self.lst
+        vp = lst.viewport()
+        bands = [(top, bottom) for top, bottom in bands if not (bottom < 0 or top > vp.height())]
+        if not bands:
+            return
+        lo, hi = self._screen()
+        parted = []
+        for q in range(lo, hi + 1):
+            off = self.offset(q) if q != self.src else 0.0
+            if off:
+                parted.append((self._rect(q), off))
+        region = QRegion()
+        for top, bottom in bands:
+            grew = True
+            while grew:
+                grew = False
+                for rq, off in parted:
+                    if (rq.bottom() < top or rq.top() > bottom) and \
+                            rq.bottom() + math.ceil(off) + 1 >= top and rq.top() + math.floor(off) - 1 <= bottom:
+                        top, bottom, grew = min(top, rq.top()), max(bottom, rq.bottom()), True
+            region = region.united(QRect(0, top, vp.width(), bottom - top + 1))
+        vp.update(region)
+
+    def scrolled(self, dy):
+        """The list scrolled by `dy` (the scroll bar's value; Qt has moved what was painted): the strip that scrolled in
+        repaints, widened to the parted rows whose pictures reach into it from places outside it (Qt paints only the
+        rows whose places lie in the strip: a row pushed down into the bottom strip, or pulled up into the top one, was
+        left unpainted — the M4.1 adversary's S1). Never the whole list."""
+        if self._rects is not None:                  # (inside a clock frame: the frame's rects are from before it)
+            self._rects = {}
+        h = self.lst.viewport().height()
+        if dy > 0:
+            self._update_bands([(h - dy - 1, h)])
+        elif dy < 0:
+            self._update_bands([(-1, -dy)])
 
     def _rested(self, r):
         self.springs.pop(r, None)
@@ -464,19 +596,64 @@ class Parting:
             option.rect = lst.visualRect(idx)
             option.state = option.state & ~rows.QStyle.StateFlag.State_MouseOver
             lst.delegate.paint(p, option, idx)
-        if self.slot_y is not None:
-            src = self.src if self.src is not None else None
-            if src is not None:
-                kind, _payload, lines = model.entries[src]
-                rect = lst.visualRect(model.index(src, 0))
-            else:
-                kind, lines = rows.ROW, ()
-                rect = QRect(0, 0, lst.viewport().width(), self.h)
-            y = round(self.slot_y - lst.verticalScrollBar().value())
-            slot = lst.delegate.slot_rect(kind, QRect(rect.left(), y, rect.width(), self.h + lst.delegate._lines_h(
-                lines)), lines)
+        slot = self._slot_box()
+        if slot is not None:
             lst.delegate.paint_slot(p, slot)
         p.end()
+
+    def _slot_box(self):
+        """The slot's box in the viewport now, or None (no slot)."""
+        if self.slot_y is None:
+            return None
+        lst, model = self.lst, self.lst.model()
+        src = self.src
+        if src is not None and 0 <= src < model.rowCount():
+            kind, _payload, lines = model.entries[src]
+            rect = self._rect(src)
+        else:
+            kind, lines = rows.ROW, ()
+            rect = QRect(0, 0, lst.viewport().width(), self.h)
+        y = round(self.slot_y - lst.verticalScrollBar().value())
+        return lst.delegate.slot_rect(kind, QRect(rect.left(), y, rect.width(), self.h + lst.delegate._lines_h(lines)),
+                                      lines)
+
+
+# --- ⋯: one menu per list (C4) ------------------------------------------------------------------------------------ #
+class _KeptMenu(QMenu):
+    """A menu kept between opens: closed (a click outside it, `close()`) it only hides — Qt's close destroys a
+    window's native window, and a new one is most of an open's cost."""
+
+    def closeEvent(self, event):
+        event.ignore()
+        self.hide()
+
+
+def list_menu(lst, title):
+    """List `lst`'s one ⋯ menu, empty, named for `title`: made once and kept hidden between opens (a new menu was a new
+    native window at every open, its first show the slowest part of opening it). What an open put in it goes as it
+    hides (its actions deleted later: a pick still lands, after the hide), so a closed menu holds nothing."""
+    m = getattr(lst, "row_menu", None)
+    if m is None:
+        m = _KeptMenu(lst)
+        m.setObjectName("rowmenu")
+        m.setToolTipsVisible(True)
+        m.aboutToHide.connect(lambda: _empty_menu(m))   # never exec() it, only popup(): exec's own loop could run
+        #                                                 the emptied actions' deleteLater before its pick is read
+        lst.row_menu = m
+    elif m.isVisible():
+        m.hide()
+    _empty_menu(m)
+    m.setAccessibleName(strings.MENU_NAME.format(title=title))
+    return m
+
+
+def _empty_menu(m):
+    for act in m.actions():
+        m.removeAction(act)
+        if act.parent() is m:
+            act.deleteLater()
+    for sub in m.findChildren(QMenu, options=Qt.FindChildOption.FindDirectChildrenOnly):
+        sub.deleteLater()
 
 
 # --- the writer's callbacks, on the window's thread -------------------------------------------------------------- #
@@ -531,8 +708,19 @@ class DragController(QObject):
         self.lst.drag = self
         self.lst.setAcceptDrops(True)
         self.running = None                          # the drag in progress (`_Drag`)
-        self.ghost = None
+        self.ghost = Ghost(win)                      # C5: made once, its native window too, kept hidden between drags
+        self.ghost.winId()
+        self.destroyed.connect(self.ghost.deleteLater)   # (a language switch remakes the controller)
         self._ghost_anim = None                      # the last drop's glide or fade (stopped by the next lift)
+        # C5: the pointer resting on a row (`rows.HOVER_WARM_MS`, as the list warms its episodes) bakes its ghost ahead,
+        # kept per row key and size while the row's picture is the same: a lift right after only shows it
+        self._ghosts = {}                            # (row key, w, h, dpr) -> (row picture's cacheKey, picture, anchor)
+        self.ghost_bakes = 0                         # ghost pictures baked (tests)
+        self._rest = QTimer(self)
+        self._rest.setSingleShot(True)
+        self._rest.setInterval(rows.HOVER_WARM_MS)
+        self._rest.timeout.connect(self._warm_ghost)
+        _Resting(self.lst.viewport(), self._rest)
         self.expect = None                           # the key order the window shows ahead of the store
         self.expect_tiers = {}
         self.expect_gone = {}                        # key -> where it went (a well), until the reader says so
@@ -567,10 +755,17 @@ class DragController(QObject):
         self._settle.setSingleShot(True)
         self._settle.setInterval(D["settle-ms"])
         self._settle.timeout.connect(self._settled)
+        # Auto-scroll is the hand's, not motion (M4.1, the lead's call IK-4): it runs under Reduced motion too, on a
+        # timer of its own (never the clock, whose Reduced would stop it) — the one view timer named as allowed.
         self._scroll = QTimer(self)
-        self._scroll.setInterval(16)
+        self._scroll.setInterval(theme.MOTION["auto-scroll-tick"])
         self._scroll.timeout.connect(self._auto_scroll)
-        self.lst.verticalScrollBar().valueChanged.connect(self._scrolled)
+        # A scroll during a drag asks for the strip that scrolled in, no more (Gap 2): Qt moves what was painted and
+        # paints that strip — but only the rows whose places lie in it (and, `Parting.paint_over`, a parted row from off
+        # screen); `Parting.scrolled` widens it to the parted rows whose pictures reach in from outside it (S1).
+        bar = self.lst.verticalScrollBar()
+        self._bar_was = bar.value()
+        bar.valueChanged.connect(self._scrolled)
         self.undo_key = QShortcut(QKeySequence(QKeySequence.StandardKey.Undo), win)
         self.undo_key.setContext(Qt.ShortcutContext.WindowShortcut)
         self.undo_key.activated.connect(self.undo_last)
@@ -765,6 +960,39 @@ class DragController(QObject):
             pix = self.lst.viewport().grab(slot)
         return pix
 
+    def _ghost_for(self, key, pix, size, dpr):
+        """Row `key`'s ghost from its picture `pix` (`size`, `dpr`): the one baked as the pointer rested on it while
+        that is the same picture at the same size, else baked now (and kept). -> (picture, anchor)."""
+        k = (key, size.width(), size.height(), round(dpr, 3))
+        hit = self._ghosts.get(k) if key is not None else None
+        if hit is not None and hit[0] == pix.cacheKey():
+            return hit[1], hit[2]
+        picture, anchor = ghost_picture(pix, size.width(), size.height(), dpr)
+        self.ghost_bakes += 1
+        if key is not None:
+            self._ghosts.pop(k, None)
+            self._ghosts[k] = (pix.cacheKey(), picture, anchor)
+            while len(self._ghosts) > D["ghosts-kept"]:
+                del self._ghosts[next(iter(self._ghosts))]
+        return picture, anchor
+
+    def _warm_ghost(self):
+        """(The pointer rests on the list.) The closed row under it gets its ghost baked now, for a lift (C5)."""
+        lst = self.lst
+        r, model = lst._hover, lst.model()
+        if self.running is not None or r is None or not lst.isVisible() or not 0 <= r < model.rowCount():
+            return
+        kind, row, lines = model.entries[r]
+        if kind not in (rows.HERO, rows.ROW) or model.open_key == row.key:
+            return                                   # (an opened row's picture is the screen's, taken at the lift)
+        rect = lst.visualRect(model.index(r, 0))
+        slot = lst.delegate.slot_rect(kind, rect, lines)
+        dpr = lst.viewport().devicePixelRatioF() or 1.0
+        try:
+            self._ghost_for(row.key, self._row_picture(kind, row, lines, rect, slot), slot.size(), dpr)
+        except Exception as e:                       # (ahead of time only: the lift bakes its own)
+            print(f"Window drag: a ghost baked ahead failed: {e!r}")
+
     def _lift_safely(self, *args):
         """`_lift`, and on any error on the way the drag let go at once (the writer's and the reader's holds ended): a
         half-made drag never leaves the window holding every view and refusing every move (round 2, R3-S2)."""
@@ -790,12 +1018,10 @@ class DragController(QObject):
         d.at = global_pos
         lst._hover = None
         lst._retouch()                               # the hover look goes: nothing under the hand lifts now
-        if self.ghost is None:
-            self.ghost = Ghost(self.win)
         anim, self._ghost_anim = self._ghost_anim, None
         if anim is not None and anim.alive:          # a lift within the last drop's glide / fade: that one ends now
             anim.stop()                              # (never hides this drag's ghost when it would have finished)
-        picture, anchor = ghost_picture(pix, size.width(), size.height(), dpr)
+        picture, anchor = self._ghost_for(d.key, pix, size, dpr)
         self.ghost.set_picture(picture, anchor)
         self.ghost.set_alpha(D["ghost-alpha"])
         self.ghost.place(QPointF(global_pos) - d.grab)
@@ -947,9 +1173,11 @@ class DragController(QObject):
             if bar.value() != before:
                 self._follow(d.at)
 
-    def _scrolled(self, _value):
-        if self.running is not None or self.lst.parting is not None:
-            self.lst.viewport().update()             # a parted row may stand where the scroll exposed
+    def _scrolled(self, value):
+        was, self._bar_was = self._bar_was, value
+        parting = self.lst.parting
+        if parting is not None and parting.alive and value != was:
+            parting.scrolled(value - was)
 
     # --- the end of a drag ------------------------------------------------------------------------------------- #
     def cancel(self, why=None):
@@ -1193,7 +1421,8 @@ class DragController(QObject):
                 self.lst.update(model.index(at, 0))
 
     def _glide_away(self):
-        """Into a well (or from outside): the ghost fades out (`ghost-removed`; Reduced motion: at once)."""
+        """Into a well (or from outside): the ghost fades out (`ghost-removed`; Reduced motion: a fade kept, no longer
+        than FAST)."""
         ghost = self.ghost
         if ghost is None:
             return
@@ -1441,10 +1670,7 @@ class DragController(QObject):
 
     def menu(self, row, at):
         """⋯: a plain menu in the theme's style (Esc closes it), its entries' tips shown."""
-        m = QMenu(self.lst)
-        m.setObjectName("rowmenu")
-        m.setToolTipsVisible(True)
-        m.setAccessibleName(strings.MENU_NAME.format(title=row.title))
+        m = list_menu(self.lst, row.title)
         for name, label, tip, ok in self.menu_entries(row):
             act = QAction(label, m)
             act.setToolTip(tip)

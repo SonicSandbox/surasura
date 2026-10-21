@@ -23,7 +23,7 @@ from PyQt6.QtGui import QColor, QImage, QPainter
 from PyQt6.QtWidgets import QApplication
 
 from app import theme
-from app.qt import rows, screens, shell, stones, strings, style
+from app.qt import motion, rows, screens, shell, stones, strings, style
 from app.services import library_reader, stone_plan
 from tests.fixtures import window_seed
 from tests.qt.conftest import wait_until
@@ -1493,9 +1493,9 @@ def test_a_relayout_makes_the_height_list_once_and_reads_it_for_every_row(seeded
 
 
 def test_a_setting_no_screen_reads_paints_no_widget_and_no_row(seeded, qapp):
-    """A settings write that no screen shows (reduced motion, which no screen reads yet) must not repaint. The window
-    hears every landed write, but a change it doesn't show is no change on screen: a window that flickers on an
-    unrelated save looks broken to a learner, and every needless row redraw is work the laptop does for nothing."""
+    """A settings write that changes nothing on screen (Reduced motion turned on while nothing moves) must not repaint.
+    The window hears every landed write, but a change it doesn't show is no change on screen: a window that flickers on
+    an unrelated save looks broken to a learner, and every needless row redraw is work the laptop does for nothing."""
     from PyQt6.QtCore import QEvent, QObject
 
     class Paints(QObject):
@@ -1514,14 +1514,19 @@ def test_a_setting_no_screen_reads_paints_no_widget_and_no_row(seeded, qapp):
     heard = []
     win.bridge.settings_written.connect(lambda keys: heard.append(tuple(keys)))
     before_paints = [lst.delegate.paints for lst in lists]
+    mode = motion.clock().mode
+    was = mode.setting
+    mode.set_setting("full")
     spy = Paints()
     qapp.installEventFilter(spy)
     try:
-        win.services.settings.set({"motion": "reduced"})   # the write is queued; it lands on the writer's thread
-        assert wait_until(lambda: any("motion" in keys for keys in heard))   # it really reached the window, so no no-op
+        win.services.settings.set({"app_motion": "reduced"})   # queued; it lands on the writer's thread
+        assert wait_until(lambda: any("app_motion" in keys for keys in heard))   # it reached the window: no no-op
+        assert mode.reduced                                     # and the window read it (the clock's mode)
         QTest.qWait(500)                                    # nothing happens for a while: any repaint would show here
     finally:
         qapp.removeEventFilter(spy)
+        mode.set_setting(was)
     assert spy.painted == [], spy.painted
     assert [lst.delegate.paints for lst in lists] == before_paints
 

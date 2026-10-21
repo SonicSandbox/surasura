@@ -45,8 +45,11 @@ FIN_MENU = {
     "unpin": ("Done with its cards", "Its cards go back to their place in your order"),
     "cards": ("Its {n} cards in Anki", "What happens to its new cards"),
     "cards-none": ("Its cards in Anki", "What happens to its new cards"),
-    "cards-out": ("Leave its new cards out of your order", "Its new cards leave your learning order; none is deleted"),
-    "cards-in": ("Put them back in the order", "Its new cards come back into your learning order"),
+    # P4.1 L2 (TF fix 10, IK #6; W1.2: "unstudied cards suspended and tagged, never deleted"): what Anki sees
+    "cards-out": ("Leave its new cards out of your order",
+                  "Its new cards leave your order: suspended in Anki and tagged, never deleted. Put back brings them "
+                  "back"),
+    "cards-in": ("Put them back in the order", "Its new cards come back into your order, unsuspended in Anki"),
     "mine": ("Mine", "Make its cards"),
     "mine-too": ("Mine it too", "Make cards for what isn't mined yet"),
     "folder": ("Open its folder", "Open the folder its files are in"),
@@ -465,7 +468,8 @@ DRAG_FINISHED = "{title} finished · its cards stay put"
 DRAG_KEEP = "Keep"
 DRAG_KEEP_TIP = "Keep its new cards in your order, as they are"
 DRAG_TAKE_OUT = "Leave its new cards out of your order"      # IK-1: Finished's ⋯ words, one name for one action
-DRAG_TAKE_OUT_TIP = "Its new cards leave your learning order; none is deleted: Undo puts them back"
+DRAG_TAKE_OUT_TIP = ("Its new cards leave your order: suspended in Anki and tagged, never deleted. Undo or Put back "
+                     "brings them back")         # P4.1 L2 (TF fix 10, IK #6)
 DRAG_TAKEN_OUT = "{title}: its new cards are out of your order"
 DRAG_ADDED = "Added {name} at #{n} · analysed on the next Generate"
 DRAG_ADDED_N = "Added {count} files at #{n} · analysed on the next Generate"

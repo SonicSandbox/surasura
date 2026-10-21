@@ -8,7 +8,8 @@ A card you suspend in Anki says "I know this": at Surasura's next known-words sy
   `marked` · `flag:1` … `flag:7`; `[]` is off. Read in the decks the known-words sync already reads. A setting with a
   term this doesn't know is off (said once a read), never a wider signal (review B #21).
 - **Never counted:** Surasura's own suspensions — Junban's "later" (`Surasura::later`, and `<junban_tag>::later` when
-  you named Junban's tag otherwise: adversary B #4) and Connect's shelf (`surasura::shelf`) — and Anki's leeches
+  you named Junban's tag otherwise: adversary B #4), *Take its new cards out*'s (`Surasura::out`, and
+  `<junban_tag>::out`: P4.1 L2, `unlisted.out_tag`) and Connect's shelf (`surasura::shelf`) — and Anki's leeches
   (`leech`). A Connect-made card **you** suspend counts like any (Anki's tag
   search ignores case).
 - **Newly signalled since the last read → known**: appended to KnownWord.json as the sync appends (append-only, under
@@ -40,7 +41,7 @@ import json
 import os
 
 KNOWN_BY = "anki-signal"
-NEVER = ("-tag:Surasura::later", "-tag:surasura::shelf", "-tag:leech")
+NEVER = ("-tag:Surasura::later", "-tag:Surasura::out", "-tag:surasura::shelf", "-tag:leech")
 FLAGS = tuple(f"flag:{n}" for n in range(1, 8))
 TERMS = ("suspended", "marked") + FLAGS
 SIGNAL_WORD_ONLY = True     # the Word field only (the lean asked of Sonic); False: the known-words sync's fields
@@ -72,16 +73,20 @@ def signal(settings):
 
 
 def _never(settings):
-    """The tags that never count: NEVER, and Junban's later tag under the parent you named (`unlisted.later_tag`)."""
+    """The tags that never count: NEVER, and Junban's later tag and *Take its new cards out*'s under the parent you
+    named (`unlisted.later_tag`, `unlisted.out_tag`: P4.1 L2 — a taken-out show's suspends never say "I know this")."""
     tag = (settings or {}).get("junban_tag", "")
     tag = tag.strip() if isinstance(tag, str) else ""
     try:
         from modules.junban import unlisted
-        later = unlisted.later_tag(tag)
+        later, out = unlisted.later_tag(tag), unlisted.out_tag(tag)
     except Exception:                       # Junban absent: its rule, as written there
-        later = f"{tag or 'Surasura'}::later"
-    extra = f"-tag:{later}"
-    return NEVER if extra.lower() in (n.lower() for n in NEVER) else NEVER + (extra,)
+        later, out = f"{tag or 'Surasura'}::later", f"{tag or 'Surasura'}::out"
+    never = NEVER
+    for extra in (f"-tag:{later}", f"-tag:{out}"):
+        if extra.lower() not in (n.lower() for n in never):
+            never = never + (extra,)
+    return never
 
 
 def query(terms, decks, settings=None):

@@ -988,18 +988,41 @@ def _job(item, state="waiting", reason=None, kind="mine", made=0, words=0):
             "words": words}
 
 
-def test_no_feed_or_an_off_feed_builds_todays_view_byte_for_byte():
-    """`connect=None` (no Connect in this window) and Connect off (`Feed.on` False: IK S7) leave every row, episode
-    and line as they are without the feed — a learner without Connect sees nothing new."""
-    from app.connect import feed
+def test_no_feed_builds_todays_view_byte_for_byte():
+    """`connect=None` (no Connect feed in this window) leaves every row, episode and line as they are without the
+    feed. (An off Feed no longer does: row 13, the next test.)"""
     items = items_of([("now", 1, 1, eps("星降る街の小さな工房", 1, 4), {2: {"availability": "missing"}}),
                       ("soon", 2, 2, eps("雲の上の郵便屋さん", 1, 3), {}),
                       ("graduated", 3, 3, ["白銀の書庫番 01 雨の街角.txt"], {})])
     plain = vr.build(items, WORKS, {"mine_line": 3})
-    off = feed._off({"connect_enabled": True, "logic": {"automation": False}})
     assert vr.build(items, WORKS, {"mine_line": 3}, connect=None) == plain
-    assert vr.build(items, WORKS, {"mine_line": 3}, connect=off)._replace(connect=None) == plain
     assert plain.connect is None
+
+
+@pytest.mark.parametrize("settings", [{}, {"connect_enabled": True, "logic": {"automation": False}}],
+                         ids=["switch-off", "automation-off"])
+def test_connect_off_shows_no_top_line_and_no_waiting_row(settings):
+    """Row 13 (laptop fixes): with Connect off (its switch, or D29's automation: `Feed.on` False) nothing mines by
+    itself, so no *Everything above this line mines itself* line and no *Waiting — it mines by itself* on a top row:
+    the rows read *Mine* / *Mine rest* with no "top" in their tips. Its cards in Anki and *No video* stay as they were.
+    What a wrong answer costs: every top row promising cards that never come. On (or no feed) the line stays."""
+    from app.connect import feed
+    items = items_of([("now", 1, 1, eps("星降る街の小さな工房", 1, 4), {}),
+                      ("soon", 2, 2, eps("雲の上の郵便屋さん", 1, 3), {}),
+                      ("now", 3, 3, eps("白銀の書庫番", 1, 2), {0: {"availability": "missing"},
+                                                             1: {"availability": "missing"}})])
+    cards = {1: 5}                                       # its first episode's cards are in Anki
+    plain = vr.build(items, WORKS, {"mine_line": 4}, cards=cards)
+    assert [ln.kind for ln in plain.lines].count("top") == 1                       # (the baseline: a line, Waiting)
+    assert any(r.status.kind == "waiting" for r in plain.rows)
+    off = vr.build(items, WORKS, {"mine_line": 4}, cards=cards, connect=feed._off(settings))
+    assert "top" not in [ln.kind for ln in off.lines]
+    statuses = [r.status for r in off.rows] + [e.status for r in off.rows for e in r.episodes]
+    assert not [s for s in statuses if s.kind == "waiting"]
+    assert not [s for s in statuses if "top" in s.tip]
+    assert {r.title: r.status.kind for r in off.rows} == {"星降る街の小さな工房": "mine_rest", "雲の上の郵便屋さん": "mine",
+                                                          "白銀の書庫番": "no_media"}
+    assert next(r for r in off.rows if r.title == "星降る街の小さな工房").status.tip == "1/4 mined"
 
 
 def test_each_of_connects_kinds_is_a_stone_with_its_own_words():

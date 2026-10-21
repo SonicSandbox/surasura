@@ -17,6 +17,8 @@ CHANGE = "Change ›"
 CHANGE_TIP = "Go to {section}"
 COMING_LATER = "coming later"
 COMING_WITH_HATO = "coming with hato"
+SET_UP_MINER = "Set up Anki Miner ›"                                  # row 13: the needs-Anki-Miner line's door
+SET_UP_MINER_TIP = "Go to Anki Miner in Connections: install it, or show Surasura where it is"
 CONNECTED = "connected"
 NOT_CONNECTED = "not connected"
 CHECK = "Check"
@@ -147,6 +149,10 @@ ROWS = {
                         "Surasura Connect: when you place an episode at the top of Current, Anki Miner makes its cards "
                         "and Surasura orders them. Needs Anki and Anki Miner. Nothing placed before you turn it on",
                         "connect make cards mine automatically anki miner"),
+    # row 13 (laptop fixes): *Make cards for me* while Anki Miner isn't found (and Connect is off)
+    "connect_needs_miner": ("Make cards for me", "Needs Anki Miner: set it up in Connections",
+                            "Surasura Connect makes your cards with Anki Miner. Once it is installed, this switch "
+                            "appears here", "connect make cards mine automatically anki miner needs"),
     "connect_mine_words": ("Words to make cards from", "", "Which words of an episode become cards",
                            "words to make cards from mine mode which words all unknown i+1 list"),
     "mine_line": ("Mine automatically", "The files at the top of Current mine themselves the moment they’re placed",

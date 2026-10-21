@@ -16,7 +16,9 @@ says and hands every change on through `change()`; it decides nothing.
   placing rules, Anki Miner's card, the credits…).
 - `ctx`: a frozenset of the optional modules found (`installed_modules()`: "modules.junban", …), "koe_revealed" (the
   Speech reveal gate: `enable_koe` is in settings.json, `koe.is_revealed()`) and the known-words road chosen on the page
-  ("road:anki" / "road:import"; page state, never a key — RUNBOOK 🧭 4).
+  ("road:anki" / "road:import"; page state, never a key — RUNBOOK 🧭 4). Row 13 (laptop fixes): "hato_found" (hato's
+  entry in the shared tools folder), "miner_found" (`anki_miner.find`) and "looked" (the look has answered), each found
+  on a worker — a row for a tool not here hides; its saved value is never touched.
 - **Saving** (the RUNBOOK's rule, CLAUDE.md §6): `change()` returns only the row's own keys, and nothing for a value
   already there. A per-language value (`connect_backlog_cap`, `connect_video_folders`) comes back whole with only this
   language's entry changed, plus `update(file_dict)` that re-applies this one entry onto the file's value at write time
@@ -63,6 +65,7 @@ _STORE = "app.qt.settings_store"
 FILLED_BY = {
     "setup_known": _LIVE, "setup_anki": _LIVE, "setup_mining": _LIVE, "setup_level": _LIVE, "setup_cards": _LIVE,
     "anki_connection": _LIVE, "hato": _LIVE, "jimaku": _LIVE, "anilist": _LIVE, "more_from_houseki": _LIVE,
+    "connect_needs_miner": _LIVE,               # row 13
     "export_frequency_list": _LIVE, "export_reading_words": _LIVE, "export_sentence_list": _LIVE,
     "logs": _LIVE, "data_credits": _LIVE, "version": _LIVE,
     "new_cards_a_day": _CONNECT_ROWS, "connect_enabled": _CONNECT_ROWS, "anki_miner": _CONNECT_ROWS,
@@ -137,6 +140,17 @@ _JUNBAN_ON = _all(_JUNBAN, _on("enable_junban"))
 _CONNECT = _on("connect_enabled")
 _KOE = _all(_module("modules.koe"), lambda settings, language, ctx: "koe_revealed" in ctx)
 _YOUTUBE = _module("modules.youtube_downloader")
+# Row 13 (laptop fixes): a tool's rows wait until the page's look finds it. *Make cards for me* stays while Connect
+# is on (its way off); without Anki Miner and off, one line says what it needs (the wizard's ORDER_OFF, IK-14)
+_MINER = _module("miner_found")
+
+
+def _connect_switch(settings, language, ctx):
+    return _MINER(settings, language, ctx) or _CONNECT(settings, language, ctx)
+
+
+def _needs_miner(settings, language, ctx):
+    return "looked" in ctx and not _connect_switch(settings, language, ctx)
 
 
 # --- the rows ------------------------------------------------------------------------------------------------------ #
@@ -169,7 +183,8 @@ ROWS = (
     # Anki & mining
     _row("anki_connection", "anki", "status"),
     _row("new_cards_a_day", "anki", "custom", ("words_per_day",), bounds=(0, None)),       # P9: Anki's own value
-    _row("connect_enabled", "anki", "custom", ("connect_enabled",)),                        # P5: Connect's switch
+    _row("connect_enabled", "anki", "custom", ("connect_enabled",), when=_connect_switch),  # P5: Connect's switch
+    _row("connect_needs_miner", "anki", "status", when=_needs_miner),                        # row 13: until it's found
     _row("connect_mine_words", "anki", "cards", ("connect_mine_words",), options=("list", "unknown", "i1"),
          group="from_library", when=_CONNECT),
     _row("mine_line", "anki", "custom", when=_CONNECT),                                     # P6: the store's line
@@ -264,13 +279,13 @@ ROWS = (
     # Connections (docked)
     _row("anki_miner", "connect", "custom", ("connect_anki_miner_path",)),                   # P8: Anki Miner's card
     _row("hato", "connect", "status", group="houseki"),
-    _row("jimaku", "connect", "status"),
-    _row("anilist", "connect", "status"),
+    _row("jimaku", "connect", "status", when=_never),          # row 13: hidden until hato hands its key over
+    _row("anilist", "connect", "status", when=_never),         # row 13: hidden until AniList's import is built
     # --- W3.2 L3: the covers' switch (01 §1.3 C1: off until the user says yes) and *Remove downloaded covers*
     _row("covers_download", "connect", "toggle", ("covers_download",)),
     _row("remove_downloaded_covers", "connect", "action", sub=True),
     # --- end W3.2 L3
-    _row("more_from_houseki", "connect", "status"),
+    _row("more_from_houseki", "connect", "status", when=_never),   # row 13: hidden until a tool is listed there
 
     # Journey
     _row("theme", "reading", "select", ("theme",),

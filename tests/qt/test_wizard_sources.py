@@ -40,6 +40,7 @@ from tests.test_sources_scan import _drive, _text, _write
 
 SHOWS = {"月影の旅人": 3, "Hoshizora Kissa": 2}            # made-up shows in the first folder, episodes each
 LOOSE = {"風鈴の街": 2}                                     # … and in the second
+MINER = r"C:\Programs\Anki Miner\AnkiMiner.exe"            # row 13: Anki Miner's program, as a stand-in finds it
 
 
 @pytest.fixture(autouse=True)
@@ -360,6 +361,7 @@ def line(qapp):
         area, cards = needs_ui.make_area(win)
         page = SimpleNamespace(cards=cards, show_entries=cards.show_entries)
         ny = needs_ui.NeedsYou(win, page, "ja")
+        ny.find_miner = lambda _settings: MINER         # row 13: Anki Miner found (a stand-in; nothing real looked at)
         written = []
         win.bridge.settings_written.connect(written.append)
         ny.entries = tuple(service.entries(None, offers={service.FIRST_CARDS}, cards_on=cards_on))
@@ -644,3 +646,40 @@ def test_the_folders_and_the_cards_line_never_touch_the_network(empty_library, m
     assert setup_wizard.read_folders("ja", [first])["added"] == 5
     assert len(setup_wizard.first_cards("ja", {"connect_enabled": True})) == 5     # its own watermark, then the 5
     assert opened == []
+
+
+# --- row 13 (laptop fixes): setup's *Make cards* waits for Anki Miner ------------------------------------------- #
+def test_the_make_cards_line_waits_while_anki_miner_isnt_found_and_stays_offered():
+    """Row 13: setup offered D1's line (its shows came into the top 20), but no Anki Miner here — *Make cards* would
+    turn Connect on for cards it can never make, so the line waits; the offer is kept, and it shows once Anki Miner is
+    found. Found, it is the line as before."""
+    service.offer("ja")
+    assert service.entries(_view(25), offers=service.read_offers("ja"), miner_found=False) == []
+    assert service.read_offers("ja") == {service.FIRST_CARDS}                 # still offered, nothing answered
+    assert service.read_answered("ja") == frozenset()
+    entry = service.entries(_view(25), offers=service.read_offers("ja"), miner_found=True)[0]
+    assert entry.kind == service.FIRST_CARDS and entry.actions == ("first_cards", "not_now")
+
+
+@pytest.mark.parametrize("here", [False, True], ids=["miner-absent", "miner-found"])
+def test_needs_you_asks_for_anki_miner_on_its_worker_and_shows_the_line_by_it(line, empty_library, here):
+    """Row 13, the window: Needs you's gather (a worker) asks for Anki Miner — a stand-in, never the real one — and the
+    line shows only when it is found. Never asked on the window's thread."""
+    service.offer("ja")
+    ny, win, settings, _written = line(on=False)
+    asked = []
+
+    def find(_settings):
+        asked.append(threading.current_thread() is threading.main_thread())
+        return MINER if here else None
+    ny.find_miner = find
+    ny.read_connect = lambda _lang: None
+    ny.find_offline = lambda *a: []
+    ny.read_asks = lambda: ()
+    ny.entries = ()
+    ny.view_in(_view(25))
+    assert wait_until(lambda: asked and not ny._running, 10)
+    QApplication.processEvents()
+    assert asked == [False] * len(asked), "Anki Miner was looked for on the window's thread"
+    kinds = [e.kind for e in ny.entries]
+    assert (service.FIRST_CARDS in kinds) is here

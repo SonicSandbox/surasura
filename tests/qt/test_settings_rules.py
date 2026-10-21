@@ -404,3 +404,33 @@ def test_one_language_whose_pairings_cannot_be_read_keeps_the_other_languages_so
         return real(store)
     monkeypatch.setattr(library, "pairings", pairings)
     assert sr.sources_seen(("zh", "ja")) == {"youtube", CHANNEL}
+
+
+# --- row 13 (laptop fixes): hato's line waits for hato -------------------------------------------------------------- #
+def test_without_hato_its_line_and_offer_hide_and_its_saved_rule_is_kept_until_hato_is_found(qapp, monkeypatch):
+    """Row 13: hato not found by the page's look (no usable entry in the shared tools folder) — no *From hato* line
+    and no hato in *+ rule*: a rule for a program that sends nothing. Hiding writes nothing: the saved `"hato": "top"`
+    stays, and once the look finds hato its line comes back holding it. What a wrong answer costs: a rule the learner
+    sets for a tool they don't have, or a saved rule lost by hiding it."""
+    seen_without_hato = {"youtube", CHANNEL}
+    monkeypatch.setattr(sr, "sources_seen", lambda languages=None: set(seen_without_hato))   # (nor did the store)
+    page, store = make_page({"placing_rules": RULES}, "ja", found=EVERYTHING - {"hato_found"})
+    rows = sr.attach(page)
+    QApplication.processEvents()
+    assert shown(rows) == [("source", "after-show"), ("bilibili", "finished"), (CHANNEL, "soon")]
+    assert "hato" not in rows.offered(seen_without_hato)
+    words = menu_words(open_menu(rows))
+    assert "From hato" not in words and not [w for w in words if "hato" in w.lower()]
+    rows.menu.close()
+    assert store.calls == [] and store.get()["placing_rules"] == RULES, "hiding hato's line writes nothing"
+    page._looked((EVERYTHING, {}))                     # the look (or a later one) finds hato: its line, as saved
+    assert wait_until(lambda: "hato" in rows.lines, 5)
+    assert shown(rows)[0] == ("hato", "top") and store.calls == []
+
+
+def test_a_found_hato_keeps_its_line_first_at_its_default(qapp):
+    """Row 13, the other state: hato found → its line stands first, at its default, as before."""
+    page, store = make_page({}, "ja", found=EVERYTHING)
+    rows = sr.attach(page)
+    QApplication.processEvents()
+    assert shown(rows) == [("hato", "after-show"), ("source", "after-show")] and store.calls == []

@@ -436,7 +436,14 @@ def test_not_installed_offers_install_with_the_star_line_right_beside_it(world):
     shown = [b for b in (card.install, card.star_line, card.browse, card.open_miner, card.check_again)
              if b.isVisibleTo(page)]
     assert shown == [card.install, card.star_line, card.browse, card.check_again]
-    assert abs(card.install.geometry().right() - card.star_line.geometry().left()) < 30, "the star line beside Install"
+    # the star line comes right after Install: beside it when both fit the card, else first on the next line (the
+    # buttons wrap inside the card, never cut: the wizard-text fix)
+    install, star = card.install.geometry(), card.star_line.geometry()
+    if card.install.sizeHint().width() + card.star_line.sizeHint().width() + 30 <= card.width():
+        assert abs(install.right() - star.left()) < 30, "the star line beside Install"
+    else:
+        assert star.left() == install.left() and star.top() > install.top(), "the star line under Install"
+    assert star.right() < card.width() and install.right() < card.width()
     assert S.STAR_LINE.endswith("★") and not card.star_box.isVisibleTo(page) and not card.star_link.isVisibleTo(page)
 
 

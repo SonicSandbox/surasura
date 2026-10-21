@@ -27,12 +27,13 @@ pytest.importorskip("modules.junban")
 
 from app import analyzer, anki_sync_rule, library_store, plan_engine, replan_preview  # noqa: E402
 from modules.junban import reposition, spaced, undo  # noqa: E402
-from modules.junban.tests.test_reposition import URL, _collection, _patched  # noqa: E402
+from modules.junban.tests.test_reposition import _collection, _patched  # noqa: E402
 from modules.junban.tests.test_spaced_runs import ModCollection  # noqa: E402
 from tests import plan_file_cases as cases  # noqa: E402
 
 CASE = "rp2-ja"
 DECK = "TheBank"
+URL = "http://127.0.0.1:18765"      # nothing listens here: only the patched transport answers (never Anki's own port)
 
 
 class SyncCollection(ModCollection):

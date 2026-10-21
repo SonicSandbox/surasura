@@ -294,12 +294,43 @@ def test_every_route_to_the_anki_port_is_refused_and_named():
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:   # a suite's stand-in address: a patch that slipped
         with pytest.raises(harness_guards.AnkiPortRefused):
             s.connect(("127.0.0.1", 18765))
+
+    async def through_asyncio():                                    # Windows' loop connects through its proactor
+        await asyncio.open_connection("127.0.0.1", 8765)
+    import asyncio
+    with pytest.raises(OSError):
+        asyncio.run(through_asyncio())
     claimed = harness_guards._claim_anki_tries()
     tries = _on(8765, claimed)
-    assert len(tries) >= 5, tries                                   # (urllib may try both localhost addresses)
+    assert len(tries) >= 6, tries                                   # (urllib may try both localhost addresses)
     assert all("test_every_route_to_the_anki_port_is_refused_and_named" in t for t in tries), tries
     assert any("app" + os.sep + "anki_connect.py" in t for t in tries), "a try names the code that sent it"
     assert len(_on(18765, claimed)) == 1, claimed
+    assert os.environ.get("NO_PROXY") == "*", "a loopback proxy would carry a request to the port past the check"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the child watch is Windows-only")
+def test_a_child_of_surasuras_code_that_would_reach_anki_unguarded_is_flagged(monkeypatch, tmp_path):
+    # Why: a child is its own interpreter, out of the guard's reach; SURASURA_NO_ANKI_SYNC (set for the run) keeps its
+    # Anki callers off, and a test that turns it off points the child at a closed port. A wrong answer: a child of
+    # Surasura's code reaching a real Anki unseen — or every child of an "Anki closed" test flagged for nothing.
+    assert os.environ.get("SURASURA_NO_ANKI_SYNC") == "1", "the run sets it for itself and every child"
+    surasura = [sys.executable, "-c", "pass  # from app import cli"]             # stands in for a CLI child
+    default_root, closed_root = tmp_path / "default", tmp_path / "closed"
+    default_root.mkdir()
+    closed_root.mkdir()
+    (closed_root / "settings.json").write_text('{"anki_connect_url": "http://127.0.0.1:9"}', encoding="utf-8")
+    subprocess.run(surasura, env=dict(os.environ, SURASURA_TEST_ROOT=str(default_root)), check=True)   # switch on
+    assert harness_guards._claim_anki_tries() == []
+    monkeypatch.delenv("SURASURA_NO_ANKI_SYNC")
+    subprocess.run(surasura, env=dict(os.environ, SURASURA_TEST_ROOT=str(closed_root)), check=True)    # port 9
+    subprocess.run([sys.executable, "-c", "pass"], env=dict(os.environ, SURASURA_TEST_ROOT=str(default_root)),
+                   check=True)                                                    # not Surasura's code
+    subprocess.run(["cmd", "/c", "exit 0"], check=True)                           # not Python
+    assert harness_guards._claim_anki_tries() == []
+    subprocess.run(surasura, env=dict(os.environ, SURASURA_TEST_ROOT=str(default_root)), check=True)   # 8765
+    flagged = harness_guards._claim_anki_tries()
+    assert len(flagged) == 1 and "Anki's own port and no SURASURA_NO_ANKI_SYNC" in flagged[0], flagged
 
 
 def test_other_loopback_ports_stay_open():
@@ -344,7 +375,7 @@ def test_a_real_run_fails_the_test_a_left_thread_tries_the_port_in_and_the_run_f
     # A real pytest run of the three helpers below: the first leaves a thread that tries the port during the second
     # (as the re-plan host's loop did after its patch closed); the third leaves one that tries after the last test,
     # while the run waits on its child. The second test fails naming the first; the run fails for the late try.
-    env = dict(os.environ, PYTHONPATH=PROJECT, PYTHONIOENCODING="utf-8", SURASURA_TEST_CHILD_GRACE_MS="20000")
+    env = dict(os.environ, PYTHONPATH=PROJECT, PYTHONIOENCODING="utf-8", SURASURA_TEST_CHILD_GRACE_MS="90000")
     env[PROBE] = str(tmp_path / "probe")
     env.pop("PYTEST_CURRENT_TEST", None)                        # the nested run starts as any run does
     env.pop("PYTEST_ADDOPTS", None)                             # why: a `-p <plugin>` there is not on this PYTHONPATH
@@ -373,7 +404,7 @@ def _wait_for(condition, seconds=20):
     return False
 
 
-def _left_thread_tries_the_port_once(ready):
+def _left_thread_tries_the_port_once(ready, then=None):
     import socket
 
     def run():
@@ -383,6 +414,8 @@ def _left_thread_tries_the_port_once(ready):
                 s.connect(("127.0.0.1", 8765))
             except OSError:
                 pass
+        if then:
+            open(then, "w").close()
     threading.Thread(target=run, name="left-behind", daemon=True).start()
 
 
@@ -400,9 +433,12 @@ def test_helper_is_running_when_the_thread_tries():
 
 @pytest.mark.skipif(not os.environ.get(PROBE), reason="a helper of the nested run above")
 def test_helper_leaves_a_thread_that_tries_after_the_last_test():
-    subprocess.Popen([sys.executable, "-c", "import time; time.sleep(3)"])     # the run waits on it after the tests
+    tried = os.environ[PROBE] + ".tried"
+    # The run waits on this child after the tests, and the child waits until the thread has tried (at most 60 s).
+    wait = f"import os, time; [time.sleep(0.05) for _ in range(1200) if not os.path.exists({tried!r})]"
+    subprocess.Popen([sys.executable, "-c", wait])
     _left_thread_tries_the_port_once(lambda: _wait_for(
-        lambda: os.environ.get("PYTEST_CURRENT_TEST") == harness_guards.BETWEEN_TESTS))
+        lambda: os.environ.get("PYTEST_CURRENT_TEST") == harness_guards.BETWEEN_TESTS), then=tried)
 
 # --- every module suite takes the guards ------------------------------------------------------------------------- #
 
@@ -436,7 +472,7 @@ def test_every_module_suite_on_disk_takes_the_harness_guards():
     suites = sorted(glob.glob(os.path.join(PROJECT, "modules", "*", "tests")))
     if not suites:
         pytest.skip("no module suites in this checkout (the private parts are absent)")
-    wanted = set(harness_guards.EVERY_SUITE) | {"pytest_sessionfinish"}
+    wanted = set(harness_guards.EVERY_SUITE) | {"pytest_sessionfinish", "pytest_configure"}
     for suite in suites:
         path = os.path.join(suite, "conftest.py")
         assert os.path.isfile(path), f"{suite} has no conftest.py: it runs without the harness guards"

@@ -19,8 +19,9 @@ from tests.network_guard import around_a_test
 # The guards every suite shares (each module suite's conftest imports them too): the real data roots, the gap
 # between tests, Tk interpreters freed on the main thread, no child left running, no real Anki reached.
 from tests.harness_guards import (_guard_real_local_data, _guard_anki_port,  # noqa: F401
-                                  _clear_destroyed_default_root, pytest_collection, pytest_runtest_teardown,
-                                  pytest_runtestloop, session_finish_guards)
+                                  _clear_destroyed_default_root, pytest_collection, pytest_runtest_protocol,
+                                  pytest_runtest_teardown, pytest_runtestloop, session_finish_guards,
+                                  configure_guards)
 
 quiet_windows()                             # test windows open on a desktop of their own: never seen, never typed into
 
@@ -438,6 +439,7 @@ def _proc_stats():
 
 
 def pytest_configure(config):
+    configure_guards(config)
     path = os.environ.get("SURASURA_TEST_PROFILE")
     if not path:
         return

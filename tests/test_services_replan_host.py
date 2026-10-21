@@ -508,7 +508,8 @@ def test_the_force_path_a_move_landing_mid_write_runs_exactly_one_more_job(gate,
                 live = replan.host._host
                 replan.finish(time.monotonic() + 5)
                 if live is not None and live._thread is not None:
-                    live._thread.join(5)
+                    live._thread.join(10)
+                    assert not live._thread.is_alive(), "the host's thread outlived its finish (and the stand-in)"
     finally:
         store.close()
 

@@ -470,6 +470,16 @@ class Parting:
             self._repaint_band(rect.top() + math.floor(min(0.0, was, v)) - 1,
                                rect.bottom() + math.ceil(max(0.0, was, v)) + 1)
 
+    def repaint_rows(self, places):
+        """(The list's hover look in motion, during a drag: Gap 2 item 4.) Each place's row repaints where it is painted
+        now — the band from its place to its place moved by its offset — never the whole list."""
+        for r in places:
+            rect = self._rect(r)
+            if rect.isValid():
+                off = self.offset(r) if r != self.src else 0.0
+                self._repaint_band(rect.top() + math.floor(min(0.0, off)) - 1,
+                                   rect.bottom() + math.ceil(max(0.0, off)) + 1)
+
     def _collect(self):
         """Inside a clock frame (C6): True, and the frame's collection begun — the rows' rects kept for the frame, its
         bands asked for at its end, in one update."""

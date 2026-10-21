@@ -21,7 +21,7 @@ from app import library_store as ls
 from app import sources
 from tests.test_library_store_support import LANGUAGES
 from tests.test_sources_scan import (_ScandirSpy, _cache, _current, _drive, _empty, _fresh_module_state,  # noqa: F401
-                                     _items, _library_files, _look, _SHOWS, _spy_reads, _text, _tree, _video, _write)
+                                     _items, _library_files, _look, _settle, _SHOWS, _spy_reads, _text, _tree, _video, _write)
 
 CARD = os.path.join("Old Backups", "Console Card")
 BLUE = os.path.join(CARD, "loader", "skins", "blue")
@@ -440,3 +440,24 @@ def test_the_writers_undo_of_a_skip_that_removed_nothing_reads_the_folder_again(
     finally:
         w.finish(time.monotonic() + 5)
         store.close()
+
+
+def test_a_subtitle_folder_skipped_after_it_was_read_comes_back_with_read_again_on_a_quick_look():
+    """A `Subs` folder is listed with its show's folder, whose time doesn't move when it is skipped or read again: a
+    change to the skips lists everything once, so *Read again* brings its subtitles back on the next quick look."""
+    language = "ja"
+    store, _data = _empty(language)
+    src = _drive("Media")
+    show = _SHOWS[language][0]
+    _video(os.path.join(src, show, f"{show} - 01.mkv"))
+    _write(os.path.join(src, show, "Subs", f"{show} - 01.ja.srt"), _text(language, 1))
+    _settle(src)                                                                 # folder times the cache trusts
+    with store:
+        root = store.add_source(src)
+        assert _look(store, language, root, first=True)["added"] == 1
+        change = store.skip_folder(os.path.join(src, show, "Subs"))
+        assert len(change.trash_ids) == 1
+        _look(store, language, root)
+        assert store.read_folder_again(change.folder)
+        back = _look(store, language, root)                                      # quick: the show folder unchanged
+        assert any(store.item(i)["rel_path"].endswith(".ja.srt") for i in back["ids"])

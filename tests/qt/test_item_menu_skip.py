@@ -1,5 +1,5 @@
-"""Current's ⋯ › *Never read this folder* (K6, `app/qt/item_menu.py`): the item's folder and each one above it inside its
-source folder, asked on the looks' worker and added before *Open its folder*; a pick writes through the window's writer
+"""Current's ⋯ › *Never read this folder* (K6, `app/qt/item_menu.py`): the item's folder and each one above it inside
+its source folder, asked on the looks' worker and added before *Open its folder*; a pick writes through the window's writer
 with a toast and Undo. On the window's seed through a recording writer, the folders a stand-in looks answer (the store's
 own answer is `Store.skip_choices`, tested in tests/test_sources_skip.py).
 

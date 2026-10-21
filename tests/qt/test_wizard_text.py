@@ -144,9 +144,7 @@ def _child():
                 shell.close()
                 shell.deleteLater()
                 app.processEvents()
-    from app.qt import bridge                         # (page 5's switch saved on starts Connect's marks on a worker:
-    bridge.wait_for_workers(5000)                     # one still running as the process ends crashes it, as at quit)
-    print("RESULT " + json.dumps([out, checked, app.primaryScreen().devicePixelRatio()]), flush=True)
+    print("RESULT " + json.dumps([out, checked, app.primaryScreen().devicePixelRatio()]))
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows' own fonts and scaling (the app's platform)")

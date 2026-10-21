@@ -741,3 +741,7 @@ def test_B2_7_one_look_says_which_tools_are_here_and_one_rule_when_make_cards_is
         T.MISSING, T.MISSING, T.INSTALLED, T.INSTALLED, T.INSTALLED, T.READY]
     assert [T.make_cards_shown(level) for level in (T.MISSING, T.INSTALLED, T.READY)] == [False, True, True]
     assert T.make_cards_shown(T.MISSING, on=True)
+    # the wizard's answer (WZ-4): ready only, whatever the switch
+    assert [T.make_cards_shown(level, ready=True) for level in (T.MISSING, T.INSTALLED, T.READY)] == [
+        False, False, True]
+    assert not T.make_cards_shown(T.INSTALLED, on=True, ready=True)

@@ -1906,9 +1906,10 @@ class CardsPage(_Page):
         return bool(self.look) and self.look.get("state") == "ready"
 
     def offered(self):
-        """Whether *Make cards for me* is shown: the one answer Settings and *Needs you* give too
-        (`services.tools_found.make_cards_shown`, IK2-3: Anki Miner installed; what it still needs is said above)."""
-        return bool(self.look) and tools_found.make_cards_shown(tools_found.miner_level(self.look.get("state")))
+        """Whether *Make cards for me* is shown: the shared rule's *ready* answer (`services.tools_found`, WZ-4: on by
+        default once Anki Miner is ready; Settings and *Needs you* ask its *installed* answer)."""
+        return bool(self.look) and tools_found.make_cards_shown(tools_found.miner_level(self.look.get("state")),
+                                                                ready=True)
 
     def answers(self):
         """The switch's answer; None while it isn't shown (a False would turn Connect off on *Set up again*)."""
@@ -1976,7 +1977,7 @@ class CardsPage(_Page):
         self.head.setStretchFactor(self.name, 0 if ready else 1)     # *Recommended* beside the name, not far right
         self.dot.set_state(dot, S.MINER_FIX_TIP if dot == "warn" else "")
         _show(self.rec, ready)
-        _show(self.make, self.offered())                  # absent until Anki Miner is installed (WZ-4, IK2-3)
+        _show(self.make, self.offered())                  # absent unless Anki Miner is ready (WZ-4)
         _show(self.btn_star, look is not None and not ready)
         _show(self.star_quiet, ready)                     # the star line stays, quieter, once it's ready
         _show(self.btn_install, state in ("missing", "too-old") or update)

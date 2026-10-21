@@ -714,9 +714,9 @@ def test_anki_miner_needing_a_fix_shows_its_amber_dot_its_sentence_and_check_aga
     assert page.dot.state == "warn" and page.name.text() == fix["say"] and page.sub.text() == fix["do"]
     assert page.dots[3].state == "warn" and not page.btn_check.isHidden()
     assert page.btn_install.isHidden()
-    # IK2-3: *Make cards for me* by the one answer Settings and Needs you give (`services.tools_found`): installed is
-    # enough, its fix said above it; the switch's answer is saved as Settings' would be
-    assert not page.make.isHidden() and page.offered() and page.answers() == {"make_cards": True}
+    # WZ-4 (Sonic's answer): installed but not ready, *Make cards for me* stays hidden and nothing turns Connect on —
+    # the shared rule's *ready* answer (`services.tools_found`), never the *installed* one Settings asks
+    assert page.make.isHidden() and not page.offered() and page.answers() == {"make_cards": None}
 
 
 # --- 6 · your list ----------------------------------------------------------------------------------------------------------- #

@@ -9,10 +9,14 @@ setup wizard (laptop fixes row 13; its review's B2-7 / IK2-3: each had decided i
 - `miner_level(state)`: a fuller look's state — the wizard's (`anki_miner_setup.look`: missing · too-old · needs-setup
   · ready) or the card's (`settings_values.card_state`: missing · setup · ready) — on the same scale: `MISSING`,
   `INSTALLED` (too old, or its own setup not finished) or `READY`.
-- `make_cards_shown(level, on=False)`: **the** answer to "when is *Make cards for me* offered" — once Anki Miner is
-  installed (any level above `MISSING`: what Settings and *Needs you* can know without asking Anki or running Anki
-  Miner; what still needs doing is said beside it — the wizard's fix line, the card's steps, Connect's own reason), or
-  while it is on already (M3: the switch is the way off; then, off, it collapses to the "needs Anki Miner" line).
+- `make_cards_shown(level, on=False, ready=False)`: **the** rule for "when is *Make cards for me* offered", with its two
+  answers — each caller asks the one its own rule asks:
+  - installed (`ready=False`; Settings, *Needs you*, Anki Miner's card): any level above `MISSING` — what they can know
+    without asking Anki or running Anki Miner; what still needs doing is said beside it (the card's steps, Connect's own
+    reason) — or while it is on already (M3: the switch is the way off; then, off, it collapses to the "needs Anki
+    Miner" line);
+  - ready (`ready=True`; the setup wizard, WZ-4, Sonic 2026-10-14: on by default once Anki Miner is *ready*): only
+    `READY`, from the wizard's full look.
 
 Qt-free, light: the standard library and the two readers named above.
 """
@@ -56,6 +60,9 @@ def miner_level(state):
     return _LEVEL.get(state, INSTALLED) if state else MISSING
 
 
-def make_cards_shown(level, on=False):
-    """Whether *Make cards for me* is offered: Anki Miner installed (or ready), or the switch on already (M3)."""
+def make_cards_shown(level, on=False, ready=False):
+    """Whether *Make cards for me* is offered: Anki Miner installed (or ready), or the switch on already (M3); asked
+    `ready` (the wizard, WZ-4): only once Anki Miner is ready."""
+    if ready:
+        return level == READY
     return bool(on) or level in (INSTALLED, READY)

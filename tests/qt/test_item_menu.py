@@ -339,6 +339,31 @@ def test_split_here_on_a_closed_row_asks_after_which_episode(world):
     assert calls(writer, "split")[-1][1] == [row.episodes[3].id]
 
 
+def test_B2_2_a_show_the_soon_line_runs_through_splits_each_episode_by_its_own_piece(world):
+    """The row of a show the Soon line cuts holds two pieces (P-LF-16: NOW's up to `soon_from`, then Soon's own). ✂ on
+    a Soon episode splits Soon's piece — never NOW's, where the store finds no such item and does nothing — and the seam
+    the line already makes is never offered: no menu entry, no seam, and asked anyway no toast and no Undo."""
+    _seed, win, writer = world()
+    a, _b = split_parts(win)
+    open_row(win, a)
+    row = rows_of(win)[a]._replace(soon_from=2, soon_piece=987654)    # Ep 1–2 NOW's piece, Ep 3… Soon's
+    assert len(row.episodes) >= 4
+    entry = next(e for e in win.items.entries(row) if e.name == "split")
+    offered = [c.payload.id for c in entry.children]
+    assert row.episodes[2].id not in offered and row.episodes[1].id in offered and row.episodes[3].id in offered
+    lst = lst_of(win)
+    seams = [p[3].id for p in lst.delegate._seam_parts(row, lst.visualRect(lst.model().index(a, 0)))]
+    assert row.episodes[2].id not in seams and row.episodes[3].id in seams
+    toast = win.toasts.card.message if win.toasts.card is not None else None
+    assert win.items.split(row, row.episodes[2]) is None and calls(writer, "split") == []
+    settle()
+    assert (win.toasts.card.message if win.toasts.card is not None else None) == toast     # no toast, no Undo
+    win.items.split(row, row.episodes[3])
+    assert calls(writer, "split")[-1] == ("split", [row.episodes[3].id], {"piece_id": 987654})
+    win.items.split(row, row.episodes[1])
+    assert calls(writer, "split")[-1] == ("split", [row.episodes[1].id], {"piece_id": row.piece_id})
+
+
 def test_a_single_file_and_hatos_mix_offer_no_split_and_no_seam(world):
     _seed, win, _w = world()
     rs = rows_of(win)

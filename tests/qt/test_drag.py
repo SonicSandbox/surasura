@@ -18,6 +18,7 @@ What a wrong answer would cost a learner:
 import os
 import threading
 import time
+from collections import namedtuple
 
 import pytest
 
@@ -1753,6 +1754,61 @@ def test_P_LF_16_nudges_around_a_show_the_soon_line_runs_through_move_beside_it_
     win.moves.nudge(rs[at - 1], 1)
     op = calls(writer)[-1]
     assert op[0] == "move" and op[2]["tier"] == "soon" and op[2]["after_id"] == show.episodes[-1].id
+
+
+def _sent_to_soon_lands_after_the_show(win, writer, show, moved):
+    """B2-1: what is sent to Soon with the line inside a show lands after that show's last file — never at Soon's very
+    top, between its NOW and Soon files (the show split again) — and the toast counts only NOW's files above it."""
+    op = calls(writer, "move")[-1]
+    assert op[1] == drag.ids_of(moved) and op[2]["tier"] == "soon"
+    assert op[2]["before_id"] is None and op[2]["after_id"] == show.episodes[-1].id
+    rs = rows_of(win)
+    place = next(i for i, r in enumerate(rs) if r.key == moved.key)
+    assert rs[place - 1].key == show.key                              # just below the show the line runs through
+    now_files = sum(r.n_files for r in rs[:place]) - (show.n_files - show.soon_from)      # its Soon file isn't NOW's
+    assert win.toasts.card.message == strings.DRAG_SOON.format(title=moved.title, n=place + 1, files=now_files)
+    assert wait_until(lambda: win.moves.expect is None, 3)
+    rs = rows_of(win)                                                 # the store's view, once the move landed
+    show_now = next(r for r in rs if r.key == show.key)
+    assert [r.key for r in rs].count(show.key) == 1 and show_now.soon_from == 4      # still one row, never split
+    assert rs[rs.index(show_now) + 1].key == moved.key
+
+
+def test_B2_1_a_drop_on_the_soon_well_lands_after_a_show_the_soon_line_runs_through(world):
+    seed, win, writer, at = _soon_line_through_a_show(world)
+    rs = rows_of(win)
+    show, moved = rs[at], rs[1]
+    lift(win, 1)
+    point = well_point(win, "soon")
+    move_global(win, point)
+    release_global(win, point)
+    _sent_to_soon_lands_after_the_show(win, writer, show, moved)
+
+
+def test_B2_1_the_menus_soon_lands_after_a_show_the_soon_line_runs_through(world):
+    seed, win, writer, at = _soon_line_through_a_show(world)
+    rs = rows_of(win)
+    show, moved = rs[at], rs[1]
+    win.moves.menu_pick(moved, "soon")
+    _sent_to_soon_lands_after_the_show(win, writer, show, moved)
+
+
+def test_B2_1_soon_slot_is_the_one_rule_and_counts_only_now_files():
+    """The pure rule the three callers share: with no show cut by the line, Soon's top (no anchor) and every file above
+    it; with one, after its last file and its Soon files left out of the count."""
+    Ep = namedtuple("Ep", "id")
+    R = namedtuple("R", "key tier n_files episodes soon_from")
+
+    def row(key, tier, ids, cut=None):
+        return R(key, tier, len(ids), tuple(Ep(i) for i in ids), cut)
+    plain = [row("a", "now", [1, 2]), row("b", "now", [3]), row("c", "soon", [4, 5])]
+    assert drag.soon_slot(plain, 0) == (1, 1, None)
+    cut = [row("a", "now", [1, 2]), row("b", "now", [3, 4, 5], cut=1), row("c", "soon", [6])]
+    assert drag.soon_slot(cut, 0) == (1, 1, 5)                        # after the show's #5; its two Soon files out
+    assert drag.soon_slot(cut, None) == (2, 3, 5)
+    whole = cut[:2]                                                   # the show holds the whole of Soon
+    assert drag.soon_slot(whole, 0) == (1, 1, 5)
+    assert drag.soon_slot(cut, 1) == (1, 2, None)                     # the show itself sent: Soon's top, whole
 
 
 def test_the_menu_leaves_out_up_next_for_up_next_and_finished_for_splits_and_hatos_mix(world):

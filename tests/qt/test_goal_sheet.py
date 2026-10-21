@@ -295,6 +295,31 @@ def test_G2_move_up_closes_the_sheet_moves_the_first_piece_keeps_the_rest_in_goa
     assert [p.line for p in rest.pieces] == ["Ep 13–24"]              # the rest stays in Goal
 
 
+def test_B2_1_move_to_soon_lands_after_a_show_the_soon_line_runs_through(world):
+    """IK2-1: Goal's *Move to Soon* takes Current's ⋯ *Soon* rule (`drag.soon_slot`): with the store's Soon line inside
+    NOW's last show (P-LF-16), the piece lands after that show's last file — never at Soon's very top, between the
+    show's NOW and Soon files (the show split again)."""
+    seed, win, writer = world()
+    rs = rows_of(win)
+    at = next(i for i, r in enumerate(rs) if r.tier == "soon") - 1
+    show = rs[at]
+    top_of_soon = min(r["ord"] for r in seed.library.items() if r["tier"] == "soon")
+    seed.library.commit(items=[{"id": show.episodes[-1].id, "tier": "soon", "ord": top_of_soon - 1024}], order=True)
+    assert wait_until(lambda: rows_of(win)[at].soon_from is not None, 5)
+    settle()
+    sheet = open_sheet(win)
+    work = two_part(win)
+    sheet.pick(work, "soon")
+    op = calls(writer, "move")[0]
+    assert op[1] == list(work.pieces[0].item_ids) and op[2]["tier"] == "soon"
+    assert op[2]["before_id"] is None and op[2]["after_id"] == show.episodes[-1].id
+    first = work.pieces[0].item_ids[0]
+    assert wait_until(lambda: any(e.id == first for r in rows_of(win) for e in r.episodes), 5)
+    rs = rows_of(win)
+    place = next(i for i, r in enumerate(rs) if any(e.id == first for e in r.episodes))
+    assert rs[place - 1].key == show.key and rs[place - 1].soon_from is not None     # the show still one row
+
+
 def test_a_one_part_title_moves_whole_and_its_toast_says_so(world):
     seed, win, writer = world()
     sheet = open_sheet(win)

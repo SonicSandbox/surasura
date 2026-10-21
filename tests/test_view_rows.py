@@ -62,7 +62,7 @@ def test_episode_numbers_come_from_the_file_names_in_every_common_shape():
     assert vr.episode_number("[Group] 海辺の図書室 - 11 [1080p].srt") == 11
     assert vr.episode_number("なぜ人は行列に並ぶのか.srt") is None
     # a year in brackets, a date and a resolution are never an episode (W2.2 review A-11)
-    assert vr.episode_number("天気の子 (2019).srt") is None
+    assert vr.episode_number("雨音の子 (2019).srt") is None
     assert vr.episode_number("Hanashi Radio 2026-09-02.srt") is None
     assert vr.episode_number("海辺の図書室 - 05 [1080p] x264.mkv") == 5
     # a release's checksum in brackets is never an episode: [E04F4EFB] was read as "E04"
@@ -158,6 +158,50 @@ def test_a_show_wholly_below_the_line_stays_below_and_a_show_apart_from_the_line
         ("星降る街の小さな工房", "now", 4), ("海辺の図書室", "soon", 3), ("星降る街の小さな工房", "soon", 4)]
     assert all(r.soon_from is None for r in view.rows)
     assert [ln.after for ln in view.lines if ln.kind == "soon"] == [0]
+
+
+def test_B2_9_a_show_holding_the_whole_of_soon_still_has_the_soon_line_drawn_after_it():
+    """B2-9: when Soon is nothing but the tail of the show the line runs through, the line is still drawn after that
+    show (before, no row was in Soon, so none was drawn) — by the one rule the drag's lines use too."""
+    items = _straddle()
+    items = {k: v for k, v in items.items() if v["work_id"] != 5}     # no other show in Soon
+    view = vr.build(items, WORKS, {"mine_line": 20, "soon_line": 25})
+    assert [(r.title, r.soon_from) for r in view.rows] == [("星降る街の小さな工房", None), ("雲の上の郵便屋さん", 3)]
+    soon = [ln for ln in view.lines if ln.kind == "soon"]
+    assert len(soon) == 1 and soon[0].after == 1 and "25" in soon[0].tip
+    assert vr.soon_line_after(view.rows) == 1
+    assert vr.soon_line_after(view.rows[:1]) is None                   # nothing in Soon, nothing cut: no line
+
+
+def test_B2_8_before_connects_first_look_the_rows_show_no_top_line_and_no_waiting():
+    """B2-8 (Michi's call): the reader builds with the feed's last look (`Provider.latest`); before any look Connect is
+    not known to be on (`feed.NOT_LOOKED`: `on` False, the one test), so the first screen never shows the top line and
+    *Waiting* only for them to go once a look finds Connect off. Nothing is read for it: no stamp, no record."""
+    from app.connect import feed
+    looked = []
+    provider = feed.Provider("ja", lambda: {"connect_enabled": False}, stamp=lambda **k: looked.append("stamp"),
+                             read=lambda **k: looked.append("read"))
+    first = provider.latest()
+    assert first is feed.NOT_LOOKED and first.on is False and first.line is None and looked == []
+    items = _straddle()
+    without = vr.build(items, WORKS, {"mine_line": 20, "soon_line": 25})
+    assert [ln.kind for ln in without.lines] == ["top", "soon"]           # no Feed at all: today's view
+    start = vr.build(items, WORKS, {"mine_line": 20, "soon_line": 25}, connect=first)
+    assert [ln.kind for ln in start.lines] == ["soon"]
+    assert not any(r.status is not None and r.status.kind == "waiting" for r in start.rows)
+    off = vr.build(items, WORKS, {"mine_line": 20, "soon_line": 25}, connect=provider.feed())
+    assert off.lines == start.lines and [r.status for r in off.rows] == [r.status for r in start.rows]   # no flash
+
+
+def test_B2_2_split_piece_names_each_episodes_own_piece_and_no_split_the_line_already_makes():
+    view = vr.build(_straddle(), WORKS, {"mine_line": 20, "soon_line": 25})
+    show = view.rows[1]
+    assert (show.piece_id, show.soon_from, show.soon_piece) == (11, 3, 12)
+    assert vr.split_piece(show, 1) == (11, 1) and vr.split_piece(show, 2) == (11, 2)
+    assert vr.split_piece(show, 3) is None                             # the Soon line parts it there already
+    assert vr.split_piece(show, 0) is None and vr.split_piece(view.rows[2], 5) == (13, 5)
+    one = vr.build(_straddle(piece_ids=False), WORKS, {"mine_line": 20, "soon_line": 25}).rows[1]
+    assert one.soon_from == 3 and vr.split_piece(one, 3) is None       # no piece: nothing to split
 
 
 def test_a_show_the_soon_line_runs_through_is_the_same_row_object_next_build_and_survives_the_first_screen_cache():

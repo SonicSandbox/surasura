@@ -1458,6 +1458,56 @@ def test_C3_a_drop_across_a_line_relays_the_rows_out_never_resets_and_keeps_the_
     assert calls(writer, "move")
 
 
+def test_IKB8_a_drop_across_a_line_above_the_screen_moves_no_row_on_screen(world):
+    """IKB-8: a drop across the Soon line relays the rows out (C3) and keeps the scroll value, where a reset put the top
+    row back from its anchor. With the line's old place above the screen, no row on screen may shift by the line's
+    height at the drop: each sits where the parting painted it just before. (An anchor kept by the top row's key, as
+    the reset's, would be wrong here: that row moved up a place with the drop, so the list would jump by a row.)"""
+    seed, win, writer = world(files=2000, apply=False, size=(1280, 900))
+    clock, undo = _on_test_time()
+    try:
+        lst = lst_of(win)
+        model = lst.model()
+        bar = lst.verticalScrollBar()
+
+        def line_at():
+            return next(i for i, e in enumerate(model.entries) if any(ln.kind == "soon" for ln in e[2]))
+        at = line_at()
+        src = 2
+        assert model.entries[src][1].tier == "now" and src < at
+        moved_key = model.entries[src][1].key
+        hows, real = [], model.set_entries
+        model.set_entries = lambda entries: hows.append(real(entries)) or hows[-1]
+        lift(win, src)                                                # a NOW row above both lines
+        top = at + 3
+        bar.setValue(lst.visualRect(model.index(top, 0)).top() + bar.value() + 20)   # scrolled past the Soon line
+        QApplication.processEvents()
+        to = top + 4
+        target = row_point(win, to)
+        move_global(win, target)
+        clock.advance(1000)                                           # the rows have parted and rest
+        QApplication.processEvents()
+        p = lst.parting
+        assert lst.visualRect(model.index(at, 0)).bottom() < 0        # the line's old place is above the screen
+        vh = lst.viewport().height()
+        before = {}
+        for i in range(model.rowCount()):
+            r = lst.visualRect(model.index(i, 0))
+            if i != p.src and r.bottom() >= 0 and r.top() < vh:
+                before[model.entries[i][1].key] = r.top() + int(round(p.offset(i)))
+        assert len(before) >= 6
+        release_global(win, target)
+        clock.advance(1000)                                           # the ghost home, the rows at rest
+        QApplication.processEvents()
+        assert "relayout" in hows and "reset" not in hows, hows       # C3's branch, not the reset
+        assert line_at() == at - 1                                    # the drop crossed the Soon line: it moved
+        after = {model.entries[i][1].key: lst.visualRect(model.index(i, 0)).top() for i in range(model.rowCount())}
+        moved = {k: (y, after[k]) for k, y in before.items() if k != moved_key and after[k] != y}
+        assert moved == {}, moved                                     # no row on screen shifted at the drop
+    finally:
+        undo()
+
+
 def test_C6_no_row_is_painted_ahead_while_a_drag_parts_the_rows_and_it_resumes_after(world, monkeypatch):
     """C6: the list's painting ahead (`_warm_one`, a row a turn) ran under a drag, 51 rows in one 15 ms chain during
     auto-scroll. While the rows part it waits — the shown list and a hidden one laid out like it — and starts again

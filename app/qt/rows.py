@@ -2456,6 +2456,11 @@ class RowsView(QListView):
                 for i in looks:                          # only the rows that look different (dirty rows, never all)
                     self.update(model.index(i, 0))
         elif how == "relayout":
+            # S19's written skip: a relayout (a row opened, or C3's lines moving inside a drop's span) repaints the whole
+            # viewport — Qt's QListView repaints it on its delayed layout (`doItemsLayout`) whatever is asked here, so a
+            # narrower update would change nothing; every row comes from its kept picture (`_same_face`). Only lines that
+            # take no row height (a groove drawn in the gap) would let the span alone repaint: a look change, W4.1's.
+            # The scroll value is kept, never the top row's anchor (IKB-8): a drop moved that row a place, as it painted.
             self.looks_changed = True
             self._rest()
             self.relayout()

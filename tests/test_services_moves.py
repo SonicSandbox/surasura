@@ -1826,7 +1826,7 @@ def test_an_explorer_drop_whose_anchor_vanishes_at_the_write_tries_the_next_neig
     store.item = lambda i: {"tier": "now"}
     tried = []
 
-    def insert_at(files, anchor, before=True, started_at=None):
+    def insert_at(files, anchor, before=True, started_at=None, origins=None):
         tried.append((anchor, before))
         if anchor == 5:
             raise ls.StoreConflict("the anchor item is gone")

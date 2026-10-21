@@ -31,11 +31,11 @@ from tests.test_services_moves import Heard, Library, _outside_file, lib, make_w
 
 
 class Writer(FakeWriter):
-    """test_drag's recording writer, with `insert_at`'s `into` (W3.2 Q3)."""
+    """test_drag's recording writer, with `insert_at`'s `into` (W3.2 Q3) and `origin` (K21)."""
 
-    def insert_at(self, paths, tier, before_id=None, after_id=None, near=(), label=None, into=None):
+    def insert_at(self, paths, tier, before_id=None, after_id=None, near=(), label=None, into=None, origin=True):
         return self._put("insert_at", [], label, files=list(paths), tier=tier, before_id=before_id,
-                         after_id=after_id, into=into)
+                         after_id=after_id, into=into, origin=origin)
 
 
 @pytest.fixture
@@ -89,6 +89,7 @@ def test_an_episode_whose_show_is_in_current_joins_it_in_its_folder_after_its_la
     kw = inserts(writer)[0]
     assert kw["files"] == [path] and kw["tier"] == split[1].tier
     assert kw["after_id"] == split[1].episodes[-1].id and kw["into"] == folder
+    assert kw["origin"] is True                                      # K21: where it came from is recorded
     assert win.moves.toasted.text == strings.DRAG_ADDED.format(name=os.path.basename(path), n=split[1].index)
 
 
@@ -186,6 +187,7 @@ def test_paste_text_writes_one_utf8_txt_and_adds_it_at_the_top(world):
     with open(path, "rb") as f:
         assert f.read().decode("utf-8") == text                      # one UTF-8 .txt, the text as pasted
     assert (kw["tier"], kw["after_id"]) == ("now", None)
+    assert kw["origin"] is False                                     # K21: a temporary file is no one's origin
     assert win.moves.toasted.text == strings.DRAG_ADDED.format(name="台所の会話: 朝/夜", n=1)
     writer.free()                                                    # N7: landed, its temporary folder goes
     assert wait_until(lambda: not os.path.exists(os.path.dirname(path)), 5)

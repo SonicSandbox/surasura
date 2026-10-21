@@ -2613,3 +2613,363 @@ def test_the_releases_already_in_are_a_folders_own_never_its_subfolders():
         _write(os.path.join(src, show, f"[Grp] {show} - 01.srt"), _text(language, 5))
         _settle(os.path.join(src, show))
         assert _look(store, language, root)["added"] == 1 and _items(store) == 2
+
+
+# --- item 8a: a copy gone with the data folder is copied back ------------------------------------------------------ #
+
+def _start_afresh(language, store, data_dir):
+    """The laptop's reset (item 8): the store's own folder and the sources' folder-time cache deleted, and the data
+    folder's content — User Files, with the store's JSON copy, kept — then the app started again: `maintain` rebuilds
+    the store from the copy (§6.8), every item pointing at a copy that is gone. -> the store, opened again."""
+    import glob
+    user_files_dir, db = store.user_files_dir, store.db_path
+    store.close()
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE      # the JSON copy written
+    for f in glob.glob(db + "*"):
+        try:
+            os.remove(f)
+        except PermissionError:                                                 # the lock file, held by its process
+            pass
+    shutil.rmtree(os.path.dirname(sources.cache_path(language)), ignore_errors=True)
+    for name in os.listdir(data_dir):
+        p = os.path.join(data_dir, name)
+        shutil.rmtree(p) if os.path.isdir(p) else os.remove(p)
+    sources._LOOKED.clear()                                                     # a new run of the app
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE      # rebuilt from the copy
+    return ls.open_store(language, data_dir, user_files_dir)
+
+
+def _availability(store):
+    return dict(store.conn.execute("SELECT rel_path, availability FROM items").fetchall())
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_after_the_data_folder_is_lost_the_next_look_copies_each_live_item_back_into_its_place(language, monkeypatch):
+    """Item 8a: the data folder emptied and the store rebuilt from its JSON copy, every item points at a copy that is
+    gone and every original is a known origin — so no look ever copied it again, and the items stayed missing for
+    good. Now the look copies each live item's original back into exactly its copy's place (Current, New arrivals and
+    Finished alike), byte for byte, and the items are available again in that same look — the window hears it (the
+    availability version moves); a second look reads no original and writes nothing. A removed episode's copy is
+    never brought back (S6)."""
+    store, data_dir = _empty(language)
+    a, b = _SHOWS[language]
+    src = _drive("driveA")
+    tag = _OURS[language]
+    paths = [_write(os.path.join(src, a, f"[Grp] {a} - {n:02d} (1080p).{tag}.srt"), _text(language, n))
+             for n in (9, 10, 11, 12)]
+    for p in paths:
+        _video(p[:-len(f".{tag}.srt")] + ".mkv", body=b"\x1a\x45\xdf\xa3 fake matroska " + os.path.basename(p).encode())
+    _settle(src)
+    with store:
+        root = store.add_source(src)
+        ids = _look(store, language, root, first=True)["ids"]
+        assert len(ids) == 4
+        later = _write(os.path.join(src, b, "notes.txt"), _text(language, 3))
+        _settle(src)
+        assert _look(store, language, root, full=True)["added"] == 1                   # New arrivals (SRC-2)
+        store.finish([ids[0]])
+        store.remove([ids[3]])                                                          # its copy is the caller's
+        held = {r: _sha(os.path.join(data_dir, *r.split("/"))) for r in _availability(store)}
+        assert len(held) == 4
+    store = _start_afresh(language, store, data_dir)
+    with store:
+        assert set(_availability(store).values()) == {"missing"} and _library_files(data_dir) == []
+        tiers = dict(store.conn.execute("SELECT rel_path, tier FROM items").fetchall())
+        assert sorted(tiers.values()) == ["arrivals", "graduated", "now", "now"]
+        version = store.meta()["availability_version"]
+        result = _look(store, language, root)
+        assert set(_availability(store).values()) == {"available"}
+        assert store.meta()["availability_version"] > version
+        assert result["restored"] == 4 and (result["added"], result["attached"]) == (0, 0)
+        assert _library_files(data_dir) == sorted(held)                                 # the removed one isn't back
+        for rel, sha in held.items():
+            assert _sha(os.path.join(data_dir, *rel.split("/"))) == sha
+        assert dict(store.conn.execute("SELECT rel_path, tier FROM items").fetchall()) == tiers   # places kept
+        assert not any(f.endswith(".part") for f in _library_files(data_dir))
+        read = []
+        real = sources._copy_part
+        monkeypatch.setattr(sources, "_copy_part", lambda *a, **k: read.append(a[0]) or real(*a, **k))
+        again = _look(store, language, root, full=True)
+        assert read == []                                                               # nothing copied, none read
+        assert (again["restored"], again["added"], again["attached"]) == (0, 0, 0)
+        assert _items(store) == 4
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_item_whose_original_is_gone_too_stays_missing_and_nothing_is_written(language):
+    """Item 8a, SRC-8: a copy gone and its original gone too — the item stays as it is, missing, and the look writes
+    nothing (no copy, no folder in Library, no record changed); the others are copied back."""
+    store, data_dir = _empty(language)
+    a = _SHOWS[language][0]
+    src = _drive("driveA")
+    paths = [_write(os.path.join(src, a, f"{a} - {n:02d}.srt"), _text(language, n)) for n in (1, 2)]
+    _settle(src)
+    with store:
+        root = store.add_source(src)
+        assert _look(store, language, root, first=True)["added"] == 2
+    store = _start_afresh(language, store, data_dir)
+    os.remove(paths[0])
+    _settle(src)
+    with store:
+        records = store.conn.execute("SELECT content_key, pairing FROM pairings ORDER BY content_key").fetchall()
+        result = _look(store, language, root)
+        assert _availability(store) == {f"Library/{a}/{a} - 01.srt": "missing", f"Library/{a}/{a} - 02.srt": "available"}
+        assert _library_files(data_dir) == [f"Library/{a}/{a} - 02.srt"]
+        assert store.conn.execute("SELECT content_key, pairing FROM pairings ORDER BY content_key").fetchall() == records
+        assert result["restored"] == 1
+    store.close()
+    store = _start_afresh(language, ls.open_store(language, data_dir, store.user_files_dir), data_dir)
+    os.remove(paths[1])
+    _settle(src)
+    with store:
+        result = _look(store, language, root)
+        assert result["restored"] == 0 and set(_availability(store).values()) == {"missing"}
+        assert not os.path.exists(os.path.join(data_dir, ls.CONTENT_FOLDER))            # nothing written at all
+
+
+# --- item 11: a folder of versions of the episodes above it joins its show ----------------------------------------- #
+
+def _versions_show(language):
+    """A show's season folder: episode 5's video and subtitle — and the folder's own name, a season's (S12 stays)."""
+    show = f"{_SHOWS[language][1]} S03"
+    src = _drive("driveA")
+    folder = os.path.join(src, show)
+    tag = _OURS[language]
+    _video(os.path.join(folder, f"[Grp] {show} - 05 (1080p).mkv"))
+    sub = _write(os.path.join(folder, f"[Grp] {show} - 05 (1080p).{tag}.srt"), _text(language, 5))
+    return src, folder, show, tag, sub
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_versions_folder_of_the_episodes_above_it_is_that_shows_never_a_show_of_its_own(language):
+    """Item 11 (the laptop's `<show>` and `<show>/synced` as two shows): a subfolder holding only subtitles of episodes
+    the folder above holds — re-timed ones (`synced/`), no videos, no folders — is listed with the folder above, as
+    `Subs/` is: one show, one subtitle per episode (SRC-7: the episode already in keeps its own), its folder time kept
+    with the folder's (a quick look lists neither). A later version of that episode under another name is that
+    episode's too, never a second item."""
+    store, data_dir = _empty(language)
+    src, folder, show, tag, sub = _versions_show(language)
+    synced = _write(os.path.join(folder, "synced", f"[Grp] {show} - 05 (1080p).{tag}.srt"), _text(language, 5, "。"))
+    _settle(src)
+    with store:
+        root = store.add_source(src)
+        result = _look(store, language, root, first=True)
+        assert (result["shows"], result["added"]) == (1, 1) and _items(store) == 1
+        assert _library_files(data_dir) == [f"Library/{show}/{os.path.basename(sub)}"]
+        entry = _cache(language)["roots"][str(root)]["dirs"][ls.path_key(folder)]
+        assert entry["subtitles"] == [os.path.dirname(synced)]
+        assert os.path.dirname(synced) not in entry["subs"]
+        again = _look(store, language, root, full=True)
+        assert (again["shows"], again["added"], again["attached"]) == (1, 0, 0) and _items(store) == 1
+        _write(os.path.join(folder, "synced", f"[Other] {show} - 05 [synced].{tag}.srt"), _text(language, 5, "！"))
+        later = _look(store, language, root)                         # synced/'s time moved: the show listed again
+        assert (later["added"], later["attached"]) == (0, 0) and _items(store) == 1
+        assert store.ordered("arrivals") == []
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_subfolder_holding_an_episode_the_folder_above_lacks_stays_its_own_show(language, monkeypatch):
+    """Item 11, no guessing: a subfolder with an episode the folder above doesn't hold (6 beside 5), a video, or a
+    folder of its own is its own show, as before; a season folder (`Season 2`) stays its own show whatever its
+    episodes (S12)."""
+    store, data_dir = _empty(language)
+    src, folder, show, tag, sub = _versions_show(language)
+    _write(os.path.join(folder, "synced", f"[Grp] {show} - 05 (1080p).{tag}.srt"), _text(language, 5, "。"))
+    _write(os.path.join(folder, "synced", f"[Grp] {show} - 06 (1080p).{tag}.srt"), _text(language, 6))
+    _write(os.path.join(folder, "with video", f"[Grp] {show} - 05 (1080p).{tag}.srt"), _text(language, 5, "！"))
+    _video(os.path.join(folder, "with video", f"[Grp] {show} - 05 (1080p).mkv"), body=b"\x1a\x45\xdf\xa3 another")
+    _write(os.path.join(folder, "nested", f"[Grp] {show} - 05 (1080p).{tag}.srt"), _text(language, 5, "？"))
+    os.makedirs(os.path.join(folder, "nested", "more"))
+    _write(os.path.join(folder, "Season 2", f"{show} - 05.{tag}.srt"), _text(language, 7))
+    _settle(src)
+    with store:
+        root = store.add_source(src)
+        result = _look(store, language, root, first=True)
+        assert result["shows"] == 5 and _items(store) == 6
+        assert sorted({os.path.dirname(f) for f in _library_files(data_dir)}) == sorted(
+            f"Library/{show}" + p for p in ("", "/synced", "/with video", "/nested", "/Season 2"))
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_copy_back_never_writes_over_a_file_nor_from_an_empty_or_unsettled_original(language):
+    """Item 8a's refusals: a file already at the copy's place is never written over (the item stays missing: the
+    disk sync finds that file); an original emptied is never copied back (an empty text loses the words); one written
+    in the last seconds waits for the next look — then is copied back, its record naming it. No `.part` is left."""
+    store, data_dir = _empty(language)
+    a = _SHOWS[language][0]
+    src = _drive("driveA")
+    paths = [_write(os.path.join(src, a, f"{a} - {n:02d}.srt"), _text(language, n)) for n in (1, 2, 3, 4)]
+    _settle(src)
+    with store:
+        root = store.add_source(src)
+        assert _look(store, language, root, first=True)["added"] == 4
+    store = _start_afresh(language, store, data_dir)
+    rels = [f"Library/{a}/{os.path.basename(p)}" for p in paths]
+    other = _write(os.path.join(data_dir, *rels[0].split("/")), _text(language, 9), age=0)
+    taken = _sha(other)
+    _write(paths[1], "")
+    _write(paths[2], _text(language, 3, "、新しい"), age=0)
+    with store:
+        result = _look(store, language, root)
+        assert result["restored"] == 1 and result["waiting"] >= 1
+        assert _availability(store) == {rels[0]: "missing", rels[1]: "missing", rels[2]: "missing",
+                                        rels[3]: "available"}
+        assert _sha(other) == taken and _library_files(data_dir) == [rels[0], rels[3]]
+        t = time.time() - 60
+        os.utime(paths[2], (t, t))
+        again = _look(store, language, root, full=True)
+        assert again["restored"] == 1 and _availability(store)[rels[2]] == "available"
+        assert _sha(os.path.join(data_dir, *rels[2].split("/"))) == _sha(paths[2])
+        record = store.origins()[ls.path_key(os.path.abspath(paths[2]))]
+        assert (record.size, record.mtime_ns, record.sha256) == (os.stat(paths[2]).st_size,
+                                                                 os.stat(paths[2]).st_mtime_ns, _sha(paths[2]))
+        assert _sha(other) == taken and not any(f.endswith(".part") for f in _library_files(data_dir))
+
+
+def test_a_copy_back_never_writes_a_missing_file_outside_library():
+    """Item 8a: an origin recorded on a 2.x item (in HighPriority, check b) whose file is gone: never written back —
+    only copies in Library are Surasura's (S5); the item stays missing."""
+    language = "ja"
+    data_dir, user_files_dir, doc = library(language, shows=1, episodes=1, loose=0, tiers=("now",))
+    write_manifest(user_files_dir, doc)
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    store = ls.open_store(language, data_dir, user_files_dir)
+    rel = doc["schedule"][ls.TIERS["now"][0]][0]["physical_path"]
+    old = open(os.path.join(data_dir, rel), "rb").read()
+    src = _drive("driveA")
+    path = os.path.join(src, "Show", "ep01.srt")
+    os.makedirs(os.path.dirname(path))
+    with open(path, "wb") as f:
+        f.write(old)
+    t = time.time() - 60
+    os.utime(path, (t, t))
+    with store:
+        root = store.add_source(src)
+        assert _look(store, language, root, first=True)["attached"] == 1
+        os.remove(os.path.join(data_dir, rel))
+        store.sync_disk()
+        assert _availability(store) == {rel: "missing"}
+        result = _look(store, language, root, full=True)
+        assert result["restored"] == 0 and _availability(store) == {rel: "missing"}
+        assert not os.path.exists(os.path.join(data_dir, rel)) and _library_files(data_dir) == []
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_copies_back_leaves_a_row_removed_moved_or_back_meanwhile_and_names_the_copies_no_item_holds(language):
+    """Item 8a, the store's half (`Store.copies_back`): only an item still at that rel and still missing is made
+    available, its size and time the copy's; a removed item's copy, and one for a row moved elsewhere, come back as no
+    item's (the look trashes them, never left in Library untracked: B2); a row available already is left as it is;
+    nothing done moves no version."""
+    store, data_dir = _empty(language)
+    a = _SHOWS[language][0]
+    src = _drive("driveA")
+    for n in (1, 2, 3, 4):
+        _write(os.path.join(src, a, f"{a} - {n:02d}.srt"), _text(language, n))
+    _settle(src)
+    with store:
+        root = store.add_source(src)
+        ids = _look(store, language, root, first=True)["ids"]
+        rels = [store.item(i)["rel_path"] for i in ids]
+        with store._writing():
+            store.conn.execute("UPDATE items SET availability = 'missing'")
+            store.conn.execute("UPDATE items SET availability = 'available' WHERE id = ?", (ids[3],))
+        store.remove([ids[1]])
+        meta = store.meta()
+        assert store.copies_back([]) == ([], [])
+        st = os.stat(os.path.join(data_dir, *rels[0].split("/")))
+        done, unused = store.copies_back([(ids[0], rels[0], st.st_size, st.st_mtime_ns), (ids[1], rels[1], 1, 1),
+                                          (ids[2], rels[2] + ".moved", 1, 1), (ids[3], rels[3], 1, 1)])
+        assert done == [ids[0]] and unused == [rels[1], rels[2] + ".moved"]
+        assert [store.item(i)["availability"] for i in (ids[0], ids[2], ids[3])] == ["available", "missing",
+                                                                                     "available"]
+        assert (store.item(ids[0])["size"], store.item(ids[0])["mtime_ns"]) == (st.st_size, st.st_mtime_ns)
+        assert store.meta()["availability_version"] == meta["availability_version"] + 1
+        assert store.copies_back([(ids[3], rels[3], 1, 1)]) == ([], [])
+        assert store.meta()["availability_version"] == meta["availability_version"] + 1
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_copy_back_takes_the_text_its_item_last_followed(language):
+    """Item 8a: an item holding two originals — an episode and its v2, followed into the copy (H12) — gets the v2's
+    text back, the one its records last followed, never the earlier release's."""
+    store, data_dir = _empty(language)
+    show = _SHOWS[language][1]
+    src = _drive("driveA")
+    tag = _OURS[language]
+    _write(os.path.join(src, f"[Grp] {show} - 05 (1080p).{tag}.srt"), _text(language, 1), age=120)
+    _settle(src)
+    with store:
+        root = store.add_source(src)
+        item = _look(store, language, root, first=True)["ids"][0]
+        v2 = _write(os.path.join(src, f"[Grp] {show} - 05v2 (1080p).{tag}.srt"), _text(language, 1, "、訂正"))
+        assert _look(store, language, root)["recopied"] == 1
+        rel = store.item(item)["rel_path"]
+    store = _start_afresh(language, store, data_dir)
+    with store:
+        assert _look(store, language, root)["restored"] == 1
+        assert _sha(os.path.join(data_dir, *rel.split("/"))) == _sha(v2) and _items(store) == 1
+
+
+def test_a_copy_back_whose_item_went_meanwhile_goes_to_the_trash(monkeypatch):
+    """Item 8a, B2: an item removed between its copy written back and the store told — the copy is no item's, so it
+    goes to the trash, never left in Library untracked."""
+    language = "ja"
+    store, data_dir = _empty(language)
+    a = _SHOWS[language][0]
+    src = _drive("driveA")
+    _write(os.path.join(src, a, f"{a} - 01.srt"), _text(language, 1))
+    _settle(src)
+    with store:
+        root = store.add_source(src)
+        item = _look(store, language, root, first=True)["ids"][0]
+    store = _start_afresh(language, store, data_dir)
+    real = store.copies_back
+
+    def removed_meanwhile(back):
+        store.remove([item])
+        return real(back)
+    monkeypatch.setattr(store, "copies_back", removed_meanwhile)
+    with store:
+        result = _look(store, language, root)
+        assert result["restored"] == 0 and _library_files(data_dir) == [] and _items(store) == 0
+        assert len(_trash(data_dir)) == 1
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("case", ["same name", "only the folder's tagged", "only the folder's named like the video",
+                                  "ass above, srt in synced"])
+def test_of_one_episodes_subtitles_listed_together_the_order_picks_the_one_taken(language, case):
+    """Item 11, the order of one episode's subtitles (Sonic's answer, the library model 2): our language's tag, then
+    named like the video, then in a versions folder (`synced/`), then `.ass` before `.srt`, then the first by name —
+    the others are other versions, never counted. So `synced/`'s file wins over the folder's own unless the folder's
+    wins at an earlier step; and once taken, it is the episode: a later release found beside the video is never a
+    second item."""
+    store, data_dir = _empty(language)
+    show = f"{_SHOWS[language][1]} S03"
+    src = _drive("driveA")
+    folder = os.path.join(src, show)
+    tag = _OURS[language]
+    stem = f"[Grp] {show} - 05 (1080p)"
+    _video(os.path.join(folder, stem + ".mkv"))
+    own, synced, winner = {
+        "same name": (f"{stem}.{tag}.srt", f"{stem}.{tag}.srt", "synced"),
+        "only the folder's tagged": (f"{stem}.{tag}.srt", f"{stem}.srt", "own"),
+        "only the folder's named like the video": (f"{stem}.{tag}.srt", f"[Alt] {show} - 05 [synced].{tag}.srt",
+                                                   "own"),
+        "ass above, srt in synced": (f"{stem}.{tag}.ass", f"{stem}.{tag}.srt", "synced"),
+    }[case]
+    own = _write(os.path.join(folder, own), _text(language, 5))
+    synced = _write(os.path.join(folder, "synced", synced), _text(language, 5, "。"))
+    _settle(src)
+    with store:
+        root = store.add_source(src)
+        result = _look(store, language, root, first=True)
+        assert (result["shows"], result["added"]) == (1, 1) and _items(store) == 1
+        taken = own if winner == "own" else synced
+        files = _library_files(data_dir)
+        assert files == [f"Library/{show}/{os.path.basename(taken)}"] and _sha(os.path.join(data_dir, files[0])) == \
+            _sha(taken)
+        assert ls.path_key(os.path.abspath(taken)) in store.origins() and len(store.origins()) == 1
+        _write(os.path.join(folder, f"[Third] {show} - 05 (720p).{tag}.srt"), _text(language, 5, "！"))
+        later = _look(store, language, root)
+        assert (later["added"], later["attached"]) == (0, 0) and _items(store) == 1

@@ -30,6 +30,7 @@ Rules that bite (spec §6.2, §8)
 - **Headless:** no Tk, Qt or pandas here (I9).
 """
 
+import bisect
 import hashlib
 import json
 import ntpath
@@ -7330,7 +7331,7 @@ PLACEHOLDER_ATTRS = 0x1000 | 0x40000 | 0x400000   # OFFLINE · RECALL_ON_OPEN ·
 _LINK_TAGS = (0xA000000C, 0xA0000003)              # IO_REPARSE_TAG_SYMLINK, IO_REPARSE_TAG_MOUNT_POINT (a junction)
 _DIGITS = re.compile(r"(\d+)")
 _EPUB_PART = re.compile(r"\.epub#\d+$", re.I)    # an EPUB's part's origin (`<book>.epub#3`)
-Origin = namedtuple("Origin", "item_id root origin size mtime_ns sha256 rel_path")
+Origin = namedtuple("Origin", "item_id root origin size mtime_ns sha256 rel_path availability")
 
 
 def origin_key(path):
@@ -7702,19 +7703,33 @@ def _store_add_source(self, path):
 
 def _store_sources(self, all=False, counts=True):
     """[{id, path, on, items}] of the sources being read (`all`: the stopped ones too), in the order added; `items` =
-    the items with an origin in it (the offline line's count: *its 412 episodes are kept*). `counts=False` (a look,
-    Connect's video index): the roots' rows alone, no origin read; the counts are gathered here, never in
-    a GROUP BY (its temporary B-tree went to disk: 14 MB written per call at 20k origins)."""
+    the live items with an origin under its folder, whichever source recorded it (the offline line's count: *its 412
+    episodes are kept*; item 8b: a show's folder added inside a folder read before counts the episodes that one took
+    in) — by the origin keys' path, `/`-ended (`…\\Show` never counts `…\\Show S2`). `counts=False` (a look,
+    Connect's video index): the roots' rows alone, no origin read; the counts are gathered here from one read of the
+    keys in order (each folder's by its prefix), never in a GROUP BY (its temporary B-tree went to disk: 14 MB written
+    per call at 20k origins)."""
     kinds = ("source", "source-off") if all else ("source",)
-    held = {}
+    keys, ids = [], []
     with self._reading():
         rows = self.conn.execute(f"SELECT id, path, kind FROM roots WHERE kind IN ({','.join('?' * len(kinds))}) "
                                  "ORDER BY id", kinds).fetchall()
         if counts and rows:
-            for root, item_id in self.conn.execute(f"SELECT json_extract(p.pairing, '$.root'), p.item_id "
-                                                   f"FROM pairings p WHERE {_ORIGIN_ROW}"):
-                held.setdefault(root, set()).add(item_id)
-    return [{"id": i, "path": p, "on": k == "source", "items": len(held.get(i, ()))} for i, p, k in rows]
+            for key, item_id in self.conn.execute(f"SELECT substr(p.content_key, {len(SOURCE_KEY) + 1}), p.item_id "
+                                                  f"FROM pairings p WHERE {_ORIGIN_ROW} ORDER BY p.content_key"):
+                keys.append(key)
+                ids.append(item_id)
+    out = []
+    for i, p, k in rows:
+        held = set()
+        if keys and p:
+            prefix = path_key(os.path.abspath(p)).rstrip("/") + "/"
+            at = bisect.bisect_left(keys, prefix)
+            while at < len(keys) and keys[at].startswith(prefix):
+                held.add(ids[at])
+                at += 1
+        out.append({"id": i, "path": p, "on": k == "source", "items": len(held)})
+    return out
 
 
 def _store_stop_source(self, root_id):
@@ -7729,8 +7744,9 @@ def _store_stop_source(self, root_id):
 
 
 def _store_origins(self):
-    """{path_key(origin): Origin(item_id, root, origin, size, mtime_ns, sha256, rel_path)} for every origin recorded,
-    in any tier (a finished item is never taken in again): one read per look. The records' fields are read by SQLite
+    """{path_key(origin): Origin(item_id, root, origin, size, mtime_ns, sha256, rel_path, availability)} for every
+    origin recorded, in any tier (a finished item is never taken in again): one read per look — the item's
+    availability with it, so a look finds the copies gone (item 8a) with no stat of its own. The records' fields are read by SQLite
     (F13: decoding every record in Python held the interpreter 0.25 s at 20k, stretching a window's save meanwhile); a
     record that isn't a JSON object reads as one with no fields."""
     field = lambda name: (f"CASE WHEN json_valid(p.pairing) THEN CASE WHEN json_type(p.pairing) = 'object' THEN "  # noqa
@@ -7738,8 +7754,8 @@ def _store_origins(self):
     with self._reading():
         rows = self.conn.execute(
             f"SELECT substr(p.content_key, {len(SOURCE_KEY) + 1}), p.item_id, {field('root')}, {field('origin')}, "
-            f"{field('size')}, {field('mtime_ns')}, {field('sha256')}, i.rel_path FROM pairings p JOIN items i ON "
-            f"i.id = p.item_id WHERE {_ORIGIN_ROW} ORDER BY p.content_key").fetchall()
+            f"{field('size')}, {field('mtime_ns')}, {field('sha256')}, i.rel_path, i.availability FROM pairings p "
+            f"JOIN items i ON i.id = p.item_id WHERE {_ORIGIN_ROW} ORDER BY p.content_key").fetchall()
     return {r[0]: Origin._make(r[1:]) for r in rows}         # in key order (a look finds a folder's by its prefix)
 
 
@@ -7837,6 +7853,35 @@ def _store_update_origin(self, origin, size, mtime_ns, sha256):
                           (json.dumps(new, sort_keys=True, ensure_ascii=False), key))
         self._copy_dirty()
     return True
+
+
+def _store_copies_back(self, back):
+    """Item 8a: the copies a look wrote back into their own place (`back`: [(item_id, rel, size, mtime_ns)] — the
+    copy's rel and its stats as written). Each item still at that rel and still 'missing' is available again in place,
+    as the disk sync's *came back* is — its id, place, words, cards and records kept, its size and time the new copy's
+    — in ONE command the window hears like any availability change (no event: nothing moved). A row removed, moved or
+    back meanwhile is left as it is. -> (the ids made available, the rels no item holds: the caller's to trash, never
+    left in Library untracked — B2)."""
+    back = [b for b in back if b[1]]
+    if not back:
+        return [], []
+    with self._command("copy_back", SOURCE_PRODUCER) as cmd:
+        done, tiers = [], set()
+        for item_id, rel, size, mtime_ns in back:
+            row = self.conn.execute("SELECT tier FROM items WHERE id = ? AND rel_key = ? AND availability = 'missing'",
+                                    (item_id, path_key(rel))).fetchone()
+            if row is None:
+                continue
+            self.conn.execute("UPDATE items SET availability = 'available', size = ?, mtime_ns = ? WHERE id = ?",
+                              (size, mtime_ns, item_id))
+            done.append(item_id)
+            tiers.add(row[0])
+        if done:
+            cmd.feed(done)
+            cmd.touch(tiers, availability=True)
+        unused = [rel for _i, rel, _s, _m in back if not self.conn.execute(
+            "SELECT 1 FROM items WHERE rel_key = ?", (path_key(rel),)).fetchone()]
+    return done, unused
 
 
 def _store_exclude_origins(self, pairs, now):
@@ -8200,6 +8245,7 @@ Store._sync_drop = _store_sync_drop
 Store._take_out = _store_take_out
 Store._waiting_video = _store_waiting_video
 Store.update_origin = _store_update_origin
+Store.copies_back = _store_copies_back
 Store._exclude_origins = _store_exclude_origins
 Store._let_origins_back = _store_let_origins_back
 Store.take_in = _store_take_in

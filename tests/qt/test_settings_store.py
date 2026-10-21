@@ -257,3 +257,21 @@ def test_trust_turned_off_or_another_key_starts_nothing(qapp, kicked):
     assert store_rows.kick_on_trust({"connect_trust_timing": True}, {"connect_trust_timing": True}) is False
     assert store_rows.kick_on_trust({}, {"split_length": 900}) is False
     assert store_rows.kick_on_trust(None, {"connect_trust_timing": True}) is True
+
+
+def test_trust_waits_for_its_settings_write_before_starting_connect(qapp, kicked):
+    # Review LF-9 #4: the started Connect reads settings.json from disk; the page's write is queued (0.25 s, retried
+    # behind another program's lock), so the start waits for it to land, or Connect would read the switch still off.
+    calls, done = kicked
+    order = []
+
+    class Store:
+        def flush(self, timeout=None):
+            order.append("flush")
+            return True
+
+    from app.connect import kick
+    kick.kick = lambda settings: (order.append("kick"), done.set())
+    assert store_rows.kick_on_trust({}, {"connect_trust_timing": True}, store=Store()) is True
+    assert wait_until(done.is_set)
+    assert order == ["flush", "kick"]

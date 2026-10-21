@@ -194,16 +194,76 @@ def test_trust_leaves_an_installed_tsubasa_in_charge():
     assert shifted == (fit_check.TIMED, "tsubasa", None, 2.5)
 
 
-def test_connects_steps_read_the_switch_from_settings(monkeypatch):
-    # The runner's real fit step hands `connect_trust_timing` to the check: absent or false → the signed rule; true →
-    # an unpaired episode with no checker mines.
+def test_connects_steps_read_the_switch_from_settings_as_they_are_now(monkeypatch):
+    # The runner's real fit step reads `connect_trust_timing` from settings.json at each check, never the snapshot taken
+    # when Connect started (review LF-9 #2): turned off mid-run, the signed rule is back for the next episode; turned on
+    # mid-run, the next episode mines. Absent or anything but true → off.
+    from app.cli import verbs
     from app.connect import runner
     monkeypatch.setattr(fit_check, "find_tsubasa", lambda: None)
     job = {"id": 1, "item_id": 1}
-    assert runner.Steps({}).fit("ja", job, None, VIDEO, SUBTITLE)[0] == fit_check.NOT_TIMED
-    assert runner.Steps({"connect_trust_timing": False}).fit("ja", job, None, VIDEO, SUBTITLE)[0] == fit_check.NOT_TIMED
-    assert runner.Steps({"connect_trust_timing": True}).fit("ja", job, None, VIDEO, SUBTITLE) == (
-        fit_check.TIMED, "you", None, 0.0)
+    now = {}
+    monkeypatch.setattr(verbs, "settings", lambda: dict(now))
+    started_on = runner.Steps({"connect_trust_timing": True})
+    assert started_on.fit("ja", job, None, VIDEO, SUBTITLE)[0] == fit_check.NOT_TIMED, "absent in the file: off"
+    now["connect_trust_timing"] = "true"
+    assert started_on.fit("ja", job, None, VIDEO, SUBTITLE)[0] == fit_check.NOT_TIMED, "only true itself is on"
+    now["connect_trust_timing"] = True
+    started_off = runner.Steps({"connect_trust_timing": False})
+    assert started_off.fit("ja", job, None, VIDEO, SUBTITLE) == (fit_check.TIMED, "you", None, 0.0)
+
+
+def test_a_library_folders_own_record_or_a_link_is_not_hatos_so_trust_releases_it():
+    # Review LF-9 #1 (blocking): an episode read from a Library folder carries Surasura's origin record (producer
+    # "source"), one linked by hand a "surasura" record — neither is a timing hato checked. With the switch on and no
+    # tsubasa they mine at their own times; off, the reason names the cause and the switch.
+    source = {"producer": "source", "channel_id": 3, "root": 3, "origin": "かぐや荘の日々/第03話.ja.srt",
+              "video_path": "D:/Anime/かぐや荘の日々/第03話.mkv", "show": {"title": "かぐや荘の日々"}}
+    linked = {"schema": 1, "producer": "surasura", "content_key": "abc", "video_path": VIDEO}
+    for record in (source, linked):
+        assert fit_check.fit(record, VIDEO, SUBTITLE, tsubasa="", trust=True) == (fit_check.TIMED, "you", None, 0.0)
+        off = fit_check.fit(record, VIDEO, SUBTITLE, tsubasa="")
+        assert off[0] == fit_check.NOT_TIMED and off[2] == fit_check.NO_CHECKER
+
+
+def test_a_record_hato_wrote_still_waits_with_or_without_its_producer_named(tmp_path):
+    # hato's records name no producer, or "hato": an untimed one is never released by the switch.
+    for record in ({"schema": 1, "verdict": "untimed"}, {"schema": 1, "producer": "hato", "verdict": "untimed"},
+                   {"schema": 1, "producer": "  hato ", "verdict": "extracted"}):
+        got = fit_check.fit(record, VIDEO, SUBTITLE, tsubasa="", trust=True)
+        assert got[0] == fit_check.NOT_TIMED and "Trust my subtitles" not in got[2], record
+
+
+RAW_ERROR = {"outcome": "ERROR", "segments": [], "offset": None,
+             "reason": "第03話.mkv could not be measured: it has no subtitle track to align against. The speech-mask path "
+                       "that does not need one lands at RUNBOOK B6 and its band has not been fitted yet, so nothing is "
+                       "guessed here."}
+
+
+def test_trust_mines_a_raw_video_tsubasa_has_nothing_to_time_against():
+    # Sonic's follow-up (P-LF-9, 2026-10-21 "yes, go ahead and mine it"): tsubasa's ERROR for a video with no subtitle
+    # track inside (P0.2: "it has no subtitle track to align against") is "nothing can check it" — with the switch on it
+    # mines at the subtitle's own times; off, it waits and the reason names the switch.
+    on = fit_check.fit(None, VIDEO, SUBTITLE, tsubasa="tsubasa", run=_tsubasa(RAW_ERROR), trust=True)
+    assert on == (fit_check.TIMED, "you", None, 0.0)
+    off = fit_check.fit(None, VIDEO, SUBTITLE, tsubasa="tsubasa", run=_tsubasa(RAW_ERROR))
+    assert off[0] == fit_check.NOT_TIMED and fit_check.TRUST_LABEL in off[2]
+
+
+def test_trust_never_mines_past_tsubasas_refusal_or_another_error():
+    # REFUSED is tsubasa finding the subtitle doesn't fit (the wrong cut, the wrong episode); any other ERROR isn't
+    # "no track". Both still wait with the switch on, and neither points at it.
+    for answer in ({"outcome": "REFUSED", "reason": "no speech match", "segments": []},
+                   {"outcome": "ERROR", "reason": "the video could not be read", "segments": []}):
+        got = fit_check.fit(None, VIDEO, SUBTITLE, tsubasa="tsubasa", run=_tsubasa(answer), trust=True)
+        assert got[0] == fit_check.NOT_TIMED and fit_check.TRUST_LABEL not in got[2], answer
+
+
+def test_trust_never_mines_a_raw_video_hato_paired_untimed(tmp_path):
+    # A raw with hato's own untimed record: hato said it isn't checked, so it waits even when tsubasa can't time it.
+    record = {"schema": 1, "verdict": "untimed"}
+    got = fit_check.fit(record, VIDEO, SUBTITLE, tsubasa="tsubasa", run=_tsubasa(RAW_ERROR), trust=True)
+    assert got[0] == fit_check.NOT_TIMED
 
 
 def test_a_tsubasa_run_that_fails_to_start_or_times_out_is_retried_not_refused():

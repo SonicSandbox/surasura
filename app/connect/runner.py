@@ -1540,8 +1540,10 @@ class Steps:
 
     def fit(self, lang, job, pairing, video, subtitle):
         """-> (verdict, who, why, offset): `subtitle` is the library's copy (hato's sha256 is checked on it);
-        `connect_trust_timing` (off by default) mines an unpaired episode nothing here can check at its own times."""
-        return fit_check.fit(pairing, video, subtitle, trust=(self.loaded or {}).get("connect_trust_timing") is True)
+        `connect_trust_timing` (off by default; read from settings.json as it is now, so a switch turned mid-run counts
+        for the next episode) mines an episode nothing here can check at its own times."""
+        trust = self._settings(lang).get("connect_trust_timing") is True
+        return fit_check.fit(pairing, video, subtitle, trust=trust)
 
     def mine(self, lang, job, picked, words, attempt):
         """One Anki Miner batch -> {"outcomes", "app", "doubt"} (doubt: the run crashed or timed out — the words it

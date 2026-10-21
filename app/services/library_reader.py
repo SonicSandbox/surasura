@@ -40,6 +40,7 @@ library store, on a plain thread of its own — never the window's thread.
 
 Qt-free (the import guard): the window reaches it through `app/qt/bridge.py`.
 """
+import bisect
 import gc
 import json
 import os
@@ -59,6 +60,13 @@ CACHE_VERSION = 4                # 2: keyed (store id, epoch, state version, pla
 def cache_path(language):
     from app import path_utils
     return os.path.join(path_utils.get_local_data_path(), f"window_cache_{language}.json")
+
+
+FEW_SORTED = 64                  # a tier with at most this many ids touched: they are put in place, never a full sort
+
+
+def _sort_key(r):
+    return (r.get("ord") or 0.0, r["id"])       # `view_rows._by_tier`'s order
 
 
 def _no_numbers():
@@ -101,7 +109,7 @@ class LibraryReader:
         self._mode = None
         self.row_cache = view_rows.RowCache()       # rows kept between builds (the reader's thread only)
         self._tiers, self._pos, self._dirty = None, {}, set()
-        self._moved_in = {}                # tier -> ids that came into it or moved in it since it was last sorted
+        self._moved_in = {}                # tier -> ids that came into it, moved in it or left it since it was last sorted
         self._changed_ids = None
         self._build_changed = None         # ids changed or gone since the last build (None: a full read, all looked at)
         self._build_works = None           # ... and the works (`view_rows.build`'s `changed_works`)
@@ -532,6 +540,7 @@ class LibraryReader:
                     self._moved_in.setdefault(r.get("tier"), set()).add(r["id"])
                     if old is not None:
                         self._dirty.add(old.get("tier"))
+                        self._moved_in.setdefault(old.get("tier"), set()).add(r["id"])     # M4.1 B3: left it
                 else:                                   # the same place: swapped in, no sort
                     at = self._pos.get(r["id"])
                     if at is not None:
@@ -552,6 +561,7 @@ class LibraryReader:
                     old = self._items.pop(ident, None)
                     if old is not None and self._tiers is not None:
                         self._dirty.add(old.get("tier"))
+                        self._moved_in.setdefault(old.get("tier"), set()).add(ident)       # M4.1 B3
                 else:
                     self._works.pop(ident, None)
             self._changed_ids = changed
@@ -565,18 +575,32 @@ class LibraryReader:
             self._dirty, self._moved_in = set(), {}
             self._pos = {r["id"]: (t, i) for t, rows in self._tiers.items() for i, r in enumerate(rows)}
         elif self._dirty:
+            items = self._items
             for t in self._dirty:
                 if t is None:
                     continue
-                # the tier's own items and those that came into it, not all 20,000 (speed round 5: an arrival's
-                # sort walked every item on the reader's thread); one gone or moved out drops out here
-                ids = {r["id"] for r in self._tiers.get(t, ())} | self._moved_in.pop(t, set())
-                items = self._items
-                rows = [items[i] for i in ids if i in items and items[i].get("tier") == t]
-                rows.sort(key=lambda r: (r.get("ord") or 0.0, r["id"]))
+                touched, old = self._moved_in.pop(t, set()), self._tiers.get(t)
+                if old is not None and len(touched) <= FEW_SORTED:
+                    # M4.1 B3: a few ids (a menu's move into Goal's ~16,000): taken out, those still in the tier put
+                    # back in place; the rest keep their order (a full sort was up to 28 ms at 20,000 files)
+                    lo = next((k for k, r in enumerate(old) if r["id"] in touched), len(old))
+                    rows = old[:lo] + [r for r in old[lo:] if r["id"] not in touched]
+                    for i in touched:
+                        r = items.get(i)
+                        if r is not None and r.get("tier") == t:
+                            k = bisect.bisect_right(rows, _sort_key(r), key=_sort_key)
+                            rows.insert(k, r)
+                            lo = min(lo, k)
+                else:
+                    # the tier's own items and those that came into it, not all 20,000 (speed round 5: an arrival's
+                    # sort walked every item on the reader's thread); one gone or moved out drops out here
+                    ids = {r["id"] for r in old or ()} | touched
+                    rows = [items[i] for i in ids if i in items and items[i].get("tier") == t]
+                    rows.sort(key=_sort_key)
+                    lo = 0
                 self._tiers[t] = rows
-                for i, r in enumerate(rows):
-                    self._pos[r["id"]] = (t, i)
+                for i in range(lo, len(rows)):
+                    self._pos[rows[i]["id"]] = (t, i)
             self._dirty, self._moved_in = set(), {}
         return self._tiers
 

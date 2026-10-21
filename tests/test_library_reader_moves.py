@@ -58,3 +58,48 @@ def test_a_version_read_that_fails_tells_nothing_and_the_next_read_tells_only_a_
     h.now["order_version"] = 8
     reader._moved(h)
     assert heard == [("ja", "epoch-1")]
+
+
+# --- M4.1 B3: a few moved ids put in place, never a full sort ------------------------------------------------------ #
+def test_M41_B3_tiers_kept_in_place_over_random_moves_equal_a_full_sort_at_20000_files():
+    """A menu's move into Goal (~16,000 items at 20,000 files) sorted the whole tier again: the few ids are now taken
+    out and put back in place. Wrong, a row would sit in a tier it left, twice, or out of the store's `(ord, id)` order —
+    or a row's kept place (`_pos`, where a change in place is swapped in) would point at another row. Random moves,
+    changes in place, removals, arrivals and a big batch (the full sort), each checked against `_by_tier`."""
+    import random
+    from app.services import view_rows
+    rng = random.Random(41)
+    tiers = ("arrivals", "now", "soon", "goal", "graduated")
+    weights = (1, 1, 3, 16, 3)
+    items = {i: {"id": i, "tier": rng.choices(tiers, weights)[0], "ord": rng.choice([None, float(rng.randrange(5000))]),
+                 "watched": 0} for i in range(1, 20001)}
+    reader = LibraryReader(None, language="ja")
+    reader._merge({"full": True, "items": list(items.values()), "works": [], "gone": [], "version": 1, "epoch": "e"})
+    reader._sorted_tiers()
+    next_id, version = 20001, 1
+    for step in range(120):
+        changes, gone = [], []
+        for _ in range(200 if step % 40 == 39 else rng.randint(1, 6)):
+            i = rng.choice(list(reader._items))
+            kind = rng.random()
+            if kind < 0.5:                                   # a move: another tier, or another place in its own
+                changes.append(dict(reader._items[i], tier=rng.choices(tiers, weights)[0],
+                                    ord=float(rng.randrange(5000)) + rng.random()))
+            elif kind < 0.75:                                # a change in place (watched): swapped in, no sort
+                changes.append(dict(reader._items[i], watched=1))
+            elif kind < 0.9:
+                gone.append(("item", i))
+            else:                                            # an arrival
+                changes.append({"id": next_id, "tier": rng.choice(tiers), "ord": float(rng.randrange(5000)),
+                                "watched": 0})
+                next_id += 1
+        gone_ids = {g[1] for g in gone}
+        changes = [c for c in changes if c["id"] not in gone_ids]
+        version += 1
+        reader._merge({"full": False, "items": changes, "works": [], "gone": gone, "version": version, "epoch": "e"})
+        got = reader._sorted_tiers()
+        want = view_rows._by_tier(reader._items)
+        for t in tiers:
+            assert [r["id"] for r in got.get(t, [])] == [r["id"] for r in want[t]], (step, t)
+            assert all(a is b for a, b in zip(got.get(t, []), want[t])), (step, t)    # the newest dicts, never stale
+            assert all(reader._pos[r["id"]] == (t, k) for k, r in enumerate(got.get(t, []))), (step, t)

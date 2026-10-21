@@ -424,7 +424,7 @@ ROWS = {
                         "add frequency list"),
 
     # App
-    "text_size": ("Text size", "Applied the next time Surasura starts", "The window's text size",
+    "text_size": ("Text size", "Applied when Surasura restarts: it offers to at once", "The window's text size",
                   "text size font bigger smaller read zoom restart"),
     "app_motion": ("Motion",
                    "Follow Windows: as Windows’ Show animations is set. Reduced: nothing slides, rows jump into place, "
@@ -533,6 +533,14 @@ CREDITS_DONE = "Done"
 CREDITS_DONE_TIP = "Closes the credits (Esc)"
 CREDITS_README_ALSO = "README's Data Credits also names: {names}"
 OFFER_AGAIN_NAME = "Offer the skipped version again"
+# *Text size*: applied when Surasura starts again, so it asks at once (laptop fixes, row 15)
+TEXT_SIZE_RESTART_ASK = "Restart now to apply?"
+TEXT_SIZE_RESTART_BODY = ("{size} text shows once Surasura starts again. It reopens here, at the same size and place; "
+                          "anything running finishes first.")
+TEXT_SIZE_RESTART_YES = "Restart now"
+TEXT_SIZE_RESTART_YES_TIP = "Closes Surasura and opens it again with the new text size"
+TEXT_SIZE_RESTART_NO = "Later"
+TEXT_SIZE_RESTART_NO_TIP = "Keep working: the new size shows the next time Surasura starts"
 # Export: the format pop, the outcome in the bar
 EXPORT = "Export"
 COVERS_REMOVE = "Remove"                    # --- W3.2 L3: *Remove downloaded covers*' button

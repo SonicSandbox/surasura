@@ -20,7 +20,7 @@ from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QFileDialog
 
 from app import exports
-from app.qt import motion, strings, windows
+from app.qt import motion, strings, style, windows
 from app.qt import settings_controls as sc
 from app.qt import settings_live as live
 from app.qt import settings_page as sp
@@ -457,6 +457,62 @@ def test_without_a_shell_method_the_page_saves_and_says_restart(qapp, fakes):
     page.row("text_size").controls[0].changed.emit("L")
     assert store.calls == [({"text_size": "L"}, None)]
     assert shell.bar_line.lines == [strings.RESTART_TO_APPLY]
+
+
+# --- laptop fixes row 15: *Restart now to apply?* ------------------------------------------------------------------ #
+def _with_restart(shell):
+    shell.restarts = []
+    shell.restart = lambda: shell.restarts.append(True)
+    return shell
+
+
+def test_text_size_asks_restart_now_and_yes_restarts_once_after_the_page_saved(qapp, fakes):
+    # Sonic: "having it ask and then if they select yes to restart it would auto restart". Before: only the bar's
+    # *Restart Surasura to apply*, and the user had to quit and start Surasura again by hand.
+    page, store, shell = make(fakes)
+    _with_restart(shell)
+    page.row("text_size").controls[0].changed.emit("L")
+    assert store.calls == [({"text_size": "L"}, None)]          # saved first: the quit writes it before the new start
+    card = page.live.asking
+    assert card is not None and card.isVisible()
+    assert card.title.text() == S.TEXT_SIZE_RESTART_ASK
+    assert "Large" in card.body.text()
+    assert card.yes.text() == S.TEXT_SIZE_RESTART_YES and card.no.text() == S.TEXT_SIZE_RESTART_NO
+    assert card.yes.toolTip() and card.no.toolTip()
+    assert shell.restarts == []                                 # nothing before the answer
+    card.yes.click()
+    assert shell.restarts == [True] and page.live.asking is None
+    assert shell.bar_line.lines == []                           # no *Restart to apply*: it is restarting
+    assert store.calls == [({"text_size": "L"}, None)]          # written once
+
+
+@pytest.mark.parametrize("how", ["later", "esc"])
+def test_later_or_esc_keeps_working_and_says_restart_to_apply(qapp, fakes, how):
+    page, store, shell = make(fakes)
+    _with_restart(shell)
+    page.row("text_size").controls[0].changed.emit("S")
+    card = page.live.asking
+    if how == "later":
+        card.no.click()
+    else:
+        card.close()                                            # Esc / Back / a click outside close the card: No
+    QApplication.processEvents()
+    assert shell.restarts == [] and page.live.asking is None
+    assert shell.bar_line.lines == [strings.RESTART_TO_APPLY]
+    assert store.calls == [({"text_size": "S"}, None)]          # still saved for the next start
+
+
+def test_choosing_the_size_already_shown_asks_nothing(qapp, fakes):
+    page, store, shell = make(fakes)
+    _with_restart(shell)
+    shown = style.current()[1]
+    other = "L" if shown != "L" else "S"
+    page.row("text_size").controls[0].changed.emit(other)
+    page.live.asking.no.click()
+    shell.bar_line.lines.clear()
+    page.row("text_size").controls[0].changed.emit(shown)      # back to the size on screen: nothing to apply
+    assert page.live.asking is None and shell.restarts == [] and shell.bar_line.lines == []
+    assert store.calls[-1] == ({"text_size": shown}, None)
 
 
 def test_motion_is_saved_and_set_on_the_clock(qapp, fakes, monkeypatch):

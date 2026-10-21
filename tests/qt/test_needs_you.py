@@ -245,7 +245,7 @@ def test_G4_find_videos_lists_a_match_or_no_match_for_each_episode_on_real_named
     row, eps = no_video_show(win)
     data = ny.data_dir
     title = row.title
-    video_beside(data, eps[0], f"[SubsPlease] {title} - {eps[0].number:02d} (1080p) [A1B2C3D4].mkv")
+    video_beside(data, eps[0], f"[KumoSubs] {title} - {eps[0].number:02d} (1080p) [A1B2C3D4].mkv")
     ny.read_connect = lambda _lang: jobs(*eps)
     ny.read_settings = lambda: {"connect_enabled": True, "connect_video_folders": {}}
     settle(ny)
@@ -266,7 +266,7 @@ def test_G4_find_videos_lists_a_match_or_no_match_for_each_episode_on_real_named
         service.find_videos = real
     assert looked == [True]                                     # on a worker
     found = ny.found[card.key]
-    assert found[0][1] is not None and "✓ found" in found[0][2] and "[SubsPlease]" in found[0][2]
+    assert found[0][1] is not None and "✓ found" in found[0][2] and "[KumoSubs]" in found[0][2]
     assert found[1][1] is None and found[1][2] == f'✗ nothing with "{eps[1].number:02d}" in its name'
     whys = [lab.text() for lab in ny.cards.card(card.key).findChildren(QLabel) if lab.objectName() == "needswhy"]
     assert whys == [found[0][2], found[1][2]]
@@ -276,7 +276,7 @@ def test_G4_find_videos_lists_a_match_or_no_match_for_each_episode_on_real_named
 def test_G5_link_these_links_every_match_through_link_video_never_relink(world):
     seed, win, writer, ny = world()
     row, eps = no_video_show(win)
-    paths = [video_beside(ny.data_dir, e, f"[Erai-raws] {row.title} - {e.number:02d} [1080p].mkv") for e in eps]
+    paths = [video_beside(ny.data_dir, e, f"[Hoshi-raws] {row.title} - {e.number:02d} [1080p].mkv") for e in eps]
     ny.read_connect = lambda _lang: jobs(*eps)
     ny.read_settings = lambda: {"connect_enabled": True, "connect_video_folders": {}}
     settle(ny)
@@ -301,7 +301,7 @@ def test_G6_find_all_missing_videos_looks_for_every_show_at_once(world):
     assert len(shows) >= 2
     shows = shows[:2]
     for r, e in shows:
-        video_beside(ny.data_dir, e, f"[SubsPlease] {r.title} - {e.number:02d} (1080p).mkv")
+        video_beside(ny.data_dir, e, f"[KumoSubs] {r.title} - {e.number:02d} (1080p).mkv")
     ny.read_connect = lambda _lang: jobs(*[e for _r, e in shows])
     ny.read_settings = lambda: {"connect_enabled": True, "connect_video_folders": {}}
     settle(ny)
@@ -449,11 +449,11 @@ def test_IK8_an_offline_root_is_one_entry_that_never_offers_remove_and_remove_al
 def test_rename_asks_this_one_relinks_and_its_new_joins_as_a_new_file(world):
     probe = window_seed.build()
     gone = next(r for r in probe.items if r["tier"] == "now" and r["availability"] == "missing")
-    rel = gone["rel_path"].rsplit("/", 1)[0] + "/[SubsPlease] 改名 - 03 (1080p).srt"
+    rel = gone["rel_path"].rsplit("/", 1)[0] + "/[KumoSubs] 改名 - 03 (1080p).srt"
     asks = [{"rel": rel, "candidates": [{"id": gone["id"], "rel_path": gone["rel_path"], "title": gone["title"]}]}]
     seed, win, writer, ny = world(asks=asks)
     ask = next(e for e in ny.entries if e.kind == service.ASK)
-    assert ask.title.startswith("Is [SubsPlease] 改名 - 03 (1080p).srt the one from")
+    assert ask.title.startswith("Is [KumoSubs] 改名 - 03 (1080p).srt the one from")
     want = os.path.join(ny.data_dir, *rel.split("/"))
     button(ny, ask.key, "this_one").click()
     assert wait_until(lambda: any(c[0] == "relink" for c in writer.calls), 5)
@@ -544,7 +544,7 @@ def test_N9_an_empty_status_tick_works_nothing_out_and_repaints_no_card(world):
 def test_L1_IK4_a_300_file_show_gone_shows_twelve_lines_and_and_n_more_its_answers_still_count_every_file(qapp):
     """IK-L1-4: a card built a label and up to three buttons per gone file, on the window's thread: E8's moved show of
     300 files made ~1,000 widgets. Twelve lines show, then *and 288 more*; the card's own answers act on all."""
-    show = "葬送のフリーレン"
+    show = "旅路のエルフィナ"
     lines = tuple(service.NeedLine(key=f"item:{i}", text=f"{show} 第{i:03d}話 · its file is gone", item_id=i,
                                    label=f"第{i:03d}話", number=i, rel_path=f"HighPriority/{show}/{i:03d}.srt",
                                    actions=("choose_file", "keep_words", "remove")) for i in range(1, 301))
@@ -700,3 +700,66 @@ def test_N1_two_pieces_of_one_work_swapped_keep_its_file_gone_card_as_a_fresh_lo
     assert ny.entries == kept
     after = next(e for e in ny.entries if e.kind == service.GONE and e.data["group"] == work)
     assert after == before and after.key == before.key
+
+
+# --- the laptop's "Needs you is unviewable" (laptop fixes, FEEDBACK row 3) ----------------------------------------- #
+def assert_cards_readable(ny):
+    """Every card laid out: as wide as the area's viewport, tall enough for its words, its labels and buttons inside
+    it, no card over another."""
+    vp = ny.page.area.viewport()
+    tops = []
+    for key in ny.cards.order:
+        card = ny.cards.cards[key][1]
+        assert card.isVisible()
+        assert abs(card.width() - vp.width()) <= 1, f"{card.accessibleName()}: {card.width()} wide in {vp.width()}"
+        inside = card.rect()
+        title = card.findChild(QLabel, "needstitle")
+        assert title.height() >= title.fontMetrics().height(), f"{card.accessibleName()}: its title is cut"
+        for lab in card.findChildren(QLabel):
+            if lab.text():
+                assert lab.height() > 0 and lab.width() > 0, f"{card.accessibleName()}: '{lab.text()}' unlaid"
+                assert inside.contains(lab.geometry())
+        for b in card.findChildren(QPushButton):
+            assert b.width() >= b.minimumSizeHint().width() and inside.contains(b.geometry()), \
+                f"{card.accessibleName()}: {b.text()} clipped"
+        tops.append((card.y(), card.y() + card.height()))
+    for (_t, bottom), (top, _b) in zip(tops, tops[1:]):
+        assert top >= bottom, "two cards over each other"
+
+
+@pytest.mark.parametrize("size", ["M", "L"])
+def test_the_page_shows_readable_cards_when_first_opened_after_its_entries_change_and_after_switching_tabs(
+        world, qapp, size):
+    """The laptop's page showed one 100x30 pill with button stubs: opening it marked its entries seen, which built
+    every card again in the same order — and a rebuilt card was put in the layout only when the order changed, so the
+    new ones sat unlaid at 0,0 over each other. Seen or not shows on no card, so opening the page builds none again
+    (S19); a card that is built again (here every card, by `rewire`, in the same order) still takes its place.
+    Entries arrive while Current shows, as on the laptop."""
+    from app.qt import style
+    style.apply(qapp, "night", size, "ja")
+    try:
+        seed, win, writer, ny = world()
+        assert win.current_tab() == "current" and len(ny.entries) >= 3
+        win.show_tab("needs")                                   # the cards the hidden page owed, built as it shows
+        builds, widgets = ny.cards.builds, {k: w for k, (_s, w) in ny.cards.cards.items()}
+        assert wait_until(lambda: ny.counts()[1] == 0 and not ny._running, 10)   # marked seen: new entries
+        for _ in range(20):
+            QApplication.processEvents()
+        assert ny.cards.builds == builds, "marking the entries seen built cards again"
+        assert {k: w for k, (_s, w) in ny.cards.cards.items()} == widgets
+        assert_cards_readable(ny)
+        win.show_tab("current")
+        for _ in range(10):
+            QApplication.processEvents()
+        win.show_tab("needs")
+        for _ in range(20):
+            QApplication.processEvents()
+        assert_cards_readable(ny)
+        builds = ny.cards.builds
+        ny.rewire()                                             # every card built again while the page shows
+        for _ in range(20):
+            QApplication.processEvents()
+        assert ny.cards.builds >= builds + len(ny.entries)
+        assert_cards_readable(ny)
+    finally:
+        style.apply(qapp, "night", "M", "ja")

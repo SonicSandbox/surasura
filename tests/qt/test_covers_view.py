@@ -21,6 +21,7 @@ from types import SimpleNamespace
 import pytest
 
 pytest.importorskip("PyQt6")
+from PyQt6.QtCore import QRectF
 from PyQt6.QtWidgets import QApplication
 
 from app import library_store as ls
@@ -89,7 +90,7 @@ def near(a, b, tol=6):
 
 # --- the decoder ---------------------------------------------------------------------------------------------------- #
 def test_a_poster_beside_the_files_is_decoded_off_the_window_thread_and_painted(qapp):
-    rel = "HighPriority/進撃の巨人/poster.png"
+    rel = "HighPriority/星降る丘の巨人/poster.png"
     poster("ja", rel)
     seen = []
     real_decode = qcovers.decode
@@ -119,7 +120,7 @@ def test_a_current_rows_art_is_its_poster_as_a_strip_faded_out_at_its_right(qapp
 
 
 def test_without_a_picture_the_generated_cover_comes_at_once_and_nothing_is_decoded(qapp):
-    title = "鋼の錬金術師"
+    title = "銀の錬成師"
     for ref in (None, ref_of(3, source="generated"), ref_of(3, source="file", rel=None)):
         assert qcovers.decoded(ref, 44, 63, 1.0) is None
         assert qcovers.pixmap_for(ref, title, 44, 63, 1.0) is rows.cover(title, 44, 63, 1.0)
@@ -128,11 +129,65 @@ def test_without_a_picture_the_generated_cover_comes_at_once_and_nothing_is_deco
     assert qcovers.decodes[0] == 0 and not qcovers._running
 
 
+@pytest.mark.parametrize("text_size", ["S", "M", "L"])
+@pytest.mark.parametrize("dpr", [1.0, 2.5])
+def test_a_generated_cover_writes_a_latin_title_as_one_short_line_and_a_japanese_one_down_its_edge(qapp, monkeypatch,
+                                                                                                    text_size, dpr):
+    """Laptop try (FEEDBACK 11): a placeholder cover stood a Latin title one letter under another down its right edge
+    ("P / C / R / e" on the opened row's standing cover). A title in Latin script is now one horizontal line across
+    the cover's top, cut with "…" to its width, at every text size and screen scale; a Japanese title keeps the mock's
+    vertical cover (W2.2: vertical for Japanese / Chinese). Read from what `rows.cover` itself works out to paint."""
+    from app.qt import style
+    style.apply(qapp, "night", text_size, "ja")             # (the harness puts the look back)
+    f = rows.fz()
+    boxes = {"row": (round(31 * f), round(44 * f), False), "stand": (*rows.RowDelegate.stand_size(), True),
+             "hero": (88, 126, True), "dock": (26, 37, False)}
+    labels, drawn = [], []
+    real = rows.cover_label
+    monkeypatch.setattr(rows, "cover_label", lambda title, w, fm: labels.append((title, w, fm, real(title, w, fm)))
+                        or labels[-1][3])
+
+    class Painter(rows.QPainter):                           # AD-8: what `cover` hands `drawText`, as it paints
+        def drawText(self, *args):
+            drawn[-1].append((QRectF(args[0]), args[-1]))
+            return super().drawText(*args)
+    monkeypatch.setattr(rows, "QPainter", Painter)
+    latin = ("Old Drives/Backup Disk 2/game-mods/skins/blue", "Akari no Saikushokunin Brotherhood",
+             "[FanSubs] Kaze no Machi S2 - 07 (1080p)")
+    japanese = ("「水無瀬カナエの午後」", "灯の細工職人", "7月のペンギン", "42―フォーティツー―", "２０４９年",
+                "ﾎｰﾑﾗﾝ･ﾀﾞｲｱﾘｰ", "Akari:灯の細工職人", "42 フォーティツー")      # made-up titles
+    #   any kana or kanji letter makes it vertical: digits, symbols and a romaji name before it decide nothing;
+    #   half-width kana is kana
+    for name, (w, h, large) in boxes.items():
+        for title in latin + japanese:
+            rows.clear_covers()
+            drawn.append([])
+            pix = rows.cover(title, w, h, dpr, large)
+            assert (pix.width(), pix.height()) == (max(1, round(w * dpr)), max(1, round(h * dpr)))
+            vertical, text = labels[-1][3]
+            if vertical:                                    # one character per call, each down the right edge
+                assert len(drawn[-1]) >= 2 and all(len(t) == 1 and r.left() > w / 2 for r, t in drawn[-1])
+                assert [r.top() for r, _t in drawn[-1]] == sorted(r.top() for r, _t in drawn[-1])
+            elif text:                                      # one call: the line, across the top, as wide as the box
+                (r, t), = drawn[-1]
+                assert t == text and r.left() < w / 4 and r.width() > r.height() and r.top() < h / 3
+    assert len(labels) == len(boxes) * (len(latin) + len(japanese))     # every cover painted asked what to write
+    for title, w, fm, (vertical, text) in labels:
+        if title in latin:
+            assert not vertical and "\n" not in text       # one horizontal line, never a letter per line
+            assert fm.horizontalAdvance(text) <= w * 0.84   # inside the cover's box
+            assert text == title or text.endswith("…") or len(text) <= 1     # whole, cut with "…", or its initial
+            if w >= 31:                                     # a row's cover and up: at least the first letters
+                assert text and text.rstrip("…") and title.startswith(text.rstrip("…"))
+        else:
+            assert vertical and text == title               # Japanese: the mock's vertical cover, as before
+
+
 @pytest.mark.parametrize("what", ["text renamed .jpg", "truncated jpeg", "vanished"])
 def test_a_broken_or_vanished_image_gives_the_generated_cover_quietly_and_is_not_tried_again(qapp, what):
-    rel = "HighPriority/呪術廻戦/poster.jpg"
+    rel = "HighPriority/呪符奇譚/poster.jpg"
     if what == "text renamed .jpg":
-        poster("ja", rel, "呪術廻戦 第1話\n".encode("utf-8") * 8)
+        poster("ja", rel, "呪符奇譚 第1話\n".encode("utf-8") * 8)
     elif what == "truncated jpeg":
         poster("ja", rel, jpeg(32, 48)[:-40])
     ref = ref_of(11, rel)
@@ -140,7 +195,7 @@ def test_a_broken_or_vanished_image_gives_the_generated_cover_quietly_and_is_not
     qcovers.notifier().ready.connect(heard.append)
     try:
         assert landed(ref, 44, 63) is None
-        assert qcovers.pixmap_for(ref, "呪術廻戦", 44, 63, 1.0) is rows.cover("呪術廻戦", 44, 63, 1.0)
+        assert qcovers.pixmap_for(ref, "呪符奇譚", 44, 63, 1.0) is rows.cover("呪符奇譚", 44, 63, 1.0)
         settle()
         assert qcovers.decodes[0] == 1 and heard == []          # no repaint for nothing, never asked again
     finally:
@@ -148,7 +203,7 @@ def test_a_broken_or_vanished_image_gives_the_generated_cover_quietly_and_is_not
 
 
 def test_one_decode_per_work_shape_size_and_ratio(qapp):
-    rel = "HighPriority/葬送のフリーレン/cover.png"
+    rel = "HighPriority/旅路のエルフィナ/cover.png"
     poster("ja", rel)
     ref = ref_of(5, rel)
     for _ in range(3):                                          # asked while it runs: it waits for the same answer
@@ -163,15 +218,15 @@ def test_one_decode_per_work_shape_size_and_ratio(qapp):
 
 
 def test_on_ready_runs_once_on_the_window_thread_and_says_which_work(qapp):
-    rel = "GoalContent/薬屋のひとりごと/folder.png"
+    rel = "GoalContent/薬草屋のひとりごと/folder.png"
     poster("ja", rel)
     ref = ref_of(21, rel)
     calls, heard = [], []
     qcovers.notifier().ready.connect(heard.append)
     try:
-        pix = qcovers.pixmap_for(ref, "薬屋のひとりごと", 26, 37, 1.0, "stack",
+        pix = qcovers.pixmap_for(ref, "薬草屋のひとりごと", 26, 37, 1.0, "stack",
                                  on_ready=lambda: calls.append(threading.current_thread() is threading.main_thread()))
-        assert pix is rows.cover("薬屋のひとりごと", 26, 37, 1.0)        # the generated one meanwhile
+        assert pix is rows.cover("薬草屋のひとりごと", 26, 37, 1.0)        # the generated one meanwhile
         assert wait_until(lambda: calls, 5)
         assert calls == [True] and heard == [21]
     finally:
@@ -202,7 +257,7 @@ def test_the_whole_budget_holds_at_200_percent_with_every_row_shape(qapp):
 
 
 def test_nothing_decodes_while_a_window_waits_for_its_first_frame(qapp):
-    rel = "HighPriority/ぼっち・ざ・ろっく/poster.png"
+    rel = "HighPriority/ひとり・ざ・ばんど/poster.png"
     poster("ja", rel)
     token = object()
     qcovers.hold(token)

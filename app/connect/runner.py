@@ -1083,25 +1083,8 @@ class Steps:
             paired = isinstance(named, str) and bool(named)
             subtitle = None if paired else self.subtitle(lang, job)
         from app.connect import videos
-        if paired:
-            if _on_disk(named):
-                return named                # the named path is trusted as it is: never read (a stat only)
-            size = pairing.get("video_size")
-            found = self._videos(lang).find([os.path.basename(named)],
-                                            size if isinstance(size, int) and size > 0 else None)
-            # away from its named path, a file of that name and size is the paired video only when its bytes say so
-            # (09-hato-layer v2 §1.1): another episode under the same name is never mined as this one. A source
-            # folder's record keeps the video's key as `video_key` (its row is keyed by the origin: SRC B1), and one
-            # with no key takes no moved video; every other record is judged as before Sources (review H14)
-            if pairing.get("producer") == "source":
-                key = pairing.get("video_key")
-                refused = found is not None and (key is None or videos.content_key(found) != key)
-            else:
-                refused = found is not None and videos.content_key(found) != pairing.get("content_key")
-            if refused:
-                log.info("Connect: %s has the paired video's name and size but not its content; not used", found)
-                return None
-            return found
+        if paired:                          # the index is made (and listed) only once the named path isn't on disk
+            return paired_video(pairing, lambda names, size: self._videos(lang).find(names, size))
         if not subtitle:
             return None
         names = videos.names_for(subtitle)
@@ -1703,8 +1686,35 @@ def _on_disk(path):
     return not (getattr(st, "st_file_attributes", 0) & _PLACEHOLDER)
 
 
-def beside(subtitle):
-    """A video next to the subtitle with its name (`Show - 05.mkv` for `Show - 05.ja.srt`), on disk -> its path."""
+def paired_video(pairing, find):
+    """The video a pairing names (`video_path`), on this computer -> its path; else, moved, the one `find(names, size)`
+    (a video index's lookup) gives by its name and size, when its bytes say it is the paired video; else None. One
+    rule for Connect (`Runner.video`) and the window's ▶ (`app/services/play.py`): the two never disagree."""
+    from app.connect import videos
+    named = pairing.get("video_path")
+    if _on_disk(named):
+        return named                        # the named path is trusted as it is: never read (a stat only)
+    size = pairing.get("video_size")
+    found = find([os.path.basename(named)], size if isinstance(size, int) and size > 0 else None)
+    # away from its named path, a file of that name and size is the paired video only when its bytes say so
+    # (09-hato-layer v2 §1.1): another episode under the same name is never mined as this one. A source
+    # folder's record keeps the video's key as `video_key` (its row is keyed by the origin: SRC B1), and one
+    # with no key takes no moved video; every other record is judged as before Sources (review H14)
+    if pairing.get("producer") == "source":
+        key = pairing.get("video_key")
+        refused = found is not None and (key is None or videos.content_key(found) != key)
+    else:
+        refused = found is not None and videos.content_key(found) != pairing.get("content_key")
+    if refused:
+        log.info("Connect: %s has the paired video's name and size but not its content; not used", found)
+        return None
+    return found
+
+
+def beside(subtitle, exts=None, unlisted=None):
+    """A video next to the subtitle with its name (`Show - 05.mkv` for `Show - 05.ja.srt`), on disk -> its path; None
+    when there's none, `unlisted` when its folder can't be listed (a share offline: the window's ▶ says so). `exts`:
+    what is looked for, the video extensions unless given (an audio item's ▶ looks for audio)."""
     folder, name = os.path.split(subtitle)
     stem = os.path.splitext(name)[0]
     stems = [stem]
@@ -1714,9 +1724,9 @@ def beside(subtitle):
     try:
         names = {n.lower(): n for n in os.listdir(folder or ".")}
     except OSError:
-        return None
+        return unlisted
     for s in stems:
-        for ext in VIDEO_EXTENSIONS:
+        for ext in exts or VIDEO_EXTENSIONS:
             found = names.get((s + ext).lower())
             if found and _on_disk(os.path.join(folder, found)):
                 return os.path.join(folder, found)

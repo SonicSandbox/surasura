@@ -1818,7 +1818,7 @@ class ShellWindow(QMainWindow):
         if not folder:
             return
         if sys.platform == "win32":
-            bridge.run_in_worker(os.startfile, folder)    # the shell's open can take a moment: off the GUI thread
+            bridge.run_in_worker(screens.open_with_system, folder)   # can take a moment: off the GUI thread
         else:
             QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
 
@@ -2048,7 +2048,7 @@ class ShellWindow(QMainWindow):
 
     def _open_path(self, path):
         if sys.platform == "win32":
-            bridge.run_in_worker(os.startfile, path)      # the shell's open can take a moment: off the GUI thread
+            bridge.run_in_worker(screens.open_with_system, path)     # can take a moment: off the GUI thread
         else:
             QDesktopServices.openUrl(QUrl.fromLocalFile(path))
 

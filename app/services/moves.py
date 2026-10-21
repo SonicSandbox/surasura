@@ -365,6 +365,14 @@ class Writer:
         file: a taken name comes back as `name_1.ext`, named in a note) and the rows where they stood."""
         return self._put({"op": "remove", "ids": list(ids), "label": label})
 
+    def skip_folder(self, path, label=None):
+        """*Never read this folder* (K6): `Store.skip_folder` — the folder's row, and the items whose every origin lies
+        under it removed as *Remove…* removes them (their copies to the data folder's trash, under the store's write
+        lock; nothing in the learner's own folders is touched), one change: Undo puts them back and reads the folder
+        again. Refused (`NotASource`: outside every source, a source itself) → `failed`'s note, nothing written. Never
+        journalled (a crash before it lands loses only the click)."""
+        return self._put({"op": "skip_folder", "ids": [], "path": os.fspath(path), "label": label})
+
     def restore(self, trash_ids, label=None):
         """Put back from the trash (`Store.restore` by trash ids, the files first, as Undo of a remove does). Undo sends
         them back to the trash."""
@@ -794,6 +802,8 @@ class Writer:
                 change, note = self._insert(store, cmd)
             elif op in ("remove", "restore"):
                 change = self._remove(store, cmd) if op == "remove" else self._restore(store, cmd)
+            elif op == "skip_folder":
+                change = self._skip_folder(store, cmd)
             elif op == "register":                  # --- W3.2 B
                 change = self._register(store, cmd)
             else:
@@ -913,6 +923,29 @@ class Writer:
                         trashed[item_id] = to
                         moved.append((_full(store, to), _full(store, row["rel_path"])))
                 return store.remove(cmd["ids"], trashed)
+        except BaseException:
+            _move_back(moved)
+            raise
+
+    def _skip_folder(self, store, cmd):
+        """K6: under the store's write lock, the refusal asked first (no file moves for a refused folder), then each
+        item's copy under the folder to the trash, as `_remove` does, then `Store.skip_folder` in the same transaction;
+        the files back where they were if anything fails."""
+        lib = _ls()
+        moved = []
+        try:
+            with store._writing():
+                reason = store.skip_refused(cmd["path"])
+                if reason:
+                    raise lib.NotASource(reason)
+                trashed = {}
+                for item_id in store.items_under(cmd["path"]):
+                    row = store.item(item_id)
+                    to = _trash(lib, store, row["rel_path"]) if row is not None else None
+                    if to:
+                        trashed[item_id] = to
+                        moved.append((_full(store, to), _full(store, row["rel_path"])))
+                return store.skip_folder(cmd["path"], trashed)
         except BaseException:
             _move_back(moved)
             raise
@@ -1476,8 +1509,8 @@ def _refused(change, out):
         return True
     if change.kind in ("finish", "put_back_finished") or (change.kind == "set_tier" and change.status):
         return not out.items and _skips(out) - len(change.items) >= len(change.status)
-    if change.kind == "remove":
-        return not out.restored                     # every row put back meanwhile
+    if change.kind == "remove":                     # every row put back meanwhile (a skip's folder row: read again)
+        return not out.restored and not getattr(out, "folder_dropped", False)
     if change.kind == "restore":
         return not out.trash_ids                    # every row it put back changed since
     if change.kind == "import_finished":

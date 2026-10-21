@@ -4519,13 +4519,22 @@ class Store:
                 cmd.touch()
                 out, skipped = self._change(cmd, "undo"), []
             elif kind == "remove" or kind == "undo_add":
+                folder = getattr(change, "folder", None)        # K6: a skip's Undo reads its folder again too
+                if folder is not None:
+                    if not self._unskip(folder):                # read again meanwhile: its files may be back
+                        return self._skipped(cmd, max(1, len(change.trash_ids)))
                 rows = self.trash_rows(change.trash_ids)
                 waiting = [r["id"] for r in rows if not r["restored_at"]]
                 if not waiting:
+                    if folder is not None:
+                        out = self._change(cmd, "undo")
+                        out.folder_dropped = True
+                        return out
                     return self._skipped(cmd, len(change.trash_ids))
                 explicit = {it["id"]: it.get("explicit", 1) for it in change.items}
                 out = self.restore(waiting, rel_paths, by="undo", kind="undo",
                                    explicit_of=lambda i: explicit.get(i, 1))
+                out.folder_dropped = folder is not None
                 skipped = [t for t in change.trash_ids if t not in waiting]
             elif kind == "relink":
                 out, skipped = self._undo_relink(cmd, change)
@@ -7873,6 +7882,169 @@ def _store_let_origins_back(self, keys):
                           chunk)
 
 
+# --- K6: a folder no look reads (*Never read this folder*) ------------------------------------------------------- #
+# A skipped folder is one `exclusions` row: kind FOLDER_SKIP, `pattern` its path key, `root_id` the innermost source
+# being read that holds it, `note` {"path": the folder as written}. Its skip removes the items whose every origin lies
+# under it as Remove does (the store's trash; each origin a 'removed' row, its note marked {"folder": <row id>}), in the
+# same command — Undo puts them back and drops the row; *Read again* drops the row and its marked 'removed' rows, so
+# the next look takes its files in as new (SRC-2), never twice (SRC-7). `sources._Look` never lists a skipped folder.
+FOLDER_SKIP = "folder"
+SKIP_NOT_FOLDER = "That isn't a folder."
+SKIP_IS_SOURCE = "That's a folder Surasura reads: to leave all of it out, stop reading it."
+SKIP_OUTSIDE = "That folder isn't inside a folder Surasura reads."
+SKIP_HOLDS_SOURCE = "That folder holds a folder Surasura reads: stop reading that one first."
+SKIP_ALREADY = "That folder is skipped already."
+
+
+def _under(key, folder):
+    """Is the path key `key` inside the folder key `folder` (never the folder itself)?"""
+    return key.startswith(folder.rstrip("/") + "/")
+
+
+def skip_refusal(path, sources, skipped=()):
+    """Why the folder `path` can't be skipped (K6) -> (reason or None, the id of the innermost source holding it). Pure:
+    `sources` [(id, path)] of the folders being read; `skipped` the keys of the folders skipped already. Refused: no
+    path; a source folder itself (that's *Stop reading*); one inside no source being read; one holding a source being
+    read (its look would read nothing); one skipped already, or inside one."""
+    if not isinstance(path, str) or not path.strip():
+        return SKIP_NOT_FOLDER, None
+    key = path_key(folder_path(path)).rstrip("/")
+    keys = [(i, path_key(folder_path(p)).rstrip("/")) for i, p in sources]
+    if any(k == key for _i, k in keys):
+        return SKIP_IS_SOURCE, None
+    held = [(len(k), i) for i, k in keys if _under(key, k)]
+    if not held:
+        return SKIP_OUTSIDE, None
+    if any(_under(k, key) for _i, k in keys):
+        return SKIP_HOLDS_SOURCE, None
+    if any(s == key or _under(key, s) for s in skipped):
+        return SKIP_ALREADY, None
+    return None, max(held, key=lambda h: h[0])[1]
+
+
+def _store_read_sources(self):
+    """[(id, path)] of the sources being read (their rows alone)."""
+    return [(s["id"], s["path"]) for s in self.sources(counts=False)]
+
+
+def _store_skipped_folders(self):
+    """[{id, root, key, path}] of the folders no look reads, in the order skipped (K6): Settings' list, the look's
+    skip."""
+    with self._reading():
+        rows = self.conn.execute("SELECT id, root_id, pattern, note FROM exclusions WHERE kind = ? ORDER BY id",
+                                 (FOLDER_SKIP,)).fetchall()
+    return [{"id": i, "root": r, "key": k, "path": (_json_dict(n) or {}).get("path") or k} for i, r, k, n in rows]
+
+
+def _store_skip_refused(self, path):
+    """Why `path` can't be skipped (K6, `skip_refusal`'s plain words), or None. A read."""
+    return skip_refusal(path, self._read_sources(), [f["key"] for f in self.skipped_folders()])[0]
+
+
+def _store_items_under(self, path):
+    """K6: the live items whose every origin lies inside the folder `path`, in id order — an item with an origin
+    elsewhere, or a record of another producer (hato's), stays. A range read on the origins' keys."""
+    lo = SOURCE_KEY + path_key(folder_path(path)).rstrip("/") + "/"
+    hi = lo[:-1] + "0"                                   # "/" + 1: every key inside the folder, none beside it
+    with self._reading():
+        inside = sorted({r[0] for r in self.conn.execute(
+            "SELECT item_id FROM pairings WHERE content_key >= ? AND content_key < ? AND item_id IS NOT NULL",
+            (lo, hi))})
+        out = []
+        for chunk in _chunks(inside, 500):
+            for item_id, every, there in self.conn.execute(
+                    f"SELECT item_id, COUNT(*), SUM(content_key >= ? AND content_key < ?) FROM pairings WHERE item_id "
+                    f"IN ({','.join('?' * len(chunk))}) GROUP BY item_id ORDER BY item_id", [lo, hi] + chunk):
+                if every == there:
+                    out.append(item_id)
+    return out
+
+
+def _store_skip_choices(self, item_ids):
+    """⋯'s *Never read this folder* (K6): for the first of these items' origins inside a source being read, its folder
+    and each folder above it up to (never) the innermost such source folder, deepest first — each one `skip_refusal`
+    accepts -> [path]; [] when none of them came from a source being read."""
+    ids = [i for i in item_ids if isinstance(i, int)][:500]
+    if not ids:
+        return []
+    with self._reading():
+        origins = [(_json_dict(t) or {}).get("origin") for (t,) in self.conn.execute(
+            f"SELECT p.pairing FROM pairings p WHERE {_ORIGIN_ROW} AND p.item_id IN ({','.join('?' * len(ids))}) "
+            f"ORDER BY p.content_key", ids)]
+    sources = self._read_sources()
+    skipped = [f["key"] for f in self.skipped_folders()]
+    keys = [path_key(folder_path(p)).rstrip("/") for _i, p in sources]
+    for origin in origins:
+        if not isinstance(origin, str) or not origin:
+            continue
+        folder = folder_path(os.path.dirname(_EPUB_PART.sub(".epub", origin)))
+        key = path_key(folder).rstrip("/")
+        held = [k for k in keys if k == key or _under(key, k)]
+        if not held:
+            continue
+        top, out = max(held, key=len), []
+        while _under(path_key(folder).rstrip("/"), top):
+            if skip_refusal(folder, sources, skipped)[0] is None:
+                out.append(folder)
+            up = os.path.dirname(folder)
+            if up == folder:
+                break
+            folder = up
+        return out
+    return []
+
+
+def _store_skip_folder(self, path, trashed_paths=None):
+    """*Never read this folder* (K6), ONE command: the folder's row, then the items whose every origin lies under it
+    removed as `remove` does (`trashed_paths` {id: rel}: where the caller's file work sent their copies — the window's
+    writer trashes them under this write lock first; files in his own folders are never touched) -> the change, kind
+    'remove' (Undo puts the items back and drops the row: `undo`), `folder` its row's id. Refused (`NotASource`, its
+    reason) before anything is written."""
+    with self._command("remove") as cmd:
+        reason, root = skip_refusal(path, self._read_sources(), [f["key"] for f in self.skipped_folders()])
+        if reason:
+            raise NotASource(reason)
+        norm = folder_path(path)
+        folder = self.conn.execute("INSERT INTO exclusions (root_id, pattern, kind, created_at, note) VALUES "
+                                   "(?, ?, ?, ?, ?)", (root, path_key(norm).rstrip("/"), FOLDER_SKIP, _now(),
+                                                       _dumps({"path": norm}))).lastrowid
+        self._skips_moved()
+        ids = self.items_under(norm)
+        change = (self.remove(ids, trashed_paths) if ids else None) or self._change(cmd, "remove")
+        for chunk in _chunks(list(getattr(change, "excluded", None) or ()), 500):
+            self.conn.execute(f"UPDATE exclusions SET note = json_set(CASE WHEN json_valid(note) THEN note ELSE '{{}}' "
+                              f"END, '$.folder', ?) WHERE id IN ({','.join('?' * len(chunk))})", [folder] + chunk)
+        change.folder, change.folder_path = folder, norm
+        return change
+
+
+def _store_unskip(self, folder_id):
+    """(Inside a write.) The folder row `folder_id` and the 'removed' rows its skip wrote go -> True when it was
+    there."""
+    if not self.conn.execute("DELETE FROM exclusions WHERE id = ? AND kind = ?", (folder_id, FOLDER_SKIP)).rowcount:
+        return False
+    self.conn.execute("DELETE FROM exclusions WHERE kind = 'removed' AND json_valid(note) AND "
+                      "json_extract(note, '$.folder') = ?", (folder_id,))
+    self._skips_moved()
+    return True
+
+
+def _store_skips_moved(self):
+    """(Inside a write.) The skipped folders changed: the copy carries them (`copy_dirty`), and meta `folder_skips`
+    moves, so a look reads them again (it reads no exclusion while that stays as its cache says)."""
+    meta = self._meta()
+    self._set_meta({"copy_dirty": int(meta.get("copy_dirty") or 0) + 1,
+                    "folder_skips": int(meta.get("folder_skips") or 0) + 1})
+
+
+def _store_read_folder_again(self, folder_id):
+    """Settings' *Read again* (K6): the folder is read again — its row and the 'removed' rows its skip wrote go, so the
+    next look takes its files in as new (shows never shown → New arrivals, SRC-2; never twice, SRC-7). Not on Undo.
+    -> True when it was skipped."""
+    with self._writing():
+        return self._unskip(folder_id)
+
+
 def _store_take_in(self, root_id, found, first=False, rules=None):
     """A look's files taken in, as ONE command per batch (the scan calls it per show, ≤ 200 files; an EPUB's parts all
     in one). Each copy is already on disk under `Library/` (the caller copied it outside the lock, as moves' drop does).
@@ -8202,6 +8374,15 @@ Store._waiting_video = _store_waiting_video
 Store.update_origin = _store_update_origin
 Store._exclude_origins = _store_exclude_origins
 Store._let_origins_back = _store_let_origins_back
+Store._read_sources = _store_read_sources
+Store.skipped_folders = _store_skipped_folders
+Store.skip_refused = _store_skip_refused
+Store.items_under = _store_items_under
+Store.skip_choices = _store_skip_choices
+Store.skip_folder = _store_skip_folder
+Store._unskip = _store_unskip
+Store._skips_moved = _store_skips_moved
+Store.read_folder_again = _store_read_folder_again
 Store.take_in = _store_take_in
 Store._write_origin = _store_write_origin
 Store._take_new = _store_take_new

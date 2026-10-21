@@ -22,6 +22,9 @@ on which thread, and what the window is told. Qt-free; the shell (`app/qt/shell.
   (`NotASource.reason`). **Stop reading** (`stop`): `Store.stop_source` (its items stay), its watch closed.
 - **Arrival rows name their folder** (`folders(item_ids)`): each item's origin record (`connect.library.pairing_of`)
   read back to its source folder's path.
+- **Skipped folders** (K6): every summary carries `skipped` (`Store.skipped_folders`: Settings' list);
+  `skippable(item_ids)` answers ⋯'s *Never read this folder* submenu (`Store.skip_choices`); *Read again*
+  (`read_again`) drops the skip (`Store.read_folder_again`) and looks at its source folder at once.
 """
 import threading
 import time
@@ -135,6 +138,19 @@ class SourceLooks:
         """`then({item_id: source folder path or None})` on the worker (the arrival rows' folder names)."""
         ids = list(item_ids)
         return self._worker.put(self._folders, ids, then) if ids and not self._closing.is_set() else False
+
+    def skippable(self, item_ids, then):
+        """`then([folder path])` on the worker: ⋯'s *Never read this folder* choices for these items, deepest first (K6;
+        [] for items that came from no folder being read)."""
+        ids = list(item_ids)
+        return self._worker.put(self._skippable, ids, then) if ids and not self._closing.is_set() else False
+
+    def read_again(self, folder_id, then=None, language=None):
+        """Settings' *Read again* (K6): `then({"folder", "read", "language"})` on the worker, then a look of the source
+        holding it. `language`: the language it was listed in — another's (ids repeat across stores) is refused."""
+        if self._closing.is_set() or (language is not None and language != self.language):
+            return False
+        return self._worker.put(self._read_again, folder_id, then or _nothing)
 
     def close(self):
         """The window closes (or another language opens): the look under way stops between files, every watch closes,
@@ -281,6 +297,34 @@ class SourceLooks:
         if store is not None:
             self._publish(store, {})
 
+    def _skippable(self, ids, then):
+        out = []
+        try:
+            store = self._store()
+            if store is not None:
+                out = store.skip_choices(ids)
+        except Exception as e:
+            print(f"Sources: the folders to skip couldn't be read: {e!r}")
+        then(out)
+
+    def _read_again(self, folder_id, then):
+        answer = {"folder": folder_id, "read": False, "language": self.language}
+        store, root = None, None
+        try:
+            store = self._store()
+            if store is not None:
+                root = next((f["root"] for f in store.skipped_folders() if f["id"] == folder_id), None)
+                answer["read"] = bool(store.read_folder_again(folder_id))
+        except Exception as e:
+            answer["refused"] = str(e) or repr(e)
+        then(answer)
+        if store is not None:
+            self._publish(store, {})
+        if answer["read"] and root is not None:
+            with self._lock:                          # its files come back now, not at the next hour
+                if not self._closing.is_set():
+                    self._queue(False, {root})
+
     def _publish(self, store, totals):
         if store is None:
             store = self._store()
@@ -293,6 +337,10 @@ class SourceLooks:
             return
         summary = dict(totals, language=self.language)
         summary["sources"] = [dict(r, reachable=self._reachable.get(r["id"])) for r in rows]
+        try:
+            summary["skipped"] = store.skipped_folders()          # K6: Settings' *Skipped folders*
+        except Exception as e:
+            print(f"Sources: the skipped folders couldn't be read: {e!r}")
         self.on_result(summary)
 
     def _folders(self, ids, then):

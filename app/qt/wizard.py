@@ -1312,6 +1312,11 @@ class ShowsPage(_Page):
         pick.setSpacing(_px(14))
         self.btn_pick = _button(S.PICK_FOLDER, S.PICK_FOLDER_TIP, self.wiz.pick_folder, self.folders_part)
         pick.addWidget(self.btn_pick)
+        self.skips = []                     # K6: folders inside the picked ones never read (skipped on *Next*)
+        self.btn_skip = _button(S.SKIP_FOLDER, S.SKIP_FOLDER_TIP, self.wiz.skip_folder, self.folders_part,
+                                name="wizlink")
+        self.btn_skip.setVisible(False)
+        pick.addWidget(self.btn_skip)
         self.reading_line = _label("wizsub", "", self.folders_part)
         f = self.reading_line.font()
         _tabular(f)
@@ -1390,13 +1395,25 @@ class ShowsPage(_Page):
         self.folders = [p for p in self.folders if p != path]
         self._paint_folders()
 
+    def add_skip(self, path):
+        """K6: a folder the store's rule lets be skipped (inside a picked one): listed, with *Read it after all*."""
+        key = os.path.normcase(os.path.normpath(path))
+        if not any(os.path.normcase(os.path.normpath(p)) == key for p in self.skips):
+            self.skips.append(path)
+        self.refuse(None)
+        self._paint_folders()
+
+    def remove_skip(self, path):
+        self.skips = [p for p in self.skips if p != path]
+        self._paint_folders()
+
     def refuse(self, text):
         _set_text(self.refused_line, text or "")
         _show(self.refused_line, bool(text))
 
     def _paint_folders(self):
         """The picked folders, each a row with *Remove* (rebuilt only when the list changed, S19)."""
-        key = (tuple(self.folders), self.wiz.reading is not None)
+        key = (tuple(self.folders), tuple(self.skips), self.wiz.reading is not None)
         if key == self._folders_key:
             return
         self._folders_key = key
@@ -1422,6 +1439,24 @@ class ShowsPage(_Page):
             line.addWidget(b)
             line.addStretch(1)
             self.folder_list.addWidget(w)
+        for path in self.skips:                           # K6: the folders inside them never read
+            w = QWidget(self.folders_part)
+            line = QHBoxLayout(w)
+            line.setContentsMargins(0, 0, 0, 0)
+            line.setSpacing(_px(14))
+            name = _label("wizsub", S.SKIPPED_ROW.format(folder=path), w)
+            f = name.font()
+            f.setFamilies(list(theme.path_font_families(self.wiz.language)))
+            name.setFont(f)
+            line.addWidget(name)
+            b = _button(S.SKIP_REMOVE, S.SKIP_REMOVE_TIP, lambda p=path: self.remove_skip(p), w, name="wizlink")
+            b.setAccessibleName(S.SKIP_REMOVE_NAME.format(folder=path))
+            _enable(b, self.wiz.reading is None)
+            line.addWidget(b)
+            line.addStretch(1)
+            self.folder_list.addWidget(w)
+        _show(self.btn_skip, bool(self.folders))          # only inside a folder picked
+        _enable(self.btn_skip, self.wiz.reading is None)
         text = S.PICK_ANOTHER if self.folders else S.PICK_FOLDER
         if self.btn_pick.text() != text:
             self.btn_pick.setText(text)
@@ -1465,6 +1500,7 @@ class ShowsPage(_Page):
         self.refuse("\n".join(problems))
         read = set(result.get("read") or ())
         self.folders = [p for p in self.folders if p not in read]
+        self.skips = [p for p in self.skips if p not in set(result.get("skips") or ())]   # K6: the ones it dealt with
         self._paint_folders()
     # --- end SRC W1a
 
@@ -2510,6 +2546,33 @@ class SetupWizard(QWidget):
                              failed=self.alive(lambda info: page.refuse(S.FOLDER_REFUSED.format(folder=path,
                                                                                                 why=info[1]))))
 
+    def skip_folder(self):
+        """K6 *Skip a folder…*: the system's folder dialog, starting in the last folder picked; the folder is checked by
+        the store's own rule on a worker (`skip_refused`: inside a folder picked or read, never one itself) — refused,
+        its reason in the page's refusal line; else listed, skipped on *Next* before the first look."""
+        page = self.pages[2]
+        if self.reading is not None or self._gone or not page.folders:
+            return
+        path = self.pick_dialog(S.SKIP_TITLE, page.folders[-1])
+        if not path:
+            return
+        path = os.path.normpath(path)
+        refused = getattr(self.api, "skip_refused", None)
+        if refused is None:
+            return
+        language, chosen = self.language, list(page.folders)
+
+        def checked(why):
+            if language != self.language:
+                return
+            if why:
+                page.refuse(S.FOLDER_REFUSED.format(folder=path, why=why))
+            else:
+                page.add_skip(path)
+        bridge.run_in_worker(refused, language, path, chosen, then=self.alive(checked),
+                             failed=self.alive(lambda info: page.refuse(S.FOLDER_REFUSED.format(folder=path,
+                                                                                                why=info[1]))))
+
     def _read_folders(self, paths):
         """*Next* with folders picked: each added and given setup's first look (`read_folders`) on a worker — never the
         window's thread — its progress on the page with *Stop*; then the rows read again, and Needs you looks for its
@@ -2519,6 +2582,7 @@ class SetupWizard(QWidget):
         self.reading = stop
         self._read_seq += 1
         seq, language = self._read_seq, self.language
+        skips = list(page.skips)                              # K6: skipped before each folder's first look
         progress = bridge.Relay(self)
         progress.said.connect(lambda counts: self.alive(page.show_reading)(*counts))
         page.refuse(None)
@@ -2532,6 +2596,10 @@ class SetupWizard(QWidget):
                 return
             self.reading = None
             self._rearm()                                     # the page changed under the learner: a press waits
+            if skips:                                         # K6: the skips inside a folder it read are done with
+                read = [os.path.normcase(os.path.normpath(p)) + os.sep for p in (result or {}).get("read") or ()]
+                result = dict(result or {}, skips=[s for s in skips
+                                                   if any(os.path.normcase(s).startswith(r) for r in read)])
             page.show_read(result)
             self.paint_footer()
             self.read_rows()
@@ -2546,7 +2614,8 @@ class SetupWizard(QWidget):
 
         def failed(info):
             ended({"failed": [(p, str(info[1])) for p in paths], "read": list(paths)})
-        bridge.run_in_worker(self.api.read_folders, language, paths, lambda found, shows: progress.call((found, shows)),
+        read = (lambda *a: self.api.read_folders(*a, skips=skips)) if skips else self.api.read_folders
+        bridge.run_in_worker(read, language, paths, lambda found, shows: progress.call((found, shows)),
                              stop.is_set, then=lambda result: (self.alive(ended)(result), needs_look()),
                              failed=lambda info: (self.alive(failed)(info), needs_look()))
 

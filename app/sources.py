@@ -26,6 +26,12 @@ folder, `Library/<show>/<file>` (SRC-4). One look (`scan`):
   from an empty file, one under half the copy's size or one that changed while read; the old copy *copied* into the
   data folder's `.trash` first (its clock restarted), then the new one put in its place at once (`os.replace`, S5);
   a `v2`'s text only once `take_in` recorded it on its episode.
+- **A skipped folder** (K6, *Never read this folder*: `Store.skip_folder`): never listed, nor anything under it, and
+  its files never counted as found; the cache keeps the skips it was written with (and the store's `folder_skips`
+  stamp, so a quick look reads no exclusion), and a change to them lists everything once. **A text holding fewer than
+  MIN_SCRIPT characters of the language's script** (a backup's skin config, an untagged English `.srt`) is no content:
+  skipped, never copied — unless an item already holds its bytes or video (check a / b) — and remembered by its stats
+  like an EPUB with no text, so an unchanged one is never read again.
 - **An unreachable folder** (SRC-3): `{"reachable": False}`, nothing written or marked — one that goes while it is
   listed too (its folder times kept as they were).
 
@@ -46,7 +52,8 @@ import time
 import unicodedata
 
 from app import library_store as ls
-from app.path_utils import restart_trash_clock, write_source_marker
+from app.path_utils import _bom_encoding, _decode, restart_trash_clock, write_source_marker
+from app.unicode_ranges import HAN, KANA
 
 log = logging.getLogger("surasura-cli")
 
@@ -59,6 +66,8 @@ FOCUS_S = 5 * 60                # a look on the window's focus: at most this oft
 HOURLY_S = 60 * 60              # else, while a window is in front
 CACHE_VERSION = 2               # 2: a folder's subtitle folders are listed with it
 EPUB = ".epub"
+MIN_SCRIPT = 20                 # a text holding fewer characters of the language's script is no content (K6)
+_SCRIPT = {"ja": re.compile(f"[{KANA}{HAN}]"), "zh": re.compile(f"[{HAN}]")}
 _SUBS = frozenset({"subs", "subtitles", "subtitle"})   # a folder of the subtitles of the videos above it
 
 # A subtitle's language tag (`Show - 05.ja.srt`, `.pt-BR`): ours is taken, another language's skipped (S7). ISO 639-1
@@ -277,6 +286,20 @@ def _read_text(path, st):
     return data, hashlib.sha256(data).hexdigest()
 
 
+def _in_script(data, language):
+    """K6: does a text's bytes hold at least MIN_SCRIPT characters of the language's script (ja: kana or Han; zh: Han)?
+    Decoded as `path_utils.read_text` reads a file he supplies (a BOM, else UTF-8, else CP932 / GB18030 then cp950; a
+    damaged one as its BOM or UTF-8 says, its bad bytes replaced). A loader's skin config, an English `.srt`, a
+    readme: no. Bytes all ASCII are never decoded."""
+    if data.isascii():
+        return False
+    text = _decode(data, language)
+    if text is None:
+        text = data.decode(_bom_encoding(data) or "utf-8", "replace")
+    found = _SCRIPT.get(language, _SCRIPT["ja"]).finditer(text)
+    return sum(1 for _m in zip(range(MIN_SCRIPT), found)) >= MIN_SCRIPT
+
+
 def _write_part(part, data):
     """`data` into `part` (ours: a `.part` in the data folder), flushed to the disk before it is renamed."""
     with open(part, "wb") as dst:
@@ -378,6 +401,8 @@ class _Look:
         self.videos = None           # {video key: item id} of the origins' records, read once a look
         self.batches = 0             # take-ins this look (a checkpoint every CHECKPOINT_EVERY)
         self.hashes = {}
+        self.skip = set()            # K6: the keys of the folders skipped inside this source (`run`)
+        self.skip_stamp = None
 
     # --- the look ------------------------------------------------------------------------------------------------- #
 
@@ -393,7 +418,16 @@ class _Look:
         held = cache["roots"].get(str(self.root_id)) or {}
         mine = held.get("path") == ls.path_key(path)
         dirs = held.get("dirs") if mine and isinstance(held.get("dirs"), dict) else {}
-        self.full = self.full or looked not in _LOOKED or not dirs
+        # K6: the folders no look reads (*Never read this folder*) inside this one — read from the store only when its
+        # skips moved since this cache was written (meta `folder_skips`, read above: a quick look reads no exclusion);
+        # a change to them lists everything once (a folder read again is listed whatever its time)
+        self.skip_stamp = meta.get("folder_skips")
+        if mine and held.get("skip_stamp") == self.skip_stamp:
+            self.skip = set(held.get("skipped") or ())
+        else:
+            top = ls.path_key(path).rstrip("/")
+            self.skip = {f["key"] for f in self.store.skipped_folders() if ls._under(f["key"], top)}
+        self.full = self.full or looked not in _LOOKED or not dirs or (held.get("skipped") or []) != sorted(self.skip)
         # EPUBs that gave no text, by their stats (K5): never parsed again until they change; a full look keeps only
         # the ones it saw
         self.no_text = (held.get("books") if mine and isinstance(held.get("books"), dict) else None) or {}
@@ -433,6 +467,10 @@ class _Look:
         meta = self.store.meta()
         cache = _load_cache(self.language, (meta.get("store_id"), meta.get("epoch")))
         entry = {"path": ls.path_key(path), "dirs": seen, "books": self.no_text_kept}
+        if self.skip:
+            entry["skipped"] = sorted(self.skip)
+        if self.skip_stamp is not None:
+            entry["skip_stamp"] = self.skip_stamp
         if self.shown_kept:
             entry["shown"] = self.shown_kept
         if cache["roots"].get(str(self.root_id)) != entry:   # H15: written only when the look changed it
@@ -491,6 +529,8 @@ class _Look:
                 break
             folder = stack.pop()
             fkey = ls.path_key(folder)
+            if self._skips(folder):                          # K6: never listed, nor anything under it
+                continue
             try:
                 st = os.stat(folder)
             except OSError:
@@ -560,13 +600,17 @@ class _Look:
         seen.update(kept)
         return True
 
+    def _skips(self, folder):
+        """A folder no look reads (K6: skipped; nothing under it is reached, its folder above never pushes it)."""
+        return bool(self.skip) and ls.path_key(folder).rstrip("/") in self.skip
+
     def _subtitles(self, folder, subs, texts, epubs, vids, langs, seen):
         """The folder's subtitle folders — `Subs`, `Subtitles`, and a language's inside one (`Subs/ja`) — listed
         with it: their texts (and EPUBs, and videos) are the folder's own, so a subtitle there is its show's and pairs
         with its videos by name, and an untagged one in a language's folder is that language's (`langs`); each one's
         time kept beside the folder's (S4). One that can't be listed has the folder listed again next look.
         -> (the folder's other subfolders, the subtitle folders listed)."""
-        todo = [(s, None) for s in subs if _subs_folder(os.path.basename(s))]
+        todo = [(s, None) for s in subs if _subs_folder(os.path.basename(s)) and not self._skips(s)]
         others = [s for s in subs if not _subs_folder(os.path.basename(s))]
         listed_with = []
         while todo:
@@ -591,6 +635,8 @@ class _Look:
             if language:
                 langs.update((x[1], language) for x in t)
             for child in children:
+                if self._skips(child):
+                    continue
                 tongue = None if language else _folder_language(os.path.basename(child))
                 if tongue:
                     todo.append((child, tongue))
@@ -605,6 +651,11 @@ class _Look:
         'book')]."""
         out, groups = [], {}
         for t in texts:
+            k = _key(t[1]) if self.no_text else None
+            if k is not None and self.no_text.get(k) == [t[2].st_size, t[2].st_mtime_ns]:
+                self.no_text_kept[k] = self.no_text[k]       # none of our script in it, and unchanged (K6)
+                self.out["skipped"] += 1
+                continue
             base, language, flags = _tag(t[0])
             language = language or (langs or {}).get(t[1])
             if language not in (None, self.language) or "forced" in flags:   # a forced track holds only the signs
@@ -834,6 +885,10 @@ class _Look:
             if vkey:
                 f["video_key"] = vkey
         item = (self._video_item(vkey) if vkey else None) or self._same_bytes(st.st_size, sha)
+        if item is None and data is not None and not _in_script(data, self.language):
+            self.no_text_kept[_key(path)] = [st.st_size, st.st_mtime_ns]   # K6: a skin config, an English .srt: no
+            self.out["skipped"] += 1                                       # new text and no v2's: not read again
+            return None                                                    # until it changes
         if item is None and held is not None and held[0] < version:   # a v2 of an episode already in (S7)
             earlier = held[1]
             if self._refuses(earlier.rel_path, st):          # not followed: nor recorded (its bytes aren't the item's)

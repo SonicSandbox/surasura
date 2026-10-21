@@ -10,6 +10,8 @@ import copy
 import io
 import json
 import sys
+import time
+import types
 
 from tests.qt import bench_sweep
 
@@ -251,6 +253,7 @@ def test_the_report_prints_on_a_console_that_cannot_write_its_arrows(tmp_path, m
     _write(tmp_path, "drag", _drag_doc(BASE_MOMENTS))
     raw = io.BytesIO()
     monkeypatch.setattr(sys, "stdout", io.TextIOWrapper(raw, encoding="cp1252"))
+    bench_sweep.utf8_stdout()
     assert bench_sweep.main(["compare", str(tmp_path)]) == 0
     sys.stdout.flush()
     assert "\u2192".encode("utf-8") in raw.getvalue()
@@ -281,6 +284,13 @@ class _Runs:
         return type("P", (), {"returncode": code})()
 
 
+def _fake_processes(monkeypatch, runs, sleep):
+    """The driver's own `subprocess` and `time` replaced — never the modules themselves, which other tests' threads
+    still use."""
+    monkeypatch.setattr(bench_sweep, "subprocess", types.SimpleNamespace(run=runs))
+    monkeypatch.setattr(bench_sweep, "time", types.SimpleNamespace(sleep=sleep, time=time.time, strftime=time.strftime))
+
+
 def _args(out, **kw):
     a = dict(out=str(out), set="sweep", files=20000, reps=None, baseline=None, lock="/locks/with-lock.sh",
              holder="Mado (timing sweep)", gap=60, plan=False)
@@ -290,8 +300,7 @@ def _args(out, **kw):
 
 def test_run_holds_each_group_through_with_lock_tries_again_after_75_and_skips_a_done_group(tmp_path, monkeypatch):
     runs, sleeps = _Runs([75, 0, 0]), []
-    monkeypatch.setattr(bench_sweep.subprocess, "run", runs)
-    monkeypatch.setattr(bench_sweep.time, "sleep", sleeps.append)
+    _fake_processes(monkeypatch, runs, sleeps.append)
     monkeypatch.setattr(bench_sweep, "git_bash", lambda: "C:/Git/usr/bin/bash.exe")
     monkeypatch.setattr(bench_sweep, "_commit", lambda: ("b71092d", False))
     for p in ("drag", "drag-250"):                                           # group 1 already done
@@ -314,6 +323,6 @@ def test_run_refuses_a_folder_holding_another_runs_pieces(tmp_path, monkeypatch)
     # A 2,000-file dry run's pieces carry the same names as the real sweep's: resuming over them would mix the two.
     _started(tmp_path, files=2000)
     runs = _Runs([])
-    monkeypatch.setattr(bench_sweep.subprocess, "run", runs)
+    _fake_processes(monkeypatch, runs, lambda s: None)
     assert bench_sweep.run(_args(tmp_path)) == 2
     assert runs.calls == []

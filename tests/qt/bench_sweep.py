@@ -522,11 +522,16 @@ def run(a):
     return write_report(a.out, None, "full.md", "full")
 
 
-def main(argv=None):
+def utf8_stdout():
+    """The table's → × ≥ printed on a cp1252 console (Git Bash, a redirected log) rather than raising after sweep.md
+    was written. Called when run as a script, never on an importer's stdout."""
     try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")      # the table's → × ≥ on a cp1252 console
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except (AttributeError, ValueError):
         pass
+
+
+def main(argv=None):
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("run")
@@ -566,4 +571,5 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
+    utf8_stdout()
     sys.exit(main())

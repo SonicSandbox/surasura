@@ -2937,10 +2937,11 @@ def test_a_copy_back_whose_item_went_meanwhile_goes_to_the_trash(monkeypatch):
 
 @pytest.mark.parametrize("language", LANGUAGES)
 @pytest.mark.parametrize("case", ["same name", "only the folder's tagged", "only the folder's named like the video",
-                                  "ass above, srt in synced"])
+                                  "ass above, srt in synced", "named like the video, untagged, above a tagged other",
+                                  "named like the video but flagged, below a tagged other"])
 def test_of_one_episodes_subtitles_listed_together_the_order_picks_the_one_taken(language, case):
-    """Item 11, the order of one episode's subtitles (Sonic's answer, the library model 2): our language's tag, then
-    named like the video, then in a versions folder (`synced/`), then `.ass` before `.srt`, then the first by name —
+    """Item 11, the order of one episode's subtitles (Sonic's answers, the library model 2 and T2-A1): named exactly
+    like the video (no flag), then our language's tag, then in a versions folder (`synced/`), then `.ass` before `.srt`, then the first by name —
     the others are other versions, never counted. So `synced/`'s file wins over the folder's own unless the folder's
     wins at an earlier step; and once taken, it is the episode: a later release found beside the video is never a
     second item."""
@@ -2957,6 +2958,12 @@ def test_of_one_episodes_subtitles_listed_together_the_order_picks_the_one_taken
         "only the folder's named like the video": (f"{stem}.{tag}.srt", f"[Alt] {show} - 05 [synced].{tag}.srt",
                                                    "own"),
         "ass above, srt in synced": (f"{stem}.{tag}.ass", f"{stem}.{tag}.srt", "synced"),
+        # T2-A1: a subtitle made for this exact video is timed to it, so it goes before a tagged one of another name
+        "named like the video, untagged, above a tagged other": (f"{stem}.srt",
+                                                                f"[Alt] {show} - 05 [synced].{tag}.srt", "own"),
+        # a flag (`.sdh`) is something added: no longer the exact name, so the tag decides
+        "named like the video but flagged, below a tagged other": (f"{stem}.sdh.srt",
+                                                                  f"[Alt] {show} - 05 [synced].{tag}.srt", "synced"),
     }[case]
     own = _write(os.path.join(folder, own), _text(language, 5))
     synced = _write(os.path.join(folder, "synced", synced), _text(language, 5, "。"))

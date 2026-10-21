@@ -656,16 +656,17 @@ class _Look:
     def _episodes(self, root, parts, texts, epubs, langs=None, vids=None, versions=()):
         """One folder's files as a look takes them (S7): another language's subtitles skipped (by the file's tag, else
         its language folder's: `langs`); one per episode — an episode already in keeps its own and the rest are
-        skipped, else the first in the order of one episode's subtitles listed together (Sonic, the library model 2):
-        our language's tag, then (a flag after the plain one) named like a video (`vids`), then in a versions folder
-        listed with it (`versions`' keys, item 11: `synced/`), then `.ass` / `.ssa` before `.srt`, then the first by
-        name -> [(name, path, stat, show, 'new' | 'known' | 'book')]."""
+        skipped, else the first in the order of one episode's subtitles listed together (Sonic, the library model 2
+        and T2-A1): named exactly like a video (`vids`, no flag: made for that video, so timed to it), then our
+        language's tag, then (a flag after the plain one) in a versions folder listed with it (`versions`' keys, item
+        11: `synced/`), then `.ass` / `.ssa` before `.srt`, then the first by name -> [(name, path, stat, show, 'new' |
+        'known' | 'book')]."""
         like = {os.path.splitext(v)[0] for v in (vids or ())}            # their names, lowered
 
         def order(name, path):
             base, language, flags = _tag(name)
-            return ((language or (langs or {}).get(path)) != self.language, bool(flags), base.lower() not in like,
-                    ls.path_key(os.path.dirname(path)) not in versions,
+            return (bool(flags) or base.lower() not in like, (language or (langs or {}).get(path)) != self.language,
+                    bool(flags), ls.path_key(os.path.dirname(path)) not in versions,
                     _RANK.get(os.path.splitext(name)[1].lower(), 2), name)
         out, groups = [], {}
         for t in texts:

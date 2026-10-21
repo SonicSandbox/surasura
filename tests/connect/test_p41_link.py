@@ -38,7 +38,7 @@ class Tsubasa:
     """`subprocess.run`'s stand-in for tsubasa: its one JSON line; each call's command kept."""
 
     def __init__(self, outcome="CONFIDENT", offset=-1.5):
-        self.answer = {"outcome": outcome, "segments": [{"offset": offset}] if outcome == "CONFIDENT" else []}
+        self.answer = c.tsubasa_answer(outcome, [[None, offset]] if outcome == "CONFIDENT" else [])
         self.calls = []
 
     def __call__(self, command, **_k):

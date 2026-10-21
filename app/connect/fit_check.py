@@ -10,15 +10,17 @@ known to be timed to its video — a card cut from a subtitle a few seconds off 
   it's installed (`tsubasa --pair VIDEO SUB --dry-run --json --no-results`, P0.2: about a second an episode, never a
   write): `CONFIDENT` with one segment → mine; anything else (`REFUSED`, `ERROR`, two segments or none, an answer it
   can't read) → not timed; no answer at all (it timed out, or couldn't start) → asked again at the runner's next look.
-  Its one segment's `offset` is the shift Anki Miner cuts the lines by (`subtitle_offset`, RUNBOOK-P1.3 1.3.4): tsubasa
+  Its offset (`_offset`: the answer's `offset`, else its one [start, offset] segment's) is the shift Anki Miner cuts
+  the lines by (`subtitle_offset`, RUNBOOK-P1.3 1.3.4); none readable → it waits: tsubasa
   checks with `--dry-run`, so the copy itself is never re-timed.
 - **Neither** → not timed. 2.x lists it once in *Needs you*, with no button (E16; 3.0: *Mine anyway*, G1.3-6).
 - **Trust my subtitles' timing** (`connect_trust_timing`, off by default; laptop try row 9, P-LF-9): with nothing to
   check it — no tsubasa on this PC, or tsubasa's ERROR for a video with no subtitle track inside (a raw; P0.2) — and no
-  record of hato's, the episode mines at its subtitle's own times (no shift), as *Mine anyway* would. hato's records
-  name no producer or `hato` (as `rules.rule_for` reads them); a Library folder's origin record (`source`) and a
-  *Link…* (`surasura`) are no timing anyone checked. A record hato says it didn't check (`untimed`, `extracted`, …)
-  still waits; tsubasa's REFUSED and any other ERROR still wait.
+  pairing program's record (`others`), the episode mines at its subtitle's own times (no shift), as *Mine anyway*
+  would. Only Surasura's own records are released: a Library folder's or + Add's origin (`source`) and a *Link…*
+  (`surasura`) are no timing anyone was asked to check. Every other record waits — hato's (no producer, or `hato`, as
+  `rules.rule_for` reads them) and any program's registered through `connect register` — as do tsubasa's REFUSED and
+  any other ERROR.
 
 tsubasa decides by `outcome` and `segments` only (P0.2: on `ERROR` its other fields carry defaults). It is GPL, so it
 is run as a program, never imported (K1). Found beside Surasura's own exe when frozen (3.0 ships `tsubasa.exe` in its
@@ -78,7 +80,7 @@ def check(pairing, video, subtitle, tsubasa=None, run=None, timeout=TIMEOUT_S, t
 def hato_timed(pairing, subtitle):
     """hato's own verdict holds (09-hato-layer v2 *Connect's gate*): schema 1, `timed`, one segment, a reference
     Surasura knows (`REFERENCES`), and the library copy is the file hato timed (its sha256)."""
-    pairing = pairing or {}
+    pairing = pairing if isinstance(pairing, dict) else {}     # a row of another shape is no verdict of hato's
     timing = pairing.get("timing") if isinstance(pairing.get("timing"), dict) else {}
     if pairing.get("schema") != 1 or pairing.get("verdict") != "timed" or timing.get("segments") != 1:
         return False
@@ -97,14 +99,19 @@ def hato_timed(pairing, subtitle):
     return digest.hexdigest() == want.lower()
 
 
-def hatos(pairing):
-    """Is this a record hato wrote? Its records name no producer, or `hato` (`rules.rule_for` reads them so); a Library
-    folder's origin record (`source`) and a *Link…* (`surasura`) are Surasura's own."""
-    if not pairing:
+OWN_PRODUCERS = ("source", "surasura")   # library_store.SOURCE_PRODUCER, link.PRODUCER: Surasura's own records
+
+
+def others(pairing):
+    """Did a pairing program write this record — hato (no producer named, or `hato`: `rules.rule_for` reads them so) or
+    any other registering through `connect register`? Then its verdict stands and the switch never releases it. Only
+    Surasura's own records (`OWN_PRODUCERS`) and no record at all (None) are released. A row that is there but empty, or
+    of a shape Surasura doesn't know, waits."""
+    if pairing is None:
         return False
     if not isinstance(pairing, dict):
-        return True                 # a record of a shape Surasura doesn't know: never released by the switch
-    return str(pairing.get("producer") or "hato").strip() == "hato"
+        return True
+    return str(pairing.get("producer") or "hato").strip() not in OWN_PRODUCERS
 
 
 def fit(pairing, video, subtitle, tsubasa=None, run=None, timeout=TIMEOUT_S, trust=False):
@@ -114,7 +121,7 @@ def fit(pairing, video, subtitle, tsubasa=None, run=None, timeout=TIMEOUT_S, tru
         return TIMED, "hato", None, 0.0
     exe = tsubasa if tsubasa is not None else find_tsubasa()
     if not exe:
-        if hatos(pairing):          # hato paired it but didn't time it: the switch never releases that
+        if others(pairing):         # a pairing program paired it but didn't time it: the switch never releases that
             return NOT_TIMED, None, "Not timed to its video, so no cards.", 0.0
         if trust:                   # you said your subtitles are synced: cut where the subtitle puts the lines
             return TIMED, "you", None, 0.0
@@ -131,14 +138,16 @@ def fit(pairing, video, subtitle, tsubasa=None, run=None, timeout=TIMEOUT_S, tru
     outcome = (answer or {}).get("outcome")
     segments = (answer or {}).get("segments")
     if outcome == "CONFIDENT" and isinstance(segments, list) and len(segments) == 1:
-        offset = segments[0].get("offset") if isinstance(segments[0], dict) else None
-        return TIMED, "tsubasa", None, float(offset) if isinstance(offset, (int, float)) else 0.0
+        offset = _offset(answer)
+        if offset is None:          # nothing to cut by: 0.0 could be seconds off, so it waits
+            return NOT_TIMED, "tsubasa", "tsubasa gave no shift to cut its lines by, so no cards.", 0.0
+        return TIMED, "tsubasa", None, offset
     if outcome == "CONFIDENT" and isinstance(segments, list) and len(segments) > 1:
         return NOT_TIMED, "tsubasa", "Its timing changes part-way through the video, so no cards.", 0.0
     if outcome == "CONFIDENT":
         return NOT_TIMED, "tsubasa", "tsubasa found no timing to cut its lines by, so no cards.", 0.0
     reason = (answer or {}).get("reason")
-    raw = outcome == "ERROR" and isinstance(reason, str) and NO_TRACK in reason and not hatos(pairing)
+    raw = outcome == "ERROR" and isinstance(reason, str) and NO_TRACK in reason and not others(pairing)
     if raw and trust:               # nothing inside the video to time against, and you trust your subtitles
         return TIMED, "you", None, 0.0
     if outcome in ("REFUSED", "ERROR"):
@@ -146,6 +155,22 @@ def fit(pairing, video, subtitle, tsubasa=None, run=None, timeout=TIMEOUT_S, tru
             f" tsubasa: {reason}" if isinstance(reason, str) and reason else "") + (
             f" If your subtitles are synced, turn on {TRUST_LABEL} in Settings → Anki & mining." if raw else ""), 0.0
     return NOT_TIMED, "tsubasa", "tsubasa gave no answer, so no cards.", 0.0
+
+
+def _number(value):
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def _offset(answer):
+    """The shift, in seconds, tsubasa's answer says to cut its lines by, or None. Its real `--json` (0.1.10,
+    `cli.as_json`): a top-level `offset` (the first segment's), read first, and `segments` as [start, offset] pairs.
+    Anki Miner adds it to every subtitle time (`subtitle_offset`): a subtitle 2.4 s late reads -2.4."""
+    offset = _number(answer.get("offset"))
+    if offset is None:
+        segments = answer.get("segments")
+        first = segments[0] if isinstance(segments, list) and segments else None
+        offset = _number(first[1]) if isinstance(first, list) and len(first) == 2 else None
+    return offset
 
 
 def _answer(stdout):

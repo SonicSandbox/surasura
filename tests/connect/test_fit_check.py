@@ -11,11 +11,15 @@ import subprocess
 from types import SimpleNamespace
 
 from app.connect import fit_check
+from tests.connect_helpers import TSUBASA_REAL, tsubasa_answer
 
 VIDEO = "C:/Video/上層部の話 01.mkv"
 SUBTITLE = "C:/Subs/上層部の話 01.srt"
-ONE_SEGMENT = {"start": 0.0, "end": 1420.5, "offset": 0.0}
-TWO_SEGMENTS = [ONE_SEGMENT, {"start": 1420.5, "end": 1500.0, "offset": 3.2}]
+# tsubasa's answers are its real `--json` shape, built on one recorded from tsubasa 0.1.10 (`connect_helpers`).
+REAL = TSUBASA_REAL
+ONE_SEGMENT = [None, 0.0]
+TWO_SEGMENTS = [[None, 0.0], [1420.5, 3.2]]
+_answer = tsubasa_answer
 
 
 def _tsubasa(answer, stdout=None):
@@ -63,8 +67,7 @@ def test_a_hato_timed_record_that_fails_the_gate_goes_to_tsubasa(tmp_path):
 
     def tsubasa(command, **kw):
         asked.append(command)
-        return SimpleNamespace(stdout=(json.dumps({"outcome": "CONFIDENT", "segments": [
-            {"start": 0.0, "end": 1420.5, "offset": 1.24}]}) + "\n").encode("utf-8"))
+        return SimpleNamespace(stdout=(json.dumps(_answer(segments=[[None, 1.24]])) + "\n").encode("utf-8"))
 
     for record in (_hato_record(body, schema=2), _hato_record(body, timing={"segments": 2}),
                    _hato_record(body, timing=None), _hato_record("別のファイル".encode("utf-8"))):
@@ -86,8 +89,7 @@ def _timed_by(reference, tmp_path):
 
     def tsubasa(command, **kw):
         asked.append(command)
-        return SimpleNamespace(stdout=(json.dumps({"outcome": "CONFIDENT", "segments": [
-            {"start": 0.0, "end": 1420.5, "offset": 1.24}]}) + "\n").encode("utf-8"))
+        return SimpleNamespace(stdout=(json.dumps(_answer(segments=[[None, 1.24]])) + "\n").encode("utf-8"))
 
     got = fit_check.fit(_hato_record(body, timing=timing), VIDEO, str(subtitle), tsubasa="tsubasa", run=tsubasa)
     return got, len(asked)
@@ -109,24 +111,24 @@ def test_a_reference_absent_v1s_subtitle_or_unknown_goes_to_tsubasa(tmp_path):
 
 
 def test_a_confident_answer_with_exactly_one_segment_is_timed():
-    assert _check({"outcome": "CONFIDENT", "segments": [ONE_SEGMENT]}) == (fit_check.TIMED, "tsubasa", None)
+    assert _check(_answer()) == (fit_check.TIMED, "tsubasa", None)
 
 
 def test_a_confident_answer_with_two_segments_is_not_timed_and_says_why():
     # Two segments means the timing shifts part-way through: a card from it would hold the wrong line's audio.
-    got = _check({"outcome": "CONFIDENT", "segments": TWO_SEGMENTS})
+    got = _check(_answer(segments=TWO_SEGMENTS))
     assert got[0] == fit_check.NOT_TIMED
     assert got[1] == "tsubasa"
     assert "changes part-way" in got[2]
 
 
 def test_a_confident_answer_with_no_segments_is_not_timed():
-    got = _check({"outcome": "CONFIDENT", "segments": []})
+    got = _check(_answer(segments=[]))
     assert got[0] == fit_check.NOT_TIMED and got[1] == "tsubasa"
 
 
 def test_a_refused_answer_is_not_timed_and_carries_tsubasas_reason():
-    got = _check({"outcome": "REFUSED", "segments": [ONE_SEGMENT], "reason": "no speech match"})
+    got = _check(_answer("REFUSED", reason="no speech match"))
     assert got[0] == fit_check.NOT_TIMED
     assert "refused" in got[2] and "no speech match" in got[2]
 
@@ -190,7 +192,7 @@ def test_trust_leaves_an_installed_tsubasa_in_charge():
                             run=_tsubasa({"outcome": "REFUSED", "reason": "no speech match"}))
     assert refused[0] == fit_check.NOT_TIMED and refused[1] == "tsubasa"
     shifted = fit_check.fit(None, VIDEO, SUBTITLE, tsubasa="tsubasa", trust=True,
-                            run=_tsubasa({"outcome": "CONFIDENT", "segments": [dict(ONE_SEGMENT, offset=2.5)]}))
+                            run=_tsubasa(_answer(segments=[[None, 2.5]])))
     assert shifted == (fit_check.TIMED, "tsubasa", None, 2.5)
 
 
@@ -232,6 +234,22 @@ def test_a_record_hato_wrote_still_waits_with_or_without_its_producer_named(tmp_
                    {"schema": 1, "producer": "  hato ", "verdict": "extracted"}):
         got = fit_check.fit(record, VIDEO, SUBTITLE, tsubasa="", trust=True)
         assert got[0] == fit_check.NOT_TIMED and "Trust my subtitles" not in got[2], record
+
+
+def test_another_programs_untimed_record_waits_and_only_surasuras_own_records_are_released(tmp_path):
+    # Delta review LF-9 #1: `surasura-cli connect register` takes any short producer name, so a pairing program other
+    # than hato can register an untimed subtitle. Only Surasura's own records — a Library folder's or + Add's origin
+    # (`source`), a *Link…* (`surasura`) — are no timing anyone was asked to check; every other record waits, as an
+    # empty row does (it exists, so it isn't "no record").
+    from app import library_store
+    from app.connect import link
+    assert set(fit_check.OWN_PRODUCERS) == {library_store.SOURCE_PRODUCER, link.PRODUCER}, "one rule for both names"
+    for record in ({"schema": 1, "producer": "sonarr-sync", "verdict": "untimed"}, {}, [], "garbled"):
+        got = fit_check.fit(record, VIDEO, SUBTITLE, tsubasa="", trust=True)
+        assert got[0] == fit_check.NOT_TIMED, record
+        raw = fit_check.fit(record, VIDEO, SUBTITLE, tsubasa="tsubasa", run=_tsubasa(RAW_ERROR), trust=True)
+        assert raw[0] == fit_check.NOT_TIMED, record
+    assert fit_check.fit(None, VIDEO, SUBTITLE, tsubasa="", trust=True)[0] == fit_check.TIMED, "no record at all"
 
 
 RAW_ERROR = {"outcome": "ERROR", "segments": [], "offset": None,
@@ -284,7 +302,7 @@ def test_tsubasa_is_always_run_dry_and_json_so_it_never_retimes_the_file():
 
     def run(command, **kw):
         seen.append(command)
-        return SimpleNamespace(stdout=(json.dumps({"outcome": "CONFIDENT", "segments": [ONE_SEGMENT]}) + "\n").encode())
+        return SimpleNamespace(stdout=(json.dumps(_answer()) + "\n").encode())
 
     fit_check.check(None, VIDEO, SUBTITLE, tsubasa="tsubasa", run=run)
     assert "--dry-run" in seen[0]
@@ -353,3 +371,31 @@ def test_programs_beside_the_exe_are_named_without_exe_off_windows(tmp_path, mon
     assert path_utils.program_beside("tsubasa") == str(tmp_path / "tsubasa")
     monkeypatch.setattr(sys, "platform", "win32")
     assert path_utils.program_beside("surasura-cli") == str(tmp_path / "surasura-cli.exe")
+
+
+def test_tsubasas_real_answer_for_a_shifted_pair_is_timed_with_its_own_offset():
+    # Minato's proof (T1, 2026-10-21): tsubasa 0.1.10 on a pair shifted +2.4 s answers CONFIDENT, segments
+    # [[null, -2.4]], offset -2.4. Anki Miner adds `subtitle_offset` to every subtitle time, so -2.4 is the shift its
+    # cards must be cut by; 0.0 would cut every card 2.4 s off its line.
+    got = fit_check.fit(None, VIDEO, SUBTITLE, tsubasa="tsubasa", run=_tsubasa(None, stdout=json.dumps(
+        REAL, ensure_ascii=False) + "\n"))
+    assert got[:3] == (fit_check.TIMED, "tsubasa", None)
+    assert abs(got[3] - (-2.4)) < 1e-9
+
+
+def test_a_confident_answer_whose_offset_cant_be_read_waits_rather_than_cut_at_zero():
+    # One segment but no number to cut by (a shape Connect doesn't know, a null): mining at 0.0 could be seconds off,
+    # so it waits with a reason, as tsubasa's own unreadable answer does.
+    for answer in (dict(REAL, segments=[[None, None]], offset=None), dict(REAL, segments=[{"offset": -2.4}], offset=None),
+                   dict(REAL, segments=[[None]], offset="-2.4")):
+        got = fit_check.fit(None, VIDEO, SUBTITLE, tsubasa="tsubasa", run=_tsubasa(answer))
+        assert got[0] == fit_check.NOT_TIMED and got[2], answer
+
+
+def test_the_top_level_offset_is_read_first_and_the_first_segments_offset_without_it():
+    got = fit_check.fit(None, VIDEO, SUBTITLE, tsubasa="tsubasa", run=_tsubasa(dict(REAL, segments=[[None, 1.0]],
+                                                                                   offset=1.5)))
+    assert got[0] == fit_check.TIMED and got[3] == 1.5
+    got = fit_check.fit(None, VIDEO, SUBTITLE, tsubasa="tsubasa", run=_tsubasa(dict(REAL, segments=[[None, 1.0]],
+                                                                                   offset=None)))
+    assert got[0] == fit_check.TIMED and got[3] == 1.0

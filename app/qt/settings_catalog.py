@@ -68,6 +68,7 @@ FILLED_BY = {
     "new_cards_a_day": _CONNECT_ROWS, "connect_enabled": _CONNECT_ROWS, "anki_miner": _CONNECT_ROWS,
     "placing_rules": _RULES,
     "library_folders": "app.qt.settings_sources",          # --- SRC W1b: the folders read where they are
+    "fresh_library": "app.qt.settings_sources",            # --- K7: *Start a fresh library…*
     "mine_line": _STORE, "soon_line": _STORE, "set_up_again": _STORE,
     "remove_downloaded_covers": _LIVE,          # --- W3.2 L3
 }
@@ -252,6 +253,7 @@ ROWS = (
     _row("target_language", "content", "choice", ("target_language",), options=LANGUAGES),
     _row("soon_line", "content", "custom"),                                                 # P6: the store's line
     _row("library_folders", "content", "custom"),                     # SRC W1b: the store's sources, read where they are
+    _row("fresh_library", "content", "custom"),                       # K7: the library set aside, the folders read again
     _row("split_length", "content", "number", ("split_length",), bounds=(1, None)),
     _row("enable_youtube_transcripts", "content", "toggle", ("enable_youtube_transcripts",), when=_YOUTUBE),
     _row("enable_youtube_preview", "content", "toggle", ("enable_youtube_preview",), when=_YOUTUBE),

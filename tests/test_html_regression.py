@@ -103,8 +103,8 @@ class TestHTMLRegression(unittest.TestCase):
         opened.assert_not_called()
         as_app.assert_not_called()
 
-        with patch("webbrowser.open") as opened:
-            generate_static_html(theme="default", open_browser=False)
+        with patch("webbrowser.open") as opened:     # the user's Generate does open it (into the mock)
+            generate_static_html(theme="default")
         opened.assert_called_once()
 
     def test_zen_mode_regression(self):

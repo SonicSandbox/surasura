@@ -14,7 +14,9 @@
 * no test reaches a real Anki: a connection to the AnkiConnect port is refused for the whole run, between tests and
   from a thread that outlived its test included, and fails the test (or the run) naming it (`_guard_anki_port`);
 * no test opens a browser or a file viewer, in this process or a Python child it starts (tests/open_guard_site/): the
-  open is refused and fails the test (or the run) naming it (`_guard_anki_port` claims them too).
+  open is refused and fails the test (or the run) naming it (`_guard_anki_port` claims them too);
+* a test's own `monkeypatch.undo()` never takes its test root away: the root is put back, and the test fails naming
+  it (claimed by `_guard_anki_port` too).
 
 A conftest takes them by importing these names at its top level and never binding them again (pytest registers a
 conftest's hooks and fixtures by name): `EVERY_SUITE` below, plus `pytest_sessionfinish` and `pytest_configure` — a
@@ -256,14 +258,49 @@ if not callable(getattr(_pytest_runner, "_update_current_test_var", None)):
 
 
 def _update_current_test_var(item, when):
-    """pytest's own (`_pytest/runner.py`), with BETWEEN_TESTS where it popped the variable."""
+    """pytest's own (`_pytest/runner.py`), with BETWEEN_TESTS where it popped the variable; it also marks a test's call
+    for the undo guard below (pytest calls it at the start of every phase)."""
     if when:
         os.environ["PYTEST_CURRENT_TEST"] = f"{item.nodeid} ({when})".replace("\x00", "(null)")
     else:
         os.environ["PYTEST_CURRENT_TEST"] = BETWEEN_TESTS
+    patch = getattr(item, "funcargs", {}).get("monkeypatch") if when == "call" else None
+    _CALL_PATCH[0] = (patch, os.environ.get("SURASURA_TEST_ROOT"), item.nodeid) if patch is not None else None
 
 
 _pytest_runner._update_current_test_var = _update_current_test_var
+
+
+# --- A test's own monkeypatch.undo() keeps its test root (2026-10-21) --------------------------------------------- #
+# `monkeypatch.undo()` in a test undoes every patch of the test's one monkeypatch, the conftests' sandbox with them:
+# SURASURA_TEST_ROOT gone, the rest of the test resolved its paths with no root (get_user_data_path: the checkout's own
+# data folder; a per-user one by any route past path_utils' refusal), and an empty real %APPDATA%\Houseki\Surasura
+# appeared twice in Kura's runs. So an undo() of the running test's own monkeypatch during its call puts back the root
+# the call started with (through the same monkeypatch: its teardown still removes it), and the test fails at its end
+# naming it (`_guard_anki_port`): its patches belong in `monkeypatch.context()`. pytest's own undo at the fixture's
+# teardown, a `monkeypatch.context()` and a `pytest.MonkeyPatch()` of a test's own are other calls, never touched.
+_CALL_PATCH = [None]    # (the running test's monkeypatch, SURASURA_TEST_ROOT as its call started, its node id)
+_UNDONE = []            # the tests that undid their own monkeypatch mid-test, not yet claimed by their end
+_REAL_UNDO = getattr(pytest.MonkeyPatch.undo, "_surasura_real", pytest.MonkeyPatch.undo)
+
+
+def _undo_keeping_the_root(self):
+    _REAL_UNDO(self)
+    held = _CALL_PATCH[0]
+    if held is not None and self is held[0]:
+        if held[1] is not None:
+            self.setenv("SURASURA_TEST_ROOT", held[1])
+        _UNDONE.append(f"{held[2]} called monkeypatch.undo()")
+
+
+_undo_keeping_the_root._surasura_real = _REAL_UNDO
+pytest.MonkeyPatch.undo = _undo_keeping_the_root
+
+
+def _claim_undone():
+    """The undo() calls since the last claim -> one line each, naming the test."""
+    undone, _UNDONE[:] = list(_UNDONE), []
+    return undone
 
 
 def pytest_collection(session):
@@ -548,8 +585,13 @@ def _claim_anki_tries():
 def _guard_anki_port():
     """Fail a test during which anything tried the AnkiConnect port (refused: a real Anki may be listening there) —
     its own code, a thread left by an earlier test, or a try in the gap before it — naming each try. And one during
-    which anything opened a browser or a viewer (refused), a child of it included."""
+    which anything opened a browser or a viewer (refused), a child of it included. And one that undid its own
+    monkeypatch mid-test (its root put back)."""
     yield
+    undone = _claim_undone()
+    assert not undone, ("monkeypatch.undo() in a test undoes the harness's sandbox too (its SURASURA_TEST_ROOT was put "
+                        "back; the conftests' other patches stay undone): scope the test's own patches with "
+                        "`with monkeypatch.context() as patched:` instead: " + "; ".join(undone))
     tries = _claim_anki_tries()
     assert not tries, ("the AnkiConnect port was tried, or a child that could was started unguarded (refused or "
                        "flagged; a real Anki could have answered): " + "; ".join(tries))

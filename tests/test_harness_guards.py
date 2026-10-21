@@ -273,6 +273,60 @@ def test_open_helper_opens_the_report(tmp_path):
     webbrowser.open((tmp_path / "reading_list_static.html").as_uri())
 
 
+# --- a test's own monkeypatch.undo() keeps the test root (2026-10-21) ---------------------------------------------- #
+# `monkeypatch.undo()` in a test undid the conftest's SURASURA_TEST_ROOT too: the rest of the test resolved its paths
+# with no root (the project's own data folder; a per-user one by a route past path_utils' refusal) — the likely maker,
+# with the teardown gap, of the empty real %APPDATA%\Houseki\Surasura in Kura's runs.
+
+def test_an_undo_in_the_test_keeps_its_test_root_and_names_the_test(monkeypatch):
+    from app import path_utils
+    root = os.environ["SURASURA_TEST_ROOT"]
+    monkeypatch.setenv("SURASURA_HARNESS_UNDO_PROBE", "patched")
+    monkeypatch.undo()
+    assert "SURASURA_HARNESS_UNDO_PROBE" not in os.environ          # the test's own patch is undone, as it asked
+    assert os.environ.get("SURASURA_TEST_ROOT") == root             # the sandbox's root is not
+    assert path_utils.get_user_data_path() == root
+    assert path_utils.get_persistent_user_data_path().startswith(root)
+    undone = harness_guards._claim_undone()                        # claimed here, so this test itself passes
+    assert len(undone) == 1 and "test_an_undo_in_the_test_keeps_its_test_root_and_names_the_test" in undone[0]
+
+
+def test_a_scoped_patch_and_a_monkeypatch_of_its_own_are_never_flagged(monkeypatch):
+    root = os.environ["SURASURA_TEST_ROOT"]
+    with monkeypatch.context() as patched:
+        patched.setenv("SURASURA_HARNESS_UNDO_PROBE", "patched")
+    own = pytest.MonkeyPatch()
+    own.setenv("SURASURA_HARNESS_UNDO_PROBE", "patched")
+    own.undo()
+    assert os.environ.get("SURASURA_TEST_ROOT") == root and harness_guards._claim_undone() == []
+
+
+UNDO_PROBE = "SURASURA_HARNESS_UNDO_RUN"       # set only for the nested run below: its helper runs there alone
+
+
+def test_a_test_that_undoes_its_monkeypatch_fails_naming_it():
+    # A real pytest run of the helper below: its paths stay under its root, and the per-test guard fails it by name.
+    env = dict(os.environ, PYTHONPATH=PROJECT, PYTHONIOENCODING="utf-8")
+    env[UNDO_PROBE] = "1"
+    for name in ("PYTEST_CURRENT_TEST", "PYTEST_ADDOPTS", "SURASURA_TEST_ROOT"):
+        env.pop(name, None)
+    out = subprocess.run(
+        [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "-q",
+         "tests/test_harness_guards.py::test_undo_helper_undoes_and_reads_a_path"],
+        cwd=PROJECT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=300)
+    text = out.stdout.decode("utf-8", "replace")
+    assert out.returncode == 1 and "1 passed, 1 error" in text, text           # the call passed; the guard failed it
+    assert "monkeypatch.undo()" in text and "test_undo_helper_undoes_and_reads_a_path" in text, text
+
+
+@pytest.mark.skipif(not os.environ.get(UNDO_PROBE), reason="a helper of the nested run above")
+def test_undo_helper_undoes_and_reads_a_path(monkeypatch):
+    from app import path_utils
+    root = os.environ["SURASURA_TEST_ROOT"]
+    monkeypatch.undo()
+    assert path_utils.get_persistent_user_data_path().startswith(root)
+
+
 # --- no pytest run reaches the real Houseki roots ------------------------------------------------------------------ #
 
 def test_a_plain_run_never_reaches_the_real_houseki_roots_even_outside_its_tests(tmp_path):

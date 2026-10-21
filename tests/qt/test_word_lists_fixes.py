@@ -216,13 +216,14 @@ def test_hiding_the_text_mid_paste_kills_its_child_and_says_nothing(main, monkey
 
 
 def test_a_new_paste_kills_the_older_ones_child_and_shows_its_own_words(main, monkeypatch, children):
-    monkeypatch.setattr(word_lists, "find_command", lambda: HANG)
-    w = _open(main)
-    w.paste_button.click()
-    w.text.setPlainText("冒険の準備")
-    w.find_button.click()
-    assert wait_until(lambda: len(children) == 1, 30)
-    monkeypatch.undo()                                               # the real child again
+    with monkeypatch.context() as patched:      # scoped: an undo() would also undo the harness's test root
+        patched.setattr(word_lists, "find_command", lambda: HANG)
+        w = _open(main)
+        w.paste_button.click()
+        w.text.setPlainText("冒険の準備")
+        w.find_button.click()
+        assert wait_until(lambda: len(children) == 1, 30)
+    # the real child again
     w.text.setPlainText("灯台の砂時計")
     w.find_button.click()
     assert wait_until(lambda: w.candidates is not None, 60)

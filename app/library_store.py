@@ -3431,11 +3431,13 @@ class Store:
             cmd.touch()
             return change
 
-    def join(self, piece_ids, ahead=False):
+    def join(self, piece_ids, ahead=False, titles=False):
         """One piece of several pieces of one title (05 §5.2 #6): the other pieces' items move to just after the first
         piece's last item — "a join across sections lands where the target part is" (W1.2 §8.2), across tiers or
         with other items between — and become one piece; one command, one undo. A join of two titles' pieces is
-        refused: make them one title first (`merge_works`).
+        refused: make them one title first (`merge_works`) — unless `titles` (P-LF-4, a title dropped on another: Sonic
+        2026-10-21): the others' titles are merged into the first piece's (`merge_works`' body: the first piece's title
+        kept) in the same command, so its one undo makes them two titles and two pieces again.
         W3.2: `ahead` — they go just before the first piece's first item instead (the part coming in holds the earlier
         episodes: episode order, E22). Items that come in from Finished have their cards back in the learning order
         (`in_learning_order` 1, as `put_back_finished`: anything taken out comes back, G1.6-10); items that come in
@@ -3452,7 +3454,8 @@ class Store:
             target = piece_ids[0]
             if not members[target]:
                 raise ValueError("the piece to join onto is gone")
-            if len({r[4] for p in piece_ids for r in members[p]}) > 1:
+            works = list(dict.fromkeys(r[4] for p in piece_ids for r in members[p]))
+            if len(works) > 1 and not titles:
                 raise ValueError("these are different titles — make them one title first")
             others = [p for p in piece_ids[1:] if members[p]]
             moving = [r for p in others for r in members[p]]
@@ -3464,6 +3467,14 @@ class Store:
             # `finished` event); the window joins onto Current rows only, so this guards a stale row's race
             if tier == "graduated" and any(r[1] != "graduated" for r in moving):
                 raise ValueError("a part can't join a finished one: finish it first")
+            merged = None
+            if len(works) > 1:                       # --- P-LF-4: one title first, then one piece (one undo)
+                keep = members[target][0][4]
+                if keep is None or None in works:
+                    raise ValueError("a part without a title can't be joined")
+                merged = self._change(cmd, "merge_works")
+                self._merge_into(cmd, merged, keep, [w for w in works if w != keep])
+                self._drop_apart(keep, works)
             nxt = self._beyond(tier, (last[0], last[2]), set(), -1 if ahead else 1, len(moving))
             if ahead:
                 nxt = nxt[::-1]
@@ -3499,6 +3510,8 @@ class Store:
             self.conn.executemany("DELETE FROM pieces WHERE id = ?", [(p,) for p in others])
             change.pieces = {"items": [(r[0], p, r[3]) for p in others for r in members[p]], "created": [],
                              "deleted": [tuple(g) for g in gone if g]}
+            if merged is not None:
+                change.works = merged.works          # P-LF-4: `undo` puts the titles back too (`_undo_works`)
             cmd.touch()
             return change
 
@@ -4541,6 +4554,14 @@ class Store:
                 out, skipped = self._undo_finish(cmd, change)
             elif kind == "join" and change.pieces is not None:       # (before the status: W3.2's join has one)
                 out, skipped = self._undo_join(cmd, change)
+                if change.works is not None:        # P-LF-4: a title dropped on another: two titles again
+                    for item_id, piece in self.conn.execute(   # the dragged title's other parts keep their pieces
+                            "SELECT id, piece_id FROM items WHERE id IN (SELECT value FROM json_each(?))",
+                            (_dumps([t[0] for t in change.works["items"]]),)):
+                        if item_id not in cmd.hints and piece is not None:
+                            cmd.hints[item_id] = piece      # (else settling folds one beside its own into it)
+                    _o, more = self._undo_works(cmd, change)
+                    skipped = list(skipped) + [i for i in more if i not in skipped]
             elif change.status:
                 out, skipped = self._undo_status(cmd, change)
             elif change.works is not None:

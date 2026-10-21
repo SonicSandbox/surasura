@@ -205,7 +205,7 @@ class StandinWriter:
                 self._move_now(ids, *to)
         return self._run(ids, label, write)
 
-    def join(self, piece_ids, label=None, ahead=False):
+    def join(self, piece_ids, label=None, ahead=False, titles=False):
         """`Store.join` (W3.2 Q8: a drop on another part of the same title, `item_menu.join`): the other parts' items
         into the first part's piece and tier, after its last item (`ahead`: before its first). (M4.1 A5: the stand-in
         had no `join`, and such a drop raised in the child.)"""

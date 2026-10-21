@@ -19,6 +19,10 @@ A3 `split`, 06 E4, E22).
 a move beside it, so a part can still be placed next to its other part): the rows hold still (no gap opens), that part
 shows a green dashed outline and *Drop to join*; the drop joins them in episode order, opens the result and toasts
 *Joined Ep x–y* with Undo.
+**A title dropped on another** (P-LF-4, Sonic 2026-10-21: "can't seem to drag and join something"): over the middle of
+another title's part the hand must rest `JOIN_REST_MS` before that part is outlined (a passing drag still reorders, as
+n3 had it); the drop makes them one title and one part in one `Writer.join(..., titles=True)` — the title dropped on
+keeps its name and place — toasted *Joined … to …* with one Undo.
 
 **Episode order where the target is** (E22): the target part keeps its place; one `Writer.join` with the target first —
 the other's files go after the target's last, or just before its first when they hold the earlier episodes (`ahead`).
@@ -32,13 +36,14 @@ window's thread.
 import os
 from collections import namedtuple
 
-from PyQt6.QtCore import QObject, QPoint
+from PyQt6.QtCore import QObject, QPoint, QTimer
 from PyQt6.QtGui import QAction
 
 from app import library_store
 from app.qt import bridge, confirm, drag, finished, rows, strings, windows
 
 JOIN_EDGE = 0.3                                     # a part's top and bottom 30 %: a move beside it, not a join
+JOIN_REST_MS = 500                                  # P-LF-4: another title joins only once the hand rests this long
 
 Entry = namedtuple("Entry", "name label tip ok children checked payload", defaults=(None, None, None))
 Part = namedtuple("Part", "key piece_id ids numbers tier place title")
@@ -97,6 +102,12 @@ class ItemActions(QObject):
         # --- end W3.2 L3
         self.last_menu = None
         self.question = None                         # *Remove…*'s confirmation while it is open
+        # --- P-LF-4: another title's part under the hand, (drag, key), and the one it has rested on
+        self._resting = self._rested = None
+        self._rest = QTimer(self)
+        self._rest.setSingleShot(True)
+        self._rest.setInterval(JOIN_REST_MS)
+        self._rest.timeout.connect(self._rested_on)
 
     # N3: the window's moves, writer and language read at call time (a language switch remakes them)
     @property
@@ -286,18 +297,20 @@ class ItemActions(QObject):
         return self.moves._give(drag.Ticket(text, (row.key,), drag.ids_of(row)),
                                 lambda t: self.writer.split(piece, ep.id, label=t))
 
-    def join(self, target, other):
+    def join(self, target, other, titles=False):
         """`other` joins `target` where the target is, in episode order (E22): one `Writer.join` with the target first —
         `ahead` when `other` holds the earlier episodes (they go just before the target's first file). A part from
         Finished comes back with its cards in the order, one from New arrivals is placed: the store's join does both in
-        its one command (IK-L2-1), so one toast, one Undo, one Ctrl+Z. -> the key the result has (opened)."""
+        its one command (IK-L2-1), so one toast, one Undo, one Ctrl+Z. `titles` (P-LF-4): `other` is another title's,
+        made the target's title in that same command. -> the key the result has (opened)."""
         if self.moves.refused() is not None:
             return None
-        text = strings.ITEM_JOINED.format(range=range_text(target, other))
+        text = strings.ITEM_JOINED_TITLES.format(other=other.title, title=target.title) if titles else \
+            strings.ITEM_JOINED.format(range=range_text(target, other))
         pieces = [target.piece_id, other.piece_id]
         ahead = comes_first(other, target)
         if self.moves._give(drag.Ticket(text, (target.key,), target.ids + other.ids),
-                            lambda t: self.writer.join(pieces, label=t, ahead=ahead)) is None:
+                            lambda t: self.writer.join(pieces, label=t, ahead=ahead, titles=titles)) is None:
             return None
         self._open(target.key)
         return target.key
@@ -350,7 +363,22 @@ class ItemActions(QObject):
 
     # --- drop-to-join (G3; `drag.DragController` asks) ------------------------------------------------------------- #
     def target(self, d, global_pos):
-        """The key of the part of the same title under the hand (a part dragged from the list), else None."""
+        """The key of the part under the hand that a drop joins (a part dragged from the list): one of the same title
+        at once; another title's once the hand has rested `JOIN_REST_MS` over its middle (P-LF-4). Else None."""
+        other = self._over(d, global_pos)
+        if other is None or other.work_id == d.row.work_id:
+            self._resting = self._rested = None
+            self._rest.stop()
+            return other.key if other is not None else None
+        if self._rested == (d, other.key):
+            return other.key
+        if self._resting != (d, other.key):          # a new part under the hand: its rest starts now
+            self._resting, self._rested = (d, other.key), None
+            self._rest.start()
+        return None
+
+    def _over(self, d, global_pos):
+        """The joinable part whose middle is under the hand (not the dragged one), else None."""
         row = d.row
         if d.external or not joinable(row):
             return None
@@ -362,14 +390,21 @@ class ItemActions(QObject):
         if not idx.isValid():
             return None
         kind, other, _lines = self.lst.model().entries[idx.row()]
-        if kind not in (rows.HERO, rows.ROW) or other.key == d.key or other.work_id != row.work_id or \
-                not joinable(other):
+        if kind not in (rows.HERO, rows.ROW) or other.key == d.key or not joinable(other):
             return None
         slab = self.lst.delegate.slot_rect(kind, self.lst.visualRect(idx), _lines)
         edge = round(slab.height() * JOIN_EDGE)
         if not slab.top() + edge <= pos.y() <= slab.bottom() - edge:
             return None                              # its edges place it beside the part, as any row's do
-        return other.key
+        return other
+
+    def _rested_on(self):
+        """The hand has rested on another title's part: asked again where it is (no move comes while it rests)."""
+        d = self.moves.running
+        if d is None or self._resting is None or self._resting[0] is not d:
+            return
+        self._rested = self._resting
+        self.moves._follow(d.at)
 
     def show(self, key):
         self.lst.set_join(key)
@@ -378,7 +413,7 @@ class ItemActions(QObject):
         target = self._row(key)
         if target is None or d.row is None:
             return None
-        return self.join(part_of(target, self._place(target)), part_of(d.row))
+        return self.join(part_of(target, self._place(target)), part_of(d.row), titles=target.work_id != d.row.work_id)
 
 
 def _numbers(arrival):

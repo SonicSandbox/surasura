@@ -3568,3 +3568,83 @@ def test_H_T2_the_writer_says_when_it_stopped(lib, make_writer):
     assert not w.stopped()
     w.finish(time.monotonic() + 1)
     assert w.stopped()
+
+
+# --- P-LF-4: a title dropped on another (`Writer.join(..., titles=True)`) -------------------------------------------- #
+def _two_titles(lib):
+    """Two titles' parts in 6+ Months: (target piece, its items, the other title's piece, its items)."""
+    store = lib.store
+    shows = [i for i in lib.ids("goal") if store.item(i)["parent_folder"]]
+    a = shows[0]
+    b = next(i for i in shows if store.item(i)["work_id"] != store.item(a)["work_id"])
+    pa, pb = store.item(a)["piece_id"], store.item(b)["piece_id"]
+    members = lambda p: [r[0] for r in store.conn.execute(               # noqa: E731
+        "SELECT id FROM items WHERE piece_id = ? ORDER BY ord, id", (p,))]
+    return pa, members(pa), pb, members(pb)
+
+
+def _works_of(lib, ids):
+    return [lib.store.item(i)["work_id"] for i in ids]
+
+
+def test_P_LF_4_a_title_join_given_while_the_store_is_busy_is_journalled_lands_as_one_title_and_undoes(
+        lib, make_writer, short_lock_wait):
+    """A busy store queues the join of two titles (journalled with its `titles`, never dropped); freed, it lands as one
+    title and one part, and its one Undo makes them two titles in two parts again, every row back in its place."""
+    w, heard = make_writer()
+    pa, ma, pb, mb = _two_titles(lib)
+    wa, wb = _works_of(lib, ma[:1] + mb[:1])
+    order = lib.ids("goal")
+    holder = LockHolder(lib.db)
+    try:
+        assert w.join([pa, pb], label="joined", titles=True) is not None
+        assert h.until(lambda: journalled(lib.language) == [("join", [])])
+        entry = journal(lib.language)["pending"][0]
+        assert entry["titles"] is True and entry["piece_ids"] == [pa, pb]
+        assert _works_of(lib, mb) == [wb] * len(mb)                       # nothing written while busy
+    finally:
+        holder.release()
+    assert h.until(lambda: heard.saved)
+    assert heard.saved[0][1] == "joined" and journal(lib.language) is None
+    assert _works_of(lib, ma + mb) == [wa] * (len(ma) + len(mb))
+    assert {lib.store.item(i)["piece_id"] for i in ma + mb} == {pa}
+    w.undo(label="undo")
+    assert h.until(lambda: heard.undone)
+    assert _works_of(lib, ma) == [wa] * len(ma) and _works_of(lib, mb) == [wb] * len(mb)
+    assert {lib.store.item(i)["piece_id"] for i in mb} == {pb} and lib.ids("goal") == order
+
+
+def test_P_LF_4_a_title_join_replayed_after_a_crash_still_joins_the_titles(lib, make_writer, short_lock_wait):
+    """The journal keeps `titles`: a join of two titles queued before a crash is replayed as one (without it the
+    store would refuse two titles' parts and the drop would be lost)."""
+    w, heard = make_writer()
+    pa, ma, pb, mb = _two_titles(lib)
+    wa = _works_of(lib, ma[:1])[0]
+    holder = LockHolder(lib.db)
+    w.join([pa, pb], titles=True)
+    assert h.until(lambda: journalled(lib.language) == [("join", [])])
+    w._abandon()
+    holder.release()
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: journal(lib.language) is None)
+    assert h.until(lambda: _works_of(lib, mb) == [wa] * len(mb))
+    assert {lib.store.item(i)["piece_id"] for i in ma + mb} == {pa} and heard2.notes == []
+
+
+def test_P_LF_4_a_title_join_refused_on_a_read_only_store_and_one_that_meets_it_says_why_and_writes_nothing(
+        lib, make_writer):
+    w, heard = make_writer()
+    pa, ma, pb, mb = _two_titles(lib)
+    wb = _works_of(lib, mb[:1])[0]
+    w.hold()
+    assert w.join([pa, pb], titles=True) is not None                 # accepted while the store could be written
+    ls.mark_damaged(lib.db, "test: damaged mid-drag")
+    w.release()
+    assert h.until(lambda: heard.notes)
+    assert heard.notes == [WORDS["read_only"].format(reason="damaged")]
+    assert heard.saved == [] and w.pending() == 0
+    assert h.until(lambda: not w.can_write(), seconds=M.MODE_RECHECK_S * 3)
+    assert w.join([pa, pb], titles=True) is None and w.pending() == 0  # refused before anything is painted
+    os.remove(ls.damaged_marker(lib.db))
+    assert _works_of(lib, mb) == [wb] * len(mb) and {lib.store.item(i)["piece_id"] for i in mb} == {pb}

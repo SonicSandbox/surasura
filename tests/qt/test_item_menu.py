@@ -39,8 +39,9 @@ class ItemWriter(FakeWriter):
     def split(self, piece_id, at_item_id, label=None):
         return self._put("split", [at_item_id], label, piece_id=piece_id)
 
-    def join(self, piece_ids, label=None, ahead=False):
-        return self._put("join", [], label, piece_ids=list(piece_ids), ahead=ahead)
+    def join(self, piece_ids, label=None, ahead=False, titles=False):
+        return self._put("join", [], label, piece_ids=list(piece_ids), ahead=ahead,
+                         **({"titles": True} if titles else {}))
 
     def set_media_type(self, work_ids, media_type, label=None):
         return self._put("set_media_type", [], label, work_ids=list(work_ids), media_type=media_type)
@@ -559,6 +560,99 @@ def test_change_cover_shows_once_covers_offer_their_entries(world):
     assert picked == [row.key]
 
 
+# --- P-LF-4: a title dropped on another (Sonic's laptop: "can't seem to drag and join something") ----------------- #
+def two_titles(win):
+    """Two rows of different titles, neither Up next, neither split: (dragged place, dropped-on place)."""
+    rs = rows_of(win)
+    split = {r.work_id for r in rs if sum(1 for o in rs if o.work_id == r.work_id) > 1}
+    ok = [i for i, r in enumerate(rs) if i > 0 and item_menu.joinable(r) and r.work_id not in split]
+    a = ok[0]
+    b = next(i for i in ok if i > a + 1 and rs[i].work_id != rs[a].work_id)
+    return b, a
+
+
+def rest():
+    QTest.qWait(item_menu.JOIN_REST_MS + 150)
+
+
+def test_P_LF_4_another_title_is_outlined_only_after_the_hand_rests_and_the_outline_clears_on_leave_and_esc(world):
+    # a passing hand reorders as before (a gap under it); resting over the middle outlines the other title (the rows
+    # hold still); off it, or Esc, the outline goes — and a new drag starts its rest again
+    _seed, win, writer = world()
+    b, a = two_titles(win)
+    lst = lst_of(win)
+    rs = rows_of(win)
+    lift(win, b)
+    to = middle_point(win, a)
+    move_global(win, to)
+    settle()
+    assert win.moves.running.target[0] == "list" and lst.join_key is None, "no rest yet: a move, a gap opens"
+    rest()
+    d = win.moves.running
+    assert d.target == ("join", rs[a].key) and lst.join_key == rs[a].key
+    assert d.parting.slot == d.parting.src                           # the rows hold still under the outline
+    move_global(win, middle_point(win, 4 if a != 4 and b != 4 else 5))   # off it
+    settle()
+    assert lst.join_key is None and win.moves.running.target[0] == "list"
+    move_global(win, to)                                             # back on it: its rest starts again
+    settle()
+    assert lst.join_key is None
+    rest()
+    assert lst.join_key == rs[a].key
+    QTest.keyClick(win, Qt.Key.Key_Escape)
+    settle()
+    assert win.moves.running is None and lst.join_key is None
+    QTest.qWait(theme_swallow())
+    lift(win, b)                                                     # a new drag: never joins at once
+    move_global(win, to)
+    settle()
+    assert lst.join_key is None and win.moves.running.target[0] == "list"
+    win.moves.cancel()
+    assert writer.calls == []
+
+
+def theme_swallow():
+    from app import theme
+    return theme.MOTION["click-swallow-after-drag"] + 30
+
+
+def test_P_LF_4_a_passing_drop_on_another_title_reorders_and_never_joins(world):
+    _seed, win, writer = world()
+    b, a = two_titles(win)
+    lift(win, b)
+    to = middle_point(win, a)
+    move_global(win, to)
+    release_global(win, to)                                          # let go at once: no rest
+    rest()                                                           # (the rest's timer, if any, finds no drag)
+    assert [c[0] for c in writer.calls] == ["move"]
+    assert win.moves.running is None and lst_of(win).join_key is None
+
+
+def test_P_LF_4_a_rested_drop_on_another_title_is_one_join_of_the_two_titles_toasted_with_undo(world):
+    _seed, win, writer = world()
+    b, a = two_titles(win)
+    rs = rows_of(win)
+    lift(win, b)
+    to = middle_point(win, a)
+    move_global(win, to)
+    rest()
+    release_global(win, to)
+    ahead = item_menu.comes_first(item_menu.part_of(rs[b]), item_menu.part_of(rs[a]))
+    assert calls(writer) == [("join", [], {"piece_ids": [rs[a].piece_id, rs[b].piece_id], "ahead": ahead,
+                                           "titles": True})]
+    assert lst_of(win).model().open_key == rs[a].key
+    assert wait_until(lambda: win.toasts.card.message ==
+                      strings.ITEM_JOINED_TITLES.format(other=rs[b].title, title=rs[a].title), 5)
+
+
+def test_P_LF_4_a_read_only_store_joins_no_titles(world):
+    _seed, win, writer = world(writable=False)
+    b, a = two_titles(win)
+    rs = rows_of(win)
+    assert win.items.join(item_menu.part_of(rs[a]), item_menu.part_of(rs[b]), titles=True) is None
+    assert writer.calls == []
+
+
 def test_open_its_folder_opens_it_or_says_its_gone(world, monkeypatch):
     seed, win, _w = world()
     opened, said = [], []
@@ -710,3 +804,54 @@ def test_real_store_remove_sends_the_files_to_the_trash_and_undo_brings_them_bac
     win.toasts.card.buttons[0].click()
     assert wait_until(lambda: sorted(store.item(x)["rel_path"] for x in store.ids("now")
                                      if store.item(x)["rel_path"] in rels) == sorted(rels), 5)
+
+
+# --- P-LF-4 on the real store --------------------------------------------------------------------------------------- #
+def _state(store):
+    rows = store.conn.execute("SELECT id, tier, piece_id, work_id FROM items ORDER BY id").fetchall()
+    works = store.conn.execute("SELECT id, title FROM works ORDER BY id").fetchall()
+    return {t: store.ids(t) for t in ls.TIERS}, rows, works
+
+
+def _rest_and_drop(win, b, a):
+    lift(win, b)
+    to = middle_point(win, a)
+    move_global(win, to)
+    QTest.qWait(item_menu.JOIN_REST_MS + 150)
+    assert win.moves.running.target[0] == "join"
+    release_global(win, to)
+
+
+def test_real_store_P_LF_4_a_title_rested_on_and_dropped_on_is_one_row_and_undo_and_ctrl_z_split_it_back(real):
+    # two folders of one show read as two titles: the drop makes one title and one row (the dropped-on title's name
+    # and place); the toast's Undo, and then Ctrl+Z after a second drop, put every row, part and title back exactly
+    store, win, _writer = real()
+    b, a = two_titles(win)
+    rs = rows_of(win)
+    kept, dragged = rs[a], rs[b]
+    before = _state(store)
+    keys = [r.key for r in rs]
+    _rest_and_drop(win, b, a)
+    ids = list(drag.ids_of(kept)) + list(drag.ids_of(dragged))
+    assert wait_until(lambda: {store.item(i)["work_id"] for i in ids} == {kept.work_id} and
+                      {store.item(i)["piece_id"] for i in ids} == {kept.piece_id}, 5)
+    assert not store.conn.execute("SELECT 1 FROM works WHERE id = ?", (dragged.work_id,)).fetchone()
+
+    def one_row():
+        now = rows_of(win)
+        row = next((r for r in now if r.key == kept.key), None)
+        return row is not None and sorted(e.id for e in row.episodes) == sorted(ids) and \
+            not any(r.key == dragged.key for r in now) and row.title == kept.title
+    assert wait_until(one_row, 5)
+    assert wait_until(lambda: not win.moves.tickets, 5)
+    assert win.toasts.card.message == strings.ITEM_JOINED_TITLES.format(other=dragged.title, title=kept.title)
+    win.toasts.card.buttons[0].click()                               # the toast's Undo
+    assert wait_until(lambda: _state(store) == before, 5)
+    assert wait_until(lambda: [r.key for r in rows_of(win)] == keys, 5)
+    b, a = two_titles(win)
+    _rest_and_drop(win, b, a)
+    assert wait_until(lambda: len({store.item(i)["work_id"] for i in ids}) == 1, 5)
+    assert wait_until(lambda: not win.moves.tickets, 5)
+    QTest.keyClick(win, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+    assert wait_until(lambda: _state(store) == before, 5)
+    assert wait_until(lambda: [r.key for r in rows_of(win)] == keys, 5)

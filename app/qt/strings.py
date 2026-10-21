@@ -119,6 +119,7 @@ ITEM_JOIN_PART_TIP = "Join {range} to this part, in episode order"
 ITEM_JOIN_WHERE = {"now": "#{n} in Current", "soon": "#{n} in Current (Soon)", "goal": "in Goal",
                    "graduated": "in Finished", "arrivals": "in New arrivals"}
 ITEM_JOINED = "Joined {range}"
+ITEM_JOINED_TITLES = "Joined {other} to {title}"
 ITEM_RANGE = "Ep {a}–{b}"
 ITEM_RANGE_ONE = "Ep {a}"
 ITEM_RANGE_FILES = "{n} files"

@@ -331,6 +331,53 @@ def test_join_across_tiers_moves_then_joins_in_one_undo(language):
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
+def test_P_LF_4_a_title_joined_onto_another_is_one_title_one_piece_and_one_undo_makes_them_two_again(language):
+    """P-LF-4 (Sonic's laptop: three folders of one show were three titles, and a drop of one onto another did
+    nothing): `join(..., titles=True)` merges the others' titles into the first piece's title (`merge_works`' body: its
+    name kept, the other's among its other titles) and joins the pieces after the target's last, in one command; one
+    undo puts back both titles, every item's title, both pieces and every row's place. A third piece of the dragged
+    title elsewhere comes to the kept title but keeps its own piece. Without `titles` it is still refused."""
+    store = migrated(language, shows=2, episodes=4)
+    store.set_soon_line(len(store.ids("now")))                  # keep the tiers where the test puts them
+    shows = [i for i in store.ids("goal") if store.item(i)["parent_folder"]]
+    wa = _work(store, shows[0])
+    b = next(i for i in shows if _work(store, i) != wa)
+    wb = _work(store, b)
+    target, away = _piece(store, shows[0]), _piece(store, b)
+    ma, mb = _members(store, target), _members(store, away)
+    store.split(away, mb[3])                                    # the dragged title's last episode: a piece of its own
+    rest = _piece(store, mb[3])
+    away_members = _members(store, away)
+    titles = dict(store.conn.execute("SELECT id, title FROM works"))
+    works = lambda: [r for r in store.conn.execute(f"SELECT {cols} FROM works ORDER BY id")]  # noqa: E731
+    cols = ", ".join(r[1] for r in store.conn.execute("PRAGMA table_info(works)") if r[1] != "feed_in")
+    works_before = works()
+    order = {t: store.ids(t) for t in ls.TIERS}
+    pieces = {i: _piece(store, i) for i in ma + mb}
+    with pytest.raises(ValueError):
+        store.join([target, away])
+    assert {t: store.ids(t) for t in ls.TIERS} == order and _work(store, mb[0]) == wb
+    assert store.keep_apart([wa, wb])                           # an earlier *Keep apart* answer: his drop wins
+    change = store.join([target, away], titles=True)
+    assert change is not None and change.works is not None
+    assert all(_work(store, i) == wa for i in ma + mb), "one title: the dragged title's other piece too"
+    assert not store.conn.execute("SELECT 1 FROM works WHERE id = ?", (wb,)).fetchone()
+    kept = store.conn.execute("SELECT title, titles FROM works WHERE id = ?", (wa,)).fetchone()
+    assert kept[0] == titles[wa] and titles[wb] in json.loads(kept[1]), "the dropped-on title's name; the other's kept"
+    assert _members(store, target) == ma + away_members, "one piece, the dragged part after the target's last"
+    assert _members(store, rest) == [mb[3]]
+    assert json.loads(store.meta().get("kept_apart") or "[]") == [], "the merged-away title forgotten there"
+    assert pieces_ok(store) is None
+    store.undo(change)
+    assert {t: store.ids(t) for t in ls.TIERS} == order
+    assert {i: _piece(store, i) for i in ma + mb} == pieces
+    assert all(_work(store, i) == wa for i in ma) and all(_work(store, i) == wb for i in mb)
+    assert works() == works_before, "every title as it was (its feed version apart)"
+    assert pieces_ok(store) is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 def test_H_Bo1_a_part_never_joins_a_finished_one_so_nothing_reaches_finished_unfinished(language):
     """W3.2 H (Bo1): joined onto a part that is wholly in Finished, a Current part's episodes went to Finished with no
     watched mark, no finished date and no `finished` event — a show "finished" that Finished's own rules never

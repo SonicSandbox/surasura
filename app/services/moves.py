@@ -93,6 +93,7 @@ KEPT = ("tier", "before_id", "after_id", "near", "direction", "on", "keep_cards"
 JOURNALLED += ("register",)
 KEPT += ("records", "rules")
 KEPT += ("soon_line", "mine_line")              # W3.3 P6: `set_options`'s values
+KEPT += ("titles",)                             # P-LF-4: a join of two titles (a replay merges them too)
 # --- end W3.2 B
 PART = ".part"                  # a dropped file is copied under its name + this (no content name: no sync takes it up),
 #                                 then renamed whole
@@ -387,12 +388,16 @@ class Writer:
         """`Store.split`: a new piece from `at_item_id` to the piece's end (*Split here*)."""
         return self._put({"op": "split", "ids": [at_item_id], "piece_id": piece_id, "label": label})
 
-    def join(self, piece_ids, label=None, ahead=False):
+    def join(self, piece_ids, label=None, ahead=False, titles=False):
         """`Store.join`: one piece of several of one title (a drop on a seam); two titles' pieces → `failed`'s note.
-        `ahead`: the others go just before the first piece (W3.2: the earlier episodes coming in, one command)."""
+        `ahead`: the others go just before the first piece (W3.2: the earlier episodes coming in, one command).
+        `titles` (P-LF-4: a title dropped on another): the others' titles become the first piece's in the same command
+        (journalled and replayed as any join: its pieces checked as queued)."""
         cmd = {"op": "join", "ids": [], "piece_ids": list(piece_ids), "label": label}
         if ahead:
             cmd["ahead"] = True
+        if titles:
+            cmd["titles"] = True
         return self._put(cmd)
 
     def set_media_type(self, work_ids, media_type, label=None):
@@ -878,7 +883,7 @@ class Writer:
         if op == "split":
             return store.split(cmd["piece_id"], ids[0])
         if op == "join":
-            return store.join(cmd["piece_ids"], ahead=bool(cmd.get("ahead")))
+            return store.join(cmd["piece_ids"], ahead=bool(cmd.get("ahead")), titles=bool(cmd.get("titles")))
         if op == "set_media_type":
             return store.set_media_type(cmd["work_ids"], cmd["media_type"])
         if op == "set_cover":

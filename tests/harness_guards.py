@@ -240,6 +240,30 @@ def _between_tests():
     os.environ.setdefault("PYTEST_CURRENT_TEST", BETWEEN_TESTS)
 
 
+# pytest's own end of a teardown pops the variable (`_pytest.runner._update_current_test_var(item, None)`) after the
+# test's monkeypatch has removed its root, and only then does `pytest_runtest_teardown` below set BETWEEN_TESTS: a
+# worker that outlived its test and read a path in those few statements met neither variable and got a per-user path
+# (Mado's Needs-you flake, 2026-10-21: tracks/window/work/laptop-fixes/needs/FLAKE.md). So pytest's one function is
+# replaced: the same value at set-up, call and teardown, and BETWEEN_TESTS written in the pop's place — one assignment,
+# so the variable is never absent. A pytest that renamed the function stops the run here, never silently reopens it.
+import _pytest.runner as _pytest_runner     # noqa: E402
+
+if not callable(getattr(_pytest_runner, "_update_current_test_var", None)):
+    raise RuntimeError("pytest no longer has _pytest.runner._update_current_test_var: tests/harness_guards.py's "
+                       "PYTEST_CURRENT_TEST gap guard needs its new name")
+
+
+def _update_current_test_var(item, when):
+    """pytest's own (`_pytest/runner.py`), with BETWEEN_TESTS where it popped the variable."""
+    if when:
+        os.environ["PYTEST_CURRENT_TEST"] = f"{item.nodeid} ({when})".replace("\x00", "(null)")
+    else:
+        os.environ["PYTEST_CURRENT_TEST"] = BETWEEN_TESTS
+
+
+_pytest_runner._update_current_test_var = _update_current_test_var
+
+
 def pytest_collection(session):
     _between_tests()
 

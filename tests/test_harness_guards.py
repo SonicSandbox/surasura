@@ -125,6 +125,64 @@ def test_helper_runs_second():
     pass
 
 
+GAP_PROBE = "SURASURA_HARNESS_GAP_PROBE"     # set only for the nested run below: its helpers run there alone
+GAP_SEEN = []
+GAP_STOP = threading.Event()
+
+
+def test_pytests_own_end_of_teardown_never_leaves_the_variable_unset(monkeypatch):
+    # pytest's last step of a teardown (`_update_current_test_var(item, None)`) popped PYTEST_CURRENT_TEST, and the
+    # wrapper above named the gap only after it: a worker reading a path in between met neither variable. Now that
+    # step writes BETWEEN_TESTS itself, in one assignment (Mado's Needs-you flake, 2026-10-21).
+    import _pytest.runner
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "x (teardown)")
+    _pytest.runner._update_current_test_var(None, None)
+    assert os.environ["PYTEST_CURRENT_TEST"] == harness_guards.BETWEEN_TESTS
+
+
+def test_a_worker_that_outlives_its_test_never_meets_a_moment_without_a_guard(tmp_path):
+    # A real pytest run: its first helper starts a worker that outlives it (as the Needs-you gather did) and watches,
+    # through 200 later tests' ends and starts, for a moment with neither the test root nor PYTEST_CURRENT_TEST set —
+    # where path_utils would hand out a per-user path. Thread switches every microsecond, so a gap is met if one is
+    # there (before the fix: thousands of moments in every run). The last helper fails the run if the worker saw one.
+    env = dict(os.environ, PYTHONPATH=PROJECT, PYTHONIOENCODING="utf-8")
+    env[GAP_PROBE] = "1"
+    env.pop("PYTEST_CURRENT_TEST", None)
+    env.pop("PYTEST_ADDOPTS", None)
+    env.pop("SURASURA_TEST_ROOT", None)
+    out = subprocess.run(
+        [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "-q", "tests/test_harness_guards.py",
+         "-k", "test_gap_helper"],
+        cwd=PROJECT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=300)
+    text = out.stdout.decode("utf-8", "replace")
+    assert out.returncode == 0 and "202 passed" in text, text
+
+
+def _watch_for_a_gap():
+    while not GAP_STOP.is_set():
+        if "PYTEST_CURRENT_TEST" not in os.environ and "SURASURA_TEST_ROOT" not in os.environ:
+            GAP_SEEN.append(os.environ.get("PYTEST_CURRENT_TEST"))
+
+
+@pytest.mark.skipif(not os.environ.get(GAP_PROBE), reason="a helper of the nested run above")
+def test_gap_helper_0_starts_a_worker_that_outlives_it():
+    sys.setswitchinterval(1e-6)
+    threading.Thread(target=_watch_for_a_gap, daemon=True, name="outlives its test").start()
+
+
+@pytest.mark.skipif(not os.environ.get(GAP_PROBE), reason="a helper of the nested run above")
+@pytest.mark.parametrize("n", range(200))
+def test_gap_helper_1_one_of_many(monkeypatch, n):
+    monkeypatch.setenv("SURASURA_TEST_ROOT", os.path.join(PROJECT, "never-made", str(n)))   # gone at its teardown
+
+
+@pytest.mark.skipif(not os.environ.get(GAP_PROBE), reason="a helper of the nested run above")
+def test_gap_helper_2_the_worker_met_no_gap():
+    GAP_STOP.set()
+    sys.setswitchinterval(0.005)
+    assert GAP_SEEN == [], f"{len(GAP_SEEN)} moments with neither PYTEST_CURRENT_TEST nor a test root"
+
+
 # --- no pytest run reaches the real Houseki roots ------------------------------------------------------------------ #
 
 def test_a_plain_run_never_reaches_the_real_houseki_roots_even_outside_its_tests(tmp_path):

@@ -103,3 +103,51 @@ def test_M41_B3_tiers_kept_in_place_over_random_moves_equal_a_full_sort_at_20000
             assert [r["id"] for r in got.get(t, [])] == [r["id"] for r in want[t]], (step, t)
             assert all(a is b for a, b in zip(got.get(t, []), want[t])), (step, t)    # the newest dicts, never stale
             assert all(reader._pos[r["id"]] == (t, k) for k, r in enumerate(got.get(t, []))), (step, t)
+
+
+def test_M41_B3_a_few_ids_put_in_place_match_a_full_sort_over_small_random_libraries_with_ties_and_skipped_sorts():
+    """The 20,000-file test above rarely meets what a small library meets: ties (`None` and 0.0 sort as one `ord`, the
+    id decides), the same id moved twice before the next sort, a tier emptied and filled again, and several feeds merged
+    between two sorts (the reader builds only when it looks). 300 libraries of 1–120 items, each sort checked against
+    `_by_tier`: the ids, the newest objects and `_pos`."""
+    import random
+    from app.services import view_rows
+    tiers = ("now", "soon", "goal", "graduated", "arrivals")
+    rng = random.Random(41)
+    for trial in range(300):
+        reader = LibraryReader(None, language="ja")
+        n = rng.randint(1, 120)
+        items = [{"id": i, "tier": rng.choice(tiers), "ord": rng.choice([None, 0.0, float(rng.randint(0, 50))])}
+                 for i in range(n)]
+        reader._merge({"full": True, "items": items, "works": [], "gone": [], "options": {}, "version": 0,
+                       "epoch": 1})
+        reader._sorted_tiers()
+        next_id = n
+        for step in range(rng.randint(1, 8)):
+            changes, gone = [], []
+            for _ in range(rng.randint(0, 70)):
+                kind, ids = rng.random(), list(reader._items)
+                if kind < 0.55 and ids:                      # a move: its tier and / or its place
+                    x = dict(reader._items[rng.choice(ids)])
+                    if rng.random() < 0.5:
+                        x["tier"] = rng.choice(tiers)
+                    x["ord"] = rng.choice([None, 0.0, float(rng.randint(0, 50)), x.get("ord")])
+                    changes.append(x)
+                elif kind < 0.75 and ids:                    # the same place, a new object
+                    changes.append(dict(reader._items[rng.choice(ids)]))
+                elif kind < 0.9:                             # an arrival
+                    changes.append({"id": next_id, "tier": rng.choice(tiers), "ord": float(rng.randint(0, 50))})
+                    next_id += 1
+                elif ids:
+                    gone.append(("item", rng.choice(ids)))
+            last = {x["id"]: x for x in changes}             # a feed holds one record per id, the last (the store's)
+            reader._merge({"full": False, "items": list(last.values()), "works": [], "gone": gone, "options": {},
+                           "version": step + 1, "epoch": 1})
+            if rng.random() < 0.7:                           # else the next feed merges before any sort
+                got = reader._sorted_tiers()
+                want = view_rows._by_tier(reader._items)
+                for t in tiers:
+                    assert [r["id"] for r in got.get(t, ())] == [r["id"] for r in want.get(t, ())], (trial, step, t)
+                    for k, r in enumerate(got.get(t, ())):
+                        assert r is reader._items[r["id"]], (trial, step, t, "stale object")
+                        assert reader._pos[r["id"]] == (t, k), (trial, step, t, "pos")

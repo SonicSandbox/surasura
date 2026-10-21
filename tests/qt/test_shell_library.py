@@ -866,12 +866,15 @@ def _duties():
                 chores=FakeChores(log), replan=_Replan())
 
 
-def test_automation_turned_back_on_brings_connects_line_and_feed_back_through_the_status_poll(opened):
+def test_automation_turned_back_on_brings_connects_line_and_feed_back_through_the_status_poll(opened, monkeypatch):
     """B1 (a): a look that found D29's automation off stops Connect's tick (`Provider.every` None); the window's own
     status poll asks nothing more of it. Automation turned back on in Settings asks the line by name, so the bar leaves
     *Automation is off…* and the stones' feed is an on Feed again, ticking. What a wrong answer would cost: Connect
     making cards while the bar says it makes none, and no row ever showing *Mining* / *Waiting*."""
     from app.connect import feed as connect_feed_module
+    # Connect is never started by a test (a kick would run the CLI without the test root: harness_guards)
+    from app.connect import kick as connect_kick
+    monkeypatch.setattr(connect_kick, "kick", lambda settings: None)
     ja = migrated("ja")
     _settings(target_language="ja", connect_enabled=True, logic={"automation": False})
     services, win = opened(**_duties())
@@ -885,11 +888,14 @@ def test_automation_turned_back_on_brings_connects_line_and_feed_back_through_th
     ja.close()
 
 
-def test_a_language_whose_feed_last_found_connect_off_looks_again_when_switched_back_to(opened):
+def test_a_language_whose_feed_last_found_connect_off_looks_again_when_switched_back_to(opened, monkeypatch):
     """B1 (b), the adversary's case: Connect off in Japanese, switch to Chinese, turn *Make cards for me* on there,
     switch back. The Japanese feed (kept across switches) last found Connect off: the switch asks the line by name, so
     it looks again and is on. What a wrong answer would cost: the Japanese rows never showing Connect, the bar holding
     the Chinese library's last Connect line."""
+    # Connect is never started by a test (a kick would run the CLI without the test root: harness_guards)
+    from app.connect import kick as connect_kick
+    monkeypatch.setattr(connect_kick, "kick", lambda settings: None)
     ja, zh = migrated("ja"), migrated("zh")
     _settings(target_language="ja", connect_enabled=False)
     services, win = opened(**_duties())

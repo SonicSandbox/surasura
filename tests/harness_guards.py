@@ -12,7 +12,9 @@
 * Tk interpreters are freed on the main thread, never by a worker's collection (Windows fatal 0x80000003);
 * a test's child process never outlives the run: one still running at the end is ended, named, and fails the run;
 * no test reaches a real Anki: a connection to the AnkiConnect port is refused for the whole run, between tests and
-  from a thread that outlived its test included, and fails the test (or the run) naming it (`_guard_anki_port`).
+  from a thread that outlived its test included, and fails the test (or the run) naming it (`_guard_anki_port`);
+* no test opens a browser or a file viewer, in this process or a Python child it starts (tests/open_guard_site/): the
+  open is refused and fails the test (or the run) naming it (`_guard_anki_port` claims them too).
 
 A conftest takes them by importing these names at its top level and never binding them again (pytest registers a
 conftest's hooks and fixtures by name): `EVERY_SUITE` below, plus `pytest_sessionfinish` and `pytest_configure` — a
@@ -546,11 +548,60 @@ def _claim_anki_tries():
 @pytest.fixture(autouse=True)
 def _guard_anki_port():
     """Fail a test during which anything tried the AnkiConnect port (refused: a real Anki may be listening there) —
-    its own code, a thread left by an earlier test, or a try in the gap before it — naming each try."""
+    its own code, a thread left by an earlier test, or a try in the gap before it — naming each try. And one during
+    which anything opened a browser or a viewer (refused), a child of it included."""
     yield
     tries = _claim_anki_tries()
     assert not tries, ("the AnkiConnect port was tried, or a child that could was started unguarded (refused or "
                        "flagged; a real Anki could have answered): " + "; ".join(tries))
+    opened = _claim_opens()
+    assert not opened, ("a browser or a file viewer was opened (refused: a test never opens one on this desktop; "
+                        "pass --no-open, or hand the code its own opener): " + "; ".join(opened))
+
+
+# --- No test opens a browser or a file viewer (2026-10-21) ---------------------------------------------------------- #
+# Tests opened Journey and report pages — one under a test root — in Sonic's own Chrome and left them open. The guard
+# (tests/open_guard_site/open_guard.py) refuses webbrowser's opens, os.startfile, QDesktopServices.openUrl and a browser
+# or viewer started as a child, here and, through the Popen watch, in every Python child a test starts; each refused
+# open is a line in the run's own log, read at each test's end. Only the log is shared: one rule, in one file.
+def _load_open_guard():
+    import importlib.util
+    folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), "open_guard_site")
+    spec = importlib.util.spec_from_file_location("open_guard", os.path.join(folder, "open_guard.py"))
+    module = sys.modules.get("open_guard")
+    if module is None or getattr(module, "HERE", None) != folder:
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        sys.modules["open_guard"] = module
+    return module
+
+
+_OPEN_GUARD = _load_open_guard()
+os.environ[_OPEN_GUARD.LOG] = os.path.join(os.path.dirname(os.environ["LOCALAPPDATA"]), "opened.jsonl")
+_OPEN_GUARD.install(qt=True)
+_OPENS_READ = [0]           # how far the log has been read
+
+
+def _claim_opens():
+    """The log's lines since the last claim -> one line each, naming the test, the route, what and where."""
+    try:
+        with open(os.environ[_OPEN_GUARD.LOG], "rb") as f:
+            f.seek(_OPENS_READ[0])
+            data = f.read()
+    except OSError:
+        return []
+    complete = data[:data.rfind(b"\n") + 1]
+    _OPENS_READ[0] += len(complete)
+    out = []
+    for raw in complete.decode("utf-8", "replace").splitlines():
+        try:
+            line = json.loads(raw)
+        except ValueError:
+            out.append(raw)
+            continue
+        out.append(f"{line.get('route')} {line.get('target')!r} during {line.get('test')} (pid {line.get('pid')}, "
+                   f"thread {line.get('thread')!r}{', at ' + line['where'] if line.get('where') else ''})")
+    return out
 
 
 @pytest.hookimpl(wrapper=True)
@@ -597,12 +648,26 @@ def _say_tries_at_exit():
 atexit.register(_say_tries_at_exit)
 
 
+def _report_late_opens(reporter):
+    """The opens no test's end claimed (after the last test, or by a child still running then) -> how many."""
+    late = _claim_opens()
+    for line in late:
+        line = f"A BROWSER OR VIEWER OPENED after its test had ended (refused): {line}"
+        if reporter:
+            reporter.write_sep("!", line, red=True)
+            reporter.stats.setdefault("opened", []).append(line)
+        else:
+            print(line)
+    return len(late)
+
+
 def session_finish_guards(session=None):
     _free_tk_interpreters()     # what a still-running thread holds stays held, deleted at exit on this thread
     _end_leaked_children(_CHILDREN, grace_ms=0)     # an interrupted run's children: ended, nothing waited for
     reporter = session.config.pluginmanager.get_plugin("terminalreporter") if session is not None else None
-    if _report_late_anki_tries(reporter) and session is not None and session.exitstatus == 0:
-        session.exitstatus = 1  # a try after the test loop (an interrupted run's, or at the session's end)
+    late = _report_late_anki_tries(reporter) + _report_late_opens(reporter)
+    if late and session is not None and session.exitstatus == 0:
+        session.exitstatus = 1  # a try or an open after the test loop (an interrupted run's, or at the session's end)
 
 
 def pytest_sessionfinish(session, exitstatus):

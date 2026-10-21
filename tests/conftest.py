@@ -61,18 +61,10 @@ def mock_messagebox():
         yield
 
 
-@pytest.fixture(scope="session", autouse=True)
-def no_browser_launch():
-    """Never open a real browser during a test run.
-
-    generate_static_html() ends by opening the report — correct in the app, but several tests call it
-    just to inspect the generated HTML, so a full run used to spawn a browser tab per test. Same
-    rationale as mock_messagebox above: suppress the side effect, not the behaviour under test.
-    Tests that assert on OPENING patch static_html_generator.open_report, which is untouched here.
-    """
-    with patch("webbrowser.open"), \
-         patch("app.static_html_generator.open_as_app"):
-        yield
+# No browser opens during a test run: tests/harness_guards.py refuses every way to open one (this process and every
+# Python child) and fails the test that tried, naming it (2026-10-21). It replaces the silent session-wide mock of
+# webbrowser.open / open_as_app that stood here: that reached no child, no os.startfile and no Qt, and hid the tests that
+# opened a page. A test that only inspects the report passes open_browser=False (an analyzer child: --no-open).
 
 @pytest.fixture
 def project_root():

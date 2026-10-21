@@ -253,10 +253,7 @@ def _key_body(path, size):
 
 
 def names_for(subtitle):
-    """The video names a subtitle without a pairing goes with (`Show - 05.mkv` for `Show - 05.ja.srt`)."""
-    stem = os.path.splitext(os.path.basename(subtitle))[0]
-    stems = [stem]
-    base, tag = os.path.splitext(stem)
-    if base and 1 < len(tag) <= 4:
-        stems.append(base)
-    return [s + ext for s in stems for ext in runner.VIDEO_EXTENSIONS]
+    """The video names a subtitle without a pairing goes with (`Show - 05.mkv` for `Show - 05.ja.srt`): its stem and its
+    stem without the marks LM1a's rule reads (`episode_names.video_stems`), each in NFC and NFD."""
+    from app.episode_names import video_stems
+    return [s + ext for s in video_stems(subtitle) for ext in runner.VIDEO_EXTENSIONS]

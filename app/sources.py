@@ -88,8 +88,12 @@ _FONTS = (".otf", ".ttf", ".woff", ".woff2")
 _XMLENC = "{http://www.w3.org/2001/04/xmlenc#}"
 _SUBS = frozenset({"subs", "subtitles", "subtitle"})   # a folder of the subtitles of the videos above it
 # Item 11 (LF-1 / LF-2): a folder of other versions of the episodes above it, known by its NAME alone (casefolded,
-# NFKC) — always listed with the folder above; any other subfolder (`Part 2`, `2期`, `Movie`) is never joined
-_VERSIONS = frozenset({"synced", "sync", "resync", "resynced", "retimed", "timed", "versions", "alt", "alternate"})
+# NFKC) — always listed with the folder above; any other subfolder (`Part 2`, `2期`, `Movie`) is never joined. The
+# re-timer's words also end a subtitle's name as a versions mark (LF-17: `<video>.ja.synced.srt`); `.alt` on a file
+# stays an unknown tag (an alternative translation is its own release)
+_RETIMED = frozenset({"synced", "sync", "resync", "resynced", "retimed", "timed"})
+_VERSIONS = _RETIMED | {"versions", "alt", "alternate"}
+_FOLDER_MARKS = re.compile(r"[\[\]()（）【】「」]|\b(?:subs?|subtitles?)\b|字幕")   # around a language folder's name
 
 # A subtitle's language tag (`Show - 05.ja.srt`, `.pt-BR`): ours is taken, another language's skipped (S7). ISO 639-1
 # and 639-2 (B and T), a few names; `sc` / `tc` are Chinese here, never Sardinian; a tag not listed is no tag.
@@ -110,8 +114,8 @@ _ISO_639_2 = ("aar abk ave afr aka amh arg ara asm ava aym aze bak bel bul bih b
               "zul fil scc scr")
 _LANGS = dict.fromkeys((_ISO_639_1 + " " + _ISO_639_2 + " english korean spanish french german portuguese russian "
                         "italian arabic vietnamese thai indonesian").split(), "other")
-_LANGS.update(dict.fromkeys("ja jp jpn jap japanese".split(), "ja"))
-_LANGS.update(dict.fromkeys("zh zho chi chs cht sc tc gb big5 chinese cmn yue".split(), "zh"))
+_LANGS.update(dict.fromkeys("ja jp jpn jap japanese 日本語 日本语 日语 日文".split(), "ja"))
+_LANGS.update(dict.fromkeys("zh zho chi chs cht sc tc gb big5 chinese cmn yue 中文 简体 繁体 繁體 简中 繁中".split(), "zh"))
 _FLAGS = frozenset({"forced", "sdh", "hi", "cc"})   # a track's flags (Plex, Jellyfin, Bazarr), never a language
 _RANK = {".ass": 0, ".ssa": 0, ".srt": 1}           # of one episode's subtitles in one language: the first taken
 # A folder that is only a season or the specials (S12): the source folder's name goes in front
@@ -200,21 +204,35 @@ def _key(path):
 def _tag(name):
     """(the name's stem without its tags, the tag's language: 'ja', 'zh', 'other' or None, its flags), read from the
     right: `ep01.ja.forced.srt` → ('ep01', 'ja', {'forced'}); a flag either side of the language (`.hi` is Bazarr's
-    hearing-impaired, never Hindi); a tag no list holds stays part of the stem (untagged)."""
-    stem, language, flags = os.path.splitext(name)[0], None, set()
+    hearing-impaired, never Hindi); a tag no list holds stays part of the stem (untagged). A versions mark
+    (`_RETIMED`: `.synced`, `.retimed`, either side of the language, LF-17) is no flag: it comes off the stem, so the
+    file is that video's episode (`_marked` says it was there)."""
+    return _tags(name)[:3]
+
+
+def _marked(name):
+    """LF-17: does the name end in a versions mark (`<video>.ja.synced.srt`, `<video>.synced.ja.srt`)? Ranked as a
+    versions folder's file is (`_episodes`' order)."""
+    return _tags(name)[3]
+
+
+def _tags(name):
+    stem, language, flags, marked = os.path.splitext(name)[0], None, set(), False
     while True:
         base, tag = os.path.splitext(stem)
-        tag = tag[1:].casefold()
+        tag = unicodedata.normalize("NFKC", tag[1:]).casefold()
         if not base or not tag:
             break
-        if tag in _FLAGS:
+        if tag in _RETIMED:
+            marked = True
+        elif tag in _FLAGS:
             flags.add(tag)
         elif language is None and (_LANGS.get(tag) or _LANGS.get(re.split(r"[-_]", tag)[0])):
             language = _LANGS.get(tag) or _LANGS[re.split(r"[-_]", tag)[0]]
         else:
             break
         stem = base
-    return stem, language, flags
+    return stem, language, flags, marked
 
 
 def _episode_of(name):
@@ -250,14 +268,21 @@ def _release(name):
     return " ".join(text.replace("_", " ").split()).casefold()
 
 
-def _subs_folder(name):
-    """A folder holding the subtitles of the videos above it (`Subs`, `Subtitles`)?"""
-    return unicodedata.normalize("NFKC", name).strip().casefold() in _SUBS
-
-
-def _versions_folder(name):
-    """A folder of other versions of the episodes above it (`synced`, `retimed`, `alt`: `_VERSIONS`), by its name?"""
-    return unicodedata.normalize("NFKC", name).strip().casefold() in _VERSIONS
+def _subtitle_folder(name, parent, language):
+    """The ONE named-folder rule (item 11, LF-1, LF-15, LF-16): is the subfolder `name` of the folder `parent` (its
+    name) listed with it — its texts the folder's own — by its NAME alone (NFKC, casefolded), never by what it holds?
+    -> "versions" (`_VERSIONS`: `synced`, `retimed`, `alt`…: other versions of the episodes above), "subs" (`Subs`,
+    `Subtitles`; the show folder's own name — a download unpacked into it, LF-16), the library's language (a folder
+    named only for it — `JP`, `[Japanese]`, `Japanese Subs`, `中文字幕` — by the language names `Subs/<language>/`
+    reads, `_folder_language`, brackets and "Subs" / 字幕 around them allowed: its untagged texts are that language's,
+    LF-15), or None: `Part 2`, `Movie`, `English`, `<Show> [archive]` — a folder of its own."""
+    folded = unicodedata.normalize("NFKC", name).strip().casefold()
+    if folded in _VERSIONS:
+        return "versions"
+    if folded in _SUBS or folded == unicodedata.normalize("NFKC", parent).strip().casefold():
+        return "subs"
+    bare = " ".join(_FOLDER_MARKS.sub(" ", folded).split())
+    return language if bare and _folder_language(bare) == language else None
 
 
 def _folder_language(name):
@@ -699,18 +724,21 @@ class _Look:
         with it: their texts (and EPUBs, and videos) are the folder's own, so a subtitle there is its show's and pairs
         with its videos by name, and an untagged one in a language's folder is that language's (`langs`); each one's
         time kept beside the folder's (S4). One that can't be listed has the folder listed again next look.
-        A versions folder (item 11: `synced/`, `retimed/` — `_versions_folder`, by its name alone, LF-1) is listed with
-        it the same way and recorded in `versions`: its files are the folder's releases (the order, `_held`), and a
-        number the folder lacks is the show's next episode (LF-2: never a show of its own, whatever it gains).
+        Which subfolders: `_subtitle_folder`, by name alone — `Subs`, the show's own name, a folder named for our
+        language (its untagged texts ours, LF-15), and a versions folder (item 11: `synced/`, `retimed/`, LF-1),
+        recorded in `versions`: its files are the folder's releases (the order, `_held`), and a number the folder lacks
+        is the show's next episode (LF-2: never a show of its own, whatever it gains).
         -> (the folder's other subfolders, the subtitle folders listed)."""
-        joins = lambda s: _subs_folder(os.path.basename(s)) or _versions_folder(os.path.basename(s))   # noqa: E731
-        todo = [(s, None) for s in subs if joins(s) and not self._skips(s)]
-        others = [s for s in subs if not joins(s)]
+        kinds = {s: _subtitle_folder(os.path.basename(s), os.path.basename(folder), self.language) for s in subs}
+        todo = [(s, kinds[s] if kinds[s] not in ("subs", "versions") else None) for s in subs
+                if kinds[s] and not self._skips(s)]
+        others = [s for s in subs if not kinds[s]]
+        for s in subs:
+            if kinds[s] == "versions":
+                self.versions.setdefault(ls.path_key(folder), set()).add(ls.path_key(s))
         listed_with = []
         while todo:
             path, language = todo.pop(0)
-            if _versions_folder(os.path.basename(path)) and os.path.dirname(path) == folder:
-                self.versions.setdefault(ls.path_key(folder), set()).add(ls.path_key(path))
             try:
                 st = os.stat(path)
                 listing = _listing(path)
@@ -753,9 +781,9 @@ class _Look:
         like = {os.path.splitext(v)[0] for v in (vids or ())}            # their names, lowered
 
         def order(name, path):
-            base, language, flags = _tag(name)
+            base, language, flags, marked = _tags(name)
             return (bool(flags) or base.lower() not in like, (language or (langs or {}).get(path)) != self.language,
-                    bool(flags), ls.path_key(os.path.dirname(path)) not in versions,
+                    bool(flags), not marked and ls.path_key(os.path.dirname(path)) not in versions,
                     _RANK.get(os.path.splitext(name)[1].lower(), 2), name)
         out, groups = [], {}
         for t in texts:

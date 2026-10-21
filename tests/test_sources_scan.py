@@ -3151,3 +3151,100 @@ def test_a_subtitle_named_like_the_video_in_our_language_still_beats_a_tagged_on
         assert _look(store, language, root, first=True)["added"] == 1 and _items(store) == 1
         files = _library_files(data_dir)
         assert [_sha(os.path.join(data_dir, *f.split("/"))) for f in files] == [_sha(exact)]
+
+
+# --- LF-15 / LF-16 / LF-17: the one named-folder rule (and its words at the end of a subtitle's name) --------------- #
+
+_LANGUAGE_FOLDERS = {"ja": ["JP", "ja", "[Japanese]", "Japanese Subs", "日本語字幕"],
+                     "zh": ["CHS", "zh", "[Chinese]", "中文字幕", "ＣＨＴ"]}
+
+
+def _videos_above(language, show, n=2):
+    src = _drive("driveA")
+    folder = os.path.join(src, show)
+    stems = [f"[Grp] {show} - {e:02d} (1080p)" for e in range(1, n + 1)]
+    for e, stem in enumerate(stems, 1):
+        _video(os.path.join(folder, stem + ".mkv"), body=b"fake matroska %d" % e)
+    return src, folder, stems
+
+
+def _waiting(store):
+    return store.conn.execute("SELECT COUNT(*) FROM items WHERE availability = 'waiting'").fetchone()[0]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("at", range(5))
+def test_a_folder_named_only_for_our_language_is_listed_with_the_videos_above_it(language, at):
+    """LF-15 (scenario rows 29-32): `<Show>/` holds the videos, `<Show>/JP/` (or `[Japanese]`, `Japanese Subs`,
+    `中文字幕`…) their untagged subtitles. By the name alone — the language names `Subs/<language>/` reads — it counts
+    as `Subs/`: one show, each subtitle its video's, no video waiting. Its untagged texts are ours."""
+    store, data_dir = _empty(language)
+    show = _SHOWS[language][0]
+    src, folder, stems = _videos_above(language, show)
+    for e, stem in enumerate(stems, 1):
+        _write(os.path.join(folder, _LANGUAGE_FOLDERS[language][at], stem + ".srt"), _text(language, e))
+    _settle(src)
+    with store:
+        root = store.add_source(src)
+        result = _look(store, language, root, first=True)
+        assert (result["shows"], _items(store), _waiting(store)) == (1, 2, 0)
+        assert {os.path.dirname(f) for f in _library_files(data_dir)} == {f"Library/{show}"}
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_folder_named_for_another_language_stays_a_folder_of_its_own(language):
+    """LF-15's other side: `English/` beside the videos is never joined (its texts aren't ours anyway): the videos
+    wait (even holding our text, it is a folder of its own)."""
+    store, data_dir = _empty(language)
+    show = _SHOWS[language][0]
+    src, folder, stems = _videos_above(language, show, n=1)
+    _write(os.path.join(folder, "English", stems[0] + ".srt"), _text(language, 1))
+    _settle(src)
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        assert _waiting(store) == 1
+        assert {os.path.dirname(f) for f in _library_files(data_dir) if f.endswith(".srt")} == \
+            {f"Library/{show}/English"}
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_download_unpacked_into_a_folder_named_like_the_show_is_that_shows(language):
+    """LF-16 (row 45): `<Show>/<Show>/` holds a subtitle download named its own way (`<Show>.S01E01.WEBRip.ja.srt`):
+    by its name — the show folder's own — it is the show's subtitle folder: one show. A folder named like the archive
+    (`<Show> [archive]`) stays a show of its own."""
+    store, data_dir = _empty(language)
+    show = _SHOWS[language][0]
+    src, folder, stems = _videos_above(language, show)
+    for e in (1, 2):
+        _write(os.path.join(folder, show,
+                            f"{show}.S01E{e:02d}.WEBRip.{_OURS[language]}.srt"), _text(language, e))
+        _write(os.path.join(folder, f"{show} [archive]", f"{show}.S01E{e:02d}.WEB.{_OURS[language]}.srt"),
+               _text(language, e, "。"))
+    _settle(src)
+    with store:
+        root = store.add_source(src)
+        result = _look(store, language, root, first=True)
+        assert result["shows"] == 2 and _items(store) == 4
+        assert sorted({os.path.dirname(f) for f in _library_files(data_dir)}) == [
+            f"Library/{show}", f"Library/{show}/{show} [archive]"]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("mark", ["{tag}.synced", "synced.{tag}", "{tag}.RETIMED"])
+def test_a_retimed_file_beside_the_video_is_that_episode_never_a_second_item(language, mark):
+    """LF-17 (row 44): `<video>.ja.srt` and a re-timer's `<video>.ja.synced.srt` (or `.synced.ja`, `.retimed`) beside
+    it: the versions mark is the versions folders' word — one item, and the re-timed text is the one read (ranked as
+    a versions folder's file)."""
+    store, data_dir = _empty(language)
+    show = _SHOWS[language][0]
+    src, folder, stems = _videos_above(language, show, n=1)
+    tag = _OURS[language]
+    _write(os.path.join(folder, f"{stems[0]}.{tag}.srt"), _text(language, 1))
+    retimed = _write(os.path.join(folder, f"{stems[0]}.{mark.format(tag=tag)}.srt"), _text(language, 1, "、調整"))
+    _settle(src)
+    with store:
+        root = store.add_source(src)
+        assert _look(store, language, root, first=True)["added"] == 1 and _items(store) == 1
+        files = _library_files(data_dir)
+        assert [_sha(os.path.join(data_dir, *f.split("/"))) for f in files] == [_sha(retimed)]

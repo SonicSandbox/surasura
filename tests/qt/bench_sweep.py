@@ -8,23 +8,27 @@ only be run right before a major point … 5 hours is too long. 1.5 hours would 
     python tests/qt/bench_sweep.py baseline DIR --save BASE.json [--commit SHA]
 
 Not collected by pytest (no `test_` prefix). Run it from the copy; with `--lock`, each group of pieces is its own
-`with-lock.sh --max 15 timed` call (a group stays under 15 minutes), 60 s apart with no lock of ours so queued test runs
-take their slots first; a group that gave up waiting is tried again a minute later (for up to two hours). A piece whose
-JSON is written with no failed run is skipped on a re-run: run the same command again to resume (a failed piece's JSON
-is moved aside as `_failed-…` and the piece runs again; a folder holding another set, size or repetitions is refused).
+`with-lock.sh --max 15 timed` call (each measured under 15 minutes here; sweep.md names one that ran over), 60 s apart
+with no lock of ours so queued test runs take their slots first; a group that gave up waiting is tried again a minute
+later (for up to two hours). A piece whose JSON is written with no failed run is skipped on a re-run: run the same
+command again to resume (a failed piece's JSON is moved aside as `_failed-…` and the piece runs again; a folder holding
+another set, size or repetitions is refused).
 
-**The sweep** (`--set sweep`, ~15 minutes; routine checks, in place of the full set): every bench moment once at the
-hard settings — `bench_drag` (every group: the drag, the lines, the menu and key moves, hover-lift, the real Goal
-sheet, the arrival and the toasts) and `bench_scroll` (scroll, notches, the opens, tabs, outside commits) at 20,000
-files, `bench_motion` (each overlay, the toast) and `bench_settings` (the build, the glide, the fold, the switch,
-slider-release, a keystroke), all at 150 % (this desktop's own scale), 5 repetitions; then a short 250 % pass (drag and
-scroll, 3 repetitions), one Reduced pass (drag and motion) and one `--cover-scan` pass (drag). Then the comparison:
-each piece and moment against the stored baseline (`compare`).
+**The sweep** (`--set sweep`, 12.7 minutes measured on this desktop, three holds of 3.7 / 2.2 / 4.8; routine checks, in
+place of the full set): every bench moment once at the hard settings — `bench_drag` (every group: the drag, the lines,
+the menu and key moves, hover-lift, the real Goal sheet, the arrival and the toasts) and `bench_scroll` (scroll,
+notches, the opens, tabs, outside commits) at 20,000 files, `bench_motion` (each overlay, the toast) and
+`bench_settings` (the build, the glide, the fold, the switch, slider-release, a keystroke), all at 150 % (this
+desktop's own scale), 5 repetitions; then a short 250 % pass (drag and scroll, 3 repetitions), one Reduced pass (drag
+and motion) and one `--cover-scan` pass (drag). Then the comparison: each piece and moment against the stored baseline
+(`compare`).
 
-**The full set** (`--set full`, sized to ≤ 90 minutes from the sweep's measured piece times; only right before a major
-checkpoint the lead puts to Sonic, on an idle machine): every bench at 100, 150 and 250 %, 10 repetitions, 20,000 files,
-plus `bench_drag` at 2,000 files at 150 %, one Reduced pass of every bench and one cover-scan pass (drag and scroll) at
-150 %. Its table is `full.md` (no baseline: the bar's own table is the planning folder's `timed_table.py`).
+**The full set** (`--set full`, ~50 minutes sized from the sweep's measured piece times — a drag costs ~22 s a
+repetition plus ~22 s, a scroll ~5 s plus ~16 s — within Sonic's 90; only right before a major checkpoint the lead puts
+to Sonic, on an idle machine): every bench at 100, 150 and 250 %, 10 repetitions (20 for drag and scroll at 150 %,
+where the bar is judged), 20,000 files, plus drag and scroll at 2,000 files at 150 %, one Reduced pass of every bench
+and one cover-scan pass (drag and scroll) at 150 %. Its table is `full.md` (no baseline: the bar's own table is the
+planning folder's `timed_table.py`).
 
 **The comparison** (`compare`, and `run` given `--baseline`): per piece and moment, the worse of the piece's runs — a
 moment is **flagged** by name when its frame p95 or its steps' typical worst is over `RATIO` × the baseline's (and over
@@ -87,31 +91,35 @@ def plan(name, files=20000, reps=None):
         ]
     if name == "full":
         r = reps or 10
+        judged = 2 * r                           # 150 %, where the bar is judged: twice the repetitions (20)
 
-        def drag(scale, n=files, *more):
-            return ["--files", n, "--runs", 1, "--cycles", r, "--scales", scale, *more]
+        def drag(scale, n=files, *more, k=r):
+            return ["--files", n, "--runs", 1, "--cycles", k, "--scales", scale, *more]
 
-        def scroll(scale, *more):
-            return ["--files", files, "--runs", 1, "--reps", r, "--scales", scale, *more]
+        def scroll(scale, n=files, *more, k=r):
+            return ["--files", n, "--runs", 1, "--reps", k, "--scales", scale, *more]
         return [
-            ("drag-100-150", [("drag-100", "bench_drag.py", drag(100)), ("drag-150", "bench_drag.py", drag(150))]),
+            ("drag-100-150", [("drag-100", "bench_drag.py", drag(100)),
+                              ("drag-150", "bench_drag.py", drag(150, k=judged))]),
             ("drag-250-2k", [("drag-250", "bench_drag.py", drag(250)),
                              ("drag2k-150", "bench_drag.py", drag(150, 2000))]),
-            ("scroll", [("scroll-100", "bench_scroll.py", scroll(100)), ("scroll-150", "bench_scroll.py", scroll(150)),
-                        ("scroll-250", "bench_scroll.py", scroll(250))]),
+            ("scroll", [("scroll-100", "bench_scroll.py", scroll(100)),
+                        ("scroll-150", "bench_scroll.py", scroll(150, k=judged)),
+                        ("scroll-250", "bench_scroll.py", scroll(250)),
+                        ("scroll2k-150", "bench_scroll.py", scroll(150, 2000))]),
             ("motion-settings", [
                 ("motion", "bench_motion.py", ["--rounds", r, "--repeat", 1, "--scales", "100,150,250"]),
                 ("settings-page", "bench_settings.py", ["--rounds", r, "--runs", 1, "--scales", "100,150,250"]),
             ]),
             ("reduced", [
                 ("drag-reduced", "bench_drag.py", drag(150, files, "--reduced")),
-                ("scroll-reduced", "bench_scroll.py", scroll(150, "--reduced")),
+                ("scroll-reduced", "bench_scroll.py", scroll(150, files, "--reduced")),
                 ("motion-reduced", "bench_motion.py", ["--rounds", r, "--repeat", 1, "--scales", 150, "--reduced"]),
                 ("settings-page-reduced", "bench_settings.py",
                  ["--rounds", r, "--runs", 1, "--scales", 150, "--reduced"]),
             ]),
             ("cover", [("drag-cover", "bench_drag.py", drag(150, files, "--cover-scan")),
-                       ("scroll-cover", "bench_scroll.py", scroll(150, "--cover-scan"))]),
+                       ("scroll-cover", "bench_scroll.py", scroll(150, files, "--cover-scan"))]),
         ]
     raise SystemExit(f"unknown set: {name} (sweep, full)")
 
@@ -283,8 +291,10 @@ MISSES = {
     ],
     "full": [
         "125, 175 and 200 % (100, 150 and 250 % only: the bar is judged at 150 %, 250 % is the laptop's scale)",
-        SIZE_BLIND + ": only the drag runs at 2,000 items, at 150 %",
-        "a slow-frame cause rarer than about 1 in 10 repetitions, and run-to-run spread (one run per scale)",
+        SIZE_BLIND + ": only drag and scroll run at 2,000 items, at 150 % (Reduced, the cover scan and 100 / 250 % at "
+        "20,000 only)",
+        "a slow-frame cause rarer than about 1 in 10 repetitions (1 in 20 for drag and scroll at 150 %), and "
+        "run-to-run spread (one run per scale)",
         "Reduced and the cover scan at any scale but 150 %",
     ],
 }

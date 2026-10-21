@@ -175,14 +175,22 @@ def test_the_sweep_runs_every_bench_at_the_hard_settings_and_its_passes():
     assert dry["drag"][1][dry["drag"][1].index("--files") + 1] == "2000"
 
 
-def test_the_full_set_runs_three_scales_ten_repetitions_and_the_2k_drag_once():
+def test_the_full_set_runs_three_scales_ten_repetitions_twenty_where_judged_and_a_2k_library_once():
     p = bench_sweep.pieces("full")
-    scales = {n: a[a.index("--scales") + 1] for n, (_, a) in p.items()}
-    assert {scales[n] for n in ("drag-100", "drag-150", "drag-250")} == {"100", "150", "250"}
-    assert scales["motion"] == scales["settings-page"] == "100,150,250"
-    assert p["drag2k-150"][1][p["drag2k-150"][1].index("--files") + 1] == "2000"
-    assert all(a[a.index(f) + 1] == "10" for _, a in p.values() for f in ("--cycles", "--reps", "--rounds") if f in a)
+
+    def arg(name, flag):
+        args = p[name][1]
+        return args[args.index(flag) + 1] if flag in args else None
+    assert {arg(n, "--scales") for n in ("drag-100", "drag-150", "drag-250")} == {"100", "150", "250"}
+    assert arg("motion", "--scales") == arg("settings-page", "--scales") == "100,150,250"
+    # 2,000 files once each for the two benches that have a library (a moment slow small but fine at 20,000).
+    assert arg("drag2k-150", "--files") == arg("scroll2k-150", "--files") == "2000"
+    assert {n for n in p if arg(n, "--files") == "2000"} == {"drag2k-150", "scroll2k-150"}
+    reps = {n: arg(n, "--cycles") or arg(n, "--reps") or arg(n, "--rounds") for n in p}
+    assert reps.pop("drag-150") == reps.pop("scroll-150") == "20"       # where the bar is judged
+    assert set(reps.values()) == {"10"}
     assert sum("--reduced" in a for _, a in p.values()) == 4     # one Reduced pass of each bench
+    assert {n for n, (_, a) in p.items() if "--cover-scan" in a} == {"drag-cover", "scroll-cover"}
     names = [n for _, g in bench_sweep.plan("full") for n, _, _ in g]
     assert len(names) == len(set(names))
 

@@ -303,24 +303,36 @@ tsubasa_a = Analysis(
     optimize=0,
 )
 tsubasa_pyz = PYZ(tsubasa_a.pure)
-tsubasa_exe = EXE(
-    tsubasa_pyz,
-    tsubasa_a.scripts,
-    [],
-    exclude_binaries=True,
-    name='tsubasa',
-    debug=False,
-    bootloader_ignore_signals=False,
-    strip=False,
-    upx=False,
-    console=True,
-    disable_windowed_traceback=False,
-    argv_emulation=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
-    icon=[tsubasa_icon] if tsubasa_icon and os.path.isfile(tsubasa_icon) else None,
-)
+# Byte-identical from one pin to the next build: PyInstaller stamps an exe's PE header with the build time unless
+# SOURCE_DATE_EPOCH is set, and that stamp was the only difference between two builds of tsubasa.exe. Fixed here, for
+# tsubasa.exe only, a release whose pin (and PyInstaller) didn't move ships the same file: its part isn't downloaded.
+TSUBASA_BUILD_STAMP = '1767225600'          # 2026-01-01 00:00 UTC, a constant
+build_time = os.environ.get('SOURCE_DATE_EPOCH')
+os.environ['SOURCE_DATE_EPOCH'] = TSUBASA_BUILD_STAMP
+try:
+    tsubasa_exe = EXE(
+        tsubasa_pyz,
+        tsubasa_a.scripts,
+        [],
+        exclude_binaries=True,
+        name='tsubasa',
+        debug=False,
+        bootloader_ignore_signals=False,
+        strip=False,
+        upx=False,
+        console=True,
+        disable_windowed_traceback=False,
+        argv_emulation=False,
+        target_arch=None,
+        codesign_identity=None,
+        entitlements_file=None,
+        icon=[tsubasa_icon] if tsubasa_icon and os.path.isfile(tsubasa_icon) else None,
+    )
+finally:
+    if build_time is None:
+        os.environ.pop('SOURCE_DATE_EPOCH', None)
+    else:
+        os.environ['SOURCE_DATE_EPOCH'] = build_time
 
 coll = COLLECT(
     exe,

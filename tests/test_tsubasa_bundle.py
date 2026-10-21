@@ -210,6 +210,37 @@ def test_the_spec_freezes_tsubasa_from_its_console_script_into_the_shared_collec
     assert {"tsubasa_exe", "tsubasa_a.binaries", "tsubasa_a.datas"} <= args
 
 
+def test_tsubasa_exe_alone_is_stamped_with_a_fixed_build_time_and_the_callers_is_put_back(monkeypatch):
+    # Two builds of tsubasa.exe from one pin differed only in PyInstaller's PE build stamp (the time of the build): with
+    # a fixed SOURCE_DATE_EPOCH for its EXE step alone, an unchanged pin ships the same bytes, and the update's tsubasa
+    # part isn't downloaded again. The other programs keep the caller's setting, and it is put back afterwards.
+    import types
+    from unittest.mock import patch
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700000000")
+    stamps = {}
+
+    class _Analysis:
+        def __init__(self, scripts, **kw):
+            self.pure, self.scripts, self.binaries, self.datas = [], [], [], kw["datas"]
+
+    hooks = types.ModuleType("PyInstaller.utils.hooks")
+    hooks.collect_all = lambda name: ([], [], [])
+    fakes = {"PyInstaller": types.ModuleType("PyInstaller"), "PyInstaller.utils": types.ModuleType("PyInstaller.utils"),
+             "PyInstaller.utils.hooks": hooks}
+    here = os.getcwd()
+    os.chdir(PROJECT)
+    try:
+        with patch.dict(sys.modules, fakes):
+            exec(compile(open(SPEC, encoding="utf-8").read(), "Surasura.spec", "exec"),
+                 {"Analysis": _Analysis, "PYZ": lambda *a, **k: None, "COLLECT": lambda *a, **k: None,
+                  "EXE": lambda *a, **k: stamps.setdefault(k["name"], os.environ.get("SOURCE_DATE_EPOCH")),
+                  "__name__": "__main__"})
+    finally:
+        os.chdir(here)
+    assert stamps == {"Surasura": "1700000000", "surasura-cli": "1700000000", "tsubasa": "1767225600"}
+    assert os.environ["SOURCE_DATE_EPOCH"] == "1700000000"
+
+
 def test_the_entry_is_tsubasas_own_console_script_and_nothing_else():
     tree = ast.parse(open(ENTRY, encoding="utf-8").read())
     imports = [(n.module, [a.name for a in n.names]) for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)]

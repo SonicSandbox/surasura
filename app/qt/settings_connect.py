@@ -36,7 +36,7 @@ import threading
 from contextlib import contextmanager
 
 from PyQt6 import sip
-from PyQt6.QtCore import QObject, Qt
+from PyQt6.QtCore import QObject, QSize, Qt
 from PyQt6.QtWidgets import QApplication, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QVBoxLayout, QWidget
 
 from app import theme
@@ -45,6 +45,7 @@ from app.qt import applog, bridge, confirm, style, windows
 from app.qt import settings_catalog as catalog
 from app.qt import settings_controls as sc
 from app.qt import settings_strings as S
+from app.qt.wizard import FlowLayout
 from app.services import settings as settings_service
 
 CARD_W = 380                    # the Anki Miner card's widest (px at text size M): its lines wrap inside it
@@ -410,12 +411,11 @@ class MinerCard(QWidget):
         star = QVBoxLayout(self.star_box)
         star.setContentsMargins(0, 0, 0, 0)
         star.addWidget(_label(S.STAR_ASK, "settingshelp", self.star_box))
-        star_row = QHBoxLayout()
+        star_row = FlowLayout(None, round(8 * _f()))      # buttons wrap to a second line, never cut (wizard text fix)
         self.star_button = _button(S.STAR_BUTTON, S.STAR_BUTTON_TIP, self._starred, self.star_box)
         self.not_now = _button(S.NOT_NOW, S.NOT_NOW_TIP, self._not_now, self.star_box)
         star_row.addWidget(self.star_button)
         star_row.addWidget(self.not_now)
-        star_row.addStretch(1)
         star.addLayout(star_row)
         self.star_box.hide()
         box.addWidget(self.star_box)
@@ -425,8 +425,7 @@ class MinerCard(QWidget):
         self.steps = self._build_steps()
         self.steps.hide()
         box.addWidget(self.steps)
-        buttons = QHBoxLayout()
-        buttons.setSpacing(round(8 * _f()))
+        buttons = FlowLayout(None, round(8 * _f()))      # four buttons are wider than the card: they wrap, never cut
         self.install = _button(S.INSTALL_MINER, S.INSTALL_MINER_TIP, self._install, self)
         self.star_line = _button(S.STAR_LINE, S.STAR_LINE_TIP, self._starred, self, kind="settingsmore")   # AM★
         self.browse = _button(S.BROWSE_MINER, S.BROWSE_MINER_TIP, self._browse, self)
@@ -434,12 +433,16 @@ class MinerCard(QWidget):
         self.check_again = _button(S.CHECK_AGAIN, S.CHECK_AGAIN_TIP, self.check, self)
         for b in (self.install, self.star_line, self.browse, self.open_miner, self.check_again):
             buttons.addWidget(b)
-        buttons.addStretch(1)
         box.addLayout(buttons)
         self.star_link = _button(S.STAR_LINK, S.STAR_LINK_TIP, self._open_star, self, kind="settingsmore")
         box.addWidget(self.star_link, 0, Qt.AlignmentFlag.AlignLeft)
         self._buttons(None, answered=True)
         slot.layout().addWidget(self)
+        slot.slot_needs = self.maximumWidth           # beside the words only at its full width, else stacked
+
+    def sizeHint(self):
+        # as wide as the card may be (its buttons wrap inside it: their row no longer asks for its whole length)
+        return QSize(self.maximumWidth(), super().sizeHint().height())
 
     def resizeEvent(self, event):
         super().resizeEvent(event)

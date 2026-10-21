@@ -88,3 +88,42 @@ def test_the_markdown_carries_the_median_column_and_the_bar_as_it_was():
             "0 clock wake-ups once still.") in md
     assert "| step typ. worst | median worst | slowest |" in md
     assert "| 90.0 | 4.0 | 90.0 | 3 | 0 |" in md
+
+
+# --- --cover-scan (register R-11): the app's scan kept running while the moments run -------------------------------- #
+class _Signal:
+    def __init__(self):
+        self.slots = []
+
+    def connect(self, slot):
+        self.slots.append(slot)
+
+    def emit(self, value):
+        for slot in self.slots:
+            slot(value)
+
+
+class _Token:
+    def __init__(self, cancelled=False):
+        self.cancelled = cancelled
+
+    def is_set(self):
+        return self.cancelled
+
+
+def test_the_cover_scan_starts_again_after_each_end_until_stopped_and_counts_only_scans_that_ran_to_their_end():
+    # hold 2's pass with the scan running: a scan that ends while the moments run must be followed by another, a scan a
+    # later start cancelled (the shell's first) is neither counted nor followed, and nothing starts once stopped
+    starts, waits, signal = [], [], _Signal()
+    scans = bench_moments.CoverScans(lambda: starts.append(1), pause_ms=1000, scanned=signal,
+                                     later=lambda ms, fn: (waits.append(ms), fn()))
+    scans.begin()
+    assert len(starts) == 1
+    signal.emit((_Token(cancelled=True), 0))                              # the shell's first, cancelled by ours
+    assert len(starts) == 1 and scans.n == 0
+    signal.emit((_Token(), 0))
+    signal.emit((_Token(), 3))
+    assert len(starts) == 3 and waits == [1000, 1000] and scans.n == 2
+    summary = scans.stop()
+    signal.emit((_Token(), 0))                                            # the last one ends after the moments
+    assert len(starts) == 3 and summary["ended"] == 2 and summary["ms"]["n"] == 2

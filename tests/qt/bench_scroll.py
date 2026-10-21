@@ -3,7 +3,8 @@ budget"; BRIEF's budgets: first frame ≤ 1 s, any GUI-thread step ≤ 4 ms, a f
 idle ≤ ~250 MB).
 
     python tests/qt/bench_scroll.py --files 20000 [--runs 3] [--current-share 0.9] [--scales 100,125,150,175,200,250]
-                                    [--reduced] [--freeze-motion] [--outside 10] [--json OUT.json]
+                                    [--reduced] [--freeze-motion] [--reps 10] [--outside N] [--cover-scan]
+                                    [--json OUT.json]
 
 Not collected by pytest (no `test_` prefix). A timed run: start it through `locks/with-lock.sh timed …` from the copy.
 
@@ -32,6 +33,16 @@ hover lift, as a person sees them); `--freeze-motion` freezes it as W2.2 and W3.
 `app_motion` = reduced in the run's own settings. **The writer process** of *scroll-writes* (another program writing)
 is started as the child starts, before the window opens, and waits for its ids — never spawned on the window's thread
 inside a measured pass (W3.1a timed-1 #4: one 25–50 ms step a run there).
+
+**Repetitions** (hold 2 asks >= 20): `--reps` (10) sets each moment's: a scroll pass's 30-step stretches (it turns at
+half, and back down if it reaches the top first), the notch bursts (6 s each way per 10, turning back at an end), the
+rows opened and closed in each of the three passes (taken from the screens after the first one when a screen holds
+fewer — each scrolled into view between two repetitions, outside them), the tab switches, and the outside commits
+(`--outside`, else `--reps`).
+**`--cover-scan`** (register R-11; off by default, as hold 1 ran): the app's own disk cover scan (`covers.start_scan`,
+on its thread, with a writer that answers `idle` and takes no write: `bench_drag.StandinWriter`) runs from the live
+rows to the end — started again a second after each one ends (`bench_moments.CoverScans`), so the moments run
+beside it; the scans counted and timed (`cover_scans`).
 """
 import argparse
 import json
@@ -88,6 +99,8 @@ def run_child(seed_path, out_path, scale, root, env=None):
     else:
         env.pop("SURASURA_FREEZE_MOTION", None)
     env["SURASURA_BENCH_OUTSIDE"] = str(OUTSIDE)
+    env["SURASURA_BENCH_REPS"] = str(REPS)
+    env["SURASURA_BENCH_COVER_SCAN"] = "1" if COVER_SCAN else "0"
     env["SURASURA_READER_GC_FREEZE"] = "1" if GC_FREEZE else "0"
     env["SURASURA_ROW_PIXMAPS"] = "1" if PIXMAPS else "0"
     if SWITCH is not None:
@@ -126,15 +139,19 @@ PIXMAPS = True
 SWITCH = None
 FREEZE = False
 OUTSIDE = 10
+REPS = 10
+COVER_SCAN = False
 
 
 def main_parent(a):
-    global GC_FREEZE, PIXMAPS, SWITCH, FREEZE, OUTSIDE
+    global GC_FREEZE, PIXMAPS, SWITCH, FREEZE, OUTSIDE, REPS, COVER_SCAN
     GC_FREEZE = a.gc_freeze
     SWITCH = a.switch
     PIXMAPS = a.pixmaps == "on"
     FREEZE = a.freeze_motion
-    OUTSIDE = a.outside
+    REPS = a.reps
+    OUTSIDE = a.outside if a.outside is not None else a.reps
+    COVER_SCAN = a.cover_scan
     work = tempfile.mkdtemp(prefix="surasura-bench-scroll-seed-")
     seed_path = os.path.join(work, "seed.pkl")
     t = time.perf_counter()
@@ -154,7 +171,8 @@ def main_parent(a):
     target = a.out or os.path.join(work, f"bench_scroll_{a.files}{'_cur' if a.current_share else ''}.json")
     out = bench_moments.scaled_runs("bench_scroll", a.scales_list, a.runs, a.reduced, one_run, target,
                                     meta={"files": files, "current_share": a.current_share, "pixmaps": a.pixmaps,
-                                          "freeze_motion": FREEZE, "outside": OUTSIDE})
+                                          "freeze_motion": FREEZE, "outside": OUTSIDE, "reps": REPS,
+                                          "cover_scan": COVER_SCAN})
     by_scale = {}
     for r in out["results"]:
         by_scale.setdefault(r["scale"], []).append(r)
@@ -340,6 +358,8 @@ def main_child(a):
         if result["rows_live_ms"] is None and not view.loading and view.rows:
             result["rows_live_ms"] = round(hud_module._process_age_ms() or 0, 1)
             result["rows"] = len(view.rows)
+            if os.environ.get("SURASURA_BENCH_COVER_SCAN") == "1":
+                scans.begin()
             QTimer.singleShot(400, phase_scroll)
     # each list's refresh: when, how long, how ("same" / "relayout" / "reset") and how many rows changed — set beside
     # the long steps of the phases that refresh (W2.2 round 4: what an arrival's and a writer's long steps hold)
@@ -365,6 +385,16 @@ def main_child(a):
         result["first_frame_ms"] = round(hud_module._process_age_ms() or 0, 1)
         hud.ignore_before = time.perf_counter()
     window.first_frame.connect(first_frame)
+    reps = max(1, int(os.environ.get("SURASURA_BENCH_REPS", "10")))
+
+    def scan_once():
+        """`--cover-scan`: the app's own disk scan over this library (no writer is the window's here: the scan's own,
+        answering `idle` and taking no write)."""
+        from app.qt import covers as qcovers
+        from tests.qt.bench_drag import StandinWriter
+        language = getattr(window, "language", None) or "ja"
+        qcovers.start_scan(opener, language, StandinWriter(None, None, cover_scan=True))
+    scans = bench_moments.CoverScans(scan_once)
 
     # the phases ----------------------------------------------------------------------------------------------------- #
     def phase_scroll(writes=False, rest=False):
@@ -384,6 +414,7 @@ def main_child(a):
         state = {"n": 0, "dir": 1}
         timer = QTimer(window)
         timer.setTimerType(Qt.TimerType.PreciseTimer)
+        steps = 30 * reps
 
         def step():
             if state["n"] % 30 == 0:                     # a repetition: 30 steps (half a second)
@@ -392,15 +423,17 @@ def main_child(a):
                 v = bar.value() + state["dir"] * 40
                 if v >= bar.maximum():
                     state["dir"] = -1
+                elif v <= 0 and state["dir"] < 0:        # the top reached before the end: down again (a short list)
+                    state["dir"] = 1
                 bar.setValue(max(0, min(bar.maximum(), v)))
             state["n"] += 1
-            if state["n"] == 150:
+            if state["n"] == steps // 2:
                 state["dir"] = -1
                 if rest:
                     timer.stop()
                     moments.end()
                     QTimer.singleShot(1000, lambda: timer.start(16))
-            if state["n"] >= 300:
+            if state["n"] >= steps:
                 timer.stop()
                 if writes:
                     writer.terminate()
@@ -423,13 +456,14 @@ def main_child(a):
         rng = random.Random(11)
         at, plan = 0, []
         for direction in (1, -1):
-            end = at + 6000
+            end = at + 600 * reps                        # (6 s each way at 10: ~10 bursts)
             while at < end:
                 for _ in range(rng.randint(3, 5)):
                     plan.append((at, direction))
                     at += 60
                 at += 400
         last = None
+        turned = [1]
         for when, direction in plan:
             first = last is None or when - last > 60     # a burst's first notch: a repetition
             last = when
@@ -437,11 +471,16 @@ def main_child(a):
             def notch(direction=direction, first=first):
                 if first:
                     moments.begin("scroll-notches")
+                d = direction * turned[0]
+                if d > 0 and bar.value() >= bar.maximum() or d < 0 and bar.value() <= 0:
+                    turned[0], d = -turned[0], -d        # an end reached first (a short list): the wheel turns back
                 with hud.span("scroll-step"):
-                    bar.setValue(max(0, min(bar.maximum(), bar.value() + direction * 3 * bar.singleStep())))
+                    bar.setValue(max(0, min(bar.maximum(), bar.value() + d * 3 * bar.singleStep())))
             QTimer.singleShot(when, notch)
         QTimer.singleShot(at + 100, lambda: (mark("scroll-notches", end=True),
                                              moments.still("scroll-notches", lambda: QTimer.singleShot(200, phase_open))))
+
+    opened = {"rows": []}                                # open-first's rows, opened again by open-again
 
     def phase_open(stage="open-first"):
         # review C-9, three passes of the rows on one screen: "open-first" — a screen it hasn't opened before, the
@@ -457,13 +496,28 @@ def main_child(a):
         for _ in range(3):
             QApplication.processEvents()
         mark(stage)
-        shown = [i for i in range(lst.model().rowCount())    # the rows wholly on screen (a row below it is neither
-                 if 0 <= lst.visualRect(lst.model().index(i, 0)).top() and   # hovered nor painted when it opens)
-                 lst.visualRect(lst.model().index(i, 0)).bottom() <= vh]
-        order = shown[:10]
+
+        def whole(i):                                    # wholly on screen (a row below it is neither hovered nor
+            r = lst.visualRect(lst.model().index(i, 0))  # painted when it opens)
+            return 0 <= r.top() and r.bottom() <= vh
+        if stage == "open-again":
+            order = opened["rows"]
+        else:
+            shown = [i for i in range(lst.model().rowCount()) if whole(i)]
+            first, count = (shown[0] if shown else 0), lst.model().rowCount()
+            # `reps` rows: this screen's, then the screens after it (then before it, on a short list)
+            order = (list(range(first, count)) + list(range(first - 1, -1, -1)))[:reps]
+            opened["rows"] = order
         n = len(order)
         rest_ms, gap = (300, 600) if stage != "open-quick" else (30, 330)
         last = [QPointF(-1, -1)]
+
+        def into_view(i):
+            """Between two repetitions, outside them: a row not wholly on screen scrolled into view."""
+            if not whole(i):
+                moments.end()
+                bar.setValue(max(0, min(bar.maximum(), bar.value() + lst.visualRect(lst.model().index(i, 0)).top()
+                                        - 8)))
 
         def hover(i):
             rect = lst.visualRect(lst.model().index(i, 0))
@@ -477,7 +531,8 @@ def main_child(a):
                                                        Qt.KeyboardModifier.NoModifier))
             last[0] = pos
         for k, i in enumerate(order):
-            t = gap * k
+            t = 100 + gap * k
+            QTimer.singleShot(t - 100, lambda i=i: into_view(i))
             QTimer.singleShot(t, lambda: moments.begin(stage))      # a repetition: one row hovered, opened, closed
             QTimer.singleShot(t, lambda i=i: hover(i))
             for dt in (rest_ms, rest_ms + 120):
@@ -487,7 +542,7 @@ def main_child(a):
                 QTimer.singleShot(t + dt, toggle)
         then = {"open-first": lambda: phase_open("open-again"), "open-again": lambda: phase_open("open-quick"),
                 "open-quick": phase_tabs}[stage]
-        QTimer.singleShot(gap * n + 200, lambda: (mark(stage, end=True), moments.still(stage, then)))
+        QTimer.singleShot(100 + gap * n + 200, lambda: (mark(stage, end=True), moments.still(stage, then)))
 
     def phase_tabs():
         # each list a few screens down first (review C-1: a hidden list kept its top, so a scrolled one's first switch
@@ -502,6 +557,8 @@ def main_child(a):
         mark("tabs")
         names = ["finished", "needs", "current", "finished", "current", "finished", "current", "finished",
                  "current", "current"]
+        names = (names * (reps // len(names) + 1))[:reps]               # (`reps` switches, ending on Current)
+        names[-1] = "current"
         for i, name in enumerate(names):
             def switch(name=name):
                 moments.begin("tabs")
@@ -550,6 +607,7 @@ def main_child(a):
     def finish():
         mark("idle", end=True)
         moments.end()
+        result["cover_scans"] = scans.stop() if os.environ.get("SURASURA_BENCH_COVER_SCAN") == "1" else None
         moments.wakes.setdefault("idle", "the idle itself")
         result["memory"] = hud_module._memory_mb()
         result["moments"] = moments.summary()
@@ -585,7 +643,7 @@ def main_child(a):
             json.dump(result, f)
         app.quit()
 
-    QTimer.singleShot(150000 + 2000 * outside_n, finish)   # never longer than this
+    QTimer.singleShot(150000 + 2000 * outside_n + 9000 * max(0, reps - 10), finish)   # never longer than this
     window.show_first()
     try:
         app.exec()
@@ -618,7 +676,11 @@ def main():
     ap.add_argument("--language", default="ja")
     bench_moments.add_arguments(ap)
     ap.add_argument("--freeze-motion", action="store_true", help="motion frozen, as W2.2 and W3.1a's timed-1 ran")
-    ap.add_argument("--outside", type=int, default=10, help="outside commits (hato drops), each a repetition")
+    ap.add_argument("--reps", type=int, default=10, help="repetitions of each moment (>= 10; hold 2: 20)")
+    ap.add_argument("--outside", type=int, default=None,
+                    help="outside commits (hato drops), each a repetition (default: --reps)")
+    ap.add_argument("--cover-scan", action="store_true",
+                    help="the app's disk cover scan runs during the moments (register R-11; hold 1 ran without it)")
     ap.add_argument("--gc-freeze", action="store_true", help="the reader freezes the collector after each view (A/B)")
     ap.add_argument("--pixmaps", choices=("on", "off"), default="on",
                     help="rows and episodes painted once into pixmaps (on) or drawn on every paint (off): review IK-30")

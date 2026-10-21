@@ -202,3 +202,115 @@ def test_a_moment_that_drew_no_frame_is_named_whatever_was_noted():
                "key-up": {"reps": 10, "frames_n": 0}, "key-down": {"reps": 10, "frames_n": 0},
                "toast-connect": {"reps": 10, "frames_n": 183}, "idle": {"reps": 0, "frames_n": 0}}
     assert bench_drag.unplayed(moments) == {"menu-goal": 10, "key-up": 10, "key-down": 10}
+
+
+# --- hold 2: >= 20 repetitions, the hover rest, the real Goal sheet, the cover scan --------------------------------- #
+def test_only_names_groups_of_moments_in_their_order_and_refuses_a_name_that_is_none():
+    # `--only` proves a group at 20 repetitions in a short call: a typo must stop the run, never run nothing
+    assert bench_drag.selected(None) == list(bench_drag.GROUPS)
+    assert bench_drag.selected("done, menu,hover") == ["menu", "hover", "done"]
+    with pytest.raises(SystemExit):
+        bench_drag.selected("menu,menus")
+
+
+def test_a_row_given_back_lands_at_the_end_of_now_in_its_order_reading_only_that_tier(monkeypatch):
+    # menu-soon used NOW's rows up by its tenth repetition (row4-causes A2): each moved row comes back after it
+    lib = _library()
+    monkeypatch.setattr(lib, "items", lambda: pytest.fail("the give-back copied every item"))
+    lib.commit(**bench_drag.give_back(lib, [41, 42, 43]))                 # Goal's title back to NOW
+    assert _order(lib, "now") == [11, 12, 13, 21, 22, 23, 41, 42, 43]
+    assert _order(lib, "goal") == []
+    lib.commit(**bench_drag.give_back(lib, [11, 12, 13]))                 # one in NOW already: to its end
+    assert _order(lib, "now") == [21, 22, 23, 41, 42, 43, 11, 12, 13]
+
+
+def test_the_finish_toast_takes_its_rows_again_once_every_one_was_used():
+    # at 20 repetitions a small library has fewer rows than repetitions: each is given back unwatched, then reused
+    rows_ = [_row(1, "now"), _row(2, "now"), _row(3, "soon"), _row(4, "soon", watched=(1, 1, 1))]
+    used = set()
+    picked = []
+    for _ in range(5):
+        row = bench_drag.pick_done(rows_, used)
+        used.add(row.key)
+        picked.append(row.key)
+    assert picked == [2, 3, 2, 3, 2]                                     # never Up Next, never an all-watched row
+    assert bench_drag.pick_done([_row(1, "now"), _row(4, "soon", watched=(1, 1, 1))], set()) is None
+
+
+class _Held(_Numbers):
+    """Numbers that hold the writer's thread until told: its write is queued meanwhile."""
+
+    def __init__(self):
+        super().__init__()
+        self.go = threading.Event()
+
+    def after_move(self, *a, **k):
+        self.go.wait(5)
+        return super().after_move(*a, **k)
+
+
+def test_the_cover_scan_flag_answers_idle_as_the_real_writer_and_off_the_scan_stops_as_in_hold_1(tmp_path,
+                                                                                                 monkeypatch):
+    # R-11: off (hold 1, the default) the stand-in has no `idle` and the app's scan stops at its first ask; on, the
+    # scan asks it before each title and goes through every one, waiting while a write is queued
+    from app.services import covers
+    from tests.fixtures.standin_store import StandinOpener
+    lib = _library()
+    off = bench_drag.StandinWriter(lib, _Numbers())
+    assert not hasattr(off, "idle")
+    with pytest.raises(AttributeError):
+        covers._my_turn(off, None)
+    numbers = _Held()
+    on = bench_drag.StandinWriter(lib, numbers, cover_scan=True)
+    on.on_saved = lambda change, label: None
+    assert on.idle(0) is True
+    on.move([31], "now")
+    assert on.idle(0.05) is False                                         # a write queued: the scan waits
+    numbers.go.set()
+    assert on.idle(5) is True
+    opener = StandinOpener(lib)
+    opener.check()
+    feed = opener.handle().read_feed()                                    # as the window's scan reads its titles
+    works = covers.works_from(feed["items"], feed["works"])
+    seen, real = [], covers._scan_one
+    monkeypatch.setattr(covers, "_scan_one", lambda language, data_dir, work, writer: seen.append(work.id) or
+                        real(language, data_dir, work, writer))
+    assert covers.scan("ja", works, on, data_dir=str(tmp_path)) == 0      # no picture beside any file here
+    assert sorted(seen) == sorted(w.id for w in works) and len(seen) == len(TITLES)
+
+
+def test_a_hover_rest_bakes_the_rows_ghost_so_the_lift_bakes_none(world):  # noqa: F811
+    # hover-lift times C5's bake where it now happens (the pointer resting on a row), so the rest must bake it and
+    # the lift after it must find it ready — else the moment times the old lift
+    from PyQt6.QtTest import QTest
+    from app.qt import rows
+    from tests.qt.test_drag import lift as lift_row
+    _seed, win, _writer = world()
+    lst = lst_of(win)
+    i = next(n for n, e in enumerate(lst.model().entries) if e[0] == rows.ROW and n >= 2)
+    before = win.moves.ghost_bakes
+    win.moves._ghosts.clear()
+    bench_drag.hover_rest(lst, i)
+    assert lst._hover == i
+    QTest.qWait(rows.HOVER_WARM_MS + 150)
+    assert win.moves.ghost_bakes == before + 1                            # baked as the pointer rested
+    lift_row(win, i)
+    assert win.moves.ghost_bakes == before + 1                            # the lift took it as it was
+    win.moves.cancel()
+
+
+def test_the_goal_sheet_moment_opens_the_windows_own_sheet_through_the_docks_ask(world):  # noqa: F811
+    # R-5: the bench timed a stand-in of the sheet's size; hold 2 times the real one (its tiles, its spring, its shadow)
+    from app.qt import goal_sheet
+    _seed, win, _writer = world()
+    sheet = bench_drag.open_goal_sheet(win)
+    assert isinstance(sheet, goal_sheet.GoalSheet) and sheet is win.goal_sheet
+    settle()
+    assert sheet.isVisible() and sheet.opens == 1
+    assert bench_drag.open_goal_sheet(win) is None                        # open already: asked once, never toggled shut
+    assert sheet.isVisible()
+    sheet.close()
+    settle()
+    assert not sheet.isVisible()
+    assert bench_drag.open_goal_sheet(win) is sheet and sheet.opens == 2
+    sheet.close()

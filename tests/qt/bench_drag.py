@@ -3,7 +3,7 @@
 RUNBOOK's list that a move, an arrival or a toast makes, judged against the bar on this desktop (`bench_moments.BAR`).
 
     python tests/qt/bench_drag.py [--files 20000] [--runs 2] [--cycles 10] [--scales 100,125,150,175,200,250]
-                                  [--reduced] [--json OUT.json]
+                                  [--reduced] [--cover-scan] [--only drag,menu,...] [--json OUT.json]
 
 Not collected by pytest (no `test_` prefix). A timed run: start it through `locks/with-lock.sh timed …` from the copy.
 
@@ -24,6 +24,11 @@ each (>= 10 for a timed run), the moments run through the window's own paths:
     click does (the menu hidden, the action's own `triggered`): `menu-top`, `menu-soon`, `menu-goal` — the rows slide,
     the wells rise;
   - **a move by key**: Alt+↑ (`key-up`) and Alt+↓ (`key-down`) on the current row (`RowsView.keyPressEvent`);
+  - **a hover rest, then the lift** (`hover-lift`): the pointer rests on a row past `rows.HOVER_WARM_MS`, so its ghost
+    is baked as the window bakes it ahead (C5, on the window's thread), then the press and the 6 px that lift it (the
+    drag let go after the repetition; the ghosts kept are dropped before each, so each rest bakes one: its `notes`);
+  - **the real Goal sheet rising** (`goal-sheet`): the dock's bar asks for it (`sheet_requested`, as its click does),
+    the sheet rises on its spring with its shadow (its tiles made at the first opening), closed after the repetition;
   - **the arrival moment** (`arrival`): a show never shown before lands in New arrivals (the store write the reader
     feeds as an arrival); the inset's covers part, the new one drops in, the count lifts (no toast exists: none added);
   - **the finish toasts**: `toast-done-all` — the last unwatched episode's Done (`done_requested`, drag.py's
@@ -32,6 +37,15 @@ each (>= 10 for a timed run), the moments run through the window's own paths:
 After each moment's last repetition the clock's wake-ups are counted once it is still. Timed beside, never judged
 here: drop / move -> numbers (the moved row's *N new* in the window) and -> saved (the writer's `on_saved`; the
 stand-in's — the real store's is the timed hold's own script, IK-7).
+
+**Repetitions** (hold 2 asks >= 20: `--cycles 20`): every moment plays `--cycles` times (`menu-open` 3 ×) without
+running out of rows — what a moment uses up is given back after its repetition, outside it, as another program's commit
+the reader picks up (*To Soon*'s and *To Goal*'s row back at NOW's end, `give_back`; the finished row's episodes
+unwatched, `pick_done` taking the rows again once each was used). `--only` runs some groups of moments (`GROUPS`), e.g.
+to prove a group at 20 repetitions in a short call. **`--cover-scan`** (register R-11; off by default, as hold 1 ran):
+the stand-in writer answers `idle`, so the app's own disk cover scan (`covers.scan`, on its thread) runs — started
+again a second after each one ends (`bench_moments.CoverScans`), so the moments run beside it (the app scans once per
+open: this is its worst case); the scans counted and timed (`extra.cover_scans`).
 """
 import argparse
 import os
@@ -48,6 +62,18 @@ if ROOT not in sys.path:
 from tests.qt import bench_moments                                    # noqa: E402
 
 DRAG = ("pickup", "slide", "autoscroll", "drop")
+GROUPS = ("drag", "lines", "menu", "keys", "hover", "goal-sheet", "arrival", "done", "finished", "connect")
+
+
+def selected(only):
+    """The groups of moments `--only` names (comma-separated; None: every group), in `GROUPS`' order."""
+    if not only:
+        return list(GROUPS)
+    names = [x.strip() for x in only.split(",") if x.strip()]
+    unknown = [x for x in names if x not in GROUPS]
+    if unknown:
+        raise SystemExit(f"--only: not a group: {', '.join(unknown)} (groups: {', '.join(GROUPS)})")
+    return [g for g in GROUPS if g in names]
 
 
 # --- the parent ------------------------------------------------------------------------------------------------------ #
@@ -77,7 +103,8 @@ def main_parent(a):
         env["SURASURA_ROW_PIXMAPS"] = "1"
         out_path = os.path.join(os.path.dirname(root), "result.json")
         cmd = [sys.executable, os.path.abspath(__file__), "--child", seed_path, "--plan", plan_path, "--out", out_path,
-               "--cycles", str(a.cycles)]
+               "--cycles", str(a.cycles)] + (["--cover-scan"] if a.cover_scan else []) + \
+            (["--only", a.only] if a.only else [])
         proc = subprocess.run(cmd, env=env, cwd=ROOT, timeout=1800, check=False, capture_output=True, text=True,
                               encoding="utf-8", errors="replace")
         if not os.path.exists(out_path):
@@ -90,7 +117,8 @@ def main_parent(a):
             r.setdefault("extra", {})["stderr"] = proc.stderr[-1500:]
         return r
     bench_moments.scaled_runs("bench_drag", a.scales_list, a.runs, a.reduced, one_run, a.out,
-                              meta={"files": files, "cycles": a.cycles})
+                              meta={"files": files, "cycles": a.cycles, "cover_scan": a.cover_scan,
+                                    "only": selected(a.only)})
 
 
 # --- the child's stand-in writer (out here so its rules are tested: tests/qt/test_bench_drag.py) --------------------- #
@@ -99,13 +127,24 @@ class StandinWriter:
     worked out and written on a thread of its own, where `moves.Writer` only queues on the caller's (M4.1 A3: a nudge
     worked out where it was called copied the whole library on the GUI thread) — the numbers worked out before the
     write (as `moves.Writer._numbers_move`), then the change written into the stand-in and its callbacks on that thread.
-    Each command's time to `on_saved` noted on the moment it came from (`moments`, set once the HUD is up)."""
+    Each command's time to `on_saved` noted on the moment it came from (`moments`, set once the HUD is up).
+    `cover_scan` (`--cover-scan`, register R-11): it answers `idle` as `moves.Writer` does, so the app's disk cover
+    scan runs (`covers.scan` asks it before each title); without it the scan stops at its first ask, as in hold 1."""
     from app.qt.strings import MOVE_WORDS as words
 
-    def __init__(self, library, numbers):
+    def __init__(self, library, numbers, cover_scan=False):
         self.library, self.numbers, self.moments = library, numbers, None
         self.on_saved = self.on_saving = self.on_reread = self.on_note = self.on_undone = None
         self._pending = 0
+        if cover_scan:
+            self.idle = self._idle
+
+    def _idle(self, timeout=None):
+        """(Any thread.) Whether nothing is queued, waiting up to `timeout` s for it (`moves.Writer.idle`)."""
+        end = time.perf_counter() + (timeout or 0.0)
+        while self._pending and time.perf_counter() < end:
+            time.sleep(0.005)
+        return not self._pending
 
     def start(self):
         return self
@@ -200,7 +239,7 @@ class StandinWriter:
     def _nothing(self, *a, **k):
         return None
 
-    set_finished = insert_at = undo = _nothing
+    set_finished = insert_at = undo = set_cover = _nothing
 
 
 class _Change:
@@ -267,6 +306,63 @@ def done_candidates(rows_, used):
             and not all(e.watched for e in r.episodes)]
 
 
+def give_back(library, ids, tier="now"):
+    """The commit that puts `ids` back at the end of `tier`, in their order (another program's: the reader picks it up)
+    — what a moment used up (*To Soon*'s and *To Goal*'s row) given back after its repetition, so no moment runs out
+    of rows at 20 repetitions (hold 2). Only the tier's keys read."""
+    mine = set(ids)
+    last = max((o for o, i, _p in library.tier_keys(tier) if i not in mine), default=0.0)
+    return {"items": [{"id": i, "tier": tier, "ord": last + 512.0 * (n + 1)} for n, i in enumerate(ids)],
+            "order": True}
+
+
+def pick_done(rows_, used):
+    """toast-done-all's next row (`done_candidates`): once every row was used, the used ones again (each was given
+    back unwatched after its repetition) — `used` emptied. -> a row, or None."""
+    cands = done_candidates(rows_, used)
+    if not cands and used:
+        used.clear()
+        cands = done_candidates(rows_, used)
+    return cands[0] if cands else None
+
+
+def title_point(lst, i):
+    """A point on row `i`'s title (a part that lifts it on a drag), in the viewport's coordinates."""
+    from PyQt6.QtCore import QPoint
+    from app.qt import rows
+    entry = lst.model().entries[i]
+    rect = lst.visualRect(lst.model().index(i, 0))
+    if entry[0] == rows.HERO:
+        return lst.delegate._hero_geometry(entry[1], rect, entry[2])["title"].center()
+    g = lst.delegate.line_geometry(entry[1], lst.delegate.slab_of(rect))
+    return QPoint(g["main"].left() + 20, g["main"].center().y())
+
+
+def hover_rest(lst, i):
+    """The pointer comes to rest on row `i`'s title with no button down (as `bench_scroll` hovers its rows): the list's
+    hover and the drag's rest timer (`drag._Resting`, `rows.HOVER_WARM_MS`) start. -> the point (the viewport's)."""
+    from PyQt6.QtCore import QEvent, QPointF, Qt
+    from PyQt6.QtGui import QHoverEvent, QMouseEvent
+    from PyQt6.QtWidgets import QApplication
+    vp = lst.viewport()
+    at = title_point(lst, i)
+    pos, gpos = QPointF(at), QPointF(vp.mapToGlobal(at))
+    QApplication.sendEvent(vp, QHoverEvent(QEvent.Type.HoverMove, pos, gpos, QPointF(-1, -1)))
+    QApplication.sendEvent(vp, QMouseEvent(QEvent.Type.MouseMove, pos, gpos, Qt.MouseButton.NoButton,
+                                           Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier))
+    return at
+
+
+def open_goal_sheet(window):
+    """The real Goal sheet asked for as the dock's bar asks (its click: `sheet_requested`, the shell's `toggle`), never
+    a stand-in (survey Gap 2 item 5, register R-5). -> the sheet, or None (no dock or sheet, or open already)."""
+    sheet = getattr(window, "goal_sheet", None)
+    if sheet is None or window.dock is None or sheet.isVisible():
+        return None
+    window.dock.sheet_requested.emit()
+    return sheet
+
+
 def close_open_row(lst):
     """A row left open closed, as a click on it closes it (`RowsView.toggle`) — before a moment's row is chosen, never
     inside a repetition (the rows' places are read through `visualRect`, which lays the list out first). A drop on another part of the same title joins them and opens
@@ -298,6 +394,7 @@ def arrival_template(library):
 
 # --- the child ------------------------------------------------------------------------------------------------------- #
 def main_child(a):
+    row_title = globals()["title_point"]                  # (the module's: the child names its own below)
     from types import SimpleNamespace
     from PyQt6.QtCore import QEvent, QPoint, QPointF, Qt, QTimer
     from PyQt6.QtGui import QKeyEvent, QMouseEvent
@@ -343,7 +440,7 @@ def main_child(a):
             moments.note(watch["moment"], "numbers_ms", round((time.perf_counter() - watch["t0"]) * 1000, 2))
             watch.clear()
     shell.ShellWindow.show_library = show_library
-    writer = StandinWriter(library, numbers)
+    writer = StandinWriter(library, numbers, cover_scan=a.cover_scan)
     services = shell.Services(library=reader, writer=writer)
     window = shell.open_window(app, services)
     window.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
@@ -367,12 +464,7 @@ def main_child(a):
         send(central, QEvent.Type.MouseMove, central.mapFromGlobal(gpos), NONE, LEFT)
 
     def title_point(i):
-        entry = lst.model().entries[i]
-        rect = lst.visualRect(lst.model().index(i, 0))
-        if entry[0] == rows.HERO:
-            return lst.delegate._hero_geometry(entry[1], rect, entry[2])["title"].center()
-        g = lst.delegate.line_geometry(entry[1], lst.delegate.slab_of(rect))
-        return QPoint(g["main"].left() + 20, g["main"].center().y())
+        return row_title(lst, i)
 
     def visible_rows():
         out = []
@@ -434,6 +526,9 @@ def main_child(a):
     def cycle(c):
         def choose():                                    # (before the repetition: M4.1 A3, the bench's own row scan)
             close_open_row(lst)
+            bar = lst.verticalScrollBar()
+            if bar.value() > bar.maximum() * 2 // 3:     # the auto-scrolls brought it near the end: room below again
+                bar.setValue(bar.maximum() // 3)         # (else a short list's drop lands back on its own place)
             vis = visible_rows()
             i = vis[min(len(vis) - 1, 2 + c % 3)]
             state["src"] = i
@@ -477,15 +572,26 @@ def main_child(a):
         at(16, begin("drop"))
         at(16, let_go("drop"))
         at(0, end_after(900))                                   # the glide home and the numbers
+        at(0, moved("drop"))
         at(400, lambda: None)
 
     def let_go(name):
         def go():
+            state["drops"] = None
             if window.moves.running is None:
                 return
             watch_numbers(state["key"], name)
+            state["drops"] = window.moves.drops
             send(central, QEvent.Type.MouseButtonRelease, central.mapFromGlobal(state["hand"]), LEFT, NONE)
         return go
+
+    def moved(name):
+        """After a drop's repetition: one that moved nothing (let go on its own place, or never lifted) is said."""
+        def check():
+            if state.get("drops") is None or window.moves.drops == state["drops"]:
+                why = f"{name}: not a move"
+                result["skipped"][why] = result["skipped"].get(why, 0) + 1
+        return check
 
     # --- a drop across the top-20 line or the Soon line (R3-S6) ----------------------------------------------------- #
     def line_cycle(kind, c):
@@ -537,6 +643,7 @@ def main_child(a):
         at(120, lambda: None)                            # a rest over the slot, then the release
         at(0, let_go(name))
         at(0, end_after(900))
+        at(0, lambda: state["line_ok"] and moved(name)())
         at(200, lambda: None)
 
     # --- a move by the item menu ------------------------------------------------------------------------------------ #
@@ -581,9 +688,26 @@ def main_child(a):
                 watch_numbers(row.key, name)
             menu.hide()                                  # as QMenu does on a click: hidden, then the action triggered
             act.trigger()
+            state["menu_moved"] = row
+        at(0, lambda: state.pop("menu_moved", None))
         at(0, begin(name))
         at(0, pick)
         at(0, end_after(800))
+        if which in ("soon", "goal"):                    # its row given back to NOW, after the repetition (20 of them)
+            at(0, lambda: until(lambda: writer.pending() == 0, 4000, f"{name}: move never saved"))
+
+            def back():
+                row = state.get("menu_moved")
+                state["back_id"] = row.episodes[0].id if row is not None and row.episodes else None
+                if state["back_id"] is not None:
+                    opener.pending.append(give_back(library, [e.id for e in row.episodes]))
+
+            def is_back():
+                i, v = state["back_id"], page.view_model
+                return i is None or v is not None and any(r.tier == "now" and any(e.id == i for e in r.episodes)
+                                                          for r in v.rows)
+            at(0, back)
+            at(0, lambda: until(is_back, 4000, f"{name}: never given back"))
         at(150, lambda: None)
 
     # --- a move by key (Alt+↑ / Alt+↓) ------------------------------------------------------------------------------ #
@@ -643,18 +767,19 @@ def main_child(a):
         at(200, lambda: None)
 
     # --- the finish toasts ------------------------------------------------------------------------------------------ #
-    used = set()
+    used, used_arrivals = set(), set()
 
     def done_cycle(c):
         def prep():
             v = page.view_model
-            cands = done_candidates(v.rows if v is not None else (), used)
-            row = cands[0] if cands else None
+            row = pick_done(v.rows if v is not None else (), used)
             state["done_row"] = row.key if row is not None else None
+            state["done_unwatched"] = []
             if row is None:
                 result["skipped"]["toast-done-all: no row"] = result["skipped"].get("toast-done-all: no row", 0) + 1
                 return
             used.add(row.key)
+            state["done_unwatched"] = [e.id for e in row.episodes if not e.watched]
             others = [e.id for e in row.episodes[:-1] if not e.watched]
             if others:                                   # another program marks the rest watched first
                 opener.pending.append({"items": [{"id": i, "watched": 1} for i in others]})
@@ -680,16 +805,29 @@ def main_child(a):
         at(0, done)
         at(0, end_after(700))
         at(0, window.toasts.close)
+        at(0, lambda: until(lambda: writer.pending() == 0, 4000, "toast-done-all: Done never saved"))
+
+        def give_back_unwatched():                       # after the repetition: the row as it was, for a later one
+            ids = state["done_unwatched"]
+            if ids:
+                opener.pending.append({"items": [{"id": i, "watched": 0} for i in ids]})
+
+        def unwatched_again():
+            key, ids, v = state["done_row"], set(state["done_unwatched"]), page.view_model
+            row = next((r for r in (v.rows if v is not None else ()) if r.key == key), None)
+            return not ids or row is None or not any(e.watched for e in row.episodes if e.id in ids)
+        at(0, give_back_unwatched)
+        at(0, lambda: until(unwatched_again, 4000, "toast-done-all: never given back"))
         at(150, lambda: None)
 
     def finished_cycle(c):
         def choose():
             tray = getattr(window, "arrivals_tray", None)
             v = page.view_model
-            arrivals = [x for x in (getattr(v, "arrivals", ()) or ()) if x.key not in used]
+            arrivals = [x for x in (getattr(v, "arrivals", ()) or ()) if x.key not in used_arrivals]
             state["arrival"] = arrivals[0] if arrivals and tray is not None else None
             if state["arrival"] is not None:
-                used.add(state["arrival"].key)
+                used_arrivals.add(state["arrival"].key)
 
         def finish():
             arrival = state["arrival"]
@@ -719,6 +857,68 @@ def main_child(a):
         at(0, end_after(700))
         at(0, window.toasts.close)
 
+    # --- a hover rest, then the lift (C5's ghost baked as the pointer rests) ----------------------------------------- #
+    def hover_cycle(c):
+        def prep():
+            close_open_row(lst)
+            vis = visible_rows()
+            state["hover_row"] = vis[min(len(vis) - 1, 1 + c % 4)] if vis else None
+            if state["hover_row"] is None:
+                result["skipped"]["hover-lift: no row"] = result["skipped"].get("hover-lift: no row", 0) + 1
+            window.moves._ghosts.clear()                 # each rest bakes its row's ghost (none kept from before)
+        at(250, prep)
+
+        def rest():
+            i = state["hover_row"]
+            if i is not None:
+                state["at"] = lst.viewport().mapToGlobal(hover_rest(lst, i))
+                state["bakes"] = window.moves.ghost_bakes
+        at(0, begin("hover-lift"))
+        at(rows.HOVER_WARM_MS + 80, rest)                # (the rest inside the repetition: the bake is its cost)
+
+        def press():
+            if state["hover_row"] is None:
+                return
+            moments.note("hover-lift", "baked_at_rest", window.moves.ghost_bakes - state["bakes"])
+            state["bakes"] = window.moves.ghost_bakes
+            send(lst.viewport(), QEvent.Type.MouseButtonPress, lst.viewport().mapFromGlobal(state["at"]), LEFT, LEFT)
+            p = state["at"] + QPoint(0, theme.MOTION["drag-start-px"])
+            send(lst.viewport(), QEvent.Type.MouseMove, lst.viewport().mapFromGlobal(p), NONE, LEFT)
+            state["hand"] = p
+        at(16, press)
+        for k in range(8):                               # the hand drifts while the ghost settles
+            at(16, lambda k=k: state["hover_row"] is not None and move_global(state["hand"] + QPoint(k % 2, k // 4)))
+
+        def lifted():
+            if state["hover_row"] is not None:
+                moments.note("hover-lift", "baked_at_lift", window.moves.ghost_bakes - state["bakes"])
+        at(0, lifted)
+        at(0, end_after(120))
+        at(0, lambda: window.moves.running is not None and window.moves.cancel())     # let go, outside it
+        at(400, lambda: None)
+
+    # --- the real Goal sheet rising (survey Gap 2 item 5, register R-5) ---------------------------------------------- #
+    def sheet_cycle(c):
+        def prep():
+            sheet = getattr(window, "goal_sheet", None)
+            if sheet is not None and sheet.isVisible():
+                sheet.close()
+        at(250, prep)
+
+        def rise():
+            state["sheet"] = open_goal_sheet(window)
+            if state["sheet"] is None:
+                result["skipped"]["goal-sheet: no sheet"] = result["skipped"].get("goal-sheet: no sheet", 0) + 1
+        at(0, begin("goal-sheet"))
+        at(0, rise)
+        at(0, lambda: until(lambda: state["sheet"] is None or state["sheet"].isVisible() and
+                            not state["sheet"].rising(), 3000, "goal-sheet: never rose"))
+        at(0, end_after(150))
+        at(0, lambda: state["sheet"] is not None and state["sheet"].close())          # closed, outside it
+        at(300, lambda: None)
+
+    scans = bench_moments.CoverScans(window.scan_covers)     # `--cover-scan`: the shell's own scan, kept running
+
     def run(i=0):
         if i >= len(plan):
             return finish()
@@ -743,38 +943,58 @@ def main_child(a):
         arrival_from.append(arrival_template(library))
         lst.verticalScrollBar().setValue(lst.verticalScrollBar().maximum() // 3)
         n = a.cycles
-        for c in range(n):
-            cycle(c)
-        at(0, still("drop"))
-        for kind in ("top", "soon"):
+        groups = selected(a.only)
+        if a.cover_scan:
+            at(0, scans.begin)
+        if "drag" in groups:
+            for c in range(n):
+                cycle(c)
+            at(0, still("drop"))
+        if "lines" in groups:
+            for kind in ("top", "soon"):
+                at(0, lambda: lst.verticalScrollBar().setValue(0))
+                for c in range(n):
+                    line_cycle(kind, c)
+                at(0, still(f"drop-{'top20' if kind == 'top' else 'soon'}"))
+        if "menu" in groups:
+            for which in ("up-next", "soon", "goal"):
+                at(0, lambda: lst.verticalScrollBar().setValue(0))
+                for c in range(n):
+                    menu_cycle(which, c)
+                at(0, still({"up-next": "menu-top", "soon": "menu-soon", "goal": "menu-goal"}[which]))
+            at(0, still("menu-open"))
+        if "keys" in groups:
+            for step in (-1, 1):
+                at(0, lambda: lst.verticalScrollBar().setValue(0))
+                for c in range(n):
+                    key_cycle(step, c)
+                at(0, still("key-up" if step < 0 else "key-down"))
+        if "hover" in groups:
             at(0, lambda: lst.verticalScrollBar().setValue(0))
             for c in range(n):
-                line_cycle(kind, c)
-            at(0, still(f"drop-{'top20' if kind == 'top' else 'soon'}"))
-        for which in ("up-next", "soon", "goal"):
+                hover_cycle(c)
+            at(0, still("hover-lift"))
+        if "goal-sheet" in groups:
+            for c in range(n):
+                sheet_cycle(c)
+            at(0, still("goal-sheet"))
+        if "arrival" in groups:
+            for c in range(n):
+                arrival_cycle(c)
+            at(0, still("arrival"))
+        if "done" in groups:
             at(0, lambda: lst.verticalScrollBar().setValue(0))
             for c in range(n):
-                menu_cycle(which, c)
-            at(0, still({"up-next": "menu-top", "soon": "menu-soon", "goal": "menu-goal"}[which]))
-        at(0, still("menu-open"))
-        for step in (-1, 1):
-            at(0, lambda: lst.verticalScrollBar().setValue(0))
+                done_cycle(c)
+            at(0, still("toast-done-all"))
+        if "finished" in groups:
             for c in range(n):
-                key_cycle(step, c)
-            at(0, still("key-up" if step < 0 else "key-down"))
-        for c in range(n):
-            arrival_cycle(c)
-        at(0, still("arrival"))
-        at(0, lambda: lst.verticalScrollBar().setValue(0))
-        for c in range(n):
-            done_cycle(c)
-        at(0, still("toast-done-all"))
-        for c in range(n):
-            finished_cycle(c)
-        at(0, still("toast-finished"))
-        for c in range(n):
-            connect_cycle(c)
-        at(0, still("toast-connect"))
+                finished_cycle(c)
+            at(0, still("toast-finished"))
+        if "connect" in groups:
+            for c in range(n):
+                connect_cycle(c)
+            at(0, still("toast-connect"))
         QTimer.singleShot(1500, run)
 
     def finish():
@@ -791,6 +1011,8 @@ def main_child(a):
         result["drops"] = window.moves.drops
         result["reduced"] = motion_reduced()
         result["extra"] = {"skipped": result["skipped"], "drops": result["drops"]}
+        if a.cover_scan:
+            result["cover_scans"] = result["extra"]["cover_scans"] = scans.stop()
         import json
         with open(a.out, "w", encoding="utf-8") as f:
             json.dump(result, f)
@@ -817,9 +1039,13 @@ def main():
     ap.add_argument("--cycles", type=int, default=10, help="repetitions of each moment (>= 10 for a timed run)")
     ap.add_argument("--scale", type=int, default=None, help="one scale in % (the old flag: --scales takes a list)")
     bench_moments.add_arguments(ap)
+    ap.add_argument("--cover-scan", action="store_true",
+                    help="the app's disk cover scan runs during the moments (register R-11; hold 1 ran without it)")
+    ap.add_argument("--only", default=None, help=f"some groups of moments, comma-separated: {', '.join(GROUPS)}")
     ap.add_argument("--plan", default=None)
     ap.add_argument("--child", default=None)
     a = ap.parse_args()
+    selected(a.only)                                     # an unknown group said before any seed is built
     if a.child:
         main_child(a)
     else:

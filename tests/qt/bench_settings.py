@@ -18,6 +18,9 @@ and every GUI-thread step, `--rounds` times each (>= 10 for a timed run):
   - `more-options`: a section's *More options* clicked, open then closed;
   - `switch-junban`: Junban's on/off switch pressed and released (the slide, the light, the write, its landing: the
     section's rows shown or hidden) — skipped, and said, when `modules/junban` is absent;
+  - `slider-release`: the level slider (Settings › Level) pressed on its band's chamber and dragged to the next before
+    the repetition, then let go: its `changed` and the page's refresh and write at the release (Gap 2: the choice and
+    its save at the action), through the gem's settle into its chamber;
   - `search-key`: a keystroke in the search (a word typed letter by letter, then taken back).
 After each moment's last repetition the clock's wake-ups are counted once it is still.
 """
@@ -193,6 +196,64 @@ def main_child(a):
         at(800, press)                                   # (its write and landing inside the repetition)
         at(0, lambda: moments.end())
 
+    # --- the level slider let go ------------------------------------------------------------------------------------ #
+    def slider(c):
+        def go():
+            row = page().row("level")
+            ctl = row.controls[0] if row is not None and row.controls and row.isVisible() else None
+            state["slider"] = ctl if ctl is not None and ctl.isEnabled() else None
+            if state["slider"] is None:
+                why = "slider-release: no slider"
+                result["skipped"][why] = result["skipped"].get(why, 0) + 1
+                return
+            p = page()
+            p.scroll.verticalScrollBar().setValue(max(0, p._y_in_body(row) - 200))
+            n = len(ctl._bands)
+            i = ctl._index
+            state["slider_to"] = i + 1 if i + 1 < n else i - 1      # a neighbouring band: the next, or at the end
+            state["slider_from"] = i                                  # where its gem is seated now
+        at(250, go)
+
+        def mouse(kind, i, buttons):
+            ctl = state["slider"]
+            pos = ctl.chamber(i)
+            QApplication.sendEvent(ctl, QMouseEvent(kind, pos, QPointF(ctl.mapToGlobal(pos.toPoint())),
+                                                    Qt.MouseButton.LeftButton, buttons, Qt.KeyboardModifier.NoModifier))
+
+        def press():
+            if state["slider"] is not None:              # pressed and dragged before the repetition (the lift)
+                mouse(QEvent.Type.MouseButtonPress, state["slider_from"], Qt.MouseButton.LeftButton)
+        at(16, press)
+        for k in range(1, 13):                           # the hand travels to the other chamber at 60 Hz
+            def drag_(k=k):
+                ctl = state["slider"]
+                if ctl is None:
+                    return
+                a_, b_ = ctl.chamber(state["slider_from"]), ctl.chamber(state["slider_to"])
+                pos = a_ + (b_ - a_) * (k / 12)
+                QApplication.sendEvent(ctl, QMouseEvent(QEvent.Type.MouseMove, pos,
+                                                        QPointF(ctl.mapToGlobal(pos.toPoint())),
+                                                        Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton,
+                                                        Qt.KeyboardModifier.NoModifier))
+            at(16, drag_)
+        at(120, lambda: None)                            # held over it a moment, as a hand does
+
+        def release():
+            if state["slider"] is None:
+                return
+            state["slider_was"] = state["slider"].value()
+            moments.begin("slider-release")              # the release: its `changed`, the page's refresh and write,
+            mouse(QEvent.Type.MouseButtonRelease, state["slider_to"], Qt.MouseButton.NoButton)    # the gem's settle
+        at(0, release)
+        at(500, lambda: None)                            # (the settle, 85-205 ms, and the write's landing inside it)
+
+        def released():
+            moments.end()
+            if state["slider"] is not None:              # its band changed at the release (a `changed` each time)
+                moments.note("slider-release", "changed", int(state["slider"].value() != state["slider_was"]))
+        at(0, released)
+        at(150, lambda: None)
+
     # --- a search keystroke --------------------------------------------------------------------------------------------- #
     def keystrokes():
         out = []
@@ -240,6 +301,9 @@ def main_child(a):
         for c in range(2 * ((n + 1) // 2)):
             switch(c)
         at(0, still("switch-junban"))
+        for c in range(n):
+            slider(c)
+        at(0, still("slider-release"))
         strokes = keystrokes()
         k = 0
         while k < max(n, len(strokes)):

@@ -166,6 +166,52 @@ class Moments:
         return out
 
 
+class CoverScans:
+    """`--cover-scan` (bench_drag, bench_scroll; register R-11): the app's own disk cover scan (`start()`: the shell's
+    `scan_covers`, or `covers.start_scan` with a writer that answers `idle`) kept running while the moments run —
+    started again `pause_ms` after each one ends (the app scans once per open: this is its worst case, never less).
+    `summary()`: the scans ended and how long those it started took (ms)."""
+
+    def __init__(self, start, pause_ms=1000, scanned=None, later=None):
+        self.start, self.pause_ms = start, pause_ms
+        self.scanned, self.later = scanned, later
+        self.on, self.n, self.ms, self._t0 = False, 0, [], None
+
+    def begin(self):
+        if self.scanned is None:
+            from app.qt import covers as qcovers
+            self.scanned = qcovers.notifier().scanned
+        if self.later is None:
+            from PyQt6.QtCore import QTimer
+            self.later = QTimer.singleShot
+        self.scanned.connect(self._ended)
+        self.on = True
+        self._go()
+
+    def _go(self):
+        if self.on:
+            self._t0 = time.perf_counter()
+            self.start()
+
+    def _ended(self, result):
+        cancel = result[0] if isinstance(result, tuple) else None
+        if cancel is not None and cancel.is_set():
+            return                                   # one a later start cancelled (the shell's first): that one ends
+        self.n += 1
+        if self._t0 is not None:
+            self.ms.append(round((time.perf_counter() - self._t0) * 1000, 1))
+            self._t0 = None
+        if self.on:
+            self.later(self.pause_ms, self._go)
+
+    def stop(self):
+        self.on = False
+        return self.summary()
+
+    def summary(self):
+        return {"ended": self.n, "ms": _stats(self.ms) if self.ms else None}
+
+
 def _stats(values):
     nums = [v for v in values if isinstance(v, (int, float))]
     if not nums or len(nums) != len(values):

@@ -71,8 +71,8 @@ class UpdateError(Exception):
 # Locations. The update's state lives in <Houseki local root>\update\ (S3.1 D9): the marker, the result, the report,
 # 2.x-shaped staging (`staging_dir`), a 3.x release's assembled program (`stage_dir`), the previous version kept for
 # Go back (`previous_root`) and the copied-out swapper (`swapper_dir`). The program folder holds the programs
-# (Surasura.exe, surasura-cli.exe, updater.exe) and _internal (templates/ and the runtime; the app code is inside the
-# exes, not loose under _internal).
+# (Surasura.exe, surasura-cli.exe, tsubasa.exe, updater.exe) and _internal (templates/ and the runtime; the app code is
+# inside the exes, not loose under _internal).
 # ---------------------------------------------------------------------------
 def _user_dir():
     return path_utils.get_user_data_path()
@@ -336,6 +336,7 @@ def tree_sha256(folder):
 # ---------------------------------------------------------------------------
 EXE_NAME = "Surasura.exe"
 CLI_EXE_NAME = "surasura-cli.exe"
+TSUBASA_EXE_NAME = "tsubasa.exe"    # tsubasa's command line (T1 B): Connect's child, waited for by the folder's sweep
 
 _HOLD = threading.Event()       # set from "Update now" until the update is cancelled (or the app exits for it)
 _DEFERRED = []                  # children asked for meanwhile: started when the update is cancelled
@@ -925,8 +926,8 @@ def launch_installer(staged):
 # previous\<from>\. Anything else in the program folder is someone else's and never moves: Inno's unins000.*, and the
 # library's folders and settings should they sit there (an installed copy whose library.json can't be read runs
 # portable) — KEPT_ENTRIES, which a release may never name either.
-OWNED_ENTRIES = ("_internal", EXE_NAME, CLI_EXE_NAME, UPDATER_EXE_NAME, "README.md", "RELEASE_NOTES.md",
-                 "UPDATE_INSTRUCTIONS.md", "LICENSE")
+OWNED_ENTRIES = ("_internal", EXE_NAME, CLI_EXE_NAME, TSUBASA_EXE_NAME, UPDATER_EXE_NAME, "README.md",
+                 "RELEASE_NOTES.md", "UPDATE_INSTRUCTIONS.md", "LICENSE")
 KEPT_ENTRIES = ("User Files", "data", "results", "settings.json")
 _VERSION_RE = re.compile(r"\d{1,6}(\.\d{1,6}){0,3}\Z")
 

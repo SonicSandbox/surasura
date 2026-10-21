@@ -15,6 +15,13 @@ def is_frozen():
     """Check if the application is running in a frozen (packaged) environment."""
     return getattr(sys, 'frozen', False)
 
+def program_beside(name):
+    """A program Surasura's bundle ships beside the running one — `Surasura`, `surasura-cli`, `tsubasa` share one
+    folder and its `_internal` (packaging/Surasura.spec) — by its name: its path in the running exe's folder, `.exe`
+    added on Windows. Whether it is there is the caller's to check; meaningful only when frozen."""
+    ext = ".exe" if sys.platform == "win32" else ""
+    return os.path.join(os.path.dirname(os.path.abspath(sys.executable)), name + ext)
+
 def get_base_path():
     """
     Get the base directory for retrieving RESOURCES (templates, bundled scripts).

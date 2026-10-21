@@ -38,7 +38,7 @@ jobs:
           PROOF_PATHS: >-
             packaging/** package_app.py updater_helper.py app/updater.py app/update_checker.py app_entry.py
             app/build_info.py app/cli/** scripts/cli_smoke.py .github/workflows/package.yml
-            .github/workflows/pr-merge.yml
+            .github/workflows/pr-merge.yml requirements.txt
         run: |
           read -r base head draft labelled < <(gh pr view "$PR" --repo "$REPO" --json baseRefName,headRefOid,isDraft,labels \
             --jq '[.baseRefName, .headRefOid, (.isDraft|tostring), ([.labels[].name] | index("reviewed") != null | tostring)] | join(" ")')

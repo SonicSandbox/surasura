@@ -32,11 +32,10 @@ def running():
 def command():
     """`surasura-cli connect`: the command-line program beside this one when frozen (`Surasura.exe` and
     `surasura-cli.exe` ship side by side), else `python -m app.cli`."""
-    from app.path_utils import is_frozen
+    from app.path_utils import is_frozen, program_beside
     args = ["connect"]
     if is_frozen():
-        name = "surasura-cli.exe" if sys.platform == "win32" else "surasura-cli"
-        return [os.path.join(os.path.dirname(sys.executable), name)] + args
+        return [program_beside("surasura-cli")] + args
     return [sys.executable, "-m", "app.cli"] + args
 
 

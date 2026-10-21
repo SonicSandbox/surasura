@@ -7334,7 +7334,8 @@ Store._undo_reset = _store_undo_reset
 # source found it. Remove keeps an origin out for good (an `exclusions` row); Finish keeps its records.
 
 SKIP_DIRS = ("$recycle.bin", "#recycle", "@eadir", ".stversions", ".trash", "system volume information", "@recycle",
-             "#snapshot", "@recently-snapshot", "~snapshot", ".snapshot")   # + QNAP's / Synology's bins and snapshots
+             "#snapshot", "@recently-snapshot", "~snapshot", ".snapshot",   # + QNAP's / Synology's bins and snapshots
+             "node_modules")    # a web project's packages: thousands of folders, its `.ts` files no videos (K6, S9)
 PLACEHOLDER_ATTRS = 0x1000 | 0x40000 | 0x400000   # OFFLINE · RECALL_ON_OPEN · RECALL_ON_DATA_ACCESS (Connect's `_on_disk`)
 _LINK_TAGS = (0xA000000C, 0xA0000003)              # IO_REPARSE_TAG_SYMLINK, IO_REPARSE_TAG_MOUNT_POINT (a junction)
 _DIGITS = re.compile(r"(\d+)")
@@ -7386,7 +7387,8 @@ def _ancestors(path):
 
 def skip_dir(name, path):
     """Does a look at a source folder skip this folder (B3)? Dot folders (.stversions, .trash), the recycle bins
-    (Windows' and a NAS's), a NAS's @eaDir, System Volume Information, and a folder link or junction — never followed:
+    (Windows' and a NAS's), a NAS's @eaDir, System Volume Information, a web project's node_modules, and a folder link
+    or junction — never followed:
     one that loops never ends, one into the data folder brings it back. `path`: the folder's path, or its `os.DirEntry`
     (the listing's own stat: no call)."""
     if name.startswith(".") or name.casefold() in SKIP_DIRS:

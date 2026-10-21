@@ -28,10 +28,15 @@ folder, `Library/<show>/<file>` (SRC-4). One look (`scan`):
   a `v2`'s text only once `take_in` recorded it on its episode.
 - **A skipped folder** (K6, *Never read this folder*: `Store.skip_folder`): never listed, nor anything under it, and
   its files never counted as found; the cache keeps the skips it was written with (and the store's `folder_skips`
-  stamp, so a quick look reads no exclusion), and a change to them lists everything once. **A text holding fewer than
-  MIN_SCRIPT characters of the language's script** (a backup's skin config, an untagged English `.srt`) is no content:
-  skipped, never copied — unless an item already holds its bytes or video (check a / b) — and remembered by its stats
-  like an EPUB with no text, so an unchanged one is never read again.
+  stamp, so a quick look reads no exclusion), and a change to them lists everything once. **A text or book not in the
+  library's language** (`_refusal`, ONE rule: Japanese needs MIN_SCRIPT kana letters — Han alone is Chinese; Chinese
+  MIN_SCRIPT Han and fewer than MIN_SCRIPT kana letters) is no content — a backup's skin config, an untagged English
+  `.srt`, a Chinese fansub beside the Japanese subtitle, an English EPUB — nor is a loose `.txt` / `.md` with fewer
+  than BOOK_MIN_CHARS characters of the script (T2-B4: counted `short` too); a text over IN_MEMORY is judged by its
+  first HEAD bytes (B4), an EPUB whose encryption.xml locks more than its fonts is never split (B6). Each is skipped,
+  never copied — a text unless an item already holds its bytes or video (check a / b) — and remembered by its stats
+  like an EPUB with no text, so an unchanged one is never read again. Dot files (a Mac's `._*` twins, `.DS_Store`)
+  are never listed, nor a `.ts` under TS_MIN as a video (B7, S9).
 - **An unreachable folder** (SRC-3): `{"reachable": False}`, nothing written or marked — one that goes while it is
   listed too (its folder times kept as they were).
 
@@ -52,8 +57,8 @@ import time
 import unicodedata
 
 from app import library_store as ls
-from app.path_utils import _bom_encoding, _decode, restart_trash_clock, write_source_marker
-from app.unicode_ranges import HAN, KANA
+from app.path_utils import decode_text, restart_trash_clock, write_source_marker
+from app.unicode_ranges import HAN, KANA_LETTERS
 
 log = logging.getLogger("surasura-cli")
 
@@ -67,7 +72,17 @@ HOURLY_S = 60 * 60              # else, while a window is in front
 CACHE_VERSION = 2               # 2: a folder's subtitle folders are listed with it
 EPUB = ".epub"
 MIN_SCRIPT = 20                 # a text holding fewer characters of the language's script is no content (K6)
-_SCRIPT = {"ja": re.compile(f"[{KANA}{HAN}]"), "zh": re.compile(f"[{HAN}]")}
+BOOK_MIN_CHARS = 1000           # a loose .txt / .md holding fewer of the script's characters is no content (T2-B4)
+HEAD = 1 << 20                  # a text over IN_MEMORY is judged by this much of its start, read with its hash (B4)
+TS_MIN = 1 << 20                # a `.ts` under this size is TypeScript, not a video (S9: by the listing's stat)
+_KANA = re.compile(f"[{KANA_LETTERS}]")      # kana letters: never ・ or ー (a Chinese name's separator, a dash)
+_HAN = re.compile(f"[{HAN}]")
+_BOOK_SCRIPT = {"ja": re.compile(f"[{KANA_LETTERS}{HAN}]"), "zh": _HAN}
+_LOOSE = (".txt", ".md")        # a loose text: a book's worth or nothing; subtitles (.srt .ass .ssa) need no length
+# a book's font obfuscation (IDPF's, Adobe's) hides only its fonts: no lock (B6)
+_FONT_OBFUSCATION = ("http://www.idpf.org/2008/embedding", "http://ns.adobe.com/pdf/enc#RC")
+_FONTS = (".otf", ".ttf", ".woff", ".woff2")
+_XMLENC = "{http://www.w3.org/2001/04/xmlenc#}"
 _SUBS = frozenset({"subs", "subtitles", "subtitle"})   # a folder of the subtitles of the videos above it
 
 # A subtitle's language tag (`Show - 05.ja.srt`, `.pt-BR`): ours is taken, another language's skipped (S7). ISO 639-1
@@ -142,10 +157,11 @@ def local_or_network(path):
 
 
 def scan(store, language, root, first=False, progress=None, stop=None, full=False, rules=None):
-    """One look at the source `root` (its id) -> {reachable, found, shows, added, attached, skipped, waiting,
-    recopied, stopped, busy, ids}. `first`: setup's own first scan (SRC-1: Current, quiet); `full`: Refresh (S4);
-    `progress(found, shows)` every PROGRESS_S; `stop()` is asked between files (a stopped look keeps what it took in,
-    whole); `rules`: the placing rules `take_in` applies to an arrival. A source not being read raises NotASource.
+    """One look at the source `root` (its id) -> {reachable, found, shows, added, attached, skipped, short, waiting,
+    recopied, stopped, busy, ids} (`short`: of those skipped, the loose texts too short to be a book, T2-B4).
+    `first`: setup's own first scan (SRC-1: Current, quiet); `full`: Refresh (S4); `progress(found, shows)` every
+    PROGRESS_S; `stop()` is asked between files (a stopped look keeps what it took in, whole); `rules`: the placing
+    rules `take_in` applies to an arrival. A source not being read raises NotASource.
     Another look at the same store running → {"busy": True}, nothing done."""
     key = _store_key(store)
     with _GUARD:
@@ -164,8 +180,8 @@ def _store_key(store):
 
 
 def _result(**values):
-    out = {"reachable": True, "found": 0, "shows": 0, "added": 0, "attached": 0, "skipped": 0, "waiting": 0,
-           "recopied": 0, "stopped": False, "busy": False, "ids": []}
+    out = {"reachable": True, "found": 0, "shows": 0, "added": 0, "attached": 0, "skipped": 0, "short": 0,
+           "waiting": 0, "recopied": 0, "stopped": False, "busy": False, "ids": []}
     out.update(values)
     return out
 
@@ -275,29 +291,83 @@ def _lost(root):
 
 
 def _read_text(path, st):
-    """(the new text's bytes when it is small enough to keep in memory, else None; its sha256): read once. (None, None)
-    when the bytes read are not as many as the listing's size (the record names that size): it waits."""
+    """(the new text's bytes when it is small enough to keep in memory, else None; its sha256; the bytes `_refusal`
+    judges — all of them, or a text over IN_MEMORY's first HEAD, B4): read once, a big one hashed block by block.
+    (None, None, None) when the bytes read are not as many as the listing's size (the record names that size): it
+    waits."""
     if st.st_size > IN_MEMORY:
-        return None, ls.sha256_of(path)
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            head = f.read(HEAD)
+            h.update(head)
+            for block in iter(lambda: f.read(1 << 20), b""):
+                h.update(block)
+        return None, h.hexdigest(), head
     with open(path, "rb") as f:
         data = f.read()
     if len(data) != st.st_size:
-        return None, None
-    return data, hashlib.sha256(data).hexdigest()
+        return None, None, None
+    return data, hashlib.sha256(data).hexdigest(), data
 
 
-def _in_script(data, language):
-    """K6: does a text's bytes hold at least MIN_SCRIPT characters of the language's script (ja: kana or Han; zh: Han)?
-    Decoded as `path_utils.read_text` reads a file he supplies (a BOM, else UTF-8, else CP932 / GB18030 then cp950; a
-    damaged one as its BOM or UTF-8 says, its bad bytes replaced). A loader's skin config, an English `.srt`, a
-    readme: no. Bytes all ASCII are never decoded."""
+def _count(pattern, text, most):
+    """How many of `pattern`'s characters `text` holds, counted up to `most` (no further: a book is never counted
+    whole)."""
+    return sum(1 for _m in zip(range(most), pattern.finditer(text)))
+
+
+def _refusal(data, language, loose=False, head=False):
+    """K6, the ONE rule every text and book a look finds passes: why it is not the library's content, or None when it
+    is. `data`: a new text's bytes (`head`: a big text's first HEAD bytes, a character cut at their end no damage), or
+    an EPUB's extracted text.
+    - "script": Japanese needs at least MIN_SCRIPT kana letters — Han without kana is Chinese (a Chinese fansub, a
+      Chinese novel: B5); Chinese at least MIN_SCRIPT Han and fewer than MIN_SCRIPT kana letters (a text holding
+      kana is Japanese). A loader's skin config, an English `.srt` or log, an English EPUB: neither.
+    - "short" (`loose`: a `.txt` / `.md`, T2-B4): fewer than BOOK_MIN_CHARS characters of the script (ja: kana + Han;
+      zh: Han) — a readme, a lyric sheet, a note; a big text's first megabyte counting that many is enough.
+      Subtitles and EPUBs: the first rule alone.
+    Bytes are decoded by `path_utils.decode_text` (the rule a file he supplies is read by); bytes all ASCII never."""
     if data.isascii():
+        return "script"
+    text = data if isinstance(data, str) else decode_text(data, language, head=head)
+    if language == "zh":
+        ours = _count(_KANA, text, MIN_SCRIPT) < MIN_SCRIPT and _count(_HAN, text, MIN_SCRIPT) >= MIN_SCRIPT
+    else:
+        ours = _count(_KANA, text, MIN_SCRIPT) >= MIN_SCRIPT
+    if not ours:
+        return "script"
+    if loose and _count(_BOOK_SCRIPT.get(language, _BOOK_SCRIPT["ja"]), text, BOOK_MIN_CHARS) < BOOK_MIN_CHARS:
+        return "short"
+    return None
+
+
+def _locked(path):
+    """B6: does the EPUB's `META-INF/encryption.xml` encrypt anything beyond its fonts — a shop's DRM (Adobe's,
+    Readium LCP, Apple's)? Its text read as text would be mojibake words. A font obfuscated (IDPF's, Adobe's way) or
+    a font file encrypted is no lock; one whose encryption.xml can't be read is locked. Not a zip: no (Extract says
+    it has no text)."""
+    import zipfile
+    from xml.etree import ElementTree
+    try:
+        with zipfile.ZipFile(path) as z:
+            try:
+                raw = z.read("META-INF/encryption.xml")
+            except KeyError:
+                return False
+    except (OSError, zipfile.BadZipFile):
         return False
-    text = _decode(data, language)
-    if text is None:
-        text = data.decode(_bom_encoding(data) or "utf-8", "replace")
-    found = _SCRIPT.get(language, _SCRIPT["ja"]).finditer(text)
-    return sum(1 for _m in zip(range(MIN_SCRIPT), found)) >= MIN_SCRIPT
+    try:
+        root = ElementTree.fromstring(raw)
+    except ElementTree.ParseError:
+        return True
+    for data in root.iter(_XMLENC + "EncryptedData"):
+        method = data.find(_XMLENC + "EncryptionMethod")
+        ref = data.find(f".//{_XMLENC}CipherReference")
+        uri = (ref.get("URI") if ref is not None else None) or ""
+        if (method.get("Algorithm") if method is not None else None) not in _FONT_OBFUSCATION \
+                and not uri.lower().endswith(_FONTS):
+            return True
+    return False
 
 
 def _write_part(part, data):
@@ -350,6 +420,8 @@ def _listing(folder):
     try:
         with os.scandir(folder) as found:
             for entry in found:
+                if entry.name.startswith("."):               # a dot folder (`skip_dir`) or a dot file: a Mac's
+                    continue                                 # AppleDouble twin `._Show - 01.mkv`, `.DS_Store` (B7)
                 try:
                     if entry.is_dir(follow_symlinks=False):
                         st = entry.stat(follow_symlinks=False)  # first: `skip_dir` takes a failed stat for a skip
@@ -368,6 +440,8 @@ def _listing(folder):
                 except OSError:
                     unread = True
                     continue
+                if kind == "video" and low.endswith(".ts") and st.st_size < TS_MIN:
+                    continue                                 # TypeScript, not MPEG-TS (S9)
                 if kind == "video":
                     vids[low] = (entry.path, st)             # a placeholder too: it is beside, its key never read
                 elif ls.is_placeholder(st):
@@ -390,6 +464,7 @@ class _Look:
         self.unsettled = set()       # folders (path keys) a file in which waits: listed again next look
         self.this_look = set()       # the bytes taken this look (the same bytes twice wait for the next look)
         self.this_videos = set()     # the videos a subtitle was taken for this look (S7: one per video per language)
+        self.runners_up = {}         # {a new subtitle's path: [its episode's other files, in S7's order]} (B5)
         self.made = set()            # the copies this look wrote (rels): trashed when take_in can't take them (N3)
         self.said = 0.0
         self.by_folder = None        # {folder key: {(show, episode): (version, Origin)}}: the releases already in
@@ -652,9 +727,10 @@ class _Look:
         out, groups = [], {}
         for t in texts:
             k = _key(t[1]) if self.no_text else None
-            if k is not None and self.no_text.get(k) == [t[2].st_size, t[2].st_mtime_ns]:
-                self.no_text_kept[k] = self.no_text[k]       # none of our script in it, and unchanged (K6)
+            if k is not None and (self.no_text.get(k) or [])[:2] == [t[2].st_size, t[2].st_mtime_ns]:
+                self.no_text_kept[k] = self.no_text[k]       # none of our script in it, or short, unchanged (K6)
                 self.out["skipped"] += 1
+                self.out["short"] += self.no_text[k][2:] == ["short"]
                 continue
             base, language, flags = _tag(t[0])
             language = language or (langs or {}).get(t[1])
@@ -673,6 +749,8 @@ class _Look:
             self.out["skipped"] += len(members) - 1
             n, p, st = members[0][2]
             out.append((n, p, st, _show_of(root, parts, n), "new"))
+            if len(members) > 1:                             # the next in its place if this one isn't ours (B5)
+                self.runners_up[p] = [m[2] for m in members[1:]]
         # K1: of one episode's releases found new here (`- 05`, `- 05v2`), only the latest is taken; H13: of its
         # releases of that version whose names differ only in their marks (`[A] Show - 05`, `[B] Show - 05 (720p)`),
         # only the first by name — a name that says more (`Show - 05 特別編`) is its own
@@ -866,7 +944,7 @@ class _Look:
         if track is not None and track in self.this_videos:  # one subtitle per video per language: the next look's
             self._wait(folder)
             return None
-        data, sha = _read_text(path, st)                     # read once: hashed now, copied from memory
+        data, sha, head = _read_text(path, st)               # read once: hashed now, copied from memory
         if sha is None or not self._same(path, st):
             self._wait(folder)
             return None
@@ -885,10 +963,17 @@ class _Look:
             if vkey:
                 f["video_key"] = vkey
         item = (self._video_item(vkey) if vkey else None) or self._same_bytes(st.st_size, sha)
-        if item is None and data is not None and not _in_script(data, self.language):
-            self.no_text_kept[_key(path)] = [st.st_size, st.st_mtime_ns]   # K6: a skin config, an English .srt: no
-            self.out["skipped"] += 1                                       # new text and no v2's: not read again
-            return None                                                    # until it changes
+        why = None if item is not None else _refusal(head, self.language, name.lower().endswith(_LOOSE), data is None)
+        if why:                                              # K6: a skin config, an English .srt, a Chinese fansub,
+            self._pass_over(path, st, why)                   # a readme: no new text and no v2's — not read again
+            rest = self.runners_up.pop(path, None)           # until it changes; B5: the episode's next file (the
+            if not rest:                                     # Japanese `.srt` after a Chinese `.ass`) in its place
+                return None
+            self.out["skipped"] -= 1
+            if rest[1:]:
+                self.runners_up[rest[0][1]] = rest[1:]
+            n, p, s = rest[0]
+            return self._new(os.path.dirname(p), p, s, n, show, vids)
         if item is None and held is not None and held[0] < version:   # a v2 of an episode already in (S7)
             earlier = held[1]
             if self._refuses(earlier.rel_path, st):          # not followed: nor recorded (its bytes aren't the item's)
@@ -1177,10 +1262,12 @@ class _Look:
                            "show": rel.split("/")[1] if rel.count("/") >= 2 else show, "item_id": item, "episode": i}
                           for i, (item, rel) in sorted(known.items())])
             return
+        if _locked(path):                                    # a shop's DRM: never split (B6)
+            self._pass_over(path, st)
+            return
         chunks, error = extract.chunks_of(path, self.language)
-        if error or not chunks:                              # no text in it: nothing to read, until it changes
-            self.no_text_kept[_key(path)] = [st.st_size, st.st_mtime_ns]
-            self.out["skipped"] += 1
+        if error or not chunks or _refusal("".join(chunks), self.language):   # no text, or none of the language
+            self._pass_over(path, st)                        # (an English translation, B6): until it changes
             return
         if not self._same(path, st):
             self._wait(folder)
@@ -1238,6 +1325,14 @@ class _Look:
                 f["item_id"] = item
             found.append(f)
         self._commit(found)
+
+    def _pass_over(self, path, st, why=None):
+        """A file that is no content — an EPUB with no text or locked (K5, B6), a text none of the language's (K6), a
+        loose text too short (`why` "short", T2-B4) — counted skipped (and `short`), and remembered by its stats in
+        the cache's `books`: never read again until it changes."""
+        self.no_text_kept[_key(path)] = [st.st_size, st.st_mtime_ns] + (["short"] if why == "short" else [])
+        self.out["skipped"] += 1
+        self.out["short"] += why == "short"
 
     def _books(self):
         """{an EPUB's sha256: {part number: (item_id, rel)}} of the books already in (their parts' records)."""

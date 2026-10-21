@@ -61,6 +61,14 @@ def _text(language, n, extra=""):
         return f.read() + f"\n{n}{extra}\n"
 
 
+def _book_text(language):
+    """A loose `.txt` worth reading (T2-B4: BOOK_MIN_CHARS characters of the script or more): the app's own sample."""
+    path = os.path.join(os.path.dirname(RESOURCES), os.pardir, "samples", language, "HighPriority",
+                        "H_priority_sample_1.txt")
+    with open(path, encoding="utf-8-sig") as f:
+        return f.read()
+
+
 def _write(path, text, age=60):
     """A file in a source folder, its time `age` seconds back (settled: older than the half-written wait)."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -176,7 +184,7 @@ def test_a_first_scan_copies_each_episode_into_library_by_show_and_lands_it_in_c
     src = _drive("driveA")
     for n in (2, 1, 10):
         _write(os.path.join(src, a, f"{a} - {n:02d}.srt"), _text(language, n))
-    _write(os.path.join(src, b, "notes.txt"), _text(language, 3))
+    _write(os.path.join(src, b, "notes.txt"), _book_text(language))
     calls = []
     with store:
         root = store.add_source(src)

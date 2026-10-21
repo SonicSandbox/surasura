@@ -32,12 +32,22 @@ SKIN = ("# skin: blue\n"
         "covers_size = 160, 224\nhide_header = 0\nhide_hddinfo = 1\nhide_footer = 0\n")
 
 
+SAMPLES = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "samples")
+
+
+def _sample(language):
+    """A real novel-length text (the app's own samples): over BOOK_MIN_CHARS characters of the language's script."""
+    with open(os.path.join(SAMPLES, language, "HighPriority", "H_priority_sample_1.txt"), encoding="utf-8-sig") as f:
+        return f.read()
+
+
 def _card_and_show(language, src, card_text=True):
     """The show folder (two episodes) and, under the card backup, two files: one per folder of the loader's own.
-    `card_text`: real text there (so a look takes it in as items — the skip's case); False: the loader's ASCII config."""
+    `card_text`: real text there, a book's worth (so a look takes it in as items — the skip's case); False: the
+    loader's ASCII config."""
     show = _SHOWS[language][0]
     eps = [_write(os.path.join(src, show, f"{show} - {n:02d}.srt"), _text(language, n)) for n in (1, 2)]
-    body = (lambda n: _text(language, n, extra=" skin")) if card_text else (lambda n: SKIN)
+    body = (lambda n: _sample(language) + f"\n{n} skin\n") if card_text else (lambda n: SKIN)
     card = [_write(os.path.join(src, BLUE, "skin.txt"), body(7)),
             _write(os.path.join(src, CARD, "loader", "skin", "skin.txt"), body(8))]
     return eps, card
@@ -179,7 +189,7 @@ def test_an_item_with_an_origin_outside_the_skipped_folder_stays():
     text = _text(language, 3)
     both = [_write(os.path.join(src, show, f"{show} - 03.srt"), text), _write(os.path.join(src, BLUE, "copy.srt"),
                                                                              text)]
-    only = _write(os.path.join(src, BLUE, "skin.txt"), _text(language, 4))
+    only = _write(os.path.join(src, BLUE, "skin.txt"), _sample(language))
     with store:
         root = store.add_source(src)
         _look(store, language, root, first=True)
@@ -285,7 +295,7 @@ def test_a_skin_file_with_no_word_of_our_language_is_skipped_never_copied_and_re
         _look(store, language, root)
         again = _look(store, language, root, full=True)                         # a Refresh
         assert read == [] and again["skipped"] == 2 and again["added"] == 0
-        _write(card[0], _text(language, 9), age=30)                               # now real text: read, taken
+        _write(card[0], _sample(language), age=30)                                # now a book's worth: taken
         changed = _look(store, language, root, full=True)
         assert changed["added"] == 1 and [p for p in read if p.startswith(src)] == [card[0]]
 
@@ -317,7 +327,7 @@ def test_a_text_in_its_own_encoding_still_passes(language, encoding):
     path = os.path.join(src, show, f"{show} - 01.txt")
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding=encoding, newline="\n") as f:
-        f.write(_text(language, 3))                                              # context_test.txt: CP932 holds it
+        f.write(_sample(language))                                               # a book's worth: CP932 holds it
     t = time.time() - 60
     os.utime(path, (t, t))
     with store:
@@ -334,7 +344,7 @@ def test_twenty_characters_of_our_script_make_a_text_content(language, n, taken)
     src = _drive("Media")
     show = _SHOWS[language][0]
     unit = "あ" if language == "ja" else "字"
-    _write(os.path.join(src, show, "short.txt"), "Title: " + unit * n + " (2024)\n" + "x" * 200 + "\n")
+    _write(os.path.join(src, show, "short.srt"), "Title: " + unit * n + " (2024)\n" + "x" * 200 + "\n")
     with store:
         root = store.add_source(src)
         assert _look(store, language, root, first=True)["added"] == (1 if taken else 0)
@@ -461,3 +471,335 @@ def test_a_subtitle_folder_skipped_after_it_was_read_comes_back_with_read_again_
         assert store.read_folder_again(change.folder)
         back = _look(store, language, root)                                      # quick: the show folder unchanged
         assert any(store.item(i)["rel_path"].endswith(".ja.srt") for i in back["ids"])
+
+
+# --- K6 gaps (2026-10-21): what is the library's language, big files, books, junk in the listing ------------------- #
+# What a wrong answer costs: a Chinese fansub read through the Japanese tokenizer (kanji compounds flooding the list,
+# the real subtitle hidden as "another version"); a 40 MB English log or an English EPUB as a show of empty parts; a
+# DRM book's mojibake as words; a Mac's `._` twins turning a folder's videos into "no subtitles yet" shows; every
+# TypeScript file a video; a readme or a lyric sheet as an episode.
+
+def _resource(language, name):
+    from tests.test_library_store_support import RESOURCES
+    with open(os.path.join(RESOURCES, language, name), encoding="utf-8-sig") as f:
+        return f.read()
+
+
+def _item_rels(store, ids):
+    return sorted(store.item(i)["rel_path"] for i in ids)
+
+
+def _records(store):
+    import json
+    return [json.loads(p) for (p,) in store.conn.execute("SELECT pairing FROM pairings")]
+
+
+def test_a_chinese_fansub_beside_the_japanese_subtitle_is_passed_over_and_the_japanese_one_taken():
+    """B5: `Show - 01.ass` holds a Chinese fansub (its `.简体` mark is no tag the look knows), `Show - 01.srt` the
+    Japanese subtitle. Han without kana is Chinese: the `.ass` is passed over, so the `.srt` is the episode's text (it
+    used to be the `.ass`, ranked first, the Japanese one hidden as another version); a Chinese novel in the same
+    Japanese library is passed over too."""
+    language = "ja"
+    store, data_dir = _empty(language)
+    src = _drive("Media")
+    show = _SHOWS[language][0]
+    _video(os.path.join(src, show, f"{show} - 01.mkv"))
+    _write(os.path.join(src, show, f"{show} - 01.ass"), _resource("zh", "night_market.srt"))
+    _write(os.path.join(src, show, f"{show} - 01.srt"), _text(language, 0))
+    _write(os.path.join(src, "Novels", "夜市小说.txt"), _sample("zh"))
+    with store:
+        root = store.add_source(src)
+        got = _look(store, language, root, first=True)
+        assert _item_rels(store, got["ids"]) == [f"Library/{show}/{show} - 01.srt"]
+        assert _library_files(data_dir) == [f"Library/{show}/{show} - 01.srt"]
+
+
+@pytest.mark.parametrize("name", ["ep01.srt", "第一巻.txt"])
+def test_a_japanese_text_in_a_chinese_library_is_passed_over(name):
+    """The reverse: a text holding kana (here with plenty of Han too) is Japanese, never Chinese."""
+    language = "zh"
+    store, data_dir = _empty(language)
+    src = _drive("Media")
+    body = _resource("ja", "placed_episode.srt") if name.endswith(".srt") else _sample("ja")
+    _write(os.path.join(src, _SHOWS[language][0], name), body)
+    with store:
+        root = store.add_source(src)
+        got = _look(store, language, root, first=True)
+        assert got["added"] == 0 and _library_files(data_dir) == []
+
+
+@pytest.mark.parametrize("kana,taken", [(19, True), (20, False)])
+def test_a_chinese_text_quoting_a_few_kana_is_still_chinese(kana, taken):
+    """The zh guard's line: fewer than MIN_SCRIPT kana letters (a Japanese title quoted in a Chinese article) leave it
+    Chinese; MIN_SCRIPT or more make it Japanese. ・ and ー are no kana letters (a Chinese name's separator)."""
+    language = "zh"
+    store, _data = _empty(language)
+    src = _drive("Media")
+    letters = "".join(ch for ch in _resource("ja", "placed_episode.srt") if "ぁ" <= ch <= "ヺ")[:kana]
+    _write(os.path.join(src, _SHOWS[language][0], "ep01.srt"),
+           _resource("zh", "night_market.srt") + "\n约翰・列侬——" + letters + "\n")
+    with store:
+        root = store.add_source(src)
+        assert _look(store, language, root, first=True)["added"] == (1 if taken else 0)
+
+
+# T2-B4 (answered 2026-10-21): a loose .txt / .md is a book's worth of text, or nothing
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_short_loose_text_is_skipped_counted_as_short_and_remembered_but_a_short_subtitle_is_taken(language,
+                                                                                                    monkeypatch):
+    """A `.txt` / `.md` with fewer than BOOK_MIN_CHARS characters of the language's script (a readme, a lyric, a note)
+    is no content: skipped, counted under `short` too, never copied, remembered by its stats (never read again until
+    it changes); the same text as a subtitle (`.srt`) is an episode — subtitles need only the presence rule."""
+    store, data_dir = _empty(language)
+    src = _drive("Media")
+    show = _SHOWS[language][0]
+    short = _resource(language, "context_test.txt")
+    _write(os.path.join(src, show, f"{show} - 01.srt"), short)
+    notes = [_write(os.path.join(src, "Notes", name), short) for name in ("memo.txt", "memo.md")]
+    _write(os.path.join(src, "Books", "long.txt"), _sample(language)[1:])
+    with store:
+        root = store.add_source(src)
+        got = _look(store, language, root, first=True)
+        assert sorted(_library_files(data_dir)) == sorted([f"Library/{show}/{show} - 01.srt", "Library/Books/long.txt"])
+        assert got["short"] == 2 and got["skipped"] == 2
+        read = []
+        _spy_reads(monkeypatch, read)
+        again = _look(store, language, root, full=True)                          # a Refresh: remembered
+        assert read == [] and again["short"] == 2 and again["added"] == 0
+        _write(notes[0], _sample(language), age=30)                               # now a book's worth: taken
+        assert _look(store, language, root, full=True)["added"] == 1
+
+
+@pytest.mark.parametrize("language,n,taken", [("ja", 999, False), ("ja", 1000, True), ("zh", 999, False),
+                                              ("zh", 1000, True)])
+def test_a_thousand_characters_of_our_script_make_a_loose_text_a_book(language, n, taken):
+    """BOOK_MIN_CHARS' line, counted in the language's script (ja: kana + Han; zh: Han), never in bytes or lines."""
+    import re
+    from app.unicode_ranges import HAN, KANA_LETTERS
+    script = re.compile(f"[{KANA_LETTERS}{HAN}]" if language == "ja" else f"[{HAN}]")
+    text = _sample(language)
+    end = [m.end() for m in script.finditer(text)][n - 1]
+    store, _data = _empty(language)
+    src = _drive("Media")
+    _write(os.path.join(src, "Books", "part.txt"), text[:end] + "\n")
+    with store:
+        root = store.add_source(src)
+        got = _look(store, language, root, first=True)
+        assert (got["added"], got["short"]) == ((1, 0) if taken else (0, 1))
+
+
+def _big(path, head, body, size=17 << 20):
+    """A text over IN_MEMORY (16 MB): `head`, then `body` repeated to `size` bytes (UTF-8), its time settled."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    unit = body.encode("utf-8")
+    with open(path, "wb") as f:
+        f.write(head.encode("utf-8"))
+        written = len(head.encode("utf-8"))
+        while written < size:
+            f.write(unit)
+            written += len(unit)
+    t = time.time() - 60
+    os.utime(path, (t, t))
+    return path
+
+
+def _cut_inside(raw):
+    try:
+        raw.decode("utf-8")
+        return False
+    except UnicodeDecodeError:
+        return True
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_text_over_sixteen_megabytes_is_judged_by_its_first_megabyte(language, monkeypatch):
+    """B4: a big text used to be taken unchecked. Now its first megabyte — read with its hash, one pass — decides: a
+    17 MB English log is passed over and remembered; a 17 MB dump of the language whose first megabyte ends inside a
+    character is taken (the cut character is no damage); one whose first megabyte holds none of the language (an ASCII
+    header longer than a megabyte) is passed over — the first megabyte is what is judged, nothing after it."""
+    store, data_dir = _empty(language)
+    src = _drive("Media")
+    log = "2026-10-21 03:14:07 INFO worker-3 flushed 4096 rows to segment 0x7f3a (took 12 ms)\n"
+    text = _sample(language)
+    times = sources.HEAD // len(text.encode("utf-8")) + 2
+    pad = next(p for p in range(4) if _cut_inside((" " * p + text * times).encode("utf-8")[:sources.HEAD]))
+    english = _big(os.path.join(src, "Logs", "corpus_dump.txt"), "", log)
+    _big(os.path.join(src, "Dumps", "all_episodes.txt"), " " * pad, text)
+    late = _big(os.path.join(src, "Late", "export.txt"), log * ((sources.HEAD // len(log)) + 1), text)
+    assert os.path.getsize(english) > sources.IN_MEMORY
+    with store:
+        root = store.add_source(src)
+        got = _look(store, language, root, first=True)
+        assert _library_files(data_dir) == ["Library/Dumps/all_episodes.txt"] and got["added"] == 1
+        read = []
+        _spy_reads(monkeypatch, read)
+        again = _look(store, language, root, full=True)
+        assert [p for p in read if p in (english, late)] == [] and again["added"] == 0
+
+
+_ENGLISH = ("<p>The lantern had burned low by the time the ferry reached the far bank, and nobody on board seemed "
+            "willing to be the first to step off into the fog.</p><p>She folded the letter twice, slipped it into her "
+            "coat, and told the boatman that she would walk the rest of the way.</p>")
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_english_epub_is_passed_over_before_any_part_is_written_and_remembered(language, monkeypatch):
+    """B6: the English translation beside the learner's book used to become a show of empty parts. Its text holds none
+    of the language: no part written, skipped, and remembered by its stats like a book with no text — not split again
+    at a start or a Refresh, until it changes."""
+    from app import extract
+    from tests.test_sources_scan import _epub
+    store, data_dir = _empty(language)
+    src = _drive("Media")
+    book = _epub(os.path.join(src, "Books", "Moonshadow 1.epub"), [_ENGLISH * 8] * 3)
+    opened = []
+    real = extract.chunks_of
+    monkeypatch.setattr(extract, "chunks_of", lambda *a, **k: opened.append(a[0]) or real(*a, **k))
+    with store:
+        root = store.add_source(src)
+        got = _look(store, language, root, first=True)
+        assert got["added"] == 0 and got["skipped"] == 1 and _library_files(data_dir) == []
+        sources._LOOKED.clear()
+        _look(store, language, root)
+        _look(store, language, root, full=True)
+        assert opened == [book]
+
+
+def _lock(path, algorithm, uri):
+    """Add a `META-INF/encryption.xml` naming `uri` encrypted with `algorithm` (the text itself left readable: only
+    the declaration is under test)."""
+    import zipfile
+    xml = ('<?xml version="1.0"?><encryption xmlns="urn:oasis:names:tc:opendocument:xmlns:container" '
+           'xmlns:enc="http://www.w3.org/2001/04/xmlenc#"><enc:EncryptedData>'
+           f'<enc:EncryptionMethod Algorithm="{algorithm}"/><enc:CipherData><enc:CipherReference URI="{uri}"/>'
+           '</enc:CipherData></enc:EncryptedData></encryption>')
+    st = os.stat(path)
+    with zipfile.ZipFile(path, "a") as z:
+        z.writestr("META-INF/encryption.xml", xml)
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
+    return path
+
+
+def test_a_locked_epub_is_never_split_and_a_books_obfuscated_fonts_are_no_lock(monkeypatch):
+    """B6: an EPUB whose encryption.xml encrypts its text (a store's DRM) is "locked": passed over before it is split
+    (encrypted bytes read as text make mojibake words), remembered by its stats. A font obfuscated the IDPF's way is
+    an ordinary book's: split as always."""
+    from app import extract
+    from tests.test_sources_scan import _chapters, _epub
+    language = "ja"
+    store, data_dir = _empty(language)
+    src = _drive("Media")
+    locked = _lock(_epub(os.path.join(src, "Locked", "月影 1.epub"), _chapters()),
+                   "http://www.w3.org/2001/04/xmlenc#aes128-cbc", "EPUB/c1.xhtml")
+    fonts = _lock(_epub(os.path.join(src, "Fonts", "月影 2.epub"), _chapters()),
+                  "http://www.idpf.org/2008/embedding", "EPUB/fonts/mincho.otf")
+    opened = []
+    real = extract.chunks_of
+    monkeypatch.setattr(extract, "chunks_of", lambda *a, **k: opened.append(a[0]) or real(*a, **k))
+    with store:
+        root = store.add_source(src)
+        got = _look(store, language, root, first=True)
+        assert opened == [fonts] and got["added"] >= 2 and got["skipped"] == 1
+        assert _library_files(data_dir) and all(r.startswith("Library/月影 2/") for r in _library_files(data_dir))
+        read = []
+        _spy_reads(monkeypatch, read)
+        _look(store, language, root, full=True)
+        assert locked not in read                                                # remembered: never read again
+
+
+_APPLE_DOUBLE = b"\x00\x05\x16\x07\x00\x02\x00\x00Mac OS X        " + b"\x00" * 4064   # a 4 KB `._` twin
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_macs_dot_files_are_never_listed_and_pairing_still_works(language):
+    """B7: a drive a Mac touched holds `._Show - 01.mkv` (AppleDouble), `._Show - 01.ja.srt`, `._Book.epub` and
+    `.DS_Store` beside the real files. A dot file is skipped as a dot folder is: the subtitle pairs with its own video,
+    nothing is counted skipped, and a folder of `._` videos alone makes no "no subtitles yet" show."""
+    store, data_dir = _empty(language)
+    src = _drive("Media")
+    a, b = _SHOWS[language]
+    video = _video(os.path.join(src, a, f"{a} - 01.mkv"))
+    _write(os.path.join(src, a, f"{a} - 01.{language}.srt"), _text(language, 0))
+    for junk in (f"._{a} - 01.mkv", f"._{a} - 01.{language}.srt", "._Book.epub", ".DS_Store"):
+        _video(os.path.join(src, a, junk), body=_APPLE_DOUBLE)
+    _video(os.path.join(src, b, f"._{b} - 01.mkv"), body=_APPLE_DOUBLE)
+    listed = sources._listing(os.path.join(src, a))
+    names = [n for n, _p, _s in listed[0] + listed[1]] + list(listed[2])
+    assert not [n for n in names if n.startswith(".")]
+    with store:
+        root = store.add_source(src)
+        got = _look(store, language, root, first=True)
+        assert (got["added"], got["skipped"], got["waiting"]) == (1, 0, 0) and _items(store) == 1
+        (record,) = _records(store)
+        assert os.path.normcase(record["video_path"]) == os.path.normcase(os.path.abspath(video))
+
+
+def test_a_small_ts_file_is_no_video_and_node_modules_is_never_listed(monkeypatch):
+    """S9: `.ts` is MPEG-TS and TypeScript. A `.ts` under a megabyte (by the listing's stat: nothing read) is no video
+    — a web project's sources make no "no subtitles yet" shows — while a 2 MB one is a video waiting for its text; a
+    `node_modules` folder is never listed at all."""
+    language = "ja"
+    store, _data = _empty(language)
+    src = _drive("Media")
+    show = _SHOWS[language][0]
+    code = "export function greet(name: string): string {\n  return `hello ${name}`;\n}\n" * 28   # about 2 KB
+    _write(os.path.join(src, "web", "src", "main.ts"), code)
+    _write(os.path.join(src, "web", "node_modules", "pkg", "index.ts"), code)
+    _video(os.path.join(src, show, f"{show} - 03.ts"), body=b"\x47" + b"\x00" * (2 << 20))
+    assert "main.ts" not in sources._listing(os.path.join(src, "web", "src"))[2]
+    spy = _ScandirSpy(monkeypatch)
+    with store:
+        root = store.add_source(src)
+        got = _look(store, language, root, first=True)
+        assert got["added"] == 1 and _items(store) == 1                         # the 2 MB one, its text to come
+        (record,) = _records(store)
+        assert record["video_path"].endswith(f"{show} - 03.ts")
+        assert not spy.saw(os.path.join(src, "web", "node_modules")) and spy.saw(os.path.join(src, "web", "src"))
+
+
+# --- the writer: a skip is journalled as Remove is (its trash moves survive a crash) ------------------------------ #
+
+def test_a_skip_on_a_busy_store_is_journalled_and_a_crash_replays_it_once(monkeypatch):
+    """Remove is journalled (04 §4.5) for its trash moves; *Never read this folder* is the same write: on a busy store
+    it waits in the journal, and after a crash the next start applies it — the folder row, its items to the trash.
+    One that landed before the crash (the journal not yet emptied) is let go quietly, never *couldn't be applied*."""
+    from tests import services_helpers as h
+    from tests.test_services_moves import LockHolder, journal, journalled
+    real = ls._WriteLock.acquire
+    monkeypatch.setattr(ls._WriteLock, "acquire", lambda self, timeout=ls.LOCK_TIMEOUT: real(self, min(timeout, 0.2)))
+    language = "ja"
+    store, data_dir = _empty(language)
+    src = _drive("Media")
+    _card_and_show(language, src)
+    root = store.add_source(src)                                                 # (closed at the end)
+    _look(store, language, root, first=True)
+    w, heard = _writer(language)
+    w2 = w3 = None
+    try:
+        holder = LockHolder(store.db_path)
+        w.skip_folder(os.path.join(src, CARD), label="skipped")
+        assert h.until(lambda: journalled(language) == [("skip_folder", [])])
+        w._abandon()                                                             # the crash
+        holder.release()
+        assert store.skipped_folders() == []
+        w2, heard2 = _writer(language)
+        assert w2.replay()
+        assert h.until(lambda: len(store.skipped_folders()) == 1 and not w2.pending())
+        assert [r for r in _library_files(data_dir) if "Console Card" in r] == [] and heard2.notes == []
+        assert store.read_folder_again(store.skipped_folders()[0]["id"])
+        holder = LockHolder(store.db_path)
+        w2.skip_folder(os.path.join(src, CARD), label="skipped")
+        assert h.until(lambda: journalled(language) == [("skip_folder", [])])
+        w2._abandon()
+        holder.release()
+        store.skip_folder(os.path.join(src, CARD))                               # it landed (another window's)
+        w3, heard3 = _writer(language)
+        assert w3.replay()
+        assert h.until(lambda: journal(language) is None and not w3.pending())
+        w3.finish(time.monotonic() + 5)                                          # its thread done: every note heard
+        assert heard3.notes == [] and len(store.skipped_folders()) == 1
+    finally:
+        for writer in (w, w2, w3):
+            if writer is not None and not writer._abandoned:
+                writer.finish(time.monotonic() + 5)
+        store.close()

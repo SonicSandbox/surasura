@@ -45,7 +45,8 @@ LONG_SAY = ("Your choices on this page couldn't be saved: [Errno 13] Permission 
 WINDOWS = ((1000, 620), (1333, 860))           # the window's least size (theme.WINDOW_MIN); a 150 % laptop's
 # what a learner's own names look like at their longest: a nested deck, a show's folder deep on a drive
 DECKS = [("日本語::Mining::Anime::Sentence cards from subtitles", 2140), ("Core 2k/6k Optimized Japanese Vocabulary",
-                                                                      1980), ("Kanji Practice", 610)]
+                                                                      1980), ("Kanji Practice", 610),
+         ("日本語::Mining::Anime::2024 Fall season::Sentence cards with audio and pictures from every episode", 88)]
 ROWS = [{"name": "星空ダイナー", "count": 12, "folder": r"E:\Anime\Shows I'm watching\Hoshizora Diner (2024) [1080p]",
          "kind": "shows"},
         {"name": "夜の図書館", "count": 1, "folder": r"E:\Books\Light novels\yoru-no-toshokan-vol-1.epub",

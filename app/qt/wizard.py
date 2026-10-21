@@ -40,7 +40,7 @@ import time
 from functools import lru_cache
 
 from PyQt6 import sip
-from PyQt6.QtCore import QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont, QFontMetricsF, QLinearGradient, QPainter, QPen, QRadialGradient
 from PyQt6.QtWidgets import (QAbstractButton, QApplication, QComboBox, QFileDialog, QHBoxLayout, QLabel, QLayout,
                              QBoxLayout, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget)
@@ -625,6 +625,13 @@ class _PageScroll(QScrollArea):
             return least
         return QSize(page.minimumSizeHint().width() + self.verticalScrollBar().sizeHint().width(), least.height())
 
+    def eventFilter(self, obj, event):
+        # (QScrollArea watches its page) the page's layout changed — decks or rows came in: its least width is asked
+        # again, never left cut at the right until another page shows
+        if obj is self.widget() and event.type() == QEvent.Type.LayoutRequest:
+            self.updateGeometry()
+        return super().eventFilter(obj, event)
+
 
 def _scrolled(page):
     """`page` in a frameless scroll area: at its full height when the window is shorter than it (the text, the
@@ -745,6 +752,9 @@ class FlowLayout(QLayout):
         return y + line - rect.y()
 
 
+DECK_CHIP_MAX = 420                 # a deck chip's widest (px × the text size): inside the least window's page
+
+
 class DeckChip(QAbstractButton):
     """A deck as a tablet: ✓ when it is read, its name, its studied cards."""
 
@@ -766,7 +776,7 @@ class DeckChip(QAbstractButton):
         name_f, count_f = self._parts()
         w = (_px(36) + QFontMetricsF(name_f).horizontalAdvance(self.name)
              + QFontMetricsF(count_f).horizontalAdvance(S.DECK_CARDS.format(n=self.count or 0)) + _px(14))
-        return QSize(math.ceil(w), _px(34))
+        return QSize(min(math.ceil(w), _px(DECK_CHIP_MAX)), _px(34))   # a long name shortened (`paintEvent`)
 
     def focusInEvent(self, event):
         self._keyed = event.reason() != Qt.FocusReason.MouseFocusReason
@@ -788,8 +798,11 @@ class DeckChip(QAbstractButton):
         x += _px(20)
         p.setFont(name_f)
         p.setPen(_c("ink") if on else _c("ink-dim"))
-        p.drawText(QPointF(x, base), self.name)
-        x += QFontMetricsF(name_f).horizontalAdvance(self.name) + _px(8)
+        count = QFontMetricsF(count_f).horizontalAdvance(S.DECK_CARDS.format(n=self.count or 0))
+        name = QFontMetricsF(name_f).elidedText(self.name, Qt.TextElideMode.ElideMiddle,
+                                                max(0.0, self.width() - x - _px(8) - count - _px(14)))
+        p.drawText(QPointF(x, base), name)                # (whole in its tooltip and its name for a reader)
+        x += QFontMetricsF(name_f).horizontalAdvance(name) + _px(8)
         p.setFont(count_f)
         p.setPen(_c("ink-dim"))
         p.drawText(QPointF(x, base), S.DECK_CARDS.format(n=self.count or 0))

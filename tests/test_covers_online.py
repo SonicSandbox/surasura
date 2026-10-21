@@ -760,3 +760,57 @@ def test_S3_S4_a_downloaded_cover_whose_file_went_is_asked_again_and_lands_under
     new = _wants(lib)[work]
     assert new.cover_source == "anilist" and new.cover_path != old.cover_path
     assert os.path.isfile(C.image_path(lib.language, new))
+
+
+# --- laptop fixes, row 18: a show that came in video-only, sent to Finished, gets its cover -------------------------- #
+_VIDEO_ONLY = {"ja": "ある日の物語", "zh": "夜市小记"}          # made-up show names
+
+
+def _video_only_show(lib):
+    """Setup's first look at a folder of the user's (`sources.scan(first=True)`, as `setup_wizard.read_folders` runs
+    it) holding one show of videos with no subtitles beside them: its episodes wait in New arrivals (K5, *no subtitles
+    yet*) — then the user sends it to Finished (he has watched it). -> (its work, its item ids)."""
+    from app import sources
+    from tests.test_sources_scan import _drive, _video
+    sources._LOOKED.clear()
+    show = os.path.join(_drive("anime"), _VIDEO_ONLY[lib.language])
+    for e in (1, 2, 3):
+        _video(os.path.join(show, f"[Kumo-Subs] Aru Hi no Monogatari - {e:02d} (1080p).mkv"),
+               body=b"\x1a\x45\xdf\xa3 matroska " + bytes([e]) * 64)    # each episode its own bytes (its own video)
+    got = sources.scan(lib.store, lib.language, lib.store.add_source(os.path.dirname(show)), first=True)
+    sources._LOOKED.clear()
+    ids = [i for i in got["ids"] if lib.store.item(i)["availability"] == "waiting"]
+    assert len(ids) == 3, got
+    work = lib.work_of(ids[0])
+    assert lib.store._work_row(work)["title"] == _VIDEO_ONLY[lib.language]
+    lib.writer.set_finished(ids)
+    assert h.until(lambda: not lib.writer.pending() and all(lib.store.item(i)["tier"] == "graduated" for i in ids))
+    return work, ids
+
+
+def test_row18_a_video_only_show_from_setup_sent_to_finished_is_asked_online_and_its_cover_lands(lib, anilist):
+    """Sonic, row 18: the shows he sent to Finished at the start got no cover, while a folder added on the Finished
+    page did. A show whose videos came in with no subtitles has items typed by the fallback ('text'), so its Want's
+    kind read 'text' and `fetchable` refused it in every place it stood — New arrivals, Current, Finished — for good."""
+    work, _ids = _video_only_show(lib)
+    w = _wants(lib)[work]
+    assert w.kind == "subtitle" and O.fetchable(w), "a show waiting for its subtitles is a show, asked like one"
+    anilist.add(171000, "Aru Hi no Monogatari", w.title, search=O.clean_title(w.title)[0])
+    f = fetcher(lib.writer, anilist, language=lib.language, data_dir=lib.data_dir)
+    before = lib.heard.rereads
+    assert f.want([w]) == 1 and f.run_once() == 1 and _landed(lib, before)
+    source, ref, path, locked = lib.row(work)
+    assert (source, ref, locked) == ("anilist", "171000", 0) and path.startswith("cache:")
+    searches = [b["variables"]["search"] for b, _h in anilist.posts if "search" in b["variables"]]
+    assert searches == [_VIDEO_ONLY[lib.language]], "its cleaned name only, asked once"
+
+
+def test_row18_a_coverless_finished_show_is_asked_once_a_session_never_a_storm(lib, anilist):
+    """S19: an existing Finished show with no cover (one AniList doesn't know) is asked at its first paint after the
+    fix — once: painted again, asked again by the window, the fetcher sends nothing more."""
+    work, _ids = _video_only_show(lib)
+    f = fetcher(lib.writer, anilist, language=lib.language, data_dir=lib.data_dir)
+    for _ in range(3):
+        f.want([_wants(lib)[work]])
+        f.run_once()
+    assert len(anilist.posts) == 1 and anilist.gets == [] and lib.row(work)[0] is None

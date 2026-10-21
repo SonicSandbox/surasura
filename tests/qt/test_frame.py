@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import QApplication, QFrame, QVBoxLayout, QWidget
 from app import theme
 from app.qt import frame, motion, shell, strings
 from app.services import generate as G
+from app.services.jobs import JobRegistry
 from app.services.view_rows import Goal
 from tests.qt.conftest import wait_until
 from tests.qt.pixels import count, rgb_array
@@ -240,6 +241,90 @@ def test_the_level_mark_follows_generate_and_the_journey(world):
     world.status.refresh_soon("journey")
     assert wait_until(lambda: level.mark == "journey")
     assert strings.LEVEL_MARKS["journey"] in level.toolTip()
+
+
+# --- laptop fixes: the journey opens only when asked (*Journey ↗* beside the level ▾) -------------------------------- #
+def _journey_on_disk():
+    import os
+    from app import path_utils
+    results = path_utils.get_user_file("results")
+    os.makedirs(results, exist_ok=True)
+    with open(os.path.join(results, shell.JOURNEY_FILE), "w", encoding="utf-8") as f:
+        f.write("<html><title>ぼっち・ざ・ろっく！</title></html>")
+
+
+def test_the_journey_button_sits_beside_the_level_and_opens_the_journey_once_per_click(world, monkeypatch):
+    """Sonic (laptop try): "there should be a button by auto right now to open the journey". The header's *Journey ↗*
+    stands right of the level ▾, in the header's button look, with a tooltip, an accessible name and a Tab stop; it
+    shows once a journey is on disk (a button that would do nothing isn't shown). One click opens one journey; a click
+    while that one is still opening adds none."""
+    import threading
+    from PyQt6.QtWidgets import QToolButton
+    b, level = world.d.journey_button, world.d.level
+    row = world.win.header.layout()
+    assert isinstance(b, QToolButton) and b.parent() is world.win.header
+    assert row.indexOf(b) == row.indexOf(level) + 1 and row.indexOf(b) < row.indexOf(world.win.add_stone)
+    assert b.isHidden()                                             # no journey yet: nothing to open
+    gate, calls = threading.Event(), []
+
+    def opener():
+        calls.append(threading.current_thread() is threading.main_thread())
+        gate.wait(5)
+        return True
+    monkeypatch.setattr(world.services, "open_journey", opener)
+    _journey_on_disk()
+    world.start()
+    assert wait_until(lambda: not b.isHidden())
+    assert b.text() == strings.HEADER_JOURNEY and b.toolTip() == strings.JOURNEY_TIP
+    assert b.accessibleName() == strings.HEADER_JOURNEY_NAME and b.focusPolicy() == Qt.FocusPolicy.TabFocus
+    b.click()
+    assert wait_until(lambda: calls == [False])                     # opened on a worker
+    b.click()                                                       # while the first still opens: not a second
+    _settle()
+    assert calls == [False]
+    gate.set()
+    assert wait_until(lambda: not world.win._journey_opening)
+    b.click()
+    assert wait_until(lambda: len(calls) == 2)                      # the next click opens it again
+
+
+def test_no_journey_opens_by_itself_at_start_after_a_generate_or_a_level_change(world, monkeypatch):
+    """Sonic (laptop try): "the journey should never automatically pop up anymore. It pops up after the first one on
+    load". Nothing in the window opens it by itself: not the start, not a Generate ending, not a level change — and
+    the runs the window asks for (the setup wizard's first Generate, the button's) write it with `--no-open`."""
+    import webbrowser
+    from app import static_html_generator
+    from app.services import setup_wizard
+    from app.services.generate import GenerateController
+    opened = []
+    monkeypatch.setattr(static_html_generator, "open_report", lambda app_mode=False: opened.append("report") or True)
+    monkeypatch.setattr(webbrowser, "open", lambda url, *a, **k: opened.append(url))
+    monkeypatch.setattr(world.services, "open_journey", lambda: opened.append("window") or True)
+    _journey_on_disk()
+    world.start()                                                   # the start
+    assert wait_until(lambda: not world.d.journey_button.isHidden())
+    world.controller.push(state=G.RUNNING, step="Counting words", done=1, total=2)
+    world.controller.push(state=G.CURRENT)                          # a Generate ended (the first load's too)
+    world.d.pop.picked.emit("rare")                                 # a level change
+    assert wait_until(lambda: world.services.settings.get().get("logic", {}).get("selection", {}).get("band")
+                      == "rare")
+    _settle(40)
+    assert opened == []
+    argvs = []
+
+    class Capturing(GenerateController):
+        def request(self, *args, **kw):
+            def launcher(run):
+                argvs.append(list(run.argv))
+                raise OSError("stand-in: the argv is all this test reads")
+            kw.setdefault("launcher", launcher)
+            return super().request(*args, **kw)
+    monkeypatch.setattr(world.services, "controller", Capturing(JobRegistry(), settle=0))
+    assert setup_wizard.generate(world.services)                    # the setup wizard's first Generate
+    world.d.generate.button.click()                                 # the button's
+    assert wait_until(lambda: len(argvs) == 2, 10)
+    assert all("--no-open" in argv for argv in argvs)
+    assert opened == []
 
 
 # --- the vein -------------------------------------------------------------------------------------------------------- #

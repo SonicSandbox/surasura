@@ -318,7 +318,8 @@ class GenerateController:
     def request(self, language, settings=None, argv=None, quiet=False, restart=False, settle=None, launcher=None,
                 on_wait=None, cancel_event=None, inline=False, label=None):
         """Ask for a Generate. `argv` (`['analyzer.py', …]`) or `settings` (settings.json's shape) say what to run;
-        `quiet`: automatic, written not opened. `launcher(run)`: start the child another way (else this controller
+        `quiet`: automatic. Either way the journey is written, never opened (laptop fixes, Sonic: "the journey should
+        never automatically pop up"; the header's *Journey ↗* opens it). `launcher(run)`: start the child another way (else this controller
         spawns and reads it). `on_wait(holder)`: once, if another program's Generate holds `results`.
         `cancel_event`: another Event that also drops the run while it waits (the window's closing). `inline`: take a
         free `results` lock and launch on this thread (a test harness with no queue to drain). `label`: the bar's
@@ -326,7 +327,7 @@ class GenerateController:
         if argv is None:
             from app import run_args
             argv = run_args.analyzer_args(settings or {}, language)
-            argv = argv + [PROGRESS_FLAG] + (["--no-open"] if quiet else [])
+            argv = argv + [PROGRESS_FLAG, "--no-open"]
         if not isinstance(cancel_event, threading.Event):
             cancel_event = self.closing if isinstance(self.closing, threading.Event) else None
         run = Run(self, list(argv), language, quiet, on_wait, cancel_event, launcher, inline, label)

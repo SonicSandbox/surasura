@@ -293,6 +293,24 @@ def test_a_launcher_that_raises_is_failed_and_the_next_request_runs():
     assert controller.state().state == G.CURRENT
 
 
+def test_neither_the_users_generate_nor_an_automatic_one_opens_the_journey():
+    """Laptop fixes (Sonic: "the journey should never automatically pop up anymore. It pops up after the first one on
+    load"): the window's runs — the setup wizard's first Generate and the button's, as well as the automatic ones —
+    write the journey with `--no-open`; it opens only from the header's *Journey ↗* (or a link the learner clicks)."""
+    controller = GenerateController(JobRegistry(), settle=0)
+    seen = []
+
+    def launcher(run):
+        seen.append((run.quiet, list(run.argv)))
+        raise OSError("stand-in: the argv is all this test reads")
+    for quiet in (False, True):
+        controller.request("ja", settings=_settings(), quiet=quiet, launcher=launcher)
+        assert h.until(lambda: len(seen) == (2 if quiet else 1) and controller.state().state == G.FAILED, seconds=10)
+    assert [q for q, _argv in seen] == [False, True]
+    for _quiet, argv in seen:
+        assert "--no-open" in argv and argv[0] == "analyzer.py" and G.PROGRESS_FLAG in argv
+
+
 def test_a_restart_request_asks_the_run_to_stop_and_runs_after():
     registry = JobRegistry()
     controller = GenerateController(registry, settle=0)

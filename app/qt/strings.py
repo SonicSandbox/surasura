@@ -220,13 +220,16 @@ GENERATE_RUNNING_TIP = "Generating your list: {step}\n• Click to stop before y
 GENERATE_WRITING_TIP = "Generating your list: {step}. It can't stop part-way here, and finishes in a moment"
 GENERATE_FAILED_TIP = "Generate didn't finish: {message}\n• Click to try again"
 GENERATE_AUTO_TIP = ("Generating by itself, because Anki brought in words you know: {step}\n• Click to generate now: "
-                     "your own run takes its place and opens your journey")
+                     "your own run takes its place")
 GENERATE_LOG = "Open the log"
 GENERATE_LOG_TIP = "Open the last Generate's log, to see what went wrong"
 GENERATE_PROGRESS_NAME = "Generate's progress"
 JOURNEY_TIP = "Your list with its sentences, in its own window\n• Click to open your journey"
 JOURNEY_NONE_TIP = "Your journey appears after your first Generate"
 JOURNEY_FAILED = "Couldn't open your journey: {why}"
+# The header's button beside the level ▾ (laptop fixes: the journey never opens by itself, only from here or a link)
+HEADER_JOURNEY = "Journey ↗"
+HEADER_JOURNEY_NAME = "Open your journey"
 HELP = "?"
 HELP_NAME = "Help"
 HELP_TIP = "Help\n• Click for the online guide"

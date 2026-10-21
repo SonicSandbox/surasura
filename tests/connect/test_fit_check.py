@@ -55,6 +55,9 @@ def test_hatos_timed_verdict_mines_without_running_tsubasa(tmp_path):
     subtitle.write_bytes(body)
     got = fit_check.fit(_hato_record(body), VIDEO, str(subtitle), tsubasa="tsubasa", run=must_not_run)
     assert got == (fit_check.TIMED, "hato", None, 0.0)
+    # and on a PC with no tsubasa at all (a learner's laptop): hato's verdict alone mines it (mutant LF9-H02)
+    assert fit_check.fit(_hato_record(body), VIDEO, str(subtitle), tsubasa="", run=must_not_run) == got
+    assert fit_check.fit(_hato_record(body), VIDEO, str(subtitle), tsubasa="", trust=True) == got
 
 
 def test_a_hato_timed_record_that_fails_the_gate_goes_to_tsubasa(tmp_path):
@@ -405,3 +408,16 @@ def test_the_top_level_offset_is_read_first_and_the_first_segments_offset_withou
     got = fit_check.fit(None, VIDEO, SUBTITLE, tsubasa="tsubasa", run=_tsubasa(dict(REAL, segments=[[None, 1.0]],
                                                                                    offset=None)))
     assert got[0] == fit_check.TIMED and got[3] == 1.0
+
+
+def test_an_error_with_no_reason_or_another_kind_of_reason_waits_and_never_raises():
+    # tsubasa's ERROR carries defaults in its other fields (P0.2): a missing, null or non-text reason is no raw, with
+    # the switch on or off — it waits, it never crashes the look (mutant LF9-H05)
+    for reason in (None, 3, ["no subtitle track"]):
+        answer = dict(REAL, outcome="ERROR", segments=[], offset=None, reason=reason)
+        for trust in (False, True):
+            got = fit_check.fit(None, VIDEO, SUBTITLE, tsubasa="tsubasa", run=_tsubasa(answer), trust=trust)
+            assert got[0] == fit_check.NOT_TIMED, (reason, trust)
+    answer = dict(REAL, outcome="ERROR", segments=[], offset=None)
+    del answer["reason"]
+    assert fit_check.fit(None, VIDEO, SUBTITLE, tsubasa="tsubasa", run=_tsubasa(answer), trust=True)[0] ==         fit_check.NOT_TIMED

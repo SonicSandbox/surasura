@@ -94,6 +94,19 @@ DEFERRED = "deferred"
 # Anki Miner's settled outcomes: a word with one of these is never sent again for the job
 UNSETTLED = (None, "uncertain", "not_attempted")
 VIDEO_EXTENSIONS = (".mkv", ".mp4", ".webm", ".avi", ".m4v", ".mov", ".ts")
+TS_MIN = 1 << 20                # a `.ts` under this size is TypeScript, not a video (K6, S9: by the listing's stat)
+
+
+def video_name(name):
+    """Can a file of this name be a video? One of VIDEO_EXTENSIONS, and never a dot file (a Mac's `._` copy on a NAS or
+    exFAT drive: metadata, never a video). The name's half of `video_file`, for a listing before its stat."""
+    return not name.startswith(".") and name.lower().endswith(VIDEO_EXTENSIONS)
+
+
+def video_file(name, size):
+    """Is a listed file a video? `video_name`, and never a `.ts` under TS_MIN (TypeScript). `size`: the listing's stat,
+    nothing read. One rule for Connect's video index (`videos._list`) and the library's look."""
+    return video_name(name) and not (name.lower().endswith(".ts") and size < TS_MIN)
 _PLACEHOLDER = 0x1000 | 0x40000 | 0x400000      # OFFLINE · RECALL_ON_OPEN · RECALL_ON_DATA_ACCESS (a cloud file)
 
 

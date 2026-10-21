@@ -75,3 +75,21 @@ def test_added_video_lists_only_its_own_folder_and_is_found_by_name(tmp_path):
     found = second.find(["上層部 - 04.mkv"])
     assert found is not None
     assert os.path.basename(found) == "上層部 - 04.mkv"
+
+
+def test_a_macs_dot_copy_and_a_small_ts_are_no_videos_and_a_real_ts_is(tmp_path):
+    # Laptop try (K6): a NAS or exFAT drive a Mac wrote holds `._<name>` beside every file — 4 KB of
+    # metadata, never a video — and a web project's `.ts` files are TypeScript. Connect's index takes neither (they
+    # would be found by name and handed to Anki Miner as the episode's video); a broadcast `.ts` recording is a video.
+    # One rule with the library's look (`runner.video_file`).
+    from app.connect import runner
+    folder = tmp_path / "上層部の話"
+    folder.mkdir()
+    _video(folder, "上層部の話 - 03.mkv")
+    _video(folder, "._上層部の話 - 03.mkv", size=4096)
+    _video(folder, "player.ts", size=2048)
+    _video(folder, "上層部の話 - 04.ts", size=runner.TS_MIN)
+    listed = videos._list(str(folder))[0]
+    assert sorted(listed) == ["上層部の話 - 03.mkv", "上層部の話 - 04.ts"]
+    assert not runner.video_file("._上層部の話 - 03.mkv", 4096) and not runner.video_file("player.ts", 2048)
+    assert runner.video_file("上層部の話 - 04.TS", runner.TS_MIN) and not runner.video_file("上層部の話 - 03.srt", 9)

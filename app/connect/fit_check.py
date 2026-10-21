@@ -11,14 +11,14 @@ known to be timed to its video — a card cut from a subtitle a few seconds off 
   write): `CONFIDENT` with one segment → mine; anything else (`REFUSED`, `ERROR`, two segments or none, an answer it
   can't read) → not timed; no answer at all (it timed out, or couldn't start) → asked again at the runner's next look.
   Its offset (`_offset`: the answer's `offset`, else its one [start, offset] segment's) is the shift Anki Miner cuts
-  the lines by (`subtitle_offset`, RUNBOOK-P1.3 1.3.4); none readable → it waits: tsubasa
+  the lines by (`subtitle_offset`, RUNBOOK-P1.3 1.3.4); none readable → not timed (never cut at 0.0): tsubasa
   checks with `--dry-run`, so the copy itself is never re-timed.
 - **Neither** → not timed. 2.x lists it once in *Needs you*, with no button (E16; 3.0: *Mine anyway*, G1.3-6).
 - **Trust my subtitles' timing** (`connect_trust_timing`, off by default; laptop try row 9, P-LF-9): with nothing to
   check it — no tsubasa on this PC, or tsubasa's ERROR for a video with no subtitle track inside (a raw; P0.2) — and no
   pairing program's record (`others`), the episode mines at its subtitle's own times (no shift), as *Mine anyway*
-  would. Only Surasura's own records are released: a Library folder's or + Add's origin (`source`) and a *Link…*
-  (`surasura`) are no timing anyone was asked to check. Every other record waits — hato's (no producer, or `hato`, as
+  would. Only Surasura's own records are released (`OWN_PRODUCERS`): a Library folder's or + Add's origin (`source`),
+  a *Link…* (`surasura`) and its own YouTube download (`youtube`) are no timing anyone was asked to check. Every other record waits — hato's (no producer, or `hato`, as
   `rules.rule_for` reads them) and any program's registered through `connect register` — as do tsubasa's REFUSED and
   any other ERROR.
 
@@ -99,7 +99,10 @@ def hato_timed(pairing, subtitle):
     return digest.hexdigest() == want.lower()
 
 
-OWN_PRODUCERS = ("source", "surasura")   # library_store.SOURCE_PRODUCER, link.PRODUCER: Surasura's own records
+# Surasura's own records: a folder's or + Add's origin (library_store.SOURCE_PRODUCER), a *Link…* (link.PRODUCER), its
+# YouTube / bilibili download (app/qt/windows.youtube_record: the transcript of that very video). `connect register`
+# refuses them as a producer (app/cli/connect_verbs.RESERVED), so no other program can claim them.
+OWN_PRODUCERS = ("source", "surasura", "youtube")
 
 
 def others(pairing):
@@ -139,7 +142,7 @@ def fit(pairing, video, subtitle, tsubasa=None, run=None, timeout=TIMEOUT_S, tru
     segments = (answer or {}).get("segments")
     if outcome == "CONFIDENT" and isinstance(segments, list) and len(segments) == 1:
         offset = _offset(answer)
-        if offset is None:          # nothing to cut by: 0.0 could be seconds off, so it waits
+        if offset is None:          # nothing to cut by: 0.0 could be seconds off, so not timed
             return NOT_TIMED, "tsubasa", "tsubasa gave no shift to cut its lines by, so no cards.", 0.0
         return TIMED, "tsubasa", None, offset
     if outcome == "CONFIDENT" and isinstance(segments, list) and len(segments) > 1:

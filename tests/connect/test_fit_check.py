@@ -17,7 +17,6 @@ VIDEO = "C:/Video/上層部の話 01.mkv"
 SUBTITLE = "C:/Subs/上層部の話 01.srt"
 # tsubasa's answers are its real `--json` shape, built on one recorded from tsubasa 0.1.10 (`connect_helpers`).
 REAL = TSUBASA_REAL
-ONE_SEGMENT = [None, 0.0]
 TWO_SEGMENTS = [[None, 0.0], [1420.5, 3.2]]
 _answer = tsubasa_answer
 
@@ -250,13 +249,18 @@ def test_another_programs_untimed_record_waits_and_only_surasuras_own_records_ar
     # empty row does (it exists, so it isn't "no record").
     from app import library_store
     from app.connect import link
-    assert set(fit_check.OWN_PRODUCERS) == {library_store.SOURCE_PRODUCER, link.PRODUCER}, "one rule for both names"
+    from app.cli import connect_verbs
+    assert set(fit_check.OWN_PRODUCERS) == {library_store.SOURCE_PRODUCER, link.PRODUCER, "youtube"}, "one rule"
+    assert set(fit_check.OWN_PRODUCERS) <= set(connect_verbs.RESERVED), "no other program can claim one"
     for record in ({"schema": 1, "producer": "sonarr-sync", "verdict": "untimed"}, {}, [], "garbled"):
         got = fit_check.fit(record, VIDEO, SUBTITLE, tsubasa="", trust=True)
         assert got[0] == fit_check.NOT_TIMED, record
         raw = fit_check.fit(record, VIDEO, SUBTITLE, tsubasa="tsubasa", run=_tsubasa(RAW_ERROR), trust=True)
         assert raw[0] == fit_check.NOT_TIMED, record
     assert fit_check.fit(None, VIDEO, SUBTITLE, tsubasa="", trust=True)[0] == fit_check.TIMED, "no record at all"
+    # Surasura's own YouTube download: the transcript of that very video (app/qt/windows.youtube_record)
+    youtube = {"schema": 1, "producer": "youtube", "media_type": "youtube", "content_key": "youtube:abc123"}
+    assert fit_check.fit(youtube, VIDEO, SUBTITLE, tsubasa="", trust=True)[0] == fit_check.TIMED
 
 
 RAW_ERROR = {"outcome": "ERROR", "segments": [], "offset": None,

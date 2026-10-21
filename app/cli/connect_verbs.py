@@ -84,7 +84,9 @@ def _kick(loaded):
 
 
 _SOURCE = re.compile(r"[a-z0-9_-]{1,32}")
-RESERVED = ("user", "undo", "sync")     # the names the store and the window log their own placements under
+# the names the store and the window log their own placements under, and Surasura's own records' producers (another
+# program claiming one would be released by *Trust my subtitles' timing*: `fit_check.OWN_PRODUCERS`)
+RESERVED = ("user", "undo", "sync", "source", "surasura", "youtube")
 
 
 def _source(value):

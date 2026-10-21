@@ -65,6 +65,10 @@ def test_episode_numbers_come_from_the_file_names_in_every_common_shape():
     assert vr.episode_number("天気の子 (2019).srt") is None
     assert vr.episode_number("Hanashi Radio 2026-09-02.srt") is None
     assert vr.episode_number("海辺の図書室 - 05 [1080p] x264.mkv") == 5
+    # a release's checksum in brackets is never an episode: [E04F4EFB] was read as "E04"
+    assert vr.episode_number("[SubsPlease] 海辺の図書室 - 01 (1080p) [E04F4EFB].mkv") == 1
+    assert vr.episode_number("[Group] 星降る街 - 12 [1E2F3A4B].ja.ass") == 12
+    assert vr.episode_number("Show S01E05 [ABCD1234].mkv") == 5
 
 
 def test_ranges_say_the_parts_a_row_holds_with_gaps():

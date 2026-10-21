@@ -206,7 +206,8 @@ _EP_PATTERNS = (
     re.compile(r"(?i)(?:^|[^A-Za-z])(?:ep|episode|e)\.?\s*(\d{1,4})(?!\d)"),
 )
 _NOT_EPISODE = re.compile(r"[(\[（【]\s*(?:19|20)\d\d\s*[)\]）】]|(?:19|20)\d\d[-./]\d{1,2}[-./]\d{1,2}|\d{3,4}[pP]\b|"
-                          r"[xX]26[45]|\b(?:19|20)\d\d\b(?=\s*$)")
+                          r"[xX]26[45]|\b(?:19|20)\d\d\b(?=\s*$)|"
+                          r"\[[0-9A-Fa-f]{8}\]")     # a release's checksum (`[E04F4EFB]`): its "E04" is no episode
 _NUMBER = re.compile(r"(?:^|[\s_\-\[\(（【#＃])(\d{1,4})(?:v\d)?(?=$|[\s_\-\]\)）】.])")
 
 

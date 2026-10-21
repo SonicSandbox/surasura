@@ -768,8 +768,10 @@ def _junban_auto(args, lang, junban_settings, auto, job=None, current=None, posi
     if session is not None:
         session.begin(url, junban_settings)     # S1 before the run reads Anki (P2.3): the phone's reviews come first
     done = auto.reorder(junban_settings, list_current=list_current, positions_only=positions_only, run_id=run_id,
-                        job=job)
+                        job=job, cards_out=not positions_only)
     outcome, report = done["outcome"], done.get("report") or {}
+    if not positions_only:
+        _record_cards_out(lang, report)     # P4.1 L2: whatever landed, before any answer below (a stop part way too)
     if outcome == "needs-deck":
         raise CliError("needs-you", "The automatic reorder runs for one deck only: choose one in the 順 window.",
                        ask="choose a deck in 順")
@@ -831,6 +833,26 @@ def _plan_moved(current, versions):
         return replan.key(None, versions) != current.key
     except Exception:
         return True
+
+
+# --- P4.1 L2: *Take its new cards out* (05 §5.7, D14) — the record Put back restores from ------------------------ #
+def _record_cards_out(lang, report):
+    """The run's *Take its new cards out* changes into the store's `anki_changes`, and the records its Put back
+    restored closed (`pins.record`; Junban's own store handle is read-only, as for `_record_planned`). Read first: the
+    store is opened only when the run changed something. A store that can't be written now is only logged."""
+    if not (report or {}).get("cards_out") and not (report or {}).get("put_back"):
+        return
+    try:
+        from app.connect import library
+        from modules.junban import pins
+        store = library.open_store(lang)
+        if store is None:
+            return
+        with store:
+            pins.record(store, report)
+    except Exception as e:
+        contract.log.warning("the cards Junban took out of the order weren't recorded: %s", e)
+# --- end P4.1 L2 ---
 
 
 def _record_planned(lang, versions):

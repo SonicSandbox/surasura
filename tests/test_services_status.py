@@ -395,6 +395,69 @@ def test_connects_real_record_with_no_ledger_reads_up_to_date():
     assert provider() == "Up to date"
 
 
+# --- P4.1 L2 (row 4.1.13, W-A5): Connect's line is the window's Connect feed's (`app/connect/feed.Provider`) ------ #
+def _record(line, jobs=()):
+    return {"stamp": None, "running": True, "languages": {"ja": {"line": line, "state": "mining", "jobs": list(jobs)}}}
+
+
+def test_connects_line_and_the_stones_share_one_stamp_a_tick():
+    """W-A5: the line and the stones come from one feed — each tick is one `stamp` (a spy), the reader's stones read
+    the look's Feed (`latest()`, no stamp of their own), and only a new Feed wakes the reader (`on_change`). What a
+    wrong answer would cost: two stamps (and two record reads) every 3 s for the same answer, or stones that lag the
+    line by a tick."""
+    from app.connect import feed as connect_feed
+    clock = _Clock()
+    stamps, looks, reads, woken = [["a"]], [], [], []
+
+    def stamp(languages=None):
+        looks.append(1)
+        return list(stamps[-1])
+
+    def read(languages=None):
+        reads.append(1)
+        rec = _record("Making cards 2 of 5 — ぼっち・ざ・ろっく！ 第3話 (audio)",
+                      [{"item": 7, "state": "mining", "made": 2, "words": 5, "job": 1}])
+        rec["stamp"] = list(stamps[-1])
+        return rec
+    feed = connect_feed.Provider("ja", lambda: {"connect_enabled": True}, stamp=stamp, read=read)
+    feed.on_change = lambda: woken.append(feed.latest())
+    provider = S.connect_line("ja", lambda: {"connect_enabled": True}, feed=feed)
+    status = StatusService(JobRegistry(), reader=_QuietReader(), providers={"connect": provider}, clock=clock)
+    status.poll()
+    _settle(status)
+    assert looks == [1] and reads == [1]
+    got = feed.latest()
+    assert status.snapshot().connect == got.line and got.items[7].made == 2 and got.mining == {7}
+    assert woken == [got], "a new Feed wakes the reader once"
+    for _ in range(3):                                   # three ticks, Connect unchanged
+        clock.now += 3
+        status.poll()
+        _settle(status)
+        assert feed.latest() is got                      # the stones read the same object: nothing rebuilt (S19)
+    assert len(looks) == 4 and reads == [1] and woken == [got], "one stamp a tick, no read, no wake"
+    stamps.append(["b"])                                 # the stamp moves with nothing the window shows changed
+    clock.now += 3
+    status.poll()
+    _settle(status)
+    assert len(looks) == 5 and reads == [1, 1] and feed.latest() is got and woken == [got]
+
+
+def test_connects_line_with_automation_off_says_why_and_with_connect_unset_shows_nothing():
+    """F-7 (`settings_manager.connect_on`, not `connect_enabled` alone): set up but D29's automation off, the mark
+    says why nothing runs (IK N4) and Connect's files aren't looked at; not set up, no mark at all (as before)."""
+    from app.connect import feed as connect_feed
+    looked = []
+    settings = {"connect_enabled": True, "logic": {"automation": False}}
+    provider = S.connect_line("ja", lambda: settings, stamp=lambda languages=None: looked.append(1) or ["a"],
+                              read=lambda languages=None: _record("Up to date"))
+    assert provider() == connect_feed.OFF_AUTOMATION and looked == []
+    assert provider.every() is None
+    settings["connect_enabled"] = False
+    assert provider() is None and looked == []
+    settings.update(connect_enabled=True, logic={"automation": True})
+    assert provider() == "Up to date" and looked == [1] and provider.every() == S.TICKS["connect"]
+
+
 def test_the_ankiweb_countdown_ticks_every_second():
     """Gap 10: `anki_sync_rule.status` (the Tk-free rule) gives *AnkiWeb: syncing in N s* while a sync is pending; the
     window's poll asks it every second, so the count goes down one a tick, and the bar hears each new number once."""

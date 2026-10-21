@@ -5,10 +5,14 @@
   pick mines it untimed (`runner._fit`: tsubasa isn't asked, no shift; logged *mined anyway: not timed*). The choice
   holds for the pairing it was made on: a pairing changed since (hato re-timed it, a new subtitle) is picked again and
   checked again, as any. On hato's name-only pairings (`verdict: untimed`) the entry carries `feed.UNTIMED_WARNING`.
+- `make_cards(language, gap_id)` (P4.1 WF; IK D-1 lean (a), P2.1-3): *Make their cards* on a *Needs you* gap — the
+  gap's episodes queued as Connect's ordinary jobs (kind `mine`, by `user`), never an ask: a word Connect ever made,
+  a deleted card's included, is never made again (`library.made_words_for`, N15 / G1.3-4); the gap marked noticed.
 
 Each runs on the window's worker, one short ledger transaction; the caller kicks Connect after (`kick.kick`). No
 ledger → nothing written (the window never makes one). Light: the standard library and the ledger.
 """
+import json
 import os
 
 from app.connect import ledger as book
@@ -36,3 +40,45 @@ def mine_anyway(language, need_id, path=None):
         ledger.set_state(job["id"], "queued", picked=picked)        # its reason and resume step cleared: picks anew
         ledger.conn.execute("UPDATE needs SET fixed_at = ? WHERE id = ?", (book._now(), need_id))
     return True
+
+
+def make_cards(language, gap_id, path=None, store_id=None):
+    """*Make their cards* -> how many of the gap's episodes were queued (0: none left to queue — each has an open job
+    or was mined); False (nothing written) when there's no ledger, no such gap of this language, or the library's
+    identity can't be read. Each episode with no open job and never mined (`ledger.mined`) gets an ordinary `mine` job
+    stamped with the library's identity (`store_id`: read from the library, read-only, unless given — a job without
+    one is never mined into this library, `runner._job`); the gap marked noticed."""
+    path = path or book.path()
+    if not os.path.exists(path):
+        return False
+    store_id = store_id or _store_id(language)
+    if not store_id:
+        return False
+    queued = 0
+    with book.Ledger(path) as ledger, ledger.transaction():
+        row = ledger.conn.execute("SELECT items FROM gaps WHERE id = ? AND language = ?", (gap_id, language)).fetchone()
+        if row is None:
+            return False
+        for item_id in dict.fromkeys(json.loads(row[0] or "[]")):
+            job = ledger.job(language, item_id)
+            if (job is not None and job.get("state") in book.OPEN) or ledger.mined(language, item_id):
+                continue
+            if ledger.queue(language, item_id, "user", None, store_id) is not None:
+                queued += 1
+        ledger.mark_noticed([gap_id])
+    return queued
+
+
+def _store_id(language):
+    """The library's identity (`library.store_id`), read-only (`mode=ro`: never made or written), or None."""
+    from app.connect import window_link
+    conn = window_link._store_ro(language)
+    if conn is None:
+        return None
+    try:
+        row = conn.execute("SELECT value FROM meta WHERE key = 'store_id'").fetchone()
+        return row[0] if row else None
+    except Exception:
+        return None
+    finally:
+        conn.close()

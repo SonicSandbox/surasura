@@ -45,8 +45,11 @@ FIN_MENU = {
     "unpin": ("Done with its cards", "Its cards go back to their place in your order"),
     "cards": ("Its {n} cards in Anki", "What happens to its new cards"),
     "cards-none": ("Its cards in Anki", "What happens to its new cards"),
-    "cards-out": ("Leave its new cards out of your order", "Its new cards leave your learning order; none is deleted"),
-    "cards-in": ("Put them back in the order", "Its new cards come back into your learning order"),
+    # P4.1 L2 (TF fix 10, IK #6; W1.2: "unstudied cards suspended and tagged, never deleted"): what Anki sees
+    "cards-out": ("Leave its new cards out of your order",
+                  "Its new cards leave your order: suspended in Anki and tagged, never deleted. Put back brings them "
+                  "back"),
+    "cards-in": ("Put them back in the order", "Its new cards come back into your order, unsuspended in Anki"),
     "mine": ("Mine", "Make its cards"),
     "mine-too": ("Mine it too", "Make cards for what isn't mined yet"),
     "folder": ("Open its folder", "Open the folder its files are in"),
@@ -366,8 +369,37 @@ ROWS_MORE_TIP = "More\n• Click for what you can do with it"
 ROWS_MOVE_TIP = {"up": "Move up one\n• Click to move it up one place",
                  "down": "Move down one\n• Click to move it down one place"}
 ROWS_MINE_NOW_TIP = "{tip}\n• Click to mine it now"
-ROWS_MINE_NOW_LATER = "Mine now arrives with Anki Miner's step, in a later build"
-ROWS_NO_MEDIA_LATER = "{tip}\nLink… · Mine text: in a later build"
+# --- P4.1 L2: the stones' actions (4.1.11): Mine this, No video's Link… · Mine text, and why nothing happens while
+# Connect is off (IK S7); the window's routing (`app/qt/mine_actions.py`)
+ROWS_MINE_THIS_TIP = "{tip}\n• Click to mine it now"
+ROWS_NO_MEDIA_TIP = "{tip}\n• Click to link its video, or to mine its text in Anki Miner"
+ROWS_ACTION_OFF = "{tip}\n{why}"
+ROWS_ACTION_KEY = "→ then Enter: {action}"
+ROWS_ACTION_NAMES = {"mine-now": "Mine now", "mine-this": "Mine this", "no-media": "Link… or Mine text"}
+ROWS_LINK = "Link…"
+ROWS_LINK_TIP = "Choose its video: its cards get their pictures and audio from it"
+ROWS_MINE_TEXT = "Mine text"
+ROWS_MINE_TEXT_TIP = "Open Anki Miner to mine its text by hand: its file's path is copied for you"
+MINE_ASKED = "{title}: its cards come next"
+MINE_ASKED_N = "{n} files: their cards come next"
+# --- P4.1 WF (the reviews' word fixes, IK S5): one file said as one; a book's button opens Anki Miner (never "mine it
+# now"); C6's toast says Connect waits while Anki Miner's window is open (the N1 disposition); a bulk ask with nothing
+# left to ask for; a gap's *Make their cards* as Connect's ordinary work (D-1 lean (a)), counted, no title pasted
+MINE_ASKED_ONE = "1 file: its cards come next"
+MINE_NOTHING = "Nothing to ask for: their cards are in Anki already, being made, or were deleted"
+ROWS_MINE_TEXT_THIS_TIP = "{tip}\n• Click to mine its text by hand in Anki Miner"
+MAKE_CARDS_QUEUED = {True: "1 episode's cards come next", False: "{n} episodes' cards come next"}
+MAKE_CARDS_NONE = "Nothing left to make: Connect has each of those episodes already"
+MAKE_CARDS_GONE = "Connect has no record of those episodes now: nothing was made"
+# --- end P4.1 WF
+MINE_TEXT_COPIED = ("Anki Miner is opening · {name}'s path is copied: paste it there to mine its text. Connect waits "
+                    "while Anki Miner's window is open")
+MINE_TEXT_NO_MINER = "Anki Miner isn't installed: set it up in Settings, then Mine text"
+MINE_TEXT_NOT_OPENED = "Couldn't open Anki Miner: {path}"
+LINK_TITLE = "Choose the video for {label}"
+LINK_FILTER = "Videos ({patterns})"
+LINKING_ONE = "Linking {label}'s video"
+# --- end P4.1 L2
 ROWS_STONE_TIP = "{label}{state}\n• Click to mark it {action}"
 ROWS_STONE_STATE = {"cut": " · watched", "raw": " · {n} cards in Anki", "rock": ""}
 ROWS_STONE_MISSING = " · no {word} on disk"
@@ -379,7 +411,7 @@ ROWS_DONE_ALL_MIX_TIP = "Every file of it is watched"         # hato's mix never
 ROWS_HERO_KNOWN = "{pct}% known · "
 ROWS_HERO_NEW_LINK = "{n} new words ↗"
 ROWS_JOURNEY_TIP = "Your journey: your list with its sentences\n• Click to open it in its own window"
-ROWS_TOP_LINE_WHERE = "{tip}\nIts setting: Settings → Anki & mining"
+ROWS_TOP_LINE_WHERE = "{tip}\n• Click to change it: Settings → Anki & mining"     # P4.1 L2 (row 4.1.14)
 ROWS_SOON_LINE_WHERE = "{tip}\nWhere Soon starts is a setting: Settings → Content"
 ROWS_ACCESSIBLE_STRING = "{line} · {string}"
 
@@ -436,7 +468,8 @@ DRAG_FINISHED = "{title} finished · its cards stay put"
 DRAG_KEEP = "Keep"
 DRAG_KEEP_TIP = "Keep its new cards in your order, as they are"
 DRAG_TAKE_OUT = "Leave its new cards out of your order"      # IK-1: Finished's ⋯ words, one name for one action
-DRAG_TAKE_OUT_TIP = "Its new cards leave your learning order; none is deleted: Undo puts them back"
+DRAG_TAKE_OUT_TIP = ("Its new cards leave your order: suspended in Anki and tagged, never deleted. Undo or Put back "
+                     "brings them back")         # P4.1 L2 (TF fix 10, IK #6)
 DRAG_TAKEN_OUT = "{title}: its new cards are out of your order"
 DRAG_ADDED = "Added {name} at #{n} · analysed on the next Generate"
 DRAG_ADDED_N = "Added {count} files at #{n} · analysed on the next Generate"

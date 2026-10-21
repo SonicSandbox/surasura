@@ -190,7 +190,9 @@ class Services:
         if providers is None:
             return
         replan, get = self.replan, self.settings.get
-        providers.update(replan=replan.line, connect=status_service.connect_line(language, get),
+        providers.update(replan=replan.line,
+                         connect=status_service.connect_line(language, get, feed=connect_feed(language, self.settings)),
+                         # P4.1 L2 (row 4.1.13): the feed the library's stones are built from — one stamp a tick
                          ankiweb=status_service.ankiweb_line(get), journey=status_service.journey_pending(language),
                          backlog=status_service.anki_backlog(language))
 
@@ -301,7 +303,9 @@ class Services:
         self._provide_lines(self.language)
         refresh = getattr(self.status, "refresh_soon", None)
         if refresh is not None:
-            refresh("journey", "replan")                  # the new language's dot and line at once
+            # the new language's dot and line at once; and Connect's (P4.1 WF, review B1: the language's feed is kept
+            # across switches, so one whose last look found Connect off ticks again only once it is asked by name)
+            refresh("journey", "replan", "connect")
 
     def generate(self):
         """(A worker.) The header's Generate: the newest settings written first (the analyzer reads settings.json), the
@@ -997,6 +1001,10 @@ class ShellWindow(QMainWindow):
             current = self.page_widgets.get("current")
             if hasattr(current, "on_journey"):                         # W3.1a S5: Up Next's *N new words ↗*
                 current.on_journey = lambda _row, _episode: self._open_journey(asked=True)
+            # --- P4.1 L2 (row 4.1.14): a click on the top-20 line opens its setting
+            if hasattr(current, "on_line"):
+                current.on_line = lambda kind: self.open_setting("mine_line") if kind == "top" else None
+            # --- end P4.1 L2
             self.library_bridge.library_changed.connect(self.search.library_moved)     # --- W3.2 Q3
             if not getattr(services, "library_after_frame", False):
                 services.library.start()                       # (W3.2 P0: main's starts after the first frame)
@@ -1113,6 +1121,13 @@ class ShellWindow(QMainWindow):
         self._fetcher = None
         self.cover_fetcher()
         # --- end W3.2 L3
+        # --- P4.1 L2: Connect's actions — the stones' Mine now / Mine this / Link… / Mine text, Finished's Mine and Mine
+        # it too, the arrivals' Mine them too, Needs you's Mine the text only (`mine_actions.py`), given a writer
+        self.mine = None
+        if self.moves is not None:
+            from app.qt import mine_actions
+            self.mine = mine_actions.MineActions(self)
+        # --- end P4.1 L2
 
         self._restore_state(read_state(self.state_file))
 
@@ -1423,6 +1438,9 @@ class ShellWindow(QMainWindow):
             from app.qt import drag
             self.moves = drag.DragController(self, writer, reader)
             self.moves.start(on_worker=True)        # its first look at the store and its replay off this thread
+            if getattr(self, "mine", None) is None:     # P4.1 WF (adversary N7): a window opened with no writer gets
+                from app.qt import mine_actions         # Connect's actions with its first; one made already follows
+                self.mine = mine_actions.MineActions(self)     # `win.moves` and the language at each call
         self._follow_covers(reader, writer)
         reader.start()
         self._follow_looks(writer)                  # --- SRC W1b: that language's source folders
@@ -1756,7 +1774,8 @@ class ShellWindow(QMainWindow):
         if "covers_download" in keys:                   # --- W3.2 L3: turned on, what is on screen now is asked
             qcovers.ask_again()                         # (titles dropped while it was off too: N1)
             self.ask_shown_covers()
-        if "connect_enabled" in keys:                   # Connect's tick is skipped while off: its line asked now
+        if "connect_enabled" in keys or "logic.automation" in keys:     # Connect's tick is skipped while off (its
+            # switch or D29's automation, `connect_on`: P4.1 WF, review B1): its line asked now
             refresh = getattr(self.services.status, "refresh_soon", None)
             if refresh is not None:
                 refresh("connect")
@@ -2714,13 +2733,75 @@ def library_for(language, settings, freeze_gc=False):
     yet (a fresh install, a 2.x library not migrated), one being migrated, read-only or damaged opens in the reader's
     mode for it, and the chores' helper (W3.5) builds or migrates it as 2.5 did. -> (reader, writer)."""
     from app.services import library_reader, moves
+    feed = connect_feed(language, settings)                 # --- P4.1 L2: Connect's feed (row 4.1.10)
     _opener, numbers, reader = moves.open_library(
         language, check=moves.plan_check(language, lambda: settings_service.thaw(settings.get())),
         cache_file=library_reader.cache_path(language), freeze_gc=freeze_gc,
-        watch=library_lookout)                              # W3.2 B: woken by the bell + the tree watch (IK0-5)
+        watch=library_lookout,                              # W3.2 B: woken by the bell + the tree watch (IK0-5)
+        connect=feed.latest)                                # P4.1 L2: the stones from the status line's last look
+    _wake_on_feed(feed, reader)                             # P4.1 L2
     writer = moves.Writer(_opener, language, journal_file=moves.journal_path(language), numbers=numbers,
-                          words=strings.MOVE_WORDS)
+                          words=strings.MOVE_WORDS,
+                          after_commit=connect_after_commit(language, settings))     # P4.1 L2 (W-A2)
     return reader, writer
+
+
+# --- P4.1 L2: Connect in the window (W1: rows 4.1.10, 4.1.13; W-A1, W-A2, W-A5) ------------------------------------ #
+_CONNECT_FEEDS = {}             # id(settings service) -> (a weak reference to it, {language: feed.Provider})
+_CONNECT_FEEDS_LOCK = threading.Lock()      # P4.1 WF (adversary N5): two switch workers make one feed a language
+
+
+def connect_feed(language, settings):
+    """The window's one Connect feed for `language` (`app/connect/feed.Provider`): the status line's provider ticks it
+    (`Services._provide_lines`: every 3 s while Connect is on, one stamp a look) and the library reader builds its
+    stones from its last look (`latest`). One per settings service and language, so a language switch back finds the
+    same one; it holds the settings service weakly (a test's windows let theirs go)."""
+    import weakref
+    from app.connect import feed as connect_feed_module
+    with _CONNECT_FEEDS_LOCK:
+        hit = _CONNECT_FEEDS.get(id(settings))
+        if hit is None or hit[0]() is not settings:
+            try:
+                ref = weakref.ref(settings)
+            except TypeError:                               # a stand-in that can't be held weakly: its own feed
+                return connect_feed_module.Provider(language, settings.get)
+            for k in [k for k, (r, _f) in _CONNECT_FEEDS.items() if r() is None]:
+                del _CONNECT_FEEDS[k]                       # the windows gone
+            hit = _CONNECT_FEEDS[id(settings)] = (ref, {})
+        ref, feeds = hit
+        if language not in feeds:
+            def get():
+                held = ref()
+                return held.get() if held is not None else {}
+            feeds[language] = connect_feed_module.Provider(language, get)
+        return feeds[language]
+
+
+def _wake_on_feed(feed, reader):
+    """A new Feed wakes `reader` (the reader open now; held weakly: a reader a language switch let go is freed)."""
+    import weakref
+    ref = weakref.ref(reader)
+
+    def wake():
+        held = ref()
+        if held is not None:
+            held.refresh()
+    feed.on_change = wake
+
+
+def connect_after_commit(language, settings):
+    """The window's writer's `after_commit(change, op)` (W-A2, row 4.1.6's rule): after every write the store
+    committed — a move into the top 20, an ask (*Mine now*, *Mine this*, *Mine it too*), a line moved — one look on
+    the writer's thread (`window_link.Link.after_change`: read-only), and Connect kicked when it has something unread.
+    One `Link` per writer: it remembers what it kicked for."""
+    from app.connect import window_link
+    link = window_link.Link(language, lambda: settings_service.thaw(settings.get()))
+
+    def after_commit(_change, _op):
+        link.after_change()
+    after_commit.link = link
+    return after_commit
+# --- end P4.1 L2
 
 
 def open_services(settings=None, freeze_gc=False, **kw):

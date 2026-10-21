@@ -148,7 +148,8 @@ def test_three_missing_in_the_top_20_are_amber_on_the_open_rows_episodes(seeded)
     assert wait_until(lambda: lst.visualRect(lst.model().index(i, 0)).height() > 200)
     lst.scrollTo(lst.model().index(i, 0), lst.ScrollHint.PositionAtTop)
     QApplication.processEvents()
-    statuses = part(lst, i, "status")
+    statuses = [p for p in lst.delegate.parts(lst.model().entries[i], lst.visualRect(lst.model().index(i, 0)))
+                if p[0] == "status" or p[0] in rows.ACTION_NAMES]     # P4.1 4.1.11: No video's pill is a button now
     rect, arr = grab(lst, i)
     warn = 0
     for name, r, tip, _p in statuses:
@@ -212,6 +213,27 @@ def test_the_top_20_line_is_drawn_after_the_row_holding_the_20th_available_file(
     colours = style.colours()
     assert count(band, colours["groove"], tolerance=1) > width * 0.9
     assert count(band, over(colours["groove-lip"], colours["bg"]), tolerance=2) > width * 0.9
+
+
+def test_a_click_on_the_top_20_line_opens_its_setting_and_its_hover_keeps_its_words(seeded):
+    """P4.1 L2 row 4.1.14 (Gap 1: the line stays, really subtle): the groove is where the learner finds *how many mine
+    themselves* — a click opens Settings at *Mine automatically: the top N* (`open_setting("mine_line")`); its hover
+    still says what it is (`top_tip`) and now that a click changes it. The Soon line asks nothing."""
+    seed, win = seeded()
+    lst = current(win)
+    asked = []
+    win.open_setting = lambda target: asked.append(target)
+    at = [i for i, e in enumerate(lst.model().entries) if any(ln.kind == "top" for ln in e[2])][0]
+    strip = part(lst, at, "top-line")[0]
+    assert strip[2].startswith("Everything above this line mines itself") and "Click to change it" in strip[2]
+    QTest.mouseClick(lst.viewport(), Qt.MouseButton.LeftButton, pos=strip[1].center())
+    QApplication.processEvents()
+    assert asked == ["mine_line"]
+    entries = lst.model().entries
+    soon_at = next(i for i, e in enumerate(entries) if e[0] == rows.ROW and e[1].tier == "soon") - 1
+    QTest.mouseClick(lst.viewport(), Qt.MouseButton.LeftButton, pos=part(lst, soon_at, "soon-line")[0][1].center())
+    QApplication.processEvents()
+    assert asked == ["mine_line"]
 
 
 def test_the_soon_line_sits_where_soon_starts_with_its_word(seeded):
@@ -445,10 +467,15 @@ def test_a_click_on_a_pill_a_mark_or_a_stone_never_opens_or_closes_the_row(seede
     QApplication.processEvents()
     asked = []
     lst.done_requested.connect(lambda row, ep: asked.append(ep.id))
-    for name in ("status", "mark", "stone"):
-        p = part(lst, i, name)[0]
+    entry = lst.model().entries[i]
+    pill = next(p for p in lst.delegate.parts(entry, lst.visualRect(lst.model().index(i, 0)))
+                if p[0] == "status" or p[0] in rows.ACTION_NAMES)     # P4.1 4.1.11: a pill may be a button now —
+    for name in ("pill", "mark", "stone"):                            # it asks, and still never opens or closes the row
+        p = pill if name == "pill" else part(lst, i, name)[0]
         QTest.mouseClick(lst.viewport(), Qt.MouseButton.LeftButton, pos=p[1].center())
         QApplication.processEvents()
+        if lst.action_menu is not None:
+            lst.action_menu.close()
         assert lst.model().open_key is not None, name
         assert asked == ([p[3].id] if name == "stone" else []), name
 

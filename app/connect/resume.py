@@ -40,7 +40,8 @@ def watermarks(languages=CONNECT_LANGUAGES):
     set now, each language in its own try -> None, or the failures named by language. A library that is there but
     won't open (busy, damaged, read-only) is a failure: its watermark isn't set, and nothing else of that language is
     written. No library yet: only the ledger's two marks (an ask needs a library; the ledger is made if it isn't
-    there, so an ask made before Connect ever ran is never mined either)."""
+    there, so an ask made before this turn-on is never mined either — the asks watermark is set here alone: a ledger
+    without one counts every unanswered ask, F-2)."""
     failed = []
     try:
         from app import library_store

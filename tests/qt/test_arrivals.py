@@ -361,7 +361,10 @@ def test_A2_101_mine_them_too_stays_hidden_until_P41_sets_its_callable(world):
     open_tray(win)
     tray = tray_of(win)
     head = tray.heads["watched"][0]
-    assert head.mine.isHidden()
+    assert not head.mine.isHidden()                                   # P4.1 4.1.11: the window's routing sets it
+    tray.mine_too = None
+    tray.set_groups(tuple(list(tray.groups)))
+    assert head.mine.isHidden()                                       # unset: hidden
     got = []
     tray.mine_too = got.append
     tray.set_groups(tuple(list(tray.groups)))                         # the next view

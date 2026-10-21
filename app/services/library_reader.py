@@ -25,6 +25,10 @@ library store, on a plain thread of its own — never the window's thread.
   items it changed when the provider says which (`numbers.changed(since)`, W3.1a's `moves.Numbers`: a drop moves *N new*
   on a few rows), else every row. *Mining now* comes from Connect's status (`mining()` → item ids; none until Connect's
   record exists, 04 §4.4 gap 9).
+- **Connect's feed** (P4.1 L2, row 4.1.10, W-A1): `connect()` → the `app/connect/feed.Feed` to build with (the window's
+  `feed.Provider.latest`: what the status line's last tick read — no stamp of its own) or None; another Feed object
+  than the last view's builds the view again (the Provider's `on_change` wakes the reader), the same one builds
+  nothing (S19).
 - **It wakes on the bell** (W3.2 B; IK0-5, L3.1-4: "let windows handle it but with the fallback"): given `watch`
   (`watch(store, wake)` -> an opened `library_watch.Lookout` on the reader's own wake event — the shell's
   `library_lookout`), made on this thread once the store can be used, the reader sleeps until the store's bell rings
@@ -69,13 +73,19 @@ def _no_mining():
     return ()
 
 
+def _no_connect():
+    return None
+
+
 class LibraryReader:
     def __init__(self, opener, language="ja", numbers=None, mining=None, poll=POLL_S, cache_file=None,
-                 cache_rows=view_rows.CACHE_ROWS, freeze_gc=False, watch=None):
+                 cache_rows=view_rows.CACHE_ROWS, freeze_gc=False, watch=None, connect=None):
         self.opener = opener
         self.language = language
         self.numbers = numbers or _no_numbers
         self.mining = mining or _no_mining
+        self.connect = connect or _no_connect       # P4.1 L2: Connect's feed (row 4.1.10)
+        self._connect_built = None                  # ... the Feed the last view was built with
         self.poll = poll
         self.cache_file = cache_file
         self.cache_rows = cache_rows
@@ -279,6 +289,7 @@ class LibraryReader:
             return
         with self._lock:                                # W3.2 Q1: new estimates from the window
             estimates_new, self._estimates_new = self._estimates_new, False
+        estimates_new = estimates_new or self._connect_moved()      # P4.1 L2: a new Connect feed rebuilds the same way
         dv = h.data_version()
         cards_due = self._cards_stale and time.monotonic() - self._cards_all_at >= CARDS_ALL_S
         if not changed_mode and dv == self._data_version and version == self._numbers_version \
@@ -571,8 +582,23 @@ class LibraryReader:
             self._dirty, self._moved_in = set(), {}
         return self._tiers
 
+    # --- P4.1 L2: Connect's feed (row 4.1.10)
+    def _connect_moved(self):
+        """Another Connect Feed than the last view was built with (an object compare: the Provider hands back the
+        same object while nothing changed)."""
+        try:
+            return self.connect() is not self._connect_built
+        except Exception:
+            return False
+    # --- end P4.1 L2
+
     def _build(self, numbers, mode, reason, rows_known):
         self.builds += 1
+        try:                                            # --- P4.1 L2: Connect's feed, read once a build
+            connect = self.connect()
+        except Exception:
+            connect = None
+        self._connect_built = connect
         # a new numbers version rebuilds only the rows holding an item it changed, when the provider says which (a
         # drop moves *N new* on a few rows); the seed's provider can't say: every row, as before
         numbers_changed = None
@@ -587,7 +613,8 @@ class LibraryReader:
                                reason=reason, loading=not rows_known, cache=self.row_cache,
                                tiers=self._sorted_tiers() if self._items else None, changed=self._build_changed,
                                changed_works=self._build_works, numbers_changed=numbers_changed,
-                               estimates=self._estimates)     # W3.2 Q1
+                               estimates=self._estimates,     # W3.2 Q1
+                               connect=connect)               # P4.1 L2
         self._built_numbers = self._numbers_version
         self._build_changed = set()                     # built: from here on, only what the feed changes
         self._build_works = set()

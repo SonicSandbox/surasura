@@ -26,8 +26,10 @@ VERSIONS = {"order_version": 7, "pins_version": 2, "planned_order_version": 7, "
 def harness(monkeypatch):
     seen = {"reorder": [], "jobs": [], "recorded": [], "report": {"ok": True, "stats": {"total": 3}, "written": []}}
 
-    def reorder(junban_settings, list_current, positions_only, run_id, job):
-        seen["reorder"].append({"list_current": list_current, "positions_only": positions_only, "job": job})
+    # P4.1 L2 (package T): Connect's step also asks the run to suspend and record *Take its new cards out* (`cards_out`)
+    def reorder(junban_settings, list_current, positions_only, run_id, job, cards_out):
+        seen["reorder"].append({"list_current": list_current, "positions_only": positions_only, "job": job,
+                                "cards_out": cards_out})
         return {"outcome": "done", "report": seen["report"]}
     auto = SimpleNamespace(blocked=lambda settings, window=False: None, window_open=lambda: False, reorder=reorder)
     monkeypatch.setattr(verbs, "deck_aside", lambda settings, lang: None)
@@ -70,6 +72,7 @@ def test_the_re_plans_rows_follow_your_junban_order_and_carry_its_file_numbers(h
     _run(harness, current, junban_order=" Priority ")
     assert harness["jobs"] == [{"automatic": True, "rows": current.rows("priority"), "places": current.places}]
     assert harness["reorder"][0]["list_current"] is True
+    assert harness["reorder"][0]["cards_out"] is True, "P4.1 L2: not positions only, so the run records a take-out"
 
 
 class _Store:

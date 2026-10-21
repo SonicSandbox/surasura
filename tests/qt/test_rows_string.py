@@ -259,9 +259,10 @@ def test_every_done_wherever_it_is_clicked_goes_through_the_pages_one_path(seede
     assert len(got) == 4
 
 
-def test_the_mine_now_button_says_when_it_arrives_and_no_video_names_link_and_mine_text(seeded):
-    """Waiting's icon is the Mine now button: hit-tested, and its click says it arrives with Anki Miner's step (a tip,
-    no toast). No video shows a warning whose tip names Link… · Mine text."""
+def test_the_mine_now_button_asks_for_its_files_and_no_video_names_link_and_mine_text(seeded):
+    """Waiting's icon is the Mine now button: hit-tested, and its click asks the page's routing for its files
+    (`mine_requested`, P4.1 row 4.1.11 — moved from "it arrives in a later build"); no toast, the row stays closed. No
+    video shows a warning whose tip names Link and Mine text."""
     seed, win = seeded(size=(1280, 1100))
     lst = current(win)
     entries = lst.model().entries
@@ -269,15 +270,17 @@ def test_the_mine_now_button_says_when_it_arrives_and_no_video_names_link_and_mi
     lst.scrollTo(lst.model().index(i, 0), lst.ScrollHint.PositionAtTop)
     QApplication.processEvents()
     mine = part(lst, i, "mine-now")[0]
+    got = []
+    lst.mine_requested.connect(lambda row, ids: got.append((row.key, ids)))
     toasts = [w for w in QApplication.topLevelWidgets() if w.isVisible()]
     QTest.mouseClick(lst.viewport(), Qt.MouseButton.LeftButton, pos=mine[1].center())
-    assert wait_until(lambda: win.tooltips.showing() == strings.ROWS_MINE_NOW_LATER)
+    assert got == [(entries[i][1].key, mine[3].ids)] and mine[3].ids
     assert lst.model().open_key is None
     assert [w for w in QApplication.topLevelWidgets() if w.isVisible() and w not in toasts and
             "toast" in w.objectName().lower()] == []
     k = next(n for n, e in enumerate(entries) if e[0] == rows.ROW and e[1].status.kind == "no_media")
-    warn = part(lst, k, "status")[0]
-    assert "Link… · Mine text" in warn[2]
+    warn = part(lst, k, "no-media")[0]
+    assert "link its video" in warn[2] and "mine its text" in warn[2]
 
 
 # --- hover ---------------------------------------------------------------------------------------------------------------

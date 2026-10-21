@@ -55,7 +55,8 @@ def world(monkeypatch, tmp_path):
     monkeypatch.setattr(library, "open_store", lambda lang, role="connect": (order.append(f"open {lang}"),
                                                                             FakeStore(lang, order))[1])
     monkeypatch.setattr(library, "switch_on", lambda store, *a: order.append(f"watermark {store.lang}"))
-    monkeypatch.setattr(level, "forget", lambda lang: order.append(f"forget {lang}"))
+    # P4.1 L2 (F-6): the switch goes through `resume.watermarks`, which hands `forget` its open ledger
+    monkeypatch.setattr(level, "forget", lambda lang, ledger=None: order.append(f"forget {lang}"))
     monkeypatch.setattr(library, "has_reader", lambda store, name=library.READER: True)
     monkeypatch.setattr(library_store.Store, "unregister_reader", lambda self, name: None, raising=False)
     real_save = settings_manager.save_keys

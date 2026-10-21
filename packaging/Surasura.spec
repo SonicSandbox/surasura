@@ -279,11 +279,20 @@ cli_exe = EXE(
 tsubasa_spec = importlib.util.find_spec('tsubasa')
 tsubasa_icon = os.path.join(list(tsubasa_spec.submodule_search_locations)[0], 'data', 'tsubasa.ico') \
     if tsubasa_spec is not None and tsubasa_spec.submodule_search_locations else None
+tsubasa_datas = []
+try:                                        # its licence notice (GPL-3.0-or-later), beside PyQt6's: from its metadata
+    from importlib import metadata as tsubasa_metadata
+    for dist_file in tsubasa_metadata.distribution('tsubasa-sync').files or []:
+        if os.path.basename(str(dist_file)).upper().startswith(('LICENSE', 'LICENCE', 'COPYING', 'NOTICE')):
+            tsubasa_datas.append((str(tsubasa_metadata.distribution('tsubasa-sync').locate_file(dist_file)),
+                                  'licenses/tsubasa-sync'))
+except Exception as e:
+    print(f"BUILD CONFIG: tsubasa-sync's licence notice not found ({e})")
 tsubasa_a = Analysis(
     [os.path.join(project_root, 'packaging', 'tsubasa_entry.py')],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=tsubasa_datas,
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

@@ -216,25 +216,49 @@ def test_the_entry_is_tsubasas_own_console_script_and_nothing_else():
     assert imports == [("tsubasa.cli", ["main"])]
 
 
+def _imported_names(tree):
+    """Every module a file imports: `import x`, `from x import y`, and `importlib.import_module("x")` /
+    `__import__("x")` with a literal name."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            yield from (a.name for a in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            yield node.module or ""
+        elif isinstance(node, ast.Call) and node.args and isinstance(node.args[0], ast.Constant) and \
+                isinstance(node.args[0].value, str) and \
+                (getattr(node.func, "attr", None) == "import_module" or getattr(node.func, "id", None) == "__import__"):
+            yield node.args[0].value
+
+
+def _python_files():
+    yield from (os.path.join(PROJECT, name) for name in ("app_entry.py", "updater_helper.py", "package_app.py"))
+    for top in ("app", "modules"):
+        for root, _dirs, files in os.walk(os.path.join(PROJECT, top)):
+            yield from (os.path.join(root, name) for name in files if name.endswith(".py"))
+
+
 def test_nothing_of_surasuras_imports_tsubasa():
     # K1: tsubasa (GPL) is only ever run as a program; the bundle puts its code beside Surasura's, never inside.
     found = []
-    for top in ("app", "modules"):
-        for root, _dirs, files in os.walk(os.path.join(PROJECT, top)):
-            for name in files:
-                if name.endswith(".py"):
-                    path = os.path.join(root, name)
-                    try:
-                        with warnings.catch_warnings():
-                            warnings.simplefilter("ignore")              # another file's old escapes, not ours
-                            tree = ast.parse(open(path, encoding="utf-8").read())
-                    except (SyntaxError, UnicodeDecodeError):
-                        continue
-                    for node in ast.walk(tree):
-                        names = [a.name for a in node.names] if isinstance(node, ast.Import) else \
-                            [node.module or ""] if isinstance(node, ast.ImportFrom) else []
-                        found += [os.path.relpath(path, PROJECT) for n in names if n.split(".")[0] == "tsubasa"]
+    for path in _python_files():
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")              # another file's old escapes, not ours
+                tree = ast.parse(open(path, encoding="utf-8").read())
+        except (SyntaxError, UnicodeDecodeError):
+            continue
+        found += [os.path.relpath(path, PROJECT) for n in _imported_names(tree) if n.split(".")[0] == "tsubasa"]
     assert found == []
+
+
+@pytest.mark.parametrize("source, seen", [
+    ("import tsubasa", True), ("from tsubasa.cli import main", True), ("import tsubasa.api as api", True),
+    ("importlib.import_module('tsubasa')", True), ("__import__('tsubasa.cli')", True),
+    ("import tsubasa_helper", False), ("subprocess.run(['tsubasa', '--version'])", False),
+])
+def test_the_import_scan_sees_every_way_in(source, seen):
+    names = list(_imported_names(ast.parse(source)))
+    assert any(n.split(".")[0] == "tsubasa" for n in names) is seen
 
 
 # --- the ritual's step: packaging/tsubasa_pin.py ---------------------------------------------------------------------------
@@ -273,8 +297,16 @@ def test_bump_moves_only_the_pin_every_other_byte_kept(tmp_path, monkeypatch):
     path = _requirements(tmp_path, "pandas\n# 翼\ntsubasa-sync==0.1.10   # T1 B\nPyQt6==6.11.*", newline="\r\n")
     monkeypatch.setattr(package_app, "tsubasa_installed", lambda: "0.1.10")
     assert _pin_script().main(["--bump"], fetch=_release("v0.1.11"), path=path) == 0
-    assert open(path, "rb").read() == "pandas\r\n# 翼\r\ntsubasa-sync==0.1.11\r\nPyQt6==6.11.*".encode("utf-8")
+    assert open(path, "rb").read() == \
+        "pandas\r\n# 翼\r\ntsubasa-sync==0.1.11   # T1 B\r\nPyQt6==6.11.*".encode("utf-8")
     assert package_app.tsubasa_pin(path) == "0.1.11"
+
+
+def test_bump_reads_past_a_byte_order_mark_on_the_pins_own_line(tmp_path):
+    path = tmp_path / "requirements.txt"
+    path.write_bytes(b"\xef\xbb\xbftsubasa-sync==0.1.10\npandas\n")
+    _pin_script().bump("0.1.11", str(path))
+    assert path.read_bytes() == b"\xef\xbb\xbftsubasa-sync==0.1.11\npandas\n"
 
 
 def test_the_ritual_passes_only_when_pin_installed_and_release_agree(tmp_path, monkeypatch):

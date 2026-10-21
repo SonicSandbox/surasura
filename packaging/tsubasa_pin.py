@@ -7,7 +7,7 @@
                                               -r requirements.txt, the suites, and the build)
 
 The latest release is SonicSandbox/Tsubasa-sync's on GitHub (releases/latest): the build machine's one call here, never
-the app's. Unreachable: exit 2, nothing changed. Sonic's condition on T1 B: "make sure that tsubasa updates are included
+the app's. Unreachable, or a tag that isn't a plain version: exit 2, nothing changed. Sonic's condition on T1 B: "make sure that tsubasa updates are included
 when needed" — tsubasa.exe ships inside Surasura, so a tsubasa fix reaches users only through a Surasura update."""
 import argparse
 import json
@@ -42,20 +42,23 @@ def latest_release(fetch=None):
 
 
 def bump(version, path=package_app.REQUIREMENTS):
-    """requirements.txt's tsubasa-sync line becomes `tsubasa-sync==<version>`; every other byte stays."""
+    """requirements.txt's tsubasa-sync requirement becomes `tsubasa-sync==<version>`; every other byte stays (a byte
+    order mark, the line's own comment, every line end)."""
     with open(path, "rb") as f:
-        lines = f.read().decode("utf-8").splitlines(keepends=True)
+        text = f.read().decode("utf-8")
+    bom = "\ufeff" if text.startswith("\ufeff") else ""
     out, done = [], 0
-    for line in lines:
+    for line in text[len(bom):].splitlines(keepends=True):
         body = line.rstrip("\r\n")
-        if package_app._TSUBASA_LINE.match(body.split("#", 1)[0].strip()):
-            line = f"tsubasa-sync=={version}" + line[len(body):]
+        requirement = body.split("#", 1)[0].rstrip()
+        if package_app._TSUBASA_LINE.match(requirement.strip()):
+            line = f"tsubasa-sync=={version}" + line[len(requirement):]
             done += 1
         out.append(line)
     if done != 1:
         raise ValueError(f"requirements.txt names tsubasa-sync on {done} lines, not one")
     with open(path, "wb") as f:
-        f.write("".join(out).encode("utf-8"))
+        f.write((bom + "".join(out)).encode("utf-8"))
 
 
 def main(argv=None, fetch=None, path=package_app.REQUIREMENTS):
@@ -64,7 +67,7 @@ def main(argv=None, fetch=None, path=package_app.REQUIREMENTS):
     args = parser.parse_args(argv)
     pin, have, latest = package_app.tsubasa_pin(path), package_app.tsubasa_installed(), latest_release(fetch)
     print(f"tsubasa: requirements.txt pins {pin or 'nothing exactly'}, this Python has {have or 'none'}, "
-          f"the latest release is {latest or 'unknown (unreachable)'}")
+          f"the latest release is {latest or 'unknown (no answer from GitHub)'}")
     if latest is None:
         print("Can't read tsubasa's latest release: check it by hand before the build "
               "(https://github.com/SonicSandbox/Tsubasa-sync/releases).")

@@ -3106,3 +3106,48 @@ def test_of_one_episodes_subtitles_listed_together_the_order_picks_the_one_taken
         later = _look(store, language, root)
         assert (later["added"], later["attached"]) == (0, 0) and _items(store) == 1
 
+
+# --- LF-9 / I-R3: the exact-name step passes the one language rule too (K6's `_refusal`) -------------------------- #
+
+_ENGLISH = ("1\n00:00:01,000 --> 00:00:03,000\nWhere are you going?\n\n2\n00:00:04,000 --> 00:00:06,000\n"
+            "Home, before the rain comes.\n")
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_subtitle_named_like_the_video_in_another_language_never_beats_ours(language):
+    """LF-9 (the adversary's P6): `Show - 05.srt` named exactly like the video but in another language (English as a
+    release ships it untagged; in a Chinese library a Japanese one) vs `[JP] Show - 05.<ours>.srt`. The exact name
+    goes first (T2-A1), but every candidate passes K6's one language rule: the other language's file is out, ours is
+    the episode — one item, never none."""
+    store, data_dir = _empty(language)
+    show = _SHOWS[language][0]
+    src = _drive("driveA")
+    folder = os.path.join(src, show)
+    _video(os.path.join(folder, f"{show} - 05.mkv"), body=b"fake matroska 5")
+    _write(os.path.join(folder, f"{show} - 05.srt"), _ENGLISH if language == "ja" else _text("ja", 5))
+    ours = _write(os.path.join(folder, f"[JP] {show} - 05.{_OURS[language]}.srt"), _text(language, 5))
+    _settle(src)
+    with store:
+        root = store.add_source(src)
+        result = _look(store, language, root, first=True)
+        files = _library_files(data_dir)
+        assert (result["added"], _items(store)) == (1, 1)
+        assert [_sha(os.path.join(data_dir, *f.split("/"))) for f in files] == [_sha(ours)]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_subtitle_named_like_the_video_in_our_language_still_beats_a_tagged_one(language):
+    """T2-A1 holds with the rule: the untagged file named like the video, in our language, is the episode."""
+    store, data_dir = _empty(language)
+    show = _SHOWS[language][0]
+    src = _drive("driveA")
+    folder = os.path.join(src, show)
+    _video(os.path.join(folder, f"{show} - 05.mkv"), body=b"fake matroska 5")
+    exact = _write(os.path.join(folder, f"{show} - 05.srt"), _text(language, 5))
+    _write(os.path.join(folder, f"[JP] {show} - 05.{_OURS[language]}.srt"), _text(language, 5, "。"))
+    _settle(src)
+    with store:
+        root = store.add_source(src)
+        assert _look(store, language, root, first=True)["added"] == 1 and _items(store) == 1
+        files = _library_files(data_dir)
+        assert [_sha(os.path.join(data_dir, *f.split("/"))) for f in files] == [_sha(exact)]

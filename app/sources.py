@@ -746,8 +746,10 @@ class _Look:
         skipped, else the first in the order of one episode's subtitles listed together (Sonic, the library model 2
         and T2-A1): named exactly like a video (`vids`, no flag: made for that video, so timed to it), then our
         language's tag, then (a flag after the plain one) in a versions folder listed with it (`versions`' keys, item
-        11: `synced/`), then `.ass` / `.ssa` before `.srt`, then the first by name -> [(name, path, stat, show, 'new' |
-        'known' | 'book')]."""
+        11: `synced/`), then `.ass` / `.ssa` before `.srt`, then the first by name. Every pick passes K6's one language
+        rule (`_refusal`, at `_new`): one that isn't ours is out and the next in this order takes its place — its
+        group's, then the other releases of its episode (`runners_up`, LF-9: an English `.srt` named like the video
+        never keeps the `.ja.srt` out) -> [(name, path, stat, show, 'new' | 'known' | 'book')]."""
         like = {os.path.splitext(v)[0] for v in (vids or ())}            # their names, lowered
 
         def order(name, path):
@@ -797,13 +799,17 @@ class _Look:
                 if p in read and read[p][1] == latest[read[p][0]]:
                     first.setdefault(read[p][0] + (read[p][2],), p)
             kept = []
-            for e in out:
+            for e in sorted(out, key=lambda e: order(e[0], e[1]) + (e[1],)):
                 r = read.get(e[1])
                 if r is not None and (r[1] < latest[r[0]] or first[r[0] + (r[2],)] != e[1]):
                     self.out["skipped"] += 1
+                    if r[1] == latest[r[0]]:                 # LF-9: the first's runner-up — the one language rule
+                        self.runners_up.setdefault(first[r[0] + (r[2],)], []).extend(   # (`_refusal`, at `_new`)
+                            [e[:3]] + self.runners_up.pop(e[1], []))                    # passes on it if it isn't ours
                 else:
                     kept.append(e)
-            out = kept
+            kept = {id(e) for e in kept}
+            out = [e for e in out if id(e) in kept]       # (in the listing's order, as before)
         for n, p, st in epubs:
             k = _key(p)
             if k in self._book_keys():                       # a known EPUB is never split again

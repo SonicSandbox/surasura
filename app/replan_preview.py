@@ -72,6 +72,10 @@ NOT_ANSWERING = "Anki isn't answering just now — trying again shortly"
 BUSY = "順 is busy — re-ordering when it's done"
 UPDATE = "An update is waiting — re-ordering after it"
 UP_TO_DATE = "Anki's order is up to date"
+# --- P4.1 L2 (TF fix 10, IK #6): a job that took a show's new cards out, or put them back, says so ---
+CARDS_TAKEN_OUT = "{n:,} new card{s} taken out of your order (suspended in Anki, never deleted)"
+CARDS_PUT_BACK = "{n:,} card{s} put back in your order"
+# --- end P4.1 L2 ---
 # A reorder you started (or one of Connect's) didn't finish: only its Restore goes on from there (I3) — in 順 until
 # the new window has its own.
 RESTORE_FIRST = "Anki not re-ordered: the last reorder didn't finish. Open 順 and press Restore previous order"
@@ -784,6 +788,11 @@ class Host:
             line += " · the rest after your review"
         elif report.get("left"):
             line += f" · {len(report['left'])} changed in Anki meanwhile, placed next"
+        # --- P4.1 L2 (TF fix 10, IK #6): cards taken out or put back are named — never "up to date" alone ---
+        cards = _cards_out_line(report)
+        if cards:
+            line = f"Anki: {cards}" if line == UP_TO_DATE else f"{line} · {cards}"
+        # --- end P4.1 L2 ---
         self._tell(line)
         if written and not report.get("left"):      # cards still waiting: never "up to date" 5 s later (R10)
             self._done_at = time.monotonic() + DONE_S
@@ -937,9 +946,20 @@ def _record_cards_out(store, report):
         return
     try:
         from modules.junban import pins
-        pins.record(store, report)
+        pins.record(store, report, by="replan")      # TF fix 10 (IK #12): the host's own, never "connect"
     except Exception as e:
         _log_shadow(f"the cards Junban took out of the order weren't recorded: {e}")
+
+
+def _cards_out_line(report):
+    """The job's *Take its new cards out* in the bar's words (TF fix 10): how many it took out, how many it put back;
+    "" when it did neither."""
+    parts = []
+    for key, words in (("cards_taken_out", CARDS_TAKEN_OUT), ("cards_put_back", CARDS_PUT_BACK)):
+        n = (report or {}).get(key) or 0
+        if n:
+            parts.append(words.format(n=n, s="" if n == 1 else "s"))
+    return " · ".join(parts)
 # --- end P4.1 L2 ---
 
 

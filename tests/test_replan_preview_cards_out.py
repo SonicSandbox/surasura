@@ -1,14 +1,20 @@
-"""*Take its new cards out*, the whole loop through the window's re-order host (P4.1 L2 package T; L2.2 05 §5.7, D14).
+"""*Take its new cards out*, the whole loop through the window's re-order host (P4.1 L2 package T, with the review's
+fixes TF; L2.2 05 §5.7, D14).
 
 On the RP-2 library (tests/plan_file_cases.py: real Japanese and Chinese text across Current, Soon and Goal),
-generated as a Generate leaves it, and Junban's fake collection holding one new card per word of its list:
+generated as a Generate leaves it, and Junban's fake collection holding one new card per word of its list, plus three
+cards whose words aren't on it:
 
   * *Take its new cards out* on a Current item → the host's next job (owed through `pins_version`, T-4) places the
-    item's new cards after every other card, tags them `Surasura::out` and suspends them — with your 順 actions off
-    (T-1) and one of them a list word (T-2) — its reviewed card and a card another Current item shares stay as they
-    are (T-3), and the store records exactly the cards suspended and the notes tagged (`anki_changes`, T-6);
+    item's new cards whose words left the list after every other card, tags them `Surasura::out` and suspends them —
+    with your 順 actions off (T-1) — while its card whose word is on the list stays in, placed by the list (TF fix 3,
+    P4.1-7); its reviewed card and a card another Current item shares stay as they are (T-3), the store records
+    exactly the cards suspended and the notes tagged (`anki_changes`, T-6, by the host: TF fix 10), and the bar says
+    how many were taken out (TF fix 10);
   * *Put back*, *Put them back in the order* or the take-out's undo → the next job unsuspends exactly those, takes
-    the tag off exactly those notes, and closes the record (T-5); a card you suspended meanwhile stays suspended;
+    the tag off exactly those notes, places them in the same job and closes the record (T-5); a card you suspended
+    meanwhile stays suspended;
+  * a review that begins just before the suspends → nothing taken out, and the job stays owed (TF fix 6);
   * automation off → the host writes nothing to Anki and records nothing.
 
 Never Anki: the fake answers on `urlopen`.
@@ -27,6 +33,9 @@ from tests.test_replan_preview import ACTIONS, DECK, MarkingCollection, _list_wo
 
 OUT_TAG = "Surasura::out"
 REVIEWED = {"ja": "眼鏡", "zh": "眼镜"}
+# Three words the RP-2 list doesn't hold (checked below): the out item's two cards whose words left the list, and the
+# card it shares with another Current item (P4.1-7, TF fix 3: a list word's card would stay in, placed by the list).
+UNLISTED = {"ja": ["蝸牛", "薔薇", "躑躅"], "zh": ["蜗牛", "玫瑰", "杜鹃"]}
 
 
 @pytest.fixture(params=["ja", "zh"])
@@ -55,8 +64,10 @@ def lib(request, tmp_path, monkeypatch):
 
 
 def _deck(language, root):
-    """40 of the list's words (queued in the reverse of the list's order) and a card the learner has studied."""
-    words = _list_words(root, 40) + [REVIEWED[language]]
+    """40 of the list's words (queued in the reverse of the list's order), three words off the list and a card the
+    learner has studied."""
+    assert not set(UNLISTED[language]) & set(_list_words(root)), "the words off the list must be off it"
+    words = _list_words(root, 40) + UNLISTED[language] + [REVIEWED[language]]
     cards, notes, _ = _collection(words, dues=list(range(3000 + len(words) - 1, 2999, -1)), deck=DECK)
     fake = MarkingCollection(cards, notes, actions=ACTIONS)
     by_word = {fake.notes[c["note"]]["fields"]["Expression"]["value"]: c for c in fake.cards.values()}
@@ -80,25 +91,34 @@ def _owed(store):
 
 
 def _take_out(lib):
-    """Current's first item linked to two list words' cards and the studied card; Current's second item shares a
-    third list word's card with it. Then the host lays the ladder, and the first item's cards are taken out."""
+    """Current's first item linked to two cards off the list, one list word's card and the studied card; Current's
+    second item shares a third card off the list with it. Then the host lays the ladder (its lines kept in `said`, its
+    reports in `reports`), and the first item's cards are taken out by the caller."""
     language, root, store = lib
     fake, words, by_word = _deck(language, root)
-    out, shared, other = [by_word[words[0]], by_word[words[1]]], by_word[words[2]], by_word[words[5]]
+    out = [by_word[w] for w in UNLISTED[language][:2]]
+    shared, listed, other = by_word[UNLISTED[language][2]], by_word[words[0]], by_word[words[5]]
     reviewed = by_word[REVIEWED[language]]
     a, b = store.ids("now")[:2]
-    _link(store, a, *out, shared, reviewed)
+    _link(store, a, *out, listed, shared, reviewed)
     _link(store, b, shared)
-    host = replan_preview.Host(language, say=[].append)
+    said, reports = [], []
+    host = replan_preview.Host(language, say=said.append)
+    write = host._write
+    host._write = lambda *args, **kwargs: reports.append(write(*args, **kwargs)) or reports[-1]
     with _patched(fake):
         host._job("catch-up")
-    return fake, host, a, out, shared, other, dict(reviewed)
+    return fake, host, a, out, shared, listed, other, dict(reviewed), said, reports
 
 
 @pytest.mark.parametrize("how", ["put-back", "order-on", "undo"])
-def test_taken_out_then_put_back_round_trips_exactly_what_was_changed(lib, how):
+def test_taken_out_then_put_back_round_trips_exactly_what_was_changed(lib, monkeypatch, how):
     language, root, store = lib
-    fake, host, a, out, shared, other, reviewed = _take_out(lib)
+    fake, host, a, out, shared, listed, other, reviewed, said, reports = _take_out(lib)
+    recorded_by = []
+    record = library_store.Store.record_anki_changes
+    monkeypatch.setattr(library_store.Store, "record_anki_changes",
+                        lambda self, rows, by="connect": recorded_by.append(by) or record(self, rows, by=by))
     change = store.finish([a], keep_cards=False)
     assert _owed(store), "T-4: owed to Anki"
     with _patched(fake):
@@ -107,13 +127,17 @@ def test_taken_out_then_put_back_round_trips_exactly_what_was_changed(lib, how):
     assert [card["queue"] for card in out] == [-1, -1] and all(OUT_TAG in _tags(fake, card) for card in out)
     new = {c["cardId"]: c["due"] for c in fake.cards.values() if c["type"] == 0 and c["cardId"] not in out_ids}
     assert min(card["due"] for card in out) > max(new.values()), "after every other card"
+    # P4.1-7 (TF fix 3; moved from T-2's "the item wins over the list"): its list word's card stays in, by the list
+    assert listed["queue"] == 0 and OUT_TAG not in _tags(fake, listed) and listed["due"] < min(c["due"] for c in out)
     assert shared["queue"] == 0 and OUT_TAG not in _tags(fake, shared), "T-3: Current's second item claims it"
     by_id = {c["cardId"]: c for c in fake.cards.values()}
     assert by_id[reviewed["cardId"]] == reviewed, "a studied card is never touched"
     records = store.anki_changes_of([a])
     assert [(r["action"], r["after"]["suspended"], r["after"]["tag"], sorted(r["after"]["tagged"])) for r in records] \
         == [("cards_out", out_ids, OUT_TAG, sorted(card["note"] for card in out))]
+    assert recorded_by == ["replan"], "TF fix 10: the host's own record"
     assert not _owed(store), "the clean job recorded the order planned"
+    assert any("2 new cards taken out of your order" in line for line in said), said
 
     other["queue"] = -1                                         # meanwhile you suspend a card yourself
     if how == "put-back":
@@ -126,19 +150,40 @@ def test_taken_out_then_put_back_round_trips_exactly_what_was_changed(lib, how):
     with _patched(fake):
         host._job("move")
     assert [card["queue"] for card in out] == [0, 0] and not any(OUT_TAG in _tags(fake, card) for card in out)
-    rest = [c["due"] for c in fake.cards.values() if c["type"] == 0 and c["queue"] == 0 and c["cardId"] not in out_ids]
-    assert max(card["due"] for card in out) < max(rest), "placed again in the same job, not left at the end"
+    planned = reports[-1]["stats"]["order"]
+    assert set(out_ids) <= {row.card_id for row in planned} and not [row for row in planned if row.out], \
+        "placed again in the same job, nothing out"
     assert other["queue"] == -1, "the card you suspended stays suspended"
     assert by_id[reviewed["cardId"]]["queue"] == 2
     assert store.anki_changes_of([a]) == [] and store.cards_out() == {"out": [], "back": []}
     unsuspended = [c for action, ids in fake.suspend_calls if action == "unsuspend" for c in ids]
     assert sorted(unsuspended) == out_ids, "exactly the recorded cards, never more"
+    assert any("2 cards put back in your order" in line for line in said), said
+
+
+def test_a_review_at_the_suspends_leaves_the_take_out_owed(lib):
+    """TF fix 6 (adversary S3): a review begins just as the job re-reads the cards it would suspend — nothing is taken
+    out, nothing recorded, and the host doesn't record the plan as written: the take-out stays owed for its next look."""
+    language, root, store = lib
+    fake, host, a, out, _shared, _listed, _other, _reviewed, _said, _reports = _take_out(lib)
+    out_ids = sorted(card["cardId"] for card in out)
+
+    def review_begins(ids):
+        if sorted(ids) == out_ids:
+            fake.reviewing = True
+    fake.before_cards_info = review_begins
+    store.finish([a], keep_cards=False)
+    with _patched(fake):
+        host._job("move")
+    assert [card["queue"] for card in out] == [0, 0] and not any(OUT_TAG in _tags(fake, card) for card in out)
+    assert store.anki_changes_of([a]) == []
+    assert _owed(store), "still owed: the next look takes them out"
 
 
 def test_with_automation_off_nothing_reaches_anki_and_nothing_is_recorded(lib):
     """T-6: D29 off — the window's words stay *Leave its new cards out of your order*; Anki is never asked."""
     language, root, store = lib
-    fake, host, a, out, _shared, _other, _reviewed = _take_out(lib)
+    fake, host, a, out, _shared, _listed, _other, _reviewed, _said, _reports = _take_out(lib)
     _settings_file(root, target_language=language, junban_replan_language=language, logic={"automation": False})
     store.finish([a], keep_cards=False)
     fake.requests.clear()

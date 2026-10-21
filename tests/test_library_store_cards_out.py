@@ -133,3 +133,25 @@ def test_pinning_an_item_whose_cards_are_out_brings_them_back(language):
     assert _owed(store)
     assert store.cards_out()["out"] == [] and [r["id"] for r in store.cards_out()["back"]] == [rid]
     store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("how", ["move", "set_tier"])
+def test_leaving_finished_by_a_move_or_a_tier_change_brings_its_cards_back(language, how):
+    """TF fix 8 (adversary S5; G1.6-10: anything taken out comes back): a Finished item whose cards were taken out,
+    moved to Current by the command line's `place` (`move`) or promoted in the Content Manager (`set_tier`) — not
+    *Put back* — is back in the learning order and owed to Anki, so its cards come back; the move's undo takes it back
+    to Finished with its cards out again (owed too). A move inside Finished changes nothing."""
+    store = migrated(language)
+    a, b = store.ids("now")[:2]
+    store.finish([a, b], keep_cards=False)
+    store.move([b], "graduated", before_id=a)                # within Finished
+    assert store.item(b)["in_learning_order"] == 0, "a move inside Finished leaves its cards out"
+    _planned(store)
+    change = store.move([a], "now") if how == "move" else store.set_tier([a], "now")
+    assert store.item(a)["tier"] == "now" and store.item(a)["in_learning_order"] == 1
+    assert _owed(store) and store.cards_out()["out"] == [(b, store.item(b)["rel_path"])]
+    _planned(store)
+    store.undo(change)
+    assert store.item(a)["tier"] == "graduated" and store.item(a)["in_learning_order"] == 0 and _owed(store)
+    store.close()

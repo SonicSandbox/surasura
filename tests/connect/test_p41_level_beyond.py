@@ -48,7 +48,7 @@ def _level_jobs():
 
 def _library_of_28():
     """28 episodes: the top 20 and 2 more in Current, 3 in Goal, 2 in Finished and 1 in Goal taken out of the learning
-    order (*Take its new cards out*, then put back in Goal) — every one already mined. -> (top 20, rest of Current,
+    order (*Take its new cards out* in Goal) — every one already mined. -> (top 20, rest of Current,
     Goal in its order, Finished, the taken-out one, {item: file name})."""
     c.library(extra=25)
     with c.store() as s:
@@ -56,8 +56,9 @@ def _library_of_28():
         assert len(ids) == 28
         s.set_tier(ids[22:25], "goal")
         s.set_tier(ids[25:27], "graduated")
-        s.finish([ids[27]], keep_cards=False)
         s.set_tier([ids[27]], "goal")
+        # P4.1 L2 (TF fix 8): leaving Finished now brings an item back into the order, so it is taken out in Goal
+        s.set_learning_order([ids[27]], on=False)
         assert s.item(ids[27])["in_learning_order"] == 0
         for item_id in ids:
             s.receipt(item_id, "2026-10-07T09:00:00Z")

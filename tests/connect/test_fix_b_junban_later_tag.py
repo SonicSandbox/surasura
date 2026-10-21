@@ -20,3 +20,15 @@ def test_with_no_parent_named_or_surasura_the_later_tag_is_excluded_once():
     for settings in (None, {}, {"junban_tag": "Surasura"}):
         search = known_signal.query(["suspended"], ["日本語"], settings)
         assert search.count("-tag:Surasura::later") == 1, settings
+
+
+def test_take_its_new_cards_out_suspends_are_never_counted_under_the_named_parent_or_surasura():
+    # Why (P4.1 L2, TF fix 1; D23): *Take its new cards out* suspends a show's unstudied cards and tags them
+    # `<junban_tag>::out` (`unlisted.out_tag`). With the default signal (suspended) every one of them would mark its
+    # word known — a whole show's words, none of them learnt. Both the named parent's and Surasura's are excluded.
+    search = known_signal.query(["suspended"], ["日本語"], {"junban_tag": "MyTag"})
+    assert "-tag:MyTag::out" in search
+    assert "-tag:Surasura::out" in search
+    for settings in (None, {}, {"junban_tag": "Surasura"}, {"junban_tag": "surasura"}):
+        search = known_signal.query(["suspended"], ["中文"], settings)
+        assert search.lower().count("-tag:surasura::out") == 1, settings

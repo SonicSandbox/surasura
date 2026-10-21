@@ -2085,6 +2085,9 @@ class Store:
             change = self._change(cmd, "move")
             self._before(change, ordered)
             self._put(tier, block, where, cmd.version)
+            # --- P4.1 L2 (TF fix 8, G1.6-10): out of Finished by any path, its cards come back into the order ---
+            self._back_in_order(cmd, change, [r[0] for r in ordered if r[1] == "graduated" and tier != "graduated"])
+            # --- end P4.1 L2 ---
             cmd.touch({r[1] for r in ordered} | {tier})
             for item_id in block:
                 cmd.event(item_id, "placed", int(by == "user" if explicit is None else explicit),
@@ -2092,6 +2095,26 @@ class Store:
                 if by != cmd.by:
                     cmd.event_by[item_id] = by
             return change
+
+    # --- P4.1 L2 (TF fix 8; adversary S5): leaving Finished brings an item back into the learning order ---
+    def _back_in_order(self, cmd, change, ids):
+        """Items leaving Finished by a move or a tier change (the command line's `place`, the Content Manager's
+        Promote / Demote — not only *Put back* and a join): `in_learning_order` 1, as `put_back_finished` and `join` set
+        it (G1.6-10: anything taken out comes back), the values replaced on the change for its undo, and `pins_version`
+        bumped (T-4: its cards are owed back to Anki). Without it a Finished item taken out and moved to Current kept
+        its new cards suspended at every re-order."""
+        status = []
+        for part in _chunks(list(ids), 500):
+            status += [(i, "in_learning_order", old, 1) for i, old in self.conn.execute(
+                f"SELECT id, in_learning_order FROM items WHERE id IN ({','.join('?' * len(part))})", part).fetchall()
+                if old != 1]
+        if not status:
+            return
+        self.conn.executemany("UPDATE items SET in_learning_order = 1 WHERE id = ?", [(i,) for i, *_r in status])
+        cmd.feed(i for i, *_r in status)
+        cmd.touch(pins=True)
+        change.status = list(change.status) + status
+    # --- end P4.1 L2 ---
 
     def _in_place(self, tier, ordered, before_id, after_id, end=False):
         """True when the move would leave every item in `tier` and the tier's sequence unchanged (`end`: the block
@@ -2222,6 +2245,9 @@ class Store:
                 groups.setdefault(where, []).append(item_id)
             for where, group in groups.items():
                 self._put(tier, group, where, cmd.version)
+            # --- P4.1 L2 (TF fix 8, G1.6-10): Promote / Demote out of Finished brings its cards back into the order ---
+            self._back_in_order(cmd, change, [i for i in moving if rows[i][1] == "graduated" and tier != "graduated"])
+            # --- end P4.1 L2 ---
             if tier == "graduated":
                 self.conn.executemany("UPDATE items SET graduated_at = ? WHERE id = ?",
                                       [(_now(), i) for i in moving])
@@ -3710,7 +3736,7 @@ class Store:
             if change is None:
                 change = self._change(cmd, "put_back_finished")
             change.kind = "put_back_finished"
-            change.status = status
+            change.status = list(change.status) + status     # P4.1 L2 (TF fix 8): the move's own, when it set it
             return change
 
     def _undo_finish(self, cmd, change):
@@ -3979,14 +4005,15 @@ class Store:
         return {w: json.loads(n) for w, n in self.conn.execute("SELECT word, note_ids FROM made_words WHERE item_id = ?",
                                                                (item_id,))}
 
-    def record_anki_changes(self, changes):
+    def record_anki_changes(self, changes, by="connect"):     # P4.1 L2 (TF fix 10): `by`, the caller
         """The re-plan's record of the cards it changed for an item (05 §5.7, D14): [(item_id, action, [note ids],
-        before, after)], one short write; *Put back* restores exactly these, never more. Returns the record ids."""
+        before, after)], one short write; *Put back* restores exactly these, never more. Returns the record ids.
+        `by`: who recorded it — Connect's step ("connect"), the window's re-order host ("replan")."""
         rows = [(item_id, action, _dumps([int(n) for n in notes]), _dumps(before), _dumps(after), _now())
                 for item_id, action, notes, before, after in changes]
         if not rows:
             return []
-        with self._command("record_anki_changes", "connect") as cmd:
+        with self._command("record_anki_changes", by) as cmd:
             first = self.conn.execute("SELECT COALESCE(MAX(id), 0) FROM anki_changes").fetchone()[0] + 1
             self.conn.executemany("INSERT INTO anki_changes (item_id, action, notes, before, after, at) "
                                   "VALUES (?, ?, ?, ?, ?, ?)", rows)
@@ -4011,12 +4038,12 @@ class Store:
             out.append(row)
         return out
 
-    def mark_anki_reverted(self, change_ids):
+    def mark_anki_reverted(self, change_ids, by="connect"):     # P4.1 L2 (TF fix 10): `by`, as above
         """The re-plan put those cards back (Put back): their records are closed, kept. Returns how many."""
         ids = list(dict.fromkeys(change_ids))
         if not ids:
             return 0
-        with self._command("mark_anki_reverted", "connect") as cmd:
+        with self._command("mark_anki_reverted", by) as cmd:
             n = self.conn.execute(f"UPDATE anki_changes SET reverted_at = ? WHERE reverted_at IS NULL AND id IN "
                                   f"({','.join('?' * len(ids))})", [_now()] + ids).rowcount
             if n:
@@ -4434,6 +4461,8 @@ class Store:
             elif getattr(change, "options", None):
                 out, skipped = self._undo_options(cmd, change)
             elif kind == "set_tier" and change.status:              # W3.2: an arrival finished, its watched
+                out, skipped = self._undo_finish(cmd, change)
+            elif kind == "move" and change.status:      # P4.1 L2 (TF fix 8): out of Finished, back in the order
                 out, skipped = self._undo_finish(cmd, change)
             elif kind == "join" and change.pieces is not None:       # (before the status: W3.2's join has one)
                 out, skipped = self._undo_join(cmd, change)

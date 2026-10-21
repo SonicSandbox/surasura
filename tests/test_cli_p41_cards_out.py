@@ -67,3 +67,30 @@ def test_junban_auto_and_resort_positions_only_ask_nothing_and_record_nothing(mo
     assert asked[0]["cards_out"] is False
     assert store.anki_changes_of([a]) == []
     store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("report, recorded", [
+    ({"ok": True, "written": [], "left": [201, 202]}, False),                    # a take-out dropped at the re-check
+    ({"ok": False, "written": [], "failures": [(301, "collection is not open")], "left": [301]}, False),  # Put back
+    ({"ok": True, "written": [], "left": []}, True),                             # clean: the plan is Anki's
+])
+def test_connects_step_records_the_plan_only_when_the_take_out_and_put_back_landed(monkeypatch, language, report,
+                                                                                   recorded):
+    """TF fix 6 (adversary S3): a take-out planned but not acted on, or a Put back that left a record open, comes back
+    in the run's report (`left` / `failures`) — Connect's step then doesn't record the plan as written, so its next
+    look re-plans and tries again; a clean run records it."""
+    from app.connect import replan
+    calls = []
+    monkeypatch.setattr(verbs, "_record_planned", lambda lang, versions: calls.append(versions))
+    monkeypatch.setattr(replan, "key", lambda *a, **k: "same")
+    current = SimpleNamespace(result=object(), rows=lambda mode: [], places=None, key="same",
+                              versions={"order_version": 3, "pins_version": 2})
+    from app import analyzer
+    monkeypatch.setattr(analyzer, "journey_is_current", lambda *a, **k: True)
+    monkeypatch.setattr(verbs, "_session", lambda loaded: None)
+    auto, asked = _fake_auto(report)
+    settings = {"target_language": language, "junban_scope": "all", "enable_junban": True}
+    verbs._junban_auto(SimpleNamespace(wait=0), language, settings, auto, current=current, positions_only=False)
+    assert asked[0]["cards_out"] is True
+    assert bool(calls) is recorded

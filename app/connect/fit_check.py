@@ -13,6 +13,10 @@ known to be timed to its video — a card cut from a subtitle a few seconds off 
   Its one segment's `offset` is the shift Anki Miner cuts the lines by (`subtitle_offset`, RUNBOOK-P1.3 1.3.4): tsubasa
   checks with `--dry-run`, so the copy itself is never re-timed.
 - **Neither** → not timed. 2.x lists it once in *Needs you*, with no button (E16; 3.0: *Mine anyway*, G1.3-6).
+- **Trust my subtitles' timing** (`connect_trust_timing`, off by default; laptop try row 9, P-LF-9): with nothing on this
+  PC to check it (no tsubasa) and no pairing of hato's, the episode mines at its subtitle's own times (no shift), as
+  *Mine anyway* would. A pairing hato says it didn't check (`untimed`, `extracted`, …) still waits; an installed
+  tsubasa still decides.
 
 tsubasa decides by `outcome` and `segments` only (P0.2: on `ERROR` its other fields carry defaults). It is GPL, so it
 is run as a program, never imported (K1). Found on PATH (`tsubasa`, or `tsubasa.exe`); a test hands its own.
@@ -33,6 +37,9 @@ TIMED, NOT_TIMED, RETRY = "timed", "not timed", "retry"
 TIMEOUT_S = 120             # a file without a usable index is read whole: 10–30 s over a network share (P0.2)
 CREATE_NO_WINDOW = 0x08000000
 REFERENCES = ("text-track", "picture-track", "speech-mask")     # what tsubasa timed against (09-hato-layer v2 P13)
+TRUST_LABEL = "Trust my subtitles’ timing"                         # Settings → Anki & mining (settings_strings)
+NO_CHECKER = ("Nothing on this PC can check its timing (no tsubasa), so no cards yet. If your subtitles are synced, "
+              f"turn on {TRUST_LABEL} in Settings → Anki & mining.")
 
 
 def version(pairing):
@@ -47,11 +54,12 @@ def find_tsubasa():
     return shutil.which("tsubasa")
 
 
-def check(pairing, video, subtitle, tsubasa=None, run=None, timeout=TIMEOUT_S):
-    """-> (TIMED, NOT_TIMED or RETRY, who decided: `hato` · `tsubasa` · None, the reason in plain words when not
-    timed). RETRY: tsubasa didn't answer (timed out, couldn't start) — the runner asks again at its next look.
-    `tsubasa`: its program (default: found on PATH); `run`: `subprocess.run`'s stand-in (tests)."""
-    return fit(pairing, video, subtitle, tsubasa, run, timeout)[:3]
+def check(pairing, video, subtitle, tsubasa=None, run=None, timeout=TIMEOUT_S, trust=False):
+    """-> (TIMED, NOT_TIMED or RETRY, who decided: `hato` · `tsubasa` · `you` (`trust`) · None, the reason in plain
+    words when not timed). RETRY: tsubasa didn't answer (timed out, couldn't start) — the runner asks again at its next
+    look. `tsubasa`: its program (default: found on PATH); `run`: `subprocess.run`'s stand-in (tests); `trust`:
+    `connect_trust_timing`."""
+    return fit(pairing, video, subtitle, tsubasa, run, timeout, trust)[:3]
 
 
 def hato_timed(pairing, subtitle):
@@ -76,14 +84,18 @@ def hato_timed(pairing, subtitle):
     return digest.hexdigest() == want.lower()
 
 
-def fit(pairing, video, subtitle, tsubasa=None, run=None, timeout=TIMEOUT_S):
+def fit(pairing, video, subtitle, tsubasa=None, run=None, timeout=TIMEOUT_S, trust=False):
     """`check`, with the shift to cut by -> (verdict, who, why, offset in seconds: tsubasa's one segment's, else
     0.0)."""
     if hato_timed(pairing, subtitle):
         return TIMED, "hato", None, 0.0
     exe = tsubasa if tsubasa is not None else find_tsubasa()
     if not exe:
-        return NOT_TIMED, None, "Not timed to its video, so no cards.", 0.0
+        if pairing:                 # hato paired it but didn't time it: the switch never releases that
+            return NOT_TIMED, None, "Not timed to its video, so no cards.", 0.0
+        if trust:                   # you said your subtitles are synced: cut where the subtitle puts the lines
+            return TIMED, "you", None, 0.0
+        return NOT_TIMED, None, NO_CHECKER, 0.0
     command = [exe, "--pair", video, subtitle, "--dry-run", "--json", "--no-results"]
     options = {"creationflags": CREATE_NO_WINDOW} if sys.platform == "win32" and run is None else {}
     try:

@@ -638,7 +638,9 @@ def _fit(steps, ledger, lang, job):
         picked["offset"] = 0.0
         ledger.set_state(jid, "mining", picked=picked)
         return
-    verdict, _who, why, offset = steps.fit(lang, job, pairing, picked.get("video"), picked.get("file"))
+    verdict, who, why, offset = steps.fit(lang, job, pairing, picked.get("video"), picked.get("file"))
+    if verdict == fit_check.TIMED and who == "you":
+        log.info("Connect: job %s mined at its subtitle's own times: you trust your subtitles' timing", jid)
     if verdict == fit_check.RETRY:
         raise Wait(why)                     # tsubasa couldn't answer this time: asked again at the next look
     if verdict != fit_check.TIMED:
@@ -1537,8 +1539,9 @@ class Steps:
                 "absent": out.get("skipped") == "anki miner absent"}
 
     def fit(self, lang, job, pairing, video, subtitle):
-        """-> (verdict, who, why, offset): `subtitle` is the library's copy (hato's sha256 is checked on it)."""
-        return fit_check.fit(pairing, video, subtitle)
+        """-> (verdict, who, why, offset): `subtitle` is the library's copy (hato's sha256 is checked on it);
+        `connect_trust_timing` (off by default) mines an unpaired episode nothing here can check at its own times."""
+        return fit_check.fit(pairing, video, subtitle, trust=(self.loaded or {}).get("connect_trust_timing") is True)
 
     def mine(self, lang, job, picked, words, attempt):
         """One Anki Miner batch -> {"outcomes", "app", "doubt"} (doubt: the run crashed or timed out — the words it

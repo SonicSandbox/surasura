@@ -142,7 +142,68 @@ def test_an_absent_tsubasa_program_is_not_timed_without_running_anything():
         raise AssertionError("ran with no tsubasa program")
 
     got = fit_check.check(None, VIDEO, SUBTITLE, tsubasa="", run=must_not_run)
-    assert got == (fit_check.NOT_TIMED, None, "Not timed to its video, so no cards.")
+    assert got == (fit_check.NOT_TIMED, None, fit_check.NO_CHECKER)
+
+
+def test_with_nothing_to_check_it_the_reason_names_the_cause_and_the_switch():
+    # Laptop try row 9: every episode said "Not timed" although its subtitles were synced — Connect never looked,
+    # because nothing on the PC could check them. The reason must say so (no tsubasa) and name the way out, not read
+    # as a verdict on the subtitle.
+    got = fit_check.fit(None, VIDEO, SUBTITLE, tsubasa="", run=None)
+    assert got[0] == fit_check.NOT_TIMED
+    assert "no tsubasa" in got[2] and "Trust my subtitles’ timing" in got[2]
+
+
+def test_trusting_your_subtitles_mines_an_unpaired_episode_at_its_own_times_without_a_checker():
+    # P-LF-9 (off by default): with the switch on and nothing on this PC to check it, an episode hato never paired
+    # (a library folder's, one you placed) mines at its subtitle's own times — no shift, nothing run.
+    def must_not_run(*_a, **_kw):
+        raise AssertionError("ran with no tsubasa program")
+
+    got = fit_check.fit(None, VIDEO, SUBTITLE, tsubasa="", run=must_not_run, trust=True)
+    assert got == (fit_check.TIMED, "you", None, 0.0)
+    assert fit_check.check(None, VIDEO, SUBTITLE, tsubasa="", run=must_not_run, trust=True)[0] == fit_check.TIMED
+
+
+def test_trust_is_off_by_default():
+    # The signed rule (K16 / G1.3-6) holds until the switch is turned on: no checker, no pairing → not timed.
+    assert fit_check.fit(None, VIDEO, SUBTITLE, tsubasa="")[0] == fit_check.NOT_TIMED
+    assert fit_check.fit(None, VIDEO, SUBTITLE, tsubasa="", trust=False)[0] == fit_check.NOT_TIMED
+
+
+def test_trust_never_overrules_hatos_own_untimed_or_extracted_verdict(tmp_path):
+    # hato placed these by name only (untimed) or took the video's own track out unchecked (extracted): a pairing
+    # that says it isn't checked still waits for *Mine anyway*, switch or not.
+    body = "1\n00:00:01,000 --> 00:00:02,500\n上層部の決定だ\n".encode("utf-8")
+    subtitle = tmp_path / "上層部の話 01.srt"
+    subtitle.write_bytes(body)
+    for verdict in ("untimed", "extracted", "forced", "timed"):
+        record = _hato_record(body, verdict=verdict, subtitle_sha256="0" * 64)    # "timed" here fails the sha256
+        got = fit_check.fit(record, VIDEO, str(subtitle), tsubasa="", trust=True)
+        assert got[0] == fit_check.NOT_TIMED, verdict
+        assert "Trust my subtitles" not in got[2], "the switch can't release it: don't point at it"
+
+
+def test_trust_leaves_an_installed_tsubasa_in_charge():
+    # tsubasa on this PC is a real check: its refusal still stops the episode, its one segment's offset still cuts.
+    refused = fit_check.fit(None, VIDEO, SUBTITLE, tsubasa="tsubasa", trust=True,
+                            run=_tsubasa({"outcome": "REFUSED", "reason": "no speech match"}))
+    assert refused[0] == fit_check.NOT_TIMED and refused[1] == "tsubasa"
+    shifted = fit_check.fit(None, VIDEO, SUBTITLE, tsubasa="tsubasa", trust=True,
+                            run=_tsubasa({"outcome": "CONFIDENT", "segments": [dict(ONE_SEGMENT, offset=2.5)]}))
+    assert shifted == (fit_check.TIMED, "tsubasa", None, 2.5)
+
+
+def test_connects_steps_read_the_switch_from_settings(monkeypatch):
+    # The runner's real fit step hands `connect_trust_timing` to the check: absent or false → the signed rule; true →
+    # an unpaired episode with no checker mines.
+    from app.connect import runner
+    monkeypatch.setattr(fit_check, "find_tsubasa", lambda: None)
+    job = {"id": 1, "item_id": 1}
+    assert runner.Steps({}).fit("ja", job, None, VIDEO, SUBTITLE)[0] == fit_check.NOT_TIMED
+    assert runner.Steps({"connect_trust_timing": False}).fit("ja", job, None, VIDEO, SUBTITLE)[0] == fit_check.NOT_TIMED
+    assert runner.Steps({"connect_trust_timing": True}).fit("ja", job, None, VIDEO, SUBTITLE) == (
+        fit_check.TIMED, "you", None, 0.0)
 
 
 def test_a_tsubasa_run_that_fails_to_start_or_times_out_is_retried_not_refused():
@@ -169,3 +230,10 @@ def test_tsubasa_is_always_run_dry_and_json_so_it_never_retimes_the_file():
     assert "--dry-run" in seen[0]
     assert "--json" in seen[0]
     assert seen[0][:4] == ["tsubasa", "--pair", VIDEO, SUBTITLE]
+
+
+def test_the_reason_names_the_switch_by_the_label_settings_shows():
+    # The reason sends you to a Settings row: its name must be the row's own, or the pointer leads nowhere.
+    from app.qt import settings_strings
+    assert settings_strings.ROWS["connect_trust_timing"][0] == fit_check.TRUST_LABEL
+    assert fit_check.TRUST_LABEL in fit_check.NO_CHECKER

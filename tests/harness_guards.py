@@ -10,24 +10,32 @@
 * no moment of the run without a test's guard: PYTEST_CURRENT_TEST names the gap between two tests and the end of the
   run, so a worker thread that outlived its test is refused a real per-user path there too;
 * Tk interpreters are freed on the main thread, never by a worker's collection (Windows fatal 0x80000003);
-* a test's child process never outlives the run: one still running at the end is ended, named, and fails the run.
+* a test's child process never outlives the run: one still running at the end is ended, named, and fails the run;
+* no test reaches a real Anki: a connection to the AnkiConnect port is refused for the whole run, between tests and
+  from a thread that outlived its test included, and fails the test (or the run) naming it (`_guard_anki_port`).
 
 A conftest takes them by importing these names at its top level and never binding them again (pytest registers a
-conftest's hooks and fixtures by name): `EVERY_SUITE` below, plus `pytest_sessionfinish` — a module suite's conftest
-imports that hook itself (tests/test_harness_guards.py checks every one); tests/conftest.py, whose session-finish hook
-does more, calls `session_finish_guards()` from its own. Their own tests: tests/test_harness_guards.py.
+conftest's hooks and fixtures by name): `EVERY_SUITE` below, plus `pytest_sessionfinish` and `pytest_configure` — a
+module suite's conftest imports those hooks itself (tests/test_harness_guards.py checks every one); tests/conftest.py,
+whose own hooks do more, calls `session_finish_guards()` and `configure_guards()` from them. Their own tests:
+tests/test_harness_guards.py.
 """
 import atexit
+import json
 import os
+import re
 import shutil
+import socket
 import sys
 import tempfile
 import threading
 import time
+import traceback
 
 import pytest
 
-EVERY_SUITE = ("_guard_real_local_data", "pytest_collection", "pytest_runtest_teardown", "pytest_runtestloop")
+EVERY_SUITE = ("_guard_real_local_data", "_guard_anki_port", "pytest_collection", "pytest_runtest_protocol",
+               "pytest_runtest_teardown", "pytest_runtestloop")
 
 
 # --- The real per-user roots are out of reach --------------------------------------------------------------------- #
@@ -255,8 +263,10 @@ def _watch_children():
     started = subprocess.Popen.__init__
 
     def __init__(self, *args, **kwargs):
+        command = kwargs.get("args", args[0] if args else None)
+        _check_python_child(command, kwargs.get("env"))
         started(self, *args, **kwargs)
-        _watch_child(_CHILDREN, self.pid, kwargs.get("args", args[0] if args else None))
+        _watch_child(_CHILDREN, self.pid, command)
     __init__._watched_by_conftest = True
     subprocess.Popen.__init__ = __init__
 
@@ -306,11 +316,13 @@ def _end_leaked_children(children, grace_ms=10000):
 @pytest.hookimpl(wrapper=True)
 def pytest_runtestloop(session):
     """Once every test has run (not on Ctrl-C): a child still running after the grace (SURASURA_TEST_CHILD_GRACE_MS,
-    10 s) is ended and named, and fails the run — counted in the closing line too ("1 leaked child")."""
+    10 s) is ended and named, and fails the run — counted in the closing line too ("1 leaked child"). A try at the
+    AnkiConnect port no test's end claimed (after the last test's) fails the run the same way ("1 anki port")."""
     result = yield
     leaked = _end_leaked_children(_CHILDREN, int(os.environ.get("SURASURA_TEST_CHILD_GRACE_MS", "10000")))
+    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+    session.testsfailed += _report_late_anki_tries(reporter)       # (defined below, with the Anki-port guard)
     if leaked:
-        reporter = session.config.pluginmanager.get_plugin("terminalreporter")
         for pid, command, test in leaked:
             line = (f"LEAKED CHILD PROCESS {pid}, still running after every test had ended (ended now): {command!r} "
                     f"from {test}")
@@ -326,10 +338,248 @@ def pytest_runtestloop(session):
 _watch_children()
 
 
-def session_finish_guards():
+# --- No test reaches a real Anki ---------------------------------------------------------------------------------- #
+# Every suite's AnkiConnect is a stand-in (a patched `urlopen`, Junban's helpers patched, an adapter's methods faked),
+# so nothing listens on the AnkiConnect port while the tests run — unless Anki is open on this machine, with the user's
+# own profile. A test whose patch closed before its thread's last request, or that faked all but one call, sent that
+# request to a real Anki and stayed green (refused, it reads as "Anki is closed"): six such tries, 2026-10-20. So for
+# the whole process a connection to the port is refused before it leaves — any host, through socket.connect /
+# connect_ex (urllib, http.client, requests, a raw socket) and asyncio's Windows proactor — and remembered with the
+# test running then, the thread and the test that started it, and where in the code. At each test's end every try
+# not yet claimed fails that test (an error at its teardown naming each); one after the last test fails the run. The
+# ports: AnkiConnect's own and the stand-in addresses the suites give it (nothing listens there: a try there is a patch
+# that didn't hold). A test that must reach a real Anki (the live drills, DevTest only) carries the mark ANKI_PORT_MARK;
+# the port is open only while that test runs, to its own code and the threads it started, never to a thread it leaves
+# behind. A child process is its own interpreter, out of the guard's reach: every child starts with
+# SURASURA_NO_ANKI_SYNC=1 (set for the run below; the app's Anki callers stay off under it), and a Python child of
+# Surasura's code an unmarked test starts without it, whose settings give Anki's own port, is flagged as a try
+# (Windows: the child watch's Popen wrapper; a test meeting "Anki closed" points its child at port 9). NO_PROXY=* for
+# the run: a loopback proxy would carry a request to the port past the check. Not covered: code calling the C socket
+# type's methods directly, and a child (not Python, or not caught by the check above) that reaches Anki anyway.
+ANKI_PORT_MARK = "anki_port"
+ANKI_PORTS = frozenset({8765,                        # AnkiConnect's (app/anki_connect.DEFAULT_URL)
+                        8766, 8770, 18765, 28765})   # the suites' stand-in anki_connect_url / junban_url addresses
+_CONNREFUSED = 10061 if sys.platform == "win32" else 111            # what connect_ex answers for a closed port
+_ANKI_TRIES = []          # [address, the test running then, thread, the test that started it, where, claimed]
+_ANKI_OPEN = [None]       # the node id of the test carrying ANKI_PORT_MARK while it runs, else None
+_STARTED_IN = "_surasura_started_in"                                # a thread's attribute: the test that started it
+_PROJECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+class AnkiPortRefused(ConnectionRefusedError):
+    """A test tried the AnkiConnect port (refused by the test harness: a real Anki may be listening there)."""
+
+
+def _test_now():
+    return os.environ.get("PYTEST_CURRENT_TEST") or BETWEEN_TESTS
+
+
+def _opted_in_now():
+    """Whether a marked test is running and this is its own code: the main thread, or a thread it started."""
+    node = _ANKI_OPEN[0]
+    if node is None or _test_now().rsplit(" (", 1)[0] != node:
+        return False
+    thread = threading.current_thread()
+    started_in = getattr(thread, _STARTED_IN, None)
+    return thread is threading.main_thread() or (started_in is not None and started_in.rsplit(" (", 1)[0] == node)
+
+
+def _anki_port_refuses(family, address):
+    """Whether a connection to `address` goes to the AnkiConnect port, from anything but an opted-in test's own code."""
+    if family not in (socket.AF_INET, socket.AF_INET6) or not isinstance(address, tuple) or len(address) < 2:
+        return False
+    return address[1] in ANKI_PORTS and not _opted_in_now()
+
+
+_SURASURA_CODE = re.compile(r"app_entry|\b(?:app|modules)[./\\]|\b(?:from|import) (?:app|modules)\b")
+
+
+def _child_reaches_anki(env):
+    """Whether a child's settings (its test root's settings.json, else this checkout's) give Anki's own port."""
+    from urllib.parse import urlsplit
+    path = os.path.join(env.get("SURASURA_TEST_ROOT") or _PROJECT, "settings.json")
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            settings = json.load(f)
+    except (OSError, ValueError):
+        settings = {}
+    try:
+        from app import anki_connect
+        return urlsplit(anki_connect.address(settings if isinstance(settings, dict) else {})).port == 8765
+    except Exception:
+        return True
+
+
+def _check_python_child(command, env):
+    """A Python child running Surasura's code, started by anything but an opted-in test without SURASURA_NO_ANKI_SYNC,
+    whose settings point at Anki's own port: recorded as a try (the guard can't follow it into its process). A child
+    of a test that turned the switch off on purpose to meet "Anki closed" reads a closed or stand-in port: not one."""
+    parts = list(command) if isinstance(command, (list, tuple)) else [command]
+    if not parts or not all(isinstance(x, (str, bytes, os.PathLike)) for x in parts):
+        return
+    parts = [os.fsdecode(x) for x in parts]
+    first = parts[0] if len(parts) > 1 else (parts[0].split() or [""])[0]
+    name = os.path.basename(first.strip('"')).lower()
+    if not name.startswith("python") and os.path.normcase(first) != os.path.normcase(sys.executable):
+        return
+    env = env if env is not None else os.environ
+    if env.get(NO_ANKI) or _opted_in_now() or not _SURASURA_CODE.search(" ".join(parts)):
+        return
+    if not _child_reaches_anki(env):
+        return
+    thread = threading.current_thread()
+    _ANKI_TRIES.append([f"a child of Surasura's code with Anki's own port and no {NO_ANKI} (out of the guard's "
+                        f"reach): {command!r}", _test_now(), thread.name, getattr(thread, _STARTED_IN, None),
+                        _where(), False])
+
+
+def _where():
+    """The project's own frames nearest the try (innermost first): which code sent it."""
+    frames = [f for f in traceback.extract_stack()[:-3]
+              if f.filename.startswith(_PROJECT)
+              and os.path.basename(f.filename) not in ("harness_guards.py", "network_guard.py")]
+    return " <- ".join(f"{os.path.relpath(f.filename, _PROJECT)}:{f.lineno} {f.name}" for f in reversed(frames[-4:]))
+
+
+def _anki_refused(address):
+    thread = threading.current_thread()
+    _ANKI_TRIES.append([address, _test_now(), thread.name, getattr(thread, _STARTED_IN, None), _where(), False])
+    return AnkiPortRefused(f"the test harness refused a connection to the AnkiConnect port {address!r}: a test never "
+                           f"reaches a real Anki (tests/harness_guards.py; mark {ANKI_PORT_MARK} if it must)")
+
+
+def _guard_the_anki_port():
+    if getattr(socket.socket.__dict__.get("connect"), "_anki_port_guard", False):
+        return
+    real_connect, real_connect_ex = socket.socket.connect, socket.socket.connect_ex
+
+    def connect(sock, address):
+        if _anki_port_refuses(sock.family, address):
+            raise _anki_refused(address)
+        return real_connect(sock, address)
+
+    def connect_ex(sock, address):
+        if _anki_port_refuses(sock.family, address):
+            _anki_refused(address)
+            return _CONNREFUSED
+        return real_connect_ex(sock, address)
+
+    connect._anki_port_guard = connect_ex._anki_port_guard = True
+    socket.socket.connect, socket.socket.connect_ex = connect, connect_ex
+    try:
+        from asyncio.windows_events import IocpProactor        # asyncio's Windows loop connects past socket.connect
+    except ImportError:
+        return
+    real_proactor_connect = IocpProactor.connect
+
+    def proactor_connect(self, conn, address):
+        if _anki_port_refuses(conn.family, address):
+            raise _anki_refused(address)
+        return real_proactor_connect(self, conn, address)
+    IocpProactor.connect = proactor_connect
+
+
+def _tag_threads():
+    """Every thread remembers the test that started it, for the message when it tries the port after that test."""
+    if getattr(threading.Thread.start, "_tagged_by_conftest", False):
+        return
+    start = threading.Thread.start
+
+    def started(self):
+        starter = threading.current_thread()
+        inherited = None if starter is threading.main_thread() else getattr(starter, _STARTED_IN, None)
+        try:
+            setattr(self, _STARTED_IN, inherited or _test_now())
+        except AttributeError:
+            pass
+        return start(self)
+    started._tagged_by_conftest = True
+    threading.Thread.start = started
+
+
+NO_ANKI = "SURASURA_NO_ANKI_SYNC"
+os.environ.setdefault(NO_ANKI, "1")      # the app's Anki callers stay off, in this process and every child it starts
+os.environ["NO_PROXY"] = os.environ["no_proxy"] = "*"       # no proxy carries a request to the port past the check
+_guard_the_anki_port()
+_tag_threads()
+
+
+def _claim_anki_tries():
+    """Every try not yet claimed, marked claimed -> one line each."""
+    lines = []
+    for attempt in list(_ANKI_TRIES):
+        if attempt[5]:
+            continue
+        attempt[5] = True
+        address, during, thread, started_in, where = attempt[:5]
+        line = f"{address!r} during {during}, thread {thread!r}"
+        if started_in and started_in.rsplit(" (", 1)[0] != during.rsplit(" (", 1)[0]:
+            line += f" started in {started_in}"
+        lines.append(line + (f", from {where}" if where else ""))
+    return lines
+
+
+@pytest.fixture(autouse=True)
+def _guard_anki_port():
+    """Fail a test during which anything tried the AnkiConnect port (refused: a real Anki may be listening there) —
+    its own code, a thread left by an earlier test, or a try in the gap before it — naming each try."""
+    yield
+    tries = _claim_anki_tries()
+    assert not tries, ("the AnkiConnect port was tried, or a child that could was started unguarded (refused or "
+                       "flagged; a real Anki could have answered): " + "; ".join(tries))
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_protocol(item, nextitem):
+    """The port open to a test carrying ANKI_PORT_MARK, from its set-up to its teardown (decided on the item itself, so
+    a suite whose conftest loads mid-collection — `pytest modules` — reads it too)."""
+    _ANKI_OPEN[0] = item.nodeid if item.get_closest_marker(ANKI_PORT_MARK) else None
+    try:
+        return (yield)
+    finally:
+        _ANKI_OPEN[0] = None
+
+
+def pytest_configure(config):
+    """Registers the opt-in mark (a historic hook: a conftest that loads late gets it too). tests/conftest.py, which
+    has its own, calls configure_guards()."""
+    configure_guards(config)
+
+
+def configure_guards(config):
+    config.addinivalue_line("markers", f"{ANKI_PORT_MARK}: the test may reach the AnkiConnect port (a real Anki: the "
+                            "live drills only); refused, and the test failed, for every other test")
+
+
+def _report_late_anki_tries(reporter):
+    """The tries no test's end claimed, each named -> how many."""
+    late = _claim_anki_tries()
+    for line in late:
+        line = f"ANKI PORT TRIED after its test had ended (refused): {line}"
+        if reporter:
+            reporter.write_sep("!", line, red=True)
+            reporter.stats.setdefault("anki port", []).append(line)
+        else:
+            print(line)
+    return len(late)
+
+
+def _say_tries_at_exit():
+    """A try after the session's end (a daemon thread at interpreter exit): refused, and said on stderr."""
+    for line in _claim_anki_tries():
+        sys.stderr.write(f"ANKI PORT TRIED at interpreter exit (refused): {line}\n")
+
+
+atexit.register(_say_tries_at_exit)
+
+
+def session_finish_guards(session=None):
     _free_tk_interpreters()     # what a still-running thread holds stays held, deleted at exit on this thread
     _end_leaked_children(_CHILDREN, grace_ms=0)     # an interrupted run's children: ended, nothing waited for
+    reporter = session.config.pluginmanager.get_plugin("terminalreporter") if session is not None else None
+    if _report_late_anki_tries(reporter) and session is not None and session.exitstatus == 0:
+        session.exitstatus = 1  # a try after the test loop (an interrupted run's, or at the session's end)
 
 
 def pytest_sessionfinish(session, exitstatus):
-    session_finish_guards()
+    session_finish_guards(session)

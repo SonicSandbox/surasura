@@ -474,37 +474,43 @@ def test_the_force_path_a_move_landing_mid_write_runs_exactly_one_more_job(gate,
     replan = R.Replan(registry, GenerateController(registry, settle=0), settings_service.SettingsService(), "ja",
                       keeper_options={"launcher": _Launches(), "pending": lambda: False})   # open_host: in process
     try:
-        with _patched(fake):
-            replan.host.catch_up()                          # the ladder laid once (every card), the plan recorded
-            assert h.until(lambda: replan.host.opened == 1 and not replan.host.busy(), seconds=30)
-            host = replan.host._host
-            real_job, real_run = host._job, reposition.run
-            monkeypatch.setattr(host, "_job", lambda kind: kinds.append(kind) or real_job(kind))
-            moved = []
+        with _patched(fake):        # held until the host's thread has ended: its loop asks Anki on its own (`_unplaced`)
+            try:
+                replan.host.catch_up()                          # the ladder laid once (every card), the plan recorded
+                assert h.until(lambda: replan.host.opened == 1 and not replan.host.busy(), seconds=30)
+                host = replan.host._host
+                real_job, real_run = host._job, reposition.run
+                monkeypatch.setattr(host, "_job", lambda kind: kinds.append(kind) or real_job(kind))
+                moved = []
 
-            def run_with_a_move(settings, **kw):            # the user moves a file while the write is in Anki
-                report = real_run(settings, **kw)
-                if not moved:                               # (a handle of this thread's own: sqlite's rule)
-                    other = library_store.open_store("ja", get_data_path("ja"), get_user_files_path("ja"))
-                    try:
-                        moved.append(rp_tests._move_later_to_top(other))
-                        replan.store_moved("ja", other.versions())
-                    finally:
-                        other.close()
-                return report
-            monkeypatch.setattr(reposition, "run", run_with_a_move)
-            replan.host.after_generate()                    # the correction after a Generate
-            ok = h.until(lambda: len(kinds) >= 2 and not replan.host.busy(), seconds=15)
-            assert ok, kinds
-            _quiet(replan)
-            # Nothing pending, no retry armed: no third job can start.
-            assert not replan.host.busy() and host._retry_at is None, (kinds, host._retry_kind)
-        assert kinds == ["generate", "move"], kinds
-        assert host._force is False and "move" not in host._want
-        versions = store.versions()
-        assert versions["planned_order_version"] == versions["order_version"]
+                def run_with_a_move(settings, **kw):            # the user moves a file while the write is in Anki
+                    report = real_run(settings, **kw)
+                    if not moved:                               # (a handle of this thread's own: sqlite's rule)
+                        other = library_store.open_store("ja", get_data_path("ja"), get_user_files_path("ja"))
+                        try:
+                            moved.append(rp_tests._move_later_to_top(other))
+                            replan.store_moved("ja", other.versions())
+                        finally:
+                            other.close()
+                    return report
+                monkeypatch.setattr(reposition, "run", run_with_a_move)
+                replan.host.after_generate()                    # the correction after a Generate
+                ok = h.until(lambda: len(kinds) >= 2 and not replan.host.busy(), seconds=15)
+                assert ok, kinds
+                _quiet(replan)
+                # Nothing pending, no retry armed: no third job can start.
+                assert not replan.host.busy() and host._retry_at is None, (kinds, host._retry_kind)
+                assert kinds == ["generate", "move"], kinds
+                assert host._force is False and "move" not in host._want
+                versions = store.versions()
+                assert versions["planned_order_version"] == versions["order_version"]
+            finally:
+                live = replan.host._host
+                replan.finish(time.monotonic() + 5)
+                if live is not None and live._thread is not None:
+                    live._thread.join(10)
+                    assert not live._thread.is_alive(), "the host's thread outlived its finish (and the stand-in)"
     finally:
-        replan.finish(time.monotonic() + 5)
         store.close()
 
 

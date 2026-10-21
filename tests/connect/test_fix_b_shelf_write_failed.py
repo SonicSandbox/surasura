@@ -10,8 +10,8 @@ What each test holds still:
     back.
 
 Why the fake: the suspend call is Junban's AnkiConnect helper, monkeypatched to answer "busy" for one card; the
-adapter's other methods are faked on the instance. No test reaches Anki, no sleeps, no network. The ledger is a real
-SQLite file in a temp folder.
+adapter's other methods (the note-mod read before the write included) are faked on the instance. No test reaches
+Anki, no sleeps, no network. The ledger is a real SQLite file in a temp folder.
 """
 import contextlib
 
@@ -48,6 +48,7 @@ def test_shelve_refused_by_anki_raises_and_records_no_restore_point(ledger, monk
     adapter.writer = lambda verb: contextlib.nullcontext()
     adapter.reviewing = lambda: False
     adapter.add_tag = lambda note_ids, tag: None
+    adapter.note_mods = lambda note_ids: {}          # (the read before the write: Anki's, so faked too)
     chosen = [shelf.Card(5, 1, "勇気", 7)]
 
     with pytest.raises(anki_connect.AnkiError):

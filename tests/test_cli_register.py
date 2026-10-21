@@ -231,9 +231,9 @@ def test_a_register_that_builds_the_store_still_queues_the_drop():
         assert [(j["item_id"], j["source"]) for j in ledger.jobs("ja")] == [(line["file_id"], "hato")]
 
 
-# "surasura" / "source" / "youtube": Surasura's own records' names — another program claiming one would be released by
-# Trust my subtitles' timing (re-check of row 9)
-@pytest.mark.parametrize("producer", ["AnkiMiner", "my tool", "", "x" * 33, "surasura", "source", "youtube"])
+# "surasura" / "source": the names of records only Surasura writes — another program claiming one would be released by
+# Trust my subtitles' timing (re-check of row 9). "youtube" stays a program's name (test_placing_rules)
+@pytest.mark.parametrize("producer", ["AnkiMiner", "my tool", "", "x" * 33, "surasura", "source"])
 def test_a_producer_that_isnt_a_short_program_name_is_bad_data(producer):
     """Intent review #4: the placement log records the producer as who registered: never rewritten to "hato"."""
     c.library()

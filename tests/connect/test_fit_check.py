@@ -251,7 +251,7 @@ def test_another_programs_untimed_record_waits_and_only_surasuras_own_records_ar
     from app.connect import link
     from app.cli import connect_verbs
     assert set(fit_check.OWN_PRODUCERS) == {library_store.SOURCE_PRODUCER, link.PRODUCER, "youtube"}, "one rule"
-    assert set(fit_check.OWN_PRODUCERS) <= set(connect_verbs.RESERVED), "no other program can claim one"
+    assert {library_store.SOURCE_PRODUCER, link.PRODUCER} <= set(connect_verbs.RESERVED), "no other program claims one"
     for record in ({"schema": 1, "producer": "sonarr-sync", "verdict": "untimed"}, {}, [], "garbled"):
         got = fit_check.fit(record, VIDEO, SUBTITLE, tsubasa="", trust=True)
         assert got[0] == fit_check.NOT_TIMED, record

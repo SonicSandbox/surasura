@@ -99,9 +99,10 @@ def hato_timed(pairing, subtitle):
     return digest.hexdigest() == want.lower()
 
 
-# Surasura's own records: a folder's or + Add's origin (library_store.SOURCE_PRODUCER), a *Link…* (link.PRODUCER), its
-# YouTube / bilibili download (app/qt/windows.youtube_record: the transcript of that very video). `connect register`
-# refuses them as a producer (app/cli/connect_verbs.RESERVED), so no other program can claim them.
+# Released by the switch: Surasura's own records — a folder's or + Add's origin (library_store.SOURCE_PRODUCER) and a
+# *Link…* (link.PRODUCER), which `connect register` refuses from any other program (connect_verbs.RESERVED) — and a
+# YouTube / bilibili download's (`youtube`: Surasura's own, app/qt/windows.youtube_record, or a downloader the placing
+# rules name): its transcript is that very video's, so no timing is in doubt whoever registered it.
 OWN_PRODUCERS = ("source", "surasura", "youtube")
 
 

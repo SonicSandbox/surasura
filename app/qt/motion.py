@@ -291,6 +291,7 @@ class Clock(QObject):
         self.mode = Mode(parent=self)
         self.mode.changed.connect(self._mode_changed)
         self.on_frame_done = None                # the HUD's hook: called with (late_ms, work_ms) after each frame
+        self._after = []                         # called once at the end of the frame running now (`after_frame`)
 
     def _mode_changed(self, reduced):
         """Reduced motion turned on mid-motion (05 §5.10, M4.1 row 1): every running move — an animation or a spring —
@@ -340,6 +341,19 @@ class Clock(QObject):
         self._test_now = None
         if self._anims or self._springs:
             self._start_timer()
+
+    @property
+    def in_frame(self):
+        """True while a frame runs (an animation's or a spring's frame call)."""
+        return self._frame_now is not None
+
+    def after_frame(self, fn):
+        """`fn()` once at the end of the frame running now, after every animation and spring took it (C6: what a
+        frame's moves ask the screen for, asked once); outside a frame, now."""
+        if self._frame_now is None:
+            fn()
+        else:
+            self._after.append(fn)
 
     @property
     def test_time(self):
@@ -544,6 +558,12 @@ class Clock(QObject):
                 self._step_spring(s, now)
         finally:
             self._frame_now = None
+            after, self._after = self._after, []
+            for fn in after:
+                try:
+                    fn()
+                except Exception:
+                    sys.excepthook(*sys.exc_info())
         self._prune()
         work = (time.perf_counter() - t0) * 1000.0
         self.stats.frames += 1

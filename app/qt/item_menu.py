@@ -32,9 +32,8 @@ window's thread.
 import os
 from collections import namedtuple
 
-from PyQt6.QtCore import QObject, QPoint, Qt
+from PyQt6.QtCore import QObject, QPoint
 from PyQt6.QtGui import QAction
-from PyQt6.QtWidgets import QMenu
 
 from app import library_store
 from app.qt import bridge, confirm, drag, finished, rows, strings, windows
@@ -201,11 +200,7 @@ class ItemActions(QObject):
     def menu(self, row, at):
         """⋯: the moves, these, a separator and *Remove…* — a plain menu in the theme's style (Esc closes it), every
         entry's tip shown."""
-        m = QMenu(self.lst)
-        m.setObjectName("rowmenu")
-        m.setToolTipsVisible(True)
-        m.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-        m.setAccessibleName(strings.MENU_NAME.format(title=row.title))
+        m = drag.list_menu(self.lst, row.title)          # C4: the list's one menu, emptied as it hides
         for name, label, tip, ok in self.moves.menu_entries(row):
             act = QAction(label, m)
             act.setToolTip(tip)

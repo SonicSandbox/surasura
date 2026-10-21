@@ -73,11 +73,11 @@ def settle(ny, timeout=10):
 def world(qapp):
     made = []
 
-    def make(connect=None, asks=(), offline=None, connect_calls=None):
+    def make(connect=None, asks=(), offline=None, connect_calls=None, apply=False):
         data = path_utils.get_data_path("ja")
         os.makedirs(data, exist_ok=True)                    # the library folder is there (else: all of it offline)
         seed = window_seed.build()
-        writer = NeedsWriter(seed.library, apply=False)
+        writer = NeedsWriter(seed.library, apply=apply)
         win, services = open_window(qapp, seed, writer)
         made.append((win, services))
         ny = win.needs_you
@@ -213,11 +213,11 @@ def test_opening_the_page_marks_its_entries_seen_they_stay_listed_and_stop_count
 # --- the cards ----------------------------------------------------------------------------------------------------- #
 def test_cards_come_in_S3s_order_with_an_amber_edge_and_a_tooltip_on_every_button(world):
     seed, win, writer, ny = world()
-    assert ny.cards.order == [e.key for e in ny.entries]
     assert ny.entries[0].kind == service.BULK                 # four shows with files gone: one answer at the top
     assert all(b.toolTip() for b in ny.cards.buttons())      # N8: every button explains itself
     assert all(b.accessibleName() for b in ny.cards.buttons())
     win.show_tab("needs")
+    assert ny.cards.order == [e.key for e in ny.entries]
     card = ny.cards.card(ny.entries[1].key)
     assert wait_until(lambda: card.isVisible() and card.width() > 10, 5)
     img = card.grab().toImage()
@@ -589,3 +589,82 @@ def test_H_W5_a_kept_file_that_came_back_leaves_the_seen_file_at_the_next_look(w
     service.answer("ja", [service.item_key(still), service.item_key(there)])    # `there`: kept once, back since
     settle(ny)
     assert service.read_answered("ja") == {service.item_key(still)}, "a file still gone keeps its answer"
+
+
+# --- C1 (M4.1 row 4): a move works nothing out, a hidden page builds no card ---------------------------------------- #
+def _counting_views(ny):
+    """Count the views the page hands the controller (the shell's `show_library`, each view of a move)."""
+    seen = [0]
+    real = ny.view_in
+
+    def view_in(view):
+        seen[0] += 1
+        return real(view)
+    ny.view_in = view_in
+    return seen
+
+
+def test_C1_a_move_works_nothing_out_and_builds_no_card_and_a_file_gone_after_still_makes_its_card(world):
+    """C1: each of a move's views (the window's own order, the numbers', the store's, the settle's) worked the entries
+    out again on a worker — a stat of every Current file — and the hidden page's cards were built again under the
+    style sheet. A reorder changes nothing a card says. What it could break: a file gone after it must still make its
+    card (built once the page shows, never while it is hidden)."""
+    seed, win, writer, ny = world(apply=True)
+    ny.cards.flush()                                            # the cards the first look owes, built
+    carded = {e.data["group"] for e in ny.entries if e.kind in (service.GONE, service.NO_VIDEO)}
+    plain = next(r for r in rows_of(win)[1:] if service._group(r) not in carded
+                 and not any(e.missing for e in r.episodes) and drag_free(r))
+    views = _counting_views(ny)
+    gathers, builds = ny.gathers, ny.cards.builds
+    win.moves.menu_pick(plain, "up-next")                       # the window's own order at once, then the store's
+    assert wait_until(lambda: writer.saved and win.moves.expect is None and not win.moves.tickets
+                      and rows_of(win)[0].key == plain.key
+                      and win.services.library.view().rows[0].key == plain.key, 10)
+    for _ in range(20):
+        QApplication.processEvents()
+    assert views[0] >= 2                                        # the move's views reached the page
+    assert ny.gathers == gathers and not ny._running, "a reorder worked the entries out again"
+    assert ny.cards.builds == builds, "a reorder built cards again"
+    # a file of that row goes missing: its card comes — built when the page shows, not while it is hidden
+    ep = plain.episodes[0]
+    seed.library.commit(items=[{"id": ep.id, "availability": "missing"}], availability=True)
+    assert wait_until(lambda: any(e.kind == service.GONE and e.data["group"] == service._group(plain)
+                                  for e in ny.entries) and not ny._running, 10)
+    gone = next(e for e in ny.entries if e.kind == service.GONE and e.data["group"] == service._group(plain))
+    assert ny.cards.builds == builds, "a hidden page built its cards"
+    win.show_tab("needs")
+    card = ny.cards.cards.get(gone.key)
+    assert card is not None and ny.cards.builds > builds
+    assert wait_until(lambda: card[1].isVisible(), 5)
+    assert ep.label in " ".join(lab.text() for lab in card[1].findChildren(QLabel))
+
+
+def drag_free(row):
+    """A row the menu can make Up Next (not hato's mix)."""
+    return row.source != "hato"
+
+
+def test_C1_two_shows_with_cards_swapped_are_worked_out_again_their_cards_in_the_new_order_none_built(world):
+    """What skipping a reorder could break: the shows' cards stand in Current's order (S3), so a reorder that swaps two
+    shows with cards is worked out again — the cards move, none is built again (the bulk answer's files order-free)."""
+    seed, win, writer, ny = world()
+    win.show_tab("needs")                                       # (its entries marked seen: that look let land)
+    assert wait_until(lambda: ny.counts()[1] == 0 and not ny._running, 10)
+    settle(ny)
+    view = win.page_widgets["needs"].view_model
+    rows_ = list(view.rows)
+    shows = [e.data["group"] for e in ny.entries if e.kind == service.GONE]
+    assert len(shows) >= 2
+    a = next(i for i, r in enumerate(rows_) if service._group(r) == shows[0])
+    b = next(i for i, r in enumerate(rows_) if service._group(r) == shows[1])
+    rows_[a], rows_[b] = rows_[b], rows_[a]
+    swapped = view._replace(rows=tuple(r._replace(index=i + 1) for i, r in enumerate(rows_)))
+    gathers, builds = ny.gathers, ny.cards.builds
+    ny.view_in(swapped)
+    assert wait_until(lambda: ny.gathers > gathers and not ny._running, 10)
+    for _ in range(5):
+        QApplication.processEvents()
+    order = [e.data["group"] for e in ny.entries if e.kind == service.GONE]
+    assert order[:2] == [shows[1], shows[0]]
+    assert ny.cards.order == [e.key for e in ny.entries]
+    assert ny.cards.builds == builds

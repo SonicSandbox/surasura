@@ -703,7 +703,8 @@ def test_the_package_proof_runs_on_everything_it_proves():
     paths = _package_paths()
     for path in ("packaging/**", "package_app.py", "updater_helper.py", "app/updater.py", "app/update_checker.py",
                  "app_entry.py", "app/build_info.py", "app/cli/**", "scripts/cli_smoke.py",
-                 ".github/workflows/package.yml", ".github/workflows/pr-merge.yml"):
+                 ".github/workflows/package.yml", ".github/workflows/pr-merge.yml",
+                 "requirements.txt"):      # T1 B: a tsubasa pin bump alone is proved frozen too
         assert path in paths, path
 
 

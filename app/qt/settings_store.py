@@ -19,6 +19,8 @@ into the slots the page leaves for them (`custom_row`).
   (Settings' automation row) — then calls `app/connect/resume.turned_on(before, after)` on a worker: off → on moves
   Connect's watermarks, so nothing that arrived while it was off is mined; anything else does nothing there. Connect's
   own switch (`settings_connect`) needs none: `switch.turn_on` sets the watermarks before its save.
+- **`kick_on_trust(before, changes)`** (laptop try row 9, P-LF-9): *Trust my subtitles' timing* turned on starts
+  Connect (`kick.kick`, on a worker), so the episodes waiting as *Not timed* are picked again now, not at its next start.
 
 GUI_Design_Guidelines_Qt: the page's controls (no new rules), a tooltip on every field and button.
 """
@@ -54,6 +56,34 @@ def resume_connect(before, changes):
     bridge.run_in_worker(_turned_on, before, after,
                          failed=lambda info: applog.log("settings", f"Connect's watermarks: {info[0]}"))
     return True
+
+
+def kick_on_trust(before, changes, store=None):
+    """After a settings write of `changes` onto `before`: `connect_trust_timing` off -> on starts Connect on a worker,
+    once `store`'s queued write has landed (the started Connect reads settings.json from disk). `kick.kick` does nothing
+    while Connect is off or running: a running Connect reads the switch at its next episode, and the ones it set aside
+    this run mine at its next start (the same gap as *Mine anyway*'s, P4.1 follow-up F-3). -> True when it was asked."""
+    if changes.get("connect_trust_timing") is not True or (before or {}).get("connect_trust_timing") is True:
+        return False
+    from app.services import settings as settings_service
+    after = settings_service.thaw(before) if before is not None else {}
+    for key, value in changes.items():
+        settings_service.put(after, key, value)
+    bridge.run_in_worker(_kick, after, store,
+                         failed=lambda info: applog.log("settings", f"Connect's start: {info[0]}"))
+    return True
+
+
+FLUSH_S = 10            # the longest the start waits for the switch's write (another program holding the lock)
+
+
+def _kick(settings, store=None):
+    """(A worker.) Connect started for the episodes the trust switch releases, after the write landed."""
+    from app.connect import kick
+    flush = getattr(store, "flush", None)
+    if flush is not None and not flush(FLUSH_S):
+        applog.log("settings", "Trust my subtitles' timing: its write hadn't landed; Connect starts anyway")
+    return kick.kick(settings)
 
 
 def _turned_on(before, after):

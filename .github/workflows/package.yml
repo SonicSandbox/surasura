@@ -15,6 +15,7 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
     # pr-merge.yml's PROOF_PATHS holds the same list (tests/test_packaging_config.py checks the two match).
+    # requirements.txt: tsubasa's pin (T1 B), so a bump alone is proved frozen with its tsubasa.exe checked.
     paths:
       - "packaging/**"
       - "package_app.py"
@@ -27,6 +28,7 @@ on:
       - "scripts/cli_smoke.py"
       - ".github/workflows/package.yml"
       - ".github/workflows/pr-merge.yml"
+      - "requirements.txt"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}

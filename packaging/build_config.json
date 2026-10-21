@@ -1,5 +1,5 @@
 {
-  "_about": "The build's one configuration (S3.1 D15): packaging/Surasura.spec and package_app.py read it, never a settings.json. modules: which optional modules ship (2.5.0 shipped junban, koe, youtube_downloader); koe also needs its folder. parts: update.json's parts (D4), first match wins: a path ending in / is a folder, \"\" every file left.",
+  "_about": "The build's one configuration (S3.1 D15): packaging/Surasura.spec and package_app.py read it, never a settings.json. modules: which optional modules ship (2.5.0 shipped junban, koe, youtube_downloader); koe also needs its folder. parts: update.json's parts (D4; tsubasa: its program and its name tables, so a tsubasa bump is one small part, T1 B), first match wins: a path ending in / is a folder, \"\" every file left.",
   "modules": {
     "junban": true,
     "koe": true,
@@ -25,6 +25,7 @@
                               "_internal/scripts/", "_internal/samples/"]},
     {"name": "qt", "paths": ["_internal/PyQt6/", "_internal/licenses/"]},
     {"name": "dict", "paths": ["_internal/unidic_lite/", "_internal/jieba/", "_internal/defaults/"]},
+    {"name": "tsubasa", "paths": ["tsubasa.exe", "_internal/tsubasa/"]},
     {"name": "runtime", "paths": [""]}
   ]
 }

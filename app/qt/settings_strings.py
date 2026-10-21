@@ -166,6 +166,12 @@ ROWS = {
     "connect_video_folders": ("Where videos are looked for", "Surasura pairs a subtitle with its video by name",
                               "The folders (and their subfolders) where Connect looks for a moved video, for this "
                               "language", "video folders pair moved"),
+    "connect_trust_timing": ("Trust my subtitles’ timing",
+                             "When nothing on this PC can check them, mine at the subtitles’ own times",
+                             "Surasura mines an episode by itself only once hato or tsubasa has checked its subtitles "
+                             "play in time with the video. With neither on this PC, every episode waits for Mine "
+                             "anyway. Turn this on if your subtitles are already synced. hato’s untimed subtitles "
+                             "still wait", "trust timing synced subtitles not timed tsubasa"),
     "junban_own_tag": ("Your own cards first",
                        "Cards you made yourself go before Surasura’s, in the order you made them — never suspended",
                        "Cards you mine yourself go ahead of the ones Surasura Connect makes, in the order you mined "

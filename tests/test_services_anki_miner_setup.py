@@ -195,12 +195,11 @@ def test_needs_setup_when_its_profile_is_missing_the_dot_shows_the_worst_of_its_
 def test_before_37_the_fix_carries_its_update_mark_for_the_pages_update_button(monkeypatch):
     # setup.py marks the pre-3.7 profile check `update`; the look passes it on (the wizard shows *Update Anki Miner…*)
     miner = _miner("ok", "ok", "needs-you", "not-checked", version="3.6.0")
-    miner[2]["say"] = "Anki Miner 3.7 or newer needs no setup here. Update it and press Check again."
     miner[2]["update"] = True
     _pieces(monkeypatch, miner=miner, found={"path": MINER_PATH, "app": "3.6.0"})
     result = M.look({}, "ja")
     assert result["state"] == "needs-setup"
-    assert result["fix"]["update"] is True and result["fix"]["say"].startswith("Anki Miner 3.7 or newer")
+    assert result["fix"]["update"] is True and "Manage profiles" in result["fix"]["do"]
 
 
 def test_a_check_that_stops_connect_is_the_fix_before_ankiweb_which_does_not(monkeypatch):

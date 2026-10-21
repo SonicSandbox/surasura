@@ -4,7 +4,7 @@ fixes it. Connect has no account to sign in to: what stands in for "signed out" 
 rule for it is to name it, offer its one action, and do everything else meanwhile.
 
 `checks(settings, language)` -> {"ready", "checks", "anki_profile", "anki_miner"}. Each check is
-`{"id", "state", "say", "do", "blocks"}`:
+`{"id", "state", "say", "do", "blocks"}` (+ `"update": True` where updating Anki Miner is the better fix):
 
 - `state`: `ok` · `waiting` (Connect waits by itself: Anki closed, another profile open, Anki Miner busy — the status
   line's, never *Needs you*) · `needs-you` (only you can fix it) · `not-checked` (it can't be looked at yet: it needs
@@ -276,13 +276,10 @@ def _anki_miner(settings, language, answered):
     except anki_miner.AnkiMinerError as e:
         check = _miner_error("anki_miner_profile", e)
         if e.kind == "needs-you" and name == anki_miner.DEFAULT_PROFILE:
-            # only before 3.7 (from 3.7 the usual profile is used, `choose_profile`): the update first, the profile by
-            # hand as the way to keep this Anki Miner (Michi's AM-profile-copy scope, option A); `update` shows the
-            # wizard's Update button
-            check["say"] = "Anki Miner 3.7 or newer needs no setup here. Update it and press Check again."
-            check["do"] = ("Or keep this Anki Miner and make its profile by hand: in Anki Miner, Manage profiles… → New, "
-                           "name it Surasura; then in its Settings, Whitelist → choose file: "
-                           f"{anki_miner.whitelist_path(language)}")
+            check["do"] = ("In Anki Miner: Manage profiles… → New, name it Surasura; then in its Settings, Whitelist → "
+                           f"choose file: {anki_miner.whitelist_path(language)}")
+            # only before 3.7 (from 3.7 the usual profile is used, `choose_profile`): updating is the better fix — the
+            # wizard leads with it and its Update button (Michi's AM-profile-copy scope, option A)
             check["update"] = True
         return out + [check] + rest("anki_miner_profile", "Checked once Connect has an Anki Miner profile."), found
     called = next((entry.get("name") for entry in listed if entry.get("id") == profile), None) or profile

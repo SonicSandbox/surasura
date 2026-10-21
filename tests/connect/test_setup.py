@@ -272,9 +272,8 @@ def test_before_37_a_missing_surasura_profile_shows_the_two_guided_steps(monkeyp
     check = _by_id(setup.checks(_settings(fake_miner), "ja"))["anki_miner_profile"]
     assert check["state"] == "needs-you" and "Manage profiles" in check["do"]
     assert anki_miner.whitelist_path("ja") in check["do"], "the file to choose, with its real path"
-    # the update leads (from 3.7 no profile is needed: the usual one is used); the steps by hand stay as the other way
-    assert check["say"] == "Anki Miner 3.7 or newer needs no setup here. Update it and press Check again."
-    assert check["do"].startswith("Or keep this Anki Miner") and check.get("update") is True
+    # marked: updating is the better fix (from 3.7 no profile is needed); the wizard leads with it, in its own words
+    assert check.get("update") is True and '"Surasura"' in check["say"]
 
 
 def test_from_37_no_surasura_profile_means_no_profile_line_and_no_update(monkeypatch, ready_37):

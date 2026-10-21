@@ -43,7 +43,7 @@ from PyQt6 import sip
 from PyQt6.QtCore import QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont, QFontMetricsF, QLinearGradient, QPainter, QPen, QRadialGradient
 from PyQt6.QtWidgets import (QAbstractButton, QApplication, QComboBox, QFileDialog, QHBoxLayout, QLabel, QLayout,
-                             QProgressBar, QPushButton, QScrollArea, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget)
+                             QBoxLayout, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget)
 
 from app import path_utils, settings_manager, theme
 from app.qt import applog, bridge, confirm, motion, strings, style, windows
@@ -299,10 +299,30 @@ class Choice(QAbstractButton):
                self.dot if dot is False else dot)
         if new != (self.line, self.recommended, self.dot):
             self.line, self.recommended, self.dot = new
+            self.updateGeometry()                         # its words' width moved (`minimumSizeHint`)
+            if self.channel is not None:
+                self.channel.updateGeometry()
+                self.channel.fit()
             self.update()
 
     def sizeHint(self):
         return QSize(_px(150), _px(42 if self.small else 76))
+
+    def minimumSizeHint(self):
+        return QSize(self.needed_width(), self.sizeHint().height())     # never narrower than its words
+
+    def needed_width(self):
+        """The width its words are drawn in (`paintEvent`): the dot, the title and *Recommended*; the line."""
+        pad = _px(16 if not self.small else 12)
+        title = QFontMetricsF(_font("body", 600)).horizontalAdvance(self.title)
+        if self.dot:
+            title += _px(10) + _px(10)
+        if self.recommended:
+            rec = _font("eyebrow")
+            rec.setLetterSpacing(QFont.SpacingType.PercentageSpacing, 110)
+            title += _px(12) + QFontMetricsF(rec).horizontalAdvance(S.RECOMMENDED)
+        line = QFontMetricsF(_font("row-sub")).horizontalAdvance(self.line) if self.line and not self.small else 0
+        return math.ceil(2 * pad + max(title, line)) + 1
 
     def focusInEvent(self, event):
         self._keyed = event.reason() != Qt.FocusReason.MouseFocusReason
@@ -379,6 +399,11 @@ class GlyphChoice(Choice):
     def sizeHint(self):
         return QSize(_px(430), _px(250))
 
+    def needed_width(self):
+        glyph = QFontMetricsF(_font("first-run-heading", 700, GLYPH_SCALE, theme.font_families(self.key)))
+        name = QFontMetricsF(_font("body", 400))
+        return math.ceil(2 * _px(30) + max(glyph.horizontalAdvance(self.glyph), name.horizontalAdvance(self.title))) + 1
+
     def paintEvent(self, _event):
         self.paints += 1
         p = QPainter(self)
@@ -421,6 +446,26 @@ class Channel(QWidget):
         self.row = QHBoxLayout(self)
         self.row.setContentsMargins(0, 0, 0, 0)
         self.row.setSpacing(gap)
+
+    def _needed(self):
+        """The width its choices' words take side by side (each at least its own: `Choice.minimumSizeHint`)."""
+        return sum(ch.needed_width() for ch in self.choices) + self.row.spacing() * max(0, len(self.choices) - 1)
+
+    def minimumSizeHint(self):
+        # as narrow as one choice: narrower than all side by side, they stack (`resizeEvent`)
+        least = self.row.minimumSize()
+        return QSize(max((ch.needed_width() for ch in self.choices), default=0), least.height())
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.fit()
+
+    def fit(self):
+        way = (QBoxLayout.Direction.LeftToRight if self.width() >= self._needed()
+               else QBoxLayout.Direction.TopToBottom)
+        if self.row.direction() != way:                   # the words never cut: one above another when narrow
+            self.row.setDirection(way)
+            self.updateGeometry()
 
     def add(self, choice):
         choice.channel = self
@@ -532,14 +577,13 @@ class SwitchRow(QWidget):
         words.setSpacing(_px(2))
         head = QHBoxLayout()
         head.setSpacing(_px(10))
-        self.name = _label("wizlabel", name, self)
-        head.addWidget(self.name)
+        self.name = _label("wizlabel", name, self, wrap=True)
+        head.addWidget(self.name, 1)
         self.rec = _label("wizrec", S.RECOMMENDED, self)
         self.rec.setVisible(recommended)
         head.addWidget(self.rec)
-        head.addStretch(1)
         words.addLayout(head)
-        self.line = _label("wizsub", line, self)
+        self.line = _label("wizsub", line, self, wrap=True)
         self.line.setVisible(bool(line))
         words.addWidget(self.line)
         row.addLayout(words, 1)
@@ -571,10 +615,21 @@ def _button(text, tip, slot, parent=None, name=None, kind=None):
     return b
 
 
+class _PageScroll(QScrollArea):
+    """Scrolls up and down only, so it asks for its page's least width (never a page cut at the right)."""
+
+    def minimumSizeHint(self):
+        page = self.widget()
+        least = super().minimumSizeHint()
+        if page is None:
+            return least
+        return QSize(page.minimumSizeHint().width() + self.verticalScrollBar().sizeHint().width(), least.height())
+
+
 def _scrolled(page):
     """`page` in a frameless scroll area: at its full height when the window is shorter than it (the text, the
     pictures and the buttons are never squeezed into each other), the window's height otherwise; never sideways."""
-    area = QScrollArea()
+    area = _PageScroll()
     area.setObjectName("wizscroll")
     area.setFrameShape(QScrollArea.Shape.NoFrame)
     area.setWidgetResizable(True)
@@ -601,7 +656,7 @@ def _split_path(text):
     return text[:found.start()].rstrip(), found.group(0).strip()
 
 
-_PATH_AT_END = re.compile(r"(?<!\S)[A-Za-z]:\\.*$", re.S)
+_PATH_AT_END = re.compile(r"(?<!\S)[A-Za-z]:\\\S(?:.*\S)?\.\w+\s*$", re.S)
 
 
 def _set_text(label, text):
@@ -671,8 +726,8 @@ class FlowLayout(QLayout):
 
     def minimumSize(self):
         size = QSize()
-        for item in self._items:                          # an item is placed at its hint: never narrower
-            size = size.expandedTo(item.minimumSize()).expandedTo(item.sizeHint())
+        for item in self._items:
+            size = size.expandedTo(item.minimumSize())
         return size
 
     def _place(self, rect, move):
@@ -683,8 +738,8 @@ class FlowLayout(QLayout):
             hint = item.sizeHint()
             if x + hint.width() > rect.right() + 1 and line > 0:
                 x, y, line = rect.x(), y + line + self._gap, 0
-            if move:
-                item.setGeometry(QRect(QPoint(x, y), hint))
+            if move:                                      # never past the line's end (a button wider than it)
+                item.setGeometry(QRect(QPoint(x, y), QSize(min(hint.width(), rect.right() + 1 - x), hint.height())))
             x += hint.width() + self._gap
             line = max(line, hint.height())
         return y + line - rect.y()
@@ -810,6 +865,10 @@ class FadedSentence(QWidget):
         bright = _font("first-run-heading", 700, SENTENCE_SCALE, theme.font_families(self.language))
         gap = _px(18)
         fm = QFontMetricsF(faded)
+        drawn = sum(QFontMetricsF(bright if i == new else faded).horizontalAdvance(w) for i, w in enumerate(words))
+        k = min(1.0, self.width() / max(1.0, drawn + gap * (len(words) - 1)))   # narrower than the line: smaller
+        if k < 1.0:
+            p.scale(k, k)
         base = fm.ascent() + _px(6)
         x = 0.0
         dim = style.qcolor(theme.mix(style.colours()["ink-faint"], 70, style.colours()["bg"]))
@@ -850,6 +909,9 @@ class CardsPicture(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
         label_w, card_w, card_h, gap = _px(70), _px(96), _px(58), _px(10)
+        k = min(1.0, self.width() / max(1, label_w + len(words) * (card_w + gap)))   # narrower: all of it, smaller
+        if k < 1.0:
+            p.scale(k, k)
         word_f = _font("body", 700, 1.25, theme.font_families(self.language))
         small = _font("mini", 400)
         rows = ((S.ORDER_TODAY, words, False), (S.ORDER_WITH, tuple(reversed(words)), True))
@@ -1110,7 +1172,7 @@ class _Page(QWidget):
         self.box = QVBoxLayout(self)
         self.box.setContentsMargins(0, _px(36), 0, _px(20))
         self.box.setSpacing(_px(14))
-        self.title = _label("wiztitle", title, self)
+        self.title = _label("wiztitle", title, self, wrap=True)
         self.box.addWidget(self.title)
         self.line = _label("wizline", line, self, wrap=True)
         self.line.setVisible(bool(line))
@@ -1537,7 +1599,9 @@ class ShowsPage(_Page):
         line.addWidget(title)
         count = row_count(r)
         folder = str(r.get("folder") or "")
-        sub = _label("wizrowline", S.ROW_LINE.format(count=count, folder=folder) if folder else count, w)
+        # wraps, a long folder after a backslash too (it widened the page past the window: the review's B1)
+        sub = _label("wizrowline", _breakable(S.ROW_LINE.format(count=count, folder=folder)) if folder else count, w,
+                     wrap=True)
         f = sub.font()
         f.setFamilies(list(theme.path_font_families(self.wiz.language)))      # a path's ¥ is a backslash again
         sub.setFont(f)
@@ -1571,6 +1635,22 @@ class _Tile(QWidget):
         p.setPen(_c("ink-dim"))
         p.drawText(QRectF(self.rect()), Qt.AlignmentFlag.AlignCenter, self.title[:1])
         p.end()
+
+
+class _Combo(QComboBox):
+    """A menu that takes the wheel only once focused (the page scrolls under it otherwise), and never asks for a long
+    deck name's width."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.setMinimumContentsLength(16)
+
+    def wheelEvent(self, event):
+        if self.hasFocus():
+            super().wheelEvent(event)
+        else:
+            event.ignore()
 
 
 class OrderPage(_Page):
@@ -1607,7 +1687,7 @@ class OrderPage(_Page):
         deck = QHBoxLayout()
         deck.setSpacing(_px(14))
         deck.addWidget(_label("wizlabel", S.DECK, self.controls))
-        self.deck_box = QComboBox(self.controls)
+        self.deck_box = _Combo(self.controls)
         self.deck_box.setToolTip(S.DECK_PICK_TIP)
         self.deck_box.setAccessibleName(S.DECK)
         self.deck_box.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -1617,13 +1697,14 @@ class OrderPage(_Page):
         deck.addStretch(1)
         rows.addLayout(deck)
         rows.addWidget(style.separator(self.controls))
-        later = QHBoxLayout()
-        later.addWidget(_label("wizlabel", S.LATER, self.controls), 1)
+        later = QVBoxLayout()                             # the words above the three (beside them they were wider
+        later.setSpacing(_px(6))                          # than the least window at Large text)
+        later.addWidget(_label("wizlabel", S.LATER, self.controls, wrap=True))
         self.later = Channel(S.LATER_NAME, self.controls)
         for key in ("leave", "mark", "aside"):
             self.later.add(Choice(key, S.LATER_CHOICES[key], S.LATER_TIPS[key], self.later, small=True))
-        self.later.setFixedWidth(_px(430))
-        later.addWidget(self.later)
+        self.later.setMaximumWidth(_px(430))              # (narrower only in a window narrower than it)
+        later.addWidget(self.later, 0, Qt.AlignmentFlag.AlignLeft)
         rows.addLayout(later)
         rows.addWidget(style.separator(self.controls))
         self.open_anki = SwitchRow(S.OPEN_ANKI, S.OPEN_ANKI_LINE, S.OPEN_ANKI_TIP, self.controls)
@@ -1860,13 +1941,17 @@ class CardsPage(_Page):
         update = bool((fix or {}).get("update")) and not ready      # before 3.7: the update first (option A)
         sub, path = _split_path(sub)
         by_hand = update or bool(path)                    # the steps go under the buttons, the path on its own line
-        _set_text(self.name, name)
-        _set_text(self.sub, "" if by_hand else sub)
+        if update:
+            name = S.MINER_UPDATE_FIRST
+            sub = f"{S.MINER_BY_HAND}\n{sub}" if sub else ""
+        _set_text(self.name, _breakable(name))            # (neither is selected: a path in them may break)
+        _set_text(self.sub, "" if by_hand else _breakable(sub))
         _show(self.sub, bool(sub) and not by_hand)
         _set_text(self.steps, sub if by_hand else "")
         _show(self.steps, bool(sub) and by_hand)
         self.path_text = path
         _set_text(self.path, _breakable(path))
+        self.path.setAccessibleDescription(path)          # a reader hears the path, not its break marks
         _show(self.path, bool(path))
         _show(self.btn_copy, bool(path))
         self.head.setStretchFactor(self.name, 0 if ready else 1)     # *Recommended* beside the name, not far right
@@ -1929,7 +2014,7 @@ class LevelPage(_Page):
             col.setSpacing(0)
             big = _label("wizbig", S.NONE_YET, self)
             col.addWidget(big)
-            col.addWidget(_label("wizbigsub", sub, self))
+            col.addWidget(_label("wizbigsub", sub, self, wrap=True))
             numbers.addLayout(col)
             self.big[key] = big
         numbers.addStretch(1)
@@ -1937,7 +2022,7 @@ class LevelPage(_Page):
         self.numbers_part = QWidget(self)
         self.numbers_part.setLayout(numbers)
         self.box.addWidget(self.numbers_part)
-        self.counting = _label("wizsub", S.COUNTING, self)
+        self.counting = _label("wizsub", S.COUNTING, self, wrap=True)
         self.box.addWidget(self.counting)
         self.box.addStretch(1)
         self.numbers = None
@@ -2264,6 +2349,7 @@ class SetupWizard(QWidget):
     def say(self, text):
         text = text or ""
         _set_text(self.say_line, _breakable(text))
+        self.say_line.setAccessibleName(text)             # a reader hears the words, not the break marks
         _show(self.say_line, bool(text))
 
     # --- moving between pages ------------------------------------------------------------------------------------- #

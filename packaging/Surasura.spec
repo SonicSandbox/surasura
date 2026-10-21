@@ -268,6 +268,51 @@ cli_exe = EXE(
     icon=[os.path.join(project_root, 'app', 'assets', 'images', 'app_icon.ico')],
 )
 
+# -----------------------------------------------------------------------------
+# tsubasa.exe: tsubasa's command line (T1 B, 2026-10-21), a console program beside Surasura.exe sharing its _internal\,
+# built from the tsubasa-sync package requirements.txt pins (packaging/tsubasa_entry.py, its console script written out).
+# Connect runs it as its own program and never imports it (K1). Its own slim Analysis, like surasura-cli's: tsubasa's
+# code rides inside tsubasa.exe, its name tables in _internal\tsubasa\ (tsubasa's own PyInstaller hook, found through
+# its pyinstaller40 entry point: no datas here), numpy is the one the app already ships. package_app.py refuses a build
+# whose installed tsubasa-sync or whose tsubasa.exe --version isn't the pinned one.
+# -----------------------------------------------------------------------------
+tsubasa_spec = importlib.util.find_spec('tsubasa')
+tsubasa_icon = os.path.join(list(tsubasa_spec.submodule_search_locations)[0], 'data', 'tsubasa.ico') \
+    if tsubasa_spec is not None and tsubasa_spec.submodule_search_locations else None
+tsubasa_a = Analysis(
+    [os.path.join(project_root, 'packaging', 'tsubasa_entry.py')],
+    pathex=[],
+    binaries=[],
+    datas=[],
+    hiddenimports=[],
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=excluded_modules + ['tsubasa.gui', 'tsubasa.dev', 'tkinter', '_tkinter', 'tkinterdnd2', 'pandas',
+                                 'PyQt6', 'requests', 'app', 'modules'],
+    noarchive=False,
+    optimize=0,
+)
+tsubasa_pyz = PYZ(tsubasa_a.pure)
+tsubasa_exe = EXE(
+    tsubasa_pyz,
+    tsubasa_a.scripts,
+    [],
+    exclude_binaries=True,
+    name='tsubasa',
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=False,
+    console=True,
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+    icon=[tsubasa_icon] if tsubasa_icon and os.path.isfile(tsubasa_icon) else None,
+)
+
 coll = COLLECT(
     exe,
     a.binaries,
@@ -275,6 +320,9 @@ coll = COLLECT(
     cli_exe,
     cli_a.binaries,
     cli_a.datas,
+    tsubasa_exe,
+    tsubasa_a.binaries,
+    tsubasa_a.datas,
     strip=False,
     upx=False,
     upx_exclude=[],

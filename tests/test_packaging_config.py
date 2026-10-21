@@ -23,6 +23,15 @@ def _source(path):
         return f.read()
 
 
+@pytest.fixture(autouse=True)
+def _tsubasa_as_pinned(monkeypatch):
+    """The build's tsubasa gates (T1 B) see the pinned tsubasa-sync installed and a whole tsubasa.exe, so each test
+    below proves its own step; tests/test_tsubasa_bundle.py proves the gates."""
+    pin = package_app.tsubasa_pin()
+    monkeypatch.setattr(package_app, "tsubasa_installed", lambda: pin)
+    monkeypatch.setattr(package_app, "tsubasa_version_of", lambda exe: (0, f"tsubasa {pin}"))
+
+
 def _dispatch_targets():
     """Every module app_entry.py's main() and _qt_window() import to run a command (`from app import analyzer` ->
     app.analyzer, `from app.qt import shell` -> app.qt.shell, `from app import main as dashboard` -> app.main)."""
@@ -148,7 +157,7 @@ def test_a_settings_json_that_enables_everything_changes_nothing(tmp_path):
     """The build machine's settings.json (every 2.x build toggle on) bundles nothing the build config leaves out."""
     config = json.loads(_source(CONFIG))
     config["modules"].update(junban=False, youtube_downloader=False, koe=False)
-    main, _cli = _run_spec(tmp_path, config, {"enable_junban": True, "enable_youtube_transcripts": True,
+    main, _cli, _tsubasa = _run_spec(tmp_path, config, {"enable_junban": True, "enable_youtube_transcripts": True,
                                                "enable_youtube_preview": True, "enable_reels": True})
     for module in ("modules.junban", "modules.youtube_downloader", "modules.koe", "modules.reels",
                    "modules.immersion_architect"):
@@ -157,7 +166,7 @@ def test_a_settings_json_that_enables_everything_changes_nothing(tmp_path):
 
 
 def test_the_shipped_config_bundles_what_2_5_0_shipped(tmp_path):
-    main, _cli = _run_spec(tmp_path, json.loads(_source(CONFIG)), {})
+    main, _cli, _tsubasa = _run_spec(tmp_path, json.loads(_source(CONFIG)), {})
     for module in ("modules.junban", "modules.youtube_downloader", "modules.koe"):
         assert module not in main["excludes"]
     for module in ("modules.reels", "modules.immersion_architect"):
@@ -166,14 +175,14 @@ def test_the_shipped_config_bundles_what_2_5_0_shipped(tmp_path):
 
 
 def test_no_build_config_bundles_no_optional_module(tmp_path):
-    main, _cli = _run_spec(tmp_path, None, {"enable_junban": True})
+    main, _cli, _tsubasa = _run_spec(tmp_path, None, {"enable_junban": True})
     for module in ("modules.junban", "modules.youtube_downloader", "modules.koe", "modules.reels"):
         assert module in main["excludes"]
 
 
 @pytest.mark.skipif(not __import__("importlib.util").util.find_spec("PyQt6"), reason="PyQt6 is not installed")
 def test_the_window_gets_five_qt_modules_and_their_licences(tmp_path):
-    main, cli = _run_spec(tmp_path, json.loads(_source(CONFIG)), {})
+    main, cli, _tsubasa = _run_spec(tmp_path, json.loads(_source(CONFIG)), {})
     kept = {"PyQt6.QtCore", "PyQt6.QtGui", "PyQt6.QtWidgets", "PyQt6.QtNetwork", "PyQt6.QtSvg"}
     assert kept <= set(main["hiddenimports"]) and not kept & set(main["excludes"])
     for unused in ("PyQt6.QtQml", "PyQt6.QtQuick", "PyQt6.QtMultimedia", "PyQt6.QtPdf", "PyQt6.uic"):
@@ -194,7 +203,7 @@ def test_the_build_config_reads_and_carries_the_floors():
     assert config["upx"] is False
     assert config["qt_modules"] == ["QtCore", "QtGui", "QtWidgets", "QtNetwork", "QtSvg"]
     assert config["data_name"] == "Surasura"
-    assert [p["name"] for p in config["parts"]] == ["app", "qt", "dict", "runtime"]
+    assert [p["name"] for p in config["parts"]] == ["app", "qt", "dict", "tsubasa", "runtime"]
     assert config["parts"][-1]["paths"] == [""]
 
 
@@ -235,6 +244,8 @@ def test_each_program_file_falls_in_its_part():
              "_internal/PyQt6/Qt6/bin/Qt6Core.dll": "qt", "_internal/licenses/PyQt6/LICENSE": "qt",
              "_internal/unidic_lite/dicdir/sys.dic": "dict", "_internal/jieba/dict.txt": "dict",
              "_internal/defaults/ja/frequency_list_ja_global50k.csv": "dict",
+             "tsubasa.exe": "tsubasa", "_internal/tsubasa/data/aliases.tsv.gz": "tsubasa",
+             "_internal/numpy/core/_multiarray_umath.cp311-win_amd64.pyd": "runtime",
              "_internal/sqlite3.dll": "runtime", "_internal/python311.dll": "runtime",
              "_internal/templatesX/a.html": "runtime"}                  # a folder rule matches the folder only
     assert {path: package_app.part_of(path, parts) for path in cases} == cases
@@ -274,7 +285,7 @@ def test_a_whole_program_passes_every_check(tmp_path):
     folder, config = _program(tmp_path)
     failures, facts = package_app.check_program(str(folder), config)
     assert failures == []
-    assert facts["exes"] == ["Surasura.exe", "surasura-cli.exe", "updater.exe"]
+    assert facts["exes"] == ["Surasura.exe", "surasura-cli.exe", "tsubasa.exe", "updater.exe"]
     assert package_app._version_tuple(facts["sqlite"]) >= (3, 51, 3)
     assert facts["stamp"] == {"version": "3.0.0", "build_id": "20261012T000000Z-0a1b2c3d", "data_name": "Surasura",
                               "install_shape": "0123456789abcdef"}
@@ -283,6 +294,7 @@ def test_a_whole_program_passes_every_check(tmp_path):
 @pytest.mark.parametrize("damage, expected", [
     (lambda f: (f / "Setup.exe").write_bytes(b"MZ"), "programs at the top"),
     (lambda f: (f / "updater.exe").unlink(), "programs at the top"),
+    (lambda f: (f / "tsubasa.exe").unlink(), "programs at the top"),          # T1 B: tsubasa ships in every build
     (lambda f: (f / "Surasura.exe").rename(f / "surasura.exe"), "programs at the top"),
     (lambda f: (f / "settings.json").write_text("{}", encoding="utf-8"), "library"),
     (lambda f: (f / "User Files").mkdir(), "library"),
@@ -328,7 +340,7 @@ def _stubbed_build(tmp_path, monkeypatch, release, updater_builds=True, needs_in
         frozen.append(os.path.basename(cmd[-1]))
         if frozen[-1] == "Surasura.spec":
             (tmp_path / "dist" / "Surasura" / "_internal").mkdir(parents=True)
-            for exe in ("Surasura.exe", "surasura-cli.exe"):
+            for exe in ("Surasura.exe", "surasura-cli.exe", "tsubasa.exe"):
                 (tmp_path / "dist" / "Surasura" / exe).write_bytes(b"MZ")
         elif updater_builds:
             (tmp_path / "dist" / "updater.exe").write_bytes(b"MZ updater")

@@ -2356,9 +2356,14 @@ class ShellWindow(QMainWindow):
     def restart(self):
         """*Restart now* (Settings › Text size; laptop fixes row 15): the window closes the quit's way — what can't
         stop part-way ends first (E20), the window state is saved (size, place, this tab), the settings written — and
-        `main` starts the same program again once the claim is let go (`relaunch`)."""
+        `main` starts the same program again once the quit is over, the store's close included (`relaunch`). Offered
+        only while no Generate runs (`generating`)."""
         self.restart_asked = True
         self.close()
+
+    def generating(self):
+        """Whether a Generate waits or runs (the registry's newest snapshot): a quit now would stop it (B2-3)."""
+        return jobs_module.generating(self._jobs)
 
     # --- overlays --------------------------------------------------------------------------------------------- #
     def register_overlay(self, overlay):
@@ -2915,21 +2920,15 @@ def main(argv=None):
     window.first_frame.connect(services.load_numbers)  # W3.2 P0: the plan's numbers after it too
     window.show_first()
     hud.mark("shown")
-    relaunched = []
-
-    def release():
-        """The claim goes; then, a restart asked (`ShellWindow.restart`), the new start — it finds the claim free and
-        opens its window while this process finishes the store's close trigger."""
-        instance.release()
-        if window.restart_asked and not relaunched:
-            relaunched.append(relaunch(argv))
     try:
         code = app.exec()
     finally:
         try:
-            services.shutdown(release=release)            # the claim goes before the store's close trigger
+            services.shutdown(release=instance.release)   # the claim goes before the store's close trigger
         finally:
-            release()                                     # (once: done already unless the quit failed before it)
+            instance.release()                            # (once: done already unless the quit failed before it)
+            if window.restart_asked:                      # *Restart now* (`ShellWindow.restart`): the new start only
+                relaunch(argv)                            # once the store's close has ended (or its wait ran out, B2-4)
             quiet_exit(gone=(window,))                    # W3.4: nothing of Qt's or a worker's left for the teardown
     return code
 

@@ -311,6 +311,28 @@ def test_neither_the_users_generate_nor_an_automatic_one_opens_the_journey():
         assert "--no-open" in argv and argv[0] == "analyzer.py" and G.PROGRESS_FLAG in argv
 
 
+def test_IK2_4_a_run_that_opens_nothing_is_one_rule_in_run_args():
+    """IK2-4: `--no-open` comes from `run_args` (`opens=False`), never added by hand beside it: the window's argv is
+    the builder's own plus the progress flag; a run that opens nothing never passes `--app-mode` either (the
+    command line's `headless` is the same rule). The run signature never reads either, so nothing re-runs."""
+    from app import run_args
+    settings = dict(_settings(), open_app_mode=True)
+    opens = run_args.analyzer_args(settings, "ja")
+    assert "--app-mode" in opens and "--no-open" not in opens                 # the Tk dashboard's Generate, as before
+    quiet = run_args.analyzer_args(settings, "ja", opens=False)
+    assert "--no-open" in quiet and "--app-mode" not in quiet
+    assert quiet == run_args.analyzer_args(settings, "ja", headless=True)
+    controller = GenerateController(JobRegistry(), settle=0)
+    seen = []
+
+    def launcher(run):
+        seen.append(list(run.argv))
+        raise OSError("stand-in: the argv is all this test reads")
+    controller.request("ja", settings=settings, launcher=launcher)
+    assert h.until(lambda: seen and controller.state().state == G.FAILED, seconds=10)
+    assert seen[0] == quiet + [G.PROGRESS_FLAG] and seen[0].count("--no-open") == 1
+
+
 def test_a_restart_request_asks_the_run_to_stop_and_runs_after():
     registry = JobRegistry()
     controller = GenerateController(registry, settle=0)

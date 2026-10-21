@@ -88,6 +88,9 @@ def wants_from(items, works):
         if item.get("rel_path"):
             rels.setdefault(w, []).append(item["rel_path"])
         kind = item.get("source_type")
+        # TEMPORARY (laptop fixes row 18, B2-5): the root is the store typing a waiting video 'text' at take-in
+        # (`library_store._store_take_new`, `path_utils.infer_source_type`'s fallback); once the store stamps its media
+        # type there (Kura: PACKAGES fincov root, LM1 / LM4), this override goes
         if item.get("availability") == "waiting":       # a video waiting for its subtitles (K5: no text copy, so its
             kind = "subtitle"                           # type the fallback 'text'): a show's episode, as they'll make it
         kinds.setdefault(w, {})[kind] = kinds.get(w, {}).get(kind, 0) + 1

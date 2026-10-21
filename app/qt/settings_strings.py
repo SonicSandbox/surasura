@@ -535,8 +535,9 @@ CREDITS_README_ALSO = "README's Data Credits also names: {names}"
 OFFER_AGAIN_NAME = "Offer the skipped version again"
 # *Text size*: applied when Surasura starts again, so it asks at once (laptop fixes, row 15)
 TEXT_SIZE_RESTART_ASK = "Restart now to apply?"
-TEXT_SIZE_RESTART_BODY = ("{size} text shows once Surasura starts again. It reopens here, at the same size and place; "
-                          "anything running finishes first.")
+TEXT_SIZE_RESTART_BODY = "{size} text shows once Surasura starts again. It reopens here, at the same size and place."
+# ... and while a Generate runs nothing is asked: a quit would stop it and nothing starts it again (B2-3)
+TEXT_SIZE_AFTER_GENERATE = "Restart Surasura once Generate finishes to apply"
 TEXT_SIZE_RESTART_YES = "Restart now"
 TEXT_SIZE_RESTART_YES_TIP = "Closes Surasura and opens it again with the new text size"
 TEXT_SIZE_RESTART_NO = "Later"

@@ -151,19 +151,32 @@ def test_main_starts_the_program_again_after_the_claim_goes_only_when_a_restart_
             win.close()
         return 0
 
+    class Chores:                                              # the store's close trigger, recorded (B2-4)
+        def close(self, store=False):
+            pass
+
+        def close_store(self):
+            log.append("store closed")
+
+    def services(**_kw):
+        made = shell.Services()
+        made.chores, made.started = Chores(), True             # (as once the duties started: the close runs)
+        return made
     monkeypatch.setattr(single_module, "SingleInstance", lambda: _OneInstance(log))
     monkeypatch.setattr(start_gate, "gate", lambda _app: True)
-    monkeypatch.setattr(shell, "open_services", lambda **_kw: shell.Services())
+    monkeypatch.setattr(shell, "open_services", services)
     monkeypatch.setattr(shell, "open_window", spy_window)
     monkeypatch.setattr(QApplication, "exec", fake_exec)
     monkeypatch.setattr(shell, "prepare_process", lambda: None)
     monkeypatch.setattr(shell, "relaunch", lambda argv: log.append(("relaunch", list(argv))))   # never a real start
     assert shell.main(["app_entry.py", "--hud"]) == 0
+    assert log[0] == "released" and log[1] == "store closed"     # the claim goes before the store's close trigger
     if restart:
-        assert log[0] == "released" and log[1] == ("relaunch", ["app_entry.py", "--hud"])   # the claim free first
-        assert log.count(("relaunch", ["app_entry.py", "--hud"])) == 1                      # once
+        # B2-4: the new start only once the store's close has ended — never beside the old process's 7–15 s close
+        assert log[2:].count(("relaunch", ["app_entry.py", "--hud"])) == 1 and "relaunch" not in str(log[:2])
+        assert log.index(("relaunch", ["app_entry.py", "--hud"])) > log.index("store closed")
     else:
-        assert all(entry == "released" for entry in log)
+        assert all(entry in ("released", "store closed") for entry in log)
 
 
 def test_relaunch_starts_the_same_program_from_source_and_frozen(monkeypatch, tmp_path):

@@ -19,12 +19,14 @@ THEME_ARGS = {
 }
 
 
-def analyzer_args(settings, language=None, headless=False):
+def analyzer_args(settings, language=None, headless=False, opens=True):
     """The analyzer's argv (`['analyzer.py', ...]`) for Generate with `settings` (settings.json's shape).
 
     `language`: the one to generate (default: the settings' `target_language`). `headless`: started by another
-    program (`surasura-cli generate`) — always `--no-open` and never `--app-mode`, so nothing opens on the desktop.
-    Neither is in the run signature: the report a headless run writes is the one the window would reopen."""
+    program (`surasura-cli generate`). `opens` False: the 3.0 window's Generate — the journey is written, never opened
+    (laptop fixes row 12: its *Journey ↗* opens it). Either way the one rule: a run that opens nothing passes
+    `--no-open` and never `--app-mode`, so nothing opens on the desktop. Neither is in the run signature: the report
+    such a run writes is the one the window would reopen."""
     settings = settings or {}
     language = language or settings.get("target_language") or "ja"
     context = ((settings.get("logic") or {}).get("context") or {})
@@ -61,13 +63,14 @@ def analyzer_args(settings, language=None, headless=False):
 
     args.append(f'--theme={THEME_ARGS.get(settings.get("theme", "Dark Flow"), "default")}')
 
-    if settings.get("open_app_mode", False) and not headless:
+    opens = opens and not headless
+    if settings.get("open_app_mode", False) and opens:
         args.append('--app-mode')
 
     # Zen Limit (passed to analyzer just in case, or for consistency)
     zen_limit = settings.get("zen_limit", 50)
     if zen_limit > 0:
         args.append(f'--zen-limit={zen_limit}')
-    if headless:
+    if not opens:
         args.append('--no-open')
     return args

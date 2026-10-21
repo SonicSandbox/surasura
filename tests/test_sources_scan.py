@@ -2768,26 +2768,76 @@ def test_a_versions_folder_of_the_episodes_above_it_is_that_shows_never_a_show_o
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_a_subfolder_holding_an_episode_the_folder_above_lacks_stays_its_own_show(language, monkeypatch):
-    """Item 11, no guessing: a subfolder with an episode the folder above doesn't hold (6 beside 5), a video, or a
-    folder of its own is its own show, as before; a season folder (`Season 2`) stays its own show whatever its
-    episodes (S12)."""
+def test_only_a_folder_named_for_versions_joins_its_show_never_one_guessed_from_its_files(language):
+    """Item 11 by its NAME alone (LF-1): a subfolder of subtitles numbered like the folder's own — a split cour's
+    `Part 2`, a `Movie` — is its own show, its text never taken for the folder's episodes (the guess from contents
+    took Part 2's text for Part 1's three items); a versions folder, however its name is written (`Synced`, a
+    full-width `ＲＥＴＩＭＥＤ`), joins whatever it holds; a season folder (`Season 2`) stays its own (S12)."""
     store, data_dir = _empty(language)
     src, folder, show, tag, sub = _versions_show(language)
-    _write(os.path.join(folder, "synced", f"[Grp] {show} - 05 (1080p).{tag}.srt"), _text(language, 5, "。"))
-    _write(os.path.join(folder, "synced", f"[Grp] {show} - 06 (1080p).{tag}.srt"), _text(language, 6))
-    _write(os.path.join(folder, "with video", f"[Grp] {show} - 05 (1080p).{tag}.srt"), _text(language, 5, "！"))
-    _video(os.path.join(folder, "with video", f"[Grp] {show} - 05 (1080p).mkv"), body=b"\x1a\x45\xdf\xa3 another")
-    _write(os.path.join(folder, "nested", f"[Grp] {show} - 05 (1080p).{tag}.srt"), _text(language, 5, "？"))
-    os.makedirs(os.path.join(folder, "nested", "more"))
+    part2 = _write(os.path.join(folder, "Part 2", f"[Grp] {show} - 05 (1080p).{tag}.srt"), _text(language, 5, "！"))
+    _write(os.path.join(folder, "Movie", f"[Grp] {show} - 05 (1080p).{tag}.srt"), _text(language, 5, "？"))
+    _write(os.path.join(folder, "Synced", f"[Alt] {show} - 05.{tag}.srt"), _text(language, 5, "。"))
+    _write(os.path.join(folder, "ＲＥＴＩＭＥＤ", f"[Third] {show} - 05.{tag}.srt"), _text(language, 5, "、"))
+    _video(os.path.join(folder, "Synced", f"[Alt] {show} - 05.mkv"), body=b"\x1a\x45\xdf\xa3 another")
     _write(os.path.join(folder, "Season 2", f"{show} - 05.{tag}.srt"), _text(language, 7))
     _settle(src)
     with store:
         root = store.add_source(src)
         result = _look(store, language, root, first=True)
-        assert result["shows"] == 5 and _items(store) == 6
+        assert result["shows"] == 4 and _items(store) == 4
         assert sorted({os.path.dirname(f) for f in _library_files(data_dir)}) == sorted(
-            f"Library/{show}" + p for p in ("", "/synced", "/with video", "/nested", "/Season 2"))
+            f"Library/{show}" + p for p in ("", "/Part 2", "/Movie", "/Season 2"))
+        own = [f for f in _library_files(data_dir) if os.path.dirname(f) == f"Library/{show}"]
+        assert len(own) == 1 and _sha(os.path.join(data_dir, *own[0].split("/"))) != _sha(part2)
+        entry = _cache(language)["roots"][str(root)]["dirs"][ls.path_key(folder)]
+        assert sorted(entry["subtitles"]) == sorted(os.path.join(folder, n) for n in ("Synced", "ＲＥＴＩＭＥＤ"))
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_split_cours_part_2_of_same_named_subtitles_keeps_both_parts(language):
+    """LF-1, the adversary's P1: `Show/` holds episodes 1-3 with videos and subtitles, `Show/Part 2/` subtitles only,
+    named the same. Both parts are kept — six items — and each item holds its own part's text."""
+    store, data_dir = _empty(language)
+    src = _drive("driveA")
+    show, tag = _SHOWS[language][0], _OURS[language]
+    folder = os.path.join(src, show)
+    one, two = [], []
+    for n in (1, 2, 3):
+        _video(os.path.join(folder, f"[Grp] {show} - {n:02d} (1080p).mkv"), body=b"fake matroska %d" % n)
+        one.append(_write(os.path.join(folder, f"[Grp] {show} - {n:02d} (1080p).{tag}.srt"), _text(language, n)))
+        two.append(_write(os.path.join(folder, "Part 2", f"[Grp] {show} - {n:02d} (1080p).{tag}.srt"),
+                          _text(language, n, "、第二部")))
+    _settle(src)
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        assert _items(store) == 6
+        held = {_sha(os.path.join(data_dir, *f.split("/"))) for f in _library_files(data_dir)}
+        assert held == {_sha(p) for p in one + two}
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_versions_folder_that_gains_a_number_gives_the_show_its_next_episode_never_doubles(language):
+    """LF-2, the adversary's P2: `synced/` joined; later it gains episode 4, which the folder lacks. It stays joined
+    (never a show of its own, which brought its 1-3 in again: 3 items became 7) and 4 is the show's next episode."""
+    store, data_dir = _empty(language)
+    src = _drive("driveA")
+    show, tag = _SHOWS[language][0], _OURS[language]
+    folder = os.path.join(src, show)
+    for n in (1, 2, 3):
+        _video(os.path.join(folder, f"[Grp] {show} - {n:02d} (1080p).mkv"), body=b"fake matroska %d" % n)
+        _write(os.path.join(folder, f"[Grp] {show} - {n:02d} (1080p).{tag}.srt"), _text(language, n))
+        _write(os.path.join(folder, "synced", f"[Alt] {show} - {n:02d}.{tag}.srt"), _text(language, n, "、調整"))
+    _settle(src)
+    with store:
+        root = store.add_source(src)
+        assert _look(store, language, root, first=True)["added"] == 3 and _items(store) == 3
+        four = _write(os.path.join(folder, "synced", f"[Alt] {show} - 04.{tag}.srt"), _text(language, 4, "、調整"))
+        _settle(src)
+        result = _look(store, language, root, full=True)
+        assert (result["added"], _items(store), result["shows"]) == (1, 4, 1)
+        assert f"Library/{show}/{os.path.basename(four)}" in _library_files(data_dir)
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
@@ -2910,6 +2960,73 @@ def test_a_copy_back_takes_the_text_its_item_last_followed(language):
         assert _sha(os.path.join(data_dir, *rel.split("/"))) == _sha(v2) and _items(store) == 1
 
 
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_copy_back_takes_the_later_release_even_when_its_file_time_is_older(language):
+    """LF-3, the adversary's P3: the v2 arrived with an older file time than its v1 (an archive keeps its time) and
+    was followed into the copy. The copy back takes the v2 — the later release, then the record followed last —
+    never the newest file time, which brought the v1's text back."""
+    store, data_dir = _empty(language)
+    show = _SHOWS[language][1]
+    src = _drive("driveA")
+    tag = _OURS[language]
+    _write(os.path.join(src, f"[Grp] {show} - 05 (1080p).{tag}.srt"), _text(language, 1), age=120)
+    _settle(src)
+    with store:
+        root = store.add_source(src)
+        item = _look(store, language, root, first=True)["ids"][0]
+        v2 = _write(os.path.join(src, f"[Grp] {show} - 05v2 (1080p).{tag}.srt"), _text(language, 1, "、訂正"),
+                    age=900)
+        _settle(src, age=30)
+        assert _look(store, language, root, full=True)["recopied"] == 1
+        rel = store.item(item)["rel_path"]
+    store = _start_afresh(language, store, data_dir)
+    with store:
+        assert _look(store, language, root)["restored"] == 1
+        assert _sha(os.path.join(data_dir, *rel.split("/"))) == _sha(v2) and _items(store) == 1
+
+
+@pytest.mark.parametrize("failure", ["the store busy", "the copy's stat"])
+def test_a_copy_placed_but_not_recorded_is_removed_so_the_next_look_puts_it_back(failure, monkeypatch):
+    """H15: the copy is renamed into its place before the store records it; the store busy, or the copy's stat
+    failing, left an untracked file there — which no later look ever replaced (a file at the place is the sync's).
+    One cleanup path: our just-placed copy is removed, the item stays missing, and the next look restores it."""
+    language = "ja"
+    store, data_dir = _empty(language)
+    a = _SHOWS[language][0]
+    src = _drive("driveA")
+    original = _write(os.path.join(src, a, f"{a} - 01.srt"), _text(language, 1))
+    _settle(src)
+    with store:
+        root = store.add_source(src)
+        item = _look(store, language, root, first=True)["ids"][0]
+        rel = store.item(item)["rel_path"]
+    store = _start_afresh(language, store, data_dir)
+    place = os.path.normcase(os.path.join(data_dir, *rel.split("/")))
+    real_copies_back, real_stat = store.copies_back, os.stat
+    if failure == "the store busy":
+        def busy(*_a, **_k):
+            raise ls.StoreBusy("the library is busy; try again")
+        monkeypatch.setattr(store, "copies_back", busy)
+    else:
+        real = os.stat
+
+        def stat(p, *args, **kw):
+            if os.path.normcase(os.fspath(p)) == place:
+                raise PermissionError(13, "held by a scanner")
+            return real(p, *args, **kw)
+        monkeypatch.setattr(sources.os, "stat", stat)
+    with store:
+        try:
+            _look(store, language, root)
+        except ls.StoreBusy:
+            pass
+        monkeypatch.setattr(store, "copies_back", real_copies_back)    # (never `undo`: it drops the test root too)
+        monkeypatch.setattr(sources.os, "stat", real_stat)
+        assert _library_files(data_dir) == [] and set(_availability(store).values()) == {"missing"}
+        assert _look(store, language, root, full=True)["restored"] == 1
+        assert _sha(os.path.join(data_dir, *rel.split("/"))) == _sha(original)
+
+
 def test_a_copy_back_whose_item_went_meanwhile_goes_to_the_trash(monkeypatch):
     """Item 8a, B2: an item removed between its copy written back and the store told — the copy is no item's, so it
     goes to the trash, never left in Library untracked."""
@@ -2925,9 +3042,9 @@ def test_a_copy_back_whose_item_went_meanwhile_goes_to_the_trash(monkeypatch):
     store = _start_afresh(language, store, data_dir)
     real = store.copies_back
 
-    def removed_meanwhile(back):
+    def removed_meanwhile(back, records=None):
         store.remove([item])
-        return real(back)
+        return real(back, records)
     monkeypatch.setattr(store, "copies_back", removed_meanwhile)
     with store:
         result = _look(store, language, root)

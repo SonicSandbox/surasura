@@ -254,6 +254,7 @@ class FreshRow(QObject):
         self.shell = page.shell
         self.card = None
         self.running = False
+        self.counting = False                             # the sheet's counts being read (the looks' worker)
         slot = page.custom_row(FRESH_ID)
         self.button = sc.Door(S.FRESH_OPEN, tooltip=S.FRESH_TIP, parent=slot)
         self.button.clicked.connect(lambda _c=False: self.ask())
@@ -297,13 +298,38 @@ class FreshRow(QObject):
         self.enable()
 
     def ask(self):
-        """The sheet: what goes, what stays, the known-words box (off). -> the card, or None when it can't run."""
+        """The sheet: what goes, what comes back, what stays, with the store's counts of what never comes back and of
+        the cards left suspended (`SourceLooks.fresh_counts`, read on the looks' worker first: the card opens when they
+        land), the known-words box (off). -> the card when it opened at once (looks that can't count), else None."""
         self.enable()
-        if self.why_not() is not None or self.card is not None:
+        if self.card is not None and self.card.answer is not None:
+            self.card = None                              # dropped (its window hidden): no callback comes (H13)
+        if self.why_not() is not None or self.card is not None or self.counting:
             return None
+        counts = getattr(self._looks(), "fresh_counts", None)
+        if counts is None:
+            return self._sheet(None)
+        from app.qt import bridge
+        relay = bridge.Relay(self)
+
+        def counted(found):
+            relay.deleteLater()
+            self.counting = False
+            if self.alive() and self.why_not() is None and self.card is None:
+                self._sheet(found)
+        relay.said.connect(counted)
+        self.counting = True
+        if not counts(relay.call):
+            relay.deleteLater()
+            self.counting = False
+            return self._sheet(None)
+        return None
+
+    def _sheet(self, counts):
         from app.qt import confirm
-        self.card = confirm.ask(self.page, S.FRESH_ASK, S.FRESH_BODY, S.FRESH_YES, S.FRESH_YES_TIP, default_no=True,
-                                danger=True, check=S.FRESH_KNOWN, check_tip=S.FRESH_KNOWN_TIP, on_answer=self._answered)
+        self.card = confirm.ask(self.page, S.FRESH_ASK, fresh_body(counts), S.FRESH_YES, S.FRESH_YES_TIP,
+                                default_no=True, danger=True, check=S.FRESH_KNOWN, check_tip=S.FRESH_KNOWN_TIP,
+                                on_answer=self._answered)
         return self.card
 
     def _answered(self, yes):
@@ -327,6 +353,8 @@ class FreshRow(QObject):
                 known = answer.get("known") or ""
                 text = S.FRESH_DONE_KNOWN_KEPT.format(why=known[len("kept: "):]) if known.startswith("kept: ") \
                     else S.FRESH_DONE
+            elif answer.get("aside"):
+                text = S.FRESH_NOT_ALL_BACK.format(folder=answer["aside"])
             elif answer.get("failed"):
                 text = S.FRESH_FAILED.format(reason=answer["failed"])
             else:
@@ -343,3 +371,19 @@ class FreshRow(QObject):
             self.enable()
             return False
         return True
+
+
+def fresh_body(counts):
+    """The sheet's words: `FRESH_BODY`, then what never comes back and the cards left suspended, by the store's counts
+    (`library_store.fresh_counts`; a count of 0 says nothing; None: the counts couldn't be read)."""
+    counts = counts or {}
+    plural = lambda n: "" if n == 1 else "s"                                              # noqa: E731
+    parts = [words.format(n=counts[key], s=plural(counts[key])) for key, words in (
+        ("added", S.FRESH_GONE_ADDED), ("youtube", S.FRESH_GONE_YOUTUBE), ("other", S.FRESH_GONE_OTHER))
+        if counts.get(key)]
+    lines = [S.FRESH_BODY]
+    if parts:
+        lines.append(S.FRESH_GONE.format(parts=", ".join(parts)))
+    if counts.get("suspended"):
+        lines.append(S.FRESH_SUSPENDED.format(n=counts["suspended"], s=plural(counts["suspended"])))
+    return "\n\n".join(lines)

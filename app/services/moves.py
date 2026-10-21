@@ -1068,7 +1068,7 @@ class Writer:
         cmd["data_dir"] = data_dir
         cmd["started_at"] = lib._now()              # a sync that meets a copy made: the command takes the row over
         walked = {lib.path_key(f) for f in lib.WALK_FOLDERS}               # the folders the disk sync walks
-        out, made, left, already, origins = [], [], [], [], {}
+        out, made, left, already, origins, listings = [], [], [], [], {}, {}
         into = cmd.get("into") or [None] * len(cmd["files"])          # --- W3.2 Q3: + Add's folders
         rels = {p: lib.library_rel(data_dir, p) for p in cmd["files"]}
         inside = {p: r for p, r in rels.items() if r is not None and lib.path_key(r.split("/", 1)[0]) in walked}
@@ -1100,7 +1100,10 @@ class Writer:
                         continue
                 parts = _in_library(_into(sub, folder, walked, lib), path, lib)
                 dest = os.path.join(data_dir, *parts, os.path.basename(path))
-                st = os.stat(path) if rel is None and cmd.get("origin", True) else None   # K21: before it is read
+                try:                                # K21: before it is read
+                    st = os.stat(path) if rel is None and cmd.get("origin", True) else None
+                except OSError:                     # H16: no origin, the file still added
+                    st = None
                 if os.path.exists(dest) and filecmp.cmp(path, dest, shallow=False):
                     out.append(dest)
                 else:
@@ -1109,7 +1112,10 @@ class Writer:
                     made.append(dest)
                     out.append(dest)
                 if st is not None:
-                    origins[dest] = _origin_of(path, st, dest, parts, lib)
+                    try:
+                        origins[dest] = _origin_of(path, st, dest, parts, lib, listings)
+                    except OSError as e:            # H16: recording where it came from never stops the add
+                        print(f"+ Add: where {os.path.basename(path)} came from isn't kept ({e!r})")
         finally:
             cmd["copied"] = made
         cmd["files"] = out
@@ -1718,15 +1724,16 @@ def _into(sub, folder, walked, lib):
     return parts
 
 
-def _origin_of(path, st, copy, parts, lib):
+def _origin_of(path, st, copy, parts, lib, listings=None):
     """(K21) Where a file + Add or a drop copied in came from, for its origin record (`Store._add_origins`): the
     original's absolute path, its size and time (`st`, taken before it was read), the sha256 of the bytes copied (the
     copy's), the show its `Library` folder names, and the video beside the original with its name, found as Connect's
-    `runner.beside` finds it (a listing and a stat: the video is never opened)."""
+    `runner.beside` finds it (a listing and a stat: the video is never opened; `listings`: the add's own, so each
+    folder is listed once per add, H6). An OSError is the caller's: no origin, the add goes on (H16)."""
     from app.connect import runner
     f = {"origin": os.path.abspath(path), "size": st.st_size, "mtime_ns": st.st_mtime_ns,
          "sha256": lib.sha256_of(copy), "show": "/".join(parts[1:])}
-    video = runner.beside(path)
+    video = runner.beside(path, listings)
     if video:
         f.update(video_path=os.path.abspath(video), video_size=os.path.getsize(video))
     return f

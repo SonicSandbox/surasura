@@ -2423,10 +2423,16 @@ class Store:
         {origin, size, mtime_ns, sha256, show, video_path?, video_size?}}, `moves._copy_in`'s): no source holds it
         (`root` None), `via` "add". So a folder read later takes the original as known (SRC-7: never a second item; a
         Remove's exclusion keeps it out, SRC-8) and Connect looks beside the original for its video. One origin, one
-        row: the same original added again (changed since: other bytes, a new item) moves its row to the new item."""
+        row: the same original added again (changed since: other bytes, a new item) moves its row to the new item —
+        only from an add's row or a row whose item is gone; a row a folder's look recorded stays its item's (LF-7: that
+        item stays followed and restorable) and the new item records none."""
         for item_id, item in added:
             f = origins.get(item[0])
             if not f:
+                continue
+            old = self.conn.execute("SELECT p.pairing, i.id FROM pairings p LEFT JOIN items i ON i.id = p.item_id "
+                                    "WHERE p.content_key = ?", (origin_key(f["origin"]),)).fetchone()
+            if old is not None and old[1] is not None and (_json_dict(old[0]) or {}).get("via") != "add":
                 continue
             record = dict(_origin_record(None, f["origin"], f), via="add")
             self.conn.execute("INSERT OR REPLACE INTO pairings (content_key, item_id, pairing, paired_at) "
@@ -7352,7 +7358,7 @@ PLACEHOLDER_ATTRS = 0x1000 | 0x40000 | 0x400000   # OFFLINE · RECALL_ON_OPEN ·
 _LINK_TAGS = (0xA000000C, 0xA0000003)              # IO_REPARSE_TAG_SYMLINK, IO_REPARSE_TAG_MOUNT_POINT (a junction)
 _DIGITS = re.compile(r"(\d+)")
 _EPUB_PART = re.compile(r"\.epub#\d+$", re.I)    # an EPUB's part's origin (`<book>.epub#3`)
-Origin = namedtuple("Origin", "item_id root origin size mtime_ns sha256 rel_path availability")
+Origin = namedtuple("Origin", "item_id root origin size mtime_ns sha256 rel_path availability paired_at")
 
 
 def origin_key(path):
@@ -7404,11 +7410,17 @@ def skip_dir(name, path):
     (the listing's own stat: no call)."""
     if name.startswith(".") or name.casefold() in SKIP_DIRS:
         return True
-    import stat
     try:
         st = path.stat(follow_symlinks=False) if isinstance(path, os.DirEntry) else os.lstat(path)
     except OSError:
         return True
+    return is_link(st)
+
+
+def is_link(st):
+    """Is this stat (never followed: `os.lstat`, a listing's own) a symlink or a junction? The one link rule: a look
+    never walks into one (`skip_dir`), a fresh library never copies or removes through one (`_set_aside`, LF-4)."""
+    import stat
     return stat.S_ISLNK(st.st_mode) or getattr(st, "st_reparse_tag", 0) in _LINK_TAGS
 
 
@@ -7765,8 +7777,8 @@ def _store_stop_source(self, root_id):
 
 
 def _store_origins(self):
-    """{path_key(origin): Origin(item_id, root, origin, size, mtime_ns, sha256, rel_path, availability)} for every
-    origin recorded, in any tier (a finished item is never taken in again): one read per look — the item's
+    """{path_key(origin): Origin(item_id, root, origin, size, mtime_ns, sha256, rel_path, availability, paired_at)}
+    for every origin recorded, in any tier (a finished item is never taken in again): one read per look — the item's
     availability with it, so a look finds the copies gone (item 8a) with no stat of its own. The records' fields are read by SQLite
     (F13: decoding every record in Python held the interpreter 0.25 s at 20k, stretching a window's save meanwhile); a
     record that isn't a JSON object reads as one with no fields."""
@@ -7775,7 +7787,8 @@ def _store_origins(self):
     with self._reading():
         rows = self.conn.execute(
             f"SELECT substr(p.content_key, {len(SOURCE_KEY) + 1}), p.item_id, {field('root')}, {field('origin')}, "
-            f"{field('size')}, {field('mtime_ns')}, {field('sha256')}, i.rel_path, i.availability FROM pairings p "
+            f"{field('size')}, {field('mtime_ns')}, {field('sha256')}, i.rel_path, i.availability, p.paired_at "
+            f"FROM pairings p "
             f"JOIN items i ON i.id = p.item_id WHERE {_ORIGIN_ROW} ORDER BY p.content_key").fetchall()
     return {r[0]: Origin._make(r[1:]) for r in rows}         # in key order (a look finds a folder's by its prefix)
 
@@ -7876,13 +7889,14 @@ def _store_update_origin(self, origin, size, mtime_ns, sha256):
     return True
 
 
-def _store_copies_back(self, back):
+def _store_copies_back(self, back, records=None):
     """Item 8a: the copies a look wrote back into their own place (`back`: [(item_id, rel, size, mtime_ns)] — the
     copy's rel and its stats as written). Each item still at that rel and still 'missing' is available again in place,
     as the disk sync's *came back* is — its id, place, words, cards and records kept, its size and time the new copy's
     — in ONE command the window hears like any availability change (no event: nothing moved). A row removed, moved or
-    back meanwhile is left as it is. -> (the ids made available, the rels no item holds: the caller's to trash, never
-    left in Library untracked — B2)."""
+    back meanwhile is left as it is. `records` ({item_id: (origin, size, mtime_ns, sha256)}): the originals whose
+    stats moved, rewritten for the items made available, in the same command (`update_origin`'s rule; H4). -> (the ids
+    made available, the rels no item holds: the caller's to trash, never left in Library untracked — B2)."""
     back = [b for b in back if b[1]]
     if not back:
         return [], []
@@ -7900,6 +7914,9 @@ def _store_copies_back(self, back):
         if done:
             cmd.feed(done)
             cmd.touch(tiers, availability=True)
+        for item_id in done:
+            if item_id in (records or {}):
+                self.update_origin(*records[item_id])     # joins this command (the write lock is re-entrant)
         unused = [rel for _i, rel, _s, _m in back if not self.conn.execute(
             "SELECT 1 FROM items WHERE rel_key = ?", (path_key(rel),)).fetchone()]
     return done, unused
@@ -8432,8 +8449,9 @@ RESET_PREFIX = "library-reset-"   # User Files/<lang>/.trash/library-reset-<YYYY
 RESET_RECORD = "reset.json"       # in it: what came from where, enough to put the old library back by hand
 RESET_WAIT = 2.0                  # s: another writer's commit is waited for this long, then the reset is refused
 # Emptied by the reset; `roots` stays (the folders he reads, their ids kept), and so does every exclusion but Remove's
-RESET_TABLES = ("anki_links", "pairings", "made_words", "made_lines", "placement_log", "trash", "anki_changes", "gone",
-                "items", "pieces", "works")
+# — but never Connect's never-again sets (`made_words`, `made_lines`, G1.3-4: a word whose card he deleted is never made
+# again; item ids are never reused, so their stale ids meet no new item: I-R1 / LF-5)
+RESET_TABLES = ("anki_links", "pairings", "placement_log", "trash", "anki_changes", "gone", "items", "pieces", "works")
 RESET_KEEP_META = ("mine_line", "arrivals_on", "log_seq")     # his library options, and the log's numbering (+ readers)
 # Why a reset is refused (nothing changed), in the window's words
 RESET_UPDATE = "An update is being installed: start a fresh library once it has finished."
@@ -8442,6 +8460,9 @@ RESET_CONNECT = "Connect is making cards: start a fresh library once it has fini
 RESET_KNOWN = "Your known words are being updated: try again in a moment."
 RESET_BUSY = "Another Surasura program is saving your library: try again in a moment."
 RESET_DAMAGED = "Your library needs Repair first."
+RESET_LINKED = ("A linked folder in your data folder is in the way ({path}): Surasura never moves or removes what a "
+                "link leads to. Remove the link (never its folder), then start a fresh library.")
+RESET_NOT_ALL_BACK = "Part of your library couldn't be put back; it is in the backup ({folder})"
 
 
 class ResetRefused(StoreError):
@@ -8491,10 +8512,40 @@ def _same_bytes(a, b):
                 return True
 
 
+class ResetNotAllBack(StoreError):
+    """A reset that failed before its commit, with part of the library left in the backup (`folder`): `reset.json`'s
+    `not_put_back` names each piece. The window never says "Nothing was changed" for it."""
+
+    def __init__(self, folder):
+        super().__init__(RESET_NOT_ALL_BACK.format(folder=folder))
+        self.folder = folder
+
+
+def _links_under(src):
+    """The first symlink or junction at or under `src` (`is_link`, never followed), or None."""
+    try:
+        if is_link(os.lstat(src)):
+            return src
+    except OSError:
+        return None
+    stack = [src] if os.path.isdir(src) else []
+    while stack:
+        with os.scandir(stack.pop()) as found:
+            for entry in found:
+                if is_link(entry.stat(follow_symlinks=False)):
+                    return entry.path
+                if entry.is_dir(follow_symlinks=False):
+                    stack.append(entry.path)
+    return None
+
+
 def _set_aside(src, dst):
     """`src` to `dst`, a name in the backup folder: a rename (one volume); refused (another volume, a folder a watch
     holds open) → copied, every file's bytes checked, then the original removed — a file that can't be removed raises:
-    left beside the library, the disk sync would walk it back in. A folder left empty (held open) stays, empty."""
+    left beside the library, the disk sync would walk it back in. A folder left empty (held open) stays, empty.
+    A link or junction anywhere in it stops the copy before anything is copied or removed (LF-4: Python 3.11 walks a
+    junction as a plain folder, so the removal would delete the files of the folder it leads to — his own): the reset
+    is refused (`RESET_LINKED`) and everything already moved put back. A rename moves a link itself, never through it."""
     import shutil
     os.makedirs(os.path.dirname(dst), exist_ok=True)
     try:
@@ -8502,8 +8553,11 @@ def _set_aside(src, dst):
         return
     except OSError:
         pass
+    link = _links_under(src)
+    if link is not None:
+        raise ResetRefused(RESET_LINKED.format(path=link))
     if os.path.isdir(src):
-        shutil.copytree(src, dst, symlinks=True)               # a link copied as a link: never followed out
+        shutil.copytree(src, dst, symlinks=True)
         files = [os.path.join(w, n) for w, _d, names in os.walk(src) for n in names]
         pairs = [(f, os.path.join(dst, os.path.relpath(f, src))) for f in files]
     else:
@@ -8530,8 +8584,10 @@ def _set_aside(src, dst):
 
 
 def _put_back(dst, src):
-    """One `_set_aside` undone: what reached the backup goes back where it came from (a rename, else copied back into
-    it; the backup's copy then stays)."""
+    """One `_set_aside` undone — recorded before it began, so one that stopped part way (a copy checked, some files
+    removed) is undone too (H1 / LF-6): when nothing is left at `src`, the backup renamed back; else each file of the
+    backup missing at `src` copied back, never over a file there (the original: a byte check that failed leaves bad
+    bytes in the backup). The backup's copy then stays."""
     import shutil
     if not os.path.lexists(dst):
         return
@@ -8541,10 +8597,16 @@ def _put_back(dst, src):
             return
         except OSError:
             pass
-    if os.path.isdir(dst):
-        shutil.copytree(dst, src, symlinks=True, dirs_exist_ok=True)
-    else:
-        shutil.copy2(dst, src)
+    if not os.path.isdir(dst):
+        if not os.path.lexists(src):
+            shutil.copy2(dst, src)
+        return
+    for where, _dirs, names in os.walk(dst):
+        here = os.path.normpath(os.path.join(src, os.path.relpath(where, dst)))
+        os.makedirs(here, exist_ok=True)
+        for n in names:
+            if not os.path.lexists(os.path.join(here, n)):
+                shutil.copy2(os.path.join(where, n), os.path.join(here, n))
 
 
 def _write_record(folder, record):
@@ -8566,7 +8628,8 @@ def start_fresh(store, forget_known=False, _step=None):
     entry of `data/<lang>/` (the `Library/` copies, a 2.x upgrade's tier folders — left, the disk sync walks them back
     in — hato's drop folder, `data/<lang>/.trash`); the sources' folder-time cache. **Stays:** the folders he reads
     (their `roots` rows and ids; nothing under them is ever written) and his library options (the mine line, New
-    arrivals' switch); a folder he said never to read (an exclusion that isn't Remove's); Anki; settings.json;
+    arrivals' switch); a folder he said never to read (an exclusion that isn't Remove's); Connect's never-again sets
+    (`made_words`, `made_lines`: a card he deleted is never made again, LF-5); Anki; settings.json;
     results/; known words unless `forget_known` (then KnownWord.json is kept dated in the trash with
     `backup_to_trash`, copied into the backup, and replaced by an empty one in its own format). The caller reads the
     folders again (`SourceLooks.fresh`: a first look of each, `first=True`, landing in Current as setup's does).
@@ -8587,8 +8650,11 @@ def start_fresh(store, forget_known=False, _step=None):
     store copied and checked (`_copy_whole`: its own check, every table's count) — not whole → StoreError, nothing
     moved; (3) the JSON copy, (4) the folder times, (5) `data/<lang>`'s entries moved (`_set_aside`) — the store
     still holds the old library: a kill here leaves every moved thing at its `to`; (6) the one write, committed
-    (status "written": the store copy is the old library); (7) the export; (8) the known words; status "done". An
-    error (not a kill) before the commit rolls the write back and puts every move back itself (status "undone").
+    (status "written": the store copy is the old library); (7) the export; (8) the known words; status "done" —
+    after the commit every step is best-effort, logged, never raised (`_after_commit`, H2: the fresh library stands).
+    An error (not a kill) before the commit rolls the write back and puts every move back itself, each on its own, a
+    move recorded before it began (status "undone"; a piece that couldn't go back is named in `not_put_back` and
+    raised as `ResetNotAllBack`); a link in the data folder refuses it there (`RESET_LINKED`, LF-4).
     No restore button here (K7): `reset.json` says how by hand. `_step(name)` (tests) is called after each step."""
     step = _step or (lambda _name: None)
     if update_staged():
@@ -8668,34 +8734,59 @@ def _start_fresh(store, forget_known, step):
             for name in ("manifest", "cache", "data"):
                 for move in moves:
                     if move["step"] == name:
+                        done.append(move)               # before it begins: one stopping part way is put back (H1)
                         _set_aside(move["from"], move["to"])
-                        done.append(move)
                 step(name)
             _reset_tables(store)
             step("wipe")
             store.conn.execute("COMMIT")
-        except Exception:
+        except Exception as e:
             if store.conn.in_transaction:
                 store.conn.execute("ROLLBACK")
-            for move in reversed(done):
-                _put_back(move["to"], move["from"])
+            left = []
+            for move in reversed(done):                 # each on its own: one failing never keeps the rest away
+                try:
+                    _put_back(move["to"], move["from"])
+                except Exception as why:
+                    left.append({"from": move["from"], "to": move["to"], "error": repr(why)})
             record["status"] = "undone"
-            _write_record(folder, record)
+            if left:
+                record["not_put_back"] = left
+            _after_commit("its record", _write_record, folder, record)
+            if left:
+                raise ResetNotAllBack(folder) from e
             raise
-        record["status"] = "written"
-        _write_record(folder, record)
-    library_watch.ring(store.db_path)                   # every window listening reads the new epoch in full
-    step("write")
+        record["status"] = "written"                    # committed: from here on nothing is the reset's failure (H2)
+        _after_commit("its record", _write_record, folder, record)
+    return _after_write(store, folder, record, forget_known, step)
+
+
+def _after_commit(what, call, *args):
+    """A step after the reset's commit (or its record after an undo): logged when it fails, never raised — the fresh
+    library stands, so the window never says "Nothing was changed" for it (H2). -> its answer, or None."""
     try:
-        export_copy(store)                              # the fresh JSON copy now (the maintenance lock is held)
-    except Exception as e:                              # the next maintain exports it
-        print(f"Fresh library: the JSON copy waits for the next save ({e!r})")
+        return call(*args)
+    except Exception as e:
+        print(f"Fresh library: {what} failed ({e!r}); the library stands as it was written")
+        return None
+
+
+def _after_write(store, folder, record, forget_known, step):
+    """`start_fresh`'s steps (7)–(8), after the commit: each best-effort (`_after_commit`) — the JSON copy (the next
+    maintain exports it), the known words (kept, with why), the last record write, the folders' list."""
+    _after_commit("the windows' bell", library_watch.ring, store.db_path)   # every window reads the new epoch in full
+    step("write")
+    _after_commit("the JSON copy (it waits for the next save)", export_copy, store)   # the maintenance lock is held
     step("export")
-    known = _forget_known(store, folder, record) if forget_known else "kept"
+    known = "kept"
+    if forget_known:
+        known = _after_commit("forgetting the known words", _forget_known, store, folder, record)
+        known = known or "kept: they couldn't be forgotten"
     record.update(status="done", known=record["known"] or known, finished_at=_now())
-    _write_record(folder, record)
+    _after_commit("its record", _write_record, folder, record)
     step("known")
-    return {"backup": folder, "known": known, "sources": [r["id"] for r in store.sources()]}
+    rows = _after_commit("the folders' list", store.sources) or []
+    return {"backup": folder, "known": known, "sources": [r["id"] for r in rows]}
 
 
 def _reset_tables(store):
@@ -8722,7 +8813,8 @@ def _reset_tables(store):
 
 def _forget_known(store, folder, record):
     """*Also forget my known words*: KnownWord.json kept dated in the trash (`backup_to_trash`, byte-checked) and
-    copied into the backup, then an empty one in its own format (`anki_sync`'s). -> "forgotten", or "kept: <why>"
+    copied into the backup, then one in its own format (`anki_sync`'s) holding only the words he dismissed — every
+    replacing import's rule, `anki_sync.kept_ignored` (I-R4). -> "forgotten", or "kept: <why>"
     (the library is fresh either way). Words from his Anki cards come back at the next Anki sync (a file rewritten
     outside the sync makes its next run a full one, D4)."""
     from app import anki_sync
@@ -8736,12 +8828,66 @@ def _forget_known(store, folder, record):
         shutil.copyfile(path, copy)
         if not _same_bytes(path, copy):
             raise OSError("the backup copy did not match it")
-        record["known"] = {"from": path, "dated": dated, "copy": copy}
-        _write_record(folder, record)
-        anki_sync._atomic_write_json(path, anki_sync._fresh_file([]))
+        ignored = anki_sync.kept_ignored(path, store.language, [])   # his dismissed words stay dismissed (I-R4)
+        anki_sync._atomic_write_json(path, anki_sync._fresh_file(ignored))
     except OSError as e:
         return f"kept: {e}"
+    record["known"] = {"from": path, "dated": dated, "copy": copy, "ignored_kept": len(ignored)}   # once it happened
     return "forgotten"
+
+
+def fresh_counts(store):
+    """What *Start a fresh library*'s sheet names, from the store (I-R1, I-R5, LF-8), in one read -> {"added": the +
+    Add files whose original is in no folder Surasura reads (gone, or elsewhere: their records go with the library),
+    "youtube": YouTube / bilibili transcripts, "other": every other item no folder being read brings back (pasted
+    texts, hato's drops, 2.x content), "suspended": the cards *Take its new cards out* left suspended in Anki (the
+    open `cards_out` records: they go into the backup, so the cards stay suspended — Put back is a Junban run over
+    Anki, never the reset's)}. An item comes back when one of its origins lies under a folder being read."""
+    on = [path_key(os.path.abspath(r["path"])).rstrip("/") + "/" for r in store.sources(counts=False) if r["path"]]
+    with store._reading():
+        items = store.conn.execute("SELECT id, source_type FROM items").fetchall()
+        origins = store.conn.execute(
+            f"SELECT p.item_id, substr(p.content_key, {len(SOURCE_KEY) + 1}), CASE WHEN json_valid(p.pairing) AND "
+            f"json_type(p.pairing) = 'object' THEN json_extract(p.pairing, '$.via') END FROM pairings p WHERE "
+            f"{_ORIGIN_ROW}").fetchall()
+        changes = store.conn.execute("SELECT after FROM anki_changes WHERE reverted_at IS NULL AND action = "
+                                     "'cards_out'").fetchall()
+    back, added = set(), set()
+    for item_id, key, via in origins:
+        if any(key.startswith(prefix) for prefix in on):
+            back.add(item_id)
+        elif via == "add":
+            added.add(item_id)
+    out = {"added": 0, "youtube": 0, "other": 0, "suspended": 0}
+    for item_id, source_type in items:
+        if item_id in back:
+            continue
+        kind = "added" if item_id in added else "youtube" if source_type in ("youtube", "bilibili") else "other"
+        out[kind] += 1
+    cards = set()
+    for (after,) in changes:
+        record = _json_dict(after) or {}
+        cards.update(c for c in record.get("suspended") or () if isinstance(c, int))
+    out["suspended"] = len(cards)
+    return out
+
+
+def unfinished_reset(user_files_dir):
+    """LF-11: the newest backup folder of a fresh library a kill stopped part way (`reset.json` still "started": its
+    moves may be half done, the old library in the backup), or None. Read once a run, at the first look."""
+    trash = os.path.join(user_files_dir, ".trash")
+    try:
+        names = sorted((n for n in os.listdir(trash) if n.startswith(RESET_PREFIX)), reverse=True)
+    except OSError:
+        return None
+    for name in names:
+        try:
+            with open(os.path.join(trash, name, RESET_RECORD), encoding="utf-8") as f:
+                if json.load(f).get("status") == "started":
+                    return os.path.join(trash, name)
+        except (OSError, ValueError, AttributeError):
+            continue
+    return None
 
 
 # ------------------------------------------------------------------------------------------------ #

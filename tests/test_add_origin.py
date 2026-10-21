@@ -197,3 +197,63 @@ def test_an_episode_added_after_its_shows_last_episode_records_its_original_too(
     assert ids[ids.index(last) + 1] == new
     assert _record(lib.store, sub)[0] == new
     assert _same(_video_of(lib.language, new), mkv)
+
+
+# --- the review fix round (LF register: LF-7, H16, H6) --------------------------------------------------------------- #
+
+def test_adding_a_changed_original_a_folder_already_reads_keeps_that_items_record(lib, make_writer):
+    # why: LF-7 — the folder's item holds the original's record; he edits the original and adds it with + Add before a
+    # look. The REPLACE moved the record to the new item: the folder's item was no longer followed, restorable or
+    # counted. A record a folder's look wrote stays its item's; the new item records none
+    w, heard = make_writer()
+    folder = _drive("driveA")
+    sub, _mkv = _original(lib.language, folder)
+    root = lib.store.add_source(folder)
+    held = _look(lib.store, lib.language, root, full=True)["ids"][0]
+    assert _record(lib.store, sub)[0] == held
+    with open(sub, "a", encoding="utf-8", newline="\n") as f:
+        f.write("\n12\n00:10:00,000 --> 00:10:02,000\n訂正版の一行。\n")
+    new = _add(w, heard, [sub])
+    assert new != held
+    item_id, record = _record(lib.store, sub)
+    assert item_id == held and record["root"] == root and record.get("via") != "add"
+    assert [s["items"] for s in lib.store.sources() if s["id"] == root] == [1]
+
+
+def test_an_original_whose_record_cant_be_made_is_still_added(lib, make_writer, monkeypatch):
+    # why: H16 — the record is a help (Connect's video beside it); a file it can't stat or list beside (a share's
+    # hiccup) must never stop the add after the copy is made
+    from app.services import moves
+    w, heard = make_writer()
+    sub, _mkv = _original(lib.language, _drive("driveA"))
+
+    def broken(*_a, **_k):
+        raise PermissionError(13, "the share went away")
+    monkeypatch.setattr(moves, "_origin_of", broken)
+    new = _add(w, heard, [sub])
+    assert lib.store.item(new) is not None and _record(lib.store, sub) == (None, None)
+
+
+def test_one_add_lists_each_originals_folder_once(lib, make_writer, monkeypatch):
+    # why: H6 — the video beside each original was found by listing its folder once per file: a season added at once
+    # from a share listed the same folder once per episode
+    w, heard = make_writer()
+    folder = _drive("driveA")
+    with open(os.path.join(h.RESOURCES, lib.language, SUBTITLE[lib.language]), encoding="utf-8") as f:
+        text = f.read()
+    subs = []
+    for n in (1, 2, 3):                                                # three episodes of one show, one folder
+        path = _write(os.path.join(folder, f"[GroupSubs] Hoshizora Kissa - {n:02d} (1080p).{lib.language}.srt"),
+                      text + "。" * n)
+        _video(path[:-len(f".{lib.language}.srt")] + ".mkv", body=b"fake matroska %d" % n)
+        subs.append(path)
+    listed, real = [], os.listdir
+
+    def listdir(p="."):
+        listed.append(os.path.normcase(os.path.abspath(p)))
+        return real(p)
+    monkeypatch.setattr(runner.os, "listdir", listdir)
+    _add(w, heard, subs)
+    monkeypatch.setattr(runner.os, "listdir", real)                  # (never `undo`: it drops the test root too)
+    assert listed.count(os.path.normcase(os.path.abspath(folder))) == 1
+    assert all(_record(lib.store, s)[1].get("video_path") for s in subs)

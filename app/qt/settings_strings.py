@@ -645,11 +645,22 @@ FRESH_TIP = ("Empty your library and read your folders again from scratch\nThe o
 FRESH_RUNNING_TIP = "Starting a fresh library…"
 FRESH_ASK = "Start a fresh library?"
 FRESH_BODY = ("Goes, into one dated backup (User Files › .trash › library-reset-…): your library's order, tiers, "
-              "New arrivals and Needs you, removed episodes, its JSON copy (master_manifest.json) and every copy "
-              "Surasura keeps in its data folder.\n\n"
-              "Stays: your video and text folders (only ever read) and the list of them — they are read again from "
-              "scratch right after, into Current — Anki and its cards, your settings and, unless you tick the box, "
-              "your known words.")
+              "New arrivals and Needs you, its JSON copy (master_manifest.json) and every copy Surasura keeps in its "
+              "data folder.\n\n"
+              "Comes back: what is in your video and text folders, read again from scratch into Current — episodes "
+              "you removed too. A book's text comes back only when Surasura reads its folder again.\n\n"
+              "Stays: your folders (only ever read) and the list of them, your settings, the cards in Anki (a card "
+              "you deleted is never made again) and, unless you tick the box, your known words.")
+# The sheet's counts (the store's `fresh_counts`), each line only when its count isn't 0
+FRESH_GONE = "Only in the backup, never back: {parts}."
+FRESH_GONE_ADDED = "{n} file{s} you added with + Add from outside your folders"
+FRESH_GONE_YOUTUBE = "{n} YouTube transcript{s}"
+FRESH_GONE_OTHER = "{n} other text{s} with no folder to read again (pasted, hato's, from before 3.0)"
+FRESH_SUSPENDED = ("{n} card{s} Surasura took out of your learning order stay suspended in Anki: unsuspend them "
+                   "there if you want them back.")
+FRESH_NOT_ALL_BACK = "Not all of your library could be put back: the rest is in {folder}"
+FRESH_UNFINISHED = ("A fresh library was stopped part way: your old library may be in its backup, {folder} "
+                    "(reset.json there says how to put it back)")
 FRESH_YES = "Start fresh"
 FRESH_YES_TIP = "Set this library aside in a backup and read your folders again"
 FRESH_KNOWN = "Also forget my known words"

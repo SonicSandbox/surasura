@@ -1713,18 +1713,23 @@ def beside_origin(pairing):
     return beside(origin) if isinstance(origin, str) and origin else None
 
 
-def beside(subtitle):
-    """A video next to the subtitle with its name (`Show - 05.mkv` for `Show - 05.ja.srt`), on disk -> its path."""
+def beside(subtitle, listings=None):
+    """A video next to the subtitle with its name (`Show - 05.mkv` for `Show - 05.ja.srt`), on disk -> its path.
+    `listings` ({folder: its names}, a caller's own — + Add's many files): each folder listed once across calls (H6)."""
     folder, name = os.path.split(subtitle)
     stem = os.path.splitext(name)[0]
     stems = [stem]
     base, tag = os.path.splitext(stem)
     if base and 1 < len(tag) <= 4:
         stems.append(base)                  # the language tag: .ja, .jpn, .zh
-    try:
-        names = {n.lower(): n for n in os.listdir(folder or ".")}
-    except OSError:
-        return None
+    names = listings.get(folder) if listings is not None else None
+    if names is None:
+        try:
+            names = {n.lower(): n for n in os.listdir(folder or ".")}
+        except OSError:
+            return None
+        if listings is not None:
+            listings[folder] = names
     for s in stems:
         for ext in VIDEO_EXTENSIONS:
             found = names.get((s + ext).lower())

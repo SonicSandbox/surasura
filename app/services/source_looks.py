@@ -82,6 +82,7 @@ class SourceLooks:
         self._wake = threading.Event()                # every watch's reports wake the one watch thread
         self._watcher = None
         self._reachable = {}                          # root id -> the last look's answer (this run)
+        self._reset_told = False                      # a fresh library a kill left unfinished: said once a run (LF-11)
         self.looks = 0                                # looks run (tests)
 
     # --- the window's side (its thread; each returns at once) ---------------------------------------------------- #
@@ -131,6 +132,13 @@ class SourceLooks:
         if self._closing.is_set():
             return False
         return self._worker.put(self._fresh, bool(forget_known), then or _nothing)
+
+    def fresh_counts(self, then):
+        """What the fresh library's sheet names (`library_store.fresh_counts`), read on the worker: `then(counts)`, or
+        `then(None)` when the store can't be read. -> False once closed."""
+        if self._closing.is_set():
+            return False
+        return self._worker.put(self._fresh_counts, then)
 
     def busy(self):
         """A look is queued or running (Settings says *Stop reading* waits for the file it is on)."""
@@ -193,7 +201,7 @@ class SourceLooks:
             if store is None:
                 return
             self.looks += 1
-            rows = store.sources()
+            rows = store.sources(counts=False)        # the roots alone: the counts are `_publish`'s (H9)
             totals = {"added": 0, "waiting": 0, "full": full}
             for row in rows:
                 if self._closing.is_set():
@@ -205,6 +213,10 @@ class SourceLooks:
                     totals["added"] += result.get("added", 0)
                     totals["waiting"] += result.get("waiting", 0)
             self._follow_watches(rows)
+            if not self._reset_told:                  # LF-11: a reset a kill left half done, named once a run
+                self._reset_told = True
+                from app import library_store as ls
+                totals["unfinished_reset"] = ls.unfinished_reset(store.user_files_dir)
             self._publish(store, totals)
         except Exception as e:                        # a look that failed waits for the next: never the window's fault
             print(f"Sources: the look stopped: {e!r}")
@@ -254,7 +266,7 @@ class SourceLooks:
                     answer["refused"] = e.reason
                 else:
                     answer["root"] = root
-                    row = next((r for r in store.sources() if r["id"] == root), {"id": root, "path": path})
+                    row = next((r for r in store.sources(counts=False) if r["id"] == root), {"id": root, "path": path})
                     answer["result"] = self._scan(store, row, full=True, first=first, progress=lambda found, shows:
                                                   self.on_progress(row["path"], found, shows))
                     if answer["result"] is None or answer["result"].get("busy"):
@@ -263,7 +275,7 @@ class SourceLooks:
                         item = store.item(item_id)
                         if item is not None and item["tier"] == "arrivals":
                             answer["arrivals"] += 1      # D6: the shows never shown wait there
-                    self._follow_watches(store.sources())
+                    self._follow_watches(store.sources(counts=False))
         except Exception as e:
             answer["refused"] = str(e) or repr(e)
         then(answer)
@@ -277,8 +289,8 @@ class SourceLooks:
             store = self._store()
             if store is not None:
                 answer["stopped"] = bool(store.stop_source(root_id))
-                self._again_at.pop(root_id, None)
                 with self._lock:
+                    self._again_at.pop(root_id, None)
                     w = self._watches.pop(root_id, None)
                 if w is not None:
                     _close(w)
@@ -309,15 +321,20 @@ class SourceLooks:
                     answer.update(done=True, backup=out["backup"], known=out["known"])
         except Exception as e:                        # put back by the store itself (its status "undone")
             answer["failed"] = str(e) or repr(e)
-        then(answer)
+            answer["aside"] = getattr(e, "folder", None)    # part of it left in the backup (`ResetNotAllBack`)
+        try:
+            then(answer)
+        except Exception as e:                        # the window's fault never stops the folders' first look (H2)
+            print(f"Sources: the fresh library's answer wasn't shown: {e!r}")
         if store is None:
             return
         totals = {"added": 0, "waiting": 0, "full": True}
-        if answer["done"]:
+        if answer["done"]:                            # committed: the folders are read again, whatever came after
             self._reachable.clear()
-            self._again_at.clear()
+            with self._lock:
+                self._again_at.clear()
             try:
-                rows = store.sources()
+                rows = store.sources(counts=False)
                 for row in rows:                      # read again from scratch: setup's first scan (SRC-1)
                     if self._closing.is_set():
                         break
@@ -329,6 +346,17 @@ class SourceLooks:
             except Exception as e:
                 print(f"Sources: the fresh library's first look stopped: {e!r}")
         self._publish(store, totals)
+
+    def _fresh_counts(self, then):
+        counts = None
+        try:
+            store = self._store()
+            if store is not None:
+                from app import library_store as ls
+                counts = ls.fresh_counts(store)
+        except Exception as e:                        # the sheet opens without them
+            print(f"Sources: the fresh library's counts couldn't be read: {e!r}")
+        then(counts)
 
     def _publish(self, store, totals):
         if store is None:
@@ -416,39 +444,51 @@ class SourceLooks:
         """The watch thread: blocked until a watch reports (or a pending folder settles), then a look of the folders
         that changed — or, while the window is behind, kept for its focus."""
         while not self._closing.is_set():
-            with self._lock:
-                watches = list(self._watches.items())
-            dues = [d for d in (w.due() for _r, w in watches) if d is not None]
-            now = time.monotonic()                    # (the watches' own time: real, never the cadence's clock)
-            dues += [max(0.0, at - now) for at in self._again_at.values()]
-            self._wake.wait(min(dues) if dues else None)
-            self._wake.clear()
-            if self._closing.is_set():
-                return
-            now = time.monotonic()
-            changed = set()
-            for root, w in watches:
-                if getattr(w, "state", "watching") != "watching":
-                    with self._lock:                  # ended (the drive went): looked at now, the cadence after
-                        if self._watches.get(root) is w:
-                            del self._watches[root]
+            try:
+                self._watch_once()
+            except Exception as e:                    # H10: one bad turn never ends the watches for the run
+                print(f"Sources: a watch report wasn't handled: {e!r}")
+                self._closing.wait(0.5)               # (never a busy loop on an error that repeats)
+
+    def _watch_once(self):
+        """One turn of the watch thread. `_again_at` is read and written under the lock only (H10: the worker clears
+        it, a *Stop reading* pops it)."""
+        with self._lock:
+            watches = list(self._watches.items())
+            again = list(self._again_at.values())
+        dues = [d for d in (w.due() for _r, w in watches) if d is not None]
+        now = time.monotonic()                        # (the watches' own time: real, never the cadence's clock)
+        dues += [max(0.0, at - now) for at in again]
+        self._wake.wait(min(dues) if dues else None)
+        self._wake.clear()
+        if self._closing.is_set():
+            return
+        now = time.monotonic()
+        changed = set()
+        for root, w in watches:
+            if getattr(w, "state", "watching") != "watching":
+                with self._lock:                      # ended (the drive went): looked at now, the cadence after
+                    if self._watches.get(root) is w:
+                        del self._watches[root]
                     self._again_at.pop(root, None)
-                    changed.add(root)
-                    continue
-                folders, whole = w.take()
-                if folders or whole:
+                changed.add(root)
+                continue
+            folders, whole = w.take()
+            if folders or whole:
+                with self._lock:
                     self._again_at[root] = now + self._quiet        # pushed back by every later report
+        with self._lock:
             for root, at in list(self._again_at.items()):
                 if at <= now:
                     del self._again_at[root]
                     changed.add(root)
-            if not changed:
-                continue
-            with self._lock:
-                if self._shown:
-                    self._queue(False, changed)
-                else:
-                    self._dirty |= changed
+        if not changed:
+            return
+        with self._lock:
+            if self._shown:
+                self._queue(False, changed)
+            else:
+                self._dirty |= changed
 
 
 def _close(watch):

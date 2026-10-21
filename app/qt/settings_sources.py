@@ -16,6 +16,12 @@ rows' packages — never by the page itself.
   names its language, so a root id another store also holds is never stopped there (ids repeat across stores).
   Without a library (no looks), the buttons are greyed and say why.
 
+***Start a fresh library…*** (K7, its own row below): the confirm sheet says what goes and what stays, with *Also
+forget my known words* (off); Esc, Back or a click outside is No. Yes → `SourceLooks.fresh` on the looks' worker (the
+store's `start_fresh`: one dated backup, then the folders read again from scratch); the bar says *Fresh library:
+reading your folders…* once the reset landed, or why nothing was changed. Greyed with why while there is no library
+or it can't be written, and while one runs. No restore button (the backup's `reset.json` says how by hand).
+
 GUI_Design_Guidelines_Qt: the page's controls and label styles (no new rules), a tooltip on every button.
 """
 from PyQt6 import sip
@@ -29,6 +35,7 @@ from app.qt import settings_strings as S
 from app.qt.settings_rules import _SourceWords
 
 ROW_ID = "library_folders"
+FRESH_ID = "fresh_library"
 
 
 def _f():
@@ -40,7 +47,8 @@ def _alive(w):
 
 
 def attach(page):
-    """The *Library folders* row filled into `page`'s slot -> its `SourcesRow` (kept by the page as a child)."""
+    """The *Library folders* row filled into `page`'s slot -> its `SourcesRow` (kept by the page as a child); the
+    *Start a fresh library* row beside it (`SourcesRow.fresh`)."""
     return SourcesRow(page)
 
 
@@ -128,6 +136,7 @@ class SourcesRow(QObject):
         self.show_sources(getattr(self.shell, "sources", ()) or ())
         if looks is not None:
             looks.listing()                               # the counts as they stand, read on the looks' worker
+        self.fresh = FreshRow(page) if FRESH_ID in getattr(page, "slots", {}) else None
 
     def alive(self):
         return _alive(self.page)
@@ -232,4 +241,105 @@ class SourcesRow(QObject):
         line.stop.setEnabled(False)                       # one stop per click
         if busy and self.shell is not None:               # S6: a look under way lets it go after the file it's on
             windows.say_in_bar(self.shell, S.SOURCES_STOPPING.format(path=source["path"]))
+        return True
+
+
+class FreshRow(QObject):
+    """*Start a fresh library…* (K7): `button`; `card` while the sheet is open; `running` from Yes until the reset
+    answered."""
+
+    def __init__(self, page):
+        super().__init__(page)
+        self.page = page
+        self.shell = page.shell
+        self.card = None
+        self.running = False
+        slot = page.custom_row(FRESH_ID)
+        self.button = sc.Door(S.FRESH_OPEN, tooltip=S.FRESH_TIP, parent=slot)
+        self.button.clicked.connect(lambda _c=False: self.ask())
+        slot.layout().addWidget(self.button)
+        seen = getattr(self.shell, "sources_seen", None)
+        if seen is not None:
+            seen.connect(self._seen)
+        self.enable()
+
+    def alive(self):
+        return _alive(self.page)
+
+    def _looks(self):
+        return getattr(self.shell, "looks", None) if self.shell is not None else None
+
+    def why_not(self):
+        """Why the library can't be started afresh now (the button's tooltip), or None."""
+        if self.running:
+            return S.FRESH_RUNNING_TIP
+        if self._looks() is None:
+            return S.STORE_NO_LIBRARY_TIP
+        writer = getattr(getattr(self.page, "services", None), "writer", None)
+        try:
+            reason = writer.reason() if writer is not None else None
+        except Exception:
+            reason = None
+        return S.FRESH_NOT_WRITABLE.format(reason=reason) if reason else None
+
+    def enable(self):
+        """Greyed with why while it can't run; repainted only when it turned (S19)."""
+        if not self.alive():
+            return
+        why = self.why_not()
+        tip = why or S.FRESH_TIP
+        if self.button.isEnabled() != (why is None):
+            self.button.setEnabled(why is None)
+        if self.button.toolTip() != tip:
+            self.button.setToolTip(tip)
+
+    def _seen(self, _summary):
+        self.enable()
+
+    def ask(self):
+        """The sheet: what goes, what stays, the known-words box (off). -> the card, or None when it can't run."""
+        self.enable()
+        if self.why_not() is not None or self.card is not None:
+            return None
+        from app.qt import confirm
+        self.card = confirm.ask(self.page, S.FRESH_ASK, S.FRESH_BODY, S.FRESH_YES, S.FRESH_YES_TIP, default_no=True,
+                                danger=True, check=S.FRESH_KNOWN, check_tip=S.FRESH_KNOWN_TIP, on_answer=self._answered)
+        return self.card
+
+    def _answered(self, yes):
+        card, self.card = self.card, None
+        if yes:
+            self.start(forget_known=bool(card is not None and card.checked))
+
+    def start(self, forget_known=False):
+        """The reset on the looks' worker (never this thread); the bar says how it went. -> True when it was queued."""
+        looks = self._looks()
+        if looks is None or self.running:
+            return False
+        from app.qt import bridge
+        relay = bridge.Relay(self)
+
+        def landed(answer):
+            relay.deleteLater()
+            self.running = False
+            self.enable()
+            if answer.get("done"):
+                known = answer.get("known") or ""
+                text = S.FRESH_DONE_KNOWN_KEPT.format(why=known[len("kept: "):]) if known.startswith("kept: ") \
+                    else S.FRESH_DONE
+            elif answer.get("failed"):
+                text = S.FRESH_FAILED.format(reason=answer["failed"])
+            else:
+                reason = answer.get("refused")
+                text = S.FRESH_REFUSED.format(reason=S.STORE_NO_LIBRARY_TIP if reason == "no-library" else reason)
+            if self.shell is not None:
+                windows.say_in_bar(self.shell, text)
+        relay.said.connect(landed)
+        self.running = True                               # before the ask: an answer may land at once
+        self.enable()
+        if not looks.fresh(forget_known, relay.call):
+            relay.deleteLater()
+            self.running = False
+            self.enable()
+            return False
         return True

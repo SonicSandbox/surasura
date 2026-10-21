@@ -20,6 +20,9 @@ on which thread, and what the window is told. Qt-free; the shell (`app/qt/shell.
 - **+ Add → A folder…** (`add`): `Store.add_source` then its first look — a later look's landing (D6: a show never
   shown waits in New arrivals; `first=True` is setup's own first scan only). A refused folder answers its reason
   (`NotASource.reason`). **Stop reading** (`stop`): `Store.stop_source` (its items stay), its watch closed.
+- **Start a fresh library** (`fresh`, K7): `library_store.start_fresh` on the worker (the store's own write lock and
+  backup), then a first look of every folder being read (`first=True`, in full: setup's first scan, so they land in
+  Current), the window told twice — once the library is fresh (`then`), and the looks' summary after.
 - **Arrival rows name their folder** (`folders(item_ids)`): each item's origin record (`connect.library.pairing_of`)
   read back to its source folder's path.
 """
@@ -121,6 +124,13 @@ class SourceLooks:
         with self._lock:
             self._stopping.add(root_id)               # a look reading it now stops between files (S6)
         return self._worker.put(self._stop, root_id, then or _nothing)
+
+    def fresh(self, forget_known=False, then=None):
+        """*Start a fresh library* (K7): `then({"done", "refused", "failed", "backup", "known", "language"})` on the
+        worker once the reset answered; every folder's first look follows, then the summary. -> False once closed."""
+        if self._closing.is_set():
+            return False
+        return self._worker.put(self._fresh, bool(forget_known), then or _nothing)
 
     def busy(self):
         """A look is queued or running (Settings says *Stop reading* waits for the file it is on)."""
@@ -280,6 +290,45 @@ class SourceLooks:
         then(answer)
         if store is not None:
             self._publish(store, {})
+
+    def _fresh(self, forget_known, then):
+        answer = {"done": False, "refused": None, "failed": None, "backup": None, "known": None,
+                  "language": self.language}
+        store = None
+        try:
+            store = self._store()
+            if store is None:
+                answer["refused"] = "no-library"
+            else:
+                from app import library_store as ls
+                try:
+                    out = ls.start_fresh(store, forget_known=forget_known)
+                except ls.ResetRefused as e:
+                    answer["refused"] = e.reason
+                else:
+                    answer.update(done=True, backup=out["backup"], known=out["known"])
+        except Exception as e:                        # put back by the store itself (its status "undone")
+            answer["failed"] = str(e) or repr(e)
+        then(answer)
+        if store is None:
+            return
+        totals = {"added": 0, "waiting": 0, "full": True}
+        if answer["done"]:
+            self._reachable.clear()
+            self._again_at.clear()
+            try:
+                rows = store.sources()
+                for row in rows:                      # read again from scratch: setup's first scan (SRC-1)
+                    if self._closing.is_set():
+                        break
+                    result = self._scan(store, row, full=True, first=True)
+                    if result is not None:
+                        totals["added"] += result.get("added", 0)
+                        totals["waiting"] += result.get("waiting", 0)
+                self._follow_watches(rows)
+            except Exception as e:
+                print(f"Sources: the fresh library's first look stopped: {e!r}")
+        self._publish(store, totals)
 
     def _publish(self, store, totals):
         if store is None:

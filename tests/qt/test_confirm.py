@@ -249,3 +249,28 @@ def test_focus_goes_back_where_it_was(second):
     card, answers = _ask(second)
     card.no.click()
     assert wait_until(lambda: QApplication.focusWidget() is second.field)
+
+
+# --- K7: an optional box under the words (*Also forget my known words*) ------------------------------------------- #
+def test_a_box_under_the_words_starts_off_is_reached_by_tab_and_counts_only_with_yes(second):
+    # a box ticked by default, or read on a No, would forget a learner's known words he never meant to
+    seen = []
+    card = confirm.ask(second, "Start a fresh library?", "Everything goes into one backup.", "Start fresh",
+                       "Set the library aside", default_no=True, danger=True, check="Also forget my known words",
+                       check_tip="KnownWord.json is kept in the backup",
+                       on_answer=lambda yes: seen.append((yes, card.checked)))
+    QApplication.processEvents()
+    assert card.check is not None and not card.check.isChecked() and card.check.toolTip()
+    QTest.keyClick(QApplication.focusWidget(), Qt.Key.Key_Tab)             # Cancel → Start fresh
+    QTest.keyClick(QApplication.focusWidget(), Qt.Key.Key_Tab)             # → the box, never the window behind
+    assert QApplication.focusWidget() is card.check
+    QTest.keyClick(card.check, Qt.Key.Key_Space)
+    assert card.check.isChecked()
+    card.no.click()
+    assert seen == [(False, False)]                                         # No: never read as ticked
+    card = confirm.ask(second, "Start a fresh library?", "", "Start fresh", "Set the library aside",
+                       check="Also forget my known words", on_answer=lambda yes: seen.append((yes, card.checked)))
+    QApplication.processEvents()
+    card.check.setChecked(True)
+    card.yes.click()
+    assert seen[-1] == (True, True)

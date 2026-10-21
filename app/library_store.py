@@ -8404,6 +8404,326 @@ def repair_store(db_path, language, data_dir, user_files_dir, lock):
 
 
 # ------------------------------------------------------------------------------------------------ #
+# Start a fresh library (K7, laptop fixes; Settings → Content): the library's own state set aside
+# ------------------------------------------------------------------------------------------------ #
+
+RESET_PREFIX = "library-reset-"   # User Files/<lang>/.trash/library-reset-<YYYYmmdd-HHMMSS>/ (that .trash is never purged)
+RESET_RECORD = "reset.json"       # in it: what came from where, enough to put the old library back by hand
+RESET_WAIT = 2.0                  # s: another writer's commit is waited for this long, then the reset is refused
+# Emptied by the reset; `roots` stays (the folders he reads, their ids kept), and so does every exclusion but Remove's
+RESET_TABLES = ("anki_links", "pairings", "made_words", "made_lines", "placement_log", "trash", "anki_changes", "gone",
+                "items", "pieces", "works")
+RESET_KEEP_META = ("mine_line", "arrivals_on", "log_seq")     # his library options, and the log's numbering (+ readers)
+# Why a reset is refused (nothing changed), in the window's words
+RESET_UPDATE = "An update is being installed: start a fresh library once it has finished."
+RESET_GENERATE = "A Generate is running: start a fresh library once it has finished."
+RESET_CONNECT = "Connect is making cards: start a fresh library once it has finished."
+RESET_KNOWN = "Your known words are being updated: try again in a moment."
+RESET_BUSY = "Another Surasura program is saving your library: try again in a moment."
+RESET_DAMAGED = "Your library needs Repair first."
+
+
+class ResetRefused(StoreError):
+    """A fresh library refused before anything was changed; `reason` in the window's words."""
+
+    def __init__(self, reason):
+        super().__init__(reason)
+        self.reason = reason
+
+
+def _copy_db(conn, dest):
+    """The store's rows through SQLite's backup API (a plain copy of the .db alone loses committed rows, K6), written
+    under a `.part` name and renamed once whole. Never inside a transaction on `conn` (the backup then waits on it)."""
+    target = sqlite3.connect(dest + ".part")
+    try:
+        conn.backup(target)
+    finally:
+        target.close()
+    os.replace(dest + ".part", dest)
+
+
+def _copy_whole(conn, dest):
+    """Is the copy at `dest` the store as it stands? Its own check passes, and every table holds as many rows as the
+    store's (read under the write lock: nothing moves meanwhile)."""
+    copy = sqlite3.connect(dest)
+    try:
+        if [r[0] for r in copy.execute("PRAGMA quick_check")] != ["ok"]:
+            return False
+        for (name,) in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall():
+            sql = f'SELECT COUNT(*) FROM "{name}"'
+            if copy.execute(sql).fetchone() != conn.execute(sql).fetchone():
+                return False
+        return True
+    except sqlite3.DatabaseError:
+        return False
+    finally:
+        copy.close()
+
+
+def _same_bytes(a, b):
+    with open(a, "rb") as x, open(b, "rb") as y:
+        while True:
+            one, two = x.read(1 << 20), y.read(1 << 20)
+            if one != two:
+                return False
+            if not one:
+                return True
+
+
+def _set_aside(src, dst):
+    """`src` to `dst`, a name in the backup folder: a rename (one volume); refused (another volume, a folder a watch
+    holds open) → copied, every file's bytes checked, then the original removed — a file that can't be removed raises:
+    left beside the library, the disk sync would walk it back in. A folder left empty (held open) stays, empty."""
+    import shutil
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    try:
+        os.rename(src, dst)
+        return
+    except OSError:
+        pass
+    if os.path.isdir(src):
+        shutil.copytree(src, dst, symlinks=True)               # a link copied as a link: never followed out
+        files = [os.path.join(w, n) for w, _d, names in os.walk(src) for n in names]
+        pairs = [(f, os.path.join(dst, os.path.relpath(f, src))) for f in files]
+    else:
+        shutil.copy2(src, dst)
+        pairs = [(src, dst)]
+    for a, b in pairs:
+        if not _same_bytes(a, b):
+            raise OSError(f"the backup copy of {a} did not match it")
+    if not os.path.isdir(src):
+        os.remove(src)
+        return
+    for where, dirs, names in os.walk(src, topdown=False):
+        for n in names:
+            os.remove(os.path.join(where, n))
+        for d in dirs:
+            try:
+                os.rmdir(os.path.join(where, d))
+            except OSError:
+                pass
+    try:
+        os.rmdir(src)
+    except OSError:
+        pass
+
+
+def _put_back(dst, src):
+    """One `_set_aside` undone: what reached the backup goes back where it came from (a rename, else copied back into
+    it; the backup's copy then stays)."""
+    import shutil
+    if not os.path.lexists(dst):
+        return
+    if not os.path.lexists(src):
+        try:
+            os.rename(dst, src)
+            return
+        except OSError:
+            pass
+    if os.path.isdir(dst):
+        shutil.copytree(dst, src, symlinks=True, dirs_exist_ok=True)
+    else:
+        shutil.copy2(dst, src)
+
+
+def _write_record(folder, record):
+    with open(os.path.join(folder, RESET_RECORD + ".tmp"), "w", encoding="utf-8") as f:
+        json.dump(record, f, indent=2, ensure_ascii=False)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(os.path.join(folder, RESET_RECORD + ".tmp"), os.path.join(folder, RESET_RECORD))
+
+
+def start_fresh(store, forget_known=False, _step=None):
+    """*Start a fresh library* (asked for 2026-10-21: "I need a reset library button as well") for `store`'s language ->
+    {"backup": the backup folder, "known": "kept" | "forgotten" | "kept: <why>", "sources": [root ids being read]}.
+
+    **Goes, into one dated backup** (`User Files/<lang>/.trash/library-reset-<stamp>/`, never purged; `reset.json` in
+    it names what came from where): the store's rows — items, order, pieces, works, trash, the log, New arrivals,
+    pairings and origins, Remove's exclusions, Anki links — as a SQLite backup; its JSON copy `master_manifest.json`
+    (item 8: a store whose database is lost rebuilds itself from it — left here, the old library comes back); every
+    entry of `data/<lang>/` (the `Library/` copies, a 2.x upgrade's tier folders — left, the disk sync walks them back
+    in — hato's drop folder, `data/<lang>/.trash`); the sources' folder-time cache. **Stays:** the folders he reads
+    (their `roots` rows and ids; nothing under them is ever written) and his library options (the mine line, New
+    arrivals' switch); a folder he said never to read (an exclusion that isn't Remove's); Anki; settings.json;
+    results/; known words unless `forget_known` (then KnownWord.json is kept dated in the trash with
+    `backup_to_trash`, copied into the backup, and replaced by an empty one in its own format). The caller reads the
+    folders again (`SourceLooks.fresh`: a first look of each, `first=True`, landing in Current as setup's does).
+
+    **The one write:** every table emptied and a fresh meta — a **new store_id** (a new library: Connect's queued jobs
+    name the store they were read from and drop for another, P2.1 #12), `epoch` + 1 (every window reads in full; the
+    folder-time cache is dropped), `state_version` and the other versions only ever up, item ids never reused (the
+    sequences stay, K30), the Soon line at 25 (`_line_after_build`), works / search keys seeded as a build's are. The
+    fresh JSON copy is exported at once (`export_copy`, under the maintenance lock held).
+
+    **Refused** (`ResetRefused`, nothing changed) while an update is staged, a Generate holds `results`, Connect runs,
+    the helper holds the maintenance lock, another writer keeps the write lock past RESET_WAIT, the known-words lock
+    is held (when asked to forget them), or the store is damaged. Every lock is held to the end, the write lock from
+    the backup copy to the commit, so the copy holds every row the write empties.
+
+    **Crash-safe by its order** — a kill between any two steps leaves the old library in place or restorable by hand
+    from `reset.json`: (1) the backup folder and `reset.json` (status "started", every move it will make); (2) the
+    store copied and checked (`_copy_whole`: its own check, every table's count) — not whole → StoreError, nothing
+    moved; (3) the JSON copy, (4) the folder times, (5) `data/<lang>`'s entries moved (`_set_aside`) — the store
+    still holds the old library: a kill here leaves every moved thing at its `to`; (6) the one write, committed
+    (status "written": the store copy is the old library); (7) the export; (8) the known words; status "done". An
+    error (not a kill) before the commit rolls the write back and puts every move back itself (status "undone").
+    No restore button here (K7): `reset.json` says how by hand. `_step(name)` (tests) is called after each step."""
+    step = _step or (lambda _name: None)
+    if update_staged():
+        raise ResetRefused(RESET_UPDATE)
+    from app import locks
+    token = object()                                    # this reset's holds: a hold by this thread too is refused
+    held = []
+    try:
+        try:
+            held.append(locks.take("results", "Starting a fresh library", owner=token))
+        except locks.Busy:
+            raise ResetRefused(RESET_GENERATE) from None
+        if locks.in_use("connect"):
+            raise ResetRefused(RESET_CONNECT)
+        if forget_known:
+            from app.anki_sync import known_lock_name
+            try:
+                held.append(locks.take(known_lock_name(store.language), "Starting a fresh library", wait=RESET_WAIT,
+                                       owner=token))
+            except locks.Busy:
+                raise ResetRefused(RESET_KNOWN) from None
+        lock = MaintenanceLock(store.db_path)
+        try:
+            if not lock.try_acquire():
+                raise ResetRefused(RESET_BUSY)
+            return _start_fresh(store, forget_known, step)
+        finally:
+            lock.close()
+    finally:
+        for h in reversed(held):
+            h.release()
+
+
+def _start_fresh(store, forget_known, step):
+    from contextlib import ExitStack
+    from app import sources
+    language, data_dir, user_files_dir = store.language, store.data_dir, store.user_files_dir
+    stack = ExitStack()
+    try:
+        stack.enter_context(store._writing(begin=False, wait=RESET_WAIT))
+    except StoreBusy:
+        raise ResetRefused(RESET_BUSY) from None
+    except StoreReadOnly:
+        raise ResetRefused(RESET_DAMAGED) from None
+    with stack:
+        trash = os.path.join(user_files_dir, ".trash")
+        folder = os.path.join(trash, RESET_PREFIX + _stamp())
+        n = 1
+        while os.path.exists(folder):
+            folder = os.path.join(trash, f"{RESET_PREFIX}{_stamp()}-{n}")
+            n += 1
+        os.makedirs(folder)
+        moves = []
+        target = manifest_path(user_files_dir)
+        if os.path.lexists(target):
+            moves.append({"step": "manifest", "from": target, "to": os.path.join(folder, MANIFEST_NAME)})
+        cache = sources.cache_path(language)
+        if os.path.lexists(cache):
+            moves.append({"step": "cache", "from": cache, "to": os.path.join(folder, os.path.basename(cache))})
+        if os.path.isdir(data_dir):
+            for name in sorted(os.listdir(data_dir)):
+                moves.append({"step": "data", "from": os.path.join(data_dir, name),
+                              "to": os.path.join(folder, "data", name)})
+        db_copy = os.path.join(folder, os.path.basename(store.db_path))
+        record = {"language": language, "status": "started", "started_at": _now(), "db": store.db_path,
+                  "db_copy": db_copy, "moves": moves, "known": None,
+                  "how_to_put_back": "Close Surasura. Copy db_copy over db (delete db's -wal and -shm first) when the "
+                                     "status is written or done, then move every 'to' back to its 'from'."}
+        _write_record(folder, record)
+        done = []
+        try:
+            step("folder")
+            _copy_db(store.conn, db_copy)
+            if not _copy_whole(store.conn, db_copy):
+                raise StoreError("the library's backup copy isn't whole; nothing was changed")
+            step("backup")
+            for name in ("manifest", "cache", "data"):
+                for move in moves:
+                    if move["step"] == name:
+                        _set_aside(move["from"], move["to"])
+                        done.append(move)
+                step(name)
+            _reset_tables(store)
+            step("wipe")
+            store.conn.execute("COMMIT")
+        except Exception:
+            if store.conn.in_transaction:
+                store.conn.execute("ROLLBACK")
+            for move in reversed(done):
+                _put_back(move["to"], move["from"])
+            record["status"] = "undone"
+            _write_record(folder, record)
+            raise
+        record["status"] = "written"
+        _write_record(folder, record)
+    library_watch.ring(store.db_path)                   # every window listening reads the new epoch in full
+    step("write")
+    try:
+        export_copy(store)                              # the fresh JSON copy now (the maintenance lock is held)
+    except Exception as e:                              # the next maintain exports it
+        print(f"Fresh library: the JSON copy waits for the next save ({e!r})")
+    step("export")
+    known = _forget_known(store, folder, record) if forget_known else "kept"
+    record.update(status="done", known=record["known"] or known, finished_at=_now())
+    _write_record(folder, record)
+    step("known")
+    return {"backup": folder, "known": known, "sources": [r["id"] for r in store.sources()]}
+
+
+def _reset_tables(store):
+    """The one write's rows (inside the reset's write lock): BEGIN, every table of the library's own emptied, Remove's
+    exclusions with them, and a fresh meta (`start_fresh`'s docstring). Committed by the caller."""
+    conn = store.conn
+    old = store._meta()
+    conn.execute("BEGIN IMMEDIATE")
+    for sql in ADDED_TABLES_SQL:                         # an added table this store may not have made yet
+        conn.execute(sql)
+    for name in RESET_TABLES:
+        conn.execute(f"DELETE FROM {name}")
+    conn.execute("DELETE FROM exclusions WHERE kind = 'removed'")
+    conn.execute("DELETE FROM meta")
+    meta = _fresh_meta(uuid.uuid4().hex, int(old.get("epoch") or 1) + 1, int(old.get("state_version") or 0) + 1)
+    for key in ("order_version", "availability_version", "pins_version"):
+        meta[key] = int(old.get(key) or 0) + 1
+    meta.update({k: v for k, v in old.items() if k in RESET_KEEP_META or k.startswith("reader")})
+    store._set_meta(meta)
+    _seed_schema2(store, meta["state_version"])         # the feed's floor and the search fold, as every build's
+    _line_after_build(store)                            # nothing in Current: 25 (Q2-4)
+    store._set_meta({"migrated_at": _now()})
+
+
+def _forget_known(store, folder, record):
+    """*Also forget my known words*: KnownWord.json kept dated in the trash (`backup_to_trash`, byte-checked) and
+    copied into the backup, then an empty one in its own format (`anki_sync`'s). -> "forgotten", or "kept: <why>"
+    (the library is fresh either way). Words from his Anki cards come back at the next Anki sync (a file rewritten
+    outside the sync makes its next run a full one, D4)."""
+    from app import anki_sync
+    path = os.path.join(store.user_files_dir, anki_sync.KNOWN_FILE)
+    if not os.path.isfile(path):
+        return "forgotten"
+    try:
+        dated = backup_to_trash(path)
+        copy = os.path.join(folder, anki_sync.KNOWN_FILE)
+        import shutil
+        shutil.copyfile(path, copy)
+        if not _same_bytes(path, copy):
+            raise OSError("the backup copy did not match it")
+        record["known"] = {"from": path, "dated": dated, "copy": copy}
+        _write_record(folder, record)
+        anki_sync._atomic_write_json(path, anki_sync._fresh_file([]))
+    except OSError as e:
+        return f"kept: {e}"
+    return "forgotten"
+
+
+# ------------------------------------------------------------------------------------------------ #
 # File work (§6.6, §6.11): the caller's, outside every transaction — the store itself never moves a
 # file (I3). Tk-free, so Phase 2's Content Manager calls these instead of its own copies.
 # ------------------------------------------------------------------------------------------------ #

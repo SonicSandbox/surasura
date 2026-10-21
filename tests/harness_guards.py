@@ -417,7 +417,6 @@ def _anki_port_refuses(family, address):
     return address[1] in ANKI_PORTS and not _opted_in_now()
 
 
-_SURASURA_CODE = re.compile(r"app_entry|\b(?:app|modules)[./\\]|\b(?:from|import) (?:app|modules)\b")
 
 
 def _child_reaches_anki(env):
@@ -577,6 +576,7 @@ def _load_open_guard():
 
 
 _OPEN_GUARD = _load_open_guard()
+_SURASURA_CODE = _OPEN_GUARD.SURASURA_CODE      # one rule for both guards: a child running Surasura's code
 os.environ[_OPEN_GUARD.LOG] = os.path.join(os.path.dirname(os.environ["LOCALAPPDATA"]), "opened.jsonl")
 _OPEN_GUARD.install(qt=True)
 _OPENS_READ = [0]           # how far the log has been read

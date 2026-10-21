@@ -75,7 +75,7 @@ class TestHTMLRegression(unittest.TestCase):
         if key in self._CACHE:
             content = self._CACHE[key]
         else:
-            generate_static_html(theme=theme, zen_limit=zen_limit)
+            generate_static_html(theme=theme, zen_limit=zen_limit, open_browser=False)
             with open(OUTPUT_FILE, "r", encoding="utf-8") as f:
                 content = f.read()
             self._CACHE[key] = content
@@ -104,7 +104,7 @@ class TestHTMLRegression(unittest.TestCase):
         as_app.assert_not_called()
 
         with patch("webbrowser.open") as opened:
-            generate_static_html(theme="default")
+            generate_static_html(theme="default", open_browser=False)
         opened.assert_called_once()
 
     def test_zen_mode_regression(self):

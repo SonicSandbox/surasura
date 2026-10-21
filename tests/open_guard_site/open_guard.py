@@ -15,6 +15,7 @@ file at each test's end and fails that test naming each line:
 Nothing here imports the app."""
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -71,11 +72,21 @@ def viewer(command):
     return name in VIEWERS or (name == "cmd" and "start" in rest)
 
 
+# Surasura's own code in a child's command (the harness's Anki check reads the same rule).
+SURASURA_CODE = re.compile(r"app_entry|\b(?:app|modules)[./\\]|\b(?:from|import) (?:app|modules)\b")
+
+
 def python_child(command):
-    """Whether a child is a Python (its program named python*, or this one)."""
-    program, _rest = _words(command)
-    return bool(program) and (os.path.basename(program).lower().startswith("python")
-                              or os.path.normcase(program) == os.path.normcase(sys.executable))
+    """Whether a child is a Python running Surasura's code (its program named python*, or this one; app_entry, -m app…,
+    an `import app` in its -c). Any other Python child — a stand-in for Anki started with a clean environment — keeps
+    its environment as given."""
+    program, rest = _words(command)
+    if not program or not (os.path.basename(program).lower().startswith("python")
+                           or os.path.normcase(program) == os.path.normcase(sys.executable)):
+        return False
+    words = command if isinstance(command, (list, tuple)) else [command]
+    return bool(SURASURA_CODE.search(" ".join(os.fsdecode(w) if isinstance(w, (bytes, os.PathLike)) else str(w)
+                                              for w in words)))
 
 
 def child_env(env):

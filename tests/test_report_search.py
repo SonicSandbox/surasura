@@ -360,7 +360,7 @@ def test_generated_report_carries_forms_to_the_browser(tmp_path, monkeypatch):
     monkeypatch.setattr(static_html_generator, "PRIORITY_CSV", str(results / "priority_learning_list.csv"))
     monkeypatch.setattr(static_html_generator, "PROGRESSIVE_CSV", str(results / "progressive_learning_list.csv"))
     monkeypatch.setattr(static_html_generator, "OUTPUT_FILE", str(out))
-    static_html_generator.generate_static_html(theme="default")
+    static_html_generator.generate_static_html(theme="default", open_browser=False)
 
     html = out.read_text(encoding="utf-8")
     assert '"Forms"' in html

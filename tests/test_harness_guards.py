@@ -236,12 +236,12 @@ def test_a_python_child_opening_a_page_its_way_is_refused_and_named_for_the_test
     # The analyzer as a child opened the report through webbrowser, os.startfile or Chrome in app mode: out of any
     # monkeypatch's reach. The child carries the guard (its PYTHONPATH), even with an environment of its own.
     _no_browser_at_all(monkeypatch)
-    code = ("import os, subprocess, webbrowser; webbrowser.open('file:///C:/無い/x.html'); "
+    code = ("import app, os, subprocess, webbrowser; webbrowser.open('file:///C:/無い/x.html'); "
             "os.startfile(r'C:\\無い\\x.html'); "
             "subprocess.run([r'C:\\無い\\Google\\Chrome\\Application\\chrome.exe', '--app=file:///C:/無い/x.html'])")
     env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
     env["PYTHONIOENCODING"] = "utf-8"
-    done = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, timeout=120)
+    done = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, timeout=120, cwd=PROJECT)
     assert done.returncode == 0, done.stderr.decode("utf-8", "replace")
     missing, lines = _claimed(["webbrowser.open ", "os.startfile ", "a browser or viewer started as a child "])
     assert missing == [], lines

@@ -50,9 +50,11 @@ def _failed_result(version="2.5.1"):
         json.dump({"status": "failed", "from": "2.5.0", "to": version, "reason": "swap failed (rolled back)"}, f)
 
 
-def test_a_failed_update_is_noted_in_update_state_and_settings_json_is_untouched(dashboard):
+def test_a_failed_update_is_noted_in_update_state_and_settings_json_is_untouched(dashboard, monkeypatch):
     before = _write_settings({"wpd": 17})
     _failed_result("2.5.1")
+    opened = []
+    monkeypatch.setattr("webbrowser.open", opened.append)     # its "download it by hand" page: asked, never opened
     dashboard.reconcile_update_result()
     with open(_settings_path(), "rb") as f:
         assert f.read() == before, "settings.json's bytes must not change"

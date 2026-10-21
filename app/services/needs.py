@@ -218,7 +218,8 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
 
 
 def _gone_entry(group, hits, seen):
-    row = hits[0][0]
+    hits = sorted(hits, key=lambda hit: hit[1].id)   # order-free (C1, the M4.1 adversary's N1): two pieces of one work
+    row = hits[0][0]                                 # swapped in Current keep the card's key, lines, title and folder
     word = view_rows.MEDIA_WORD.get(row.media, "video")
     ids = [e.id for _r, e in hits]
     if len(hits) == 1:

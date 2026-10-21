@@ -668,3 +668,35 @@ def test_C1_two_shows_with_cards_swapped_are_worked_out_again_their_cards_in_the
     assert order[:2] == [shows[1], shows[0]]
     assert ny.cards.order == [e.key for e in ny.entries]
     assert ny.cards.builds == builds
+
+
+def test_N1_two_pieces_of_one_work_swapped_keep_its_file_gone_card_as_a_fresh_look_makes_it(world):
+    """The M4.1 adversary's N1: C1 keeps the entries on a reorder (one work's pieces swapped read the same), but the
+    work's *file gone* card took its files in Current's order — its key (seen or not), lines and title — so the next
+    real look changed its key and the card came back unseen. The card is order-free: a fresh look makes the same."""
+    seed, win, writer, ny = world()
+    rows_ = list(win.page_widgets["needs"].view_model.rows)
+    pieces = [i for i, r in enumerate(rows_) if r.work_id is not None
+              and sum(1 for q in rows_ if q.work_id == r.work_id) == 2 and r.tier == "now"]
+    a, b = pieces[:2]
+    work = rows_[a].work_id
+    assert rows_[b].work_id == work and not any(e.missing for i in (a, b) for e in rows_[i].episodes)
+    seed.library.commit(items=[{"id": rows_[i].episodes[0].id, "availability": "missing"} for i in (a, b)],
+                        availability=True)                       # one file of each piece gone
+    assert wait_until(lambda: any(e.kind == service.GONE and e.data["group"] == work and len(e.lines) == 2
+                                  for e in ny.entries) and not ny._running, 10)
+    settle(ny)
+    view = win.page_widgets["needs"].view_model
+    before = next(e for e in ny.entries if e.kind == service.GONE and e.data["group"] == work)
+    rows_ = list(view.rows)
+    a, b = (next(i for i, r in enumerate(rows_) if r.key == k) for k in (rows_[a].key, rows_[b].key))
+    rows_[a], rows_[b] = rows_[b], rows_[a]
+    swapped = view._replace(rows=tuple(r._replace(index=i + 1) for i, r in enumerate(rows_)))
+    gathers = ny.gathers
+    ny.view_in(swapped)
+    assert ny.gathers == gathers and not ny._running            # C1: the reorder kept the entries
+    kept = ny.entries
+    settle(ny)                                                  # a fresh look at the swapped rows
+    assert ny.entries == kept
+    after = next(e for e in ny.entries if e.kind == service.GONE and e.data["group"] == work)
+    assert after == before and after.key == before.key

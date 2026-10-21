@@ -541,6 +541,19 @@ class Parting:
             region = region.united(QRect(0, top, vp.width(), bottom - top + 1))
         vp.update(region)
 
+    def scrolled(self, dy):
+        """The list scrolled by `dy` (the scroll bar's value; Qt has moved what was painted): the strip that scrolled in
+        repaints, widened to the parted rows whose pictures reach into it from places outside it (Qt paints only the
+        rows whose places lie in the strip: a row pushed down into the bottom strip, or pulled up into the top one, was
+        left unpainted — the M4.1 adversary's S1). Never the whole list."""
+        if self._rects is not None:                  # (inside a clock frame: the frame's rects are from before it)
+            self._rects = {}
+        h = self.lst.viewport().height()
+        if dy > 0:
+            self._update_bands([(h - dy - 1, h)])
+        elif dy < 0:
+            self._update_bands([(-1, -dy)])
+
     def _rested(self, r):
         self.springs.pop(r, None)
 
@@ -624,7 +637,8 @@ def list_menu(lst, title):
         m = _KeptMenu(lst)
         m.setObjectName("rowmenu")
         m.setToolTipsVisible(True)
-        m.aboutToHide.connect(lambda: _empty_menu(m))
+        m.aboutToHide.connect(lambda: _empty_menu(m))   # never exec() it, only popup(): exec's own loop could run
+        #                                                 the emptied actions' deleteLater before its pick is read
         lst.row_menu = m
     elif m.isVisible():
         m.hide()
@@ -746,8 +760,12 @@ class DragController(QObject):
         self._scroll = QTimer(self)
         self._scroll.setInterval(theme.MOTION["auto-scroll-tick"])
         self._scroll.timeout.connect(self._auto_scroll)
-        # A scroll during a drag asks for no repaint of its own (Gap 2): Qt moves what was painted and paints the strip
-        # that scrolled in — a row whose place is in it, and (`Parting.paint_over`) a parted row from off screen.
+        # A scroll during a drag asks for the strip that scrolled in, no more (Gap 2): Qt moves what was painted and
+        # paints that strip — but only the rows whose places lie in it (and, `Parting.paint_over`, a parted row from off
+        # screen); `Parting.scrolled` widens it to the parted rows whose pictures reach in from outside it (S1).
+        bar = self.lst.verticalScrollBar()
+        self._bar_was = bar.value()
+        bar.valueChanged.connect(self._scrolled)
         self.undo_key = QShortcut(QKeySequence(QKeySequence.StandardKey.Undo), win)
         self.undo_key.setContext(Qt.ShortcutContext.WindowShortcut)
         self.undo_key.activated.connect(self.undo_last)
@@ -1154,6 +1172,12 @@ class DragController(QObject):
             bar.setValue(before + dy)
             if bar.value() != before:
                 self._follow(d.at)
+
+    def _scrolled(self, value):
+        was, self._bar_was = self._bar_was, value
+        parting = self.lst.parting
+        if parting is not None and parting.alive and value != was:
+            parting.scrolled(value - was)
 
     # --- the end of a drag ------------------------------------------------------------------------------------- #
     def cancel(self, why=None):

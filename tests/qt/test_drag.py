@@ -1209,6 +1209,103 @@ def test_gap2_auto_scroll_while_rows_spring_back_into_the_strip_leaves_no_row_un
         undo()
 
 
+def _strip_shown_as_whole(win, lst, where):
+    shown, whole = _on_screen_vs_whole(win, lst)
+    bad = (abs(shown.astype(int) - whole.astype(int)) > 2).any(axis=2)
+    assert not bad.any(), (where, int(bad.sum()), [int(v) for v in bad.nonzero()[0][[0, -1]]])
+
+
+def _edge_row(win, lst, band, upper):
+    """A scroll place and a point in the edge band (`band`: its viewport rows, tried in order — its inner end scrolls
+    1 px a tick, so the slot stays put for a few ticks) on a row's upper (or lower) half, the row's place clear of the
+    viewport's edge by more than a few pixels: -> (scroll value, y), the list scrolled there."""
+    bar, h = lst.verticalScrollBar(), lst.viewport().height()
+    for v in range(bar.maximum() // 2, bar.maximum() // 2 + 200):
+        bar.setValue(v)
+        QApplication.processEvents()
+        for y in band:
+            idx = lst.indexAt(QPoint(4, y))
+            if not idx.isValid():
+                continue
+            r = lst.visualRect(idx)
+            if upper and y < r.center().y() and r.bottom() < h - 6:
+                return v, y
+            if not upper and y >= r.center().y() + 4 and r.top() > 2:     # (the list comes down under the hand)
+                return v, y
+    raise AssertionError("no such geometry in the seed")
+
+
+def test_S1_auto_scroll_down_paints_the_strip_under_rows_parted_down_from_places_outside_it(world):
+    """M4.1 adversary S1: a drag from outside the list (the Goal sheet, the tray) pushes every row past the slot down.
+    The hand in the bottom band on a row's upper half leaves the slot's box short of the edge, so the strip each tick
+    scrolls in shows the slot's row, pushed down into it from a place outside it — Qt alone paints only the rows whose
+    places lie in the strip, and a background band grew a pixel row a tick. The scroll asks for that strip, widened
+    to the parted rows whose pictures reach into it."""
+    seed, win, writer = world(apply=False)
+    clock, undo = _on_test_time()
+    try:
+        lst = lst_of(win)
+        vp = lst.viewport()
+        bar = lst.verticalScrollBar()
+        h, edge = vp.height(), theme.MOTION["auto-scroll-edge"]
+        v, y = _edge_row(win, lst, range(h - edge + 1, h - 1), upper=True)
+        goal_ids = [r["id"] for r in seed.items if r["tier"] == "goal"][:3]
+        first = lst.indexAt(QPoint(4, h // 2)).row()
+        assert win.moves.begin_by_id(goal_ids, "goal", "海辺の図書室", row_point(win, first))
+        win.moves._scroll.stop()                                      # the test steps the ticks itself
+        move_global(win, vp.mapToGlobal(QPoint(vp.width() // 2, y)))
+        win.moves._scroll.stop()
+        clock.advance(1000)                                           # parted, at rest
+        _flushed(lst)
+        _strip_shown_as_whole(win, lst, "at rest")
+        for i in range(6):
+            win.moves._auto_scroll()
+            clock.advance(motion.FRAME_MS)
+            QApplication.processEvents()
+            _strip_shown_as_whole(win, lst, ("down", i, bar.value(), lst.parting.slot))
+        assert bar.value() > v
+        win.moves.cancel()
+    finally:
+        undo()
+
+
+def test_S1_auto_scroll_up_paints_the_strip_under_rows_parted_up_from_places_outside_it(world):
+    """S1's mirror: a row lifted from above the screen pulls the rows up to its slot; the hand in the top band on a
+    row's lower half leaves the slot's box short of the top edge, so the slot's row, pulled up, stands in the strip
+    each tick scrolls in from a place below it. (A shorter window: the lifted row a screen above the scroll place.)"""
+    seed, win, writer = world(apply=False, size=(1280, 560))
+    clock, undo = _on_test_time()
+    try:
+        lst = lst_of(win)
+        vp = lst.viewport()
+        bar = lst.verticalScrollBar()
+        h, edge = vp.height(), theme.MOTION["auto-scroll-edge"]
+        v, y = _edge_row(win, lst, range(edge - 1, 0, -1), upper=False)     # the band's inner end: 1 px a tick
+        assert v >= h
+        bar.setValue(v - h)                                           # the row to lift: half a screen above v's top
+        QApplication.processEvents()
+        lift(win, lst.indexAt(QPoint(4, h // 2)).row())
+        win.moves._scroll.stop()
+        bar.setValue(v)
+        QApplication.processEvents()
+        move_global(win, vp.mapToGlobal(QPoint(vp.width() // 2, y)))
+        win.moves._scroll.stop()
+        clock.advance(1000)                                           # parted up, at rest
+        p = lst.parting
+        assert p.slot > p.src and p._slot_box().top() > 2             # the slot's box short of the top edge
+        _flushed(lst)
+        _strip_shown_as_whole(win, lst, "at rest")
+        for i in range(6):
+            win.moves._auto_scroll()
+            clock.advance(motion.FRAME_MS)
+            QApplication.processEvents()
+            _strip_shown_as_whole(win, lst, ("up", i, bar.value(), p.slot))
+        assert bar.value() < v
+        win.moves.cancel()
+    finally:
+        undo()
+
+
 def test_gap2_a_drop_on_goal_shows_goals_new_count_and_its_name_at_the_drop_while_the_wells_fall(world):
     """The bar's new count (and the dock's accessible name) waited for the wells' 260 ms fall; now they come at the
     drop, the bar shown under the wells falling away from it."""

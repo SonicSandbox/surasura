@@ -44,7 +44,7 @@ class Holder:
     """Another program holding a lock (a child Python), until `release()` — or `kill()`."""
 
     def __init__(self, name, verb="another Surasura program"):
-        env = dict(os.environ, PYTHONPATH=PROJECT_ROOT)
+        env = dict(os.environ, PYTHONPATH=PROJECT_ROOT, SURASURA_NO_ANKI_SYNC="1")    # it holds a lock, never asks Anki
         self.proc = subprocess.Popen([sys.executable, "-c", _HOLDER, name, verb], cwd=PROJECT_ROOT, env=env,
                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         line = self.proc.stdout.readline().strip()

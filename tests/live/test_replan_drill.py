@@ -33,7 +33,8 @@ import urllib.request
 import pytest
 
 LIVE = os.environ.get("SURASURA_LIVE_ANKI") == "DevTest"
-pytestmark = pytest.mark.skipif(not LIVE, reason="writes to Anki: SURASURA_LIVE_ANKI=DevTest only")
+pytestmark = [pytest.mark.skipif(not LIVE, reason="writes to Anki: SURASURA_LIVE_ANKI=DevTest only"),
+              pytest.mark.anki_port]       # the harness guard lets these reach Anki (tests/harness_guards.py)
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 URL = os.environ.get("SURASURA_LIVE_ANKI_URL", "http://127.0.0.1:8765")

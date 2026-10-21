@@ -378,9 +378,9 @@ def test_the_sources_seen_come_from_the_library_stores_pairings():
     from tests import connect_helpers as c
     c.library("ja")
     with c.store("ja") as s:
-        first = c.drop("ぼっち・ざ・ろっく！ - 05.ja.srt")
+        first = c.drop("ひとり・で・ぽっぷ！ - 05.ja.srt")
         s.register(first, c.record(first, "v5"))
-        second = c.drop("ぼっち・ざ・ろっく！ - 06.ja.srt")
+        second = c.drop("ひとり・で・ぽっぷ！ - 06.ja.srt")
         s.register(second, c.record(second, "v6", producer="youtube", channel_id="UCgx8nPpXp9c0Kv4bUk1D3ng"))
     assert sr.sources_seen(("ja", "zh")) == {"hato", "youtube", CHANNEL}, "no Chinese store: it adds nothing"
 
@@ -391,7 +391,7 @@ def test_one_language_whose_pairings_cannot_be_read_keeps_the_other_languages_so
     from tests import connect_helpers as c
     c.library("ja")
     with c.store("ja") as s:
-        first = c.drop("ぼっち・ざ・ろっく！ - 05.ja.srt")
+        first = c.drop("ひとり・で・ぽっぷ！ - 05.ja.srt")
         s.register(first, c.record(first, "v5", producer="youtube", channel_id="UCgx8nPpXp9c0Kv4bUk1D3ng"))
     c.library("zh")
     real = library.pairings

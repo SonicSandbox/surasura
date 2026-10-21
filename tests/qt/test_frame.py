@@ -27,9 +27,9 @@ from app.services.view_rows import Goal
 from tests.qt.conftest import wait_until
 from tests.qt.pixels import count, rgb_array
 
-TITLES = ("ぼっち・ざ・ろっく！", "葬送のフリーレン", "薬屋のひとりごと", "スパイファミリー", "チェンソーマン",
-          "呪術廻戦", "その着せ替え人形は恋をする", "よふかしのうた", "推しの子", "ダンジョン飯", "からかい上手の高木さん",
-          "響け！ユーフォニアム")
+TITLES = ("ひとり・で・ぽっぷ！", "星送りのリーフェン", "茶屋のないしょごと", "ソライロファミリア", "ハガネノコウジョウ",
+          "符術奇譚", "その仕立て屋は夢をみる", "よあけのうた", "月影の子", "迷宮ごはん", "からかい名人の小林さん",
+          "奏でて！セレナーデ")
 
 
 def _goal(n=12, files=128):
@@ -250,7 +250,7 @@ def _journey_on_disk():
     results = path_utils.get_user_file("results")
     os.makedirs(results, exist_ok=True)
     with open(os.path.join(results, shell.JOURNEY_FILE), "w", encoding="utf-8") as f:
-        f.write("<html><title>ぼっち・ざ・ろっく！</title></html>")
+        f.write("<html><title>ひとり・で・ぽっぷ！</title></html>")
 
 
 def test_the_journey_button_sits_beside_the_level_and_opens_the_journey_once_per_click(world, monkeypatch):

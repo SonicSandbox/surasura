@@ -44,7 +44,7 @@ ALL_ON = {
     "connect_enabled": True, "enable_junban": True, "strategy": "coverage", "enable_koe": True,
     "anki_sync_decks": {"ja": ["日本語::コア2k"], "zh": ["中文::HSK"]},
     "connect_backlog_cap": {"ja": 40, "zh": 25},
-    "connect_video_folders": {"ja": ["E:\\アニメ\\ぼっち・ざ・ろっく！"], "zh": ["D:\\视频\\中文"]},
+    "connect_video_folders": {"ja": ["E:\\アニメ\\ひとり・で・ぽっぷ！"], "zh": ["D:\\视频\\中文"]},
 }
 NEW_FOLDER = "D:\\動画\\日本語"
 

@@ -185,7 +185,7 @@ def fetcher(writer, server=None, on=True, language="ja", **kw):
 def test_with_the_switch_off_nothing_leaves_the_machine_not_even_a_title_asked_for(anilist):
     pen = Pen()
     f = fetcher(pen, anilist, on=False)
-    asked = [want(1, "葬送のフリーレン", anilist_id=154587), want(2, "進撃の巨人"), want(3, "動画", video_id="dQw4w9WgXcQ")]
+    asked = [want(1, "星送りのリーフェン", anilist_id=900101), want(2, "嵐壁の巨兵"), want(3, "動画", video_id="dQw4w9WgXcQ")]
     assert f.want(asked) == 0 and f.run_once() == 0
     assert anilist.posts == [] and anilist.gets == [] and pen.covers == []
 
@@ -193,33 +193,33 @@ def test_with_the_switch_off_nothing_leaves_the_machine_not_even_a_title_asked_f
 def test_the_switch_is_off_by_default_so_a_fresh_install_sends_nothing_to_the_real_anilist():
     f = O.Fetcher("ja", Pen())                      # settings.json's defaults, the real AniList (the guard refuses it)
     assert f.on() is False
-    assert f.want([want(1, "葬送のフリーレン", anilist_id=154587)]) == 0 and f.run_once() == 0
+    assert f.want([want(1, "星送りのリーフェン", anilist_id=900101)]) == 0 and f.run_once() == 0
 
 
 def test_the_switch_turned_off_after_a_title_was_asked_for_stops_the_next_request(anilist):
     pen = Pen()
-    anilist.add(154587, "Sousou no Frieren", "葬送のフリーレン")
+    anilist.add(900101, "Hoshiokuri no Riefen", "星送りのリーフェン")
     f = fetcher(pen, anilist)
-    assert f.want([want(1, "葬送のフリーレン", anilist_id=154587)]) == 1
+    assert f.want([want(1, "星送りのリーフェン", anilist_id=900101)]) == 1
     f.switch["covers_download"] = False
     assert f.run_once() == 0 and anilist.posts == [] and pen.covers == []
-    candidate = O.Candidate(154587, f"{anilist.base}/img/154587.jpg", "葬送のフリーレン", 2023, "TV")
-    assert f.candidates(want(1, "葬送のフリーレン")) == [] and f.pick(want(1, "葬送のフリーレン"), candidate) is None
-    assert f.paste(want(1, "葬送のフリーレン"), "https://anilist.co/anime/154587") == (None, "off")
+    candidate = O.Candidate(900101, f"{anilist.base}/img/900101.jpg", "星送りのリーフェン", 2023, "TV")
+    assert f.candidates(want(1, "星送りのリーフェン")) == [] and f.pick(want(1, "星送りのリーフェン"), candidate) is None
+    assert f.paste(want(1, "星送りのリーフェン"), "https://anilist.co/anime/900101") == (None, "off")
     assert anilist.posts == [] and anilist.gets == []
 
 
 # --- what is sent ---------------------------------------------------------------------------------------------------- #
 def test_the_requests_hold_only_an_id_or_a_cleaned_title_with_surasuras_user_agent_and_no_referer(anilist):
     pen = Pen()
-    anilist.add(154587, "Sousou no Frieren", "葬送のフリーレン")
-    anilist.add(16498, "Shingeki no Kyojin", "進撃の巨人", english="Attack on Titan", year=2013, search="進撃の巨人")
+    anilist.add(900101, "Hoshiokuri no Riefen", "星送りのリーフェン")
+    anilist.add(900202, "Arashikabe no Kyohei", "嵐壁の巨兵", english="Giants of the Storm Wall", year=2013, search="嵐壁の巨兵")
     f = fetcher(pen, anilist)
-    release = r"D:\Anime\進撃の巨人\[SubsPlease] 進撃の巨人 - 01 (1080p) [ABCD1234].mkv"
-    assert f.want([want(1, "葬送のフリーレン", anilist_id=154587), want(2, release)]) == 2
+    release = r"D:\Anime\嵐壁の巨兵\[SubsPlease] 嵐壁の巨兵 - 01 (1080p) [ABCD1234].mkv"
+    assert f.want([want(1, "星送りのリーフェン", anilist_id=900101), want(2, release)]) == 2
     assert f.run_once() == 2
     sent = [body["variables"] for body, _headers in anilist.posts]
-    assert sent == [{"ids": [154587]}, {"search": "進撃の巨人"}]
+    assert sent == [{"ids": [900101]}, {"search": "嵐壁の巨兵"}]
     assert all(set(body) == {"query", "variables"} for body, _headers in anilist.posts)
     raw = json.dumps([body for body, _headers in anilist.posts], ensure_ascii=False)
     for leak in ("SubsPlease", "1080p", "ABCD1234", "Anime", ".mkv", " - 01", "D:"):
@@ -227,17 +227,17 @@ def test_the_requests_hold_only_an_id_or_a_cleaned_title_with_surasuras_user_age
     for _what, headers in anilist.posts + anilist.gets:
         assert headers["User-Agent"] == f"Surasura/{__version__}"
         assert "Referer" not in headers and "Cookie" not in headers
-    assert sorted(p for p, _h in anilist.gets) == ["/img/154587.jpg", "/img/16498.jpg"]
-    assert [(c[1], c[2], c[5]) for c in pen.covers] == [("anilist", "154587", True), ("anilist", "16498", True)]
+    assert sorted(p for p, _h in anilist.gets) == ["/img/900101.jpg", "/img/900202.jpg"]
+    assert [(c[1], c[2], c[5]) for c in pen.covers] == [("anilist", "900101", True), ("anilist", "900202", True)]
 
 
 @pytest.mark.parametrize("name, cleaned, year", [
-    ("[SubsPlease] Sousou no Frieren - 01 (1080p) [ABCD1234].mkv", "Sousou no Frieren", None),
-    (r"D:\Anime\進撃の巨人\[Group] 進撃の巨人 第3話 (BD 1080p HEVC).ja.srt", "進撃の巨人", None),
-    ("Shingeki.no.Kyojin.S02E05.1080p.WEB-DL.mkv", "Shingeki no Kyojin Season 2", None),
-    ("葬送のフリーレン (2023)", "葬送のフリーレン", 2023),
-    ("かぐや様は告らせたい 第2期 EP 03", "かぐや様は告らせたい 第2期", None),
-    ("ぼっち・ざ・ろっく！ #01", "ぼっち・ざ・ろっく!", None),
+    ("[SubsPlease] Hoshiokuri no Riefen - 01 (1080p) [ABCD1234].mkv", "Hoshiokuri no Riefen", None),
+    (r"D:\Anime\嵐壁の巨兵\[Group] 嵐壁の巨兵 第3話 (BD 1080p HEVC).ja.srt", "嵐壁の巨兵", None),
+    ("Arashikabe.no.Kyohei.S02E05.1080p.WEB-DL.mkv", "Arashikabe no Kyohei Season 2", None),
+    ("星送りのリーフェン (2023)", "星送りのリーフェン", 2023),
+    ("みさき様は言わせたい 第2期 EP 03", "みさき様は言わせたい 第2期", None),
+    ("ひとり・で・ぽっぷ！ #01", "ひとり・で・ぽっぷ!", None),
     ("Steins;Gate 0", "Steins;Gate 0", None),
 ])
 def test_a_cleaned_title_loses_its_group_episode_resolution_hash_and_path(name, cleaned, year):
@@ -281,55 +281,55 @@ def test_anilists_queries_are_paced_under_its_limit(anilist):
 
 def test_a_title_asked_again_is_never_fetched_twice_in_a_session(anilist):
     pen = Pen()
-    anilist.add(154587, "Sousou no Frieren", "葬送のフリーレン")
+    anilist.add(900101, "Hoshiokuri no Riefen", "星送りのリーフェン")
     f = fetcher(pen, anilist)
-    f.want([want(1, "葬送のフリーレン", anilist_id=154587)])
+    f.want([want(1, "星送りのリーフェン", anilist_id=900101)])
     f.run_once()
-    assert f.want([want(1, "葬送のフリーレン", anilist_id=154587)]) == 0 and f.run_once() == 0
+    assert f.want([want(1, "星送りのリーフェン", anilist_id=900101)]) == 0 and f.run_once() == 0
     assert len(anilist.posts) == 1
 
 
 # --- the confidence gate ------------------------------------------------------------------------------------------- #
-def _frieren(anilist):
-    anilist.add(154587, "Sousou no Frieren", "葬送のフリーレン", english="Frieren: Beyond Journey's End", year=2023,
-                search="葬送のフリーレン")
-    anilist.add(170068, "Sousou no Frieren: ●● no Mahou", "葬送のフリーレン ～●●の魔法～", year=2023, fmt="ONA",
-                search="葬送のフリーレン")
+def _riefen(anilist):
+    anilist.add(900101, "Hoshiokuri no Riefen", "星送りのリーフェン", english="Riefen: Beyond the Starlit Road", year=2023,
+                search="星送りのリーフェン")
+    anilist.add(900104, "Hoshiokuri no Riefen: ●● no Mahou", "星送りのリーフェン ～●●の魔法～", year=2023, fmt="ONA",
+                search="星送りのリーフェン")
 
 
 def test_an_exact_title_with_the_right_season_and_year_is_accepted(anilist):
-    _frieren(anilist)
+    _riefen(anilist)
     media = list(anilist.media.values())
-    assert O.gate("葬送のフリーレン", media)["id"] == 154587
-    assert O.gate("Sousou no Frieren", media, 2023)["id"] == 154587, "the romaji title"
-    assert O.gate("frieren beyond journeys end", media)["id"] == 154587, "the English one, normalised"
+    assert O.gate("星送りのリーフェン", media)["id"] == 900101
+    assert O.gate("Hoshiokuri no Riefen", media, 2023)["id"] == 900101, "the romaji title"
+    assert O.gate("riefen beyond the starlit road", media)["id"] == 900101, "the English one, normalised"
     pen = Pen()
     f = fetcher(pen, anilist)
-    f.want([want(1, "[SubsPlease] 葬送のフリーレン (2023) - 05 (1080p).mkv")])
-    assert f.run_once() == 1 and pen.covers[0][1:3] == ("anilist", "154587")
+    f.want([want(1, "[SubsPlease] 星送りのリーフェン (2023) - 05 (1080p).mkv")])
+    assert f.run_once() == 1 and pen.covers[0][1:3] == ("anilist", "900101")
 
 
 def test_a_near_miss_a_wrong_season_or_a_wrong_year_is_refused(anilist):
-    anilist.add(16498, "Shingeki no Kyojin", "進撃の巨人", year=2013)
-    anilist.add(20958, "Shingeki no Kyojin Season 2", "進撃の巨人 Season2", year=2017)
-    anilist.add(170068, "Sousou no Frieren: ●● no Mahou", "葬送のフリーレン ～●●の魔法～", year=2023)
+    anilist.add(900202, "Arashikabe no Kyohei", "嵐壁の巨兵", year=2013)
+    anilist.add(900203, "Arashikabe no Kyohei Season 2", "嵐壁の巨兵 Season2", year=2017)
+    anilist.add(900104, "Hoshiokuri no Riefen: ●● no Mahou", "星送りのリーフェン ～●●の魔法～", year=2023)
     media = list(anilist.media.values())
-    assert O.gate("葬送のフリーレン", media) is None, "a near miss"
-    assert O.gate("進撃の巨人", [anilist.media[20958]]) is None, "the name says no season: the second isn't it"
-    assert O.gate("進撃の巨人 Season 3", media) is None, "no third season among the answers"
-    assert O.gate("進撃の巨人", media, 2019) is None, "the wrong year"
-    assert O.gate("進撃の巨人 第2期", media)["id"] == 20958 and O.gate("進撃の巨人", media)["id"] == 16498
-    twins = [anilist.media[16498], dict(anilist.media[16498], id=99999)]
-    assert O.gate("進撃の巨人", twins) is None, "two answers pass: neither is taken"
+    assert O.gate("星送りのリーフェン", media) is None, "a near miss"
+    assert O.gate("嵐壁の巨兵", [anilist.media[900203]]) is None, "the name says no season: the second isn't it"
+    assert O.gate("嵐壁の巨兵 Season 3", media) is None, "no third season among the answers"
+    assert O.gate("嵐壁の巨兵", media, 2019) is None, "the wrong year"
+    assert O.gate("嵐壁の巨兵 第2期", media)["id"] == 900203 and O.gate("嵐壁の巨兵", media)["id"] == 900202
+    twins = [anilist.media[900202], dict(anilist.media[900202], id=99999)]
+    assert O.gate("嵐壁の巨兵", twins) is None, "two answers pass: neither is taken"
 
 
 def test_a_search_with_no_sure_match_records_nothing_and_isnt_asked_again(anilist):
-    anilist.add(170068, "Sousou no Frieren: ●● no Mahou", "葬送のフリーレン ～●●の魔法～", search="葬送のフリーレン")
+    anilist.add(900104, "Hoshiokuri no Riefen: ●● no Mahou", "星送りのリーフェン ～●●の魔法～", search="星送りのリーフェン")
     pen = Pen()
     f = fetcher(pen, anilist)
-    f.want([want(1, "葬送のフリーレン")])
+    f.want([want(1, "星送りのリーフェン")])
     assert f.run_once() == 0 and pen.covers == [] and anilist.gets == []
-    assert f.want([want(1, "葬送のフリーレン")]) == 0, "the generated cover stays; Change cover… offers the top 5"
+    assert f.want([want(1, "星送りのリーフェン")]) == 0, "the generated cover stays; Change cover… offers the top 5"
 
 
 # --- the library: a real store through the window's writer ---------------------------------------------------------- #
@@ -352,12 +352,12 @@ def _landed(lib, before):
 def test_a_fetched_cover_lands_in_the_cache_as_a_background_cover_never_on_undo(lib, anilist):
     work = lib.work_of(lib.store.ids("now")[0])
     w = _wants(lib)[work]
-    anilist.add(16498, "Shingeki no Kyojin", w.title, search=w.title)
+    anilist.add(900202, "Arashikabe no Kyohei", w.title, search=w.title)
     f = fetcher(lib.writer, anilist, language=lib.language)
     before = lib.heard.rereads
     assert f.want([w]) == 1 and f.run_once() == 1 and _landed(lib, before)
     source, ref, path, locked = lib.row(work)
-    assert (source, ref, locked) == ("anilist", "16498", 0) and path.startswith("cache:")
+    assert (source, ref, locked) == ("anilist", "900202", 0) and path.startswith("cache:")
     assert os.path.isfile(C.image_path(lib.language, _wants(lib)[work]))
     assert not [n for n in os.listdir(path_utils.get_covers_cache_path()) if n.endswith(".part")]
     assert lib.heard.saved == [] and not lib.writer.can_undo()
@@ -383,9 +383,9 @@ def test_a_locked_user_or_disk_cover_is_never_asked_for_nor_replaced(lib, anilis
 def test_a_cover_the_user_chose_while_a_fetch_was_on_its_way_stays_theirs(lib, anilist, tmp_path):
     work = lib.work_of(lib.store.ids("now")[0])
     w = _wants(lib)[work]
-    anilist.add(16498, "Shingeki no Kyojin", w.title)
+    anilist.add(900202, "Arashikabe no Kyohei", w.title)
     f = fetcher(lib.writer, anilist, language=lib.language)
-    assert f.want([w._replace(anilist_id=16498)]) == 1
+    assert f.want([w._replace(anilist_id=900202)]) == 1
     kept = C.keep_user_image(lib.language, work, write(str(tmp_path / "選んだ.png"), png()), lib.writer)
     assert h.until(lambda: len(lib.heard.saved) == 1)
     before = lib.heard.rereads
@@ -396,8 +396,8 @@ def test_a_cover_the_user_chose_while_a_fetch_was_on_its_way_stays_theirs(lib, a
 
 def test_offline_the_generated_cover_stays_quietly_and_the_title_is_asked_again_later(lib, anilist, capsys):
     work = lib.work_of(lib.store.ids("now")[0])
-    w = _wants(lib)[work]._replace(anilist_id=16498)
-    anilist.add(16498, "Shingeki no Kyojin", "進撃の巨人")
+    w = _wants(lib)[work]._replace(anilist_id=900202)
+    anilist.add(900202, "Arashikabe no Kyohei", "嵐壁の巨兵")
     clock = Clock()
     f = fetcher(lib.writer, anilist, language=lib.language, clock=clock, sleep=clock.sleep)
     probe = ThreadingHTTPServer(("127.0.0.1", 0), BaseHTTPRequestHandler)
@@ -411,16 +411,16 @@ def test_offline_the_generated_cover_stays_quietly_and_the_title_is_asked_again_
     clock.now += O.RETRY_S
     before = lib.heard.rereads
     assert f.run_once() == 1 and _landed(lib, before)
-    assert lib.row(work)[:2] == ("anilist", "16498")
+    assert lib.row(work)[:2] == ("anilist", "900202")
     assert "Traceback" not in capsys.readouterr().out
 
 
 def test_a_failing_server_is_retried_too_and_never_raises(anilist):
     pen = Pen()
-    anilist.add(16498, "Shingeki no Kyojin", "進撃の巨人", search="進撃の巨人")
+    anilist.add(900202, "Arashikabe no Kyohei", "嵐壁の巨兵", search="嵐壁の巨兵")
     anilist.down = True
     f = fetcher(pen, anilist)
-    f.want([want(1, "進撃の巨人", anilist_id=16498), want(2, "進撃の巨人")])
+    f.want([want(1, "嵐壁の巨兵", anilist_id=900202), want(2, "嵐壁の巨兵")])
     assert f.run_once() == 0 and set(f._later) == {1, 2} and pen.covers == []
 
 
@@ -430,32 +430,32 @@ def test_remove_downloaded_covers_takes_only_the_downloaded_ones_and_they_may_co
     poster = write(os.path.join(lib.folder_of(lib.store.ids("goal")[0]), "poster.jpg"), jpeg())
     assert h.until(lambda: len(lib.heard.saved) == 1)
     lib.scan()
-    anilist.add(16498, "Shingeki no Kyojin", "進撃の巨人")
+    anilist.add(900202, "Arashikabe no Kyohei", "嵐壁の巨兵")
     f = fetcher(lib.writer, anilist, language=lib.language)
     before = lib.heard.rereads
-    f.want([_wants(lib)[fetched]._replace(anilist_id=16498)])
+    f.want([_wants(lib)[fetched]._replace(anilist_id=900202)])
     assert f.run_once() == 1 and _landed(lib, before)
     cached = C.image_path(lib.language, _wants(lib)[fetched])
     assert os.path.isfile(cached)
     before = lib.heard.rereads
     assert f.remove_downloaded() is not None and _landed(lib, before)
-    assert lib.row(fetched) == ("anilist", "16498", None, 0) and not os.path.exists(cached)
+    assert lib.row(fetched) == ("anilist", "900202", None, 0) and not os.path.exists(cached)
     assert lib.row(mine) == ("user", None, kept, 1)
     assert os.path.isfile(C.image_path(lib.language, _wants(lib)[mine])), "the user's image is user data"
     assert lib.row(disk)[0] == "file" and os.path.isfile(poster)
     assert len(lib.heard.saved) == 1, "nothing of the fetch or the removal reached the user's Undo"
-    assert f.want([_wants(lib)[fetched]._replace(anilist_id=16498)]) == 1, "re-fetchable while the switch is on"
+    assert f.want([_wants(lib)[fetched]._replace(anilist_id=900202)]) == 1, "re-fetchable while the switch is on"
 
 
 def test_remove_downloaded_covers_deletes_only_a_bare_name_in_the_cache_never_a_path_a_record_names():
     # Why: `drop_cached` deletes what the store's records name; a record naming a path (an old store, a hand edit)
     # must never reach a file outside the cache — the local data folder one level up, the user's own covers.
     folder = path_utils.get_covers_cache_path()
-    outside = write(os.path.join(os.path.dirname(folder), "進撃の巨人.jpg"), jpeg())
-    mine = write(os.path.join(path_utils.get_user_files_path("ja"), "covers", "葬送のフリーレン.png"), png())
-    cached = write(os.path.join(folder, "anilist-16498.jpg"), jpeg())
-    named = ["cache:../進撃の巨人.jpg", "cache:..\\進撃の巨人.jpg", "cache:" + mine, "user:葬送のフリーレン.png",
-             "cache:anilist-16498.jpg"]
+    outside = write(os.path.join(os.path.dirname(folder), "嵐壁の巨兵.jpg"), jpeg())
+    mine = write(os.path.join(path_utils.get_user_files_path("ja"), "covers", "星送りのリーフェン.png"), png())
+    cached = write(os.path.join(folder, "anilist-900202.jpg"), jpeg())
+    named = ["cache:../嵐壁の巨兵.jpg", "cache:..\\嵐壁の巨兵.jpg", "cache:" + mine, "user:星送りのリーフェン.png",
+             "cache:anilist-900202.jpg"]
     assert O.drop_cached(named) == 1
     assert os.path.isfile(outside) and os.path.isfile(mine) and not os.path.exists(cached)
 
@@ -481,16 +481,16 @@ def test_a_picked_candidate_is_the_users_locked_with_undo(lib, anilist):
 def test_paste_a_link_takes_anilist_and_youtube_links_and_nothing_else(lib, anilist):
     work = lib.work_of(lib.store.ids("now")[0])
     w = _wants(lib)[work]
-    anilist.add(154587, "Sousou no Frieren", "葬送のフリーレン")
+    anilist.add(900101, "Hoshiokuri no Riefen", "星送りのリーフェン")
     f = fetcher(lib.writer, anilist, language=lib.language)
-    assert f.paste(w, "https://example.com/frieren.jpg") == (None, "not_a_link")
-    assert f.paste(w, r"C:\Users\me\Pictures\frieren.jpg") == (None, "not_a_link")
-    assert f.paste(w, "https://www.themoviedb.org/tv/209867-frieren") == (None, "no_key")
+    assert f.paste(w, "https://example.com/riefen.jpg") == (None, "not_a_link")
+    assert f.paste(w, r"C:\Users\me\Pictures\riefen.jpg") == (None, "not_a_link")
+    assert f.paste(w, "https://www.themoviedb.org/tv/900999-riefen") == (None, "no_key")
     assert anilist.posts == [] and anilist.gets == []
-    path, why = f.paste(w, "https://anilist.co/anime/154587/Sousou-no-Frieren/")
+    path, why = f.paste(w, "https://anilist.co/anime/900101/Hoshiokuri-no-Riefen/")
     assert why is None and h.until(lambda: len(lib.heard.saved) == 1)
-    assert lib.row(work) == ("anilist", "154587", path, 1)
-    assert [b["variables"] for b, _h in anilist.posts] == [{"ids": [154587]}]
+    assert lib.row(work) == ("anilist", "900101", path, 1)
+    assert [b["variables"] for b, _h in anilist.posts] == [{"ids": [900101]}]
     path, why = f.paste(_wants(lib)[work], "https://youtu.be/dQw4w9WgXcQ")
     assert why is None and h.until(lambda: len(lib.heard.saved) == 2)
     assert lib.row(work) == ("youtube", "dQw4w9WgXcQ", path, 1) and anilist.gets[-1][0] == "/vi/dQw4w9WgXcQ/hqdefault.jpg"
@@ -513,11 +513,11 @@ def test_a_youtube_videos_thumbnail_is_fetched_only_with_the_switch_on(anilist):
 def test_wants_from_the_feed_finds_a_videos_id_and_leaves_books_and_bilibili_alone():
     items = [
         {"id": 1, "ord": 1, "work_id": 10, "source_type": "youtube", "rel_path": "YouTube/ゆっくり解説 [dQw4w9WgXcQ].txt"},
-        {"id": 2, "ord": 2, "work_id": 11, "source_type": "subtitle", "rel_path": "NOW/進撃の巨人/進撃の巨人_第01話.srt"},
-        {"id": 3, "ord": 3, "work_id": 12, "source_type": "epub", "rel_path": "NOW/本好きの下剋上/第一部.txt"},
+        {"id": 2, "ord": 2, "work_id": 11, "source_type": "subtitle", "rel_path": "NOW/嵐壁の巨兵/嵐壁の巨兵_第01話.srt"},
+        {"id": 3, "ord": 3, "work_id": 12, "source_type": "epub", "rel_path": "NOW/本棚好きの逆転劇/第一部.txt"},
         {"id": 4, "ord": 4, "work_id": 13, "source_type": "bilibili", "rel_path": "NOW/某视频 [BV1xx411c7mD].srt"},
     ]
-    works = {i: {"id": i, "title": t} for i, t in ((10, "ゆっくり解説"), (11, "進撃の巨人"), (12, "本好きの下剋上"),
+    works = {i: {"id": i, "title": t} for i, t in ((10, "ゆっくり解説"), (11, "嵐壁の巨兵"), (12, "本棚好きの逆転劇"),
                                                    (13, "某视频"))}
     got = {w.id: w for w in O.wants_from(items, works)}
     assert got[10].video_id == "dQw4w9WgXcQ" and got[11].kind == "subtitle"
@@ -526,12 +526,12 @@ def test_wants_from_the_feed_finds_a_videos_id_and_leaves_books_and_bilibili_alo
 
 def test_the_fetcher_works_on_its_own_thread_and_want_returns_at_once(anilist):
     pen = Pen()
-    anilist.add(154587, "Sousou no Frieren", "葬送のフリーレン")
+    anilist.add(900101, "Hoshiokuri no Riefen", "星送りのリーフェン")
     f = O.Fetcher("ja", pen, settings=lambda: {"covers_download": True}, api=anilist.base, ytimg=anilist.base,
                   image_hosts=("127.0.0.1",))
     try:
         started = time.monotonic()
-        assert f.want([want(1, "葬送のフリーレン", anilist_id=154587)]) == 1
+        assert f.want([want(1, "星送りのリーフェン", anilist_id=900101)]) == 1
         assert time.monotonic() - started < 0.05
         assert h.until(lambda: pen.covers) and f._thread is not threading.current_thread()
     finally:
@@ -540,10 +540,10 @@ def test_the_fetcher_works_on_its_own_thread_and_want_returns_at_once(anilist):
 
 def test_an_image_from_anywhere_but_anilist_or_youtube_is_never_fetched(anilist):
     pen = Pen()
-    anilist.add(154587, "Sousou no Frieren", "葬送のフリーレン")
-    anilist.media[154587]["coverImage"] = {"large": "https://evil.example/cover.jpg"}
+    anilist.add(900101, "Hoshiokuri no Riefen", "星送りのリーフェン")
+    anilist.media[900101]["coverImage"] = {"large": "https://evil.example/cover.jpg"}
     f = fetcher(pen, anilist)
-    f.want([want(1, "葬送のフリーレン", anilist_id=154587)])
+    f.want([want(1, "星送りのリーフェン", anilist_id=900101)])
     assert f.run_once() == 0 and pen.covers == [] and anilist.gets == []
 
 
@@ -558,17 +558,17 @@ def test_B1_the_switch_turned_off_while_the_throttle_waits_sends_nothing_after_i
         f.switch["covers_download"] = False         # turned off in Settings while the fetcher waits for its turn
         clock.sleep(seconds)
     f.api_gate.sleep = sleep
-    f.want([want(1, "葬送のフリーレン"), want(2, "進撃の巨人")])
+    f.want([want(1, "星送りのリーフェン"), want(2, "嵐壁の巨兵")])
     assert f.run_once() == 0
     assert len(anilist.posts) == 1 and clock.slept, "the second search waited, and the switch was off at its turn"
     assert anilist.gets == [] and pen.covers == []
     f.switch["covers_download"] = True
-    assert f.want([want(2, "進撃の巨人")]) == 1, "dropped while off, never parked for a retry: asked again once on"
+    assert f.want([want(2, "嵐壁の巨兵")]) == 1, "dropped while off, never parked for a retry: asked again once on"
 
 
 def test_B1_the_switch_turned_off_inside_an_id_answer_fetches_no_image_of_its_batch(anilist):
     pen = Pen()
-    ids = [154587 + n for n in range(5)]
+    ids = [900101 + n for n in range(5)]
     for i in ids:
         anilist.add(i, f"Title {i}")
     f = fetcher(pen, anilist, images_per_minute=1000)
@@ -585,7 +585,7 @@ def test_B1_a_fetcher_stopped_mid_throttle_ends_at_once_never_spins_and_sends_no
     f = O.Fetcher("ja", pen, settings=lambda: {"covers_download": True}, api=anilist.base, ytimg=anilist.base,
                   image_hosts=("127.0.0.1",), per_minute=1)
     try:
-        f.want([want(1, "葬送のフリーレン"), want(2, "進撃の巨人")])
+        f.want([want(1, "星送りのリーフェン"), want(2, "嵐壁の巨兵")])
         assert h.until(lambda: len(anilist.posts) == 1 and f.api_gate.turns >= 2)   # the second waits its minute
         time.sleep(0.1)
         started = time.monotonic()
@@ -610,7 +610,7 @@ def test_N_an_idle_fetcher_sleeps_until_asked_with_no_timer_waking_it(anilist):
             return super().wait(timeout)
     f._cond = Cond()
     try:
-        f.want([want(1, "葬送のフリーレン")])          # nothing found: done, nothing to retry
+        f.want([want(1, "星送りのリーフェン")])          # nothing found: done, nothing to retry
         assert h.until(lambda: len(anilist.posts) == 1 and waits)
         time.sleep(0.7)
         assert waits == [None], "asleep without a timeout (S19), never waking every half second"
@@ -639,9 +639,9 @@ def test_N_an_image_redirected_to_another_host_is_refused_and_plain_http_never_l
         server.shutdown()
         server.server_close()
     real = O.Fetcher("ja", Pen())
-    assert real._allowed("https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx16498.jpg")
+    assert real._allowed("https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx900202.jpg")
     assert real._allowed("https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg")
-    assert not real._allowed("http://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx16498.jpg")
+    assert not real._allowed("http://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx900202.jpg")
     assert not real._allowed("https://evil.example/cover.jpg")
 
 
@@ -680,30 +680,30 @@ def test_S2_a_waiter_sleeps_outside_the_throttles_lock_so_the_users_ask_never_wa
 def test_S2_find_it_online_goes_ahead_of_the_background_queue(anilist):
     pen = Pen()
     clock = Clock()
-    _frieren(anilist)
+    _riefen(anilist)
     f = fetcher(pen, anilist, clock=clock, per_minute=6)
-    f.want([want(n, t) for n, t in enumerate(("進撃の巨人", "本好きの下剋上", "薬屋のひとりごと", "鬼滅の刃", "呪術廻戦"), 1)])
+    f.want([want(n, t) for n, t in enumerate(("嵐壁の巨兵", "本棚好きの逆転劇", "茶屋のないしょごと", "霧断の剣", "符術奇譚"), 1)])
     f.run_once()
     assert len(anilist.posts) == 5 and clock.slept == []
-    assert f.candidates(want(9, "葬送のフリーレン")) and clock.slept == []
+    assert f.candidates(want(9, "星送りのリーフェン")) and clock.slept == []
 
 
 def test_B2_the_store_writes_a_fetched_cover_only_over_none_generated_or_its_own(lib):
     s = lib.store
     a, b, c = (lib.work_of(s.ids(t)[0]) for t in ("now", "soon", "goal"))
-    assert s.set_cover(a, "anilist", ref="16498", path="cache:anilist-a.jpg") is not None, "over none"
-    assert s.set_cover(a, "anilist", ref="16498", path="cache:anilist-a2.jpg") is not None, "its own source's"
+    assert s.set_cover(a, "anilist", ref="900202", path="cache:anilist-a.jpg") is not None, "over none"
+    assert s.set_cover(a, "anilist", ref="900202", path="cache:anilist-a2.jpg") is not None, "its own source's"
     assert s.set_cover(a, "youtube", ref="dQw4w9WgXcQ", path="cache:youtube-a.jpg") is None, "another source's"
     poster = lib.rel(os.path.join(lib.folder_of(s.ids("soon")[0]), "poster.jpg"))
     assert s.set_cover(b, "file", ref=poster) is not None
-    assert s.set_cover(b, "anilist", ref="16498", path="cache:anilist-b.jpg") is None, "never over the art on disk"
+    assert s.set_cover(b, "anilist", ref="900202", path="cache:anilist-b.jpg") is None, "never over the art on disk"
     assert lib.row(b) == ("file", poster, None, 0)
     assert s.set_cover(c, "generated") is not None
-    assert s.set_cover(c, "anilist", ref="16498", path="cache:anilist-c.jpg") is not None, "over the generated one"
+    assert s.set_cover(c, "anilist", ref="900202", path="cache:anilist-c.jpg") is not None, "over the generated one"
     # Its own source, but an image of the user's (User Files, not the re-fetchable cache): never written over.
-    assert s.set_cover(c, "anilist", ref="16498", path="user:薬屋のひとりごと.png") is not None
-    assert s.set_cover(c, "anilist", ref="16498", path="cache:anilist-c2.jpg") is None, "never over a user: image"
-    assert lib.row(c) == ("anilist", "16498", "user:薬屋のひとりごと.png", 0)
+    assert s.set_cover(c, "anilist", ref="900202", path="user:茶屋のないしょごと.png") is not None
+    assert s.set_cover(c, "anilist", ref="900202", path="cache:anilist-c2.jpg") is None, "never over a user: image"
+    assert lib.row(c) == ("anilist", "900202", "user:茶屋のないしょごと.png", 0)
     assert s.set_cover(a, "file", ref=poster) is not None, "art on disk is written over a downloaded cover (D-1)"
 
 
@@ -713,9 +713,9 @@ def test_B2_an_arrival_with_its_folder_art_takes_the_art_and_anilist_is_never_as
     show = lib.store.ids("now")[0]
     work = lib.work_of(show)
     art = write(os.path.join(lib.folder_of(show), "folder.jpg"), jpeg())
-    w = _wants(lib)[work]._replace(anilist_id=16498)
+    w = _wants(lib)[work]._replace(anilist_id=900202)
     assert w.rel_paths
-    anilist.add(16498, "Shingeki no Kyojin", w.title, search=O.clean_title(w.title)[0])
+    anilist.add(900202, "Arashikabe no Kyohei", w.title, search=O.clean_title(w.title)[0])
     f = fetcher(lib.writer, anilist, language=lib.language, data_dir=lib.data_dir)
     before = lib.heard.rereads
     assert f.want([w]) == 1 and f.run_once() == 0 and _landed(lib, before)
@@ -729,8 +729,8 @@ def test_B2_the_scans_disk_record_landing_before_a_fetch_is_never_overwritten(li
     refuses the fetch at write time."""
     show = lib.store.ids("now")[0]
     work = lib.work_of(show)
-    w = _wants(lib)[work]._replace(anilist_id=16498)                 # the fetch's copy: no cover yet
-    anilist.add(16498, "Shingeki no Kyojin", w.title)
+    w = _wants(lib)[work]._replace(anilist_id=900202)                 # the fetch's copy: no cover yet
+    anilist.add(900202, "Arashikabe no Kyohei", w.title)
     f = fetcher(lib.writer, anilist, language=lib.language, data_dir=lib.data_dir)
     assert f.want([w]) == 1
     poster = lib.rel(os.path.join(lib.folder_of(show), "poster.jpg"))
@@ -746,12 +746,12 @@ def test_S3_S4_a_downloaded_cover_whose_file_went_is_asked_again_and_lands_under
     """Another library's *Remove downloaded covers* (or an Undo back to an old record) took the cached file: the title
     is askable again, and its new file lands under a new name so the row repaints."""
     work = lib.work_of(lib.store.ids("now")[0])
-    anilist.add(16498, "Shingeki no Kyojin", "進撃の巨人")
+    anilist.add(900202, "Arashikabe no Kyohei", "嵐壁の巨兵")
     f = fetcher(lib.writer, anilist, language=lib.language, data_dir=lib.data_dir)
     before = lib.heard.rereads
-    f.want([_wants(lib)[work]._replace(anilist_id=16498)])
+    f.want([_wants(lib)[work]._replace(anilist_id=900202)])
     assert f.run_once() == 1 and _landed(lib, before)
-    old = _wants(lib)[work]._replace(anilist_id=16498)
+    old = _wants(lib)[work]._replace(anilist_id=900202)
     os.remove(C.image_path(lib.language, old))
     assert O.fetchable(old)
     again = fetcher(lib.writer, anilist, language=lib.language, data_dir=lib.data_dir)    # the next ask

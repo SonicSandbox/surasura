@@ -94,6 +94,21 @@ DEFERRED = "deferred"
 # Anki Miner's settled outcomes: a word with one of these is never sent again for the job
 UNSETTLED = (None, "uncertain", "not_attempted")
 VIDEO_EXTENSIONS = (".mkv", ".mp4", ".webm", ".avi", ".m4v", ".mov", ".ts")
+TS_MIN = 1 << 20                # a `.ts` under this size is TypeScript, not a video (K6, S9: by the listing's stat)
+
+
+def video_name(name):
+    """Can a file of this name be a video? One of VIDEO_EXTENSIONS, and never a Mac's `._` copy (on a NAS or exFAT
+    drive: metadata, never a video). Any other leading dot is a name (`.hack SIGN - 01.mkv`). The name's half of
+    `video_file`, for a listing before its stat."""
+    return not name.startswith("._") and name.lower().endswith(VIDEO_EXTENSIONS)
+
+
+def video_file(name, size):
+    """Is a listed file a video? `video_name`, and never a `.ts` under TS_MIN (TypeScript). `size`: the listing's stat,
+    nothing read. Connect's video index (`videos._list`) reads it; the library's look and Needs you's video listing are
+    to call it too (asked of their owners), so that what counts as a video file is one rule."""
+    return video_name(name) and not (name.lower().endswith(".ts") and size < TS_MIN)
 _PLACEHOLDER = 0x1000 | 0x40000 | 0x400000      # OFFLINE · RECALL_ON_OPEN · RECALL_ON_DATA_ACCESS (a cloud file)
 
 
@@ -638,7 +653,9 @@ def _fit(steps, ledger, lang, job):
         picked["offset"] = 0.0
         ledger.set_state(jid, "mining", picked=picked)
         return
-    verdict, _who, why, offset = steps.fit(lang, job, pairing, picked.get("video"), picked.get("file"))
+    verdict, who, why, offset = steps.fit(lang, job, pairing, picked.get("video"), picked.get("file"))
+    if verdict == fit_check.TIMED and who == "you":
+        log.info("Connect: job %s mined at its subtitle's own times: you trust your subtitles' timing", jid)
     if verdict == fit_check.RETRY:
         raise Wait(why)                     # tsubasa couldn't answer this time: asked again at the next look
     if verdict != fit_check.TIMED:
@@ -1520,8 +1537,11 @@ class Steps:
                 "absent": out.get("skipped") == "anki miner absent"}
 
     def fit(self, lang, job, pairing, video, subtitle):
-        """-> (verdict, who, why, offset): `subtitle` is the library's copy (hato's sha256 is checked on it)."""
-        return fit_check.fit(pairing, video, subtitle)
+        """-> (verdict, who, why, offset): `subtitle` is the library's copy (hato's sha256 is checked on it);
+        `connect_trust_timing` (off by default; read from settings.json as it is now, so a switch turned mid-run counts
+        for the next episode) mines an episode nothing here can check at its own times."""
+        trust = self._settings(lang).get("connect_trust_timing") is True
+        return fit_check.fit(pairing, video, subtitle, trust=trust)
 
     def mine(self, lang, job, picked, words, attempt):
         """One Anki Miner batch -> {"outcomes", "app", "doubt"} (doubt: the run crashed or timed out — the words it

@@ -55,18 +55,25 @@ def ids_of(row):
     return [e.id for e in row.episodes]
 
 
+def tail_tier(row):
+    """The tier of a row's last file: Soon for a show the Soon line runs through (`Row.soon_from`, P-LF-16: one row
+    above the line, its last files Soon), else the row's. What lands after the row lands there — after the show."""
+    return "soon" if getattr(row, "soon_from", None) is not None else row.tier
+
+
 def placement(rows_, src, slot, near_n=None):
     """Where a row dropped in the list lands (04 §4.5): `rows_` Current's rows as painted; `src` the dragged row's place
     (None: a drag from outside the list, or files); `slot` its place in the new order. After the row before it (its
-    last file), in that row's tier — at the very top, before the first row, in its tier. `near`: the painted neighbours,
-    nearest first, for an anchor gone or out of the tier when the write lands (the writer's fallback).
+    last file), in that file's tier (`tail_tier`) — at the very top, before the first row, in its tier. `near`: the
+    painted neighbours, nearest first, for an anchor gone or out of the tier when the write lands (the writer's
+    fallback).
     -> (tier, before_id, after_id, near)."""
     near_n = D["near"] if near_n is None else near_n
     others = [r for i, r in enumerate(rows_) if i != src]
     prev = others[slot - 1] if 0 < slot <= len(others) else None
     nxt = others[slot] if 0 <= slot < len(others) else None
     if prev is not None:
-        tier, before_id, after_id = prev.tier, None, prev.episodes[-1].id
+        tier, before_id, after_id = tail_tier(prev), None, prev.episodes[-1].id
     elif nxt is not None:
         tier, before_id, after_id = nxt.tier, nxt.episodes[0].id, None
     else:
@@ -74,7 +81,7 @@ def placement(rows_, src, slot, near_n=None):
     near = []
     for k in range(near_n):
         a, b = slot - 1 - k, slot + k
-        if 0 <= a < len(others) and others[a].tier == tier and others[a].episodes[-1].id != after_id:
+        if 0 <= a < len(others) and tail_tier(others[a]) == tier and others[a].episodes[-1].id != after_id:
             near.append((others[a].episodes[-1].id, "after"))
         if 0 <= b < len(others) and others[b].tier == tier and others[b].episodes[0].id != before_id:
             near.append((others[b].episodes[0].id, "before"))
@@ -186,6 +193,8 @@ def reordered(view, keys, tiers=None):
         tier = tiers.get(k, r.tier)
         if tier != r.tier:
             changes["tier"] = tier
+        if k in tiers and getattr(r, "soon_from", None) is not None:
+            changes["soon_from"] = None             # moved whole into one tier: the line no longer runs through it
         out.append(r._replace(**changes) if changes else r)
     if out and view.rows and out[0].key != view.rows[0].key:
         out[0] = view_rows._as_hero(out[0])        # the new Up Next reads as one
@@ -1617,7 +1626,8 @@ class DragController(QObject):
     # --- ↑ ↓ and ⋯ ---------------------------------------------------------------------------------------------- #
     def nudge(self, row, step):
         """↑ ↓ (A2 #13, Alt+↑ / ↓): one place up or down. Within its tier the store's `nudge`; across the NOW / Soon edge
-        a `move` beside the neighbour (the store's nudge stays in its tier). The window shows the swap at once."""
+        a `move` beside the neighbour (the store's nudge stays in its tier) — and for a show the Soon line runs through,
+        or past one (P-LF-16: its files are in both tiers). The window shows the swap at once."""
         base = self.base()
         if base is None or self.running is not None or self.refused() is not None:
             return
@@ -1631,7 +1641,8 @@ class DragController(QObject):
         nb = rows_[j]
         keys = [r.key for r in rows_]
         keys[i], keys[j] = keys[j], keys[i]
-        new = reordered(base, keys, {row.key: nb.tier})
+        land = nb.tier if step < 0 else tail_tier(nb)    # before its first file, or after its last
+        new = reordered(base, keys, {row.key: land})
         place = j
         text = strings.DRAG_UP_NEXT.format(title=row.title) if place == 0 else \
             (strings.DRAG_PLACED_MINES if mines_itself(new.lines, place) else strings.DRAG_PLACED).format(
@@ -1639,12 +1650,12 @@ class DragController(QObject):
         ids = ids_of(row)
         ticket = Ticket(text, (row.key,), ids)
         self._ahead(new)
-        if nb.tier == row.tier:
+        if land == row.tier and getattr(row, "soon_from", None) is None:
             self._give(ticket, lambda t: self.writer.nudge(ids, "up" if step < 0 else "down", label=t))
         elif step < 0:
-            self._give(ticket, lambda t: self.writer.move(ids, nb.tier, before_id=nb.episodes[0].id, label=t))
+            self._give(ticket, lambda t: self.writer.move(ids, land, before_id=nb.episodes[0].id, label=t))
         else:
-            self._give(ticket, lambda t: self.writer.move(ids, nb.tier, after_id=nb.episodes[-1].id, label=t))
+            self._give(ticket, lambda t: self.writer.move(ids, land, after_id=nb.episodes[-1].id, label=t))
 
     def menu_entries(self, row):
         """⋯'s entries for a row, in order: [(name, label, tip, enabled)]. *Up next* not for Up Next itself; *Finished*

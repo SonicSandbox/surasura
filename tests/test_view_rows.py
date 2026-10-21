@@ -110,6 +110,70 @@ def test_current_is_now_then_soon_and_the_soon_line_sits_where_soon_starts():
     assert soon and soon[0].after == 0 and "4" in soon[0].tip
 
 
+def _straddle(piece_ids=True):
+    """55 files in Current, the Soon line at 25 (the store's count): 星降る街 22 episodes, then 雲の上の郵便屋さん's 4
+    episodes at files 23–26 — its first 3 NOW, its 4th the first file of Soon (the store cuts a piece at the line) —
+    then 海辺の図書室's 29 episodes, wholly Soon."""
+    work(5, "海辺の図書室")
+    p = (lambda n: n) if piece_ids else (lambda n: None)
+    return items_of([("now", 1, p(10), eps("星降る街の小さな工房", 1, 22), {}),
+                     ("now", 2, p(11), eps("雲の上の郵便屋さん", 1, 3), {}),
+                     ("soon", 2, p(12), eps("雲の上の郵便屋さん", 4, 4), {}),
+                     ("soon", 5, p(13), eps("海辺の図書室", 1, 29), {})])
+
+
+@pytest.mark.parametrize("piece_ids", [True, False])
+def test_a_show_the_soon_line_runs_through_is_one_row_above_the_line_and_the_next_show_below(piece_ids):
+    """P-LF-16 (Sonic, 2026-10-21): the Soon line counts files, so it can fall mid-series; the tiers and Generate stay
+    per file, but the window never splits a show at the line — it is one row above the line, the line is drawn after
+    it, and the first Soon show comes after. Before, its 4th episode was a second row of the same show below the
+    line."""
+    view = vr.build(_straddle(piece_ids), WORKS, {"mine_line": 20, "soon_line": 25})
+    assert [r.title for r in view.rows] == ["星降る街の小さな工房", "雲の上の郵便屋さん", "海辺の図書室"]
+    show = view.rows[1]
+    assert show.tier == "now" and show.n_files == 4 and show.line == "Ep 1–4" and show.soon_from == 3
+    assert [e.number for e in show.episodes] == [1, 2, 3, 4]
+    soon = [ln for ln in view.lines if ln.kind == "soon"]
+    assert len(soon) == 1 and soon[0].after == 1 and "25" in soon[0].tip       # after the show, never inside it
+    assert view.rows[2].tier == "soon" and view.rows[2].soon_from is None
+    # the counts and place numbers are the rows as shown: 3 rows, every file still counted once
+    assert [r.index for r in view.rows] == [1, 2, 3]
+    assert view.counts.current_rows == 3 and view.counts.current_files == 55
+    assert "3 in Current · 55 files" in view.subline
+    # the top-20 line is the files' own: through the first row, its first 20 episodes mine themselves
+    top = [ln for ln in view.lines if ln.kind == "top"]
+    assert len(top) == 1 and top[0].after == 0 and top[0].split == 20
+    assert all(e.in_top for e in view.rows[0].episodes[:20]) and not any(e.in_top for e in show.episodes)
+
+
+def test_a_show_wholly_below_the_line_stays_below_and_a_show_apart_from_the_line_is_never_joined():
+    """Only a show the line runs through is kept whole: a show wholly in Soon stays below the line, and a later part of
+    the last NOW show with another show between them stays its own row (a split the learner made)."""
+    work(5, "海辺の図書室")
+    items = items_of([("now", 1, 10, eps("星降る街の小さな工房", 1, 4), {}),
+                      ("soon", 5, 13, eps("海辺の図書室", 1, 3), {}),
+                      ("soon", 1, 14, eps("星降る街の小さな工房", 5, 8), {})])
+    view = vr.build(items, WORKS, {"soon_line": 4})
+    assert [(r.title, r.tier, r.n_files) for r in view.rows] == [
+        ("星降る街の小さな工房", "now", 4), ("海辺の図書室", "soon", 3), ("星降る街の小さな工房", "soon", 4)]
+    assert all(r.soon_from is None for r in view.rows)
+    assert [ln.after for ln in view.lines if ln.kind == "soon"] == [0]
+
+
+def test_a_show_the_soon_line_runs_through_is_the_same_row_object_next_build_and_survives_the_first_screen_cache():
+    """S19: a build with nothing changed gives back the same row (the window repaints nothing); the first screen's
+    cache keeps the cut, so the first frame draws the line after the show too."""
+    import json
+    items = _straddle()
+    cache = vr.RowCache()
+    one = vr.build(items, WORKS, {"mine_line": 20, "soon_line": 25}, numbers=(1, {}), cache=cache)
+    two = vr.build(items, WORKS, {"mine_line": 20, "soon_line": 25}, numbers=(1, {}), cache=cache)
+    assert two.rows[1] is one.rows[1] and two.rows[1].soon_from == 3
+    back = vr.from_cache(json.loads(json.dumps(vr.to_cache(one))))
+    assert back.rows[1].soon_from == 3 and back.rows[2].soon_from is None
+    assert [ln.after for ln in back.lines if ln.kind == "soon"] == [1]
+
+
 def test_the_hero_is_the_first_row_and_up_next_skips_the_watched_episodes():
     items = items_of([("now", 1, 1, eps("星降る街の小さな工房", 1, 8), {0: {"watched": 1}, 1: {"watched": 1}})])
     hero = vr.build(items, WORKS, {}).rows[0]

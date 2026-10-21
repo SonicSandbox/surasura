@@ -396,7 +396,7 @@ def test_a_confident_answer_whose_offset_cant_be_read_waits_rather_than_cut_at_z
     # One segment but no number to cut by (a shape Connect doesn't know, a null): mining at 0.0 could be seconds off,
     # so it waits with a reason, as tsubasa's own unreadable answer does.
     for answer in (dict(REAL, segments=[[None, None]], offset=None), dict(REAL, segments=[{"offset": -2.4}], offset=None),
-                   dict(REAL, segments=[[None]], offset="-2.4")):
+                   dict(REAL, segments=[[None]], offset="-2.4"), dict(REAL, segments=[[None, True]], offset=True)):
         got = fit_check.fit(None, VIDEO, SUBTITLE, tsubasa="tsubasa", run=_tsubasa(answer))
         assert got[0] == fit_check.NOT_TIMED and got[2], answer
 

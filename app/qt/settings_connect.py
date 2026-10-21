@@ -505,6 +505,10 @@ class MinerCard(QWidget):
             self.update_note.setText(S.MINER_UPDATE.format(version=update["version"]) if update else "")
             self.update_note.setVisible(bool(update))
             self._buttons(state["state"], answered)
+        # row 13: installed or browsed since the look → its gate opens (only opens: the look alone says it's absent)
+        seen = getattr(self.page, "set_found", None)
+        if seen is not None and state["state"] != "missing":
+            seen("miner_found", True)
 
     def _broke(self, info):
         if not self.rows.alive():

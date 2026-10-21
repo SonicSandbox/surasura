@@ -134,6 +134,8 @@ STRINGS = {
     "tip_waiting": "In your top {line}: it mines by itself, in turn",
     "tip_mine_rest": "{k}/{n} mined · the rest isn't in your top {line} yet",
     "tip_mine": "Not in your top {line}: it isn't mined yet",
+    # row 13 (laptop fixes): Connect off — no top line, so no "top" in the words either
+    "tip_mine_rest_off": "{k}/{n} mined", "tip_mine_off": "It isn't mined yet",
     "tip_no_media": "No {word} on disk{top}\n• Link one for pictures and audio, or mine the text on its own",
     "tip_no_media_top": " — it's in your top {line}, so it's waiting for one",
     "tip_removed": "Its {word} was removed after it was mined. The cards keep their pictures and audio",
@@ -378,7 +380,8 @@ def status_of(eps, word, line_n):
     """One status for a set of episodes (a row's, or one episode's), in the mock's order (`stHTML`): every item mined →
     *N in Anki*; any being mined → *Mining*; an unmined one that can be mined in the top → *Waiting*; some mined, the
     rest ready → *Mine rest*; none mined, ready → *Mine*; nothing left that could be mined → *No video*. And the
-    on-disk mark beside it when something isn't there."""
+    on-disk mark beside it when something isn't there. `line_n` None: Connect is off — no top, so no *Waiting* (row 13:
+    nothing mines by itself) and no "top" in the tips."""
     n = len(eps)
     mined = [e for e in eps if e.cards or e.mined]
     k = len(mined)
@@ -408,9 +411,11 @@ def status_of(eps, word, line_n):
         st = Status("waiting", label, STRINGS["tip_waiting"].format(line=line_n), "dim")
     elif ready and k:
         st = Status("mine_rest", STRINGS["mine_rest"].format(k=k, n=n),
-                    STRINGS["tip_mine_rest"].format(k=k, n=n, line=line_n), "ok")
+                    STRINGS["tip_mine_rest" if line_n is not None else "tip_mine_rest_off"].format(k=k, n=n,
+                                                                                                    line=line_n), "ok")
     elif ready:
-        st = Status("mine", STRINGS["mine"], STRINGS["tip_mine"].format(line=line_n), "ink")
+        st = Status("mine", STRINGS["mine"], STRINGS["tip_mine" if line_n is not None else "tip_mine_off"].format(
+            line=line_n), "ink")
     elif no_subs and len(no_subs) == len(unmined):                  # SRC W1b: only videos waiting for subtitles
         label = STRINGS["no_subs"] if len(no_subs) == 1 else STRINGS["no_subs_n"].format(n=len(no_subs))
         return Status("no_subs", label, STRINGS["tip_no_subs"].format(word=word), "faint"), None
@@ -1023,13 +1028,16 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
     feed_items = connect.items if connect is not None and connect.on else None
     if feed_items is not None:
         mining |= set(connect.mining)
+    # row 13 (laptop fixes): a Feed that is off (Connect's switch, or D29's automation) — nothing mines by itself, so
+    # no top line and no *Waiting* on the rows (no Feed at all, as before: the line and its statuses)
+    off = connect is not None and not connect.on
     # --- end P4.1 L2
     options = options or {}
     line_n = options.get("mine_line")
     line_n = 20 if line_n is None else int(line_n)
     tiers = tiers if tiers is not None else _by_tier(items)
     current = tiers["now"] + tiers["soon"]
-    top_ids = _mine_ids(current, line_n)
+    top_ids = [] if off else _mine_ids(current, line_n)          # row 13: Connect off → nothing "in the top"
     # every item above the line's place (missing ones included) is "in the top": the line falls after the n-th available
     in_top = set()
     if top_ids:
@@ -1046,8 +1054,8 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
     rows = []
     for tier in ("now", "soon"):
         for piece in pieces(tiers[tier]):
-            rows.append(_cached_row(cache, len(rows) + 1, tier, piece, works, numbers, cards, mining, in_top, line_n,
-                                    False, guessed, hero=not rows, connect=feed_items))
+            rows.append(_cached_row(cache, len(rows) + 1, tier, piece, works, numbers, cards, mining, in_top,
+                                    None if off else line_n, False, guessed, hero=not rows, connect=feed_items))
     worst = worst_needs(rows[1:])
     if cache is not None:
         if worst == cache.worst:

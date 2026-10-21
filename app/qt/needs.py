@@ -294,6 +294,15 @@ def _connect_callable(module, name):
         return None
 
 
+def _find_miner(settings):
+    """(A worker.) Row 13: Anki Miner's program (`anki_miner.find`), or None — setup's *Make cards* waits for it."""
+    try:
+        from app.connect import anki_miner
+        return anki_miner.find(settings)
+    except Exception:
+        return None
+
+
 def _default_asks(opener):
     """9a's questions through a store handle of this worker's own (closed after: a pool thread keeps none)."""
     if opener is None or getattr(opener, "mode", None) != "store" or not hasattr(opener, "handle"):
@@ -374,6 +383,7 @@ class NeedsYou(QObject):
         self.switch_on = _settings_switch_on
         self.first_cards = _first_cards
         self._first_running = False
+        self.find_miner = _find_miner                   # row 13: Anki Miner looked for in the gather (a worker)
         self.connect_calls = {"mine_anyway": _connect_callable("actions", "mine_anyway"),
                               "ask_hato": _connect_callable("hato", "backfill"),
                               "dismiss": _connect_callable("status", "dismiss"),
@@ -452,6 +462,7 @@ class NeedsYou(QObject):
         view, failures, lang, data_dir = self.view, self.failures, self.language, self.data_dir
         read_connect, read_asks, find_offline, read_settings = (self.read_connect, self.read_asks,
                                                                  self.find_offline, self.read_settings)
+        find_miner = self.find_miner
 
         def gather():
             settings = read_settings() or {}
@@ -466,7 +477,8 @@ class NeedsYou(QObject):
                 print(f"Needs you: the seen file wasn't pruned: {e!r}")
             out = service.entries(view, failures, connect, service.read_seen(lang), roots, asks,
                                   service.read_answered(lang), offers=service.read_offers(lang),
-                                  cards_on=bool(settings.get("connect_enabled")))
+                                  cards_on=bool(settings.get("connect_enabled")),
+                                  miner_found=bool(find_miner(settings)))     # row 13: D1's line waits for it
             return asked, tuple(out)
         bridge.run_in_worker(gather, then=self._got, failed=self._gather_failed)
 

@@ -540,6 +540,11 @@ class Live(QObject):
             slot.addWidget(mark)
             slot.addWidget(check)
             self.parts[row_id] = {"mark": mark, "check": check}
+        elif row_id == "connect_needs_miner":           # row 13: Anki Miner not found — the way to its card
+            door = sc.Door(S.SET_UP_MINER, tooltip=S.SET_UP_MINER_TIP, name=f"{row.label}: {S.SET_UP_MINER}")
+            door.clicked.connect(lambda _c=False: self.page.reveal("anki_miner"))
+            self._slot(row_id).layout().addWidget(door)
+            self.parts[row_id] = {"door": door}
         elif row_id == "hato":
             mark = sc.StatusMark(False, S.NOT_INSTALLED, tooltip=row.tip, name=row.label)
             self._slot(row_id).layout().addWidget(mark)

@@ -25,7 +25,7 @@ from app.services.settings import freeze
 from app.settings_placement import OWNERS, PLACED
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-EVERYTHING = frozenset(catalog.MODULES) | {"koe_revealed"}
+EVERYTHING = frozenset(catalog.MODULES) | {"koe_revealed", "hato_found", "miner_found"}   # + row 13's tools
 NOTHING = frozenset()
 
 
@@ -675,3 +675,38 @@ def test_the_licence_line_is_the_licence_files_first_and_copyright_lines(monkeyp
                                       encoding="utf-8")
     monkeypatch.setattr(credits, "_LICENCE", [])
     assert credits.licence_line() == "MIT License · Copyright (c) 2026 SonicSandbox"
+
+
+# --- row 13 (laptop fixes): the rows of a tool not here yet hide; a saved value is never touched --------------------- #
+LOOKED = EVERYTHING | {"looked"}
+NO_MINER = LOOKED - {"miner_found"}
+
+
+def test_placeholders_for_tools_not_built_yet_never_show_and_download_covers_stays():
+    """Row 13: jimaku (*coming with hato*), AniList (*coming later*) and More from Houseki (*coming later*) are words
+    with nothing behind them — hidden, whatever is found. Download covers (which does reach AniList) and hato's own
+    row stay. The rows stay in the catalog (strings, logos), so nothing they name is lost."""
+    for ctx in (LOOKED, frozenset()):
+        shown = _shown({}, "ja", ctx)
+        assert not {"jimaku", "anilist", "more_from_houseki"} & shown
+        assert {"hato", "covers_download", "anki_miner"} <= shown
+    assert {"jimaku", "anilist", "more_from_houseki"} <= set(catalog.ROW)
+
+
+def test_make_cards_for_me_waits_for_anki_miner_as_one_line_that_says_so():
+    """Row 13: Anki Miner found → *Make cards for me* (Connect's switch), no needs line. Not found and Connect off →
+    the switch hides and one line says it needs Anki Miner (the wizard's ORDER_OFF) — only once the look answered, so
+    a learner with Anki Miner never sees it flash. Not found but Connect already on → the switch stays: it is the
+    learner's way off, and the saved `connect_enabled` is never flipped by hiding."""
+    found = _shown({}, "ja", LOOKED)
+    assert "connect_enabled" in found and "connect_needs_miner" not in found
+    missing = _shown({}, "ja", NO_MINER)
+    assert "connect_enabled" not in missing and "connect_needs_miner" in missing
+    before_look = _shown({}, "ja", EVERYTHING - {"miner_found"})
+    assert "connect_enabled" not in before_look and "connect_needs_miner" not in before_look
+    on = _shown({"connect_enabled": True}, "ja", NO_MINER)
+    assert "connect_enabled" in on and "connect_needs_miner" not in on
+    assert {"connect_mine_words", "mine_line"} <= on                       # Connect's own rows follow its switch
+    row = catalog.ROW["connect_needs_miner"]
+    assert row.section == "anki" and row.keys == () and row.label == "Make cards for me"
+    assert "Anki Miner" in row.help and row.tip

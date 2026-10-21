@@ -233,6 +233,9 @@ class RulesRow(QObject):
         slot.slot_needs = lambda: self.box.sizeHint().width()    # beside the words: every source whole (else stacked)
         self._sync(keep=False)
         page.bridge.settings_written.connect(self._written)
+        looked = getattr(page, "looked", None)          # row 13: hato found (or not) once the page's look answers
+        if looked is not None:
+            looked.connect(lambda: self._sync(anchor=self.page.row(ROW_ID)) if self.alive() else None)
         if page.built:
             self._ready()
         else:
@@ -246,11 +249,15 @@ class RulesRow(QObject):
             self.page._tab_order()
 
     # --- showing ------------------------------------------------------------------------------------------------- #
+    def _hato(self):
+        """Row 13: hato found by the page's look — without it, hato's line and offer hide (its saved rule is kept)."""
+        return "hato_found" in self.page._ctx()
+
     def _wanted(self):
-        """source -> target the lines should show: hato's, your folders', each rule's, and each new line still at
-        Wait."""
+        """source -> target the lines should show: hato's (once hato is found), your folders', each rule's, and each
+        new line still at Wait."""
         rules = held_rules(self.page._settings())
-        wanted = {HATO: rules.get(HATO, WAIT)}
+        wanted = {HATO: rules.get(HATO, WAIT)} if self._hato() else {}
         firsts = [s for s in DEFAULTS if s != HATO and s in rules]               # the defaults' lines first
         for source in firsts + sorted(s for s in rules if s != HATO and s not in firsts):
             wanted[source] = rules[source]
@@ -366,9 +373,9 @@ class RulesRow(QObject):
         bridge.run_in_worker(_read_seen, then=done, failed=failed)
 
     def offered(self, seen):
-        """The sources + rule offers: hato and those seen, without a line, hato first."""
-        sources = {HATO} | {s for s in (seen or ()) if isinstance(s, str) and s.strip()}
-        return [s for s in [HATO] + sorted(sources - {HATO}) if s not in self.lines]
+        """The sources + rule offers: hato (once found) and those seen, without a line, hato first."""
+        sources = ({HATO} if self._hato() else set()) | {s for s in (seen or ()) if isinstance(s, str) and s.strip()}
+        return [s for s in [HATO] + sorted(sources - {HATO}) if s in sources and s not in self.lines]
 
     def offer(self, seen):
         """The menu: each source seen without a line, then *Another source…*; Esc closes it, adding nothing."""

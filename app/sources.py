@@ -501,6 +501,9 @@ class _Look:
         self.this_look = set()       # the bytes taken this look (the same bytes twice wait for the next look)
         self.this_videos = set()     # the videos a subtitle was taken for this look (S7: one per video per language)
         self.runners_up = {}         # {a new subtitle's path: [its episode's other files, in S7's order]} (B5)
+        self.held_videos = []        # LF-19: [(a folder's videos, its picks)]: they wait if the rule refuses every pick
+        self.refused = set()         # LF-19: the picks K6's rule refused with no runner-up left (`_new`)
+        self.chain = {}              # LF-19: {a runner-up's path: the pick it stands in for}
         self.made = set()            # the copies this look wrote (rels): trashed when take_in can't take them (N3)
         self.said = 0.0
         self.by_folder = None        # {folder key: {(show, episode): (version, Origin)}}: the releases already in
@@ -690,12 +693,15 @@ class _Look:
                     books.append((where, name, path, st, show))
                 else:
                     new.append((where, path, st, name, show, vids))
-            if vids and not episodes and not epubs:          # videos and none of our text yet: they wait (K5)
-                for path, st in sorted(vids.values()):
-                    show = _show_of(self.base, parts, os.path.basename(path))
+            waits = [(folder, path, st, _show_of(self.base, parts, os.path.basename(path)))
+                     for path, st in sorted(vids.values())] if vids and not epubs else []
+            if waits and not episodes:                       # videos and none of our text yet: they wait (K5)
+                for w in waits:
                     self.out["found"] += 1
-                    self.shows.add(ls.search_fold(show, self.language))
-                    new.append((folder, path, st, show))
+                    self.shows.add(ls.search_fold(w[3], self.language))
+                    new.append(w)
+            elif waits and all(e[4] == "new" for e in episodes):   # LF-19: wait too if the rule refuses every pick
+                self.held_videos.append((waits, {e[1] for e in episodes}))
             self._say()
         return seen, new, known, books
 
@@ -895,6 +901,33 @@ class _Look:
             self._commit(batch)
             if self.out["stopped"]:
                 return
+        self._refused_only()
+
+    def _refused_only(self):
+        """LF-19: a folder's videos whose every subtitle pick the one language rule refused (`_refusal` at `_new`: an
+        English `.srt`, a short note) wait as the videos of a folder with none of our text do (K5) — the waiting check
+        sees what the rule refuses, in this look; the next look skips those texts by their stats and finds the videos
+        waiting already."""
+        by_show = {}
+        for waits, picks in self.held_videos:
+            if picks <= self.refused:
+                for w in waits:
+                    by_show.setdefault(w[3], []).append(w)
+        for show in sorted(by_show, key=lambda s: (ls.search_fold(s, self.language), s)):
+            batch = []
+            for w in by_show[show]:
+                if self.stopped():
+                    return
+                self.out["found"] += 1
+                self.shows.add(ls.search_fold(show, self.language))
+                try:
+                    f = self._video_only(*w)
+                except OSError:                              # gone or locked meanwhile: the next look
+                    self._wait(w[0])
+                    f = None
+                if f is not None:
+                    batch.append(f)
+            self._commit(batch)
 
     def _commit(self, found):
         """`take_in` of one batch; a copy no item holds (the source stopped meanwhile — this batch's copies — or the
@@ -1032,10 +1065,12 @@ class _Look:
             self._pass_over(path, st, why)                   # a readme: no new text and no v2's — not read again
             rest = self.runners_up.pop(path, None)           # until it changes; B5: the episode's next file (the
             if not rest:                                     # Japanese `.srt` after a Chinese `.ass`) in its place
+                self.refused.add(self.chain.get(path, path))     # LF-19: the pick and all behind it refused
                 return None
             self.out["skipped"] -= 1
             if rest[1:]:
                 self.runners_up[rest[0][1]] = rest[1:]
+            self.chain[rest[0][1]] = self.chain.get(path, path)
             n, p, s = rest[0]
             return self._new(os.path.dirname(p), p, s, n, show, vids)
         if item is None and held is not None and held[0] < version:   # a v2 of an episode already in (S7)

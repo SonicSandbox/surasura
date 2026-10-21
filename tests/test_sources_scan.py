@@ -3248,3 +3248,78 @@ def test_a_retimed_file_beside_the_video_is_that_episode_never_a_second_item(lan
         assert _look(store, language, root, first=True)["added"] == 1 and _items(store) == 1
         files = _library_files(data_dir)
         assert [_sha(os.path.join(data_dir, *f.split("/"))) for f in files] == [_sha(retimed)]
+
+
+# --- LF-19: a video whose every subtitle the one language rule refuses waits, as one with none -------------------- #
+
+def _not_ours(language):
+    """A subtitle the library's language rule refuses (`_refusal`): English for both; in a Chinese library a Japanese
+    one too would do, English is the shape row 54 names."""
+    return _ENGLISH
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("beside", ["an English .srt", "an English .srt and a short note", "two English releases"])
+def test_a_video_whose_only_subtitles_arent_ours_waits_like_one_with_none(language, beside):
+    """LF-19 (scenario row 54): `Show - 05.mkv` with only an English `.srt` beside it (and a short `.txt` note, which
+    the 1,000-character rule refuses). The waiting check sees what K6's one rule refuses: the video waits for our
+    subtitle in New arrivals, in the first look — never nothing at all."""
+    store, data_dir = _empty(language)
+    show = _SHOWS[language][0]
+    src = _drive("driveA")
+    folder = os.path.join(src, show)
+    _video(os.path.join(folder, f"{show} - 05.mkv"), body=b"fake matroska 5")
+    _write(os.path.join(folder, f"{show} - 05.srt"), _not_ours(language))
+    if "note" in beside:
+        _write(os.path.join(folder, "notes.txt"), _text(language, 1)[:200])
+    if "two" in beside:                                                  # the second waits behind the first (LF-9)
+        _write(os.path.join(folder, f"[Alt] {show} - 05.srt"), _not_ours(language) + "\n3\n00:00:07,000 --> "
+               "00:00:08,000\nSee you.\n")
+    _settle(src)
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        assert _waiting(store) == 1 and _items(store) == 1
+        assert [f for f in _library_files(data_dir) if f.endswith((".srt", ".txt"))] == []
+        again = _look(store, language, root, full=True)                 # the next look: still the one waiting video
+        assert (again["added"], _items(store), _waiting(store)) == (0, 1, 1)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_refused_subtitle_beside_ours_never_makes_the_video_wait(language):
+    """LF-19's other side: an English `.srt` named like the video and our `.ja.srt` / `.zh.srt` beside it — ours is
+    the episode (LF-9) and the video goes with it: nothing waits."""
+    store, data_dir = _empty(language)
+    show = _SHOWS[language][0]
+    src = _drive("driveA")
+    folder = os.path.join(src, show)
+    _video(os.path.join(folder, f"{show} - 05.mkv"), body=b"fake matroska 5")
+    _write(os.path.join(folder, f"{show} - 05.srt"), _not_ours(language))
+    ours = _write(os.path.join(folder, f"{show} - 05.{_OURS[language]}.srt"), _text(language, 5))
+    _settle(src)
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        assert (_items(store), _waiting(store)) == (1, 0)
+        files = _library_files(data_dir)
+        assert [_sha(os.path.join(data_dir, *f.split("/"))) for f in files] == [_sha(ours)]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_refused_subtitle_in_a_folder_holding_ours_makes_no_video_wait(language):
+    """LF-19 stays K5's folder rule: in a downloads folder, show A's episode 5 has only an English `.srt`, show B's
+    episode 6 our subtitle. The folder holds our text, so — as for a video with no subtitle at all there — nothing
+    waits: only every pick refused makes the folder's videos wait. B's episode is the one item."""
+    store, data_dir = _empty(language)
+    a, b = _SHOWS[language]
+    src = _drive("driveA")
+    folder = os.path.join(src, "Downloads")
+    _video(os.path.join(folder, f"[Grp] {a} - 05 (1080p).mkv"), body=b"fake matroska 5")
+    _video(os.path.join(folder, f"[Grp] {b} - 06 (1080p).mkv"), body=b"fake matroska 6")
+    _write(os.path.join(folder, f"[Grp] {a} - 05 (1080p).srt"), _not_ours(language))
+    _write(os.path.join(folder, f"[Grp] {b} - 06 (1080p).{_OURS[language]}.srt"), _text(language, 6))
+    _settle(src)
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        assert (_items(store), _waiting(store)) == (1, 0)

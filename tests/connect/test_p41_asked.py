@@ -265,18 +265,62 @@ def test_asks_made_while_connect_was_off_are_never_mined(tmp_path):
     assert _mined(steps) == [late] and _jobs(early) == []
 
 
-def test_the_first_look_that_reads_asks_mines_none_made_before_it(tmp_path):
-    """A ledger without an asks watermark (one before P4.1): the first look sets it, as the placement reader is set at
-    the first look — nothing asked before Connect read asks is mined (G1.1-2)."""
+def _kicks():
+    calls = []
+    return calls, (lambda settings: calls.append(dict(settings)) or object())
+
+
+def test_an_ask_on_a_ledger_with_no_watermark_kicks_and_is_mined(tmp_path):
+    """F-2 (AD-5, ⭐ P4.1-4; moved from "the first look sets the watermark", which passed such an ask by): a ledger
+    without an asks watermark — none yet, or one before P4.1 — counts every unanswered ask. The window's change after
+    *Mine this* kicks Connect for it, and Connect's look queues it and mines it; the look sets no watermark."""
+    from app.connect import window_link
     c.library()
     with c.store() as s:
         s.bookkeeping({"mine_line": 2}, copy_carries=True)
-        below = s.ids("now")[-1]
-        s.ask_mining([below])
-    assert _look()["asked"] == []
+        ids = s.ids("now")
+        kinds = {i: os.path.splitext(s.item(i)["rel_path"])[1] for i in ids}
+    below = _srt(ids, kinds)[-1]
+    _ask([below])                                       # *Mine this*, before Connect's first look (no ledger yet)
+    calls, kick = _kicks()
+    link = window_link.Link("ja", lambda: {"connect_enabled": True}, kick=kick, running=lambda: False)
+    assert link.after_change() == window_link.KICKED and len(calls) == 1, "the window's change kicks for the ask"
+    got = _look()
+    assert got["asked"] == [below] and below in got["queued"]
     with Ledger() as ledger:
-        assert ledger.asks_from("ja") is not None
-    assert _jobs() == []
+        assert ledger.asks_from("ja") is None, "a look sets no asks watermark"
+    steps = _steps(tmp_path, {below: WORDS[2]})
+    _run(steps)
+    assert _mined(steps) == [below] and _jobs(below)[0]["state"] == "done"
+    assert link.after_change() == window_link.NOTHING, "answered: nothing more to kick for"
+
+
+@pytest.mark.parametrize("writer", ["resume", "switch"])
+def test_an_ask_made_while_off_then_turned_on_is_never_mined_with_no_watermark_before(tmp_path, writer):
+    """F-2's other half (C1, IK B2): every off → on sets the asks watermark — `resume.turned_on` (the automation row,
+    the wizard) and Connect's own switch (`switch.turn_on`'s watermarks, Settings and the Tk dashboard) — so an ask
+    made while Connect was off, on a ledger that never had a watermark (or no ledger at all), is never mined or
+    kicked for."""
+    from app.connect import resume, switch, window_link
+    c.library(connect=False)
+    with c.store() as s:
+        s.bookkeeping({"mine_line": 2}, copy_carries=True)
+        ids = s.ids("now")
+        kinds = {i: os.path.splitext(s.item(i)["rel_path"])[1] for i in ids}
+    below = _srt(ids, kinds)[-1]
+    _ask([below])                                       # while Connect is off (no ledger, no watermark)
+    time.sleep(0.05)                                    # (Windows' clock steps ~16 ms: the switch comes later)
+    if writer == "resume":
+        assert resume.turned_on({"connect_enabled": False}, {"connect_enabled": True}, ["ja"]) is None
+    else:
+        assert switch._watermarks(["ja"]) is None
+    calls, kick = _kicks()
+    link = window_link.Link("ja", lambda: {"connect_enabled": True}, kick=kick, running=lambda: False)
+    assert link.after_change() == window_link.NOTHING and calls == [], "asked while off: nothing to kick for"
+    assert _look()["asked"] == []
+    steps = _steps(tmp_path, {below: WORDS[2]})
+    _run(steps)
+    assert _mined(steps) == [] and _jobs(below) == []
 
 
 def test_an_ask_undone_before_mining_drops_its_job_and_mine_now_undone_puts_it_back(tmp_path):

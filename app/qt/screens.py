@@ -177,10 +177,12 @@ class CurrentPage(Page):
         self.on_nudge = None                        # (row, -1 | +1): ↑ ↓
         self.on_menu = None                         # (row, global QPoint): ⋯
         self.on_journey = None                      # (row, episode): Up Next's ↗
+        self.on_line = None                         # --- P4.1 L2 (row 4.1.14): (kind): a line clicked ("top")
         self.list.done_requested.connect(self.done)
         self.list.nudge_requested.connect(lambda row, step: self._ask(self.on_nudge, row, step))
         self.list.menu_requested.connect(lambda row, at: self._ask(self.on_menu, row, at))
         self.list.journey_requested.connect(lambda row, ep: self._ask(self.on_journey, row, ep))
+        self.list.line_requested.connect(lambda kind: self._ask(self.on_line, kind))     # --- P4.1 L2
 
     def done(self, row, episode):
         """**The one path for a Done** (S12), wherever it's clicked — a stone on a row, a stone or ✓ Done on Up Next,

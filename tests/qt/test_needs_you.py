@@ -326,7 +326,7 @@ def test_G7_a_line_with_no_match_offers_choose_file_and_remove_episode_mine_text
     assert wait_until(lambda: card.key in ny.found and not ny.looking, 10)
     names = [b.property("action") for b in ny.cards.buttons(card.key)]
     assert "choose_video" in names and "remove_episode" in names
-    assert "mine_text_only" not in names                       # P4.1's: hidden until its callable is set
+    assert "mine_text_only" in names                           # P4.1 4.1.12: the window's routing sets its callable
     elsewhere = tmp_path / f"{row.title} 第{eps[0].number}話.mp4"
     elsewhere.write_bytes(b"\x00\x00\x00\x18ftypmp42")
     asked = []
@@ -501,7 +501,7 @@ def test_connects_kinds_call_their_callables_on_a_worker_and_a_missing_one_is_hi
     assert opened == [None]
     gap = next(e for e in ny.entries if e.kind == service.GAP)
     names = {b.property("action") for b in ny.cards.buttons(gap.key)}
-    assert names == {"leave_them"}                               # *Make their cards*: P4.1's, hidden
+    assert names == {"leave_them", "make_cards"}                 # P4.1 L2 (4.1.12): *Make their cards* is set now
     # Connect without its *Mine anyway*: the button isn't there (never one that does nothing)
     ny.connect_calls["mine_anyway"] = None
     ny.rewire()

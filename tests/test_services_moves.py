@@ -2211,7 +2211,8 @@ def test_AD6_a_drop_whose_undo_is_refused_leaves_its_cards_choice_on_the_undo_st
     w.undo(drop)                                                    # the toast's Undo: refused
     assert h.until(lambda: heard.notes)
     assert heard.notes == [WORDS["cant_undo"]] and heard.undone == []
-    assert _learning(lib, now[1]) == (0, None)                      # the choice was left as it was
+    # P4.1 L2 (TF fix 8): the other program's move out of Finished brings its cards back (G1.6-10); the pin stays ended
+    assert _learning(lib, now[1]) == (1, None)                      # the choice itself was never undone
     assert w.can_undo()                                             # and is still there to take back
     w.undo()
     assert h.until(lambda: heard.undone)

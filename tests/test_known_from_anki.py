@@ -9,7 +9,8 @@ accident (a request the user never asked for). Pure functions: no Anki is reache
 from app.connect import known_signal
 
 
-NEVER_TERMS = "-tag:Surasura::later -tag:surasura::shelf -tag:leech"
+# P4.1 L2 (TF fix 1): *Take its new cards out*'s suspends (`Surasura::out`) never count either.
+NEVER_TERMS = "-tag:Surasura::later -tag:Surasura::out -tag:surasura::shelf -tag:leech"
 
 
 def _on(**extra):

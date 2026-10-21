@@ -114,13 +114,15 @@ def test_a_refused_kick_is_tried_again_at_the_next_change():
     assert len(kicks.calls) == 2
 
 
-def test_no_library_or_no_reader_is_nothing_unread():
+def test_no_library_or_no_reader_is_nothing_unread_and_an_ask_with_no_ledger_is():
     assert window_link.unread("ja") is None, "no store at all"
     c.library()
     assert window_link.unread("ja") is None, "Connect never switched on for this library"
     with c.store() as s:
         s.ask_mining([s.ids("now")[-1]])
-    assert window_link.unread("ja") is None, "no ledger yet: its first look sets the watermark past every ask"
+    # F-2 (moved from "no ledger yet: its first look sets the watermark past every ask"): no ledger is no watermark,
+    # so the ask is unread and the window's change kicks for it
+    assert window_link.unread("ja")[1] is not None
 
 
 def test_the_language_is_read_when_the_change_is_looked_at():

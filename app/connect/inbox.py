@@ -16,8 +16,10 @@
   never dropped for leaving the line, still by a `finished` or `removed` event (`keeps`).
 - **Asks** (P4.1 row 4.1.3, C2 / C3): every look reads the store's asks (`mine_asked`) no receipt answers
   (`library.asked`): one no job holds yet → a job of kind `asked` (by `user`), or the item's open job carries it and
-  goes first (*Mine now*); an ask made before the asks watermark (`asks_from:<lang>`: Connect off) is never mined —
-  a ledger without one sets it at this first look, so nothing asked before Connect read asks is mined (G1.1-2). An
+  goes first (*Mine now*); an ask made before the asks watermark (`asks_from:<lang>`, set at every off → on by
+  `resume.turned_on`: Connect off) is never mined (G1.1-2). A ledger without one (Connect never turned on through a
+  writer that sets it) counts every unanswered ask, and the look sets none (F-2, ⭐ P4.1-4: an ask the window made
+  before Connect's first look is kicked for and mined, never passed). An
   ask undone (the store's undo) before its job's mining started → the job it made dropped (*left: ask undone*), one
   it moved back in its place. Any ending uses an ask up (the ledger keeps the job's `asked_at`, IK S4).
 - **Crash-safe:** the jobs are committed first, then the reader advanced. A kill between the two re-reads the same
@@ -30,7 +32,7 @@
   logged meanwhile is passed unread.
 """
 from app.connect import library
-from app.connect.ledger import ASKED, LEVEL, NOT_STARTED, Ledger, stamp, stamp_key
+from app.connect.ledger import ASKED, LEVEL, NOT_STARTED, Ledger, stamp_key
 
 ENTERS = ("entered_mine_line",)
 LEAVES = ("left_mine_line", "removed", "finished")
@@ -125,12 +127,9 @@ def _asks(store, language, ledger, found, queued, dropped, asked):
     `found` None (the asks couldn't be read): nothing changes this look (AD-6)."""
     if found is None:
         return
-    watermark = ledger.asks_from(language)
-    if watermark is None:                   # the first look that reads asks: nothing asked before it is mined
-        watermark = stamp()
-        ledger.set_asks_from(language, watermark)
+    watermark = ledger.asks_from(language)  # None: every unanswered ask counts, and none is set here (F-2)
     for item_id, asked_at in library.unanswered(found):
-        if stamp_key(asked_at) < stamp_key(watermark):
+        if watermark is not None and stamp_key(asked_at) < stamp_key(watermark):
             continue                        # asked while Connect was off: never mined (C1, IK B2)
         got = ledger.ask(language, item_id, asked_at, store_id=library.store_id(store))
         if got is not None:
@@ -159,26 +158,27 @@ def pending(store):
 
 def newest_unread_ask(language, found, ledger_path=None):
     """The newest ask (its stamp) no receipt answers, made since the asks watermark and held by no job yet, or None —
-    read on the ledger opened read-only (never made: no ledger, or no watermark yet, is nothing unread — the first
-    look sets the watermark past every ask there is)."""
+    read on the ledger opened read-only (never made). No watermark yet (or no ledger at all) is no line to fall
+    before: the newest ask the ledger doesn't hold is unread, so the window's change kicks for it (F-2, as `consume`
+    counts it)."""
     import os
     import pathlib
     import sqlite3
     from app.connect import ledger as book
     path = ledger_path or book.path()
     todo = library.unanswered(found)
-    if not todo or not os.path.exists(path):
+    if not todo:
         return None
+    if not os.path.exists(path):
+        return todo[0][1]                   # no ledger: nothing recorded, no watermark (F-2)
     try:
         conn = sqlite3.connect(pathlib.Path(path).as_uri() + "?mode=ro", uri=True, timeout=1.0, isolation_level=None)
     except sqlite3.Error:
         return None
     try:
         watermark = book.asks_from_in(conn, language)
-        if watermark is None:
-            return None
         for item_id, asked_at in todo:      # the newest first
-            if stamp_key(asked_at) < stamp_key(watermark):
+            if watermark is not None and stamp_key(asked_at) < stamp_key(watermark):
                 break
             if not book.ask_recorded_in(conn, language, item_id, asked_at):
                 return asked_at

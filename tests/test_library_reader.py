@@ -755,3 +755,48 @@ def test_S1_the_sync_helper_answers_a_busy_store_with_its_own_code_never_failed(
     assert ls.sync_process("ja") == ls.EXIT_BUSY
     monkeypatch.setattr(Busy, "sync_disk", lambda self, folders=None: 1 / 0)
     assert ls.sync_process("ja") == ls.EXIT_FAILED
+
+
+# --- P4.1 L2 (row 4.1.10, W-A1): Connect's feed through the reader ------------------------------------------------ #
+def test_connects_feed_reaches_the_view_and_an_unchanged_feed_builds_nothing():
+    """The window's Connect feed (`feed.Provider`, ticked by the status line) hands the reader its last Feed
+    (`latest`, no stamp of its own) and wakes it when the Feed changed (`on_change` → `refresh`): the stones show
+    Connect's wait at once, and a tick that found Connect unchanged — the same Feed object — builds and publishes
+    nothing (S19). Connect's stand-in record names the seed's own top episode; its reason is the runner's."""
+    from app.connect import feed, runner
+    seed = window_seed.build()
+    first = view_rows.build({r["id"]: r for r in seed.items}, {w["id"]: w for w in seed.works}, {"mine_line": 20},
+                            mining=seed.mining())
+    top = {"id": next(e.id for r in first.rows for e in r.episodes if e.status.kind == "waiting")}   # waits its turn
+    stamps, reads = [["a"]], []
+
+    def read(languages=None):
+        reads.append(1)
+        jobs = [{"item": top["id"], "job": 1, "state": "waiting", "reason": runner.ANKI_CLOSED, "kind": "mine"}]
+        return {"stamp": list(stamps[-1]), "running": False,
+                "languages": {seed.language: {"line": runner.ANKI_CLOSED, "jobs": jobs}}}
+    provider = feed.Provider(seed.language, lambda: {"connect_enabled": True},
+                             stamp=lambda languages=None: list(stamps[-1]), read=read)
+    reader = _reader(seed, connect=provider.latest)
+    provider.on_change = reader.refresh
+    views, _got = _collect(reader)
+    reader.start()
+    try:
+        assert _wait(lambda: views and views[-1][1].state == "full")
+
+        def status_of_top():
+            return next(e.status for r in views[-1][1].rows for e in r.episodes if e.id == top["id"])
+        assert status_of_top().tip != runner.ANKI_CLOSED, "no look yet: the view as without Connect"
+        provider.feed()                                       # the status line's tick
+        assert _wait(lambda: status_of_top().tip == runner.ANKI_CLOSED)
+        assert views[-1][1].connect is provider.latest()
+        time.sleep(0.1)
+        builds, n = reader.builds, len(views)
+        for _ in range(3):                                    # ticks with Connect unchanged
+            provider.feed()
+        stamps.append(["b"])                                  # a stamp moved by nothing the window shows
+        provider.feed()
+        time.sleep(0.3)
+        assert (reader.builds, len(views)) == (builds, n) and reads == [1, 1]
+    finally:
+        reader.stop()

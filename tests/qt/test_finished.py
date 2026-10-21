@@ -209,9 +209,9 @@ def test_the_menu_shows_the_state_the_store_holds_pin_and_cards(fin):
     assert [c[0] for c in cards[4]] == ["cards-out"]
     assert [c[0] for c in next(e for e in fa.menu_entries(plain._replace(cards_out=True))
                                if e[0] == "cards")[4]] == ["cards-in"]
-    assert "mine" not in names_of(plain) and "mine-too" not in names_of(plain)      # P4.1's, hidden until wired
-    fa.on_mine_too = lambda r: None
-    assert "mine-too" in names_of(plain)
+    assert "mine-too" in names_of(plain)          # P4.1 4.1.11: the window's routing sets it (and Mine, for no cards)
+    fa.on_mine_too = None
+    assert "mine" not in names_of(plain) and "mine-too" not in names_of(plain)      # unset: hidden
 
 
 def test_each_menu_entry_reaches_the_writer_with_its_op(fin):
@@ -650,7 +650,11 @@ def test_L1_N7_each_menu_is_deleted_once_it_closes(fin):
 
 def test_L1_IK1_the_finish_toasts_choice_says_what_finisheds_menu_says_and_never_that_anki_changed():
     assert strings.DRAG_TAKE_OUT == strings.FIN_MENU["cards-out"][0]
-    assert "Anki" not in strings.DRAG_TAKE_OUT + strings.DRAG_TAKE_OUT_TIP
+    # P4.1 L2 (TF fix 10, IK #6): the take-out now suspends in Anki, so the tips say so (W1.2: "suspended and tagged,
+    # never deleted") — the action's name still never claims Anki changed
+    assert "Anki" not in strings.DRAG_TAKE_OUT
+    for tip in (strings.DRAG_TAKE_OUT_TIP, strings.FIN_MENU["cards-out"][1]):
+        assert "suspended in Anki" in tip and "never deleted" in tip
 
 
 def test_L1_S6_an_import_whose_change_reaches_the_toast_late_still_says_added_never_nothing_new(real, tmp_path):

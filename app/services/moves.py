@@ -970,16 +970,25 @@ class Writer:
         change (the line there already) or a write: the reader looks again, and the numbers when the Soon line moved
         rows between NOW and Soon."""
         moved = False
+        changes = []                                # --- P4.1 L2 (row 4.1.14): what was written, for `after_commit`
         if cmd.get("soon_line") is not None:
-            moved = store.set_soon_line(cmd["soon_line"]) is not None
+            changes.append(store.set_soon_line(cmd["soon_line"]))
+            moved = changes[-1] is not None
         if cmd.get("mine_line") is not None:
-            store.set_library_options(mine_line=cmd["mine_line"])
+            changes.append(store.set_library_options(mine_line=cmd["mine_line"]))
         if moved:                                   # the rows it moved changed tier: the moves queued behind it
             with self._cond:                        # compare against what it left (a crash's replay keeps them)
                 later = {i for c in itertools.islice(self._pending, 1, None) for i in c.get("ids") or ()}
             self._refresh_seen(store, later)
         self._landed(cmd)
         self._call(self.on_reread)
+        # --- P4.1 L2 (row 4.1.14): a line moved logs the files that crossed it (`entered_mine_line` / `left_…`), as a
+        # move does: Connect is told after it as after any write (the shell's `connect_after_commit` kicks it)
+        for change in changes:
+            if change is not None:
+                self._call(self.after_commit, change, "set_options")
+                break
+        # --- end P4.1 L2
         if moved:
             self._numbers_resync()
 

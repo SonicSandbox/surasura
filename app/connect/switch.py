@@ -53,31 +53,12 @@ def turn_on(languages=CONNECT_LANGUAGES, log=print):
 
 
 def _watermarks(languages):
-    """Each language's watermark at its log's end and its last-looked-at list forgotten, each in its own try ->
-    None, or the failures named by language."""
-    failed = []
-    try:
-        from app import library_store
-        from app.connect import level, library
-        from app.connect.ledger import path as ledger_path
-        from app.path_utils import get_data_path
-    except Exception as e:
-        return str(e)
-    for lang in languages:
-        try:
-            store = library.open_store(lang, role="window")
-            if store is not None:
-                with store:
-                    library.switch_on(store)
-            elif os.path.exists(library_store.library_db_path(lang, get_data_path(lang))):
-                # a library that's there but won't open (busy, damaged, read-only): its watermark isn't set
-                failed.append(BUSY.format(LANGUAGE_NAMES.get(lang, lang)))
-                continue
-            if os.path.exists(ledger_path()):   # no ledger: no list looked at yet (and none made here)
-                level.forget(lang)
-        except Exception as e:
-            failed.append(f"{LANGUAGE_NAMES.get(lang, lang)}: {e}")
-    return "; ".join(failed) or None
+    """Each language's watermarks, as every off → on sets them (`resume.watermarks`, C1 / IK B2): the placement log's
+    at its end, the last-looked-at list forgotten and the asks watermark now — the window's asks count only after it
+    (F-2: a ledger with none counts every unanswered ask, so the switch must set it) -> None, or the failures named
+    by language."""
+    from app.connect import resume
+    return resume.watermarks(languages)
 
 
 def backfill(languages, saved, log=print):

@@ -108,7 +108,8 @@ def test_a_language_switch_asks_the_bar_for_the_new_languages_line_and_dot_at_on
     services.language_changed("zh")
     assert asked, "nothing asked of the bar after the switch"
     names, journey = asked[-1]
-    assert names == {"journey", "replan"} and journey is not old
+    # P4.1 L2 WF (B1): the switch asks Connect's line too, so a feed that last found Connect off looks again
+    assert names == {"journey", "replan", "connect"} and journey is not old
     services.shutdown(0.05)
 
 

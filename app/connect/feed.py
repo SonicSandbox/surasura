@@ -107,8 +107,32 @@ class Provider:
         self._stamp, self._read = stamp, read
         self._last = None           # (the stamp the read took, its Feed)
         self._on = True
+        # P4.1 L2 (W1): the window's side. `latest()` the Feed the last look found (the library reader builds with it:
+        # no second stamp a tick, row 4.1.13); `on_change()` called by a look that found another Feed (the reader's
+        # `refresh`: the stones rebuilt) — one listener, the reader open now
+        self._latest = None
+        self.on_change = None
+
+    def latest(self):
+        """The Feed the last look found, or None before any (no stones: the view as without Connect). No read."""
+        return self._latest
 
     def feed(self):
+        """The Feed now (`_look`), kept as `latest()`: a Feed equal to the last is the last object (S19 — off, a
+        record unreadable again, a stamp moved by nothing the window shows), and a new one tells `on_change`."""
+        got = self._look()
+        last = self._latest
+        if last is not None and (got is last or got == last):
+            return last
+        self._latest = got
+        if self.on_change is not None:
+            try:
+                self.on_change()
+            except Exception as e:                  # a listener's fault never stops the look
+                print(f"Connect's feed listener failed: {e}")
+        return got
+
+    def _look(self):
         """The Feed now: off → the off Feed, nothing read; the stamp unchanged → the same Feed object (S19); a record
         that can't be read → its own line (Connect's record says why), never a raise."""
         from app import settings_manager

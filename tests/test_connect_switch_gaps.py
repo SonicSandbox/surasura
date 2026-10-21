@@ -30,15 +30,18 @@ def _no_session(app, monkeypatch):
 
 # --- switching on ---------------------------------------------------------------------------------------------------
 
-def test_switching_on_with_no_ledger_yet_makes_no_ledger(dashboard, monkeypatch):
-    # Nothing made yet: there is no list to forget, and a look must never create the ledger file
-    from app.connect.ledger import path
+def test_switching_on_with_no_ledger_yet_makes_the_ledger_for_its_asks_watermark(dashboard, monkeypatch):
+    # P4.1 L2 (F-2 / F-6, Sonic's P4.1-4): the asks line is drawn when Connect is turned on, and it lives in the
+    # ledger's meta — so the switch-on makes the ledger (was: "the switch-on made no ledger"; a look still never does)
+    from app.connect.ledger import Ledger, path
     app, _lines = _settings_open(dashboard, monkeypatch)
     _no_session(app, monkeypatch)
     assert not os.path.exists(path())
     _switch(app, True)
     assert read_settings()["connect_enabled"] is True
-    assert not os.path.exists(path()), "the switch-on made no ledger"
+    assert os.path.exists(path()), "the switch-on draws the asks line in a new ledger"
+    with Ledger() as ledger:
+        assert ledger.asks_from("ja") is not None
 
 
 def test_switching_on_closes_the_library_it_opened(dashboard, monkeypatch):

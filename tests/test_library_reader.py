@@ -484,6 +484,39 @@ def test_a_full_cards_re_ask_that_finds_the_same_counts_builds_and_publishes_not
     assert reader._cards is before
 
 
+
+def test_M41_B2_the_cards_full_pass_asks_only_current_and_finished_and_never_while_a_drag_holds(monkeypatch):
+    """The cards' full pass every CARDS_ALL_S (12-23 ms of Python's lock at 20,000 files) fell inside a drag's slide.
+    It waits for the drop, asks only the items whose rows show cards (Current and Finished, from the reader's sorted
+    tiers), and a card made in Anki meanwhile for a Finished file still shows once the drag is over."""
+    seed = window_seed.build()
+    reader = _reader(seed)
+    views, _ = _collect(reader)
+    reader._look()                                       # the first look: the full read and the first view
+    handle = seed.opener.handle()                        # the reader's own handle (this thread's)
+    asked = []
+    real_cards_of = handle.cards_of
+
+    def spy(item_ids):
+        asked.append(list(item_ids))
+        return real_cards_of(item_ids)
+    monkeypatch.setattr(handle, "cards_of", spy)
+    monkeypatch.setattr(library_reader, "CARDS_ALL_S", 0.0)  # every item is due again at once
+    fin = next(r["id"] for r in seed.items if r["tier"] == "graduated" and not seed.library._cards.get(r["id"]))
+    reader.hold()                                        # a drag
+    with seed.library._lock:
+        seed.library._cards[fin] = [7, 8]                # made in Anki: no feed row, data_version moves
+        seed.library._data_version += 1
+    reader._look()
+    assert asked == [] and reader._cards.get(fin) is None    # read under the hand, no full pass
+    reader.release()                                     # the drop
+    reader._look()
+    want = sorted(r["id"] for r in seed.items if r["tier"] in ("now", "soon", "graduated"))
+    assert len(asked) == 1 and sorted(asked[0]) == want
+    assert reader._cards[fin] == 2
+    assert any(e.cards == 2 for m in views[-1][1].finished for r in m.rows for e in r.episodes if e.id == fin)
+
+
 def _busy_commit(seed, n):
     """One more episode for the store to report: another program writing to the library all the time."""
     hero = next(r for r in seed.items if r["tier"] == "now")

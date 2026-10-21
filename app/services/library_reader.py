@@ -293,7 +293,7 @@ class LibraryReader:
         with self._lock:                                # W3.2 Q1: new estimates from the window
             estimates_new, self._estimates_new = self._estimates_new, False
         dv = h.data_version()
-        cards_due = self._cards_stale and time.monotonic() - self._cards_all_at >= CARDS_ALL_S
+        cards_due = self._cards_stale and not held and time.monotonic() - self._cards_all_at >= CARDS_ALL_S
         if not changed_mode and dv == self._data_version and version == self._numbers_version \
                 and self._view is not None and not self._view.busy and not cards_due and not released \
                 and not estimates_new:                  # W3.2 Q1
@@ -367,7 +367,8 @@ class LibraryReader:
             if owed or self._cache_due is not None or self._recheck or self._held_dirty or \
                     (view is not None and view.busy):
                 timeout = min(timeout, self.poll)       # a sync, a read or the cache's quiet look to try again
-            if self._cards_stale:                       # a card made elsewhere moves no row: asked again when due
+            if self._cards_stale and not self._hold.is_set():   # a card made elsewhere moves no row: asked again when
+                #                                                 due (M4.1 B2: after a drag, which `release` wakes)
                 timeout = min(timeout, max(0.0, self._cards_all_at + CARDS_ALL_S - time.monotonic()))
             if self._mode is not None and self._mode[0] != "store":
                 timeout = max(self.poll, min(timeout, MODE_RECHECK_S))
@@ -495,12 +496,14 @@ class LibraryReader:
     def _card_counts(self, h):
         """{item_id: cards} for the items whose rows show cards (Current, Finished). A card made for an item doesn't
         move its row in the feed (`record_made`), so every item is asked again at most every CARDS_ALL_S; between, only
-        the items the feed changed. The same dict object comes back when nothing changed (the row cache reads that)."""
+        the items the feed changed — and not while a drag holds the view (nothing is built then; asked at the next look
+        after it). The same dict object comes back when nothing changed (the row cache reads that)."""
         if not hasattr(h, "cards_of"):
             return {}
         now = time.monotonic()
-        if self._changed_ids is None or now - self._cards_all_at >= CARDS_ALL_S:
-            ids = [i for i, r in self._items.items() if r.get("tier") in ("now", "soon", "graduated")]
+        if self._changed_ids is None or (now - self._cards_all_at >= CARDS_ALL_S and not self._hold.is_set()):
+            tiers = self._sorted_tiers()                # M4.1 B2: the three tiers' ids, not a scan of every item
+            ids = [r["id"] for t in ("now", "soon", "graduated") for r in tiers.get(t, ())]
             self._cards_all_at = now
             self._cards_stale = False
             got = h.cards_of(ids)

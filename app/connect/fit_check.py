@@ -21,7 +21,8 @@ known to be timed to its video — a card cut from a subtitle a few seconds off 
   still waits; tsubasa's REFUSED and any other ERROR still wait.
 
 tsubasa decides by `outcome` and `segments` only (P0.2: on `ERROR` its other fields carry defaults). It is GPL, so it
-is run as a program, never imported (K1). Found on PATH (`tsubasa`, or `tsubasa.exe`); a test hands its own.
+is run as a program, never imported (K1). Found beside Surasura's own exe when frozen (3.0 ships `tsubasa.exe` in its
+bundle, T1), else on PATH (`tsubasa`, or `tsubasa.exe`); a test hands its own.
 
 **A pairing's version** (`version`): a short hash of the record as hato wrote it. The runner keeps it with the pick and
 looks again before mining: a pairing changed since (hato re-timed it, a new subtitle) → picked again (E17); after
@@ -31,6 +32,7 @@ Standard library only; no Tk.
 """
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -54,6 +56,14 @@ def version(pairing):
 
 
 def find_tsubasa():
+    """tsubasa's program: the one Surasura's bundle ships beside its own exe (frozen: `tsubasa.exe` beside
+    `Surasura.exe` and `surasura-cli.exe`, sharing `_internal`; T1), else one on PATH (a developer's pip install), else
+    None (nothing here checks timing)."""
+    from app.path_utils import is_frozen, program_beside
+    if is_frozen():
+        bundled = program_beside("tsubasa")
+        if os.path.isfile(bundled):
+            return bundled
     return shutil.which("tsubasa")
 
 

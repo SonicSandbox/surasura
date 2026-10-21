@@ -297,3 +297,59 @@ def test_the_reason_names_the_switch_by_the_label_settings_shows():
     from app.qt import settings_strings
     assert settings_strings.ROWS["connect_trust_timing"][0] == fit_check.TRUST_LABEL
     assert fit_check.TRUST_LABEL in fit_check.NO_CHECKER
+
+
+# --- T1 (Sonic 2026-10-21, B): 3.0 ships tsubasa.exe in Surasura's own bundle, beside Surasura.exe and
+# surasura-cli.exe. Connect must find that one first — a learner has no PATH entry for it — and only then a
+# developer's tsubasa on PATH. A frozen build is faked by `path_utils.is_frozen` and `sys.executable`, as
+# tests/test_tools_entry.py does.
+
+def _bundle(tmp_path, monkeypatch, frozen=True, ship=True):
+    """A program folder with Surasura.exe (running) and, when `ship`, tsubasa.exe beside it; PATH holds another."""
+    import sys
+    from app import path_utils
+    folder = tmp_path / "Surasura 3.0 (テスト)"           # a space and Japanese, as install paths have
+    folder.mkdir()
+    (folder / "Surasura.exe").write_bytes(b"MZ")
+    if ship:
+        (folder / "tsubasa.exe").write_bytes(b"MZ")
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(sys, "executable", str(folder / "Surasura.exe"))
+    monkeypatch.setattr(path_utils, "is_frozen", lambda: frozen)
+    monkeypatch.setattr(fit_check.shutil, "which", lambda name: "C:/dev/Scripts/tsubasa.exe" if name == "tsubasa"
+                        else None)
+    return folder
+
+
+def test_a_frozen_surasura_finds_the_tsubasa_its_bundle_ships_before_one_on_path(tmp_path, monkeypatch):
+    folder = _bundle(tmp_path, monkeypatch)
+    assert fit_check.find_tsubasa() == str(folder / "tsubasa.exe")
+
+
+def test_a_frozen_bundle_without_tsubasa_falls_back_to_path(tmp_path, monkeypatch):
+    # an older bundle, or tsubasa removed from it: a developer's install still counts
+    _bundle(tmp_path, monkeypatch, ship=False)
+    assert fit_check.find_tsubasa() == "C:/dev/Scripts/tsubasa.exe"
+
+
+def test_from_source_a_tsubasa_beside_python_is_never_taken_for_the_bundles(tmp_path, monkeypatch):
+    # from source sys.executable is python.exe: a file beside it isn't Surasura's bundle, so PATH decides
+    _bundle(tmp_path, monkeypatch, frozen=False)
+    assert fit_check.find_tsubasa() == "C:/dev/Scripts/tsubasa.exe"
+
+
+def test_with_no_tsubasa_anywhere_nothing_is_found(tmp_path, monkeypatch):
+    _bundle(tmp_path, monkeypatch, ship=False)
+    monkeypatch.setattr(fit_check.shutil, "which", lambda name: None)
+    assert fit_check.find_tsubasa() is None
+
+
+def test_programs_beside_the_exe_are_named_without_exe_off_windows(tmp_path, monkeypatch):
+    # macOS / Linux bundles ship `tsubasa`, `surasura-cli` (no .exe): one rule names every program beside the exe
+    import sys
+    from app import path_utils
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "Surasura"))
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert path_utils.program_beside("tsubasa") == str(tmp_path / "tsubasa")
+    monkeypatch.setattr(sys, "platform", "win32")
+    assert path_utils.program_beside("surasura-cli") == str(tmp_path / "surasura-cli.exe")

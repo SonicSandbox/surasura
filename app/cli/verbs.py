@@ -556,10 +556,9 @@ def _nothing_changed(argv, lang):
 def child_command(argv):
     """The analyzer child: `Surasura.exe analyzer --headless …` beside this program when frozen, else `app_entry.py`'s
     same route — `--headless` turns its crash dialog into a log line and exit 1."""
-    from app.path_utils import is_frozen
+    from app.path_utils import is_frozen, program_beside
     if is_frozen():
-        exe = os.path.join(os.path.dirname(sys.executable), "Surasura.exe" if sys.platform == "win32" else "Surasura")
-        return [exe, "analyzer", "--headless"] + argv[1:]
+        return [program_beside("Surasura"), "analyzer", "--headless"] + argv[1:]
     root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     return [sys.executable, os.path.join(root, "app_entry.py"), "analyzer", "--headless"] + argv[1:]
 

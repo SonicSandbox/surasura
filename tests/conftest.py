@@ -17,10 +17,10 @@ from tests.quiet_windows import quiet_windows
 from tests.tk_on_github import skip_tk_tests
 from tests.network_guard import around_a_test
 # The guards every suite shares (each module suite's conftest imports them too): the real data roots, the gap
-# between tests, Tk interpreters freed on the main thread, no child left running.
-from tests.harness_guards import (_guard_real_local_data, _clear_destroyed_default_root,  # noqa: F401
-                                  pytest_collection, pytest_runtest_teardown, pytest_runtestloop,
-                                  session_finish_guards)
+# between tests, Tk interpreters freed on the main thread, no child left running, no real Anki reached.
+from tests.harness_guards import (_guard_real_local_data, _guard_anki_port,  # noqa: F401
+                                  _clear_destroyed_default_root, pytest_collection, pytest_runtest_teardown,
+                                  pytest_runtestloop, session_finish_guards)
 
 quiet_windows()                             # test windows open on a desktop of their own: never seen, never typed into
 
@@ -363,7 +363,7 @@ _TIMES = {"path": os.environ.get("SURASURA_TEST_TIMES"), "files": {}}
 
 
 def pytest_sessionfinish(session, exitstatus):
-    session_finish_guards()
+    session_finish_guards(session)
     if not _TIMES["path"]:
         return
     try:

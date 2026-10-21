@@ -7,6 +7,9 @@ against the three flakes that forced full re-runs (2026-10-14):
 * a Tk interpreter freed on a worker thread (a collection there, or the thread holding it last) aborted the whole
   process (Windows fatal 0x80000003 / 0xC0000005);
 * a test's child process (`slow.py`) kept running for an hour after its pytest had gone.
+
+And the AnkiConnect port (2026-10-20): six green tests had sent a request to it, where an Anki left open
+on this machine would have answered.
 """
 import gc
 import json
@@ -255,6 +258,151 @@ def test_a_child_that_ended_is_forgotten():
     assert harness_guards._end_leaked_children(children, grace_ms=2000) == []
     harness_guards._forget_ended_children(harness_guards._CHILDREN)
     assert not any(c[0] == quick.pid for c in harness_guards._CHILDREN)
+
+# --- no test reaches a real Anki -------------------------------------------------------------------------------- #
+# Every try below is refused by the harness before a socket leaves (the first assert proves the guard is on): nothing
+# here reaches an Anki left open on this machine. Each test claims its own tries (`_claim_anki_tries`), which is what
+# keeps the guard's fixture from failing it.
+
+def _on(port, tries):
+    return [line for line in tries if f", {port})" in line or f", {port}," in line]
+
+
+def test_every_route_to_the_anki_port_is_refused_and_named():
+    # Why: the six leaks went through app.anki_connect (urllib); requests, a raw socket and connect_ex are the other
+    # doors a test's code could use. A wrong answer: a real Anki answering a test.
+    import socket
+    import urllib.error
+    import urllib.request
+    import requests
+    from app import anki_connect
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:   # first, and sending nothing: the guard is on
+        with pytest.raises(harness_guards.AnkiPortRefused):
+            s.connect(("127.0.0.1", 8765))
+        assert s.connect_ex(("127.0.0.1", 8765)) != 0
+    with pytest.raises(anki_connect.AnkiError) as offline:
+        anki_connect.invoke("version", "http://127.0.0.1:8765")
+    assert offline.value.kind == "offline"                          # the app meets it as Anki closed
+    with pytest.raises(urllib.error.URLError):
+        urllib.request.urlopen("http://localhost:8765", timeout=5)
+    with pytest.raises(requests.exceptions.ConnectionError):
+        requests.get("http://127.0.0.1:8765", timeout=5)
+    if socket.has_ipv6:
+        with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as s:
+            with pytest.raises(harness_guards.AnkiPortRefused):
+                s.connect(("::1", 8765, 0, 0))
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:   # a suite's stand-in address: a patch that slipped
+        with pytest.raises(harness_guards.AnkiPortRefused):
+            s.connect(("127.0.0.1", 18765))
+    claimed = harness_guards._claim_anki_tries()
+    tries = _on(8765, claimed)
+    assert len(tries) >= 5, tries                                   # (urllib may try both localhost addresses)
+    assert all("test_every_route_to_the_anki_port_is_refused_and_named" in t for t in tries), tries
+    assert any("app" + os.sep + "anki_connect.py" in t for t in tries), "a try names the code that sent it"
+    assert len(_on(18765, claimed)) == 1, claimed
+
+
+def test_other_loopback_ports_stay_open():
+    # Why: the suites' own servers (port 0) and "Anki is closed" (port 9) are loopback connections the guard leaves
+    # alone. A wrong answer: refusals no leak caused.
+    import socket
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    try:
+        with socket.create_connection(server.getsockname(), timeout=5):
+            pass
+    finally:
+        server.close()
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.connect_ex(("127.0.0.1", 9))
+    assert harness_guards._claim_anki_tries() == []
+
+
+@pytest.mark.anki_port
+def test_a_marked_test_may_reach_the_port():
+    # Why: the live drills (DevTest only) must reach Anki. Proven on a stand-in port of the guarded set where this test
+    # listens itself, never on Anki's own: a wrong answer would refuse the drills.
+    import socket
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        server.bind(("127.0.0.1", 28765))
+    except OSError:
+        server.close()
+        pytest.skip("port 28765 is taken on this machine")
+    server.listen(1)
+    try:
+        with socket.create_connection(("127.0.0.1", 28765), timeout=5):
+            pass
+    finally:
+        server.close()
+    assert harness_guards._claim_anki_tries() == []
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the late case waits on the child watch (Windows-only)")
+def test_a_real_run_fails_the_test_a_left_thread_tries_the_port_in_and_the_run_for_one_after_the_last(tmp_path):
+    # A real pytest run of the three helpers below: the first leaves a thread that tries the port during the second
+    # (as the re-plan host's loop did after its patch closed); the third leaves one that tries after the last test,
+    # while the run waits on its child. The second test fails naming the first; the run fails for the late try.
+    env = dict(os.environ, PYTHONPATH=PROJECT, PYTHONIOENCODING="utf-8", SURASURA_TEST_CHILD_GRACE_MS="20000")
+    env[PROBE] = str(tmp_path / "probe")
+    env.pop("PYTEST_CURRENT_TEST", None)                        # the nested run starts as any run does
+    env.pop("PYTEST_ADDOPTS", None)                             # why: a `-p <plugin>` there is not on this PYTHONPATH
+    out = subprocess.run(
+        [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "-q",
+         "tests/test_harness_guards.py::test_helper_leaves_a_thread_that_tries_the_port",
+         "tests/test_harness_guards.py::test_helper_is_running_when_the_thread_tries",
+         "tests/test_harness_guards.py::test_helper_leaves_a_thread_that_tries_after_the_last_test"],
+        cwd=PROJECT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=300)
+    text = out.stdout.decode("utf-8", "replace")
+    assert out.returncode == 1, text
+    assert "ERROR at teardown of test_helper_is_running_when_the_thread_tries" in text, text
+    assert "started in tests/test_harness_guards.py::test_helper_leaves_a_thread_that_tries_the_port" in text, text
+    assert "ANKI PORT TRIED after its test had ended" in text, text
+    # why: separate checks: a warning in the nested run would sit between them ("1 warning, …")
+    assert "3 passed" in text and "1 error" in text and "1 anki port" in text, text
+
+
+def _wait_for(condition, seconds=20):
+    import time
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        if condition():
+            return True
+        time.sleep(0.01)
+    return False
+
+
+def _left_thread_tries_the_port_once(ready):
+    import socket
+
+    def run():
+        ready()
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.connect(("127.0.0.1", 8765))
+            except OSError:
+                pass
+    threading.Thread(target=run, name="left-behind", daemon=True).start()
+
+
+@pytest.mark.skipif(not os.environ.get(PROBE), reason="a helper of the nested run above")
+def test_helper_leaves_a_thread_that_tries_the_port():
+    second = os.environ[PROBE] + ".second"
+    _left_thread_tries_the_port_once(lambda: _wait_for(lambda: os.path.exists(second)))
+
+
+@pytest.mark.skipif(not os.environ.get(PROBE), reason="a helper of the nested run above")
+def test_helper_is_running_when_the_thread_tries():
+    open(os.environ[PROBE] + ".second", "w").close()
+    assert _wait_for(lambda: any(not attempt[5] for attempt in harness_guards._ANKI_TRIES))
+
+
+@pytest.mark.skipif(not os.environ.get(PROBE), reason="a helper of the nested run above")
+def test_helper_leaves_a_thread_that_tries_after_the_last_test():
+    subprocess.Popen([sys.executable, "-c", "import time; time.sleep(3)"])     # the run waits on it after the tests
+    _left_thread_tries_the_port_once(lambda: _wait_for(
+        lambda: os.environ.get("PYTEST_CURRENT_TEST") == harness_guards.BETWEEN_TESTS))
 
 # --- every module suite takes the guards ------------------------------------------------------------------------- #
 

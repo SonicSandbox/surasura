@@ -981,6 +981,7 @@ class ShellWindow(QMainWindow):
         self.bridge.status_changed.connect(self.show_status)
         self._jobs = ()                                   # the registry's newest snapshot (E20: what the close waits for)
         self._quit = None                                 # None · "waiting" (E20: an Anki write ends first) · "ready"
+        self.restart_asked = False                        # *Restart now* (text size): main starts the program again
         self._quit_line = strings.QUIT_FINISHING          # the bar's one line while it waits
         self._quit_timer = None
         self.bridge.jobs_changed.connect(self._jobs_changed)
@@ -2328,6 +2329,13 @@ class ShellWindow(QMainWindow):
         self.update()
         return ms
 
+    def restart(self):
+        """*Restart now* (Settings › Text size; laptop fixes row 15): the window closes the quit's way — what can't
+        stop part-way ends first (E20), the window state is saved (size, place, this tab), the settings written — and
+        `main` starts the same program again once the claim is let go (`relaunch`)."""
+        self.restart_asked = True
+        self.close()
+
     # --- overlays --------------------------------------------------------------------------------------------- #
     def register_overlay(self, overlay):
         """An in-window overlay (tray, sheet, panel, popover): Esc, Back and a click outside close it (05 §5.4)."""
@@ -2883,15 +2891,44 @@ def main(argv=None):
     window.first_frame.connect(services.load_numbers)  # W3.2 P0: the plan's numbers after it too
     window.show_first()
     hud.mark("shown")
+    relaunched = []
+
+    def release():
+        """The claim goes; then, a restart asked (`ShellWindow.restart`), the new start — it finds the claim free and
+        opens its window while this process finishes the store's close trigger."""
+        instance.release()
+        if window.restart_asked and not relaunched:
+            relaunched.append(relaunch(argv))
     try:
         code = app.exec()
     finally:
         try:
-            services.shutdown(release=instance.release)   # the claim goes before the store's close trigger
+            services.shutdown(release=release)            # the claim goes before the store's close trigger
         finally:
-            instance.release()                            # (once: done already unless the quit failed before it)
+            release()                                     # (once: done already unless the quit failed before it)
             quiet_exit(gone=(window,))                    # W3.4: nothing of Qt's or a worker's left for the teardown
     return code
+
+
+def relaunch(argv):
+    """The same program started again, detached (laptop fixes row 15: *Restart now*): the frozen program with its own
+    arguments, or this Python with the script `argv` names (app_entry.py from source), from the same folder.
+    -> the Popen, or None (logged: the window just doesn't come back)."""
+    import subprocess
+    if getattr(sys, "frozen", False):
+        args = [sys.executable] + list(argv[1:])
+    elif os.path.abspath(argv[0]) == os.path.abspath(__file__):        # `python -m app.qt.shell`
+        args = [sys.executable, "-m", "app.qt.shell"] + list(argv[1:])
+    else:
+        args = [sys.executable, os.path.abspath(argv[0])] + list(argv[1:])
+    flags = 0x00000008 | 0x00000200 if sys.platform == "win32" else 0   # DETACHED_PROCESS | NEW_PROCESS_GROUP
+    try:
+        return subprocess.Popen(args, creationflags=flags, close_fds=True, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                start_new_session=(sys.platform != "win32"))
+    except (OSError, ValueError) as e:
+        applog.log("shell", f"restart: the new start failed: {e!r}")
+        return None
 
 
 def quiet_exit(workers_ms=QUIT_WORKERS_MS, join_s=QUIT_THREAD_JOIN_S, gone=()):

@@ -2536,12 +2536,16 @@ def test_a_checkpoint_that_fails_with_a_database_error_never_ends_the_look(monke
         assert "checkpoint" in caplog.text
 
 
-def test_a_window_move_during_a_look_that_finds_one_new_file_saves_within_the_budget():
+def test_a_window_move_during_a_look_that_finds_one_new_file_saves_within_the_budget(monkeypatch):
     """F13 (G1): a window's move made while a look takes one new file in waited 5 ms for the lock, but its whole save
     took up to 0.5 s at 20k origins: the look's Python pass over every origin (their names, their records decoded)
     held the interpreter, and each of the move's SQLite calls waited for it again. In the timed run
     (SURASURA_STORE_BENCH=1), at 20,000 origins in 400 shows, every move made during such a look saves within
-    MOVE_BUDGET, whole; elsewhere a short functional pass at 600."""
+    MOVE_BUDGET, whole; elsewhere a short functional pass at 600.
+    A move counts when its save overlapped the look (began before the look ended, saved after it began): one begun
+    during the look's write is saved after the look returns. The look's pass over the new file starts only once a move
+    has begun, so at least one overlaps whatever the runner's load (a look of one file at 600 origins can end before
+    the mover's first move, and did on a loaded runner)."""
     language = "ja"
     store, data_dir = _empty(language)
     _d, user_files_dir = roots(language)
@@ -2555,7 +2559,7 @@ def test_a_window_move_during_a_look_that_finds_one_new_file_saves_within_the_bu
         _settle(src)
         tier = "now" if store.ordered("now") else "soon"
         ids = [i for i, _e, _a in store.ordered(tier)][:6]
-        moving, done, moves, errors = threading.Event(), threading.Event(), [], []
+        began, done, moves, errors = threading.Event(), threading.Event(), [], []   # moves: (began, saved) of each
 
         def mover():
             other = ls.open_store(language, data_dir, user_files_dir)
@@ -2563,28 +2567,35 @@ def test_a_window_move_during_a_look_that_finds_one_new_file_saves_within_the_bu
             with other:
                 while not done.is_set():
                     t0 = time.perf_counter()
+                    began.set()
                     try:
                         other.move([ids[n % len(ids)]], tier, before_id=ids[(n + 3) % len(ids)])
-                        if moving.is_set():
-                            moves.append(time.perf_counter() - t0)
+                        moves.append((t0, time.perf_counter()))
                     except ls.StoreError as e:
                         errors.append(repr(e))
                     n += 1
                     done.wait(0.01)
+        real_new = sources._Look._new
+
+        def new_once_a_move_began(look, *args):
+            assert began.wait(30), "the mover began no move"   # the look holds no lock here: the mover isn't held
+            return real_new(look, *args)
+        monkeypatch.setattr(sources._Look, "_new", new_once_a_move_began)
         thread = threading.Thread(target=mover, name="mover")
         thread.start()
         try:
-            time.sleep(0.05)
-            moving.set()
+            began.clear()                                    # a move begun before the look started doesn't count
+            look_began = time.perf_counter()
             result = sources.scan(store, language, root)
-            moving.clear()
+            look_ended = time.perf_counter()
         finally:
             done.set()
             thread.join()
         assert result["added"] == 1 and result["reachable"]
-        assert errors == [] and moves, errors
+        during = [saved - t0 for t0, saved in moves if t0 < look_ended and saved > look_began]
+        assert errors == [] and during, (errors, moves, look_began, look_ended)
         if BENCH:
-            assert max(moves) <= MOVE_BUDGET, sorted(moves)[-5:]
+            assert max(during) <= MOVE_BUDGET, sorted(during)[-5:]
 
 
 def test_the_releases_already_in_are_a_folders_own_never_its_subfolders():

@@ -3296,8 +3296,6 @@ class Store:
                     want = cmd.hints[item_id] if cmd.hints[item_id] in pieces else None
                 elif old is not None and whole.get(old):
                     want = old
-                elif old in groups and item_id not in cmd.moved:
-                    want = old                          # LM11: a title changed in place keeps its group
                 else:
                     want = None
                 if want != old:

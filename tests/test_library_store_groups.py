@@ -531,3 +531,101 @@ def test_nudge_jumps_a_group_whole_and_moves_within_one(language):
     assert _piece(store, ma[1]) == pa and store.ids("goal").index(ma[1]) == store.ids("goal").index(ma[2]) + 1
     assert pieces_ok(store) is None
     store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_group_never_folds_into_its_first_titles_part_beside_it_nor_takes_a_row_dropped_inside(language):
+    """A whole group moved right after a part of its first title stays the group it is (05 §5.2 #4's fold is a run's);
+    a new file dropped between two of its episodes (an Explorer drop on a row) is no drop onto the group: it is a part
+    of its own and the group is cut there (05 §5.2 rule 5; *Add to group* is the window's), mended by its undo."""
+    store = _library(language)
+    data_dir, _u = roots(language)
+    (pa, ma), (pb, mb) = _shows(store, "goal")
+    store.split(pa, ma[3])                                      # A4 and B4: parts of their own
+    store.split(pb, mb[3])
+    alone, other = _piece(store, ma[3]), _piece(store, mb[3])
+    store.join([pa, pb], how="group")                           # A A A B B B, A4, B4
+    group = ma[:3] + mb[:3]
+    loose = next(i for i in store.ids("goal") if not store.item(i)["parent_folder"])
+    store.move(group, "goal", after_id=loose)                   # A4 B4 L, the group
+    store.move(group, "goal", after_id=ma[3])                   # A4, the group, B4: a part of each title beside it
+    assert store.ids("goal")[:8] == [ma[3]] + group + [mb[3]]
+    assert _members(store, pa) == group and _kind(store, pa) == "group"
+    assert _members(store, alone) == [ma[3]] and _members(store, other) == [mb[3]]
+    before = _state(store)
+    folder = store.item(ma[0])["rel_path"].rsplit("/", 1)[0]
+    change = store.insert_at([touch(data_dir, f"{folder}/{names(language)[88]}_第10話.srt")], ma[1], before=True)
+    new = change.added[0]
+    assert store.ids("goal").index(new) == store.ids("goal").index(ma[0]) + 1
+    assert _piece(store, new) not in (pa, alone), "never joined by landing inside"
+    assert _members(store, pa) == [ma[0]] and _kind(store, pa) == "run"
+    assert pieces_ok(store) is None
+    store.undo(change)
+    assert _state(store) == before
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_new_file_of_the_title_the_group_ends_with_lands_after_it_in_a_part_of_its_own(language):
+    """A new file of the group's last title: its folder's last row is the group's last — beside it, that title's own,
+    and still never joined (it arrives on its own, G4)."""
+    store = _library(language)
+    data_dir, _u = roots(language)
+    (pa, ma), (pb, mb) = _shows(store, "soon")
+    store.join([pb, pa], how="group")                           # B B B B A A A A
+    folder = store.item(ma[0])["rel_path"].rsplit("/", 1)[0]
+    new = store.insert([touch(data_dir, f"{folder}/{names(language)[89]}_第05話.srt")], "soon").added[0]
+    soon = store.ids("soon")
+    assert soon.index(new) == soon.index(ma[3]) + 1
+    assert _members(store, _piece(store, new)) == [new] and _members(store, pb) == mb + ma
+    assert pieces_ok(store) is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_finishing_the_rest_of_a_group_joins_each_titles_part_already_in_finished(language):
+    """Finished under its own work's piece, the whole group at once too: A1 finished first, then everything left — A's
+    others join A1's part in Finished, B's are a part of their own."""
+    store = _library(language)
+    (pa, ma), (pb, mb) = _shows(store, "goal")
+    store.join([pa, pb], how="group")
+    store.finish([ma[0]])
+    done = _piece(store, ma[0])
+    store.finish(ma[1:] + mb)
+    assert _members(store, done) == ma, "under A's own part in Finished"
+    assert _members(store, _piece(store, mb[0])) == mb and _kind(store, _piece(store, mb[0])) == "run"
+    assert not store.conn.execute("SELECT 1 FROM pieces WHERE id = ?", (pa,)).fetchone() or _kind(store, pa) == "run"
+    assert pieces_ok(store) is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_group_is_refused_in_new_arrivals_and_in_finished(language):
+    """`how="group"` onto a part waiting in New arrivals, or of two finished parts, is refused: a group lives in Current
+    or 6+ Months only."""
+    store = _library(language)
+    (pa, ma), (pb, mb) = _shows(store, "goal")
+    store.set_tier(ma, "arrivals")
+    with pytest.raises(ValueError):
+        store.join([_piece(store, ma[0]), pb], how="group")
+    store.finish(ma)
+    store.finish(mb)
+    with pytest.raises(ValueError):
+        store.join([_piece(store, ma[0]), _piece(store, mb[0])], how="group")
+    assert pieces_ok(store) is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_undo_of_not_part_of_this_title_over_a_whole_group_puts_the_group_back(language):
+    """*Not part of this title* on every episode of a group makes them one title (a run); its undo gives each its own
+    title back and the group with them (no row of it moved, so none leaves it)."""
+    store = _library(language)
+    (pa, ma), (pb, mb) = _shows(store, "goal")
+    store.join([pa, pb], how="group")
+    before = _state(store)
+    change = store.split_work(ma + mb, names(language)[45])
+    assert _kind(store, pa) == "run" and _members(store, pa) == ma + mb
+    store.undo(change)
+    assert _state(store) == before
+    store.close()

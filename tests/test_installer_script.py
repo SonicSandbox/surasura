@@ -279,6 +279,46 @@ def test_a_test_release_only_warns_on_a_python_below_the_floor(tmp_path, monkeyp
     assert "WARNING: building on Python" in capsys.readouterr().out
 
 
+def _explorer_opened(tmp_path, monkeypatch, ci):
+    """A whole build(), its freeze and checks stubbed, with CI set or not -> the folders it opened in Explorer."""
+    (tmp_path / "app").mkdir()
+    with open(os.path.join(PROJECT, "app", "build_info.py"), "rb") as f:
+        (tmp_path / "app" / "build_info.py").write_bytes(f.read())
+    monkeypatch.chdir(tmp_path)
+    if ci is None:
+        monkeypatch.delenv("CI", raising=False)
+    else:
+        monkeypatch.setenv("CI", ci)
+    monkeypatch.setattr(package_app, "get_version", lambda: "3.0.0")
+    monkeypatch.setattr(package_app, "_python_version", lambda: (3, 11, 9))
+    monkeypatch.setattr(package_app, "tsubasa_installed", package_app.tsubasa_pin)
+
+    def freeze(cmd, **k):               # PyInstaller's output: the four programs in dist\Surasura
+        (tmp_path / "dist" / "Surasura" / "_internal").mkdir(parents=True, exist_ok=True)
+        for name in package_app.PROGRAM_EXES:
+            (tmp_path / "dist" / "Surasura" / name).write_bytes(b"MZ")
+        return subprocess.CompletedProcess(cmd, 0)
+    monkeypatch.setattr(package_app.subprocess, "run", freeze)
+    monkeypatch.setattr(package_app, "swap_sqlite", lambda *a: None)
+    monkeypatch.setattr(package_app, "_build_updater_exe", lambda *a: True)
+    monkeypatch.setattr(package_app, "check_program", lambda *a: ([], {}))
+    monkeypatch.setattr(package_app, "check_tsubasa", lambda *a: ([], None))
+    opened = []
+    monkeypatch.setattr(package_app.os, "startfile", lambda path: opened.append(path), raising=False)
+    assert package_app.build(skip_tests=True, data_name="Surasura-test") is True
+    return opened
+
+
+def test_a_build_by_hand_opens_dist_in_explorer(tmp_path, monkeypatch):
+    assert _explorer_opened(tmp_path, monkeypatch, None) == [str(tmp_path / "dist")]
+
+
+def test_a_build_on_a_ci_runner_opens_nothing(tmp_path, monkeypatch):
+    # The package proof's "Keep it aside" moved dist moments after the build and was refused now and then: the
+    # Explorer window the build opened on dist held it (no process path under dist; still held after 60 s).
+    assert _explorer_opened(tmp_path, monkeypatch, "true") == []
+
+
 def test_the_real_name_in_another_case_is_no_test_release(tmp_path, monkeypatch, capsys):
     # `--release --data-name surasura` on Python 3.11.2 skipped the floor as a "test build"; it is the real
     # install's name on Windows, so the build stops before freezing.

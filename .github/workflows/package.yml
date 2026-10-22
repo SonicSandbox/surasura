@@ -76,8 +76,13 @@ jobs:
           python package_app.py --skip-tests --installer --data-name "$DATA_NAME"
       - name: Smoke-test its command line
         run: python scripts/cli_smoke.py dist/Surasura
+      # Refused, it names the open Explorer windows (the build opened one on dist before it skipped that under CI).
       - name: Keep it aside
-        run: mv dist "$WORK/old"
+        run: |
+          mv dist "$WORK/old" || {
+            powershell -NoProfile -Command '(New-Object -ComObject Shell.Application).Windows() | ForEach-Object { "Explorer window: " + $_.LocationURL }'
+            exit 1
+          }
       - name: Build the update, signed with a throwaway key made on this runner
         run: |
           python packaging/install_proof.py key "$WORK/test-key.hex"

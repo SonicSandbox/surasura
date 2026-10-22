@@ -959,11 +959,14 @@ def build(zip_output=False, skip_tests=False, release=False, full_update=False, 
         print(f"Zip Archive: {os.path.abspath(archive_base + '.zip')}")
     print("---------------------------------------------------")
 
-    # Open the dist folder in File Explorer
-    try:
-        os.startfile(os.path.abspath("dist"))
-    except Exception:
-        pass
+    # Open the dist folder in File Explorer — never on a CI runner (CI set, as GitHub's runners do): there nobody looks,
+    # and the open window holds dist, so the package proof's next step couldn't move it (Permission denied, 2026-10-15
+    # to 10-22, with no process of ours holding it).
+    if not os.environ.get("CI"):
+        try:
+            os.startfile(os.path.abspath("dist"))
+        except Exception:
+            pass
     return True
 
 if __name__ == "__main__":

@@ -22,6 +22,7 @@ A3 `split`, 06 E4, E22).
   in its section and place: he asked for one show, never for files to change section) — the store's refusal (two
   AniList ids, TMDB ids or YouTube channels: `TITLES_APART`) said in the bar as the store words it, its toast only
   once the store saved it;
+- *Same show as…* and any list longer than `MENU_PAGE` go on under *More…*, page by page;
 - a separator, then *Remove…*: the one modal kind (`confirm.ask`, Esc / Back / a click outside are No) naming its
   files; `Writer.remove` (the trash, 30 days) with Undo.
 **⋯ on a group (LM11b G3, IK-5):** the moves, *Study its cards first*, *Split here…*, *Rename…* (a card with the name
@@ -29,6 +30,10 @@ shown in a field: `Writer.rename_piece`, empty = named after its shows again, th
 (`Writer.ungroup`: each show back in a row of its own, in place), a separator, *Remove…* — never *What is it?*, *Join
 with…*, *Same show as…*, *Change cover…*, *Never read this folder* or *Open its folder* (each is one show's). Its writes
 toast once the store saved them, with Undo.
+**An episode's own ⋯ (row 28):** an opened row's episode line under the hand or the keyboard shows its own ⋯
+(`rows.RowsView.episode_menu_requested`): *Mark watched* / *Mark not watched* (the page's one Done path), *Play* (▶'s
+path, when it can play), *Split here…* after it (when that split is allowed), then each `episode_hooks` entry —
+callables `(row, ep) -> [Entry]`, asked as the menu opens; an entry's `payload`, a callable, runs when it is picked.
 **Group… (LM11b G4):** Ctrl+click picks Current's rows and an opened row's episodes (its stones), Shift+click the rows
 from the last one Ctrl picked instead (Ctrl+Shift+click adds them), Ctrl+Space the keyboard's row
 (`rows.RowsView.pick_row`); with things picked from 2+ shows (IK-4: one show's alone would be no group), ⋯ on a picked
@@ -168,6 +173,8 @@ class ItemActions(QObject):
         self.lst = self.page.list
         self.page.on_menu = self.menu
         self.lst.split_requested.connect(self.split)
+        self.lst.episode_menu_requested.connect(self.episode_menu)       # --- row 28
+        self.episode_hooks = []                      # row 28: (row, ep) -> [Entry], asked as an episode's ⋯ opens
         win.moves.joins = self
         self.cover_entries = None                    # Q6: (row) -> [(label, tip, enabled, callback)] (*Change cover…*)
         try:
@@ -450,6 +457,59 @@ class ItemActions(QObject):
             self.ungroup(row)
         elif name == "same-show" and payload is not None:
             self.ask_same_show(row, payload)
+
+    # --- row 28: an episode's own ⋯ ---------------------------------------------------------------------------- #
+    def episode_entries(self, row, ep):
+        """An opened row's episode `ep`'s ⋯: [Entry] — *Mark watched* ↔ *Mark not watched*, *Play* (when it can play),
+        *Split here…* after it (when that split is allowed), then each hook's entries (a hook that fails is left out)."""
+        reason = self._refused_tip()
+        name = ep_name(row, ep)
+
+        def entry(key, writes=True, **kw):
+            words, tip = strings.ITEM_EP_MENU[key]
+            ok = reason is None or not writes
+            return Entry(key, words, tip.format(ep=name) if ok else reason, ok, **kw)
+        out = [entry("ep-unwatched" if ep.watched else "ep-watched")]
+        if ep.can_play:
+            out.append(entry("ep-play", writes=False))
+        k = next((i for i, e in enumerate(row.episodes) if e.id == ep.id), None)
+        if joinable(row) and k is not None and k + 1 < len(row.episodes) and \
+                view_rows.split_piece(row, k + 1) is not None:
+            words, tip = strings.ITEM_SPLIT_HERE.format(ep=name), \
+                strings.ITEM_SPLIT_AFTER_TIP.format(ep=name, rest=rows._rest_of(row, k + 1))
+            out.append(Entry("split", words, tip if reason is None else reason, reason is None,
+                             payload=row.episodes[k + 1]))
+        for hook in list(self.episode_hooks):
+            try:
+                out += list(hook(row, ep) or ())
+            except Exception as e:                   # an optional module's entry never takes the menu down
+                print(f"Episode menu: an entry couldn't be made ({e})")
+        return out
+
+    def episode_menu(self, row, ep, at):
+        """The episode's ⋯: its entries in the list's one menu (C4), every entry's tip shown."""
+        m = drag.list_menu(self.lst, row.title)
+        m.setAccessibleName(strings.ITEM_EP_MENU_NAME.format(ep=ep_name(row, ep)))
+        for e in self.episode_entries(row, ep):
+            act = QAction(e.label, m)
+            act.setToolTip(e.tip)
+            act.setEnabled(e.ok)
+            act.triggered.connect(lambda _c=False, n=e.name, pl=e.payload: self.episode_pick(row, ep, n, pl))
+            m.addAction(act)
+        self.last_menu = m
+        m.popup(at)
+        return m
+
+    def episode_pick(self, row, ep, name, payload=None):
+        if name in ("ep-watched", "ep-unwatched"):
+            self.page.done(row, ep)                  # the one path for a Done (S12): watched ↔ not watched
+        elif name == "ep-play":
+            self.lst.play_requested.emit(ep)         # ▶'s own path
+        elif name == "split" and payload is not None:
+            self.split(row, payload)
+        elif callable(payload):                      # a hook's entry
+            payload()
+    # --- end row 28
 
     def _place(self, row):
         view = self._view()

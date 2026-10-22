@@ -1029,6 +1029,128 @@ def test_a_short_submenu_has_no_more(world):
     m.close()
 
 
+# --- row 28: an episode's own ⋯ -------------------------------------------------------------------------------------
+def _long_row_scrolled(win):
+    """The row with the most episodes (never Up Next), opened and scrolled so its head is off the top of the list:
+    (its place, the row, [(QRect, Episode)] — its episode lines fully on screen)."""
+    win.resize(1280, 640)                                              # a short window: the list has room to scroll
+    settle()
+    lst, rs = lst_of(win), rows_of(win)
+    i = max(range(1, len(rs)), key=lambda k: len(rs[k].episodes))
+    assert len(rs[i].episodes) >= 4, "the seed holds a row with several episodes"
+    open_row(win, i)
+    idx = lst.model().index(i, 0)
+    bar = lst.verticalScrollBar()
+    head = lst.delegate.slab_of(lst.visualRect(idx))
+    bar.setValue(bar.value() + head.bottom() + 1 + 4)                  # the head just past the top
+    settle()
+    vp = lst.viewport().rect()
+    assert lst.delegate.slab_of(lst.visualRect(idx)).bottom() < 0, "its head is off-screen"
+    on = [(r, ep) for r, ep in lst.delegate.episode_lines(lst.model().entries[i], lst.visualRect(idx))
+          if vp.contains(r)]
+    assert len(on) >= 2
+    return i, rs[i], on
+
+
+def _ep_more(lst, i):
+    return [pt for pt in part(lst, i) if pt[0] == "more-ep"]
+
+
+def part(lst, i):
+    entry = lst.model().entries[i]
+    return lst.delegate.parts(entry, lst.visualRect(lst.model().index(i, 0)))
+
+
+@pytest.mark.parametrize("size", ["S", "L"])
+def test_row28_a_hovered_episode_shows_its_own_more_inside_the_list_and_opens_its_menu(world, qapp, size):
+    """Row 28 (Sonic: "I cannot see the options … when i hover over each episode"): the ⋯ lived on the head alone,
+    scrolled away under Current's heading while he was on Ep 13. An episode under the hand shows its own ⋯ in its line
+    (text at 100 % and 130 %; logical pixels, so Windows' scaling moves nothing); its menu holds *Mark watched*, *Play*,
+    *Split here…* and a hook's entry, whose callback runs."""
+    theme_name, old_size, language = style.current()
+    style.apply(qapp, theme_name, size, language)
+    try:
+        _seed, win, writer = world()
+        ran = []
+        win.items.episode_hooks.append(lambda row, ep: [item_menu.Entry(
+            "mine-one", "Mine this one now", "Mine its cards now", True, payload=lambda: ran.append(ep.id))])
+        lst = lst_of(win)
+        i, row, on = _long_row_scrolled(win)
+        assert _ep_more(lst, i) == [], "nothing hovered: no episode's ⋯"
+        r, ep = on[1]
+        hover(lst, r.center())
+        more = _ep_more(lst, i)
+        assert [(pt[3].id, pt[2]) for pt in more] == [(ep.id, strings.ROWS_EP_MORE_TIP)]
+        assert lst.viewport().rect().contains(more[0][1]) and r.contains(more[0][1])
+        assert lst.hot_eps(row.key) == {ep.id}
+        # the row's own ⋯ (on its head) is unchanged
+        assert [pt[3] for pt in part(lst, i) if pt[0] == "more"] == [None]
+        press(lst, more[0][1].center())
+        release(lst, more[0][1].center())
+        settle()
+        m = win.items.last_menu
+        want = win.items.episode_entries(row, ep)
+        assert [a.text() for a in m.actions()] == [e.label for e in want]
+        assert [e.name for e in want][:1] == ["ep-unwatched" if ep.watched else "ep-watched"]
+        assert "split" in [e.name for e in want] and want[-1].name == "mine-one"
+        assert ("ep-play" in [e.name for e in want]) == ep.can_play
+        for a in m.actions():
+            assert a.toolTip().strip() and _connected(a), a.text()
+        m.actions()[-1].trigger()
+        assert ran == [ep.id], "the hook's callback ran"
+        win.items.episode_pick(row, ep, want[0].name)
+        assert [c[1] for c in calls(writer, "set_watched")] == [[ep.id]], "the stone's own path"
+        m.close()
+        # the hand gone: no ⋯
+        move(lst, QPoint(-5, -5), buttons=Qt.MouseButton.NoButton)
+        lst.leaveEvent(QEvent(QEvent.Type.Leave))
+        assert _ep_more(lst, i) == []
+    finally:
+        style.apply(qapp, theme_name, old_size, language)
+
+
+def test_row28_the_keyboard_steps_into_an_opened_rows_episodes_and_opens_one_episodes_menu(world):
+    """↓ on an opened row steps into its episodes (that one shows its ⋯, as on hover), ↑ back out to its head; Enter,
+    or the menu key, opens that episode's menu."""
+    _seed, win, _w = world()
+    lst = lst_of(win)
+    i, row, _on = _long_row_scrolled(win)
+    lst.setFocus()
+    lst.setCurrentIndex(lst.model().index(i, 0))
+    QTest.keyClick(lst, Qt.Key.Key_Down)
+    QTest.keyClick(lst, Qt.Key.Key_Down)
+    settle()
+    assert lst.currentIndex().row() == i and lst.ep_key == (row.key, row.episodes[1].id)
+    assert [pt[3].id for pt in _ep_more(lst, i)] == [row.episodes[1].id]
+    QTest.keyClick(lst, Qt.Key.Key_Return)
+    settle()
+    assert win.items.last_menu.isVisible()
+    assert win.items.last_menu.accessibleName() == strings.ITEM_EP_MENU_NAME.format(ep=row.episodes[1].label)
+    win.items.last_menu.close()
+    QTest.keyClick(lst, Qt.Key.Key_Up)
+    QTest.keyClick(lst, Qt.Key.Key_Up)
+    assert lst.ep_key is None and lst.currentIndex().row() == i, "back on its head"
+    assert _ep_more(lst, i) == []
+
+
+def test_row28_an_episode_menu_offers_no_split_after_the_last_and_greys_its_writes_when_read_only(world):
+    _seed, win, _w = world(writable=False)
+    i, row, _on = _long_row_scrolled(win)
+    entries = win.items.episode_entries(row, row.episodes[-1])
+    assert "split" not in [e.name for e in entries]
+    watched = entries[0]
+    assert not watched.ok and watched.tip == win.items._refused_tip()
+    play = [e for e in entries if e.name == "ep-play"]
+    assert all(e.ok for e in play), "Play writes nothing"
+
+
+def test_row28_a_failing_hook_leaves_the_rest_of_the_menu(world):
+    _seed, win, _w = world()
+    i, row, _on = _long_row_scrolled(win)
+    win.items.episode_hooks.append(lambda row, ep: 1 / 0)
+    assert win.items.episode_entries(row, row.episodes[0])[0].name in ("ep-watched", "ep-unwatched")
+
+
 def test_open_its_folder_opens_it_or_says_its_gone(world, monkeypatch):
     seed, win, _w = world()
     opened, said = [], []

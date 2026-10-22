@@ -1240,14 +1240,15 @@ class _Look:
         listed holds (a switch held before, a version recorded before LM3; checked first from the origins read,
         `_maybe_better`) — switched to its better version IN PLACE when the look's own order ranks that above the
         item's text, as the look would have picked it had both been there at once (`Store.switch_versions`: the one
-        rule `group_copies` / `better`, its own group's only, A6's thin rule; LM2's one swap path). A busy store: the
-        next look."""
+        rule `group_copies` / `better`, its own group's only, A6's thin rule; LM2's one swap path). A busy store, or a
+        switch that fails: the next look (never the end of this one)."""
         todo = sorted(self.better | {i for i in self.listed - self.better if self._maybe_better(i)})
         if not todo or self.stopped():
             return
         try:
             change = self.store.switch_versions(todo)
-        except ls.StoreError:
+        except (ls.StoreError, OSError, sqlite3.Error) as e:   # busy, a file or the database failing: the next look
+            log.warning("A better version's switch failed (the next look tries again): %r", e)
             return
         self.out["switched"] += len(change.switched)
 
@@ -2199,7 +2200,9 @@ class _Look:
                  for i, ((_n, o), d) in enumerate(zip(old, data), 1)]
         try:
             change = self.store.switch_parts(self.root_id, parts)
-        except ls.StoreError:                                # busy: the next look
+        except (ls.StoreError, OSError, sqlite3.Error) as e:  # busy, a file or the database failing: the book waits
+            if not isinstance(e, ls.StoreError):             # for the next look, the look goes on
+                log.warning("A book's new edition couldn't switch (the next look tries again): %r", e)
             self._wait(folder)
             return
         if not change.switched:                              # waits whole

@@ -35,6 +35,7 @@ from tests.test_sources_scan import (_OURS, _SHOWS, _drive, _empty, _fresh_modul
 
 _BOOKS = {"ja": "星の歌", "zh": "灯下书简"}                       # made-up book titles
 _EDITION = {"ja": "星の歌 (第2版)", "zh": "灯下书简（修订版）"}      # the same book, its new edition
+_OTHER = {"ja": "月の庭", "zh": "江边小记"}                        # another made-up book
 
 
 def _sha(path):
@@ -100,6 +101,11 @@ def test_a_folder_subtitle_of_an_episode_hato_holds_is_that_items_version(langua
         record = _record(store, later)
         assert record is not None and record["version"] is True and "video_path" not in record
         assert store.origins()[ls.path_key(os.path.abspath(later))].item_id == hato
+        v2 = _write(os.path.join(src, show, f"{show} - 05v2.{t}.srt"), _text(language, 5, " v2"))
+        result = _look(store, language, root)
+        assert (result["added"], len(_items(store))) == (0, 2)
+        assert _record(store, v2)["version"] is True, "hato's text is never followed by a v2: the v2 is a version"
+        assert _copy(data_dir, store.item(hato)["rel_path"]) == _text(language, 5, " hato").encode("utf-8")
         again = _look(store, language, root, full=True)
         assert (again["added"], len(_items(store))) == (0, 2)
 
@@ -298,6 +304,36 @@ def test_a_better_version_the_switch_couldnt_take_is_taken_at_a_later_look(langu
         later = _look(store, language, root, full=True)
         assert later["switched"] == 1 and _copy(data_dir, before[0][1]) == open(synced, "rb").read()
         assert _items(store) == before
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_better_versions_switch_that_fails_never_ends_the_look(language, monkeypatch):
+    """A switch that raises (the database or a file failing mid-switch) is logged and left for the next look: the look
+    finishes, the episode that arrived with the re-timed copy is taken in, the copy stays a version — and the next look
+    switches it."""
+    import sqlite3
+    store, data_dir = _empty(language)
+    src = _drive("Anime")
+    show, v, s = _synced_show(language, src)
+    t = _OURS[language]
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        before = _items(store)
+        synced = _write(os.path.join(src, show, "synced", f"{show} - 01.{t}.srt"), _text(language, 1, " synced"))
+        _video(os.path.join(src, show, f"{show} - 03.mkv"), body=b"video 3")
+        _write(os.path.join(src, show, f"{show} - 03.{t}.srt"), _text(language, 3))
+
+        def fails(*_a, **_k):
+            raise sqlite3.OperationalError("disk I/O error")
+        with monkeypatch.context() as patched:
+            patched.setattr(store, "switch_versions", fails)
+            result = _look(store, language, root)
+        assert (result["added"], result["switched"], result["stopped"]) == (1, 0, False)
+        assert _copy(data_dir, before[0][1]) == open(s[1], "rb").read()
+        assert _record(store, synced)["version"] is True
+        later = _look(store, language, root, full=True)
+        assert later["switched"] == 1 and _copy(data_dir, before[0][1]) == open(synced, "rb").read()
 
 
 # --- 2 (b): Use [B]'s subtitles, the store half (A27) --------------------------------------------------------------- #
@@ -522,6 +558,34 @@ def test_a_new_edition_one_of_whose_parts_cant_switch_waits_whole(language, monk
         assert later["switched"] == len(before) and [_copy(data_dir, rel) for _i, rel in before] == \
             _parts(new, language)
         assert book
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_new_editions_switch_that_fails_never_ends_the_look(language, monkeypatch):
+    """`switch_parts` raising (a file the system refuses, the database failing): the book keeps its old edition and
+    waits, the look goes on and takes in the other new book on the shelf; the next look switches the edition."""
+    store, data_dir = _empty(language)
+    src = _drive("Shelf")
+    _book(language, src)
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        before = _items(store)
+        old = [_copy(data_dir, rel) for _i, rel in before]
+        new = _epub(os.path.join(src, "Books", f"{_EDITION[language]}.epub"), _chapters(language, "改"), language)
+        _epub(os.path.join(src, "Novels", f"{_OTHER[language]}.epub"), _chapters(language, "別"), language)
+
+        def fails(*_a, **_k):
+            raise PermissionError(13, "The process cannot access the file")
+        with monkeypatch.context() as patched:
+            patched.setattr(store, "switch_parts", fails)
+            result = _look(store, language, root)
+        assert (result["switched"], result["stopped"]) == (0, False) and result["added"] >= 2, "the other book is in"
+        assert _items(store)[:len(before)] == before and [_copy(data_dir, rel) for _i, rel in before] == old
+        assert _record(store, f"{new}#1") is None
+        later = _look(store, language, root)
+        assert later["switched"] == len(before)
+        assert [_copy(data_dir, rel) for _i, rel in before] == _parts(new, language)
 
 
 @pytest.mark.parametrize("language", LANGUAGES)

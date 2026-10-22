@@ -893,7 +893,8 @@ class RowDelegate(QStyledItemDelegate):
         open or a Needs-you item, how many episodes it lists. Closed rows with as many lines under them are as tall."""
         kind, payload, lines = entry
         n = len(payload.episodes) if (is_open and kind in (HERO, ROW)) or kind == NEED else 0
-        return kind, len(lines), is_open and kind in (HERO, ROW), n
+        shows = len(show_starts(payload)) if is_open and kind in (HERO, ROW) else 0     # LM11b: its show lines
+        return kind, len(lines), is_open and kind in (HERO, ROW), n, shows
 
     def _size_hint(self, entry, is_open):
         kind, payload, lines = entry
@@ -922,8 +923,11 @@ class RowDelegate(QStyledItemDelegate):
         return QSize(100, round(theme.SIZES["row"] * f))
 
     def _episodes_h(self, row):
-        """An open row's episode list: 4 px, then one `episode-row` per episode (as `_episode_rows` lays them)."""
-        return 4 + len(row.episodes) * round(theme.SIZES["episode-row"] * fz())
+        """An open row's episode list: 4 px, then one `episode-row` per episode and, in a group, one `show-line` above
+        each show's episodes (as `_episode_rows` lays them)."""
+        f = fz()
+        return 4 + len(row.episodes) * round(theme.SIZES["episode-row"] * f) + \
+            len(show_starts(row)) * round(rl("show-line") * f)
 
     def _hero_text_h(self):
         """Up Next's text column: the eyebrow, the title, the source, the numbers and the string, 5 px apart."""
@@ -1313,10 +1317,28 @@ class RowDelegate(QStyledItemDelegate):
         h = round(theme.SIZES["episode-row"] * f)
         y = area.top() + 4
         out = []
-        for ep in row.episodes:
+        starts = show_starts(row)                    # LM11b: a group's show lines take their room (`_show_lines`)
+        sh = round(rl("show-line") * f)
+        for k, ep in enumerate(row.episodes):
+            if k in starts:
+                y += sh
             out.append((QRect(left, y, right - left + 1, h), ep))     # its right is the row's (haiku-code G1: 1 px)
             y += h
         return out
+
+    def _show_lines(self, row, eps):
+        """LM11b: an opened group's show lines over `eps` (`_episode_rows`' lines): [(QRect, show)], each in the room
+        left right above its show's first episode — so `_episode_rows` lists episodes only, as its callers expect."""
+        starts = show_starts(row)
+        if not starts:
+            return []
+        sh = round(rl("show-line") * fz())
+        return [(QRect(r.left(), r.top() - sh, r.width(), sh), starts[k]) for k, (r, _ep) in enumerate(eps)
+                if k in starts]
+
+    def show_lines(self, entry, rect):
+        """An opened group's (or Up Next's) show lines where `rect` lays them: [(QRect, show)] (LM11b)."""
+        return self._show_lines(entry[1], self.episode_lines(entry, rect))
 
     def _episode_parts(self, row, area, hero=False):
         out = []
@@ -1353,7 +1375,8 @@ class RowDelegate(QStyledItemDelegate):
             r, ep = eps[k]
             cols = self._episode_cols(r)
             left = r.left() + EP_LABEL_IN
-            out.append(("seam", QRect(left, r.top() - half, max(1, cols["play"].left() - 8 - left), 2 * half),
+            y = eps[k - 1][0].bottom() + 1           # LM11b: under the run before, above a show line where one stands
+            out.append(("seam", QRect(left, y - half, max(1, cols["play"].left() - 8 - left), 2 * half),
                         strings.SEAM_TIP.format(rest=_rest_of(row, k)), ep))
         return out
 
@@ -1867,6 +1890,8 @@ class RowDelegate(QStyledItemDelegate):
                 keys.add(k)
             if kind in (HERO, ROW):                  # a Needs-you card's episodes are lines, not episodes
                 eps.update(e.id for e in payload.episodes)
+                if getattr(payload, "group", False):     # LM11b: a group's show lines, kept as its episodes are
+                    eps.update(("show", e.show) for e in payload.episodes)
         for name in ("row", "ep"):
             cache = self._sprites[name]
             for key in list(cache):
@@ -2136,16 +2161,21 @@ class RowDelegate(QStyledItemDelegate):
         if not pictures:
             return
         rows_ = [(r, ep) for r, ep, *_rest in pictures]
-        stone_x = rows_[0][0].left() + 22             # the episodes' stones on a hairline, the string stood upright
-        p.fillRect(QRectF(stone_x - 0.5, rows_[0][0].top() + 8, 1, rows_[-1][0].bottom() - rows_[0][0].top() - 16),
-                   c("string"))
+        stone_x = rows_[0][0].left() + 22             # the episodes' stones on a hairline, the string stood upright —
+        cuts = sorted(show_starts(row)) or [0]        # LM11b: in a group, one per show, never through its show line
+        for a, b in zip(cuts, cuts[1:] + [len(rows_)]):
+            p.fillRect(QRectF(stone_x - 0.5, rows_[a][0].top() + 8, 1, rows_[b - 1][0].bottom() - rows_[a][0].top() -
+                              16), c("string"))
         clip = QRectF(self.view.viewport().rect()) if p.device() is self.view.viewport() else None
         split = next((ln.split for ln in (lines or ()) if ln.kind == "top" and ln.split), None)
         split_at = None
         hot = self.view.hot_eps(row.key) if clip is not None else ()     # row 28: as a row's line, its hover look
+        shows = self._show_lines(row, rows_)          # LM11b: a group's show lines
+        above = {r.bottom() + 1: r.top() for r, _show in shows}
         for i, (r, ep, draw, ident, extra) in enumerate(pictures):
-            if split is not None and i == split:       # the top-20 line runs through this row (A-12): drawn here too
-                split_at = QRect(r.left() - 8, r.top() - 2, r.width() + 8, 4)
+            if split is not None and i == split:       # the top-20 line runs through this row (A-12): drawn here too,
+                top = above.get(r.top(), r.top())      # above its show's line where one stands (LM11b)
+                split_at = QRect(r.left() - 8, top - 2, r.width() + 8, 4)
             if clip is not None and not clip.intersects(QRectF(r)):
                 continue
             if clip is not None:                       # on screen: painted once into a pixmap, reused while unchanged
@@ -2164,8 +2194,31 @@ class RowDelegate(QStyledItemDelegate):
                 p.translate(r.topLeft())
                 draw(p)
                 p.restore()
+        for r, show in shows:                         # --- LM11b: each a picture of its own, as an episode's line
+            if clip is not None and not clip.intersects(QRectF(r)):
+                continue
+            w, h = r.width(), r.height()
+            draw = lambda q, w=w, h=h, show=show: self._paint_show_line(q, QRect(0, 0, w, h), show, dpr)
+            if clip is not None:
+                pix = self._sprite("ep", ShowLine(show), r.size(), dpr, False, draw, ident=(("show", show), hero),
+                                   ground="surface" if hero else "open-row", to=(p, r.topLeft()))
+                if pix is not None:
+                    p.drawPixmap(r.topLeft(), pix)
+            else:
+                p.save()
+                p.translate(r.topLeft())
+                draw(p)
+                p.restore()
         if split_at is not None:
             self._paint_line(p, lines_top(lines), split_at, dpr)
+
+    def _paint_show_line(self, p, r, show, dpr):
+        """LM11b: a group's show line — the show's name in the row's dim sub-line style, from the stones' column to
+        where the episodes' ▶ stands, its foot a little nearer its episodes than the run above."""
+        cols = self._episode_cols(r)
+        left = cols["tick"].left()
+        TEXT.draw(p, left, r.center().y() + round(2 * fz()), show, "row-sub", cols["text_right"] - left,
+                  c("ink-dim"), weight=600, dpr=dpr)
 
     def _paint_episode(self, p, r, ep, dpr, audio=False, stone=None, sheet=None):
         """One episode line (an open row's): its stone (the tick until the stones' sheet is there), its label, its
@@ -2411,6 +2464,27 @@ def _rest_of(row, k):                                # --- W3.2 Q8: the files fr
         return strings.ITEM_RANGE.format(a=nums[0], b=nums[-1]) if len(nums) > 1 else \
             strings.ITEM_RANGE_ONE.format(a=nums[0])
     return eps[0].label if len(eps) == 1 else f"{eps[0].label} – {eps[-1].label}"
+
+
+# --- LM11b: an opened group's show lines — each show's episodes under its name: where one show ends reads at once
+ShowLine = namedtuple("ShowLine", "show")           # a show line's picture payload (`_same_face`: its name alone)
+
+
+def show_starts(row):
+    """{k: show}: the episodes of an opened group a show line stands above, with the show's name — its first, and each
+    where the show changes (`Episode.work_id`, `show`). Empty for a run, a group of one show (never `row.group`) and a
+    group from a cache from before (no `show`): those look as before."""
+    if not getattr(row, "group", False):
+        return {}
+    out, last = {}, None
+    for k, ep in enumerate(row.episodes):
+        if not ep.show:
+            return {}
+        here = (ep.work_id, ep.show)
+        if here != last:
+            out[k], last = ep.show, here
+    return out if len(out) > 1 else {}
+# --- end LM11b show lines
 
 
 def _same_payload(a, b):

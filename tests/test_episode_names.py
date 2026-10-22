@@ -779,3 +779,78 @@ def test_a_half_episodes_number_reaches_the_windows_menu_and_folder_match_as_its
                           "HighPriority/Hoshizora Kissa/[Old] Hoshizora Kissa - 12.5.ja.srt", ())
     (_line, path), = needs_ui.match_folder(str(tmp_path), [line])
     assert os.path.basename(path) == "Hoshizora Kissa - 12.5.ja.srt"
+
+
+# --- LM1b: the numbers and the key (LM1a's deferred A3, A7; A32) --------------------------------------------------- #
+
+@pytest.mark.parametrize("name,episode,show", [
+    ("Hoshizora Kissa - 2019 - 05.srt", 5, "Hoshizora Kissa"),       # A7: a year before the number is no episode
+    ("[Grp] Hoshizora Kissa - 2023 - 12 (1080p).ass", 12, "Hoshizora Kissa"),
+    ("Hoshizora Kissa - 2019.srt", 2019, "Hoshizora Kissa"),          # alone, it stays a long show's number
+    ("Umi Pirates - 1071.srt", 1071, "Umi Pirates"),
+])
+def test_a_year_before_the_episode_number_is_never_the_episode(name, episode, show):
+    n = en.identity(name)
+    assert (n.episode, n.show) == (episode, show)
+
+
+def test_a_year_in_the_name_keeps_two_remakes_apart_and_a_title_of_digits_is_keyed_by_them():
+    """A3: `Show (2009) - 05` and `Show (2023) - 05` are two episodes, `Show - 2019 - 05` is the 2019 one's; a title of
+    digits alone (`86 - 05`) is keyed by its digits, never '' (two such shows in one folder never collide); the
+    window's show is unchanged (the year a tag, as before)."""
+    k = lambda name: en.identity(name).key                                                    # noqa: E731
+    assert k("Hoshizora Kissa (2009) - 05.srt") != k("Hoshizora Kissa (2023) - 05.srt")
+    assert k("Hoshizora Kissa (2019) - 05.srt") == k("Hoshizora Kissa - 2019 - 05.srt")
+    assert k("[Grp] Hoshizora Kissa (2023) - 05 (1080p).ja.srt") == k("Hoshizora Kissa (2023) - 05.ass")
+    assert k("[2023] Hoshizora Kissa - 05.srt") == k("Hoshizora Kissa - 05.srt")             # a group named so
+    assert en.identity("Hoshizora Kissa (2009) - 05.srt").show == "Hoshizora Kissa"
+    assert k("86 - 05.srt")[0] == "86" and k("86 - 05.srt") != k("22／7 - 05.srt")
+    assert en.identity("86 - 05.srt").show is None and k("- 05.srt")[0] == ""
+
+
+@pytest.mark.parametrize("name", ["NCOP1.mkv", "[Grp] Hoshizora Kissa - NCED2 (1080p).mkv", "Hoshizora Kissa PV 01.mkv",
+                                  "Hoshizora Kissa CM1.mkv", "[Grp] Hoshizora Kissa [Menu].mkv"])
+def test_a_creditless_opening_a_promotion_an_advert_or_a_menu_never_waits(name):
+    """A32: their marks are `NEVER_WAIT`'s (the look makes no waiting item of such a video)."""
+    assert en.identity(name).special in en.NEVER_WAIT
+
+
+def test_an_episode_or_a_special_to_read_is_no_never_wait_mark():
+    for name in ("Hoshizora Kissa - 05.mkv", "Hoshizora Kissa OVA 01.mkv", "Hoshizora Kissa - 01 (OVA).mkv",
+                 "Hoshizora Kissa Movie.mkv", "Spice Market - 03.mkv"):
+        assert en.identity(name).special not in en.NEVER_WAIT
+
+
+def test_an_extras_video_is_known_by_its_mark_anywhere_and_a_dub_by_its_audio_mark():
+    """An extra's mark after the number (`- 01 - NCOP`), a creditless / trailer word, a preview;
+    `Multi-Subs` says nothing of the audio."""
+    for name in ("Hoshizora Kissa - 01 - NCOP.mkv", "[Grp] Hoshizora Kissa - Creditless ED 2.mkv",
+                 "Hoshizora Kissa - 01 (Preview).mkv", "Hoshizora Kissa Trailer.mkv", "星空喫茶 ノンクレジットOP.mkv"):
+        assert en.extra(name), name
+    for name in ("Hoshizora Kissa - 01.mkv", "Ed and the Lantern - 01.mkv", "Hoshizora Kissa - 05 Opening Night.mkv"):
+        assert not en.extra(name), name
+    assert en.dubbed("[A] Hoshizora Kissa - 05 [Dual Audio].mkv") and en.dubbed("Hoshizora Kissa - 05 [Multi].mkv")
+    assert not en.dubbed("[Grp] Hoshizora Kissa - 05 [Multi-Subs].mkv")
+
+
+def test_a_cm_cut_recording_is_an_episode_and_an_advert_is_known_by_its_own_bracket():
+    """One rule with `identity`: a TV recording with its adverts cut (`(CMカット)`, `[CM Cut]`) is episode 5, never an
+    extra (it waits and joins by its number like any episode); a bracket holding just `(CM)` is the advert's mark."""
+    for name in ("星空喫茶 - 05 (CMカット).mkv", "Hoshizora Kissa - 05 [CM Cut].mkv"):
+        assert not en.extra(name) and en.identity(name).episode == 5, name
+    assert en.extra("Hoshizora Kissa (CM).mkv")
+
+
+def test_a_year_after_the_episode_number_is_no_year_of_the_show():
+    """A28: everything after the number is ignored — `Show - 05 [2019]` is no 2019 show's."""
+    assert en.identity("Hoshizora Kissa - 05 [2019].srt").year is None
+    assert en.identity("[SubsPlease] Hoshizora Kissa - 05 (1080p) [2019].srt").key == \
+        en.identity("Hoshizora Kissa - 05.srt").key
+    assert en.identity("Hoshizora Kissa (2019) - 05.srt").year == "2019"
+
+
+def test_a_japanese_special_word_after_the_number_marks_a_special():
+    """PROVISIONAL: 劇場版 総集編 特別編 番外編 wherever they stand; an English title word never."""
+    assert en.identity("Hoshizora Kissa - 05 特別編.srt").special == "特別編"
+    assert en.identity("Hoshizora Kissa - 05 特別編.srt").key != en.identity("Hoshizora Kissa - 05.srt").key
+    assert en.identity("Hoshizora Kissa - S01E05 - A Very Special Day.srt").special is False

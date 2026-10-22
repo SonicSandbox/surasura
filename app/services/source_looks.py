@@ -430,7 +430,8 @@ class SourceLooks:
                 paths = {r["id"]: r["path"] for r in store.sources(all=True)}
                 for item_id in ids:                   # its origin row (B1's key), never hato's record before it
                     row = store.conn.execute(f"SELECT p.pairing FROM pairings p WHERE p.item_id = ? AND "
-                                             f"{ls._ORIGIN_ROW} ORDER BY p.rowid LIMIT 1", (item_id,)).fetchone()
+                                             f"{ls._ORIGIN_ROW} AND NOT {ls._VERSION_ROW} ORDER BY p.rowid LIMIT 1",
+                                             (item_id,)).fetchone()     # never another version's (LM1b)
                     try:
                         record = json.loads(row[0]) if row else None
                     except ValueError:

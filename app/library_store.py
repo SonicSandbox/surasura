@@ -96,8 +96,13 @@ SOURCE_KEY = "src:"              # an origin row's `pairings.content_key`: "src:
 SOURCE_STATS = ("size", "mtime_ns", "sha256")      # what a re-copy rewrites in its row (never what Connect reads)
 # B1: a `pairings` row that is an origin's, and a source row read only when its item has no other (`p` = the row)
 _ORIGIN_ROW = "(p.content_key >= 'src:' AND p.content_key < 'src;')"
+# LM1b: an origin that is ANOTHER VERSION of its item's episode (a second group's subtitle, a lower release, one a
+# number joined): its record says `"version": true`. It keeps its file in (found, never new again; Remove keeps it out)
+# and is no reader's: never the item's text, video, number or pairing (A8, A26)
+_VERSION_ROW = (f"({_ORIGIN_ROW} AND (CASE WHEN json_valid(p.pairing) THEN json_type(p.pairing, '$.version') END) "
+                "IS 'true')")                    # (SQLite never short-circuits for a malformed record: the CASE does)
 _PREFERRED_ROW = (f"NOT ({_ORIGIN_ROW} AND EXISTS (SELECT 1 FROM pairings q WHERE q.item_id = p.item_id AND NOT "
-                  "(q.content_key >= 'src:' AND q.content_key < 'src;')))")
+                  f"(q.content_key >= 'src:' AND q.content_key < 'src;'))) AND NOT {_VERSION_ROW}")
 MINE_LINE_DEFAULT = 20           # a lean owned by Connect's spec and the window (settled at G2.2)
 SOON_LINE_NEW = 25               # a library 3.0 builds new: the Soon line after 25 rows of Current (Q2-4)
 SEARCH_FOLD_VERSION = 1          # meta.search_fold: the version of `search_fold` the stored keys were made with
@@ -3954,8 +3959,9 @@ class Store:
         with self._command("place", by) as cmd:
             record = None
             if where == "after-show":
-                row = self.conn.execute(f"SELECT pairing FROM pairings p WHERE item_id = ? ORDER BY {_ORIGIN_ROW}, "
-                                        "paired_at DESC LIMIT 1", (ids[0],)).fetchone()     # B1: hato's first
+                row = self.conn.execute(f"SELECT pairing FROM pairings p WHERE item_id = ? AND NOT {_VERSION_ROW} "
+                                        f"ORDER BY {_ORIGIN_ROW}, paired_at DESC LIMIT 1",
+                                        (ids[0],)).fetchone()     # B1: hato's first; LM1b: never a version
                 record = json.loads(row[0]) if row else None
                 spot = self._after_show(ids[0], record, excl=set(ids))
                 if spot is None:
@@ -7698,7 +7704,8 @@ PLACEHOLDER_ATTRS = 0x1000 | 0x40000 | 0x400000   # OFFLINE · RECALL_ON_OPEN ·
 _LINK_TAGS = (0xA000000C, 0xA0000003)              # IO_REPARSE_TAG_SYMLINK, IO_REPARSE_TAG_MOUNT_POINT (a junction)
 _DIGITS = re.compile(r"(\d+)")
 _EPUB_PART = re.compile(r"\.epub#\d+$", re.I)    # an EPUB's part's origin (`<book>.epub#3`)
-Origin = namedtuple("Origin", "item_id root origin size mtime_ns sha256 rel_path availability paired_at")
+Origin = namedtuple("Origin", "item_id root origin size mtime_ns sha256 rel_path availability paired_at version "
+                              "video_path video_size video_key", defaults=(None, None, None, None))
 
 
 def origin_key(path):
@@ -7888,7 +7895,7 @@ def _store_video_holder(self, key):
     return self.conn.execute(
         f"SELECT MIN(p.item_id) FROM pairings p JOIN items i ON i.id = p.item_id WHERE i.availability != 'waiting' AND "
         f"((p.content_key = ? AND NOT {_ORIGIN_ROW}) OR ({_ORIGIN_ROW} AND json_valid(p.pairing) AND "
-        f"json_extract(p.pairing, '$.video_key') = ?))", (key, key)).fetchone()[0]
+        f"json_extract(p.pairing, '$.video_key') = ? AND NOT {_VERSION_ROW}))", (key, key)).fetchone()[0]
 
 
 def _store_twin_now(self, seen, path, content_key, pairing):
@@ -8091,7 +8098,8 @@ def _store_sources(self, all=False, counts=True):
                                  "ORDER BY id", kinds).fetchall()
         if counts and rows:
             for key, item_id in self.conn.execute(f"SELECT substr(p.content_key, {len(SOURCE_KEY) + 1}), p.item_id "
-                                                  f"FROM pairings p WHERE {_ORIGIN_ROW} ORDER BY p.content_key"):
+                                                  f"FROM pairings p WHERE {_ORIGIN_ROW} AND NOT {_VERSION_ROW} "
+                                                  f"ORDER BY p.content_key"):
                 keys.append(key)
                 ids.append(item_id)
     out = []
@@ -8119,8 +8127,9 @@ def _store_stop_source(self, root_id):
 
 
 def _store_origins(self):
-    """{path_key(origin): Origin(item_id, root, origin, size, mtime_ns, sha256, rel_path, availability, paired_at)}
-    for every origin recorded, in any tier (a finished item is never taken in again): one read per look — the item's
+    """{path_key(origin): Origin(item_id, root, origin, size, mtime_ns, sha256, rel_path, availability, paired_at,
+    version, video_path, video_size, video_key)} for every origin recorded (`version`: another version of its item's
+    episode, LM1b — a look knows its file, no reader takes it), in any tier (a finished item is never taken in again): one read per look — the item's
     availability with it, so a look finds the copies gone (item 8a) with no stat of its own. The records' fields are read by SQLite
     (F13: decoding every record in Python held the interpreter 0.25 s at 20k, stretching a window's save meanwhile); a
     record that isn't a JSON object reads as one with no fields."""
@@ -8129,8 +8138,8 @@ def _store_origins(self):
     with self._reading():
         rows = self.conn.execute(
             f"SELECT substr(p.content_key, {len(SOURCE_KEY) + 1}), p.item_id, {field('root')}, {field('origin')}, "
-            f"{field('size')}, {field('mtime_ns')}, {field('sha256')}, i.rel_path, i.availability, p.paired_at "
-            f"FROM pairings p "
+            f"{field('size')}, {field('mtime_ns')}, {field('sha256')}, i.rel_path, i.availability, p.paired_at, "
+            f"{_VERSION_ROW}, {field('video_path')}, {field('video_size')}, {field('video_key')} FROM pairings p "
             f"JOIN items i ON i.id = p.item_id WHERE {_ORIGIN_ROW} ORDER BY p.content_key").fetchall()
     return {r[0]: Origin._make(r[1:]) for r in rows}         # in key order (a look finds a folder's by its prefix)
 
@@ -8171,7 +8180,8 @@ def _store_origin_videos(self):
     with self._reading():
         for vkey, item_id in self.conn.execute(
                 f"SELECT json_extract(p.pairing, '$.video_key'), p.item_id FROM pairings p JOIN items i ON "
-                f"i.id = p.item_id WHERE {_ORIGIN_ROW} AND i.availability != 'waiting' AND json_valid(p.pairing)"):
+                f"i.id = p.item_id WHERE {_ORIGIN_ROW} AND i.availability != 'waiting' AND json_valid(p.pairing) AND "
+                f"NOT {_VERSION_ROW}"):
             if isinstance(vkey, str) and vkey and (vkey not in found or item_id < found[vkey]):
                 found[vkey] = item_id
     return found
@@ -8203,7 +8213,7 @@ def _store_item_of_video_key(self, key, origins=None):
             for vkey, item_id in self.conn.execute(
                     f"SELECT CASE WHEN {_ORIGIN_ROW} THEN json_extract(p.pairing, '$.video_key') ELSE p.content_key "
                     f"END, p.item_id FROM pairings p JOIN items i ON i.id = p.item_id WHERE i.availability != "
-                    f"'waiting' AND (NOT {_ORIGIN_ROW} OR json_valid(p.pairing))"):
+                    f"'waiting' AND (NOT {_ORIGIN_ROW} OR json_valid(p.pairing)) AND NOT {_VERSION_ROW}"):
                 if isinstance(vkey, str) and vkey and (vkey not in found or item_id < found[vkey]):
                     found[vkey] = item_id
             held = (stamp, found)
@@ -8212,23 +8222,37 @@ def _store_item_of_video_key(self, key, origins=None):
     return held[1].get(key)
 
 
-def _store_update_origin(self, origin, size, mtime_ns, sha256):
+def _store_update_origin(self, origin, size, mtime_ns, sha256, video=None):
     """A changed original re-copied (S5, K1b): only its row's `size`, `mtime_ns` and `sha256`, bookkeeping the copy
-    carries — `paired_at` and every other key kept, so Connect's pairing version never moves (B1). -> True when the
-    row changed."""
-    key = origin_key(origin)
+    carries — `paired_at` and every other key kept, so Connect's pairing version never moves (B1). `video` ({video_path,
+    video_size, video_key}, LM1b: a video found for it later, A19, or its video renamed, A20): recorded on the row too,
+    the one change here Connect reads (its pairing moves to that video; no new item). -> True when the row changed."""
+    return bool(self.update_origins([(origin, size, mtime_ns, sha256, video)]))
+
+
+def _store_update_origins(self, changes):
+    """`update_origin` for many rows in ONE write (`changes`: [(origin, size, mtime_ns, sha256, video)]): a look that
+    finds the videos of hundreds of known subtitles at once (an existing library's first look with LM1b) commits once
+    per call, never once a row. -> the origins whose row changed."""
+    done = []
     with self._writing():
-        row = self.conn.execute("SELECT pairing FROM pairings WHERE content_key = ?", (key,)).fetchone()
-        if row is None:
-            return False
-        record = _json_dict(row[0]) or {}
-        new = dict(record, size=size, mtime_ns=mtime_ns, sha256=sha256)
-        if new == record:
-            return False
-        self.conn.execute("UPDATE pairings SET pairing = ? WHERE content_key = ?",
-                          (json.dumps(new, sort_keys=True, ensure_ascii=False), key))
-        self._copy_dirty()
-    return True
+        for origin, size, mtime_ns, sha256, video in changes:
+            key = origin_key(origin)
+            row = self.conn.execute("SELECT pairing FROM pairings WHERE content_key = ?", (key,)).fetchone()
+            if row is None:
+                continue
+            record = _json_dict(row[0]) or {}
+            new = dict(record, **{k: v for k, v in (("size", size), ("mtime_ns", mtime_ns), ("sha256", sha256))
+                                  if v is not None})      # (None: as recorded — a video recorded alone)
+            new.update({k: v for k, v in (video or {}).items() if k in ("video_path", "video_size", "video_key") and v})
+            if new == record:
+                continue
+            self.conn.execute("UPDATE pairings SET pairing = ? WHERE content_key = ?",
+                              (json.dumps(new, sort_keys=True, ensure_ascii=False), key))
+            done.append(origin)
+        if done:
+            self._copy_dirty()
+    return done
 
 
 def _store_copies_back(self, back, records=None):
@@ -8364,13 +8388,14 @@ def _store_items_under(self, path):
     hi = lo[:-1] + "0"                                   # "/" + 1: every key inside the folder, none beside it
     with self._reading():
         inside = sorted({r[0] for r in self.conn.execute(
-            "SELECT item_id FROM pairings WHERE content_key >= ? AND content_key < ? AND item_id IS NOT NULL",
-            (lo, hi))})
+            f"SELECT item_id FROM pairings p WHERE content_key >= ? AND content_key < ? AND item_id IS NOT NULL AND "
+            f"NOT {_VERSION_ROW}", (lo, hi))})               # LM1b: a version's place is never the item's
         out = []
         for chunk in _chunks(inside, 500):
             for item_id, every, there in self.conn.execute(
-                    f"SELECT item_id, COUNT(*), SUM(content_key >= ? AND content_key < ?) FROM pairings WHERE item_id "
-                    f"IN ({','.join('?' * len(chunk))}) GROUP BY item_id ORDER BY item_id", [lo, hi] + chunk):
+                    f"SELECT item_id, COUNT(*), SUM(content_key >= ? AND content_key < ?) FROM pairings p WHERE item_id "
+                    f"IN ({','.join('?' * len(chunk))}) AND NOT {_VERSION_ROW} GROUP BY item_id ORDER BY item_id",
+                    [lo, hi] + chunk):
                 if every == there:
                     out.append(item_id)
     return out
@@ -8385,7 +8410,8 @@ def _store_skip_choices(self, item_ids):
         return []
     with self._reading():
         origins = [(_json_dict(t) or {}).get("origin") for (t,) in self.conn.execute(
-            f"SELECT p.pairing FROM pairings p WHERE {_ORIGIN_ROW} AND p.item_id IN ({','.join('?' * len(ids))}) "
+            f"SELECT p.pairing FROM pairings p WHERE {_ORIGIN_ROW} AND NOT {_VERSION_ROW} AND p.item_id IN "
+            f"({','.join('?' * len(ids))}) "
             f"ORDER BY p.content_key", ids)]
     sources = self._read_sources()
     skipped = [f["key"] for f in self.skipped_folders()]
@@ -8498,7 +8524,7 @@ def _store_take_in(self, root_id, found, first=False, rules=None):
         origin = f.get("origin")
         if not isinstance(origin, str) or not os.path.isabs(origin):
             raise ValueError(f"an origin must be an absolute path: {origin!r}")
-        if f.get("item_id") is not None:
+        if f.get("item_id") is not None or f.get("version"):
             continue
         rel = library_rel(self.data_dir, str(f.get("rel") or ""))
         parts = rel.split("/") if rel else []
@@ -8514,7 +8540,7 @@ def _store_take_in(self, root_id, found, first=False, rules=None):
     prepared = dict(zip(rels, self._prepare(rels, None, "Source")))
     fold = lambda f: search_fold(str(f.get("show") or ""), self.language)                     # noqa: E731
     ep = lambda f: f.get("episode") if isinstance(f.get("episode"), (int, float)) else None    # noqa: E731
-    order = sorted(found, key=lambda f: (fold(f), ep(f) is None, ep(f) or 0,
+    order = sorted(found, key=lambda f: (bool(f.get("version")), fold(f), ep(f) is None, ep(f) or 0,
                                          _natural(os.path.basename(str(f.get("rel") or f["origin"])))))
     nested = self._depth > 0          # inside an outer write (P1): its rollback would leave the waiting videos' copy wrong
     with self._command("take_in", SOURCE_PRODUCER) as cmd:
@@ -8524,6 +8550,7 @@ def _store_take_in(self, root_id, found, first=False, rules=None):
         change = self._change(cmd, "take_in")
         change.attached, change.placed, change.recorded = [], {}, {}    # recorded: {origin: item_id}
         change.skipped = {"known": [], "excluded": [], "gone": []}
+        change.versions = []         # LM1b: the items another version of whose episode was recorded
         out = {"patterns": set(), "sha256": set(), "video_key": set()}
         for pattern, note in self.conn.execute("SELECT pattern, note FROM exclusions WHERE kind = 'removed'"):
             note = _json_dict(note) or {}
@@ -8540,6 +8567,9 @@ def _store_take_in(self, root_id, found, first=False, rules=None):
         for f in order:
             origin = os.path.abspath(f["origin"])
             key = origin_key(origin)
+            if f.get("version"):
+                self._take_version(cmd, change, root_id, origin, key, f, out)
+                continue
             rel = None if f.get("item_id") is not None else library_rel(self.data_dir, str(f["rel"]))
             p = prepared.get(rel) if rel is not None else None
             # recorded already — by any source, or earlier in this batch (each record is written as it goes)
@@ -8565,8 +8595,13 @@ def _store_take_in(self, root_id, found, first=False, rules=None):
             if item_id is None:
                 held = self.conn.execute("SELECT id FROM items WHERE rel_key = ?", (p[2],)).fetchone()
                 gap = next((gaps[k] for k in _video_keys(f) if k in gaps), None) if is_content_name(p[1]) else None
+                other = gap is None and is_content_name(p[1]) and f.get("gap") in gaps.values()
+                if other:
+                    gap = f["gap"]                           # LM1b (A5): its episode's waiting item, another video's
                 if held is None and gap is not None:         # a waiting video's (K5): its row takes the copy in place
                     gap = self._fill_gap(cmd, gap, p, gaps)
+                    if gap is not None and other and f.get("video_path"):
+                        self._as_versions(gap)               # the subtitle's own video is the episode's from now
                     exact = exact and gap is not None        # its row gone (P1): a new item, the videos read again
                 if held is None and gap is None and same and same in by_bytes:   # the same bytes in this batch (A5)
                     item_id = by_bytes[same]
@@ -8602,6 +8637,42 @@ def _store_take_in(self, root_id, found, first=False, rules=None):
     return change
 
 
+def _store_take_version(self, cmd, change, root_id, origin, key, f, out):
+    """LM1b, inside `take_in`: another version of an episode already in — a second group's subtitle, a lower release,
+    one only its number joined (`f`: no copy; `item_id`, or `version_of`, the origin of the pick taken in earlier in
+    this batch — the batch takes versions last). Recorded on the item flagged `version` (`_VERSION_ROW`: never its text,
+    video, number or pairing; never a new item, never counted); not recorded when recorded already, kept out (S6) or
+    its item isn't there (its pick not taken in: the next look asks again) — the look counted it skipped already."""
+    if self.conn.execute("SELECT 1 FROM pairings WHERE content_key = ?", (key,)).fetchone():
+        return
+    if key[len(SOURCE_KEY):] in out["patterns"] or (f.get("sha256") and f["sha256"] in out["sha256"]):
+        return
+    item_id = f.get("item_id")
+    if item_id is None:
+        item_id = change.recorded.get(os.path.abspath(str(f.get("version_of") or "")))
+    if item_id is None or not self.conn.execute("SELECT 1 FROM items WHERE id = ?", (item_id,)).fetchone():
+        return
+    record = {k: v for k, v in _origin_record(root_id, origin, f).items() if not k.startswith("video_")}
+    record["version"] = True
+    self._write_origin(key, item_id, record)
+    change.versions.append(item_id)
+    cmd.touch()
+
+
+def _store_as_versions(self, item_id):
+    """LM1b (A5): a waiting item filled by a subtitle named like ANOTHER video of its episode — the records it waited
+    on (the first video's) become other versions of it, so the item's one video is the one its subtitle was made for
+    (Connect times cards to it); they stay recorded, so that video is never a new waiting item."""
+    for key, text in self.conn.execute(f"SELECT p.content_key, p.pairing FROM pairings p WHERE p.item_id = ? AND "
+                                       f"{_ORIGIN_ROW} AND NOT {_VERSION_ROW}", (item_id,)).fetchall():
+        record = _json_dict(text)
+        if record is None:
+            continue
+        record["version"] = True
+        self.conn.execute("UPDATE pairings SET pairing = ? WHERE content_key = ?",
+                          (json.dumps(record, sort_keys=True, ensure_ascii=False), key))
+
+
 def _store_write_origin(self, key, item_id, record):
     self.conn.execute("INSERT INTO pairings (content_key, item_id, pairing, paired_at) VALUES (?, ?, ?, ?)",
                       (key, item_id, json.dumps(record, sort_keys=True, ensure_ascii=False), _now()))
@@ -8614,8 +8685,9 @@ def _store_take_new(self, cmd, change, prepared, key, record, f, first, rules, w
     never placed by a rule, never counted."""
     rel = prepared[1]
     waiting = record.get("video_path") is not None and not is_content_name(rel)
-    if waiting:
-        prepared = prepared[:4] + ((None, None, "waiting"),)
+    if waiting:                                      # fincov (LM1b): typed from its video — a subtitle episode waiting
+        entry = dict(prepared[3], source_type="subtitle")    # for its text — never the fallback 'text' (a book's)
+        prepared = prepared[:3] + (entry, (None, None, "waiting"))
     work = self._source_work(rel, record, cmd, works)
     runs = runs if first and not waiting else None
     tier, where = self._source_spot(cmd, work, rel, f.get("episode"), first and not waiting, waiting, episodes, runs)
@@ -8658,6 +8730,7 @@ def _store_waiting_videos(self):
     # origin's row); in the records' order, as before
     for item_id, text in self.conn.execute(f"SELECT p.item_id, p.pairing FROM items i CROSS JOIN pairings p ON "
                                            f"p.item_id = i.id WHERE i.availability = 'waiting' AND {_ORIGIN_ROW} "
+                                           f"AND NOT {_VERSION_ROW} "
                                            f"ORDER BY p.content_key"):
         for k in _video_keys(_json_dict(text) or {}):
             out[k] = item_id
@@ -8788,6 +8861,7 @@ Store._sync_drop = _store_sync_drop
 Store._take_out = _store_take_out
 Store._waiting_video = _store_waiting_video
 Store.update_origin = _store_update_origin
+Store.update_origins = _store_update_origins
 Store.copies_back = _store_copies_back
 Store._exclude_origins = _store_exclude_origins
 Store._let_origins_back = _store_let_origins_back
@@ -8802,9 +8876,11 @@ Store._skips_moved = _store_skips_moved
 Store.read_folder_again = _store_read_folder_again
 Store.take_in = _store_take_in
 Store._write_origin = _store_write_origin
+Store._take_version = _store_take_version
 Store._take_new = _store_take_new
 Store._waiting_videos = _store_waiting_videos
 Store._fill_gap = _store_fill_gap
+Store._as_versions = _store_as_versions
 Store._source_work = _store_source_work
 Store._source_spot = _store_source_spot
 Store._in_run = _store_in_run
@@ -9383,7 +9459,7 @@ def fresh_counts(store):
         origins = store.conn.execute(
             f"SELECT p.item_id, substr(p.content_key, {len(SOURCE_KEY) + 1}), CASE WHEN json_valid(p.pairing) AND "
             f"json_type(p.pairing) = 'object' THEN json_extract(p.pairing, '$.via') END FROM pairings p WHERE "
-            f"{_ORIGIN_ROW}").fetchall()
+            f"{_ORIGIN_ROW} AND NOT {_VERSION_ROW}").fetchall()
         changes = store.conn.execute("SELECT after FROM anki_changes WHERE reverted_at IS NULL AND action = "
                                      "'cards_out'").fetchall()
     back, added = set(), set()

@@ -102,7 +102,10 @@ ITEM_MENU = {
     "cover": ("Change cover…", "Choose the picture it shows"),
     "folder": ("Open its folder", "Open the folder its files are in"),
     "remove": ("Remove…", "Take it out of your library: its files go to the trash for 30 days (asks first)"),
+    # LM11b G4: on what Ctrl+click picked ({n}: the rows and episodes picked)
+    "group": ("Group…", "Put these {n} into one row in Current\n• Undo takes them apart again"),
 }
+ITEM_GROUPED = "Grouped {n} into one row"
 ITEM_TYPES = {"anime": "Anime", "drama": "Drama", "movie": "Movie", "youtube": "YouTube", "podcast": "Podcast",
               "audiobook": "Audiobook", "book": "Book", "lightnovel": "Light novel", "manga": "Manga", "game": "Game",
               "text": "Text"}

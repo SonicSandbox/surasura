@@ -18,6 +18,12 @@ A3 `split`, 06 E4, E22).
 - *Open its folder* (`windows.open_url`, N3; looked for on a worker);
 - a separator, then *Remove…*: the one modal kind (`confirm.ask`, Esc / Back / a click outside are No) naming its
   files; `Writer.remove` (the trash, 30 days) with Undo.
+**Group… (LM11b G4):** Ctrl+click picks Current's rows and an opened row's episodes (its stones), Shift+click the rows
+from the last one picked, Ctrl+Space the keyboard's row (`rows.RowsView.pick_row`); with things picked from 2+ shows
+(IK-4: one show's alone would be no group), ⋯ (a right-click opens it at the hand) starts with *Group…*: one
+`Writer.group` — the picked rows' pieces in the list's order (both of a show the Soon line runs through), then the
+picked episodes — its toast *Grouped N into one row* with Undo. Esc / Back (the shell's router), a plain click, a drag and a view without
+a picked key let the picks go.
 **Drop-to-join (G3):** a part dragged over the middle of another part of the same title (its top and bottom 30 % stay
 a move beside it, so a part can still be placed next to its other part): the rows hold still (no gap opens), that part
 shows a green dashed outline and *Drop to join*; the drop joins them in episode order, opens the result and toasts
@@ -72,6 +78,14 @@ def comes_first(part, target):
     return a is not None and b is not None and a < b
 
 
+def pieces_of(row):
+    """The pieces a row stands for: its own, and the second of a show the Soon line runs through (B2-2)."""
+    out = [row.piece_id]
+    if getattr(row, "soon_from", None) is not None:
+        out.append(getattr(row, "soon_piece", None))
+    return [p for p in dict.fromkeys(out) if p is not None]
+
+
 def joinable(row):
     """A part that can be joined or split: a title's piece (hato's mix never)."""
     return row is not None and row.piece_id is not None and row.work_id is not None and not drag.is_mix(row)
@@ -102,6 +116,11 @@ class ItemActions(QObject):
         # --- end W3.2 L3
         self.last_menu = None
         self.question = None                         # *Remove…*'s confirmation while it is open
+        # --- LM11b G4: Ctrl+click picks a part of a title (never hato's mix); Esc / Back let the picks go (the router)
+        self.lst.pickable = lambda row: row.piece_id is not None and not drag.is_mix(row)
+        register = getattr(win, "register_overlay", None)
+        if register is not None:
+            register(self.lst.picks)
 
     # N3: the window's moves, writer and language read at call time (a language switch remakes them)
     @property
@@ -147,14 +166,18 @@ class ItemActions(QObject):
         return next((r for r in (view.rows if view is not None else ()) if r.key == key), None)
 
     # --- ⋯ ------------------------------------------------------------------------------------------------------------ #
+    def _refused_tip(self):
+        """None while the store can be written; else a greyed entry's tip, the store's reason in it (E4)."""
+        if self.writer.can_write():
+            return None
+        raw = self.writer.reason() or ""
+        return strings.MENU_REFUSED_TIP.format(reason=strings.READ_ONLY_REASONS.get(raw) or raw)
+
     def entries(self, row):
         """These entries for `row`, in order (after the moves): [Entry] — *Remove…* last (the menu puts a separator
         before it)."""
-        writable = self.writer.can_write()
-        reason = None
-        if not writable:
-            raw = self.writer.reason() or ""
-            reason = strings.MENU_REFUSED_TIP.format(reason=strings.READ_ONLY_REASONS.get(raw) or raw)
+        reason = self._refused_tip()
+        writable = reason is None
 
         def entry(name, label=None, tip=None, writes=True, **kw):
             words, own_tip = strings.ITEM_MENU.get(name, (None, None))
@@ -195,6 +218,50 @@ class ItemActions(QObject):
         out.append(entry("remove"))
         return out
 
+    # --- LM11b G4: *Group…* ------------------------------------------------------------------------------------------- #
+    def _picked(self):
+        """What Ctrl+click picked, in the list's order: ([whole rows], [(row, episode)]) — an episode of a row picked
+        whole is in it already."""
+        view = self._view()
+        rows_ = view.rows if view is not None else ()
+        whole_keys, eps = self.lst.picked_rows, self.lst.picked_eps
+        whole = [r for r in rows_ if r.key in whole_keys]
+        picked = [(r, e) for r in rows_ if r.key not in whole_keys for e in r.episodes if (r.key, e.id) in eps]
+        return whole, picked
+
+    @staticmethod
+    def _shows(whole, eps):
+        """The shows the picks span (a row with no title counts as its own: IK-4)."""
+        return {r.work_id if r.work_id is not None else ("row", r.key) for r in whole + [r for r, _e in eps]}
+
+    def group_entry(self):
+        """⋯'s *Group…* (its first entry) when things are picked from 2+ shows, else None (one show's picks: the store
+        would make no group of them); greyed with the store's reason while it can't be written (E4)."""
+        whole, eps = self._picked()
+        if len(self._shows(whole, eps)) < 2:
+            return None
+        reason = self._refused_tip()
+        words, tip = strings.ITEM_MENU["group"]
+        return Entry("group", words, tip.format(n=len(whole) + len(eps)) if reason is None else reason, reason is None)
+
+    def group(self):
+        """*Group…*: one `Writer.group` — the picked rows' pieces in the list's order, then the picked episodes — one
+        row in Current; its toast with Undo (which takes them apart again); the picks let go."""
+        whole, eps = self._picked()
+        if len(self._shows(whole, eps)) < 2 or self.moves.refused() is not None:
+            return None
+        pieces = [p for r in whole for p in pieces_of(r)]
+        items = [e.id for _r, e in eps]
+        keys = list(dict.fromkeys([r.key for r in whole] + [r.key for r, _e in eps]))
+        ids = [i for r in whole for i in drag.ids_of(r)] + items
+        text = strings.ITEM_GROUPED.format(n=len(whole) + len(eps))
+        seq = self.moves._give(drag.Ticket(text, keys, ids),
+                               lambda t: self.writer.group(piece_ids=pieces, item_ids=items, label=t))
+        if seq is not None:
+            self.lst.clear_picks()
+        return seq
+    # --- end LM11b G4
+
     def _hovered_after(self, row):
         """The episode after the one the hand was last on in this opened row (where *Split here* splits), or None."""
         hover = self.lst.ep_hover
@@ -207,6 +274,10 @@ class ItemActions(QObject):
         """⋯: the moves, these, a separator and *Remove…* — a plain menu in the theme's style (Esc closes it), every
         entry's tip shown."""
         m = drag.list_menu(self.lst, row.title)          # C4: the list's one menu, emptied as it hides
+        group = self.group_entry()                       # --- LM11b G4: *Group…* first, on what is picked
+        if group is not None:
+            self._action(m, row, group)
+            m.addSeparator()
         for name, label, tip, ok in self.moves.menu_entries(row):
             act = QAction(label, m)
             act.setToolTip(tip)
@@ -243,7 +314,9 @@ class ItemActions(QObject):
         return act
 
     def menu_pick(self, row, name, payload=None):
-        if name in ("pin", "unpin"):
+        if name == "group":                              # --- LM11b G4: what is picked, whichever row's ⋯
+            self.group()
+        elif name in ("pin", "unpin"):
             self.pin(row, name == "pin")
         elif name == "type-to":
             self.set_type(row, payload)
@@ -358,11 +431,8 @@ class ItemActions(QObject):
     def add_skip(self, row, m, folders):
         """*Never read this folder* › each of `folders` (deepest first) by its name, its whole path in its tip; greyed
         with the store's reason while it can't be written (E4). -> the submenu."""
-        writable = self.writer.can_write()
-        reason = None
-        if not writable:
-            raw = self.writer.reason() or ""
-            reason = strings.MENU_REFUSED_TIP.format(reason=strings.READ_ONLY_REASONS.get(raw) or raw)
+        reason = self._refused_tip()
+        writable = reason is None
         before = next((a for a in m.actions() if a.text() == strings.ITEM_MENU["folder"][0]), None)
         sub = QMenu(strings.ITEM_SKIP[0], m)
         sub.setObjectName("rowmenu")

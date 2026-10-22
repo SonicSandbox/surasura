@@ -18,7 +18,7 @@ import pytest
 
 pytest.importorskip("PyQt6")
 from PyQt6.QtCore import QEvent, QPoint, Qt
-from PyQt6.QtGui import QAction, QColor, QKeyEvent
+from PyQt6.QtGui import QAction, QColor, QContextMenuEvent, QKeyEvent
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication
 
@@ -26,8 +26,8 @@ from app import library_store as ls
 from app import path_utils
 from app.qt import drag, item_menu, rows, strings
 from tests.qt.conftest import wait_until
-from tests.qt.test_drag import (FakeWriter, lift, move, move_global, open_window, part_rect, press, real,  # noqa: F401
-                                release, release_global, row_point, settle)
+from tests.qt.test_drag import (FakeWriter, lift, mouse, move, move_global, open_window, part_rect, press,  # noqa: F401
+                                real, release, release_global, row_point, settle, title_point)
 from tests.qt.test_wiring import _connected
 
 
@@ -47,6 +47,9 @@ class ItemWriter(FakeWriter):
 
     def remove(self, ids, label=None):
         return self._put("remove", ids, label)
+
+    def group(self, piece_ids=(), item_ids=(), label=None):
+        return self._put("group", [], label, piece_ids=list(piece_ids), item_ids=list(item_ids))
 
 
 @pytest.fixture
@@ -735,3 +738,331 @@ def test_real_store_remove_sends_the_files_to_the_trash_and_undo_brings_them_bac
     win.toasts.card.buttons[0].click()
     assert wait_until(lambda: sorted(store.item(x)["rel_path"] for x in store.ids("now")
                                      if store.item(x)["rel_path"] in rels) == sorted(rels), 5)
+
+
+# ================================================================================================================== #
+# LM11b G4: select, then right-click *Group…* (RUNBOOK §1 G4, §2)
+# ================================================================================================================== #
+# What a wrong answer would cost a learner: a Ctrl+click that marks an episode watched (a stone is a Done on a plain
+# click); a selection he can't see, or one that lingers after he moved on and groups the wrong shows; *Group…* writing
+# two commands (two Undos) or the shows in the order he clicked them instead of the list's; a write on a library that
+# can't be saved; a right-click that does nothing.
+CTRL = Qt.KeyboardModifier.ControlModifier
+
+
+def ctrl_click(lst, pos):
+    mouse(lst.viewport(), QEvent.Type.MouseButtonPress, pos, Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+          CTRL)
+    mouse(lst.viewport(), QEvent.Type.MouseButtonRelease, pos, Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton,
+          CTRL)
+    settle(20)
+
+
+def groupable(win, n=2):
+    """`n` places of Current rows (never Up Next) that are shows' own parts, each of another show."""
+    out, works = [], set()
+    for i, r in enumerate(rows_of(win)):
+        if i and r.piece_id is not None and r.source != "hato" and len(r.episodes) >= 3 and r.work_id not in works:
+            out.append(i)
+            works.add(r.work_id)
+    assert len(out) >= n
+    return out[:n]
+
+
+def stone_of(lst, i, k):
+    """Row `i`'s (opened) `k`-th episode's stone: (its rect, the episode) — read once the row is the current one (a
+    press makes it current, and an opened row taller than the list scrolls into view then)."""
+    if lst.currentIndex().row() != i:
+        lst.setCurrentIndex(lst.model().index(i, 0))
+        settle()
+    entry = lst.model().entries[i]
+    ep = entry[1].episodes[k]
+    part = next(p for p in lst.delegate.parts(entry, lst.visualRect(lst.model().index(i, 0)))
+                if p[0] == "stone" and p[3] is ep)
+    return part[1], ep
+
+
+def slab_rect(lst, i):
+    return lst.delegate.slab_of(lst.visualRect(lst.model().index(i, 0)))
+
+
+def test_G4_ctrl_click_picks_and_unpicks_a_row_and_an_episode_and_never_marks_it_watched(world):
+    _seed, win, writer = world()
+    lst = lst_of(win)
+    a, b = groupable(win)
+    key = rows_of(win)[a].key
+    ctrl_click(lst, title_point(lst, a))
+    assert lst.picked_rows == {key} and lst.model().open_key != key       # picked, never opened
+    ctrl_click(lst, title_point(lst, a))
+    assert lst.picked_rows == set()                                       # a second Ctrl+click lets it go
+    open_row(win, b)
+    r, ep = stone_of(lst, b, 1)
+    ctrl_click(lst, r.center())
+    assert lst.picked_eps == {(rows_of(win)[b].key, ep.id)}
+    ctrl_click(lst, r.center())
+    assert lst.picked_eps == set()
+    settle()
+    assert writer.calls == [] and not ep.watched                          # nothing marked watched, nothing written
+
+
+def test_G4_ctrl_space_picks_the_keyboards_row(world):
+    _seed, win, _w = world()
+    lst = lst_of(win)
+    a, _b = groupable(win)
+    lst.setCurrentIndex(lst.model().index(a, 0))
+    QApplication.sendEvent(lst, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Space, CTRL))
+    assert lst.picked_rows == {rows_of(win)[a].key} and lst.model().open_key != rows_of(win)[a].key
+    QApplication.sendEvent(lst, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Space, CTRL))
+    assert lst.picked_rows == set()
+
+
+def test_G4_a_picked_row_and_a_picked_episode_are_painted(world):
+    _seed, win, _w = world()
+    lst = lst_of(win)
+    a, b = groupable(win)
+    accent = rows.c("accent")
+    slab = slab_rect(lst, a)
+    before = lit(lst, slab, accent, tolerance=12)
+    ctrl_click(lst, title_point(lst, a))
+    settle()
+    assert lit(lst, slab, accent, tolerance=12) >= before + slab.width()  # its slab outlined in the accent
+    open_row(win, b)
+    r, _ep = stone_of(lst, b, 2)
+    line = r.adjusted(0, -4, lst.viewport().width(), 4)
+    before = lit(lst, line, accent, tolerance=12)
+    ctrl_click(lst, r.center())
+    settle()
+    assert lit(lst, line, accent, tolerance=12) >= before + r.width()     # the episode's line too
+
+
+def test_G4_esc_a_plain_click_and_a_drag_each_clear_the_picks(world):
+    _seed, win, writer = world()
+    lst = lst_of(win)
+    a, b = groupable(win)
+    ctrl_click(lst, title_point(lst, a))
+    ctrl_click(lst, title_point(lst, b))
+    assert len(lst.picked_rows) == 2
+    QTest.keyClick(lst, Qt.Key.Key_Escape)                                # the router's Esc
+    assert lst.picked_rows == set()
+    ctrl_click(lst, title_point(lst, a))
+    at = title_point(lst, b)
+    press(lst, at)
+    release(lst, at)                                                      # a plain click: it opens b, the picks go
+    assert lst.picked_rows == set()
+    settle()
+    ctrl_click(lst, title_point(lst, a))
+    assert lst.picked_rows
+    lift(win, a)                                                          # a drag starting
+    assert lst.picked_rows == set()
+    win.moves.cancel()
+    assert calls(writer, "group") == []
+
+
+def test_G4_a_new_view_without_a_picked_row_or_episode_lets_it_go(world):
+    _seed, win, _w = world()
+    lst = lst_of(win)
+    a, _b = groupable(win)
+    key = rows_of(win)[a].key
+    lst.picked_rows |= {key, "gone"}
+    lst.picked_eps |= {(key, -1), ("gone", 7)}
+    lst.set_entries(list(lst.model().entries))
+    assert lst.picked_rows == {key} and lst.picked_eps == set()
+
+
+def test_G4_a_right_click_on_a_row_opens_its_menu_at_the_hand(world):
+    _seed, win, _w = world()
+    lst = lst_of(win)
+    a, _b = groupable(win)
+    asked = []
+    lst.menu_requested.connect(lambda row, at: asked.append((row.key, at)))
+    pos = title_point(lst, a)
+    gpos = lst.viewport().mapToGlobal(pos)
+    QApplication.sendEvent(lst.viewport(), QContextMenuEvent(QContextMenuEvent.Reason.Mouse, pos, gpos))
+    settle()
+    assert asked == [(rows_of(win)[a].key, gpos)]
+    m = win.items.last_menu
+    assert m is not None and m.isVisible()
+    assert strings.ITEM_MENU["remove"][0] in [x.text() for x in m.actions()]
+    m.close()
+
+
+def test_G4_group_is_offered_first_only_with_two_rows_and_is_tipped_and_wired(world):
+    _seed, win, _w = world()
+    lst = lst_of(win)
+    a, b = groupable(win)
+    row = rows_of(win)[a]
+    at = win.mapToGlobal(QPoint(300, 300))
+    assert win.items.group_entry() is None                                # nothing picked
+    ctrl_click(lst, title_point(lst, a))
+    assert win.items.group_entry() is None                                # one row: nothing to group
+    lst.clear_picks()
+    open_row(win, b)
+    for k in (0, 1):
+        ctrl_click(lst, stone_of(lst, b, k)[0].center())
+    assert win.items.group_entry() is None                                # two episodes of one show: no group either
+    ctrl_click(lst, title_point(lst, a))                                  # ... with another show's row: three
+    e = win.items.group_entry()
+    assert e is not None and e.ok and e.label == strings.ITEM_MENU["group"][0]
+    assert e.tip == strings.ITEM_MENU["group"][1].format(n=3)
+    m = win.items.menu(row, at)
+    first = m.actions()[0]
+    assert first.text() == strings.ITEM_MENU["group"][0] and first.toolTip() == e.tip and _connected(first)
+    m.close()
+
+
+def test_G4_group_is_one_command_the_rows_pieces_in_list_order_then_the_episodes_with_a_toast_and_undo(world):
+    _seed, win, writer = world()
+    lst = lst_of(win)
+    a, b, c3 = groupable(win, 3)
+    rs = rows_of(win)
+    ctrl_click(lst, title_point(lst, c3))                                 # picked last-first: the list's order wins
+    ctrl_click(lst, title_point(lst, a))
+    open_row(win, b)
+    r, ep = stone_of(lst, b, 1)
+    ctrl_click(lst, r.center())
+    win.items.menu_pick(rs[a], "group")
+    assert calls(writer) == [("group", [], {"piece_ids": [rs[a].piece_id, rs[c3].piece_id], "item_ids": [ep.id]})]
+    assert lst.picked_rows == set() and lst.picked_eps == set()           # the picks go with it
+    assert wait_until(lambda: win.toasts.card.message == strings.ITEM_GROUPED.format(n=3), 5)
+    assert wait_until(lambda: not win.moves.tickets, 5)
+    win.toasts.card.buttons[0].click()                                    # Undo: the one command
+    assert writer.undone and writer.undone[-1].op == "group"
+
+
+def test_G4_a_read_only_store_greys_group_with_its_reason_and_a_pick_writes_nothing(world):
+    _seed, win, writer = world(writable=False)
+    lst = lst_of(win)
+    a, b = groupable(win)
+    ctrl_click(lst, title_point(lst, a))
+    ctrl_click(lst, title_point(lst, b))
+    e = win.items.group_entry()
+    assert e is not None and not e.ok
+    assert e.tip.startswith(strings.MENU_REFUSED_TIP.format(reason="")[:20])
+    win.items.menu_pick(rows_of(win)[a], "group")
+    settle()
+    assert writer.calls == []
+
+
+def test_G4_IK4_picks_all_from_one_show_offer_no_group(world):
+    # one show's two parts (or its episodes) picked: the store would make no group of them (a quiet split, a wrong
+    # toast), so *Group…* isn't offered
+    _seed, win, writer = world()
+    lst = lst_of(win)
+    a, b = split_parts(win)
+    ctrl_click(lst, title_point(lst, a))
+    ctrl_click(lst, title_point(lst, b))
+    assert len(lst.picked_rows) == 2 and win.items.group_entry() is None
+    m = win.items.menu(rows_of(win)[a], win.mapToGlobal(QPoint(300, 300)))
+    assert strings.ITEM_MENU["group"][0] not in [x.text() for x in m.actions()]
+    m.close()
+    win.items.menu_pick(rows_of(win)[a], "group")
+    assert calls(writer, "group") == []
+
+
+def test_G4_IK1_a_picked_row_the_soon_line_runs_through_groups_both_its_pieces(world, monkeypatch):
+    _seed, win, writer = world()
+    lst = lst_of(win)
+    a, b = groupable(win)
+    view = win.page_widgets["current"].view_model
+    rs = list(view.rows)
+    rs[a] = rs[a]._replace(soon_from=1, soon_piece=987654)            # Ep 1 NOW's piece, Ep 2… Soon's
+    monkeypatch.setattr(win.items, "_view", lambda: view._replace(rows=rs))
+    assert item_menu.pieces_of(rs[a]) == [rs[a].piece_id, 987654]
+    assert item_menu.pieces_of(rs[a]._replace(soon_piece=rs[a].piece_id)) == [rs[a].piece_id]
+    lst.picked_rows |= {rs[a].key, rs[b].key}
+    win.items.menu_pick(rs[a], "group")
+    assert calls(writer, "group") == [("group", [], {"piece_ids": [rs[a].piece_id, 987654, rs[b].piece_id],
+                                                     "item_ids": []})]
+
+
+def test_G4_IK9_ctrl_click_never_plays_opens_the_menu_or_marks_a_stone_watched(world):
+    from app.qt import stones, style
+    key = stones._key(1.0, style.current()[1])
+    if key not in stones._SHEETS:                                       # the stones drawn (a closed row's are then hit)
+        stones._landed(key, stones.build(*key))
+    _seed, win, writer = world()
+    lst = lst_of(win)
+    a, b = groupable(win)
+    asked = []
+    for sig in (lst.play_requested, lst.menu_requested, lst.done_requested, lst.nudge_requested):
+        sig.connect(lambda *x, s=sig: asked.append(s))
+    lst.setCurrentIndex(lst.model().index(a, 0))
+    settle()
+    for name in ("play", "more", "up"):                                 # buttons: nothing, not even a pick
+        ctrl_click(lst, part_rect(lst, a, name)[1].center())
+    hero = rows.HERO
+    assert lst.model().entries[0][0] == hero
+    for name in ("play", "done"):
+        ctrl_click(lst, part_rect(lst, 0, name)[1].center())
+    assert asked == [] and lst.picked_rows == set()
+    stone = next(p for p in lst.delegate.parts(lst.model().entries[b], lst.visualRect(lst.model().index(b, 0)))
+                 if p[0] == "stone")                                    # a closed row's stone: picks the row
+    ctrl_click(lst, stone[1].center())
+    assert lst.picked_rows == {rows_of(win)[b].key}
+    open_row(win, a)
+    r, ep = stone_of(lst, a, 0)                                         # an opened row's: picks the episode
+    ctrl_click(lst, r.center())
+    assert (rows_of(win)[a].key, ep.id) in lst.picked_eps
+    settle()
+    assert asked == [] and writer.calls == []
+
+
+def test_G4_IK10_shift_click_picks_the_rows_from_the_last_picked_to_this_one(world):
+    _seed, win, writer = world()
+    lst = lst_of(win)
+    a, _b = groupable(win)
+    to = a + 3
+    ctrl_click(lst, title_point(lst, a))
+    mouse(lst.viewport(), QEvent.Type.MouseButtonPress, title_point(lst, to), Qt.MouseButton.LeftButton,
+          Qt.MouseButton.LeftButton, Qt.KeyboardModifier.ShiftModifier)
+    mouse(lst.viewport(), QEvent.Type.MouseButtonRelease, title_point(lst, to), Qt.MouseButton.LeftButton,
+          Qt.MouseButton.NoButton, Qt.KeyboardModifier.ShiftModifier)
+    settle(20)
+    want = {r.key for r in rows_of(win)[a:to + 1] if lst.pickable(r)}
+    assert len(want) >= 3 and lst.picked_rows == want
+    assert lst.model().open_key not in want and writer.calls == []      # nothing opened, nothing written
+
+
+def test_G4_IK11_a_pick_repaints_only_the_rows_whose_state_changed(world, monkeypatch):
+    _seed, win, _w = world()
+    lst = lst_of(win)
+    a, b = groupable(win)
+    asked = []
+    monkeypatch.setattr(lst, "update", lambda index: asked.append(index.row()))
+    rs = rows_of(win)
+    lst.pick_row(rs[a])
+    assert asked == [a]
+    lst.pick_row(rs[b])
+    assert asked == [a, b]
+    del asked[:]
+    lst.pick_row(rs[a])                                                 # let go: that row alone
+    assert asked == [a]
+    del asked[:]
+    lst.clear_picks()
+    assert asked == [b]
+    lst.clear_picks()                                                   # nothing picked: nothing repainted
+    assert asked == [b]
+
+
+def test_G4_finisheds_list_picks_nothing(world):
+    # Current's list only: Finished's rows never join a selection (a group never lives in Finished)
+    _seed, win, _w = world()
+    assert win.page_widgets["finished"].list.pickable is None
+    assert lst_of(win).pickable is not None
+
+
+def test_real_store_G4_two_shows_ctrl_clicked_and_grouped_are_one_row_and_undo_makes_them_two(real):
+    store, win, _writer = real()
+    lst = lst_of(win)
+    a, b = groupable(win)
+    rs = rows_of(win)
+    ids = drag.ids_of(rs[a]) + drag.ids_of(rs[b])
+    ctrl_click(lst, title_point(lst, a))
+    ctrl_click(lst, title_point(lst, b))
+    win.items.menu_pick(rs[a], "group")
+    assert wait_until(lambda: len({store.item(x)["piece_id"] for x in ids}) == 1, 5)
+    assert wait_until(lambda: sum(1 for r in rows_of(win) if set(drag.ids_of(r)) & set(ids)) == 1, 5)
+    assert wait_until(lambda: not win.moves.tickets, 5)
+    win.toasts.card.buttons[0].click()
+    assert wait_until(lambda: len({store.item(x)["piece_id"] for x in ids}) == 2, 5)
+    assert wait_until(lambda: sum(1 for r in rows_of(win) if set(drag.ids_of(r)) & set(ids)) == 2, 5)

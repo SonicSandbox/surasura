@@ -1034,6 +1034,7 @@ class DragController(QObject):
         d.at = global_pos
         lst._hover = None
         lst._retouch()                               # the hover look goes: nothing under the hand lifts now
+        lst.clear_picks()                            # --- LM11b G4: a drag lets the picks go
         anim, self._ghost_anim = self._ghost_anim, None
         if anim is not None and anim.alive:          # a lift within the last drop's glide / fade: that one ends now
             anim.stop()                              # (never hides this drag's ghost when it would have finished)

@@ -116,6 +116,8 @@ MIXES = {
     "well-lit": ("brief §2, the buckets", ("mix", "ok", 12, "cut", None)),
     # a row under the hand: the reference's ground for it, as written (list-r14m :663); W3.1a adds the lift
     "row-hover": ("list-r14m :663", "#0d121a"),
+    # a row or an episode picked for *Group…* (LM11b G4): a breath of the accent over it, ringed in the accent
+    "row-picked": ("LM11b G4: the selection", ("mix", "accent", 14, "transparent", None)),
     # Generate (W3.1a moves it into the level pop) and its stale state
     "generate-hover": ("mock.html :228", ("mix", "raised", 70, "accent", 12)),       # sums to 82 %
     "generate-stale-glow": ("mock.html :230", ("mix", "accent", 70, "transparent", None)),

@@ -16,8 +16,8 @@ of the window around the pages, in the redesign's flat look.
 - **The footer's corner**: the emerald and *Anki · N waiting* (`AnkiMark`: lit while Anki answers, dark when it is
   closed, failed or off; N the new cards waiting in Anki, once the sync saved a backlog; the AnkiWeb mark's words in its
   hover) and the known number (`KnownCorner`: large and dim, a hairline under it toward the next 2,500, its progress in
-  the hover). The re-order's and Connect's lines are quiet marks beside it (`QuietMark`: a dim glyph, the words in the
-  hover).
+  the hover; a click syncs now, Q30). The re-order's and Connect's lines are quiet marks beside it (`QuietMark`: a
+  dim glyph, the words in the hover).
 - **The Goal dock** (`GoalDock`): Goal's bar (its lift kept: the edge and a short cached shadow, L14) with the loose hand
   of covers, greyed once into its picture; while a drag runs, three wells — Soon · Goal · Finished — that package F
   drives through `begin_drag` / `well_at` / `hover` / `end_drag` / `set_unlit`.
@@ -842,13 +842,22 @@ class AnkiMark(QWidget):
 
 class KnownCorner(QWidget):
     """The known words, bottom right: the number large and dim, *known* beside it on its baseline, and a hairline under
-    them toward the next 2,500 (lit up to the share), its progress in the hover. No click yet (W3.3)."""
+    them toward the next 2,500 (lit up to the share), its progress in the hover. Q30: a click — or Space / Enter, one
+    Tab stop like the bar's buttons — asks for a sync now (`clicked`: the shell hands it to `Automation.sync_now`, or
+    opens the Anki window while there is nothing to sync from yet); its hover ends "Click to sync now", or, while a
+    sync runs (`set_syncing`), says one is running."""
+    clicked = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("knowncorner")
         self.n = None
+        self.said = ""                   # the shell's words, the hover's first line
+        self.syncing = False
         self.paints = 0
+        self._pressed = False
+        self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setVisible(False)
 
     def text(self):
@@ -864,8 +873,8 @@ class KnownCorner(QWidget):
             self.setVisible(False)
             self.paints += 1
             return True
-        nxt, _share = milestone(n)
-        tip = strings.FOOT_KNOWN_TIP.format(tip=tip, left=nxt - n, next=nxt)
+        self.said = tip
+        tip = self._tip(n)
         if n == self.n and tip == self.toolTip() and not self.isHidden():
             return False
         self.n = n
@@ -876,6 +885,53 @@ class KnownCorner(QWidget):
         self.paints += 1
         self.update()
         return True
+
+    def _tip(self, n):
+        nxt, _share = milestone(n)
+        click = strings.FOOT_KNOWN_SYNCING if self.syncing else strings.FOOT_KNOWN_CLICK
+        return strings.FOOT_KNOWN_TIP.format(tip=self.said, left=nxt - n, next=nxt, click=click)
+
+    def set_syncing(self, on):
+        """A sync is running (the automation's state): the hover says so instead of "Click to sync now". -> True when
+        it changed."""
+        on = bool(on)
+        if on == self.syncing:
+            return False
+        self.syncing = on
+        if self.n is not None:
+            self.setToolTip(self._tip(self.n))
+        return True
+
+    # --- the click (Q30) -------------------------------------------------------------------------------------- #
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._pressed = True
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        pressed, self._pressed = self._pressed, False
+        if event.button() == Qt.MouseButton.LeftButton and pressed and self.rect().contains(event.position().toPoint()):
+            self.clicked.emit()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key.Key_Space, Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self.clicked.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def focusInEvent(self, event):
+        super().focusInEvent(event)
+        self.update()
+
+    def focusOutEvent(self, event):
+        super().focusOutEvent(event)
+        self.update()
 
     def _parts(self):
         number = f"{self.n:,}" if self.n is not None else ""
@@ -908,6 +964,13 @@ class KnownCorner(QWidget):
         p.setOpacity(F["known-hairline-alpha"])
         p.fillRect(QRectF(2, y, span, 1), style.qcolor(theme.FRAME_COLOURS["milestone-left"]))
         p.fillRect(QRectF(2, y, span * share, 1), style.qcolor(theme.IRIS["night"][1][1]))
+        if self.hasFocus():                              # the keyboard's ring, as the level ▾'s
+            p.setOpacity(1.0)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            p.setPen(QPen(rows.c("accent"), 2))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRoundedRect(QRectF(self.rect()).adjusted(1, 1, -1, -1), theme.RADII["icon-button"],
+                              theme.RADII["icon-button"])
         p.end()
 
 

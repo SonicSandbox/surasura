@@ -5,7 +5,8 @@ and `_maybe_junban_auto`, as one service a window builds once.
 - **The triggers are the window's calls** — `started()` (the sync 2 s after the window opens, forced), `activated()`
   (the window came back into focus: the sync, 順 and a waiting Generate, each asked again), `language_changed(lang)`
   (the sync forced: known words and decks are per language), `recheck()` (the Generate button's journey check, 0.6 s
-  after a burst: focus, an indexer's end, new known words) — and they only queue: every gate (`anki_sync.may_sync`,
+  after a burst: focus, an indexer's end, new known words), `sync_now()` (a click on the bar's known-words count: the
+  same sync, forced, with the automatic sync off too) — and they only queue: every gate (`anki_sync.may_sync`,
   the settings, the throttles, a file or a store read) is asked on the service's one worker, in the order asked, so
   the window's thread never waits.
 - **Never twice.** Each duty is a job in the window's registry (`app/services/jobs.py`): the sync an `anki-sync` job,
@@ -223,11 +224,13 @@ class AutoSync:
         self._owner = owner
         self._last = float("-inf")
 
-    def maybe(self, force=False):
-        """(The worker.) Start a sync when every gate allows: None, or why not (a short word, for tests and logs)."""
+    def maybe(self, force=False, asked=False):
+        """(The worker.) Start a sync when every gate allows: None, or why not (a short word, for tests and logs).
+        `asked`: the user's own (`Automation.sync_now`) — the same job, run with the automatic sync switched off too,
+        and a user's job in the registry."""
         o = self._owner
         settings = o.settings_now()
-        if not settings.get("anki_sync_auto") or os.environ.get("SURASURA_NO_ANKI_SYNC"):
+        if not (asked or settings.get("anki_sync_auto")) or os.environ.get("SURASURA_NO_ANKI_SYNC"):
             return "off"
         now = o.clock()
         if not force and now - self._last < SYNC_EVERY:
@@ -245,7 +248,7 @@ class AutoSync:
         decks = list((settings.get("anki_sync_decks") or {}).get(language) or [])
         fields = list((settings.get("anki_sync_fields") or {}).get(language) or [])
         suspended = bool(settings.get("anki_sync_include_suspended", False))
-        o.registry.submit("anki-sync", SYNC_LABEL, automatic=True, on_quit="detach",
+        o.registry.submit("anki-sync", SYNC_LABEL, automatic=not asked, on_quit="detach",
                           start=lambda job: o.thread(self._work, job, language, settings, decks, fields, suspended))
         return None
 
@@ -582,6 +585,21 @@ class Automation:
         if self.closed:
             return
         self.sync.ended(result, language or self.language)
+
+    def sync_now(self, then=None):
+        """A sync the user asked for (a click on the bar's known-words count, Q30): the automatic sync's own job,
+        forced, run with `anki_sync_auto` off too (the user asked), ending as every sync does (`AutoSync.ended`: the
+        5-minute wait counted from it). One at a time: a click while a sync runs adds nothing ("running"). `then(why)`
+        on the worker: None when it started, else why not — "no-decks" and "never-synced" are the Anki window's to
+        set right (the first sync is always made there). Any thread; returns at once. Nothing once closed."""
+        if self.closed:
+            return
+
+        def ask():
+            why = self.sync.maybe(force=True, asked=True)
+            if then is not None:
+                then(why)
+        self.worker.put(ask)
 
     def recheck(self):
         """Is the journey still current? (`_schedule_journey_state`) — the Generate button's mark: one

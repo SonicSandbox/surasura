@@ -1623,6 +1623,8 @@ class ShellWindow(QMainWindow):
         self.anki_mark = frame.AnkiMark(footer)
         row.addWidget(self.anki_mark)
         self.known = frame.KnownCorner(footer)
+        self.known.clicked.connect(self._known_clicked)    # Q30: a click syncs now
+        self._known_relay = None
         row.addWidget(self.known)
         self._logs_folder = None
         self.status_paints = {}             # row 7's statuses (the bar's lines, the journey dot) -> repaints (S19)
@@ -2150,6 +2152,26 @@ class ShellWindow(QMainWindow):
         if d.anki.show_state(key, words, tip):
             d.paints[d.anki] = d.paints.get(d.anki, 0) + 1
 
+    def _known_clicked(self):
+        """Q30: a click on the known-words count syncs now, through the automation's one sync path (`sync_now`: the
+        automatic sync's own job, forced, and with the automatic sync off too — the user asked; it ends as every sync
+        does). A click while one runs adds nothing. With no decks chosen yet, or the first sync not made (always the
+        user's own, in the Anki window), the Anki window opens instead."""
+        automation = self.services.automation
+        if automation is None:
+            return
+        if self._known_relay is None:
+            self._known_relay = bridge.Relay(self)
+            self._known_relay.said.connect(self._known_answer)
+        automation.sync_now(then=self._known_relay.call)
+
+    def _known_answer(self, why):
+        if why in ("no-decks", "never-synced"):
+            from app.qt import windows
+            op = next((op for op in windows.OPENERS if op.name == "anki"), None)
+            if op is not None:
+                windows.launch(self, op)
+
     def _read_level(self):
         d = self.duties
         if d is not None:
@@ -2668,6 +2690,10 @@ class ShellWindow(QMainWindow):
 
     def _jobs_changed(self, views):
         self._jobs = views
+        # Q30: the count's hover says a sync is running — the automatic one, a click's or the Anki window's
+        known = getattr(self, "known", None)
+        if known is not None:
+            known.set_syncing(any(v.kind == "anki-sync" and v.state in jobs_module.LIVE for v in views))
         if self._quit == "waiting" and self._replan_waited and getattr(self, "_moves_waited", True) and \
                 not jobs_module.waits_at_quit(views):
             self._close_now()

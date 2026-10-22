@@ -435,6 +435,29 @@ def test_the_known_corner_and_its_milestone_hairline(window):
     assert k.set_known(None) and k.isHidden()
 
 
+def test_the_known_corner_is_a_button_that_asks_for_a_sync_and_says_so(window):
+    """Q30: the count clicks (the hand's cursor, one Tab stop like the bar's buttons, Space / Enter); its hover ends
+    "Click to sync now", and says a sync is running while one runs."""
+    k = window.known
+    k.set_known(12345, strings.BAR_KNOWN_TIP)
+    _settle()
+    asked = []
+    k.clicked.connect(lambda: asked.append(True))
+    assert k.cursor().shape() == Qt.CursorShape.PointingHandCursor
+    assert k.focusPolicy() == Qt.FocusPolicy.TabFocus
+    assert k.toolTip().endswith(strings.FOOT_KNOWN_CLICK) and "155 to 12,500" in k.toolTip()
+    QTest.mouseClick(k, Qt.MouseButton.LeftButton)
+    assert asked == [True]
+    k.setFocus(Qt.FocusReason.TabFocusReason)
+    QTest.keyClick(k, Qt.Key.Key_Space)
+    QTest.keyClick(k, Qt.Key.Key_Return)
+    assert asked == [True] * 3
+    assert k.set_syncing(True) and k.toolTip().endswith(strings.FOOT_KNOWN_SYNCING)
+    assert not k.set_syncing(True)
+    assert k.set_known(12346, strings.BAR_KNOWN_TIP) and k.toolTip().endswith(strings.FOOT_KNOWN_SYNCING)
+    assert k.set_syncing(False) and k.toolTip().endswith(strings.FOOT_KNOWN_CLICK)
+
+
 # --- the Goal dock ---------------------------------------------------------------------------------------------------- #
 def test_the_hand_holds_at_most_nine_covers_turned_from_minus_eight_to_eight():
     assert frame.hand_angles(12) == [-8, -6, -4, -2, 0, 2, 4, 6, 8]

@@ -27,6 +27,9 @@ from tests import services_helpers as h
 from tests.cli_helpers import same_token_store_as_the_children  # noqa: F401  (autouse: the child's store, in-process)
 
 
+_REAL_ANALYZER_ARGS = __import__("app.run_args", fromlist=["x"]).analyzer_args   # before any stand-in
+
+
 @pytest.fixture(autouse=True)
 def _real_runs_write_the_journey_but_never_open_it(monkeypatch):
     """A user's Generate opens the Journey in the browser when it ends (the app's, by design); these tests ask for that
@@ -34,8 +37,8 @@ def _real_runs_write_the_journey_but_never_open_it(monkeypatch):
     this desktop (tests/harness_guards.py fails a test that opens one)."""
     from app import run_args
     real = run_args.analyzer_args
-    monkeypatch.setattr(run_args, "analyzer_args", lambda settings, language=None, headless=False:
-                        real(settings, language, headless=True))
+    monkeypatch.setattr(run_args, "analyzer_args", lambda settings, language=None, headless=False, opens=True:
+                        real(settings, language, headless=True, opens=opens))
 
 
 def _settings(lang="ja"):
@@ -326,13 +329,13 @@ def test_IK2_4_a_run_that_opens_nothing_is_one_rule_in_run_args():
     """IK2-4: `--no-open` comes from `run_args` (`opens=False`), never added by hand beside it: the window's argv is
     the builder's own plus the progress flag; a run that opens nothing never passes `--app-mode` either (the
     command line's `headless` is the same rule). The run signature never reads either, so nothing re-runs."""
-    from app import run_args
+    real = _REAL_ANALYZER_ARGS                      # the builder itself: this file's autouse stand-in makes every run headless
     settings = dict(_settings(), open_app_mode=True)
-    opens = run_args.analyzer_args(settings, "ja")
+    opens = real(settings, "ja")
     assert "--app-mode" in opens and "--no-open" not in opens                 # the Tk dashboard's Generate, as before
-    quiet = run_args.analyzer_args(settings, "ja", opens=False)
+    quiet = real(settings, "ja", opens=False)
     assert "--no-open" in quiet and "--app-mode" not in quiet
-    assert quiet == run_args.analyzer_args(settings, "ja", headless=True)
+    assert quiet == real(settings, "ja", headless=True)
     controller = GenerateController(JobRegistry(), settle=0)
     seen = []
 

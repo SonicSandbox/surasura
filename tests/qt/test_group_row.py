@@ -184,7 +184,7 @@ def test_the_seam_between_two_shows_sits_above_the_second_shows_line_and_splits_
     seams = {p[3].id: p for p in lst.delegate.parts(entry, rect) if p[0] == "seam"}
     assert set(seams) == {ep.id for _r, ep in eps_[1:]}
     between = seams[eps_[3][1].id][1]
-    assert between.center().y() in (shows[1][0].top(), shows[1][0].top() - 1)    # on the line between the two shows
+    assert between.bottom() + 1 == shows[1][0].top()          # wholly above B's show line, its foot on it (AD-5)
     inside = seams[eps_[1][1].id][1]
     assert inside.center().y() in (eps_[1][0].top(), eps_[1][0].top() - 1)
     hit = lst.part_at(between.center())[1]
@@ -259,3 +259,243 @@ def test_the_show_lines_are_kept_pictures_a_repaint_draws_no_name_again(show_lis
     d.keep_only(lst.model().entries)
     lst.viewport().repaint()
     assert names == []
+
+
+def test_the_show_lines_stand_where_the_services_show_key_changes_and_a_cache_without_it_has_none():
+    """IK-3: which show a file is of is the service's reading (`view_rows._show_key`: its work, else its folder), put on
+    each of a group's episodes; the window's show lines read it, never key the shows themselves. A run's episodes carry
+    none, and a group from a cache from before (no `show_key`) opens as it did: no show lines."""
+    from app.qt import rows
+    rs = _shows_rows()
+    group = rs["group"]
+    assert [e.show_key for e in group.episodes] == [("w", 1)] * 3 + [("w", 2)] * 2
+    assert all(e.show_key is None for e in rs["run"].episodes)
+    assert rows.show_starts(group) == {0: group.episodes[0].show, 3: group.episodes[3].show}
+    cached = group._replace(episodes=tuple(e._replace(show_key=None) for e in group.episodes))
+    assert rows.show_starts(cached) == {}
+    # one show by the service's reading (one work), whatever else differs between its files: one show, no lines
+    one = group._replace(episodes=tuple(e._replace(show_key=("w", 1)) for e in group.episodes))
+    assert rows.show_starts(one) == {}
+
+
+def test_a_closed_rows_line_says_a_dash_new_when_its_count_is_unknown(show_list, monkeypatch):
+    """AD-7: a closed Current row whose new words aren't counted yet (no plan, files came in since Generate) reads
+    "— new" on its own line, as an episode's and the hero's do; a counted row draws its count."""
+    from PyQt6.QtGui import QImage, QPainter
+    from app.qt import rows, strings
+    rs = _shows_rows()
+    lst, _i = show_list([(rows.HERO, rs["one"], ()), (rows.ROW, rs["run"], ())], rs["one"].key)
+    d = lst.delegate
+    slab = d.slab_of(lst.visualRect(lst.model().index(1, 0)))
+    real = rows.TEXT.draw
+    for n_new, count in ((None, strings.ROWS_DASH), (44, "44")):
+        row = rs["run"]._replace(n_new=n_new, pct=91)
+        drawn = []
+        monkeypatch.setattr(rows.TEXT, "draw", lambda p, x, y, text, *a, **k: (drawn.append(text),
+                                                                                 real(p, x, y, text, *a, **k))[1])
+        img = QImage(slab.right() + 1, slab.bottom() + 1, QImage.Format.Format_RGB32)
+        img.fill(rows.c("surface"))
+        p = QPainter(img)
+        try:
+            d._paint_current(p, row, slab, False, 1.0, None)
+        finally:
+            p.end()
+            monkeypatch.setattr(rows.TEXT, "draw", real)
+        k = drawn.index(" " + strings.ROWS_NEW_WORD)
+        assert drawn[k + 1] == count, drawn
+
+
+# --- row 28 follow-up A: the hand's and the keyboard's episode ---------------------------------------------------- #
+def _group_last(show_list, height=None):
+    """The group opened as the list's LAST row (a run above it): (list, its place, the group)."""
+    from app.qt import rows
+    rs = _shows_rows()
+    lst, i = show_list([(rows.ROW, rs["run"], ()), (rows.ROW, rs["group"], ())], rs["group"].key)
+    if height is not None:
+        lst.resize(1100, height)
+        _settle()
+    return lst, i, rs["group"]
+
+
+def _settle():
+    from PyQt6.QtWidgets import QApplication
+    for _ in range(10):
+        QApplication.processEvents()
+
+
+def _keys(lst, *keys):
+    from PyQt6.QtTest import QTest
+    for k in keys:
+        QTest.keyClick(lst, k)
+    _settle()
+
+
+def test_AD1_a_click_lets_the_keyboards_episode_go_so_enter_closes_the_row_again(show_list):
+    """AD-1: ↓ into an episode, then the hand closes and opens the row on its title: Enter closes the row, never the
+    remembered episode's ⋯ (a menu from nowhere); ↓ starts again at its first episode. A close and a list reset (a
+    language switch) let it go too."""
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtTest import QTest
+    from app.qt import rows
+    lst, i, group = _group_last(show_list)
+    menus = []
+    lst.episode_menu_requested.connect(lambda r, ep, at: menus.append(ep.id))
+    lst.setCurrentIndex(lst.model().index(i, 0))
+    _keys(lst, Qt.Key.Key_Down, Qt.Key.Key_Down)
+    assert lst.ep_key == (group.key, group.episodes[1].id)
+    for _ in range(2):                                                 # closed, then opened again, by the hand
+        rect = lst.visualRect(lst.model().index(i, 0))
+        title = next(pt[1] for pt in lst.delegate.parts(lst.model().entries[i], rect) if pt[0] == "title")
+        QTest.mouseClick(lst.viewport(), Qt.MouseButton.LeftButton, pos=title.center())
+        _settle()
+    assert lst.model().open_key == group.key and lst.ep_key is None
+    _keys(lst, Qt.Key.Key_Return)
+    assert menus == [] and lst.model().open_key is None, "Enter closed the row"
+    lst.toggle(lst.model().index(i, 0))
+    _keys(lst, Qt.Key.Key_Down)
+    assert lst.ep_key == (group.key, group.episodes[0].id), "↓ from the head: its first episode"
+    lst.toggle(lst.model().index(i, 0))
+    assert lst.ep_key is None, "a close lets it go"
+    lst.toggle(lst.model().index(i, 0))
+    _keys(lst, Qt.Key.Key_Down)
+    assert lst.ep_key is not None
+    head = lst.delegate.slab_of(lst.visualRect(lst.model().index(i, 0)))
+    QTest.mouseClick(lst.viewport(), Qt.MouseButton.RightButton, pos=head.center())     # on its own row: no new current
+    assert lst.ep_key is None and lst.model().open_key == group.key, "any press of the hand lets it go"
+    entries = list(lst.model().entries)
+    for again in (entries + [(rows.ROW, _shows_rows()["one"], ())],     # a row came: a reset, the group still open
+                  [(rows.ROW, _shows_rows()["one"], ())]):             # another language's list
+        lst.setCurrentIndex(lst.model().index(i, 0))
+        _keys(lst, Qt.Key.Key_Down)
+        assert lst.ep_key is not None
+        assert lst.set_entries(again) == "reset"
+        assert lst.ep_key is None
+        lst.set_entries(entries)
+
+
+def test_AD2_right_on_an_episode_takes_that_episodes_own_button_and_down_lets_it_go(show_list):
+    """AD-2: the keyboard on episode 3, → takes episode 3's own *Mine now* and Enter asks for its file alone — never
+    the head's (every waiting file) or episode 1's. → then ↓ lets the button go: Enter then opens the next episode's
+    ⋯ and asks for nothing. On the head, → takes the head's own."""
+    from PyQt6.QtCore import Qt
+    lst, i, group = _group_last(show_list)
+    asked, menus = [], []
+    lst.mine_requested.connect(lambda r, ids: asked.append(tuple(ids)))
+    lst.episode_menu_requested.connect(lambda r, ep, at: menus.append(ep.id))
+    lst.setCurrentIndex(lst.model().index(i, 0))
+    _keys(lst, Qt.Key.Key_Down, Qt.Key.Key_Down, Qt.Key.Key_Down, Qt.Key.Key_Right, Qt.Key.Key_Return)
+    assert asked == [(group.episodes[2].id,)]
+    _keys(lst, Qt.Key.Key_Right, Qt.Key.Key_Down)
+    assert lst.action_focus is None and lst.ep_key == (group.key, group.episodes[3].id)
+    _keys(lst, Qt.Key.Key_Return)
+    assert asked == [(group.episodes[2].id,)] and menus == [group.episodes[3].id]
+    _keys(lst, Qt.Key.Key_Up, Qt.Key.Key_Up, Qt.Key.Key_Up, Qt.Key.Key_Up)
+    assert lst.ep_key is None
+    _keys(lst, Qt.Key.Key_Right, Qt.Key.Key_Return)
+    assert len(asked) == 2 and len(asked[1]) > 1, "the head's own: every waiting file of the group"
+
+
+def test_AD3_after_a_wheels_scroll_the_hands_episode_is_the_one_under_it(show_list, monkeypatch):
+    """AD-3: Qt sends no move after a wheel's scroll: the hover look and ⋯ stayed on the episode that slid away. The
+    hand's episode is read again where the cursor is."""
+    from PyQt6.QtCore import Qt
+    from app.qt import rows
+    from tests.qt.test_drag import move
+    lst, i, group = _group_last(show_list, height=260)
+    rect = lst.visualRect(lst.model().index(i, 0))
+    lines = lst.delegate.episode_lines(lst.model().entries[i], rect)
+    at = lines[0][0].center()
+    assert lst.viewport().rect().contains(at)
+    move(lst, at, buttons=Qt.MouseButton.NoButton)
+    assert lst.ep_hot == (group.key, lines[0][1].id)
+    gpos = lst.viewport().mapToGlobal(at)
+    monkeypatch.setattr(rows, "QCursor", type("C", (), {"pos": staticmethod(lambda: gpos)}))
+    bar = lst.verticalScrollBar()
+    step = lines[1][0].top() - lines[0][0].top()
+    assert bar.maximum() - bar.value() >= step
+    bar.setValue(bar.value() + step)                                   # the next episode now under the hand
+    _settle()
+    under = [ep for r, ep in lst.delegate.episode_lines(lst.model().entries[i], lst.visualRect(lst.model().index(i, 0)))
+             if r.contains(at)]
+    assert under == [lines[1][1]] and lst.ep_hot == (group.key, lines[1][1].id)
+
+
+def test_AD4_down_past_the_lists_last_episode_stays_there(show_list):
+    """AD-4: the list's last row opened, ↓ on its last episode: no next row — the keyboard stays on that episode,
+    never back to the head and round again."""
+    from PyQt6.QtCore import Qt
+    lst, i, group = _group_last(show_list)
+    lst.setCurrentIndex(lst.model().index(i, 0))
+    _keys(lst, *[Qt.Key.Key_Down] * len(group.episodes))
+    last = (group.key, group.episodes[-1].id)
+    assert lst.ep_key == last
+    _keys(lst, Qt.Key.Key_Down, Qt.Key.Key_Down)
+    assert lst.ep_key == last and lst.currentIndex().row() == i
+
+
+def test_IK4_the_hand_within_one_episode_repaints_nothing_and_to_the_next_only_those_two_lines(show_list, monkeypatch):
+    """S19 (update only what changed): the hand moving within one episode's line repaints nothing; onto the next
+    episode, only the two lines whose look changed (the one it left, the one it came to)."""
+    from PyQt6.QtCore import QPoint, Qt
+    from tests.qt.test_drag import move
+    lst, i, group = _group_last(show_list)
+    lines = lst.delegate.episode_lines(lst.model().entries[i], lst.visualRect(lst.model().index(i, 0)))
+    (r0, ep0), (r1, ep1) = lines[0], lines[1]
+    move(lst, r0.center(), buttons=Qt.MouseButton.NoButton)
+    _settle()
+    vp, updates = lst.viewport(), []
+    real_vp, real_row = vp.update, lst.update
+    monkeypatch.setattr(vp, "update", lambda *a: (updates.append(("vp",) + a), real_vp(*a))[1])
+    monkeypatch.setattr(lst, "update", lambda *a: (updates.append(("row",) + a), real_row(*a))[1])
+    for dx, dy in ((40, 0), (80, -3), (-30, 4)):
+        move(lst, r0.center() + QPoint(dx, dy), buttons=Qt.MouseButton.NoButton)
+    assert updates == [] and lst.ep_hot == (group.key, ep0.id)
+    move(lst, r1.center(), buttons=Qt.MouseButton.NoButton)
+    assert lst.ep_hot == (group.key, ep1.id)
+    assert updates == [("vp", r0), ("vp", r1)]
+
+
+def test_IK7_a_right_click_on_an_opened_rows_episode_opens_that_episodes_menu_and_on_the_head_the_rows(show_list):
+    """IK-7: a right-click on an opened row's episode opens that episode's own ⋯, at the hand (as the menu key does
+    for the keyboard's episode); on the head, the row's ⋯ as before."""
+    from PyQt6.QtGui import QContextMenuEvent
+    lst, i, group = _group_last(show_list)
+    eps_, rows_ = [], []
+    lst.episode_menu_requested.connect(lambda r, ep, at: eps_.append((r.key, ep.id, at)))
+    lst.menu_requested.connect(lambda r, at: rows_.append(r.key))
+    rect = lst.visualRect(lst.model().index(i, 0))
+    line, ep = lst.delegate.episode_lines(lst.model().entries[i], rect)[3]
+    for pos in (line.center(), lst.delegate.slab_of(rect).center()):
+        lst.contextMenuEvent(QContextMenuEvent(QContextMenuEvent.Reason.Mouse, pos, lst.viewport().mapToGlobal(pos)))
+    assert eps_ == [(group.key, ep.id, lst.viewport().mapToGlobal(line.center()))]
+    assert rows_ == [group.key]
+
+
+@pytest.mark.parametrize("f", (1.0, 1.5))
+def test_AD5_the_seams_chip_at_a_show_change_never_covers_the_next_shows_name(show_list, monkeypatch, f):
+    """AD-5: the ✂ seam where one show's run ends stands wholly above the next show's line, so its chip (lit under
+    the hand) never covers the show's name and its hover takes none of the show line — at the text factor 1.0 and
+    1.5."""
+    from PyQt6.QtGui import QImage, QPainter
+    from app.qt import rows
+    monkeypatch.setattr(rows, "fz", lambda: f)
+    rs = _shows_rows()
+    group = rs["group"]
+    lst, i = show_list([(rows.HERO, rs["run"], ()), (rows.ROW, group, ())], group.key)
+    shows, eps_, rect, entry = _ordered_under_their_shows(lst, i, group)
+    d = lst.delegate
+    sr = shows[1][0]
+    seam = next(p[1] for p in d.parts(entry, rect) if p[0] == "seam" and p[3] is eps_[3][1])
+    assert seam.bottom() < sr.top()
+    ground = rows.c("open-row")
+
+    def ink_rows(paint):
+        img = QImage(rect.width(), rect.bottom() + 40, QImage.Format.Format_RGB32)
+        img.fill(ground)
+        p = QPainter(img)
+        paint(p)
+        p.end()
+        return [y for y in range(img.height()) if any(img.pixelColor(x, y) != ground for x in range(0, 400, 2))]
+    chip = ink_rows(lambda p: d.paint_seam(p, seam))
+    name = ink_rows(lambda p: d._paint_show_line(p, sr, shows[1][1], 1.0))
+    assert chip and name and max(chip) < min(name), (max(chip), min(name))

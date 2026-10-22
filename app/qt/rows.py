@@ -39,8 +39,8 @@ from collections import OrderedDict, namedtuple
 
 from PyQt6.QtCore import (QAbstractListModel, QItemSelectionModel, QModelIndex, QPoint, QPointF, QRect, QRectF, QSize,
                           QObject, Qt, QTimer, pyqtSignal)
-from PyQt6.QtGui import (QBrush, QColor, QFont, QFontMetrics, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap,
-                         QStaticText, QTextOption)
+from PyQt6.QtGui import (QBrush, QColor, QCursor, QFont, QFontMetrics, QLinearGradient, QPainter, QPainterPath, QPen,
+                         QPixmap, QStaticText, QTextOption)
 from PyQt6.QtWidgets import QAbstractItemView, QListView, QStyle, QStyledItemDelegate
 
 from app import theme, unicode_ranges
@@ -1369,13 +1369,16 @@ class RowDelegate(QStyledItemDelegate):
         eps = self._episode_rows(row, area, hero)
         out = []
         half = max(4, round(5 * fz()))
+        starts = show_starts(row)
         for k in range(1, len(eps)):
             if view_rows.split_piece(row, k) is None:     # B2-2: the Soon line parts the show there already
                 continue
             r, ep = eps[k]
             cols = self._episode_cols(r)
             left = r.left() + EP_LABEL_IN
-            y = eps[k - 1][0].bottom() + 1           # LM11b: under the run before, above a show line where one stands
+            y = eps[k - 1][0].bottom() + 1           # LM11b: under the run before, above a show line where one stands —
+            if k in starts:                          # there wholly above it, so its ✂ chip never covers the show's name
+                y -= half                            # and its hover takes none of the show line (AD-5)
             out.append(("seam", QRect(left, y - half, max(1, cols["play"].left() - 8 - left), 2 * half),
                         strings.SEAM_TIP.format(rest=_rest_of(row, k)), ep))
         return out
@@ -2472,15 +2475,16 @@ ShowLine = namedtuple("ShowLine", "show")           # a show line's picture payl
 
 def show_starts(row):
     """{k: show}: the episodes of an opened group a show line stands above, with the show's name — its first, and each
-    where the show changes (`Episode.work_id`, `show`). Empty for a run, a group of one show (never `row.group`) and a
-    group from a cache from before (no `show`): those look as before."""
+    where the show changes (`Episode.show_key`, the service's own reading of which show a file is of). Empty for a run,
+    a group of one show (never `row.group`) and a group from a cache from before (no `show_key`): those look as
+    before."""
     if not getattr(row, "group", False):
         return {}
     out, last = {}, None
     for k, ep in enumerate(row.episodes):
-        if not ep.show:
+        here = getattr(ep, "show_key", None)
+        if here is None or not ep.show:
             return {}
-        here = (ep.work_id, ep.show)
         if here != last:
             out[k], last = ep.show, here
     return out if len(out) > 1 else {}
@@ -2600,6 +2604,7 @@ class RowsView(QListView):
         self._warm.setInterval(WARM_IDLE_MS)
         self._warm.timeout.connect(self._warm_one)
         self.verticalScrollBar().valueChanged.connect(self._rest)
+        self.verticalScrollBar().valueChanged.connect(self._hand_again)      # --- row 28 (AD-3)
         # the pointer resting on a closed row paints its episodes ahead (one a turn), so opening it only blits
         self._hover_warm = QTimer(self)
         self._hover_warm.setSingleShot(True)
@@ -2742,6 +2747,29 @@ class RowsView(QListView):
         ep = self.delegate.episode_at(entry, self.visualRect(idx), pos)
         return (entry[1].key, ep.id) if ep is not None else None
 
+    def _hand_again(self, *_args):
+        """The list moved under a resting hand (a wheel's scroll, a refresh): its episode read again where the cursor
+        is — Qt sends no move — so the hover look and ⋯ stay on the line under it (one lookup; only lines that change
+        repaint). Nothing while no row is open and no episode is lit."""
+        if self.ep_hot is None and self.model().open_key is None:
+            return
+        pos = self.viewport().mapFromGlobal(QCursor.pos())
+        self._set_ep("ep_hot", self._ep_under(pos) if self.viewport().rect().contains(pos) else None)
+
+    def _action_parts(self, idx, entry):
+        """The status buttons → can reach on row `entry`: on an opened row's episode (the keyboard's), that episode's
+        own; on its head, the head's — never an episode's button while the keyboard is on the head (AD-2)."""
+        rect = self.visualRect(idx)
+        parts = [pt for pt in self.delegate.parts(entry, rect) if pt[0] in ACTION_NAMES]
+        if entry[0] not in (HERO, ROW) or self.model().open_key != entry[1].key:
+            return parts
+        lines = self.delegate.episode_lines(entry, rect)
+        on = self.ep_key[1] if self.ep_key is not None and self.ep_key[0] == entry[1].key else None
+        if on is None:
+            return [pt for pt in parts if not any(r.contains(pt[1]) for r, _ep in lines)]
+        mine = next((r for r, ep in lines if ep.id == on), None)
+        return [pt for pt in parts if mine is not None and mine.contains(pt[1])]
+
     def _episode_key(self, event):
         """↓ on an opened row steps into its episodes and on through them, ↑ back out to its head; Enter, Space or the
         menu key on an episode opens its ⋯ (its tip shown, as on hover). -> handled."""
@@ -2754,6 +2782,9 @@ class RowsView(QListView):
         at = next((k for k, e in enumerate(eps) if self.ep_key == (entry[1].key, e.id)), None)
         if key == Qt.Key.Key_Down:
             if at is not None and at + 1 >= len(eps):
+                nxt = self.moveCursor(QAbstractItemView.CursorAction.MoveDown, Qt.KeyboardModifier.NoModifier)
+                if not nxt.isValid() or nxt.row() == idx.row():
+                    return True                      # the list's last row: the keyboard stays on its last (AD-4)
                 self._set_ep("ep_key", None)
                 return False                         # past the last: on to the next row
             k = 0 if at is None else at + 1
@@ -2767,6 +2798,7 @@ class RowsView(QListView):
         else:
             return False
         self._set_ep("ep_key", None if k is None else (entry[1].key, eps[k].id))
+        self.action_focus = None                     # AD-2: the keyboard's on an episode line now, not on a button
         line = self._ep_line(self.ep_key)
         if line is not None:                         # the episode stays in view
             vp, r, bar = self.viewport().rect(), line[1], self.verticalScrollBar()
@@ -2779,13 +2811,16 @@ class RowsView(QListView):
                 self.tooltips.request(self.viewport(), more[1], more[2])
         return True
 
-    def open_episode_menu(self, idx, ep):
-        """The episode's ⋯ menu asked for, under its ⋯ (`episode_menu_requested`)."""
+    def open_episode_menu(self, idx, ep, at=None):
+        """The episode's ⋯ menu asked for (`episode_menu_requested`): at `at` (a right-click's global point), else
+        under its ⋯."""
         entry = self.model().entries[idx.row()]
-        more = next((pt for pt in self.delegate.parts(entry, self.visualRect(idx))
-                     if pt[0] == "more-ep" and pt[3].id == ep.id), None)
-        rect = more[1] if more is not None else self.visualRect(idx)
-        self.episode_menu_requested.emit(entry[1], ep, self.viewport().mapToGlobal(rect.bottomLeft()))
+        if at is None:
+            more = next((pt for pt in self.delegate.parts(entry, self.visualRect(idx))
+                         if pt[0] == "more-ep" and pt[3].id == ep.id), None)
+            rect = more[1] if more is not None else self.visualRect(idx)
+            at = self.viewport().mapToGlobal(rect.bottomLeft())
+        self.episode_menu_requested.emit(entry[1], ep, at)
     # --- end row 28
 
     def _q8_hover(self, at, part):
@@ -2840,10 +2875,15 @@ class RowsView(QListView):
             self.looks_changed = True
             self._rest()
             self._hover = None
+            self._set_ep("ep_key", None)                 # --- row 28 (AD-1): a reset (a language switch) drops the row
             if anchor is not None and self.isVisible():
                 self._restore = anchor
                 self._apply_restore()
                 self._restore = None                     # tried once: a place gone stays gone (W2.2 review A-15)
+        if self.ep_key is not None and self._ep_line(self.ep_key) is None:
+            self._set_ep("ep_key", None)                 # --- row 28: its episode, or its row's opening, gone
+        if self.ep_hot is not None:
+            self._hand_again()                           # --- row 28 (AD-3): the hand's episode where it is now
         return how
 
     def _held_keys(self, entries):
@@ -3034,6 +3074,7 @@ class RowsView(QListView):
         if entry[0] not in (HERO, ROW):
             return
         key = entry[1].key
+        self._set_ep("ep_key", None)                 # --- row 28 (AD-1): opened or closed, the keyboard is on its head
         model.open_key = None if model.open_key == key else key
         self.relayout()
         self.opened.emit(model.open_key)
@@ -3233,17 +3274,20 @@ class RowsView(QListView):
 
     def contextMenuEvent(self, event):
         """A right-click on a row opens its ⋯ at the hand; the menu key, at the current row's ⋯ (the same
-        `menu_requested` path as ⋯)."""
+        `menu_requested` path as ⋯). On an opened row's episode (the hand's, or the keyboard's): that episode's own ⋯
+        (IK-7)."""
         mouse = event.reason() == event.Reason.Mouse
         idx = self.indexAt(event.pos()) if mouse else self.currentIndex()
         if not idx.isValid() or self.model().entries[idx.row()][0] not in (HERO, ROW, FINISHED):
             super().contextMenuEvent(event)
             return
         entry = self.model().entries[idx.row()]
-        ep = next((e for e in getattr(entry[1], "episodes", ()) if not mouse and self.ep_key == (entry[1].key, e.id)),
-                  None)
-        if ep is not None and self.model().open_key == entry[1].key:      # --- row 28: the keyboard's episode
-            self.open_episode_menu(idx, ep)
+        if mouse:                                    # --- row 28 (IK-7): the hand's episode, as the menu key's
+            ep = self.delegate.episode_at(entry, self.visualRect(idx), event.pos())
+        else:
+            ep = next((e for e in getattr(entry[1], "episodes", ()) if self.ep_key == (entry[1].key, e.id)), None)
+        if ep is not None and self.model().open_key == entry[1].key:      # --- row 28: an opened row's episode
+            self.open_episode_menu(idx, ep, event.globalPos() if mouse else None)
             event.accept()
             return
         if mouse:
@@ -3380,6 +3424,7 @@ class RowsView(QListView):
         (`mouseReleaseEvent`). A hand that travels `drag-start-px` first hands the press to the drag (`mouseMoveEvent`):
         a drag begun on a stone never marks it watched, one begun on a row never opens it."""
         self._show_focus(False)
+        self._set_ep("ep_key", None)                 # --- row 28 (AD-1): the hand's now: the keyboard's episode let go
         self._press = None
         if event.button() == Qt.MouseButton.LeftButton:
             idx, part = self.part_at(event.pos())
@@ -3517,8 +3562,7 @@ class RowsView(QListView):
         entry = self.model().entries[idx.row()]
         key = event.key()
         if key == Qt.Key.Key_Right and entry[0] in (HERO, ROW):
-            part = next((pt for pt in self.delegate.parts(entry, self.visualRect(idx)) if pt[0] in ACTION_NAMES),
-                        None)
+            part = next(iter(self._action_parts(idx, entry)), None)     # row 28: the keyboard's episode's or the head's
             if part is None:
                 return False
             self.action_focus = (entry[1].key, part[0])
@@ -3536,7 +3580,7 @@ class RowsView(QListView):
             held, self.action_focus = self.action_focus, None
             part = None
             if getattr(entry[1], "key", None) == held[0]:         # the row the keyboard went to (P4.1 WF, N8)
-                part = next((pt for pt in self.delegate.parts(entry, self.visualRect(idx)) if pt[0] == held[1]), None)
+                part = next((pt for pt in self._action_parts(idx, entry) if pt[0] == held[1]), None)
             if part is not None:
                 self._act(idx, part)
                 return True

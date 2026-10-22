@@ -171,6 +171,12 @@ def get_settings_path():
     return get_user_file("settings.json")
 
 
+def persistent_root():
+    """The folder get_persistent_user_data_path() names, never made: for a reader that must find nothing where nothing
+    was ever built — a tool reading the user's own databases makes no empty folder in their profile."""
+    return _test_redirect("persistent_root") or os.path.join(_roaming_base(), VENDOR, data_name())
+
+
 def get_persistent_user_data_path():
     """
     Get the directory for PERSISTENT USER DATA (e.g. telemetry ID).
@@ -180,7 +186,7 @@ def get_persistent_user_data_path():
     SURASURA_TEST_ROOT moves it to <test root>/persistent_root; a test that reaches the real one raises (as the local
     root does: a read made the real folder).
     """
-    path = _test_redirect("persistent_root") or os.path.join(_roaming_base(), VENDOR, data_name())
+    path = persistent_root()
     if not os.path.exists(path):
         os.makedirs(path, exist_ok=True)
     return path

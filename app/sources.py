@@ -282,8 +282,8 @@ def group_copies(picks, versions, language):
     better-version check both ask it): `picks` / `versions` = [(key, record)] of the item's own origins and of its
     other versions (a record's `origin`, `sha256`, `video_path`) -> (the pick's group, the pick's rank, {group: (key,
     rank)} — of each group the version the look would pick: `version_rank` against the pick's video, never a flagged
-    track (signs, karaoke), a bilingual file, a double-episode file, the pick's own bytes or one the learner's Undo
-    declined, LM3)."""
+    track (signs, karaoke), a bilingual file, a double-episode file, the pick's own bytes or one the switch passes
+    over while its file is as judged — the learner's Undo declined it, or it was too thin: `passed_over`, LM3)."""
     pick = next((r for _k, r in picks if r.get("video_path")), picks[0][1])
     video = pick.get("video_path")
     like = video_names([video] if video else ())
@@ -296,7 +296,7 @@ def group_copies(picks, versions, language):
     best = {}
     for key, record in versions:
         origin = str(record.get("origin") or "")
-        if not origin or record.get("sha256") in shas or record.get("declined"):
+        if not origin or record.get("sha256") in shas or passed_over(record):
             continue
         n = en.identity(os.path.basename(origin))
         if n.flags or n.bilingual or len(n.episodes) > 1:
@@ -306,6 +306,24 @@ def group_copies(picks, versions, language):
             best[group] = (key, r)
     origin = str(pick.get("origin") or "")
     return _group(os.path.basename(origin)), rank(origin), best
+
+
+def passed_over(record):
+    """LM3 (S19): a version the switch passes over while its file is as it was judged — the learner's Undo declined it
+    (`declined`) or it held too few lines (`thin`, A6): the flag holds the file's [size, mtime_ns] as recorded then
+    (a JSON text where the store's `origins` read it); its file changed since (the record's stats follow it), it is
+    judged again."""
+    stats = [record.get("size"), record.get("mtime_ns")]
+    for flag in ("declined", "thin"):
+        value = record.get(flag)
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except ValueError:
+                value = None
+        if isinstance(value, list) and value == stats:
+            return True
+    return False
 
 
 def better(rank, than):
@@ -1260,7 +1278,8 @@ class _Look:
             for o in self.origins.values():
                 self.by_item.setdefault(o.item_id, []).append(o)
         found = self.by_item.get(item_id) or []
-        record = lambda o: (o.origin, {"origin": o.origin, "sha256": o.sha256, "video_path": o.video_path})  # noqa
+        record = lambda o: (o.origin, {"origin": o.origin, "sha256": o.sha256, "video_path": o.video_path,  # noqa
+                                       "size": o.size, "mtime_ns": o.mtime_ns, "declined": o.declined, "thin": o.thin})
         picks = [record(o) for o in found if not o.version]
         versions = [record(o) for o in found if o.version]
         if not picks or not versions or found[0].availability != "available" or \
@@ -2013,10 +2032,16 @@ class _Look:
         followed (S5) and its record's stats rewritten; a refused one is left as it is (looked at again the next time
         its folder is listed, by its stats alone)."""
         o = self.origins.get(_key(path))
-        if o is None or o.version or (st.st_size, st.st_mtime_ns) == (o.size, o.mtime_ns):
-            return                                           # LM1b: a version changed is never copied over the item
+        if o is None or (st.st_size, st.st_mtime_ns) == (o.size, o.mtime_ns):
+            return
         if self._recent(st):
             self._wait(folder)
+            return
+        if o.version:                                        # LM1b: a version changed is never copied over the item;
+            sha = _read_text(path, st)[1]                    # LM3: its record follows the file — one passed over is
+            if sha is not None and self._same(path, st):     # judged again, a better one switched to (`_switch_better`)
+                self.store.update_origin(o.origin or path, st.st_size, st.st_mtime_ns, sha)
+                self.better.add(o.item_id)
             return
         outcome, sha = self._recopy(o.rel_path, o.sha256, path, st)
         if outcome == "wait":
@@ -2149,9 +2174,11 @@ class _Look:
         return self.book_origins
 
     def _book_moved(self, key, st):
-        """LM3 (T2-B6): is this known EPUB's text recorded with other stats (its bytes may be a new edition's)? Never
-        for an EPUB known only as an old edition (versions): that is never split again."""
-        picks = [o for o in (self._book_origins().get(key) or {}).values() if not o.version]
+        """LM3 (T2-B6): is this known EPUB recorded with other stats (its bytes may be a new edition's)? Its text's
+        records, else (an EPUB known only as an old or a declined edition: versions) its versions' — read again only
+        once the file changed (S19)."""
+        records = list((self._book_origins().get(key) or {}).values())
+        picks = [o for o in records if not o.version] or records
         return bool(picks) and all((o.size, o.mtime_ns) != (st.st_size, st.st_mtime_ns) for o in picks)
 
     def _edition_of(self, path):

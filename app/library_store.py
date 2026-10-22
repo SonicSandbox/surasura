@@ -7761,7 +7761,7 @@ _LINK_TAGS = (0xA000000C, 0xA0000003)              # IO_REPARSE_TAG_SYMLINK, IO_
 _DIGITS = re.compile(r"(\d+)")
 _EPUB_PART = re.compile(r"\.epub#\d+$", re.I)    # an EPUB's part's origin (`<book>.epub#3`)
 Origin = namedtuple("Origin", "item_id root origin size mtime_ns sha256 rel_path availability paired_at version "
-                              "video_path video_size video_key", defaults=(None, None, None, None))
+                              "video_path video_size video_key declined thin", defaults=(None,) * 6)
 
 
 def origin_key(path):
@@ -8184,8 +8184,9 @@ def _store_stop_source(self, root_id):
 
 def _store_origins(self):
     """{path_key(origin): Origin(item_id, root, origin, size, mtime_ns, sha256, rel_path, availability, paired_at,
-    version, video_path, video_size, video_key)} for every origin recorded (`version`: another version of its item's
-    episode, LM1b — a look knows its file, no reader takes it), in any tier (a finished item is never taken in again): one read per look — the item's
+    version, video_path, video_size, video_key, declined, thin)} for every origin recorded (`version`: another version
+    of its item's episode, LM1b — a look knows its file, no reader takes it; `declined` / `thin`: a version the switch
+    passes over while its file is as judged, LM3 `sources.passed_over`), in any tier (a finished item is never taken in again): one read per look — the item's
     availability with it, so a look finds the copies gone (item 8a) with no stat of its own. The records' fields are read by SQLite
     (F13: decoding every record in Python held the interpreter 0.25 s at 20k, stretching a window's save meanwhile); a
     record that isn't a JSON object reads as one with no fields."""
@@ -8195,7 +8196,8 @@ def _store_origins(self):
         rows = self.conn.execute(
             f"SELECT substr(p.content_key, {len(SOURCE_KEY) + 1}), p.item_id, {field('root')}, {field('origin')}, "
             f"{field('size')}, {field('mtime_ns')}, {field('sha256')}, i.rel_path, i.availability, p.paired_at, "
-            f"{_VERSION_ROW}, {field('video_path')}, {field('video_size')}, {field('video_key')} FROM pairings p "
+            f"{_VERSION_ROW}, {field('video_path')}, {field('video_size')}, {field('video_key')}, "
+            f"{field('declined')}, {field('thin')} FROM pairings p "
             f"JOIN items i ON i.id = p.item_id WHERE {_ORIGIN_ROW} ORDER BY p.content_key").fetchall()
     return {r[0]: Origin._make(r[1:]) for r in rows}         # in key order (a look finds a folder's by its prefix)
 
@@ -9099,7 +9101,7 @@ def _switch_plan(self, item_id, rel, picks, key, record, keep_name=False):
     if to_rel is None:
         return None
     text = self.conn.execute("SELECT pairing FROM pairings WHERE content_key = ?", (key,)).fetchone()[0]
-    return {"item": item_id, "rel": rel, "to_rel": to_rel, "sha256": record.get("sha256"),
+    return {"item": item_id, "rel": rel, "to_rel": to_rel, "sha256": record.get("sha256"), "key": key,
             "origins": [record["origin"]], "expect": dict(picks, **{key: text}), "write": _swapped(picks, record, key)}
 
 
@@ -9477,21 +9479,23 @@ def _store_undo_switch(self, change, decline=True):
 
 def _declined(before, after):
     """LM3: the records a better version's (or a new edition's) Undo writes — as they were, the version it switched to
-    kept a version marked `declined`, so no look switches to it again (`sources.group_copies` passes it over): a new
-    edition's record kept so (its EPUB never split again), and an EPUB rewritten at its own path keeping the file's
-    new size and time (it isn't taken for a new edition again until it changes)."""
+    kept a version marked `declined` with its file's [size, mtime_ns], so no look switches to it again while that
+    file stays as it was (`sources.passed_over`; changed, it is judged again): a new edition's record kept so (its
+    EPUB not split again until it changes), and an EPUB rewritten at its own path keeping the file's new size and time
+    (it isn't taken for a new edition again until it changes)."""
     out = dict(before)
     for key, text in after.items():
         record = _json_dict(text) or {}
         if record.get("version"):
             continue                                 # the old text's record: `before` holds it as it was
         old = _json_dict(before.get(key)) if key in before else None
+        stats = [record.get("size"), record.get("mtime_ns")]
         if old is None:
-            out[key] = dict(record, version=True, declined=True)
+            out[key] = dict(record, version=True, declined=stats)
         elif old.get("version"):
-            out[key] = dict(old, declined=True)
+            out[key] = dict(old, declined=[old.get("size"), old.get("mtime_ns")])
         else:
-            out[key] = dict(old, size=record.get("size"), mtime_ns=record.get("mtime_ns"), declined=True)
+            out[key] = dict(old, size=stats[0], mtime_ns=stats[1], declined=stats)
     return out
 
 
@@ -9577,7 +9581,8 @@ def _store_switch_versions(self, item_ids, by=SOURCE_PRODUCER):
     (`_switch`: the bytes read and checked outside the lock, the old copy to the trash, SWITCH_BATCH a command, one
     Change): the item keeps its id, place and cards; its copy takes the version's bytes and name; the version's record
     becomes the item's (with its video), the old one a version. Never a version under 1/THIN of the copy's dialogue
-    lines (A6: a signs track the look would never pick, `_thin_switch`); one whose original can't be read (a drive
+    lines (A6: a signs track the look would never pick, `_thin_switch`; remembered on its record by its file's stats,
+    `thin`, so it is read again only once its file changed); one whose original can't be read (a drive
     offline, A9) or whose copy is held is `held` — a later look tries it again. Never touches the title's group record
     nor `last_switch`. -> the Change (kind `switch_version`; `Store.undo` puts it back)."""
     from app import sources
@@ -9599,8 +9604,25 @@ def _store_switch_versions(self, item_ids, by=SOURCE_PRODUCER):
                 held.append(item_id)
                 continue
             plans.append(plan)
-    plans = [p for p in plans if not _thin_switch(self, p)]
-    return self._switch("switch_version", by, None, plans, [], held, None)
+    thin = [p for p in plans if _thin_switch(self, p)]
+    if thin:
+        _passed_over(self, [p["key"] for p in thin], "thin")
+    return self._switch("switch_version", by, None, [p for p in plans if p not in thin], [], held, None)
+
+
+def _passed_over(self, keys, flag):
+    """LM3: versions the switch passes over, remembered on their records by their files' stats as recorded (`flag`:
+    [size, mtime_ns]; `sources.passed_over`): no look reads them again until their file changed (S19)."""
+    with self._writing():
+        for key in keys:
+            row = self.conn.execute("SELECT pairing FROM pairings WHERE content_key = ?", (key,)).fetchone()
+            record = _json_dict(row[0]) if row else None
+            if record is None:
+                continue
+            record[flag] = [record.get("size"), record.get("mtime_ns")]
+            self.conn.execute("UPDATE pairings SET pairing = ? WHERE content_key = ?",
+                              (json.dumps(record, sort_keys=True, ensure_ascii=False), key))
+        self._copy_dirty()
 
 
 def _thin_switch(self, plan):

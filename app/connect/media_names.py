@@ -13,19 +13,25 @@ the mining step** (every batch's notes; a job that ends skipped or failed too), 
   one (3.0), else a hash of the line's text.
 - **One file per line**: the first note of a line gives its file under the new name (`retrieveMediaFile` →
   `storeMediaFile`); every note of the line is pointed at it (`updateNoteFields`), and the old names of the notes it
-  pointed are deleted in the same rename, once no note uses them (adversary B #15; only a kill, or Anki gone, between
-  the points and the deletes leaves one). **A name already in Anki is reused**, never uploaded again — a card made
-  again for the same line (the shelf's swap back, a deleted card made again on request) costs no upload.
+  pointed are deleted in the same rename, once no note uses them (adversary B #15). **A name already in Anki is
+  reused**, never uploaded again — a card made again for the same line (the shelf's swap back, a deleted card made
+  again on request) costs no upload.
 - **One `multi` a kind** (LF-mining row 25): the batch's name checks, reads, stores, points, searches and deletes go as
-  one AnkiConnect request each (the adapter's `many`): ~8 requests for an episode's 24 notes, not ~270. One action
-  failing in its slot leaves only its notes as they are — never pointed at a file that wasn't stored, an old file whose
-  search failed never deleted — the rest is done, and the rename raises AnkiError as a failed request always did: the
-  job waits, and the next look finishes what was left.
+  one AnkiConnect request each (the adapter's `many`): ~10 requests for an episode's 24 notes, not ~270 — at most
+  MANY_CHUNK actions and about MANY_BYTES of base64 a request (R2-9: Anki runs a request on its main thread in one
+  go). One action failing in its slot leaves only its notes as they are — never pointed at a file that wasn't stored,
+  an old file whose search failed never deleted — the rest is done, and the rename raises `Partial`: that episode's
+  own wait (R2-1), and the next look finishes what was left.
+- **Old files can stay behind** (R2-3, IK-r2-5): a note the next look finds on its `sl-` name is never planned again,
+  so an old file whose search or delete failed, or one a kill or Anki going away left between the points and the
+  deletes, stays in Anki's media folder for good. Nothing is lost (no card plays it; Anki's *Check Media* lists it).
+  Deferred: keeping the owed deletes and trying them again.
 - **Killed half-way**: run again, it finishes (the field mapping read back from the job's settings export) — a note
   already pointing at the new name is left; one still on its old name whose new file exists is pointed at it; no note
   ever points at a file that isn't there.
-- Holds Anki's write lock from its first read; never while you review (K88: asked once, after the reads and before the
-  batch's first write — its writes are three requests under the lock; before row 25 it was asked before each note's
+- Holds Anki's write lock from its first read; never while you review (K88: asked after the reads, before the batch's
+  first store, and again before its first point — IK-r2-4, P2.4-7's "before each Surasura write": a review started
+  meanwhile points no note, and the next look reuses the stored files; before row 25 it was asked before each note's
   writes: PROVISIONAL, Michi's technical rule). The next request to Zero asks for a run-file key that names each line's
   media, and then this step goes (P2.4-4).
 
@@ -35,14 +41,25 @@ import hashlib
 import os
 import re
 
+from app.anki_connect import AnkiError
+
 PREFIX = "sl-"
 _SOUND = re.compile(r"\[sound:([^\]]+)\]")
 _IMG = re.compile(r"""<img[^>]*\bsrc=["']([^"']+)["']""", re.IGNORECASE)
 MANY_CHUNK = 100        # actions in one `multi` at most: an episode's batch is one request a kind
+MANY_BYTES = 8 * 1024 * 1024    # base64 in one request at most, about (stores sent, reads answered; R2-9)
 
 
 class Reviewing(Exception):
     """You started reviewing: nothing (more) was written."""
+
+
+class Partial(AnkiError):
+    """Some of the rename's actions failed in their slots; the rest was done (the job waits, the next look finishes:
+    never *Needs you*, R2-1)."""
+
+    def __init__(self, message):
+        super().__init__(message, kind="partial")
 
 
 def fingerprint(text):
@@ -102,18 +119,39 @@ class AnkiConnectMedia:
 
     def many(self, kind, items):
         """One call of `kind` (exists, read, store, point, users, delete) for each of `items` (its arguments), sent as
-        one AnkiConnect `multi` (MANY_CHUNK at most a request) -> [(ok, the call's answer)] in order: exists → bool,
-        read → the data, users → the note ids. A slot Anki refused, or a search that isn't a list (review B #11), is
-        (False, None); a request that fails as a whole raises AnkiError."""
+        one AnkiConnect `multi` (MANY_CHUNK at most a request, and about MANY_BYTES of base64: `_chunk`) -> [(ok, the
+        call's answer)] in order: exists → bool, read → the data, users → the note ids. A slot Anki refused, or a
+        search that isn't a list (review B #11), is (False, None); a request that fails as a whole raises AnkiError."""
         from app import anki_connect
         action, params = _ACTIONS[kind]
-        out = []
-        for start in range(0, len(items), MANY_CHUNK):
-            chunk = items[start:start + MANY_CHUNK]
+        out, start, largest = [], 0, None
+        while start < len(items):
+            chunk = self._chunk(kind, items[start:start + MANY_CHUNK], largest)
             replies = anki_connect.multi([{"action": action, "params": params(*item)} for item in chunk], self.url,
                                          timeout=60 + len(chunk))
-            out += self._read(kind, chunk, replies)
+            got = self._read(kind, chunk, replies)
+            if kind == "read":
+                largest = max([largest or 0] + [len(data) for ok, data in got if ok and isinstance(data, str)])
+            out += got
+            start += len(chunk)
         return out
+
+    @staticmethod
+    def _chunk(kind, items, largest):
+        """The next request's items: stores while their data comes to MANY_BYTES (one at least); reads — whose sizes
+        only their answers tell — one alone first, then as many as MANY_BYTES holds at the largest answer so far;
+        the rest MANY_CHUNK at most."""
+        if kind == "store":
+            size, n = 0, 0
+            for _name, data in items:
+                size += len(data or "")
+                if n and size > MANY_BYTES:
+                    break
+                n += 1
+            return items[:n]
+        if kind == "read":
+            return items[:1] if largest is None else items[:max(1, MANY_BYTES // max(largest, 1))]
+        return items
 
     @staticmethod
     def _read(kind, items, replies):
@@ -144,7 +182,10 @@ def rename(media, made, key, audio_field, picture_field, fingerprints=None):
     """Rename one batch's media by the line. `made`: [(note id, line start, line end, line text)] — the notes the
     batch made; `key`: the episode's key; `fingerprints`: {(start, end): the store's fingerprint} where it has one ->
     {"renamed": n notes pointed, "stored": n files stored, "reused": n names already in Anki, "deleted": n old}.
-    Raises Reviewing (nothing written), or AnkiError once the rest is done when an action failed (§ One `multi`)."""
+    Raises Reviewing (no note pointed: before the stores, or after them — the stored files then wait, reused by the
+    next look), Partial once the rest is done when an action failed (§ One `multi`), AnkiError when a request failed
+    as a whole. Old files can stay behind: an old file whose search or delete failed, or one a kill or Anki going
+    away left between the points and the deletes, is never deleted later (§ Old files can stay behind)."""
     out = {"renamed": 0, "stored": 0, "reused": 0, "deleted": 0}
     if not made:
         return out
@@ -188,7 +229,7 @@ def rename(media, made, key, audio_field, picture_field, fingerprints=None):
                 failed += 1
             elif data:
                 stores.append((new, data))  # an old file that isn't there (empty, False): its notes are left as is
-        if media.reviewing():           # asked once, before the batch's first write (K88): resumed next look
+        if media.reviewing():           # asked before the batch's first store (K88): resumed next look
             raise Reviewing()
         for (new, _data), (ok, _answer) in zip(stores, media.many("store", stores)):
             if ok:
@@ -201,6 +242,8 @@ def rename(media, made, key, audio_field, picture_field, fingerprints=None):
             moved = [(field, value, old, new) for field, value, old, new in changes if new in ready]
             if moved:
                 points.append((note_id, {f: v.replace(o, n) for f, v, o, n in moved}, {o for _f, _v, o, _n in moved}))
+        if points and media.reviewing():    # asked again before the first point (IK-r2-4): the stored files wait
+            raise Reviewing()
         olds = set()
         for (_id, _fields, old_names), (ok, _answer) in zip(points, media.many("point", [p[:2] for p in points])):
             if ok:
@@ -221,6 +264,5 @@ def rename(media, made, key, audio_field, picture_field, fingerprints=None):
             else:
                 failed += 1
     if failed:
-        from app import anki_connect
-        raise anki_connect.AnkiError(f"Anki refused {failed} of the media rename's actions; the rest was done.")
+        raise Partial(f"Anki refused {failed} of the media rename's actions; the rest was done.")
     return out

@@ -2,14 +2,15 @@
 
 `media_names.rename` used to ask Anki one thing at a time: 271 requests for one episode's 24 notes (storeMediaFile,
 deleteMediaFile, findNotes, retrieveMediaFile, getMediaFilesNames, updateNoteFields, guiReviewActive), 14.8 s here.
-Now each kind goes as one `multi` (the adapter's `many`): about 8 requests for the same 24 notes, and every rule it
+Now each kind goes as one `multi` (the adapter's `many`): about 10 requests for the same 24 notes, and every rule it
 had holds — one file a line, a name already in Anki reused, a file another note uses never deleted, the writer held
-throughout, never a write while you review (asked once, before the batch's first write).
+throughout, never a write while you review (asked before the batch's first store and again before its first point).
+A request carries about 8 MB of base64 at most (R2-9): long clips go in several.
 
 A `multi` answers each action on its own, so one can fail while the rest succeed. Then only that action's notes are
 left as they were (a note is never pointed at a file that wasn't stored; an old file whose search failed is never
-deleted), the rest of the batch is done, and the rename still raises AnkiError, as a failed request did before: the
-job waits and the next look finishes the note that was left.
+deleted), the rest of the batch is done, and the rename raises `media_names.Partial` (an AnkiError): the job waits and
+the next look finishes the note that was left.
 
 What a wrong answer would cost: a card pointed at a clip that isn't in Anki (silent card), a clip another card plays
 deleted, or ~6 s an episode (~12 s on the laptop) spent on round trips. Two fakes: the in-memory media of
@@ -184,7 +185,7 @@ def test_an_episodes_24_notes_are_renamed_in_at_most_ten_requests(anki):
                              "Picture")
     assert out == {"renamed": 24, "stored": 24, "reused": 0, "deleted": 48}, out
     assert len(fake.requests) <= 10, fake.requests
-    assert fake.requests.count("guiReviewActive") == 1, "asked once, before the first write"
+    assert fake.requests.count("guiReviewActive") == 2, "asked before the stores and again before the points"
     names = {n["fields"]["SentenceAudio"]["value"] for n in fake.notes.values()}
     assert len(names) == 12, "one audio a line"
     assert sorted(fake.files) == sorted({m for n in fake.notes.values() for m in (
@@ -206,6 +207,35 @@ def test_one_failed_slot_in_a_real_multi_reply_leaves_its_note_and_raises(anki):
     assert "語0_12400_0_cd34.mp3" in fake.files and "語1_12400_1_cd34.mp3" in fake.files
     assert fake.notes[1000]["fields"]["Picture"]["value"].startswith('<img src="sl-'), "its picture is renamed"
     assert all(fake.notes[1000 + n]["fields"]["SentenceAudio"]["value"].startswith("[sound:sl-") for n in range(2, 24))
+
+
+def test_large_clips_go_in_several_requests_of_at_most_eight_mb(anki, monkeypatch):
+    # why (R2-9): a hundred reads or stores in one request is tens of MB of base64 with 192 kbps clips, held in memory
+    # and run on Anki's main thread in one go (its window stalls while you use it); each request now carries ~8 MB
+    notes, files, made = [], {}, []
+    for n in range(5):
+        start, end, text = LINES[n]
+        audio, picture = f"語{n}_{int(start * 1000)}_{n}_ef56.mp3", f"語{n}_{int(start * 1000)}_{n}_ef56.jpg"
+        notes.append(card_note(2000 + n, audio, picture))
+        files[audio] = bytes([n]) * (2_400_000 + n)     # ~3.2 MB of base64: a long line's clip at 192 kbps
+        files[picture] = f"picture {n}".encode("utf-8")
+        made.append((2000 + n, start, end, text))
+    fake = anki(notes, files)
+    sent = []
+
+    def invoke(action, url, timeout=30, **params):
+        answer = fake.invoke(action, url, timeout, **params)
+        if action == "multi":
+            size = sum(len(a["params"].get("data") or "") for a in params["actions"])
+            size += sum(len(r["result"]) for r in answer if isinstance(r.get("result"), str))
+            sent.append((params["actions"][0]["action"], size))
+        return answer
+    monkeypatch.setattr(anki_connect, "invoke", invoke)
+    out = media_names.rename(media_names.AnkiConnectMedia("http://127.0.0.1:8765"), made, KEY, "SentenceAudio",
+                             "Picture")
+    assert out["renamed"] == 5 and out["stored"] == 10, out
+    assert all(size <= media_names.MANY_BYTES for _action, size in sent), sent
+    assert [a for a, _s in sent].count("storeMediaFile") >= 2 and [a for a, _s in sent].count("retrieveMediaFile") >= 2
 
 
 def test_users_slot_that_isnt_a_list_counts_as_failed():

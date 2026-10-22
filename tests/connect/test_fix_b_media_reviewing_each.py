@@ -1,8 +1,9 @@
 """Media rename asks whether you're reviewing before it writes (P2.4 Part B, review fix H10; LF-mining row 25).
 
 Before row 25 the rename asked before each note's writes. It now sends its writes as one `multi` a kind (three
-requests under Anki's write lock), so it asks once: after its reads, before the batch's first write (PROVISIONAL).
-Review already started -> nothing is stored, pointed or deleted, and the job resumes on the next look. Two notes cut
+requests under Anki's write lock), so it asks after its reads, before the batch's first store, and again before its
+first point (PROVISIONAL; IK-r2-4). Review already started -> nothing is stored, pointed or deleted; started during
+the stores -> no note is pointed; either way the job resumes on the next look. Two notes cut
 from two different lines. What a wrong answer costs: a note pointed while the learner is reviewing changes a card under
 their eyes, and a rename that never asked would point notes the learner never agreed to change.
 
@@ -107,14 +108,31 @@ def test_review_already_started_writes_nothing():
     assert all(name in media.files for name in {**files_a, **files_b}), "every old file is still there"
 
 
-def test_review_is_asked_once_before_the_batchs_first_write():
-    """Anki free when asked: the batch's writes all follow that one ask (asked before the first store, never between
-    two notes' writes, PROVISIONAL row 25). Why it matters: the ask must come before any write; asking again per note
-    is what cost a request a note."""
-    media, files_a, files_b = _two_notes([False, True])
+def test_review_is_asked_before_the_stores_and_again_before_the_points():
+    """Anki free when asked: the stores follow the first ask, the points and deletes the second — never one ask per
+    note (PROVISIONAL row 25; IK-r2-4: "checked before each Surasura write", P2.4-7). Why it matters: the ask must come
+    before any write; asking again per note is what cost a request a note."""
+    media, files_a, files_b = _two_notes([False])
 
     media_names.rename(media, [(1, *LINE_A), (2, *LINE_B)], "ep-kimetsu-03", "SentenceAudio", "Picture")
 
-    assert media.events.count("reviewing") == 1 and media.events[0] == "reviewing", media.events
+    assert media.events == ["reviewing"] + ["store"] * 4 + ["reviewing"] + ["point"] * 2 + ["delete"] * 4, media.events
     assert media.points == [1, 2], "both notes pointed in the one batch"
     assert sorted(media.deleted) == sorted({**files_a, **files_b}), "each pointed note's old names go"
+
+
+def test_a_review_started_after_the_stores_points_no_note():
+    """You start reviewing while the new files are stored: `rename` raises Reviewing before any note is pointed, and
+    the next look finishes it with the names already in Anki (IK-r2-4). Why it matters: a card changed under the
+    learner's eyes; the stored files cost nothing — the next rename reuses them."""
+    media, files_a, files_b = _two_notes([False, True])
+
+    with pytest.raises(media_names.Reviewing):
+        media_names.rename(media, [(1, *LINE_A), (2, *LINE_B)], "ep-kimetsu-03", "SentenceAudio", "Picture")
+    assert media.points == [] and media.deleted == [], "nothing pointed, nothing deleted"
+    assert media.events.count("store") == 4
+
+    media.answers = [False]
+    out = media_names.rename(media, [(1, *LINE_A), (2, *LINE_B)], "ep-kimetsu-03", "SentenceAudio", "Picture")
+    assert out["renamed"] == 2 and out["reused"] == 4 and out["stored"] == 0, out
+    assert sorted(media.deleted) == sorted({**files_a, **files_b})

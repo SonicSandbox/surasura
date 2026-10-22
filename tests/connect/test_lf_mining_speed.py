@@ -23,7 +23,7 @@ from app.cli import verbs
 from app.connect import anki_miner, runner
 from tests import cli_helpers as h
 from tests import connect_helpers as c
-from tests.connect.fake_anki_miner import LAPIS_EXPORT
+from tests.connect.fake_anki_miner import FEATURES_37, LAPIS_EXPORT
 from tests.connect.test_pick_cli import library  # noqa: F401  (fixture: a generated Japanese library)
 from tests.cli_helpers import same_token_store_as_the_children  # noqa: F401  (autouse)
 
@@ -112,6 +112,24 @@ def test_a_set_older_than_fifteen_minutes_is_read_again(library, fake_miner, mon
     clock.now += 2
     _episode(steps, {"id": 3, "item_id": 3}, subtitle, video)
     assert fake_miner.commands() == LOOK_UPS + ["check", "mine"] * 2 + LOOK_UPS + ["check", "mine"]
+
+
+def test_your_active_profile_switched_mid_run_is_seen_before_the_next_batch(library, fake_miner):  # noqa: F811
+    # why (IK-r2-3): with no "Surasura" profile Connect mines with Anki Miner's active one; a kept set never read
+    # `profiles` again, so a switch in Anki Miner went unseen for up to 15 min (cards to the old deck and note type).
+    # The active profile is read again before each batch now (one start), and the pick-to-mine guard fires
+    anime, drama = {"id": "anime", "name": "Anime"}, {"id": "drama", "name": "Drama"}
+    fake_miner.plan(app="3.7.0", features=FEATURES_37, profiles=[anime, dict(drama, active=True)])
+    subtitle, video = library
+    steps = _steps(fake_miner)
+    _episode(steps, {"id": 1, "item_id": 1}, subtitle, video)
+    picked, words = _pick(steps, {"id": 2, "item_id": 2}, subtitle, video)
+    assert picked["profile"] == "drama"
+    assert fake_miner.commands() == LOOK_UPS + ["profiles", "check", "mine", "profiles"], "the active one again"
+    fake_miner.plan(app="3.7.0", features=FEATURES_37, profiles=[dict(anime, active=True), drama])
+    with pytest.raises(runner.Repick):
+        steps.mine("ja", {"id": 2, "item_id": 2}, picked, words, 1)
+    assert fake_miner.commands()[-1] != "mine", "nothing mined for the old profile"
 
 
 def test_the_command_lines_pick_holds_no_set_and_reads_anki_miner_each_time(library, fake_miner):  # noqa: F811

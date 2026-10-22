@@ -11,13 +11,22 @@
 What a wrong answer would cost: Connect never mining after setup; episodes mined out of order, the skipped ones after
 the next show; "Anki closed" while it is open; a count that lies for ten minutes. Against `FakeSteps` and stand-ins
 for Anki; never a live Anki.
+
+Round 2 (LF-mining, R2 / IK-r2): a rename with a failed slot is the episode's own wait; *Needs you* only for a refusal
+that lasts; an asked episode's own wait is never relabelled; *Mine now* on battery leaves the list's rebuild for the
+plug; the pause reads no ledger and a failed power look never ends the run.
 """
+import sqlite3
+from types import SimpleNamespace
+
 import pytest
 
 from app import anki_connect
-from app.connect import anki_session, feed, power, runner, setup
+from app.connect import anki_session, feed, media_names, power, runner, setup
 from app.connect.ledger import Ledger
 from tests.connect.fake_steps import FakeSteps
+from tests.connect.test_media_names import card_note
+from tests.connect.test_media_names_multi import FailingMedia
 
 
 @pytest.fixture
@@ -334,26 +343,118 @@ def test_an_asked_episode_on_battery_still_waits_for_anki(tmp_path, ledger):
     assert summary["languages"]["ja"]["waiting"][2] == runner.ANKI_CLOSED
 
 
+def test_an_asked_episodes_own_wait_is_never_relabelled_on_battery(tmp_path, ledger):
+    # why (R2-4, IK-r2-7): the asked episode waited on Anki (its re-order slow) and the next, unasked one ended the
+    # pass "On battery" — relabelling the asked one too; its own wait stays
+    plan = {"line": {"ja": [1, 2]}, "queue": {"ja": [1, 2]}, "blocked": runner.ON_BATTERY}
+    runner.run({}, ["ja"], steps=FakeSteps(str(tmp_path), plan), ledger=ledger, sleep=lambda s: None, looks=1)
+    _asked(ledger, 1)
+    summary = runner.run({}, ["ja"], steps=_OneRefused(str(tmp_path), plan), ledger=ledger, sleep=lambda s: None,
+                         looks=1)
+    assert summary["languages"]["ja"]["waiting"] == {1: runner.ANKI_SLOW, 2: runner.ON_BATTERY}
+    jobs = {j["item_id"]: (j["reason"], j["resume"]) for j in ledger.jobs("ja")}
+    assert jobs[1] == (runner.ANKI_SLOW, "ordering") and jobs[2][0] == runner.ON_BATTERY
+
+
+def test_on_battery_the_list_rebuild_after_an_asked_episode_waits_for_the_plug(tmp_path, ledger):
+    # why (D-r2-1 a, Sonic's lean): *Mine now* is the yes for that episode's cards, not for a full Generate (about a
+    # minute on the laptop) — it waits for the plug, as its follow-up re-order already does: still owed
+    plan = {"line": {"ja": [1]}, "queue": {"ja": [1]}, "blocked": runner.ON_BATTERY, "generate_after": True}
+    runner.run({}, ["ja"], steps=FakeSteps(str(tmp_path), plan), ledger=ledger, sleep=lambda s: None, looks=1)
+    _asked(ledger, 1)
+    steps = FakeSteps(str(tmp_path), plan)
+    summary = runner.run({}, ["ja"], steps=steps, ledger=ledger, sleep=lambda s: None, looks=1)
+    assert _mined(steps) == [1] and summary["languages"]["ja"]["done"] == [1]
+    assert ("generate", "ja") not in steps.log and ("order", None) not in steps.log
+    assert "ja" in steps.after, "the Generate is still owed"
+    assert ("order", 1) in steps.log, "the pressed episode's own re-order is part of the yes (M-3)"
+
+
 # --- 34: the plug back ends the pause at once ----------------------------------------------------------------- #
+class _Waits:
+    """The pause's clock in place of a cancel Event: each of `_pause`'s steps recorded, none waited, never set."""
+
+    def __init__(self):
+        self.steps = []
+
+    def wait(self, seconds):
+        self.steps.append(seconds)
+        return False
+
+
 def test_the_plug_back_ends_the_pause_while_episodes_wait_on_battery(tmp_path, ledger):
     # why (row 34): the skipped episodes came back only at the next 2-minute look (or a restart); now within seconds
     plan = {"line": {"ja": [1, 2]}, "queue": {"ja": [1, 2]}, "blocked": runner.ON_BATTERY}
     steps = FakeSteps(str(tmp_path), plan)
-    runner.run({}, ["ja"], steps=steps, ledger=ledger, sleep=lambda s: None, looks=1)
     steps.on_battery = lambda: False
-    assert runner._plugged_in(steps, ledger, ["ja"]) is True
-    steps.on_battery = lambda: True
-    assert runner._plugged_in(steps, ledger, ["ja"]) is False
+    clock = _Waits()
+    runner.run({}, ["ja"], steps=steps, ledger=ledger, cancel=clock, looks=2)
+    assert clock.steps == [runner.UPDATE_LOOK_S], "the first look at the plug ended the pause"
 
 
 def test_no_battery_wait_never_ends_the_pause_early(tmp_path, ledger):
     # why: a wait on Anki keeps its 2-minute look: no early wake (no look every 5 s at a closed Anki)
     plan = {"line": {"ja": [1]}, "queue": {"ja": [1]}, "blocked": runner.ANKI_CLOSED}
     steps = FakeSteps(str(tmp_path), plan)
-    runner.run({}, ["ja"], steps=steps, ledger=ledger, sleep=lambda s: None, looks=1)
     steps.on_battery = lambda: False
-    assert runner._plugged_in(steps, ledger, ["ja"]) is False
-    assert runner._plugged_in(FakeSteps(str(tmp_path), plan), ledger, ["ja"]) is False, "no power look: no wake"
+    clock = _Waits()
+    runner.run({}, ["ja"], steps=steps, ledger=ledger, cancel=clock, looks=2)
+    assert sum(clock.steps) == runner.LOOK_EVERY_S, "the whole 2 minutes"
+
+
+def _pause_reads(monkeypatch, ledger, fail=None):
+    """The ledger's `open_jobs` calls made inside the pause between two looks -> that list (`fail`: raised there)."""
+    reads, pausing = [], []
+    real_open, real_pause = ledger.open_jobs, runner._pause
+
+    def open_jobs(lang):
+        if pausing:
+            reads.append(lang)
+            if fail is not None:
+                raise fail
+        return real_open(lang)
+
+    def pause(*args):
+        pausing.append(True)
+        try:
+            return real_pause(*args)
+        finally:
+            pausing.clear()
+    monkeypatch.setattr(ledger, "open_jobs", open_jobs)
+    monkeypatch.setattr(runner, "_pause", pause)
+    return reads
+
+
+def test_a_pause_with_nothing_on_battery_never_reads_the_ledger(tmp_path, ledger, monkeypatch):
+    # why (IK-r2-8, S19): the pass that just ended knows whether anything waits on battery; the ledger was read every
+    # 5 s through each 2-minute pause all the same
+    plan = {"line": {"ja": [1]}, "queue": {"ja": [1]}, "blocked": runner.ANKI_CLOSED}
+    steps = FakeSteps(str(tmp_path), plan)
+    steps.on_battery = lambda: pytest.fail("nothing waits on battery: the power isn't looked at")
+    reads = _pause_reads(monkeypatch, ledger)
+    runner.run({}, ["ja"], steps=steps, ledger=ledger, cancel=_Waits(), looks=2)
+    assert reads == []
+
+
+def test_a_ledger_error_in_the_pause_never_ends_the_run(tmp_path, ledger, monkeypatch):
+    # why (R2-10): a sqlite error in the pause's ledger read (a busy ledger past its 5 s) ended the whole run; the
+    # pause reads no ledger now — still on battery, no wake, and the next look comes as always
+    plan = {"line": {"ja": [1]}, "queue": {"ja": [1]}, "blocked": runner.ON_BATTERY}
+    steps = FakeSteps(str(tmp_path), plan)
+    steps.on_battery = lambda: True
+    _pause_reads(monkeypatch, ledger, fail=sqlite3.OperationalError("database is locked"))
+    clock = _Waits()
+    summary = runner.run({}, ["ja"], steps=steps, ledger=ledger, cancel=clock, looks=2)
+    assert summary["looks"] == 2 and sum(clock.steps) == runner.LOOK_EVERY_S, "no wake: the whole pause"
+
+
+def test_a_power_look_that_fails_is_no_wake():
+    # why (R2-10): the wake's own look never ends the run: logged, the pause goes on
+    def broken():
+        raise OSError("GetSystemPowerStatus failed")
+    assert runner._plugged_in(SimpleNamespace(on_battery=broken), True) is False
+    assert runner._plugged_in(SimpleNamespace(on_battery=lambda: False), False) is False, "nothing on battery"
+    assert runner._plugged_in(SimpleNamespace(on_battery=lambda: False), True) is True
 
 
 def test_the_pause_ends_within_its_look_step_once_plugged_in(monkeypatch):
@@ -375,6 +476,80 @@ def test_a_request_anki_turns_down_is_needs_you_not_a_wait(monkeypatch):
     monkeypatch.setattr(anki_session, "look", lambda url: "closed")
     got = runner._anki_wait("http://127.0.0.1:8765", "mining", anki_connect.AnkiError("refused", kind="offline"))
     assert isinstance(got, runner.Wait) and got.reason == runner.ANKI_CLOSED
+
+
+@pytest.mark.parametrize("message", [
+    "Anki refused 'addNote': deck was not found: 日本語::アニメ",
+    "Anki refused 'modelFieldNames': model was not found: Lapis",
+    "Anki refused 'updateNoteFields': Note was not found: 1729512345678",
+    "Anki refused 'addNote': cannot create note because it is empty",
+])
+def test_a_lasting_refusal_anki_names_is_needs_you(monkeypatch, message):
+    # why (IK-r2-2): a deck, note type or note gone, or a note Anki can't create, stays so until you act
+    monkeypatch.delenv("SURASURA_NO_ANKI_SYNC", raising=False)
+    monkeypatch.setattr(anki_session, "look", lambda url: pytest.fail("Anki answered: no look"))
+    got = runner._anki_wait("http://127.0.0.1:8765", "mining", anki_connect.AnkiError(message, kind="action"))
+    assert isinstance(got, runner.Needs) and got.kind == "anki-refused", message
+
+
+@pytest.mark.parametrize("message, kind", [
+    ("Anki refused 'findNotes': collection is not available", "action"),
+    ("Anki refused 'storeMediaFile': [Errno 13] Permission denied: 'sl-0a1b2c3d4e5f6a7b.mp3'", "action"),
+    ("'multi' did not return a list of results.", "protocol"),
+])
+def test_a_passing_reply_is_the_episodes_own_wait(monkeypatch, message, kind):
+    # why (IK-r2-2, R2-2): "collection is not available" is Anki switching profile, syncing or closing — over in a
+    # moment, nothing for you to do; it was *Needs you*, the episode parked until the next start
+    monkeypatch.delenv("SURASURA_NO_ANKI_SYNC", raising=False)
+    monkeypatch.setattr(anki_session, "look", lambda url: "open")
+    got = runner._anki_wait("http://127.0.0.1:8765", "mining", anki_connect.AnkiError(message, kind=kind))
+    assert isinstance(got, runner.Wait) and (got.reason, got.resume) == (runner.ANKI_SLOW, "mining"), message
+
+
+# --- R2-1: a rename with a failed slot is the episode's own wait ------------------------------------------------ #
+class _EpisodeMedia(FailingMedia):
+    """Anki's media for the notes Anki Miner made: each note its word-named clip and picture, there from the first
+    time the rename asks for it; `fail` as `FailingMedia`'s."""
+
+    def __init__(self, fail=()):
+        super().__init__([], {}, fail)
+
+    def notes(self, ids):
+        for i in ids:
+            if i not in self.note_map:
+                audio, picture = f"語{i}_10000_{i}_ab12.mp3", f"語{i}_10000_{i}_ab12.jpg"
+                self.note_map[i] = card_note(i, audio, picture)
+                self.files[audio], self.files[picture] = f"clip {i}".encode("utf-8"), f"picture {i}".encode("utf-8")
+        return super().notes(ids)
+
+
+class _RealNames(FakeSteps):
+    """FakeSteps with the real `Steps.name_media` (this run's field mapping; Anki's media an `_EpisodeMedia`)."""
+
+    url = "http://127.0.0.1:8765"
+    name_media = runner.Steps.name_media
+
+    def _job_mapping(self, job):
+        return SimpleNamespace(fields={"audio": "SentenceAudio", "picture": "Picture"})
+
+
+def test_a_rename_with_a_failed_slot_waits_and_the_next_look_finishes_the_episode(tmp_path, ledger, monkeypatch):
+    # why (R2-1, IK-r2-1): one old clip Windows held (its delete refused) made the rename raise AnkiError `action`,
+    # which IK3 sent to *Needs you*: the episode parked for the run, its store record, filling and order with it
+    media = _EpisodeMedia(fail={("delete", "語1000_10000_1000_ab12.mp3")})
+    monkeypatch.setattr(media_names, "AnkiConnectMedia", lambda url: media)
+    plan = {"line": {"ja": [1]}, "queue": {"ja": [1]}, "pairings": {"1": {"content_key": "ep-bocchi-01"}}}
+    steps = _RealNames(str(tmp_path), plan)
+    summary = runner.run({}, ["ja"], steps=steps, ledger=ledger, sleep=lambda s: None, looks=1)
+    job = ledger.jobs("ja")[0]
+    assert (job["state"], job["reason"], job["resume"]) == ("waiting", runner.ANKI_SLOW, "mining")
+    assert summary["languages"]["ja"]["needs"] == [] and ledger.needs("ja") == []
+    assert steps.records == [], "the store write waits for the rename"
+
+    steps = _RealNames(str(tmp_path), plan)
+    summary = runner.run({}, ["ja"], steps=steps, ledger=ledger, sleep=lambda s: None, looks=1)
+    assert summary["languages"]["ja"]["done"] == [1] and [r[0] for r in steps.records] == [1]
+    assert all(n["fields"]["SentenceAudio"]["value"].startswith("[sound:sl-") for n in media.note_map.values())
 
 
 def test_an_episode_waiting_for_its_video_keeps_its_own_wait_when_all_wait(tmp_path, ledger):

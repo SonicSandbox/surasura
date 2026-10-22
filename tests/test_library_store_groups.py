@@ -824,3 +824,22 @@ def test_GI5_a_group_refused_in_finished_or_new_arrivals_names_the_windows_lists
         store.join([_piece(store, ma[0]), pb], how="group")
     assert str(refused.value) == ls.GROUP_REFUSED == "A group lives in Current, Soon or Goal: move these there first."
     store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_G1_a_part_of_one_title_across_the_soon_line_is_rebuilt_as_two_parts(language):
+    """Only a group runs on across the Soon line: a show's part found across it by the rebuild's seed (an older
+    version's copy, a hand edit) becomes two parts, NOW's and Soon's (05 §5.2 rule 1), never one part in two tiers."""
+    store = _three(language)
+    loose = next(i for i in store.ids("now") if not store.item(i)["parent_folder"])
+    store.move([loose], "now", before_id=store.ids("now")[0])  # a show's part ends NOW
+    (p2, m2) = _runs(store, "now")[-1]
+    assert len(m2) == 4
+    top = store.conn.execute("SELECT MIN(ord) FROM items WHERE tier = 'soon'").fetchone()[0]
+    with store._command("test") as cmd:                         # its last episode at Soon's top, the same part
+        store.conn.execute("UPDATE items SET tier = 'soon', ord = ? WHERE id = ?", (top - 1, m2[-1]))
+        ls._seed_schema2(store, cmd.version)
+    assert store.ids("soon")[0] == m2[-1]
+    assert _piece(store, m2[-1]) != _piece(store, m2[0]) and _members(store, _piece(store, m2[0])) == m2[:-1]
+    assert pieces_ok(store) is None
+    store.close()

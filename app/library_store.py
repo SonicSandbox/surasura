@@ -3365,9 +3365,9 @@ class Store:
             # --- end LM11
             # GI1, PROVISIONAL (Sonic 2026-10-21, accepted for building, to be checked in use; asked of him, LM11-Q1):
             # dropping in is putting in — a row (a new one, one moved, a whole part) landing between two rows of one
-            # group joins that group, never cuts it; at its edge it stays outside. A group dropped inside one cuts it
-            inside = lambda b, a, tier: (b[1] is not None and b[1] == a[1] and is_group(b[1])    # noqa: E731
-                                         and tier not in NO_GROUP_TIERS)
+            # group joins that group, never cuts it; at its edge it stays outside. A group dropped inside one cuts it.
+            # (No group stands in Finished or New arrivals, so neither does a row this puts in one.)
+            inside = lambda b, a: b[1] is not None and b[1] == a[1] and is_group(b[1])     # noqa: E731
             # a whole piece put back beside a piece of its own title becomes part of it (05 §5.2 #4: a season put
             # back together); an undo's pieces stay as they were. LM11: never a group, never into one (but GI1)
             for p, ids in by_piece.items():
@@ -3379,7 +3379,7 @@ class Store:
                     continue                                    # not one run: the split below decides
                 work = info[ids[0]][2]
                 before, after = near[firsts[0]][0], near[lasts[0]][1]
-                if inside(before, after, info[ids[0]][0]):
+                if inside(before, after):
                     into = before[1]                            # GI1: dropped between two rows of a group: into it
                 else:
                     into = before[1] if before[1] is not None and before[2] == work and not is_group(before[1]) else \
@@ -3412,7 +3412,7 @@ class Store:
                 work = info[run[0]][2]
                 before, after = near[run[0]][0], near[run[-1]][1]
                 if before[1] is not None and before[1] == after[1] and before[2] == work and after[2] == work \
-                        and not is_group(before[1]) or inside(before, after, info[run[0]][0]):     # GI1
+                        and not is_group(before[1]) or inside(before, after):     # GI1
                     self._set_pieces(cmd, [(before[1], i) for i in run])
                     cmd.repieced += [(i, None, before[1]) for i in run]
                     for i in run:

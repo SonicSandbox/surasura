@@ -3877,3 +3877,28 @@ def test_LM11_G7_a_queued_group_of_one_parts_episodes_apart_is_replayed_never_ta
     assert store.item(ma[2])["piece_id"] == piece
     assert [r[0] for r in store.conn.execute("SELECT id FROM items WHERE piece_id = ? ORDER BY ord, id",
                                              (piece,))] == [ma[0], ma[2]]
+
+
+def test_LM11_G7_a_queued_group_another_window_made_in_the_other_order_meanwhile_is_listed(lib, make_writer,
+                                                                                          short_lock_wait):
+    """*Group…* of A then B queued before a crash; another window grouped B then A meanwhile: everything is in one
+    piece, but not as this command asks (A's episodes first) — it isn't taken as landed: listed, nothing written."""
+    store = lib.store
+    pa, ma, pb, mb = _two_titles(lib)
+    w, heard = make_writer()
+    holder = LockHolder(lib.db)
+    try:
+        w.group(piece_ids=[pa, pb])
+        assert h.until(lambda: [e[0] for e in journalled(lib.language)] == ["group"])
+        w._abandon()
+    finally:
+        holder.release()
+    store.join([pb, pa], how="group")                           # another window: B's episodes first
+    after = [r[0] for r in store.conn.execute("SELECT id FROM items WHERE piece_id = ? ORDER BY ord, id", (pb,))]
+    assert after == mb + ma
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: journal(lib.language) is None and heard2.notes)
+    assert heard2.notes == [WORDS["crash_one"]]
+    assert [r[0] for r in store.conn.execute("SELECT id FROM items WHERE piece_id = ? ORDER BY ord, id",
+                                             (pb,))] == after

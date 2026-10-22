@@ -97,11 +97,17 @@ VIDEO_EXTENSIONS = (".mkv", ".mp4", ".webm", ".avi", ".m4v", ".mov", ".ts")
 TS_MIN = 1 << 20                # a `.ts` under this size is TypeScript, not a video (K6, S9: by the listing's stat)
 
 
+def mac_copy(name):
+    """Is this a Mac's `._` copy (AppleDouble, on a NAS or exFAT drive: metadata, never a video or a text)? The one dot
+    rule — Connect's video index and the library's look (`sources._listing`) both ask it; any other leading dot is a
+    name (`.hack SIGN - 01.mkv`, a `.hack` folder). The folders a Mac makes are `library_store.SKIP_DIRS`'."""
+    return name.startswith("._")
+
+
 def video_name(name):
-    """Can a file of this name be a video? One of VIDEO_EXTENSIONS, and never a Mac's `._` copy (on a NAS or exFAT
-    drive: metadata, never a video). Any other leading dot is a name (`.hack SIGN - 01.mkv`). The name's half of
-    `video_file`, for a listing before its stat."""
-    return not name.startswith("._") and name.lower().endswith(VIDEO_EXTENSIONS)
+    """Can a file of this name be a video? One of VIDEO_EXTENSIONS, and never a Mac's `._` copy (`mac_copy`). The
+    name's half of `video_file`, for a listing before its stat."""
+    return not mac_copy(name) and name.lower().endswith(VIDEO_EXTENSIONS)
 
 
 def video_file(name, size):
@@ -1091,7 +1097,8 @@ class Steps:
 
     def video(self, lang, job):
         """The episode's video on this computer: hato's pairing names it; else a video beside the subtitle with its
-        name; else the video index (P2.5 row 2.5.8, G1.3-12: the paired videos' folders and the ones you added — by
+        name; else one beside the original it was copied from (K21: a folder's or + Add's origin, `beside_origin`);
+        else the video index (P2.5 row 2.5.8, G1.3-12: the paired videos' folders and the ones you added — by
         name, and size when the pairing gives one). None when there's none, or only a cloud placeholder (never
         opened, RD-S1)."""
         with _held():                       # the store's two reads, one open; the disk is looked at after
@@ -1125,7 +1132,7 @@ class Steps:
         origin = pairing.get("origin") if pairing.get("producer") == "source" else None
         if isinstance(origin, str) and origin:
             names += videos.names_for(origin)   # a copy renamed `name (2)` in Library/: the original's name finds it
-        return beside(subtitle) or self._videos(lang).find(names)
+        return beside(subtitle) or beside_origin(pairing) or self._videos(lang).find(names)
 
     def _videos(self, lang):
         """The language's video index, refreshed once a run, the first time a video is missing (S19: only folders
@@ -1723,18 +1730,32 @@ def _on_disk(path):
     return not (getattr(st, "st_file_attributes", 0) & _PLACEHOLDER)
 
 
-def beside(subtitle):
-    """A video next to the subtitle with its name (`Show - 05.mkv` for `Show - 05.ja.srt`), on disk -> its path."""
+def beside_origin(pairing):
+    """K21 (laptop fixes): the video beside the original an item's text was copied from — its origin record (`producer`
+    "source": a folder's look, or + Add's / a drop's, `via` "add") names it as `origin` — with its name, on disk -> its
+    path; else None (no record, another producer's, none there, a placeholder). A listing and a stat, never a read.
+    Qt-free: Connect's `video()` asks it after `beside(subtitle)`, and ▶ may ask it with `library.pairing_of`."""
+    origin = (pairing or {}).get("origin") if (pairing or {}).get("producer") == "source" else None
+    return beside(origin) if isinstance(origin, str) and origin else None
+
+
+def beside(subtitle, listings=None):
+    """A video next to the subtitle with its name (`Show - 05.mkv` for `Show - 05.ja.srt`), on disk -> its path.
+    `listings` ({folder: its names}, a caller's own — + Add's many files): each folder listed once across calls (H6)."""
     folder, name = os.path.split(subtitle)
     stem = os.path.splitext(name)[0]
     stems = [stem]
     base, tag = os.path.splitext(stem)
     if base and 1 < len(tag) <= 4:
         stems.append(base)                  # the language tag: .ja, .jpn, .zh
-    try:
-        names = {n.lower(): n for n in os.listdir(folder or ".")}
-    except OSError:
-        return None
+    names = listings.get(folder) if listings is not None else None
+    if names is None:
+        try:
+            names = {n.lower(): n for n in os.listdir(folder or ".")}
+        except OSError:
+            return None
+        if listings is not None:
+            listings[folder] = names
     for s in stems:
         for ext in VIDEO_EXTENSIONS:
             found = names.get((s + ext).lower())

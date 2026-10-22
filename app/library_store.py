@@ -30,6 +30,7 @@ Rules that bite (spec §6.2, §8)
 - **Headless:** no Tk, Qt or pandas here (I9).
 """
 
+import bisect
 import hashlib
 import json
 import ntpath
@@ -2346,21 +2347,23 @@ class Store:
         entry = json.loads(row[1])
         return row[0] if entry.get("origin_source") == "Disk Sync" else None
 
-    def insert(self, files, tier, placement="show", started_at=None, entries=None, check=None):
+    def insert(self, files, tier, placement="show", started_at=None, entries=None, check=None, origins=None):
         """Add the files the command itself copied (Add Files, Add Folder, the preview), as one command:
         a, b, c lands a, b, c (L-Q6). `placement` "show" follows §6.10 rule 3 with `tier` (the tab
         chosen) for a directory that holds no item yet; "top" puts them at the top of `tier` (the
-        preview). A file already an item is left where it is and reported in `change.existing`."""
+        preview). A file already an item is left where it is and reported in `change.existing`.
+        `origins` (K21: + Add / a drop): {file as given: where it was copied from} — see `_add_origins`."""
         prepared = self._prepare(files, entries, "Manual Import")
-        return self._add(prepared, tier, placement, None, started_at, check, "insert")
+        return self._add(prepared, tier, placement, None, started_at, check, "insert", origins=origins)
 
-    def insert_at(self, files, anchor_id, before=True, started_at=None, entries=None, check=None):
+    def insert_at(self, files, anchor_id, before=True, started_at=None, entries=None, check=None, origins=None):
         """`insert` at an anchor item: the files land contiguous, in the order given, before or after it,
         in its tier (the user chose the place, so Q4-9 doesn't apply)."""
         prepared = self._prepare(files, entries, "Manual Import")
-        return self._add(prepared, None, "anchor", (anchor_id, before), started_at, check, "insert_at")
+        return self._add(prepared, None, "anchor", (anchor_id, before), started_at, check, "insert_at",
+                         origins=origins)
 
-    def _add(self, prepared, tier, placement, anchor, started_at, check, kind, by="user", explicit=1):
+    def _add(self, prepared, tier, placement, anchor, started_at, check, kind, by="user", explicit=1, origins=None):
         with self._command(kind, by) as cmd:
             self._recheck(check, takeover_ok=lambda i: self._takeover_id(i, started_at))
             change = self._change(cmd, kind)
@@ -2407,10 +2410,34 @@ class Store:
             for (t, where), group in groups.items():
                 self._put(t, group, where, cmd.version)
             change.added = ids
+            if origins:
+                self._add_origins(zip(ids, [t[1] for t in taken] + new), origins)
             cmd.touch(set(dest_tier), availability=any(it[4][2] == "missing" for it in new))
             for item_id in ids:
                 cmd.event(item_id, "placed", explicit)
             return change
+
+    def _add_origins(self, added, origins):
+        """K21 (laptop fixes): inside `_add`'s command, an origin record (B1's row, `_origin_record`'s shape) on each
+        item it added from a file + Add or a drop copied in from outside the data folder (`origins` {file as given:
+        {origin, size, mtime_ns, sha256, show, video_path?, video_size?}}, `moves._copy_in`'s): no source holds it
+        (`root` None), `via` "add". So a folder read later takes the original as known (SRC-7: never a second item; a
+        Remove's exclusion keeps it out, SRC-8) and Connect looks beside the original for its video. One origin, one
+        row: the same original added again (changed since: other bytes, a new item) moves its row to the new item —
+        only from an add's row or a row whose item is gone; a row a folder's look recorded stays its item's (LF-7: that
+        item stays followed and restorable) and the new item records none."""
+        for item_id, item in added:
+            f = origins.get(item[0])
+            if not f:
+                continue
+            old = self.conn.execute("SELECT p.pairing, i.id FROM pairings p LEFT JOIN items i ON i.id = p.item_id "
+                                    "WHERE p.content_key = ?", (origin_key(f["origin"]),)).fetchone()
+            if old is not None and old[1] is not None and (_json_dict(old[0]) or {}).get("via") != "add":
+                continue
+            record = dict(_origin_record(None, f["origin"], f), via="add")
+            self.conn.execute("INSERT OR REPLACE INTO pairings (content_key, item_id, pairing, paired_at) "
+                              "VALUES (?, ?, ?, ?)", (origin_key(f["origin"]), item_id,
+                                                      json.dumps(record, sort_keys=True, ensure_ascii=False), _now()))
 
     def _takeover_id(self, item_id, started_at):
         row = self.conn.execute("SELECT rel_key FROM items WHERE id = ?", (item_id,)).fetchone()
@@ -2544,13 +2571,14 @@ class Store:
 
     # --- remove and put back ------------------------------------------------------------------- #
 
-    def remove(self, ids, trashed_paths=None, check=None, by="user", kind="remove"):
+    def remove(self, ids, trashed_paths=None, check=None, by="user", kind="remove", exclude=True):
         """Rows → the trash table, each with its neighbours just before the removal (removed ones
         included), its entry, its state, its pairings and Anki links, and where its file went
         (`trashed_paths`: {id: path relative to data/<lang>}, the caller's file work). The trash rows are
         written first, then the item rows deleted; their pairings and links follow by ON DELETE CASCADE. An item that
         came from a source folder leaves an exclusion per origin (SRC-8 / S6: `_exclude_origins`); its Put back or
-        Undo deletes them."""
+        Undo deletes them. `exclude=False` (K21: the Undo of an add — + Add's origins) leaves none: an Undo is no
+        Remove, so a folder read later brings the file in as any new one."""
         trashed_paths = trashed_paths or {}
         with self._command(kind, by) as cmd:
             self._recheck(check)
@@ -2586,7 +2614,7 @@ class Store:
                 "INSERT INTO trash (item_id, root_id, rel_path, tier, prev_id, next_id, entry, item_state, "
                 "trashed_path, removed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", trash_rows)
             change.trash_ids = list(range(first, first + len(trash_rows)))
-            change.excluded = self._exclude_origins(pairs, now)        # SRC-8: a scan never takes it in again
+            change.excluded = self._exclude_origins(pairs, now) if exclude else []   # SRC-8: never taken in again
             self.conn.execute(f"DELETE FROM items WHERE id IN ({marks})", list(rows))
             cmd.gone += [("item", i) for i in rows]
             cmd.pieces_left.update(full[i]["piece_id"] for i in rows if full[i]["piece_id"] is not None)
@@ -4494,7 +4522,7 @@ class Store:
                 if not ok:
                     return self._skipped(cmd, len(skipped))
                 explicit = 0 if kind == "register" else 1
-                out = self._remove_as(ok, trashed_paths, explicit)
+                out = self._remove_as(ok, trashed_paths, explicit, exclude=kind not in ("insert", "insert_at"))
                 if kind == "register" and getattr(change, "pairing_before", (None, None))[1] is not None:
                     content_key, old = change.pairing_before          # the key's pairing before hato moved it
                     if self.conn.execute("SELECT 1 FROM items WHERE id = ?", (old[0],)).fetchone():
@@ -4519,13 +4547,22 @@ class Store:
                 cmd.touch()
                 out, skipped = self._change(cmd, "undo"), []
             elif kind == "remove" or kind == "undo_add":
+                folder = getattr(change, "folder", None)        # K6: a skip's Undo reads its folder again too
+                if folder is not None:
+                    if not self._unskip(folder):                # read again meanwhile: its files may be back
+                        return self._skipped(cmd, max(1, len(change.trash_ids)))
                 rows = self.trash_rows(change.trash_ids)
                 waiting = [r["id"] for r in rows if not r["restored_at"]]
                 if not waiting:
+                    if folder is not None:
+                        out = self._change(cmd, "undo")
+                        out.folder_dropped = True
+                        return out
                     return self._skipped(cmd, len(change.trash_ids))
                 explicit = {it["id"]: it.get("explicit", 1) for it in change.items}
                 out = self.restore(waiting, rel_paths, by="undo", kind="undo",
                                    explicit_of=lambda i: explicit.get(i, 1))
+                out.folder_dropped = folder is not None
                 skipped = [t for t in change.trash_ids if t not in waiting]
             elif kind == "relink":
                 out, skipped = self._undo_relink(cmd, change)
@@ -4580,12 +4617,12 @@ class Store:
                          f"{'were' if n != 1 else 'was'} left as {'they are' if n != 1 else 'it is'}")
         return out
 
-    def _remove_as(self, ids, trashed_paths, explicit):
+    def _remove_as(self, ids, trashed_paths, explicit, exclude=True):
         """Undo-Add: the rows go to the trash table, as `remove` does (pairings and links included, so
-        Put back works); the files went to `.trash` by the caller's file code."""
+        Put back works); the files went to `.trash` by the caller's file code. `exclude`: `remove`'s."""
         cmd = self._cmd
         events_before = len(cmd.events)
-        out = self.remove(ids, trashed_paths, by="undo", kind="undo_add")
+        out = self.remove(ids, trashed_paths, by="undo", kind="undo_add", exclude=exclude)
         cmd.events[events_before:] = [(i, k, explicit, b) for i, k, _e, b in cmd.events[events_before:]]
         for item in out.items:
             item["explicit"] = explicit
@@ -7325,12 +7362,14 @@ Store._undo_reset = _store_undo_reset
 # source found it. Remove keeps an origin out for good (an `exclusions` row); Finish keeps its records.
 
 SKIP_DIRS = ("$recycle.bin", "#recycle", "@eadir", ".stversions", ".trash", "system volume information", "@recycle",
-             "#snapshot", "@recently-snapshot", "~snapshot", ".snapshot")   # + QNAP's / Synology's bins and snapshots
+             "#snapshot", "@recently-snapshot", "~snapshot", ".snapshot",   # + QNAP's / Synology's bins and snapshots
+             "node_modules",    # a web project's packages: thousands of folders, its `.ts` files no videos (K6, S9)
+             ".appledouble", ".trashes", ".spotlight-v100", ".fseventsd", ".temporaryitems")   # a Mac's (LF-21)
 PLACEHOLDER_ATTRS = 0x1000 | 0x40000 | 0x400000   # OFFLINE · RECALL_ON_OPEN · RECALL_ON_DATA_ACCESS (Connect's `_on_disk`)
 _LINK_TAGS = (0xA000000C, 0xA0000003)              # IO_REPARSE_TAG_SYMLINK, IO_REPARSE_TAG_MOUNT_POINT (a junction)
 _DIGITS = re.compile(r"(\d+)")
 _EPUB_PART = re.compile(r"\.epub#\d+$", re.I)    # an EPUB's part's origin (`<book>.epub#3`)
-Origin = namedtuple("Origin", "item_id root origin size mtime_ns sha256 rel_path")
+Origin = namedtuple("Origin", "item_id root origin size mtime_ns sha256 rel_path availability paired_at")
 
 
 def origin_key(path):
@@ -7376,17 +7415,25 @@ def _ancestors(path):
 
 
 def skip_dir(name, path):
-    """Does a look at a source folder skip this folder (B3)? Dot folders (.stversions, .trash), the recycle bins
-    (Windows' and a NAS's), a NAS's @eaDir, System Volume Information, and a folder link or junction — never followed:
+    """Does a look at a source folder skip this folder (B3)? The folders SKIP_DIRS names — Syncthing's .stversions,
+    .trash, the recycle bins (Windows' and a NAS's), a NAS's @eaDir and snapshots, System Volume Information, a web
+    project's node_modules, the folders a Mac writes (.AppleDouble, .Trashes…: LF-21; any other dot folder is a name,
+    `.hack`) — and a folder link or junction — never followed:
     one that loops never ends, one into the data folder brings it back. `path`: the folder's path, or its `os.DirEntry`
     (the listing's own stat: no call)."""
-    if name.startswith(".") or name.casefold() in SKIP_DIRS:
+    if unicodedata.normalize("NFKC", name).casefold() in SKIP_DIRS:
         return True
-    import stat
     try:
         st = path.stat(follow_symlinks=False) if isinstance(path, os.DirEntry) else os.lstat(path)
     except OSError:
         return True
+    return is_link(st)
+
+
+def is_link(st):
+    """Is this stat (never followed: `os.lstat`, a listing's own) a symlink or a junction? The one link rule: a look
+    never walks into one (`skip_dir`), a fresh library never copies or removes through one (`_set_aside`, LF-4)."""
+    import stat
     return stat.S_ISLNK(st.st_mode) or getattr(st, "st_reparse_tag", 0) in _LINK_TAGS
 
 
@@ -7702,19 +7749,33 @@ def _store_add_source(self, path):
 
 def _store_sources(self, all=False, counts=True):
     """[{id, path, on, items}] of the sources being read (`all`: the stopped ones too), in the order added; `items` =
-    the items with an origin in it (the offline line's count: *its 412 episodes are kept*). `counts=False` (a look,
-    Connect's video index): the roots' rows alone, no origin read; the counts are gathered here, never in
-    a GROUP BY (its temporary B-tree went to disk: 14 MB written per call at 20k origins)."""
+    the live items with an origin under its folder, whichever source recorded it (the offline line's count: *its 412
+    episodes are kept*; item 8b: a show's folder added inside a folder read before counts the episodes that one took
+    in) — by the origin keys' path, `/`-ended (`…\\Show` never counts `…\\Show S2`). `counts=False` (a look,
+    Connect's video index): the roots' rows alone, no origin read; the counts are gathered here from one read of the
+    keys in order (each folder's by its prefix), never in a GROUP BY (its temporary B-tree went to disk: 14 MB written
+    per call at 20k origins)."""
     kinds = ("source", "source-off") if all else ("source",)
-    held = {}
+    keys, ids = [], []
     with self._reading():
         rows = self.conn.execute(f"SELECT id, path, kind FROM roots WHERE kind IN ({','.join('?' * len(kinds))}) "
                                  "ORDER BY id", kinds).fetchall()
         if counts and rows:
-            for root, item_id in self.conn.execute(f"SELECT json_extract(p.pairing, '$.root'), p.item_id "
-                                                   f"FROM pairings p WHERE {_ORIGIN_ROW}"):
-                held.setdefault(root, set()).add(item_id)
-    return [{"id": i, "path": p, "on": k == "source", "items": len(held.get(i, ()))} for i, p, k in rows]
+            for key, item_id in self.conn.execute(f"SELECT substr(p.content_key, {len(SOURCE_KEY) + 1}), p.item_id "
+                                                  f"FROM pairings p WHERE {_ORIGIN_ROW} ORDER BY p.content_key"):
+                keys.append(key)
+                ids.append(item_id)
+    out = []
+    for i, p, k in rows:
+        held = set()
+        if keys and p:
+            prefix = path_key(os.path.abspath(p)).rstrip("/") + "/"
+            at = bisect.bisect_left(keys, prefix)
+            while at < len(keys) and keys[at].startswith(prefix):
+                held.add(ids[at])
+                at += 1
+        out.append({"id": i, "path": p, "on": k == "source", "items": len(held)})
+    return out
 
 
 def _store_stop_source(self, root_id):
@@ -7729,8 +7790,9 @@ def _store_stop_source(self, root_id):
 
 
 def _store_origins(self):
-    """{path_key(origin): Origin(item_id, root, origin, size, mtime_ns, sha256, rel_path)} for every origin recorded,
-    in any tier (a finished item is never taken in again): one read per look. The records' fields are read by SQLite
+    """{path_key(origin): Origin(item_id, root, origin, size, mtime_ns, sha256, rel_path, availability, paired_at)}
+    for every origin recorded, in any tier (a finished item is never taken in again): one read per look — the item's
+    availability with it, so a look finds the copies gone (item 8a) with no stat of its own. The records' fields are read by SQLite
     (F13: decoding every record in Python held the interpreter 0.25 s at 20k, stretching a window's save meanwhile); a
     record that isn't a JSON object reads as one with no fields."""
     field = lambda name: (f"CASE WHEN json_valid(p.pairing) THEN CASE WHEN json_type(p.pairing) = 'object' THEN "  # noqa
@@ -7738,8 +7800,9 @@ def _store_origins(self):
     with self._reading():
         rows = self.conn.execute(
             f"SELECT substr(p.content_key, {len(SOURCE_KEY) + 1}), p.item_id, {field('root')}, {field('origin')}, "
-            f"{field('size')}, {field('mtime_ns')}, {field('sha256')}, i.rel_path FROM pairings p JOIN items i ON "
-            f"i.id = p.item_id WHERE {_ORIGIN_ROW} ORDER BY p.content_key").fetchall()
+            f"{field('size')}, {field('mtime_ns')}, {field('sha256')}, i.rel_path, i.availability, p.paired_at "
+            f"FROM pairings p "
+            f"JOIN items i ON i.id = p.item_id WHERE {_ORIGIN_ROW} ORDER BY p.content_key").fetchall()
     return {r[0]: Origin._make(r[1:]) for r in rows}         # in key order (a look finds a folder's by its prefix)
 
 
@@ -7839,6 +7902,39 @@ def _store_update_origin(self, origin, size, mtime_ns, sha256):
     return True
 
 
+def _store_copies_back(self, back, records=None):
+    """Item 8a: the copies a look wrote back into their own place (`back`: [(item_id, rel, size, mtime_ns)] — the
+    copy's rel and its stats as written). Each item still at that rel and still 'missing' is available again in place,
+    as the disk sync's *came back* is — its id, place, words, cards and records kept, its size and time the new copy's
+    — in ONE command the window hears like any availability change (no event: nothing moved). A row removed, moved or
+    back meanwhile is left as it is. `records` ({item_id: (origin, size, mtime_ns, sha256)}): the originals whose
+    stats moved, rewritten for the items made available, in the same command (`update_origin`'s rule; H4). -> (the ids
+    made available, the rels no item holds: the caller's to trash, never left in Library untracked — B2)."""
+    back = [b for b in back if b[1]]
+    if not back:
+        return [], []
+    with self._command("copy_back", SOURCE_PRODUCER) as cmd:
+        done, tiers = [], set()
+        for item_id, rel, size, mtime_ns in back:
+            row = self.conn.execute("SELECT tier FROM items WHERE id = ? AND rel_key = ? AND availability = 'missing'",
+                                    (item_id, path_key(rel))).fetchone()
+            if row is None:
+                continue
+            self.conn.execute("UPDATE items SET availability = 'available', size = ?, mtime_ns = ? WHERE id = ?",
+                              (size, mtime_ns, item_id))
+            done.append(item_id)
+            tiers.add(row[0])
+        if done:
+            cmd.feed(done)
+            cmd.touch(tiers, availability=True)
+        for item_id in done:
+            if item_id in (records or {}):
+                self.update_origin(*records[item_id])     # joins this command (the write lock is re-entrant)
+        unused = [rel for _i, rel, _s, _m in back if not self.conn.execute(
+            "SELECT 1 FROM items WHERE rel_key = ?", (path_key(rel),)).fetchone()]
+    return done, unused
+
+
 def _store_exclude_origins(self, pairs, now):
     """Inside `remove`: an exclusion per origin of the removed items (`pairs`: {item_id: [[content_key, the record's
     JSON text, paired_at]]}, as `remove` read them) — its path key, `kind` 'removed', the note {size, sha256,
@@ -7871,6 +7967,169 @@ def _store_let_origins_back(self, keys):
     for chunk in _chunks(patterns, 500):
         self.conn.execute(f"DELETE FROM exclusions WHERE kind = 'removed' AND pattern IN ({','.join('?' * len(chunk))})",
                           chunk)
+
+
+# --- K6: a folder no look reads (*Never read this folder*) ------------------------------------------------------- #
+# A skipped folder is one `exclusions` row: kind FOLDER_SKIP, `pattern` its path key, `root_id` the innermost source
+# being read that holds it, `note` {"path": the folder as written}. Its skip removes the items whose every origin lies
+# under it as Remove does (the store's trash; each origin a 'removed' row, its note marked {"folder": <row id>}), in the
+# same command — Undo puts them back and drops the row; *Read again* drops the row and its marked 'removed' rows, so
+# the next look takes its files in as new (SRC-2), never twice (SRC-7). `sources._Look` never lists a skipped folder.
+FOLDER_SKIP = "folder"
+SKIP_NOT_FOLDER = "That isn't a folder."
+SKIP_IS_SOURCE = "That's a folder Surasura reads: to leave all of it out, stop reading it."
+SKIP_OUTSIDE = "That folder isn't inside a folder Surasura reads."
+SKIP_HOLDS_SOURCE = "That folder holds a folder Surasura reads: stop reading that one first."
+SKIP_ALREADY = "That folder is skipped already."
+
+
+def _under(key, folder):
+    """Is the path key `key` inside the folder key `folder` (never the folder itself)?"""
+    return key.startswith(folder.rstrip("/") + "/")
+
+
+def skip_refusal(path, sources, skipped=()):
+    """Why the folder `path` can't be skipped (K6) -> (reason or None, the id of the innermost source holding it). Pure:
+    `sources` [(id, path)] of the folders being read; `skipped` the keys of the folders skipped already. Refused: no
+    path; a source folder itself (that's *Stop reading*); one inside no source being read; one holding a source being
+    read (its look would read nothing); one skipped already, or inside one."""
+    if not isinstance(path, str) or not path.strip():
+        return SKIP_NOT_FOLDER, None
+    key = path_key(folder_path(path)).rstrip("/")
+    keys = [(i, path_key(folder_path(p)).rstrip("/")) for i, p in sources]
+    if any(k == key for _i, k in keys):
+        return SKIP_IS_SOURCE, None
+    held = [(len(k), i) for i, k in keys if _under(key, k)]
+    if not held:
+        return SKIP_OUTSIDE, None
+    if any(_under(k, key) for _i, k in keys):
+        return SKIP_HOLDS_SOURCE, None
+    if any(s == key or _under(key, s) for s in skipped):
+        return SKIP_ALREADY, None
+    return None, max(held, key=lambda h: h[0])[1]
+
+
+def _store_read_sources(self):
+    """[(id, path)] of the sources being read (their rows alone)."""
+    return [(s["id"], s["path"]) for s in self.sources(counts=False)]
+
+
+def _store_skipped_folders(self):
+    """[{id, root, key, path}] of the folders no look reads, in the order skipped (K6): Settings' list, the look's
+    skip."""
+    with self._reading():
+        rows = self.conn.execute("SELECT id, root_id, pattern, note FROM exclusions WHERE kind = ? ORDER BY id",
+                                 (FOLDER_SKIP,)).fetchall()
+    return [{"id": i, "root": r, "key": k, "path": (_json_dict(n) or {}).get("path") or k} for i, r, k, n in rows]
+
+
+def _store_skip_refused(self, path):
+    """Why `path` can't be skipped (K6, `skip_refusal`'s plain words), or None. A read."""
+    return skip_refusal(path, self._read_sources(), [f["key"] for f in self.skipped_folders()])[0]
+
+
+def _store_items_under(self, path):
+    """K6: the live items whose every origin lies inside the folder `path`, in id order — an item with an origin
+    elsewhere, or a record of another producer (hato's), stays. A range read on the origins' keys."""
+    lo = SOURCE_KEY + path_key(folder_path(path)).rstrip("/") + "/"
+    hi = lo[:-1] + "0"                                   # "/" + 1: every key inside the folder, none beside it
+    with self._reading():
+        inside = sorted({r[0] for r in self.conn.execute(
+            "SELECT item_id FROM pairings WHERE content_key >= ? AND content_key < ? AND item_id IS NOT NULL",
+            (lo, hi))})
+        out = []
+        for chunk in _chunks(inside, 500):
+            for item_id, every, there in self.conn.execute(
+                    f"SELECT item_id, COUNT(*), SUM(content_key >= ? AND content_key < ?) FROM pairings WHERE item_id "
+                    f"IN ({','.join('?' * len(chunk))}) GROUP BY item_id ORDER BY item_id", [lo, hi] + chunk):
+                if every == there:
+                    out.append(item_id)
+    return out
+
+
+def _store_skip_choices(self, item_ids):
+    """⋯'s *Never read this folder* (K6): for the first of these items' origins inside a source being read, its folder
+    and each folder above it up to (never) the innermost such source folder, deepest first — each one `skip_refusal`
+    accepts -> [path]; [] when none of them came from a source being read."""
+    ids = [i for i in item_ids if isinstance(i, int)][:500]
+    if not ids:
+        return []
+    with self._reading():
+        origins = [(_json_dict(t) or {}).get("origin") for (t,) in self.conn.execute(
+            f"SELECT p.pairing FROM pairings p WHERE {_ORIGIN_ROW} AND p.item_id IN ({','.join('?' * len(ids))}) "
+            f"ORDER BY p.content_key", ids)]
+    sources = self._read_sources()
+    skipped = [f["key"] for f in self.skipped_folders()]
+    keys = [path_key(folder_path(p)).rstrip("/") for _i, p in sources]
+    for origin in origins:
+        if not isinstance(origin, str) or not origin:
+            continue
+        folder = folder_path(os.path.dirname(_EPUB_PART.sub(".epub", origin)))
+        key = path_key(folder).rstrip("/")
+        held = [k for k in keys if k == key or _under(key, k)]
+        if not held:
+            continue
+        top, out = max(held, key=len), []
+        while _under(path_key(folder).rstrip("/"), top):
+            if skip_refusal(folder, sources, skipped)[0] is None:
+                out.append(folder)
+            up = os.path.dirname(folder)
+            if up == folder:
+                break
+            folder = up
+        return out
+    return []
+
+
+def _store_skip_folder(self, path, trashed_paths=None):
+    """*Never read this folder* (K6), ONE command: the folder's row, then the items whose every origin lies under it
+    removed as `remove` does (`trashed_paths` {id: rel}: where the caller's file work sent their copies — the window's
+    writer trashes them under this write lock first; files in his own folders are never touched) -> the change, kind
+    'remove' (Undo puts the items back and drops the row: `undo`), `folder` its row's id. Refused (`NotASource`, its
+    reason) before anything is written."""
+    with self._command("remove") as cmd:
+        reason, root = skip_refusal(path, self._read_sources(), [f["key"] for f in self.skipped_folders()])
+        if reason:
+            raise NotASource(reason)
+        norm = folder_path(path)
+        folder = self.conn.execute("INSERT INTO exclusions (root_id, pattern, kind, created_at, note) VALUES "
+                                   "(?, ?, ?, ?, ?)", (root, path_key(norm).rstrip("/"), FOLDER_SKIP, _now(),
+                                                       _dumps({"path": norm}))).lastrowid
+        self._skips_moved()
+        ids = self.items_under(norm)
+        change = (self.remove(ids, trashed_paths) if ids else None) or self._change(cmd, "remove")
+        for chunk in _chunks(list(getattr(change, "excluded", None) or ()), 500):
+            self.conn.execute(f"UPDATE exclusions SET note = json_set(CASE WHEN json_valid(note) THEN note ELSE '{{}}' "
+                              f"END, '$.folder', ?) WHERE id IN ({','.join('?' * len(chunk))})", [folder] + chunk)
+        change.folder, change.folder_path = folder, norm
+        return change
+
+
+def _store_unskip(self, folder_id):
+    """(Inside a write.) The folder row `folder_id` and the 'removed' rows its skip wrote go -> True when it was
+    there."""
+    if not self.conn.execute("DELETE FROM exclusions WHERE id = ? AND kind = ?", (folder_id, FOLDER_SKIP)).rowcount:
+        return False
+    self.conn.execute("DELETE FROM exclusions WHERE kind = 'removed' AND json_valid(note) AND "
+                      "json_extract(note, '$.folder') = ?", (folder_id,))
+    self._skips_moved()
+    return True
+
+
+def _store_skips_moved(self):
+    """(Inside a write.) The skipped folders changed: the copy carries them (`copy_dirty`), and meta `folder_skips`
+    moves, so a look reads them again (it reads no exclusion while that stays as its cache says)."""
+    meta = self._meta()
+    self._set_meta({"copy_dirty": int(meta.get("copy_dirty") or 0) + 1,
+                    "folder_skips": int(meta.get("folder_skips") or 0) + 1})
+
+
+def _store_read_folder_again(self, folder_id):
+    """Settings' *Read again* (K6): the folder is read again — its row and the 'removed' rows its skip wrote go, so the
+    next look takes its files in as new (shows never shown → New arrivals, SRC-2; never twice, SRC-7). Not on Undo.
+    -> True when it was skipped."""
+    with self._writing():
+        return self._unskip(folder_id)
 
 
 def _store_take_in(self, root_id, found, first=False, rules=None):
@@ -8200,8 +8459,18 @@ Store._sync_drop = _store_sync_drop
 Store._take_out = _store_take_out
 Store._waiting_video = _store_waiting_video
 Store.update_origin = _store_update_origin
+Store.copies_back = _store_copies_back
 Store._exclude_origins = _store_exclude_origins
 Store._let_origins_back = _store_let_origins_back
+Store._read_sources = _store_read_sources
+Store.skipped_folders = _store_skipped_folders
+Store.skip_refused = _store_skip_refused
+Store.items_under = _store_items_under
+Store.skip_choices = _store_skip_choices
+Store.skip_folder = _store_skip_folder
+Store._unskip = _store_unskip
+Store._skips_moved = _store_skips_moved
+Store.read_folder_again = _store_read_folder_again
 Store.take_in = _store_take_in
 Store._write_origin = _store_write_origin
 Store._take_new = _store_take_new
@@ -8355,6 +8624,484 @@ def repair_store(db_path, language, data_dir, user_files_dir, lock):
     finally:
         store.close()
     return EXIT_DONE
+
+
+# ------------------------------------------------------------------------------------------------ #
+# Start a fresh library (K7, laptop fixes; Settings → Content): the library's own state set aside
+# ------------------------------------------------------------------------------------------------ #
+
+RESET_PREFIX = "library-reset-"   # User Files/<lang>/.trash/library-reset-<YYYYmmdd-HHMMSS>/ (that .trash is never purged)
+RESET_RECORD = "reset.json"       # in it: what came from where, enough to put the old library back by hand
+RESET_WAIT = 2.0                  # s: another writer's commit is waited for this long, then the reset is refused
+# Emptied by the reset; `roots` stays (the folders he reads, their ids kept), and so does every exclusion but Remove's
+# — but never Connect's never-again sets (`made_words`, `made_lines`, G1.3-4: a word whose card he deleted is never made
+# again; item ids are never reused, so their stale ids meet no new item: I-R1 / LF-5)
+RESET_TABLES = ("anki_links", "pairings", "placement_log", "trash", "anki_changes", "gone", "items", "pieces", "works")
+RESET_KEEP_META = ("mine_line", "arrivals_on", "log_seq")     # his library options, and the log's numbering (+ readers)
+# Why a reset is refused (nothing changed), in the window's words
+RESET_UPDATE = "An update is being installed: start a fresh library once it has finished."
+RESET_GENERATE = "A Generate is running: start a fresh library once it has finished."
+RESET_CONNECT = "Connect is making cards: start a fresh library once it has finished."
+RESET_KNOWN = "Your known words are being updated: try again in a moment."
+RESET_BUSY = "Another Surasura program is saving your library: try again in a moment."
+RESET_DAMAGED = "Your library needs Repair first."
+RESET_LINKED = ("A linked folder in your data folder is in the way ({path}): Surasura never moves or removes what a "
+                "link leads to. Remove the link (never its folder), then start a fresh library.")
+RESET_NOT_ALL_BACK = "Part of your library couldn't be put back; it is in the backup ({folder})"
+
+
+class ResetRefused(StoreError):
+    """A fresh library refused before anything was changed; `reason` in the window's words."""
+
+    def __init__(self, reason):
+        super().__init__(reason)
+        self.reason = reason
+
+
+def _copy_db(conn, dest):
+    """The store's rows through SQLite's backup API (a plain copy of the .db alone loses committed rows, K6), written
+    under a `.part` name and renamed once whole. Never inside a transaction on `conn` (the backup then waits on it)."""
+    target = sqlite3.connect(dest + ".part")
+    try:
+        conn.backup(target)
+    finally:
+        target.close()
+    os.replace(dest + ".part", dest)
+
+
+def _copy_whole(conn, dest):
+    """Is the copy at `dest` the store as it stands? Its own check passes, and every table holds as many rows as the
+    store's (read under the write lock: nothing moves meanwhile)."""
+    copy = sqlite3.connect(dest)
+    try:
+        if [r[0] for r in copy.execute("PRAGMA quick_check")] != ["ok"]:
+            return False
+        for (name,) in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall():
+            sql = f'SELECT COUNT(*) FROM "{name}"'
+            if copy.execute(sql).fetchone() != conn.execute(sql).fetchone():
+                return False
+        return True
+    except sqlite3.DatabaseError:
+        return False
+    finally:
+        copy.close()
+
+
+def _same_bytes(a, b):
+    with open(a, "rb") as x, open(b, "rb") as y:
+        while True:
+            one, two = x.read(1 << 20), y.read(1 << 20)
+            if one != two:
+                return False
+            if not one:
+                return True
+
+
+class ResetNotAllBack(StoreError):
+    """A reset that failed before its commit, with part of the library left in the backup (`folder`): `reset.json`'s
+    `not_put_back` names each piece. The window never says "Nothing was changed" for it."""
+
+    def __init__(self, folder):
+        super().__init__(RESET_NOT_ALL_BACK.format(folder=folder))
+        self.folder = folder
+
+
+def _links_under(src):
+    """The first symlink or junction at or under `src` (`is_link`, never followed), or None."""
+    try:
+        if is_link(os.lstat(src)):
+            return src
+    except OSError:
+        return None
+    stack = [src] if os.path.isdir(src) else []
+    while stack:
+        with os.scandir(stack.pop()) as found:
+            for entry in found:
+                if is_link(entry.stat(follow_symlinks=False)):
+                    return entry.path
+                if entry.is_dir(follow_symlinks=False):
+                    stack.append(entry.path)
+    return None
+
+
+def _set_aside(src, dst):
+    """`src` to `dst`, a name in the backup folder: a rename (one volume); refused (another volume, a folder a watch
+    holds open) → copied, every file's bytes checked, then the original removed — a file that can't be removed raises:
+    left beside the library, the disk sync would walk it back in. A folder left empty (held open) stays, empty.
+    A link or junction anywhere in it stops the copy before anything is copied or removed (LF-4: Python 3.11 walks a
+    junction as a plain folder, so the removal would delete the files of the folder it leads to — his own): the reset
+    is refused (`RESET_LINKED`) and everything already moved put back. A rename moves a link itself, never through it.
+    The removal takes only the files checked, each only while its size and time are as checked (D5: one that arrived
+    or changed after the check — hato's drop, the copier's — has no checked copy): -> those left where they are
+    ([] after a rename), named in `reset.json` (`left`)."""
+    import shutil
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    try:
+        os.rename(src, dst)
+        return []
+    except OSError:
+        pass
+    link = _links_under(src)
+    if link is not None:
+        raise ResetRefused(RESET_LINKED.format(path=link))
+    if os.path.isdir(src):
+        shutil.copytree(src, dst, symlinks=True)
+        files = [os.path.join(w, n) for w, _d, names in os.walk(src) for n in names]
+        pairs = [(f, os.path.join(dst, os.path.relpath(f, src))) for f in files]
+    else:
+        shutil.copy2(src, dst)
+        pairs = [(src, dst)]
+    checked = {}
+    for a, b in pairs:
+        st = os.stat(a)
+        if not _same_bytes(a, b):
+            raise OSError(f"the backup copy of {a} did not match it")
+        checked[a] = (st.st_size, st.st_mtime_ns)
+    left = []
+
+    def remove(path):                                   # D5: only a file checked, and unchanged since its check
+        try:
+            st = os.stat(path)
+        except OSError:
+            return
+        if checked.get(path) != (st.st_size, st.st_mtime_ns):
+            left.append(path)
+            return
+        os.remove(path)
+    if not os.path.isdir(src):
+        remove(src)
+        return left
+    for where, dirs, names in os.walk(src, topdown=False):
+        for n in names:
+            remove(os.path.join(where, n))
+        for d in dirs:
+            try:
+                os.rmdir(os.path.join(where, d))
+            except OSError:
+                pass
+    try:
+        os.rmdir(src)
+    except OSError:
+        pass
+    return left
+
+
+def _put_back(dst, src):
+    """One `_set_aside` undone — recorded before it began, so one that stopped part way (a copy checked, some files
+    removed) is undone too (H1 / LF-6): when nothing is left at `src`, the backup renamed back; else each file of the
+    backup missing at `src` copied back, never over a file there (the original: a byte check that failed leaves bad
+    bytes in the backup). The backup's copy then stays."""
+    import shutil
+    if not os.path.lexists(dst):
+        return
+    if not os.path.lexists(src):
+        try:
+            os.rename(dst, src)
+            return
+        except OSError:
+            pass
+    if not os.path.isdir(dst):
+        if not os.path.lexists(src):
+            shutil.copy2(dst, src)
+        return
+    for where, _dirs, names in os.walk(dst):
+        here = os.path.normpath(os.path.join(src, os.path.relpath(where, dst)))
+        os.makedirs(here, exist_ok=True)
+        for n in names:
+            if not os.path.lexists(os.path.join(here, n)):
+                shutil.copy2(os.path.join(where, n), os.path.join(here, n))
+
+
+def _write_record(folder, record):
+    with open(os.path.join(folder, RESET_RECORD + ".tmp"), "w", encoding="utf-8") as f:
+        json.dump(record, f, indent=2, ensure_ascii=False)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(os.path.join(folder, RESET_RECORD + ".tmp"), os.path.join(folder, RESET_RECORD))
+
+
+def start_fresh(store, forget_known=False, _step=None):
+    """*Start a fresh library* (asked for 2026-10-21: "I need a reset library button as well") for `store`'s language ->
+    {"backup": the backup folder, "known": "kept" | "forgotten" | "kept: <why>", "sources": [root ids being read]}.
+
+    **Goes, into one dated backup** (`User Files/<lang>/.trash/library-reset-<stamp>/`, never purged; `reset.json` in
+    it names what came from where): the store's rows — items, order, pieces, works, trash, the log, New arrivals,
+    pairings and origins, Remove's exclusions, Anki links — as a SQLite backup; its JSON copy `master_manifest.json`
+    (item 8: a store whose database is lost rebuilds itself from it — left here, the old library comes back); every
+    entry of `data/<lang>/` (the `Library/` copies, a 2.x upgrade's tier folders — left, the disk sync walks them back
+    in — hato's drop folder, `data/<lang>/.trash`); the sources' folder-time cache. **Stays:** the folders he reads
+    (their `roots` rows and ids; nothing under them is ever written) and his library options (the mine line, New
+    arrivals' switch); a folder he said never to read (an exclusion that isn't Remove's); Connect's never-again sets
+    (`made_words`, `made_lines`: a card he deleted is never made again, LF-5); Anki; settings.json;
+    results/; known words unless `forget_known` (then KnownWord.json is kept dated in the trash with
+    `backup_to_trash`, copied into the backup, and replaced by an empty one in its own format). The caller reads the
+    folders again (`SourceLooks.fresh`: a first look of each, `first=True`, landing in Current as setup's does).
+
+    **The one write:** every table emptied and a fresh meta — a **new store_id** (a new library: Connect's queued jobs
+    name the store they were read from and drop for another, P2.1 #12), `epoch` + 1 (every window reads in full; the
+    folder-time cache is dropped), `state_version` and the other versions only ever up, item ids never reused (the
+    sequences stay, K30), the Soon line at 25 (`_line_after_build`), works / search keys seeded as a build's are. The
+    fresh JSON copy is exported at once (`export_copy`, under the maintenance lock held).
+
+    **Refused** (`ResetRefused`, nothing changed) while an update is staged, a Generate holds `results`, Connect runs,
+    the helper holds the maintenance lock, another writer keeps the write lock past RESET_WAIT, the known-words lock
+    is held (when asked to forget them), or the store is damaged. Every lock is held to the end, the write lock from
+    the backup copy to the commit, so the copy holds every row the write empties.
+
+    **Crash-safe by its order** — a kill between any two steps leaves the old library in place or restorable by hand
+    from `reset.json`: (1) the backup folder and `reset.json` (status "started", every move it will make); (2) the
+    store copied and checked (`_copy_whole`: its own check, every table's count) — not whole → StoreError, nothing
+    moved; (3) the JSON copy, (4) the folder times, (5) `data/<lang>`'s entries moved (`_set_aside`) — the store
+    still holds the old library: a kill here leaves every moved thing at its `to`; (6) the one write, committed
+    (status "written": the store copy is the old library); (7) the export; (8) the known words; status "done" —
+    after the commit every step is best-effort, logged, never raised (`_after_commit`, H2: the fresh library stands).
+    An error (not a kill) before the commit rolls the write back and puts every move back itself, each on its own, a
+    move recorded before it began (status "undone"; a piece that couldn't go back is named in `not_put_back` and
+    raised as `ResetNotAllBack`); a link in the data folder refuses it there (`RESET_LINKED`, LF-4).
+    No restore button here (K7): `reset.json` says how by hand. `_step(name)` (tests) is called after each step."""
+    step = _step or (lambda _name: None)
+    if update_staged():
+        raise ResetRefused(RESET_UPDATE)
+    from app import locks
+    token = object()                                    # this reset's holds: a hold by this thread too is refused
+    held = []
+    try:
+        try:
+            held.append(locks.take("results", "Starting a fresh library", owner=token))
+        except locks.Busy:
+            raise ResetRefused(RESET_GENERATE) from None
+        if locks.in_use("connect"):
+            raise ResetRefused(RESET_CONNECT)
+        if forget_known:
+            from app.anki_sync import known_lock_name
+            try:
+                held.append(locks.take(known_lock_name(store.language), "Starting a fresh library", wait=RESET_WAIT,
+                                       owner=token))
+            except locks.Busy:
+                raise ResetRefused(RESET_KNOWN) from None
+        lock = MaintenanceLock(store.db_path)
+        try:
+            if not lock.try_acquire():
+                raise ResetRefused(RESET_BUSY)
+            return _start_fresh(store, forget_known, step)
+        finally:
+            lock.close()
+    finally:
+        for h in reversed(held):
+            h.release()
+
+
+def _start_fresh(store, forget_known, step):
+    from contextlib import ExitStack
+    from app import sources
+    language, data_dir, user_files_dir = store.language, store.data_dir, store.user_files_dir
+    stack = ExitStack()
+    try:
+        stack.enter_context(store._writing(begin=False, wait=RESET_WAIT))
+    except StoreBusy:
+        raise ResetRefused(RESET_BUSY) from None
+    except StoreReadOnly:
+        raise ResetRefused(RESET_DAMAGED) from None
+    with stack:
+        trash = os.path.join(user_files_dir, ".trash")
+        folder = os.path.join(trash, RESET_PREFIX + _stamp())
+        n = 1
+        while os.path.exists(folder):
+            folder = os.path.join(trash, f"{RESET_PREFIX}{_stamp()}-{n}")
+            n += 1
+        os.makedirs(folder)
+        moves = []
+        target = manifest_path(user_files_dir)
+        if os.path.lexists(target):
+            moves.append({"step": "manifest", "from": target, "to": os.path.join(folder, MANIFEST_NAME)})
+        cache = sources.cache_path(language)
+        if os.path.lexists(cache):
+            moves.append({"step": "cache", "from": cache, "to": os.path.join(folder, os.path.basename(cache))})
+        if os.path.isdir(data_dir):
+            for name in sorted(os.listdir(data_dir)):
+                moves.append({"step": "data", "from": os.path.join(data_dir, name),
+                              "to": os.path.join(folder, "data", name)})
+        db_copy = os.path.join(folder, os.path.basename(store.db_path))
+        record = {"language": language, "status": "started", "started_at": _now(), "db": store.db_path,
+                  "db_copy": db_copy, "moves": moves, "known": None,
+                  "how_to_put_back": "Close Surasura. Copy db_copy over db (delete db's -wal and -shm first) when the "
+                                     "status is written or done, then move every 'to' back to its 'from'."}
+        _write_record(folder, record)
+        done = []
+        try:
+            step("folder")
+            _copy_db(store.conn, db_copy)
+            if not _copy_whole(store.conn, db_copy):
+                raise StoreError("the library's backup copy isn't whole; nothing was changed")
+            step("backup")
+            for name in ("manifest", "cache", "data"):
+                for move in moves:
+                    if move["step"] == name:
+                        done.append(move)               # before it begins: one stopping part way is put back (H1)
+                        left = _set_aside(move["from"], move["to"])
+                        if left:
+                            move["left"] = left         # D5: never removed, no checked copy; named in reset.json
+                step(name)
+            _reset_tables(store)
+            step("wipe")
+            store.conn.execute("COMMIT")
+        except Exception as e:
+            if store.conn.in_transaction:
+                store.conn.execute("ROLLBACK")
+            left = []
+            for move in reversed(done):                 # each on its own: one failing never keeps the rest away
+                try:
+                    _put_back(move["to"], move["from"])
+                except Exception as why:
+                    left.append({"from": move["from"], "to": move["to"], "error": repr(why)})
+            record["status"] = "undone"
+            if left:
+                record["not_put_back"] = left
+            _after_commit("its record", _write_record, folder, record)
+            if left:
+                raise ResetNotAllBack(folder) from e
+            raise
+        record["status"] = "written"                    # committed: from here on nothing is the reset's failure (H2)
+        _after_commit("its record", _write_record, folder, record)
+    return _after_write(store, folder, record, forget_known, step)
+
+
+def _after_commit(what, call, *args):
+    """A step after the reset's commit (or its record after an undo): logged when it fails, never raised — the fresh
+    library stands, so the window never says "Nothing was changed" for it (H2). -> its answer, or None."""
+    try:
+        return call(*args)
+    except Exception as e:
+        print(f"Fresh library: {what} failed ({e!r}); the library stands as it was written")
+        return None
+
+
+def _after_write(store, folder, record, forget_known, step):
+    """`start_fresh`'s steps (7)–(8), after the commit: each best-effort (`_after_commit`) — the JSON copy (the next
+    maintain exports it), the known words (kept, with why), the last record write, the folders' list."""
+    _after_commit("the windows' bell", library_watch.ring, store.db_path)   # every window reads the new epoch in full
+    step("write")
+    _after_commit("the JSON copy (it waits for the next save)", export_copy, store)   # the maintenance lock is held
+    step("export")
+    known = "kept"
+    if forget_known:
+        known = _after_commit("forgetting the known words", _forget_known, store, folder, record)
+        known = known or "kept: they couldn't be forgotten"
+    record.update(status="done", known=record["known"] or known, finished_at=_now())
+    _after_commit("its record", _write_record, folder, record)
+    step("known")
+    rows = _after_commit("the folders' list", store.sources) or []
+    return {"backup": folder, "known": known, "sources": [r["id"] for r in rows]}
+
+
+def _reset_tables(store):
+    """The one write's rows (inside the reset's write lock): BEGIN, every table of the library's own emptied, Remove's
+    exclusions with them, and a fresh meta (`start_fresh`'s docstring). Committed by the caller."""
+    conn = store.conn
+    old = store._meta()
+    conn.execute("BEGIN IMMEDIATE")
+    for sql in ADDED_TABLES_SQL:                         # an added table this store may not have made yet
+        conn.execute(sql)
+    for name in RESET_TABLES:
+        conn.execute(f"DELETE FROM {name}")
+    conn.execute("DELETE FROM exclusions WHERE kind = 'removed'")
+    conn.execute("DELETE FROM meta")
+    meta = _fresh_meta(uuid.uuid4().hex, int(old.get("epoch") or 1) + 1, int(old.get("state_version") or 0) + 1)
+    for key in ("order_version", "availability_version", "pins_version"):
+        meta[key] = int(old.get(key) or 0) + 1
+    meta.update({k: v for k, v in old.items() if k in RESET_KEEP_META or k.startswith("reader")})
+    store._set_meta(meta)
+    _seed_schema2(store, meta["state_version"])         # the feed's floor and the search fold, as every build's
+    _line_after_build(store)                            # nothing in Current: 25 (Q2-4)
+    store._set_meta({"migrated_at": _now()})
+
+
+def _forget_known(store, folder, record):
+    """*Also forget my known words*: KnownWord.json kept dated in the trash (`backup_to_trash`, byte-checked) and
+    copied into the backup, then one in its own format (`anki_sync`'s) holding only the words he dismissed — every
+    replacing import's rule, `anki_sync.kept_ignored` (I-R4). -> "forgotten", or "kept: <why>"
+    (the library is fresh either way). Words from his Anki cards come back at the next Anki sync (a file rewritten
+    outside the sync makes its next run a full one, D4)."""
+    from app import anki_sync
+    path = os.path.join(store.user_files_dir, anki_sync.KNOWN_FILE)
+    if not os.path.isfile(path):
+        return "forgotten"
+    try:
+        dated = backup_to_trash(path)
+        copy = os.path.join(folder, anki_sync.KNOWN_FILE)
+        import shutil
+        shutil.copyfile(path, copy)
+        if not _same_bytes(path, copy):
+            raise OSError("the backup copy did not match it")
+        ignored = anki_sync.kept_ignored(path, store.language, [])   # his dismissed words stay dismissed (I-R4)
+        anki_sync._atomic_write_json(path, anki_sync._fresh_file(ignored))
+    except OSError as e:
+        return f"kept: {e}"
+    record["known"] = {"from": path, "dated": dated, "copy": copy, "ignored_kept": len(ignored)}   # once it happened
+    return "forgotten"
+
+
+def fresh_counts(store):
+    """What *Start a fresh library*'s sheet names, from the store (I-R1, I-R5, LF-8), in one read -> {"added": the +
+    Add files whose original is in no folder Surasura reads (gone, or elsewhere: their records go with the library),
+    "youtube": YouTube / bilibili transcripts, "other": every other item no folder being read brings back (pasted
+    texts, hato's drops, 2.x content), "suspended": the cards *Take its new cards out* left suspended in Anki (the
+    open `cards_out` records: they go into the backup, so the cards stay suspended — Put back is a Junban run over
+    Anki, never the reset's)}. An item comes back when one of its origins lies under a folder being read."""
+    on = [path_key(os.path.abspath(r["path"])).rstrip("/") + "/" for r in store.sources(counts=False) if r["path"]]
+    with store._reading():
+        items = store.conn.execute("SELECT id, source_type FROM items").fetchall()
+        origins = store.conn.execute(
+            f"SELECT p.item_id, substr(p.content_key, {len(SOURCE_KEY) + 1}), CASE WHEN json_valid(p.pairing) AND "
+            f"json_type(p.pairing) = 'object' THEN json_extract(p.pairing, '$.via') END FROM pairings p WHERE "
+            f"{_ORIGIN_ROW}").fetchall()
+        changes = store.conn.execute("SELECT after FROM anki_changes WHERE reverted_at IS NULL AND action = "
+                                     "'cards_out'").fetchall()
+    back, added = set(), set()
+    for item_id, key, via in origins:
+        if any(key.startswith(prefix) for prefix in on):
+            back.add(item_id)
+        elif via == "add":
+            added.add(item_id)
+    out = {"added": 0, "youtube": 0, "other": 0, "suspended": 0}
+    for item_id, source_type in items:
+        if item_id in back:
+            continue
+        kind = "added" if item_id in added else "youtube" if source_type in ("youtube", "bilibili") else "other"
+        out[kind] += 1
+    cards = set()
+    for (after,) in changes:
+        record = _json_dict(after) or {}
+        cards.update(c for c in record.get("suspended") or () if isinstance(c, int))
+    out["suspended"] = len(cards)
+    return out
+
+
+def unfinished_reset(user_files_dir, told=False):
+    """LF-11: the newest backup folder of a fresh library a kill stopped part way (`reset.json` still "started": its
+    moves may be half done, the old library in the backup), or None. Read once a run, at the first look. D7: only one
+    that moved something (a `moves[*].to` there: a kill during the store copy moved nothing) and wasn't told yet;
+    `told` (the looks', with the bar line): its record says `"told": true` from now on, so the line shows once."""
+    trash = os.path.join(user_files_dir, ".trash")
+    try:
+        names = sorted((n for n in os.listdir(trash) if n.startswith(RESET_PREFIX)), reverse=True)
+    except OSError:
+        return None
+    for name in names:
+        folder = os.path.join(trash, name)
+        try:
+            with open(os.path.join(folder, RESET_RECORD), encoding="utf-8") as f:
+                record = json.load(f)
+            if record.get("status") != "started" or record.get("told") or \
+                    not any(os.path.lexists(m.get("to") or "") for m in record.get("moves") or ()):
+                continue
+            if told:
+                record["told"] = True
+                _after_commit("its record", _write_record, folder, record)
+            return folder
+        except (OSError, ValueError, AttributeError, TypeError):
+            continue
+    return None
 
 
 # ------------------------------------------------------------------------------------------------ #

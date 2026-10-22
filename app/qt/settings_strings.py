@@ -340,6 +340,10 @@ ROWS = {
                                            "looks in them again for new episodes",
                         "The folders Surasura reads where they are", "library folders source read where they are "
                                                                      "stop reading look again"),
+    "fresh_library": ("Start a fresh library",
+                      "Your library set aside in one backup and your folders read again from scratch",
+                      "Empty your library and read your folders again; the old one is kept in a backup",
+                      "fresh library reset start over empty clear"),
     "split_length": ("Split books into parts of", "EPUBs and Anki decks, when you extract them",
                      "The character limit for each part when a file is split", "split epub length"),
     "enable_youtube_transcripts": ("YouTube transcripts", "Download a video’s captions straight into your library",
@@ -639,6 +643,47 @@ SOURCES_LISTING = "Looking at your folders…"
 SOURCES_NONE = "No folders yet: Surasura reads only what you add"
 SOURCES_STOPPED = "Stopped reading {path}: its {n:,} episodes stay in your library"
 SOURCES_STOPPED_ONE = "Stopped reading {path}: its episode stays in your library"
+# K6: the folders inside them Surasura never reads (⋯ › *Never read this folder*, setup's *Skip a folder…*)
+SOURCES_SKIPPED = "Skipped folders"
+SOURCES_READ_AGAIN = "Read again"
+SOURCES_READ_AGAIN_NAME = "Read {path} again"
+SOURCES_READ_AGAIN_TIP = ("Read {path} again\nIts files come back into your library at once; a show you haven't had "
+                          "yet waits in New arrivals")
+SOURCES_READ_AGAIN_DONE = "{path} is read again: its files come back into your library"
+
+# --- K7: *Start a fresh library…* (settings_sources.py: FreshRow; the store's `start_fresh`) ------------------------ #
+FRESH_OPEN = "Start a fresh library…"
+FRESH_TIP = ("Empty your library and read your folders again from scratch\nThe old library is kept in one backup in "
+             "User Files' .trash folder")
+FRESH_RUNNING_TIP = "Starting a fresh library…"
+FRESH_ASK = "Start a fresh library?"
+FRESH_BODY = ("Goes, into one dated backup (User Files › .trash › library-reset-…): your library's order, tiers, "
+              "New arrivals and Needs you, its JSON copy (master_manifest.json) and every copy Surasura keeps in its "
+              "data folder.\n\n"
+              "Comes back: what is in your video and text folders, read again from scratch into Current — episodes "
+              "you removed too. A book's text comes back only when Surasura reads its folder again.\n\n"
+              "Stays: your folders (only ever read) and the list of them, your settings, the cards in Anki (a card "
+              "you deleted is never made again) and, unless you tick the box, your known words.")
+# The sheet's counts (the store's `fresh_counts`), each line only when its count isn't 0
+FRESH_GONE = "Only in the backup, never back: {parts}."
+FRESH_GONE_ADDED = "{n} file{s} you added with + Add from outside your folders"
+FRESH_GONE_YOUTUBE = "{n} YouTube transcript{s}"
+FRESH_GONE_OTHER = "{n} other text{s} with no folder to read again (pasted, hato's, from before 3.0)"
+FRESH_SUSPENDED = ("{n} card{s} Surasura took out of your learning order stay suspended in Anki: unsuspend them "
+                   "there if you want them back.")
+FRESH_NOT_ALL_BACK = "Not all of your library could be put back: the rest is in {folder}"
+FRESH_UNFINISHED = ("A fresh library was stopped part way: your old library may be in its backup, {folder} "
+                    "(reset.json there says how to put it back)")
+FRESH_YES = "Start fresh"
+FRESH_YES_TIP = "Set this library aside in a backup and read your folders again"
+FRESH_KNOWN = "Also forget my known words"
+FRESH_KNOWN_TIP = ("KnownWord.json is kept in the backup and replaced by an empty one\nWords from your Anki cards come "
+                   "back at the next Anki sync")
+FRESH_DONE = "Fresh library: reading your folders…"
+FRESH_DONE_KNOWN_KEPT = "Fresh library: reading your folders… Your known words were kept: {why}"
+FRESH_REFUSED = "Nothing was changed. {reason}"
+FRESH_FAILED = "Nothing was changed: {reason}"
+FRESH_NOT_WRITABLE = "Your library can't be written now: {reason}"
 
 # --- PR: *Where new arrivals go* — the placing rules' lines (settings_rules.py; RULE_FROM, RULE_ADD, its tip above) -- #
 RULE_LINE_TIP = "Where arrivals from {source} go. Wait here: they wait in New arrivals for you"

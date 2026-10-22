@@ -1,9 +1,10 @@
 """The importers' and Extract's window rules, Qt-free (W3.4 row 2; `app/importers_view.py`), and the numbers a
-replacing import states before it runs (`anki_sync.kept_ignored` / `replaced_words` / `replace_numbers`, IK-18, W3.4-1:
-one rule for Anki's Replace, Migaku's and Jiten's — the dismissed words are kept, unless the new words name them).
+replacing import states before it runs (`anki_sync.dismissed_words` / `replaced_words` / `replace_numbers`, IK-18:
+one rule for Anki's Replace, Migaku's and Jiten's — a clean slate from the source, past Graduates' words kept; the
+dismissed words are dropped, counted for the confirmation, and kept by the dated backup).
 
 What a wrong answer would cost: a confirmation whose numbers aren't what the write does (the user agrees to one thing
-and gets another); a dismissed word that comes back as new after Jiten's replace; an Import or Extract button live
+and gets another); a dismissed word lost with no backup holding it; an Import or Extract button live
 when it can't do what it says (a deck with no field, a deck without the "I understand" tick); "done" said for a
 child that failed.
 """
@@ -35,21 +36,30 @@ INCOMING = [{"dictForm": "猫", "knownStatus": "KNOWN"}, {"dictForm": "犬", "kn
             {"dictForm": "あの", "knownStatus": "KNOWN"}]
 
 
-def test_kept_ignored_keeps_the_dismissed_words_the_import_doesnt_name():
+def _backup_words(language="ja"):
+    """The words of the one dated backup a replace made in the language's .trash."""
+    trash = os.path.join(get_user_files_path(language), ".trash")
+    names = [n for n in os.listdir(trash) if n.startswith("KnownWord.")]
+    assert len(names) == 1
+    with open(os.path.join(trash, names[0]), encoding="utf-8") as f:
+        return json.load(f)["words"]
+
+
+def test_dismissed_words_are_the_ignored_entries_the_import_doesnt_name():
     path = _known(CURRENT)
-    kept = anki_sync.kept_ignored(path, "ja", INCOMING)
-    assert [w["dictForm"] for w in kept] == ["えっと"]       # あの: the import names it, its entry wins
+    dismissed = anki_sync.dismissed_words(path, "ja", INCOMING)
+    assert [w["dictForm"] for w in dismissed] == ["えっと"]       # あの: the import names it, its entry wins
 
 
-def test_kept_ignored_keeps_none_from_a_file_it_cannot_read(tmp_path):
+def test_dismissed_words_are_none_from_a_file_it_cannot_read(tmp_path):
     bad = tmp_path / "KnownWord.json"
     bad.write_text("{broken", encoding="utf-8")
-    assert anki_sync.kept_ignored(str(bad), "ja", INCOMING) == []
-    assert anki_sync.kept_ignored(str(tmp_path / "missing.json"), "ja", INCOMING) == []
+    assert anki_sync.dismissed_words(str(bad), "ja", INCOMING) == []
+    assert anki_sync.dismissed_words(str(tmp_path / "missing.json"), "ja", INCOMING) == []
 
 
 def test_the_confirmation_numbers_are_what_the_replace_writes(tmp_path):
-    """now → after, as Jiten's replace then writes it (the same words, the same kept ones)."""
+    """now → after, as Jiten's replace then writes it (the same words, the same kept ones, the same dropped)."""
     from app import jiten_converter
     path = _known(CURRENT)
     words = [dict(w) for w in INCOMING]
@@ -61,20 +71,36 @@ def test_the_confirmation_numbers_are_what_the_replace_writes(tmp_path):
     assert anki_sync.count_known("ja") == after == 3       # 猫, あの, 旅
 
 
-def test_one_rule_for_every_replace_keeps_the_dismissed_words_the_new_words_dont_name():
-    """W3.4-1 + IK-40 / IK-50: Anki's Replace, Migaku's and Jiten's all write `replaced_words` — the new words, then
-    past Graduates' kept known, then every IGNORED entry the new words don't name (one they name: the new entry wins)."""
+def test_one_rule_for_every_replace_drops_the_dismissed_words_and_counts_them():
+    """IK-40 / IK-50, a clean slate by decision: Anki's Replace, Migaku's and Jiten's all write `replaced_words` — the
+    new words, then past Graduates' kept known; the IGNORED entries are dropped (counted: the ones the new words don't
+    name come back on the list; one they name is the new entry)."""
     path = _known(CURRENT)
     words = [dict(w) for w in INCOMING]
-    final, graduated, ignored = anki_sync.replaced_words(path, "ja", words)
-    assert [w["dictForm"] for w in final] == ["猫", "犬", "あの", "旅", "えっと"]
-    assert (graduated, ignored) == (1, 1)
+    final, graduated, dropped = anki_sync.replaced_words(path, "ja", words)
+    assert [w["dictForm"] for w in final] == ["猫", "犬", "あの", "旅"]
+    assert (graduated, dropped) == (1, 1)                    # えっと comes back on the list
     assert [w["knownStatus"] for w in final if w["dictForm"] == "あの"] == ["KNOWN"]   # never twice, the new one
 
 
-def test_the_numbers_count_the_dismissed_words_kept_with_no_switch():
+def test_a_dismissed_word_the_import_names_as_not_known_comes_back_and_is_counted():
+    """AD-3: えっと dismissed, and the import names it LEARNING / UNKNOWN (a Jiten card in learning, a Migaku word no
+    longer dismissed): the IGNORED entry is replaced, so えっと is back on the list — counted, as the confirmation
+    says. Named KNOWN or IGNORED, it is no word coming back, and not counted."""
+    from app import jiten_converter
+    path = _known(CURRENT)
+    for status, dropped in (("LEARNING", 2), ("UNKNOWN", 2), ("KNOWN", 1), ("IGNORED", 1)):
+        words = [{"dictForm": "猫", "knownStatus": "KNOWN"}, {"dictForm": "えっと", "knownStatus": status}]
+        assert anki_sync.replaced_words(path, "ja", words)[2] == dropped, status     # あの: never named, always back
+    cards = [{"wordText": "猫", "state": 5}, {"wordText": "えっと", "state": 2}, {"wordText": "あの", "state": 5}]
+    assert anki_sync.replace_numbers("ja", jiten_converter.words_from_cards(cards))[3] == 1   # えっと: learning
+
+
+def test_the_numbers_count_the_dismissed_words_dropped_and_none_when_there_are_none():
     _known(CURRENT)
-    assert anki_sync.replace_numbers("ja", INCOMING)[3] == 1        # every replace keeps them: nothing to ask for
+    assert anki_sync.replace_numbers("ja", INCOMING)[3] == 1
+    _known([w for w in CURRENT if w["knownStatus"] != "IGNORED"])
+    assert anki_sync.replace_numbers("ja", INCOMING)[1:] == (3, 1, 0)   # the same known words after, none dropped
 
 
 def test_the_rule_reads_chinese_words_the_same_way():
@@ -84,8 +110,8 @@ def test_the_rule_reads_chinese_words_the_same_way():
                    {"dictForm": "嗯", "knownStatus": "IGNORED", "hasCard": 0},
                    {"dictForm": "那个", "knownStatus": "IGNORED", "hasCard": 0}], "zh")
     incoming = [{"dictForm": "那个", "knownStatus": "KNOWN"}, {"dictForm": "喜欢", "knownStatus": "KNOWN"}]
-    final, graduated, ignored = anki_sync.replaced_words(path, "zh", [dict(w) for w in incoming])
-    assert [w["dictForm"] for w in final] == ["那个", "喜欢", "学习", "嗯"] and (graduated, ignored) == (1, 1)
+    final, graduated, dropped = anki_sync.replaced_words(path, "zh", [dict(w) for w in incoming])
+    assert [w["dictForm"] for w in final] == ["那个", "喜欢", "学习"] and (graduated, dropped) == (1, 1)
     assert anki_sync.replace_numbers("zh", incoming) == (2, 3, 1, 1)
 
 
@@ -101,13 +127,13 @@ def test_migakus_plan_reads_its_export_and_states_both_numbers(ja_resources_dir)
     plan = importers_view.migaku_plan(db, "ja")
     assert plan.words == len(migaku_converter.read_words(db, "ja")) > 0
     assert plan.now == 2 and plan.after > 0 and plan.graduated in (0, 1)
-    assert plan.ignored == 1            # えっと kept; あの is in the export, so Migaku's own entry wins (IK-50)
+    assert plan.ignored == 1            # えっと dropped; あの is in the export, so Migaku's own entry wins (IK-50)
     assert plan.saved is not None
 
 
-def test_a_migaku_replace_keeps_the_dismissed_words_migaku_doesnt_have_and_writes_what_it_stated(ja_resources_dir):
-    """Sonic's W3.4-1 answer + IK-50: Migaku's replace dropped every IGNORED entry not from Migaku; now it keeps them
-    like Jiten's and Anki's, and the confirmation's numbers are the write's."""
+def test_a_migaku_replace_drops_the_dismissed_words_migaku_doesnt_have_and_writes_what_it_stated(ja_resources_dir):
+    """IK-50, a clean slate by decision: Migaku's replace drops every IGNORED entry Migaku doesn't have, like Jiten's
+    and Anki's; the dated backup keeps them, and the confirmation's numbers are the write's."""
     from app import migaku_converter
     _known(CURRENT)
     db = os.path.join(ja_resources_dir, "MigakuDb.db")
@@ -115,9 +141,26 @@ def test_a_migaku_replace_keeps_the_dismissed_words_migaku_doesnt_have_and_write
     assert migaku_converter.convert_db_to_json(db, language="ja") is True
     with open(os.path.join(get_user_files_path("ja"), "KnownWord.json"), encoding="utf-8") as f:
         written = json.load(f)["words"]
-    assert [w["knownStatus"] for w in written if w["dictForm"] == "えっと"] == ["IGNORED"]
+    assert not [w for w in written if w["dictForm"] == "えっと"]
     assert len([w for w in written if w["dictForm"] == "あの"]) == 1       # Migaku's own entry, once
     assert anki_sync.count_known("ja") == plan.after
+    assert _backup_words() == CURRENT                                     # えっと kept by the backup
+
+
+def test_a_jiten_replace_drops_the_dismissed_words_and_its_backup_keeps_them():
+    """Jiten's replace, the same rule: えっと / あの dismissed — えっと (Jiten doesn't name it) is gone, あの is Jiten's
+    known word; 旅 (a past Graduate's) stays known; the backup holds the old list whole."""
+    from app import jiten_converter
+    _known(CURRENT)
+    cards = [{"wordText": "猫", "state": 5}, {"wordText": "あの", "state": 5}]
+    words = jiten_converter.words_from_cards(cards)
+    assert jiten_converter.replace_known(words, "ja", expect=anki_sync.replace_numbers("ja", words)) is True
+    with open(os.path.join(get_user_files_path("ja"), "KnownWord.json"), encoding="utf-8") as f:
+        written = json.load(f)
+    assert [(w["dictForm"], w["knownStatus"]) for w in written["words"]] == [("猫", "KNOWN"), ("あの", "KNOWN"),
+                                                                             ("旅", "KNOWN")]
+    assert written["statistics"]["ignoredWords"] == 0 and written["statistics"]["totalWords"] == 3
+    assert _backup_words() == CURRENT
 
 
 def test_jitens_plan_reads_the_kept_cards_and_none_when_unreadable(tmp_path):
@@ -125,7 +168,7 @@ def test_jitens_plan_reads_the_kept_cards_and_none_when_unreadable(tmp_path):
     cards = tmp_path / "cards.json"
     cards.write_text(json.dumps([{"wordText": "猫", "state": 5}], ensure_ascii=False), encoding="utf-8")
     plan = importers_view.jiten_plan(str(cards), "ja")
-    assert (plan.words, plan.now, plan.ignored, plan.graduated) == (1, 2, 2, 1)
+    assert (plan.words, plan.now, plan.ignored, plan.graduated) == (1, 2, 2, 1)   # えっと and あの come back
     cards.write_text("[broken", encoding="utf-8")
     assert importers_view.jiten_plan(str(cards), "ja") is None
 

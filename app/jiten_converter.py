@@ -117,9 +117,10 @@ def words_from_cards(cards):
 
 def replace_known(words, language=LANGUAGE, output_json=None, expect=None):
     """Replace KnownWord.json with Jiten's `words`, holding its lock: a dated backup first (none made: nothing
-    written), then the words of past Graduates and the words the user dismissed kept (`anki_sync.replaced_words`,
-    W3.4-1), written atomically. -> True when written. Prints each step. `expect`: the numbers the user confirmed
-    (`anki_sync.replace_numbers`); moved by now, nothing is written and `anki_sync.NumbersChanged` is raised."""
+    written), then the words of past Graduates kept (`anki_sync.replaced_words`: the words the user dismissed are
+    dropped, the backup keeps them), written atomically. -> True when written. Prints each step. `expect`: the
+    numbers the user confirmed (`anki_sync.replace_numbers`); moved by now, nothing is written and
+    `anki_sync.NumbersChanged` is raised."""
     refused_language = refuse_language(language)
     if refused_language:
         print(refused_language)
@@ -174,13 +175,12 @@ def replace_known(words, language=LANGUAGE, output_json=None, expect=None):
         if backup:
             print(f"Backed up your previous known words to: {backup}")
 
-        # The words the old GraduatedList.txt gave the file stay known words (S3.1 D13), and the words the user
-        # dismissed stay ignored (W3.4-1: a replace means "known words from Jiten", not a clean slate).
+        # The words the old GraduatedList.txt gave the file stay known words (S3.1 D13); nothing else of the old file
+        # stays (a clean slate from Jiten: the words the user dismissed are dropped, the backup above keeps them).
         from app.anki_sync import replaced_words
-        words, graduated, ignored = replaced_words(output_json, language, words)
-        stats['totalWords'] += graduated + ignored
+        words, graduated, _dropped = replaced_words(output_json, language, words)
+        stats['totalWords'] += graduated
         stats['knownWords'] += graduated
-        stats['ignoredWords'] += ignored
 
         print(f"\nWriting JSON to: {output_json}")
 

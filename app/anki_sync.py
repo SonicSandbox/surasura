@@ -119,7 +119,7 @@ class SyncResult:
     held_by: "dict | None" = None
     # replace (and its dry run): what the new file keeps beside Anki's words, and its known total
     kept_graduated: int = 0        # the old GraduatedList.txt's words (past Graduates), kept known
-    kept_ignored: int = 0          # the words dismissed in Migaku (IGNORED entries), kept ignored (W3.4-1)
+    dropped_ignored: int = 0       # the words dismissed (IGNORED entries) the new file drops: back on the list
     total_after: int = 0           # the known total the replace writes (`total_known`: the file now, for a dry run)
     changed: bool = False          # replace / restore with `expect`: the numbers moved since they were confirmed;
                                    # nothing was written (the numbers now are in this result)
@@ -199,7 +199,7 @@ def _read_known_file(language, path=None):
 
 def known_file_refusal(language, path=None):
     """Why a replacing import must write nothing over KnownWord.json (or the one at `path`): it exists but can't be
-    read, so its past Graduates' and dismissed words can't be kept and its known words can't be counted (AD2-1: the
+    read, so its past Graduates' words can't be kept and its known words can't be counted (AD2-1: the
     rule the .apkg merge follows). -> that plain sentence, or None (missing or usable)."""
     try:
         _read_known_file(language, path)
@@ -758,14 +758,15 @@ def _backup_current(language):
 
 
 def confirmed(result):
-    """The numbers Anki's Replace confirmation shows (from its dry run): what Anki brings, the past Graduates' and the
-    dismissed words kept, the known total now and after. `replace(..., expect=)` writes only while they still hold."""
-    return (result.added, result.kept_graduated, result.kept_ignored, result.total_known, result.total_after)
+    """The numbers Anki's Replace confirmation shows (from its dry run): what Anki brings, the past Graduates' words
+    kept, the dismissed words dropped, the known total now and after. `replace(..., expect=)` writes only while they
+    still hold."""
+    return (result.added, result.kept_graduated, result.dropped_ignored, result.total_known, result.total_after)
 
 
 def replace(language, url, decks, fields, include_suspended=False, dry_run=False, expect=None):
-    """Rebuild KnownWord.json from Anki only — keeping the words the old GraduatedList.txt gave it (`kept_graduated`)
-    and the dismissed words Anki doesn't bring (`replaced_words`: the one rule of every replacing import; W3.4-1).
+    """Rebuild KnownWord.json from Anki only — keeping the words the old GraduatedList.txt gave it (`kept_graduated`);
+    the dismissed words are dropped (`replaced_words`: the one rule of every replacing import, a clean slate).
     Backs up the current file first and verifies it.
     Offline, an empty result, a KnownWord.json that can't be read (its kept words and its count would be false:
     AD3-2), or a failed backup => nothing written. `dry_run` writes nothing and
@@ -825,7 +826,7 @@ def replace(language, url, decks, fields, include_suspended=False, dry_run=False
 def _count_replacement(result, path, language, words):
     """`result`'s numbers for a replace of `path` with `words`: the totals now and after, the words kept. -> the words
     to write."""
-    final, result.kept_graduated, result.kept_ignored = replaced_words(path, language, words)
+    final, result.kept_graduated, result.dropped_ignored = replaced_words(path, language, words)
     result.total_known = count_known(language)
     result.total_after = len(_known_keys(final))
     return final
@@ -867,9 +868,10 @@ def _replace_held(language, result, known_path, words, url, decks, fields, inclu
 def kept_graduated(path, language, words):
     """The old GraduatedList.txt's words (merged once, app/graduated_merge.py: entries of `source: "GraduatedList"`,
     or raised and marked GRADUATED_MARK) in the KnownWord.json at `path`, kept known by every import that replaces
-    the file — Anki's Replace, the Jiten and Migaku imports (S3.1 D13, Q4-10): -> those `words` doesn't name, to add;
-    and an UNKNOWN / LEARNING entry of `words` one of them names is made KNOWN in place (marked too). A file that is
-    missing or can't be read keeps none (the replacer's backup holds them)."""
+    the file — Anki's Replace, the Jiten and Migaku imports (S3.1 D13, Q4-10): -> those `words` doesn't name, to add,
+    known (one the user also dismissed, a marked IGNORED entry, is added KNOWN, `previousStatus: IGNORED`: AD-1); and
+    an UNKNOWN / LEARNING entry of `words` one of them names is made KNOWN in place (marked too), an IGNORED one only
+    marked. A file that is missing or can't be read keeps none (the replacer's backup holds them)."""
     try:
         data = json.loads(read_text(path, language, errors="strict"))
     except (OSError, ValueError, UnicodeDecodeError):
@@ -892,20 +894,23 @@ def kept_graduated(path, language, words):
                 w["previousStatus"] = w["knownStatus"]
                 w["knownStatus"] = "KNOWN"
                 w[GRADUATED_MARK] = True
+            elif key in graduated and w.get("knownStatus") == "IGNORED":
+                w[GRADUATED_MARK] = True        # dismissed again by the import: ignored, still a past Graduate's word
     kept = []
     for key, entry in graduated.items():
         if key not in taken:
             taken.add(key)
+            if not _is_known(entry):            # a past Graduate's word the user dismissed: known (AD-1)
+                entry = dict(entry, previousStatus=entry.get("knownStatus"), knownStatus="KNOWN")
             kept.append(entry)
     return kept
 
 
-def kept_ignored(path, language, words):
-    """The IGNORED entries of the KnownWord.json at `path` — words the user dismissed (in Migaku, or on the list) —
-    that `words` doesn't name: every replacing import keeps them (Anki's Replace, Migaku's, Jiten's: W3.4-1), so a
-    dismissed word doesn't come back as a new one; one `words` names is dropped (the new entry wins). -> those
-    entries, first per word, in the file's order. A file missing or unreadable keeps none (the replacer's backup
-    holds them)."""
+def dismissed_words(path, language, words):
+    """The IGNORED entries of the KnownWord.json at `path` — words the user dismissed in Migaku (an earlier import) —
+    that `words` doesn't hold known or IGNORED: what a replacing import drops (`replaced_words` counts them: they come
+    back on the list, the backup keeps them; one `words` names UNKNOWN / LEARNING comes back too, AD-3). -> those
+    entries, first per word, in the file's order. A file missing or unreadable has none."""
     try:
         data = json.loads(read_text(path, language, errors="strict"))
     except (OSError, ValueError, UnicodeDecodeError):
@@ -913,7 +918,8 @@ def kept_ignored(path, language, words):
     current = data.get("words") if isinstance(data, dict) else data
     if not isinstance(current, list):
         return []
-    taken = {_norm(w.get("dictForm")) for w in words if isinstance(w, dict)}
+    taken = {_norm(w.get("dictForm")) for w in words
+             if _is_known(w) or (isinstance(w, dict) and w.get("knownStatus") == "IGNORED")}
     kept = []
     for entry in current:
         if isinstance(entry, dict) and entry.get("knownStatus") == "IGNORED":
@@ -926,17 +932,18 @@ def kept_ignored(path, language, words):
 
 def replaced_words(path, language, words):
     """What a replacing import writes over the KnownWord.json at `path` — one rule for Anki's Replace, Migaku's and
-    Jiten's (W3.4-1, IK-40): `words`, then the past Graduates' words kept known (`kept_graduated`, which may raise an
-    entry of `words` in place), then the dismissed words kept (`kept_ignored`). -> (those words, how many Graduates'
-    kept, how many dismissed kept)."""
+    Jiten's (IK-40): `words`, then the past Graduates' words kept known (`kept_graduated`, which may raise an entry of
+    `words` in place). Nothing else of the old file: the words the user dismissed are dropped (a clean slate from the
+    source; the replacer's backup keeps them). -> (those words, how many Graduates' kept, how many dismissed words
+    dropped — `dismissed_words`: back on the list)."""
     graduated = kept_graduated(path, language, words)
-    ignored = kept_ignored(path, language, words + graduated)
-    return words + graduated + ignored, len(graduated), len(ignored)
+    dropped = dismissed_words(path, language, words + graduated)
+    return words + graduated, len(graduated), len(dropped)
 
 
 def replace_numbers(language, words, path=None):
     """What a replacing import's confirmation states, before it runs (IK-18): (known words now, known words after,
-    past Graduates' words kept, dismissed words kept) — `replaced_words` over the language's KnownWord.json (or the
+    past Graduates' words kept, dismissed words dropped) — `replaced_words` over the language's KnownWord.json (or the
     one at `path`), on a copy. Reads only; `words` is left as it is."""
     import copy
     path = path or _known_path(language)

@@ -193,7 +193,7 @@ def result_view(result):
         return "changed", {}
     if result.mode == "replace":
         return "replaced", {"total": result.total_known, "added": result.added, "graduated": result.kept_graduated,
-                            "ignored": result.kept_ignored}
+                            "ignored": result.dropped_ignored}
     if result.mode == "restore":
         return "restored", {"total": result.total_known}
     return "synced", {"added": result.added, "scanned": result.scanned, "full": result.mode == "full"}

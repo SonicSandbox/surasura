@@ -715,9 +715,10 @@ def _mine(steps, ledger, lang, job, record=True):
         refused = bool(batches) and batches[-1]["state"] == "refused" and batches[-1]["attempt"] == had
         attempt = had if refused else had + 1      # a call Anki Miner refused never ran: its number reused (#20)
         in_doubt = any(b["state"] == "uncertain" for b in batches)
-        ledger.set_state(jid, "mining")
+        ledger.set_state(jid, "mining", progress=None)      # a new batch: no progress yet (laptop round 5 #23)
         ledger.start_batch(jid, attempt, steps.run_dir(job))
         ran = True
+        steps.on_progress = _Progress(ledger, jid)
         try:
             got = steps.mine(lang, job, picked, todo, attempt)
         except Wait as w:
@@ -732,6 +733,8 @@ def _mine(steps, ledger, lang, job, record=True):
             _name_media_at_end(steps, ledger, lang, job)
             ledger.set_state(jid, "skipped", reason=s.why, skipped=_skipped(ledger, jid, "mining", s.why))
             raise _Finished("skipped") from None
+        finally:
+            steps.on_progress = None
         if got.get("tag_pending"):          # the names' tag Anki didn't take: added before filling (adversary #7)
             pending = sorted(set(_pending(ledger, jid)) | set(got["tag_pending"]))
             ledger.set_state(jid, "mining", tag_pending=json.dumps(pending))
@@ -771,6 +774,30 @@ def _mine(steps, ledger, lang, job, record=True):
     # look (adversary B #6, S19)
     _record_made(steps, ledger, lang, job, record)
     ledger.set_state(jid, "filling")
+
+
+PROGRESS_STEP = 5               # percent: the job's progress is saved when it moves this far, or its stage changes
+
+
+class _Progress:
+    """Where Anki Miner's run stands, saved in the job while it mines (laptop round 5 #23: the row moves, never *0/57*
+    to the end) — only when its stage changes or its percent (`anki_miner.percent`) moves PROGRESS_STEP (S19: a few
+    writes a run). Called on the runner's own thread, between its waits on Anki Miner; a write that fails is logged,
+    never a reason to stop the batch."""
+
+    def __init__(self, ledger, jid):
+        self.ledger, self.jid, self.last = ledger, jid, None
+
+    def __call__(self, progress):
+        from app.connect import anki_miner
+        key = (progress["stage"], anki_miner.percent(progress) // PROGRESS_STEP)
+        if key == self.last:
+            return
+        self.last = key
+        try:
+            self.ledger.set_state(self.jid, "mining", progress=progress)
+        except Exception:
+            log.warning("Connect couldn't save the batch's progress", exc_info=True)
 
 
 def _name_media(steps, ledger, lang, job, picked=None):
@@ -1578,7 +1605,8 @@ class Steps:
                                          mapping, self.loaded.get("connect_anki_miner_profile") or "Surasura",
                                          run_dir, self.url, attempt=attempt, wait=WAIT_S,
                                          subtitle_offset=float(picked.get("offset") or 0.0),
-                                         expect_profile=picked.get("profile"))
+                                         expect_profile=picked.get("profile"),
+                                         on_progress=getattr(self, "on_progress", None))
         except anki_miner.AnkiMinerError as e:
             if e.kind == "profile-changed":
                 raise Repick() from None

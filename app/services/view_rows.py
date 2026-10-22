@@ -135,6 +135,7 @@ STRINGS = {
     "dash": "—",
     # a status's words (its glyph is painted beside them: check · spinner · hourglass · card-plus · no-video)
     "in_anki": "{n}", "in_anki_words": "{n} in Anki", "mining_kn": "Mining · {k}/{n}", "mining": "Mining…",
+    "mining_pct": "Mining · {pct}%", "tip_mining_doing": "Making its cards now: {doing}",
     "waiting": "Waiting", "waiting_kn": "{k}/{n} · Waiting", "mine_rest": "{k}/{n} · Mine rest", "mine": "Mine",
     "no_media": "No {word}", "no_media_n": "No {word} · {n}", "removed": "{Word} removed",
     "deleted": "No cards in Anki", "deleted_n": "No cards in Anki · {n}",
@@ -530,6 +531,9 @@ def _connected(st, item, word):
     if item is None or st.kind in ("in_anki", "no_media") or (st.kind == "mining" and item.kind != connect_feed.MINING):
         return st
     if item.kind == connect_feed.MINING:
+        if item.progress is not None:       # Anki Miner's run, as it goes (laptop round 5 #23, PROVISIONAL text: lean A)
+            return Status("mining", STRINGS["mining_pct"].format(pct=item.progress),
+                          STRINGS["tip_mining_doing"].format(doing=item.doing), "accent")
         label = STRINGS["mining_kn"].format(k=item.made, n=item.total) if item.total else STRINGS["mining"]
         return Status("mining", label, STRINGS["tip_mining"], "accent")
     if item.kind == connect_feed.NO_VIDEO:

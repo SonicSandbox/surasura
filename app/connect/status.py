@@ -180,7 +180,7 @@ def _language(conn, lang, is_running, words):
                  "kind": job.get("kind") or "mine", "state": job["state"], "reason": job.get("reason"),
                  "step": STEP_WORDS.get(job["state"]) or STEP_WORDS.get(job.get("resume") or ""),
                  "words": len(_picked_words(job.get("picked"))), "made": counts.pop("made", 0),
-                 "not_made": counts}
+                 "not_made": counts, "progress": _progress(job) if job["state"] == "mining" else None}
         if words:
             entry["not_made_words"] = _rows(conn, "SELECT word, reading, outcome FROM outcomes WHERE job_id = ? AND "
                                                   "outcome != 'made' ORDER BY rowid", (job["id"],))
@@ -204,6 +204,23 @@ def _language(conn, lang, is_running, words):
                                                          (f"generating:{lang}",)).fetchone() or [None])[0])
     rec["line"], rec["state"] = _line(conn, lang, rec, open_jobs, items, is_running, {n["say"] for n in needs})
     return rec
+
+
+def _progress(job):
+    """A mining job's run as Anki Miner last said (laptop round 5 #23): {"stage", "stages", "done", "total",
+    "percent"} — before its first word (its start-up), stage 0 at 0 % — never None while it mines."""
+    from app.connect import anki_miner
+    try:
+        got = json.loads(job.get("progress") or "null")
+    except (TypeError, ValueError):
+        got = None
+    keys = ("stage", "stages", "done", "total")
+    if not (isinstance(got, dict) and all(isinstance(got.get(k), int) and not isinstance(got.get(k), bool)
+                                          and got[k] >= 0 for k in keys)):
+        got = dict.fromkeys(keys, 0)
+    out = {k: got[k] for k in keys}
+    out["percent"] = anki_miner.percent(out)
+    return out
 
 
 def _not_made(conn, job_id):

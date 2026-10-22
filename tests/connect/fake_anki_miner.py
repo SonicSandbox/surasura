@@ -18,7 +18,9 @@ What it does is read from the plan file named by FAKE_ANKI_MINER_PLAN (JSON; eve
      "forms": {"<word>": "<mined_form>"},                  # a word Anki Miner placed by another form
      "from_line": ["<word>"],                              # (word-from-line) made from its named line
      "filter": {"<word>": "duplicate-expression"},         # (filter-names) why a not_found word was dropped
-     "replay": {"<command>": {...}}}                       # answer a command with a recorded verdict, as it is
+     "replay": {"<command>": {...}},                       # answer a command with a recorded verdict, as it is
+     "progress": [[1, 5, 0, 0], [3, 5, 2, 6], …],         # each episode's progress.json, written in turn …
+     "progress_every": 0.3}                                # … this many seconds apart (API.md's stage/stages/done/total)
 
 Every call is appended to FAKE_ANKI_MINER_LOG (one JSON line: argv, and the run file's bytes' facts for `mine`), so a
 test can see what was asked and in what order. The run file is checked as Anki Miner checks it: strict UTF-8 with no
@@ -150,6 +152,13 @@ def _mine(argv, plan):
     for episode in data["episodes"]:
         folder = os.path.join(data["run_dir"], episode["run_id"])
         os.makedirs(folder, exist_ok=True)
+        for stage, stages, done, total in plan.get("progress") or ():     # as 3.9.0's ProgressFile writes it
+            tmp = os.path.join(folder, "progress.json.tmp")
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"schema": 1, "run_id": episode["run_id"], "stage": stage, "stages": stages, "done": done,
+                           "total": total}, f)
+            os.replace(tmp, os.path.join(folder, "progress.json"))
+            time.sleep(plan.get("progress_every", 0.3))
         rows, note = [], 1727000000000
         for n, request in enumerate(episode["words"]):
             status = plan.get("statuses", {}).get(request["word"], "created")

@@ -7,7 +7,9 @@
   `unseen` (*Needs you*'s badge) and `updating` (*Connect is updating your list*, F9: row 4.1.7's record flag).
 - `Item(kind, words, tip, job, made, total)`: `kind` one of KINDS; `words` the status read out (hover, keyboard
   focus, a screen reader: `WORDS`); `tip` the job's own reason in plain words (a waiting stone's hover, C7); `job`
-  its id (*Mine anyway*'s); `made` / `total` its cards so far of the words picked (*Mining 3 of 12*).
+  its id (*Mine anyway*'s); `made` / `total` its cards so far of the words picked (*Mining 3 of 12*); `progress` /
+  `doing` a mining item's percent and its step in words (`STAGE_WORDS`, from Anki Miner's progress; laptop round 5
+  #23), else None.
 - Kinds are told by the runner's and the Anki session's named reasons (`runner.NO_VIDEO`, `anki_session.CLOSED`, …)
   and the job's own `kind` (`asked`, row 4.1.3), never by a wording a test can't see.
 - `Provider(language, settings_get)`: one per window and language, a worker's call. Off → the off Feed, nothing read.
@@ -22,7 +24,8 @@ from collections import namedtuple
 EVERY_S = 3                     # the window's tick while Connect is on (the Tk row's; `services.status.TICKS`)
 
 Feed = namedtuple("Feed", "on mining items line state unseen updating")
-Item = namedtuple("Item", "kind words tip job made total")
+# `progress` / `doing` (laptop round 5 #23): a mining item's percent (0–99) and its step in words, else None
+Item = namedtuple("Item", "kind words tip job made total progress doing", defaults=(None, None))
 
 MINING, WAITING, ANKI, NO_VIDEO, NOT_TIMED, BATTERY, ASKED = (
     "mining", "waiting", "anki", "no_video", "not_timed", "battery", "asked")
@@ -38,6 +41,10 @@ WORDS = {
     BATTERY: "Waiting: on battery",
     ASKED: "Asked: its cards come next",
 }
+# What a mining item is doing, by Anki Miner's stage (its progress file: parsing, filtering, media, definitions, cards;
+# 0 = its start-up), for the row's hover (laptop round 5 #23; the window's words are Mado's to change)
+STAGE_WORDS = {0: "Starting Anki Miner", 1: "Reading the subtitles", 2: "Finding the words", 3: "Cutting clips",
+               4: "Looking up definitions", 5: "Adding cards"}
 # *Mine anyway* on a pairing hato placed by its name only (`verdict: untimed`, 09-hato-layer v2 §1.2; hato's
 # wrong-episode finding): the warning W3.2's *Needs you* entry carries (row 4.1.9)
 UNTIMED_WARNING = ("hato matched this subtitle to its video by name only: it may be another episode's. Mine anyway "
@@ -87,8 +94,14 @@ def build(record, language):
             kind = WAITING
         if kind == MINING:
             mining.add(item_id)
+        progress, doing = (job.get("progress") or None) if kind == MINING else None, None
+        if progress is not None:
+            doing = STAGE_WORDS.get(progress.get("stage"), STAGE_WORDS[0])
+            if progress.get("total"):
+                doing = f"{doing} ({progress.get('done', 0)} of {progress['total']})"
+            progress = progress.get("percent")
         items[item_id] = Item(kind=kind, words=WORDS[kind], tip=reason or WORDS[kind], job=job.get("job"),
-                              made=job.get("made") or 0, total=job.get("words") or 0)
+                              made=job.get("made") or 0, total=job.get("words") or 0, progress=progress, doing=doing)
     return Feed(on=True, mining=frozenset(mining), items=items, line=rec.get("line"), state=rec.get("state"),
                 unseen=rec.get("unseen") or 0, updating=bool(rec.get("updating")))
 

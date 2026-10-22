@@ -4,6 +4,7 @@ post-build checks run on small folders shaped like a built program."""
 import ast
 import json
 import os
+import re
 import sys
 import types
 from unittest.mock import patch
@@ -706,6 +707,17 @@ def test_the_package_proof_runs_on_everything_it_proves():
                  ".github/workflows/package.yml", ".github/workflows/pr-merge.yml",
                  "requirements.txt"):      # T1 B: a tsubasa pin bump alone is proved frozen too
         assert path in paths, path
+
+
+def test_the_proofs_installer_is_never_written_into_dist():
+    # The "Keep it aside" step moved dist seconds after the build wrote a ~140 MB setup into it, and the virus scanner
+    # still reading it made the move fail now and then (2026-10-15, 10-21, 10-22). The first build writes its
+    # installer straight into the folder the install step reads, and that folder is never dist moved whole.
+    text = _source(PACKAGE_YML)
+    built = re.search(r'package_app\.py [^\n]*--installer --installer-dir "([^"]+)"', text)
+    installed = re.search(r'install_proof\.py install "([^"]+)"', text)
+    assert built and installed and built.group(1) == installed.group(1)
+    assert f'mv dist "{installed.group(1)}"\n' not in text.replace("\r\n", "\n")
 
 
 def test_the_merge_gate_knows_the_same_paths_as_the_proof():

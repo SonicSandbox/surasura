@@ -756,7 +756,7 @@ def check_tsubasa(final_dist, pin=None, version_of=None):
 
 
 def build(zip_output=False, skip_tests=False, release=False, full_update=False, data_name=None, installer=False,
-          needs_installer=False):
+          needs_installer=False, installer_dir=None):
     version = get_version()
     build_name = "Surasura"                 # stable install-folder name (must match the spec's BUILD_NAME)
     zip_name = f"Surasura_v{version}"        # versioned DOWNLOAD zip name (kept for the updater + humans)
@@ -934,10 +934,14 @@ def build(zip_output=False, skip_tests=False, release=False, full_update=False, 
     else:
         print("Skipping Zip Archive creation (use --zip to enable).")
 
-    # 8. The installer (--installer): dist\Surasura as built, into dist\Surasura-<ver>-setup.exe.
+    # 8. The installer (--installer): dist\Surasura as built, into dist\Surasura-<ver>-setup.exe, or into
+    #    --installer-dir (the package proof: nothing fresh in dist when it moves dist aside).
     built_installer = None
     if installer:
-        built_installer = build_installer(final_dist, version, data_name, config["data_name"])
+        if installer_dir:
+            os.makedirs(installer_dir, exist_ok=True)
+        built_installer = build_installer(final_dist, version, data_name, config["data_name"],
+                                          out_dir=installer_dir or "dist")
         if built_installer is None:
             print("Build failed: --installer asked for the installer.")
             return False
@@ -982,6 +986,9 @@ if __name__ == "__main__":
     parser.add_argument("--installer", action="store_true",
                         help="Also compile packaging/surasura.iss with Inno Setup 6 (ISCC) into "
                              "dist\\Surasura-<ver>-setup.exe; with --release, update.json carries it for 2.x.")
+    parser.add_argument("--installer-dir", metavar="FOLDER", default=None,
+                        help="With --installer: write the installer into FOLDER instead of dist (the package "
+                             "proof: nothing fresh in dist when it is moved aside).")
     parser.add_argument("--needs-installer", action="store_true",
                         help="With --release: every 3.x install takes this release through its installer, even when "
                              "packaging/surasura.iss's install shape is unchanged (e.g. a new install folder).")
@@ -1004,4 +1011,4 @@ if __name__ == "__main__":
     # A failed build exits 1, so a workflow step or a script that runs it stops there.
     sys.exit(0 if build(zip_output=args.zip, skip_tests=args.skip_tests, release=args.release,
                         full_update=args.full_update, data_name=args.data_name, installer=args.installer,
-                        needs_installer=args.needs_installer) else 1)
+                        needs_installer=args.needs_installer, installer_dir=args.installer_dir) else 1)

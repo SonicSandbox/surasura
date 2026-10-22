@@ -279,6 +279,46 @@ def test_a_test_release_only_warns_on_a_python_below_the_floor(tmp_path, monkeyp
     assert "WARNING: building on Python" in capsys.readouterr().out
 
 
+def _installer_out_dir(tmp_path, monkeypatch, **build_args):
+    """build(installer=True, **build_args) with the freeze and every check stubbed -> the folder build_installer was
+    asked to write into (the build stops there: the stub returns no installer)."""
+    (tmp_path / "app").mkdir()
+    with open(os.path.join(PROJECT, "app", "build_info.py"), "rb") as f:
+        (tmp_path / "app" / "build_info.py").write_bytes(f.read())
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(package_app, "get_version", lambda: "3.0.0")
+    monkeypatch.setattr(package_app, "_python_version", lambda: (3, 11, 9))
+    monkeypatch.setattr(package_app, "tsubasa_installed", package_app.tsubasa_pin)
+    monkeypatch.setattr(package_app, "find_iscc", lambda: "ISCC.exe")
+
+    def freeze(cmd, **k):               # PyInstaller's output: the four programs in dist\Surasura
+        program = tmp_path / "dist" / "Surasura"
+        (program / "_internal").mkdir(parents=True, exist_ok=True)
+        for name in package_app.PROGRAM_EXES:
+            (program / name).write_bytes(b"MZ")
+        return subprocess.CompletedProcess(cmd, 0)
+    monkeypatch.setattr(package_app.subprocess, "run", freeze)
+    monkeypatch.setattr(package_app, "swap_sqlite", lambda *a: None)
+    monkeypatch.setattr(package_app, "_build_updater_exe", lambda *a: True)
+    monkeypatch.setattr(package_app, "check_program", lambda *a: ([], {}))
+    monkeypatch.setattr(package_app, "check_tsubasa", lambda *a: ([], None))
+    asked = []
+    monkeypatch.setattr(package_app, "build_installer", lambda *a, out_dir="dist": asked.append(out_dir))
+    assert package_app.build(skip_tests=True, installer=True, data_name="Surasura-test", **build_args) is False
+    return asked
+
+
+def test_the_installer_goes_into_dist_by_default(tmp_path, monkeypatch):
+    assert _installer_out_dir(tmp_path, monkeypatch) == ["dist"]
+
+
+def test_the_installer_goes_where_installer_dir_says_made_first(tmp_path, monkeypatch):
+    # The package proof writes it outside dist, so moving dist never meets a scanner still reading the fresh setup.
+    aside = tmp_path / "work" / "old"
+    assert _installer_out_dir(tmp_path, monkeypatch, installer_dir=str(aside)) == [str(aside)]
+    assert aside.is_dir()
+
+
 def test_the_real_name_in_another_case_is_no_test_release(tmp_path, monkeypatch, capsys):
     # `--release --data-name surasura` on Python 3.11.2 skipped the floor as a "test build"; it is the real
     # install's name on Windows, so the build stops before freezing.

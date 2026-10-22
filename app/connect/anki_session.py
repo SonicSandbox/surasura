@@ -161,7 +161,7 @@ def waiting(url, settings):
     open_now = open_now if isinstance(open_now, str) and open_now else None
     # Connect's profile is the first open one that holds the decks you chose (laptop round 5 #22: setup's page
     # records none; review A3: never a test profile open by chance); Anki naming none, recorded or not: nothing may
-    # be written, E3's guard can't hold (adversary P2.4-A #9; mutant LFM-B07: a recorded one waits too)
+    # be written, E3's guard can't hold (adversary P2.4-A #9; a recorded one waits too)
     mine = setup.anki_profile()
     if not mine and open_now:
         if not _holds_your_decks(url, settings):

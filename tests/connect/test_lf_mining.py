@@ -295,7 +295,7 @@ def test_one_episodes_failing_request_never_holds_the_others(tmp_path, ledger):
 
 @pytest.mark.parametrize("answer", [None, ""])
 def test_a_recorded_profile_waits_while_anki_names_none(monkeypatch, tmp_path, answer):
-    # why (mutant LFM-B07): Connect's profile is recorded, but Anki doesn't say which one is open (no answer in 5 s,
+    # why: Connect's profile is recorded, but Anki doesn't say which one is open (no answer in 5 s,
     # mid-switch): writing then could land in another profile (E3), so it waits as when none is recorded
     monkeypatch.setattr(setup, "record_path", lambda: str(tmp_path / "setup.json"))
     setup.keep_profile("日本語")

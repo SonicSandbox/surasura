@@ -135,6 +135,11 @@ SEAM_LABEL = "✂ Split here"
 SEAM_TIP = "✂ Split here\n• Click to make {rest} a part of its own"
 JOIN_LABEL = "Drop to join"
 # --- end W3.2 Q8
+# K6: ⋯ › *Never read this folder* › the item's folder and each one above it inside its source folder
+ITEM_SKIP = ("Never read this folder", "Leave a folder out of your library for good: pick it")
+ITEM_SKIP_TIP = ("Never read {path}\nEverything of it leaves your library (to the trash for 30 days; Undo brings it "
+                 "back); nothing in the folder is changed")
+ITEM_SKIPPED = "{name} won't be read again"
 NEEDS_HEADING = "Needs you"
 NEEDS_EMPTY = ("Nothing needs you", "When something waits on you, it shows here")
 TAB_COUNT = "{name}  {count}"                   # Finished's records, Needs you's unseen entries

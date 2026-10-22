@@ -271,3 +271,17 @@ def iso(seconds):
     """A POSIX time as hato writes its times (ISO-8601 UTC, `Z`)."""
     import datetime
     return datetime.datetime.fromtimestamp(seconds, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# tsubasa's answer as tsubasa itself prints it (`--json`, 0.1.10's `cli.as_json`): `segments` a list of [start, offset]
+# pairs (start null for the first) and a top-level `offset` (the first segment's). TSUBASA_REAL is one answer recorded
+# from tsubasa 0.1.10 on a Japanese pair shifted by +2.4 s (only its two paths replaced by made-up ones). Every stand-in
+# for tsubasa builds on it: hand-made dicts once hid that Connect read every real offset as 0.0.
+TSUBASA_REAL = json.loads(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "Test Resources", "connect",
+                                            "tsubasa_0.1.10_confident_shifted.json"), encoding="utf-8").read())
+
+
+def tsubasa_answer(outcome="CONFIDENT", segments=((None, 0.0),), **over):
+    """An answer in TSUBASA_REAL's shape: its fields, `segments` and the top-level `offset` (the first one's) as given."""
+    segments = [list(seg) for seg in segments]
+    return dict(TSUBASA_REAL, outcome=outcome, segments=segments, offset=segments[0][1] if segments else None, **over)

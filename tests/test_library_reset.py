@@ -25,7 +25,7 @@ import pytest
 
 from app import library_store as ls
 from app import locks, sources
-from tests.test_library_store_support import LANGUAGES, library, names, touch, write_manifest
+from tests.test_library_store_support import LANGUAGES, library, names, pieces_ok, touch, write_manifest
 from tests.test_sources_scan import _SHOWS, _drive, _look, _text, _tree, _write
 
 
@@ -422,3 +422,383 @@ def test_a_folder_he_said_never_to_read_stays_with_the_folders(monkeypatch):
         ls.start_fresh(store)
         kinds = [r[0] for r in store.conn.execute("SELECT kind FROM exclusions")]
     assert kinds == ["never-read"]
+
+
+# --- the review fix round (LF register: H1/LF-6, LF-4, H2, I-R1/LF-5, I-R4, I-R5/LF-8, I-R8/LF-11) ------------------ #
+
+def _no_rename_in(data_dir):
+    real = os.rename
+
+    def no_rename(a, b, *args, **kw):
+        if os.path.normcase(os.path.abspath(a)).startswith(os.path.normcase(os.path.abspath(data_dir))):
+            raise PermissionError(13, "held open by a watch")
+        return real(a, b, *args, **kw)
+    return no_rename
+
+
+def test_a_removal_that_stops_part_way_puts_every_copy_back_and_never_over_an_original(monkeypatch):
+    # H1 / LF-6: Library can't be renamed (a watch holds it), so it is copied, checked, then removed — and the 2nd
+    # removal fails. The move must count as begun: every copy already removed comes back from the backup, the ones
+    # never removed are left exactly as they were (never written over), and the record says "undone"
+    store, data_dir, user_files_dir, src, root = _world("ja")
+    before = _state(store, data_dir, user_files_dir)
+    lib = os.path.normcase(os.path.join(data_dir, ls.CONTENT_FOLDER)) + os.sep
+    real_remove, count = os.remove, [0]
+
+    def remove(p, *args, **kw):
+        if os.path.normcase(os.path.abspath(p)).startswith(lib):
+            count[0] += 1
+            if count[0] == 2:
+                raise PermissionError(13, "held open by a player")
+        return real_remove(p, *args, **kw)
+    real_rename = os.rename
+    monkeypatch.setattr(ls.os, "rename", _no_rename_in(data_dir))
+    monkeypatch.setattr(ls.os, "remove", remove)
+    with store:
+        with pytest.raises(OSError):
+            ls.start_fresh(store)
+        monkeypatch.setattr(ls.os, "rename", real_rename)              # (never `undo`: it drops the test root too)
+        monkeypatch.setattr(ls.os, "remove", real_remove)
+        rows, tree, manifest, known = _state(store, data_dir, user_files_dir)
+        assert rows == before[0] and manifest == before[2]
+        assert [p[:3] for p in tree] == [p[:3] for p in before[1]]       # every copy back, the same bytes
+    (folder,) = _backups(user_files_dir)
+    assert _record(folder)["status"] == "undone" and "not_put_back" not in _record(folder)
+
+
+def test_a_put_back_never_writes_over_the_file_left_in_place(tmp_path):
+    # H1: a move whose byte check failed leaves the original in place and bad bytes in the backup; the put-back
+    # copies back only what is missing at the source, never over it
+    src, dst = tmp_path / "data" / "Library", tmp_path / "backup" / "Library"
+    for where in (src, dst):
+        (where / "Show").mkdir(parents=True)
+    (src / "Show" / "01.srt").write_text(_text("ja", 1), encoding="utf-8")          # still in place
+    (dst / "Show" / "01.srt").write_bytes(b"\x00")                                  # the bad copy
+    (dst / "Show" / "02.srt").write_text(_text("ja", 2), encoding="utf-8")          # removed from the source
+    ls._put_back(str(dst), str(src))
+    assert (src / "Show" / "01.srt").read_text(encoding="utf-8") == _text("ja", 1)
+    assert (src / "Show" / "02.srt").read_text(encoding="utf-8") == _text("ja", 2)
+
+
+def test_each_move_is_put_back_on_its_own_and_one_that_cant_be_is_named(monkeypatch):
+    # H1: one put-back failing never keeps the others away; the record names it, and the answer is never "nothing
+    # was changed" (ResetNotAllBack names the backup folder)
+    store, data_dir, user_files_dir, src, root = _world("zh")
+    before = _state(store, data_dir, user_files_dir)
+    real = ls._put_back
+
+    def put_back(dst, src_path):
+        if os.path.basename(src_path) == ls.MANIFEST_NAME:
+            raise PermissionError(13, "the JSON copy is held open")
+        return real(dst, src_path)
+    monkeypatch.setattr(ls, "_put_back", put_back)
+
+    def fail(name):
+        if name == "wipe":
+            raise OSError("disk full at the write")
+    with store:
+        with pytest.raises(ls.ResetNotAllBack) as e:
+            ls.start_fresh(store, _step=fail)
+        assert _rows(store) == before[0]
+        assert [p[:3] for p in _tree(data_dir)] == [p[:3] for p in before[1]]   # data/ came back all the same
+    (folder,) = _backups(user_files_dir)
+    assert e.value.folder == folder
+    record = _record(folder)
+    assert record["status"] == "undone"
+    assert [m["from"] for m in record["not_put_back"]] == [ls.manifest_path(user_files_dir)]
+    assert os.path.exists(os.path.join(folder, ls.MANIFEST_NAME))      # the JSON copy is safe in the backup
+
+
+@pytest.mark.skipif(os.name != "nt", reason="a junction is Windows' own")
+def test_a_junction_in_the_data_folder_refuses_the_reset_before_anything_is_copied_or_removed(monkeypatch):
+    # LF-4: a 2.x user linked his own show folder into a tier folder. Python 3.11 walks a junction as a plain folder,
+    # so the fallback's removal would delete HIS file in HIS folder; it is refused, everything put back, his folder
+    # untouched, and the reason says a linked folder is in the way
+    import _winapi
+    store, data_dir, user_files_dir, src, root = _world("ja")
+    his = os.path.join(os.path.dirname(data_dir), "elsewhere", "his own", "Linked Show")
+    mine = _write(os.path.join(his, "Linked Show - 01.srt"), _text("ja", 6))
+    his_before = _tree(his)
+    tier = next(n for n in sorted(os.listdir(data_dir)) if os.path.isdir(os.path.join(data_dir, n)) and
+                n != ls.CONTENT_FOLDER and not n.startswith("."))
+    link = os.path.join(data_dir, tier, "Linked", "Linked Show")              # a folder down: found walking in
+    os.makedirs(os.path.dirname(link))
+    _winapi.CreateJunction(his, link)
+    rows, manifest = _rows(store), _bytes(ls.manifest_path(user_files_dir))
+    real_rename = os.rename
+    monkeypatch.setattr(ls.os, "rename", _no_rename_in(data_dir))
+    try:
+        with store:
+            with pytest.raises(ls.ResetRefused) as refused:
+                ls.start_fresh(store)
+            monkeypatch.setattr(ls.os, "rename", real_rename)
+            assert refused.value.reason == ls.RESET_LINKED.format(path=link)
+            assert _rows(store) == rows and _bytes(ls.manifest_path(user_files_dir)) == manifest
+        assert _tree(his) == his_before and os.path.exists(mine)            # his own file, never touched
+        assert os.path.isdir(link)                                           # the link still there, as he made it
+        (folder,) = _backups(user_files_dir)
+        assert _record(folder)["status"] == "undone"
+    finally:
+        os.rmdir(link)                                                      # the link only, never his folder
+        os.rmdir(os.path.dirname(link))
+
+
+def test_connects_never_again_words_and_lines_stay_through_a_reset():
+    # I-R1 / LF-5: `made_words` / `made_lines` are Connect's "never made again" (G1.3-4): a card he deleted must not
+    # be made again in his Anki after a fresh library
+    from app.connect import library
+    store, data_dir, user_files_dir, src, root = _world("ja")
+    with store:
+        item = store.ids("now")[0]
+        word = names("ja")[3]
+        library.record_batch(store, item, {word: [111]}, ls._now())
+        assert store.record_lines(item, [(222, 1000, 2000, names("ja")[4])]) == [222]
+        lines = store.conn.execute("SELECT * FROM made_lines").fetchall()
+        ls.start_fresh(store)
+        assert word in library.made_words_all(store)
+        assert store.conn.execute("SELECT * FROM made_lines").fetchall() == lines
+        assert store.conn.execute("SELECT COUNT(*) FROM items").fetchone()[0] == 0     # the library itself is fresh
+
+
+def test_after_the_commit_no_failure_is_the_resets_and_its_record_says_written(monkeypatch):
+    # H2: once the one write is committed the library IS fresh: the JSON copy, the known words (a non-OSError) and
+    # the last record write failing are logged, never raised — so the window never says "Nothing was changed"
+    from app import anki_sync
+    store, data_dir, user_files_dir, src, root = _world("ja")
+    known = _bytes(os.path.join(user_files_dir, "KnownWord.json"))
+    monkeypatch.setattr(ls, "export_copy", lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("export broke")))
+    monkeypatch.setattr(anki_sync, "_atomic_write_json",
+                        lambda *_a, **_k: (_ for _ in ()).throw(ValueError("an odd entry")))
+    real = ls._write_record
+
+    def write_record(folder, record):
+        if record["status"] == "done":
+            raise RuntimeError("the record's last write broke")
+        return real(folder, record)
+    monkeypatch.setattr(ls, "_write_record", write_record)
+    with store:
+        answer = ls.start_fresh(store, forget_known=True)
+        assert store.conn.execute("SELECT COUNT(*) FROM items").fetchone()[0] == 0
+    assert answer["known"].startswith("kept") and answer["sources"] == [root]
+    assert _record(answer["backup"])["status"] == "written"             # the commit's own record
+    assert _bytes(os.path.join(user_files_dir, "KnownWord.json")) == known
+
+
+def test_known_words_that_couldnt_be_forgotten_are_never_recorded_as_forgotten(monkeypatch):
+    # H2: the record named a known-words backup as if the words were forgotten when the write failed
+    from app import anki_sync
+    store, data_dir, user_files_dir, src, root = _world("zh")
+    monkeypatch.setattr(anki_sync, "_atomic_write_json",
+                        lambda *_a, **_k: (_ for _ in ()).throw(PermissionError(13, "held by another program")))
+    with store:
+        answer = ls.start_fresh(store, forget_known=True)
+    assert answer["known"].startswith("kept: ")
+    assert _record(answer["backup"])["known"] == answer["known"]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_forgetting_known_words_keeps_the_words_he_dismissed(language):
+    # I-R4: every replacing import keeps the IGNORED entries (anki_sync.kept_ignored); a fresh library's "forget my
+    # known words" is one more, so a dismissed word never comes back as a new one
+    store, data_dir, user_files_dir, src, root = _world(language)
+    path = os.path.join(user_files_dir, "KnownWord.json")
+    words = names(language)
+    dismissed = [{"dictForm": words[6], "knownStatus": "IGNORED"}, {"dictForm": words[7], "knownStatus": "IGNORED"}]
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"exportDate": "2026-10-20T08:00:00", "source": "anki", "statistics": {},
+                   "words": [{"dictForm": w, "knownStatus": "KNOWN"} for w in words[:4]] + dismissed}, f,
+                  ensure_ascii=False)
+    with store:
+        answer = ls.start_fresh(store, forget_known=True)
+    assert answer["known"] == "forgotten"
+    with open(path, encoding="utf-8") as f:
+        assert json.load(f)["words"] == dismissed
+    known = _record(answer["backup"])["known"]                          # the record names where the words went
+    assert known["ignored_kept"] == 2 and _bytes(known["copy"]) == _bytes(known["dated"])
+
+
+def test_the_sheets_counts_are_what_a_fresh_library_never_brings_back():
+    # I-R5 / LF-8 / I-R1: the sheet names, from the store, the items no folder being read brings back (+ Add files
+    # from outside the folders, YouTube transcripts, the rest: pasted, hato's, 2.x) and the cards left suspended —
+    # and exactly that many items are gone after the reset and the folders' first look
+    store, data_dir, user_files_dir, src, root = _world("ja")
+    with store:
+        outside = _write(os.path.join(os.path.dirname(data_dir), "elsewhere", "downloads", "Added Show - 01.srt"),
+                         _text("ja", 7))
+        copy = os.path.join(data_dir, ls.CONTENT_FOLDER, "Added Show", "Added Show - 01.srt")
+        os.makedirs(os.path.dirname(copy))
+        shutil.copyfile(outside, copy)
+        st = os.stat(outside)
+        added = store.insert([copy], "now", origins={copy: {
+            "origin": os.path.abspath(outside), "size": st.st_size, "mtime_ns": st.st_mtime_ns,
+            "sha256": ls.sha256_of(copy), "show": "Added Show"}}).added[0]
+        tube = next(i for i in store.ids("now") if i != added and not store.conn.execute(
+            f"SELECT 1 FROM pairings p WHERE p.item_id = ? AND {ls._ORIGIN_ROW}", (i,)).fetchone())
+        with store._writing():
+            store.conn.execute("UPDATE items SET source_type = 'youtube' WHERE id = ?", (tube,))
+        out = {"queue": -1, "suspended": [9001, 9002], "tag": "Surasura::out", "tagged": [501]}
+        store.record_anki_changes([(added, "cards_out", [501], {"queue": 0, "tagged": []}, out),
+                                   (tube, "cards_out", [502], {"queue": 0, "tagged": []},
+                                    dict(out, suspended=[9002, 9003]))])
+        total = store.conn.execute("SELECT COUNT(*) FROM items").fetchone()[0]
+        removed = store.conn.execute("SELECT COUNT(*) FROM exclusions WHERE kind = 'removed'").fetchone()[0]
+        counts = ls.fresh_counts(store)
+        assert (counts["added"], counts["youtube"], counts["suspended"]) == (1, 1, 3)
+        assert counts["other"] >= 2                                     # the 2.x tier files and hato's drop
+        ls.start_fresh(store)
+        _look(store, "ja", root, first=True)
+        back = store.conn.execute("SELECT COUNT(*) FROM items").fetchone()[0]
+    assert removed == 1                                                 # and the episode he removed comes back
+    assert back == total - (counts["added"] + counts["youtube"] + counts["other"]) + removed
+
+
+def test_a_reset_a_kill_left_started_is_found_at_the_next_start_and_a_finished_one_never():
+    # I-R8 / LF-11: a kill mid-move leaves reset.json "started" and the old library in the backup; the next start
+    # names that folder (the looks' first summary); a reset put back by hand, or one that finished, is never named
+    store, data_dir, user_files_dir, src, root = _world("ja")
+
+    def kill(name):
+        if name == "data":
+            raise _Killed(name)
+    with pytest.raises(_Killed):
+        ls.start_fresh(store, _step=kill)
+    store.close()
+    (folder,) = _backups(user_files_dir)
+    assert ls.unfinished_reset(user_files_dir) == folder
+    _restore_by_hand(_record(folder), store.db_path)
+    record = _record(folder)
+    record["status"] = "undone"                                         # put back by hand, as reset.json says
+    with open(os.path.join(folder, ls.RESET_RECORD), "w", encoding="utf-8") as f:
+        json.dump(record, f)
+    assert ls.unfinished_reset(user_files_dir) is None
+    store = ls.open_store("ja", data_dir, user_files_dir)
+    with store:
+        ls.start_fresh(store)
+    assert ls.unfinished_reset(user_files_dir) is None
+
+
+def test_the_looks_first_summary_names_an_unfinished_reset_once_a_run():
+    # LF-11: the window's bar line comes from the looks' first summary; later looks never repeat it
+    from app.services import source_looks
+    store, data_dir, user_files_dir, src, root = _world("zh")
+
+    def kill(name):
+        if name == "cache":
+            raise _Killed(name)
+    with pytest.raises(_Killed):
+        ls.start_fresh(store, _step=kill)
+    store.close()
+    (folder,) = _backups(user_files_dir)
+
+    opener = ls.StoreOpener("zh", data_dir, user_files_dir)
+    assert opener.check() == "store"
+    seen = []
+    looks = source_looks.SourceLooks(opener, "zh", on_result=seen.append, kind=lambda _p: "network")
+    try:
+        assert looks.asked(refreshed=True) and looks.idle(30)
+        assert looks.asked(refreshed=True) and looks.idle(30)
+    finally:
+        looks.close()
+        looks.idle(5)
+    assert [s.get("unfinished_reset") for s in seen] == [folder, None]
+
+
+# --- the delta adversary (D5, D7) ------------------------------------------------------------------------------------ #
+
+def test_the_copy_fallback_removes_only_the_files_it_checked_and_names_the_rest(tmp_path, monkeypatch):
+    """D5: rename refused -> copy, check, remove. A file that arrives after the check (hato writing, the drop copier)
+    and one changed after it are never removed — neither has a checked copy in the backup: they stay where they are
+    and are named (`_set_aside`'s answer, reset.json's `left`)."""
+    src = tmp_path / "data" / "HighPriority"
+    (src / "Hato").mkdir(parents=True)
+    (src / "Hato" / "old.srt").write_text(_text("ja", 1), encoding="utf-8")
+    (src / "Hato" / "edited.srt").write_text(_text("ja", 2), encoding="utf-8")
+    dst = tmp_path / "backup" / "HighPriority"
+    real_rename, real_same = os.rename, ls._same_bytes
+    late, edited = src / "Hato" / "arrived_late.srt", src / "Hato" / "edited.srt"
+
+    def no_rename(a, b, *args, **kw):
+        if os.path.abspath(a) == os.path.abspath(str(src)):
+            raise PermissionError(13, "held open by a watch")
+        return real_rename(a, b, *args, **kw)
+
+    def same_then_arrive(a, b):
+        ok = real_same(a, b)
+        if not late.exists() and os.path.basename(a) == "old.srt":
+            late.write_text(_text("ja", 3), encoding="utf-8")              # lands after the check
+            with open(edited, "a", encoding="utf-8") as f:                  # and an edit after its check
+                f.write("\n12\n00:10:00,000 --> 00:10:02,000\n直した一行。\n")
+        return ok
+    monkeypatch.setattr(ls.os, "rename", no_rename)
+    monkeypatch.setattr(ls, "_same_bytes", same_then_arrive)
+    left = ls._set_aside(str(src), str(dst))
+    monkeypatch.setattr(ls.os, "rename", real_rename)                      # (never `undo`: it drops the test root)
+    assert late.exists()
+    assert not (src / "Hato" / "old.srt").exists() and (dst / "Hato" / "old.srt").exists()
+    assert sorted(os.path.basename(p) for p in left) == ["arrived_late.srt", "edited.srt"]
+    assert edited.exists() and "直した一行" in edited.read_text(encoding="utf-8")
+
+
+def test_a_reset_that_moved_nothing_is_never_named_and_one_that_did_is_named_once():
+    """D7: a kill during the store copy (nothing moved) is no unfinished reset; one killed mid-move is named once —
+    told, its record says so, and the next start says nothing."""
+    store, data_dir, user_files_dir, src, root = _world("ja")
+
+    def kill_at(step):
+        def kill(name):
+            if name == step:
+                raise _Killed(name)
+        return kill
+    with pytest.raises(_Killed):
+        ls.start_fresh(store, _step=kill_at("folder"))                    # the folder and record made, nothing moved
+    assert ls.unfinished_reset(user_files_dir) is None
+    for folder in _backups(user_files_dir):
+        shutil.rmtree(folder)
+    with pytest.raises(_Killed):
+        ls.start_fresh(store, _step=kill_at("manifest"))                  # the JSON copy moved
+    store.close()
+    (folder,) = _backups(user_files_dir)
+    assert ls.unfinished_reset(user_files_dir, told=True) == folder
+    assert _record(folder)["told"] is True and _record(folder)["status"] == "started"
+    assert ls.unfinished_reset(user_files_dir, told=True) is None
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_group_and_its_name_go_with_the_library_and_nothing_queued_or_undone_brings_them_back(language):
+    """LM11: a group is library state like every piece — a reset empties `pieces` with the rest (its row, kind and name
+    kept in the backup's copy); its Group / Rename group can't be undone into the fresh library (the epoch moved), and
+    a Rename group / Ungroup a crash left queued never writes to whatever piece reuses its id (piece ids start again
+    after a reset; what each queued command names is checked by item ids, which never are)."""
+    from app.services import moves as M
+    store, data_dir, user_files_dir, src, root = _world(language)
+    with store:
+        rows = store.conn.execute("SELECT piece_id, work_id FROM items WHERE tier = 'now' ORDER BY piece_id").fetchall()
+        shows = [rows[0][0], next(p for p, w in rows if w != rows[0][1])]     # the first piece, another title's
+        grouped = store.join(shows, how="group")
+        group = grouped.piece_id
+        assert group == rows[0][0]
+        title = names(language)[46]
+        renamed = store.rename_piece(group, title)
+        queued = [{"op": "rename_piece", "piece_id": group, "title": names(language)[47]},
+                  {"op": "ungroup", "piece_id": group}]
+        for cmd in queued:
+            cmd["before"] = M._as_queued(store, cmd)
+        ls.start_fresh(store)
+        assert store.conn.execute("SELECT COUNT(*) FROM pieces").fetchone()[0] == 0
+        for change in (renamed, grouped):
+            with pytest.raises(ls.UndoRefused):
+                store.undo(change)
+        _sources_read_again(store, language)
+        assert not store.conn.execute("SELECT 1 FROM pieces WHERE kind = 'group'").fetchone()
+        assert pieces_ok(store) is None
+        again = [p for (p,) in store.conn.execute("SELECT DISTINCT piece_id FROM items ORDER BY piece_id")]
+        assert store.join(again[:2], how="group").piece_id == group, "a new group under the old one's id"
+        for cmd in queued:                                              # `Writer._changed_since`'s check: listed
+            assert not M._done(store, cmd) and M._as_queued(store, cmd) != cmd["before"]
+        assert store.conn.execute("SELECT title FROM pieces WHERE kind = 'group'").fetchone()[0] is None
+    (folder,) = _backups(user_files_dir)
+    copy = sqlite3.connect(_record(folder)["db_copy"])
+    try:
+        assert copy.execute("SELECT kind, title FROM pieces WHERE id = ?", (group,)).fetchone() == ("group", title)
+    finally:
+        copy.close()

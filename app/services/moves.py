@@ -65,8 +65,9 @@ MODE_RECHECK_S = 2.0            # idle, the thread asks the store's mode this of
 JOURNAL_VERSION = 1
 JOURNAL_TRIES = 10              # a journal write Windows refuses (the file held a moment) is tried this many times
 JOURNALLED = ("move", "nudge", "set_tier", "finish", "set_watched",
-              "place", "put_back", "import_finished", "relink", "its_new", "link_video", "remove", "restore", "pin",
-              "keep_cards", "ask_mining", "split", "join", "set_media_type", "set_cover", "set_options")
+              "place", "put_back", "import_finished", "relink", "its_new", "link_video", "remove", "skip_folder",
+              "restore", "pin", "keep_cards", "ask_mining", "split", "join", "set_media_type", "set_cover",
+              "set_options")
 #   an undo needs its Change: never journalled; nor an Explorer drop (`insert_at`: no ids yet). Its files are copied into
 #   the content folder at once, on the copier's thread — a busy store or a drag never holds the copy back, and the copy
 #   never holds a move back (G1) — so a quit or a crash before it lands leaves them whole in the folder (AD-2; since SRC
@@ -375,6 +376,15 @@ class Writer:
         the files back if anything fails. Undo puts the files back (never over a
         file: a taken name comes back as `name_1.ext`, named in a note) and the rows where they stood."""
         return self._put({"op": "remove", "ids": list(ids), "label": label})
+
+    def skip_folder(self, path, label=None):
+        """*Never read this folder* (K6): `Store.skip_folder` — the folder's row, and the items whose every origin lies
+        under it removed as *Remove…* removes them (their copies to the data folder's trash, under the store's write
+        lock; nothing in the learner's own folders is touched), one change: Undo puts them back and reads the folder
+        again. Refused (`NotASource`: outside every source, a source itself) → `failed`'s note, nothing written.
+        Journalled as Remove is (its copies' trash moves): a crash before it lands replays it at the next start, one
+        that landed before the crash is let go quietly (`_changed_since`)."""
+        return self._put({"op": "skip_folder", "ids": [], "path": os.fspath(path), "label": label})
 
     def restore(self, trash_ids, label=None):
         """Put back from the trash (`Store.restore` by trash ids, the files first, as Undo of a remove does). Undo sends
@@ -833,6 +843,8 @@ class Writer:
                 change, note = self._insert(store, cmd)
             elif op in ("remove", "restore"):
                 change = self._remove(store, cmd) if op == "remove" else self._restore(store, cmd)
+            elif op == "skip_folder":
+                change = self._skip_folder(store, cmd)
             elif op == "register":                  # --- W3.2 B
                 change = self._register(store, cmd)
             else:
@@ -959,6 +971,29 @@ class Writer:
                         trashed[item_id] = to
                         moved.append((_full(store, to), _full(store, row["rel_path"])))
                 return store.remove(cmd["ids"], trashed)
+        except BaseException:
+            _move_back(moved)
+            raise
+
+    def _skip_folder(self, store, cmd):
+        """K6: under the store's write lock, the refusal asked first (no file moves for a refused folder), then each
+        item's copy under the folder to the trash, as `_remove` does, then `Store.skip_folder` in the same transaction;
+        the files back where they were if anything fails."""
+        lib = _ls()
+        moved = []
+        try:
+            with store._writing():
+                reason = store.skip_refused(cmd["path"])
+                if reason:
+                    raise lib.NotASource(reason)
+                trashed = {}
+                for item_id in store.items_under(cmd["path"]):
+                    row = store.item(item_id)
+                    to = _trash(lib, store, row["rel_path"]) if row is not None else None
+                    if to:
+                        trashed[item_id] = to
+                        moved.append((_full(store, to), _full(store, row["rel_path"])))
+                return store.skip_folder(cmd["path"], trashed)
         except BaseException:
             _move_back(moved)
             raise
@@ -1110,7 +1145,7 @@ class Writer:
         cmd["data_dir"] = data_dir
         cmd["started_at"] = lib._now()              # a sync that meets a copy made: the command takes the row over
         walked = {lib.path_key(f) for f in lib.WALK_FOLDERS}               # the folders the disk sync walks
-        out, made, left, already, origins = [], [], [], [], {}
+        out, made, left, already, origins, listings = [], [], [], [], {}, {}
         into = cmd.get("into") or [None] * len(cmd["files"])          # --- W3.2 Q3: + Add's folders
         rels = {p: lib.library_rel(data_dir, p) for p in cmd["files"]}
         inside = {p: r for p, r in rels.items() if r is not None and lib.path_key(r.split("/", 1)[0]) in walked}
@@ -1142,7 +1177,10 @@ class Writer:
                         continue
                 parts = _in_library(_into(sub, folder, walked, lib), path, lib)
                 dest = os.path.join(data_dir, *parts, os.path.basename(path))
-                st = os.stat(path) if rel is None and cmd.get("origin", True) else None   # K21: before it is read
+                try:                                # K21: before it is read
+                    st = os.stat(path) if rel is None and cmd.get("origin", True) else None
+                except OSError:                     # H16: no origin, the file still added
+                    st = None
                 if os.path.exists(dest) and filecmp.cmp(path, dest, shallow=False):
                     out.append(dest)
                 else:
@@ -1151,7 +1189,10 @@ class Writer:
                     made.append(dest)
                     out.append(dest)
                 if st is not None:
-                    origins[dest] = _origin_of(path, st, dest, parts, lib)
+                    try:
+                        origins[dest] = _origin_of(path, st, dest, parts, lib, listings)
+                    except OSError as e:            # H16: recording where it came from never stops the add
+                        print(f"+ Add: where {os.path.basename(path)} came from isn't kept ({e!r})")
         finally:
             cmd["copied"] = made
         cmd["files"] = out
@@ -1482,6 +1523,8 @@ class Writer:
                 return True
         if cmd["op"] == "remove" and _removed(store, cmd["ids"]):
             return "done"                           # W3.2 H (C3): its rows in the trash already, as it leaves them
+        if cmd["op"] == "skip_folder" and store.skip_refused(cmd["path"]) == _ls().SKIP_ALREADY:
+            return "done"                           # K6: the folder (or one holding it) skipped already, as it leaves
         seen = cmd.get("seen")
         if seen is not None:
             now = store.check([i for i, _v in seen]).items      # `changed_in` is never NULL: None is gone
@@ -1529,8 +1572,8 @@ def _refused(change, out):
         return True
     if change.kind in ("finish", "put_back_finished") or (change.kind == "set_tier" and change.status):
         return not out.items and _skips(out) - len(change.items) >= len(change.status)
-    if change.kind == "remove":
-        return not out.restored                     # every row put back meanwhile
+    if change.kind == "remove":                     # every row put back meanwhile (a skip's folder row: read again)
+        return not out.restored and not getattr(out, "folder_dropped", False)
     if change.kind == "restore":
         return not out.trash_ids                    # every row it put back changed since
     if change.kind == "import_finished":
@@ -1781,15 +1824,16 @@ def _into(sub, folder, walked, lib):
     return parts
 
 
-def _origin_of(path, st, copy, parts, lib):
+def _origin_of(path, st, copy, parts, lib, listings=None):
     """(K21) Where a file + Add or a drop copied in came from, for its origin record (`Store._add_origins`): the
     original's absolute path, its size and time (`st`, taken before it was read), the sha256 of the bytes copied (the
     copy's), the show its `Library` folder names, and the video beside the original with its name, found as Connect's
-    `runner.beside` finds it (a listing and a stat: the video is never opened)."""
+    `runner.beside` finds it (a listing and a stat: the video is never opened; `listings`: the add's own, so each
+    folder is listed once per add, H6). An OSError is the caller's: no origin, the add goes on (H16)."""
     from app.connect import runner
     f = {"origin": os.path.abspath(path), "size": st.st_size, "mtime_ns": st.st_mtime_ns,
          "sha256": lib.sha256_of(copy), "show": "/".join(parts[1:])}
-    video = runner.beside(path)
+    video = runner.beside(path, listings)
     if video:
         f.update(video_path=os.path.abspath(video), video_size=os.path.getsize(video))
     return f

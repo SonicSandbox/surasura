@@ -9,21 +9,15 @@ entries — nothing is worked out here. ▶ asks for a file: the page looks for 
 and hands it to the system's player, or says in the bar why it can't.
 """
 import os
-import re
 import sys
 
 from PyQt6.QtCore import Qt, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget   # W3.2 Q4
 
-from app import path_utils, theme
+from app import theme
 from app.qt import bridge, rows, strings
-from app.services import view_rows
-
-VIDEO_EXTS = (".mkv", ".mp4", ".webm", ".m4v", ".avi", ".mov")
-AUDIO_EXTS = (".mp3", ".m4a", ".aac", ".opus", ".ogg", ".flac", ".wav")
-_LANGUAGE_TAG = re.compile(r"\.[a-z]{2,3}(?:[-_][A-Za-z]{2,4})?$")
-
+from app.services import play
 
 def state_line(view):
     """The page's state bar for a view, or "" (02 §2.4): getting ready, read-only with its reason, busy."""
@@ -43,29 +37,30 @@ def state_line(view):
 
 
 def media_to_open(language, episode, media):
-    """The file ▶ opens for an episode, or (None, why): the video (or audio) beside its content file — same name, a
-    player's extension — else, for a book or a text, the file itself. Runs on a worker (it looks at the disk)."""
-    rel = episode.rel_path or ""
-    path = os.path.join(path_utils.get_data_path(language), *rel.split("/"))
-    word = view_rows.MEDIA_WORD.get(media, "video")
-    if word in ("EPUB", "file"):
-        return (path, None) if os.path.exists(path) else (None, strings.PLAY_FAILED.format(
-            name=episode.label, why=strings.PLAY_NOT_ON_DISK))
-    base = os.path.splitext(path)[0]
-    bases = [base]
-    tagged = _LANGUAGE_TAG.sub("", base)            # `ep01.ja.srt`, `ep01.zh-Hans.ass` → `ep01.mkv`
-    if tagged != base:
-        bases.append(tagged)
-    for b in bases:
-        for ext in (AUDIO_EXTS if word == "audio" else VIDEO_EXTS):
-            if os.path.exists(b + ext):
-                return b + ext, None
-    return None, strings.PLAY_FAILED.format(name=episode.label, why=strings.PLAY_NO_MEDIA_BESIDE.format(word=word))
+    """The file ▶ opens for an episode, or (None, the bar's line): `services.play.to_open`'s answer (the rule is the
+    service's, shared with Connect), worded for the bar. Runs on a worker (it reads the store and looks at the disk)."""
+    path, why = play.to_open(language, episode.id, episode.rel_path, media)
+    return (path, None) if path else (None, strings.PLAY_FAILED.format(name=episode.label, why=why))
+
+
+def _ole32():
+    """Windows' COM library (a seam: the tests count its calls)."""
+    import ctypes
+    return ctypes.windll.ole32
 
 
 def open_with_system(path):
+    """A file or a folder in the user's own program. On Windows on a worker: COM set up around the call, as
+    ShellExecuteEx asks — an association that goes through COM (a Store app as the default player) can't start without
+    it; balanced only when this call set it up (not reproduced with a Store-app player: none runs in tests)."""
     if sys.platform == "win32":
-        os.startfile(path)                          # the user's own player
+        ole32 = _ole32()
+        mine = ole32.CoInitializeEx(None, 0x2 | 0x4) >= 0    # COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE
+        try:
+            os.startfile(path)                      # the user's own player
+        finally:
+            if mine:
+                ole32.CoUninitialize()
     else:
         QDesktopServices.openUrl(QUrl.fromLocalFile(path))
 

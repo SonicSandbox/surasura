@@ -590,11 +590,11 @@ def test_a_closed_window_closes_its_looks(window):
 
 
 def test_the_offline_words_name_each_folder_and_its_count():
-    rows_ = [{"id": 1, "path": "S:\\Video", "on": True, "items": 412, "reachable": False},
+    rows_ = [{"id": 1, "path": "N:\\Media", "on": True, "items": 412, "reachable": False},
              {"id": 2, "path": "D:\\Books", "on": True, "items": 0, "reachable": True},
              {"id": 3, "path": "E:\\Old", "on": False, "items": 9, "reachable": False},
              {"id": 4, "path": "F:\\New", "on": True, "items": 3, "reachable": None}]
-    assert source_looks.offline(rows_) == [("S:\\Video", 412)]
+    assert source_looks.offline(rows_) == [("N:\\Media", 412)]
 
 
 # --- the review's rows (reviews/SRC-W1b-adversary.md) -------------------------------------------------------------- #
@@ -752,3 +752,153 @@ def test_settings_waits_for_the_first_listing_before_saying_no_folders(window):
     assert row.none.text() == S.SOURCES_LISTING
     win._sources_looked({"language": win.language, "sources": []})
     assert row.none.text() == S.SOURCES_NONE and not row.none.isHidden()
+
+
+# --- ▶ on an episode a source folder holds (laptop fix "play", FEEDBACK row 5) ------------------------------------ #
+def _episode_name(n, ext):
+    """A release's name, as a download folder holds them: `[group] <show> - 09 (1080p) [crc].mkv` (made-up group)."""
+    return f"[Hoshizora Subs] {SHOW} - {n:02d} (1080p) [8F3A2C1D]{ext}"
+
+
+def _stand_in_video(path):
+    """A video stand-in (Matroska's magic and a few bytes), settled like a finished download — never played."""
+    with open(path, "wb") as f:
+        f.write(b"\x1a\x45\xdf\xa3 stand-in matroska " + os.path.basename(path).encode("utf-8"))
+    t = time.time() - 60
+    os.utime(path, (t, t))
+    return path
+
+
+def _part(lst, i, name, payload=None):
+    entry = lst.model().entries[i]
+    for p in lst.delegate.parts(entry, lst.visualRect(lst.model().index(i, 0))):
+        if p[0] == name and (payload is None or p[3] is payload):
+            return p
+    raise AssertionError((i, name))
+
+
+def test_play_opens_the_video_beside_the_original_in_a_source_folder_and_says_why_when_there_is_none(qapp,
+                                                                                                     monkeypatch):
+    """▶ on an episode a source folder holds (FEEDBACK row 5: *the play button doesn't play the media*). The library's
+    entry is the subtitle's copy in `Library/<show>/`; the video stays in the folder read in place, so looking beside
+    the copy found nothing and every ▶ said "no video beside it". The row's own ▶ (its next episode) and an episode's ▶
+    must ask the opener for the video's absolute path: the one the scan recorded beside the original, or one that
+    arrived after its subtitle (looked for beside the original by name); with no video, a line in the bar says so."""
+    from PyQt6.QtTest import QTest
+    from PyQt6.QtCore import Qt
+    from app.qt import screens, shell
+    from app.services import library_reader, play
+    from app.services import moves as moves_module
+    opener, data_dir, user_files_dir = _library()
+    opener.close()
+    folder = os.path.join(os.environ["SURASURA_TEST_ROOT"], "elsewhere", "Downloads", SHOW)
+    for n in (9, 10, 11):
+        _subtitle(folder, _episode_name(n, ".ja.srt"), n)
+    video_09 = _stand_in_video(os.path.join(folder, _episode_name(9, ".mkv")))      # there at the scan: recorded
+    store = _read_store(data_dir, user_files_dir)
+    with store:
+        root = store.add_source(folder)
+        assert sources.scan(store, "ja", root, first=True)["added"] == 3
+    video_10 = _stand_in_video(os.path.join(folder, _episode_name(10, ".mkv")))     # downloaded after its subtitle
+    opened = []
+    monkeypatch.setattr(screens, "open_with_system", opened.append)                # never a real player
+    monkeypatch.setattr(screens.QDesktopServices, "openUrl", lambda url: opened.append(url.toLocalFile()))
+    reader = library_reader.LibraryReader(moves_module.store_opener("ja"), "ja", poll=0.02)
+    services = shell.Services(library=reader)
+    win = shell.open_window(qapp, services)
+    try:
+        win.resize(1280, 900)
+        win.show()
+        page = win.page_widgets["current"]
+        assert wait_until(lambda: page.view_model is not None and page.view_model.state == "full"
+                          and not page.view_model.loading, 15)
+        for _ in range(50):
+            QApplication.processEvents()
+        lines = []
+        page.message.connect(lines.append)
+        lst = page.list
+        kind, hero, _lines = lst.model().entries[0]
+        assert kind == rows.HERO and len(hero.episodes) == 3
+        same = lambda a, b: os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))  # noqa: E731
+        # the row's own ▶: its next episode (09), whose video the scan found beside the original
+        QTest.mouseClick(lst.viewport(), Qt.MouseButton.LeftButton, pos=_part(lst, 0, "play")[1].center())
+        assert wait_until(lambda: opened or lines, 10)
+        assert lines == [] and len(opened) == 1 and same(opened[0], video_09)
+        # an episode's ▶ in the opened row: 10's video came after its subtitle — found beside the original by name
+        lst.toggle(lst.model().index(0, 0))
+        for _ in range(20):
+            QApplication.processEvents()
+        ep10, ep11 = hero.episodes[1], hero.episodes[2]
+        QTest.mouseClick(lst.viewport(), Qt.MouseButton.LeftButton, pos=_part(lst, 0, "play", ep10)[1].center())
+        assert wait_until(lambda: len(opened) > 1 or lines, 10)
+        assert lines == [] and len(opened) == 2 and same(opened[1], video_10)
+        # 11 has no video anywhere: nothing opens, and the bar says which episode and why
+        QTest.mouseClick(lst.viewport(), Qt.MouseButton.LeftButton, pos=_part(lst, 0, "play", ep11)[1].center())
+        assert wait_until(lambda: lines, 10)
+        assert len(opened) == 2
+        assert lines[0] == strings.PLAY_FAILED.format(name=ep11.label, why=play.WHY["no-media"].format(word="video"))
+        assert win.bar_line.full() == lines[0]
+    finally:
+        win.close()
+        services.shutdown(2.0)
+    QApplication.processEvents()
+
+
+# --- the opener: COM around Windows' open, the shell's opens through it (review AD-3, AD-9) ----------------------- #
+@pytest.mark.skipif(os.name != "nt", reason="Windows' opener")
+def test_the_opener_sets_up_com_around_each_open_and_undoes_only_its_own(monkeypatch):
+    """▶'s opener on a pool thread: COM is set up before Windows is asked and undone after, once per open — also when
+    Windows refuses the file; when the thread had COM in another mode already (RPC_E_CHANGED_MODE), it's left so."""
+    import threading
+    from app.qt import screens
+    calls = []
+
+    class Ole32:
+        def __init__(self, answer):
+            self.answer = answer
+
+        def CoInitializeEx(self, _reserved, flags):
+            calls.append(("init", flags))
+            return self.answer
+
+        def CoUninitialize(self):
+            calls.append(("uninit",))
+    monkeypatch.setattr(os, "startfile", lambda path: calls.append(("open", path)))   # never a real player
+    path = os.path.join(os.environ["SURASURA_TEST_ROOT"], _episode_name(9, ".mkv"))
+    for answer, expected in ((0, [("init", 0x6), ("open", path), ("uninit",)]),           # S_OK
+                             (1, [("init", 0x6), ("open", path), ("uninit",)]),           # S_FALSE: still ours to undo
+                             (-2147417850, [("init", 0x6), ("open", path)])):             # RPC_E_CHANGED_MODE
+        calls.clear()
+        monkeypatch.setattr(screens, "_ole32", lambda answer=answer: Ole32(answer))
+        t = threading.Thread(target=screens.open_with_system, args=(path,))
+        t.start()
+        t.join(10)
+        assert calls == expected
+    calls.clear()
+    monkeypatch.setattr(screens, "_ole32", lambda: Ole32(0))
+
+    def refused(p):
+        calls.append(("open", p))
+        raise OSError("No application is associated with the specified file")
+    monkeypatch.setattr(os, "startfile", refused)
+    with pytest.raises(OSError):
+        screens.open_with_system(path)
+    assert calls == [("init", 0x6), ("open", path), ("uninit",)]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows' opener")
+def test_the_shells_open_folder_and_open_file_go_through_the_same_opener_on_a_worker(window, monkeypatch):
+    """AD-9: the logs folder and a log file open as ▶'s file does (COM set up), off the window's thread."""
+    import threading
+    from app.qt import screens
+    seed, win = window(RecordingLooks())
+    asked = []
+    monkeypatch.setattr(screens, "open_with_system", lambda p: asked.append((p, threading.current_thread())))
+    monkeypatch.setattr(os, "startfile", lambda p: asked.append(("bare", p)))
+    logs = os.path.join(os.environ["SURASURA_TEST_ROOT"], "local", "logs")
+    log = os.path.join(logs, "generate.log")
+    win.open_logs(logs)
+    win._open_path(log)
+    assert wait_until(lambda: len(asked) == 2, 10)
+    assert sorted(p for p, _t in asked) == sorted([logs, log])
+    assert all(t is not threading.main_thread() for _p, t in asked)

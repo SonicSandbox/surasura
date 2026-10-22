@@ -171,9 +171,10 @@ class NeedsCards(QWidget):
 
     def _build(self, entries, found, looking):
         found = found or {}
-        keep, order = {}, []
+        keep, order, built = {}, [], self.builds
         for e in entries:
-            sig = (e, found.get(e.key), e.key in looking, self.epoch)
+            # seen or not is the tab's count only (no card shows it): opening the page builds no card again (S19)
+            sig = (e._replace(unseen=False), found.get(e.key), e.key in looking, self.epoch)
             old = self.cards.get(e.key)
             if old is not None and old[0] == sig:
                 keep[e.key] = old
@@ -189,11 +190,12 @@ class NeedsCards(QWidget):
                 w.setParent(None)
                 w.deleteLater()
         self.cards = keep
-        if order != self.order:
-            for i, key in enumerate(order):
-                w = self.cards[key][1]
-                self.box.removeWidget(w)
-                self.box.insertWidget(i, w)
+        if self.builds != built or order != self.order:
+            for i, key in enumerate(order):     # a rebuilt card is a new widget: it takes its place in the layout even
+                w = self.cards[key][1]          # when the order is the same (else it sits at 0,0 at 100x30, unlaid —
+                if self.box.indexOf(w) != i:    # the laptop's "unviewable" page); a kept card in place isn't touched
+                    self.box.removeWidget(w)
+                    self.box.insertWidget(i, w)
             self.order = order
         for key in order:
             w = self.cards[key][1]

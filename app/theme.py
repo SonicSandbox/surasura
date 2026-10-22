@@ -533,7 +533,6 @@ ROW_LINE = MappingProxyType({
     "hover-fade": 20,               # the string fades out under it over 20 px
     "anki-icon": 15,                # the Anki count's mark
     "mover-w": 22, "mover-h": 18, "mover-pad": 5,      # ↑ ↓ in the number's column
-    "title-fade": 24,               # * a title that runs over fades out over its last 24 px
     "dim": 0.45,                    # a stone that won't mine itself (not mined, not watched, below the top-20 line)
     "shadow": 4,                    # the lifted row's baked shadow, inside its own gap
     "shadow-alpha": 0.62, "lift-line-alpha": 0.09,     # the shadow, and the lit top line, at the lift's share

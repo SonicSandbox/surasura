@@ -1843,7 +1843,7 @@ def _origin_of(path, st, copy, parts, lib, listings=None):
     from app.connect import runner
     f = {"origin": os.path.abspath(path), "size": st.st_size, "mtime_ns": st.st_mtime_ns,
          "sha256": lib.sha256_of(copy), "show": "/".join(parts[1:])}
-    video = runner.beside(path, listings)
+    video = runner.beside(path, listings=listings)
     if video:
         f.update(video_path=os.path.abspath(video), video_size=os.path.getsize(video))
     return f

@@ -246,11 +246,38 @@ def test_the_soon_line_sits_where_soon_starts_with_its_word(seeded):
     assert tip.startswith("Soon:")
 
 
-def test_a_long_mixed_title_is_cut_once_with_the_whole_in_its_tooltip_and_accessible_text(seeded):
-    """E15 (W3.1a: faded at its end, not cut with an ellipsis): the title runs past its one shared width and fades
-    there; the full title is in the tooltip and to a screen reader; never two lines."""
+def _drawn_titles(lst, row, slab, opened, monkeypatch):
+    """What `_paint_current` draws as a row's title, through the painting code itself: [(text shown, its x, its
+    width)] — the strings `TEXT.draw` was handed, elided as it elides them."""
+    drawn = []
+    real = rows.TEXT.draw
+
+    def spy(p, x, y_mid, text, role, width, colour, weight=None, align="left", dpr=1.0, elide=True):
+        if role == "row-title":
+            st, w, _cut = rows.TEXT.static(text, role, width, weight, dpr, elide)
+            drawn.append((st.text(), x, w))
+        return real(p, x, y_mid, text, role, width, colour, weight, align, dpr, elide)
+    img = QImage(slab.width(), slab.height(), QImage.Format.Format_ARGB32_Premultiplied)
+    with monkeypatch.context() as m:
+        m.setattr(rows.TEXT, "draw", spy)
+        p = QPainter(img)
+        lst.delegate._paint_current(p, row, QRect(0, 0, slab.width(), slab.height()), False, 1.0, None, opened=opened)
+        p.end()
+    return drawn
+
+
+@pytest.mark.parametrize("long_title", [
+    "海鳴りの聞こえる町で暮らす二人 Season 2 — 特別編 🌊 and a very long English subtitle that goes on",
+    "Old Drives/Backup Disk 2/game-mods/skins/blue/extra",
+    "Akari no Saikushokunin Brotherhood 2nd Season — 灯の細工職人 LANTERN ARTISAN",      # made up
+])
+def test_a_long_title_is_elided_with_an_ellipsis_left_of_the_stones_with_the_whole_in_its_tooltip(seeded, monkeypatch,
+                                                                                                   long_title):
+    """E15 (laptop try, FEEDBACK 11): a title longer than its one shared width is cut with "…" inside its column — its
+    drawn right edge left of where the string starts — never cut hard (or faded) against the stones; the full title is
+    in the tooltip and to a screen reader; never two lines. Opened, the title takes the string's room and is still cut
+    with "…" before the row's own buttons."""
     seed, win = seeded(size=(1100, 760))
-    long_title = "海鳴りの聞こえる町で暮らす二人 Season 2 — 特別編 🌊 and a very long English subtitle that goes on"
     lst = current(win)
     i = next(k for k, e in enumerate(lst.model().entries) if e[0] == rows.ROW and e[1].media != "youtube")
     row = lst.model().entries[i][1]
@@ -262,12 +289,20 @@ def test_a_long_mixed_title_is_cut_once_with_the_whole_in_its_tooltip_and_access
     assert title[2].startswith(long_title)
     assert lst.model().data(idx, Qt.ItemDataRole.AccessibleTextRole).startswith(long_title)
     row = lst.model().entries[i][1]
-    g = lst.delegate.line_geometry(row, lst.delegate.slab_of(lst.visualRect(idx)))
-    _st, w, cut = rows.TEXT.static(long_title, "row-title", g["main"].width(), elide=False)
-    assert w > g["main"].width() and not cut           # it runs over its width (and is faded there), never "…"
+    slab = lst.delegate.slab_of(lst.visualRect(idx))
+    local = QRect(0, 0, slab.width(), slab.height())
+    g = lst.delegate.line_geometry(row, local)
+    assert rows.TEXT.metrics("row-title").horizontalAdvance(long_title) > g["main"].width()     # it runs over
+    (shown, x, w), = _drawn_titles(lst, row, slab, False, monkeypatch)
+    assert shown.endswith("…") and shown[:-1] and long_title.startswith(shown[:-1])
+    assert x + w <= g["main"].right() + 1 < g["gstr"].left()          # inside its column, clear of the stones
     assert lst.visualRect(idx).height() == lst.delegate.sizeHint(None, idx).height()   # one line: the height holds
     assert lst.visualRect(idx).height() == lst.delegate._line_h() + theme.ROW_LINE["gap"] + \
         lst.delegate._lines_h(lst.model().entries[i][2])
+    g = lst.delegate.line_geometry(row, local, opened=True)
+    (shown, x, w), = _drawn_titles(lst, row, slab, True, monkeypatch)
+    assert x + w <= g["main"].right() + 1
+    assert shown == long_title or shown.endswith("…")
 
 
 def test_nothing_the_screens_do_writes_to_the_library(seeded):
@@ -303,6 +338,20 @@ def test_play_looks_for_the_video_beside_the_file_on_a_worker_and_says_why_it_ca
     open(os.path.splitext(sub)[0] + ".mkv", "wb").close()
     found = screens.media_to_open("ja", ep, "anime")
     assert found[0].endswith(".mkv") and found[1] is None
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows' opener")
+def test_the_system_opener_hands_the_path_to_windows_from_a_worker_thread(monkeypatch):
+    """▶'s opener runs on a pool thread (laptop fix "play"): it hands Windows the path as given, with COM set up around
+    the call (ShellExecuteEx's rule), and a second call on the same thread works as the first did."""
+    import threading
+    asked = []
+    monkeypatch.setattr(os, "startfile", asked.append)                 # never a real player
+    path = os.path.join(os.environ["SURASURA_TEST_ROOT"], "星降る街の小さな工房 - 01 (1080p).mkv")
+    t = threading.Thread(target=lambda: (screens.open_with_system(path), screens.open_with_system(path)))
+    t.start()
+    t.join(10)
+    assert asked == [path, path]
 
 
 # --- the other pages ------------------------------------------------------------------------------------------ #

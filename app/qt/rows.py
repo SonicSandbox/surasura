@@ -8,7 +8,7 @@ paints it:
   with its watched bar, *UP NEXT*, the title and its episode, the source, *% known · N new words ↗*, **the string** of
   stones (where the chips were), ▶ *Play* (the trillion in its kind's gem) and ✓ *Done* side by side, *N in Anki*, ⋯;
 - **a Current row**: one line at every text size (W3.1a §1 *Rows*) — its number (↑ ↓ on hover or focus), the wide art
-  fading out, the title faded at its end, **the string** (one stone per file: `app/services/stone_plan.py`'s plan,
+  fading out, the title cut with "…" at its end, **the string** (one stone per file: `app/services/stone_plan.py`'s plan,
   blitted from the stones' sheet, `app/qt/stones.py`), the Anki count, *% · N new*. Hover and keyboard focus show the
   same things (S7): the row lifts on a spring with its baked shadow, its neighbours ease apart, the next stone's ring
   shows and the status, ▶ and ⋯ fade in over the string's end, holding no room. Opened, its episode lines under it,
@@ -32,7 +32,9 @@ by the window) it asks nothing and its tip says why.
 import bisect
 import math
 import os
+import re
 import time
+import unicodedata
 from collections import OrderedDict, namedtuple
 
 from PyQt6.QtCore import (QAbstractListModel, QItemSelectionModel, QModelIndex, QPoint, QPointF, QRect, QRectF, QSize,
@@ -41,7 +43,7 @@ from PyQt6.QtGui import (QBrush, QColor, QFont, QFontMetrics, QLinearGradient, Q
                          QStaticText, QTextOption)
 from PyQt6.QtWidgets import QAbstractItemView, QListView, QStyle, QStyledItemDelegate
 
-from app import theme
+from app import theme, unicode_ranges
 from app.qt import motion, stones, strings, style
 from app.qt import covers as qcovers                 # --- W3.2 Q6: a title's own picture, decoded off the GUI thread
 from app.services import stone_plan, view_rows
@@ -182,9 +184,31 @@ def clear_covers():
     _COVER_BYTES[0] = 0
 
 
+_CJK = re.compile(f"[{unicode_ranges.HAN}{unicode_ranges.KANA}]")
+
+
+def cover_label(title, w, fm):
+    """What a generated cover `w` px wide writes on itself, in the font of `fm`: (True, the title) — its characters
+    down the right edge, the mock's vertical cover — when it holds a Japanese or Chinese letter anywhere (W2.2:
+    vertical for Japanese / Chinese; 7月のペンギン, a romaji name before its kana, half-width ｱﾆﾒ read through NFKC),
+    else (False, one line) across its top, cut with "…" to the cover's width, its first letter alone where not even
+    "P…" fits: a Latin title stood one letter under another read "P / C / R / e" (laptop try, FEEDBACK 11)."""
+    title = title or ""
+    t = title.strip()
+    if not t or _CJK.search(unicodedata.normalize("NFKC", t)):
+        return True, title
+    first = next((ch for ch in t if ch.isalnum()), t[0])
+    room = max(0, int(w * 0.84))
+    line = fm.elidedText(t, Qt.TextElideMode.ElideRight, room)
+    if line in ("", "…"):
+        line = first if fm.horizontalAdvance(first) <= room else ""
+    return False, line
+
+
 def cover(title, w, h, dpr, large=False, ref=None):
     """The generated cover of a title (05 §5.6: the fallback and the offline look): the mock's gradient, the title's
-    first characters down it. Cached per (title, size, ratio)."""
+    first characters down it — or, a title in Latin script, across its top (`cover_label`). Cached per (title, size,
+    ratio)."""
     # --- W3.2 Q6: its own picture once decoded (`ref`: the row's `CoverRef`); the generated one meanwhile
     real = qcovers.decoded(ref, w, h, dpr, "tile" if large else "row") if ref is not None else None
     if real is not None:
@@ -214,10 +238,15 @@ def cover(title, w, h, dpr, large=False, ref=None):
     p.setFont(f)
     p.setPen(style.qcolor(theme.FIXED["cover-ink"]))
     fm = QFontMetrics(f)
+    vertical, text = cover_label(title, w, fm)
+    if not vertical:                                    # one line across its top, cut with "…" to the cover's width
+        p.drawText(QRectF(w * 0.08, h * 0.09, w * 0.84, fm.height()),
+                   Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, text)
+        text = ""
     step = fm.height() * 0.92
     x = w - w * 0.08 - fm.horizontalAdvance("あ")
     y = h * 0.09
-    for ch in (title or "")[: max(1, int((h * 0.82) // max(1.0, step)))]:      # vertical: one character under another
+    for ch in text[: max(1, int((h * 0.82) // max(1.0, step)))]:               # vertical: one character under another
         if not ch.strip():
             y += step * 0.5
             continue
@@ -1549,9 +1578,10 @@ class RowDelegate(QStyledItemDelegate):
         p.restore()
 
     def _paint_current(self, p, row, slab, active, dpr, sheet, opened=False, tw=None):
-        """A Current row's line drawn into its picture: the art, the title (faded at its end), the string, the Anki
+        """A Current row's line drawn into its picture: the art, the title (cut with "…"), the string, the Anki
         count, % · new; active (hover or keyboard focus), the next stone's ring and the hover group over the string's
-        end. Opened, its head: the full title, a baked sheen, no string."""
+        end. Opened, its head: the title cut with "…" in the wider column (the string's room), a baked sheen, no
+        string."""
         g = self.line_geometry(row, slab, tw, opened)
         ground = "open-row" if opened else "row-hover" if active else "surface"
         if opened:
@@ -1565,10 +1595,11 @@ class RowDelegate(QStyledItemDelegate):
         sub = row.line if row.line and (row.media == "youtube" or row.source == "hato") else ""
         t_h, s_h = round(13.5 * f * 1.3), round(12 * f * 1.3)
         top = mid - (t_h + 1 + s_h) / 2 if sub else mid - t_h / 2
-        self._faded_text(p, m.left(), top + t_h / 2, m.width(), row.title, "row-title", c("ink"), ground, dpr)
+        # one line each, cut with "…" inside the title's column, left of the string (the full title is in the tooltip):
+        # cut and faded at the column's edge it read as a title clipped by the stones (laptop try, FEEDBACK 11)
+        TEXT.draw(p, m.left(), top + t_h / 2, row.title, "row-title", m.width(), c("ink"), dpr=dpr)
         if sub:
-            self._faded_text(p, m.left(), top + t_h + 1 + s_h / 2, m.width(), sub, "row-sub", c("ink-dim"), ground,
-                             dpr)
+            TEXT.draw(p, m.left(), top + t_h + 1 + s_h / 2, sub, "row-sub", m.width(), c("ink-dim"), dpr=dpr)
         if not opened:
             self._paint_string(p, self._info(row)[0], g["gstr"], mid, sheet, ring=active)
         self._paint_stat(p, row.status, g["stat"], mid, dpr)
@@ -1584,24 +1615,6 @@ class RowDelegate(QStyledItemDelegate):
         for at, k in ((0.3, 0.0), (0.42, 0.5), (0.46, 1.0), (0.5, 0.5), (0.62, 0.0)):
             grad.setColorAt(at, faded("sheen", top * k))
         p.fillRect(QRectF(r), QBrush(grad))
-
-    @staticmethod
-    def _faded_text(p, x, y_mid, width, text, role, colour, ground, dpr):
-        """One line of text in `width`: whole when it fits, else cut at the width and faded out over its last
-        `title-fade` px into the row's own `ground` (the brief's one line; the full text is in the tooltip)."""
-        st, w, _cut = TEXT.static(text, role, width, dpr=dpr, elide=False)
-        fm = TEXT.metrics(role, dpr=dpr)
-        band = QRectF(x, y_mid - fm.height() / 2, max(0, width), fm.height())
-        p.save()
-        p.setClipRect(band)
-        TEXT.draw(p, x, y_mid, text, role, width, colour, dpr=dpr, elide=False)
-        p.restore()
-        if w > width > 0:
-            fw = min(rl("title-fade") * fz(), width * 0.4)
-            grad = QLinearGradient(QPointF(x + width - fw, 0), QPointF(x + width, 0))
-            grad.setColorAt(0, faded(ground, 0.0))
-            grad.setColorAt(1, faded(ground, 1.0))
-            p.fillRect(QRectF(x + width - fw, band.top(), fw, band.height()), QBrush(grad))
 
     def _paint_string(self, p, plan, room, mid, sheet, ring=False, big=False):
         """The string of stones in `room` (its plan laid out once per width: `stone_plan.layout`), each a blit from

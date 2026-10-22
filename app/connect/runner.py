@@ -1018,6 +1018,7 @@ class Steps:
         self._after = {}            # {lang: why}: a Generate owed once this run's mining is done (F11)
         self._served = set()        # the languages whose run plan the engine serves (prepare's, the Generate after
                                     # mining's): a plan read since that it can't serve defers the re-order (#4)
+        self._anki_miner_sets = {}  # {lang: the set}: this run's Anki Miner look-ups, read once (LF-mining row 25)
 
     # --- the run ------------------------------------------------------------------------------------------- #
     def lower_priority(self):
@@ -1547,6 +1548,13 @@ class Steps:
         except Exception:
             return {}
 
+    def _anki_miner_held(self, lang):
+        """This run's set of Anki Miner look-ups for `lang` (version answer, profile id, field mapping, export: filled
+        by `verbs._anki_miner_setup`), handed to the pick and the mine step so an episode starts Anki Miner for `check`
+        and `mine` alone (row 25). Emptied by any failure of Anki Miner or of the look-ups, and read again once 15
+        minutes old (`verbs.SETUP_FOR_S`)."""
+        return self._anki_miner_sets.setdefault(lang, {})
+
     def run_dir(self, job):
         from app.cli.verbs import _connect_folder
         return os.path.join(_connect_folder(), "runs", _tag(job))
@@ -1565,10 +1573,12 @@ class Steps:
         if subtitle is None or not os.path.isfile(subtitle):
             raise Needs("no-subtitle", "An episode's subtitle isn't in Surasura's library any more.")
         ns = SimpleNamespace(lang=lang, file=subtitle, video=video, words=None, job=str(job["id"]), wait=WAIT_S,
-                             made=made, listed=got.listed if got is not None else None)
+                             made=made, listed=got.listed if got is not None else None,
+                             held=self._anki_miner_held(lang))
         try:
             out = verbs.pick(ns)
         except CliError as e:
+            ns.held.clear()                 # row 25: read again after any failure
             holds = verbs._results_language() if e.code == "not-set-up" else None
             if WAIT_FOR_OTHER_LIST and holds and holds != lang:     # you Generated another language meanwhile
                 raise Wait(OTHER_LIST.format(LANGUAGE_NAMES.get(holds, holds))) from None
@@ -1595,8 +1605,9 @@ class Steps:
         if miner is None:
             raise Skip("Anki Miner isn't installed")
         run_dir = self.run_dir(job)
+        held = self._anki_miner_held(lang)      # row 25: the pick's look-ups, kept (the setup empties it on a failure)
         try:
-            setup = verbs._anki_miner_setup(self.loaded, lang, run_dir)
+            setup = verbs._anki_miner_setup(self.loaded, lang, run_dir, held=held)
         except CliError as e:
             raise _wait_or_needs(e, "mining", self.url) from None
         if setup is None:
@@ -1609,8 +1620,9 @@ class Steps:
                                          run_dir, self.url, attempt=attempt, wait=WAIT_S,
                                          subtitle_offset=float(picked.get("offset") or 0.0),
                                          expect_profile=picked.get("profile"),
-                                         on_progress=getattr(self, "on_progress", None))
+                                         on_progress=getattr(self, "on_progress", None), known=setup[:2])
         except anki_miner.AnkiMinerError as e:
+            held.clear()                        # any Anki Miner failure (a profile changed too): read again next time
             if e.kind == "profile-changed":
                 raise Repick() from None
             if e.kind in ("crashed", "timeout"):

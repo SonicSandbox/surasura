@@ -7,11 +7,13 @@ timeout and is killed at it; nothing opens a window (CREATE_NO_WINDOW).
 
 - `find(settings)` — where it is: `connect_anki_miner_path`, then its installer's uninstall key (InstallLocation), then
   its default folder (%LOCALAPPDATA%\\Programs\\AnkiMiner). Absent -> None: the mine step is `skipped`, never an error.
-- `version`, `profiles`, `check`, `settings_export` — read before every batch, never cached (E10: it updates itself).
+- `version`, `profiles`, `settings_export` — read once a Connect run, again after any failure and every 15 min
+  (LF-mining row 25, amending E10's "read before every batch, never cached": PROVISIONAL, Michi's technical rule;
+  `verbs._anki_miner_setup`); `check` before every batch, never cached (E9, E10: it updates itself).
 - `mine_batch(...)` — one batch, holding Surasura's Anki-write lock (`anki-writer`, E1.4) from start to end: the
-  version and `features` read again, the profile chosen (`choose_profile`), the whitelist file rewritten (N10, until
-  Z-1), the run file written (`runfile`: from 3.7, one entry a word, its `surface` and reading — Z-2), `mine` called,
-  its results read back as Surasura's outcomes (IS §4.4): `made` with the note id,
+  version and `features` read again (or handed in: `known`), the profile chosen (`choose_profile`), the whitelist
+  file rewritten (N10, until Z-1), the run file written (`runfile`: from 3.7, one entry a word, its `surface` and
+  reading — Z-2), `mine` called, its results read back as Surasura's outcomes (IS §4.4): `made` with the note id,
   `duplicate`, `not_found`, `no_definition`, `media_failed`, `refused`, `not_attempted`, `uncertain`. Each returned
   `line_start` is checked against the one sent: off by more than 0.05 s, the card took another line, and the row says
   so. Then the cards made for names get `surasura::name` (G1.3: Anki Miner's tags belong to an episode, never to one
@@ -293,8 +295,8 @@ def _result(verdict):
 
 
 def version(path):
-    """{"app", "schema", "commands", "features"}: what this Anki Miner is and can do (read every batch, E10). A build
-    its installer says is older than 3.5.0 is never run (it has no `--api`, and would open its window): AnkiMinerError
+    """{"app", "schema", "commands", "features"}: what this Anki Miner is and can do (read once a run: row 25, E10). A
+    build its installer says is older than 3.5.0 is never run (it has no `--api`, and would open its window): AnkiMinerError
     `too-old`."""
     old = too_old_install(path)
     if old:
@@ -473,13 +475,17 @@ def outcomes(words, rows, run_failed=False, features=()):
     return out
 
 
-def preflight(path, language, profile_name):
-    """Before every batch (E9, E10): what this Anki Miner is (`version`, never cached), the id of the profile Connect
-    mines with (`choose_profile`), and its `check` for the language. Raises AnkiMinerError: `needs-you` when that
-    profile is missing (`choose_profile`), `anki-closed` when Anki isn't reachable, `setup` naming what Anki Miner's
-    own setup lacks."""
-    info = version(path)
-    profile = choose_profile(info, profiles(path), profile_name)
+def preflight(path, language, profile_name, known=None):
+    """Before every batch (E9, E10): what this Anki Miner is (`version`), the id of the profile Connect mines with
+    (`choose_profile`), and its `check` for the language. `known`: (version answer, profile id) as this Connect run's
+    look-ups read them (LF-mining row 25) — then only `check` is asked, still before every batch. Raises
+    AnkiMinerError: `needs-you` when that profile is missing (`choose_profile`), `anki-closed` when Anki isn't
+    reachable, `setup` naming what Anki Miner's own setup lacks."""
+    if known is not None:
+        info, profile = known
+    else:
+        info = version(path)
+        profile = choose_profile(info, profiles(path), profile_name)
     ready = check(path, language, profile)
     items = {item.get("name"): item for item in ready.get("items") or ()}
     if items.get("anki") and not items["anki"].get("ok"):
@@ -503,7 +509,8 @@ def tag_names(url, words, outcomes):
 
 
 def mine_batch(path, language, job, video, subtitle, words, mapping, profile_name, run_dir, url, attempt=1,
-               subtitle_offset=0.0, timeout=MINE_TIMEOUT, wait=0.0, expect_profile=None, on_progress=None):
+               subtitle_offset=0.0, timeout=MINE_TIMEOUT, wait=0.0, expect_profile=None, on_progress=None,
+               known=None):
     """One batch of one episode, end to end (§ above), holding `anki-writer` (waiting up to `wait` s for another
     writer; still held -> AnkiMinerError `busy`). `words`: pick's; `mapping`: fields.Mapping (from this profile's
     export); `profile_name`: `connect_anki_miner_profile`; `url`: AnkiConnect's address, for the names' tag. Returns
@@ -511,7 +518,7 @@ def mine_batch(path, language, job, video, subtitle, words, mapping, profile_nam
     (busy, anki-closed, needs-you, setup, refused, crashed …). `expect_profile`: the profile id the words were
     picked for (P1.3-AM37 #5, the runner's half): another one active now -> AnkiMinerError `profile-changed`, before
     anything is mined (the runner picks again). `on_progress(progress)`: while the mine call runs, each `read_progress`
-    of its run that answered (laptop round 5 #23: the row moves while Anki Miner works)."""
+    of its run that answered (laptop round 5 #23: the row moves while Anki Miner works). `known`: `preflight`'s."""
     from app import anki_connect, locks
     try:
         held = anki_connect.writer("Connect's mine step", wait=wait)
@@ -522,7 +529,7 @@ def mine_batch(path, language, job, video, subtitle, words, mapping, profile_nam
             raise AnkiMinerError("reviewing", "You're reviewing in Anki. Cards are made once you've finished.")
         try:
             done = _mine_held(path, language, job, video, subtitle, words, mapping, profile_name, run_dir, attempt,
-                              subtitle_offset, timeout, expect_profile, on_progress)
+                              subtitle_offset, timeout, expect_profile, on_progress, known)
         except runfile.RunFileError as e:
             raise AnkiMinerError("refused", f"The run file for Anki Miner couldn't be written: {e}") from None
         done["tagged"], done["tag_pending"] = [], []
@@ -537,8 +544,8 @@ def mine_batch(path, language, job, video, subtitle, words, mapping, profile_nam
 
 
 def _mine_held(path, language, job, video, subtitle, words, mapping, profile_name, run_dir, attempt,
-               subtitle_offset, timeout, expect_profile=None, on_progress=None):
-    info, profile = preflight(path, language, profile_name)
+               subtitle_offset, timeout, expect_profile=None, on_progress=None, known=None):
+    info, profile = preflight(path, language, profile_name, known)
     if expect_profile is not None and profile != expect_profile:
         raise AnkiMinerError("profile-changed", "Anki Miner's profile changed since the words were picked.")
     asks, named = features(info), info.get("features")

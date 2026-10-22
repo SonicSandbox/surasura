@@ -1161,25 +1161,52 @@ def _connect_folder():
     return os.path.join(get_local_data_path(), "connect")
 
 
-def _anki_miner_setup(loaded, lang, run_dir):
+SETUP_FOR_S = 15 * 60      # a kept set of Anki Miner look-ups is read again once this old (LF-mining row 25)
+
+
+def _anki_miner_setup(loaded, lang, run_dir, held=None):
     """(Anki Miner's version answer, the profile's id, its field mapping) for the run file — or None when Anki Miner
-    isn't installed (E7: the mine step is skipped, never an error)."""
+    isn't installed (E7: the mine step is skipped, never an error).
+
+    `held`: Connect's run's set for this language (a dict, `runner.Steps._anki_miner_held`; LF-mining row 25). Holding
+    one younger than SETUP_FOR_S, Anki Miner isn't started: the kept export is written to `run_dir`'s
+    settings-export.json (a run after a kill reads the job's mapping there) and the note type still checked. Else
+    Anki Miner is read as always and the set kept in it; any failure here leaves it empty. This amends E10's "read
+    before every batch, never cached" to "once a run, again after any failure and every 15 min" (PROVISIONAL,
+    Michi's technical rule). The command line's own `pick` holds none: read every call, as before."""
     from app.connect import anki_miner, fields
     miner = anki_miner.find(loaded)
     if miner is None:
         return None
-    name = loaded.get("connect_anki_miner_profile") or "Surasura"
-    try:
-        info = anki_miner.version(miner)
-        profile = anki_miner.choose_profile(info, anki_miner.profiles(miner), name)    # 3.7: else your active one
-        os.makedirs(run_dir, exist_ok=True)
-        mapping = fields.from_export(
-            anki_miner.settings_export(miner, lang, os.path.join(run_dir, "settings-export.json"), profile), lang)
-    except anki_miner.AnkiMinerError as e:
-        raise _miner_error(e) from None
-    except fields.NeedsYou as e:
-        raise CliError("needs-you", e.message, ask=e.message) from None
+    export_path = os.path.join(run_dir, "settings-export.json")
+    read_at = (held or {}).get("at")
+    kept = held.get("set") if held and time.monotonic() - read_at < SETUP_FOR_S else None
+    if held is not None:
+        held.clear()                    # filled again only once every look-up and the note type's check answered
+    if kept is not None:
+        try:
+            os.makedirs(run_dir, exist_ok=True)
+            with open(export_path, "w", encoding="utf-8") as f:
+                json.dump(kept[3], f, ensure_ascii=False)
+        except OSError:
+            kept = None                 # read from Anki Miner, which writes the file itself
+    if kept is not None:
+        info, profile, mapping, export = kept
+    else:
+        name = loaded.get("connect_anki_miner_profile") or "Surasura"
+        try:
+            info = anki_miner.version(miner)
+            profile = anki_miner.choose_profile(info, anki_miner.profiles(miner), name)    # 3.7: else your active one
+            os.makedirs(run_dir, exist_ok=True)
+            export = anki_miner.settings_export(miner, lang, export_path, profile)
+            mapping = fields.from_export(export, lang)
+        except anki_miner.AnkiMinerError as e:
+            raise _miner_error(e) from None
+        except fields.NeedsYou as e:
+            raise CliError("needs-you", e.message, ask=e.message) from None
     _check_note_type(loaded, mapping)
+    if held is not None:
+        held.update(set=(info, profile, mapping, export), at=read_at if kept is not None else time.monotonic())
     return info, profile, mapping
 
 
@@ -1252,7 +1279,8 @@ def pick(args):
     setup = None
     if args.video is not None:
         contract.emit_progress("asking Anki Miner", 1, 3)
-        setup = _anki_miner_setup(loaded, lang, run_dir)
+        # Connect's run hands in its set of look-ups (`held`, row 25: never on the command line)
+        setup = _anki_miner_setup(loaded, lang, run_dir, held=getattr(args, "held", None))
         if setup is None:
             out["skipped"] = "anki miner absent"
 

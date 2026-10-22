@@ -52,7 +52,7 @@ def _show(language, src, video=True):
     `.srt` for 01–02 (versions). -> (show, {n: A's path}, {n: B's path}, {n: the video})."""
     show = _SHOWS[language][1]
     a = {n: _sub(src, show, "A", n, "ass", language) for n in (1, 2, 3)}
-    b = {n: _sub(src, show, "B", n, "srt", language) for n in (1, 2)}
+    b = {n: _sub(src, show, "B", n, "srt", language, " (WEB 1080p)") for n in (1, 2)}   # (another size than A's)
     v = {n: _video(os.path.join(src, show, f"{show} - {n:02d}.mkv"), body=f"video {n}".encode()) for n in (1, 2, 3)} \
         if video else {}
     return show, a, b, v
@@ -112,6 +112,9 @@ def test_other_subtitles_names_each_other_group_once_never_a_signs_track_or_a_do
         assert others[0]["content_key"] == ls.origin_key(c_ass) and others[0]["group"][0] == "subsc"
         assert os.path.abspath(c_srt) not in [o["path"] for o in others]
         assert store.other_subtitles(10 ** 6) == []
+        work = _work(store)
+        change = store.switch_group(work, store.group_of(work)["group"])
+        assert change.switched == [] and change.missing == [], "the pick's own group: no other file of it taken"
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
@@ -137,6 +140,8 @@ def test_switch_group_swaps_each_episode_in_place_and_one_undo_puts_it_back(lang
         after, rels_after = _picks(store, data_dir)
         assert rels_after == rels, "the same items and files"
         assert [after[i] for i in ids] == [_sha(b[1]), _sha(b[2]), _sha(a[3])]
+        sizes = dict(store.conn.execute("SELECT id, size FROM items"))
+        assert all(sizes[i] == os.path.getsize(os.path.join(data_dir, *rels[i].split("/"))) for i in ids),             "the item's size is its new copy's (a later same-bytes check reads it)"
         for n, item in zip((1, 2), ids):
             pairing = library.pairing_of(store, item)
             assert pairing["origin"] == os.path.abspath(b[n]) and pairing["video_path"] == os.path.abspath(v[n])
@@ -317,3 +322,116 @@ def test_keep_group_marks_the_title_checked_once_and_the_copy_carries_the_group(
             store.switch_group(work, "SubsB")
         with pytest.raises(ValueError):
             store.switch_group(10 ** 6, ["subsb", "x"])
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_existing_shows_group_is_the_group_its_earliest_episode_was_picked_from(language):
+    """A show already in before its group was recorded (a library from before LM2): 02 is B's, 05 A's; 06 arriving
+    from both takes B — the group of the show's earliest episode in — and records it."""
+    store, data_dir = _empty(language)
+    src = _drive("Anime")
+    show = _SHOWS[language][1]
+    _sub(src, show, "B", 2, "srt", language)
+    _sub(src, show, "A", 5, "srt", language)
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        with store._writing():
+            store.conn.execute("DELETE FROM meta WHERE key = ?", (ls.SHOW_GROUPS,))
+        _sub(src, show, "A", 6, "ass", language)
+        b6 = _sub(src, show, "B", 6, "srt", language)
+        _look(store, language, root)
+        assert _sha(b6) in _picks(store, data_dir)[0].values()
+        assert store.group_of(_work(store))["label"] == "SubsB"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_undo_of_a_switch_switched_again_since_leaves_the_episodes_and_the_group_as_they_are(language):
+    """B, then back to A by a second switch: undoing the FIRST finds every episode changed since — each left as it is,
+    and the title's group stays the second switch's (never put back over it)."""
+    store, data_dir = _empty(language)
+    src = _drive("Anime")
+    show, a, b, v = _show(language, src)
+    with store:
+        _look(store, language, store.add_source(src), first=True)
+        work = _work(store)
+        group_a = store.group_of(work)["group"]
+        first = store.switch_group(work, _group_b(store), by="connect")
+        second = store.switch_group(work, group_a, by="user")
+        copies, group = _picks(store, data_dir)[0], store.group_of(work)
+        assert second.switched == first.switched and group["by"] == "user"
+        undone = store.undo(first)
+        assert undone.switched == [] and undone.notes == ["2 episodes changed since and were left as they are"]
+        assert _picks(store, data_dir)[0] == copies and store.group_of(work) == group
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_switch_leaves_an_episode_whose_records_changed_while_its_text_was_read(language, monkeypatch):
+    """Between the read of B's 01 (outside the write lock) and the swap, a look re-copied A's 01 (its record moved):
+    01 is left as it is, never swapped on records it no longer matches; 02 switches."""
+    store, data_dir = _empty(language)
+    src = _drive("Anime")
+    show, a, b, v = _show(language, src)
+    with store:
+        _look(store, language, store.add_source(src), first=True)
+        ids = sorted(_picks(store, data_dir)[0])
+        target = _group_b(store)
+        real = ls._read_into_part
+
+        def meanwhile(self, plan):
+            if plan["item"] == ids[0]:
+                self.update_origin(os.path.abspath(a[1]), 7, 8, _sha(a[1]))
+            return real(self, plan)
+        with monkeypatch.context() as patched:
+            patched.setattr(ls, "_read_into_part", meanwhile)
+            change = store.switch_group(_work(store), target)
+        assert (change.switched, change.held) == ([ids[1]], [ids[0]])
+        assert _picks(store, data_dir)[0][ids[0]] == _sha(a[1])
+        assert not [f for f in _library_files(data_dir) if f.endswith(".part")]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_copy_that_cant_be_replaced_gets_its_old_text_back_from_the_trash(language, monkeypatch):
+    """The new bytes can't take 01's place (the copy reopened between the trash and the swap): the old copy comes back
+    from the trash to its place — 01 keeps A's text, listed held, no part file left; 02 switches."""
+    store, data_dir = _empty(language)
+    src = _drive("Anime")
+    show, a, b, v = _show(language, src)
+    with store:
+        _look(store, language, store.add_source(src), first=True)
+        ids = sorted(_picks(store, data_dir)[0])
+        rel = _picks(store, data_dir)[1][ids[0]]
+        target = _group_b(store)
+        real = os.replace
+
+        def replace(src_path, dst):
+            if str(src_path).endswith(".part") and os.path.normcase(dst) == os.path.normcase(
+                    os.path.join(data_dir, *rel.split("/"))):
+                raise PermissionError("held open")
+            return real(src_path, dst)
+        with monkeypatch.context() as patched:
+            patched.setattr(ls.os, "replace", replace)
+            change = store.switch_group(_work(store), target)
+        assert (change.switched, change.held) == ([ids[1]], [ids[0]])
+        assert _picks(store, data_dir)[0][ids[0]] == _sha(a[1])
+        assert library.pairing_of(store, ids[0])["origin"] == os.path.abspath(a[1])
+        assert not [f for f in _library_files(data_dir) if f.endswith(".part")]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_recorded_group_is_never_written_over_by_a_later_take_in(language):
+    """A29 at the store: a take-in handing another group for a title that has one (a look that couldn't see the
+    record) leaves the recorded group as it is."""
+    store, data_dir = _empty(language)
+    src = _drive("Anime")
+    show, a, b, v = _show(language, src, video=False)
+    with store:
+        _look(store, language, store.add_source(src), first=True)
+        work, root = _work(store), store.sources(all=True, counts=False)[0]["id"]
+        recorded = store.group_of(work)
+        item = sorted(_picks(store, data_dir)[0])[0]
+        extra = _sub(src, show, "C", 1, "srt", language)
+        store.take_in(root, [{"origin": os.path.abspath(extra), "size": os.path.getsize(extra), "mtime_ns": 1,
+                              "sha256": _sha(extra), "show": show, "item_id": item,
+                              "show_group": {"group": ["subsc", "x"], "label": "SubsC"}}])
+        assert store.group_of(work) == recorded

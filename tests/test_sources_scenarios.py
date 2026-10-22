@@ -622,6 +622,13 @@ def _rows():
                   "{S}/[SubsA] {S} - 02 (1080p).{T}.srt": _ep("{S}/[SubsA] {S} - 02 (1080p).{T}.srt",
                                                               "{S}/[SubsA] {S} - 02 (1080p).mkv")},
                  "a subtitle made for its video comes first (timed to it); the show's group decides only the rest"))
+    rows.append(("the show's group and a songs track", "convention (LM2)",
+                 "`[SubsA] <Show> - 01.ja.ass` + `[SubsB] … - 01.ja.srt` (A's: `.ass` first); 02 has A's "
+                 "`.ja.songs.ass` (sixty sung lines) and B's `.ja.srt` (the dialogue), no videos", "",
+                 [(grp("A", 1, "ass"), "J"), (grp("B", 1, "srt"), "J"),
+                  ("{S}/[SubsA] {S} - 02.{T}.songs.ass", "SONGS"), (grp("B", 2, "srt"), "FULL")], None,
+                 {grp("A", 1, "ass"): grp("A", 1, "ass"), grp("B", 2, "srt"): grp("B", 2, "srt")},
+                 "the show's group never makes a songs track the text: 02 is B's dialogue"))
     rows.append(("another group's subtitles arrive for a show in", "convention (LM2)",
                  "`[SubsA] <Show> - 01.ja.srt`, `- 02.ja.srt` in; later B's `.ass` for 01–03 and A's `- 03.ja.srt`",
                  "", [(grp("A", n, "srt"), "J") for n in (1, 2)],

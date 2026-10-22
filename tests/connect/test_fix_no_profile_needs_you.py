@@ -1,9 +1,10 @@
-"""Connect's Anki gate with no recorded Anki profile (runner `Steps.blocked`, adversary P2.4-A #9): with Anki open
-and no profile set up, the session's "another profile open" guard can't hold, so the job is *Needs you* (kind
-"no-profile") and nothing is written. With a profile recorded, the gate goes on to the session's own check.
+"""Connect's Anki gate with no recorded Anki profile (runner `Steps.blocked`, adversary P2.4-A #9; laptop round 5 #22):
+the gate never stops for it itself — the session's check (`anki_session.waiting`) is the one rule: the first profile
+Anki names while Connect is on is recorded as Connect's, and with none named nothing is written (a wait, never *Needs
+you*: tests/connect/test_lf_mining.py). With a profile recorded, the gate goes on to the session's own check too.
 
-What a wrong answer would cost: Connect making cards in whichever profile happens to be open, behind the user's back,
-when it doesn't know which profile is theirs.
+What a wrong answer would cost: Connect never mining after setup (setup's page records no profile, round 5 #22), or
+making cards in whichever profile happens to be open when Anki doesn't say which.
 """
 from app.connect import anki_session, power, runner, setup
 
@@ -22,17 +23,13 @@ def _gate(monkeypatch, profile):
     return calls
 
 
-def test_no_recorded_profile_with_anki_open_is_needs_you_and_nothing_is_written(monkeypatch):
-    # why: without a profile the "another profile open" guard can't hold, so the session's check must not run
+def test_no_recorded_profile_goes_to_the_sessions_check_which_holds_the_rule(monkeypatch):
+    # why: the profile rule lives in the session's check alone (it records the open profile, or waits): the gate
+    # neither raises *Needs you* nor skips that check
     calls = _gate(monkeypatch, None)
     steps = runner.Steps({"connect_enabled": True})
-    try:
-        steps.blocked("ja")
-    except runner.Needs as needs:
-        assert needs.kind == "no-profile"
-    else:
-        raise AssertionError("no recorded profile must raise Needs, not let Connect write")
-    assert calls == [], "the session's check (and so any write) is never reached without a profile"
+    assert steps.blocked("ja") is None
+    assert len(calls) == 1
 
 
 def test_a_recorded_profile_lets_the_gate_pass_to_the_session_check(monkeypatch):

@@ -58,21 +58,12 @@ def _off(settings):
     return Feed(on=False, mining=frozenset(), items={}, line=why, state="off", unseen=0, updating=False)
 
 
-def _anki_waits():
-    """The reasons that are a job waiting on Anki (closed, busy, not answering as it should, reviewing, another
-    program writing to it) and the start of the other-profile one."""
-    from app.connect import anki_session, runner
-    return ({runner.ANKI_CLOSED, runner.REVIEWING, runner.WRITER_BUSY, anki_session.CLOSED, anki_session.BUSY,
-             anki_session.UNUSABLE, anki_session.REVIEWING}, anki_session.OTHER_PROFILE.split("{")[0])
-
-
 def build(record, language):
     """The Feed of one language's status record (`status.read`'s) -> Feed (on)."""
     from app.connect import ledger as book
     from app.connect import runner
     rec = ((record or {}).get("languages") or {}).get(language) or {}
     running = bool((record or {}).get("running"))
-    waits, other_profile = _anki_waits()
     not_timed = {n.get("item") for n in rec.get("needs") or () if n.get("kind") == "not-timed"}
     items, mining = {}, set()
     for job in rec.get("jobs") or ():
@@ -88,7 +79,7 @@ def build(record, language):
             kind = NOT_TIMED
         elif reason == runner.ON_BATTERY:
             kind = BATTERY
-        elif reason in waits or reason.startswith(other_profile):
+        elif runner.anki_wait(reason):                  # the runner's one rule (laptop round 5 #24)
             kind = ANKI
         elif job.get("kind") == "asked":
             kind = ASKED

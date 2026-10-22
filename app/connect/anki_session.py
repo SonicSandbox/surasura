@@ -42,6 +42,7 @@ CLOSED = "Waiting for Anki: it isn't open."
 BUSY = "Waiting for Anki: it's busy."
 UNUSABLE = "Waiting for Anki: it doesn't answer as AnkiConnect should (a permission prompt in Anki?)."
 OTHER_PROFILE = 'Waiting for Anki\'s profile "{}": "{}" is open.'
+NO_PROFILE_YET = "Waiting for Anki to say which profile is open."
 REVIEWING = "Waiting while you review in Anki."
 
 
@@ -137,7 +138,9 @@ def begin(url, settings, wait=BEGIN_WAIT_S, cancel=None):
 
 def waiting(url, settings):
     """None when Connect may read and write Anki now; else the one reason, in plain words — the status line's, never
-    *Needs you* (06-edges E1–E3): Anki closed, busy, open on another profile than Connect's, or you reviewing. None
+    *Needs you* (06-edges E1–E3): Anki closed, busy, open on another profile than Connect's (none recorded yet: the
+    first one Anki names is recorded as Connect's, `setup.keep_profile`; it names none: NO_PROFILE_YET), or you
+    reviewing. None
     too with Connect's preview off (nothing of Connect's waits) or Anki switched off for the run."""
     if not on(settings):
         return None
@@ -150,14 +153,18 @@ def waiting(url, settings):
     if state == "unusable":
         return UNUSABLE
     from app.connect import setup
-    mine = setup.anki_profile()
-    if mine:
-        try:
-            open_now = anki_connect.invoke("getActiveProfile", url, timeout=5)
-        except anki_connect.AnkiError:
-            open_now = None
-        if isinstance(open_now, str) and open_now and open_now != mine:
-            return OTHER_PROFILE.format(mine, open_now)
+    try:
+        open_now = anki_connect.invoke("getActiveProfile", url, timeout=5)
+    except anki_connect.AnkiError:
+        open_now = None
+    open_now = open_now if isinstance(open_now, str) and open_now else None
+    # the first profile Anki shows while Connect is on is Connect's (laptop round 5 #22: setup's page records none);
+    # none recorded and none named: nothing may be written, E3's guard can't hold (adversary P2.4-A #9)
+    mine = setup.anki_profile() or (setup.keep_profile(open_now) if open_now else None)
+    if not mine:
+        return NO_PROFILE_YET
+    if open_now and open_now != mine:
+        return OTHER_PROFILE.format(mine, open_now)
     if anki_connect.reviewing(url):
         return REVIEWING
     return None

@@ -80,8 +80,6 @@ ANKI_OFF = "Anki is switched off for this run (SURASURA_NO_ANKI_SYNC)."
 NO_WORDS = "no words to make cards from"
 SWITCHED_OFF = "Connect was switched off."
 MINER_ABSENT = "Anki Miner isn't installed"
-NO_PROFILE = ("Connect doesn't know which Anki profile to make cards in, so it makes none. Set Connect up again in "
-              "Surasura.")
 # ASK-SONIC P2.4-8 ⭐ (a): with your list in another language, Connect waits rather than replace it with its own
 # Generate (False: it goes ahead, as before)
 WAIT_FOR_OTHER_LIST = True
@@ -365,6 +363,10 @@ def _language(steps, ledger, lang, prepared, parked, out):
         except Wait as w:
             _wait(ledger, job, w, out, parked)
             outside |= w.look
+            if holds_every(w.reason):
+                # on battery, or a wait on Anki: every episode keeps its place and the next look starts from the top
+                # (laptop round 5 #24) — never a later one (or the next show) before the one that waited
+                return _waiting_all(ledger, lang, parked, out, w.reason, w.look) or outside
         except Needs as n:
             if ledger.need(lang, n.kind, n.say, item_id=job["item_id"], job_id=job["id"]):
                 out["needs"].append(n.say)
@@ -1153,26 +1155,29 @@ class Steps:
     # --- Anki and its tools -------------------------------------------------------------------------------- #
     def blocked(self, lang):
         """The one reason Connect can't touch Anki now, or None: on battery first, then the session's (Anki closed,
-        busy, another profile, you reviewing)."""
+        busy, another profile, no profile named yet, you reviewing — the session records the first one Anki names
+        as Connect's, laptop round 5 #22)."""
         from app.connect import anki_session, power
         if os.environ.get("SURASURA_NO_ANKI_SYNC"):     # the test suites, a developer's run: Anki is never reached
             return Wait(ANKI_OFF, look=False)
         if power.on_battery():
             return ON_BATTERY
-        from app.connect import setup
-        if anki_session.on(self.loaded) and not setup.anki_profile():
-            # no profile recorded: the "another profile open" guard (E3) can't hold, so nothing is written
-            # (adversary P2.4-A #9, intent keeper #4)
-            raise Needs("no-profile", NO_PROFILE)
         return anki_session.waiting(self.url, self.loaded)
 
     def after_write(self, lang):
-        """New cards made: the session's sync clock (S3; P2.3's rule) — never fatal."""
+        """New cards made: the session's sync clock (S3; P2.3's rule), then the Anki backlog read again, so the
+        window's count of new cards follows within its 3 s look (laptop round 5 #27: whoever adds cards reads the
+        backlog after) — never fatal."""
+        from app.cli import verbs
         from app.connect import anki_session
         try:
             anki_session.after_write(self.loaded, True)
         except Exception:
             log.exception("Connect couldn't note its write for Anki's sync")
+        try:
+            verbs._backlog_read(self.loaded, lang)
+        except Exception:
+            log.exception("Connect couldn't read Anki's new cards again")
 
     def miner_found(self):
         from app.connect import anki_miner
@@ -1193,7 +1198,7 @@ class Steps:
                     raise Wait(REVIEWING, resume="filling")
                 anki_connect.invoke("addTags", self.url, notes=list(note_ids), tags=runfile.NAME_TAG)
             except anki_connect.AnkiError:
-                raise Wait(ANKI_CLOSED, resume="filling") from None
+                raise _anki_wait(self.url, "filling") from None
 
     def prepare(self, lang, ledger):
         """Once a run, per language: the session's sync, one known-sync, then the plan's verdict (P3.3,
@@ -1213,7 +1218,7 @@ class Steps:
             verbs.known_sync(ns)
         except CliError as e:
             if e.code in ("anki-closed", "anki-busy", "busy", "settings-unreadable"):
-                raise Wait(ANKI_CLOSED if e.code == "anki-closed" else e.message) from None
+                raise (_anki_wait(self.url) if e.code == "anki-closed" else Wait(e.message)) from None
             raise Needs("known-sync", e.message) from None
         got = self.current(lang, fresh=True)        # after the known-sync: its new words are part of the verdict
         if got.generate == "first":
@@ -1344,7 +1349,7 @@ class Steps:
         try:
             return shelf.waiting_count(self._anki(), made)
         except anki_connect.AnkiError:
-            raise Wait(ANKI_CLOSED, resume="mining") from None
+            raise _anki_wait(self.url, "mining") from None
 
     def _list_order(self, lang):
         """{(Word, Reading): place} in the list's own order (Junban's), or None: the re-plan's (P3.3) when the plan
@@ -1377,7 +1382,7 @@ class Steps:
         except locks.Busy:
             raise Wait(WRITER_BUSY, resume="mining") from None
         except anki_connect.AnkiError:
-            raise Wait(ANKI_CLOSED, resume="mining") from None
+            raise _anki_wait(self.url, "mining") from None
         self._shelved = getattr(self, "_shelved", set()) | {lang}
         return shelved
 
@@ -1494,7 +1499,7 @@ class Steps:
         except locks.Busy:
             raise Wait(WRITER_BUSY, resume="mining") from None
         except anki_connect.AnkiError:
-            raise Wait(ANKI_CLOSED, resume="mining") from None
+            raise _anki_wait(self.url, "mining") from None
 
     def _job_mapping(self, job):
         """The field mapping this run's `mine` set — only for the job it mined; another job (resumed with nothing left
@@ -1537,7 +1542,7 @@ class Steps:
             holds = verbs._results_language() if e.code == "not-set-up" else None
             if WAIT_FOR_OTHER_LIST and holds and holds != lang:     # you Generated another language meanwhile
                 raise Wait(OTHER_LIST.format(LANGUAGE_NAMES.get(holds, holds))) from None
-            raise _wait_or_needs(e, None) from None
+            raise _wait_or_needs(e, None, self.url) from None
         miner = out.get("anki_miner") or {}
         return {"words": out.get("words") or [], "file": subtitle, "subtitle": out.get("subtitle"),
                 "profile": miner.get("profile"), "anki_miner": miner.get("app"),
@@ -1563,7 +1568,7 @@ class Steps:
         try:
             setup = verbs._anki_miner_setup(self.loaded, lang, run_dir)
         except CliError as e:
-            raise _wait_or_needs(e, "mining") from None
+            raise _wait_or_needs(e, "mining", self.url) from None
         if setup is None:
             raise Skip("Anki Miner isn't installed")
         mapping = self._mapping = setup[2]
@@ -1579,7 +1584,7 @@ class Steps:
                 raise Repick() from None
             if e.kind in ("crashed", "timeout"):
                 return {"outcomes": [dict(_unsure(w)) for w in words], "app": None, "doubt": True}
-            raise _miner_wait_or_needs(e) from None
+            raise _miner_wait_or_needs(e, self.url) from None
         # in doubt: a crash or a timeout after the run (`error`), or a run Anki Miner itself says failed
         run = done.get("run") or {}
         doubt = bool(done.get("error")) or (bool(run) and not run.get("ok"))
@@ -1604,7 +1609,7 @@ class Steps:
         try:
             return anki_miner.uncertain_by_tag(self.url, _tag(job), words, field)
         except anki_connect.AnkiError:
-            raise Wait(ANKI_CLOSED, resume="mining") from None
+            raise _anki_wait(self.url, "mining") from None
 
     def fill(self, lang, job, note_ids):
         from app.cli import verbs
@@ -1616,7 +1621,7 @@ class Steps:
         try:
             out = verbs.backfill(ns)
         except CliError as e:
-            raise _wait_or_needs(e, "filling") from None
+            raise _wait_or_needs(e, "filling", self.url) from None
         if isinstance(out.get("skipped"), str):         # absent, the preview off, Anki switched off: named
             raise Skip(out["skipped"])
 
@@ -1648,7 +1653,7 @@ class Steps:
             try:
                 out = verbs.junban(ns)
             except CliError as e:
-                raise _wait_or_needs(e, "ordering") from None
+                raise _wait_or_needs(e, "ordering", self.url) from None
             if out.get("skipped") == "junban absent":
                 raise Skip("Junban isn't installed")
             if out.get("skipped"):          # 順 off, an update waiting, the list out of date: named, the re-sort owed
@@ -1681,16 +1686,47 @@ def _unsure(word):
             "line_start": word.get("line_start")}
 
 
-def _wait_or_needs(error, resume):
-    """A verb's CliError as the loop reads it: Anki or another writer busy → Wait (look again), else → Needs."""
-    if error.code in ("anki-closed", "anki-busy", "busy", "anki-miner-busy", "settings-unreadable"):
-        say = {"anki-closed": ANKI_CLOSED, "anki-busy": REVIEWING, "anki-miner-busy": ANKI_MINER_OPEN}.get(
-            error.code, error.message)
+def anki_wait(reason):
+    """Is `reason` a wait on Anki — closed, busy, not answering as it should, another profile or none named yet, you
+    reviewing, another program writing to it? (The window's feed shows these as *Waiting for Anki*.)"""
+    from app.connect import anki_session
+    return isinstance(reason, str) and (
+        reason in (ANKI_CLOSED, REVIEWING, WRITER_BUSY, anki_session.CLOSED, anki_session.BUSY, anki_session.UNUSABLE,
+                   anki_session.REVIEWING, anki_session.NO_PROFILE_YET)
+        or reason.startswith(anki_session.OTHER_PROFILE.split("{")[0]))
+
+
+def holds_every(reason):
+    """Does a wait with `reason` hold every episode, not only the one it stopped (laptop round 5 #24)? On battery, or
+    a wait on Anki: the pass ends there, every episode keeps its place, and the next look starts from the top — a
+    later episode (or the next show) is never mined before the ones that waited."""
+    return reason == ON_BATTERY or anki_wait(reason)
+
+
+def _anki_wait(url, resume=None):
+    """A call to Anki that failed, as the wait it is (laptop round 5 #26): Anki is called closed only when its port
+    refuses (`anki_session.look`); a slow answer — its own sync, a laptop under load — is *busy*. With Anki switched
+    off for the run (SURASURA_NO_ANKI_SYNC: the suites, a developer's run) it is never asked: *it isn't open*."""
+    from app.connect import anki_session
+    if os.environ.get("SURASURA_NO_ANKI_SYNC"):
+        return Wait(ANKI_CLOSED, resume=resume)
+    state = anki_session.look(url)
+    return Wait({"closed": ANKI_CLOSED, "unusable": anki_session.UNUSABLE}.get(state, anki_session.BUSY),
+                resume=resume)
+
+
+def _wait_or_needs(error, resume, url=None):
+    """A verb's CliError as the loop reads it: Anki or another writer busy → Wait (look again), else → Needs. Its
+    `anki-closed` (any failed probe) is named by the session's look (`_anki_wait`)."""
+    if error.code == "anki-closed":
+        return _anki_wait(url, resume)
+    if error.code in ("anki-busy", "busy", "anki-miner-busy", "settings-unreadable"):
+        say = {"anki-busy": REVIEWING, "anki-miner-busy": ANKI_MINER_OPEN}.get(error.code, error.message)
         return Wait(say, resume=resume)
     return Needs(error.code, error.message)
 
 
-def _miner_wait_or_needs(error):
+def _miner_wait_or_needs(error, url=None):
     if error.kind == "busy":
         return Wait(ANKI_MINER_OPEN, resume="mining")
     if error.kind == "writer-busy":
@@ -1698,7 +1734,7 @@ def _miner_wait_or_needs(error):
     if error.kind == "reviewing":
         return Wait(REVIEWING, resume="mining")
     if error.kind == "anki-closed":
-        return Wait(ANKI_CLOSED, resume="mining")
+        return _anki_wait(url, "mining")
     if error.kind == "absent":
         return Skip("Anki Miner isn't installed")
     return Needs(f"anki-miner-{error.kind}", error.message)

@@ -105,6 +105,19 @@ def anki_profile():
     return name if isinstance(name, str) and name else None
 
 
+def keep_profile(open_now):
+    """The first profile Anki shows while Connect is on is Connect's (S2, as `_anki_profile` takes it while Connect's
+    preview is on; laptop round 5 #22: the session's look takes it too, so setup's page never has to): `open_now`
+    recorded when the record holds none, onto the record as it is -> the profile the record holds after (another
+    program's, recorded a moment before, wins), or None when it couldn't be written."""
+    record = read_record()
+    mine = record.get("anki_profile")
+    if isinstance(mine, str) and mine:
+        return mine
+    record["anki_profile"], record["anki_profile_at"] = open_now, _now()
+    return open_now if write_record(record) else None
+
+
 # --------------------------------------------------------------------------- #
 # Anki (S1, S2, E3–E5)
 # --------------------------------------------------------------------------- #

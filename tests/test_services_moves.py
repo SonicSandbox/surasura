@@ -3812,3 +3812,68 @@ def test_LM11_a_queued_group_whose_episode_changed_part_meanwhile_is_listed_and_
     assert h.until(lambda: journal(lib.language) is None and heard2.notes)
     assert heard2.notes == [WORDS["crash_one"]]
     assert lib.store.item(ma[1])["piece_id"] != lib.store.item(mb[2])["piece_id"]
+
+
+@pytest.mark.parametrize("op", ["rename_piece", "ungroup", "add_to_group"])
+def test_LM11_G6_the_users_own_move_then_a_group_command_both_queued_before_a_crash_both_replay(lib, make_writer,
+                                                                                                short_lock_wait, op):
+    """Two clicks of his own before a crash — an episode taken out of a group, then Rename group / Ungroup / a drop onto
+    it: the replay lands the move, then checks the group command against what the move left (never "couldn't be
+    done": the user's own clicks are no change "meanwhile")."""
+    store = lib.store
+    pa, ma, pb, mb = _two_titles(lib)
+    store.join([pa, pb], how="group")
+    loose = next(i for i in lib.ids("now") if not store.item(i)["parent_folder"])
+    w, heard = make_writer()
+    holder = LockHolder(lib.db)
+    try:
+        w.move([mb[-1]], "now", before_id=lib.ids("now")[0])     # an episode taken out of the group
+        if op == "rename_piece":
+            w.rename_piece(pa, names(lib.language)[51])
+        elif op == "ungroup":
+            w.ungroup(pa)
+        else:
+            w.add_to_group(pa, item_ids=[loose])
+        assert h.until(lambda: [e[0] for e in journalled(lib.language)] == ["move", op])
+        w._abandon()
+    finally:
+        holder.release()
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: journal(lib.language) is None)
+    time.sleep(0.3)
+    assert heard2.notes == []
+    row = store.conn.execute("SELECT kind, title FROM pieces WHERE id = ?", (pa,)).fetchone()
+    if op == "rename_piece":
+        assert row == ("group", names(lib.language)[51])
+    elif op == "ungroup":
+        assert row is None or row[0] == "run"
+    else:
+        assert store.item(loose)["piece_id"] == pa
+    assert store.item(mb[-1])["tier"] == "now"
+
+
+def test_LM11_G7_a_queued_group_of_one_parts_episodes_apart_is_replayed_never_taken_as_done(lib, make_writer,
+                                                                                           short_lock_wait):
+    """*Group…* of two episodes of one part with another between them, queued before a crash: as queued they are in
+    one piece already, which is not what the command makes — the replay runs it (the two side by side, a part of their
+    own), quietly."""
+    store = lib.store
+    pa, ma, pb, mb = _two_titles(lib)
+    w, heard = make_writer()
+    holder = LockHolder(lib.db)
+    try:
+        w.group(item_ids=[ma[0], ma[2]])
+        assert h.until(lambda: [e[0] for e in journalled(lib.language)] == ["group"])
+        w._abandon()
+    finally:
+        holder.release()
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: journal(lib.language) is None)
+    time.sleep(0.3)
+    assert heard2.notes == []
+    piece = store.item(ma[0])["piece_id"]
+    assert store.item(ma[2])["piece_id"] == piece
+    assert [r[0] for r in store.conn.execute("SELECT id FROM items WHERE piece_id = ? ORDER BY ord, id",
+                                             (piece,))] == [ma[0], ma[2]]

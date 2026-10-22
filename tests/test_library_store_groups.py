@@ -393,9 +393,10 @@ def test_every_placing_rule_lands_a_grouped_titles_episode_after_the_group_never
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_inside_a_group_a_reorder_or_a_title_split_keeps_it_and_a_foreign_drop_cuts_it(language):
+def test_inside_a_group_a_reorder_or_a_title_split_keeps_it_and_a_foreign_drop_joins_it(language):
     """An episode moved within its group stays in it; *Not part of this title* inside a group keeps the group; a
-    foreign row dropped inside cuts it (05 §5.2 rule 5) — a half holding one title is a run; the undo mends it."""
+    foreign row dropped inside joins it (GI1, PROVISIONAL: dropping in is putting in — never a cut); its undo takes it
+    back out."""
     store = _library(language)
     (pa, ma), (pb, mb) = _shows(store, "goal")
     store.join([pa, pb], how="group")
@@ -408,9 +409,8 @@ def test_inside_a_group_a_reorder_or_a_title_split_keeps_it_and_a_foreign_drop_c
     assert pieces_ok(store) is None
     loose = next(i for i in store.ids("goal") if not store.item(i)["parent_folder"])
     before = _state(store)
-    drop = store.move([loose], "goal", after_id=ma[3])          # A A A | L | B B B B A
-    assert _members(store, pa) == ma[1:]
-    assert _kind(store, pa) == "run" and _kind(store, _piece(store, mb[0])) == "group"
+    drop = store.move([loose], "goal", after_id=ma[3])          # A A A L B B B B A: inside
+    assert _members(store, pa) == ma[1:] + [loose] + mb + [ma[0]] and _kind(store, pa) == "group"
     assert pieces_ok(store) is None
     store.undo(drop)
     assert _state(store) == before
@@ -534,10 +534,10 @@ def test_nudge_jumps_a_group_whole_and_moves_within_one(language):
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_a_group_never_folds_into_its_first_titles_part_beside_it_nor_takes_a_row_dropped_inside(language):
-    """A whole group moved right after a part of its first title stays the group it is (05 §5.2 #4's fold is a run's);
-    a new file dropped between two of its episodes (an Explorer drop on a row) is no drop onto the group: it is a part
-    of its own and the group is cut there (05 §5.2 rule 5; *Add to group* is the window's), mended by its undo."""
+def test_a_group_never_folds_into_its_first_titles_part_beside_it_and_a_file_dropped_inside_joins_it(language):
+    """A whole group moved right after a part of its first title stays the group it is (05 §5.2 #4's fold is a run's)
+    and never takes the parts beside it; a new file dropped between two of its episodes (an Explorer drop on a row)
+    joins it (GI1, PROVISIONAL), taken back out by its undo."""
     store = _library(language)
     data_dir, _u = roots(language)
     (pa, ma), (pb, mb) = _shows(store, "goal")
@@ -557,9 +557,8 @@ def test_a_group_never_folds_into_its_first_titles_part_beside_it_nor_takes_a_ro
     change = store.insert_at([touch(data_dir, f"{folder}/{names(language)[88]}_第10話.srt")], ma[1], before=True)
     new = change.added[0]
     assert store.ids("goal").index(new) == store.ids("goal").index(ma[0]) + 1
-    assert _piece(store, new) not in (pa, alone), "never joined by landing inside"
-    assert _members(store, pa) == [ma[0]] and _kind(store, pa) == "run"
-    assert pieces_ok(store) is None
+    assert _piece(store, new) == pa and _members(store, pa) == [ma[0], new] + group[1:] and _kind(store, pa) == "group"
+    assert _members(store, alone) == [ma[3]] and pieces_ok(store) is None
     store.undo(change)
     assert _state(store) == before
     store.close()
@@ -628,4 +627,200 @@ def test_undo_of_not_part_of_this_title_over_a_whole_group_puts_the_group_back(l
     assert _kind(store, pa) == "run" and _members(store, pa) == ma + mb
     store.undo(change)
     assert _state(store) == before
+    store.close()
+
+
+# --- the review round (LM11-register G1–G4, GI1, GI5) ------------------------------------------------------------- #
+
+def _three(language):
+    """Three shows in each of 6+ Months, Soon and NOW (four episodes each), a loose file in each tier."""
+    store = migrated(language, shows=3, episodes=4)
+    store.set_soon_line(len(store.ids("now")))
+    return store
+
+
+def _runs(store, tier):
+    """[(piece, [ids])] in the tier's order."""
+    out = []
+    for i in store.ids(tier):
+        if out and out[-1][0] == _piece(store, i):
+            out[-1][1].append(i)
+        else:
+            out.append((_piece(store, i), [i]))
+    return out
+
+
+def _title(store, piece):
+    return store.conn.execute("SELECT title FROM pieces WHERE id = ?", (piece,)).fetchone()[0]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_G1_a_group_across_the_soon_line_stays_one_group_however_the_line_moves(language):
+    """NOW and Soon are one tier for a group: a group at NOW's end whose rows the line pushes into Soon (an unrelated
+    row put at NOW's top) stays one group, through a rebuild from the JSON copy too, and is whole in NOW again when the
+    line moves back."""
+    store = _three(language)
+    data_dir, user_files_dir = roots(language)
+    (p2, m2), (pl, ml) = _runs(store, "now")[-2:]
+    store.join([p2, pl], how="group")
+    label = names(language)[48]
+    store.rename_piece(p2, label)
+    members = m2 + ml
+    incoming = store.ids("goal")[-1]
+    store.move([incoming], "now", before_id=store.ids("now")[0])
+    assert store.item(ml[-1])["tier"] == "soon", "the line pushed the group's last row into Soon"
+    assert {_piece(store, i) for i in members} == {p2} and _kind(store, p2) == "group"
+    assert pieces_ok(store) is None
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    db = store.db_path
+    store.close()
+    for suffix in ("", "-wal", "-shm"):                         # a new PC: the JSON copy alone
+        if os.path.exists(db + suffix):
+            os.rename(db + suffix, db + suffix + ".elsewhere")
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    store = ls.open_store(language, data_dir, user_files_dir)
+    group = _piece(store, members[0])
+    assert {_piece(store, i) for i in members} == {group} and _kind(store, group) == "group"
+    assert _title(store, group) == label and pieces_ok(store) is None
+    store.move([incoming], "goal")
+    assert all(store.item(i)["tier"] == "now" for i in members)
+    assert {_piece(store, i) for i in members} == {group} and _kind(store, group) == "group"
+    assert pieces_ok(store) is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_G1_an_episode_dragged_from_a_group_at_nows_end_to_the_top_of_soon_stays_in_it(language):
+    """Beside its group across the line is within the group: a reorder, never a foreign drop."""
+    store = _three(language)
+    (p2, m2), (pl, ml) = _runs(store, "now")[-2:]
+    store.join([p2, pl], how="group")
+    store.move([m2[0]], "soon", before_id=store.ids("soon")[0])
+    assert _piece(store, m2[0]) == p2 and _kind(store, p2) == "group" and pieces_ok(store) is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_G2_no_group_is_left_holding_one_title_and_each_undo_puts_it_back(language):
+    """*Group…* / a drop onto a group taking a title's episodes out of another group — rows moving, or none — and a
+    group of one title's two parts: no group is left holding one title; each undo puts the exact state back."""
+    store = _three(language)
+    (pa, ma), (pb, mb), (pc, mc) = [r for r in _runs(store, "goal") if len(r[1]) == 4][:3]
+    (pn, mn) = [r for r in _runs(store, "now") if len(r[1]) == 4][0]
+    store.join([pa, pb], how="group")                           # G = A + B
+    before = _state(store)
+    change = store.group(piece_ids=[pn], item_ids=mb)           # B goes to NOW's show: G holds A alone
+    assert _kind(store, pa) == "run" and _members(store, pa) == ma
+    assert _kind(store, pn) == "group" and pieces_ok(store) is None
+    store.undo(change)
+    assert _state(store) == before
+    store.ungroup(pa)                                           # each title a part of its own again (new ids)
+    pa, pb, pc = (_piece(store, m[0]) for m in (ma, mb, mc))
+    store.join([pb, pc], how="group")                           # H = B + C, right after A
+    before = _state(store)
+    change = store.group(piece_ids=[pa], item_ids=mb)           # B's rows sit right after A: nothing moves
+    assert _kind(store, _piece(store, mc[0])) == "run" and _kind(store, pa) == "group"
+    assert pieces_ok(store) is None
+    store.undo(change)
+    assert _state(store) == before
+    store.ungroup(pb)
+    pa = _piece(store, ma[0])
+    store.split(pa, ma[2])
+    before = _state(store)
+    change = store.join([pa, _piece(store, ma[2])], how="group")   # one title's two parts
+    assert _kind(store, pa) == "run" and _members(store, pa) == ma and pieces_ok(store) is None
+    store.undo(change)
+    assert _state(store) == before
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_G3_a_piece_id_is_never_issued_twice_so_an_undo_brings_its_group_and_name_back(language):
+    """A group whose id was the highest, joined whole into another (its row deleted), then a *Split here* elsewhere: the
+    new part takes a new id, never the group's, so undoing the join puts the group back with its name."""
+    store = _three(language)
+    (pa, ma), (pb, mb), (pc, mc) = [r for r in _runs(store, "goal") if len(r[1]) == 4][:3]
+    store.group(item_ids=ma[:2] + mb[:2])
+    t = _piece(store, ma[0])
+    assert _kind(store, t) == "group" and t == store.conn.execute("SELECT MAX(id) FROM pieces").fetchone()[0]
+    label = names(language)[49]
+    store.rename_piece(t, label)
+    before = _state(store)
+    change = store.join([pc, t], how="group")
+    assert _piece(store, ma[0]) == pc
+    (pn, mn) = [r for r in _runs(store, "now") if len(r[1]) == 4][0]
+    store.split(pn, mn[2])
+    assert _piece(store, mn[2]) > t, "a new id, past every id ever issued"
+    out = store.undo(change)
+    assert out.notes == [] and {_piece(store, i) for i in ma[:2] + mb[:2]} == {t}
+    assert _kind(store, t) == "group" and _title(store, t) == label
+    assert pieces_ok(store) is None
+    assert _state(store)[0] == before[0]
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_G4_a_new_group_starts_unnamed_and_a_split_half_too(language):
+    """Episodes taken out of a named group into a new group, and the second half of a named group's *Split here*: each
+    a new group, so its name is the window's "<first show> + N more" (NULL); the first half keeps the name."""
+    store = _three(language)
+    (pa, ma), (pb, mb), (pc, mc) = [r for r in _runs(store, "goal") if len(r[1]) == 4][:3]
+    store.join([pa, pb], how="group")
+    label = names(language)[50]
+    store.rename_piece(pa, label)
+    store.group(item_ids=[mb[3], mc[0]])                        # the group's last episode + C's first
+    t = _piece(store, mb[3])
+    assert t != pa and _kind(store, t) == "group" and _title(store, t) is None
+    assert _title(store, pa) == label and _members(store, pa) == ma + mb[:3]
+    store.move([mb[0]], "goal", after_id=ma[0])                 # A B A A A B B: two titles each side of A3
+    store.split(pa, ma[2])
+    half = _piece(store, ma[2])
+    assert _kind(store, half) == "group" and _title(store, half) is None and _title(store, pa) == label
+    assert pieces_ok(store) is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_GI1_a_row_dropped_between_two_rows_of_a_group_joins_it_and_undo_takes_it_back_out(language):
+    """PROVISIONAL (Sonic 2026-10-21, LM11-Q1): dropping in is putting in — a loose row, a whole show's part, and a new
+    file landing between two rows of one group join that group (never cut it); at its edge (before its first row) a
+    row stays outside; each undo puts the exact state back."""
+    store = _three(language)
+    data_dir, _u = roots(language)
+    (pa, ma), (pb, mb), (pc, mc) = [r for r in _runs(store, "goal") if len(r[1]) == 4][:3]
+    store.join([pa, pb], how="group")
+    loose = next(i for i in store.ids("goal") if not store.item(i)["parent_folder"])
+    before = _state(store)
+    drop = store.move([loose], "goal", after_id=ma[3])          # A A A A | L | B B B B
+    assert _piece(store, loose) == pa and _members(store, pa) == ma + [loose] + mb and _kind(store, pa) == "group"
+    assert pieces_ok(store) is None
+    store.undo(drop)
+    assert _state(store) == before
+    drop = store.move(mc, "goal", after_id=ma[1])               # a whole show's part dropped inside
+    assert {_piece(store, i) for i in mc} == {pa} and _members(store, pa) == ma[:2] + mc + ma[2:] + mb
+    assert not store.conn.execute("SELECT 1 FROM pieces WHERE id = ?", (pc,)).fetchone() and pieces_ok(store) is None
+    store.undo(drop)
+    assert _state(store) == before
+    folder = store.item(mc[0])["rel_path"].rsplit("/", 1)[0]
+    change = store.insert_at([touch(data_dir, f"{folder}/{names(language)[87]}_第11話.srt")], mb[1], before=True)
+    new = change.added[0]
+    assert _piece(store, new) == pa and _members(store, pa) == ma + [mb[0], new] + mb[1:]
+    assert pieces_ok(store) is None
+    store.undo(change)
+    assert _state(store) == before
+    edge = store.move([loose], "goal", before_id=ma[0])         # before its first row: outside
+    assert _piece(store, loose) != pa and _members(store, pa) == ma + mb
+    store.undo(edge)
+    assert _state(store) == before
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_GI5_a_group_refused_in_finished_or_new_arrivals_names_the_windows_lists(language):
+    store = _library(language)
+    (pa, ma), (pb, mb) = _shows(store, "goal")
+    store.set_tier(ma, "arrivals")
+    with pytest.raises(ValueError) as refused:
+        store.join([_piece(store, ma[0]), pb], how="group")
+    assert str(refused.value) == ls.GROUP_REFUSED == "A group lives in Current, Soon or Goal: move these there first."
     store.close()

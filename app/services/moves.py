@@ -870,7 +870,7 @@ class Writer:
         elif op == "restore" and change is not None:           # ... and a Put back's: every file it brought back
             change.copied = [r["rel_path"] for r in map(store.item, change.added) if r is not None]
         self._refresh_seen(store, cmd["ids"])
-        self._refresh_before(store, cmd)
+        self._refresh_before(store, cmd, change)
         self._landed(cmd)
         if cmd.get("replay"):
             if change is not None:
@@ -1489,11 +1489,13 @@ class Writer:
         for cmd in later:
             cmd["seen"] = [[i, now.get(i) if i in ids else v] for i, v in cmd["seen"]]
 
-    def _refresh_before(self, store, cmd):
+    def _refresh_before(self, store, cmd, change=None):
         """A command landed: the GUARDED commands queued behind it that touch its items, titles or pieces take what it
         left as their *as queued* (the user's own two clicks are never a change "meanwhile"); one the journal holds is
-        written again."""
-        keys = _keys(cmd)
+        written again. LM11 G6: the pieces its rows left and entered (`change.repieced`, the settling step's) are what
+        it touched too — a move out of a group, then Rename group / Ungroup / a drop onto it, replay as his."""
+        keys = _keys(cmd) | {("p", p) for _i, old, new in getattr(change, "repieced", None) or ()
+                             for p in (old, new) if p is not None}
         with self._cond:
             later = [c for c in itertools.islice(self._pending, 1, None) if "before" in c and keys & _keys(c)]
         if not later:
@@ -1687,10 +1689,18 @@ def _done(store, cmd):
             others = cmd["piece_ids"][1:]
             return bool(others) and not any(store.conn.execute("SELECT 1 FROM items WHERE piece_id = ? LIMIT 1",
                                                                (p,)).fetchone() for p in others)
-        if op in ("group", "add_to_group"):                # LM11: everything it names in one piece
-            ids = [i for e in cmd["before"] if isinstance(e[1], list) for i in e[1]] + list(cmd.get("item_ids") or ())
-            rows = [store.item(i) for i in ids]
-            return bool(rows) and all(r is not None for r in rows) and len({r["piece_id"] for r in rows}) == 1
+        if op in ("group", "add_to_group"):                # LM11: everything it names in one piece, as it asks (G7):
+            parts = [e[1] for e in cmd["before"] if isinstance(e[1], list)]     # side by side, part after part
+            part = {i: n for n, ids in enumerate(parts) for i in ids}
+            part.update((i, len(parts)) for i in cmd.get("item_ids") or () if i not in part)
+            rows = [store.item(i) for i in part]
+            if not rows or any(r is None for r in rows) or len({r["piece_id"] for r in rows}) != 1:
+                return False
+            order = [part.get(i) for (i,) in store.conn.execute("SELECT id FROM items WHERE piece_id = ? "
+                                                                "ORDER BY tier, ord, id", (rows[0]["piece_id"],))]
+            named = [n for n in order if n is not None]
+            first = next(k for k, n in enumerate(order) if n is not None)
+            return order[first:first + len(named)] == named and named == sorted(named)
         if op == "ungroup":
             return not store.conn.execute("SELECT 1 FROM pieces WHERE id = ? AND kind = 'group'",
                                           (cmd["piece_id"],)).fetchone()

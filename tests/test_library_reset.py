@@ -766,9 +766,9 @@ def test_a_reset_that_moved_nothing_is_never_named_and_one_that_did_is_named_onc
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_a_group_and_its_name_go_with_the_library_and_nothing_queued_or_undone_brings_them_back(language):
     """LM11: a group is library state like every piece — a reset empties `pieces` with the rest (its row, kind and name
-    kept in the backup's copy); its Group / Rename group can't be undone into the fresh library (the epoch moved), and
-    a Rename group / Ungroup a crash left queued never writes to whatever piece reuses its id (piece ids start again
-    after a reset; what each queued command names is checked by item ids, which never are)."""
+    kept in the backup's copy); its Group / Rename group can't be undone into the fresh library (the epoch moved); a
+    piece id is never issued again, a reset's new groups included (G3), so a Rename group / Ungroup a crash left queued
+    finds no group of its own: Ungroup is let go (nothing to take apart), Rename is listed — neither writes."""
     from app.services import moves as M
     store, data_dir, user_files_dir, src, root = _world(language)
     with store:
@@ -792,9 +792,10 @@ def test_a_group_and_its_name_go_with_the_library_and_nothing_queued_or_undone_b
         assert not store.conn.execute("SELECT 1 FROM pieces WHERE kind = 'group'").fetchone()
         assert pieces_ok(store) is None
         again = [p for (p,) in store.conn.execute("SELECT DISTINCT piece_id FROM items ORDER BY piece_id")]
-        assert store.join(again[:2], how="group").piece_id == group, "a new group under the old one's id"
-        for cmd in queued:                                              # `Writer._changed_since`'s check: listed
-            assert not M._done(store, cmd) and M._as_queued(store, cmd) != cmd["before"]
+        assert store.join(again[:2], how="group").piece_id > group, "never the old group's id"
+        rename, ungroup = queued                                        # `Writer._changed_since`'s two checks
+        assert not M._done(store, rename) and M._as_queued(store, rename) != rename["before"]
+        assert M._done(store, ungroup)
         assert store.conn.execute("SELECT title FROM pieces WHERE kind = 'group'").fetchone()[0] is None
     (folder,) = _backups(user_files_dir)
     copy = sqlite3.connect(_record(folder)["db_copy"])

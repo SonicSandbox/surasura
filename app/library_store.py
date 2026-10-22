@@ -675,6 +675,7 @@ TITLES_APART = {        # *Same show as…* refused (`how="titles"`, `merge_work
     "tmdb_id": "TMDB says these are two different shows. Group them instead.",
     "youtube_channel": "These are two different YouTube channels. Group them instead.",
 }
+GROUP_REFUSED = "A group lives in Current, Soon or Goal: move these there first."    # the window's list names
 # --- end LM11
 
 # Every table but meta and items goes out in the copy generically (fields + rows, §6.7); `works` without its derived
@@ -1336,7 +1337,7 @@ class Change:
         self.works = None     # works' commands: {"rows": [work rows before], "items": [(id, old, new)],
                               #                   "fields": [(work_id, column, old, new)], "created": [ids]}
         self.piece_fields = []  # LM11: (piece, "kind" | "title", old, new) written, put back by the value check
-        self.dropped = []     # LM11: the group pieces' rows the command emptied and deleted (an undo brings them back)
+        self.dropped = []     # LM11: the pieces' rows the command emptied and deleted (an undo brings them back)
 
     def __repr__(self):
         return f"<Change {self.kind} v{self.version} e{self.epoch} items={len(self.items)}>"
@@ -1378,7 +1379,7 @@ class _Command:
         self.pieces_left = set()  # pieces items left: deleted when emptied (05 §5.2 rule 7)
         self.repieced = []    # (item_id, old piece, new piece) the settling step wrote, for undo
         self.piece_fields = []  # LM11: (piece, column, old, new) — a piece's kind or title written, for undo
-        self.dropped = []     # LM11: the group pieces' rows deleted when emptied, for undo
+        self.dropped = []     # LM11: the pieces' rows deleted when emptied, for undo
         self.line_set = False  # set_soon_line: the line moved
 
     def touch(self, tiers=(), order=False, availability=False, pins=False):
@@ -3258,9 +3259,16 @@ class Store:
         return out
 
     def _new_piece(self, like=None, title=None):
+        """A new piece (`like`: of that piece's kind and name — a new GROUP starts unnamed, the window's "<first show> +
+        N more": LM11 G4). Its id is past every piece id ever issued, never one a deleted piece held (K30's rule for
+        items; LM11 G3: an undo puts a deleted group back under its own id, which nothing else can have taken)."""
         base = self.conn.execute("SELECT title, kind FROM pieces WHERE id = ?", (like,)).fetchone() if like else None
-        return self.conn.execute("INSERT INTO pieces (title, kind, created_at) VALUES (?, ?, ?)",
-                                 (base[0] if base else title, base[1] if base else "run", _now())).lastrowid
+        kind = base[1] if base else "run"
+        piece = _next_id(self.conn, "pieces")
+        _set_seq(self.conn, "pieces", piece)
+        self.conn.execute("INSERT INTO pieces (id, title, kind, created_at) VALUES (?, ?, ?, ?)",
+                          (piece, None if kind == "group" else base[0] if base else title, kind, _now()))
+        return piece
 
     def _fix_pieces(self, cmd):
         """Pieces drawn by id (05 §5.2), for what the command touched: a whole piece moved keeps its id (4); items
@@ -3272,7 +3280,7 @@ class Store:
         its own group stays in it, one whose title changed in place (*Not part of this title*) too; a group's items
         that land in Finished or New arrivals leave it (each to its own work's piece there: G4 "a finishing item goes
         to Finished under its own work"); what is left is settled by `_settle_kinds`, an emptied group's row kept on the
-        change for its undo (`cmd.dropped`)."""
+        change for its undo (`cmd.dropped`, a run's too: ids are never reused, G3)."""
         conn = self.conn
         touched = cmd.moved | cmd.reworked
         info = {}
@@ -3337,10 +3345,14 @@ class Store:
             # --- LM11: an item moved within its own group stays in it (beside another of its rows, or beside a row that
             # stays so): a reorder inside the group, never "a foreign drop"
             back = {}
+            # G1: NOW and Soon are one tier for a group — a row at the line's edge has its neighbour across it
+            across = {i: self._line_edge(info[i][0]) for i in fresh if olds[i] in groups and
+                      (info[i][0] == "soon" and near[i][0][0] is None or info[i][0] == "now" and near[i][1][0] is None)}
             while True:
                 more = {i: olds[i] for i in fresh if i not in back and olds[i] in groups
                         and info[i][0] not in NO_GROUP_TIERS
-                        and any(n[1] == olds[i] or back.get(n[0]) == olds[i] for n in near[i])}
+                        and any(n is not None and (n[1] == olds[i] or back.get(n[0]) == olds[i])
+                                for n in list(near[i]) + [across.get(i)])}
                 if not more:
                     break
                 back.update(more)
@@ -3351,8 +3363,13 @@ class Store:
                     info[i][1] = g
                 fresh -= set(back)
             # --- end LM11
+            # GI1, PROVISIONAL (Sonic 2026-10-21, accepted for building, to be checked in use; asked of him, LM11-Q1):
+            # dropping in is putting in — a row (a new one, one moved, a whole part) landing between two rows of one
+            # group joins that group, never cuts it; at its edge it stays outside. A group dropped inside one cuts it
+            inside = lambda b, a, tier: (b[1] is not None and b[1] == a[1] and is_group(b[1])    # noqa: E731
+                                         and tier not in NO_GROUP_TIERS)
             # a whole piece put back beside a piece of its own title becomes part of it (05 §5.2 #4: a season put
-            # back together); an undo's pieces stay as they were. LM11: never a group, never into one
+            # back together); an undo's pieces stay as they were. LM11: never a group, never into one (but GI1)
             for p, ids in by_piece.items():
                 if any(i in cmd.hints for i in ids) or not whole.get(p) or p in groups:
                     continue
@@ -3362,8 +3379,11 @@ class Store:
                     continue                                    # not one run: the split below decides
                 work = info[ids[0]][2]
                 before, after = near[firsts[0]][0], near[lasts[0]][1]
-                into = before[1] if before[1] is not None and before[2] == work and not is_group(before[1]) else \
-                    after[1] if after[1] is not None and after[2] == work and not is_group(after[1]) else None
+                if inside(before, after, info[ids[0]][0]):
+                    into = before[1]                            # GI1: dropped between two rows of a group: into it
+                else:
+                    into = before[1] if before[1] is not None and before[2] == work and not is_group(before[1]) else \
+                        after[1] if after[1] is not None and after[2] == work and not is_group(after[1]) else None
                 if into is None or into == p:
                     continue
                 self._set_pieces(cmd, [(into, i) for i in ids])
@@ -3392,7 +3412,7 @@ class Store:
                 work = info[run[0]][2]
                 before, after = near[run[0]][0], near[run[-1]][1]
                 if before[1] is not None and before[1] == after[1] and before[2] == work and after[2] == work \
-                        and not is_group(before[1]):
+                        and not is_group(before[1]) or inside(before, after, info[run[0]][0]):     # GI1
                     self._set_pieces(cmd, [(before[1], i) for i in run])
                     cmd.repieced += [(i, None, before[1]) for i in run]
                     for i in run:
@@ -3425,11 +3445,18 @@ class Store:
             for chunk in _chunks(sorted(cmd.pieces_left), 500):
                 empty = (f"id IN ({','.join('?' * len(chunk))}) AND NOT EXISTS "
                          "(SELECT 1 FROM items WHERE items.piece_id = pieces.id)")
-                cmd.dropped += [tuple(r) for r in conn.execute(           # LM11: a group's row, for its undo
-                    f"SELECT id, title, kind, created_at FROM pieces WHERE kind = 'group' AND {empty}", chunk)]
+                cmd.dropped += [tuple(r) for r in conn.execute(           # LM11: its row, for its undo (an id is
+                    f"SELECT id, title, kind, created_at FROM pieces WHERE {empty}", chunk)]   # never reused: G3)
                 conn.execute(f"DELETE FROM pieces WHERE {empty}", chunk)
 
     # --- LM11: a piece's kind and name ------------------------------------------------------------------------- #
+    def _line_edge(self, tier):
+        """LM11 G1: (id, piece_id, work_id) of the row across the Soon line from `tier`'s edge — NOW's last row for
+        Soon's first, Soon's first for NOW's last — or None."""
+        sql = "ORDER BY ord DESC, id DESC" if tier == "soon" else "ORDER BY ord, id"
+        return self.conn.execute(f"SELECT id, piece_id, work_id FROM items WHERE tier = ? {sql} LIMIT 1",
+                                 ("now" if tier == "soon" else "soon",)).fetchone()
+
     def _is_group(self, piece):
         row = self.conn.execute("SELECT kind FROM pieces WHERE id = ?", (piece,)).fetchone()
         return row is not None and row[0] == "group"
@@ -3489,7 +3516,7 @@ class Store:
         the work changes or another row stands between two of them; the first run holding a member the command didn't
         place keeps the id (else the first run), each other run becomes a piece of its own. LM11: a group is cut where
         the tier changes or a row stands between, never where the work does (in Finished and New arrivals, where no
-        group lives, it is). -> the pieces it made."""
+        group lives, it is), and never at the Soon line (G1). -> the pieces it made."""
         conn = self.conn
         members = conn.execute("SELECT id, tier, ord, work_id FROM items WHERE piece_id = ? ORDER BY tier, ord, id",
                                (piece,)).fetchall()
@@ -3510,6 +3537,12 @@ class Store:
                 span = {r[0]: n for n, r in enumerate(rows)}
 
         def gap(a, b):
+            if a[1] != b[1] and group and a[1] in CURRENT and b[1] in CURRENT:
+                # LM11 G1: NOW and Soon are one tier for a group (Current in one order, the line its boundary): cut
+                # only if a row stands after its last NOW row or before its first Soon row
+                between = conn.execute("SELECT 1 FROM items WHERE (tier = ? AND (ord, id) > (?, ?)) OR (tier = ? AND "
+                                       "(ord, id) < (?, ?)) LIMIT 1", (a[1], a[2], a[0], b[1], b[2], b[0])).fetchone()
+                return between is not None
             if a[1] != b[1] or (a[3] != b[3] and not (group and a[1] not in NO_GROUP_TIERS)):
                 return True
             if span is not None:
@@ -3566,16 +3599,13 @@ class Store:
 
     def split(self, piece_id, at_item_id):
         """A new piece of the items from `at_item_id` to the piece's end. Nothing moves. LM11: a group's halves are
-        groups (its name on both), each holding one work's items a run (`_settle_kinds`)."""
+        groups (the second one unnamed: a new group, G4), each holding one work's items a run (`_settle_kinds`)."""
         with self._command("split") as cmd:
             items = self._piece_items(piece_id)
             at = [r[0] for r in items].index(at_item_id) if at_item_id in [r[0] for r in items] else -1
             if at <= 0:
                 return None
-            old = self.conn.execute("SELECT title, kind FROM pieces WHERE id = ?", (piece_id,)).fetchone()
-            cur = self.conn.execute("INSERT INTO pieces (title, kind, created_at) VALUES (?, ?, ?)",
-                                    (old[0], old[1], _now()))
-            new_piece = cur.lastrowid
+            new_piece = self._new_piece(like=piece_id)
             moved = items[at:]
             self.conn.executemany("UPDATE items SET piece_id = ?, changed_in = ? WHERE id = ?",
                                   [(new_piece, cmd.version, r[0]) for r in moved])
@@ -3679,7 +3709,7 @@ class Store:
         if tier == "graduated" and any(r[1] != "graduated" for r in moving):
             raise ValueError("a part can't join a finished one: finish it first")
         if how == "group" and tier in NO_GROUP_TIERS:           # LM11: a group never lives there
-            raise ValueError("a group lives in Current or 6+ Months: move these there first")
+            raise ValueError(GROUP_REFUSED)
         merged = None
         if len(works) > 1 and how == "titles":   # --- P-LF-4: one title first, then one piece (one undo)
             keep = first[0][4]
@@ -3745,6 +3775,9 @@ class Store:
             if not self._is_group(target):
                 self._set_piece(cmd, target, "title", None)
             self._set_piece(cmd, target, "kind", "group")
+        # LM11 G2: the group made and every group a row was taken from, settled here (the settling step never meets a
+        # piece this body re-pieced): none is left holding one work's items
+        self._settle_kinds(cmd, {target} | {p for p, _rows, _w in parts})
         cmd.touch()
         return change
 
@@ -3792,7 +3825,7 @@ class Store:
             return change
 
     def _undo_piece_fields(self, cmd, change):
-        """LM11: a command's group rows deleted come back (gone again if nothing returns to them) and each piece's kind
+        """LM11: a command's piece rows deleted come back (gone again if nothing returns to them) and each piece's kind
         and name go back where they still hold what it wrote (the value check, §6.11). -> (out, skipped pieces)."""
         out, skipped = self._change(cmd, "undo"), []
         for row in getattr(change, "dropped", ()):
@@ -5616,7 +5649,7 @@ def _seed_schema2(store, version):
     # pieces: one run of one work in one tier each — LM11: a group's run goes on across works (never in Finished or
     # New arrivals); a group left holding one work's items, or one there, is a run
     pieces = {r[0]: (r[1], r[2]) for r in conn.execute("SELECT id, title, kind FROM pieces")}
-    next_piece = max([0] + list(pieces)) + 1
+    next_piece = _next_id(conn, "pieces")                      # LM11 G3: never an id issued before
     new_pieces = []
     updates = []
     used = set()
@@ -5624,18 +5657,20 @@ def _seed_schema2(store, version):
     prev_tier = prev_work = prev_old = prev_new = None
     for item_id, tier, piece, title in ordered:
         wid = item_work[item_id]
-        if tier != prev_tier:
-            prev_work = prev_old = prev_new = None
+        crossed = tier != prev_tier
+        if crossed:
+            if not (prev_tier in CURRENT and tier in CURRENT):   # LM11 G1: a group runs on across the Soon line
+                prev_work = prev_old = prev_new = None
             prev_tier = tier
         if piece is not None and piece not in pieces:
             piece = None
-        if piece is not None and piece == prev_old and (wid == prev_work or pieces[piece][1] == "group" and
-                                                        tier not in NO_GROUP_TIERS):
+        if piece is not None and piece == prev_old and (wid == prev_work and not crossed or
+                                                        pieces[piece][1] == "group" and tier not in NO_GROUP_TIERS):
             new = prev_new                                      # the run goes on
         elif piece is not None and piece not in used:
             new = piece                                         # a piece's first run keeps its id
             used.add(piece)
-        elif piece is None and prev_new is not None and wid == prev_work:
+        elif piece is None and prev_new is not None and wid == prev_work and not crossed:
             new = prev_new                                      # joins the piece of its work it directly follows
         else:
             new = next_piece
@@ -5647,6 +5682,7 @@ def _seed_schema2(store, version):
         prev_work, prev_old, prev_new = wid, piece, new
     if new_pieces:
         conn.executemany("INSERT INTO pieces (id, title, kind, created_at) VALUES (?, ?, ?, ?)", new_pieces)
+        _set_seq(conn, "pieces", next_piece - 1)
     conn.executemany("UPDATE items SET work_id = ?, piece_id = ?, search_key = ?, feed_in = ? WHERE id = ?", updates)
     conn.execute("DELETE FROM pieces WHERE id NOT IN (SELECT piece_id FROM items WHERE piece_id IS NOT NULL)")
     conn.execute(f"UPDATE pieces SET kind = 'run' WHERE kind = 'group' AND id IN (SELECT piece_id FROM items GROUP BY "
@@ -5658,7 +5694,8 @@ def _seed_schema2(store, version):
 def _pieces_ok(conn):
     """None when every piece is one contiguous run, in (ord, id), of one work's items in one tier and every item has a
     piece and a work (L2.2 05 §5.2 rule 1); else what's wrong. LM11: a group (kind 'group') may hold several works'
-    items — still one run in one tier, never in Finished or New arrivals, and never one work's alone (a run's)."""
+    items — still one run in one tier (NOW and Soon one tier for it: G1), never in Finished or New arrivals, and never
+    one work's alone (a run's)."""
     groups = {r[0] for r in conn.execute("SELECT id FROM pieces WHERE kind = 'group'")}
     seen, works = set(), {}
     prev = None
@@ -5668,7 +5705,8 @@ def _pieces_ok(conn):
             return f"item {item_id} has no piece"
         if piece in groups and tier in NO_GROUP_TIERS:
             return f"group {piece} is in Finished or New arrivals"
-        if prev is not None and prev[0] == tier and prev[1] == piece:
+        if prev is not None and prev[1] == piece and (prev[0] == tier or piece in groups and prev[0] in CURRENT and
+                                                      tier in CURRENT):     # LM11 G1: a group runs across the line
             if prev[2] != work and piece not in groups:
                 return f"piece {piece} holds two works"
         elif piece in seen:

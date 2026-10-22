@@ -803,3 +803,59 @@ def test_a_skip_on_a_busy_store_is_journalled_and_a_crash_replays_it_once(monkey
             if writer is not None and not writer._abandoned:
                 writer.finish(time.monotonic() + 5)
         store.close()
+
+
+# --- LF-21: one video-file rule (`runner.video_file`), and a Mac's `._` copy (`runner.mac_copy`) the only dot rule -- #
+
+def _waiting_items(store):
+    return store.conn.execute("SELECT COUNT(*) FROM items WHERE availability = 'waiting'").fetchone()[0]
+
+
+def test_a_title_that_starts_with_a_dot_is_read_its_folder_and_files_both():
+    """LF-21: a dot is a Mac's `._` copy only — `.hack` is a title: its folder is walked, its video and subtitle are an
+    episode like any other (every dot name was passed over: the show never came in)."""
+    language = "ja"
+    store, data_dir = _empty(language)
+    src = _drive("Media")
+    folder = os.path.join(src, ".hack Sign")
+    _video(os.path.join(folder, ".hack Sign - 01.mkv"), body=b"fake matroska 1")
+    sub = _write(os.path.join(folder, ".hack Sign - 01.ja.srt"), _text(language, 1))
+    with store:
+        root = store.add_source(src)
+        result = _look(store, language, root, first=True)
+        assert (result["added"], _items(store), _waiting_items(store)) == (1, 1, 0)
+        assert ls.path_key(os.path.abspath(sub)) in store.origins()
+
+
+@pytest.mark.parametrize("folder", [".AppleDouble", ".Trashes", ".Spotlight-V100", ".fseventsd", ".TemporaryItems"])
+def test_the_dot_folders_a_mac_makes_are_skipped_by_name(folder):
+    """LF-21: the folders macOS writes on a drive (`library_store.SKIP_DIRS`) are skipped as the recycle bins are —
+    their files are metadata or deleted ones, never episodes."""
+    language = "ja"
+    store, data_dir = _empty(language)
+    src = _drive("Media")
+    a = _SHOWS[language][0]
+    _write(os.path.join(src, a, folder, f"{a} - 01.ja.srt"), _text(language, 1))
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        assert _items(store) == 0
+
+
+def test_a_macs_copies_are_skipped_and_a_small_ts_is_no_video():
+    """LF-21: `._ep01.mkv` / `._ep01.ja.srt` (a Mac's AppleDouble twins) are never listed; a `.ts` under TS_MIN is
+    TypeScript, never a video waiting for its subtitle — the same `runner.video_file` Connect's index asks."""
+    language = "ja"
+    store, data_dir = _empty(language)
+    src = _drive("Media")
+    a = _SHOWS[language][0]
+    folder = os.path.join(src, a)
+    for junk in ("._ep01.mkv", "._ep01.ja.srt"):
+        _video(os.path.join(folder, junk), body=_APPLE_DOUBLE)
+    _video(os.path.join(src, "tool", "index.ts"), body=b"export const x = 1;\n" * 40)
+    listed = sources._listing(folder)
+    assert (listed[0], listed[2]) == ([], {})
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        assert _items(store) == 0

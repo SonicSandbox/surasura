@@ -25,6 +25,7 @@ PLACED = {
     "anki_connect_url": "neither",
     "connect_enabled": "neither", "placing_rules": "neither", "connect_mine_words": "neither",
     "connect_send_grammar": "neither", "connect_anki_miner_path": "neither", "connect_anki_miner_profile": "neither",
+    "connect_trust_timing": "neither",       # Trust my subtitles' timing (P-LF-9): what Connect mines, never a run
     "connect_open_anki": "neither",          # Open Anki for me (P2.3): when Anki is started, never a run
     "covers_download": "neither",            # Show covers (the setup wizard, G1.2-19): a cover's fetch, never a run
     "setup_seen": "neither",                 # the setup pages seen (the setup wizard, WZ-8): never a run

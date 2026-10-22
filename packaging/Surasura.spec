@@ -268,6 +268,72 @@ cli_exe = EXE(
     icon=[os.path.join(project_root, 'app', 'assets', 'images', 'app_icon.ico')],
 )
 
+# -----------------------------------------------------------------------------
+# tsubasa.exe: tsubasa's command line (T1 B, 2026-10-21), a console program beside Surasura.exe sharing its _internal\,
+# built from the tsubasa-sync package requirements.txt pins (packaging/tsubasa_entry.py, its console script written out).
+# Connect runs it as its own program and never imports it (K1). Its own slim Analysis, like surasura-cli's: tsubasa's
+# code rides inside tsubasa.exe, its name tables in _internal\tsubasa\ (tsubasa's own PyInstaller hook, found through
+# its pyinstaller40 entry point: no datas here), numpy is the one the app already ships. package_app.py refuses a build
+# whose installed tsubasa-sync or whose tsubasa.exe --version isn't the pinned one.
+# -----------------------------------------------------------------------------
+tsubasa_spec = importlib.util.find_spec('tsubasa')
+tsubasa_icon = os.path.join(list(tsubasa_spec.submodule_search_locations)[0], 'data', 'tsubasa.ico') \
+    if tsubasa_spec is not None and tsubasa_spec.submodule_search_locations else None
+tsubasa_datas = []
+try:                                        # its licence notice (GPL-3.0-or-later), beside PyQt6's: from its metadata
+    from importlib import metadata as tsubasa_metadata
+    for dist_file in tsubasa_metadata.distribution('tsubasa-sync').files or []:
+        if os.path.basename(str(dist_file)).upper().startswith(('LICENSE', 'LICENCE', 'COPYING', 'NOTICE')):
+            tsubasa_datas.append((str(tsubasa_metadata.distribution('tsubasa-sync').locate_file(dist_file)),
+                                  'licenses/tsubasa-sync'))
+except Exception as e:
+    print(f"BUILD CONFIG: tsubasa-sync's licence notice not found ({e})")
+tsubasa_a = Analysis(
+    [os.path.join(project_root, 'packaging', 'tsubasa_entry.py')],
+    pathex=[],
+    binaries=[],
+    datas=tsubasa_datas,
+    hiddenimports=[],
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=excluded_modules + ['tsubasa.gui', 'tsubasa.dev', 'tkinter', '_tkinter', 'tkinterdnd2', 'pandas',
+                                 'PyQt6', 'requests', 'app', 'modules'],
+    noarchive=False,
+    optimize=0,
+)
+tsubasa_pyz = PYZ(tsubasa_a.pure)
+# Byte-identical from one pin to the next build: PyInstaller stamps an exe's PE header with the build time unless
+# SOURCE_DATE_EPOCH is set, and that stamp was the only difference between two builds of tsubasa.exe. Fixed here, for
+# tsubasa.exe only, a release whose pin (and PyInstaller) didn't move ships the same file: its part isn't downloaded.
+TSUBASA_BUILD_STAMP = '1767225600'          # 2026-01-01 00:00 UTC, a constant
+build_time = os.environ.get('SOURCE_DATE_EPOCH')
+os.environ['SOURCE_DATE_EPOCH'] = TSUBASA_BUILD_STAMP
+try:
+    tsubasa_exe = EXE(
+        tsubasa_pyz,
+        tsubasa_a.scripts,
+        [],
+        exclude_binaries=True,
+        name='tsubasa',
+        debug=False,
+        bootloader_ignore_signals=False,
+        strip=False,
+        upx=False,
+        console=True,
+        disable_windowed_traceback=False,
+        argv_emulation=False,
+        target_arch=None,
+        codesign_identity=None,
+        entitlements_file=None,
+        icon=[tsubasa_icon] if tsubasa_icon and os.path.isfile(tsubasa_icon) else None,
+    )
+finally:
+    if build_time is None:
+        os.environ.pop('SOURCE_DATE_EPOCH', None)
+    else:
+        os.environ['SOURCE_DATE_EPOCH'] = build_time
+
 coll = COLLECT(
     exe,
     a.binaries,
@@ -275,6 +341,9 @@ coll = COLLECT(
     cli_exe,
     cli_a.binaries,
     cli_a.datas,
+    tsubasa_exe,
+    tsubasa_a.binaries,
+    tsubasa_a.datas,
     strip=False,
     upx=False,
     upx_exclude=[],

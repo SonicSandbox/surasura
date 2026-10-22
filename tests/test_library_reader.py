@@ -1073,3 +1073,67 @@ def test_LM11b_H_T2_the_first_screens_cache_is_never_skipped_for_good_while_a_co
     data = json.load(open(cache, encoding="utf-8"))
     assert data["key"] == again._key_now(seed.opener.handle())
     assert row.key not in [r.key for r in view_rows.from_cache(data["view"]).rows]
+
+
+# --- LM11b mutant pass: the gaps it found ----------------------------------------------------------------------- #
+def _expecting(seed):
+    """A reader that took in the window's expectation for Current's fifth row (a busy store: never written) -> (reader,
+    its views, that row, its ids)."""
+    reader = _reader(seed)
+    views, _ = _collect(reader)
+    reader._look()
+    row = views[-1][1].rows[4]
+    ids = [e.id for e in row.episodes]
+    reader.expect({i: "graduated" for i in ids})
+    reader._look()
+    assert row.key not in [r.key for r in views[-1][1].rows]
+    return reader, views, row, ids
+
+
+def _finished_row(view, key):
+    return next((r for m in view.finished for r in m.rows if r.key == key), None)
+
+
+def test_LM11b_the_same_expectation_asked_again_builds_nothing():
+    """S19: the window's settle asks for the expectation it already gave (or none, again): nothing is built or
+    published for it. Wrong, every settle tick built the whole view again."""
+    seed = window_seed.build()
+    reader, views, _row, ids = _expecting(seed)
+    n = len(views)
+    reader.expect({i: "graduated" for i in ids})
+    reader._look()
+    assert len(views) == n
+
+
+def test_LM11b_a_watched_mark_another_program_writes_on_an_expected_episode_shows_while_it_waits():
+    """H-W1 keeps an overlaid row only while its feed row is the same: another program marks one of the waiting show's
+    episodes watched — its Finished row shows it. Wrong, the overlaid row (and the tier list) were the old ones."""
+    seed = window_seed.build()
+    reader, views, row, ids = _expecting(seed)
+    unwatched = next(e.id for e in row.episodes if not e.watched)
+    seed.library.commit(items=[{"id": unwatched, "watched": 1}])
+    reader._look()
+    fin = _finished_row(views[-1][1], row.key)
+    assert fin is not None and next(e for e in fin.episodes if e.id == unwatched).watched
+
+
+def test_LM11b_a_show_another_program_finishes_while_one_is_expected_comes_into_finished_too():
+    """The overlaid Finished list is kept only while the reader's own is the same list: another program finishes a show
+    meanwhile — it is in Finished beside the expected one. Wrong, Finished kept its old list."""
+    seed = window_seed.build()
+    reader, views, row, _ids = _expecting(seed)
+    other = next(r for r in views[-1][1].rows if r.key != row.key and r.work_id != row.work_id)
+    seed.library.commit(items=[{"id": e.id, "tier": "graduated", "graduated_at": "2026-10-21T20:00:00Z"}
+                               for e in other.episodes], order=True)
+    reader._look()
+    view = views[-1][1]
+    assert _finished_row(view, other.key) is not None and _finished_row(view, row.key) is not None
+
+
+def test_LM11b_an_expected_finish_is_finished_now_this_months_row():
+    """A finish the store hasn't written reads as finished now: the show's Finished row stands under this month, as the
+    store will put it. Wrong, it had no date and fell under *Earlier*."""
+    seed = window_seed.build()
+    _reader_, views, row, _ids = _expecting(seed)
+    month = next(m for m in views[-1][1].finished if any(r.key == row.key for r in m.rows))
+    assert month.label == view_rows.month_label(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))

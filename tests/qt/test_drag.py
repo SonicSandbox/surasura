@@ -2588,3 +2588,60 @@ def test_LM11b_H_C3_another_command_landing_as_nothing_never_lets_the_readers_bu
     assert writer.pending() == 1 and told[-1] is not None
     writer.free()                                                     # the finish lands
     assert wait_until(lambda: told[-1] is None and not moves.tickets, 3)
+
+
+def test_LM11b_H_C3_the_finish_landing_as_nothing_lets_the_readers_build_go_though_another_command_still_waits(
+        world, monkeypatch):
+    """H-C3, the other side: the show's own finish lands as nothing (the store had nothing to change) while another
+    command still waits for the busy store — the reader's build of the show in Finished goes now, never only once the
+    queue is empty. Wrong, the show stayed off its group row for as long as the other command waited."""
+    win, writer, told = _finish_show_stuck(world, monkeypatch)
+    moves = win.moves
+    writer.move([987001], "goal")                                     # another command, waiting behind it
+    change, ticket = writer._waiting.pop(0)                           # the finish's own answer: nothing to change
+    writer.nothing.add(change.op)
+    monkeypatch.setattr(writer, "landed_empty", lambda: [ticket], raising=False)
+    writer._land(change, ticket)
+    assert wait_until(lambda: told[-1] is None, 3)
+    assert writer.pending() == 1 and ticket not in moves.tickets
+
+
+def test_LM11b_a_landed_show_finish_leaves_nothing_behind_for_the_next_move(world, monkeypatch):
+    """The show taken off its row is the window's order while its finish waits, and goes with it: once it landed, the
+    next move the window makes ahead of the store shows a view that holds that show's episodes again (an Undo of the
+    finish), never holding it back for a show it no longer takes off. Wrong, every view was held until that move
+    settled."""
+    win, writer, told = _finish_show_stuck(world, monkeypatch)
+    moves = win.moves
+    writer.free()
+    assert wait_until(lambda: told[-1] is None and moves.expect is None and not moves.tickets, 3)
+    view = _group_view(a_watched=2)                                   # the group holding SHOW_A's episodes again
+    moves._ahead(view)                                                # the next move, ahead of the store
+    assert moves.view_in(view) is not None
+
+
+def test_LM11b_a_settle_reached_while_a_drag_runs_keeps_the_held_view_under_the_hand(world):
+    """E6: the settle of an earlier move can come while the next drag runs — the reader's view it held stays held (the
+    rows under the hand never change), shown at the drop. Wrong, the held view was shown mid-drag."""
+    _seed, win, _writer = world()
+    lift(win, 3)
+    moves = win.moves
+    shown = win.page_widgets["current"].view_model
+    view = shown._replace(rows=shown.rows[::-1])
+    moves.held = view
+    moves._let_go()
+    assert moves.held is view and win.page_widgets["current"].view_model is shown
+    moves.cancel()
+
+
+def test_LM11b_every_write_landed_asks_the_reader_for_the_stores_own_view_again(world, monkeypatch):
+    """AD2-4: once every write landed the settle asks the reader to publish the store's view again — changed or not —
+    so a row the store placed otherwise than the window drew it comes back to where it is. Wrong, the window kept its
+    own drawing."""
+    _seed, win, writer = world()
+    asked = []
+    monkeypatch.setattr(win.moves.reader, "republish", lambda: asked.append(1))
+    rs = rows_of(win)
+    win.moves.nudge(rs[3], 1)
+    assert calls(writer)
+    assert wait_until(lambda: asked and win.moves.expect is None, 5)

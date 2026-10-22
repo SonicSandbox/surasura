@@ -1927,3 +1927,63 @@ def test_real_store_a_group_join_the_store_refuses_is_never_toasted_as_grouped(r
     assert any("gone" in t for t in said), said
     grouped = strings.ITEM_GROUPED_WITH.format(other=dragged.title, title=target.title)
     assert win.toasts.card is None or win.toasts.card.message != grouped
+
+
+# --- LM11b mutant pass: the gaps it found ----------------------------------------------------------------------- #
+def test_G3_same_show_as_from_a_group_row_merges_no_title(world):
+    # a group is no show (its work id is its first show's): asked from a group's row — a menu made before it became
+    # one — the merge writes nothing, never folding that first show into another
+    _seed, win, writer = world()
+    b, a = two_shows(win)
+    show = _same_show(win, rows_of(win)[b]).children[0].payload
+    group = as_group(win, a)
+    assert win.items.same_show(group, show) is None
+    assert writer.calls == []
+
+
+def test_G3_same_show_as_never_offers_a_group_tile_in_goal(world, monkeypatch):
+    # a group sitting in Goal is one tile of several shows, no show of its own: never offered as the show to merge into
+    _seed, win, _w = world()
+    view = win.page_widgets["current"].view_model
+    b, _a = two_shows(win)
+    row = view.rows[b]
+    elsewhere = {r.work_id for r in view.rows} | {r.work_id for m in view.finished or () for r in m.rows} | \
+        {a.work_id for a in view.arrivals or ()}
+    tile = next(t for t in view.goal.works if not t.group and t.work_id not in elsewhere)
+    goal = strings.ITEM_JOIN_WHERE["goal"]
+    assert tile.work_id in [c.payload.work_id for c in _same_show(win, row).children if c.payload.where == goal]
+    works = tuple(t._replace(group=True) if t is tile else t for t in view.goal.works)
+    monkeypatch.setattr(win.items, "_view", lambda: view._replace(goal=view.goal._replace(works=works)))
+    assert tile.work_id not in [c.payload.work_id for c in _same_show(win, row).children]
+
+
+def test_G2_a_drop_on_a_groups_episode_past_the_soon_line_moves_it_into_soon(world):
+    # a group the Soon line runs through: a drop after one of its Soon episodes lands in Soon, beside it (`ep_tier`)
+    _seed, win, writer = world()
+    b, a = two_shows(win)
+    rs = rows_of(win)
+    group = as_group(win, a)._replace(tier="now", soon_from=1)
+    ep = group.episodes[1]
+    ids = drag.ids_of(rs[b])
+    assert win.items.into_group_at(group, ep, ids, rs[b].title) == group.key
+    assert calls(writer) == [("move", list(ids), {"tier": "soon", "before_id": None, "after_id": ep.id, "near": [],
+                                                  "end": False})]
+
+
+def test_G2_a_rest_on_a_stale_finished_row_is_never_a_group_target(world):
+    # a row still drawn in Current though it is in Finished now (a stale view): no group lives there, so a resting hand
+    # never outlines it with *Drop to group* — the drop is a move, as any
+    _seed, win, writer = world()
+    b, a = two_shows(win)
+    view = win.page_widgets["current"].view_model
+    rs = list(view.rows)
+    rs[a] = rs[a]._replace(tier="graduated")
+    win.show_library(view._replace(rows=type(view.rows)(rs)))
+    settle()
+    lift(win, b)
+    to = middle_point(win, a)
+    move_global(win, to)
+    rest()
+    assert win.moves.running.target[0] == "list" and lst_of(win).join_key is None
+    win.moves.cancel()
+    assert writer.calls == []

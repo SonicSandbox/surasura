@@ -3881,6 +3881,42 @@ def test_LM11b_a_queued_merge_whose_title_changed_meanwhile_is_listed_and_never_
     assert _works_of(lib, mb) == [wb] * len(mb)
 
 
+def test_LM11b_a_queued_merge_whose_kept_title_changed_meanwhile_is_listed_and_never_written(lib, make_writer,
+                                                                                             short_lock_wait):
+    """The title the merge keeps counts as queued too: renamed meanwhile by another window, the learner's "make B part
+    of A" may no longer mean that A — the replay says it couldn't be done and merges nothing."""
+    w, heard = make_writer()
+    pa, ma, pb, mb = _two_titles(lib)
+    wa, wb = _works_of(lib, ma[:1] + mb[:1])
+    holder = LockHolder(lib.db)
+    try:
+        w.merge_works(wa, [wb])
+        assert h.until(lambda: [e[0] for e in journalled(lib.language)] == ["merge_works"])
+        w._abandon()
+    finally:
+        holder.release()
+    lib.store.rename_work(wa, names(lib.language)[45])
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: journal(lib.language) is None and heard2.notes)
+    assert heard2.notes == [WORDS["crash_one"]]
+    assert _works_of(lib, mb) == [wb] * len(mb)
+
+
+def test_LM11b_a_merge_moves_no_file_so_the_numbers_are_never_asked_again(lib, make_writer):
+    """A merge changes no order (S19: only what changed): once it lands, the drop numbers stand — never worked out
+    again, as after a rename or an ungroup."""
+    numbers = Recorder()
+    w, heard = make_writer(numbers=numbers)
+    pa, ma, pb, mb = _two_titles(lib)
+    wa, wb = _works_of(lib, ma[:1] + mb[:1])
+    w.merge_works(wa, [wb], label="merged")
+    assert h.until(lambda: heard.saved)
+    assert _works_of(lib, mb) == [wa] * len(mb)
+    time.sleep(0.2)
+    assert numbers.resyncs == 0 and numbers.moves == []
+
+
 def test_LM11b_a_merge_queued_behind_the_users_own_write_of_its_title_still_lands(lib, make_writer, short_lock_wait):
     """His own two clicks are never a change "meanwhile": a merge queued behind a write of the same title takes what
     that write left as its *as queued* (`_keys` names both titles)."""

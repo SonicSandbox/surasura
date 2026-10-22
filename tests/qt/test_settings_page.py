@@ -381,6 +381,7 @@ def never_moves(text_size="M", language="ja"):
             bar.setValue(max(0, min(bar.maximum(), middle)))
             QApplication.processEvents()
             v0, y0 = bar.value(), control.mapTo(vp, QPoint(0, 0)).y()
+            b0 = control.mapTo(page.body, QPoint(0, 0)).y()
             new, _payload = other_value(page, view, control, page._settings())
             change(control, new)
             y1 = control.mapTo(vp, QPoint(0, 0)).y()
@@ -388,10 +389,13 @@ def never_moves(text_size="M", language="ja"):
             store.land()
             QApplication.processEvents()
             y2, v2 = control.mapTo(vp, QPoint(0, 0)).y(), bar.value()
+            b2 = control.mapTo(page.body, QPoint(0, 0)).y()
             checked += 1
             if (y1, y2) != (y0, y0):
                 problems.append(f"{view.row.id}: y {y0} -> {y1} -> {y2}")
-            if view.row.id != "target_language" and v2 != v0:
+            # the scroll moves only as far as a line above re-flowed (`hold`: Your setup's line, a live row's answer),
+            # keeping the control under the hand — never on its own
+            if view.row.id != "target_language" and v2 - v0 != b2 - b0:
                 problems.append(f"{view.row.id}: scroll {v0} -> {v2}")
     page.close()
     return problems, checked
@@ -478,8 +482,8 @@ def test_search_reads_japanese_words_and_opens_a_fold_where_a_row_matches_then_r
     page, store = make_page(ALL_ON, "ja")
     page.fold("level")                                    # the user opened Level's More options
     assert page.folds() == {"level"}
-    page.search.edit.setText("例文")                       # a choice's label in Japanese: Backfill's fills
-    assert page.rows["junban_backfill_fills"].isVisibleTo(page)
+    page.search.edit.setText("例文")                       # a label in Japanese: Backfill's fills
+    assert page.rows["backfill_sentence"].isVisibleTo(page)
     page.search.edit.setText("suspended")                 # Known words' + row, its fold closed by the user
     assert page.rows["anki_sync_include_suspended"].isVisibleTo(page)
     assert page.slabs["known"].adv.isVisibleTo(page)

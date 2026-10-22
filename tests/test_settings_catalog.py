@@ -51,10 +51,18 @@ def _placed(key):
 
 
 def _places():
-    """key -> where it shows: each row whose keys or door hold it, and NOT_SHOWN."""
-    places = {}
+    """key -> where it shows: each row whose keys or door hold it, and NOT_SHOWN. A list setting's switches (Q31: one
+    of its values each) are one place — a value two switches draw still counts twice."""
+    places, values = {}, {}
     for row in catalog.ROWS:
         for key in row.keys + row.reaches:
+            if catalog._member(row):
+                held = values.setdefault(key, set())
+                first, value = not held, row.options[0]
+                if not first and value not in held:
+                    held.add(value)
+                    continue                         # another value of the same list: the same place
+                held.add(value)
             places.setdefault(key, []).append(row.id)
     for key in catalog.NOT_SHOWN:
         places.setdefault(key, []).append("NOT_SHOWN")
@@ -285,13 +293,72 @@ def test_tablets_write_a_list_in_the_settings_order_or_only_the_bool_keys_that_f
     assert catalog.change(catalog.ROW["known_from_anki"], settings, "ja", {"flag:3", "suspended"})[0] == \
         {"known_from_anki": ["suspended", "flag:3"]}
     assert catalog.change(catalog.ROW["known_from_anki"], settings, "ja", [])[0] == {"known_from_anki": []}
-    assert catalog.change(catalog.ROW["junban_backfill_fills"], settings, "ja", ["sentence", "patterns"])[0] == \
+    # Q31: a list's values as switches — one switch writes the whole list, its values in the switches' order
+    assert catalog.change(catalog.ROW["backfill_sentence"], settings, "ja", True)[0] == \
         {"junban_backfill_fills": ["patterns", "sentence"]}
-    # several switches as one row: only the one that changed is written
-    later = catalog.ROW["junban_later"]
-    assert catalog.change(later, {}, "ja", ["junban_later_flag"]) == ({"junban_later_flag": True}, None)
-    assert catalog.change(later, {"junban_later_flag": True}, "ja", {"junban_later_flag": False})[0] == \
-        {"junban_later_flag": False}
+    assert catalog.change(catalog.ROW["backfill_patterns"], settings, "ja", False)[0] == {"junban_backfill_fills": []}
+    assert catalog.change(catalog.ROW["backfill_patterns"], settings, "ja", True) == ({}, None)      # already there
+    # a value the file holds that no switch names (hand-edited) is kept, never dropped
+    assert catalog.change(catalog.ROW["junban_only_star"], {"junban_only_markers": ["reading", "rare"]}, "ja",
+                          True)[0] == {"junban_only_markers": ["star", "reading", "rare"]}
+    assert catalog.value(catalog.ROW["junban_only_reading"], {"junban_only_markers": ["reading"]}, "ja") is True
+    assert catalog.value(catalog.ROW["junban_only_star"], {"junban_only_markers": "star"}, "ja") is False
+    # several bool keys: a switch each, only its own key written
+    flag = catalog.ROW["junban_later_flag"]
+    assert catalog.change(flag, {}, "ja", True) == ({"junban_later_flag": True}, None)
+    assert catalog.change(flag, {"junban_later_flag": True}, "ja", False)[0] == {"junban_later_flag": False}
+
+
+@WITH_MODULES
+def test_your_own_cards_is_one_choice_and_their_tag_sits_under_it_never_greyed():
+    """Q29: *Your own cards first* was a tag field and *Order all cards by the list* a toggle — the tag read as the
+    "first". Now one choice writes `junban_order_all` (First → False, In your list's order → True) and *Their tag* is
+    indented under it, shown under both choices (the tag keeps a card from being suspended either way)."""
+    row, tag = catalog.ROW["junban_order_all"], catalog.ROW["junban_own_tag"]
+    assert (row.kind, row.keys, row.options, row.group) == ("choice", ("junban_order_all",), (False, True), "in_anki")
+    assert (tag.kind, tag.keys, tag.sub) == ("text", ("junban_own_tag",), True)
+    ids = [r.id for r in catalog.ROWS]
+    assert ids.index("junban_own_tag") == ids.index("junban_order_all") + 1
+    labels = [label for _v, label, _l in catalog.options(row, {}, "ja")]
+    assert labels == ["First, in the order you made them", "In your list’s order"]
+    assert catalog.change(row, {}, "ja", True) == ({"junban_order_all": True}, None)
+    assert catalog.change(row, {"junban_order_all": True}, "ja", False) == ({"junban_order_all": False}, None)
+    assert catalog.change(row, {"junban_order_all": False}, "ja", False) == ({}, None)
+    for order_all in (False, True):
+        shown = _shown({"connect_enabled": True, "junban_order_all": order_all}, "ja")
+        assert {"junban_order_all", "junban_own_tag"} <= shown, order_all
+    assert all(S.OPTION_TIPS["junban_order_all"].get(v) for v in (False, True))     # each choice says what it does
+    assert "suspended" in tag.tip and "suspended" in row.tip
+
+
+@WITH_MODULES
+def test_phrases_and_i_plus_one_first_are_two_switches_for_japanese_not_at_the_back():
+    """Q31: one row of two pills under "First" read as pick one; they work together. Two plain switches, each its own
+    key, hidden for Chinese and with "At the back" (Junban's reorder uses neither there)."""
+    for row_id in ("junban_phrases", "junban_ready_first"):
+        row = catalog.ROW[row_id]
+        assert (row.kind, row.keys, row.group) == ("toggle", (row_id,), None)
+        assert catalog.change(row, {row_id: False}, "ja", True) == ({row_id: True}, None)
+        assert catalog.change(row, {row_id: True}, "ja", False) == ({row_id: False}, None)
+        for unlisted in ("list_first", "journey"):
+            assert row_id in _shown({"junban_unlisted": unlisted}, "ja"), (row_id, unlisted)
+        assert row_id not in _shown({"junban_unlisted": "back"}, "ja")
+        assert row_id not in _shown({}, "zh")
+        assert row_id not in _shown({"enable_junban": False}, "ja")
+    assert "junban_first" not in catalog.ROW and "junban_first" not in S.ROWS
+    assert catalog.ROW["junban_ready_first"].label.startswith("i+1 first: ")
+
+
+def test_no_multi_pick_reads_as_a_pick_one():
+    """Q31: tablets lit and dim read like a choice's segments, so a few independent picks are switches, a row each —
+    tablets stay only for a long set of states (Count as known in Anki's nine), and never for several bool keys."""
+    for row in catalog.ROWS:
+        if row.kind == "tablets":
+            assert len(row.keys) == 1 and len(row.options or ()) > 3, row.id
+    member = [row for row in catalog.ROWS if catalog._member(row)]
+    assert {row.id for row in member} == {"junban_only_star", "junban_only_lopsided", "junban_only_reading",
+                                          "backfill_patterns", "backfill_sentence"}
+    assert all(len(row.options) == 1 for row in member)
 
 
 def test_a_hand_picked_level_turns_automatic_off_in_the_same_change():
@@ -404,9 +471,8 @@ def test_a_change_never_writes_a_key_outside_its_own_row():
     manual = {"logic": {"selection": {"band": "rare", "auto": False}}, "words_per_day": 12}
     assert catalog.change(level, manual, "ja", {"logic.selection.auto": True, "words_per_day": 40})[0] == \
         {"logic.selection.auto": True}
-    later = catalog.ROW["junban_later"]
-    assert catalog.change(later, {}, "ja", {"junban_later_flag": True, "connect_enabled": True})[0] == \
-        {"junban_later_flag": True}
+    known = catalog.ROW["known_from_anki"]
+    assert set(catalog.change(known, {}, "ja", ["marked"])[0]) == {"known_from_anki"}
 
 
 def test_values_read_dotted_paths_per_language_entries_and_defaults_from_a_frozen_copy():
@@ -459,7 +525,7 @@ def test_japanese_rows_hide_for_chinese_and_the_script_shows_only_for_chinese():
 @WITH_MODULES
 def test_module_rows_hide_without_their_module():
     without = {row for row in _shown({"enable_koe": True}, "ja", frozenset({"koe_revealed"}))}
-    for row_id in ("enable_junban", "junban_scope", "put_back", "junban_backfill_fills", "enable_youtube_transcripts",
+    for row_id in ("enable_junban", "junban_scope", "put_back", "backfill_patterns", "enable_youtube_transcripts",
                    "enable_youtube_preview", "enable_koe", "koe_door", "setup_cards"):
         assert row_id not in without, row_id
         assert row_id in _shown({"enable_koe": True}, "ja"), row_id
@@ -546,8 +612,8 @@ def test_find_matches_labels_help_search_words_and_choice_labels():
 
 @WITH_MODULES
 def test_find_reads_japanese_and_full_width_letters():
-    assert "junban_backfill_fills" in catalog.find("パターン", {}, "ja", EVERYTHING)
-    assert "junban_backfill_fills" in catalog.find("例文", {}, "ja", EVERYTHING)
+    assert "backfill_patterns" in catalog.find("パターン", {}, "ja", EVERYTHING)
+    assert "backfill_sentence" in catalog.find("例文", {}, "ja", EVERYTHING)
     assert "phrase_rows" in catalog.find("腑に落ちる", {}, "ja", EVERYTHING)
     assert catalog.find("ＩＧＮＯＲＥ　ＮＡＭＥＳ", {}, "ja", EVERYTHING) == catalog.find("ignore names", {}, "ja",
                                                                                      EVERYTHING)

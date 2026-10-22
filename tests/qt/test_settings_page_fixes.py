@@ -223,8 +223,11 @@ def _move(widget, pos):
 
 
 def test_tablets_show_the_tip_of_the_tablet_under_the_pointer_and_name_their_picks(qapp):
-    tips = S.OPTION_TIPS["junban_only_markers"]
-    opts = [(v, S.OPTIONS["junban_only_markers"][v], tips[v]) for v in ("star", "lopsided", "reading")]
+    # the control's own rule (its rows on the page became switches, Q31): a glyph tablet's tip, its name in words
+    tips = {"star": "High leverage: the words the report stars",
+            "lopsided": "Lopsided: words that come almost entirely from one part of your library",
+            "reading": "Reading: words you'll read but essentially never hear"}
+    opts = [(v, glyph, tips[v]) for v, glyph in (("star", "✦"), ("lopsided", "⚖"), ("reading", "📖"))]
     t = sc.Tablets(opts, multi=True, value=["star", "reading"], tooltip="Only words marked", name="Only words marked")
     t.resize(t.sizeHint())
     t.show()
@@ -404,3 +407,65 @@ def test_anki_miner_seen_after_the_look_shows_the_switch_in_place_of_the_line(qa
     assert catalog.visible(catalog.ROW["connect_enabled"], page._settings(), "ja", page._ctx())
     page.set_found("miner_found", True)                       # already open: nothing again
     assert told == [True] and store.calls == []
+
+
+# --- Q29 / Q31 (laptop build 2): your own cards as one choice; the multi-picks as switches ------------------------ #
+def _written(store, control, new):
+    """A person's change on `control` -> what the page handed the settings service."""
+    before = len(store.calls)
+    control.set_value(new)
+    control.changed.emit(new)
+    return [changes for changes, _update in store.calls[before:]]
+
+
+@pytest.mark.parametrize("chosen, written", [(True, {"junban_order_all": True}), (False, {"junban_order_all": False})])
+def test_your_own_cards_choice_writes_order_all_and_their_tag_stays_open_under_it(qapp, chosen, written):
+    """Q29: *First, in the order you made them* writes False, *In your list's order* True — through the service only;
+    *Their tag* is indented under it and never greyed, under either choice, and writes its own key."""
+    page, store = make_page(dict(ALL_ON, junban_order_all=not chosen, junban_own_tag="immersion"), "ja")
+    view, tag = page.rows["junban_order_all"], page.rows["junban_own_tag"]
+    choice = view.controls[0]
+    assert isinstance(choice, sc.Choice) and choice.values() == [False, True]
+    assert choice.toolTip() and tag.controls[0].toolTip()
+    assert _written(store, choice, chosen) == [written]
+    store.land()
+    assert tag.row.sub and tag.isVisibleTo(page) and tag.controls[0].isEnabled()
+    assert _written(store, tag.controls[0], "immersion 日本語") == [{"junban_own_tag": "immersion 日本語"}]
+
+
+def test_phrases_and_i_plus_one_first_are_switches_hidden_for_chinese_and_at_the_back(qapp):
+    """Q31: two plain switches, each writing its own key; no "First" heading; gone at the back and for Chinese."""
+    page, store = make_page(dict(ALL_ON, junban_phrases=True, junban_ready_first=False), "ja")
+    phrases, ready = page.rows["junban_phrases"], page.rows["junban_ready_first"]
+    assert isinstance(phrases.controls[0], sc.Toggle) and isinstance(ready.controls[0], sc.Toggle)
+    assert phrases.controls[0].value() is True and ready.controls[0].value() is False
+    assert _written(store, ready.controls[0], True) == [{"junban_ready_first": True}]     # both on: they work together
+    assert _written(store, phrases.controls[0], False) == [{"junban_phrases": False}]
+    store.land()
+    assert phrases.isVisibleTo(page) and ready.isVisibleTo(page)
+    store.outside({"junban_unlisted": "back"})
+    assert not phrases.isVisibleTo(page) and not ready.isVisibleTo(page)
+    store.outside({"junban_unlisted": "journey"})
+    assert phrases.isVisibleTo(page) and ready.isVisibleTo(page)
+    store.outside({"target_language": "zh"})
+    assert not phrases.isVisibleTo(page) and not ready.isVisibleTo(page)
+
+
+def test_backfills_fills_are_two_switches_writing_one_list(qapp):
+    """Q31's check: パターン and 例文 were two tablets under "Fill" — a pick-one look; now a switch each."""
+    page, store = make_page(dict(ALL_ON, junban_backfill_fills=["patterns"]), "ja")
+    patterns, sentence = (page.rows[r].controls[0] for r in ("backfill_patterns", "backfill_sentence"))
+    assert isinstance(patterns, sc.Toggle) and patterns.value() is True and sentence.value() is False
+    assert _written(store, sentence, True) == [{"junban_backfill_fills": ["patterns", "sentence"]}]
+    store.land()
+    assert patterns.value() is True and sentence.value() is True
+    assert _written(store, patterns, False) == [{"junban_backfill_fills": ["sentence"]}]
+
+
+def test_no_control_on_the_page_draws_a_few_independent_picks_as_tablets(qapp):
+    """Q31's check, as drawn: every tablets control left on the page is a long set (Count as known in Anki)."""
+    page, _store = make_page(ALL_ON, "ja")
+    tablets = [(view.row.id, c) for view in page.rows.values() for c in view.controls
+               if isinstance(c, sc.Tablets) and not c.is_list]
+    assert [row_id for row_id, _c in tablets] == ["known_from_anki"]
+    assert all(len(c._options) > 3 for _r, c in tablets)

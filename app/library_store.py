@@ -2069,7 +2069,8 @@ class Store:
 
     def move(self, ids, tier, before_id=None, after_id=None, check=None, by="user", explicit=None):
         """Drag: the block keeps its current relative order and lands contiguous before or after the
-        anchor (neither = the top of `tier`). A tier change is Demote / Promote without moving files.
+        anchor (neither = the top of `tier`, `_tier_top`: Soon's past a show the line runs through). A tier
+        change is Demote / Promote without moving files.
         A no-op — an anchor inside `ids`, or every item already in `tier` in the same sequence —
         commits nothing and returns None. `by`: who placed it, as the placement log records it (a
         program's name from the command line's `place --source`, ✅ G1.3-5); explicit when "user", or as
@@ -2242,68 +2243,52 @@ class Store:
                                                 (need + len(excl),)) if r[0] not in excl]
         return ("after", rows[need - 1]) if len(rows) >= need else ("end",)
 
-    def _soon_top(self, excl, mine=None, slots=None):
-        """THE rule for where Soon's top lands (B2-1: the store's one rule; the window asks it, `soon_top`, or passes no
-        place): the first slot below the line (`_line_slot`) — unless the rows either side of it are one show the line
-        runs through (`_one_show`: one group's piece, else one title, else one folder — the view's one row, P-LF-16),
-        then after that show's last file in Soon (`_soon_slots`). Rows that are all of that show (`mine`, default
-        `excl`: per row in `set_tier`, the block in `move`) keep the slot: a reorder within their own show; any other
-        row, or a block holding one, goes after it, so the show is never cut. `slots`: `_soon_slots(excl)` already
-        read (one read for a whole `set_tier`)."""
-        slot, past, below = self._soon_slots(excl) if slots is None else slots
-        if past is None:
-            return slot
-        rows = self._show_rows(excl if mine is None else mine)
-        return slot if rows and all(_one_show(r, below) for r in rows) else past
+    def _soon_top(self, excl):
+        """THE rule for where rows sent to Soon's top land, as one block in the order given (B2-1, P-LF-16 — Sonic: "a
+        soon show should be added after that series": the store's one rule; the window asks it, `soon_top`, or passes
+        no place): the first slot below the line (`_line_slot`) — unless the rows either side of it are one show the
+        line runs through (`_one_show`: the window's one row, P-LF-16), then right after that show's last row in Soon
+        (`_show_end`), whatever the block holds (the show's own episodes too)."""
+        where, below = self._soon_slots(excl)
+        return where if below is None else self._show_end(below, excl)
 
     _SHOW_COLS = ("SELECT i.id, i.piece_id, i.work_id, i.parent_folder, p.kind, i.ord FROM items i "
                   "LEFT JOIN pieces p ON p.id = i.piece_id WHERE ")
 
-    def _show_rows(self, ids):
-        out = []
-        for chunk in _chunks(list(ids), 500):
-            out += self.conn.execute(self._SHOW_COLS + f"i.id IN ({','.join('?' * len(chunk))})", chunk).fetchall()
-        return out
-
     def _soon_slots(self, excl):
-        """(the line's slot, the slot past the show it cuts or None, that show's first Soon row) for rows `excl` sent
-        to Soon's top. The show's Soon files are walked from its first one while they are one show with it (pieces
-        or none: a row with no piece is its title's, else its folder's), skipping `excl`."""
+        """(the line's slot, the first Soon row below it when the rows either side of it are one show, else None) for
+        rows `excl` sent to Soon's top — a few rows read, whatever the show's length."""
         where = self._line_slot("soon", excl)
         if where[0] == "end":
-            return where, None, None
+            return where, None
         cols, lim = self._SHOW_COLS, len(excl) + 1
         if where[0] == "top":
             above = next((r for r in self.conn.execute(cols + "i.tier = 'now' ORDER BY i.ord DESC, i.id DESC LIMIT ?",
                                                        (lim,)) if r[0] not in excl), None)
-            start = None
+            below = self.conn.execute(cols + "i.tier = 'soon' ORDER BY i.ord, i.id LIMIT ?", (lim,))
         else:
             above = self.conn.execute(cols + "i.id = ?", (where[1],)).fetchone()
-            start = above
-        if above is None:
-            return where, None, None
-        below, last = None, None
-        while True:
-            if start is None:
-                batch = self.conn.execute(cols + "i.tier = 'soon' ORDER BY i.ord, i.id LIMIT ?", (lim + 200,))
-            else:
-                batch = self.conn.execute(cols + "i.tier = 'soon' AND (i.ord, i.id) > (?, ?) ORDER BY i.ord, i.id "
-                                          "LIMIT ?", (start[5], start[0], lim + 200))
-            batch = batch.fetchall()
-            for r in batch:
-                if r[0] in excl:
-                    continue
-                if below is None:
-                    if not _one_show(above, r):
-                        return where, None, None
-                    below = r
-                elif not _one_show(r, below):
-                    return where, ("after", last), below
-                last = r[0]
-            if len(batch) < lim + 200:
-                break
-            start = batch[-1]
-        return (where, None, None) if below is None else (where, ("after", last), below)
+            below = above and self.conn.execute(cols + "i.tier = 'soon' AND (i.ord, i.id) > (?, ?) "
+                                                "ORDER BY i.ord, i.id LIMIT ?", (above[5], above[0], lim))
+        below = below and next((r for r in below if r[0] not in excl), None)
+        if above is None or below is None or not _one_show(above, below):
+            return where, None
+        return where, below
+
+    def _show_end(self, below, excl):
+        """("after", the last Soon row of `below`'s show): its piece's last Soon row (the window's row stops at the
+        piece change, as `view_rows` joins it); a row with no piece (an older copy's), its title's — else its
+        folder's — last Soon row with no piece. One indexed read, skipping `excl`."""
+        if below[1] is not None:
+            key, value = "piece_id = ?", below[1]
+        elif below[2] is not None:
+            key, value = "piece_id IS NULL AND work_id = ?", below[2]
+        else:
+            key, value = "piece_id IS NULL AND parent_folder = ?", below[3]
+        last = next((r[0] for r in self.conn.execute(f"SELECT id FROM items WHERE tier = 'soon' AND {key} "
+                                                      f"ORDER BY ord DESC, id DESC LIMIT ?", (value, len(excl) + 1))
+                     if r[0] not in excl), below[0])
+        return ("after", last)
 
     def _folder_last(self, tier, folder, excl):
         """The last row of `folder` (the placement key) in `tier`, skipping `excl`: (id, ord) or None."""
@@ -2315,7 +2300,8 @@ class Store:
 
     def set_tier(self, ids, tier, check=None, by="user", explicit=None):
         """Graduate (→ graduated, `graduated_at` set), Demote, Promote — no file moves (L5). Each item
-        lands after its folder's last row in the new tier, else at the top, in the order given. `by` as
+        lands after its folder's last row in the new tier, else at the top (`_tier_top`: Soon's past a show the
+        line runs through), in the order given. `by` as
         `move`'s (the command line's `finish --source`)."""
         if tier not in TIERS:
             raise ValueError(f"unknown tier {tier!r}")
@@ -2329,17 +2315,15 @@ class Store:
             change = self._change(cmd, "set_tier")
             self._before(change, [rows[i] for i in moving])
             excl = set(moving)
-            groups, slots = {}, None
+            groups, top = {}, None
             for item_id in moving:
                 folder = rows[item_id][4]
                 last = self._folder_last(tier, folder, excl) if folder else None
                 if last:
                     where = ("after", self._past_group(last[0]))                        # LM11 (G4)
-                elif tier == "soon":                                                    # B2-1: per row, by show
-                    slots = self._soon_slots(excl) if slots is None else slots
-                    where = self._soon_top(excl, mine=[item_id], slots=slots)
                 else:
-                    where = self._tier_top(tier, excl)
+                    top = self._tier_top(tier, excl) if top is None else top            # one read a command
+                    where = top
                 groups.setdefault(where, []).append(item_id)
             for where, group in groups.items():
                 self._put(tier, group, where, cmd.version)

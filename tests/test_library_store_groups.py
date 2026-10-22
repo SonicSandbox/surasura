@@ -990,12 +990,12 @@ def test_B2_1_soons_top_lands_after_a_group_the_soon_line_runs_through(language)
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_B2_1_an_episode_of_the_show_the_line_runs_through_keeps_soons_top_inside_its_show(language):
-    """W's own NOW episode sent to Soon's top is a reorder within W: it lands at the slot, beside its show's episodes,
-    never after W's last (out of episode order for nothing)."""
+def test_B2_1_an_episode_of_the_show_the_line_runs_through_lands_after_the_show_too(language):
+    """One answer, whatever the block holds (P-LF-16: "a soon show should be added after that series"): W's own NOW
+    episode sent to Soon's top lands after W's last row as any row would, never between W's episodes."""
     store, w = _straddling(language)
     store.place([w[0]], "soon")
-    assert _block(store, [w[1], w[2], w[0], w[3]])
+    assert _block(store, [w[1], w[2], w[3], w[0]])
     assert pieces_ok(store) is None
     store.close()
 
@@ -1041,9 +1041,9 @@ def test_B2_1_a_block_holding_another_shows_row_goes_after_the_show_never_inside
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_B2_1_a_demote_decides_per_row_so_another_shows_row_never_stays_inside_the_show(language):
-    """`set_tier` places each row by its own show: a loose file demoted beside one of W's episodes goes after W's last
-    file, never into the slot inside W (which W's own episode may keep)."""
+def test_B2_1_a_demote_of_a_shows_episode_and_a_loose_file_never_leaves_either_inside_the_show(language):
+    """`set_tier`: W's episode goes after its folder's last row, the loose file to Soon's top — after W's last row,
+    never into the slot inside W."""
     store, w = _straddling(language)
     loose = next(i for i in store.ids("goal") if not store.item(i)["parent_folder"])
     store.set_tier([w[0], loose], "soon")
@@ -1066,6 +1066,25 @@ def test_B2_1_a_show_with_no_pieces_across_the_line_is_still_one_show(language):
     assert [store.item(i)["piece_id"] for i in w] == [None] * 4
     incoming = [r for r in _runs(store, "goal") if len(r[1]) == 4][0][1][0]
     store.move([incoming], "soon")
+    current = store.ids("now") + store.ids("soon")
+    assert current[current.index(w[-1]) + 1] == incoming and _block(store, w)
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_B2_1_a_long_show_across_the_line_is_walked_to_its_last_file(language):
+    """A show with many episodes below the line (more than one read's worth): Soon's top lands after its very last
+    file, never part-way down it."""
+    store = migrated(language, shows=2, episodes=30)
+    store.set_soon_line(len(store.ids("now")))
+    loose = next(i for i in store.ids("now") if not store.item(i)["parent_folder"])
+    store.move([loose], "now", before_id=store.ids("now")[0])
+    w = _runs(store, "now")[-1][1]
+    assert len(w) == 30
+    store.set_soon_line(len(store.ids("now")) - 25)
+    incoming = next(i for i in store.ids("goal") if store.item(i)["parent_folder"])
+    assert store.soon_top([incoming]) == ("after", w[-1])
+    store.place([incoming], "soon")
     current = store.ids("now") + store.ids("soon")
     assert current[current.index(w[-1]) + 1] == incoming and _block(store, w)
     store.close()

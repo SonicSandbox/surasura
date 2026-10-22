@@ -1833,8 +1833,8 @@ def test_set_soon_line_and_the_library_options_undo(language):
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_soons_top_is_the_first_slot_below_the_line(language):
     """05 §5.1: "the top of Soon" is the first slot below the line, counted without the rows being placed — an item
-    sent there from NOW lands first in Soon, never bounced back above the line — after the show the line then runs
-    through (Soon's first show, its first episode taken up into NOW: B2-1, one row), never inside it."""
+    sent there from NOW is never bounced back above the line; with the line then running through Soon's first show
+    (its first episode taken up into NOW), it lands after that show (B2-1: one row), never inside it."""
     store = migrated(language, shows=3, episodes=4)
     now, soon = store.ids("now"), store.ids("soon")
     show = [i for i in soon if store.item(i)["work_id"] == store.item(soon[0])["work_id"]]

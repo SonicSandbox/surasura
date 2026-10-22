@@ -545,10 +545,14 @@ class AnkiWindow(windows.SecondaryWindow):
             self.say(strings.ANKI_LAST.format(ago=ago, n=known.last_added))
 
     def _automation_state(self, state):
-        """The automatic sync wrote this language's known words: the numbers read again (the Tk `refresh_known`)."""
+        """The automatic sync wrote this language's known words: the numbers read again (the Tk `refresh_known`). A
+        sync by hand ends there too (`Automation.anki_synced`, told before the window hears its result): while the
+        window's own job has ended, its `_ended` — right behind — reads them, once (AD-6, S19)."""
         if getattr(state, "sync", None) == "synced" and getattr(state, "language", None) == self.language \
                 and state.seq != self._automation_seq:
             self._automation_seq = state.seq
+            if self.job is not None and self.job.state not in jobs_module.LIVE:
+                return
             self.refresh_known()
 
     # --- the jobs ----------------------------------------------------------------------------------------------- #

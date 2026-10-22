@@ -265,6 +265,17 @@ class AutoSync:
         except Exception as e:
             problem = str(e)
             print(f"Anki sync skipped: {e}")
+        failed = (result is None and not closed) or (result is not None and bool(result.error))
+        job.finish(ok=not failed, message=problem or (result.error if result is not None else None))
+        self.ended(result, language, closed, problem)
+
+    def ended(self, result, language, closed=False, problem=None):
+        """(The sync's own thread.) Every sync's end, automatic or by hand (`Automation.anki_synced`: the Anki window's
+        *Sync now*, the setup wizard's first sync): the bar told, the 5-minute wait counted from now, and the result's
+        work (`result`) queued for the worker."""
+        o = self._owner
+        if result is not None or closed:
+            self._last = o.clock()
         if closed:
             o.publish(sync=CLOSED, message="Anki is closed")
         elif result is None:
@@ -277,9 +288,6 @@ class AutoSync:
                 o.worker.put(o._read_known)
         else:
             o.publish(sync=SYNCED, added=result.added, message=None)     # its count is another language's (D31)
-
-        failed = (result is None and not closed) or (result is not None and bool(result.error))
-        job.finish(ok=not failed, message=problem or (result.error if result is not None else None))
         if result is not None:
             o.worker.put(self.result, result, language)
 
@@ -567,6 +575,13 @@ class Automation:
             return
         self.worker.put(self._read_known)
         self.recheck()
+
+    def anki_synced(self, result, language):
+        """A sync by hand ended (the Anki window's *Sync now*, Replace, Restore; the setup wizard's first sync): it ends
+        as the automatic one does (`AutoSync.ended`). The job's own thread; returns at once. Nothing once closed."""
+        if self.closed:
+            return
+        self.sync.ended(result, language or self.language)
 
     def recheck(self):
         """Is the journey still current? (`_schedule_journey_state`) — the Generate button's mark: one

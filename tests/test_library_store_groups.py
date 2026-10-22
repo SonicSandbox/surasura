@@ -843,3 +843,141 @@ def test_G1_a_part_of_one_title_across_the_soon_line_is_rebuilt_as_two_parts(lan
     assert _piece(store, m2[-1]) != _piece(store, m2[0]) and _members(store, _piece(store, m2[0])) == m2[:-1]
     assert pieces_ok(store) is None
     store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_IK12_a_named_group_dropped_onto_a_show_keeps_its_name_and_one_undo_puts_it_all_back(language):
+    """The window's drop is `join([target, dragged], how="group")` (the target first keeps the place): a named group
+    dragged onto a show — or onto a group with no name of its own — must keep the learner's name, not fall back to the
+    derived "<first show> + N more"; one undo puts back both pieces, the name on the dragged group and every row."""
+    store = _three(language)
+    (ga, ma), (gb, mb), (gc, mc) = [r for r in _runs(store, "goal") if len(r[1]) == 4][:3]
+    (sa, msa), (sb, msb) = [r for r in _runs(store, "soon") if len(r[1]) == 4][:2]
+    store.join([ga, gb], how="group")
+    label = names(language)[44]
+    store.rename_piece(ga, label)
+    before = _state(store)
+    change = store.join([gc, ga], how="group")                  # the named group dragged onto show C
+    assert _kind(store, gc) == "group" and _title(store, gc) == label
+    assert _members(store, gc) == mc + ma + mb and _kind(store, ga) is None
+    assert pieces_ok(store) is None
+    store.undo(change)
+    assert _state(store) == before and _title(store, ga) == label
+    store.join([sa, sb], how="group")                           # an unnamed group as the target
+    change = store.join([sa, ga], how="group")
+    assert _title(store, sa) == label and _members(store, sa) == msa + msb + ma + mb
+    store.undo(change)
+    assert _title(store, ga) == label and _title(store, sa) is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_IK12_two_named_groups_onto_a_show_take_the_derived_name_and_a_named_target_keeps_its_own(language):
+    """Which name would be a guess when two named groups come in at once: neither (the derived name; Rename sets one).
+    A target with a name of its own keeps it, whatever comes in (LM11: a group joined onto keeps its name)."""
+    store = _three(language)
+    (ga, _ma), (gb, _mb), (gc, _mc) = [r for r in _runs(store, "goal") if len(r[1]) == 4][:3]
+    (sa, _msa), (sb, _msb), (sc, _msc) = [r for r in _runs(store, "soon") if len(r[1]) == 4][:3]
+    store.join([ga, gb], how="group")
+    store.rename_piece(ga, names(language)[44])
+    store.join([sa, sb], how="group")
+    store.rename_piece(sa, names(language)[46])
+    change = store.join([gc, ga, sa], how="group")
+    assert _kind(store, gc) == "group" and _title(store, gc) is None
+    store.undo(change)
+    change = store.join([ga, sa], how="group")
+    assert _title(store, ga) == names(language)[44]
+    store.undo(change)
+    part = store.group(item_ids=[_members(store, sa)[0]])       # rows taken out of a named group: it keeps its name
+    assert part is None or _title(store, sa) == names(language)[46]
+    store.close()
+
+
+def _straddling(language):
+    """Three shows in each tier; the Soon line through NOW's last show W (its last two episodes in Soon: W's NOW run
+    and Soon run, one row in the window, P-LF-16). -> (store, W's episodes)."""
+    store = _three(language)
+    loose = next(i for i in store.ids("now") if not store.item(i)["parent_folder"])
+    store.move([loose], "now", before_id=store.ids("now")[0])  # a show's part ends NOW
+    w = _runs(store, "now")[-1][1]
+    assert len(w) == 4
+    store.set_soon_line(len(store.ids("now")) - 2)
+    assert [store.item(i)["tier"] for i in w] == ["now", "now", "soon", "soon"]
+    return store, w
+
+
+def _block(store, ids):
+    """Whether `ids` stand side by side in Current, in this order."""
+    current = store.ids("now") + store.ids("soon")
+    at = current.index(ids[0])
+    return current[at:at + len(ids)] == list(ids)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("how", ["place", "move", "set_tier", "arrival"])
+def test_B2_1_soons_top_lands_after_a_show_the_soon_line_runs_through(language, how):
+    """New arrivals' Soon (`place('soon')`), a move or a Demote to Soon with no anchor: "the top of Soon" is the first
+    slot below the line — but with the line inside a show (W's NOW and Soon episodes one row), that slot is between
+    W's episodes, so a row sent there split W in two rows. It lands after W's last file, as the window's
+    `drag.soon_slot` does: one rule. One undo puts it back."""
+    store, w = _straddling(language)
+    incoming = [r for r in _runs(store, "goal") if len(r[1]) == 4][0][1][0]
+    if how == "arrival":
+        store.set_tier([incoming], "arrivals")
+    before = _state(store)
+    if how in ("place", "arrival"):
+        change = store.place([incoming], "soon")
+    elif how == "move":
+        change = store.move([incoming], "soon")
+    else:
+        change = store.set_tier([incoming], "soon")
+    current = store.ids("now") + store.ids("soon")
+    assert _block(store, w), "W stays one run of episodes"
+    assert current[current.index(w[-1]) + 1] == incoming, "after W's last file"
+    assert store.item(incoming)["tier"] == "soon" and pieces_ok(store) is None
+    store.undo(change)
+    assert _state(store) == before
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_B2_1_soons_top_lands_after_a_group_the_soon_line_runs_through(language):
+    """A group is one piece across the line (LM11b G1): Soon's top lands after its last row, never inside it."""
+    store = _three(language)
+    loose = next(i for i in store.ids("now") if not store.item(i)["parent_folder"])
+    store.move([loose], "now", before_id=store.ids("now")[0])  # two shows end NOW
+    (p2, m2), (pl, ml) = _runs(store, "now")[-2:]
+    store.join([p2, pl], how="group")
+    store.set_soon_line(len(store.ids("now")) - 1)
+    in_current = lambda: [i for i in store.ids("now") + store.ids("soon") if _piece(store, i) == p2]  # noqa: E731
+    members = in_current()
+    assert store.item(members[-1])["tier"] == "soon" and store.item(members[-2])["tier"] == "now"
+    incoming = [r for r in _runs(store, "goal") if len(r[1]) == 4][0][1][0]
+    store.place([incoming], "soon")
+    current = store.ids("now") + store.ids("soon")
+    assert in_current() == members and _kind(store, p2) == "group"
+    assert current[current.index(members[-1]) + 1] == incoming and _piece(store, incoming) != p2
+    assert pieces_ok(store) is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_B2_1_an_episode_of_the_show_the_line_runs_through_keeps_soons_top_inside_its_show(language):
+    """W's own NOW episode sent to Soon's top is a reorder within W: it lands at the slot, beside its show's episodes,
+    never after W's last (out of episode order for nothing)."""
+    store, w = _straddling(language)
+    store.place([w[0]], "soon")
+    assert _block(store, [w[1], w[2], w[0], w[3]])
+    assert pieces_ok(store) is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_B2_1_with_no_show_across_the_line_soons_top_is_unchanged(language):
+    """The line between two shows: Soon's top is the first slot below it, as before."""
+    store = _three(language)
+    incoming = [r for r in _runs(store, "goal") if len(r[1]) == 4][0][1][0]
+    first = store.ids("soon")[0]
+    store.place([incoming], "soon")
+    assert store.ids("soon")[:2] == [incoming, first]
+    store.close()

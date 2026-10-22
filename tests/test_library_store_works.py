@@ -1000,9 +1000,10 @@ def test_place_soon_and_after_show(language):
     before it in Current, before the next when only later episodes are there, and to Current's top when its title is
     only in Finished or 6+ Months (Q4-9). Each is one undoable command."""
     store = migrated(language, shows=2, episodes=4)
-    now = store.ids("now")
+    now, soon = store.ids("now"), store.ids("soon")
+    show = [i for i in soon if _work(store, i) == _work(store, soon[0])]
     change = store.place([now[0]], "soon")
-    assert store.ids("soon")[0] == now[0]
+    assert store.ids("soon")[len(show) - 1] == now[0], "after the show the line then runs through (B2-1)"
     store.undo(change)
     assert store.ids("now") == now
     goal_show = [i for i in store.ids("goal") if store.item(i)["parent_folder"]]

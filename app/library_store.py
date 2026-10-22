@@ -2212,6 +2212,11 @@ class Store:
         return self.move(moving, tier, after_id=target)
 
     def _tier_top(self, tier, excl):
+        """Where "the top of `tier`" is (`_line_slot`); Soon's never inside a show the line runs through
+        (`_soon_top`)."""
+        return self._soon_top(excl) if tier == "soon" else self._line_slot(tier, excl)
+
+    def _line_slot(self, tier, excl):
         """Where "the top of `tier`" is. Soon's top is the first slot below the Soon line (L2.2 05 §5.1), counted
         without the rows being placed: rows leaving NOW let the line take Soon's first rows up, so the slot is after
         Current's `soon_line`-th row once they're gone; with fewer rows than the line nothing can sit below it (the
@@ -2230,6 +2235,40 @@ class Store:
         rows = [r[0] for r in self.conn.execute("SELECT id FROM items WHERE tier = 'soon' ORDER BY ord, id LIMIT ?",
                                                 (need + len(excl),)) if r[0] not in excl]
         return ("after", rows[need - 1]) if len(rows) >= need else ("end",)
+
+    def _soon_top(self, excl):
+        """Soon's top (`_tier_top`) never inside a show the Soon line runs through (B2-1, the window's
+        `drag.soon_slot`: one rule): the rows either side of the slot one show — one group's piece (a group is one
+        piece across the line), else one title, else one folder (`view_rows._same_show`, the view's one row, P-LF-16) —
+        and it lands after that show's last file in Soon instead. A row of that show itself keeps the slot (a reorder
+        within it)."""
+        where = self._line_slot("soon", excl)
+        if where[0] == "end":
+            return where
+        cols = ("SELECT i.id, i.piece_id, i.work_id, i.parent_folder, p.kind, i.ord FROM items i "
+                "LEFT JOIN pieces p ON p.id = i.piece_id WHERE ")
+        lim = len(excl) + 1
+        if where[0] == "top":
+            above = next((r for r in self.conn.execute(cols + "i.tier = 'now' ORDER BY i.ord DESC, i.id DESC LIMIT ?",
+                                                       (lim,)) if r[0] not in excl), None)
+            below = next((r for r in self.conn.execute(cols + "i.tier = 'soon' ORDER BY i.ord, i.id LIMIT ?",
+                                                       (lim,)) if r[0] not in excl), None)
+        else:
+            above = self.conn.execute(cols + "i.id = ?", (where[1],)).fetchone()
+            below = above and next((r for r in self.conn.execute(
+                cols + "i.tier = 'soon' AND (i.ord, i.id) > (?, ?) ORDER BY i.ord, i.id LIMIT ?",
+                (above[5], above[0], lim)) if r[0] not in excl), None)
+        if above is None or below is None or below[1] is None or not _one_show(above, below):
+            return where
+        for chunk in _chunks(list(excl), 500):
+            mine = self.conn.execute(cols.replace("WHERE ", "WHERE i.id IN (" + ",".join("?" * len(chunk)) + ")"),
+                                     chunk).fetchall()
+            if any(_one_show(r, below) for r in mine):
+                return where
+        last = next((r[0] for r in self.conn.execute("SELECT id FROM items WHERE piece_id = ? AND tier = 'soon' "
+                                                      "ORDER BY ord DESC, id DESC LIMIT ?", (below[1], lim))
+                     if r[0] not in excl), None)
+        return ("after", last) if last is not None else where
 
     def _folder_last(self, tier, folder, excl):
         """The last row of `folder` (the placement key) in `tier`, skipping `excl`: (id, ord) or None."""
@@ -3752,8 +3791,12 @@ class Store:
         if merged is not None:
             change.works = merged.works          # P-LF-4: `undo` puts the titles back too (`_undo_works`)
         if how == "group":                       # LM11: kind and name, put back by the undo's value check
-            if not self._is_group(target):
-                self._set_piece(cmd, target, "title", None)
+            had = self.conn.execute("SELECT kind, title FROM pieces WHERE id = ?", (target,)).fetchone()
+            if had is None or had[0] != "group" or had[1] is None:
+                # IK-12: a target with no name of its own takes the one named group joined whole onto it (a named
+                # group dragged onto a show keeps its name); two named, or none: the derived name
+                named = [g[1] for g in gone if g and g[2] == "group" and g[1] is not None]
+                self._set_piece(cmd, target, "title", named[0] if len(named) == 1 else None)
             self._set_piece(cmd, target, "kind", "group")
         # LM11 G2: the group made and every group a row was taken from, settled here (the settling step never meets a
         # piece this body re-pieced): none is left holding one work's items
@@ -5447,6 +5490,16 @@ def _work_ids_of(record):
 
 
 Pin = namedtuple("Pin", "item_id rel_path tier pinned_at")
+def _one_show(a, b):
+    """Two rows (id, piece, work, folder, piece kind, ord) of one row in the view across the Soon line (P-LF-16,
+    `view_rows._same_show` and its group rule): a group's piece, else one title, else one folder."""
+    if a[4] == "group" or b[4] == "group":
+        return a[1] is not None and a[1] == b[1]
+    if a[2] is not None or b[2] is not None:
+        return a[2] == b[2]
+    return a[3] is not None and a[3] == b[3]
+
+
 PLACING_TARGETS = ("wait", "top", "after-show", "soon", "goal", "finished")
 
 

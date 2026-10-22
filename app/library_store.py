@@ -3752,8 +3752,12 @@ class Store:
         if merged is not None:
             change.works = merged.works          # P-LF-4: `undo` puts the titles back too (`_undo_works`)
         if how == "group":                       # LM11: kind and name, put back by the undo's value check
-            if not self._is_group(target):
-                self._set_piece(cmd, target, "title", None)
+            had = self.conn.execute("SELECT kind, title FROM pieces WHERE id = ?", (target,)).fetchone()
+            if had is None or had[0] != "group" or had[1] is None:
+                # IK-12: a target with no name of its own takes the one named group joined whole onto it (a named
+                # group dragged onto a show keeps its name); two named, or none: the derived name
+                named = [g[1] for g in gone if g and g[2] == "group" and g[1] is not None]
+                self._set_piece(cmd, target, "title", named[0] if len(named) == 1 else None)
             self._set_piece(cmd, target, "kind", "group")
         # LM11 G2: the group made and every group a row was taken from, settled here (the settling step never meets a
         # piece this body re-pieced): none is left holding one work's items

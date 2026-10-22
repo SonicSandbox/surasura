@@ -223,11 +223,8 @@ def _move(widget, pos):
 
 
 def test_tablets_show_the_tip_of_the_tablet_under_the_pointer_and_name_their_picks(qapp):
-    # the control's own rule (its rows on the page became switches, Q31): a glyph tablet's tip, its name in words
-    tips = {"star": "High leverage: the words the report stars",
-            "lopsided": "Lopsided: words that come almost entirely from one part of your library",
-            "reading": "Reading: words you'll read but essentially never hear"}
-    opts = [(v, glyph, tips[v]) for v, glyph in (("star", "✦"), ("lopsided", "⚖"), ("reading", "📖"))]
+    tips = S.OPTION_TIPS["junban_only_markers"]
+    opts = [(v, S.OPTIONS["junban_only_markers"][v], tips[v]) for v in ("star", "lopsided", "reading")]
     t = sc.Tablets(opts, multi=True, value=["star", "reading"], tooltip="Only words marked", name="Only words marked")
     t.resize(t.sizeHint())
     t.show()
@@ -451,6 +448,17 @@ def test_phrases_and_i_plus_one_first_are_switches_hidden_for_chinese_and_at_the
     assert not phrases.isVisibleTo(page) and not ready.isVisibleTo(page)
 
 
+def test_only_words_marked_is_glyph_tablets_again_writing_one_list(qapp):
+    """IK-4: with the tick rule, ✦ ⚖ 📖 are tablets again — more pictures, fewer words — one list, each tablet's own
+    tip and its name in words for a screen reader."""
+    page, store = make_page(dict(ALL_ON, junban_only_markers=["Reading"]), "ja")      # hand-edited: read as Junban does
+    control = page.rows["junban_only_markers"].controls[0]
+    assert isinstance(control, sc.Tablets) and control.multi and control.value() == ["reading"]
+    assert [label for _v, label, _t in control._options] == ["✦", "⚖", "📖"]
+    assert all(tip for _v, _l, tip in control._options)
+    assert _written(store, control, ["star", "reading"]) == [{"junban_only_markers": ["star", "reading"]}]
+
+
 def test_backfills_fills_are_two_switches_writing_one_list(qapp):
     """Q31's check: パターン and 例文 were two tablets under "Fill" — a pick-one look; now a switch each."""
     page, store = make_page(dict(ALL_ON, junban_backfill_fills=["patterns"]), "ja")
@@ -462,10 +470,37 @@ def test_backfills_fills_are_two_switches_writing_one_list(qapp):
     assert _written(store, patterns, False) == [{"junban_backfill_fills": ["sentence"]}]
 
 
-def test_no_control_on_the_page_draws_a_few_independent_picks_as_tablets(qapp):
-    """Q31's check, as drawn: every tablets control left on the page is a long set (Count as known in Anki)."""
+def test_no_multi_pick_on_the_page_paints_a_choices_vein(qapp, monkeypatch):
+    """Q31 / IK-1, as drawn: Sonic's "the line like what i expected for mutually exclusive options" — every tablets
+    row on the page is a multi-pick, and each paints a tick on each lit tablet and no vein at all."""
+    page, _store = make_page(dict(ALL_ON, known_from_anki=["suspended", "flag:3"], junban_only_markers=["star"]), "ja")
+    tablets = {view.row.id: c for view in page.rows.values() for c in view.controls
+               if isinstance(c, sc.Tablets) and not c.is_list}
+    assert set(tablets) == {"known_from_anki", "junban_only_markers"}
+    veins, ticks = [], []
+    monkeypatch.setattr(sc, "paint_vein", lambda *a, **k: veins.append(a))
+    monkeypatch.setattr(sc, "paint_tick", lambda *a, **k: ticks.append(a))
+    for row_id, control in tablets.items():
+        assert control.multi, row_id
+        control.resize(control.sizeHint())
+        del veins[:], ticks[:]
+        control.grab()                                        # one paint of this control alone
+        assert veins == [], row_id
+        assert len(ticks) == len(control.value()), row_id
+
+
+def test_a_change_settles_through_the_deepest_widget_in_the_same_turn(qapp):
+    """AD-1's stricter check found it: a size change climbs one level a layout pass, and Your setup's line sits 5 levels
+    under the body — four passes left the body a turn late, the page squeezed a row above to fit, then slid 8 px under
+    the hand. One pass per level, from the deepest widget the page builds, and one for the body the scroll area
+    resizes."""
+    from PyQt6.QtWidgets import QWidget
     page, _store = make_page(ALL_ON, "ja")
-    tablets = [(view.row.id, c) for view in page.rows.values() for c in view.controls
-               if isinstance(c, sc.Tablets) and not c.is_list]
-    assert [row_id for row_id, _c in tablets] == ["known_from_anki"]
-    assert all(len(c._options) > 3 for _r, c in tablets)
+
+    def depth(widget):
+        levels = 0
+        while widget is not None and widget is not page.body:
+            widget, levels = widget.parentWidget(), levels + 1
+        return levels
+    deepest = max(depth(w) for w in page.body.findChildren(QWidget))
+    assert depth(page.rows["setup_cards"].help) <= deepest < sp.SETTLE_PASSES

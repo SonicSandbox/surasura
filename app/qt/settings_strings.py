@@ -63,6 +63,7 @@ FOLDER_PICK_TITLE = "Where videos are looked for"
 ADD = "Add"                                      # an empty bed's words when the page names none
 REMOVE_NAME = "Remove {item}"                    # a list tablet's ✕, for screen readers (the accessible description)
 CROSS = "✕"
+TICK = "✓"                                       # a multi-pick tablet's mark when lit (Q31: never a choice's vein)
 PICKED_NONE = "None picked"                       # a set of tablets with none picked, for screen readers
 STATUS_NAME = "{name}: {words}"                  # the status mark, for screen readers
 
@@ -78,7 +79,7 @@ SECTIONS = {
 GROUPS = {
     "counts_as_known": "What counts as known", "from_library": "Cards from your library",
     "in_anki": "Cards already in Anki", "anki": "Anki", "names": "Names", "words_phrases": "Words and phrases",
-    "houseki": "Houseki tools", "not_on_list": "Cards not on your list", "only_markers": "Only words marked",
+    "houseki": "Houseki tools", "not_on_list": "Cards not on your list",
 }
 
 # --- the doors (a window, or an action, a row opens) ---------------------------------------------------------------- #
@@ -179,10 +180,11 @@ ROWS = {
                              "anyway. Turn this on if your subtitles are already synced. hato’s untimed subtitles "
                              "still wait", "trust timing synced subtitles not timed tsubasa"),
     # Q29: one choice — where your own cards go — and the tag that marks them under it
-    "junban_order_all": ("Your own cards", "The cards you make yourself, never tagged, flagged or suspended",
+    "junban_order_all": ("Your own cards", "The cards you make yourself, never marked or suspended as not on your list",
                          "First: the cards you made yourself go ahead of the ones Surasura Connect makes, in the order "
                          "you made them. In your list's order: they go among Connect's, by your list. Either way they "
-                         "are never tagged, flagged or suspended", "own cards first order all list manual yomitan"),
+                         "are never marked or suspended as not on your list", "own cards first order all list manual "
+                         "yomitan"),
     "junban_own_tag": ("Their tag", "Every card carrying it is yours too, whenever you made it",
                        "Type a tag (immersion): every card carrying it counts as your own, even one made before "
                        "Connect's first card, so it goes as chosen above and is never suspended. Empty: your own cards "
@@ -264,15 +266,11 @@ ROWS = {
     "junban_tag_markers": ("Tag ✦ ⚖ 📖 markers", "As sub-tags of the tag below",
                            "Also adds the word's markers as sub-tags — Surasura::star, ::lopsided, ::reading — so you "
                            "can build a filtered deck on one of them", "markers star lopsided reading tag"),
-    "junban_only_star": ("✦ High leverage", "The words the report stars",
-                         "Reorder only the words carrying a mark switched on here; the rest keep their order, at the "
-                         "back. All off: every word", "only markers star high leverage filter"),
-    "junban_only_lopsided": ("⚖ Lopsided", "Words that come almost entirely from one part of your library",
-                             "Reorder only the words carrying a mark switched on here; the rest keep their order, at "
-                             "the back. All off: every word", "only markers lopsided filter"),
-    "junban_only_reading": ("📖 Reading", "Words you'll read but essentially never hear",
-                            "Reorder only the words carrying a mark switched on here; the rest keep their order, at "
-                            "the back. All off: every word", "only markers reading filter"),
+    # IK-4: glyph tablets again — a tick on each one picked (Q31's rule), never a choice's vein
+    "junban_only_markers": ("Only words marked", "None picked: every word",
+                            "Reorder only the words carrying one of these marks; the rest keep their order, at the "
+                            "back. While one is picked, Idioms and set phrases and i+1 first don't apply",
+                            "only markers star lopsided reading filter high leverage"),
     "junban_tag": ("Tag the notes I move", "Empty: no tag",
                    "Adds this tag to every note whose card moved. Restore takes it back off", "tag notes moved"),
     "junban_chunk_size": ("Cards per write", "", "How many cards go to Anki in one request", "chunk cards per write"),
@@ -499,8 +497,7 @@ OPTIONS = {
     "junban_scope": {"deck": "This deck", "all": "All decks"},
     "junban_order": {"content": "As I’ll meet it", "priority": "By leverage"},
     "junban_unlisted": {"list_first": "After it", "journey": "Mixed in", "back": "At the back"},
-    "junban_only_star": {"star": "✦"}, "junban_only_lopsided": {"lopsided": "⚖"},
-    "junban_only_reading": {"reading": "📖"},
+    "junban_only_markers": {"star": "✦", "lopsided": "⚖", "reading": "📖"},
     "backfill_patterns": {"patterns": FILLS["patterns"]}, "backfill_sentence": {"sentence": FILLS["sentence"]},
     "junban_backfill_cards": {"all": "All", "new": "New only"},
     "strategy": {"freq": "Level", "coverage": "Coverage %"},
@@ -524,6 +521,9 @@ OPTION_LINES = {
 }
 # An option's own tooltip (a choice's or a tablet's), where its label alone doesn't say it
 OPTION_TIPS = {
+    "junban_only_markers": {"star": "High leverage: the words the report stars",
+                            "lopsided": "Lopsided: words that come almost entirely from one part of your library",
+                            "reading": "Reading: words you'll read but essentially never hear"},
     "junban_order_all": {False: "Your own cards go ahead of Connect's, in the order you made them",
                          True: "Your own cards go among Connect's, in your list's order"},
 }

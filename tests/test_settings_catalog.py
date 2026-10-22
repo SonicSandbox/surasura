@@ -69,6 +69,31 @@ def _places():
     return places
 
 
+def _switches_apart():
+    """AD-8: a list setting's switches (Q31) count as one place only while they sit together — next to each other in
+    `ROWS`, in one section; -> {key: [(row id, section)]} for each key whose switches don't."""
+    by_key = {}
+    for i, row in enumerate(catalog.ROWS):
+        if catalog._member(row):
+            by_key.setdefault(row.keys[0], []).append((i, row.id, row.section))
+    return {key: [(row_id, section) for _i, row_id, section in found] for key, found in by_key.items()
+            if len({section for _i, _r, section in found}) > 1
+            or [i for i, _r, _s in found] != list(range(found[0][0], found[0][0] + len(found)))}
+
+
+def test_one_list_settings_switches_sit_together_or_the_one_place_rule_fails(monkeypatch):
+    """AD-8: the rule above counts a list's switches as one place; split across sections, or with another row between
+    them, they are two places a person has to find — the check says so."""
+    assert _switches_apart() == {}
+    rows = list(catalog.ROWS)
+    i = next(n for n, row in enumerate(rows) if row.id == "backfill_sentence")
+    moved = rows.pop(i)
+    monkeypatch.setattr(catalog, "ROWS", tuple(rows[:i + 1] + [moved] + rows[i + 1:]))      # a row between them
+    assert "junban_backfill_fills" in _switches_apart()
+    monkeypatch.setattr(catalog, "ROWS", tuple(rows[:i] + [moved._replace(section="junban")] + rows[i:]))
+    assert _switches_apart()["junban_backfill_fills"][-1] == ("backfill_sentence", "junban")
+
+
 def _owner(key):
     return next((module for prefix, module in OWNERS if key.startswith(prefix)), None)
 
@@ -83,6 +108,8 @@ def test_every_installed_placed_setting_is_in_exactly_one_row_or_not_shown():
     assert not missing, f"no row shows these and NOT_SHOWN doesn't name them: {missing}"
     twice = {key: where for key, where in places.items() if len(where) > 1}
     assert not twice, f"settings in more than one place: {twice}"
+    apart = _switches_apart()
+    assert not apart, f"one list setting's switches not side by side in one section: {apart}"
     assert all(reason.strip() for reason in catalog.NOT_SHOWN.values()), "every NOT_SHOWN key says why"
     unfilled = _unfilled_slots()
     assert not unfilled, f"rows the page leaves an empty slot for that nothing fills: {unfilled}"
@@ -299,10 +326,13 @@ def test_tablets_write_a_list_in_the_settings_order_or_only_the_bool_keys_that_f
     assert catalog.change(catalog.ROW["backfill_patterns"], settings, "ja", False)[0] == {"junban_backfill_fills": []}
     assert catalog.change(catalog.ROW["backfill_patterns"], settings, "ja", True) == ({}, None)      # already there
     # a value the file holds that no switch names (hand-edited) is kept, never dropped
-    assert catalog.change(catalog.ROW["junban_only_star"], {"junban_only_markers": ["reading", "rare"]}, "ja",
-                          True)[0] == {"junban_only_markers": ["star", "reading", "rare"]}
-    assert catalog.value(catalog.ROW["junban_only_reading"], {"junban_only_markers": ["reading"]}, "ja") is True
-    assert catalog.value(catalog.ROW["junban_only_star"], {"junban_only_markers": "star"}, "ja") is False
+    assert catalog.change(catalog.ROW["backfill_sentence"], {"junban_backfill_fills": ["patterns", "glossary"]}, "ja",
+                          True)[0] == {"junban_backfill_fills": ["patterns", "sentence", "glossary"]}
+    assert catalog.value(catalog.ROW["backfill_sentence"], {"junban_backfill_fills": ["sentence"]}, "ja") is True
+    assert catalog.value(catalog.ROW["backfill_patterns"], {"junban_backfill_fills": "patterns"}, "ja") is False
+    # IK-4: ✦ ⚖ 📖 are glyph tablets again, written in the marks' order
+    assert catalog.change(catalog.ROW["junban_only_markers"], {}, "ja", ["reading", "star"])[0] == \
+        {"junban_only_markers": ["star", "reading"]}
     # several bool keys: a switch each, only its own key written
     flag = catalog.ROW["junban_later_flag"]
     assert catalog.change(flag, {}, "ja", True) == ({"junban_later_flag": True}, None)
@@ -329,6 +359,10 @@ def test_your_own_cards_is_one_choice_and_their_tag_sits_under_it_never_greyed()
         assert {"junban_order_all", "junban_own_tag"} <= shown, order_all
     assert all(S.OPTION_TIPS["junban_order_all"].get(v) for v in (False, True))     # each choice says what it does
     assert "suspended" in tag.tip and "suspended" in row.tip
+    # IK-6: with *Tag the notes I move* filled in, a card of yours that moves is tagged — what never happens to it is
+    # Junban's not-on-your-list marking
+    for words in (row.help, row.tip):
+        assert "never tagged" not in words and "never marked or suspended as not on your list" in words, words
 
 
 @WITH_MODULES
@@ -345,19 +379,47 @@ def test_phrases_and_i_plus_one_first_are_two_switches_for_japanese_not_at_the_b
         assert row_id not in _shown({"junban_unlisted": "back"}, "ja")
         assert row_id not in _shown({}, "zh")
         assert row_id not in _shown({"enable_junban": False}, "ja")
+        # IK-3: Junban's own rule — a marker filter moves only the chosen words, so neither switch is asked then
+        assert row_id not in _shown({"junban_only_markers": ["star"]}, "ja")
+        assert row_id not in _shown({"junban_only_markers": ["Reading"]}, "ja")      # hand-edited, read as Junban does
+        assert row_id in _shown({"junban_only_markers": ["sparkle"]}, "ja")         # no mark Junban knows: no filter
     assert "junban_first" not in catalog.ROW and "junban_first" not in S.ROWS
     assert catalog.ROW["junban_ready_first"].label.startswith("i+1 first: ")
 
 
+@WITH_MODULES
+def test_the_first_switches_ask_junbans_own_rule_and_hide_when_it_cant_be_asked(monkeypatch):
+    """IK-3: the page asks `reposition.first_applies` — the one rule the run decides by — never a copy of it; a Junban
+    that can't be imported (an optional module, half there) hides both rows, never breaks the page."""
+    from modules.junban import reposition
+    asked = []
+    monkeypatch.setattr(reposition, "first_applies", lambda settings, language: asked.append(language) or False)
+    assert "junban_phrases" not in _shown({}, "ja") and asked
+    monkeypatch.setitem(sys.modules, "modules.junban.reposition", None)          # an import that fails
+    assert not {"junban_phrases", "junban_ready_first"} & _shown({}, "ja")
+    assert "junban_order" in _shown({}, "ja")                                    # the rest of Junban's rows stay
+
+
+@WITH_MODULES
+def test_only_words_marked_reads_the_file_as_junbans_filter_does():
+    """IK-5: one reader — `anki_match.normalize_markers`, the one Junban filters by — so a hand-edited "Star" shows ✦
+    lit (Junban moves only starred words), a mark this version doesn't know shows nothing, a lone string is one mark."""
+    row = catalog.ROW["junban_only_markers"]
+    assert catalog.value(row, {"junban_only_markers": ["Reading", "star", "sparkle"]}, "ja") == ["star", "reading"]
+    assert catalog.value(row, {"junban_only_markers": "lopsided"}, "ja") == ["lopsided"]
+    assert catalog.value(row, {"junban_only_markers": 3}, "ja") == []
+    assert catalog.value(row, {}, "ja") == []
+
+
 def test_no_multi_pick_reads_as_a_pick_one():
-    """Q31: tablets lit and dim read like a choice's segments, so a few independent picks are switches, a row each —
-    tablets stay only for a long set of states (Count as known in Anki's nine), and never for several bool keys."""
-    for row in catalog.ROWS:
-        if row.kind == "tablets":
-            assert len(row.keys) == 1 and len(row.options or ()) > 3, row.id
+    """Q31 (IK-1): no multi-pick looks like a pick-one — a tablets row is one list value's picks, each lit one ticked
+    and never veined (the control's rule, proven where the page draws them); several bool keys are a switch each; a
+    list's switches each name one of its values."""
+    tablets = [row for row in catalog.ROWS if row.kind == "tablets"]
+    assert all(len(row.keys) == 1 and row.options for row in tablets), [row.id for row in tablets]
+    assert {row.id for row in tablets} == {"known_from_anki", "junban_only_markers"}
     member = [row for row in catalog.ROWS if catalog._member(row)]
-    assert {row.id for row in member} == {"junban_only_star", "junban_only_lopsided", "junban_only_reading",
-                                          "backfill_patterns", "backfill_sentence"}
+    assert {row.id for row in member} == {"backfill_patterns", "backfill_sentence"}
     assert all(len(row.options) == 1 for row in member)
 
 

@@ -10,11 +10,12 @@ says and hands every change on through `change()`; it decides nothing.
   indented under the row above; `when(settings, language, ctx)` whether it shows; `door` the opener names
   (`app/qt/windows.OPENERS`) its buttons open; `target` the section a summary's *Change ›* goes to.
 - **Kinds:** `toggle` (a bool key; with `options` one value of a list key, Q31) · `choice` (one of a few) · `cards`
-  (choice cards, a line under each) · `tablets` (a long list value's picks — two or three independent picks are
-  switches, a row each, never tablets that read as a pick-one: Q31) · `list` (a list value: its items + the empty
-  bed) · `slider` (the level) · `number` · `range` (two numbers) · `text` · `select` (a long one-of) · `door` ·
-  `status` · `summary` (Your setup) · `link` · `action` (an export, P11) · `custom` (a row its own package draws:
-  Connect's switch, the store lines, the placing rules, Anki Miner's card, the credits…).
+  (choice cards, a line under each) · `tablets` (a list value's picks, each lit one ticked — never the vein a choice
+  draws under its one, so no multi-pick reads as a pick-one: Q31; picks a word each says better are switches, a row
+  each) · `list` (a list value: its items + the empty bed) · `slider` (the level) · `number` · `range` (two numbers) ·
+  `text` · `select` (a long one-of) · `door` · `status` · `summary` (Your setup) · `link` · `action` (an export, P11) ·
+  `custom` (a row its own package draws: Connect's switch, the store lines, the placing rules, Anki Miner's card, the
+  credits…).
 - `ctx`: a frozenset of the optional modules found (`installed_modules()`: "modules.junban", …), "koe_revealed" (the
   Speech reveal gate: `enable_koe` is in settings.json, `koe.is_revealed()`) and the known-words road chosen on the page
   ("road:anki" / "road:import"; page state, never a key — RUNBOOK 🧭 4). Row 13 (laptop fixes): "hato_found" (hato's
@@ -142,13 +143,18 @@ _JUNBAN = _module("modules.junban")
 _JUNBAN_ON = _all(_JUNBAN, _on("enable_junban"))
 
 
-def _not_at_the_back(settings, language, ctx):
-    return value_of(settings, "junban_unlisted") != "back"
+def _first_applies(settings, language, ctx):
+    """Q31: whether *Idioms and set phrases* and *i+1 first* take part in Junban's reorder — Junban's own rule
+    (`reposition.first_applies`, the one its run asks: Japanese, "After it" or "Mixed in", no *Only words marked*
+    pick); Junban absent or failing: never (the rows hide)."""
+    try:
+        from modules.junban.reposition import first_applies
+        return bool(first_applies(settings, language))
+    except Exception:
+        return False
 
 
-# Q31: *Phrases* and *i+1 first* — Japanese only, and only with "After it" or "Mixed in" (Junban's reorder skips both
-# at the back)
-_JUNBAN_FIRST = _all(_JUNBAN_ON, _ja, _not_at_the_back)
+_JUNBAN_FIRST = _all(_JUNBAN_ON, _first_applies)
 _CONNECT = _on("connect_enabled")
 _KOE = _all(_module("modules.koe"), lambda settings, language, ctx: "koe_revealed" in ctx)
 _YOUTUBE = _module("modules.youtube_downloader")
@@ -242,12 +248,9 @@ ROWS = (
     _row("junban_write_freqsort", "junban", "toggle", ("junban_write_freqsort",), adv=True, when=_JUNBAN_ON),
     _row("junban_tag", "junban", "text", ("junban_tag",), adv=True, when=_JUNBAN_ON),
     _row("junban_tag_markers", "junban", "toggle", ("junban_tag_markers",), adv=True, when=_JUNBAN_ON),
-    _row("junban_only_star", "junban", "toggle", ("junban_only_markers",), options=("star",), adv=True,
-         group="only_markers", when=_JUNBAN_ON),
-    _row("junban_only_lopsided", "junban", "toggle", ("junban_only_markers",), options=("lopsided",), adv=True,
-         when=_JUNBAN_ON),
-    _row("junban_only_reading", "junban", "toggle", ("junban_only_markers",), options=("reading",), adv=True,
-         when=_JUNBAN_ON),
+    # IK-4: ✦ ⚖ 📖 as glyph tablets, each picked one ticked (Q31's rule: never a choice's vein)
+    _row("junban_only_markers", "junban", "tablets", ("junban_only_markers",), options=("star", "lopsided", "reading"),
+         adv=True, when=_JUNBAN_ON),
     _row("junban_chunk_size", "junban", "number", ("junban_chunk_size",), adv=True, when=_JUNBAN_ON, bounds=(1, None)),
 
     # Backfill (with modules/junban; hides with Junban's switch, as in 2.4: N3)
@@ -445,6 +448,9 @@ def _one(settings, key, language):
     found = plain(value_of(settings, key))
     if key == "known_from_anki" and isinstance(found, str):
         found = [found]
+    if key == "junban_only_markers":            # IK-5: read as Junban reads it, one reader (a hand-edited "Star" is ✦)
+        from app.anki_match import normalize_markers
+        found = list(normalize_markers(found))
     if key == "placing_rules":                  # merged per key: a source not named keeps its default (SRC W1 fix)
         from app import settings_manager
         found = settings_manager.placing_rules(found)

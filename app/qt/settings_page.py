@@ -64,6 +64,10 @@ BIG = 10 ** 6                   # a number field's ceiling where the catalog nam
 FALLBACK = {"mine_line": "connect_enabled", "soon_line": "content", "connect_enabled": "connect_needs_miner"}
 PLACEHOLDER_KINDS = ("summary", "status", "custom", "action")
 SETTLE_MORE = 4                 # `hold`: layout passes after the first settle while the held row still moves
+# `_settle`'s passes: one per level a size change climbs, from the deepest widget under the body (a field's edit, 8
+# down) to the body the scroll area resizes. Fewer and a line re-flowed deep in a row (Your setup's, 5 down) reached
+# the body a turn late: the page squeezed a row to fit, then slid once it grew (AD-1). Each empty pass costs nothing.
+SETTLE_PASSES = 10
 
 # The sections' icons: the old mock's line icons (mock-g16 `<symbol id="i-…">`, 16 × 16), drawn in a text colour.
 ICONS = {
@@ -1298,7 +1302,7 @@ class SettingsPage(QWidget):
     def _settle(self):
         """The layouts done now, in this turn (before a paint): the rows shown or hidden, the slabs, the body and the
         scroll bar's range."""
-        for _ in range(4):
+        for _ in range(SETTLE_PASSES):
             QApplication.sendPostedEvents(None, QEvent.Type.LayoutRequest)
 
     def _in_view(self, widget):

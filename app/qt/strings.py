@@ -137,6 +137,9 @@ ITEM_REMOVED = "Removed {title}"
 SEAM_LABEL = "✂ Split here"
 SEAM_TIP = "✂ Split here\n• Click to make {rest} a part of its own"
 JOIN_LABEL = "Drop to join"
+# LM11b G2: another show dropped on a show once the hand rests on it (`item_menu.JOIN_REST_MS`): one row of both
+JOIN_GROUP_LABEL = "Drop to group"
+ITEM_GROUPED_WITH = "Grouped {other} with {title}"
 # --- end W3.2 Q8
 # K6: ⋯ › *Never read this folder* › the item's folder and each one above it inside its source folder
 ITEM_SKIP = ("Never read this folder", "Leave a folder out of your library for good: pick it")

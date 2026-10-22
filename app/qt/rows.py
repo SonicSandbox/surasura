@@ -1233,6 +1233,18 @@ class RowDelegate(QStyledItemDelegate):
         """An opened Current row's episodes' area: under its slab."""
         return QRect(rect.left(), slab.bottom() + 1, rect.width(), rect.bottom() - slab.bottom())
 
+    def episode_at(self, entry, rect, pos):
+        """The episode of an opened Current row (or Up Next) whose line `pos` (the viewport's) is on, else None (LM11b
+        G2: a drop on an opened group's episode lands after it)."""
+        kind, payload, lines = entry
+        if kind not in (HERO, ROW) or self.view.model().open_key != payload.key:
+            return None
+        if kind == HERO:
+            eps = self._episode_rows(payload, self._hero_geometry(payload, rect, lines)["eps"], hero=True)
+        else:
+            eps = self._episode_rows(payload, self._open_area(rect, self.slab_of(rect)))
+        return next((ep for r, ep in eps if r.top() <= pos.y() <= r.bottom()), None)
+
     def _sheet_there(self):
         """Whether the stones' sheet is there to draw a string from (L4: until it lands — or all session, if its build
         failed — a row paints no stone, so none can be clicked: a click on the bare string opens the row)."""
@@ -1374,8 +1386,10 @@ class RowDelegate(QStyledItemDelegate):
             p.drawRoundedRect(r.adjusted(0.75, 0.75, -0.75, -0.75), radius, radius)
         p.restore()
 
-    def paint_join(self, p, r):
-        """The part a dragged part would join (G3): a green dashed outline and *Drop to join*."""
+    def paint_join(self, p, r, label=None):
+        """The part a dragged part would join (G3): a green dashed outline and `label` (*Drop to join*; LM11b G2:
+        *Drop to group* on another show)."""
+        label = label or strings.JOIN_LABEL
         f = fz()
         p.save()
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
@@ -1385,13 +1399,13 @@ class RowDelegate(QStyledItemDelegate):
         p.setBrush(Qt.BrushStyle.NoBrush)
         radius = theme.DRAG["placeholder-radius"]
         p.drawRoundedRect(QRectF(r).adjusted(1.5, 1.5, -1.5, -1.5), radius, radius)
-        w = TEXT.metrics("status-pill").horizontalAdvance(strings.JOIN_LABEL) + round(16 * f)
+        w = TEXT.metrics("status-pill").horizontalAdvance(label) + round(16 * f)
         h = round(20 * f)
         chip = QRectF(r.right() - w - round(12 * f), r.top() + 4, w, h)
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(c("bg"))
         p.drawRoundedRect(chip, h / 2, h / 2)
-        TEXT.draw(p, chip.left(), chip.center().y(), strings.JOIN_LABEL, "status-pill", chip.width(), c("ok"),
+        TEXT.draw(p, chip.left(), chip.center().y(), label, "status-pill", chip.width(), c("ok"),
                   align="centre")
         p.restore()
     # --- end W3.2 Q8
@@ -2505,6 +2519,7 @@ class RowsView(QListView):
         self.seam = None                             # --- W3.2 Q8: (row key, episode id) of the ✂ seam under the hand
         self.ep_hover = None                         # --- W3.2 Q8: (row key, episode id) the hand was last on
         self.join_key = None                         # --- W3.2 Q8: the part a drag would join (outlined)
+        self.join_label = strings.JOIN_LABEL         # LM11b G2: its words (*Drop to group* on another show)
         # --- LM11b G4: the selection *Group…* takes — Ctrl+click on a row (or Ctrl+Space) picks the row, Shift+click
         # the rows from the last one Ctrl picked to this one instead (Ctrl+Shift+click adds them), Ctrl+click on an
         # opened row's stone that episode; under Ctrl or
@@ -2554,7 +2569,7 @@ class RowsView(QListView):
         if self.join_key is not None:
             r = self._q8_rect(self.join_key)
             if r is not None:
-                self.delegate.paint_join(p, r)
+                self.delegate.paint_join(p, r, self.join_label)
         p.end()
 
     def _q8_update(self, what):
@@ -2570,11 +2585,13 @@ class RowsView(QListView):
         self._q8_update(old)
         self._q8_update(seam)
 
-    def set_join(self, key):
-        """The part a drag would join (or None): its outline, that row alone repainted."""
-        if key == self.join_key:
+    def set_join(self, key, label=None):
+        """The part a drag would join (or None): its outline and `label` (None: *Drop to join*), that row alone
+        repainted."""
+        label = label or strings.JOIN_LABEL
+        if key == self.join_key and label == self.join_label:
             return
-        old, self.join_key = self.join_key, key
+        old, self.join_key, self.join_label = self.join_key, key, label
         self._q8_update(old)
         self._q8_update(key)
 

@@ -13,6 +13,7 @@ What a wrong answer would cost a learner:
   * an entry with no tooltip, or a seam that never shows where the hand is.
 """
 import os
+from types import SimpleNamespace
 
 import pytest
 
@@ -39,8 +40,19 @@ class ItemWriter(FakeWriter):
     def split(self, piece_id, at_item_id, label=None):
         return self._put("split", [at_item_id], label, piece_id=piece_id)
 
-    def join(self, piece_ids, label=None, ahead=False):
-        return self._put("join", [], label, piece_ids=list(piece_ids), ahead=ahead)
+    def join(self, piece_ids, label=None, ahead=False, how="parts"):
+        return self._put("join", [], label, piece_ids=list(piece_ids), ahead=ahead,
+                         **({"how": how} if how != "parts" else {}))
+
+    def add_to_group(self, piece_id, piece_ids=(), item_ids=(), label=None):
+        return self._put("add_to_group", [], label, piece_id=piece_id, piece_ids=list(piece_ids),
+                         item_ids=list(item_ids))
+
+    def ungroup(self, piece_id, label=None):
+        return self._put("ungroup", [], label, piece_id=piece_id)
+
+    def rename_piece(self, piece_id, title, label=None):
+        return self._put("rename_piece", [], label, piece_id=piece_id, title=title)
 
     def set_media_type(self, work_ids, media_type, label=None):
         return self._put("set_media_type", [], label, work_ids=list(work_ids), media_type=media_type)
@@ -587,6 +599,211 @@ def test_change_cover_shows_once_covers_offer_their_entries(world):
     assert picked == [row.key]
 
 
+# --- LM11b G2: a show dropped on another show (Sonic's answers: a rest on its middle makes a group, no question) ---- #
+def two_shows(win):
+    """Two Current rows of different shows, neither Up next, neither a show in two parts: (dragged place, dropped-on
+    place) — the dropped-on one above, with 2+ episodes (an opened group of it has an episode before its last)."""
+    rs = rows_of(win)
+    split = {r.work_id for r in rs if sum(1 for o in rs if o.work_id == r.work_id) > 1}
+    ok = [i for i, r in enumerate(rs) if i > 0 and item_menu.joinable(r) and r.work_id not in split]
+    a = next(i for i in ok if len(rs[i].episodes) >= 2)
+    b = next(i for i in ok if i > a + 1 and rs[i].work_id != rs[a].work_id)
+    return b, a
+
+
+def rest():
+    QTest.qWait(item_menu.JOIN_REST_MS + 150)
+
+
+def theme_swallow():
+    from app import theme
+    return theme.MOTION["click-swallow-after-drag"] + 30
+
+
+def as_group(win, i, other_work=987654):
+    """Row `i` shown as a group of its show and another (G1's `group` / `works`), the rest of the view as it was."""
+    view = win.page_widgets["current"].view_model
+    rs = list(view.rows)
+    rs[i] = rs[i]._replace(group=True, works=(rs[i].work_id, other_work))
+    win.show_library(view._replace(rows=type(view.rows)(rs)))
+    settle()
+    assert rows_of(win)[i].group
+    return rows_of(win)[i]
+
+
+def test_G2_another_show_is_outlined_drop_to_group_only_after_the_hand_rests_and_it_clears_on_leave_and_esc(world):
+    # a passing hand reorders as before (a gap under it); resting over the middle outlines the other show with *Drop to
+    # group* (the rows hold still); off it, or Esc, the outline goes — and a new drag starts its rest again
+    _seed, win, writer = world()
+    b, a = two_shows(win)
+    lst = lst_of(win)
+    rs = rows_of(win)
+    lift(win, b)
+    to = middle_point(win, a)
+    move_global(win, to)
+    settle()
+    assert win.moves.running.target[0] == "list" and lst.join_key is None, "no rest yet: a move, a gap opens"
+    rest()
+    d = win.moves.running
+    assert d.target == ("join", rs[a].key) and lst.join_key == rs[a].key
+    assert lst.join_label == strings.JOIN_GROUP_LABEL
+    assert d.parting.slot == d.parting.src                           # the rows hold still under the outline
+    move_global(win, middle_point(win, 4 if 4 not in (a, b) else 5))   # off it
+    settle()
+    assert lst.join_key is None and win.moves.running.target[0] == "list"
+    move_global(win, to)                                             # back on it: its rest starts again
+    settle()
+    assert lst.join_key is None
+    rest()
+    assert lst.join_key == rs[a].key
+    QTest.keyClick(win, Qt.Key.Key_Escape)
+    settle()
+    assert win.moves.running is None and lst.join_key is None
+    QTest.qWait(theme_swallow())
+    lift(win, b)                                                     # a new drag: never groups at once
+    move_global(win, to)
+    settle()
+    assert lst.join_key is None and win.moves.running.target[0] == "list"
+    win.moves.cancel()
+    assert writer.calls == []
+
+
+def test_G2_the_same_shows_other_part_still_joins_at_once_with_drop_to_join(world):
+    _seed, win, writer = world()
+    a, b = split_parts(win)
+    lst = lst_of(win)
+    lift(win, b)
+    move_global(win, middle_point(win, a))
+    settle()
+    assert win.moves.running.target == ("join", rows_of(win)[a].key) and lst.join_label == strings.JOIN_LABEL
+    win.moves.cancel()
+    assert writer.calls == []
+
+
+def test_G2_a_passing_drop_on_another_show_reorders_and_never_groups(world):
+    _seed, win, writer = world()
+    b, a = two_shows(win)
+    lift(win, b)
+    to = middle_point(win, a)
+    move_global(win, to)
+    release_global(win, to)                                          # let go at once: no rest
+    rest()                                                           # (the rest's timer, if any, finds no drag)
+    assert [c[0] for c in writer.calls] == ["move"]
+    assert win.moves.running is None and lst_of(win).join_key is None
+
+
+def test_G2_a_rested_drop_on_another_show_is_one_group_join_target_first_opened_and_toasted_with_undo(world):
+    _seed, win, writer = world()
+    b, a = two_shows(win)
+    rs = rows_of(win)
+    lift(win, b)
+    to = middle_point(win, a)
+    move_global(win, to)
+    rest()
+    release_global(win, to)
+    assert calls(writer) == [("join", [], {"piece_ids": [rs[a].piece_id, rs[b].piece_id], "ahead": False,
+                                           "how": "group"})]
+    assert lst_of(win).model().open_key == rs[a].key
+    text = strings.ITEM_GROUPED_WITH.format(other=rs[b].title, title=rs[a].title)
+    assert wait_until(lambda: win.toasts.card.message == text, 5)
+    assert win.toasts.card.buttons, "its Undo"
+
+
+def test_G2_a_part_dropped_on_a_group_led_by_its_own_show_waits_for_the_rest_and_makes_a_group_join(world):
+    # either side a group: never a join of one show's parts at once, though the group's first show is the dragged one's
+    _seed, win, writer = world()
+    a, b = split_parts(win)
+    group = as_group(win, a)
+    lst = lst_of(win)
+    lift(win, b)
+    to = middle_point(win, a)
+    move_global(win, to)
+    settle()
+    assert win.moves.running.target[0] == "list" and lst.join_key is None
+    rest()
+    assert lst.join_key == group.key and lst.join_label == strings.JOIN_GROUP_LABEL
+    release_global(win, to)
+    assert calls(writer) == [("join", [], {"piece_ids": [group.piece_id, rows_of(win)[b].piece_id], "ahead": False,
+                                           "how": "group"})]
+
+
+def _opened_group_episode(win, k):
+    """A short row (2–4 episodes) shown as a group and opened, and another show's row above it still in view (an
+    opened row pushes the rows under it down): (dragged place, the group, its `k`-th episode (-1: its last), the global
+    point on that episode's stone)."""
+    rs = rows_of(win)
+    ok = [i for i, r in enumerate(rs) if i > 0 and item_menu.joinable(r)]
+    a = next(i for i in ok if 2 <= len(rs[i].episodes) <= 4 and any(j < i and rs[j].work_id != rs[i].work_id
+                                                                      for j in ok))
+    group = as_group(win, a)
+    lst = lst_of(win)
+    open_row(win, a)
+    r, ep = stone_of(lst, a, k if k >= 0 else len(group.episodes) - 1)
+    view = lst.viewport().rect()
+    b = next(j for j in reversed(ok) if j < a and rs[j].work_id != rs[a].work_id and
+             view.contains(title_point(lst, j)))
+    return b, group, ep, lst.viewport().mapToGlobal(r.center())
+
+
+def test_G2_IK2_a_rested_drop_on_an_opened_groups_episode_lands_after_it_in_one_move_toasted_with_undo(world):
+    # Sonic's LM11-Q1: a drop into a group joins it where dropped — a move after that episode, in its tier (the store's
+    # GI1 takes it into the group there)
+    _seed, win, writer = world()
+    b, group, ep, at = _opened_group_episode(win, 0)
+    dragged = rows_of(win)[b]
+    lift(win, b)
+    move_global(win, at)
+    settle()
+    assert win.moves.running.target[0] == "list"                     # passing: a move, as before
+    rest()
+    assert win.moves.running.target == ("join", group.key)
+    release_global(win, at)
+    assert calls(writer) == [("move", list(drag.ids_of(dragged)), {"tier": group.tier, "before_id": None,
+                                                                   "after_id": ep.id, "near": [], "end": False})]
+    text = strings.ITEM_GROUPED_WITH.format(other=dragged.title, title=group.title)
+    assert wait_until(lambda: win.toasts.card.message == text, 5)
+    assert win.toasts.card.buttons, "its Undo"
+
+
+def test_G2_IK2_a_rested_drop_on_an_opened_groups_last_episode_is_the_group_join_at_its_end(world):
+    _seed, win, writer = world()
+    b, group, _ep, at = _opened_group_episode(win, -1)
+    dragged = rows_of(win)[b]
+    lift(win, b)
+    move_global(win, at)
+    rest()
+    release_global(win, at)
+    assert calls(writer) == [("join", [], {"piece_ids": [group.piece_id, dragged.piece_id], "ahead": False,
+                                           "how": "group"})]
+
+
+def test_G2_IK2_an_episode_after_the_soon_line_lands_in_soon():
+    eps = [SimpleNamespace(id=n) for n in (11, 12, 13)]
+    row = SimpleNamespace(tier="now", soon_from=2, episodes=eps)
+    assert [item_menu.ep_tier(row, e) for e in eps] == ["now", "now", "soon"]
+    assert item_menu.ep_tier(SimpleNamespace(tier="now", soon_from=None, episodes=eps), eps[2]) == "now"
+
+
+def test_G2_IK1_a_show_the_soon_line_runs_through_passes_both_its_pieces_to_the_group_join(world, monkeypatch):
+    _seed, win, writer = world()
+    b, a = two_shows(win)
+    rs = rows_of(win)
+    target = rs[a]._replace(soon_from=1, soon_piece=876543)
+    dragged = rs[b]._replace(soon_from=1, soon_piece=765432)
+    assert win.items.group_join(target, dragged) == target.key
+    assert calls(writer) == [("join", [], {"piece_ids": [target.piece_id, 876543, dragged.piece_id, 765432],
+                                           "ahead": False, "how": "group"})]
+
+
+def test_G2_a_read_only_store_groups_nothing(world):
+    _seed, win, writer = world(writable=False)
+    b, a = two_shows(win)
+    rs = rows_of(win)
+    assert win.items.group_join(rs[a], rs[b]) is None
+    assert win.items.add_to_group(rs[a], [e.id for e in rs[b].episodes], rs[b].title) is None
+    assert writer.calls == []
+
+
 def test_open_its_folder_opens_it_or_says_its_gone(world, monkeypatch):
     seed, win, _w = world()
     opened, said = [], []
@@ -1120,3 +1337,55 @@ def test_real_store_G4_two_shows_ctrl_clicked_and_grouped_are_one_row_and_undo_m
     win.toasts.card.buttons[0].click()
     assert wait_until(lambda: len({store.item(x)["piece_id"] for x in ids}) == 2, 5)
     assert wait_until(lambda: sum(1 for r in rows_of(win) if set(drag.ids_of(r)) & set(ids)) == 2, 5)
+
+
+# --- LM11b G2 on the real store ------------------------------------------------------------------------------------- #
+def _state(store):
+    items = store.conn.execute("SELECT id, tier, piece_id, work_id FROM items ORDER BY id").fetchall()
+    pieces = store.conn.execute("SELECT id, kind, title FROM pieces ORDER BY id").fetchall()
+    return {t: store.ids(t) for t in ls.TIERS}, items, pieces
+
+
+def _rest_and_drop(win, b, a):
+    lift(win, b)
+    to = middle_point(win, a)
+    move_global(win, to)
+    rest()
+    assert win.moves.running.target[0] == "join"
+    release_global(win, to)
+
+
+def test_real_store_G2_two_shows_rested_and_dropped_are_one_group_row_and_undo_and_ctrl_z_make_them_two(real):
+    # the dropped-on show keeps its place and its row's key; the group is one row holding both shows' files; the
+    # toast's Undo, and Ctrl+Z after a second drop, put every row and piece back exactly
+    store, win, _writer = real()
+    b, a = two_shows(win)
+    rs = rows_of(win)
+    kept, dragged = rs[a], rs[b]
+    ids = list(drag.ids_of(kept)) + list(drag.ids_of(dragged))
+    before = _state(store)
+    keys = [r.key for r in rs]
+    _rest_and_drop(win, b, a)
+    assert wait_until(lambda: {store.item(i)["piece_id"] for i in ids} == {kept.piece_id}, 5)
+    assert store.conn.execute("SELECT kind FROM pieces WHERE id = ?", (kept.piece_id,)).fetchone()[0] == "group"
+    assert {store.item(i)["work_id"] for i in ids} == {kept.work_id, dragged.work_id}       # each keeps its own show
+
+    def one_row():
+        now = rows_of(win)
+        holding = [r for r in now if set(drag.ids_of(r)) & set(ids)]
+        return len(holding) == 1 and holding[0].group and holding[0].key == kept.key and \
+            list(drag.ids_of(holding[0])) == ids
+    assert wait_until(one_row, 5)
+    assert wait_until(lambda: not win.moves.tickets, 5)
+    assert win.toasts.card.message == strings.ITEM_GROUPED_WITH.format(other=dragged.title, title=kept.title)
+    win.toasts.card.buttons[0].click()                               # the toast's Undo
+    assert wait_until(lambda: _state(store) == before, 5)
+    assert wait_until(lambda: [r.key for r in rows_of(win)] == keys, 5)
+    QTest.qWait(theme_swallow())
+    b, a = two_shows(win)
+    _rest_and_drop(win, b, a)
+    assert wait_until(lambda: len({store.item(i)["piece_id"] for i in ids}) == 1, 5)
+    assert wait_until(lambda: not win.moves.tickets, 5)
+    QTest.keyClick(win, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+    assert wait_until(lambda: _state(store) == before, 5)
+    assert wait_until(lambda: [r.key for r in rows_of(win)] == keys, 5)

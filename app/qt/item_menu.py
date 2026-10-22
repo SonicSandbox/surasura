@@ -29,6 +29,15 @@ a picked key let the picks go.
 a move beside it, so a part can still be placed next to its other part): the rows hold still (no gap opens), that part
 shows a green dashed outline and *Drop to join*; the drop joins them in episode order, opens the result and toasts
 *Joined Ep x–y* with Undo.
+**Drop to group (LM11b G2; Sonic's answers: a drop on another show makes a group, no question):** over the middle of
+another show's part, or of a group (either side a group), the hand rests `JOIN_REST_MS` before that row is outlined with
+*Drop to group* (a passing drag still reorders); the drop is one `Writer.join(..., how="group")`, the row dropped on
+first (it keeps its place, a group its name), never `ahead` — toasted *Grouped … with …* with Undo, the result
+opened.
+On an opened group, the hand on one of its episodes before its last lands it after that episode (`Writer.move`: the
+store takes it into the group there, LM11-Q1 / IK-2). A New arrivals file rested on a group joins it
+(`Writer.add_to_group`, IK-3); on a show's part it is placed as before. A row the Soon line runs through names both its
+pieces (`pieces_of`, IK-1).
 
 **Episode order where the target is** (E22): the target part keeps its place; one `Writer.join` with the target first —
 the other's files go after the target's last, or just before its first when they hold the earlier episodes (`ahead`).
@@ -42,7 +51,7 @@ window's thread.
 import os
 from collections import namedtuple
 
-from PyQt6.QtCore import QObject, QPoint
+from PyQt6.QtCore import QObject, QPoint, QTimer
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import QMenu
 
@@ -51,6 +60,7 @@ from app.qt import bridge, confirm, drag, finished, rows, strings, windows
 from app.services import view_rows
 
 JOIN_EDGE = 0.3                                     # a part's top and bottom 30 %: a move beside it, not a join
+JOIN_REST_MS = 500                                  # LM11b G2: another show groups only once the hand rests this long
 
 Entry = namedtuple("Entry", "name label tip ok children checked payload", defaults=(None, None, None))
 Part = namedtuple("Part", "key piece_id ids numbers tier place title")
@@ -85,6 +95,18 @@ def pieces_of(row):
     if getattr(row, "soon_from", None) is not None:
         out.append(getattr(row, "soon_piece", None))
     return [p for p in dict.fromkeys(out) if p is not None]
+
+
+def same_show(a, b):
+    """Two runs of one show (a drop joins them at once): never a group on either side (LM11b G2)."""
+    return not getattr(a, "group", False) and not getattr(b, "group", False) and a.work_id == b.work_id
+
+
+def ep_tier(row, ep):
+    """`row`'s episode `ep`'s tier: Soon from `soon_from` on (a show the Soon line runs through), else the row's."""
+    cut = getattr(row, "soon_from", None)
+    k = next((i for i, e in enumerate(row.episodes) if e.id == ep.id), 0)
+    return "soon" if cut is not None and k >= cut else row.tier
 
 
 def joinable(row):
@@ -122,6 +144,15 @@ class ItemActions(QObject):
         register = getattr(win, "register_overlay", None)
         if register is not None:
             register(self.lst.picks)
+        # --- LM11b G2: the row under the hand that a drop would group with, (drag, key), and the one it has rested on;
+        # the opened group's episode the hand is on (a drop lands after it), (key, episode)
+        self._resting = self._rested = None
+        self._group_key = None
+        self._ep_at = None
+        self._rest = QTimer(self)
+        self._rest.setSingleShot(True)
+        self._rest.setInterval(JOIN_REST_MS)
+        self._rest.timeout.connect(self._rested_on)
 
     # N3: the window's moves, writer and language read at call time (a language switch remakes them)
     @property
@@ -497,11 +528,79 @@ class ItemActions(QObject):
         return self.moves._give(drag.Ticket(strings.ITEM_REMOVED.format(title=row.title), (row.key,), ids),
                                 lambda t: self.writer.remove(ids, label=t))
 
+    # --- LM11b G2: drop to group ------------------------------------------------------------------------------------ #
+    def group_join(self, target, other):
+        """`other` (a row) dropped on `target` (another show's part, or a group): one `Writer.join(how="group")`, the
+        target's pieces first (it keeps its place, a group its name), never `ahead`; its toast with Undo, the result
+        opened. -> the target's key."""
+        if self.moves.refused() is not None:
+            return None
+        pieces = list(dict.fromkeys(pieces_of(target) + pieces_of(other)))
+        text = strings.ITEM_GROUPED_WITH.format(other=other.title, title=target.title)
+        if self.moves._give(drag.Ticket(text, (target.key, other.key), drag.ids_of(target) + drag.ids_of(other)),
+                            lambda t: self.writer.join(pieces, label=t, how="group")) is None:
+            return None
+        self._open(target.key)
+        return target.key
+
+    def into_group_at(self, group, ep, ids, title, keys=()):
+        """Files `ids` dropped on the opened `group`'s episode `ep` (not its last): moved after it, in its tier — the
+        store takes them into the group there (GI1, LM11-Q1). -> the group's key."""
+        if self.moves.refused() is not None:
+            return None
+        ids = list(ids)
+        tier = ep_tier(group, ep)
+        text = strings.ITEM_GROUPED_WITH.format(other=title, title=group.title)
+        if self.moves._give(drag.Ticket(text, (group.key,) + tuple(keys), ids),
+                            lambda t: self.writer.move(ids, tier, after_id=ep.id, label=t)) is None:
+            return None
+        self._open(group.key)
+        return group.key
+
+    def add_to_group(self, group, ids, title):
+        """New arrivals' files `ids` dropped on `group` (IK-3): one `Writer.add_to_group`, after its last row. -> its
+        key."""
+        if self.moves.refused() is not None:
+            return None
+        ids = list(ids)
+        piece = group.piece_id
+        text = strings.ITEM_GROUPED_WITH.format(other=title, title=group.title)
+        if self.moves._give(drag.Ticket(text, (group.key,), ids),
+                            lambda t: self.writer.add_to_group(piece, item_ids=ids, label=t)) is None:
+            return None
+        self._open(group.key)
+        return group.key
+    # --- end LM11b G2
+
     # --- drop-to-join (G3; `drag.DragController` asks) ------------------------------------------------------------- #
     def target(self, d, global_pos):
-        """The key of the part of the same title under the hand (a part dragged from the list), else None."""
+        """The key of the row under the hand that a drop joins: a part of the same show at once; another show's, or a
+        group, once the hand has rested `JOIN_REST_MS` on it (LM11b G2). Else None."""
+        hit = self._over(d, global_pos)
+        other, ep = hit if hit is not None else (None, None)
+        if other is None or (d.row is not None and same_show(d.row, other)):
+            self._resting = self._rested = self._group_key = self._ep_at = None
+            self._rest.stop()
+            return other.key if other is not None else None
+        self._ep_at = (other.key, ep) if ep is not None else None
+        if self._rested == (d, other.key):
+            self._group_key = other.key
+            return other.key
+        self._group_key = None
+        if self._resting != (d, other.key):          # a new row under the hand: its rest starts now
+            self._resting, self._rested = (d, other.key), None
+            self._rest.start()
+        return None
+
+    def _over(self, d, global_pos):
+        """(the row under the hand a drop would join, the opened group's episode it is on — not its last — or None),
+        else None: over a row's middle (its edges place beside it), or anywhere on an opened group's episodes. A drag
+        from the list: a joinable part; New arrivals' (IK-3): a group only."""
         row = d.row
-        if d.external or not joinable(row):
+        if d.external:
+            if getattr(d, "source", None) != "arrivals":
+                return None
+        elif not joinable(row):
             return None
         vp = self.lst.viewport()
         pos = vp.mapFromGlobal(global_pos)
@@ -510,24 +609,50 @@ class ItemActions(QObject):
         idx = self.lst.indexAt(QPoint(pos.x(), pos.y()))
         if not idx.isValid():
             return None
-        kind, other, _lines = self.lst.model().entries[idx.row()]
-        if kind not in (rows.HERO, rows.ROW) or other.key == d.key or other.work_id != row.work_id or \
-                not joinable(other):
+        entry = self.lst.model().entries[idx.row()]
+        kind, other, _lines = entry
+        if kind not in (rows.HERO, rows.ROW) or other.key == d.key or not joinable(other):
             return None
-        slab = self.lst.delegate.slot_rect(kind, self.lst.visualRect(idx), _lines)
+        group = getattr(other, "group", False)
+        if d.external and not group:
+            return None                              # a tray file on a show's part: placed in the list, as before
+        rect = self.lst.visualRect(idx)
+        ep = self.lst.delegate.episode_at(entry, rect, pos) if group else None
+        if ep is not None:
+            return other, (ep if ep.id != other.episodes[-1].id else None)
+        slab = self.lst.delegate.slot_rect(kind, rect, _lines)
         edge = round(slab.height() * JOIN_EDGE)
         if not slab.top() + edge <= pos.y() <= slab.bottom() - edge:
             return None                              # its edges place it beside the part, as any row's do
-        return other.key
+        return other, None
+
+    def _rested_on(self):
+        """The hand has rested on another show's row: asked again where it is (no move comes while it rests)."""
+        d = self.moves.running
+        if d is None or self._resting is None or self._resting[0] is not d:
+            return
+        self._rested = self._resting
+        self.moves._follow(d.at)
 
     def show(self, key):
-        self.lst.set_join(key)
+        self.lst.set_join(key, strings.JOIN_GROUP_LABEL if key is not None and key == self._group_key else None)
 
     def drop(self, d, key):
         target = self._row(key)
-        if target is None or d.row is None:
+        if target is None:
             return None
-        return self.join(part_of(target, self._place(target)), part_of(d.row))
+        ep = self._ep_at[1] if self._ep_at is not None and self._ep_at[0] == key else None
+        if d.external:
+            if ep is not None:
+                return self.into_group_at(target, ep, d.ids, d.title)
+            return self.add_to_group(target, d.ids, d.title)
+        if d.row is None:
+            return None
+        if same_show(target, d.row):
+            return self.join(part_of(target, self._place(target)), part_of(d.row))
+        if ep is not None:
+            return self.into_group_at(target, ep, drag.ids_of(d.row), d.row.title, (d.row.key,))
+        return self.group_join(target, d.row)
 
 
 def _numbers(arrival):

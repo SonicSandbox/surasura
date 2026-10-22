@@ -171,6 +171,12 @@ def get_settings_path():
     return get_user_file("settings.json")
 
 
+def persistent_root():
+    """The folder get_persistent_user_data_path() names, never made: for a reader that must find nothing where nothing
+    was ever built — a tool reading the user's own databases makes no empty folder in their profile."""
+    return _test_redirect("persistent_root") or os.path.join(_roaming_base(), VENDOR, data_name())
+
+
 def get_persistent_user_data_path():
     """
     Get the directory for PERSISTENT USER DATA (e.g. telemetry ID).
@@ -180,7 +186,7 @@ def get_persistent_user_data_path():
     SURASURA_TEST_ROOT moves it to <test root>/persistent_root; a test that reaches the real one raises (as the local
     root does: a read made the real folder).
     """
-    path = _test_redirect("persistent_root") or os.path.join(_roaming_base(), VENDOR, data_name())
+    path = persistent_root()
     if not os.path.exists(path):
         os.makedirs(path, exist_ok=True)
     return path
@@ -757,11 +763,14 @@ def _bom_encoding(raw):
     return next((encoding for bom, encoding in _BOMS if raw.startswith(bom)), None)
 
 
-def _decoding(raw, language):
+def _decoding(raw, language, head=False):
     """(text, encoding): the bytes' text by the rule above and the encoding that read it — or (None, None) when no
-    encoding reads them whole."""
+    encoding reads them whole. `head`: the bytes are a file's first part, so a character cut at their end is left off
+    (each encoding's incremental decoder, not told the bytes end there), never taken for damage."""
     def strictly(encoding):
         try:
+            if head:
+                return codecs.getincrementaldecoder(encoding)("strict").decode(raw, final=False)
             return raw.decode(encoding)
         except UnicodeDecodeError:
             return None
@@ -779,30 +788,39 @@ def _decoding(raw, language):
     return None, None
 
 
-def _decode(raw, language):
-    """The bytes' text by the rule above, or None when no encoding reads them whole."""
-    return _decoding(raw, language)[0]
+def decode_text(raw, language=None, errors="replace", name=None, head=False):
+    """The text of a file's bytes by THE rule above — the one every reader of a file the user supplies goes
+    through: `read_text`, and the source look's script check (`sources._in_script`) on the bytes it read already.
+    Its BOM's encoding, else strict UTF-8, else the language's Windows encodings (`language` "ja" / "zh"; None tries
+    none), a reading holding a Private Use character refused; line ends read as open() reads them (CRLF and a lone
+    CR are "\\n").
+
+    Bytes no encoding reads whole (damaged) are read as their BOM, else UTF-8, says, every bad sequence marked
+    U+FFFD — never dropped — with a warning naming the file `name` (none without one). errors="strict" raises
+    UnicodeDecodeError instead. `head`: the bytes are a file's first part (`_decoding`)."""
+    text = _decoding(raw, language, head)[0]
+    if text is None:
+        text = raw.decode(_bom_encoding(raw) or "utf-8", errors)
+        if name is not None:
+            try:
+                print(f"Warning: {name} is damaged or in an unknown encoding; "
+                      f"its unreadable bytes are marked U+FFFD.")
+            except UnicodeEncodeError:
+                print("Warning: a file is damaged or in an unknown encoding; its unreadable bytes are marked U+FFFD.")
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def read_text(path, language=None, errors="replace"):
     """The text of a file the user supplies or can edit — content, KnownWord.json, the word lists, a
     frequency list — decoded by the rule above for `language` ("ja" / "zh"; None tries no legacy
-    encoding), line ends read as open() reads them (CRLF and a lone CR are "\\n").
+    encoding): `decode_text` on its bytes.
 
     A file no encoding reads whole (damaged) is read as its BOM, else UTF-8, says, every bad sequence
     marked U+FFFD — never dropped — with a warning. errors="strict" raises UnicodeDecodeError instead:
     for a caller that writes the file back, where nothing may be lost to a guess."""
     with open(path, "rb") as f:
         raw = f.read()
-    text = _decode(raw, language)
-    if text is None:
-        text = raw.decode(_bom_encoding(raw) or "utf-8", errors)
-        try:
-            print(f"Warning: {os.path.basename(path)} is damaged or in an unknown encoding; "
-                  f"its unreadable bytes are marked U+FFFD.")
-        except UnicodeEncodeError:
-            print("Warning: a file is damaged or in an unknown encoding; its unreadable bytes are marked U+FFFD.")
-    return text.replace("\r\n", "\n").replace("\r", "\n")
+    return decode_text(raw, language, errors, name=os.path.basename(path))
 
 
 # Adding to such a file is done in its own encoding — the one read_text reads it in — and with its own line ends:

@@ -623,7 +623,8 @@ class _Lister:
                             if entry.is_dir(follow_symlinks=False):
                                 if deep and depth < videos.DEPTH:
                                     todo.append((entry.path, depth + 1))
-                            elif entry.name.lower().endswith(runner.VIDEO_EXTENSIONS):
+                            elif runner.video_file(entry.name, entry.stat(follow_symlinks=False).st_size):
+                                # Connect's one rule for a video file: never a Mac `._` copy or a small `.ts`
                                 out.append(entry.path)
                         except OSError:
                             continue
@@ -658,7 +659,7 @@ def _find_one(line, data_dir, folders, title, lister):
     from app.connect import runner
     if line.number is None:
         return line.label, None, STRINGS["why_no_number"]
-    shown = f"{line.number:02d}"
+    shown = f"{line.number:02d}" if isinstance(line.number, int) else str(line.number)   # LM1a: `- 12.5` is 12.5
     show = os.path.join(data_dir, *[p for p in _norm(line.rel_path).split("/")[:-1] if p])
 
     def matching(paths):

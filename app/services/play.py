@@ -72,8 +72,8 @@ def to_open(language, item_id, rel_path, media):
     record = pairing(language, item_id)
     unread = record is None
     record = record or {}
-    origin = record.get("origin") if record.get("producer") == "source" else None
-    origin = origin if isinstance(origin, str) and os.path.isabs(origin) else None
+    origin = runner.origin_of(record)
+    origin = origin if origin and os.path.isabs(origin) else None
     word = MEDIA_WORD.get(media, "video")
     if word in ("EPUB", "file"):
         book = origin and re.sub(r"#\d+$", "", origin)              # an EPUB's part (`<book>.epub#3`): the book
@@ -95,7 +95,8 @@ def to_open(language, item_id, rel_path, media):
     for p in (path, origin):
         if not p:
             continue
-        found = runner.beside(p, exts, unlisted=_UNLISTED)
+        # beside the copy, then beside the original: Connect's own two looks (`beside`, `beside_origin`), one rule each
+        found = runner.beside(p, exts, _UNLISTED) if p is path else runner.beside_origin(record, exts, _UNLISTED)
         if found is _UNLISTED:
             unreachable = unreachable or p is origin    # the copy's folder not there: nothing beside it
         elif found:

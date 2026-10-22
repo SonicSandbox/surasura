@@ -37,13 +37,13 @@ decodes an image for the screen (Q6 does, off the window's thread).
 import hashlib
 import os
 import posixpath
-import re
 import zipfile
 from collections import namedtuple
 from urllib.parse import unquote
 from xml.etree import ElementTree
 
 from app import path_utils
+from app.episode_names import season_folder
 
 ART_STEMS = ("cover", "poster", "folder")           # best first (01 §1.3 row 3)
 ART_EXTS = (".jpg", ".jpeg", ".png")
@@ -52,8 +52,6 @@ MAX_IMAGE = 25 << 20            # bytes: a cover past this isn't one (and is nev
 MAX_OPF = 4 << 20               # bytes: an EPUB's package file past this isn't read
 USER_COVERS = "covers"          # User Files/<lang>/covers/
 _PLACEHOLDER = 0x1000 | 0x40000 | 0x400000      # OFFLINE · RECALL_ON_OPEN · RECALL_ON_DATA_ACCESS (a cloud file)
-_SEASON = re.compile(r"(?i)^(?:season|series)[\s._-]*\d{1,3}\b|^s\d{1,3}$|^第\s*[\d０-９一二三四五六七八九十]+\s*[期季部]"
-                     r"|^[\d０-９]+\s*期$|^シーズン\s*[\d０-９]+")
 _REPLACEABLE = (None, "generated")              # a cover the scan may write over (unlocked)
 PACE_S = 0.1                    # the scan asks `cancel` this often while it waits for the writer's queue to empty
 
@@ -158,7 +156,7 @@ def _folders(rel_paths):
         parts = rel.split("/")[:-1]
         if len(parts) < 2:
             continue
-        for at in (parts, parts[:-1] if len(parts) >= 3 and _SEASON.search(parts[-1]) else None):
+        for at in (parts, parts[:-1] if len(parts) >= 3 and season_folder(parts[-1]) is not None else None):
             if at and "/".join(at) not in out:
                 out.append("/".join(at))
     return out

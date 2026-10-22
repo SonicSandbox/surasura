@@ -60,7 +60,7 @@ def _render_sidebar(tmp_path, filenames):
          patch.object(gen, "PRIORITY_CSV", str(results / "priority_learning_list.csv")), \
          patch.object(gen, "PROGRESSIVE_CSV", str(results / "progressive_learning_list.csv")), \
          patch.object(gen, "OUTPUT_FILE", str(out)):
-        gen.generate_static_html(theme="default")
+        gen.generate_static_html(theme="default", open_browser=False)
 
     payload = re.search(r"let globalData = (\{.*?\});\n", out.read_text(encoding="utf-8"), re.S)
     return {f["filename"]: f["is_goal_content"] for f in json.loads(payload.group(1))["progressive"]}

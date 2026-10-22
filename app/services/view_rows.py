@@ -32,6 +32,7 @@ import re
 from collections import namedtuple
 
 from app.connect import feed as connect_feed     # P4.1 L2: Connect's kinds (a light module: no Qt, no Tk)
+from app.episode_names import identity           # LM1a: the one reading of a file name (pure)
 from app.path_utils import infer_source_type
 from app.services import stone_plan
 
@@ -200,15 +201,6 @@ STRINGS = {
 
 _EXT = re.compile(r"\.[A-Za-z0-9]{1,5}$")
 _YT_ID = re.compile(r"\s*\[[0-9A-Za-z_-]{6,11}\]$")
-_EP_PATTERNS = (
-    re.compile(r"[Ss]\d{1,2}[Ee](\d{1,4})"),
-    re.compile(r"第\s*(\d{1,4})\s*[話话回集]"),
-    re.compile(r"(?i)(?:^|[^A-Za-z])(?:ep|episode|e)\.?\s*(\d{1,4})(?!\d)"),
-)
-_NOT_EPISODE = re.compile(r"[(\[（【]\s*(?:19|20)\d\d\s*[)\]）】]|(?:19|20)\d\d[-./]\d{1,2}[-./]\d{1,2}|\d{3,4}[pP]\b|"
-                          r"[xX]26[45]|\b(?:19|20)\d\d\b(?=\s*$)|"
-                          r"\[[0-9A-Fa-f]{8}\]")     # a release's checksum (`[E04F4EFB]`): its "E04" is no episode
-_NUMBER = re.compile(r"(?:^|[\s_\-\[\(（【#＃])(\d{1,4})(?:v\d)?(?=$|[\s_\-\]\)）】.])")
 
 
 # --- small pieces ---------------------------------------------------------------------------------------------------- #
@@ -218,14 +210,11 @@ def stem(name):
 
 
 def episode_number(name):
-    """The episode (or part) number a file's name gives, or None: `S01E05`, `第5話`, `ep05`, `Show - 05`, `Show 05 …`."""
-    s = _NOT_EPISODE.sub(" ", _EXT.sub("", name or ""))
-    for pat in _EP_PATTERNS:
-        m = pat.search(s)
-        if m:
-            return int(m.group(1))
-    found = [m for m in _NUMBER.finditer(s)]
-    return int(found[-1].group(1)) if found else None
+    """The episode (or part) number a file's name gives, or None: `S01E05`, `第5話`, `ep05`, `Show - 05`, `Show 05 …` —
+    LM1a's one rule (`episode_names.identity`), a bare number read too (the window has no folder to ask); a special
+    (`OVA 01`, `- 01 (OVA)`) has none here (A4: never *Ep 1*, nor episode 1's video offered for it)."""
+    n = identity(name, bare_numbers=True)
+    return None if n.special else n.episode
 
 
 def runs(numbers):

@@ -135,7 +135,7 @@ def test_report_links_point_at_the_original_wording(tmp_path):
          patch("app.static_html_generator.PROGRESSIVE_CSV", str(results / "progressive_learning_list.csv")), \
          patch("app.static_html_generator.OUTPUT_FILE", str(out)), \
          patch("app.static_html_generator.open_report"):
-        static_html_generator.generate_static_html()
+        static_html_generator.generate_static_html(open_browser=False)
     html = out.read_text(encoding="utf-8")
 
     def injected(text):   # the report's data is JSON with ensure_ascii, so CJK arrives \u-escaped

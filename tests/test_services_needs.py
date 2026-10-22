@@ -618,3 +618,14 @@ def test_H_W5_an_answer_never_writes_over_a_seen_file_it_couldnt_read():
         with open(path, encoding="utf-8") as f:
             assert f.read() == broken, "never written over"
         assert needs.read_answered("ja") == frozenset()                   # (the page still reads it as nothing)
+
+
+def test_find_videos_lists_a_video_by_connects_one_rule_never_a_mac_copy_or_a_small_typescript_file(tmp_path):
+    # Michi (laptop fixes): Needs you's listing used its own extension test; a NAS's `._` copy and a TypeScript `.ts`
+    # read as videos there while Connect refused them. Both now ask `runner.video_file`.
+    (tmp_path / "星屑の街 - 05.mkv").write_bytes(b"\0" * 16)
+    (tmp_path / "._星屑の街 - 05.mkv").write_bytes(b"\0" * 16)
+    (tmp_path / "番組表.ts").write_text("export const 回 = 5;\n", encoding="utf-8")
+    (tmp_path / "星屑の街 - 06.ts").write_bytes(b"\0" * runner.TS_MIN)
+    got = sorted(os.path.basename(p) for p in needs._Lister().videos(str(tmp_path), False))
+    assert got == ["星屑の街 - 05.mkv", "星屑の街 - 06.ts"]

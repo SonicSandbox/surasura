@@ -254,6 +254,28 @@ def test_a_local_folders_watch_report_looks_at_that_folder_once_it_settles(looks
     assert scans[0][0] is not threading.main_thread()
 
 
+def test_a_watch_turn_that_fails_never_ends_the_watches_for_the_run(looks_world, scans):
+    """H10: an error in one turn of the watch thread (a dictionary changed while it was read) ended the thread: no
+    watch report was ever looked at again that run. The turn is logged and the next report still looks."""
+    class Flaky(FakeWatch):
+        failed = []
+
+        def take(self):
+            if not Flaky.failed:
+                Flaky.failed.append(True)
+                self.pending = False
+                raise RuntimeError("dictionary changed size during iteration")
+            return super().take()
+    looks, clock, _seen, _dirs = looks_world(kind="local", watch=Flaky)
+    _added(looks, _source())
+    scans.clear()
+    FakeWatch.made[-1].report()                               # this turn fails
+    assert wait_until(lambda: Flaky.failed, 5)
+    time.sleep(0.2)
+    FakeWatch.made[-1].report()                               # the next one is still heard
+    assert wait_until(lambda: len(scans) == 1, 5)
+
+
 def test_a_watch_report_while_the_window_is_behind_waits_for_its_focus(looks_world, scans):
     looks, clock, _seen, _dirs = looks_world(kind="local")
     _added(looks, _source())

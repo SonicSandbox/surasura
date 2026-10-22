@@ -1826,7 +1826,7 @@ def test_an_explorer_drop_whose_anchor_vanishes_at_the_write_tries_the_next_neig
     store.item = lambda i: {"tier": "now"}
     tried = []
 
-    def insert_at(files, anchor, before=True, started_at=None):
+    def insert_at(files, anchor, before=True, started_at=None, origins=None):
         tried.append((anchor, before))
         if anchor == 5:
             raise ls.StoreConflict("the anchor item is gone")
@@ -3568,3 +3568,337 @@ def test_H_T2_the_writer_says_when_it_stopped(lib, make_writer):
     assert not w.stopped()
     w.finish(time.monotonic() + 1)
     assert w.stopped()
+
+
+# --- P-LF-4: a title dropped on another (`Writer.join(..., titles=True)`: how="titles") ---------------------------- #
+def _two_titles(lib):
+    """Two titles' parts in 6+ Months: (target piece, its items, the other title's piece, its items)."""
+    store = lib.store
+    shows = [i for i in lib.ids("goal") if store.item(i)["parent_folder"]]
+    a = shows[0]
+    b = next(i for i in shows if store.item(i)["work_id"] != store.item(a)["work_id"])
+    pa, pb = store.item(a)["piece_id"], store.item(b)["piece_id"]
+    members = lambda p: [r[0] for r in store.conn.execute(               # noqa: E731
+        "SELECT id FROM items WHERE piece_id = ? ORDER BY ord, id", (p,))]
+    return pa, members(pa), pb, members(pb)
+
+
+def _works_of(lib, ids):
+    return [lib.store.item(i)["work_id"] for i in ids]
+
+
+def test_P_LF_4_a_title_join_given_while_the_store_is_busy_is_journalled_lands_as_one_title_and_undoes(
+        lib, make_writer, short_lock_wait):
+    """A busy store queues the join of two titles (journalled with its `titles`, never dropped); freed, it lands as one
+    title and one part, and its one Undo makes them two titles in two parts again, every row back in its place."""
+    w, heard = make_writer()
+    pa, ma, pb, mb = _two_titles(lib)
+    wa, wb = _works_of(lib, ma[:1] + mb[:1])
+    order = lib.ids("goal")
+    holder = LockHolder(lib.db)
+    try:
+        assert w.join([pa, pb], label="joined", titles=True) is not None
+        assert h.until(lambda: journalled(lib.language) == [("join", [])])
+        entry = journal(lib.language)["pending"][0]
+        assert entry["how"] == "titles" and entry["piece_ids"] == [pa, pb]     # LM11: `titles=True` is how="titles"
+        assert _works_of(lib, mb) == [wb] * len(mb)                       # nothing written while busy
+    finally:
+        holder.release()
+    assert h.until(lambda: heard.saved)
+    assert heard.saved[0][1] == "joined" and journal(lib.language) is None
+    assert _works_of(lib, ma + mb) == [wa] * (len(ma) + len(mb))
+    assert {lib.store.item(i)["piece_id"] for i in ma + mb} == {pa}
+    w.undo(label="undo")
+    assert h.until(lambda: heard.undone)
+    assert _works_of(lib, ma) == [wa] * len(ma) and _works_of(lib, mb) == [wb] * len(mb)
+    assert {lib.store.item(i)["piece_id"] for i in mb} == {pb} and lib.ids("goal") == order
+
+
+def test_P_LF_4_a_title_join_replayed_after_a_crash_still_joins_the_titles(lib, make_writer, short_lock_wait):
+    """The journal keeps `titles`: a join of two titles queued before a crash is replayed as one (without it the
+    store would refuse two titles' parts and the drop would be lost)."""
+    w, heard = make_writer()
+    pa, ma, pb, mb = _two_titles(lib)
+    wa = _works_of(lib, ma[:1])[0]
+    holder = LockHolder(lib.db)
+    w.join([pa, pb], titles=True)
+    assert h.until(lambda: journalled(lib.language) == [("join", [])])
+    w._abandon()
+    holder.release()
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: journal(lib.language) is None)
+    assert h.until(lambda: _works_of(lib, mb) == [wa] * len(mb))
+    assert {lib.store.item(i)["piece_id"] for i in ma + mb} == {pa} and heard2.notes == []
+
+
+def test_P_LF_4_a_title_join_refused_on_a_read_only_store_and_one_that_meets_it_says_why_and_writes_nothing(
+        lib, make_writer):
+    w, heard = make_writer()
+    pa, ma, pb, mb = _two_titles(lib)
+    wb = _works_of(lib, mb[:1])[0]
+    w.hold()
+    assert w.join([pa, pb], titles=True) is not None                 # accepted while the store could be written
+    ls.mark_damaged(lib.db, "test: damaged mid-drag")
+    w.release()
+    assert h.until(lambda: heard.notes)
+    assert heard.notes == [WORDS["read_only"].format(reason="damaged")]
+    assert heard.saved == [] and w.pending() == 0
+    assert h.until(lambda: not w.can_write(), seconds=M.MODE_RECHECK_S * 3)
+    assert w.join([pa, pb], titles=True) is None and w.pending() == 0  # refused before anything is painted
+    os.remove(ls.damaged_marker(lib.db))
+    assert _works_of(lib, mb) == [wb] * len(mb) and {lib.store.item(i)["piece_id"] for i in mb} == {pb}
+
+
+# --- LM11: user-made groups through the writer (`group`, `add_to_group`, `ungroup`, `rename_piece`, `join(how=)`) --- #
+def _group_state(lib):
+    """Each tier's order, each item's piece and work, each piece's title and kind: what an Undo puts back."""
+    store = lib.store
+    return ({t: store.ids(t) for t in ls.TIERS}, dict(store.conn.execute("SELECT id, piece_id FROM items")),
+            dict(store.conn.execute("SELECT id, work_id FROM items")),
+            sorted(store.conn.execute("SELECT id, title, kind FROM pieces")))
+
+
+def _kind_of(lib, piece):
+    row = lib.store.conn.execute("SELECT kind, title FROM pieces WHERE id = ?", (piece,)).fetchone()
+    return tuple(row) if row else None
+
+
+def _third(lib):
+    """A third title's piece (Soon) and its items."""
+    store = lib.store
+    c = next(i for i in lib.ids("soon") if store.item(i)["parent_folder"])
+    pc = store.item(c)["piece_id"]
+    return pc, [r[0] for r in store.conn.execute("SELECT id FROM items WHERE piece_id = ? ORDER BY ord, id", (pc,))]
+
+
+def _group_op(lib, w, op, titles):
+    """Queue `op` on the writer over `titles` (`_grouped_first`'s); -> a check of what it leaves once it landed."""
+    pa, ma, pb, mb = titles
+    store = lib.store
+    word = names(lib.language)[44]
+    if op == "join":
+        w.join([pa, pb], how="group", label=op)
+        return lambda: _kind_of(lib, pa) == ("group", None) and {store.item(i)["piece_id"] for i in ma + mb} == {pa}
+    if op == "group":
+        w.group(item_ids=[ma[1], mb[2]], label=op)
+        return lambda: store.item(ma[1])["piece_id"] == store.item(mb[2])["piece_id"] and \
+           _kind_of(lib, store.item(ma[1])["piece_id"])[0] == "group"
+    if op == "add_to_group":
+        pc, mc = _third(lib)
+        w.add_to_group(pa, piece_ids=[pc], label=op)
+        return lambda: {store.item(i)["piece_id"] for i in mc} == {pa}
+    if op == "ungroup":
+        w.ungroup(pa, label=op)
+        return lambda: store.item(ma[0])["piece_id"] != store.item(mb[0])["piece_id"] and \
+           _kind_of(lib, store.item(mb[0])["piece_id"])[0] == "run"
+    w.rename_piece(pa, word, label=op)
+    return lambda: _kind_of(lib, pa) == ("group", word)
+
+
+def _grouped_first(lib, op):
+    """Two titles' parts (read before any group); for the commands that act on a group, grouped on the store first."""
+    titles = _two_titles(lib)
+    if op not in ("join", "group"):
+        lib.store.join([titles[0], titles[2]], how="group")
+    return titles
+
+
+GROUP_OPS = ["join", "group", "add_to_group", "ungroup", "rename_piece"]
+
+
+@pytest.mark.parametrize("op", GROUP_OPS)
+def test_LM11_each_group_command_lands_as_one_change_and_its_undo_puts_the_exact_state_back(lib, make_writer, op):
+    """Every group command is one change on the Undo stack; Undo puts back each row, piece, kind and name."""
+    w, heard = make_writer()
+    titles = _grouped_first(lib, op)
+    before = _group_state(lib)
+    landed = _group_op(lib, w, op, titles)
+    assert h.until(lambda: heard.saved)
+    assert heard.saved[0][1] == op and landed()
+    w.undo(label="undo")
+    assert h.until(lambda: heard.undone)
+    assert _group_state(lib) == before
+
+
+@pytest.mark.parametrize("op", GROUP_OPS)
+def test_LM11_a_group_command_queued_before_a_crash_is_replayed_once_and_lands(lib, make_writer, short_lock_wait, op):
+    """A busy store queues the command (journalled with everything it needs); after a crash the next writer replays it
+    and it lands as given — never lost, never twice."""
+    w, heard = make_writer()
+    titles = _grouped_first(lib, op)
+    holder = LockHolder(lib.db)
+    try:
+        landed = _group_op(lib, w, op, titles)
+        assert h.until(lambda: [e[0] for e in journalled(lib.language)] == [op])
+        assert not landed(), "nothing written while busy"
+        w._abandon()
+    finally:
+        holder.release()
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: journal(lib.language) is None)
+    assert h.until(landed) and heard2.notes == []
+
+
+def test_LM11_a_journal_entry_of_mados_titles_join_replays_as_how_titles(lib, make_writer):
+    """A journal written by the window's first build (`"titles": true` on a join) replays as `how="titles"`: one title,
+    one part."""
+    pa, ma, pb, mb = _two_titles(lib)
+    wa = _works_of(lib, ma[:1])[0]
+    path = M.journal_path(lib.language)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"version": M.JOURNAL_VERSION, "language": lib.language,
+                   "pending": [{"op": "join", "ids": [], "piece_ids": [pa, pb], "titles": True}]}, f)
+    w, heard = make_writer()
+    assert w.replay()
+    assert h.until(lambda: journal(lib.language) is None)
+    assert h.until(lambda: _works_of(lib, mb) == [wa] * len(mb))
+    assert {lib.store.item(i)["piece_id"] for i in ma + mb} == {pa}
+
+
+def test_LM11_a_titles_join_the_ids_refuse_says_why_and_writes_nothing(lib, make_writer):
+    """*Same show as…* on two titles AniList says are different: the store's reason reaches the window as a note."""
+    w, heard = make_writer()
+    pa, ma, pb, mb = _two_titles(lib)
+    wa, wb = _works_of(lib, ma[:1] + mb[:1])
+    with lib.store._writing():
+        lib.store.conn.execute("UPDATE works SET anilist_id = 7 WHERE id = ?", (wa,))
+        lib.store.conn.execute("UPDATE works SET anilist_id = 8 WHERE id = ?", (wb,))
+    w.join([pa, pb], how="titles")
+    assert h.until(lambda: heard.notes)
+    assert heard.notes == [WORDS["failed"].format(error=ls.TITLES_APART["anilist_id"])]
+    assert _works_of(lib, mb) == [wb] * len(mb) and heard.saved == []
+
+
+@pytest.mark.parametrize("op", GROUP_OPS)
+def test_LM11_a_group_command_that_landed_but_left_its_entry_is_let_go_quietly(lib, make_writer, short_lock_wait, op):
+    """The race the journal can lose (W3.2 H C3): the command landed, its entry left behind; at the restart its
+    replay finds what it writes already there and lets it go — no "couldn't be done" note, nothing written twice."""
+    w, heard = make_writer()
+    titles = _grouped_first(lib, op)
+    holder = LockHolder(lib.db)
+    landed = []
+    stale = _stale(lib, w, holder, lambda: landed.append(_group_op(lib, w, op, titles)))
+    assert h.until(landed[0])
+    after = _group_state(lib)
+    w._abandon()
+    M._write_json(M.journal_path(lib.language), stale)
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: journal(lib.language) is None)
+    time.sleep(0.3)
+    assert heard2.notes == [] and _group_state(lib) == after
+
+
+def test_LM11_a_queued_group_whose_episode_changed_part_meanwhile_is_listed_and_never_written(lib, make_writer,
+                                                                                               short_lock_wait):
+    """A group of selected episodes queued before a crash: one of them was put in another part meanwhile (another
+    window's *Split here*) — the replay says it couldn't be done and groups nothing."""
+    w, heard = make_writer()
+    pa, ma, pb, mb = _two_titles(lib)
+    holder = LockHolder(lib.db)
+    try:
+        w.group(item_ids=[ma[1], mb[2]])
+        assert h.until(lambda: [e[0] for e in journalled(lib.language)] == ["group"])
+        assert journal(lib.language)["pending"][0]["before"], "journalled with each episode's part as queued"
+        w._abandon()
+    finally:
+        holder.release()
+    lib.store.split(pa, ma[1])
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: journal(lib.language) is None and heard2.notes)
+    assert heard2.notes == [WORDS["crash_one"]]
+    assert lib.store.item(ma[1])["piece_id"] != lib.store.item(mb[2])["piece_id"]
+
+
+@pytest.mark.parametrize("op", ["rename_piece", "ungroup", "add_to_group"])
+def test_LM11_G6_the_users_own_move_then_a_group_command_both_queued_before_a_crash_both_replay(lib, make_writer,
+                                                                                                short_lock_wait, op):
+    """Two clicks of his own before a crash — an episode taken out of a group, then Rename group / Ungroup / a drop onto
+    it: the replay lands the move, then checks the group command against what the move left (never "couldn't be
+    done": the user's own clicks are no change "meanwhile")."""
+    store = lib.store
+    pa, ma, pb, mb = _two_titles(lib)
+    store.join([pa, pb], how="group")
+    loose = next(i for i in lib.ids("now") if not store.item(i)["parent_folder"])
+    w, heard = make_writer()
+    holder = LockHolder(lib.db)
+    try:
+        w.move([mb[-1]], "now", before_id=lib.ids("now")[0])     # an episode taken out of the group
+        if op == "rename_piece":
+            w.rename_piece(pa, names(lib.language)[51])
+        elif op == "ungroup":
+            w.ungroup(pa)
+        else:
+            w.add_to_group(pa, item_ids=[loose])
+        assert h.until(lambda: [e[0] for e in journalled(lib.language)] == ["move", op])
+        w._abandon()
+    finally:
+        holder.release()
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: journal(lib.language) is None)
+    time.sleep(0.3)
+    assert heard2.notes == []
+    row = store.conn.execute("SELECT kind, title FROM pieces WHERE id = ?", (pa,)).fetchone()
+    if op == "rename_piece":
+        assert row == ("group", names(lib.language)[51])
+    elif op == "ungroup":
+        assert row is None or row[0] == "run"
+    else:
+        assert store.item(loose)["piece_id"] == pa
+    assert store.item(mb[-1])["tier"] == "now"
+
+
+def test_LM11_G7_a_queued_group_of_one_parts_episodes_apart_is_replayed_never_taken_as_done(lib, make_writer,
+                                                                                           short_lock_wait):
+    """*Group…* of two episodes of one part with another between them, queued before a crash: as queued they are in
+    one piece already, which is not what the command makes — the replay runs it (the two side by side, a part of their
+    own), quietly."""
+    store = lib.store
+    pa, ma, pb, mb = _two_titles(lib)
+    w, heard = make_writer()
+    holder = LockHolder(lib.db)
+    try:
+        w.group(item_ids=[ma[0], ma[2]])
+        assert h.until(lambda: [e[0] for e in journalled(lib.language)] == ["group"])
+        w._abandon()
+    finally:
+        holder.release()
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: journal(lib.language) is None)
+    time.sleep(0.3)
+    assert heard2.notes == []
+    piece = store.item(ma[0])["piece_id"]
+    assert store.item(ma[2])["piece_id"] == piece
+    assert [r[0] for r in store.conn.execute("SELECT id FROM items WHERE piece_id = ? ORDER BY ord, id",
+                                             (piece,))] == [ma[0], ma[2]]
+
+
+def test_LM11_G7_a_queued_group_another_window_made_in_the_other_order_meanwhile_is_listed(lib, make_writer,
+                                                                                          short_lock_wait):
+    """*Group…* of A then B queued before a crash; another window grouped B then A meanwhile: everything is in one
+    piece, but not as this command asks (A's episodes first) — it isn't taken as landed: listed, nothing written."""
+    store = lib.store
+    pa, ma, pb, mb = _two_titles(lib)
+    w, heard = make_writer()
+    holder = LockHolder(lib.db)
+    try:
+        w.group(piece_ids=[pa, pb])
+        assert h.until(lambda: [e[0] for e in journalled(lib.language)] == ["group"])
+        w._abandon()
+    finally:
+        holder.release()
+    store.join([pb, pa], how="group")                           # another window: B's episodes first
+    after = [r[0] for r in store.conn.execute("SELECT id FROM items WHERE piece_id = ? ORDER BY ord, id", (pb,))]
+    assert after == mb + ma
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: journal(lib.language) is None and heard2.notes)
+    assert heard2.notes == [WORDS["crash_one"]]
+    assert [r[0] for r in store.conn.execute("SELECT id FROM items WHERE piece_id = ? ORDER BY ord, id",
+                                             (pb,))] == after

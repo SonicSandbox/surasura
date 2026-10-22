@@ -274,3 +274,42 @@ def test_a_box_under_the_words_starts_off_is_reached_by_tab_and_counts_only_with
     card.check.setChecked(True)
     card.yes.click()
     assert seen[-1] == (True, True)
+
+
+# --- LM11b G3: a field (the group's Rename card) ------------------------------------------------------------------ #
+def test_a_field_starts_with_the_name_shown_selected_in_focus_enter_is_yes_and_its_text_is_read_only_with_yes(second):
+    # a learner renaming a group types over the name at once and presses Enter; a No never reads what he typed
+    seen = []
+    card = confirm.ask(second, "Rename this group", "", "Rename", "Save this name", field="星降る街の小さな工房 + 1 more",
+                       on_answer=lambda yes: seen.append((yes, card.text)))
+    QApplication.processEvents()
+    assert wait_until(lambda: QApplication.focusWidget() is card.field, 3)
+    assert card.field.text() == "星降る街の小さな工房 + 1 more" and card.field.selectedText() == card.field.text()
+    card.field.insert("雲の上の郵便屋さん")                  # typed over the selection (QTest can't type kana: Qt aborts)
+    QTest.keyClick(card.field, Qt.Key.Key_Return)
+    assert seen == [(True, "雲の上の郵便屋さん")] and _gone(card)
+    card = confirm.ask(second, "Rename this group", "", "Rename", "Save this name", field="雲の上の郵便屋さん",
+                       on_answer=lambda yes: seen.append((yes, card.text)))
+    QApplication.processEvents()
+    QTest.keyClick(card.field, Qt.Key.Key_Backspace)
+    QTest.keyClick(QApplication.focusWidget(), Qt.Key.Key_Escape)
+    assert seen[-1] == (False, None) and _gone(card)
+
+
+def test_tab_goes_round_the_field_and_the_two_buttons_never_out_to_the_window_behind(second):
+    card = confirm.ask(second, "Rename this group", "", "Rename", "Save this name", field="山の音")
+    QApplication.processEvents()
+    assert wait_until(lambda: QApplication.focusWidget() is card.field, 3)
+    ring = []
+    for _ in range(3):
+        QTest.keyClick(QApplication.focusWidget(), Qt.Key.Key_Tab)
+        ring.append(QApplication.focusWidget())
+    assert ring == [card.no, card.yes, card.field]
+    card.no.click()
+
+
+def test_a_card_without_a_field_has_none_and_no_text(second):
+    card, answers = _ask(second)
+    assert card.field is None
+    card.yes.click()
+    assert answers == [True] and card.text is None

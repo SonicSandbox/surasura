@@ -104,7 +104,28 @@ ITEM_MENU = {
     "remove": ("Remove…", "Take it out of your library: its files go to the trash for 30 days (asks first)"),
     # LM11b G4: on what Ctrl+click picked ({n}: the rows and episodes picked)
     "group": ("Group…", "Put these {n} into one row in Current\n• Undo takes them apart again"),
+    # LM11b G3: on a group's ⋯ (IK-5), and *Same show as…* on a show's own row (IK-6)
+    "rename": ("Rename…", "Give this group a name of its own (left empty, it is named after its shows again)"),
+    "ungroup": ("Ungroup", "Put each show back in a row of its own, where it is: nothing is lost\n"
+                           "• Undo groups them again"),
+    "same-show": ("Same show as…", "Make this part of another show: it and its new episodes go into that show "
+                                   "(asks first)"),
 }
+ITEM_UNGROUPED = "Ungrouped {title}"
+ITEM_RENAME_ASK = "Rename this group"
+ITEM_RENAME_BODY = "Leave it empty to name it after its shows again."
+ITEM_RENAME_YES = "Rename"
+ITEM_RENAME_YES_TIP = "Give the group this name"
+ITEM_RENAMED = "Renamed {title} to {name}"
+ITEM_RENAME_CLEARED = "{title} is named after its shows again"
+ITEM_SAME_SHOW_PICK = "{title} · {where}"
+ITEM_SAME_SHOW_PICK_TIP = "Make this part of {title} (asks first)"
+# the confirm's words as Sonic approved them (GW-1, 2026-10-21): {b} this row's show, {a} the one picked
+ITEM_SAME_SHOW_ASK = "Make {b} part of {a}?"
+ITEM_SAME_SHOW_BODY = "New episodes of {b} will go into {a}. Undo works until you close Surasura."
+ITEM_SAME_SHOW_YES = "Make one show"
+ITEM_SAME_SHOW_YES_TIP = "Make {b} part of {a}: one show from now on"
+ITEM_SAME_SHOW_DONE = "{b} is now part of {a}"
 ITEM_GROUPED = "Grouped {n} into one row"
 ITEM_TYPES = {"anime": "Anime", "drama": "Drama", "movie": "Movie", "youtube": "YouTube", "podcast": "Podcast",
               "audiobook": "Audiobook", "book": "Book", "lightnovel": "Light novel", "manga": "Manga", "game": "Game",

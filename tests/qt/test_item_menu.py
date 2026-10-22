@@ -151,7 +151,8 @@ def test_the_menu_lists_the_moves_then_study_type_split_join_folder_and_remove_l
     _seed, win, _w = world()
     a, _b = split_parts(win)
     row = rows_of(win)[a]
-    assert names(win.items.entries(row)) == ["pin", "type", "split", "join", "cover", "folder", "remove"]   # W3.2 L3
+    assert names(win.items.entries(row)) == ["pin", "type", "split", "join", "same-show", "cover", "folder",
+                                                 "remove"]                       # W3.2 L3; LM11b G3: same-show
     m = win.items.menu(row, win.mapToGlobal(QPoint(300, 300)))
     acts = m.actions()
     texts = [x.text() for x in acts]
@@ -804,6 +805,152 @@ def test_G2_a_read_only_store_groups_nothing(world):
     assert writer.calls == []
 
 
+# --- LM11b G3: ⋯ on a group (IK-5), *Rename…*, *Ungroup*, *Same show as…* (IK-6) ---------------------------------- #
+def test_G3_IK5_a_groups_menu_is_the_moves_study_split_rename_ungroup_then_remove_and_nothing_of_one_show(world,
+                                                                                                            monkeypatch):
+    # a group is several shows: what it is, its cover, its folder, a skipped folder or another part of "its" title
+    # would each be one show's, so none of them is offered
+    _seed, win, _w = world()
+    _b, a = two_shows(win)
+    group = as_group(win, a)
+    skips = []
+    monkeypatch.setattr(win.items, "_offer_skip", lambda row, m: skips.append(row.key))
+    entries = win.items.entries(group)
+    assert names(entries) == ["pin", "split", "rename", "ungroup", "remove"]
+    m = win.items.menu(group, win.mapToGlobal(QPoint(300, 300)))
+    acts = m.actions()
+    moves = [label for _n, label, _t, _ok in win.moves.menu_entries(group)]
+    assert [x.text() for x in acts] == moves + [e.label for e in entries[:-1]] + ["", strings.ITEM_MENU["remove"][0]]
+    assert acts[-2].isSeparator() and skips == []
+    for act in acts:                                                 # every entry tipped and wired
+        if not act.isSeparator():
+            for x in [act] + (act.menu().actions() if act.menu() is not None else []):
+                assert x.toolTip().strip() and _connected(x), x.text()
+    m.close()
+
+
+def test_G3_ungroup_is_one_writer_call_toasted_with_undo(world):
+    _seed, win, writer = world()
+    _b, a = two_shows(win)
+    group = as_group(win, a)
+    win.items.menu_pick(group, "ungroup")
+    assert calls(writer) == [("ungroup", [], {"piece_id": group.piece_id})]
+    assert wait_until(lambda: win.toasts.card.message == strings.ITEM_UNGROUPED.format(title=group.title), 5)
+    win.toasts.card.buttons[0].click()
+    assert wait_until(lambda: len(writer.undone) == 1, 5)
+
+
+def _rename_card(win, group):
+    win.items.menu_pick(group, "rename")
+    card = win.items.question
+    assert card is not None and card.isVisible() and card.field is not None
+    assert card.title.text() == strings.ITEM_RENAME_ASK and card.yes.text() == strings.ITEM_RENAME_YES
+    assert card.no.text() == strings.CONFIRM_NO and card.field.text() == group.title    # the name shown
+    return card
+
+
+def test_G3_rename_writes_the_new_name_once_toasted_with_undo(world):
+    _seed, win, writer = world()
+    _b, a = two_shows(win)
+    group = as_group(win, a)
+    card = _rename_card(win, group)
+    card.field.setText("  雲の上の郵便屋さんと仲間たち ")
+    card.yes.click()
+    assert calls(writer) == [("rename_piece", [], {"piece_id": group.piece_id, "title": "雲の上の郵便屋さんと仲間たち"})]
+    text = strings.ITEM_RENAMED.format(title=group.title, name="雲の上の郵便屋さんと仲間たち")
+    assert wait_until(lambda: win.toasts.card.message == text, 5)
+    win.toasts.card.buttons[0].click()
+    assert wait_until(lambda: len(writer.undone) == 1, 5)
+
+
+def test_G3_rename_to_nothing_names_it_after_its_shows_again_and_the_same_name_or_esc_writes_nothing(world):
+    _seed, win, writer = world()
+    _b, a = two_shows(win)
+    group = as_group(win, a)
+    card = _rename_card(win, group)
+    assert wait_until(lambda: QApplication.focusWidget() is card.field, 3)
+    QTest.keyClick(QApplication.focusWidget(), Qt.Key.Key_Escape)  # Esc (the shell's router): No
+    assert writer.calls == [] and win.items.question is None
+    card = _rename_card(win, group)
+    card.yes.click()                                                 # the name it had: nothing to write
+    assert writer.calls == []
+    card = _rename_card(win, group)
+    card.field.setText("   ")
+    card.yes.click()
+    assert calls(writer) == [("rename_piece", [], {"piece_id": group.piece_id, "title": None})]
+    assert wait_until(lambda: win.toasts.card.message == strings.ITEM_RENAME_CLEARED.format(title=group.title), 5)
+
+
+def test_G3_a_read_only_store_renames_and_ungroups_nothing(world):
+    _seed, win, writer = world(writable=False)
+    _b, a = two_shows(win)
+    group = as_group(win, a)
+    assert all(not e.ok for e in win.items.entries(group) if e.name in ("rename", "ungroup"))
+    assert win.items.ungroup(group) is None and win.items.rename(group, "山の音") is None
+    win.items.menu_pick(group, "rename")
+    assert win.items.question is None and writer.calls == []
+
+
+def _same_show(win, row):
+    return next((e for e in win.items.entries(row) if e.name == "same-show"), None)
+
+
+def test_G3_IK6_same_show_as_lists_each_other_show_once_from_current_goal_finished_and_new_arrivals(world,
+                                                                                                    monkeypatch):
+    _seed, win, _w = world()
+    view = win.page_widgets["current"].view_model
+    b, a = two_shows(win)
+    row = view.rows[b]
+    entry = _same_show(win, row)
+    assert entry is not None and entry.tip == strings.ITEM_MENU["same-show"][1] and entry.ok
+    shows = [c.payload for c in entry.children]
+    assert len({s.key for s in shows}) == len(shows) <= item_menu.SAME_SHOW_MAX
+    assert all(c.tip and c.ok and c.label == strings.ITEM_SAME_SHOW_PICK.format(title=c.payload.title,
+                                                                               where=c.payload.where)
+               for c in entry.children)
+    works = [s.work_id for s in shows]
+    assert row.work_id not in works and len(set(works)) == len(works)          # one entry per show, never its own
+    current = [s for s in shows if s.where.endswith(("in Current", "in Current (Soon)"))]
+    first = next(r for r in view.rows if item_menu.joinable(r) and not r.group and r.work_id != row.work_id)
+    assert current[0].key == first.key and current[0].pieces == tuple(item_menu.pieces_of(first))
+    wheres = {s.where for s in shows}
+    assert strings.ITEM_JOIN_WHERE["graduated"] in wheres or not any(m.rows for m in view.finished or ())
+    assert strings.ITEM_JOIN_WHERE["arrivals"] in wheres or not view.arrivals
+    # a group is no show of its own; a Goal tile is offered once the view names its piece (`GoalPiece.piece_id`)
+    group = as_group(win, a)
+    assert group.key not in [c.payload.key for c in _same_show(win, rows_of(win)[b]).children]
+    assert _same_show(win, group) is None
+    tile = SimpleNamespace(key=("w", 4321), work_id=4321, title="風の谷の小さな図書館", source="disk", group=False,
+                           pieces=(SimpleNamespace(item_ids=(1,), line="Ep 1–2", piece_id=5432),))
+    goal_view = win.page_widgets["current"].view_model
+    monkeypatch.setattr(win.items, "_view", lambda: goal_view._replace(
+        goal=goal_view.goal._replace(works=(tile,))))
+    goal = [c.payload for c in _same_show(win, rows_of(win)[b]).children if c.payload.work_id == 4321]
+    assert [(s.pieces, s.where) for s in goal] == [((5432,), strings.ITEM_JOIN_WHERE["goal"])]
+
+
+def test_G3_same_show_as_asks_first_cancel_is_the_default_and_writes_nothing_yes_is_one_titles_join(world):
+    _seed, win, writer = world()
+    b, _a = two_shows(win)
+    row = rows_of(win)[b]
+    show = _same_show(win, row).children[0].payload
+    win.items.menu_pick(row, "same-show", show)
+    card = win.items.question
+    assert card.title.text() == strings.ITEM_SAME_SHOW_ASK.format(b=row.title, a=show.title)
+    assert card.body.text() == strings.ITEM_SAME_SHOW_BODY.format(b=row.title, a=show.title)
+    assert card.yes.text() == strings.ITEM_SAME_SHOW_YES and card.no.text() == strings.CONFIRM_NO
+    assert card.default is card.no
+    card.no.click()
+    assert writer.calls == []
+    win.items.menu_pick(row, "same-show", show)
+    win.items.question.yes.click()
+    assert calls(writer) == [("join", [], {"piece_ids": list(show.pieces) + item_menu.pieces_of(row), "ahead": False,
+                                           "how": "titles"})]
+    text = strings.ITEM_SAME_SHOW_DONE.format(b=row.title, a=show.title)
+    assert wait_until(lambda: win.toasts.card.message == text, 5)
+    assert win.toasts.card.buttons, "its Undo"
+
+
 def test_open_its_folder_opens_it_or_says_its_gone(world, monkeypatch):
     seed, win, _w = world()
     opened, said = [], []
@@ -1389,3 +1536,78 @@ def test_real_store_G2_two_shows_rested_and_dropped_are_one_group_row_and_undo_a
     QTest.keyClick(win, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
     assert wait_until(lambda: _state(store) == before, 5)
     assert wait_until(lambda: [r.key for r in rows_of(win)] == keys, 5)
+
+
+# --- LM11b G3 on the real store ------------------------------------------------------------------------------------- #
+def _grouped_outside(store, win):
+    """Two shows of Current grouped by another program: (the group's row, its items' ids, the state before)."""
+    b, a = two_shows(win)
+    rs = rows_of(win)
+    ids = list(drag.ids_of(rs[a])) + list(drag.ids_of(rs[b]))
+    before = _state(store)
+    store.join([rs[a].piece_id, rs[b].piece_id], how="group")
+    assert wait_until(lambda: any(r.group and list(drag.ids_of(r)) == ids for r in rows_of(win)), 10)
+    return next(r for r in rows_of(win) if r.group), ids, before
+
+
+def test_real_store_G3_ungroup_makes_two_rows_and_its_undo_one_again(real):
+    store, win, _writer = real()
+    group, ids, before = _grouped_outside(store, win)
+    grouped = _state(store)
+    win.items.menu_pick(group, "ungroup")
+    assert wait_until(lambda: len({store.item(i)["piece_id"] for i in ids}) == 2, 5)
+    assert wait_until(lambda: sum(1 for r in rows_of(win) if set(drag.ids_of(r)) & set(ids)) == 2, 5)
+    assert wait_until(lambda: win.toasts.card.message == strings.ITEM_UNGROUPED.format(title=group.title), 5)
+    win.toasts.card.buttons[0].click()
+    assert wait_until(lambda: _state(store) == grouped, 5)
+
+
+def test_real_store_G3_rename_names_the_group_and_undo_gives_back_its_shows_name(real):
+    store, win, _writer = real()
+    group, _ids, _before = _grouped_outside(store, win)
+    win.items.menu_pick(group, "rename")
+    card = win.items.question
+    card.field.setText("雨の日の喫茶店めぐり")
+    card.yes.click()
+    assert wait_until(lambda: any(r.key == group.key and r.title == "雨の日の喫茶店めぐり" for r in rows_of(win)), 5)
+    assert store.conn.execute("SELECT title FROM pieces WHERE id = ?", (group.piece_id,)).fetchone()[0] == \
+        "雨の日の喫茶店めぐり"
+    assert wait_until(lambda: not win.moves.tickets, 5)
+    win.toasts.card.buttons[0].click()
+    assert wait_until(lambda: any(r.key == group.key and r.title == group.title for r in rows_of(win)), 5)
+
+
+def test_real_store_G3_same_show_as_makes_one_title_and_one_undo_makes_two(real):
+    store, win, _writer = real()
+    b, _a = two_shows(win)
+    row = rows_of(win)[b]
+    show = next(c.payload for c in _same_show(win, row).children if c.payload.key in [r.key for r in rows_of(win)])
+    before = _state(store)
+    win.items.menu_pick(row, "same-show", show)
+    win.items.question.yes.click()
+    assert wait_until(lambda: {store.item(i)["work_id"] for i in drag.ids_of(row)} == {show.work_id}, 5)
+    assert wait_until(lambda: win.toasts.card.message == strings.ITEM_SAME_SHOW_DONE.format(b=row.title,
+                                                                                           a=show.title), 5)
+    win.toasts.card.buttons[0].click()
+    assert wait_until(lambda: _state(store) == before, 5)
+
+
+def test_real_store_G3_same_show_as_refused_by_anilist_says_why_in_the_bar_and_changes_nothing(real, monkeypatch):
+    store, win, _writer = real()
+    b, _a = two_shows(win)
+    row = rows_of(win)[b]
+    show = next(c.payload for c in _same_show(win, row).children if c.payload.key in [r.key for r in rows_of(win)])
+    with store._writing():                                       # as each title's AniList record would set them
+        store.conn.execute("UPDATE works SET anilist_id = ? WHERE id = ?", (101, show.work_id))
+        store.conn.execute("UPDATE works SET anilist_id = ? WHERE id = ?", (202, row.work_id))
+    before = _state(store)
+    said = []
+    say = win.say
+    monkeypatch.setattr(win, "say", lambda text: (said.append(text), say(text)))
+    win.items.menu_pick(row, "same-show", show)
+    win.items.question.yes.click()
+    assert wait_until(lambda: any(ls.TITLES_APART["anilist_id"] in t for t in said), 5)
+    assert wait_until(lambda: not win.moves.tickets, 5)
+    assert _state(store) == before
+    done = strings.ITEM_SAME_SHOW_DONE.format(b=row.title, a=show.title)
+    assert win.toasts.card is None or win.toasts.card.message != done          # no toast for what never happened

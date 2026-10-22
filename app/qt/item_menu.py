@@ -16,8 +16,17 @@ A3 `split`, 06 E4, E22).
   asked on the looks' worker, added once it answers; none for a row from no folder being read): `Writer.skip_folder`
   with Undo;
 - *Open its folder* (`windows.open_url`, N3; looked for on a worker);
+- *Same show as…* › the other shows the view holds, one entry each (Current's in order, Goal's, Finished's, New
+  arrivals'; at most `SAME_SHOW_MAX`), each asking first (`confirm.ask`, Cancel the default: "Make <B> part of <A>?"):
+  one `Writer.join(how="titles")`, the show picked first — the store's refusal (two AniList ids, TMDB ids or YouTube
+  channels: `TITLES_APART`) said in the bar as the store words it, its toast only once the store saved it;
 - a separator, then *Remove…*: the one modal kind (`confirm.ask`, Esc / Back / a click outside are No) naming its
   files; `Writer.remove` (the trash, 30 days) with Undo.
+**⋯ on a group (LM11b G3, IK-5):** the moves, *Study its cards first*, *Split here…*, *Rename…* (a card with the name
+shown in a field: `Writer.rename_piece`, empty = named after its shows again, the same name writes nothing), *Ungroup*
+(`Writer.ungroup`: each show back in a row of its own, in place), a separator, *Remove…* — never *What is it?*, *Join
+with…*, *Same show as…*, *Change cover…*, *Never read this folder* or *Open its folder* (each is one show's). Its writes
+toast once the store saved them, with Undo.
 **Group… (LM11b G4):** Ctrl+click picks Current's rows and an opened row's episodes (its stones), Shift+click the rows
 from the last one Ctrl picked instead (Ctrl+Shift+click adds them), Ctrl+Space the keyboard's row
 (`rows.RowsView.pick_row`); with things picked from 2+ shows (IK-4: one show's alone would be no group), ⋯ on a picked
@@ -64,6 +73,10 @@ JOIN_REST_MS = 500                                  # LM11b G2: another show gro
 
 Entry = namedtuple("Entry", "name label tip ok children checked payload", defaults=(None, None, None))
 Part = namedtuple("Part", "key piece_id ids numbers tier place title")
+Show = namedtuple("Show", "key work_id title pieces where")
+#   LM11b G3: a show *Same show as…* offers — `pieces` what its join names (a row's: both of a show the Soon line runs
+#   through), `where` its section as *Join with…* names it
+SAME_SHOW_MAX = 20
 #   a part of a title as ⋯ and the drop see it: `ids` its files' item ids in order, `numbers` their episode numbers
 #   (None where it has none), `tier` the store's, `place` its 1-based place in Current (None elsewhere)
 
@@ -215,8 +228,9 @@ class ItemActions(QObject):
             words, own_tip = strings.ITEM_MENU.get(name, (None, None))
             ok = writable or not writes
             return Entry(name, label or words, (tip or own_tip) if ok else reason, ok, **kw)
+        group = getattr(row, "group", False)
         out = [entry("unpin") if row.studying else entry("pin")]
-        if row.work_id is not None:
+        if row.work_id is not None and not group:
             kinds = [entry("type-to", label=strings.ITEM_TYPES[m], tip=strings.ITEM_TYPE_TIP.format(
                 kind=strings.ITEM_TYPES[m]), checked=row.media == m, payload=m) for m in library_store.MEDIA_TYPES]
             kinds.append(entry("type-to", label=strings.ITEM_TYPE_GUESS[0], tip=strings.ITEM_TYPE_GUESS[1],
@@ -236,11 +250,19 @@ class ItemActions(QObject):
                           tip=strings.ITEM_SPLIT_AFTER_TIP.format(ep=row.episodes[k - 1].label,
                                                                   rest=rows._rest_of(row, k)),
                           payload=row.episodes[k]) for k in cuts]))
+        if group:                                    # --- LM11b G3 (IK-5): the rest is one show's
+            out += [entry("rename"), entry("ungroup"), entry("remove")]
+            return out
         others = self.other_parts(row)
         if others:
             out.append(entry("join", children=[
                 entry("join", label=strings.ITEM_JOIN_PART.format(range=range_text(p), where=where),
                       tip=strings.ITEM_JOIN_PART_TIP.format(range=range_text(p)), payload=p) for p, where in others]))
+        shows = self.same_shows(row)                 # --- LM11b G3 (IK-6)
+        if shows:
+            out.append(entry("same-show", children=[
+                entry("same-show", label=strings.ITEM_SAME_SHOW_PICK.format(title=s.title, where=s.where),
+                      tip=strings.ITEM_SAME_SHOW_PICK_TIP.format(title=s.title), payload=s) for s in shows]))
         covers = self.cover_entries(row) if self.cover_entries is not None else None
         if covers:
             out.append(entry("cover", children=[
@@ -342,7 +364,8 @@ class ItemActions(QObject):
                 continue
             self._action(m, row, e)
         self.last_menu = m
-        self._offer_skip(row, m)                     # K6: *Never read this folder*, once the looks' worker answers
+        if not getattr(row, "group", False):         # (LM11b G3: a group's folders are several shows')
+            self._offer_skip(row, m)                 # K6: *Never read this folder*, once the looks' worker answers
         m.popup(at)
         return m
 
@@ -374,6 +397,12 @@ class ItemActions(QObject):
             self.open_folder(row)
         elif name == "remove":
             self.ask_remove(row)
+        elif name == "rename":                           # --- LM11b G3
+            self.ask_rename(row)
+        elif name == "ungroup":
+            self.ungroup(row)
+        elif name == "same-show" and payload is not None:
+            self.ask_same_show(row, payload)
 
     def _place(self, row):
         view = self._view()
@@ -527,6 +556,107 @@ class ItemActions(QObject):
         ids = drag.ids_of(row)
         return self.moves._give(drag.Ticket(strings.ITEM_REMOVED.format(title=row.title), (row.key,), ids),
                                 lambda t: self.writer.remove(ids, label=t))
+
+    # --- LM11b G3: a group's *Rename…* / *Ungroup*, a show's *Same show as…* ------------------------------------- #
+    def same_shows(self, row):
+        """*Same show as…*'s shows for `row` (a show's own row, never a group): [Show] — each other show the view holds
+        once, where it first stands: Current's runs in order, Goal's tiles (once the view names their pieces:
+        `GoalPiece.piece_id`), Finished's, New arrivals'; at most `SAME_SHOW_MAX`."""
+        view = self._view()
+        if view is None or not joinable(row) or getattr(row, "group", False):
+            return []
+        out, seen = [], {row.work_id}
+
+        def add(work_id, key, title, pieces, where):
+            if work_id is not None and work_id not in seen and pieces and len(out) < SAME_SHOW_MAX:
+                seen.add(work_id)
+                out.append(Show(key, work_id, title, tuple(pieces), where))
+        for n, r in enumerate(view.rows, 1):
+            if joinable(r) and not getattr(r, "group", False):
+                add(r.work_id, r.key, r.title, pieces_of(r),
+                    strings.ITEM_JOIN_WHERE[r.tier if r.tier in ("now", "soon") else "now"].format(n=n))
+        for w in getattr(getattr(view, "goal", None), "works", None) or ():
+            if not getattr(w, "group", False):
+                first = next((getattr(p, "piece_id", None) for p in w.pieces), None)
+                add(w.work_id, w.key, w.title, (first,) if first is not None else (), strings.ITEM_JOIN_WHERE["goal"])
+        for month in view.finished or ():
+            for r in month.rows:
+                if joinable(r) and not getattr(r, "group", False):
+                    add(r.work_id, r.key, r.title, pieces_of(r), strings.ITEM_JOIN_WHERE["graduated"])
+        for a in view.arrivals or ():
+            add(a.work_id, a.key, a.title, (a.piece_id,) if a.piece_id is not None else (),
+                strings.ITEM_JOIN_WHERE["arrivals"])
+        return out
+
+    def _give_saved(self, ticket, command):
+        """`_give` with its toast (and Undo) once the store saved the command — a refusal, or nothing to change (the
+        name it had), toasts nothing (`DragController._reread` runs a waiting `then` for a command that landed as
+        nothing, so the change is asked for)."""
+        ticket.then = lambda: self.moves._toast(ticket) if ticket.change is not None else None
+        return self.moves._give(ticket, command, toast=False)
+
+    def ungroup(self, row):
+        """*Ungroup*: `Writer.ungroup` — each show back in a row of its own, in place; its toast with Undo."""
+        if not getattr(row, "group", False) or self.moves.refused() is not None:
+            return None
+        piece = row.piece_id
+        return self._give_saved(drag.Ticket(strings.ITEM_UNGROUPED.format(title=row.title), (row.key,),
+                                            drag.ids_of(row)), lambda t: self.writer.ungroup(piece, label=t))
+
+    def ask_rename(self, row):
+        """*Rename…*: the card with the name shown in a field (Esc / Back / Cancel: nothing written)."""
+        if not getattr(row, "group", False) or self.moves.refused() is not None:
+            return None
+
+        def answered(said_yes):
+            self.question = None
+            if said_yes:
+                self.rename(row, card.text)
+        card = confirm.ask(self.win, strings.ITEM_RENAME_ASK, strings.ITEM_RENAME_BODY, strings.ITEM_RENAME_YES,
+                           strings.ITEM_RENAME_YES_TIP, field=row.title, on_answer=answered)
+        self.question = card
+        return card
+
+    def rename(self, row, text):
+        """The group's own name (`Writer.rename_piece`): `text` stripped; empty → None, named after its shows again; the
+        name shown → nothing written. Its toast with Undo."""
+        if not getattr(row, "group", False) or self.moves.refused() is not None:
+            return None
+        name = (text or "").strip() or None
+        if name == row.title:
+            return None
+        piece = row.piece_id
+        words = strings.ITEM_RENAMED.format(title=row.title, name=name) if name is not None else \
+            strings.ITEM_RENAME_CLEARED.format(title=row.title)
+        return self._give_saved(drag.Ticket(words, (row.key,), drag.ids_of(row)),
+                                lambda t: self.writer.rename_piece(piece, name, label=t))
+
+    def ask_same_show(self, row, show):
+        """*Same show as…* › `show`: asked first (Cancel the default; Esc / Back / a click outside: nothing written)."""
+        if self.moves.refused() is not None:
+            return None
+
+        def answered(said_yes):
+            self.question = None
+            if said_yes:
+                self.same_show(row, show)
+        self.question = confirm.ask(
+            self.win, strings.ITEM_SAME_SHOW_ASK.format(b=row.title, a=show.title),
+            strings.ITEM_SAME_SHOW_BODY.format(b=row.title, a=show.title), strings.ITEM_SAME_SHOW_YES,
+            strings.ITEM_SAME_SHOW_YES_TIP.format(b=row.title, a=show.title), default_no=True, on_answer=answered)
+        return self.question
+
+    def same_show(self, row, show):
+        """`row`'s show made part of `show`: one `Writer.join(how="titles")`, `show`'s pieces first (it keeps its name
+        and place) — refused by the store when the ids say two shows (`TITLES_APART`, said in the bar through the writer's
+        `failed` note); its toast with Undo once saved."""
+        if not joinable(row) or getattr(row, "group", False) or self.moves.refused() is not None:
+            return None
+        pieces = list(dict.fromkeys(list(show.pieces) + pieces_of(row)))
+        text = strings.ITEM_SAME_SHOW_DONE.format(b=row.title, a=show.title)
+        return self._give_saved(drag.Ticket(text, (row.key, show.key), drag.ids_of(row)),
+                                lambda t: self.writer.join(pieces, label=t, how="titles"))
+    # --- end LM11b G3
 
     # --- LM11b G2: drop to group ------------------------------------------------------------------------------------ #
     def group_join(self, target, other):

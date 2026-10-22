@@ -17,7 +17,14 @@ folder, `Library/<show>/<file>` (SRC-4). One look (`scan`):
 - **Never a duplicate** (SRC-7, S7): one subtitle per episode per language (`.ja.ass`, then `.ja.srt`, then untagged;
   an `.sdh` / `.hi` / `.cc` one after the plain one, a `.forced` one and another language's tag skipped — each name
   read by LM1a's one rule, `episode_names.identity`: its marks, its episode and "the same episode"), one per video
-  in a look, the latest release of an episode (`- 05v2` over `- 05`); then, cheapest first, (a) a video beside it
+  in a look, the latest release of an episode (`- 05v2` over `- 05`). LM1b (PROVISIONAL): ONE episode per key per
+  show (`Library/<show>`, from any folder or source, A9); a subtitle finds its video by name, else by its episode's
+  number among the folder's videos (`_video_for`, A4; one of several videos of an episode, A5); `Subs/<video>/` is
+  that video's (A11); every other file of an episode is another VERSION — an origin on the same item flagged
+  `version`, never an item, a count, the item's text or any reader's (`_version`, `library_store._VERSION_ROW`); a
+  pick under a quarter of its episode's fullest candidate's lines gives way (A6); a known subtitle's video come
+  later, or renamed, is recorded on it (`_late`, A19, A20); creditless openings and the like never wait (A32). Then,
+  cheapest first, (a) a video beside it
   already paired → that item, (b) an item holding the same bytes → that item, a `v2` of an episode already in → that
   item, its copy followed (S5), else (c) a copy (`.part`, then renamed; a file changed in the last SETTLE_S seconds, or
   while copied, waits for the next look). A removed item's path, bytes, video, or its episode's re-release stay out
@@ -47,7 +54,6 @@ folder, `Library/<show>/<file>` (SRC-4). One look (`scan`):
 `due` is the cadence the shell asks (SRC-9); `local_or_network` tells it which folders a watch can follow (D5).
 Nothing is ever written under a source folder. Standard library only.
 """
-import bisect
 import hashlib
 import json
 import logging
@@ -70,6 +76,7 @@ log = logging.getLogger("surasura-cli")
 SETTLE_S = 5                    # a file (or the video beside it) modified this recently may still be being written
 PROGRESS_S = 0.2                # `progress` at most this often
 BATCH = 25                      # files per `take_in`, per show: a take-in holds the write lock ~50 ms at most
+LATE_BATCH = 200                # known subtitles' late videos recorded per write (`_late`: a row's UPDATE, ~0.1 ms)
 CHECKPOINT_EVERY = 5            # take-ins between a look's PASSIVE checkpoints (a window never checkpoints by itself)
 IN_MEMORY = 16 << 20            # a new text up to this size is read once: hashed and copied from memory
 FOCUS_S = 5 * 60                # a look on the window's focus: at most this often
@@ -88,7 +95,8 @@ _LOOSE = (".txt", ".md")        # a loose text: a book's worth or nothing; subti
 _FONT_OBFUSCATION = ("http://www.idpf.org/2008/embedding", "http://ns.adobe.com/pdf/enc#RC")
 _FONTS = (".otf", ".ttf", ".woff", ".woff2")
 _XMLENC = "{http://www.w3.org/2001/04/xmlenc#}"
-_SUBS = frozenset({"subs", "subtitles", "subtitle"})   # a folder of the subtitles of the videos above it
+_SUBS = frozenset({"subs", "subtitles", "subtitle", "sub", "字幕"})   # a folder of the subtitles of the videos above
+# it (A11: `sub`, `字幕` too); inside one, a folder named like one of those videos holds that video's (`Subs/<video>/`)
 # Item 11 (LF-1 / LF-2): a folder of other versions of the episodes above it, known by its NAME alone (casefolded,
 # NFKC) — always listed with the folder above; any other subfolder (`Part 2`, `2期`, `Movie`) is never joined. The
 # re-timer's words also end a subtitle's name as a versions mark (LF-17: `<video>.ja.synced.srt`); `.alt` on a file
@@ -101,6 +109,9 @@ _CODES = frozenset({"jp", "cn", "tw", "hk", "sg", "mo", "hans", "hant", "jpan", 
 
 _LANGS = en.LANGS                # LM1a: the one language table (`episode_names`), the folder rule's too
 _RANK = {".ass": 0, ".ssa": 0, ".srt": 1}           # of one episode's subtitles in one language: the first taken
+_OVERRIDE = re.compile(r"\{[^}]*\}")          # an .ass line's override tags (`{\\pos(…)}`, `{\\k20}`)
+THIN = 4                        # A6: a pick holding under 1/THIN of its episode's fullest candidate's lines (a signs
+                                # track) is never the episode's text while that one is
 _GUARD = threading.Lock()
 _RUNNING = set()                # stores a look is running on (their path keys): never two at once
 _LOOKED = set()                 # (store, source) looked at in full this run: later looks list only what changed
@@ -147,7 +158,8 @@ def local_or_network(path):
 
 def scan(store, language, root, first=False, progress=None, stop=None, full=False, rules=None):
     """One look at the source `root` (its id) -> {reachable, found, shows, added, attached, skipped, short, waiting,
-    recopied, restored, stopped, busy, ids} (`short`: of those skipped, the loose texts too short to be a book, T2-B4).
+    recopied, restored, paired, stopped, busy, ids} (`short`: of those skipped, the loose texts too short to be a book,
+    T2-B4; `paired`: known texts whose video was found and recorded on them, `_late` — "12 episodes found their videos").
     `first`: setup's own first scan (SRC-1: Current, quiet); `full`: Refresh (S4); `progress(found, shows)` every
     PROGRESS_S; `stop()` is asked between files (a stopped look keeps what it took in, whole); `rules`: the placing
     rules `take_in` applies to an arrival. A source not being read raises NotASource.
@@ -170,7 +182,7 @@ def _store_key(store):
 
 def _result(**values):
     out = {"reachable": True, "found": 0, "shows": 0, "added": 0, "attached": 0, "skipped": 0, "short": 0,
-           "waiting": 0, "recopied": 0, "restored": 0, "stopped": False, "busy": False, "ids": []}
+           "waiting": 0, "recopied": 0, "restored": 0, "paired": 0, "stopped": False, "busy": False, "ids": []}
     out.update(values)
     return out
 
@@ -218,6 +230,23 @@ def _kind(name):
     return n.bilingual, bool(n.flags)
 
 
+def _show_key(show):
+    """A show's `Library/<show>` folder key (as the store groups a show's title)."""
+    return ls.folder_key_of(f"{ls.CONTENT_FOLDER}/{show}/x")
+
+
+def _video_rank(low, vids):
+    """A5 (PROVISIONAL): of several videos of one episode, the one Connect uses — not marked Dual / Dub / Multi
+    (`episode_names.dubbed`), then the largest, then the first by name."""
+    return en.dubbed(low), -vids[low][1].st_size, low
+
+
+def _group(name):
+    """A8 (LM1a's `group`): a file's release group — its leading `[tag]` and the name before its episode marker,
+    folded: a later release follows the pick of its own group only."""
+    return en.identity(name).group[:2]
+
+
 def _nfc(name):
     """A name in NFC, as names are compared (A24: a Mac's or a zip's NFD name is the same name)."""
     return unicodedata.normalize("NFC", name)
@@ -243,6 +272,13 @@ def _subtitle_folder(name, parent, language):
     if any(p in _VERSIONS for p in pieces) and all(p in _VERSIONS or p in _LANGS or p in _SUB_WORDS for p in pieces):
         return "versions"
     return language if words and all(_word_language(w) == language for w in words) else None
+
+
+def _video_named(name, vids):
+    """A11: the video (its listing key) a subtitle folder's subfolder is named like (`Subs/<video name>/`: the name in
+    NFC, case-folded, against the video's without its extension), or None."""
+    want = _nfc(name).strip().casefold()
+    return next((v for v in sorted(vids) if _nfc(os.path.splitext(v)[0]).casefold() == want), None)
 
 
 def _word_language(word):
@@ -486,6 +522,16 @@ class _Look:
         self.versions = {}           # {a folder's key: the keys of its versions folders listed with it} (item 11)
         self.skip = set()            # K6: the keys of the folders skipped inside this source (`run`)
         self.skip_stamp = None
+        self.video_of = {}           # LM1b (A11): {a text in `Subs/<video>/`: that video (its listing key)}
+        self.by_show = None          # LM1b (A9): {a show's folder key: {episode key: (version, Origin)}} (`_held`)
+        self.pending = []            # LM1b: the other versions of a pick just taken, read into its batch (`_take`)
+        self.late = []               # LM1b (A19, A20): known texts of a listed folder, asked for a video (`_late`)
+        self.read = {}               # A6: {a candidate's path: `_read_text`'s answer}: read once, for its lines too
+        self.vkeys = {}              # A4: {id of a folder's videos: (them, how many, [(video, its key)])}
+        self.years = {}              # A3: {a show's folder key: the years its new files' names write}
+        self.origin_years = {}       # A3: {a show's folder key: the years its origins' names write}
+        self.waits = None            # {video key or path key: item} of the items waiting for their text
+        self.recorded = None         # the path keys of the videos the origins name
 
     # --- the look ------------------------------------------------------------------------------------------------- #
 
@@ -537,6 +583,7 @@ class _Look:
                     self._changed(*item)
                 except OSError:                              # gone or locked meanwhile: the next look
                     self._wait(item[0])
+            self._late()                                     # LM1b (A19, A20): a known text's video, come or renamed
             self._restore(known)                             # before check (b): an item back holds its bytes again
             texts = [c[2].st_size for c in new if len(c) == 6]
             self.sizes = self.store.items_of_size(texts) if texts else {}
@@ -573,12 +620,13 @@ class _Look:
         self.ex_paths = set(excluded)
         self.ex_shas = {n["sha256"] for n in excluded.values() if n.get("sha256")}
         self.ex_videos = {n["video_key"] for n in excluded.values() if n.get("video_key")}
-        self.ex_episodes, self.ex_releases = set(), set()
+        self.ex_episodes, self.ex_releases, self.ex_joined = set(), set(), set()
         for p, n in excluded.items():
             if n.get("show") and n.get("episode") is not None:
                 name = os.path.basename(p)
                 episode = self._removed(n["show"], n["episode"], name)
                 self.ex_episodes.add(episode)
+                self.ex_joined.add(episode[:2] + episode[3:])       # A12: whatever its name's show (a number's join)
                 self.ex_releases.add(episode + (_release(name),))    # H13: its other releases of that version too
 
     def stopped(self):
@@ -649,7 +697,7 @@ class _Look:
             rel = os.path.relpath(folder, self.base)
             parts = [] if rel == "." else rel.replace("\\", "/").split("/")
             episodes = self._episodes(self.base, parts, texts, epubs, langs, vids, self.versions.get(fkey, ()))
-            for name, path, st, show, kind in episodes:
+            for name, path, st, show, kind, *item in episodes:
                 self.out["found"] += 1
                 self.shows.add(ls.search_fold(show, self.language))
                 where = os.path.dirname(path)                # this folder, or a subtitle folder listed with it
@@ -657,18 +705,22 @@ class _Look:
                     where = folder                           # a versions folder's: the folder's releases (S7, H12)
                 if kind == "known":
                     known.append((where, path, st))
+                    self.late.append((where, path, name, vids))     # A19 / A20: its video asked after the changes
                 elif kind == "book":
                     books.append((where, name, path, st, show))
+                elif kind == "version":                      # LM1b: beside a file of its episode already in
+                    new.append((where, path, st, name, show, vids, item[0]))
                 else:
                     new.append((where, path, st, name, show, vids))
             waits = [(folder, path, st, _show_of(self.base, parts, os.path.basename(path)))
-                     for path, st in sorted(vids.values())] if vids and not epubs else []
-            if waits and not episodes:                       # videos and none of our text yet: they wait (K5)
-                for w in waits:
+                     for path, st in self._waiting(vids)] if vids and not epubs else []
+            kept = any(_key(t[1]) in self.ex_paths for t in texts)   # a removed episode's text (kept out, never a
+            if waits and not episodes and not kept:          # pick) still counts: its video never waits. Videos and
+                for w in waits:                              # none of our text yet: they wait (K5)
                     self.out["found"] += 1
                     self.shows.add(ls.search_fold(w[3], self.language))
                     new.append(w)
-            elif waits and all(e[4] == "new" for e in episodes):   # LF-19: wait too if the rule refuses every pick
+            elif waits and episodes and all(e[4] == "new" for e in episodes):   # LF-19: wait too if the rule refuses every pick
                 self.held_videos.append((waits, {e[1] for e in episodes}))
             self._say()
         return seen, new, known, books
@@ -704,7 +756,7 @@ class _Look:
         is the show's next episode (LF-2: never a show of its own, whatever it gains).
         -> (the folder's other subfolders, the subtitle folders listed)."""
         kinds = {s: _subtitle_folder(os.path.basename(s), os.path.basename(folder), self.language) for s in subs}
-        todo = [(s, kinds[s] if kinds[s] not in ("subs", "versions") else None) for s in subs
+        todo = [(s, kinds[s] if kinds[s] not in ("subs", "versions") else None, None) for s in subs
                 if kinds[s] and not self._skips(s)]
         others = [s for s in subs if not kinds[s]]
         for s in subs:
@@ -712,7 +764,7 @@ class _Look:
                 self.versions.setdefault(ls.path_key(folder), set()).add(ls.path_key(s))
         listed_with = []
         while todo:
-            path, language = todo.pop(0)
+            path, language, owner = todo.pop(0)
             try:
                 st = os.stat(path)
                 listing = _listing(path)
@@ -732,17 +784,22 @@ class _Look:
                 vids.setdefault(name, video)
             if language:
                 langs.update((x[1], language) for x in t)
+            if owner:                                        # A11: the texts of `Subs/<video>/` are that video's
+                self.video_of.update((x[1], owner) for x in t)
             for child in children:
                 if self._skips(child):
                     continue
                 tongue = None if language else _folder_language(os.path.basename(child))
                 kind = _subtitle_folder(os.path.basename(child), os.path.basename(path), self.language)
-                if tongue:
-                    todo.append((child, tongue))
+                named = None if owner else _video_named(os.path.basename(child), vids)
+                if named:                                    # A11 (LM1b): a folder named like a video beside it
+                    todo.append((child, language, named))
+                elif tongue:
+                    todo.append((child, tongue, owner))
                 elif kind:                                   # D1: the same named-folder rule all the way down
                     if kind == "versions":                   # (`<Show>/<Show>/Subs/`, `…/synced/`)
                         self.versions.setdefault(ls.path_key(folder), set()).add(ls.path_key(child))
-                    todo.append((child, kind if kind not in ("subs", "versions") else language))
+                    todo.append((child, kind if kind not in ("subs", "versions") else language, owner))
                 else:
                     others.append(child)
         return sorted(others), listed_with
@@ -766,7 +823,8 @@ class _Look:
             # by the key below. I1: a bilingual file comes after every one-language file, even one named like the
             # video (LM1a-Q1); I8: "named like a video" asks the names Connect pairs (`video_stems`: `ep01.alt.srt`)
             n, (bilingual, flagged) = en.identity(name), _kind(name)
-            return (bilingual, flagged or not any(_nfc(s).lower() in like for s in en.video_stems(name)),
+            named = path in self.video_of or any(_nfc(s).lower() in like for s in en.video_stems(name))   # made for it
+            return (bilingual, flagged or not named,
                     (n.language or (langs or {}).get(path)) != self.language, flagged,
                     not n.retimed and ls.path_key(os.path.dirname(path)) not in versions,
                     _RANK.get(os.path.splitext(name)[1].lower(), 2), name)
@@ -778,18 +836,26 @@ class _Look:
                 self.out["skipped"] += 1
                 self.out["short"] += self.no_text[k][2:] == ["short"]
                 continue
+            if _key(t[1]) in self.ex_paths:                  # kept out (S6) — never a pick, never a version
+                self.out["skipped"] += 1
+                continue
             n = en.identity(t[0])
+            if n.year:
+                self.years.setdefault(_show_key(_show_of(root, parts, t[0])), set()).add(n.year)
             language = n.language or (langs or {}).get(t[1])
             if language not in (None, self.language) or "forced" in n.flags or (
                     n.bilingual and self.language not in n.languages):   # a forced track holds only the signs
                 self.out["skipped"] += 1
                 continue
-            groups.setdefault(_nfc(n.stem).casefold(), []).append((language, bool(n.flags), t))
+            group = ("\0" + self.video_of[t[1]]) if t[1] in self.video_of else _nfc(n.stem).casefold()   # A11
+            groups.setdefault(group, []).append((language, bool(n.flags), t))
         for members in groups.values():
             mine = [t for _l, _f, t in members if _key(t[1]) in self.origins]
-            if mine:
-                self.out["skipped"] += len(members) - len(mine)
+            if mine:                                         # LM1b: the rest are its versions
+                item = self.origins[_key(mine[0][1])].item_id
                 out.extend((n, p, st, _show_of(root, parts, n), "known") for n, p, st in mine)
+                out.extend((n, p, st, _show_of(root, parts, n), "version", item) for _l, _f, (n, p, st) in members
+                           if _key(p) not in self.origins)
                 continue
             members.sort(key=lambda m: order(m[2][0], m[2][1]))
             self.out["skipped"] += len(members) - 1
@@ -797,37 +863,52 @@ class _Look:
             out.append((n, p, st, _show_of(root, parts, n), "new"))
             if len(members) > 1:                             # the next in its place if this one isn't ours (B5)
                 self.runners_up[p] = [m[2] for m in members[1:]]
-        # K1: of one episode's releases found new here (`- 05`, `- 05v2`), only the latest is taken; H13: of its
-        # releases of that version whose names differ only in their marks (`[A] Show - 05`, `[B] Show - 05 (720p)`),
-        # only the first in the order above — a name that says more (`Show - 05 特別編`) is its own
+        # K1, LM1b: ONE file per episode found new here — the episode its key says (`_keys`: its video's, by name or
+        # number, A4, else its name's), so its releases (`[A] Show - 05`, `[B] Show - 05 (720p)`, `Show - 05 - Title`,
+        # jimaku's `星空喫茶 第5話`) are one: of the latest version (`- 05v2` over `- 05`) the first in the order above;
+        # every other file of the episode is behind it (`runners_up`: in its place if the language rule refuses it,
+        # LF-9 — a lower version newest first, D6 — and else its versions). A double episode (`- 05-06`) is the
+        # episode of its first number, and a version only where single files cover every number it claims (the singles
+        # win wherever they are; PROVISIONAL)
         read = {}
-        for n, p, _st, _show, kind in out:
-            k = self._episode_key(n)
-            if kind == "new" and k is not None:
-                read[p] = (k, _episode_of(n)[1], _release(n))
+        for n, p, _st, show, kind, *_item in out:
+            keys = self._keys(n, self._video_for(p, n, vids)[0], show) if kind == "new" else []
+            if keys:
+                read[p] = (keys, _episode_of(n)[1], self._claims(n, show))
         if read:
+            owner = {}
+            for p, (keys, _v, claims) in read.items():
+                if len(claims) < 2:
+                    for k in keys:
+                        owner.setdefault(k, keys[0])
+            ep = {}
+            for p, (keys, _v, claims) in read.items():
+                ep[p] = keys[0]
+                if len(claims) > 1 and all(k in owner for k in claims):
+                    ep[p] = owner[claims[0]]                 # covered by single files: their version
+            def rank(e):                                     # a double episode after the singles (PROVISIONAL)
+                o = order(e[0], e[1])
+                return o[:2] + (e[1] in read and len(read[e[1]][2]) > 1,) + o[2:] + (e[1],)
             latest, first = {}, {}
-            for k, version, _r in read.values():
-                latest[k] = max(latest.get(k, 0), version)
-            for n, p, *_rest in sorted(out, key=lambda e: order(e[0], e[1]) + (e[1],)):
-                if p in read and read[p][1] == latest[read[p][0]]:
-                    first.setdefault(read[p][0] + (read[p][2],), p)
-            kept, lower, lead = [], [], {}
-            for k, p in first.items():                       # (in the order: the episode's first pick)
-                lead.setdefault(k[:-1], p)
-            for e in sorted(out, key=lambda e: order(e[0], e[1]) + (e[1],)):
+            for p, (_keys, version, _c) in read.items():
+                latest[ep[p]] = max(latest.get(ep[p], 0), version)
+            for e in sorted(out, key=rank):
+                if e[1] in read and read[e[1]][1] == latest[ep[e[1]]]:
+                    first.setdefault(ep[e[1]], e[1])
+            kept, lower = [], []
+            for e in sorted(out, key=rank):
                 r = read.get(e[1])
-                if r is not None and (r[1] < latest[r[0]] or first[r[0] + (r[2],)] != e[1]):
+                if r is not None and (r[1] < latest[ep[e[1]]] or first[ep[e[1]]] != e[1]):
                     self.out["skipped"] += 1
                     behind = [e[:3]] + self.runners_up.pop(e[1], [])
-                    if r[1] == latest[r[0]]:                 # LF-9: the first's runner-up — the one language rule
-                        self.runners_up.setdefault(first[r[0] + (r[2],)], []).extend(behind)   # (`_refusal`, at
-                    else:                                    # `_new`) passes on it if it isn't ours; D6: a lower
-                        lower.append((r[1], r[0], behind))   # version waits behind the latest, newest first
+                    if r[1] == latest[ep[e[1]]]:             # LF-9: the first's runner-up — the one language rule
+                        self.runners_up.setdefault(first[ep[e[1]]], []).extend(behind)   # (`_refusal`, at `_new`)
+                    else:                                    # passes on it if it isn't ours; D6: a lower version
+                        lower.append((r[1], ep[e[1]], behind))   # waits behind the latest, newest first
                 else:
                     kept.append(e)
             for _v, k, behind in sorted(lower, key=lambda x: -x[0]):
-                self.runners_up.setdefault(lead[k], []).extend(behind)
+                self.runners_up.setdefault(first[k], []).extend(behind)
             kept = {id(e) for e in kept}
             out = [e for e in out if id(e) in kept]       # (in the listing's order, as before)
         for n, p, st in epubs:
@@ -841,12 +922,27 @@ class _Look:
             out.append((n, p, st, _show_of(root, parts, n), "book"))
         return out
 
-    def _episode_key(self, name):
+    def _episode_key(self, name, show=None):
         """LM1a: the episode a file name reads (`episode_names.identity`'s key: show without its season, season,
         episode, part, special), its show folded for the library's language (`search_fold`: Chinese Traditional as
-        Simplified too) — two releases of one episode have the same; None when it reads no episode."""
+        Simplified too) — two releases of one episode have the same; None when it reads no episode. A3 (PROVISIONAL):
+        a year the name writes keeps it apart only in a show (`show`, its `Library` folder) whose names
+        write two years or more — two remakes; else `Show (2019) - 05` is `Show - 05`."""
         n = en.identity(name)
-        return None if n.episode is None else (ls.search_fold(n.key[0], self.language),) + n.key[1:]
+        if n.episode is None:
+            return None
+        k = n.key
+        if n.year and show is not None and len(self._years(show)) < 2:
+            k = (k[0][:-len(f" ({n.year})")],) + k[1:]
+        return (ls.search_fold(k[0], self.language),) + k[1:]
+
+    def _years(self, show):
+        """A3: the years the names of a show's files write — its new ones this look and its origins'."""
+        fk = _show_key(show)
+        if fk not in self.origin_years:
+            self.origin_years[fk] = {y for y in (en.identity(os.path.basename(o.origin or "")).year
+                                                 for o in self._show_origins(fk)) if y}
+        return self.origin_years[fk] | self.years.get(fk, set())
 
     def _removed(self, show, episode, name):
         """K2 (S6): a removed episode's key — its show and number as recorded (the exclusion's note) or read from the
@@ -869,8 +965,8 @@ class _Look:
         taken in."""
         from app.extract import clean_name
         by_show = {}
-        for c in new:                                        # a text (6), a video waiting for its text (4)
-            by_show.setdefault(c[4] if len(c) == 6 else c[3], []).append(c)
+        for c in new:                                        # a text (6), a version (7), a video waiting for its text (4)
+            by_show.setdefault(c[4] if len(c) >= 6 else c[3], []).append(c)
         for b in books:
             by_show.setdefault(clean_name(os.path.splitext(b[1])[0]) or "Book", []).append(b)
         for show in sorted(by_show, key=lambda s: (ls.search_fold(s, self.language), s)):
@@ -885,12 +981,17 @@ class _Look:
                         self._wait(c[0])
                     continue
                 try:
-                    f = self._new(*c) if len(c) == 6 else self._video_only(*c)
+                    if len(c) == 7:                          # LM1b: another version of an episode in (counted skipped)
+                        self.out["skipped"] += 1
+                        f = self._version(c[0], c[1], c[2], c[4], c[3], item_id=c[6])
+                    else:
+                        f = self._new(*c) if len(c) == 6 else self._video_only(*c)
                 except OSError:                              # gone or locked meanwhile: the next look
                     self._wait(c[0])
                     f = None
                 if f is not None:
                     batch.append(f)
+                batch.extend(self._pending())                # its versions in the same batch, after it (`take_in`)
                 if len(batch) >= BATCH:
                     self._commit(batch)
                     batch = []
@@ -997,33 +1098,45 @@ class _Look:
 
     def _new(self, folder, path, st, name, show, vids):
         """One new text file -> its `found` entry for `take_in` (an `item_id` for an episode already in, else the
-        copy's `rel`), or None (skipped, or waiting for the next look)."""
-        from app.connect import runner, videos
+        copy's `rel`; `version` for another version of one, LM1b), or None (skipped, or waiting for the next look).
+        Its video is `_video_for`'s (its name, else its episode's number, A4); its episode is its show's (`_held`, A9:
+        from any folder or source) — one already in takes it as another version (A8: a later release only from the
+        pick's own group, of its kind or a better one, is followed instead, S5). A pick holding under a quarter of the
+        lines of its episode's fullest candidate gives way to the next (`_thin`, A6)."""
+        from app.connect import videos
         if _key(path) in self.ex_paths:
             self.out["skipped"] += 1
             return None
         episode, version = _episode_of(name)
-        held = self._held(folder).get(self._episode_key(name)) if episode is not None else None
+        vname, _by = self._video_for(path, name, vids)
+        keys = self._keys(name, vname, show)
+        held = next((h for h in map(self._held(show).get, keys) if h is not None), None) if keys else None
+        claims = self._claims(name, show)
+        if held is not None and len(claims) > 1 and not all(k in self._held(show) for k in claims):
+            held = None                                      # a double episode of a number held by nothing
         held_name = os.path.basename(held[1].origin or "") if held is not None else ""
-        if held is not None and (held[0] > version or (held[0] == version and  # an earlier release (K1), another
-                                 _release(held_name) == _release(name)) or   # (H13), or a later one of a worse kind
-                                 (held[0] < version and _kind(name) > _kind(held_name))):   # (I9: a signs-only v2)
-            self.out["skipped"] += 1                         # of an episode already in
-            return None
+        forced = None
+        if held is not None and not (held[0] < version and _kind(name) <= _kind(held_name) and  # I9: a worse kind's
+                                     _group(name) == _group(held_name)):   # v2, A8: another group's, is a version
+            got = self.read[path] = self.read.get(path) or _read_text(path, st)
+            if got[1] is None or got[1] != held[1].sha256:   # (A26: the pick's own bytes found again — a moved
+                self.out["skipped"] += 1                     # show — are its origin, with its video, never a version)
+                return self._version(folder, path, st, show, name, item_id=held[1].item_id, chain=True)
+            forced = held[1].item_id
         removed = self._removed(show, episode, ls.path_key(name))
         release = removed + (_release(ls.path_key(name)),)
-        if (version > 1 and removed in self.ex_episodes) or release in self.ex_releases:
-            self.out["skipped"] += 1                         # a re-release, or another release, of one removed (K2)
-            return None
+        if forced is None and ((version > 1 and removed in self.ex_episodes) or release in self.ex_releases or
+                               (episode is not None and removed[:2] + removed[3:] in self.ex_joined)):
+            self.out["skipped"] += 1                         # K2, A12: every file of a removed episode stays out,
+            return None                                      # whatever its group or title (PROVISIONAL)
         if self._recent(st):
             self._wait(folder)
             return None
-        video, vkey = None, None
-        stem = _tag(name)[0]
-        for candidate in [stem + e for e in runner.VIDEO_EXTENSIONS] + videos.names_for(name):
-            video = vids.get(candidate.lower())
-            if video:
-                break
+        if self.runners_up.get(path):                        # A6: a signs track is never the episode's text
+            thin = self._thin(path, st, name, show, vids)
+            if thin is not False:
+                return thin
+        video, vkey = (vids.get(vname) if vname else None), None
         if video and not ls.is_placeholder(video[1]):
             if self._recent(video[1]):
                 self._wait(folder)
@@ -1039,7 +1152,7 @@ class _Look:
         if track is not None and track in self.this_videos:  # one subtitle per video per language: the next look's
             self._wait(folder)
             return None
-        data, sha, head = _read_text(path, st)               # read once: hashed now, copied from memory
+        data, sha, head = self.read.pop(path, None) or _read_text(path, st)   # read once: copied from memory
         if sha is None or not self._same(path, st):
             self._wait(folder)
             return None
@@ -1049,6 +1162,8 @@ class _Look:
         if sha in self.this_look:                            # the same bytes twice: the next look attaches it
             self._wait(folder)
             return None
+        if episode is None and video:                        # A11: `Subs/<video>/2_Japanese.srt` is its video's
+            episode = _episode_of(os.path.basename(video[0]))[0]
         f = {"origin": os.path.abspath(path), "size": st.st_size, "mtime_ns": st.st_mtime_ns, "sha256": sha,
              "show": show}
         if episode is not None:
@@ -1057,7 +1172,11 @@ class _Look:
             f["video_path"], f["video_size"] = os.path.abspath(video[0]), video[1].st_size
             if vkey:
                 f["video_key"] = vkey
-        item = (self._video_item(vkey) if vkey else None) or self._same_bytes(st.st_size, sha)
+        item = (self._video_item(vkey) if vkey else None) or self._same_bytes(st.st_size, sha) or forced
+        if item is None:                                     # a waiting item of its episode (another release's
+            gap = next((g for g in map(self._waits(show).get, keys) if g is not None), None)   # video) takes it in place
+            if gap is not None:
+                f["gap"] = gap
         why = None if item is not None else _refusal(head, self.language, name.lower().endswith(_LOOSE), data is None)
         if why:                                              # K6: a skin config, an English .srt, a Chinese fansub,
             self._pass_over(path, st, why)                   # a readme: no new text and no v2's — not read again
@@ -1071,7 +1190,7 @@ class _Look:
             self.chain[rest[0][1]] = self.chain.get(path, path)
             n, p, s = rest[0]
             return self._new(os.path.dirname(p), p, s, n, show, vids)
-        if item is None and held is not None and held[0] < version:   # a v2 of an episode already in (S7)
+        if item is None and held is not None and held[0] < version:   # a v2 of an episode already in (S5)
             earlier = held[1]
             if self._refuses(earlier.rel_path, st):          # not followed: nor recorded (its bytes aren't the item's)
                 self.out["skipped"] += 1
@@ -1081,7 +1200,10 @@ class _Look:
         if item is not None:
             f["item_id"] = item
         else:
-            rel = self._copy(path, st, show, name, sha, data)
+            copy = name                                      # A11: a `Subs/<video>/` file is named as its video
+            if path in self.video_of and video:
+                copy = os.path.splitext(os.path.basename(video[0]))[0] + os.path.splitext(name)[1]
+            rel = self._copy(path, st, show, copy, sha, data)
             if rel is None:
                 self._wait(folder)
                 return None
@@ -1089,7 +1211,266 @@ class _Look:
         self.this_look.add(sha)
         if track is not None:
             self.this_videos.add(track)
+        for n, p, s in self.runners_up.pop(path, []):        # LM1b: the episode's other files are its versions
+            self.pending.append((os.path.dirname(p), p, s, show, n, item, f["origin"]))
         return f
+
+    def _version(self, folder, path, st, show, name, item_id=None, of=None, chain=False):
+        """LM1b: another version of an episode in (of the item `item_id`, or of the pick `of` taken in this batch) ->
+        its `found` entry (`version`: no copy, no video, never counted), or None — kept out, refused by the one
+        language rule (remembered by its stats as K6's are; it was counted skipped already) or not settled (its
+        folder listed again next look). `chain`: the episode's other files behind it are versions too. Read once, as
+        any new text, so Remove keeps its bytes out and a switch (LM3) knows them."""
+        if chain:
+            for n, p, s in self.runners_up.pop(path, []):
+                self.pending.append((os.path.dirname(p), p, s, show, n, item_id, of))
+        if _key(path) in self.ex_paths:
+            return None
+        if self._recent(st):
+            self.unsettled.add(ls.path_key(folder))
+            return None
+        data, sha, head = self.read.pop(path, None) or _read_text(path, st)
+        if sha is None or not self._same(path, st):
+            self.unsettled.add(ls.path_key(folder))
+            return None
+        if sha in self.ex_shas:
+            return None
+        why = _refusal(head, self.language, name.lower().endswith(_LOOSE), data is None)
+        if why:
+            self.no_text_kept[_key(path)] = [st.st_size, st.st_mtime_ns] + (["short"] if why == "short" else [])
+            self.out["short"] += why == "short"
+            return None
+        f = {"origin": os.path.abspath(path), "size": st.st_size, "mtime_ns": st.st_mtime_ns, "sha256": sha,
+             "show": show, "version": True}
+        episode = _episode_of(name)[0]
+        if episode is not None:
+            f["episode"] = episode
+        if item_id is not None:
+            f["item_id"] = item_id
+        else:
+            f["version_of"] = of
+        return f
+
+    def _pending(self):
+        """The versions `_new` / `_version` left for the batch of the pick they follow (`pending`), read now."""
+        out = []
+        while self.pending:
+            folder, path, st, show, name, item_id, of = self.pending.pop(0)
+            try:
+                f = self._version(folder, path, st, show, name, item_id=item_id, of=of, chain=True)
+            except OSError:                                  # gone or locked meanwhile: the next look
+                self.unsettled.add(ls.path_key(folder))
+                f = None
+            if f is not None:
+                out.append(f)
+        return out
+
+    def _thin(self, path, st, name, show, vids):
+        """A6: is the pick `path` thin — under 1/THIN of the dialogue lines of the fullest of its peers (its episode's
+        candidates in `runners_up` of its kind or a better one, `_kind`, each the language rule takes: a signs or songs
+        track never out-counts a plain file)? Then the first peer that isn't thin stands in (`_new`'s
+        answer on it) and this one goes behind the rest, a version; else False."""
+        rest = self.runners_up.get(path) or []
+        mine = self._lines(path, st, name)
+        if mine is None:
+            return False
+        peers = [(x, p, s, n) for x, p, s in rest if _kind(x) <= _kind(name) and not self._recent(s)
+                 for n in [self._lines(p, s, x)] if n is not None]
+        most = max([mine] + [n for *_r, n in peers])
+        if mine * THIN >= most:
+            return False
+        x, p, s, _n = next(c for c in peers if c[3] * THIN >= most)
+        self.runners_up.pop(path)
+        self.runners_up[p] = [c for c in rest if c[1] != p] + [(name, path, st)]
+        self.chain[p] = self.chain.get(path, path)
+        return self._new(os.path.dirname(p), p, s, x, show, vids)
+
+    def _lines(self, path, st, name):
+        """A6: a candidate's dialogue lines — the distinct texts of its `Dialogue:` lines (.ass / .ssa: override tags
+        `{…}` off, a sign drawn frame by frame once) or of its cues (.srt), by what it holds — or None: none (a text,
+        not a subtitle), it can't be read as listed, or the one language rule refuses it. Read once (`read`: `_new`
+        and `_version` take it from there)."""
+        if path not in self.read:
+            try:
+                self.read[path] = _read_text(path, st)
+            except OSError:
+                self.read[path] = (None, None, None)
+        data, sha, head = self.read[path]
+        if sha is None or _refusal(head, self.language, name.lower().endswith(_LOOSE), data is None):
+            return None
+        text = decode_text(head, self.language, head=data is None)
+        said = set()
+        for line in text.splitlines():
+            if line.lstrip().startswith("Dialogue:"):
+                said.add(_OVERRIDE.sub("", line.split(",", 9)[-1]).strip())
+        if not said and "-->" in text:
+            for cue in re.split(r"\n\s*\n", text.replace("\r\n", "\n")):
+                lines = cue.strip().split("\n")
+                at = next((i for i, x in enumerate(lines) if "-->" in x), None)
+                if at is not None:
+                    said.add(" ".join(x.strip() for x in lines[at + 1:]))
+        said.discard("")
+        return len(said) or None
+
+    def _video_for(self, path, name, vids):
+        """LM1b, the ONE pairing rule of a look: the video a text found in a folder goes with -> (its key in `vids`,
+        'name' | 'number') or (None, None). A text in `Subs/<video>/` is that video's (A11); a loose `.txt` / `.md`
+        only by its exact stem (T2-B3); a subtitle by its name — its stem, then the names Connect pairs
+        (`videos.names_for`) — else by its episode's key among the folder's videos (A4: never a special's, and only
+        where the names' shows agree or the folder's videos carry one show). Of several videos of one episode (A5,
+        their keys alike; never an extra's, `episode_names.extra`): one not marked Dual / Dub / Multi, then the
+        largest, then the first by name (`_video_rank`). PROVISIONAL (Sonic 2026-10-21: accepted for building,
+        to be checked in use)."""
+        from app.connect import runner, videos
+        if not vids:
+            return None, None
+        if path in self.video_of:
+            v = self.video_of[path]
+            return (v, "name") if v in vids else (None, None)
+        if name.lower().endswith(_LOOSE):
+            stem = os.path.splitext(name)[0]
+            v = next((c.lower() for c in (stem + e for e in runner.VIDEO_EXTENSIONS) if c.lower() in vids), None)
+            return (v, "name") if v else (None, None)
+        for candidate in [_tag(name)[0] + e for e in runner.VIDEO_EXTENSIONS] + videos.names_for(name):
+            if candidate.lower() in vids:
+                return candidate.lower(), "name"
+        k = self._episode_key(name)
+        if k is None or k[4]:
+            return None, None
+        held = self.vkeys.get(id(vids))                      # the folder's videos' keys, read once a look
+        if held is None or held[0] is not vids or held[1] != len(vids):
+            keyed = [(v, vk) for v, vk in ((v, self._episode_key(v)) for v in sorted(vids))
+                     if vk and not vk[4] and not en.extra(v)]   # an extra's video is no episode's
+            held = self.vkeys[id(vids)] = (vids, len(vids), keyed)
+        keyed = held[2]
+        one = len({vk[0] for _v, vk in keyed}) == 1
+        same = [v for v, vk in keyed if vk[1:] == k[1:] and (one or vk[0] == k[0])]
+        return (min(same, key=lambda v: _video_rank(v, vids)), "number") if same else (None, None)
+
+    def _keys(self, name, video=None, show=None):
+        """LM1b: the episode keys a text answers to in its show (`show`: `_episode_key`'s years) — its video's first
+        (`_video_for`), then its name's own (a double episode's first number: `_claims` holds the rest); [] when it
+        reads none."""
+        own = self._episode_key(name, show)
+        first = self._episode_key(video, show) if video else None
+        return list(dict.fromkeys(k for k in (first, own) if k))
+
+    def _claims(self, name, show=None):
+        """A13: the keys of every number a name claims — a double episode `05-06` claims 5 and 6; one key for a single
+        number, [] for none."""
+        n, own = en.identity(name), self._episode_key(name, show)
+        return [] if own is None else [own[:2] + (e,) + own[3:] for e in (n.episodes or (n.episode,))]
+
+    def _waiting(self, vids):
+        """K5, LM1b: the videos of a folder with none of our text that wait for it — one per episode (A5: videos whose
+        keys agree are releases of one episode: `_video_rank`'s first), never an extra's — a creditless opening or
+        ending, a promotion, an advert, a trailer, a menu (A32: `episode_names.extra`) ->
+        [(path, stat)] in name order."""
+        out, seen = [], set()
+        for low in sorted(vids, key=lambda v: _video_rank(v, vids)):
+            if en.extra(low):
+                continue
+            k = self._episode_key(low)
+            if k is not None and k in seen:
+                continue
+            seen.add(k)
+            out.append(vids[low])
+        return sorted(out)
+
+    def _late(self):
+        """LM1b (A19, A20): a known text of a folder listed, recorded with no video, whose video is there now (by
+        `_video_for`'s rule) — or whose recorded video was renamed (gone, and one beside it of the same size and content
+        key) — has it recorded on its origin (`update_origins`, LATE_BATCH a write; no new item). Never a version's,
+        a waiting item's, a video another item holds or one kept out."""
+        from app.connect import videos
+        found = []
+        for folder, path, name, vids in self.late:
+            if self.stopped():
+                break
+            if len(found) >= LATE_BATCH:
+                self._record_late(found)
+            o = self.origins.get(_key(path))
+            if o is None or o.version or not vids or o.availability == "waiting":
+                continue
+            video = None
+            if o.video_path:                                 # A20: renamed beside it, its bytes the same
+                if os.path.basename(o.video_path).lower() in vids or os.path.exists(o.video_path):
+                    continue
+                for _low, (vpath, vst) in sorted(vids.items()):
+                    if vst.st_size == o.video_size and not ls.is_placeholder(vst) and not self._recent(vst) and \
+                            videos.content_key(vpath) == o.video_key:
+                        video = (vpath, vst, o.video_key)
+                        break
+            else:                                            # A19: its video came after it
+                vname, _by = self._video_for(path, name, vids)
+                if vname is None or ls.is_placeholder(vids[vname][1]):
+                    continue
+                vpath, vst = vids[vname]
+                pk = ls.path_key(os.path.abspath(vpath))
+                if pk in self._recorded() or pk in self._waiting_items() or pk in self.ex_paths:
+                    continue                                 # another item's video, a waiting one's or one kept out:
+                if self._recent(vst):                        # its content key is never read for it
+                    self._wait(folder)
+                    continue
+                vkey = videos.content_key(vpath)
+                if vkey is None:
+                    self._wait(folder)
+                    continue
+                if vkey in self.ex_videos or self._video_item(vkey) not in (None, o.item_id) or \
+                        vkey in self._waiting_items():
+                    continue                                 # never a video a waiting item holds
+                video = (vpath, vst, vkey)
+            if video is None:
+                continue
+            found.append((o.origin or path, video))
+            self._recorded().add(ls.path_key(os.path.abspath(video[0])))   # claimed now: a later text of this pass
+            if self.videos is not None:                      # never takes it
+                self.videos[video[2]] = min(o.item_id, self.videos.get(video[2], o.item_id))
+        self._record_late(found)
+
+    def _record_late(self, found):
+        """`_late`'s finds written LATE_BATCH at a time (`update_origins`: one write each, never one per subtitle — a
+        library's first look may pair hundreds); `found` is emptied."""
+        if not found:
+            return
+        # (None: its stats as they are — a re-copy this look rewrote them)
+        self.out["paired"] += len(self.store.update_origins([
+            (origin, None, None, None, {"video_path": os.path.abspath(video[0]), "video_size": video[1].st_size,
+                                        "video_key": video[2]}) for origin, video in found]))
+        del found[:]
+
+    def _recorded(self):
+        """The path keys of the videos the origins' records name (read once a look)."""
+        if self.recorded is None:
+            self.recorded = {ls.path_key(os.path.abspath(o.video_path)) for o in self.origins.values() if o.video_path}
+        return self.recorded
+
+    def _waiting_items(self):
+        """{video key or path key: item} of the items waiting for their text (read once a look)."""
+        if self.waits is None:
+            with self.store._reading():
+                self.waits = self.store._waiting_videos()
+        return self.waits
+
+    def _waits(self, show):
+        """A5: {episode key: item} of this show's items waiting for their text (a video's, K5) — one per episode:
+        another release's video of it never waits beside it, and its subtitle fills it in place."""
+        out = {}
+        for o in self._show_origins(_show_key(show)):
+            name = os.path.basename(o.origin or "")
+            k = self._episode_key(name, show) if o.availability == "waiting" and not o.version and \
+                not ls.is_content_name(name.lower()) else None
+            if k is not None:
+                out.setdefault(k, o.item_id)
+        return out
+
+    def _show_origins(self, fk):
+        """The origins of the show whose `Library` folder key is `fk` (all of them grouped by it once a look)."""
+        if self.by_show is None:
+            self.by_show, self.show_origins = {}, {}
+            for o in self.origins.values():
+                self.show_origins.setdefault(ls.folder_key_of(o.rel_path or ""), []).append(o)
+        return self.show_origins.get(fk, ())
 
     def _video_only(self, folder, path, st, show):
         """A video in a folder with none of our text yet (K5, SRC-2 (video)) -> its found-record for `take_in`: one
@@ -1103,6 +1484,9 @@ class _Look:
             self.out["skipped"] += 1
             return None
         stats = [st.st_size, st.st_mtime_ns]
+        k = self._episode_key(os.path.basename(path), show)
+        if k is not None and k in self._waits(show):         # A5: its episode waits already, on another video
+            return None
         if self.shown_videos.get(_key(path)) == stats or self._is_shown(show):
             self.shown_kept[_key(path)] = stats              # asked about once (H21): until the video changes
             return None
@@ -1167,36 +1551,27 @@ class _Look:
                 return item_id
         return None
 
-    def _held(self, folder):
-        """S7: the releases already in from this folder -> {(K4's show of the name, episode): (version, Origin)}, the
-        latest of each — a `v2` found is that episode (followed, S5), an earlier one found later is skipped. Worked
-        out per folder, once a look, from that folder's origins alone (F13: a look that found one new file read the
-        names of every origin, 1.3 s at 20k, stretching a window's save meanwhile): the origins' keys sorted once, the
-        folder's found by its prefix. A versions folder listed with it (item 11) is the folder's own here too: a
-        version found later under another name is the episode already in, never a second item."""
-        fkey = ls.path_key(os.path.abspath(folder))
-        versions = {fkey} | self.versions.get(fkey, set())
-        if self.by_folder is None:
-            self.by_folder, self.keys = {}, sorted(self.origins)
-        if fkey in self.by_folder:
-            return self.by_folder[fkey]
-        releases = self.by_folder[fkey] = {}
-        prefix = fkey.rstrip("/") + "/"
-        at = bisect.bisect_left(self.keys, prefix)
-        while at < len(self.keys) and self.keys[at].startswith(prefix):
-            o = self.origins[self.keys[at]]
-            at += 1
+    def _held(self, show):
+        """S7, LM1b (A9): the episodes of this show already in — `Library/<show>`, from any folder or source -> {an
+        episode key: (version, Origin)}, the latest pick of each (never a version, A8) under every key it answers to
+        (`_keys`: its name's numbers, its video's). A `v2` found is that episode (followed, S5), an earlier one or
+        another group's found later is a version. Worked out per show, once a look, from that show's origins alone
+        (a look that found one new file read the names of every origin, 1.3 s at 20k): the origins grouped by
+        their copies' folder once, only names of the show asked read."""
+        fk = _show_key(show)
+        origins = self._show_origins(fk)
+        if fk in self.by_show:
+            return self.by_show[fk]
+        releases = self.by_show[fk] = {}
+        for o in origins:
             name = os.path.basename(o.origin or "")
-            if not ls.is_content_name(name.lower()):         # a book's part, or a video waiting for its text (K5)
+            if o.version or not ls.is_content_name(name.lower()):   # a version, a book's part, a waiting video (K5)
                 continue
-            if ls.path_key(os.path.dirname(os.path.abspath(o.origin))) not in versions:   # a subfolder's
-                continue
-            episode, version = _episode_of(name)
-            if episode is None:
-                continue
-            k = self._episode_key(name)
-            if k not in releases or releases[k][0] < version:
-                releases[k] = (version, o)
+            version = _episode_of(name)[1]
+            keys = self._keys(name, os.path.basename(o.video_path) if o.video_path else None, show)
+            for k in dict.fromkeys(keys + self._claims(name, show)):   # a double held under each of its numbers
+                if k not in releases or releases[k][0] < version:
+                    releases[k] = (version, o)
         return releases
 
     # --- writing into Library -------------------------------------------------------------------------------------- #
@@ -1332,8 +1707,8 @@ class _Look:
         chosen = {}
         for folder, path, st in known:
             o = self.origins.get(_key(path))
-            if o is None or o.availability != "missing" or _key(path) in self.ex_paths:
-                continue
+            if o is None or o.version or o.availability != "missing" or _key(path) in self.ex_paths:
+                continue                                     # LM1b: a version's bytes are never the item's copy
             rank = (_episode_of(os.path.basename(path))[1], o.paired_at or "")
             if o.item_id not in chosen or rank > chosen[o.item_id][0]:
                 chosen[o.item_id] = (rank, o, folder, path, st)
@@ -1388,8 +1763,8 @@ class _Look:
         followed (S5) and its record's stats rewritten; a refused one is left as it is (looked at again the next time
         its folder is listed, by its stats alone)."""
         o = self.origins.get(_key(path))
-        if o is None or (st.st_size, st.st_mtime_ns) == (o.size, o.mtime_ns):
-            return
+        if o is None or o.version or (st.st_size, st.st_mtime_ns) == (o.size, o.mtime_ns):
+            return                                           # LM1b: a version changed is never copied over the item
         if self._recent(st):
             self._wait(folder)
             return

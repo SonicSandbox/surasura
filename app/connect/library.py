@@ -88,12 +88,14 @@ def pairing_of(store, item_id):
     only when the item has no other — it never shadows hato's video path, ids and episode numbers — and read without
     the origin's size, time and sha256, which a re-copy rewrites: the pairing's version (`fit_check.version`) stays.
     Among origin rows, one naming a video first, then the oldest: an origin attached later (a moved original, the same
-    bytes found again) never drops the video nor moves the version."""
+    bytes found again) never drops the video nor moves the version. Never another version of the item's episode
+    (LM1b: an origin flagged `version`, `library_store._VERSION_ROW`)."""
     from app import library_store
     origin = library_store._ORIGIN_ROW
     video_last = (f"CASE WHEN {origin} AND json_valid(p.pairing) THEN json_extract(p.pairing, '$.video_path') IS NULL "
                   "ELSE 1 END")
-    row = store.conn.execute(f"SELECT content_key, pairing FROM pairings p WHERE item_id = ? ORDER BY {origin}, "
+    row = store.conn.execute(f"SELECT content_key, pairing FROM pairings p WHERE item_id = ? AND NOT "
+                             f"{library_store._VERSION_ROW} ORDER BY {origin}, "
                              f"{video_last}, CASE WHEN {origin} THEN 0 ELSE paired_at END DESC, "
                              f"CASE WHEN {origin} THEN 0 ELSE rowid END DESC, paired_at, rowid LIMIT 1",
                              (item_id,)).fetchone()

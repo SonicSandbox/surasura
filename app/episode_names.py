@@ -71,6 +71,7 @@ class Name(NamedTuple):
     stem: str               # the name without its extension and its marks, as written
     release: str            # H13: without its release's marks, folded
     key: tuple              # (show, season, episode, part, special)
+    year: object            # A3: the year written before the episode marker ('2009'), else None
 
 
 # --- the marks ------------------------------------------------------------------------------------------------- #
@@ -134,7 +135,19 @@ _SPECIAL_NUMBER = re.compile(r"(?<![A-Za-z0-9])(?:OVA|OAD|SP|Specials?|NC\s?OP|N
                              r"(\d{1,3})(?:v(\d+))?\b", re.I)
 _BRACKET_NUMBER = re.compile(r"\[第?(\d{1,4}(?:\.\d)?)(?:v(\d+))?(?:[-~](\d{1,4}))?\s*[話话集回]?\s*(?:END|Fin|完)?\]",
                              re.I)                              # [05], [05v2], [05 END], [第05话] (A6)
-_DATE = re.compile(r"(?:19|20)\d\d[-./]\d{1,2}[-./]\d{1,2}")
+_Y = r"(?:19|20)\d\d"                                            # a year: the ONE pattern every year read uses
+_YEAR = re.compile(_Y)
+_DATE = re.compile(_Y + r"[-./]\d{1,2}[-./]\d{1,2}")
+_YEAR_TAG = re.compile(r"[\[(（［](" + _Y + r")[\])）］]")                  # `Show (2009)`, `Show [2023]` (A3)
+_YEAR_DASH = re.compile(r"\s[-–~]\s*(" + _Y + r")\s*$")                   # `Show - 2019` before ` - 05` (A7)
+# The four Japanese special words mark a special wherever they stand (`Show - 05 特別編`: LM1b, PROVISIONAL)
+_JA_SPECIAL = re.compile(r"劇場版|総集編|特別編|番外編")
+# A video of an extra, by a mark anywhere in its name: never an episode's video, never waiting (never `CM` here: a
+# `(CMカット)` recording is an episode; a bracket holding just `(CM)` is the special's own mark, NEVER_WAIT's)
+_EXTRA = re.compile(r"(?<![A-Za-z])(?:NC\s?OP|NC\s?ED|(?-i:OP|ED|PV)|Creditless|Trailer|Teaser|Menu|Preview)"
+                    r"(?:\s?\d{1,2})?(?![A-Za-z])|ノンクレジット|ノンテロップ", re.I)
+# Another audio's release (A5): `Dual Audio`, `Dub`, `Multi` (never `Multi-Subs`, which says nothing of the audio)
+_DUBBED = re.compile(r"(?<![a-z])(?:dual|dub|dubbed|multi(?![\s._-]?subs?))(?![a-z])", re.I)
 _BARE = re.compile(r"(?:^|(?<=[\s\-#]))(\d{1,4})(?:v(\d+))?(?=\s|$)", re.I)
 _VERSION = re.compile(r"(?:(?<=\d)|\s)v\d+$", re.I)
 _DOT_VERSION = re.compile(r"\.v\d{1,2}", re.I)                   # `Show - 05.v2.srt`: its video is `Show - 05` (A5)
@@ -151,6 +164,9 @@ _SHOW_ROMAN = re.compile(r"\s+(II|III|IV|V|VI)$")
 _ROMAN = {"II": 2, "III": 3, "IV": 4, "V": 5, "VI": 6}
 _SHOW_SPECIAL = re.compile(r"\s+(?:OVA|OAD|SP|Specials?|Movie|Recap|劇場版|総集編|特別編|番外編)$|"
                            r"^(?:劇場版|総集編|特別編|番外編)\s+", re.I)
+# A special's videos that never wait for a subtitle of their own (A32): a creditless opening or ending, a promotion, an
+# advert, a menu — never an episode to read
+NEVER_WAIT = frozenset({"NCOP", "NCED", "PV", "CM", "MENU", "PREVIEW"})
 # A folder that is only a season or the specials (S12): the look puts the source's name in front, the covers look one
 # folder up for its art
 _SEASON_FOLDER = re.compile(r"s[\s._-]?(\d{1,3})|(?:(?:season|series)[\s._-]*(\d{1,3})|"
@@ -330,7 +346,7 @@ def identity(name, folder_name=None, bare_numbers=False):
         cut = _EPISODE.search(prefix)
         prefix = prefix[:cut.start()] if cut else prefix
     elif not track:
-        m = _EPISODE.search(plain)
+        m = _marker(plain)
         if m:
             number = m.group(1) or m.group(5) or m.group(7)
             letter, version, upto = m.group(2), m.group(3), m.group(4) or m.group(6) or m.group(8)
@@ -340,15 +356,18 @@ def identity(name, folder_name=None, bare_numbers=False):
             if m:
                 number, version = m.group(1), m.group(2)
                 prefix, rest = plain[:m.start(1)], plain[m.end():]
+    year = _YEAR_DASH.search(prefix) if m is not None and not track else None
+    if year:                                                    # A7: `Show - 2019 - 05` is episode 5 of `Show`
+        prefix = prefix[:year.start()]
     show = None if track else _clean(prefix)
     # A2: a special's mark before the episode marker (`Show OVA - 01`, `劇場版 …`; a special's own number's: `OVA 01`)
     # or a bracket holding just the mark (`(OVA)`, `[Menu]`) — never the leading `[group]` (`[SP-Fansub]`), a release
     # tag (`(CMカット)`, `[SP Ver]`) or the title after the number (`- S01E05 - A Very Special Day`)
     special = _special(prefix) or next((s for s in (_special(g, whole=True) for g in inside[1 if lead else 0:]) if s),
-                                       False)
+                                       False) or (_JA_SPECIAL.search(rest).group(0) if _JA_SPECIAL.search(rest) else False)
     if number is None and not track:
         b = next((b for b in _BRACKET_NUMBER.finditer(text)
-                  if b.start() > 0 and not re.fullmatch(r"(?:19|20)\d\d", b.group(1))), None)
+                  if b.start() > 0 and not _YEAR.fullmatch(b.group(1))), None)
         if b:
             number, version, upto = b.group(1), b.group(2), b.group(3)
             before = _TAGS.findall(text[:b.start()])
@@ -377,10 +396,48 @@ def identity(name, folder_name=None, bare_numbers=False):
     release = " ".join(release.replace("_", " ").split()).casefold()
     group = (fold(lead.group(1)) if lead and lead.start() == 0 else "", fold(_clean(prefix) or show or ""),
              fold(folder_name))
-    # the key: what "the same episode" is (PROVISIONAL, Sonic 2026-10-21: to be checked in use); A1: S00 stays 0
-    key = (fold(base), 1 if season is None else season, episode, part, special)
+    # the key: what "the same episode" is (PROVISIONAL, Sonic 2026-10-21: to be checked in use); A1: S00 stays 0; A3:
+    # a year written in the name (`Show (2009)`, `Show - 2019 - 05`) keeps a remake apart, and a title of digits alone
+    # (`86 - 05`, `22/7 - 05`) is keyed by its digits, never ''
+    # (a year tag only before the episode marker: everything after the number is ignored, A28)
+    year = year.group(1) if year else next((t.group(1) for t in _YEAR_TAG.finditer(text, lead.end() if lead else 0)
+                                            if episode is not None and _after(text[t.end():])), None)
+    shown = fold(base) or (fold(re.sub(r"[\W_]+", " ", _JUNK.sub(" ", prefix))) if show is None and episode is not None else "")
+    key = (f"{shown} ({year})" if year else shown, 1 if season is None else season, episode, part, special)
     return Name(show, season, episode, episodes, part, int(version), special, group, language, langs, flags, two,
-                retimed, stem, release, key)
+                retimed, stem, release, key, year)
+
+
+def _after(text):
+    """Does an episode marker follow (`text`: what comes after a year tag)? Then the tag was before the number."""
+    plain = _TAGS.sub(" ", text)
+    return bool(_SEASON_EP.search(plain) or _EPISODE.search(plain) or _SPECIAL_NUMBER.search(plain) or
+                _BRACKET_NUMBER.search(text))
+
+
+def extra(name):
+    """A video of an extra — a creditless opening or ending, a promotion, an advert, a trailer, a menu, a preview — by
+    its special mark (`NEVER_WAIT`) or such a mark anywhere in its name (`<show> - 01 - NCOP`): never an episode's
+    video (the look's number join) and never a waiting item (A32)."""
+    n = identity(name)
+    return n.special in NEVER_WAIT or bool(_EXTRA.search(n.stem))
+
+
+def dubbed(name):
+    """A5: a video named as another audio's release (`Dual Audio`, `Dub`, `Multi`): taken after the others."""
+    return bool(_DUBBED.search(str(name or "")))
+
+
+def _marker(text):
+    """The episode marker of a name: the first, unless its number is a year (19xx / 20xx) with another marker after it
+    (A7: `Show - 2019 - 05` is episode 5; `Show - 2019` alone stays 2019, a long show's number)."""
+    first = None
+    for m in _EPISODE.finditer(text):
+        if first is None:
+            first = m
+        if not _YEAR.fullmatch(m.group(1) or m.group(5) or m.group(7) or ""):
+            return m
+    return first
 
 
 def _bare(text):
@@ -388,7 +445,7 @@ def _bare(text):
     def blank(m):                                               # offsets kept: the caller cuts the name by them
         return " " * len(m.group(0))
     text = _DATE.sub(blank, _JUNK.sub(blank, text))
-    found = [m for m in _BARE.finditer(text) if not re.fullmatch(r"(?:19|20)\d\d", m.group(1))]
+    found = [m for m in _BARE.finditer(text) if not _YEAR.fullmatch(m.group(1))]
     return found[-1] if found else None
 
 

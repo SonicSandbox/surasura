@@ -410,3 +410,89 @@ def test_a_word_the_lists_encoding_cant_hold_rewrites_it_in_utf8_after_a_backup(
     backups = os.listdir(trash)
     assert len(backups) == 1 and open(os.path.join(trash, backups[0]), "rb").read() == before
     assert not os.path.exists(path + ".tmp")
+
+
+# --- K6: one decode rule, `decode_text` — the look's script check reads bytes as read_text reads a file ----------- #
+def _pin_cases():
+    """(name, language, bytes, errors): every case the rule has — each BOM, strict UTF-8, each legacy encoding, the
+    Big5 / GB18030 trap, ETEN, half-width kana, empty and BOM-only, mixed line ends, damaged (replace and strict), no
+    language — real text from the resources."""
+    mixed = "\r\n".join(JA.splitlines()[:2]) + "\r" + JA.splitlines()[2] + "\n"
+    damaged, _cut = _damaged(JA)
+    cases = [("ja-" + e, "ja", JA.encode(e), "replace") for e in ("utf-8", "utf-8-sig", "utf-16", "utf-32", "cp932")]
+    cases += [("ja-utf-16-be", "ja", codecs.BOM_UTF16_BE + JA.encode("utf-16-be"), "replace"),
+              ("ja-cues-cp932", "ja", SAMPLE_CUES.encode("cp932"), "replace"),
+              ("ja-half-width", "ja", "ﾅｲﾌを持って冒険に出かけた。\n".encode("cp932"), "replace"),
+              ("ja-mixed-ends-utf-16", "ja", mixed.encode("utf-16"), "replace"),
+              ("ja-mixed-ends-cp932", "ja", mixed.encode("cp932"), "replace"),
+              ("ja-damaged", "ja", damaged, "replace"), ("ja-damaged-strict", "ja", damaged, "strict"),
+              ("ja-tiny-damaged", "ja", "冒険".encode("utf-8") + b"\xff", "replace"),
+              ("ja-no-language", None, JA.encode("cp932"), "replace")]
+    cases += [("zh-" + e, "zh", ZH.encode(e), "replace") for e in ("utf-8", "utf-8-sig", "utf-16", "gbk", "gb18030")]
+    cases += [("tw-" + e, "zh", TW.encode(e), "replace") for e in ("big5", "cp950")]
+    cases += [("tw-eten", "zh", "他們的友誼是永恒的，裏面還有€。\n".encode("cp950"), "replace"),
+              ("zh-short-gbk", "zh", "我们走吧。\n".encode("gbk"), "replace")]
+    cases += [(f"empty-{n}", "ja", raw, "replace") for n, raw in enumerate(
+        (b"", codecs.BOM_UTF8, codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE, codecs.BOM_UTF32_LE))]
+    return cases
+
+
+def _outcome(fn):
+    try:
+        return "text", fn()
+    except UnicodeDecodeError as e:
+        return "refused", e.encoding
+
+
+@pytest.mark.parametrize("name, language, raw, errors", _pin_cases(), ids=[c[0] for c in _pin_cases()])
+def test_decode_text_reads_bytes_exactly_as_read_text_reads_the_file(tmp_path, capsys, name, language, raw, errors):
+    """K6: the source look judges a text's bytes it already holds (`sources._in_script`) by the same rule a file is
+    read with — the one public `decode_text`, which `read_text` calls — never a second copy of it. Same text, same
+    refusal; the damaged-file warning only where a file is named."""
+    path = _write_bytes(tmp_path, name + ".txt", raw)
+    want = _outcome(lambda: read_text(path, language, errors=errors))
+    warned = capsys.readouterr().out
+    assert _outcome(lambda: path_utils.decode_text(raw, language, errors=errors)) == want
+    assert capsys.readouterr().out == ""                                       # no file named: nothing said
+    if warned:
+        assert _outcome(lambda: path_utils.decode_text(raw, language, errors=errors, name=name + ".txt")) == want
+        assert capsys.readouterr().out == warned
+
+
+def test_read_text_is_byte_identical_to_what_it_read_before_decode_text(tmp_path, capsys):
+    """Every existing caller of read_text (content, KnownWord.json, the lists, settings) reads exactly what it read
+    before the rule moved into `decode_text`: each case's text (or refusal) and warning, digested on the code before
+    the move (K6 gaps, 2026-10-21)."""
+    import hashlib
+    h = hashlib.sha256()
+    for name, language, raw, errors in _pin_cases():
+        path = _write_bytes(tmp_path, name + ".txt", raw)
+        kind, value = _outcome(lambda: read_text(path, language, errors=errors))
+        h.update(f"{name}\0{kind}\0{value}\0{capsys.readouterr().out}\0".encode("utf-8", "surrogatepass"))
+    assert h.hexdigest() == _READ_TEXT_PIN
+
+
+_READ_TEXT_PIN = "f01cf474eb4ac0cd7094c3e72b730b89cfe553b90d127fbe9b0cf7fe5e04ef67"   # recorded at 33b60d4
+
+
+@pytest.mark.parametrize("language, text, encoding", [("ja", JA, "utf-8"), ("ja", JA, "cp932"), ("ja", JA, "utf-16"),
+                                                      ("zh", ZH, "gb18030"), ("zh", TW, "cp950")],
+                         ids=["ja-utf-8", "ja-cp932", "ja-utf-16", "zh-gb18030", "tw-cp950"])
+def test_a_files_head_cut_inside_a_character_reads_in_its_own_encoding(language, text, encoding):
+    """A big text is judged by its first megabyte (K6), which can end inside a character: with `head=True` that cut
+    character is left off — no damage, so strict UTF-8 (or the file's own encoding) still reads it, never a wrong
+    legacy guess or a mojibake that holds no kana."""
+    raw = (text * 3).encode(encoding)
+    whole = raw.decode(encoding)
+    cut = next(n for n in range(len(raw) // 2, len(raw)) if _splits(raw[:n], encoding))
+    head = path_utils.decode_text(raw[:cut], language, errors="strict", head=True)
+    assert whole.startswith(head) and len(head) >= len(whole) // 2 - 2
+
+
+def _splits(raw, encoding):
+    """Do these bytes end inside a character (no strict decode of them)?"""
+    try:
+        raw.decode(encoding)
+        return False
+    except UnicodeDecodeError:
+        return True

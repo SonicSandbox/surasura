@@ -129,6 +129,7 @@ DEFAULT_SETTINGS = {
     # their subfolders, beside the folders your paired videos are in. A list for every language, or {lang: [...]}.
     # Never in a signature.
     "connect_video_folders": [],
+    "connect_trust_timing": False,      # P-LF-9: mine an unpaired episode nothing here can check, at its own times
     # Known from Anki (P2.4, Sonic 2026-10-07): which card states mean "I know this word" — every one picked must hold
     # ("and"): "suspended" (the default), "marked", "flag:1" … "flag:7"; [] is off. Surasura's own suspensions (the
     # shelf, Junban's "later") and Anki's leeches never count. Read by the known-words sync only while Connect's

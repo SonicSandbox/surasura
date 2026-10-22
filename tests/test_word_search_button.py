@@ -328,7 +328,7 @@ def test_button_survives_into_the_generated_report(tmp_path, monkeypatch):
                         str(results / "progressive_learning_list.csv"))
     monkeypatch.setattr(static_html_generator, "OUTPUT_FILE", str(out))
 
-    static_html_generator.generate_static_html(theme="Dark Flow")
+    static_html_generator.generate_static_html(theme="Dark Flow", open_browser=False)
 
     html = out.read_text(encoding="utf-8")
     assert "https://nadeshiko.co/en/search/" in html

@@ -219,3 +219,64 @@ def test_a_write_of_no_connect_key_asks_for_no_watermark(qapp, turned):
     assert store_rows.resume_connect(None, {"connect_enabled": True}) is True     # (no settings read: off before)
     assert wait_until(done.is_set)
     assert calls[0][0] == {} and calls[0][1] == {"connect_enabled": True}
+
+
+# --- Trust my subtitles' timing turned on: Connect is started, so the episodes waiting on it mine now ----------------- #
+@pytest.fixture
+def kicked(monkeypatch):
+    from app.connect import kick
+    calls = []
+    done = threading.Event()
+
+    def record(settings):
+        calls.append((settings, threading.current_thread() is threading.main_thread()))
+        done.set()
+    monkeypatch.setattr(kick, "kick", record)
+    return calls, done
+
+
+def test_trust_turned_on_in_the_page_starts_connect_on_a_worker(qapp, kicked):
+    # Laptop try row 9: the episodes already waiting as *Not timed* are picked again only when Connect next starts —
+    # turning the switch on must start it, or they sit until something else does.
+    calls, done = kicked
+    data = dict(ALL_ON, connect_trust_timing=False)
+    page, _rows, _shell, store = make({"soon_line": 25, "mine_line": 20, "arrivals_on": 1}, data=data)
+    try:
+        change(page.rows["connect_trust_timing"].controls[0], True)
+        assert store.calls[-1][0] == {"connect_trust_timing": True}
+        assert wait_until(done.is_set)
+        settings, on_main = calls[0]
+        assert settings["connect_trust_timing"] is True and on_main is False
+    finally:
+        _close(page)
+
+
+def test_trust_turned_off_or_another_key_starts_nothing(qapp, kicked):
+    calls, _done = kicked
+    assert store_rows.kick_on_trust({"connect_trust_timing": True}, {"connect_trust_timing": False}) is False
+    assert store_rows.kick_on_trust({"connect_trust_timing": True}, {"connect_trust_timing": True}) is False
+    assert store_rows.kick_on_trust({}, {"split_length": 900}) is False
+    assert store_rows.kick_on_trust(None, {"connect_trust_timing": True}) is True
+
+
+def test_trust_waits_for_its_settings_write_before_starting_connect(qapp, kicked):
+    # Review LF-9 #4: the started Connect reads settings.json from disk; the page's write is queued (0.25 s, retried
+    # behind another program's lock), so the start waits for it to land, or Connect would read the switch still off.
+    calls, done = kicked
+    order = []
+
+    class Store:
+        def flush(self, timeout=None):
+            order.append("flush")
+            waited.append(timeout)
+            return True
+
+    waited = []
+
+    from app.connect import kick
+    kick.kick = lambda settings: (order.append("kick"), done.set())
+    assert store_rows.kick_on_trust({}, {"connect_trust_timing": True}, store=Store()) is True
+    assert wait_until(done.is_set)
+    assert order == ["flush", "kick"]
+    # it gives the write time to land behind another program's lock (mutant LF9-B28: a zero wait starts Connect at once)
+    assert waited == [store_rows.FLUSH_S] and store_rows.FLUSH_S >= 5

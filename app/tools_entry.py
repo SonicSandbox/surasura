@@ -58,10 +58,8 @@ def _advertised():
     from app import path_utils
     if (path_utils.is_frozen() and path_utils.installed_library() is not None
             and path_utils.data_name() == path_utils.DATA_NAME):
-        folder = os.path.dirname(os.path.abspath(sys.executable))
-        ext = ".exe" if sys.platform == "win32" else ""
-        app = os.path.join(folder, "Surasura" + ext)
-        return os.path.join(folder, "surasura-cli" + ext), (app if os.path.isfile(app) else None)
+        app = path_utils.program_beside("Surasura")
+        return path_utils.program_beside("surasura-cli"), (app if os.path.isfile(app) else None)
     cli = os.environ.get("SURASURA_TOOLS_CLI")
     if cli:
         return os.path.abspath(cli), None

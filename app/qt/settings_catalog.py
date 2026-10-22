@@ -180,6 +180,7 @@ ROWS = (
     _row("known_from_anki", "anki", "tablets", ("known_from_anki",),
          options=tuple(term for term, _label in settings_values.KNOWN), when=_CONNECT),
     _row("connect_video_folders", "anki", "list", ("connect_video_folders",), when=_CONNECT),
+    _row("connect_trust_timing", "anki", "toggle", ("connect_trust_timing",), when=_CONNECT),
     _row("junban_own_tag", "anki", "text", ("junban_own_tag",), group="in_anki", when=_all(_CONNECT, _JUNBAN)),
     _row("junban_order_all", "anki", "toggle", ("junban_order_all",), when=_all(_CONNECT, _JUNBAN)),
     _row("anki_sync_delay_min", "anki", "choice", ("anki_sync_delay_min",), adv=True, group="anki"),

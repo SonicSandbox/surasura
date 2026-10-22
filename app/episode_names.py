@@ -14,7 +14,8 @@ keeps a pattern of its own (Sonic: one shared rule, never a second copy).
   side of the language; `.hi` is hearing-impaired, never Hindi; a second language tag ends the reading), a bracket
   group that holds only marks (`[jpn]`, `[CHS]`, `(JPN)`, `[GB_JP]`, `[简日双语]`; never the leading `[group]`), AM's
   `_track3_[jpn]`, an underscore's word (`_karaoke`), `N_Language` (`3_Japanese`: a track named by its language, no
-  episode or show of its own, A11); the Chinese fansub marks (`CHS CHT SC TC GB BIG5 简 繁 简体 繁體`). A bracket or an
+  episode or show of its own, A11); a re-timer's mark (`.synced`, `.retimed`: `retimed`, LF-17) comes off too; the
+  Chinese fansub marks (`CHS CHT SC TC GB BIG5 简 繁 简体 繁體`). A bracket or an
   underscore reads a short list (never `[Fin]`, `[END]`: no language); a dot tag every ISO 639 code. Flags: `forced sdh
   hi cc signs songs s&s karaoke op ed commentary lyrics`. Two languages in one mark (`chs&jpn`, `GB_JP`, `简日双语`) =
   `bilingual` (`language` None, both in `languages`): picked only when nothing monolingual exists.
@@ -61,6 +62,7 @@ class Name(NamedTuple):
     languages: frozenset
     flags: frozenset
     bilingual: bool
+    retimed: bool           # LF-17: a re-timer's mark (`.synced`) came off its stem
     stem: str               # the name without its extension and its marks, as written
     release: str            # H13: without its release's marks, folded
     key: tuple              # (show, season, episode, part, special)
@@ -85,20 +87,25 @@ _ISO_639_2 = ("aar abk ave afr aka amh arg ara asm ava aym aze bak bel bul bih b
               "ron rus kin san srd snd sme sag sin slo slk slv smo sna som alb sqi srp ssw sot sun swe swa tam tel "
               "tgk tha tir tuk tgl tsn ton tur tso tat twi tah uig ukr urd uzb ven vie vol wln wol xho yid yor zha "
               "zul fil scc scr")
-_JA = "ja jp jpn jap japanese".split()
-_ZH = "zh zho chi chs cht sc tc gb big5 chinese cmn yue".split()
+_JA = "ja jp jpn jap japanese 日本語 日本语 日语 日文".split()
+_ZH = ("zh zho chi chs cht sc tc gb big5 chinese cmn yue 中文 简体 繁体 繁體 简中 繁中 简体中文 繁體中文 繁体中文 简繁 "
+       "中文简体 中文繁体 simplified traditional").split()                                       # (D4)
 _LANGS = dict.fromkeys((_ISO_639_1 + " " + _ISO_639_2 + " english korean spanish french german portuguese russian "
                         "italian arabic vietnamese thai indonesian").split(), "other")
 _LANGS.update(dict.fromkeys(_JA, "ja"))
 _LANGS.update(dict.fromkeys(_ZH, "zh"))
+LANGS = _LANGS                  # the one language table: the look's named-folder rule reads it too (`Subs/<language>`)
 # A bracket's or an underscore's language: a short list (a release's `[Fin]` is no Finnish, `[IT]` no Italian)
 _MARKS = dict.fromkeys("en eng english kor korean spa spanish fre fra french ger deu german por portuguese rus "
                        "russian ita italian ara arabic vie vietnamese tha thai ind indonesian 英 英文 英语 英語".split(),
                        "other")
-_MARKS.update(dict.fromkeys(_JA + "日 日文 日语 日語 日本語".split(), "ja"))
-_MARKS.update(dict.fromkeys(_ZH + "简 簡 繁 简体 簡體 繁体 繁體 简中 繁中 中 中文".split(), "zh"))
+_MARKS.update(dict.fromkeys(_JA + "日 日語".split(), "ja"))
+_MARKS.update(dict.fromkeys(_ZH + "简 簡 繁 簡體 中".split(), "zh"))
 _FLAGS = frozenset({"forced", "sdh", "hi", "cc", "signs", "songs", "s&s", "karaoke", "op", "ed", "commentary",
                     "lyrics"})      # a track's flags (Plex, Jellyfin, Bazarr, Anki Miner), never a language
+# A re-timer's mark ending a subtitle's name (LF-17: `<video>.ja.synced.srt`, either side of the language): no flag, it
+# comes off the stem (the file is that video's episode) and says the file was re-timed; `.alt` stays an unknown tag
+RETIMED = frozenset({"synced", "sync", "resync", "resynced", "retimed", "timed"})
 _CJK = re.compile(r"((?:简体|簡體|繁体|繁體|简中|繁中|中文|日文|日语|日語|日本語|英文|英语|英語|[简簡繁中日英])+)"
                   r"(双语|雙語|双字|雙字)?(?:内嵌|內嵌|内封|內封|外挂|外掛|字幕)?")
 _CJK_PART = re.compile(r"简体|簡體|繁体|繁體|简中|繁中|中文|日文|日语|日語|日本語|英文|英语|英語|[简簡繁中日英]")
@@ -192,10 +199,10 @@ def _mark(text, table):
 
 
 def _marks(stem):
-    """(stem without its marks, languages, flags, bilingual, a track named by its language): the dot tags from the
-    right (a second language tag ends them, as it always did), then every bracket of marks but the leading one, AM's
+    """(stem without its marks, languages, flags, bilingual, a track named by its language, re-timed): the dot tags
+    from the right (a second language tag ends them, as it always did; a re-timer's mark comes off), then every bracket of marks but the leading one, AM's
     `_track3`, an underscore's word (never `_hi` / `_cc`: a word, not a flag), and `N_Language`."""
-    langs, flags, two = set(), set(), []
+    langs, flags, two, retimed = set(), set(), [], False
 
     def take(m):
         langs.update(m[0])
@@ -204,6 +211,9 @@ def _marks(stem):
 
     while True:
         base, dot = os.path.splitext(stem)
+        if base and unicodedata.normalize("NFKC", dot[1:]).casefold() in RETIMED:
+            retimed, stem = True, base
+            continue
         m = _mark(dot[1:], _LANGS) if base and dot[1:] else None
         if m is None or (m[0] and langs):
             break
@@ -228,7 +238,7 @@ def _marks(stem):
         if t is None:
             take(m)
         stem = tail[:(t or u).start()]
-    return stem, frozenset(langs), frozenset(flags), any(two) or len(langs) >= 2, bool(track)
+    return stem, frozenset(langs), frozenset(flags), any(two) or len(langs) >= 2, bool(track), retimed
 
 
 def _number(value):
@@ -295,7 +305,7 @@ def identity(name, folder_name=None, bare_numbers=False):
     kept for the last names asked: the same name is read once)."""
     raw = str(name or "").replace("\\", "/").rsplit("/", 1)[-1]
     stem = _EXT.sub("", raw)
-    stem, langs, flags, two, track = _marks(stem)
+    stem, langs, flags, two, track, retimed = _marks(stem)
     text = unicodedata.normalize("NFKC", stem)
     lead = re.match(r"\s*\[([^\]]*)\]", text)
     special = _special(text)
@@ -356,7 +366,7 @@ def identity(name, folder_name=None, bare_numbers=False):
              fold(folder_name))
     key = (fold(base), season or 1, episode, part, special)
     return Name(show, season, episode, episodes, part, int(version), special, group, language, langs, flags, two,
-                stem, release, key)
+                retimed, stem, release, key)
 
 
 def _bare(text):

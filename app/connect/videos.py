@@ -90,11 +90,13 @@ def _list(folder, limit=None, skip=False):
                         if not (skip and skip_dir(entry.name, entry)):
                             subs.append(entry.path)
                         continue
-                    if not entry.name.lower().endswith(runner.VIDEO_EXTENSIONS):
+                    if not runner.video_name(entry.name):
                         continue
                     st = entry.stat(follow_symlinks=False)
                 except OSError:
                     continue
+                if not runner.video_file(entry.name, st.st_size):
+                    continue                    # a small `.ts`: TypeScript (the look's rule, `runner.video_file`)
                 # a cloud placeholder is indexed too (its download moves no folder's time) but never opened:
                 # `find` takes a file only once it is on this computer
                 videos[entry.name.lower()] = [entry.name, st.st_size]

@@ -537,3 +537,18 @@ def test_a_half_episodes_no_video_line_looks_for_its_own_number(tmp_path):
     (show / "Hoshizora Kissa - 12.5.mkv").write_bytes(b"\x1a\x45\xdf\xa3 fake")
     _label, path, _why = needs._find_one(line, str(tmp_path / "data"), [], "Hoshizora Kissa", needs._Lister())
     assert os.path.basename(path) == "Hoshizora Kissa - 12.5.mkv"
+
+
+@pytest.mark.parametrize("name, stem, language, retimed", [
+    ("Hoshizora Kissa - 05.ja.synced.srt", "Hoshizora Kissa - 05", "ja", True),
+    ("Hoshizora Kissa - 05.synced.ja.srt", "Hoshizora Kissa - 05", "ja", True),
+    ("Hoshizora Kissa - 05.retimed.srt", "Hoshizora Kissa - 05", None, True),
+    ("Hoshizora Kissa - 05.ja.srt", "Hoshizora Kissa - 05", "ja", False),
+    ("Hoshizora Kissa - 05.alt.srt", "Hoshizora Kissa - 05.alt", None, False),
+])
+def test_a_retimers_mark_comes_off_the_stem_and_is_read_by_the_one_rule(name, stem, language, retimed):
+    """LF-17: `<video>.ja.synced.srt` is that video's episode, re-timed (the look ranks it as a versions folder's file);
+    `.alt` stays an unknown tag (an alternative translation is a release of its own). The look asks the rule."""
+    n = en.identity(name)
+    assert (n.stem, n.language, n.retimed, n.episode) == (stem, language, retimed, 5)
+    assert sources._marked(name) is retimed and sources._tag(name)[:2] == (stem, language)

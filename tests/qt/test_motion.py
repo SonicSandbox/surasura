@@ -530,16 +530,16 @@ def test_a_piece_that_raises_on_a_tests_time_is_reported_the_overlay_shown_and_t
     def snapshot_that_raises(self):
         seen.append(self)                                       # the opening, to check its filter afterwards
         raise ValueError("a piece's bug")
-    monkeypatch.setattr(motion.OverlayOpening, "_snapshot", snapshot_that_raises)
-    card = Card(stage, "slide")
-    card.open()
-    opening = seen[0]
-    assert qt_errors and qt_errors[0][0] is ValueError
-    qt_errors.clear()
-    assert opening.ended and not opening.live                   # the opening is over
-    assert motion.opening_of(card) is None and not _filters_left(opening)
-    assert card.isVisible()                                     # shown at once, without the motion
-    monkeypatch.undo()
+    with monkeypatch.context() as patched:      # scoped: an undo() would also undo the harness's test root
+        patched.setattr(motion.OverlayOpening, "_snapshot", snapshot_that_raises)
+        card = Card(stage, "slide")
+        card.open()
+        opening = seen[0]
+        assert qt_errors and qt_errors[0][0] is ValueError
+        qt_errors.clear()
+        assert opening.ended and not opening.live               # the opening is over
+        assert motion.opening_of(card) is None and not _filters_left(opening)
+        assert card.isVisible()                                 # shown at once, without the motion
     card.hide()
     assert card.open() is not None                              # and it opens again
     clock.advance(400)

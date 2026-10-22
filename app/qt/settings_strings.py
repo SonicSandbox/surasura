@@ -685,29 +685,6 @@ FRESH_REFUSED = "Nothing was changed. {reason}"
 FRESH_FAILED = "Nothing was changed: {reason}"
 FRESH_NOT_WRITABLE = "Your library can't be written now: {reason}"
 
-# --- K7: *Start a fresh library…* (settings_sources.py: FreshRow; the store's `start_fresh`) ------------------------ #
-FRESH_OPEN = "Start a fresh library…"
-FRESH_TIP = ("Empty your library and read your folders again from scratch\nThe old library is kept in one backup in "
-             "User Files' .trash folder")
-FRESH_RUNNING_TIP = "Starting a fresh library…"
-FRESH_ASK = "Start a fresh library?"
-FRESH_BODY = ("Goes, into one dated backup (User Files › .trash › library-reset-…): your library's order, tiers, "
-              "New arrivals and Needs you, removed episodes, its JSON copy (master_manifest.json) and every copy "
-              "Surasura keeps in its data folder.\n\n"
-              "Stays: your video and text folders (only ever read) and the list of them — they are read again from "
-              "scratch right after, into Current — Anki and its cards, your settings and, unless you tick the box, "
-              "your known words.")
-FRESH_YES = "Start fresh"
-FRESH_YES_TIP = "Set this library aside in a backup and read your folders again"
-FRESH_KNOWN = "Also forget my known words"
-FRESH_KNOWN_TIP = ("KnownWord.json is kept in the backup and replaced by an empty one\nWords from your Anki cards come "
-                   "back at the next Anki sync")
-FRESH_DONE = "Fresh library: reading your folders…"
-FRESH_DONE_KNOWN_KEPT = "Fresh library: reading your folders… Your known words were kept: {why}"
-FRESH_REFUSED = "Nothing was changed. {reason}"
-FRESH_FAILED = "Nothing was changed: {reason}"
-FRESH_NOT_WRITABLE = "Your library can't be written now: {reason}"
-
 # --- PR: *Where new arrivals go* — the placing rules' lines (settings_rules.py; RULE_FROM, RULE_ADD, its tip above) -- #
 RULE_LINE_TIP = "Where arrivals from {source} go. Wait here: they wait in New arrivals for you"
 RULE_LINE_NAME = "Where arrivals from {source} go"

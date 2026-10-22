@@ -1151,6 +1151,142 @@ def test_row28_a_failing_hook_leaves_the_rest_of_the_menu(world):
     assert win.items.episode_entries(row, row.episodes[0])[0].name in ("ep-watched", "ep-unwatched")
 
 
+def _on_screen(lst, i):
+    """Row `i`'s episode lines fully in the list's view, as laid out now: [(QRect, Episode)]."""
+    vp = lst.viewport().rect()
+    return [(r, ep) for r, ep in lst.delegate.episode_lines(lst.model().entries[i], lst.visualRect(lst.model().index(i, 0)))
+            if vp.contains(r)]
+
+
+def _click_ep_more(win, lst, i, line):
+    """The hand on episode line `line` = (QRect, Episode) of row `i`, then a click (press, release) on its ⋯ -> the
+    menu it opened. The press scrolls nothing: the ⋯ stays under the hand (the bug: Qt's autoScroll pulled a tall opened
+    row's head back in, so the release met its title and nothing opened)."""
+    r, ep = line
+    win.items.last_menu = None
+    hover(lst, r.center())
+    more = [pt for pt in _ep_more(lst, i) if pt[3].id == ep.id]
+    assert len(more) == 1, "the hovered episode, and it alone, shows its ⋯"
+    bar = lst.verticalScrollBar().value()
+    press(lst, more[0][1].center())
+    assert lst.verticalScrollBar().value() == bar, "the press moves nothing under the hand"
+    release(lst, more[0][1].center())
+    settle()
+    assert win.items.last_menu is not None, "the click opened the episode's menu"
+    return win.items.last_menu
+
+
+@pytest.mark.parametrize("fz,dpr", [(1.0, 1.0), (1.0, 1.5), (1.5, 1.0), (1.5, 1.5)])
+def test_row28_a_click_on_an_episodes_more_opens_that_episodes_menu_at_every_text_size_and_screen_ratio(
+        world, qapp, monkeypatch, fz, dpr):
+    """Row 28's bug: a click on an episode's ⋯ opened nothing — the press made its row current and Qt scrolled the row's
+    head back into view, the ⋯ slid away before the release. Text at 100 % and 150 %, a 150 % screen (the rows' scroll
+    step snaps to it): the menu opens, its entries that episode's."""
+    from app import theme
+    monkeypatch.setitem(theme.TEXT_SIZES, "row28", fz)                 # a text size of its own: 150 %
+    theme_name, old_size, language = style.current()
+    style.apply(qapp, theme_name, "row28", language)
+    try:
+        assert rows.fz() == fz
+        _seed, win, _w = world()
+        lst = lst_of(win)
+        monkeypatch.setattr(lst.viewport(), "devicePixelRatioF", lambda: dpr)
+        assert lst.viewport().devicePixelRatioF() == dpr
+        i, row, on = _long_row_scrolled(win)
+        for line in (on[0], on[-1]):
+            m = _click_ep_more(win, lst, i, line)
+            assert [a.text() for a in m.actions()] == [e.label for e in win.items.episode_entries(row, line[1])]
+            assert m.accessibleName() == strings.ITEM_EP_MENU_NAME.format(ep=line[1].label)
+            m.close()
+    finally:
+        style.apply(qapp, theme_name, old_size, language)
+
+
+def test_row28_up_nexts_opened_episode_lines_show_their_own_more_and_a_click_opens_its_menu(world):
+    """Up Next's card opens as a row does: its episode under the hand shows its ⋯ (none while no hand is there), and a
+    click on it opens that episode's menu."""
+    _seed, win, _w = world()
+    lst = lst_of(win)
+    assert lst.model().entries[0][0] == rows.HERO
+    open_row(win, 0)
+    hero = lst.model().entries[0][1]
+    on = _on_screen(lst, 0)
+    assert on and _ep_more(lst, 0) == []
+    m = _click_ep_more(win, lst, 0, on[-1])
+    want = win.items.episode_entries(hero, on[-1][1])
+    assert [a.text() for a in m.actions()] == [e.label for e in want]
+    assert m.accessibleName() == strings.ITEM_EP_MENU_NAME.format(ep=on[-1][1].label)
+    m.close()
+
+
+def test_row28_in_a_group_an_episodes_menu_names_its_own_show(world):
+    """LM11b: a group holds several shows, each with its Ep 1 — an episode's menu names its own show ("<show> · Ep N",
+    as the group's row labels it), never another's."""
+    _seed, win, _w = world()
+    view = win.page_widgets["current"].view_model
+    rs = list(view.rows)
+    i = next(k for k in range(1, len(rs)) if len(rs[k].episodes) >= 2 and item_menu.joinable(rs[k]))
+    shows = ("星降る街の小さな工房", "白銀の書庫番")
+    eps = tuple(e._replace(show=shows[n % 2]) for n, e in enumerate(rs[i].episodes))
+    rs[i] = rs[i]._replace(group=True, works=(rs[i].work_id, 987654), episodes=eps)
+    win.show_library(view._replace(rows=type(view.rows)(rs)))
+    settle()
+    open_row(win, i)
+    lst = lst_of(win)
+    lst.scrollTo(lst.model().index(i, 0), lst.ScrollHint.PositionAtTop)
+    settle()
+    group = lst.model().entries[i][1]
+    assert group.group
+    for line in _on_screen(lst, i)[:2]:
+        ep = line[1]
+        named = view_rows.STRINGS["group_ep"].format(show=ep.show, label=ep.label)
+        m = _click_ep_more(win, lst, i, line)
+        assert m.accessibleName() == strings.ITEM_EP_MENU_NAME.format(ep=named)
+        watched = win.items.episode_entries(group, ep)[0]
+        assert named in watched.tip and shows[1 - shows.index(ep.show)] not in watched.tip
+        m.close()
+
+
+def test_row28_mark_watched_is_the_pages_one_done_path_with_its_undo(world, monkeypatch):
+    """S12: *Mark watched* in an episode's menu is the page's one Done (`page.done`, as a stone's click) — the writer's
+    `set_watched` for that file, its toast with Undo."""
+    _seed, win, writer = world()
+    lst = lst_of(win)
+    i, row, on = _long_row_scrolled(win)
+    line = next(ln for ln in on if not ln[1].watched)
+    seen, real_done = [], win.items.page.done
+    monkeypatch.setattr(win.items.page, "done", lambda r, e: (seen.append((r.key, e.id)), real_done(r, e)))
+    m = _click_ep_more(win, lst, i, line)
+    act = next(a for a in m.actions() if a.text() == strings.ITEM_EP_MENU["ep-watched"][0])
+    act.trigger()
+    m.close()
+    assert seen == [(row.key, line[1].id)]
+    assert [c[1] for c in calls(writer, "set_watched")] == [[line[1].id]]
+    assert wait_until(lambda: win.toasts.card is not None and win.toasts.card.buttons, 5)
+    assert wait_until(lambda: not win.moves.tickets, 5)
+    win.toasts.card.buttons[0].click()                               # Undo: that Done
+    assert writer.undone and writer.undone[-1].op == "set_watched"
+
+
+def test_row28_enter_on_the_keyboards_episode_opens_the_same_menu_the_click_does(world):
+    _seed, win, _w = world()
+    lst = lst_of(win)
+    i, row, _on = _long_row_scrolled(win)
+    lst.setFocus()
+    lst.setCurrentIndex(lst.model().index(i, 0))
+    QTest.keyClick(lst, Qt.Key.Key_Down)
+    settle()
+    ep = row.episodes[0]
+    assert lst.ep_key == (row.key, ep.id)
+    win.items.last_menu = None
+    QTest.keyClick(lst, Qt.Key.Key_Enter)
+    settle()
+    m = win.items.last_menu
+    assert m is not None and m.isVisible()
+    assert [a.text() for a in m.actions()] == [e.label for e in win.items.episode_entries(row, ep)]
+    m.close()
+
+
 def test_open_its_folder_opens_it_or_says_its_gone(world, monkeypatch):
     seed, win, _w = world()
     opened, said = [], []

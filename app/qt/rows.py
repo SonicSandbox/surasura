@@ -3315,7 +3315,10 @@ class RowsView(QListView):
             if self._press_pick is None and (part is None or part[0] != "more"):
                 self.clear_picks()                   # a plain click lets the picks go (⋯ keeps them: *Group…*)
             if idx.isValid():
-                self.setCurrentIndex(idx)
+                scrolls = self.hasAutoScroll()
+                self.setAutoScroll(False)            # row 28: made current where it stands — Qt's scrollTo would pull
+                self.setCurrentIndex(idx)            # a tall opened row's head back in, the part slid from under the hand
+                self.setAutoScroll(scrolls)
                 if part is not None:
                     entry = self.model().entries[idx.row()]
                     self._press = (idx.row(), part[0], part[3], event.pos(), getattr(entry[1], "key", None))

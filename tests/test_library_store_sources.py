@@ -172,8 +172,9 @@ def test_a_source_may_never_be_or_hold_surasuras_own_folders(language):
         assert store.add_source(_source_root()) is not None                 # a folder beside them is fine
 
 
-@pytest.mark.parametrize("name", [".hidden", ".stversions", ".trash", "$RECYCLE.BIN", "$Recycle.Bin", "#recycle",
-                                  "@eaDir", "System Volume Information"])
+@pytest.mark.parametrize("name", [".AppleDouble", ".Trashes", ".Spotlight-V100", ".fseventsd", ".TemporaryItems",
+                                  ".stversions", ".trash", "$RECYCLE.BIN", "$Recycle.Bin", "#recycle", "@eaDir",
+                                  "System Volume Information"])
 def test_the_walk_skips_hidden_recycled_and_old_version_folders(name, tmp_path):
     """B3: Syncthing's .stversions, the recycle bins (Windows' and a NAS's), a NAS's @eaDir thumbnails and the trash
     hold removed or old versions: read, they would bring back episodes removed on purpose."""
@@ -182,7 +183,7 @@ def test_the_walk_skips_hidden_recycled_and_old_version_folders(name, tmp_path):
     assert ls.skip_dir(name, str(folder)) is True
 
 
-@pytest.mark.parametrize("name", ["フリーレン", "夜市", "Season 1", "Specials", "第2期"])
+@pytest.mark.parametrize("name", ["フリーレン", "夜市", "Season 1", "Specials", "第2期", ".hack Sign"])   # LF-21: a title
 def test_the_walk_reads_an_ordinary_show_folder(name, tmp_path):
     folder = tmp_path / name
     folder.mkdir()
@@ -1402,3 +1403,27 @@ def test_a_later_file_of_a_show_still_waiting_reads_none_of_its_records(language
                              for n in (1, 3)], first=True)
         store.take_in(root, [_found(language, data_dir, src, other, "ep2.srt", 22, episode=2)])
         assert [p for p in _current(store) if f"/{other}/" in p] == [f"Library/{other}/ep{n}.srt" for n in (1, 2, 3)]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_folder_added_inside_another_source_counts_the_episodes_under_it(language):
+    """Item 8b (the laptop's *0 episodes*): a source's count is its folder's — the live items with an origin under that
+    folder, whichever source recorded them. A show's folder added after the folder around it was read (and stopped)
+    counts the episodes the outer one took in; the outer one, stopped, still counts them; a folder whose name only
+    starts the same (`<show>` beside `<show> S2`) counts none of them; a removed episode counts nowhere."""
+    store, data_dir = _empty(language)
+    downloads = _source_root("Downloads")
+    near = names(language)[141]
+    show = f"{near} S2"
+    with store:
+        outer = store.add_source(downloads)
+        ids = store.take_in(outer, [_found(language, data_dir, downloads, show, f"[Grp] {show} - {n:02d} (1080p).srt",
+                                           n) for n in (9, 10, 11)], first=True).added
+        os.makedirs(os.path.join(downloads, near))
+        store.stop_source(outer)
+        inner = store.add_source(os.path.join(downloads, show))
+        beside = store.add_source(os.path.join(downloads, near))
+        assert [(s["id"], s["items"]) for s in store.sources()] == [(inner, 3), (beside, 0)]
+        assert [(s["id"], s["items"]) for s in store.sources(all=True)] == [(outer, 3), (inner, 3), (beside, 0)]
+        store.remove([ids[0]])
+        assert [(s["id"], s["items"]) for s in store.sources(all=True)] == [(outer, 2), (inner, 2), (beside, 0)]

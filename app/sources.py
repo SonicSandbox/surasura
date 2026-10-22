@@ -352,24 +352,8 @@ def dialogue_lines(text):
     return len(said)
 
 
-# T2-B6 (LM3, PROVISIONAL): a book file's edition marks — a bracket holding an edition word (`(第2版)`, `【新装版】`,
-# `[Revised Edition]`, `(v2)`), or one ending the name after a space (`改訂版`, `第二版`, `2nd Edition`, `v2`); never a
-# bare number (`<book> 2` is its second volume)
-_EDITION_WORD = (r"(?:[^\s()\[\]【】]*版|\bedition\b|\bed\.|\brevised\b|\brev\.|\bv\d+\b|\bver\.?\s*\d+\b|改訂|改订|"
-                 r"増補|增补|修订|修訂|新装)")
-_EDITION_MARK = re.compile(rf"\s*[(\[【][^)\]】]*?{_EDITION_WORD}[^)\]】]*[)\]】]\s*$|"
-                           rf"[\s_\-]+(?:\d+(?:st|nd|rd|th)\s+)?{_EDITION_WORD}\s*$", re.IGNORECASE)
-
-
-def edition_name(name):
-    """T2-B6 (LM3, PROVISIONAL): a book file's name with its edition marks off (`_EDITION_MARK`, from its end, NFKC,
-    case-folded): two EPUBs in one folder whose names read the same are one book's editions. '' for nothing left."""
-    stem = unicodedata.normalize("NFKC", os.path.splitext(name)[0]).strip()
-    while True:
-        shorter = _EDITION_MARK.sub("", stem).strip()
-        if shorter == stem or not shorter:
-            return shorter.casefold() if shorter else ""
-        stem = shorter
+# T2-B6 (LM3, PROVISIONAL; IK-L3-4): an edition vs a volume is one name reading, beside the others
+edition_name = en.edition_name
 
 
 def book_parts(path, language):

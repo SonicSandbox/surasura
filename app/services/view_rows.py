@@ -65,6 +65,10 @@ Episode = namedtuple("Episode", Episode._fields + ("work_id", "show"),
                      defaults=tuple(Episode._field_defaults.values()) + (None, None))
 #   work_id, show (LM11b G5): the work it is of, and in a group its show's name as the group labels it (None in a
 #   run); both None in a cache from before. What *Move {show} to Finished* takes and names (`drag.show_finished`)
+Episode = namedtuple("Episode", Episode._fields + ("show_key",),
+                     defaults=tuple(Episode._field_defaults.values()) + (None,))
+#   show_key: in a group, which show it is of (`_show_key`: its work, else its folder) — where an opened group's show
+#   lines stand (`rows.show_starts`); None in a run and in a cache from before
 Row = namedtuple("Row", "key index tier work_id piece_id media media_word verb title title_ep line source n_files n_watched "
                         "pct pct_tone n_new status mark episodes next_index studying date cover_title accessible "
                         "description chips more_chips play_tip can_play cards_out string", defaults=(False, None))
@@ -499,7 +503,7 @@ def status_of(eps, word, line_n):
 
 
 # --- building ------------------------------------------------------------------------------------------------------ #
-def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=None, show=None):
+def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=None, show=None, show_key=None):
     name = item.get("title") or (item.get("rel_path") or "").rsplit("/", 1)[-1]
     number = None if media == "youtube" else episode_number(name)
     if media == "youtube":
@@ -525,7 +529,7 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=
                  cards=c, mining=item["id"] in mining and not mined, missing=missing, removed=missing and mined,
                  in_top=in_top, pct=pct_of(known, counted), n_new=n_new, status=None, mark=None,
                  rel_path=item.get("rel_path"), play_tip="", can_play=not missing and not waiting, waiting=waiting,
-                 media_word=MEDIA_WORD.get(media, "video"), work_id=item.get("work_id"), show=show)
+                 media_word=MEDIA_WORD.get(media, "video"), work_id=item.get("work_id"), show=show, show_key=show_key)
     asked = item.get("mine_asked")                    # asked again after it was mined: it mines again (Sonic's "unless asked")
     deleted = bool(item.get("mined_at")) and not mined and not (asked and str(asked) > str(item["mined_at"]))
     ep = ep._replace(deleted=deleted)
@@ -658,7 +662,7 @@ def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, 
         shows, kinds, names, group_title, group_line = _group(meta, piece, works, guessed)
         media = kinds[_show_key(first)]
         eps = [_episode(it, works.get(it.get("work_id")) or {}, kinds[_show_key(it)], numbers, cards, mining,
-                        it["id"] in in_top_ids, line_n, connect, names[_show_key(it)]) for it in piece]
+                        it["id"] in in_top_ids, line_n, connect, names[_show_key(it)], _show_key(it)) for it in piece]
     else:
         media = _media(work, piece, guessed)
         eps = [_episode(it, work, media, numbers, cards, mining, it["id"] in in_top_ids, line_n, connect)
@@ -1456,8 +1460,9 @@ def _row_from(data):
     r = Row(*data)
     st = Status(*r.status) if r.status else None
     mk = Mark(*r.mark) if r.mark else None
-    eps = tuple(Episode(*e)._replace(status=Status(*e[12]) if e[12] else None, mark=Mark(*e[13]) if e[13] else None)
-                for e in r.episodes)
+    eps = tuple(ep._replace(status=Status(*ep.status) if ep.status else None, mark=Mark(*ep.mark) if ep.mark else None,
+                            show_key=tuple(ep.show_key) if ep.show_key else None)     # (JSON wrote it as a list)
+                for ep in (Episode(*e) for e in r.episodes))
     chips = tuple(Chip(*c) for c in r.chips)
     r = r._replace(status=st, mark=mk, episodes=eps, chips=chips,
                    cover=CoverRef(*r.cover) if r.cover else None,                  # W3.2 Q6

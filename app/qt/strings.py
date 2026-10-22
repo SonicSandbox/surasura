@@ -111,6 +111,12 @@ ITEM_MENU = {
     "same-show": ("Same show as…", "Make this part of another show: it and its new episodes go into that show "
                                    "(asks first)"),
 }
+# a submenu longer than a page (`item_menu.MENU_PAGE`) goes on in a submenu of its own, page by page
+MENU_MORE = ("More…", "The rest of this list")
+# row 28: an opened row's episode's own ⋯ ({ep}: the episode as ⋯ names it; {action}: its stone's click,
+# `ROWS_STONE_ACTION`) — its *Play* is ▶'s own verb and tip
+ITEM_EP_MARK = ("Mark {action}", "Mark {ep} {action}\n• Undo takes it back")
+ITEM_EP_MENU_NAME = "What you can do with {ep}"
 ITEM_UNGROUPED = "Ungrouped {title}"
 ITEM_RENAME_ASK = "Rename this group"
 ITEM_RENAME_BODY = "Leave it empty to name it after its shows again."
@@ -399,6 +405,7 @@ WELLS_NAME = "Where it can go: {wells}"
 # --- W3.1a rows (app/qt/rows.py): Current's one-line row, the string on it, Up Next flat, the grooves. A row's other
 # words are W2.2's (ROWS_*) and view_rows'.
 ROWS_MORE_TIP = "More\n• Click for what you can do with it"
+ROWS_EP_MORE_TIP = "More: this episode\n• Click for what you can do with it"
 ROWS_MOVE_TIP = {"up": "Move up one\n• Click to move it up one place",
                  "down": "Move down one\n• Click to move it down one place"}
 ROWS_MINE_NOW_TIP = "{tip}\n• Click to mine it now"

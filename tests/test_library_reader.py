@@ -800,3 +800,131 @@ def test_connects_feed_reaches_the_view_and_an_unchanged_feed_builds_nothing():
         assert (reader.builds, len(views)) == (builds, n) and reads == [1, 1]
     finally:
         reader.stop()
+
+
+# --- LM11b G1: the feed's pieces (a group's kind and name) ---------------------------------------------------------- #
+import pytest                                                                         # noqa: E402
+
+
+def test_LM11b_G1_the_reader_keeps_the_feeds_pieces_replaced_on_a_full_read_and_merged_on_a_delta():
+    """The feed carries each piece's kind and name (Kura's LM11: every piece on a full read, a delta only the pieces
+    of the rows it changed). Wrong, a rename would never reach the row, or a delta would forget every other group."""
+    reader = library_reader.LibraryReader(None, language="ja")
+    group = {"id": 10, "title": None, "kind": "group"}
+    run = {"id": 3, "title": "白銀の書庫番", "kind": "run"}
+    reader._merge({"full": True, "items": [], "works": [], "gone": [], "version": 1, "epoch": "e",
+                   "pieces": [group, run]})
+    assert reader._pieces == {10: group, 3: run}
+    reader._merge({"full": False, "items": [], "works": [], "gone": [], "version": 2, "epoch": "e",
+                   "pieces": [{"id": 10, "title": "日曜の夜に見るもの", "kind": "group"}, dict(run)]})
+    assert reader._pieces[10]["title"] == "日曜の夜に見るもの"
+    assert reader._pieces[3] is run                   # an equal piece keeps its object: its row stays cached
+    reader._merge({"full": False, "items": [], "works": [], "gone": [], "version": 3, "epoch": "e"})  # no pieces
+    assert set(reader._pieces) == {10, 3}
+    reader._merge({"full": True, "items": [], "works": [], "gone": [], "version": 4, "epoch": "e2", "pieces": [run]})
+    assert reader._pieces == {3: run}                 # a full read replaces them
+
+
+@pytest.mark.parametrize("language", ("ja", "zh"))
+def test_LM11b_G1_on_a_real_store_two_shows_grouped_reach_the_view_as_one_row_and_a_rename_follows(language):
+    """End to end on a migrated store: another handle groups two Current shows (`Store.group`), the reader's delta read
+    brings one row "<first show> + 1 more" holding both shows' files; *Rename…*'s write (`rename_piece`) shows the name.
+    Wrong, the window would keep two rows, or a stale name, until a restart."""
+    from app.services import moves
+    from tests.test_library_store_support import migrated
+    store = migrated(language)
+    reader = library_reader.LibraryReader(moves.store_opener(language), language=language, poll=0.02)
+    views, _got = _collect(reader)
+    reader.start()
+    try:
+        assert _wait(lambda: views and views[-1][1].state == "full")
+        shows = [r for r in views[-1][1].rows if r.tier == "now" and r.n_files > 1 and r.piece_id is not None][:2]
+        assert len(shows) == 2
+        a, b = shows
+        before = len(views[-1][1].rows)
+        store.group(piece_ids=[a.piece_id, b.piece_id])
+        name = f"{a.title} + 1 more"
+        assert _wait(lambda: any(r.group and r.title == name for r in views[-1][1].rows))
+        row = next(r for r in views[-1][1].rows if r.group)
+        assert row.work_id == a.work_id and row.n_files == a.n_files + b.n_files
+        assert row.line == f"{row.n_files} files · 2 shows" and len(views[-1][1].rows) == before - 1
+        store.rename_piece(row.piece_id, "日曜の夜に見るもの")
+        assert _wait(lambda: any(r.group and r.title == "日曜の夜に見るもの" for r in views[-1][1].rows))
+    finally:
+        reader.stop()
+        store.close()
+
+
+def _grouped_store(language):
+    """A migrated store whose first two NOW shows (four episodes each) are grouped -> (store, group piece id)."""
+    from tests.test_library_store_support import migrated
+    store = migrated(language)
+    shows = []
+    for i in store.ids("now"):
+        it = store.item(i)
+        if it["parent_folder"] and it["piece_id"] not in shows:
+            shows.append(it["piece_id"])
+    return store, store.group(piece_ids=shows[:2]).piece_id
+
+
+@pytest.mark.parametrize("language", ("ja", "zh"))
+def test_LM11b_G1_on_a_real_store_a_group_the_soon_line_cuts_between_its_shows_is_one_row_with_one_key(language):
+    """IK-1 end to end: the store keeps the group one piece in NOW and Soon when the line falls inside it — here
+    between its two shows, so no show runs through the line. The view holds it once, above the line, its Soon files
+    from `soon_from` on. Wrong, two rows would share its key."""
+    from app.services import moves
+    store, group = _grouped_store(language)
+    store.set_soon_line(4)                            # after the first show's four episodes, inside the group
+    reader = library_reader.LibraryReader(moves.store_opener(language), language=language, poll=0.02)
+    views, _got = _collect(reader)
+    reader.start()
+    try:
+        assert _wait(lambda: views and views[-1][1].state == "full")
+        view = views[-1][1]
+        keys = [r.key for r in view.rows]
+        assert len(keys) == len(set(keys)) and keys.count(f"p{group}") == 1
+        row = next(r for r in view.rows if r.key == f"p{group}")
+        assert row.group and row.n_files == 8 and (row.soon_from, row.soon_piece) == (4, group)
+        assert [ln.after for ln in view.lines if ln.kind == "soon"] == [view.rows.index(row)]
+    finally:
+        reader.stop()
+        store.close()
+
+
+def test_LM11b_G1_after_a_restart_the_first_screen_shows_the_group_and_the_full_read_after_it_gives_it_again(
+        tmp_path):
+    """IK-10: the first screen's cache keeps a group a group (its name, `group` True), and the live full read that
+    replaces it gives the same group row. Wrong, a restart would flash the group as its first show, or lose it."""
+    from app.services import moves
+    store, group = _grouped_store("ja")
+    cache = str(tmp_path / "window_cache_ja.json")
+    at = view_rows.Row._fields.index("group")
+
+    def cached_group():
+        try:
+            rows = json.load(open(cache, encoding="utf-8"))["view"]["rows"]
+        except (OSError, ValueError, KeyError):
+            return False
+        return any(r[at] for r in rows)
+    reader = library_reader.LibraryReader(moves.store_opener("ja"), language="ja", poll=0.02, cache_file=cache)
+    views, _got = _collect(reader)
+    reader.start()
+    try:
+        assert _wait(lambda: views and views[-1][1].state == "full")
+        live = next(r for r in views[-1][1].rows if r.group)
+        assert _wait(cached_group)
+    finally:
+        reader.stop()
+    again = library_reader.LibraryReader(moves.store_opener("ja"), language="ja", poll=0.02, cache_file=cache)
+    views2, _ = _collect(again)
+    again.start()
+    try:
+        assert _wait(lambda: len(views2) >= 2 and not views2[-1][1].cached)
+        first = views2[0][1]
+        assert first.cached and [(r.key, r.title, r.group) for r in first.rows if r.group] == \
+            [(live.key, live.title, True)]
+        assert [(r.key, r.title, r.works) for r in views2[-1][1].rows if r.group] == [(live.key, live.title, live.works)]
+        assert live.key == f"p{group}" and len(live.works) == 2
+    finally:
+        again.stop()
+        store.close()

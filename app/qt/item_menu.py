@@ -141,13 +141,13 @@ class ItemActions(QObject):
 
     def other_parts(self, row):
         """The other parts of `row`'s title the view holds: [(Part, where)] — Current's in order, then Finished's, then
-        New arrivals'."""
+        New arrivals'. A group (LM11b G1) is no title's part: it has none and is never one."""
         view = self._view()
-        if view is None or not joinable(row):
+        if view is None or not joinable(row) or getattr(row, "group", False):
             return []
         out = []
         for n, r in enumerate(view.rows, 1):
-            if r.key != row.key and r.work_id == row.work_id and joinable(r):
+            if r.key != row.key and r.work_id == row.work_id and joinable(r) and not getattr(r, "group", False):
                 out.append((part_of(r, n), strings.ITEM_JOIN_WHERE[r.tier if r.tier in ("now", "soon") else "now"]
                             .format(n=n)))
         for month in view.finished or ():

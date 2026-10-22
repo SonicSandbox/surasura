@@ -111,6 +111,7 @@ class LibraryReader:
         self._view = None
         # the reader thread's own copy of the library (touched only there)
         self._items, self._works, self._cards = {}, {}, {}
+        self._pieces = {}                  # LM11b G1: the feed's pieces {id: {id, title, kind}} (a group's kind and name)
         self._options = {}
         self._seen = self._epoch = None
         self._data_version = None
@@ -257,6 +258,7 @@ class LibraryReader:
         # files — so a reader a language switch dropped holds none of them, whoever still holds the reader. The last
         # view stays (`view()`: the window shows it until the next language's first view comes)
         self._items, self._works, self._cards, self._options = {}, {}, {}, {}
+        self._pieces = {}
         self._tiers, self._pos, self._dirty, self._moved_in = None, {}, set(), {}
         self.row_cache = view_rows.RowCache()
         self._cache_due = None
@@ -323,6 +325,7 @@ class LibraryReader:
                 self._tell_gone(gone)
         cards = self._card_counts(h)
         changed = (feed["full"] or feed["items"] or feed["works"] or feed["gone"] or changed_mode
+                   or feed.get("pieces")                # LM11b G1: a group's kind or name
                    or self._options != options_before or version != self._numbers_version
                    or cards != self._cards or self._view is None or self._view.busy or self._view.cached or released
                    or estimates_new)                    # W3.2 Q1
@@ -537,6 +540,7 @@ class LibraryReader:
         if feed["full"]:
             self._items = {r["id"]: r for r in feed["items"]}
             self._works = {w["id"]: w for w in feed["works"]}
+            self._pieces = {p["id"]: p for p in feed.get("pieces") or ()}       # LM11b G1
             self._tiers = None                          # sorted again in full at the next build
             self._changed_ids = None
             self._build_changed = None
@@ -564,6 +568,9 @@ class LibraryReader:
                         self._moved_in.setdefault(r.get("tier"), set()).add(r["id"])
             for w in feed["works"]:
                 self._works[w["id"]] = w
+            for p in feed.get("pieces") or ():          # LM11b G1: an equal piece keeps its object (its row cached)
+                if self._pieces.get(p["id"]) != p:
+                    self._pieces[p["id"]] = p
             if self._build_changed is not None:
                 self._build_changed.update(r["id"] for r in feed["items"])
                 self._build_changed.update(ident for kind, ident in feed["gone"] if kind == "item")
@@ -650,7 +657,8 @@ class LibraryReader:
                                tiers=self._sorted_tiers() if self._items else None, changed=self._build_changed,
                                changed_works=self._build_works, numbers_changed=numbers_changed,
                                estimates=self._estimates,     # W3.2 Q1
-                               connect=connect)               # P4.1 L2
+                               connect=connect,               # P4.1 L2
+                               pieces=self._pieces)           # LM11b G1
         self._built_numbers = self._numbers_version
         self._build_changed = set()                     # built: from here on, only what the feed changes
         self._build_works = set()

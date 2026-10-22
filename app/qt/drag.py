@@ -112,12 +112,13 @@ def soon_slot(rows_, src):
 
 def split_first(rows_, row):
     """A split's first part (A2: the Finished well stays unlit, ⋯ leaves Finished out): another Current row of the same
-    title whose files come after this one's. (Goal's parts aren't in the view: a later part waiting in Goal isn't seen.)"""
-    if row.work_id is None:
+    title whose files come after this one's. (Goal's parts aren't in the view: a later part waiting in Goal isn't seen.)
+    A group (LM11b G1: the learner's own row of several shows, its work_id its first show's) is never a part."""
+    if row.work_id is None or getattr(row, "group", False):
         return False
     mine = _last_number(row)
     for r in rows_:
-        if r.key != row.key and r.work_id == row.work_id:
+        if r.key != row.key and r.work_id == row.work_id and not getattr(r, "group", False):
             theirs = _first_number(r)
             if mine is None or theirs is None or theirs > mine:
                 return True

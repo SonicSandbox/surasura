@@ -2976,6 +2976,7 @@ class Store:
         self.conn.executemany("UPDATE works SET anilist_id = NULL, tmdb_id = NULL, youtube_channel = NULL WHERE id = ?",
                               [(o["id"],) for o in others])           # the unique ids free before the kept takes them
         self._set_work_fields(cmd, change, keep_id, fields)
+        self._carry_group(keep_id, [o["id"] for o in others])      # LM2: the show's group goes with it
         self.conn.executemany("DELETE FROM works WHERE id = ?", [(o["id"],) for o in others])
         cmd.gone += [("work", o["id"]) for o in others]
         cmd.fed_works.add(keep_id)
@@ -8849,10 +8850,16 @@ def _store_episodes_of(self, ids, cache=None):
 # PROVISIONAL (Sonic 2026-10-21: LM-1a, T2-A1, T2-A2, A29; to be checked in use). A show's subtitle group (the look's
 # reading, `sources._group`: the leading `[tag]` and the name before the episode marker, folded) is recorded on its
 # title in meta `show_groups` — {work id: {"group": [tag, name], "label", "by": "look" | "connect" | "user",
-# "checked": Connect's first-cards check done}} — at the first take-in that reads it, and never decided again by a
-# look; the copy carries it (`COPY_META_KEYS`), a fresh library starts without it. Connect's first cards may switch it
-# once (`switch_group`: every episode with that group's copy takes it in place, one Undo).
+# "checked": Connect's first-cards check is done, "tried": the groups a check found no fit in, "pending": episodes a
+# switch couldn't take yet}} — at the first take-in that takes one of its episodes, and never decided again by a look;
+# the copy carries it (`COPY_META_KEYS`), a fresh library starts without it. Connect's first cards may switch it
+# (`switch_group`: every episode holding that group's copy takes it in place; the last switch is kept, `last_switch`,
+# so the window's Undo reaches it after a restart too: `undo_switch`).
 SHOW_GROUPS = "show_groups"
+LAST_SWITCH = "last_switch:"     # + work id: the title's last switch, as its Undo needs it
+SWITCH_PENDING = "switch_pending:"   # + a switch step's token: the file moves of a step not committed (a crash's)
+SWITCH_BATCH = 3                 # episodes a switch command swaps: ~10 ms of write lock here, a laptop's ≤ ~25 ms
+SWITCH_STALE_S = 60              # a pending step older than this is a crashed one (a step waits ≤ LOCK_TIMEOUT)
 
 
 def _groups_read(self):
@@ -8869,23 +8876,34 @@ def _group_value(group):
 
 def _store_show_groups(self):
     """{a show's folder key: its group (tag, name)} — the look's read, once a look: the group of the title a new file
-    of that folder joins (`_source_work`: the lowest id holding the folder key)."""
+    of that folder joins, as `_folder_work` finds it — the lowest id holding the folder key, else the title of the
+    files in that folder (a show merged into another title keeps going there)."""
     with self._reading():
         groups = _groups_read(self)
         if not groups:
             return {}
-        out = {}
+        out, owned = {}, set()
         for fk, work_id in self.conn.execute("SELECT folder_key, MIN(id) FROM works WHERE folder_key IS NOT NULL "
                                              "GROUP BY folder_key"):
+            owned.add(fk)
             group = _group_value((groups.get(str(work_id)) or {}).get("group"))
             if group is not None:
                 out[fk] = tuple(group)
+        ids = [int(w) for w, r in groups.items() if w.isdigit() and _group_value((r or {}).get("group"))]
+        for chunk in _chunks(ids, 500):
+            for work_id, folder in self.conn.execute(
+                    f"SELECT DISTINCT work_id, parent_folder FROM items WHERE work_id IN "
+                    f"({','.join('?' * len(chunk))}) AND parent_folder IS NOT NULL AND parent_folder != ''", chunk):
+                fk = path_key(folder)
+                if fk not in owned and fk not in out:
+                    out[fk] = tuple(_group_value(groups[str(work_id)]["group"]))
     return out
 
 
 def _store_note_groups(self, found, change):
-    """(Inside `take_in`.) The show's group a look decided (`found`'s `show_group`), recorded on the title of the item
-    each entry went to — only where the title has none yet (A29: never decided again)."""
+    """(Inside `take_in`.) The show's group a look decided (`found`'s `show_group`: the group of the file it took for
+    the show's earliest episode, or of the earliest episode in), recorded on the title of the item each entry went to
+    — only where the title has none yet (A29: never decided again)."""
     groups, changed = None, False
     for f in found:
         decided = f.get("show_group")
@@ -8908,29 +8926,59 @@ def _store_note_groups(self, found, change):
         self._set_meta({SHOW_GROUPS: _dumps(groups)})
 
 
+def _carry_group(self, keep_id, other_ids):
+    """(Inside `merge_works`.) A merged title's group record goes to the title kept when that one has none, or only a
+    look's: a show Connect or the learner switched keeps its group as *Same title as…* joins it."""
+    groups = _groups_read(self)
+    kept = groups.get(str(keep_id)) or {}
+    if _group_value(kept.get("group")) is not None and kept.get("by") != "look":
+        return
+    chosen = [groups[str(o)] for o in other_ids if _group_value((groups.get(str(o)) or {}).get("group"))]
+    record = next((r for r in chosen if r.get("by") != "look"), None) or         (next(iter(chosen), None) if _group_value(kept.get("group")) is None else None)
+    if record is not None:
+        groups[str(keep_id)] = dict(record)
+        self._set_meta({SHOW_GROUPS: _dumps(groups)})
+
+
 def _store_group_of(self, work_id):
     """LM2, Connect's first cards (T2-A2): the title's subtitle group -> {"group": [tag, name] | None, "label": the
-    group as a learner reads it | None, "by": who decided it ("look" | "connect" | "user") | None, "checked": whether
-    Connect's first-cards check ran (`keep_group`, `switch_group`)}; None when there is no such title."""
+    group as a learner reads it | None, "by": who decided it ("look" | "connect" | "user") | None, "checked": Connect's
+    first-cards check is done (a fit kept, `keep_group`; a switch; the learner's own switch or Undo), "tried": the
+    groups a check tried and found no fit in ([[tag, name]]: check again once another group's copy is there),
+    "pending": the episodes a switch couldn't take yet (offline, held open: `switch_group` again takes them)}; None
+    when there is no such title."""
     with self._reading():
         if not self.conn.execute("SELECT 1 FROM works WHERE id = ?", (work_id,)).fetchone():
             return None
         record = _groups_read(self).get(str(work_id)) or {}
     return {"group": _group_value(record.get("group")), "label": record.get("label") or None,
-            "by": record.get("by"), "checked": bool(record.get("checked"))}
+            "by": record.get("by"), "checked": bool(record.get("checked")),
+            "tried": [g for g in map(_group_value, record.get("tried") or ()) if g],
+            "pending": [i for i in record.get("pending") or () if isinstance(i, int)]}
 
 
-def _store_keep_group(self, work_id, by="connect"):
-    """LM2 (T2-A2): Connect's first-cards check kept the title's group — "checked", so it never runs again for that
-    title. Bookkeeping the copy carries (no version moves, never on the Undo stack). -> True when written."""
+def _store_keep_group(self, work_id, by="connect", tried=None):
+    """LM2 (T2-A2): Connect's first-cards check kept the title's group. `tried` None: the pick fits — "checked", so
+    the check never runs again for that title. `tried` ([group, …]: the pick's and every other group's it tried, none
+    fitting): the check stays open, the groups recorded, so Connect checks again only once another group's copy is
+    there (PROVISIONAL, Sonic 2026-10-21, to be checked in use). Bookkeeping the copy carries (no version moves, never on the
+    Undo stack). -> True when written."""
     with self._writing():
         if not self.conn.execute("SELECT 1 FROM works WHERE id = ?", (work_id,)).fetchone():
             return False
         groups = _groups_read(self)
         record = groups.setdefault(str(work_id), {})
-        if record.get("checked"):
-            return False
-        record["checked"] = True
+        if tried is None:
+            if record.get("checked"):
+                return False
+            record["checked"] = True
+            record.pop("tried", None)
+        else:
+            seen = [g for g in map(_group_value, record.get("tried") or ()) if g]
+            new = [g for g in map(_group_value, tried) if g and g not in seen]
+            if not new:
+                return False
+            record["tried"] = seen + new
         record.setdefault("by", None)
         self._set_meta({SHOW_GROUPS: _dumps(groups), "copy_dirty": self._meta().get("copy_dirty", 0) + 1})
     return True
@@ -8938,15 +8986,18 @@ def _store_keep_group(self, work_id, by="connect"):
 
 def _group_copies(self, item_id):
     """(Inside a read.) An episode's subtitle copies by group -> (its pick's rows {content key: pairing text}, the
-    pick's group, {group: (key, record, rank)} — of each other group the copy `subtitle_rank` puts first: never a
-    flagged track (signs, karaoke), a double-episode file or the pick's own bytes), or None for an item that isn't a
-    folder's episode (no origin, a book's part, hato's text: LM3)."""
+    pick's group, {group: (key, record, rank)} — of each other group the copy the look would pick
+    (`sources.version_rank`: the latest release, then `subtitle_rank`): never a flagged track (signs, karaoke), a
+    bilingual file, a double-episode file or the pick's own bytes); "hato" for an item hato's text is the pick of
+    (LM3); None for one that isn't a folder's episode (no origin, a book's part)."""
     from app import sources
-    from app.episode_names import identity, video_stems
+    from app.episode_names import identity
     rows = self.conn.execute(f"SELECT p.content_key, p.pairing, {_ORIGIN_ROW}, {_VERSION_ROW} FROM pairings p "
                              f"WHERE p.item_id = ? ORDER BY p.content_key", (item_id,)).fetchall()
-    if not rows or not all(r[2] for r in rows):
-        return None                                  # hato's text, or no record: not a folder's pick (LM3)
+    if not rows:
+        return None
+    if not all(r[2] for r in rows):
+        return "hato"                                # hato's text: not a folder's pick (LM3)
     picks = {k: t for k, t, _o, version in rows if not version}
     records = {k: _json_dict(t) or {} for k, t, _o, _v in rows}
     if not picks or any(_EPUB_PART.search(str(records[k].get("origin") or "")) for k in picks):
@@ -8954,7 +9005,7 @@ def _group_copies(self, item_id):
     pick = next((records[k] for k in picks if records[k].get("video_path")), records[next(iter(picks))])
     pick_name = os.path.basename(str(pick.get("origin") or ""))
     video = pick.get("video_path")
-    like = {unicodedata.normalize("NFC", os.path.splitext(os.path.basename(video))[0]).casefold()} if video else set()
+    like = sources.video_names([video] if video else ())
     shas = {records[k].get("sha256") for k in picks}
     best = {}
     for key, _t, _o, version in rows:
@@ -8964,13 +9015,11 @@ def _group_copies(self, item_id):
             continue
         name = os.path.basename(origin)
         n = identity(name)
-        if n.flags or len(n.episodes) > 1:
-            continue                                 # a signs track is never the text; a double is two episodes'
-        named = any(unicodedata.normalize("NFC", v).casefold() in like for v in video_stems(name)) or \
-            unicodedata.normalize("NFC", os.path.basename(os.path.dirname(origin))).casefold() in like
-        rank = sources.subtitle_rank(name, self.language, named,
-                                     sources._folder_language(os.path.basename(os.path.dirname(origin))),
-                                     sources.in_versions_folder(origin, self.language))
+        if n.flags or n.bilingual or len(n.episodes) > 1:
+            continue                                 # never the text: a signs track, two languages, two episodes
+        folder = os.path.basename(os.path.dirname(origin))
+        rank = sources.version_rank(name, self.language, sources.named_like(name, like, folder),
+                                    sources._folder_language(folder), sources.in_versions_folder(origin, self.language))
         group = sources._group(name)
         if group not in best or rank < best[group][2]:
             best[group] = (key, record, rank)
@@ -8981,11 +9030,11 @@ def _store_other_subtitles(self, item_id):
     """LM2 (T2-A2), Connect's first cards: the episode's other groups' subtitles beside its pick -> [{"path": the
     original (absolute; not checked: a drive may be offline), "group": [tag, name], "label", "content_key"}], one per
     group other than the pick's — the copy `switch_group` would take for this episode — best first in the look's order
-    (`sources.subtitle_rank`)."""
+    (`sources.version_rank`)."""
     from app import sources
     with self._reading():
         copies = _group_copies(self, item_id)
-    if copies is None:
+    if not isinstance(copies, tuple):
         return []
     _picks, mine, best = copies
     return [{"path": record["origin"], "group": list(group),
@@ -9004,22 +9053,38 @@ def _swapped(picks, record, to_key):
     return write
 
 
+def _switch_rel(self, rel, origin, item_id):
+    """Where the switched copy lives: named as the subtitle it now holds (`Library/<show>/<its name>`: its format the
+    readers read by its extension — an `.srt`'s bytes never sit in an `.ass` — and the window names it), or None when
+    another file or item already has that name."""
+    to_rel = rel.rsplit("/", 1)[0] + "/" + os.path.basename(origin)
+    if path_key(to_rel) == path_key(rel):
+        return rel
+    taken = self.conn.execute("SELECT 1 FROM items WHERE rel_key = ? AND id != ?", (path_key(to_rel), item_id))
+    if taken.fetchone() or os.path.exists(os.path.join(self.data_dir, _strip(to_rel))):
+        return None
+    return to_rel
+
+
 def _store_switch_group(self, work_id, group, by="connect"):
     """LM2 (T2-A2: Connect's first cards found another group's subtitle fits; LM3's *Use [B]'s subtitles*): the title
     switches to `group` ([tag, name], as `other_subtitles` names it) — every episode holding that group's copy takes
-    it IN PLACE: the copy at its `rel_path` gets its bytes (the old copy to the data folder's trash first, its clock
-    restarted), the item keeps its id, place and cards; the pick's records become versions and the new one is the
+    it IN PLACE: the item keeps its id, place and cards; its copy gets that subtitle's bytes and name (the old copy to
+    the data folder's trash first, its clock restarted); the pick's records become versions and the new one is the
     item's (its video moves with it, so Connect's `pairing_of` reads it). The originals are read and checked by their
-    sha256 outside the write lock; the swap is one command. The group is recorded, `checked`, by `by`. -> the Change
-    (kind `switch_group`: `switched`, `missing` — episodes with no copy of that group, `held` — the copy held open, its
-    original changed, gone or offline, or its records changed meanwhile), undone by `Store.undo` (the old pick's bytes
-    from its original, else the trash); None when nothing was written (that group recorded and checked already,
-    nothing to switch)."""
+    sha256 outside the write lock; the swaps go SWITCH_BATCH episodes a command (G1), each step's file moves noted
+    first (`SWITCH_PENDING`: a crash's are put back, `settle_switches`). Once an episode switched, the group is recorded
+    (`by`, `checked`; its episodes held this time `pending`: `switch_group` again takes them) — never over a record
+    changed meanwhile (the learner's own switch) — and the switch kept for its Undo (`last_switch`, `undo_switch`).
+    -> the Change (kind `switch_group`: `switched`; `missing` — episodes with no copy of that group; `held` — offline,
+    changed since the look, held open, hato's text, or its name taken), undone by `Store.undo` or `undo_switch`;
+    nothing recorded when nothing switched."""
     from app import sources
     target = _group_value(group)
     if target is None:
         raise ValueError(f"a group is [tag, name]: {group!r}")
     target = tuple(target)
+    self.settle_switches()
     plans, missing, held, label = [], [], [], None
     with self._reading():
         if not self.conn.execute("SELECT 1 FROM works WHERE id = ?", (work_id,)).fetchone():
@@ -9028,6 +9093,9 @@ def _store_switch_group(self, work_id, group, by="connect"):
         for item_id, rel, availability in self.conn.execute(
                 "SELECT id, rel_path, availability FROM items WHERE work_id = ? ORDER BY id", (work_id,)).fetchall():
             copies = _group_copies(self, item_id)
+            if copies == "hato":
+                held.append(item_id)
+                continue
             if copies is None:
                 continue
             picks, mine, best = copies
@@ -9038,24 +9106,33 @@ def _store_switch_group(self, work_id, group, by="connect"):
                 continue
             key, record, _rank = best[target]
             label = label or sources.group_label(os.path.basename(record["origin"]))
-            if availability != "available":
+            to_rel = _switch_rel(self, rel, record["origin"], item_id)
+            if availability != "available" or to_rel is None:
                 held.append(item_id)
                 continue
             text = self.conn.execute("SELECT pairing FROM pairings WHERE content_key = ?", (key,)).fetchone()[0]
-            plans.append({"item": item_id, "rel": rel, "sha256": record.get("sha256"), "origins": [record["origin"]],
-                          "expect": dict(picks, **{key: text}), "write": _swapped(picks, record, key)})
-    after = dict(before or {}, group=list(target), label=label or (before or {}).get("label") or "", by=by,
-                 checked=True)
-    if not plans and before == after:
-        return None
-    return self._switch("switch_group", by, work_id, plans, missing, held, (None, after))
+            plans.append({"item": item_id, "rel": rel, "to_rel": to_rel, "sha256": record.get("sha256"),
+                          "origins": [record["origin"]], "expect": dict(picks, **{key: text}),
+                          "write": _swapped(picks, record, key)})
+    after = {k: v for k, v in (before or {}).items() if k not in ("tried", "pending")}
+    after.update(group=list(target), label=label or after.get("label") or "", by=by, checked=True)
+    return self._switch("switch_group", by, work_id, plans, missing, held, (before, after), label_from=(
+        before or {}).get("label"), label_to=label)
 
 
-def _read_into_part(self, plan):
+def _part_path(self, plan, token):
+    return os.path.join(self.data_dir, _strip(plan["to_rel"])) + f".{token}.part"
+
+
+def _read_into_part(self, plan, token):
     """A switch's bytes, outside the lock: the first of `plan["origins"]` (then the trashed copy, `plan["trash"]`)
-    whose bytes are `plan["sha256"]`, written beside the copy as `<copy>.part` -> True, else False."""
+    whose bytes are `plan["sha256"]`, written beside the copy as `<copy>.<token>.part` (its own name: two switches never
+    share one) -> True, else False. Never written where `Library` leads out of the data folder."""
     full = os.path.join(self.data_dir, _strip(plan["rel"]))
+    if not _ours_to_move(self.data_dir, plan["rel"], full):
+        return False
     tried = list(plan["origins"]) + ([os.path.join(self.data_dir, _strip(plan["trash"]))] if plan.get("trash") else [])
+    part = _part_path(self, plan, token)
     for path in tried:
         try:
             with open(path, "rb") as f:
@@ -9065,12 +9142,12 @@ def _read_into_part(self, plan):
         if not plan["sha256"] or hashlib.sha256(data).hexdigest() != plan["sha256"]:
             continue
         try:
-            with open(full + ".part", "wb") as f:
+            with open(part, "wb") as f:
                 f.write(data)
         except OSError:
-            _remove_quietly(full + ".part")
+            _remove_quietly(part)
             return False
-        plan["part"] = full + ".part"
+        plan["part"] = part
         return True
     return False
 
@@ -9082,90 +9159,224 @@ def _remove_quietly(path):
         pass
 
 
-def _store_switch(self, kind, by, work_id, plans, missing, held, record):
-    """A switch's one command (`switch_group`, its Undo): each episode whose bytes were read (`_read_into_part`) and
-    whose records are still as read swaps — its copy to the trash (`trash_file`), the new bytes put in its place
-    (`os.replace`), its records written, its size and time recorded — and the title's group record goes to `record[1]`
-    (where it still is `record[0]`: an Undo's value check; `record[0]` None: whatever it is). A copy held open, or
-    records changed since, leave that episode as it was (`held`); anything failing puts every copy back. -> the
-    Change, with `swaps` for its Undo."""
-    held = list(held)
-    for plan in plans:
-        if not _read_into_part(self, plan):
-            held.append(plan["item"])
-    ready = [p for p in plans if p.get("part")]
-    moved = []
+def _part_holds(part, sha256):
+    try:
+        return sha256_of(part) == sha256
+    except OSError:
+        return False
+
+
+def _trash_name(rel, token):
+    base, ext = os.path.splitext(rel.rsplit("/", 1)[-1])
+    return f".trash/{base}_{time.strftime('%Y%m%d%H%M%S')}_{token}{ext}"
+
+
+def _store_switch(self, kind, by, work_id, plans, missing, held, record, label_from=None, label_to=None,
+                  undoing=False):
+    """A switch's commands (`switch_group`, its Undo), SWITCH_BATCH episodes each, one Change for all: per step, each
+    episode's bytes read (`_read_into_part`), its file moves noted and committed first (`SWITCH_PENDING`), then ONE
+    command: each episode whose records are still as read and whose part still holds those bytes swaps — its copy to
+    the trash (`trash_file`), the new bytes in its place under its new name (`os.replace`, `_repoint`), its records
+    written, its size and time recorded — the note cleared, and (once an episode switched) the title's group record set
+    to `record[1]` where it is still `record[0]` (G4: a switch made meanwhile is never written over) and the switch kept
+    for its Undo (`last_switch`; an Undo drops it). An episode whose copy is held open, or whose records changed since,
+    stays as it was (`held`); anything failing in a step puts its copies back (a later step's failure leaves the
+    earlier steps done, the rest held). -> the Change, with `swaps` for its Undo."""
+    meta = self.meta()
+    change = Change(kind, meta["epoch"], meta["state_version"])
+    change.work_id, change.switched, change.missing, change.held, change.swaps = work_id, [], list(missing), \
+        list(held), []
+    expected, new = record
+    change.group_before = expected
+    written = False
+    chunks = [plans[i:i + SWITCH_BATCH] for i in range(0, len(plans), SWITCH_BATCH)]
+    for n, chunk in enumerate(chunks):
+        token = uuid.uuid4().hex[:8]
+        ready = []
+        for plan in chunk:
+            if _read_into_part(self, plan, token):
+                plan["trash"] = _trash_name(plan["rel"], token)
+                ready.append(plan)
+            else:
+                change.held.append(plan["item"])
+        try:
+            step = self._switch_step(kind, by, work_id, ready, token, change, expected, new, written, undoing,
+                                     label_from, label_to)
+        except BaseException:
+            if n == 0:
+                raise
+            print(f"Library store: a subtitle switch stopped after {len(change.switched)} of {len(plans)} episodes "
+                  f"(the rest stay as they are)")
+            change.held += [p["item"] for c in chunks[n:] for p in c if p["item"] not in change.held]
+            break
+        finally:
+            for plan in ready:
+                _remove_quietly(plan["part"])
+        if step:
+            written, expected = True, new
+    if written and not undoing and change.held:       # a step that stopped: the rest wait as the record's pending
+        try:
+            with self._writing():
+                groups = _groups_read(self)
+                if _unpended(groups.get(str(work_id))) == _unpended(new):
+                    groups[str(work_id)] = dict(groups[str(work_id)], pending=sorted(set(change.held)))
+                    self._set_meta({SHOW_GROUPS: _dumps(groups)})
+        except Exception:                            # the next switch_group finds them by their records anyway
+            pass
+    change.group_after = new if written else change.group_before
+    return change
+
+
+def _unpended(record):
+    """A group record as a value check compares it: its `pending` list is the switch's own bookkeeping."""
+    return {k: v for k, v in record.items() if k != "pending"} if isinstance(record, dict) else record
+
+
+def _store_switch_step(self, kind, by, work_id, ready, token, change, expected, new, written, undoing, label_from,
+                       label_to):
+    """One step of `_switch` (see there). -> True when the group record was written."""
+    if not ready:
+        return False
+    pending = SWITCH_PENDING + token
+    if ready:
+        note = [{"rel": p["rel"], "to_rel": p["to_rel"], "trash": p["trash"], "part": _strip(library_rel(
+            self.data_dir, p["part"]) or ""), "sha256": p["sha256"]} for p in ready]
+        self.bookkeeping({pending: _dumps({"at": time.time(), "moves": note})})
+    moved, wrote = [], False
     try:
         with self._command(kind, by) as cmd:
-            change = self._change(cmd, kind)
-            change.work_id, change.switched, change.missing, change.held = work_id, [], list(missing), held
-            change.swaps = []
             tiers = set()
             for plan in ready:
                 item = self.conn.execute("SELECT rel_path, tier FROM items WHERE id = ?", (plan["item"],)).fetchone()
                 now = dict(self.conn.execute("SELECT content_key, pairing FROM pairings WHERE item_id = ?",
                                              (plan["item"],)).fetchall())
-                if item is None or item[0] != plan["rel"] or any(now.get(k) != t for k, t in plan["expect"].items()):
-                    held.append(plan["item"])        # changed since it was read: left as it is
+                if item is None or item[0] != plan["rel"] or \
+                        any(now.get(k) != t for k, t in plan["expect"].items()) or \
+                        not _part_holds(plan["part"], plan["sha256"]):
+                    change.held.append(plan["item"])  # changed since it was read: left as it is
                     continue
                 full = os.path.join(self.data_dir, _strip(plan["rel"]))
+                to_full = os.path.join(self.data_dir, _strip(plan["to_rel"]))
+                if to_full != full and os.path.exists(to_full):
+                    change.held.append(plan["item"])  # its new name taken meanwhile
+                    continue
                 try:
-                    trashed = trash_file(self.data_dir, plan["rel"])
+                    old = os.stat(full)
+                    trashed = trash_file(self.data_dir, plan["rel"], to=plan["trash"])
                 except OSError:                      # held open: left as it is
                     trashed = None
                 if trashed is None:
-                    held.append(plan["item"])
+                    change.held.append(plan["item"])
                     continue
                 gone = os.path.join(self.data_dir, _strip(trashed))
                 try:
-                    os.replace(plan["part"], full)
+                    os.replace(plan["part"], to_full)
                 except OSError:
-                    os.replace(gone, full)
-                    held.append(plan["item"])
+                    _switch_back(gone, full, old)
+                    change.held.append(plan["item"])
                     continue
-                moved.append((gone, full))
+                moved.append((gone, full, to_full, old))
                 after = {}
                 for key, value in plan["write"].items():
                     after[key] = value if isinstance(value, str) else json.dumps(value, sort_keys=True,
-                                                                                    ensure_ascii=False)
+                                                                                ensure_ascii=False)
                     self.conn.execute("UPDATE pairings SET pairing = ? WHERE content_key = ?", (after[key], key))
-                st = os.stat(full)
-                self.conn.execute("UPDATE items SET size = ?, mtime_ns = ? WHERE id = ?",
-                                  (st.st_size, st.st_mtime_ns, plan["item"]))
+                st = os.stat(to_full)
+                if plan["to_rel"] != plan["rel"]:
+                    self._repoint(plan["item"], plan["to_rel"], st.st_size, st.st_mtime_ns)
+                else:
+                    self.conn.execute("UPDATE items SET size = ?, mtime_ns = ? WHERE id = ?",
+                                      (st.st_size, st.st_mtime_ns, plan["item"]))
                 cmd.feed([plan["item"]])
                 tiers.add(item[1])
                 change.switched.append(plan["item"])
-                change.swaps.append({"item": plan["item"], "rel": plan["rel"], "trash": trashed,
-                                     "before": plan["expect"], "after": after})
-            groups = _groups_read(self)
-            expected, new = record
-            change.group_before = change.group_after = groups.get(str(work_id))
-            if expected is None or groups.get(str(work_id)) == expected:
-                change.group_after = new
-                if new is None:
-                    groups.pop(str(work_id), None)
+                change.swaps.append({"item": plan["item"], "rel": plan["to_rel"], "to_rel": plan["rel"],
+                                     "trash": trashed, "before": plan["expect"], "after": after})
+            self.conn.execute("DELETE FROM meta WHERE key = ?", (pending,))
+            if change.switched:
+                groups = _groups_read(self)
+                if _unpended(groups.get(str(work_id))) == _unpended(expected):
+                    record = dict(new) if new is not None else None
+                    if record is not None and not undoing and change.held:
+                        record["pending"] = sorted(set(change.held))
+                    if record is None:
+                        groups.pop(str(work_id), None)
+                    else:
+                        groups[str(work_id)] = record
+                    self._set_meta({SHOW_GROUPS: _dumps(groups)})
+                    wrote = True
+                if undoing:
+                    self.conn.execute("DELETE FROM meta WHERE key = ?", (LAST_SWITCH + str(work_id),))
                 else:
-                    groups[str(work_id)] = new
-                self._set_meta({SHOW_GROUPS: _dumps(groups)})
+                    self._set_meta({LAST_SWITCH + str(work_id): _dumps({
+                        "at": _now(), "by": by, "epoch": change.epoch, "from": label_from, "to": label_to,
+                        "group_before": change.group_before, "group_after": dict(new) if new else None,
+                        "switched": change.switched, "missing": change.missing, "held": change.held,
+                        "swaps": change.swaps})})
             cmd.touch(tiers)
     except BaseException:
-        for gone, full in reversed(moved):           # the old copies back where they were
-            try:
-                os.replace(gone, full)
-            except OSError as e:
-                print(f"Library store: a switched copy couldn't be put back ({full}): {e!r}")
+        for gone, full, to_full, old in reversed(moved):   # the old copies back where they were
+            if to_full != full:
+                _remove_quietly(to_full)
+            _switch_back(gone, full, old)
+        try:
+            with self._writing():
+                self.conn.execute("DELETE FROM meta WHERE key = ?", (pending,))
+        except Exception:                            # the next look settles it (`settle_switches`)
+            pass
         raise
-    finally:
-        for plan in ready:
-            if os.path.exists(plan["part"]):
-                _remove_quietly(plan["part"])
-    return change
+    return wrote
+
+
+def _switch_back(gone, full, old=None):
+    """A copy the trash took back in its place, its time as it was (no re-read for nothing)."""
+    try:
+        os.replace(gone, full)
+        if old is not None:
+            os.utime(full, ns=(old.st_atime_ns, old.st_mtime_ns))
+    except OSError as e:
+        print(f"Library store: a switched copy couldn't be put back ({full}): {e!r}")
+
+
+def _store_settle_switches(self, now=None):
+    """A crashed switch's file moves put back (G3, S5): each step noted (`SWITCH_PENDING`) and never committed for
+    SWITCH_STALE_S — the old copy back from the trash where its place holds the new bytes or nothing, the new name's
+    file and the part removed — the note dropped. The records were never written (the note goes with them), so the
+    copies agree with them again. -> how many steps were settled."""
+    rows = self.conn.execute("SELECT key, value FROM meta WHERE key >= ? AND key < ?",
+                             (SWITCH_PENDING, SWITCH_PENDING[:-1] + ";")).fetchall()
+    stale = [(k, _json_dict(v) or {}) for k, v in rows]
+    stale = [(k, v) for k, v in stale if (now or time.time()) - float(v.get("at") or 0) > SWITCH_STALE_S]
+    if not stale:
+        return 0
+    with self._writing():
+        for key, note in stale:
+            for move in note.get("moves") or ():
+                full = os.path.join(self.data_dir, _strip(str(move.get("rel") or "")))
+                to_full = os.path.join(self.data_dir, _strip(str(move.get("to_rel") or "")))
+                gone = os.path.join(self.data_dir, _strip(str(move.get("trash") or "")))
+                if move.get("part"):
+                    _remove_quietly(os.path.join(self.data_dir, _strip(move["part"])))
+                if not move.get("trash") or not os.path.isfile(gone):
+                    if to_full != full and os.path.isfile(full) and _part_holds(to_full, move.get("sha256")):
+                        _remove_quietly(to_full)
+                    continue
+                if os.path.isfile(to_full) and _part_holds(to_full, move.get("sha256")):
+                    _remove_quietly(to_full)
+                if not os.path.exists(full):
+                    _switch_back(gone, full)
+            self.conn.execute("DELETE FROM meta WHERE key = ?", (key,))
+    return len(stale)
 
 
 def _store_undo_switch(self, change):
-    """Undo of `switch_group` (`Store.undo`): each episode whose records are still as the switch wrote them gets its old
-    pick's bytes back — from its original, else the copy the switch sent to the trash — and its records as they were;
-    the title's group record back where it is still the switch's. One that changed since stays, with a note."""
+    """Undo of `switch_group` (`Store.undo`, `undo_switch`): each episode whose records are still as the switch wrote
+    them gets its old pick's bytes and name back — from its original, else the copy the switch sent to the trash — and
+    its records as they were; the title keeps the group it had, `checked` by the learner (S16: Connect never switches
+    it again by itself), where its record is still the switch's. One that changed since stays, with a note."""
+    if getattr(change, "epoch", None) != self.meta()["epoch"]:
+        raise UndoRefused("the library was rebuilt since; that change can't be undone")
+    self.settle_switches()
     plans, skipped = [], []
     with self._reading():
         for swap in change.swaps:
@@ -9173,16 +9384,21 @@ def _store_undo_switch(self, change):
                                          (swap["item"],)).fetchall())
             item = self.conn.execute("SELECT rel_path, availability FROM items WHERE id = ?",
                                      (swap["item"],)).fetchone()
+            to_rel = swap.get("to_rel") or swap["rel"]
             if item is None or item[0] != swap["rel"] or item[1] != "available" or \
-                    any(now.get(k) != t for k, t in swap["after"].items()):
+                    any(now.get(k) != t for k, t in swap["after"].items()) or \
+                    (to_rel != swap["rel"] and os.path.exists(os.path.join(self.data_dir, _strip(to_rel)))):
                 skipped.append(swap["item"])
                 continue
             pick = [r for r in (_json_dict(t) or {} for t in swap["before"].values()) if not r.get("version")]
-            plans.append({"item": swap["item"], "rel": swap["rel"], "sha256": pick[0].get("sha256") if pick else None,
+            plans.append({"item": swap["item"], "rel": swap["rel"], "to_rel": to_rel,
+                          "sha256": pick[0].get("sha256") if pick else None,
                           "origins": [str(r.get("origin") or "") for r in pick], "trash": swap["trash"],
                           "expect": swap["after"], "write": dict(swap["before"])})
+    back = dict(change.group_before or {}, checked=True, by="user")
+    back.pop("pending", None)
     out = self._switch("undo", "undo", change.work_id, plans, [], skipped,
-                       (getattr(change, "group_after", None), getattr(change, "group_before", None)))
+                       (getattr(change, "group_after", None), back), undoing=True)
     n = len(out.held)
     if n:
         out.notes.append(f"{n} episode{'s' if n != 1 else ''} changed since and {'were' if n != 1 else 'was'} left as "
@@ -9190,14 +9406,45 @@ def _store_undo_switch(self, change):
     return out
 
 
+def _store_last_switch(self, work_id):
+    """The title's last switch, as the window says it ("Connect switched <show> to SubsB · 6 of 12 · Undo") ->
+    {"at", "by", "from", "to" (the groups' labels), "switched", "missing", "held" (counts)}, or None."""
+    with self._reading():
+        row = self.conn.execute("SELECT value FROM meta WHERE key = ?", (LAST_SWITCH + str(work_id),)).fetchone()
+    record = _json_dict(row[0]) if row else None
+    if record is None:
+        return None
+    return {"at": record.get("at"), "by": record.get("by"), "from": record.get("from"), "to": record.get("to"),
+            **{k: len(record.get(k) or ()) for k in ("switched", "missing", "held")}}
+
+
+def _store_undo_switch_of(self, work_id):
+    """Undo of the title's last switch from its kept record (`last_switch`) — the window's way to Connect's switch,
+    made in Connect's own process, after a restart too. -> the undo's Change, or None when there is none to undo."""
+    with self._reading():
+        row = self.conn.execute("SELECT value FROM meta WHERE key = ?", (LAST_SWITCH + str(work_id),)).fetchone()
+    record = _json_dict(row[0]) if row else None
+    if record is None:
+        return None
+    change = Change("switch_group", record.get("epoch"), 0)
+    change.work_id, change.swaps = work_id, list(record.get("swaps") or ())
+    change.group_before, change.group_after = record.get("group_before"), record.get("group_after")
+    return self._undo_switch(change)
+
+
 Store.show_groups = _store_show_groups
 Store._note_groups = _store_note_groups
+Store._carry_group = _carry_group
 Store.group_of = _store_group_of
 Store.keep_group = _store_keep_group
 Store.other_subtitles = _store_other_subtitles
 Store.switch_group = _store_switch_group
 Store._switch = _store_switch
+Store._switch_step = _store_switch_step
+Store.settle_switches = _store_settle_switches
 Store._undo_switch = _store_undo_switch
+Store.last_switch = _store_last_switch
+Store.undo_switch = _store_undo_switch_of
 
 Store._copy_dirty = _store_copy_dirty
 Store._not_a_source = _store_not_a_source
@@ -9921,13 +10168,14 @@ def copy_into_finished(data_dir, sources, progress=None, cancel=None):
     return out
 
 
-def trash_file(data_dir, rel):
+def trash_file(data_dir, rel, to=None):
     """A user's Remove or Undo-Add: the file to `data/<lang>/.trash/<base>_<stamp><ext>` (never
     `rmtree`), its 30-day clock restarted. Returns the trashed path relative to data/<lang>, or None
     when there was no file — or when it isn't Surasura's to move (SRC K1a.6): a path that leads out of the data folder
     as written, or a copy under the content folder that a folder link leads out of it (the store makes every file
     there itself: one elsewhere may be a source's original). A 2.x tier folder's links move as they always did. The
-    caller that drops the file's row checks `trash_refused` first."""
+    caller that drops the file's row checks `trash_refused` first. `to` (".trash/<name>", a name not taken): the trash
+    file's name, chosen by the caller beforehand (LM2: a switch notes it before the move)."""
     if not rel or library_rel(data_dir, rel) is None:
         return None
     src = os.path.join(data_dir, _strip(rel))
@@ -9937,13 +10185,19 @@ def trash_file(data_dir, rel):
         return None
     trash = os.path.join(data_dir, ".trash")
     os.makedirs(trash, exist_ok=True)
-    base, ext = os.path.splitext(os.path.basename(src))
-    stamp = time.strftime("%Y%m%d%H%M%S")
-    name, n = f"{base}_{stamp}{ext}", 1
-    while os.path.exists(os.path.join(trash, name)):
-        name, n = f"{base}_{stamp}_{n}{ext}", n + 1
+    if to is not None:
+        name = to.split("/", 1)[1]
+    else:
+        base, ext = os.path.splitext(os.path.basename(src))
+        stamp = time.strftime("%Y%m%d%H%M%S")
+        name, n = f"{base}_{stamp}{ext}", 1
+        while os.path.exists(os.path.join(trash, name)):
+            name, n = f"{base}_{stamp}_{n}{ext}", n + 1
     dst = os.path.join(trash, name)
-    os.rename(src, dst)
+    if to is not None:
+        rename_no_overwrite(src, dst)            # a chosen name is never written over
+    else:
+        os.rename(src, dst)
     restart_trash_clock(dst)
     return f".trash/{name}"
 

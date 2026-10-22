@@ -250,6 +250,25 @@ def subtitle_rank(name, language, named=False, folder_language=None, versions_fo
             _RANK.get(os.path.splitext(name)[1].lower(), 2), name)
 
 
+def version_rank(name, language, named=False, folder_language=None, versions_folder=False, group=None):
+    """`subtitle_rank` after the release: the latest first (`- 05v2` over `- 05`, as the look keeps an episode's latest
+    version, D6) — the best of one group's files of an episode (`Store.other_subtitles`, `Store.switch_group`) and the
+    pick that decides a show's group (`_Look._decide_groups`)."""
+    return (-en.identity(name).version,) + subtitle_rank(name, language, named, folder_language, versions_folder, group)
+
+
+def video_names(paths):
+    """The names a subtitle is "named like" (`named_like`): each video's name without its extension, in NFC, lowered."""
+    return {_nfc(os.path.splitext(os.path.basename(v))[0]).lower() for v in paths}
+
+
+def named_like(name, like, folder=None):
+    """T2-A1: is the subtitle `name` named exactly like one of the videos `like` (`video_names`) — the names Connect
+    pairs (`video_stems`: `ep01.alt.srt`, a language tag or nothing added), or in the folder named as it
+    (`Subs/<video>/`, A11)? The look's order and the store's choice of a group's copy both ask it."""
+    return any(_nfc(s).lower() in like for s in en.video_stems(name)) or         (folder is not None and _nfc(folder).lower() in like)
+
+
 def in_versions_folder(path, language):
     """Is `path` in a versions folder of its show's (item 11: `synced/`, `retimed/`, by the folder's name alone)?"""
     folder = os.path.dirname(path)
@@ -259,8 +278,8 @@ def in_versions_folder(path, language):
 def group_label(name):
     """LM2: a subtitle group as a learner reads it — its leading `[tag]` as written (`SubsPlease`), else the name before
     its episode marker (`星空喫茶`), else the file name."""
-    m = re.match(r"\s*[\[［【]([^\]］】]+)[\]］】]", name)
-    return m.group(1).strip() if m else (en.identity(name).show or os.path.splitext(name)[0])
+    m = re.match(r"\s*\[([^\]]*)\]", unicodedata.normalize("NFKC", name))   # the leading tag `identity` reads
+    return m.group(1).strip() if m and m.group(1).strip() else (en.identity(name).show or os.path.splitext(name)[0])
 
 
 def _key_order(key):
@@ -575,6 +594,7 @@ class _Look:
         self.recorded = None         # the path keys of the videos the origins name
         self.groups = {}             # LM2: {a show's folder key: its group}, recorded (`_load`) or decided this look
         self.decided = {}            # LM2: {a show's folder key: {group, label} decided this look}: `take_in` records it
+        self.deciding = {}           # LM2: {a show's folder key: the episode whose taken file decides its group}
 
     # --- the look ------------------------------------------------------------------------------------------------- #
 
@@ -584,6 +604,11 @@ class _Look:
         if path is None:
             raise ls.NotASource("That folder isn't being read any more.")
         meta = self.store.meta()
+        if any(k.startswith(ls.SWITCH_PENDING) for k in meta):   # LM2: a crashed subtitle switch's files put back
+            try:
+                self.store.settle_switches()
+            except ls.StoreError:                    # busy: the next look
+                pass
         stamp = (meta.get("store_id"), meta.get("epoch"))
         looked = (_store_key(self.store), self.root_id)
         cache = _load_cache(self.language, stamp)
@@ -860,13 +885,13 @@ class _Look:
         never keeps the `.ja.srt` out) -> [(name, path, stat, show, 'new' | 'known' | 'book')]. A file of two
         languages in one mark (`.chs&jpn`, `[简日双语]`: LM1a) is ours when ours is one of them, taken only where no
         file of one language is; names are compared in NFC (A24)."""
-        like = {_nfc(os.path.splitext(v)[0]) for v in (vids or ())}      # their names, lowered
+        like = video_names(vids or ())                                  # their names, lowered
 
         def order(name, path):
             # PROVISIONAL (Sonic 2026-10-21: accepted for building, to be checked in use): this order (`subtitle_rank`)
             # and the grouping by the key below. "Named like a video" asks the names Connect pairs (`video_stems`:
             # `ep01.alt.srt`); LM2: the show's group, once it has one (`_show_group`), after that step
-            named = path in self.video_of or any(_nfc(s).lower() in like for s in en.video_stems(name))   # made for it
+            named = path in self.video_of or named_like(name, like)                                  # made for it
             return subtitle_rank(name, self.language, named, (langs or {}).get(path),
                                  ls.path_key(os.path.dirname(path)) in versions,
                                  self.groups.get(_show_key(_show_of(root, parts, name))))
@@ -967,10 +992,11 @@ class _Look:
 
     def _decide_groups(self, out, read, ep, rank):
         """LM2 (PROVISIONAL, Sonic 2026-10-21: LM-1a, A29): the group of each show this folder's new episodes belong to
-        that has none yet — the group its earliest episode in was picked from (`_held`), else the group of this look's
-        pick for its earliest episode here (ranked with no group: named like its video first, T2-A1) — kept for the
-        look (`groups`) and handed to `take_in` with the show's files (`decided`), which records it on the show's
-        title; a show's recorded group is never decided again (an earlier episode arriving later changes nothing)."""
+        that has none yet — the group its earliest episode in was picked from (`_held`), else the group of the file
+        this look takes for its earliest episode here (its latest release, ranked with no group: named like its video
+        first, T2-A1; `_new` names it once the language and thin rules let it in: `deciding`) — kept for the look
+        (`groups`) and handed to `take_in` with the show's files (`decided`), which records it on the show's title; a
+        show's recorded group is never decided again (an earlier episode arriving later changes nothing)."""
         shows = {}
         for e in out:
             if e[1] in read:
@@ -981,15 +1007,14 @@ class _Look:
             held = self._held(entries[0][3])
             if held:
                 name = os.path.basename(held[min(held, key=_key_order)][1].origin or "")
-            else:
+                self.decided[fk] = {"group": list(_group(name)), "label": group_label(name)}
+            else:                                    # its latest release first, as the pick (D6)
                 first = min((ep[e[1]] for e in entries), key=_key_order)
-                name = min((e for e in entries if ep[e[1]] == first), key=rank)[0]
+                cands = [e for e in entries if ep[e[1]] == first]
+                latest = max(read[e[1]][1] for e in cands)
+                name = min((e for e in cands if read[e[1]][1] == latest), key=rank)[0]
+                self.deciding[fk] = first            # recorded from the file `_new` takes for it (K6, A6 may refuse)
             self.groups[fk] = _group(name)
-            self.decided[fk] = {"group": list(_group(name)), "label": group_label(name)}
-
-    def _show_group(self, show):
-        """LM2: the show's group as the look knows it (recorded, or decided this look), or None."""
-        return self.groups.get(_show_key(show))
 
     def _episode_key(self, name, show=None):
         """LM1a: the episode a file name reads (`episode_names.identity`'s key: show without its season, season,
@@ -1286,6 +1311,10 @@ class _Look:
             self.this_videos.add(track)
         for n, p, s in self.runners_up.pop(path, []):        # LM1b: the episode's other files are its versions
             self.pending.append((os.path.dirname(p), p, s, show, n, item, f["origin"]))
+        fk = _show_key(show)
+        if self.deciding.get(fk) in keys and fk not in self.decided:   # LM2: the file taken decides the show's group
+            self.groups[fk] = _group(name)
+            self.decided[fk] = {"group": list(_group(name)), "label": group_label(name)}
         return f
 
     def _version(self, folder, path, st, show, name, item_id=None, of=None, chain=False):

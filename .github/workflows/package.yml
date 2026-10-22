@@ -70,17 +70,14 @@ jobs:
           WORK="$(cygpath -m "$RUNNER_TEMP")/package-proof"
           mkdir -p "$WORK"
           echo "WORK=$WORK" >> "$GITHUB_ENV"
-      # Its installer goes straight into $WORK/old, never into dist: moving dist seconds after the build met the virus
-      # scanner still reading the fresh ~140 MB setup (Permission denied on the move with no process of ours holding
-      # dist: 2026-10-15, 10-21, 10-22). The install step reads only the installer there.
       - name: Build the version to install, with its installer
         run: |
           python packaging/install_proof.py version old
-          python package_app.py --skip-tests --installer --installer-dir "$WORK/old" --data-name "$DATA_NAME"
+          python package_app.py --skip-tests --installer --data-name "$DATA_NAME"
       - name: Smoke-test its command line
         run: python scripts/cli_smoke.py dist/Surasura
       - name: Keep it aside
-        run: mv dist "$WORK/old/dist"
+        run: mv dist "$WORK/old"
       - name: Build the update, signed with a throwaway key made on this runner
         run: |
           python packaging/install_proof.py key "$WORK/test-key.hex"

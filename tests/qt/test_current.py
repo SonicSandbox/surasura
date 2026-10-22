@@ -192,10 +192,55 @@ def test_every_status_is_a_glyph_and_words_never_colour_alone(seeded):
         if kind in (rows.HERO, rows.ROW):
             kinds.add(row.status.kind)
             assert row.status.label and row.status.tip
-            # the hero reads as it's painted: its next episode's status (IK-12)
-            said = row.episodes[row.next_index].status if kind == rows.HERO else row.status
-            assert said.label.lower() in row.accessible.lower()
+            # the hero reads as it's painted: its row's own status, as every row (IK-12, Q33)
+            assert row.status.label.lower() in row.accessible.lower()
     assert {"mining", "waiting", "in_anki", "no_media", "mine"} <= kinds
+
+
+def _stats_painted(lst, monkeypatch, payload):
+    """The statuses Up Next's head paints at rest (`_paint_stat`), `payload` painted as the hero."""
+    painted = []
+    real = rows.RowDelegate._paint_stat
+    monkeypatch.setattr(rows.RowDelegate, "_paint_stat",
+                        lambda self, p, status, *a: painted.append(status) or real(self, p, status, *a))
+    image = QImage(1100, 200, QImage.Format.Format_ARGB32_Premultiplied)
+    image.fill(0)
+    p = QPainter(image)
+    lst.delegate._paint_hero(p, payload, QRect(0, 0, 1100, 200), (), False, 1.0, None)
+    p.end()
+    return painted
+
+
+def test_up_next_shows_its_rows_own_status_and_up_next_keeps_its_count_on_its_line(seeded, monkeypatch):
+    """Q33: the head showed Up Next's own ✓ 11 where every other row shows the whole row's ✓ N — one rule now: the
+    head shows the row's status (`view_rows`' summed status, its hover "k mined · N cards in Anki"); Up Next's own
+    count stays on its episode line."""
+    seed, win = seeded()
+    lst = current(win)
+    kind, hero, _lines = lst.model().entries[0]
+    nxt = hero.episodes[hero.next_index]
+    assert kind == rows.HERO and nxt.status.kind == "in_anki" and hero.status.kind == "mining"   # the seed: Ep 3 mined,
+    assert [p[2] for p in part(lst, 0, "status")] == [hero.status.tip]                           # Ep 4 being mined
+    assert _stats_painted(lst, monkeypatch, hero) == [hero.status]
+    # a show all in Anki: the head's ✓ is the show's sum, never its next episode's
+    _i, (_k, shown, _l) = next((i, e) for i, e in enumerate(lst.model().entries)
+                               if e[0] == rows.ROW and e[1].status.kind == "in_anki" and len(e[1].episodes) > 1)
+    first = shown.episodes[shown.next_index]
+    total = sum(int(e.status.label) for e in shown.episodes)
+    assert shown.status.label == str(total) and first.status.label != str(total)
+    assert shown.status.tip == f"{len(shown.episodes)} mined · {total} cards in Anki"
+    assert _stats_painted(lst, monkeypatch, shown)[-1] is shown.status
+    # the episode line keeps its own count
+    pills = []
+    real_pill = rows.paint_pill
+    monkeypatch.setattr(rows, "paint_pill",
+                        lambda p, status, *a, **k: pills.append(status) or real_pill(p, status, *a, **k))
+    image = QImage(1100, 40, QImage.Format.Format_ARGB32_Premultiplied)
+    image.fill(0)
+    p = QPainter(image)
+    lst.delegate._paint_episode(p, QRect(0, 0, 1100, 40), first, 1.0)
+    p.end()
+    assert pills == [first.status]
 
 
 def test_the_top_20_line_is_drawn_after_the_row_holding_the_20th_available_file(seeded):

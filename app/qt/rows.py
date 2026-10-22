@@ -611,11 +611,11 @@ class RowsModel(QAbstractListModel):
                 plan = payload.string[0] if payload.string is not None else stone_plan.plan_of(payload)
                 text = strings.ROWS_ACCESSIBLE_STRING.format(line=payload.description, string=stone_plan.words(
                     plan, strings.STRING_WORDS))
-                # --- P4.1 L2: a status that is a button says how the keyboard presses it (none while Connect is off)
-                nxt = payload.episodes[payload.next_index] if kind == HERO else None
-                st = nxt.status if nxt is not None else payload.status
+                # --- P4.1 L2: a status that is a button says how the keyboard presses it (none while Connect is off);
+                # Up Next's head carries its row's own status, as every row (Q33)
+                st = payload.status
                 if st is not None:
-                    name = action_of(st, (nxt,) if nxt is not None else payload.episodes, None, payload.media_word)[0]
+                    name = action_of(st, payload.episodes, None, payload.media_word)[0]
                     off = getattr(self.parent(), "connect_off", None) and asks_connect(name, payload.media_word)
                     if name in ACTION_NAMES and not off:
                         text += " · " + strings.ROWS_ACTION_KEY.format(action=strings.ROWS_ACTION_NAMES[name])
@@ -1171,9 +1171,8 @@ class RowDelegate(QStyledItemDelegate):
             out.append(("done", g["done"], all_tip if nxt.watched else
                         strings.ROWS_DONE_TIP.format(ep=nxt.label), nxt))
             out.append(("more", g["more"], strings.ROWS_MORE_TIP, None))
-            if nxt.status is not None:                     # --- P4.1 L2: Up Next's status, a button as a row's
-                name, tip, ask = action_of(nxt.status, (nxt,), self.view.connect_off,
-                                           nxt.media_word or payload.media_word)          # LM11b G1
+            if payload.status is not None:                 # --- P4.1 L2: the row's status, a button as a row's (Q33)
+                name, tip, ask = action_of(payload.status, payload.episodes, self.view.connect_off, payload.media_word)
                 out.append((name, g["status"], tip, ask))
             if g["journey"] is not None:
                 out.append(("journey", g["journey"], strings.ROWS_JOURNEY_TIP, nxt))
@@ -1457,7 +1456,7 @@ class RowDelegate(QStyledItemDelegate):
         b = round(rl("button") * f)
         more = QRect(side.right() - b + 1, mid + 5, b, b)
         nxt = row.episodes[row.next_index]
-        stat_w = max(self._stat_w(nxt.status), round(rl("icon-w") * f))
+        stat_w = max(self._stat_w(row.status), round(rl("icon-w") * f))       # the row's own status (Q33)
         status = QRect(more.left() - 4 - stat_w, mid + 5, stat_w, b)
         y = main.top()
         eyebrow_h = round(11 * f * 1.45)
@@ -2247,10 +2246,12 @@ class RowDelegate(QStyledItemDelegate):
         self._paint_play(p, g["play"], row, nxt, dpr, sheet)
         self._paint_done(p, g["done"], nxt, dpr)
         mid = g["more"].center().y()
-        if nxt.status is not None and nxt.status.kind in ("in_anki", "mining"):
-            self._paint_stat(p, nxt.status, g["status"], mid, dpr)     # N in Anki at rest
-        elif nxt.status is not None and hovered:    # the other statuses on hover, as a row's
-            item = next((it for it in self._hover_items(row._replace(status=nxt.status, mark=nxt.mark, studying=False))
+        # Q33: the head shows the row's own status, as every row does (the show's ✓ N); Up Next's own count stays on
+        # its episode line
+        if row.status is not None and row.status.kind in ("in_anki", "mining"):
+            self._paint_stat(p, row.status, g["status"], mid, dpr)     # N in Anki at rest
+        elif row.status is not None and hovered:    # the other statuses on hover, as a row's
+            item = next((it for it in self._hover_items(row._replace(studying=False))
                          if it[0] == "status" or it[0] in ACTION_NAMES), None)
             if item is not None:
                 r = g["status"]

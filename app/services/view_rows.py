@@ -15,12 +15,12 @@ frozen `View`:
 - ***% known*** is one number everywhere (QT-E8, G1.2-4): known tokens ÷ counted tokens, summed over the piece (never a
   mean of per-file percents); none before a Generate (an em dash, never 0 %). ***N new*** is the list words the piece is
   first to bring (summed).
-- **One status vocabulary** for a row, the hero's next episode and an open row's episodes (the mock's `stHTML`, in its
-  order): ✓ *N in Anki* · *Mining* · *Waiting* · ✓ *k/n · Mine rest* · *Mine* · *No video* / *Video removed* — and the
-  on-disk mark (⌀ N) beside it when something isn't there. *In Anki* only while its cards are there (Sonic, 2026-10-07):
-  a file mined whose cards are all gone reads a faint *No cards in Anki* (Sonic's shelf ruling: never *Waiting*, never
-  mined again unless asked; an asked-for mining outranks it). Status is a glyph and a label (and a tone the painter maps
-  to a colour), never colour alone.
+- **One status vocabulary** for a row (the hero's head too: its row's, Q33) and an open row's episodes (the mock's
+  `stHTML`, in its order): ✓ *N in Anki* · *Mining* · *Waiting* · ✓ *k/n · Mine rest* · *Mine* · *No video* / *Video
+  removed* — and the on-disk mark (⌀ N) beside it when something isn't there. *In Anki* only while its cards are there
+  (Sonic, 2026-10-07): a file mined whose cards are all gone reads a faint *No cards in Anki* (Sonic's shelf ruling:
+  never *Waiting*, never mined again unless asked; an asked-for mining outranks it). Status is a glyph and a label (and
+  a tone the painter maps to a colour), never colour alone.
 - Goal's strip, Finished by month (newest first; no date → *Earlier*), Needs you's entries (each show with files the top
   20 waits on that aren't on disk), the badges, the header's subline, each row's accessible text, and the section's
   state (full · empty · loading · getting ready · read-only; busy beside any of them).
@@ -858,10 +858,10 @@ def _cached_row(cache, index, tier, piece, works, numbers, cards, mining, in_top
 
 
 def _as_hero(h):
-    """The hero reads as it's painted: its next episode's numbers and status."""
+    """The hero reads as it's painted: its next episode's numbers, and its row's own status (Q33: as every row)."""
     nxt = h.episodes[h.next_index]
     return h._replace(accessible=STRINGS["acc_hero"].format(
-        title=h.title, ep=h.title_ep, status=spoken(nxt.status),
+        title=h.title, ep=h.title_ep, status=spoken(h.status),
         pct=STRINGS["acc_pct_none"] if nxt.pct is None else STRINGS["pct"].format(pct=round(nxt.pct)),
         new=STRINGS["dash"] if nxt.n_new is None else STRINGS["new"].format(n=nxt.n_new)).replace("  ", " "))
 

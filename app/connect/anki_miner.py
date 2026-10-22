@@ -296,8 +296,8 @@ def _result(verdict):
 
 def version(path):
     """{"app", "schema", "commands", "features"}: what this Anki Miner is and can do (read once a run: row 25, E10). A
-    build its installer says is older than 3.5.0 is never run (it has no `--api`, and would open its window): AnkiMinerError
-    `too-old`."""
+    build its installer says is older than 3.5.0 is never run (it has no `--api`, and would open its window):
+    AnkiMinerError `too-old`."""
     old = too_old_install(path)
     if old:
         raise AnkiMinerError("too-old", f"Anki Miner {old} is too old for Surasura: Connect needs 3.5.0 or later.")

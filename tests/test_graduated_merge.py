@@ -423,10 +423,9 @@ def test_anki_replace_keeps_the_merged_words(ja_known, ja_words):
     words = _words("ja")
     assert [w["dictForm"] for w in words if w.get("source") == "AnkiConnect"] == ["危険", "素晴らしい"]
     assert [w["dictForm"] for w in words if w.get("source") == "GraduatedList"] == [w for w in ja_words if w != "危険"]
-    # Migaku's known / learning / unknown entries are gone; the words dismissed there (IGNORED) stay (W3.4-1)
-    assert not any(w.get("source") not in ("AnkiConnect", "GraduatedList") and w["knownStatus"] != "IGNORED"
-                   for w in words)
-    assert result.kept_ignored == 3 and result.kept_graduated == 5
+    # Every Migaku entry is gone, the words dismissed there (IGNORED) too: a clean slate, the Graduates' words kept
+    assert not any(w.get("source") not in ("AnkiConnect", "GraduatedList") for w in words)
+    assert result.dropped_ignored == 3 and result.kept_graduated == 5
 
 
 def test_the_replace_confirmations_total_after_counts_the_graduates_words_kept(ja_known, ja_words):

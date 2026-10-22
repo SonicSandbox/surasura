@@ -598,8 +598,8 @@ def test_known_words_that_couldnt_be_forgotten_are_never_recorded_as_forgotten(m
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_forgetting_known_words_keeps_the_words_he_dismissed(language):
-    # I-R4: every replacing import keeps the IGNORED entries (anki_sync.kept_ignored); a fresh library's "forget my
-    # known words" is one more, so a dismissed word never comes back as a new one
+    # I-R4: a fresh library's "forget my known words" keeps the IGNORED entries (anki_sync.dismissed_words), so a
+    # dismissed word never comes back as a new one
     store, data_dir, user_files_dir, src, root = _world(language)
     path = os.path.join(user_files_dir, "KnownWord.json")
     words = names(language)

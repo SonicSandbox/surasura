@@ -196,7 +196,7 @@ def test_result_view_names_each_outcome():
     assert AW.result_view(S(mode="dry-run", changed=True))[0] == "changed"
     assert AW.result_view(S(mode="delta", added=3, scanned=40)) == ("synced", {"added": 3, "scanned": 40,
                                                                                "full": False})
-    assert AW.result_view(S(mode="replace", added=3, total_known=8, kept_graduated=5, kept_ignored=2)) == \
+    assert AW.result_view(S(mode="replace", added=3, total_known=8, kept_graduated=5, dropped_ignored=2)) == \
         ("replaced", {"total": 8, "added": 3, "graduated": 5, "ignored": 2})
     assert AW.result_view(S(mode="restore", total_known=40)) == ("restored", {"total": 40})
 

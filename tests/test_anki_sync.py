@@ -768,9 +768,8 @@ def test_replace_builds_an_anki_only_file_and_backs_up_the_old_one_byte_identica
     result = _replace(fake)
 
     assert result.error is None and result.mode == "replace"
-    # Migaku's known / learning / unknown entries are gone; the words dismissed there (IGNORED) are kept (W3.4-1)
-    assert _anki_forms() == ja_words[:3]
-    assert [w["knownStatus"] for w in _words() if w.get("source") != "AnkiConnect"] == ["IGNORED"] * 3
+    # A clean slate from Anki: every Migaku entry is gone, the words dismissed there (IGNORED) too
+    assert _anki_forms() == ja_words[:3] and len(_words()) == 3, "Migaku entries are gone"
     assert result.added == 3 and result.total_known == 3
     assert re.fullmatch(r"KnownWord\.\d{8}-\d{6}\.json", result.backup)
     assert _trash_files() == [result.backup]
@@ -837,23 +836,61 @@ def test_restore_backs_up_the_current_file_restores_byte_identical_and_clears_no
     assert resync.mode == "full" and resync.scanned == 3, "the next sync re-evaluates cleanly"
 
 
-def test_replace_keeps_the_words_dismissed_in_migaku_and_the_dry_run_counts_them(ja_words, migaku_file):
-    """W3.4-1 (the lean, asked through the lead): the IGNORED entries are words the user dismissed, not known words —
-    Replace rebuilds the KNOWN words from Anki and keeps the dismissals, so they never come back on the list as new
-    words. The dry run says how many it keeps and what the total becomes, the numbers the confirmation shows."""
+def test_replace_drops_the_words_dismissed_in_migaku_counts_them_and_the_backup_keeps_them(ja_words, migaku_file):
+    """Replace is a clean slate from Anki (by decision, the rule of every replacing import): the IGNORED entries —
+    words the user dismissed in Migaku — are dropped, so they come back on the list. The dry run says how many, the
+    number the confirmation shows; the dated backup still holds every one of them, as they were."""
     ignored = [w for w in _words() if w["knownStatus"] == "IGNORED"]
     assert len(ignored) == 3
     fake = FakeCollection([{"word": w} for w in ja_words[:3]])
     dry = _replace(fake, dry_run=True)
-    assert (dry.added, dry.kept_graduated, dry.kept_ignored) == (3, 0, 3)
+    assert (dry.added, dry.kept_graduated, dry.dropped_ignored) == (3, 0, 3)
     assert dry.total_known == anki_sync.count_known("ja") and dry.total_after == 3
 
     result = _replace(fake)
 
-    assert result.error is None and result.kept_ignored == 3 and result.total_after == result.total_known == 3
-    assert [w for w in _words() if w["knownStatus"] == "IGNORED"] == ignored, "byte for byte, in their order"
+    assert result.error is None and result.dropped_ignored == 3 and result.total_after == result.total_known == 3
+    assert [w for w in _words() if w["knownStatus"] == "IGNORED"] == []
     from app import token_index
-    assert set(token_index.ignored_entries(get_user_files_path("ja"), "ja")) >= {w["dictForm"] for w in ignored}
+    assert not set(token_index.ignored_entries(get_user_files_path("ja"), "ja")) & {w["dictForm"] for w in ignored}
+    with open(os.path.join(get_user_files_path("ja"), ".trash", result.backup), encoding="utf-8") as f:
+        backed_up = json.load(f)["words"]
+    assert [w for w in backed_up if w["knownStatus"] == "IGNORED"] == ignored, "the backup keeps them, in order"
+
+
+def test_replace_with_no_dismissed_words_counts_none_and_writes_anki_and_the_graduates_as_before(ja_words,
+                                                                                                 migaku_file):
+    """Empty state: a file with no IGNORED entries — nothing to drop (no "come back" line), the known and Graduates'
+    numbers the same as with them."""
+    with open(migaku_file, encoding="utf-8") as f:
+        data = json.load(f)
+    data["words"] = [w for w in data["words"] if w["knownStatus"] != "IGNORED"]
+    data["words"].append({"dictForm": ja_words[6], "knownStatus": "KNOWN", "source": anki_sync.GRADUATED_SOURCE,
+                          "language": "ja"})
+    _write_json(migaku_file, data)
+    result = _replace(FakeCollection([{"word": w} for w in ja_words[:3]]))
+    assert result.error is None and (result.added, result.kept_graduated, result.dropped_ignored) == (3, 1, 0)
+    assert result.total_known == result.total_after == 4
+    assert [w["dictForm"] for w in _words()] == ja_words[:3] + [ja_words[6]]
+
+
+def test_a_chinese_replace_drops_the_chinese_dismissed_words_and_its_backup_keeps_them(zh_resources_dir):
+    """Chinese too: the Chinese list's IGNORED entries are dropped by its Replace and kept in its own backup."""
+    with open(os.path.join(zh_resources_dir, "context_test.txt"), encoding="utf-8") as f:
+        assert "冒险" in f.read()
+    dismissed = {"dictForm": "危险", "knownStatus": "IGNORED", "language": "zh"}
+    _write_json(_known_path("zh"), {"words": [{"dictForm": "勇敢", "knownStatus": "KNOWN", "language": "zh"},
+                                              dismissed]})
+    fake = FakeCollection()
+    for w in ("冒险", "挑战"):
+        fake.add(w, deck="中文::词汇", model="Chinese (basic)", fields=[("Hanzi", w)])
+
+    result = _replace(fake, decks=["中文"], language="zh")
+
+    assert result.error is None and result.dropped_ignored == 1 and result.total_known == 2
+    assert [w["dictForm"] for w in _words("zh")] == ["冒险", "挑战"]
+    with open(os.path.join(get_user_files_path("zh"), ".trash", result.backup), encoding="utf-8") as f:
+        assert dismissed in json.load(f)["words"]
 
 
 def test_replace_whose_numbers_changed_since_the_confirmation_writes_nothing_and_says_the_new_ones(ja_words,
@@ -983,8 +1020,9 @@ def test_a_known_words_file_broken_after_the_first_check_is_still_never_replaced
     assert _read_bytes(migaku_file) == b'{"words": [{"dictForm": "' and _trash_files() == []
 
 
-def test_replace_keeps_the_dismissed_words_of_a_bare_list_known_words_file(ja_words, migaku_file):
-    """Mutant H12: an older KnownWord.json is a bare list; its IGNORED entries are kept by Replace too."""
+def test_replace_counts_and_drops_the_dismissed_words_of_a_bare_list_known_words_file(ja_words, migaku_file):
+    """Mutant H12: an older KnownWord.json is a bare list; its IGNORED entries are counted and dropped by Replace too,
+    and kept by its backup."""
     with open(migaku_file, encoding="utf-8") as f:
         entries = json.load(f)["words"]
     ignored = [w for w in entries if w["knownStatus"] == "IGNORED"]
@@ -992,10 +1030,12 @@ def test_replace_keeps_the_dismissed_words_of_a_bare_list_known_words_file(ja_wo
     _write_json(migaku_file, entries)                        # the bare-list form
     fake = FakeCollection([{"word": w} for w in ja_words[:3]])
     dry = _replace(fake, dry_run=True)
-    assert dry.kept_ignored == len(ignored)
+    assert dry.dropped_ignored == len(ignored)
     result = _replace(fake)
     assert result.error is None
-    assert [w for w in _words() if w["knownStatus"] == "IGNORED"] == ignored
+    assert [w for w in _words() if w["knownStatus"] == "IGNORED"] == []
+    with open(os.path.join(get_user_files_path("ja"), ".trash", result.backup), encoding="utf-8") as f:
+        assert [w for w in json.load(f) if w["knownStatus"] == "IGNORED"] == ignored
 
 
 def test_a_dismissed_word_a_past_graduate_names_is_written_once_as_the_graduates(ja_words, migaku_file):
@@ -1006,7 +1046,7 @@ def test_a_dismissed_word_a_past_graduate_names_is_written_once_as_the_graduates
         {"dictForm": word, "knownStatus": "KNOWN", "source": anki_sync.GRADUATED_SOURCE, "language": "ja"},
         {"dictForm": word, "knownStatus": "IGNORED", "language": "ja"}]})
     result = _replace(FakeCollection([{"word": w} for w in ja_words[:3]]))
-    assert result.error is None and result.kept_graduated == 1 and result.kept_ignored == 0
+    assert result.error is None and result.kept_graduated == 1 and result.dropped_ignored == 0
     assert [(w["dictForm"], w["knownStatus"]) for w in _words() if w["dictForm"] == word] == [(word, "KNOWN")]
 
 

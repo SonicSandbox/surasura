@@ -4,7 +4,7 @@ fixes of its latent defects (§9).
 
 What a wrong answer would cost: known words appended twice at once (the window's sync beside the automatic one), read
 by merely opening the window (S16), or read while an update waits; a Replace that writes numbers the user never saw,
-or that a stray Esc / Enter confirms; the words dismissed in Migaku brought back by a Replace (W3.4-1); a Restore that
+or that a stray Esc / Enter confirms; the words dismissed in Migaku dropped with no backup holding them; a Restore that
 puts back something else than it says; a window still writing the old language's file after a switch, or a job's
 result lost when the window switched or closed; a dead or untipped control.
 
@@ -340,7 +340,7 @@ def test_the_automatic_syncs_result_reads_the_numbers_again(main, anki):
     assert wait_until(lambda: w.total.text() == "3")
 
 
-# --- Replace: dry run → the numbers → backup → write (inv §2, §4; W3.4-1) ----------------------------------------- #
+# --- Replace: dry run → the numbers → backup → write (inv §2, §4; a clean slate) ---------------------------------- #
 def test_replace_asks_with_the_true_numbers_and_esc_and_enter_are_no(main, anki, ja_resources_dir):
     _migaku(ja_resources_dir)
     before = _bytes(_file())
@@ -366,7 +366,9 @@ def test_replace_asks_with_the_true_numbers_and_esc_and_enter_are_no(main, anki,
     assert _bytes(_file()) == before and _trash() == []
 
 
-def test_replace_after_yes_backs_up_first_keeps_the_ignored_words_and_says_so(main, anki, ja_resources_dir):
+def test_replace_after_yes_backs_up_first_drops_the_ignored_words_and_says_so(main, anki, ja_resources_dir):
+    """A clean slate from Anki: the words dismissed in Migaku are gone from the list file (they come back on the
+    list), the backup taken first holds them, and the result line says how many came back."""
     data = _migaku(ja_resources_dir)
     before = _bytes(_file())
     ignored = [x for x in data["words"] if x["knownStatus"] == "IGNORED"]
@@ -377,7 +379,7 @@ def test_replace_after_yes_backs_up_first_keeps_the_ignored_words_and_says_so(ma
     w.question.yes.click()
     _idle(main, w)
     assert [x["dictForm"] for x in _words() if x.get("source") == "AnkiConnect"] == WORDS[:3]
-    assert [x for x in _words() if x["knownStatus"] == "IGNORED"] == ignored
+    assert len(ignored) == 3 and [x for x in _words() if x["knownStatus"] == "IGNORED"] == []
     assert len(_trash()) == 1 and _bytes(os.path.join(get_user_files_path("ja"), ".trash", _trash()[0])) == before
     assert w.status.text() == (strings.ANKI_REPLACED.format(total=3, added=3)
                                + strings.ANKI_REPLACED_IGNORED[0].format(ignored=3))

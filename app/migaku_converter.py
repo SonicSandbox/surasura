@@ -104,7 +104,7 @@ def read_words(db_path, language=None):
 
 def convert_db_to_json(db_path, output_json=None, language=None, expect=None):
     """Replace KnownWord.json with the export's words, holding its lock: refused when the file can't be read, a dated
-    backup first, past Graduates' and dismissed words kept, written atomically. -> True when written. `expect`: the
+    backup first, past Graduates' words kept (the words dismissed outside Migaku dropped), written atomically. -> True when written. `expect`: the
     numbers the user confirmed; moved by now, nothing is written and `anki_sync.NumbersChanged` is raised."""
     if not output_json:
         # Save to User Files/<lang>/KnownWord.json
@@ -178,13 +178,12 @@ def convert_db_to_json(db_path, output_json=None, language=None, expect=None):
             if backup:
                 print(f"Backed up your previous known words to: {backup}")
 
-            # The words the old GraduatedList.txt gave the file stay known words (S3.1 D13), and the words the user
-            # dismissed that Migaku doesn't name stay ignored (W3.4-1: the rule Anki's and Jiten's replaces follow).
+            # The words the old GraduatedList.txt gave the file stay known words (S3.1 D13); nothing else of the old
+            # file stays (a clean slate from Migaku: dismissed words it doesn't name are dropped, the backup keeps them).
             from app.anki_sync import replaced_words
-            words, graduated, ignored = replaced_words(output_json, lock_language, words)
-            stats['totalWords'] += graduated + ignored
+            words, graduated, _dropped = replaced_words(output_json, lock_language, words)
+            stats['totalWords'] += graduated
             stats['knownWords'] += graduated
-            stats['ignoredWords'] += ignored
 
             print(f"\nWriting JSON to: {output_json}")
             json_data = {

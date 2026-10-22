@@ -54,10 +54,10 @@ def _line(parent, text, name="windowline"):
 
 
 def _kept(plan):
-    """A replace's kept lines for its confirmation: past Graduates' and dismissed words, each only when there are any
-    (never "0 … kept")."""
+    """A replace's lines for its confirmation: past Graduates' words kept, ignored words back on the list, each only
+    when there are any (never "0 … kept")."""
     return "".join(f"\n{lines[n != 1].format(n=n)}." for lines, n in ((strings.KEPT_GRADUATED, plan.graduated),
-                                                                     (strings.KEPT_IGNORED, plan.ignored)) if n)
+                                                                     (strings.IGNORED_BACK, plan.ignored)) if n)
 
 
 def _remove(kept):

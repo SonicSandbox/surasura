@@ -170,7 +170,7 @@ def test_no_key_at_all_exits_with_an_error(monkeypatch):
     fetch.assert_not_called()
 
 
-# --- W3.4 row 2: Japanese only, fetch then confirm, the ignored words kept --------------------------------------- #
+# --- W3.4 row 2: Japanese only, fetch then confirm, a clean slate (Graduates' words kept) ------------------------ #
 def test_a_chinese_import_is_refused_before_any_fetch(tmp_path):
     """Jiten stamps every word 'ja': a zh import would replace the Chinese list with Japanese words (inv §4.9)."""
     from app import jiten_converter
@@ -208,8 +208,10 @@ def test_step_one_keeps_the_cards_and_changes_no_known_words(tmp_path, mock_jite
     assert "jiten-secret-key-123" not in capsys.readouterr().out
 
 
-def test_step_two_replaces_from_the_kept_cards_with_no_fetch_and_keeps_ignored_and_graduated_words(
+def test_step_two_replaces_from_the_kept_cards_with_no_fetch_drops_ignored_and_keeps_graduated_words(
         tmp_path, mock_jiten_response):
+    """A clean slate from Jiten (by decision): the words dismissed in Migaku are dropped — back on the list — and the
+    dated backup keeps them; a past Graduate's word stays known."""
     from app import jiten_converter
     known = tmp_path / "User Files" / "ja" / "KnownWord.json"
     known.parent.mkdir(parents=True)
@@ -225,8 +227,10 @@ def test_step_two_replaces_from_the_kept_cards_with_no_fetch_and_keeps_ignored_a
         assert jiten_converter.replace_from_cards(str(cards), "ja", str(known)) is True
     get.assert_not_called()
     words = {w["dictForm"]: w["knownStatus"] for w in json.loads(known.read_text(encoding="utf-8"))["words"]}
-    assert words == {"猫": "KNOWN", "犬": "LEARNING", "旅": "KNOWN", "えっと": "IGNORED"}   # 冒険 (Anki's) replaced
-    assert len(list((known.parent / ".trash").iterdir())) == 1
+    assert words == {"猫": "KNOWN", "犬": "LEARNING", "旅": "KNOWN"}   # 冒険 (Anki's) replaced, えっと dropped
+    [backup] = list((known.parent / ".trash").iterdir())
+    backed_up = {w["dictForm"]: w["knownStatus"] for w in json.loads(backup.read_text(encoding="utf-8"))["words"]}
+    assert backed_up["えっと"] == "IGNORED" and backed_up["猫"] == "IGNORED"
 
 
 def test_step_two_with_unreadable_cards_changes_nothing(tmp_path):

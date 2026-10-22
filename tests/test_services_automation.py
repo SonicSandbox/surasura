@@ -1158,3 +1158,90 @@ def test_the_automatic_generate_waits_while_the_setup_wizard_is_up(live):
     assert h.until(lambda: launches.count() == 1, seconds=5)
     launches.runs[0].ended(0)
     auto.close()
+
+
+# --- a sync by hand ends as the automatic one does (row 30) ------------------------------------------------------- #
+def _by_hand(auto, registry, result, language="ja"):
+    """The Anki window's *Sync now* (and the setup wizard's first sync): `anki_window.submit` with the real service."""
+    from app import anki_window as AW
+    done = threading.Event()
+    AW.submit(registry, "Syncing", lambda: result, lambda r: done.set(), auto, language)
+    assert done.wait(10), "the job ended"
+    assert auto.worker.idle(5)
+
+
+@pytest.mark.parametrize("auto_generate", [True, False])
+def test_a_sync_by_hand_ends_on_the_automatic_syncs_own_path(live, monkeypatch, auto_generate):
+    """Row 30: *Sync now* told `Automation.anki_synced`, which didn't exist; the error was swallowed, so a sync by hand
+    ran no quiet Generate, started no indexer, never said the bar's new count and never restarted the 5-minute wait.
+    Every sync, by hand or automatic, now ends through `AutoSync.ended`."""
+    h.seed_library("ja")
+    _synced_once("ja")
+    anki = _Anki(monkeypatch)
+    clock, indexes = _Clock(1000.0), []
+    auto, registry, _c, launches = _make(_settings(anki_auto_generate=auto_generate), clock=clock, indexes=indexes)
+    known = anki_sync.count_known("ja")
+    _by_hand(auto, registry, anki_sync.SyncResult(added=4, total_known=known + 4, mode="delta"))
+    state = auto.state()
+    assert (state.sync, state.added, state.known) == (A.SYNCED, 4, known + 4), "the bar says the new count"
+    if auto_generate:
+        assert h.until(lambda: launches.count() == 1, seconds=10) and indexes == [], "the quiet Generate"
+        launches.runs[0].ended(0)
+    else:
+        assert indexes == [1] and launches.count() == 0, "no Generate: the indexer"
+    clock.now = 1000.0 + A.SYNC_EVERY - 1
+    auto.activated()
+    _settle(auto, registry)
+    assert anki.syncs == [], "the 5-minute wait counts from the sync by hand"
+    clock.now = 1000.0 + A.SYNC_EVERY
+    auto.activated()
+    _settle(auto, registry)
+    assert len(anki.syncs) == 1
+    auto.close()
+
+
+def test_a_sync_by_hand_that_failed_says_so_and_asks_for_nothing(live, monkeypatch):
+    h.seed_library("ja")
+    indexes = []
+    auto, registry, _c, launches = _make(_settings(), indexes=indexes)
+    _by_hand(auto, registry, anki_sync.SyncResult(error="Anki refused the request"))
+    assert (auto.state().sync, auto.state().message) == (A.FAILED, "Anki refused the request")
+    assert indexes == [] and launches.count() == 0
+    auto.close()
+
+
+def _stand_in_methods():
+    """Every test stand-in of the automation service: a class named for it, or a `type(...)` set as `.automation`
+    (or handed in as `automation=`) — and the methods each defines itself."""
+    import ast
+    import glob
+    root = os.path.dirname(os.path.abspath(__file__))
+    found = []
+    for path in glob.glob(os.path.join(root, "**", "*.py"), recursive=True):
+        with open(path, encoding="utf-8") as f:
+            tree = ast.parse(f.read(), path)
+        name = os.path.relpath(path, root)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef) and "Automation" in node.name:
+                found.append((f"{name}::{node.name}", [n.name for n in node.body
+                                                       if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]))
+            elif isinstance(node, ast.Assign) and any(getattr(t, "attr", getattr(t, "id", "")) == "automation"
+                                                      for t in node.targets):
+                made = node.value
+                if isinstance(made, ast.Call) and isinstance(made.func, ast.Call):
+                    made = made.func                                # type(...)(): the class, then its one object
+                if isinstance(made, ast.Call) and getattr(made.func, "id", None) == "type" and len(made.args) == 3 \
+                        and isinstance(made.args[2], ast.Dict):
+                    found.append((f"{name}:{node.lineno}", [k.value for k in made.args[2].keys
+                                                            if isinstance(k, ast.Constant)]))
+    return found
+
+
+def test_every_stand_in_of_the_automation_service_has_only_its_real_methods():
+    """Row 30's guard: a stand-in that answers a method the real `Automation` lacks hides a call that fails for the
+    user (swallowed, as `anki_synced` was). Every stand-in's own public method must be the real service's."""
+    found = _stand_in_methods()
+    assert len(found) >= 4, f"the scan finds the stand-ins: {found}"
+    wrong = [(where, m) for where, methods in found for m in methods
+             if not m.startswith("_") and not callable(getattr(A.Automation, m, None))]
+    assert wrong == [], f"stand-ins answering what Automation lacks: {wrong}"

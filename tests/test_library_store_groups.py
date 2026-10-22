@@ -1088,3 +1088,41 @@ def test_B2_1_a_long_show_across_the_line_is_walked_to_its_last_file(language):
     current = store.ids("now") + store.ids("soon")
     assert current[current.index(w[-1]) + 1] == incoming and _block(store, w)
     store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_B2_1_the_line_between_two_shows_of_one_group_is_inside_the_group(language):
+    """A group is the window's one row across the line even where the line falls between two of its shows: Soon's
+    top lands after the group, never between its shows."""
+    store = _three(language)
+    loose = next(i for i in store.ids("now") if not store.item(i)["parent_folder"])
+    store.move([loose], "now", before_id=store.ids("now")[0])
+    (p2, m2), (pl, ml) = _runs(store, "now")[-2:]
+    store.join([p2, pl], how="group")
+    store.set_soon_line(len(store.ids("now")) - len(ml))     # the line right between the group's two shows
+    assert store.ids("now")[-1] == m2[-1] and store.ids("soon")[:len(ml)] == ml
+    incoming = [r for r in _runs(store, "goal") if len(r[1]) == 4][0][1][0]
+    store.place([incoming], "soon")
+    current = store.ids("now") + store.ids("soon")
+    assert current[current.index(ml[-1]) + 1] == incoming and _piece(store, incoming) != p2
+    assert pieces_ok(store) is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_B2_1_rows_being_placed_are_never_their_own_anchor(language):
+    """The rows sent are skipped wherever the rule reads: W's Soon rows sent with another row (the slot then between
+    W's NOW rows and the next show), or W's last Soon row sent with another (the show then ends a row earlier) — each
+    lands as one block, never a no-op on an anchor inside the block."""
+    store, w = _straddling(language)
+    incoming = [r for r in _runs(store, "goal") if len(r[1]) == 4][0][1][0]
+    assert store.soon_top([w[2], w[3], incoming]) == ("top",), "the window's paint: an anchor outside the block"
+    assert store.move([w[2], w[3], incoming], "soon") is not None
+    assert _block(store, [w[2], w[3], incoming]) and pieces_ok(store) is None
+    store.close()
+    store, w = _straddling(language)
+    incoming = [r for r in _runs(store, "goal") if len(r[1]) == 4][0][1][0]
+    assert store.soon_top([w[3], incoming]) == ("after", w[2])
+    assert store.move([w[3], incoming], "soon") is not None
+    assert _block(store, w + [incoming]) and pieces_ok(store) is None
+    store.close()

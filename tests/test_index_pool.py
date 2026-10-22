@@ -487,13 +487,13 @@ def test_a_disk_or_locking_error_at_the_open_is_raised_and_never_deletes_the_sto
     db = str(tmp_path / "current.db")
     _store_with_a_row(db)
     deleted = []
-    monkeypatch.setattr(ti, "_delete_db", lambda path: deleted.append(path))
-    raised = _failing_connect(monkeypatch, "SELECT 1 FROM aggregate",
-                              _sqlite_error(cls, text, code if coded else None, name))
-    with pytest.raises(cls, match=text):
-        ti.open_store("ja", path=db)
-    assert raised and deleted == []
-    monkeypatch.undo()
+    with monkeypatch.context() as patched:      # scoped: an undo() would also undo the harness's test root
+        patched.setattr(ti, "_delete_db", lambda path: deleted.append(path))
+        raised = _failing_connect(patched, "SELECT 1 FROM aggregate",
+                                  _sqlite_error(cls, text, code if coded else None, name))
+        with pytest.raises(cls, match=text):
+            ti.open_store("ja", path=db)
+        assert raised and deleted == []
     store = ti.open_store("ja", path=db)
     try:
         assert store.get_meta("kept") == "yes"
@@ -515,18 +515,18 @@ def test_a_full_disk_while_an_old_store_is_built_again_is_raised_and_keeps_the_f
     pages = old.execute("PRAGMA page_count").fetchone()[0]
     old.close()
     deleted = []
-    monkeypatch.setattr(ti, "_delete_db", lambda path: deleted.append(path))
-    real_connect = sqlite3.connect
+    with monkeypatch.context() as patched:      # scoped: an undo() would also undo the harness's test root
+        patched.setattr(ti, "_delete_db", lambda path: deleted.append(path))
+        real_connect = sqlite3.connect
 
-    def capped(*a, **kw):
-        c = real_connect(*a, **kw)
-        c.execute(f"PRAGMA max_page_count = {pages}")      # no room for one more page
-        return c
-    monkeypatch.setattr(sqlite3, "connect", capped)
-    with pytest.raises(sqlite3.OperationalError) as caught:
-        ti.open_store("ja", path=db)
-    assert caught.value.sqlite_errorcode & 0xFF == 13 and deleted == []
-    monkeypatch.undo()
+        def capped(*a, **kw):
+            c = real_connect(*a, **kw)
+            c.execute(f"PRAGMA max_page_count = {pages}")      # no room for one more page
+            return c
+        patched.setattr(sqlite3, "connect", capped)
+        with pytest.raises(sqlite3.OperationalError) as caught:
+            ti.open_store("ja", path=db)
+        assert caught.value.sqlite_errorcode & 0xFF == 13 and deleted == []
     kept = sqlite3.connect(db)
     try:
         assert kept.execute("SELECT value FROM meta WHERE key = 'kept'").fetchone() == ("yes",)
@@ -541,12 +541,12 @@ def test_a_locking_protocol_answer_to_the_wal_switch_is_asked_again(tmp_path, mo
     deleted the file as damaged. By its code, and by its text when raised by hand."""
     db = str(tmp_path / "new.db")
     deleted = []
-    monkeypatch.setattr(ti, "_delete_db", lambda path: deleted.append(path))
-    raised = _failing_connect(monkeypatch, "PRAGMA journal_mode=WAL", _sqlite_error(
-        sqlite3.OperationalError, "locking protocol", 15 if coded else None, "SQLITE_PROTOCOL"), times=2)
-    ti.open_store("ja", path=db).close()
-    assert len(raised) == 2 and deleted == []
-    monkeypatch.undo()
+    with monkeypatch.context() as patched:      # scoped: an undo() would also undo the harness's test root
+        patched.setattr(ti, "_delete_db", lambda path: deleted.append(path))
+        raised = _failing_connect(patched, "PRAGMA journal_mode=WAL", _sqlite_error(
+            sqlite3.OperationalError, "locking protocol", 15 if coded else None, "SQLITE_PROTOCOL"), times=2)
+        ti.open_store("ja", path=db).close()
+        assert len(raised) == 2 and deleted == []
     c = sqlite3.connect(db)
     try:
         assert c.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
@@ -589,13 +589,13 @@ def test_an_error_is_read_by_its_code_before_its_text(tmp_path, monkeypatch, cod
     db = str(tmp_path / "current.db")
     _store_with_a_row(db)
     deleted = []
-    monkeypatch.setattr(ti, "_delete_db", lambda path: deleted.append(path))
-    _failing_connect(monkeypatch, "SELECT 1 FROM aggregate", _sqlite_error(
-        sqlite3.OperationalError, "malformed JSON", 1 if coded else None, "SQLITE_ERROR"))
-    with pytest.raises(sqlite3.OperationalError, match="malformed JSON"):
-        ti.open_store("ja", path=db)
-    assert deleted == []
-    monkeypatch.undo()
+    with monkeypatch.context() as patched:      # scoped: an undo() would also undo the harness's test root
+        patched.setattr(ti, "_delete_db", lambda path: deleted.append(path))
+        _failing_connect(patched, "SELECT 1 FROM aggregate", _sqlite_error(
+            sqlite3.OperationalError, "malformed JSON", 1 if coded else None, "SQLITE_ERROR"))
+        with pytest.raises(sqlite3.OperationalError, match="malformed JSON"):
+            ti.open_store("ja", path=db)
+        assert deleted == []
     store = ti.open_store("ja", path=db)
     try:
         assert store.get_meta("kept") == "yes"

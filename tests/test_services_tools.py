@@ -328,10 +328,10 @@ def test_a_tool_thread_that_cant_start_fails_its_job_and_tells_its_owner(tmp_pat
 
     def refuse(self):
         raise RuntimeError("can't start new thread")
-    monkeypatch.setattr(threading.Thread, "start", refuse)
-    registry, ends = jobs_module.JobRegistry(), Ends()
-    job = tools.run(registry, "sentence-corpus", "x", [script], on_end=ends, frozen=False)
-    monkeypatch.undo()
+    with monkeypatch.context() as patched:      # scoped: an undo() would also undo the harness's test root
+        patched.setattr(threading.Thread, "start", refuse)
+        registry, ends = jobs_module.JobRegistry(), Ends()
+        job = tools.run(registry, "sentence-corpus", "x", [script], on_end=ends, frozen=False)
     assert job.view().state == jobs_module.FAILED
     assert ends.codes == [None]
 

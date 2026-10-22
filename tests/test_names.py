@@ -547,9 +547,9 @@ def test_a_work_term_is_never_a_dictionary_word(tmp_path, monkeypatch):
         store.close()
     library = [_record([(s, "焔魄陣", "ccc") for s in range(5)], {"焔": 5, "魄": 5, "陣": 5})]
     assert "焔魄陣" in names.compute_tables(library)["w"]
-    monkeypatch.setattr(analyzer, "compound_joins", lambda: {"焔魄陣": ("焔魄陣", "エンハクジン", "N", 1)})
-    assert "焔魄陣" not in names.compute_tables(library)["w"], "the compound table's word"
-    monkeypatch.undo()
+    with monkeypatch.context() as patched:      # scoped: an undo() would also undo the harness's test root
+        patched.setattr(analyzer, "compound_joins", lambda: {"焔魄陣": ("焔魄陣", "エンハクジン", "N", 1)})
+        assert "焔魄陣" not in names.compute_tables(library)["w"], "the compound table's word"
     monkeypatch.setattr(names, "_jmdict_kanji", [None])
     assert names.compute_tables(library)["w"] == {}, "no JMdict list: no term"
 

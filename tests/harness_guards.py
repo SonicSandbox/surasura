@@ -12,7 +12,11 @@
 * Tk interpreters are freed on the main thread, never by a worker's collection (Windows fatal 0x80000003);
 * a test's child process never outlives the run: one still running at the end is ended, named, and fails the run;
 * no test reaches a real Anki: a connection to the AnkiConnect port is refused for the whole run, between tests and
-  from a thread that outlived its test included, and fails the test (or the run) naming it (`_guard_anki_port`).
+  from a thread that outlived its test included, and fails the test (or the run) naming it (`_guard_anki_port`);
+* no test opens a browser or a file viewer, in this process or a Python child it starts (tests/open_guard_site/): the
+  open is refused and fails the test (or the run) naming it (`_guard_anki_port` claims them too);
+* a test's own `monkeypatch.undo()` never takes its test root away: the root is put back, and the test fails naming
+  it (claimed by `_guard_anki_port` too).
 
 A conftest takes them by importing these names at its top level and never binding them again (pytest registers a
 conftest's hooks and fixtures by name): `EVERY_SUITE` below, plus `pytest_sessionfinish` and `pytest_configure` — a
@@ -240,6 +244,65 @@ def _between_tests():
     os.environ.setdefault("PYTEST_CURRENT_TEST", BETWEEN_TESTS)
 
 
+# pytest's own end of a teardown pops the variable (`_pytest.runner._update_current_test_var(item, None)`) after the
+# test's monkeypatch has removed its root, and only then does `pytest_runtest_teardown` below set BETWEEN_TESTS: a
+# worker that outlived its test and read a path in those few statements met neither variable and got a per-user path
+# (Mado's Needs-you flake, 2026-10-21: tracks/window/work/laptop-fixes/needs/FLAKE.md). So pytest's one function is
+# replaced: the same value at set-up, call and teardown, and BETWEEN_TESTS written in the pop's place — one assignment,
+# so the variable is never absent. A pytest that renamed the function stops the run here, never silently reopens it.
+import _pytest.runner as _pytest_runner     # noqa: E402
+
+if not callable(getattr(_pytest_runner, "_update_current_test_var", None)):
+    raise RuntimeError("pytest no longer has _pytest.runner._update_current_test_var: tests/harness_guards.py's "
+                       "PYTEST_CURRENT_TEST gap guard needs its new name")
+
+
+def _update_current_test_var(item, when):
+    """pytest's own (`_pytest/runner.py`), with BETWEEN_TESTS where it popped the variable; it also marks a test's call
+    for the undo guard below (pytest calls it at the start of every phase)."""
+    if when:
+        os.environ["PYTEST_CURRENT_TEST"] = f"{item.nodeid} ({when})".replace("\x00", "(null)")
+    else:
+        os.environ["PYTEST_CURRENT_TEST"] = BETWEEN_TESTS
+    patch = getattr(item, "funcargs", {}).get("monkeypatch") if when == "call" else None
+    _CALL_PATCH[0] = (patch, os.environ.get("SURASURA_TEST_ROOT"), item.nodeid) if patch is not None else None
+
+
+_pytest_runner._update_current_test_var = _update_current_test_var
+
+
+# --- A test's own monkeypatch.undo() keeps its test root (2026-10-21) --------------------------------------------- #
+# `monkeypatch.undo()` in a test undoes every patch of the test's one monkeypatch, the conftests' sandbox with them:
+# SURASURA_TEST_ROOT gone, the rest of the test resolved its paths with no root (get_user_data_path: the checkout's own
+# data folder; a per-user one by any route past path_utils' refusal), and an empty real %APPDATA%\Houseki\Surasura
+# appeared twice in Kura's runs. So an undo() of the running test's own monkeypatch during its call puts back the root
+# the call started with (through the same monkeypatch: its teardown still removes it), and the test fails at its end
+# naming it (`_guard_anki_port`): its patches belong in `monkeypatch.context()`. pytest's own undo at the fixture's
+# teardown, a `monkeypatch.context()` and a `pytest.MonkeyPatch()` of a test's own are other calls, never touched.
+_CALL_PATCH = [None]    # (the running test's monkeypatch, SURASURA_TEST_ROOT as its call started, its node id)
+_UNDONE = []            # the tests that undid their own monkeypatch mid-test, not yet claimed by their end
+_REAL_UNDO = getattr(pytest.MonkeyPatch.undo, "_surasura_real", pytest.MonkeyPatch.undo)
+
+
+def _undo_keeping_the_root(self):
+    _REAL_UNDO(self)
+    held = _CALL_PATCH[0]
+    if held is not None and self is held[0]:
+        if held[1] is not None:
+            self.setenv("SURASURA_TEST_ROOT", held[1])
+        _UNDONE.append(f"{held[2]} called monkeypatch.undo()")
+
+
+_undo_keeping_the_root._surasura_real = _REAL_UNDO
+pytest.MonkeyPatch.undo = _undo_keeping_the_root
+
+
+def _claim_undone():
+    """The undo() calls since the last claim -> one line each, naming the test."""
+    undone, _UNDONE[:] = list(_UNDONE), []
+    return undone
+
+
 def pytest_collection(session):
     _between_tests()
 
@@ -391,7 +454,6 @@ def _anki_port_refuses(family, address):
     return address[1] in ANKI_PORTS and not _opted_in_now()
 
 
-_SURASURA_CODE = re.compile(r"app_entry|\b(?:app|modules)[./\\]|\b(?:from|import) (?:app|modules)\b")
 
 
 def _child_reaches_anki(env):
@@ -522,11 +584,69 @@ def _claim_anki_tries():
 @pytest.fixture(autouse=True)
 def _guard_anki_port():
     """Fail a test during which anything tried the AnkiConnect port (refused: a real Anki may be listening there) —
-    its own code, a thread left by an earlier test, or a try in the gap before it — naming each try."""
+    its own code, a thread left by an earlier test, or a try in the gap before it — naming each try. And one during
+    which anything opened a browser or a viewer (refused), a child of it included. And one that undid its own
+    monkeypatch mid-test (its root put back)."""
     yield
-    tries = _claim_anki_tries()
-    assert not tries, ("the AnkiConnect port was tried, or a child that could was started unguarded (refused or "
-                       "flagged; a real Anki could have answered): " + "; ".join(tries))
+    undone, tries, opened = _claim_undone(), _claim_anki_tries(), _claim_opens()    # all claimed: none left to the next
+    problems = []
+    if undone:
+        problems.append("monkeypatch.undo() in a test undoes the harness's sandbox too (its SURASURA_TEST_ROOT was put "
+                        "back; the conftests' other patches stay undone): scope the test's own patches with "
+                        "`with monkeypatch.context() as patched:` instead: " + "; ".join(undone))
+    if tries:
+        problems.append("the AnkiConnect port was tried, or a child that could was started unguarded (refused or "
+                        "flagged; a real Anki could have answered): " + "; ".join(tries))
+    if opened:
+        problems.append("a browser or a file viewer was opened (refused: a test never opens one on this desktop; "
+                        "pass --no-open, or hand the code its own opener): " + "; ".join(opened))
+    assert not problems, " | ".join(problems)
+
+
+# --- No test opens a browser or a file viewer (2026-10-21) ---------------------------------------------------------- #
+# Tests opened Journey and report pages — one under a test root — in Sonic's own Chrome and left them open. The guard
+# (tests/open_guard_site/open_guard.py) refuses webbrowser's opens, os.startfile, QDesktopServices.openUrl and a browser
+# or viewer started as a child, here and, through the Popen watch, in every Python child a test starts; each refused
+# open is a line in the run's own log, read at each test's end. Only the log is shared: one rule, in one file.
+def _load_open_guard():
+    import importlib.util
+    folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), "open_guard_site")
+    spec = importlib.util.spec_from_file_location("open_guard", os.path.join(folder, "open_guard.py"))
+    module = sys.modules.get("open_guard")
+    if module is None or getattr(module, "HERE", None) != folder:
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        sys.modules["open_guard"] = module
+    return module
+
+
+_OPEN_GUARD = _load_open_guard()
+_SURASURA_CODE = _OPEN_GUARD.SURASURA_CODE      # one rule for both guards: a child running Surasura's code
+os.environ[_OPEN_GUARD.LOG] = os.path.join(os.path.dirname(os.environ["LOCALAPPDATA"]), "opened.jsonl")
+_OPEN_GUARD.install(qt=True)
+_OPENS_READ = [0]           # how far the log has been read
+
+
+def _claim_opens():
+    """The log's lines since the last claim -> one line each, naming the test, the route, what and where."""
+    try:
+        with open(os.environ[_OPEN_GUARD.LOG], "rb") as f:
+            f.seek(_OPENS_READ[0])
+            data = f.read()
+    except OSError:
+        return []
+    complete = data[:data.rfind(b"\n") + 1]
+    _OPENS_READ[0] += len(complete)
+    out = []
+    for raw in complete.decode("utf-8", "replace").splitlines():
+        try:
+            line = json.loads(raw)
+        except ValueError:
+            out.append(raw)
+            continue
+        out.append(f"{line.get('route')} {line.get('target')!r} during {line.get('test')} (pid {line.get('pid')}, "
+                   f"thread {line.get('thread')!r}{', at ' + line['where'] if line.get('where') else ''})")
+    return out
 
 
 @pytest.hookimpl(wrapper=True)
@@ -573,12 +693,26 @@ def _say_tries_at_exit():
 atexit.register(_say_tries_at_exit)
 
 
+def _report_late_opens(reporter):
+    """The opens no test's end claimed (after the last test, or by a child still running then) -> how many."""
+    late = _claim_opens()
+    for line in late:
+        line = f"A BROWSER OR VIEWER OPENED after its test had ended (refused): {line}"
+        if reporter:
+            reporter.write_sep("!", line, red=True)
+            reporter.stats.setdefault("opened", []).append(line)
+        else:
+            print(line)
+    return len(late)
+
+
 def session_finish_guards(session=None):
     _free_tk_interpreters()     # what a still-running thread holds stays held, deleted at exit on this thread
     _end_leaked_children(_CHILDREN, grace_ms=0)     # an interrupted run's children: ended, nothing waited for
     reporter = session.config.pluginmanager.get_plugin("terminalreporter") if session is not None else None
-    if _report_late_anki_tries(reporter) and session is not None and session.exitstatus == 0:
-        session.exitstatus = 1  # a try after the test loop (an interrupted run's, or at the session's end)
+    late = _report_late_anki_tries(reporter) + _report_late_opens(reporter)
+    if late and session is not None and session.exitstatus == 0:
+        session.exitstatus = 1  # a try or an open after the test loop (an interrupted run's, or at the session's end)
 
 
 def pytest_sessionfinish(session, exitstatus):

@@ -237,9 +237,9 @@ class TestSourceBadgeRendering(unittest.TestCase):
         cls._cleanup()
 
     def _generate(self, **kwargs):
-        # (Browser launching is suppressed suite-wide by the no_browser_launch conftest fixture.)
+        # Written, never opened: a test never opens a browser (tests/harness_guards.py fails one that does).
         from app.static_html_generator import generate_static_html, OUTPUT_FILE
-        generate_static_html(**kwargs)
+        generate_static_html(open_browser=False, **kwargs)
         with open(OUTPUT_FILE, "r", encoding="utf-8") as f:
             return f.read()
 

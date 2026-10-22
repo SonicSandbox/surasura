@@ -71,7 +71,7 @@ class TestCompletedFilesFeature(unittest.TestCase):
         # Imported here so the patched module constants are picked up.
         from app.static_html_generator import generate_static_html, OUTPUT_FILE
         if theme not in self._CACHE:
-            generate_static_html(theme=theme)
+            generate_static_html(theme=theme, open_browser=False)
             self.assertTrue(os.path.exists(OUTPUT_FILE), "Static report was not generated")
             with open(OUTPUT_FILE, "r", encoding="utf-8") as f:
                 self._CACHE[theme] = f.read()

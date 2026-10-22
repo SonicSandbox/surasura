@@ -1,19 +1,21 @@
-"""Media rename asks before each note's writes (P2.4 Part B, review fix H10).
+"""Media rename asks whether you're reviewing before it writes (P2.4 Part B, review fix H10; LF-mining row 25).
 
-When the learner starts reviewing in the middle of a rename, the rename must stop before it points the next note,
-not after it has already written to the second note. Two notes cut from two different lines: the first is pointed
-while Anki is free, then review starts, and the second must be left exactly as it was. What a wrong answer costs: a
-note pointed while the learner is reviewing changes a card under their eyes, and a rename that ran on past the
-question would point notes the learner never agreed to change.
+Before row 25 the rename asked before each note's writes. It now sends its writes as one `multi` a kind (three
+requests under Anki's write lock), so it asks once: after its reads, before the batch's first write (PROVISIONAL).
+Review already started -> nothing is stored, pointed or deleted, and the job resumes on the next look. Two notes cut
+from two different lines. What a wrong answer costs: a note pointed while the learner is reviewing changes a card under
+their eyes, and a rename that never asked would point notes the learner never agreed to change.
 
 The fake media is a plain in-memory adapter with the calls `rename` makes; its `reviewing()` answers from a list, so
-the test controls exactly when review starts. Nothing under test is patched.
+the test controls exactly when review starts, and `events` records the order of the asks and the writes. Nothing
+under test is patched.
 """
 import contextlib
 
 import pytest
 
 from app.connect import media_names
+from tests.connect.test_media_names import fake_many
 
 LINE_A = (83.52, 86.1, "上層部の話をする")       # the first note's line
 LINE_B = (120.0, 122.4, "溜め息をつく")          # the second note's line, a different line
@@ -29,6 +31,10 @@ class FakeMedia:
         self.answers = list(answers)
         self.points = []
         self.deleted = []
+        self.events = []
+
+    def many(self, kind, items):
+        return fake_many(self, kind, items)
 
     def notes(self, ids):
         return [self.note_map[i] for i in ids if i in self.note_map]
@@ -40,14 +46,17 @@ class FakeMedia:
         return self.files.get(name)
 
     def store(self, name, data):
+        self.events.append("store")
         self.files[name] = data
 
     def point(self, note_id, fields):
+        self.events.append("point")
         self.points.append(note_id)
         for field, value in fields.items():
             self.note_map[note_id]["fields"][field]["value"] = value
 
     def delete(self, name):
+        self.events.append("delete")
         self.deleted.append(name)
         self.files.pop(name, None)
 
@@ -56,6 +65,7 @@ class FakeMedia:
                 if any(name in (f.get("value") or "") for f in n["fields"].values())]
 
     def reviewing(self):
+        self.events.append("reviewing")
         if len(self.answers) > 1:
             return self.answers.pop(0)
         return self.answers[0]
@@ -76,24 +86,35 @@ def word_note(note_id, word, start_stamp):
     return note, files
 
 
-def test_review_starting_between_two_notes_stops_before_the_second_is_pointed():
-    """Review starts after the first note is pointed: `rename` raises Reviewing before it points the second note,
-    and deletes only the first note's old names (each note's right after it is pointed: an interrupted rename leaves
-    no old file behind, adversary B #15). Why it matters: a note pointed under review changes a card the learner is
-    looking at."""
+def _two_notes(answers):
     note_a, files_a = word_note(1, "上層部", "83520")
     note_b, files_b = word_note(2, "溜め息", "120000")
-    files = {**files_a, **files_b}
-    second_before = note_b["fields"]["SentenceAudio"]["value"]   # copied: the fake edits the note in place
-    # Before note 1: free. Before note 2: review has started.
-    media = FakeMedia([note_a, note_b], files, answers=[False, True])
-    made = [(1, *LINE_A), (2, *LINE_B)]
+    return FakeMedia([note_a, note_b], {**files_a, **files_b}, answers), files_a, files_b
+
+
+def test_review_already_started_writes_nothing():
+    """You're reviewing when the batch is ready to write: `rename` raises Reviewing with nothing stored, pointed or
+    deleted. Why it matters: a note pointed under review changes a card the learner is looking at."""
+    media, files_a, files_b = _two_notes([True])
+    before = {i: dict(n["fields"]["SentenceAudio"]) for i, n in media.note_map.items()}
 
     with pytest.raises(media_names.Reviewing):
-        media_names.rename(media, made, "ep-kimetsu-03", "SentenceAudio", "Picture")
+        media_names.rename(media, [(1, *LINE_A), (2, *LINE_B)], "ep-kimetsu-03", "SentenceAudio", "Picture")
 
-    assert media.points == [1], "only the first note is pointed; review stops the rename before the second"
-    assert media.note_map[2]["fields"]["SentenceAudio"]["value"] == second_before, \
-        "the second note keeps its own audio name"
-    assert sorted(media.deleted) == sorted(files_a), "the pointed note's old names go now, never the second's"
-    assert all(name in media.files for name in files_b), "the second note's old files are still there"
+    assert media.points == [] and media.deleted == [], "nothing pointed, nothing deleted"
+    assert "store" not in media.events, "nothing stored"
+    assert {i: n["fields"]["SentenceAudio"] for i, n in media.note_map.items()} == before
+    assert all(name in media.files for name in {**files_a, **files_b}), "every old file is still there"
+
+
+def test_review_is_asked_once_before_the_batchs_first_write():
+    """Anki free when asked: the batch's writes all follow that one ask (asked before the first store, never between
+    two notes' writes, PROVISIONAL row 25). Why it matters: the ask must come before any write; asking again per note
+    is what cost a request a note."""
+    media, files_a, files_b = _two_notes([False, True])
+
+    media_names.rename(media, [(1, *LINE_A), (2, *LINE_B)], "ep-kimetsu-03", "SentenceAudio", "Picture")
+
+    assert media.events.count("reviewing") == 1 and media.events[0] == "reviewing", media.events
+    assert media.points == [1, 2], "both notes pointed in the one batch"
+    assert sorted(media.deleted) == sorted({**files_a, **files_b}), "each pointed note's old names go"

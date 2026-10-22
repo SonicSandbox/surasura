@@ -20,8 +20,18 @@ SL_AUDIO = re.compile(r"sl-[0-9a-f]{16}\.mp3")
 SL_PICTURE = re.compile(r"sl-[0-9a-f]{16}\.jpg")
 
 
+def fake_many(media, kind, items):
+    """The adapter's `many` on a fake: each item through the fake's own call of that kind -> [(True, answer)], as
+    AnkiConnectMedia answers one `multi` (test_media_names_multi.py fails a slot)."""
+    return [(True, getattr(media, kind)(*item)) for item in items]
+
+
 class FakeMedia:
-    """Anki's media store and note fields, in memory: exactly the calls media_names.rename makes."""
+    """Anki's media store and note fields, in memory: exactly the calls media_names.rename makes (each kind of call
+    reached through `many`, as the adapter batches them)."""
+
+    def many(self, kind, items):
+        return fake_many(self, kind, items)
 
     def __init__(self, notes, files):
         self.note_map = {n["noteId"]: n for n in notes}

@@ -14,7 +14,7 @@ from app.connect import anki_miner, runner
 
 def test_the_subtitle_offset_reaches_anki_miner_as_the_job_was_picked_with_it(monkeypatch):
     monkeypatch.setattr(anki_miner, "find", lambda loaded: "am.exe")
-    monkeypatch.setattr(verbs, "_anki_miner_setup", lambda loaded, lang, run_dir: (None, None, SimpleNamespace(word="Word")))
+    monkeypatch.setattr(verbs, "_anki_miner_setup", lambda loaded, lang, run_dir, held=None: (None, None, SimpleNamespace(word="Word")))
     seen = {}
 
     def capture(*args, **kwargs):

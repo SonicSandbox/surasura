@@ -211,7 +211,7 @@ STRINGS = {
     "pct": "{pct}% known", "new": "{n} new", "hero_stats": "{pct}% known · {n} new words",
     "hero_stats_none": "not analysed yet",
     "acc_row": "{title} · {pct} · {new} · {status}", "acc_pct_none": "not analysed",
-    "acc_hero": "Up next: {title} {ep} · {pct} · {new} · {status}",
+    "acc_hero": "Up next: {title} {ep} · {pct} · {new} · all of it: {status}",     # AD-9: the status is its row's
     # New arrivals (W3.2 S1): the tray's groups, its source chips and each row's one line and number
     "arr_new": "New", "arr_watched": "Already watched",
     "chip": {"hato": "hato", "youtube": "YouTube", "anilist": "AniList", "disk": "disk"},
@@ -858,7 +858,8 @@ def _cached_row(cache, index, tier, piece, works, numbers, cards, mining, in_top
 
 
 def _as_hero(h):
-    """The hero reads as it's painted: its next episode's numbers, and its row's own status (Q33: as every row)."""
+    """The hero reads as it's painted: its next episode's numbers with the episode, and its row's own status (Q33: as
+    every row) said as the whole's — "all of it", never in one breath with the episode's (AD-9)."""
     nxt = h.episodes[h.next_index]
     return h._replace(accessible=STRINGS["acc_hero"].format(
         title=h.title, ep=h.title_ep, status=spoken(h.status),

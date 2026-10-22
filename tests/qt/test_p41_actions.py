@@ -112,6 +112,9 @@ def test_each_status_that_is_a_button_names_its_click_and_its_hover_tip_comes_th
         i = row_with(lst, kind, None)
         row = lst.model().entries[i][1]
         p = action(lst, i)
+        if isinstance(words, dict):                     # a mining ask counts its files when more than one (AD-2)
+            n = len(p[3].ids)
+            words = words[n == 1].replace("{n}", str(n))
         assert p[0] == name and p[2] == words.format(tip=row.status.tip), kind
         ev = QHelpEvent(QEvent.Type.ToolTip, p[1].center(), lst.viewport().mapToGlobal(p[1].center()))
         lst.viewportEvent(ev)

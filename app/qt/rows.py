@@ -464,7 +464,10 @@ def action_of(status, episodes, off=None, word="video"):
     elif word != "video" and name != "no-media":
         tip = strings.ROWS_MINE_TEXT_THIS_TIP.format(tip=status.tip)
     else:
-        tip = getattr(strings, _ACTION_TIPS[name]).format(tip=status.tip)
+        words = getattr(strings, _ACTION_TIPS[name])
+        if isinstance(words, dict):                 # a mining ask: how many files the click asks for (AD-2)
+            words = words[len(files) == 1]
+        tip = words.format(tip=status.tip, n=len(files))
     return name, tip, Ask(files[0].id, tuple(e.id for e in files), files[0])
 # --- end P4.1 L2
 

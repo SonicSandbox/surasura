@@ -1821,3 +1821,33 @@ def test_the_window_turning_active_or_inactive_repaints_no_row(seeded):
         vp.removeEventFilter(spy)
     assert spy.painted == [], spy.painted
     assert lst.delegate.paints == before
+
+
+def test_a_status_button_says_how_many_files_its_click_asks_for_up_next_too(seeded):
+    """AD-2 / IK-2: Up Next's status button asks for its whole row, as every row's does (Q33's one rule, kept); a click
+    that asks for more than one file says how many in its tip — "Click to mine its 4 waiting files now" — and one file
+    keeps "Click to mine it now"."""
+    seed, win = seeded()
+    lst = current(win)
+    counted = []
+    for i, (kind, row, _lines) in enumerate(lst.model().entries):
+        if kind not in (rows.HERO, rows.ROW):
+            continue
+        for name, _rect, tip, ask in part_any(lst, i):
+            if name in ("mine-now", "mine-this") and row.media_word == "video":
+                words = strings.ROWS_MINE_NOW_TIP if name == "mine-now" else strings.ROWS_MINE_THIS_TIP
+                n = len(ask.ids)
+                assert tip == words[n == 1].format(tip=row.status.tip, n=n), row.title
+                counted.append(n)
+    assert any(n > 1 for n in counted) and any(n == 1 for n in counted)
+    # Up Next asked as its whole row: its waiting files counted in its tip, the same rule
+    kind, hero, lines = lst.model().entries[0]
+    waiting = next(row.status for k, row, _l in lst.model().entries if k == rows.ROW and row.status is not None
+                   and row.status.kind == "waiting" and row.status.tone != "warn")
+    asked = rows.asked_files("waiting", hero.episodes)
+    assert len(asked) > 1                                     # the seed's show: more than its next episode waits
+    (name, _rect, tip, ask), = [p for p in lst.delegate.parts((kind, hero._replace(status=waiting), lines),
+                                                              lst.visualRect(lst.model().index(0, 0)))
+                                if p[0] == "mine-now"]
+    assert ask.ids == tuple(e.id for e in asked)
+    assert tip == strings.ROWS_MINE_NOW_TIP[len(asked) == 1].format(tip=waiting.tip, n=len(asked))

@@ -433,14 +433,21 @@ def test_the_known_corner_and_its_milestone_hairline(window):
     assert count(arr, theme.FRAME_COLOURS["known-ink"], 40) > 0                 # the number, large and dim
     assert not k.set_known(12345, strings.BAR_KNOWN_TIP)                         # unchanged: no repaint
     assert k.set_known(None) and k.isHidden()
+    # a button names itself and says what a click does before a count is read too (the wiring check)
+    assert k.accessibleName() == strings.FOOT_KNOWN_NAME and k.toolTip().startswith(strings.FOOT_KNOWN_NAME)
 
 
 def test_the_known_corner_is_a_button_that_asks_for_a_sync_and_says_so(window):
     """Q30: the count clicks (the hand's cursor, one Tab stop like the bar's buttons, Space / Enter); its hover ends
-    "Click to sync now", and says a sync is running while one runs."""
+    "Click to sync now", and says a sync is running while one runs. AD-7 / IK-7: a button as the level ▾ is (a screen
+    reader hears a button, its name the count), its description what a click does on the road shown."""
+    from PyQt6.QtWidgets import QAbstractButton
     k = window.known
+    k.set_road("anki")
     k.set_known(12345, strings.BAR_KNOWN_TIP)
     _settle()
+    assert isinstance(k, QAbstractButton) and issubclass(frame.LevelButton, QAbstractButton)
+    assert k.accessibleName() == "12,345 known" and k.accessibleDescription() == strings.FOOT_KNOWN_CLICK
     asked = []
     k.clicked.connect(lambda: asked.append(True))
     assert k.cursor().shape() == Qt.CursorShape.PointingHandCursor
@@ -456,6 +463,11 @@ def test_the_known_corner_is_a_button_that_asks_for_a_sync_and_says_so(window):
     assert not k.set_syncing(True)
     assert k.set_known(12346, strings.BAR_KNOWN_TIP) and k.toolTip().endswith(strings.FOOT_KNOWN_SYNCING)
     assert k.set_syncing(False) and k.toolTip().endswith(strings.FOOT_KNOWN_CLICK)
+    assert k.set_road("import") and k.toolTip().endswith(strings.FOOT_KNOWN_CLICK_ANKI)        # no decks yet
+    assert k.accessibleDescription() == strings.FOOT_KNOWN_CLICK_ANKI and not k.set_road("import")
+    assert k.set_syncing(True) and k.accessibleDescription() == strings.FOOT_KNOWN_SYNCING     # running: either road
+    k.set_syncing(False)
+    k.set_road("anki")
 
 
 # --- the Goal dock ---------------------------------------------------------------------------------------------------- #

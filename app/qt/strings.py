@@ -389,8 +389,15 @@ FOOT_ANKI_TIP = "{words}\n{tip}"
 FOOT_ANKI_ANKIWEB = "{tip}\n\n{ankiweb}"
 FOOT_KNOWN = "known"
 FOOT_KNOWN_TIP = "{tip}\n{left:,} to {next:,}\n{click}"
+FOOT_KNOWN_NAME = "Known words"                              # the count's button before a count is read
+FOOT_KNOWN_NONE_TIP = "{name}: not counted yet\n{click}"
 FOOT_KNOWN_CLICK = "Click to sync now"                       # Q30: the count's click, through the one sync path
+FOOT_KNOWN_CLICK_ANKI = "Click to open the Anki window: choose your decks there"     # no decks yet (IK-7)
 FOOT_KNOWN_SYNCING = "Syncing with Anki now…"
+# A click's sync refused (AD-6): AutoSync's own answer, said in the bar ("no-decks" / "never-synced" open the Anki window)
+FOOT_KNOWN_REFUSED = {"update-staged": "Not synced: an update is waiting to install, and Anki waits for it",
+                      "running": "A sync with Anki is running already",
+                      "off": "Not synced: Anki is switched off for this run"}
 WELLS = {"soon": "Soon", "goal": "Goal", "finished": "Finished"}
 WELL_SUBS = {"soon": "next in line", "goal": "someday · in no order", "finished": "newest first"}
 WELL_TIPS = {"soon": "Soon: drop it here and it comes up next in line",
@@ -405,10 +412,12 @@ WELLS_NAME = "Where it can go: {wells}"
 ROWS_MORE_TIP = "More\n• Click for what you can do with it"
 ROWS_MOVE_TIP = {"up": "Move up one\n• Click to move it up one place",
                  "down": "Move down one\n• Click to move it down one place"}
-ROWS_MINE_NOW_TIP = "{tip}\n• Click to mine it now"
+# a click that asks for more than one file says how many (AD-2: Up Next's status acts on its whole row, as every row's
+# does), one string with the count as the toasts' (`MAKE_CARDS_QUEUED`): {one file?: words}
+ROWS_MINE_NOW_TIP = {True: "{tip}\n• Click to mine it now", False: "{tip}\n• Click to mine its {n} waiting files now"}
 # --- P4.1 L2: the stones' actions (4.1.11): Mine this, No video's Link… · Mine text, and why nothing happens while
 # Connect is off (IK S7); the window's routing (`app/qt/mine_actions.py`)
-ROWS_MINE_THIS_TIP = "{tip}\n• Click to mine it now"
+ROWS_MINE_THIS_TIP = {True: "{tip}\n• Click to mine it now", False: "{tip}\n• Click to mine its {n} files now"}
 ROWS_NO_MEDIA_TIP = "{tip}\n• Click to link its video, or to mine its text in Anki Miner"
 ROWS_ACTION_OFF = "{tip}\n{why}"
 ROWS_ACTION_KEY = "→ then Enter: {action}"

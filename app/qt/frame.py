@@ -840,13 +840,14 @@ class AnkiMark(QWidget):
         p.end()
 
 
-class KnownCorner(QWidget):
+class KnownCorner(QToolButton):
     """The known words, bottom right: the number large and dim, *known* beside it on its baseline, and a hairline under
-    them toward the next 2,500 (lit up to the share), its progress in the hover. Q30: a click — or Space / Enter, one
-    Tab stop like the bar's buttons — asks for a sync now (`clicked`: the shell hands it to `Automation.sync_now`, or
-    opens the Anki window while there is nothing to sync from yet); its hover ends "Click to sync now", or, while a
-    sync runs (`set_syncing`), says one is running."""
-    clicked = pyqtSignal()
+    them toward the next 2,500 (lit up to the share), its progress in the hover. Q30: a button (painted, as the level
+    ▾ is: a screen reader hears a button) — a click, Space or Enter, one Tab stop like the bar's buttons — asks for a
+    sync now (`clicked`: the shell hands it to `Automation.sync_now`, or opens the Anki window while there is nothing
+    to sync from yet). Its hover's last line, and its accessible description, say what a click does on the road shown
+    (`set_road`, the page's known-words road: Anki's decks chosen, a sync; none, the Anki window), or, while a sync
+    runs (`set_syncing`), that one is running (IK-7)."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -854,10 +855,13 @@ class KnownCorner(QWidget):
         self.n = None
         self.said = ""                   # the shell's words, the hover's first line
         self.syncing = False
+        self.road = "anki"               # "anki" (a click syncs) or "import" (no decks yet: it opens the Anki window)
         self.paints = 0
-        self._pressed = False
         self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setAccessibleName(strings.FOOT_KNOWN_NAME)    # a button names itself, a count or not (the wiring check)
+        self.setAccessibleDescription(self._click())
+        self.setToolTip(self._tip(None))
         self.setVisible(False)
 
     def text(self):
@@ -869,7 +873,8 @@ class KnownCorner(QWidget):
             if self.n is None and self.isHidden():
                 return False
             self.n = None
-            self.setToolTip("")
+            self.setToolTip(self._tip(None))
+            self.setAccessibleName(strings.FOOT_KNOWN_NAME)
             self.setVisible(False)
             self.paints += 1
             return True
@@ -886,41 +891,46 @@ class KnownCorner(QWidget):
         self.update()
         return True
 
+    def _click(self):
+        """What a click does now, in words: a sync is running · it opens the Anki window · it syncs."""
+        if self.syncing:
+            return strings.FOOT_KNOWN_SYNCING
+        return strings.FOOT_KNOWN_CLICK_ANKI if self.road == "import" else strings.FOOT_KNOWN_CLICK
+
     def _tip(self, n):
+        if n is None:
+            return strings.FOOT_KNOWN_NONE_TIP.format(name=strings.FOOT_KNOWN_NAME, click=self._click())
         nxt, _share = milestone(n)
-        click = strings.FOOT_KNOWN_SYNCING if self.syncing else strings.FOOT_KNOWN_CLICK
-        return strings.FOOT_KNOWN_TIP.format(tip=self.said, left=nxt - n, next=nxt, click=click)
+        return strings.FOOT_KNOWN_TIP.format(tip=self.said, left=nxt - n, next=nxt, click=self._click())
+
+    def _said_again(self):
+        self.setAccessibleDescription(self._click())
+        self.setToolTip(self._tip(self.n))
 
     def set_syncing(self, on):
-        """A sync is running (the automation's state): the hover says so instead of "Click to sync now". -> True when
-        it changed."""
+        """A sync is running (the automation's state): the hover says so instead of what a click does. -> True when it
+        changed."""
         on = bool(on)
         if on == self.syncing:
             return False
         self.syncing = on
-        if self.n is not None:
-            self.setToolTip(self._tip(self.n))
+        self._said_again()
         return True
 
-    # --- the click (Q30) -------------------------------------------------------------------------------------- #
-    def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            self._pressed = True
-            event.accept()
-            return
-        super().mousePressEvent(event)
+    def set_road(self, road):
+        """The known-words road shown ("anki" / "import"): the hover's click line follows it. -> True when it changed
+        (only the tip and the description: nothing to repaint)."""
+        road = "import" if road == "import" else "anki"
+        if road == self.road:
+            return False
+        self.road = road
+        self._said_again()
+        return True
 
-    def mouseReleaseEvent(self, event):
-        pressed, self._pressed = self._pressed, False
-        if event.button() == Qt.MouseButton.LeftButton and pressed and self.rect().contains(event.position().toPoint()):
-            self.clicked.emit()
-            event.accept()
-            return
-        super().mouseReleaseEvent(event)
-
+    # --- the click (Q30): the button's own press, release and Space; Enter too, as the bar's buttons take it -------- #
     def keyPressEvent(self, event):
-        if event.key() in (Qt.Key.Key_Space, Qt.Key.Key_Return, Qt.Key.Key_Enter):
-            self.clicked.emit()
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self.click()
             event.accept()
             return
         super().keyPressEvent(event)

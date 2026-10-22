@@ -59,6 +59,12 @@ Mark = namedtuple("Mark", "count tone tip")                    # the on-disk mar
 Episode = namedtuple("Episode", "id label number title watched cards mining missing removed in_top pct n_new "
                                 "status mark rel_path play_tip can_play deleted waiting", defaults=(False, False))
 #   waiting (SRC K5 / W1b): a video found in a source folder with no subtitle yet — never played, read or mined
+Episode = namedtuple("Episode", Episode._fields + ("media_word",), defaults=(False, False, None))
+#   media_word (LM11b G1): its own show's (`MEDIA_WORD`) — a group holds several types; None in a cache from before
+Episode = namedtuple("Episode", Episode._fields + ("work_id", "show"),
+                     defaults=tuple(Episode._field_defaults.values()) + (None, None))
+#   work_id, show (LM11b G5): the work it is of, and in a group its show's name as the group labels it (None in a
+#   run); both None in a cache from before. What *Move {show} to Finished* takes and names (`drag.show_finished`)
 Row = namedtuple("Row", "key index tier work_id piece_id media media_word verb title title_ep line source n_files n_watched "
                         "pct pct_tone n_new status mark episodes next_index studying date cover_title accessible "
                         "description chips more_chips play_tip can_play cards_out string", defaults=(False, None))
@@ -75,7 +81,9 @@ Goal = namedtuple("Goal", "titles files covers line tip works", defaults=((),)) 
 # the first screen's cache (the first frame shows no sheet)
 GoalWork = namedtuple("GoalWork", "key work_id title cover_title media source n_files line pieces item_ids folder "
                                   "tip accessible")       # folder: its first file's, in the data folder (*Open its folder*)
-GoalPiece = namedtuple("GoalPiece", "item_ids line")
+GoalPiece = namedtuple("GoalPiece", "item_ids line piece_id", defaults=(None,))
+#   piece_id (LM11b G3, IK-6): the piece its files are — what *Same show as…* joins a Goal show by; None when made
+#   without one. Tiles never enter the first screen's cache
 # --- end W3.2 Q2
 Month = namedtuple("Month", "label rows")
 Need = namedtuple("Need", "key work_id title line episodes cover_title")
@@ -94,6 +102,9 @@ View = namedtuple("View", "language mode reason state busy loading cached rows l
 # its `on` tells the stones whether they may act (IK S7). Never in the first screen's cache
 View = namedtuple("View", View._fields + ("connect",), defaults=tuple(View._field_defaults.values()) + (None,))
 # --- end P4.1 L2
+# --- LM11b: `epoch`, the store's epoch the view was read at (a library rebuilt or reset has another: the window's picks
+# go with it), or None (no store read)
+View = namedtuple("View", View._fields + ("epoch",), defaults=tuple(View._field_defaults.values()) + (None,))
 #   worst: Current's rows below Up Next, the most-needing string per kind of Anki count beside it (`worst_needs`)
 #   arrivals: the tray's rows as it shows them (New, then Already watched; each newest first); arrival_groups: the
 #   groups that hold any, in that order. Neither is in the first screen's cache (the first frame shows no tray)
@@ -111,6 +122,7 @@ Goal = namedtuple("Goal", Goal._fields + ("cover_refs",), defaults=tuple(Goal._f
 # --- W3.2 L3: a Goal tile's cover record (the sheet paints its picture)
 GoalWork = namedtuple("GoalWork", GoalWork._fields + ("cover",), defaults=(None,))
 # --- end W3.2 L3
+GoalWork = namedtuple("GoalWork", GoalWork._fields + ("group",), defaults=(None, False))     # LM11b G1: a group's tile
 # --- P-LF-16: `soon_from`, the index of the first Soon file of a show the Soon line runs through (the store's line is a
 # count of files, so it can fall inside a show): the window never splits a show at the line (Sonic, 2026-10-21: "it
 # should show after the series in the UI and a soon show should be added after that series") — the show is one row
@@ -119,6 +131,13 @@ GoalWork = namedtuple("GoalWork", GoalWork._fields + ("cover",), defaults=(None,
 # files' own piece (a piece is in one tier), what ✂ *Split here* splits among them (`split_piece`, B2-2)
 Row = namedtuple("Row", Row._fields[:Row._fields.index("string")] + ("soon_from", "soon_piece") + ("string",),
                  defaults=tuple(Row._field_defaults.values())[:-1] + (None, None, None))
+# --- LM11b G1: `group`, a piece of kind 'group' (the learner's own row of several shows: Kura's LM11): its stored name or
+# "<first show> + N more", its first episode's show's work, cover and type, each episode read by its own show's type.
+# Before `string`, which stays last (a first screen's cache from before reads it falsy)
+#   works: the distinct work ids its episodes are of, in episode order — a run's `(work_id,)`, a row of no work `()`
+Row = namedtuple("Row", Row._fields[:Row._fields.index("string")] + ("group", "works", "string"),
+                 defaults=tuple(Row._field_defaults.values())[:-1] + (False, (), None))
+# --- end LM11b G1
 
 
 def cover_of(work):
@@ -212,6 +231,10 @@ STRINGS = {
     "goal_tile_tip": "{title} · {line}\nDrag it into Current to bring up {first}, or ⋯ to move it",
     "acc_goal_tile": "{title} · {line}",
     # --- end W3.2 Q2
+    # --- LM11b G1: a group's row (its name until the learner gives it one; its next episode with its show)
+    "group_name": "{first} + {n} more", "group_line": "{n} files · {k} shows", "group_ep": "{show} · {label}",
+    "group_line_channels": "{n} videos · {k} channels",       # every show in it a YouTube channel
+    "mixed_word": "media",            # a group's status word when its files are of different types (No media · 2)
 }
 
 _EXT = re.compile(r"\.[A-Za-z0-9]{1,5}$")
@@ -399,6 +422,9 @@ def pieces(rows):
     return out
 
 
+_pieces = pieces                        # `build`'s name for it (its `pieces` argument is the feed's, LM11b G1)
+
+
 # --- statuses ---------------------------------------------------------------------------------------------------- #
 def _eps_list(eps):
     labels = [e.label for e in eps[:3]]
@@ -476,7 +502,7 @@ def status_of(eps, word, line_n):
 
 
 # --- building ------------------------------------------------------------------------------------------------------ #
-def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=None):
+def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=None, show=None):
     name = item.get("title") or (item.get("rel_path") or "").rsplit("/", 1)[-1]
     number = None if media == "youtube" else episode_number(name)
     if media == "youtube":
@@ -501,7 +527,8 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=
     ep = Episode(id=item["id"], label=label, number=number, title=stem(name), watched=bool(item.get("watched")),
                  cards=c, mining=item["id"] in mining and not mined, missing=missing, removed=missing and mined,
                  in_top=in_top, pct=pct_of(known, counted), n_new=n_new, status=None, mark=None,
-                 rel_path=item.get("rel_path"), play_tip="", can_play=not missing and not waiting, waiting=waiting)
+                 rel_path=item.get("rel_path"), play_tip="", can_play=not missing and not waiting, waiting=waiting,
+                 media_word=MEDIA_WORD.get(media, "video"), work_id=item.get("work_id"), show=show)
     asked = item.get("mine_asked")                    # asked again after it was mined: it mines again (Sonic's "unless asked")
     deleted = bool(item.get("mined_at")) and not mined and not (asked and str(asked) > str(item["mined_at"]))
     ep = ep._replace(deleted=deleted)
@@ -579,27 +606,79 @@ class _Shim:
         self.waiting = getattr(ep, "waiting", False)
 
 
-def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, finished=False, guessed=None,
-         connect=None):
-    first = piece[0]
-    work = works.get(first.get("work_id")) or {}
+def _media(work, files, guessed):
+    """A work's media type as its row reads it: typed, else the store's guess from the title's files, else (no title)
+    from these files; a YouTube or bilibili first file a video's."""
     media = work.get("media_type")
     if media is None and guessed is not None and work:   # nobody typed it: the store's guess, from the title's files
         media = guessed.of(work)                         # (L3.1's rule; review IK-24)
     elif media is None:                                  # no title: from this piece's files
         counts = {}
-        for it in piece:
+        for it in files:
             kind = _kind(it)
             counts[kind] = counts.get(kind, 0) + 1
         media = media_type_guess(counts, work.get("anilist_id"), work.get("tmdb_id"))
-    if media is None and first.get("source_type") in ("youtube", "bilibili"):
+    if media is None and files[0].get("source_type") in ("youtube", "bilibili"):
         media = "youtube"
+    return media
+
+
+def _show_key(item):
+    """Which show of a group an item is of: its work, else its folder (else itself)."""
+    w = item.get("work_id")
+    return ("w", w) if w is not None else ("f", item.get("parent_folder") or item["id"])
+
+
+def _show_name(work, item):
+    name = item.get("title") or (item.get("rel_path") or "").rsplit("/", 1)[-1]
+    return work.get("title") or work.get("youtube_channel") or item.get("parent_folder") or stem(name)
+
+
+def _group(meta, piece, works, guessed):
+    """A group's shows (LM11b G1), one reading for its row and its Goal tile -> (shows {key: files}, kinds {key: media},
+    names {key: name}, title, line): its name the learner's, else "<first show> + N more"; its line *N files · K shows*
+    (*N videos · K channels* when every show is a channel)."""
+    shows = {}
+    for it in piece:
+        shows.setdefault(_show_key(it), []).append(it)
+    kinds = {k: _media(works.get(fs[0].get("work_id")) or {}, fs, guessed) for k, fs in shows.items()}
+    names = {k: _show_name(works.get(fs[0].get("work_id")) or {}, fs[0]) for k, fs in shows.items()}
+    lead = names[_show_key(piece[0])]
+    title = meta.get("title") or (STRINGS["group_name"].format(first=lead, n=len(shows) - 1) if len(shows) > 1
+                                  else lead)
+    line = STRINGS["group_line_channels" if all(m == "youtube" for m in kinds.values()) else "group_line"].format(
+        n=len(piece), k=len(shows))
+    return shows, kinds, names, title, line
+
+
+def _status_word(eps):
+    """A group's status word: the one media word its missing files share (what *No …* and the ⌀ mark speak of), else
+    the one all its files share, else the neutral *media* — a group of a video and an EPUB never says "No video" of
+    the EPUB."""
+    words = {e.media_word for e in eps if e.missing} or {e.media_word for e in eps}
+    return next(iter(words)) if len(words) == 1 else STRINGS["mixed_word"]
+
+
+def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, finished=False, guessed=None,
+         connect=None, meta=None):
+    first = piece[0]
+    work = works.get(first.get("work_id")) or {}
+    group = _is_group(meta, piece)                       # LM11b G1: `meta`, the feed's piece (a group's)
+    if group:                                            # each show by its own files and type; the row by the first's
+        shows, kinds, names, group_title, group_line = _group(meta, piece, works, guessed)
+        media = kinds[_show_key(first)]
+        eps = [_episode(it, works.get(it.get("work_id")) or {}, kinds[_show_key(it)], numbers, cards, mining,
+                        it["id"] in in_top_ids, line_n, connect, names[_show_key(it)]) for it in piece]
+    else:
+        media = _media(work, piece, guessed)
+        eps = [_episode(it, work, media, numbers, cards, mining, it["id"] in in_top_ids, line_n, connect)
+               for it in piece]
     word = MEDIA_WORD.get(media, "video")
-    eps = [_episode(it, work, media, numbers, cards, mining, it["id"] in in_top_ids, line_n, connect) for it in piece]
     shims = [_Shim(e, bool(e.cards)) for e in eps]
-    st, mark = status_of(shims, word, line_n)
+    said = _status_word(eps) if group else word      # LM11b G1: never "No video" for a group's EPUB
+    st, mark = status_of(shims, said, line_n)
     if connect is not None:                          # --- P4.1 L2
-        st = _row_connected(st, eps, connect, word)
+        st = _row_connected(st, eps, connect, said)
     n = len(eps)
     n_watched = sum(1 for e in eps if e.watched)
     known = sum(numbers.get(it["id"], (0, 0, 0))[0] for it in piece)
@@ -608,8 +687,10 @@ def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, 
     pct = pct_of(known, counted)
     n_new = sum(news) if news else None
     channel = work.get("title") or work.get("youtube_channel")
-    single_video = media == "youtube" and n == 1
-    if single_video:
+    single_video = media == "youtube" and n == 1 and not group
+    if group:                                            # LM11b G1: its name, else "<first show> + N more"
+        title, line = group_title, group_line
+    elif single_video:
         title = eps[0].title
         line = channel or ""
     elif media == "youtube":
@@ -624,6 +705,10 @@ def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, 
         line = f"{line} · " + STRINGS["watched"].format(k=n_watched, n=n)
     next_index = next((i for i, e in enumerate(eps) if not e.watched), n - 1)
     nxt = eps[next_index]
+    if group:
+        title_ep = STRINGS["group_ep"].format(show=names[_show_key(piece[next_index])], label=nxt.label)
+    else:
+        title_ep = nxt.label if (n > 1 or media in EPISODIC) and media != "youtube" else ""
     chips = ()
     more = 0
     if n > 1:
@@ -644,12 +729,14 @@ def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, 
         plan = stone_plan.plan(eps, next_index, media, key, source_of(first, work) == "hato")
         string = (plan, max(stone_plan.tightest(plan), stone_plan.ahead(plan)))
     return Row(key=key, index=index, tier=tier, work_id=first.get("work_id"), piece_id=first.get("piece_id"),
-               media=media, media_word=word, verb=VERB[word], title=title, title_ep=nxt.label if (n > 1 or media in EPISODIC) and media != "youtube"
-               else "", line=line, source=source_of(first, work), n_files=n, n_watched=n_watched, pct=pct,
+               media=media, media_word=word, verb=VERB[word], title=title, title_ep=title_ep,
+               line=line, source=source_of(first, work), n_files=n, n_watched=n_watched, pct=pct,
                pct_tone=pct_tone(pct), n_new=n_new, status=st, mark=mark, episodes=tuple(eps), next_index=next_index,
-               studying=studying, date=day_label(stamp) if finished else "", cover_title=work.get("title") or title,
+               studying=studying, date=day_label(stamp) if finished else "",
+               cover_title=(names[_show_key(first)] if group else work.get("title") or title),
                accessible=accessible, description=line, chips=chips, more_chips=more, play_tip=nxt.play_tip,
-               can_play=nxt.can_play, string=string, cover=cover_of(work),
+               can_play=nxt.can_play, string=string, cover=cover_of(work), group=group,
+               works=tuple(dict.fromkeys(it["work_id"] for it in piece if it.get("work_id") is not None)),
                cards_out=any(it.get("in_learning_order", 1) == 0 for it in piece))     # --- W3.2 Q4
 
 
@@ -698,40 +785,85 @@ class RowCache:
         self.rows = self._next
 
 
+def _is_group(meta, piece):
+    """Whether `piece` reads as a group (LM11b G1): its feed piece is of kind 'group' and holds two shows or more. LM11b
+    G5: one holding a single show is that show's run, as the store makes it (`_settle_kinds`) — read so while the
+    reader builds in a write the store hasn't made yet (`LibraryReader.expect`). One rule for its row, its Goal tile and
+    the Soon line (H-B4)."""
+    if meta is None or meta.get("kind") != "group":
+        return False
+    first = _show_key(piece[0])
+    return any(_show_key(it) != first for it in piece)
+
+
+def _group_meta(metas, piece):
+    """The feed's piece (`build(pieces=)`) of a piece of kind 'group', else None — its kind alone (a group the Soon line
+    cuts between its shows holds one show each side; Goal reads a group's runs together)."""
+    meta = metas.get(piece[0].get("piece_id")) if metas else None
+    return meta if meta is not None and meta.get("kind") == "group" else None
+
+
+def _group_of(metas, piece):
+    """The feed's piece of a piece that reads as a group (`_is_group`), else None (LM11b G1)."""
+    meta = _group_meta(metas, piece)
+    return meta if _is_group(meta, piece) else None
+
+
+_Sig = namedtuple("_Sig", "n line_n hero cards mining in_top guess connect")
+#   a cached row's signature (`_cached_row`), read by name: read by place, the fast path once took Connect's part
+#   (the last, added in P4.1 L2) for the type guess and kept a row whose guess had moved
+
+
+def _same(a, b):
+    """A row's makings beside its items — its work, or a group's (meta, works…) — the same objects as last time."""
+    return a is b or (type(a) is tuple and type(b) is tuple and len(a) == len(b) and all(x is y for x, y in zip(a, b)))
+
+
+def _guess(guessed, work):
+    return guessed.of(work) if guessed is not None and work and work.get("media_type") is None else None
+
+
 def _cached_row(cache, index, tier, piece, works, numbers, cards, mining, in_top, line_n, finished, guessed, hero,
-                connect=None, soon_from=None, soon_piece=None):
+                connect=None, soon_from=None, soon_piece=None, meta=None):
+    """`meta`: a group's piece from the feed (LM11b G1), else None."""
     if cache is None:
-        row = _row(index, tier, piece, works, numbers, cards, mining, in_top, line_n, finished, guessed, connect)
+        row = _row(index, tier, piece, works, numbers, cards, mining, in_top, line_n, finished, guessed, connect, meta)
         row = _as_hero(row) if hero else row
         return row._replace(soon_from=soon_from, soon_piece=soon_piece) if soon_from is not None else row  # P-LF-16
     first = piece[0]
     work = works.get(first.get("work_id"))
+    if meta is None:
+        made = work
+        # a title nobody typed: its guess is read from all its files, so another piece's new file can move it (reviews
+        # 2026-10-08, the Haiku pass: a cached row kept the old type)
+        guess = _guess(guessed, work)
+    else:                                            # LM11b G1: a group is its piece's meta and every show's work
+        group_works = tuple(works.get(w) for w in dict.fromkeys(it.get("work_id") for it in piece))
+        made = (meta,) + group_works
+        guess = tuple(_guess(guessed, w) for w in group_works)
     key = (tier, finished, first.get("piece_id"), first["id"])
     hit = cache.rows.get(key)
-    same_items = hit is not None and hit[1] is work and len(hit[2]) == len(piece) and \
+    same_items = hit is not None and _same(hit[1], made) and len(hit[2]) == len(piece) and \
         all(a is b for a, b in zip(hit[2], piece))
-    # a title nobody typed: its guess is read from all its files, so another piece's new file can move it (reviews
-    # 2026-10-08, the Haiku pass: a cached row kept the old type)
-    guess = guessed.of(work) if guessed is not None and work and work.get("media_type") is None else None
-    if same_items and cache.same_global and hit[0][2] == hero and hit[0][-1] == guess:
+    if same_items and cache.same_global and hit[0].hero == hero and hit[0].guess == guess:
         sig = hit[0]                                 # nothing global moved: the same objects are the same row
     else:
-        sig = (len(piece), line_n, hero, tuple(cards.get(it["id"], 0) for it in piece),
-               tuple(it["id"] in mining for it in piece), tuple(it["id"] in in_top for it in piece), guess,
-               None if connect is None else tuple(connect.get(it["id"]) for it in piece))     # --- P4.1 L2
+        sig = _Sig(len(piece), line_n, hero, tuple(cards.get(it["id"], 0) for it in piece),
+                   tuple(it["id"] in mining for it in piece), tuple(it["id"] in in_top for it in piece), guess,
+                   None if connect is None else tuple(connect.get(it["id"]) for it in piece))     # --- P4.1 L2
     if same_items and hit[0] == sig and (hit[3].soon_from, hit[3].soon_piece) == (soon_from, soon_piece):  # same cut
         row = hit[3]
         if row.index != index:
             row = row._replace(index=index)
         cache.hits += 1
     else:
-        row = _row(index, tier, piece, works, numbers, cards, mining, in_top, line_n, finished, guessed, connect)
+        row = _row(index, tier, piece, works, numbers, cards, mining, in_top, line_n, finished, guessed, connect, meta)
         if hero:
             row = _as_hero(row)
         if soon_from is not None:                    # P-LF-16
             row = row._replace(soon_from=soon_from, soon_piece=soon_piece)
         cache.misses += 1
-    cache._next[key] = (sig, work, tuple(piece), row)
+    cache._next[key] = (sig, made, tuple(piece), row)
     return row
 
 
@@ -988,6 +1120,24 @@ def _arrivals(cache, tier_rows, works, cards, estimates, guessed, changed, chang
 
 
 # --- W3.2 Q2: Goal's sheet ----------------------------------------------------------------------------------------- #
+def _goal_group(key, ps, works, guessed, meta):
+    """A group in Goal (LM11b G1, IK-7): a tile of its own, named and counted as its row is (`_group`), its cover its
+    first episode's show's — never folded into that show's tile. `ps`: every run of the group, in Goal's order (another
+    title may stand between them, H-B3) — its files one piece: one GoalPiece, brought up whole."""
+    piece = [it for p in ps for it in p]
+    first = piece[0]
+    work = works.get(first.get("work_id")) or {}
+    shows, kinds, names, title, line = _group(meta, piece, works, guessed)
+    ids = tuple(it["id"] for it in piece)
+    return GoalWork(key=key, work_id=first.get("work_id"), title=title, cover_title=names[_show_key(first)],
+                    media=kinds[_show_key(first)], source=source_of(first, work) or "disk", n_files=len(piece),
+                    line=line, pieces=(GoalPiece(item_ids=ids, line=line, piece_id=first.get("piece_id")),), item_ids=ids,
+                    folder=(first.get("rel_path") or "").rpartition("/")[0],
+                    tip=STRINGS["goal_tile_tip"].format(title=title, line=line, first=title),
+                    accessible=STRINGS["acc_goal_tile"].format(title=title, line=line), cover=cover_of(work),
+                    group=True)
+
+
 def _goal_work(key, ps, works, guessed):
     """One tile: a title's pieces in Goal (in Goal's order), titled as Current's rows are, *N episodes / videos /
     parts* over all its files, each piece's range (*Ep 1–12*)."""
@@ -1010,7 +1160,8 @@ def _goal_work(key, ps, works, guessed):
         nums = [] if media == "youtube" else \
             [episode_number(it.get("title") or (it.get("rel_path") or "").rsplit("/", 1)[-1]) for it in p]
         nums = [n for n in nums if n is not None]
-        pieces_.append(GoalPiece(item_ids=tuple(it["id"] for it in p), line=range_text(media, nums, len(p))))
+        pieces_.append(GoalPiece(item_ids=tuple(it["id"] for it in p), line=range_text(media, nums, len(p)),
+                                 piece_id=p[0].get("piece_id")))
     return GoalWork(key=key, work_id=first.get("work_id"), title=title, cover_title=work.get("title") or title,
                     media=media, source=source_of(first, work) or "disk", n_files=len(files), line=line,
                     pieces=tuple(pieces_), item_ids=tuple(it["id"] for it in files),
@@ -1020,15 +1171,20 @@ def _goal_work(key, ps, works, guessed):
                     cover=cover_of(work))           # --- W3.2 L3
 
 
-def goal_tiles(goal_items, works, guessed=None, before=None):
-    """Goal's tiles (`Goal.works`), in Goal's order: its pieces grouped by title (a piece with no title: by itself).
-    `before`: the last build's {key: (items, work, guess, tile)} — a title whose items and work are the same objects
-    and whose guess is equal gives back its tile (S19). -> (tiles, entries)."""
-    groups, order = {}, []
+def goal_tiles(goal_items, works, guessed=None, before=None, metas=None):
+    """Goal's tiles (`Goal.works`), in Goal's order: its pieces grouped by title (a piece with no title: by itself; a
+    group, LM11b G1: by itself, `metas` the feed's pieces). `before`: the last build's {key: (items, work, guess,
+    tile)} — a title whose items and work are the same objects and whose guess is equal gives back its tile (S19).
+    -> (tiles, entries)."""
+    groups, order, group_meta = {}, [], {}
     for p in pieces(goal_items):
         first = p[0]
-        key = f"w{first['work_id']}" if first.get("work_id") is not None else \
+        meta = _group_meta(metas, p)                 # its runs read together below (`_is_group`, H-B3 / H-B4)
+        key = f"p{first['piece_id']}" if meta is not None else \
+            f"w{first['work_id']}" if first.get("work_id") is not None else \
             f"p{first['piece_id']}" if first.get("piece_id") is not None else f"i{first['id']}"
+        if meta is not None:
+            group_meta[key] = meta
         if key not in groups:
             groups[key] = []
             order.append(key)
@@ -1038,14 +1194,21 @@ def goal_tiles(goal_items, works, guessed=None, before=None):
     for key in order:
         ps = groups[key]
         items = tuple(it for p in ps for it in p)
-        work = works.get(ps[0][0].get("work_id"))
-        guess = guessed.of(work) if guessed is not None and work and work.get("media_type") is None else None
+        meta = group_meta.get(key)
+        if meta is not None and not _is_group(meta, items):
+            meta = None                              # one show (H-B4): that show's run tile, as its row reads
+        if meta is None:
+            work = works.get(ps[0][0].get("work_id"))
+            guess = guessed.of(work) if guessed is not None and work and work.get("media_type") is None else None
+        else:                                        # a group: its meta and every show's work, as its row (G1)
+            group_works = tuple(works.get(w) for w in dict.fromkeys(it.get("work_id") for it in items))
+            work, guess = (meta,) + group_works, tuple(_guess(guessed, w) for w in group_works)
         old = before.get(key)
-        if old is not None and old[1] is work and old[2] == guess and len(old[0]) == len(items) and \
+        if old is not None and _same(old[1], work) and old[2] == guess and len(old[0]) == len(items) and \
                 all(a is b for a, b in zip(old[0], items)):
             tile = old[3]
         else:
-            tile = _goal_work(key, ps, works, guessed)
+            tile = _goal_work(key, ps, works, guessed) if meta is None else _goal_group(key, ps, works, guessed, meta)
         entries[key] = (items, work, guess, tile)
         tiles.append(tile)
     return tuple(tiles), entries
@@ -1054,7 +1217,7 @@ def goal_tiles(goal_items, works, guessed=None, before=None):
 
 def build(items, works, options, numbers=None, cards=None, mining=(), language="ja", mode="store", reason=None,
           loading=False, busy=False, cache=None, tiers=None, changed=None, changed_works=None, numbers_changed=None,
-          estimates=None, connect=None):
+          estimates=None, connect=None, pieces=None):
     """The window's view of the library (see the module's doc). `items` / `works`: {id: feed row}; `options`: the
     feed's {soon_line, mine_line, arrivals_on}; `numbers`: (version, {item_id: (known, counted, n_new)}) or the dict;
     `cards`: {item_id: count}; `mining`: item ids being mined now; `changed`: with `cache`, the item ids changed or gone
@@ -1064,7 +1227,8 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
     files, as the arrivals worker answers (W3.2 S1: a missing one leaves its row's number None); `connect`: Connect's
     feed (`app/connect/feed.Feed`, P4.1 L2 row 4.1.10) — its items' statuses on the rows and episodes (`_connected`)
     and its mining set beside `mining`; None: as without Connect; a Feed that is off (or not looked yet: `feed.NOT_LOOKED`)
-    — no Connect statuses, and no top line or *Waiting* (row 13: nothing mines by itself)."""
+    — no Connect statuses, and no top line or *Waiting* (row 13: nothing mines by itself); `pieces`: the feed's
+    {piece_id: {id, title, kind}} (LM11b G1) — a Current piece of kind 'group' is a group's row (`_row`)."""
     numbers_version = None
     if isinstance(numbers, tuple):
         numbers_version, numbers = numbers
@@ -1101,9 +1265,19 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
         cache.note_changed(changed)
     guessed = _Guesses(items, cache)
     rows = []
-    now_pieces, soon_pieces = pieces(tiers["now"]), pieces(tiers["soon"])
+    now_pieces, soon_pieces = _pieces(tiers["now"]), _pieces(tiers["soon"])
     soon_from = soon_piece = None
-    if now_pieces and soon_pieces and _same_show(now_pieces[-1][-1], soon_pieces[0][0]):
+    # LM11b G1: a group the line runs through is one piece in both tiers (Kura's LM11: one row, its key once) — at a
+    # show inside it too; a group never takes a run or another group beside it, nor a run a group (the store's
+    # `_fix_pieces`): the Soon line stays between them
+    straddle = False
+    if now_pieces and soon_pieces:
+        a, b = now_pieces[-1], soon_pieces[0]
+        if _group_meta(pieces, a) is not None or _group_meta(pieces, b) is not None:
+            straddle = a[0].get("piece_id") == b[0].get("piece_id")
+        else:
+            straddle = _same_show(a[-1], b[0])
+    if straddle:
         # P-LF-16: the Soon line falls inside this show — one row above the line, the line after it (tiers unchanged)
         soon_from, soon_piece = len(now_pieces[-1]), soon_pieces[0][0].get("piece_id")
         now_pieces[-1] = now_pieces[-1] + soon_pieces.pop(0)
@@ -1112,7 +1286,8 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
             cut = soon_from if tier == "now" and n == len(tier_pieces) - 1 else None
             rows.append(_cached_row(cache, len(rows) + 1, tier, piece, works, numbers, cards, mining, in_top,
                                     None if off else line_n, False, guessed, hero=not rows, connect=feed_items,
-                                    soon_from=cut, soon_piece=soon_piece if cut is not None else None))
+                                    soon_from=cut, soon_piece=soon_piece if cut is not None else None,
+                                    meta=_group_of(pieces, piece)))
     worst = worst_needs(rows[1:])
     if cache is not None:
         if worst == cache.worst:
@@ -1147,22 +1322,25 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
     else:
         goal_works = list(dict.fromkeys(r.get("work_id") for r in goal_items))   # in order, one pass (a list's `in`
         # was quadratic: ~90 ms a build at 20,000 files, bench 7)
-        covers = tuple((works.get(w) or {}).get("title") or "" for w in goal_works[:9])
+        # --- W3.2 Q2: the tiles (a title unchanged gives back its tile), every title watched, an untyped one's guess
+        tiles, g_entries = goal_tiles(goal_items, works, guessed, g_hit[4][3] if g_hit is not None else None,
+                                      pieces)                                        # LM11b G1: a group's tile
+        heads = [t.work_id for t in tiles]          # a title is a tile, by its key (H-B2: an untitled piece its own,
+        #                                             a group one): its first file's work for the strip's covers
+        covers = tuple((works.get(w) or {}).get("title") or "" for w in heads[:9])
         if goal_items:
-            g_line = STRINGS["goal_one"].format(files=thousands(len(goal_items))) if len(goal_works) == 1 else \
-                STRINGS["goal_line"].format(titles=len(goal_works), files=thousands(len(goal_items)))
+            g_line = STRINGS["goal_one"].format(files=thousands(len(goal_items))) if len(heads) == 1 else \
+                STRINGS["goal_line"].format(titles=len(heads), files=thousands(len(goal_items)))
         else:
             g_line = STRINGS["goal_empty"]
-        # --- W3.2 Q2: the tiles (a title unchanged gives back its tile), every title watched, an untyped one's guess
-        tiles, g_entries = goal_tiles(goal_items, works, guessed, g_hit[4][3] if g_hit is not None else None)
         old_goal = g_hit[4][0] if g_hit is not None else None
         if old_goal is not None and len(old_goal.works) == len(tiles) and \
                 all(a is b for a, b in zip(old_goal.works, tiles)):
             tiles = old_goal.works                       # every tile the same: the same tuple
-        goal = Goal(titles=len(goal_works), files=len(goal_items), covers=covers, line=g_line, tip=STRINGS["goal_tip"],
+        goal = Goal(titles=len(heads), files=len(goal_items), covers=covers, line=g_line, tip=STRINGS["goal_tip"],
                     works=tiles,
-                    cover_refs=tuple(cover_of(works.get(w)) for w in goal_works[:9]))        # W3.2 Q6
-        n_goal_works = len(goal_works)
+                    cover_refs=tuple(cover_of(works.get(w)) for w in heads[:9]))             # W3.2 Q6
+        n_goal_works = len(heads)
         g_untyped = tuple(w for w in goal_works if w in works and works[w].get("media_type") is None)
         _keep(cache, "goal", goal_items, goal_works, tuple((w, guessed.of(works[w])) for w in g_untyped),
               (goal, n_goal_works, g_untyped, g_entries))
@@ -1179,7 +1357,7 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
         finished, n_fin, _untyped, rows_kept = kept
         cache._next.update(rows_kept)                # its rows stay in the row cache for the next time it's built
     else:
-        fin_pieces = pieces(fin_items)
+        fin_pieces = _pieces(fin_items)
         before = set(cache._next) if cache is not None else None
         fin_rows = [_cached_row(cache, 0, "graduated", p, works, numbers, cards, mining, (), line_n, True, guessed,
                                 False, feed_items) for p in fin_pieces]
@@ -1292,7 +1470,8 @@ def _row_from(data):
                 for e in r.episodes)
     chips = tuple(Chip(*c) for c in r.chips)
     r = r._replace(status=st, mark=mk, episodes=eps, chips=chips,
-                   cover=CoverRef(*r.cover) if r.cover else None)                  # W3.2 Q6
+                   cover=CoverRef(*r.cover) if r.cover else None,                  # W3.2 Q6
+                   works=tuple(r.works or ()))                                     # LM11b G1
     plan = stone_plan.plan(r.episodes, r.next_index, r.media, r.key, r.source == "hato")     # planned again, not kept
     return r._replace(string=(plan, max(stone_plan.tightest(plan), stone_plan.ahead(plan))))
 

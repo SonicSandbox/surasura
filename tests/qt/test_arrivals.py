@@ -47,6 +47,10 @@ class ArrivalsWriter(FakeWriter):
     def remove(self, ids, label=None):
         return self._put("remove", ids, label)
 
+    def add_to_group(self, piece_id, piece_ids=(), item_ids=(), label=None):
+        return self._put("add_to_group", [], label, piece_id=piece_id, piece_ids=list(piece_ids),
+                         item_ids=list(item_ids))
+
     def _write(self, change):
         lib = self.library
         if change.op == "place":
@@ -506,6 +510,80 @@ def test_A2_28_an_arrival_dragged_onto_the_finished_well_is_recorded_finished(wo
     release_global(win, at)
     assert calls(writer, "set_tier") == [("set_tier", ids, {"tier": "graduated"})]
     assert strings.DRAG_TAKE_OUT in [b.text() for b in win.toasts.card.buttons if b.isVisible()]
+
+
+# --- LM11b G2 (IK-3): a tray file rested on a group joins it ------------------------------------------------------ #
+def _current_group(win, i, other_work=987654):
+    """Current's row `i` shown as a group of its show and another (G1's `group` / `works`)."""
+    view = win.page_widgets["current"].view_model
+    rs = list(view.rows)
+    rs[i] = rs[i]._replace(group=True, works=(rs[i].work_id, other_work))
+    win.show_library(view._replace(rows=type(view.rows)(rs)))
+    settle()
+    return win.page_widgets["current"].view_model.rows[i]
+
+
+def _middle(win, i):
+    lst = win.page_widgets["current"].list
+    return lst.viewport().mapToGlobal(lst.visualRect(lst.model().index(i, 0)).center())
+
+
+def _rest():
+    from app.qt import item_menu
+    QTest.qWait(item_menu.JOIN_REST_MS + 150)
+
+
+def test_G2_IK3_a_tray_file_rested_on_a_group_joins_it_with_one_add_to_group_toasted_with_undo(world):
+    seed, win, writer = world()
+    rows_ = win.page_widgets["current"].view_model.rows
+    i = next(k for k, r in enumerate(rows_) if k > 1 and r.piece_id is not None and r.source != "hato")
+    group = _current_group(win, i)
+    open_tray(win)
+    row = lift_row(win, 1)
+    ids = list(row.arrival.item_ids)
+    to = _middle(win, i)
+    move_global(win, to)
+    settle()
+    assert win.moves.running.target[0] == "list"                      # passing: a place in the list, as before
+    _rest()
+    assert win.moves.running.target == ("join", group.key)
+    assert win.page_widgets["current"].list.join_label == strings.JOIN_GROUP_LABEL
+    release_global(win, to)
+    assert calls(writer) == [("add_to_group", [], {"piece_id": group.piece_id, "piece_ids": [], "item_ids": ids})]
+    text = strings.ITEM_GROUPED_WITH.format(other=row.arrival.title, title=group.title)
+    assert wait_until(lambda: win.toasts.card.message == text, 5)
+    assert win.toasts.card.buttons, "its Undo"
+
+
+def test_G2_IK3_a_tray_file_rested_on_a_run_is_placed_there_as_before(world):
+    seed, win, writer = world()
+    rows_ = win.page_widgets["current"].view_model.rows
+    i = next(k for k, r in enumerate(rows_) if k > 1 and r.piece_id is not None and r.source != "hato")
+    open_tray(win)
+    row = lift_row(win, 1)
+    to = _middle(win, i)
+    move_global(win, to)
+    _rest()
+    assert win.moves.running.target[0] == "list"
+    release_global(win, to)
+    assert [c[0] for c in calls(writer)] == ["move"] and calls(writer)[0][1] == list(row.arrival.item_ids)
+
+
+def test_G2_IK3_after_its_show_finds_a_show_that_sits_inside_a_group(world, monkeypatch):
+    # the group's row names every show in it (Row.works): an arrival of its second show has a show in Current
+    seed, win, _w = world()
+    tray = open_tray(win)
+    view = win.page_widgets["current"].view_model
+    a = next(r.arrival for r in tray_rows(win) if r.arrival.work_id is not None)
+    others = [r for r in view.rows if r.work_id != a.work_id]
+    page = win.page_widgets["current"]
+    monkeypatch.setattr(page, "view_model", view._replace(rows=type(view.rows)(others)))
+    assert not tray._has_show(a)
+    grouped = others[2]._replace(group=True, works=(others[2].work_id, a.work_id))
+    rows_ = list(others)
+    rows_[2] = grouped
+    monkeypatch.setattr(page, "view_model", view._replace(rows=type(view.rows)(rows_)))
+    assert tray._has_show(a)
 
 
 # --- S19 and motion ----------------------------------------------------------------------------------------------- #

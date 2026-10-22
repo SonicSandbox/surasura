@@ -111,6 +111,7 @@ class LibraryReader:
         self._view = None
         # the reader thread's own copy of the library (touched only there)
         self._items, self._works, self._cards = {}, {}, {}
+        self._pieces = {}                  # LM11b G1: the feed's pieces {id: {id, title, kind}} (a group's kind and name)
         self._options = {}
         self._seen = self._epoch = None
         self._data_version = None
@@ -139,6 +140,13 @@ class LibraryReader:
         self._estimates = {}
         self._estimates_new = False
         # --- end W3.2 Q1
+        # --- LM11b G5: a window command not written yet ({item_id: tier}, `expect`), built in until the feed holds it
+        self._expected = {}
+        self._expected_new = None          # the window's newest, taken in by the next look
+        self._overlaid = {}                # id -> (its feed row, tier, ord, the row as built in): kept while the same
+        self._overlay_tiers = {}           # tier -> (reader's list, ids built in, list as built in, ids taken out)
+        self._cache_owed = None            # the store's key a view holding the expectation was built at (never cached)
+        # --- end LM11b G5
         # --- W3.2 B: the bell and the tree watch (`watch`), the folders they report synced on a worker of its own
         self.watch = watch
         self._lookout = None
@@ -176,6 +184,28 @@ class LibraryReader:
             self._estimates_new = True
         self._wake.set()
     # --- end W3.2 Q1
+
+    # --- LM11b G5
+    def expect(self, tiers):
+        """{item_id: tier} a command of the window's will write (*Move {show} to Finished*), from any thread: every
+        build reads those items in that tier until the feed holds them — together at its top in the order given, a
+        Finished one finished now — their rows by the view's own rule (`_row`), a busy store's wait included. None or
+        {}: forgotten (the window let go of its order). Looked at now."""
+        with self._lock:
+            self._expected_new = dict(tiers or {})
+        self._wake.set()
+
+    def _take_expected(self):
+        """The window's newest `expect`, taken in: its items and those it replaces built again -> whether it moved."""
+        with self._lock:
+            new, self._expected_new = self._expected_new, None
+        if new is None or new == self._expected:
+            return False
+        if self._build_changed is not None:
+            self._build_changed.update(set(new) | set(self._expected))
+        self._expected = new
+        return True
+    # --- end LM11b G5
 
     def hold(self):
         """A drag starts (E6): the feed is still read, but nothing is built or published until `release()`."""
@@ -240,6 +270,7 @@ class LibraryReader:
             self._wait()                            # W3.2 B: the bell, the watch or a retry (no watch: `poll`)
         self._unwatch()                             # W3.2 B
         try:
+            self._owed_cache()                          # LM11b H-T2: a command still waiting: the store's own view
             self._flush_cache()                         # the last view's cache, as the window closes
         except Exception:
             pass                                        # never in the way of closing (the store's handle below)
@@ -257,7 +288,9 @@ class LibraryReader:
         # files — so a reader a language switch dropped holds none of them, whoever still holds the reader. The last
         # view stays (`view()`: the window shows it until the next language's first view comes)
         self._items, self._works, self._cards, self._options = {}, {}, {}, {}
+        self._pieces = {}
         self._tiers, self._pos, self._dirty, self._moved_in = None, {}, set(), {}
+        self._overlaid, self._overlay_tiers = {}, {}
         self.row_cache = view_rows.RowCache()
         self._cache_due = None
 
@@ -303,6 +336,7 @@ class LibraryReader:
         with self._lock:                                # W3.2 Q1: new estimates from the window
             estimates_new, self._estimates_new = self._estimates_new, False
         estimates_new = estimates_new or self._connect_moved()      # P4.1 L2: a new Connect feed rebuilds the same way
+        estimates_new = self._take_expected() or estimates_new      # LM11b G5: and the window's expectation
         dv = h.data_version()
         cards_due = self._cards_stale and not held and time.monotonic() - self._cards_all_at >= CARDS_ALL_S
         if not changed_mode and dv == self._data_version and version == self._numbers_version \
@@ -323,6 +357,7 @@ class LibraryReader:
                 self._tell_gone(gone)
         cards = self._card_counts(h)
         changed = (feed["full"] or feed["items"] or feed["works"] or feed["gone"] or changed_mode
+                   or feed.get("pieces")                # LM11b G1: a group's kind or name
                    or self._options != options_before or version != self._numbers_version
                    or cards != self._cards or self._view is None or self._view.busy or self._view.cached or released
                    or estimates_new)                    # W3.2 Q1
@@ -350,9 +385,14 @@ class LibraryReader:
         if mode == "store" and self.cache_file:
             # written at the next look that finds nothing new, not now: the window is taking this view in at this
             # very moment, and the cache's JSON would hold Python's lock against it (speed round 5)
+            key = [self._store_id, feed["epoch"], feed["version"], version]
+            if self._expected:                          # LM11b G5: a view of what isn't written yet is never cached —
+                self._cache_owed = key                  # owed (H-T2): written once it settles, or at the stop
+                return
+            self._cache_owed = None
             if self._cache_due is None:
                 self._cache_due_at = time.monotonic()
-            self._cache_due = (view, [self._store_id, feed["epoch"], feed["version"], version])
+            self._cache_due = (view, key)
             if time.monotonic() - self._cache_due_at >= CACHE_LATEST_S:
                 self._flush_cache()                     # a store that never rests: written anyway, now and then
 
@@ -537,6 +577,7 @@ class LibraryReader:
         if feed["full"]:
             self._items = {r["id"]: r for r in feed["items"]}
             self._works = {w["id"]: w for w in feed["works"]}
+            self._pieces = {p["id"]: p for p in feed.get("pieces") or ()}       # LM11b G1
             self._tiers = None                          # sorted again in full at the next build
             self._changed_ids = None
             self._build_changed = None
@@ -564,6 +605,9 @@ class LibraryReader:
                         self._moved_in.setdefault(r.get("tier"), set()).add(r["id"])
             for w in feed["works"]:
                 self._works[w["id"]] = w
+            for p in feed.get("pieces") or ():          # LM11b G1: an equal piece keeps its object (its row cached)
+                if self._pieces.get(p["id"]) != p:
+                    self._pieces[p["id"]] = p
             if self._build_changed is not None:
                 self._build_changed.update(r["id"] for r in feed["items"])
                 self._build_changed.update(ident for kind, ident in feed["gone"] if kind == "item")
@@ -644,17 +688,81 @@ class LibraryReader:
                 numbers_changed = changed_since(self._built_numbers)
             except Exception:
                 numbers_changed = None
-        view = view_rows.build(self._items, self._works, self._options, numbers=(self._numbers_version, numbers),
+        items, tiers = self._items, (self._sorted_tiers() if self._items else None)
+        if self._expected:                              # LM11b G5: what the feed holds already is the feed's own
+            self._expected = {i: t for i, t in self._expected.items() if i in items and items[i].get("tier") != t}
+            if self._expected:                          # the rest read in their new tier, while it lasts
+                items, tiers = self._overlay(items, tiers)
+        if not self._expected:
+            self._overlaid, self._overlay_tiers = {}, {}
+        view = view_rows.build(items, self._works, self._options, numbers=(self._numbers_version, numbers),
                                cards=self._cards, mining=set(self.mining()), language=self.language, mode=mode,
                                reason=reason, loading=not rows_known, cache=self.row_cache,
-                               tiers=self._sorted_tiers() if self._items else None, changed=self._build_changed,
+                               tiers=tiers, changed=self._build_changed,
                                changed_works=self._build_works, numbers_changed=numbers_changed,
                                estimates=self._estimates,     # W3.2 Q1
-                               connect=connect)               # P4.1 L2
+                               connect=connect,               # P4.1 L2
+                               pieces=self._pieces)           # LM11b G1
+        view = view._replace(epoch=self._epoch)         # LM11b: a library rebuilt or reset lets the window's picks go
         self._built_numbers = self._numbers_version
         self._build_changed = set()                     # built: from here on, only what the feed changes
         self._build_works = set()
         return view
+
+    def _overlay(self, items, tiers):
+        """(LM11b G5) The expectation built in -> (items, tiers): each expected item in its new tier, together at that
+        tier's top in the order given (a Finished one finished now). H-W1 (S19): an overlaid row is the same dict while
+        its feed row is the same object at the same place (its row stays cached), and only the tiers it moves between
+        are made again — each the same list while the reader's and the rows built into it are (Goal's and Finished's
+        sections kept); the other tiers are the reader's own, never sorted again."""
+        expected = self._expected
+        top = {t: min(0.0, (tiers[t][0].get("ord") or 0.0) if tiers.get(t) else 0.0) for t in set(expected.values())}
+        now = None
+        built, made = {}, {}
+        for k, (i, t) in enumerate(expected.items()):
+            src = items[i]
+            at = top[t] - 1024.0 + k / (len(expected) + 1)
+            old = self._overlaid.get(i)
+            if old is not None and old[0] is src and old[1] == t and old[2] == at:
+                row = old[3]
+            else:
+                if now is None:
+                    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                row = dict(src, tier=t, ord=at, **({"graduated_at": now} if t == "graduated" else {}))
+            built[i] = (src, t, at, row)
+            made.setdefault(t, []).append(row)
+        self._overlaid = built
+        items = dict(items)
+        items.update((i, b[3]) for i, b in built.items())
+        out, lists, gone = dict(tiers), {}, frozenset(expected)
+        for t in set(made) | {b[0].get("tier") for b in built.values()}:
+            mine, src_list = made.get(t, []), tiers.get(t) or []
+            old = self._overlay_tiers.get(t)
+            # the ids taken out are part of the key — a second show expected out of the same tier list (two
+            # finishes in a row) has no row of its own there, and the first's filtered list kept it in
+            if old is not None and old[0] is src_list and old[3] == gone and len(old[1]) == len(mine) and \
+                    all(a is b for a, b in zip(old[1], mine)):
+                rows = old[2]
+            else:
+                rows = mine + [r for r in src_list if r["id"] not in expected]
+            lists[t] = (src_list, mine, rows, gone)
+            out[t] = rows
+        self._overlay_tiers = lists
+        return items, out
+
+    def _owed_cache(self):
+        """(H-T2) At the stop, a cache owed while the window's command still waits: the store's own view (built without
+        that command's rows) under the key the store held. A busy store's wait is unbounded (the window's moves are
+        queued, never dropped), so the cache is written here rather than skipped for good."""
+        if self._cache_owed is None or not self._expected or not self.cache_file or not self._items:
+            return
+        key, self._cache_owed = self._cache_owed, None
+        expected, self._expected = self._expected, {}
+        try:
+            view = self._build(self.numbers()[1], "store", None, rows_known=True)
+        finally:
+            self._expected = expected
+        self._cache_due = (view, key)
 
     def _busy(self, error):
         self._recheck = True                            # a failed read: ask the store's mode again next time
@@ -693,6 +801,8 @@ class LibraryReader:
         if not isinstance(data, dict) or data.get("version") != CACHE_VERSION or data.get("key") != self._key_now(h):
             return
         view = view_rows.from_cache(data.get("view"), language=self.language)
+        if view is not None:
+            view = view._replace(epoch=data["key"][1])  # the key matched: the store's epoch now
         if view is not None and self._view is None:
             self._publish(view)
 

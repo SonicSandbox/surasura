@@ -113,31 +113,48 @@ class MineActions(QObject):
         return [e.id for e in rows.asked_files("mine", episodes)]
 
     def mine_row(self, row, ids):
-        """*Mine now* / *Mine this* / Finished's *Mine* and *Mine it too*: the ask, or a non-video item's *Mine text*.
+        """*Mine now* / *Mine this* / Finished's *Mine* and *Mine it too*: the ask for the files Anki Miner can mine
+        (`videos_of`), the others left out and the toast saying so; none of them a video: the first one's *Mine text*.
         Nothing left to ask for: the bar says so."""
         ids = list(dict.fromkeys(ids))
         if not ids:
             self.win.say(strings.MINE_NOTHING)
             return None
-        if getattr(row, "media_word", "video") != "video":         # K67: Anki Miner mines video only
-            ep = next((e for e in row.episodes if e.id == ids[0]), row.episodes[0])
+        videos, other = videos_of(row, ids)
+        if not videos:
+            ep = other or row.episodes[0]
             return self.mine_text(ep.label, ep.rel_path)
-        return self._ask(strings.MINE_ASKED.format(title=row.title), (row.key,), ids)
+        text = strings.MINE_ASKED if len(videos) == len(ids) else strings.MINE_ASKED_VIDEOS
+        return self._ask(text.format(title=row.title), (row.key,), videos)
 
     def mine_ids(self, ids):
         """The arrivals' *Mine them too*: of `ids`, the files the rows' rule may ask for (P4.1 WF, S5), told by the
-        tray's own rows' episodes (a file the tray doesn't show isn't asked for); none left: the bar says so."""
+        tray's own rows' episodes (a file the tray doesn't show isn't asked for); none left: the bar says so. Of those,
+        the videos are asked for (`videos_of`, each tray row by its own files' types, as `mine_row`), the others left out
+        and the toast saying so; none of them a video: the first one's *Mine text*."""
         if self.off:                                 # Connect off: that is why nothing is asked, said first
             self.win.say(self.off)
             return None
         tray = getattr(self.win, "arrivals_tray", None)
-        known = {e.id: e for g in (getattr(tray, "groups", None) or ()) for a in g.rows for e in a.episodes}
+        arrivals = [a for g in (getattr(tray, "groups", None) or ()) for a in g.rows]
+        known = {e.id: e for a in arrivals for e in a.episodes}
         ids = self._askable([known[i] for i in dict.fromkeys(ids) if i in known])
         if not ids:
             self.win.say(strings.MINE_NOTHING)
             return None
-        text = strings.MINE_ASKED_ONE if len(ids) == 1 else strings.MINE_ASKED_N.format(n=len(ids))
-        return self._ask(text, (), ids)
+        videos, other = set(), None
+        for a in arrivals:
+            v, o = videos_of(a, [e.id for e in a.episodes if e.id in ids])
+            videos.update(v)
+            other = other or o
+        asked = [i for i in ids if i in videos]
+        if not asked:
+            return self.mine_text(other.label, other.rel_path)
+        if len(asked) < len(ids):
+            text = strings.MINE_ASKED_N_VIDEOS[len(asked) == 1].format(n=len(asked))
+        else:
+            text = strings.MINE_ASKED_ONE if len(ids) == 1 else strings.MINE_ASKED_N.format(n=len(ids))
+        return self._ask(text, (), asked)
 
     def _ask(self, text, keys, ids):
         """-> the writer's number, or None (Connect off: said in the bar; the store refused: the controller says)."""
@@ -223,6 +240,22 @@ class MineActions(QObject):
             service.answer(language, keys)
             return made
         bridge.run_in_worker(run, then=lambda made: needs._connect_done(_made_words(made)), failed=needs._failed)
+
+
+def videos_of(row, ids):
+    """K67 (IK S3: Anki Miner mines video only), one rule for one file and for many: of `ids`, the files that are
+    videos, each by its own type (`Episode.media_word`; the row's for a first screen's cache from before — LM11b: a
+    group holds several types) -> (their ids in order, the first other file's episode or None)."""
+    by = {e.id: e for e in row.episodes}
+    word = getattr(row, "media_word", "video")
+    videos, other = [], None
+    for i in ids:
+        ep = by.get(i)
+        if ((ep.media_word if ep is not None else None) or word) == "video":
+            videos.append(i)
+        elif other is None:
+            other = ep
+    return videos, other
 
 
 def _made_words(made):

@@ -25,7 +25,7 @@ from app.services.settings import freeze
 from app.settings_placement import OWNERS, PLACED
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-EVERYTHING = frozenset(catalog.MODULES) | {"koe_revealed"}
+EVERYTHING = frozenset(catalog.MODULES) | {"koe_revealed", "hato_found", "miner_found"}   # + row 13's tools
 NOTHING = frozenset()
 
 
@@ -198,7 +198,7 @@ def _other(row, settings, language):
     if row.kind == "tablets":
         return [v for v in row.options if v not in shown] or row.options[:1]
     if row.kind == "list":
-        return list(shown) + [r"D:\Anime\ぼっち・ざ・ろっく！"]
+        return list(shown) + [r"D:\Anime\ひとり・で・ぽっぷ！"]
     if row.id == "placing_rules":
         return ("hato", "top")
     if row.kind in ("choice", "cards", "select"):
@@ -377,7 +377,7 @@ def test_a_per_language_cap_keeps_the_other_language_and_merges_onto_the_file_at
 
 def test_per_language_video_folders_keep_the_other_language():
     row = catalog.ROW["connect_video_folders"]
-    ja_folder, zh_folder = r"D:\Anime\ぼっち・ざ・ろっく！", r"D:\剧集\甄嬛传"
+    ja_folder, zh_folder = r"D:\Anime\ひとり・で・ぽっぷ！", r"D:\剧集\云笺传"
     changes, update = catalog.change(row, {"connect_video_folders": [r"D:\Downloads"]}, "ja", [ja_folder])
     assert changes == {"connect_video_folders": {"ja": [ja_folder], "zh": [r"D:\Downloads"]}}
     on_file = {"connect_video_folders": {"ja": [], "zh": [zh_folder]}}
@@ -390,7 +390,7 @@ def test_blank_folder_lines_are_never_written_and_a_list_only_blank_lines_longer
     """A folder line left empty (or spaces) is no folder: it is dropped before the compare, so the list shown with one
     blank line more is the same list and nothing is written (S19)."""
     row = catalog.ROW["connect_video_folders"]
-    ja_folder = r"D:\Anime\ぼっち・ざ・ろっく！"
+    ja_folder = r"D:\Anime\ひとり・で・ぽっぷ！"
     changes, _update = catalog.change(row, {}, "ja", [ja_folder, "", "   "])
     assert changes["connect_video_folders"]["ja"] == [ja_folder]
     held = {"connect_video_folders": {"ja": [ja_folder], "zh": []}}
@@ -675,3 +675,73 @@ def test_the_licence_line_is_the_licence_files_first_and_copyright_lines(monkeyp
                                       encoding="utf-8")
     monkeypatch.setattr(credits, "_LICENCE", [])
     assert credits.licence_line() == "MIT License · Copyright (c) 2026 SonicSandbox"
+
+
+# --- row 13 (laptop fixes): the rows of a tool not here yet hide; a saved value is never touched --------------------- #
+LOOKED = EVERYTHING | {"looked"}
+NO_MINER = LOOKED - {"miner_found"}
+
+
+def test_placeholders_for_tools_not_built_yet_never_show_and_download_covers_stays():
+    """Row 13: jimaku (*coming with hato*), AniList (*coming later*) and More from Houseki (*coming later*) are words
+    with nothing behind them — hidden, whatever is found. Download covers (which does reach AniList) and hato's own
+    row stay. The rows stay in the catalog (strings, logos), so nothing they name is lost."""
+    for ctx in (LOOKED, frozenset()):
+        shown = _shown({}, "ja", ctx)
+        assert not {"jimaku", "anilist", "more_from_houseki"} & shown
+        assert {"hato", "covers_download", "anki_miner"} <= shown
+    assert {"jimaku", "anilist", "more_from_houseki"} <= set(catalog.ROW)
+
+
+def test_make_cards_for_me_waits_for_anki_miner_as_one_line_that_says_so():
+    """Row 13: Anki Miner found → *Make cards for me* (Connect's switch), no needs line. Not found and Connect off →
+    the switch hides and one line says it needs Anki Miner (the wizard's ORDER_OFF) — only once the look answered, so
+    a learner with Anki Miner never sees it flash. Not found but Connect already on → the switch stays: it is the
+    learner's way off, and the saved `connect_enabled` is never flipped by hiding."""
+    found = _shown({}, "ja", LOOKED)
+    assert "connect_enabled" in found and "connect_needs_miner" not in found
+    missing = _shown({}, "ja", NO_MINER)
+    assert "connect_enabled" not in missing and "connect_needs_miner" in missing
+    before_look = _shown({}, "ja", EVERYTHING - {"miner_found"})
+    assert "connect_enabled" not in before_look and "connect_needs_miner" not in before_look
+    on = _shown({"connect_enabled": True}, "ja", NO_MINER)
+    assert "connect_enabled" in on and "connect_needs_miner" not in on
+    assert {"connect_mine_words", "mine_line"} <= on                       # Connect's own rows follow its switch
+    row = catalog.ROW["connect_needs_miner"]
+    assert row.section == "anki" and row.keys == () and row.label == "Make cards for me"
+    assert "Anki Miner" in row.help and row.tip
+
+
+def test_B2_7_one_look_says_which_tools_are_here_and_one_rule_when_make_cards_is_offered(monkeypatch, tmp_path):
+    """B2-7 / IK2-3: hato's and Anki Miner's presence is one look (`services.tools_found`) — Settings' gates, hato's
+    row, Needs you and Anki Miner's card ask it — and *Make cards for me* is offered by one rule the wizard shares:
+    Anki Miner installed (any fuller look's state but missing), or the switch already on (M3: its way off)."""
+    from app import tools_entry
+    from app.connect import anki_miner
+    from app.qt import settings_live, settings_page
+    from app.services import tools_found as T
+    monkeypatch.setattr(tools_entry, "read", lambda tool: {"version": "1.2"} if tool == "hato" else None)
+    exe = tmp_path / "AnkiMiner.exe"
+    exe.write_bytes(b"")
+    found = T.tools_found({"connect_anki_miner_path": str(exe)})
+    assert found == T.Found(hato=True, miner=T.INSTALLED) and T.hato_version() == "1.2"
+    assert settings_page._tools_found({"connect_anki_miner_path": str(exe)}) == {"hato_found", "miner_found"}
+    assert settings_live.read_hato() == "1.2"
+    monkeypatch.setattr(tools_entry, "read", lambda tool: None)
+    monkeypatch.setattr(anki_miner, "find", lambda settings: None)
+    assert T.tools_found({}) == T.Found(hato=False, miner=T.MISSING) and settings_page._tools_found({}) == set()
+
+    def broken(_settings):
+        raise OSError("stand-in: the look failed")
+    monkeypatch.setattr(anki_miner, "find", broken)
+    said = []
+    assert T.tools_found({}, log=said.append).miner == T.MISSING and said    # absent, and said; never a raise
+    # the one scale for a fuller look (the wizard's states, the card's) and the one rule
+    assert [T.miner_level(s) for s in (None, "missing", "too-old", "needs-setup", "setup", "ready")] == [
+        T.MISSING, T.MISSING, T.INSTALLED, T.INSTALLED, T.INSTALLED, T.READY]
+    assert [T.make_cards_shown(level) for level in (T.MISSING, T.INSTALLED, T.READY)] == [False, True, True]
+    assert T.make_cards_shown(T.MISSING, on=True)
+    # the wizard's answer (WZ-4): ready only, whatever the switch
+    assert [T.make_cards_shown(level, ready=True) for level in (T.MISSING, T.INSTALLED, T.READY)] == [
+        False, False, True]
+    assert not T.make_cards_shown(T.INSTALLED, on=True, ready=True)

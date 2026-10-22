@@ -145,12 +145,14 @@ def item_key(item_id):
 
 # --- the entries ----------------------------------------------------------------------------------------------------- #
 def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(), asks=(), answered=frozenset(),
-            mine_line=20, offers=frozenset(), cards_on=False):
+            mine_line=20, offers=frozenset(), cards_on=False, miner_found=True):
     """The page's entries in order (see the module's doc). `view`: the reader's `View` (None: no library); `failures`:
     `status` Entries (text, at, seen); `connect`: one language's Connect record (`read_connect`; None: Connect off);
     `seen` / `answered`: `read_seen` / `read_answered`; `offline_roots`: `find_offline`'s Roots; `asks`: `asks_of`'s
     (or `Store.rename_asks()` as it is: candidates by id); `offers`: `read_offers` (D1's line); `cards_on`: Connect's
-    switch (`connect_enabled`, setup's page 5) — on, D1's line asks only about these episodes (its `_on` actions)."""
+    switch (`connect_enabled`, setup's page 5) — on, D1's line asks only about these episodes (its `_on` actions);
+    `miner_found`: Anki Miner is installed (`anki_miner.find`) — without it D1's line waits, kept offered (row 13: its
+    cards could never be made)."""
     seen, answered = frozenset(seen or ()), frozenset(answered or ())
     rows = tuple(view.rows) if view is not None and view.mode == "store" else ()
     by_id = {e.id: (r, e) for r in rows for e in r.episodes}
@@ -186,7 +188,7 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
         if group in novideo:
             shows.append(_video_entry(group, novideo[group], seen, mine_line))
     out = []
-    if FIRST_CARDS in frozenset(offers or ()) and FIRST_CARDS not in answered:
+    if FIRST_CARDS in frozenset(offers or ()) and FIRST_CARDS not in answered and miner_found:
         out.append(_first_cards_entry(rows, seen, mine_line, cards_on))
     bulk = _bulk(shows)
     if bulk is not None:

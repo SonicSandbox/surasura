@@ -47,6 +47,10 @@ WORDS["untimed"] = UNTIMED_WARNING
 OFF_CONNECT = "Make cards for me is off: Connect makes no cards."
 OFF_AUTOMATION = "Automation is off: Connect makes no cards until you turn it back on."
 UNREADABLE = "Connect's status can't be read just now."
+# Before the window's first look (laptop fixes B2-8, Michi's call): Connect not known to be on — `on` False, so the rows
+# show no top line and no *Waiting* until a look finds it on (no flash of them with Connect off). Its `line` None: the
+# status line never shows it (that line is the look's own)
+NOT_LOOKED = Feed(on=False, mining=frozenset(), items={}, line=None, state="unknown", unseen=0, updating=False)
 
 
 def _off(settings):
@@ -114,8 +118,9 @@ class Provider:
         self.on_change = None
 
     def latest(self):
-        """The Feed the last look found, or None before any (no stones: the view as without Connect). No read."""
-        return self._latest
+        """The Feed the last look found, or `NOT_LOOKED` before any (Connect not known on: `Feed.on` the one test).
+        No read."""
+        return self._latest if self._latest is not None else NOT_LOOKED
 
     def feed(self):
         """The Feed now (`_look`), kept as `latest()`: a Feed equal to the last is the last object (S19 — off, a

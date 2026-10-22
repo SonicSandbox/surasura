@@ -3,7 +3,7 @@
 The window, edge to edge under Windows' own title bar (n1); the header (the mark, the wordmark, the subline); the tabs
 (Current · Finished · Needs you · Settings) over one page each; the bottom bar (what runs, the newest command-line
 failure, Connect's line when it exists). W3.1a's frame (`frame.py`): the header + tabs one band with the vein under the
-current tab and the jobs' hairline along its foot, the level ▾ and its pop (Generate, *Open your journey*), the edges
+current tab and the jobs' hairline along its foot, the level ▾ and its pop (Generate, *Open your journey*) with *Journey ↗* beside it, the edges
 baked onto the content, the footer's emerald (the AnkiWeb mark's words in its hover) and known corner, and Current's
 Goal dock (its wells for the drag). Given a library (`Services(library=…)`: W2.2's reader),
 Current, Finished and Needs you show it (`screens.py`, display only until W3.1 / W3.2); without one, and Settings until
@@ -906,6 +906,7 @@ class _Duties:
     def __init__(self):
         self.module = None
         self.generate = self.journey = self.help = self.known = self.anki = self.level = self.update_mark = None
+        self.journey_button = None                                 # the header's *Journey ↗*, beside the level ▾
         self.sheet = self.cards = self.journey_dot = self.pop = None
         self.level_text = self.level_tip = strings.LEVEL_WAITING   # W3.1a: the ▾'s words and the level's tip
         self.previews_busy = self.previews_again = False           # W3.1b: the pop's numbers, one read at a time,
@@ -981,6 +982,7 @@ class ShellWindow(QMainWindow):
         self.bridge.status_changed.connect(self.show_status)
         self._jobs = ()                                   # the registry's newest snapshot (E20: what the close waits for)
         self._quit = None                                 # None · "waiting" (E20: an Anki write ends first) · "ready"
+        self.restart_asked = False                        # *Restart now* (text size): main starts the program again
         self._quit_line = strings.QUIT_FINISHING          # the bar's one line while it waits
         self._quit_timer = None
         self.bridge.jobs_changed.connect(self._jobs_changed)
@@ -989,6 +991,7 @@ class ShellWindow(QMainWindow):
         self._replan_waited = True                        # E20: the re-order host idle (or not waited for) at the close
         self._d29 = True                                  # D29 for the journey dot's tooltip, read on a worker
         self._d29_asked = 0                               # ... and the newest read asked (an older answer is dropped)
+        self._journey_opening = False                     # an open on its worker: a second click waits for it
         self.duties = None                                # W3.5: the duties' controls, once the duties are attached
         self.show_status(services.status.snapshot())
         # --- W2.2: the library (the reader's views, queued to this thread) ---------------------------------------- #
@@ -1886,6 +1889,18 @@ class ShellWindow(QMainWindow):
         d.journey.setEnabled(False)                     # until a journey is found on disk: hidden meanwhile
         d.journey.setVisible(False)
         d.journey.clicked.connect(self._open_journey)
+        # laptop fixes (Sonic: "the journey should never automatically pop up … a button by auto … to open the
+        # journey"): *Journey ↗* beside the ▾, the header's own button look (as ?); shown while one is on disk
+        d.journey_button = QToolButton(self.header)
+        d.journey_button.setObjectName("headjourney")
+        d.journey_button.setText(strings.HEADER_JOURNEY)
+        d.journey_button.setToolTip(strings.JOURNEY_NONE_TIP)
+        d.journey_button.setAccessibleName(strings.HEADER_JOURNEY_NAME)
+        d.journey_button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        d.journey_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        d.journey_button.setEnabled(False)
+        d.journey_button.setVisible(False)
+        d.journey_button.clicked.connect(self._open_journey)
         d.help = QToolButton(self.header)
         d.help.setText(strings.HELP)
         d.help.setToolTip(strings.HELP_TIP)
@@ -1911,6 +1926,7 @@ class ShellWindow(QMainWindow):
         # --- W3.2 Q3: the level ▾ before + Add, ? after it
         header_row = self.header.layout()
         header_row.insertWidget(header_row.indexOf(self.add_stone), d.level)
+        header_row.insertWidget(header_row.indexOf(self.add_stone), d.journey_button)    # right of the ▾ (laptop fixes)
         header_row.addWidget(d.help)
         # --- end W3.2 Q3
         self._paint_level()
@@ -2058,27 +2074,36 @@ class ShellWindow(QMainWindow):
                              failed=lambda info: self._show_journey(False))
 
     def _show_journey(self, exists):
-        b = self.duties.journey
         exists = bool(exists)
-        if b.isEnabled() != exists:
-            b.setEnabled(exists)
-            b.setVisible(exists)                           # W3.1a: in the pop only while there is one to open
-            b.setToolTip(strings.JOURNEY_TIP if exists else strings.JOURNEY_NONE_TIP)
-            if self.duties.pop.isVisible():
-                self.duties.pop.place()
+        for b in (self.duties.journey, self.duties.journey_button):
+            if b.isEnabled() != exists:
+                b.setEnabled(exists)
+                b.setVisible(exists)                       # W3.1a: shown only while there is one to open
+                b.setToolTip(strings.JOURNEY_TIP if exists else strings.JOURNEY_NONE_TIP)
+        if self.duties.pop.isVisible():
+            self.duties.pop.place()
 
     def _open_journey(self, *_checked, asked=False):
-        """*Open your journey ↗* in the pop — and (`asked`, W3.1a S5) Up Next's *N new words ↗*: with none on disk the
-        pop's entry goes, and a click from Up Next says why in the bar."""
+        """*Journey ↗* in the header, *Open your journey ↗* in the pop — and (`asked`, W3.1a S5) Up Next's *N new
+        words ↗*: with none on disk the entries go, and a click from Up Next says why in the bar. The only ways the
+        journey opens: a Generate writes it and never opens it (laptop fixes). A click while one opens is dropped."""
+        if self._journey_opening:
+            return
+        self._journey_opening = True
+
         def done(opened):
+            self._journey_opening = False
             if opened:
                 return
             if self.duties is not None:
                 self._show_journey(False)
             if asked:
                 self.say(strings.JOURNEY_NONE_TIP)
-        bridge.run_in_worker(self.services.open_journey, then=done,
-                             failed=lambda info: self.say(strings.JOURNEY_FAILED.format(why=info[0])))
+
+        def failed(info):
+            self._journey_opening = False
+            self.say(strings.JOURNEY_FAILED.format(why=info[0]))
+        bridge.run_in_worker(self.services.open_journey, then=done, failed=failed)
 
     # the bar's marks
     def _show_automation(self, state):
@@ -2327,6 +2352,18 @@ class ShellWindow(QMainWindow):
         self._apply_sizes()
         self.update()
         return ms
+
+    def restart(self):
+        """*Restart now* (Settings › Text size; laptop fixes row 15): the window closes the quit's way — what can't
+        stop part-way ends first (E20), the window state is saved (size, place, this tab), the settings written — and
+        `main` starts the same program again once the quit is over, the store's close included (`relaunch`). Offered
+        only while no Generate runs (`generating`)."""
+        self.restart_asked = True
+        self.close()
+
+    def generating(self):
+        """Whether a Generate waits or runs (the registry's newest snapshot): a quit now would stop it (B2-3)."""
+        return jobs_module.generating(self._jobs)
 
     # --- overlays --------------------------------------------------------------------------------------------- #
     def register_overlay(self, overlay):
@@ -2893,8 +2930,31 @@ def main(argv=None):
             services.shutdown(release=instance.release)   # the claim goes before the store's close trigger
         finally:
             instance.release()                            # (once: done already unless the quit failed before it)
+            if window.restart_asked:                      # *Restart now* (`ShellWindow.restart`): the new start only
+                relaunch(argv)                            # once the store's close has ended (or its wait ran out, B2-4)
             quiet_exit(gone=(window,))                    # W3.4: nothing of Qt's or a worker's left for the teardown
     return code
+
+
+def relaunch(argv):
+    """The same program started again, detached (laptop fixes row 15: *Restart now*): the frozen program with its own
+    arguments, or this Python with the script `argv` names (app_entry.py from source), from the same folder.
+    -> the Popen, or None (logged: the window just doesn't come back)."""
+    import subprocess
+    if getattr(sys, "frozen", False):
+        args = [sys.executable] + list(argv[1:])
+    elif os.path.abspath(argv[0]) == os.path.abspath(__file__):        # `python -m app.qt.shell`
+        args = [sys.executable, "-m", "app.qt.shell"] + list(argv[1:])
+    else:
+        args = [sys.executable, os.path.abspath(argv[0])] + list(argv[1:])
+    flags = 0x00000008 | 0x00000200 if sys.platform == "win32" else 0   # DETACHED_PROCESS | NEW_PROCESS_GROUP
+    try:
+        return subprocess.Popen(args, creationflags=flags, close_fds=True, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                start_new_session=(sys.platform != "win32"))
+    except (OSError, ValueError) as e:
+        applog.log("shell", f"restart: the new start failed: {e!r}")
+        return None
 
 
 def quiet_exit(workers_ms=QUIT_WORKERS_MS, join_s=QUIT_THREAD_JOIN_S, gone=()):

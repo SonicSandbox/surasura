@@ -17,6 +17,8 @@ CHANGE = "Change ›"
 CHANGE_TIP = "Go to {section}"
 COMING_LATER = "coming later"
 COMING_WITH_HATO = "coming with hato"
+SET_UP_MINER = "Set up Anki Miner ›"                                  # row 13: the needs-Anki-Miner line's door
+SET_UP_MINER_TIP = "Go to Anki Miner in Connections: install it, or show Surasura where it is"
 CONNECTED = "connected"
 NOT_CONNECTED = "not connected"
 CHECK = "Check"
@@ -147,6 +149,10 @@ ROWS = {
                         "Surasura Connect: when you place an episode at the top of Current, Anki Miner makes its cards "
                         "and Surasura orders them. Needs Anki and Anki Miner. Nothing placed before you turn it on",
                         "connect make cards mine automatically anki miner"),
+    # row 13 (laptop fixes): *Make cards for me* while Anki Miner isn't found (and Connect is off)
+    "connect_needs_miner": ("Make cards for me", "Needs Anki Miner: set it up in Connections",
+                            "Surasura Connect makes your cards with Anki Miner. Once it is installed, this switch "
+                            "appears here", "connect make cards mine automatically anki miner needs"),
     "connect_mine_words": ("Words to make cards from", "", "Which words of an episode become cards",
                            "words to make cards from mine mode which words all unknown i+1 list"),
     "mine_line": ("Mine automatically", "The files at the top of Current mine themselves the moment they’re placed",
@@ -428,7 +434,7 @@ ROWS = {
                         "add frequency list"),
 
     # App
-    "text_size": ("Text size", "Applied the next time Surasura starts", "The window's text size",
+    "text_size": ("Text size", "Applied when Surasura restarts: it offers to at once", "The window's text size",
                   "text size font bigger smaller read zoom restart"),
     "app_motion": ("Motion",
                    "Follow Windows: as Windows’ Show animations is set. Reduced: nothing slides, rows jump into place, "
@@ -537,6 +543,15 @@ CREDITS_DONE = "Done"
 CREDITS_DONE_TIP = "Closes the credits (Esc)"
 CREDITS_README_ALSO = "README's Data Credits also names: {names}"
 OFFER_AGAIN_NAME = "Offer the skipped version again"
+# *Text size*: applied when Surasura starts again, so it asks at once (laptop fixes, row 15)
+TEXT_SIZE_RESTART_ASK = "Restart now to apply?"
+TEXT_SIZE_RESTART_BODY = "{size} text shows once Surasura starts again. It reopens here, at the same size and place."
+# ... and while a Generate runs nothing is asked: a quit would stop it and nothing starts it again (B2-3)
+TEXT_SIZE_AFTER_GENERATE = "Restart Surasura once Generate finishes to apply"
+TEXT_SIZE_RESTART_YES = "Restart now"
+TEXT_SIZE_RESTART_YES_TIP = "Closes Surasura and opens it again with the new text size"
+TEXT_SIZE_RESTART_NO = "Later"
+TEXT_SIZE_RESTART_NO_TIP = "Keep working: the new size shows the next time Surasura starts"
 # Export: the format pop, the outcome in the bar
 EXPORT = "Export"
 COVERS_REMOVE = "Remove"                    # --- W3.2 L3: *Remove downloaded covers*' button

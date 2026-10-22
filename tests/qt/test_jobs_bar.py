@@ -1269,6 +1269,8 @@ def test_main_hands_its_claim_to_the_quit_before_the_stores_close_trigger(qapp, 
             pass
 
     class Window:
+        restart_asked = False                           # as the real window: no *Restart now* asked (text size)
+
         class first_frame:
             @staticmethod
             def connect(_slot): pass

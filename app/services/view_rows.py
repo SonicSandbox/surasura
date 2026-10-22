@@ -5,11 +5,13 @@ From the store's feed rows (items and works by id, `FEED_ITEM_FIELDS` / `FEED_WO
 line, the mine line), the plan's numbers per item, each item's cards and the items being mined now, `build` makes one
 frozen `View`:
 - **Current** = NOW then Soon, in `(ord, id)`; **a row is a piece**: one contiguous run of one work's items in one tier
-  (by `piece_id`; a run without one by its work, then its folder: 3.0-dev's stores before L3.1 seeded pieces).
+  (by `piece_id`; a run without one by its work, then its folder: 3.0-dev's stores before L3.1 seeded pieces) — but a
+  show the Soon line runs through is one row, above the line (`soon_from`, P-LF-16: the tiers stay per file).
 - **The hero** is Current's first row, its *Up next* the first episode not watched (02 §2.2).
 - **The top-20 line** follows the store's mine line: the top *n* **available** files of Current mine themselves
   (`_mine_ids`); the line is drawn after the row holding the *n*-th, and not at all with fewer (the mock: none under 20).
-  **The Soon line** is drawn where Soon starts (the store keeps the tiers on its line, a count of files).
+  **The Soon line** is drawn where Soon starts (the store keeps the tiers on its line, a count of files) — after a show
+  it runs through, never inside it.
 - ***% known*** is one number everywhere (QT-E8, G1.2-4): known tokens ÷ counted tokens, summed over the piece (never a
   mean of per-file percents); none before a Generate (an em dash, never 0 %). ***N new*** is the list words the piece is
   first to bring (summed).
@@ -109,6 +111,14 @@ Goal = namedtuple("Goal", Goal._fields + ("cover_refs",), defaults=tuple(Goal._f
 # --- W3.2 L3: a Goal tile's cover record (the sheet paints its picture)
 GoalWork = namedtuple("GoalWork", GoalWork._fields + ("cover",), defaults=(None,))
 # --- end W3.2 L3
+# --- P-LF-16: `soon_from`, the index of the first Soon file of a show the Soon line runs through (the store's line is a
+# count of files, so it can fall inside a show): the window never splits a show at the line (Sonic, 2026-10-21: "it
+# should show after the series in the UI and a soon show should be added after that series") — the show is one row
+# above the line, its files from `soon_from` on still Soon for the count and Generate (where a drop after it lands:
+# `app/qt/drag.tail_tier`). None on every other row; before `string`, which stays last. `soon_piece`: those Soon
+# files' own piece (a piece is in one tier), what ✂ *Split here* splits among them (`split_piece`, B2-2)
+Row = namedtuple("Row", Row._fields[:Row._fields.index("string")] + ("soon_from", "soon_piece") + ("string",),
+                 defaults=tuple(Row._field_defaults.values())[:-1] + (None, None, None))
 
 
 def cover_of(work):
@@ -135,6 +145,8 @@ STRINGS = {
     "tip_waiting": "In your top {line}: it mines by itself, in turn",
     "tip_mine_rest": "{k}/{n} mined · the rest isn't in your top {line} yet",
     "tip_mine": "Not in your top {line}: it isn't mined yet",
+    # row 13 (laptop fixes): Connect off — no top line, so no "top" in the words either
+    "tip_mine_rest_off": "{k}/{n} mined", "tip_mine_off": "It isn't mined yet",
     "tip_no_media": "No {word} on disk{top}\n• Link one for pictures and audio, or mine the text on its own",
     "tip_no_media_top": " — it's in your top {line}, so it's waiting for one",
     "tip_removed": "Its {word} was removed after it was mined. The cards keep their pictures and audio",
@@ -334,6 +346,41 @@ def ordered_tier(items, tier):
     return rows
 
 
+def _same_show(a, b):
+    """Whether two items are of one show: one work; without one, one folder — whatever their pieces (the NOW and Soon
+    runs of a show the Soon line cuts are two pieces, a piece being in one tier: the row keeps the NOW piece's id, its
+    Soon files their own, `soon_piece`)."""
+    if a.get("work_id") is not None or b.get("work_id") is not None:
+        return a.get("work_id") == b.get("work_id")
+    return a.get("parent_folder") is not None and a.get("parent_folder") == b.get("parent_folder")
+
+
+def split_piece(row, k):
+    """✂ *Split here* before the row's `k`-th episode (0-based), by that episode's own piece: a show the Soon line runs
+    through holds two (`piece_id` up to `soon_from`, `soon_piece` from it) -> (piece_id, the episode's place in that
+    piece), or None where the split would change nothing — the first file of a piece (the Soon line already parts the
+    show there) or a run with no piece (B2-2). One piece on both sides of the line (a store before L3.1's seeding):
+    that piece, the episode's place in the row."""
+    cut = getattr(row, "soon_from", None)
+    if cut is not None and k >= cut and row.soon_piece != row.piece_id:
+        piece, at = row.soon_piece, k - cut
+    else:
+        piece, at = row.piece_id, k
+    return (piece, at) if piece is not None and at > 0 else None
+
+
+def soon_line_after(rows):
+    """The row the Soon line is drawn under, or None — one rule for the reader's view and the drag's (`drag.lines_for`):
+    under a show the line runs through (`soon_from`, P-LF-16) — even when that show holds the whole of Soon (B2-9) —
+    else under the row before Soon's first; none with nothing above Soon."""
+    for i, row in enumerate(rows):
+        if getattr(row, "soon_from", None) is not None:
+            return i
+        if row.tier == "soon":
+            return i - 1 if i > 0 else None
+    return None
+
+
 def pieces(rows):
     """Contiguous runs of one piece (`piece_id`; without one: one work, then one folder) -> [[item, …], …]."""
     out = []
@@ -367,7 +414,8 @@ def status_of(eps, word, line_n):
     """One status for a set of episodes (a row's, or one episode's), in the mock's order (`stHTML`): every item mined →
     *N in Anki*; any being mined → *Mining*; an unmined one that can be mined in the top → *Waiting*; some mined, the
     rest ready → *Mine rest*; none mined, ready → *Mine*; nothing left that could be mined → *No video*. And the
-    on-disk mark beside it when something isn't there."""
+    on-disk mark beside it when something isn't there. `line_n` None: Connect is off — no top, so no *Waiting* (row 13:
+    nothing mines by itself) and no "top" in the tips."""
     n = len(eps)
     mined = [e for e in eps if e.cards or e.mined]
     k = len(mined)
@@ -397,9 +445,11 @@ def status_of(eps, word, line_n):
         st = Status("waiting", label, STRINGS["tip_waiting"].format(line=line_n), "dim")
     elif ready and k:
         st = Status("mine_rest", STRINGS["mine_rest"].format(k=k, n=n),
-                    STRINGS["tip_mine_rest"].format(k=k, n=n, line=line_n), "ok")
+                    STRINGS["tip_mine_rest" if line_n is not None else "tip_mine_rest_off"].format(k=k, n=n,
+                                                                                                    line=line_n), "ok")
     elif ready:
-        st = Status("mine", STRINGS["mine"], STRINGS["tip_mine"].format(line=line_n), "ink")
+        st = Status("mine", STRINGS["mine"], STRINGS["tip_mine" if line_n is not None else "tip_mine_off"].format(
+            line=line_n), "ink")
     elif no_subs and len(no_subs) == len(unmined):                  # SRC W1b: only videos waiting for subtitles
         label = STRINGS["no_subs"] if len(no_subs) == 1 else STRINGS["no_subs_n"].format(n=len(no_subs))
         return Status("no_subs", label, STRINGS["tip_no_subs"].format(word=word), "faint"), None
@@ -639,10 +689,11 @@ class RowCache:
 
 
 def _cached_row(cache, index, tier, piece, works, numbers, cards, mining, in_top, line_n, finished, guessed, hero,
-                connect=None):
+                connect=None, soon_from=None, soon_piece=None):
     if cache is None:
         row = _row(index, tier, piece, works, numbers, cards, mining, in_top, line_n, finished, guessed, connect)
-        return _as_hero(row) if hero else row
+        row = _as_hero(row) if hero else row
+        return row._replace(soon_from=soon_from, soon_piece=soon_piece) if soon_from is not None else row  # P-LF-16
     first = piece[0]
     work = works.get(first.get("work_id"))
     key = (tier, finished, first.get("piece_id"), first["id"])
@@ -658,7 +709,7 @@ def _cached_row(cache, index, tier, piece, works, numbers, cards, mining, in_top
         sig = (len(piece), line_n, hero, tuple(cards.get(it["id"], 0) for it in piece),
                tuple(it["id"] in mining for it in piece), tuple(it["id"] in in_top for it in piece), guess,
                None if connect is None else tuple(connect.get(it["id"]) for it in piece))     # --- P4.1 L2
-    if same_items and hit[0] == sig:
+    if same_items and hit[0] == sig and (hit[3].soon_from, hit[3].soon_piece) == (soon_from, soon_piece):  # same cut
         row = hit[3]
         if row.index != index:
             row = row._replace(index=index)
@@ -667,6 +718,8 @@ def _cached_row(cache, index, tier, piece, works, numbers, cards, mining, in_top
         row = _row(index, tier, piece, works, numbers, cards, mining, in_top, line_n, finished, guessed, connect)
         if hero:
             row = _as_hero(row)
+        if soon_from is not None:                    # P-LF-16
+            row = row._replace(soon_from=soon_from, soon_piece=soon_piece)
         cache.misses += 1
     cache._next[key] = (sig, work, tuple(piece), row)
     return row
@@ -1000,7 +1053,8 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
     unknown — on a new version every row is built again); `estimates`: {item_id: *N new* at the top} for New arrivals'
     files, as the arrivals worker answers (W3.2 S1: a missing one leaves its row's number None); `connect`: Connect's
     feed (`app/connect/feed.Feed`, P4.1 L2 row 4.1.10) — its items' statuses on the rows and episodes (`_connected`)
-    and its mining set beside `mining`; None (or a Feed that is off): as without Connect."""
+    and its mining set beside `mining`; None: as without Connect; a Feed that is off (or not looked yet: `feed.NOT_LOOKED`)
+    — no Connect statuses, and no top line or *Waiting* (row 13: nothing mines by itself)."""
     numbers_version = None
     if isinstance(numbers, tuple):
         numbers_version, numbers = numbers
@@ -1008,17 +1062,21 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
     cache_version = numbers_version if numbers_version is not None else id(numbers)
     cards = cards or {}
     mining = set(mining or ())
-    # --- P4.1 L2: Connect's feed (row 4.1.10): its items by id; off or none → None, every row as without it
+    # --- P4.1 L2: Connect's feed (row 4.1.10): its items by id; off or none → None (no Connect statuses on the rows;
+    # an off Feed also takes the top line and *Waiting* away: row 13, below)
     feed_items = connect.items if connect is not None and connect.on else None
     if feed_items is not None:
         mining |= set(connect.mining)
+    # row 13 (laptop fixes): a Feed that is off (Connect's switch, D29's automation, or no look yet: B2-8) — nothing
+    # mines by itself, so no top line and no *Waiting* on the rows (no Feed at all, as before: the line and statuses)
+    off = connect is not None and not connect.on
     # --- end P4.1 L2
     options = options or {}
     line_n = options.get("mine_line")
     line_n = 20 if line_n is None else int(line_n)
     tiers = tiers if tiers is not None else _by_tier(items)
     current = tiers["now"] + tiers["soon"]
-    top_ids = _mine_ids(current, line_n)
+    top_ids = [] if off else _mine_ids(current, line_n)          # row 13: Connect off → nothing "in the top"
     # every item above the line's place (missing ones included) is "in the top": the line falls after the n-th available
     in_top = set()
     if top_ids:
@@ -1033,10 +1091,18 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
         cache.note_changed(changed)
     guessed = _Guesses(items, cache)
     rows = []
-    for tier in ("now", "soon"):
-        for piece in pieces(tiers[tier]):
-            rows.append(_cached_row(cache, len(rows) + 1, tier, piece, works, numbers, cards, mining, in_top, line_n,
-                                    False, guessed, hero=not rows, connect=feed_items))
+    now_pieces, soon_pieces = pieces(tiers["now"]), pieces(tiers["soon"])
+    soon_from = soon_piece = None
+    if now_pieces and soon_pieces and _same_show(now_pieces[-1][-1], soon_pieces[0][0]):
+        # P-LF-16: the Soon line falls inside this show — one row above the line, the line after it (tiers unchanged)
+        soon_from, soon_piece = len(now_pieces[-1]), soon_pieces[0][0].get("piece_id")
+        now_pieces[-1] = now_pieces[-1] + soon_pieces.pop(0)
+    for tier, tier_pieces in (("now", now_pieces), ("soon", soon_pieces)):
+        for n, piece in enumerate(tier_pieces):
+            cut = soon_from if tier == "now" and n == len(tier_pieces) - 1 else None
+            rows.append(_cached_row(cache, len(rows) + 1, tier, piece, works, numbers, cards, mining, in_top,
+                                    None if off else line_n, False, guessed, hero=not rows, connect=feed_items,
+                                    soon_from=cut, soon_piece=soon_piece if cut is not None else None))
     worst = worst_needs(rows[1:])
     if cache is not None:
         if worst == cache.worst:
@@ -1053,11 +1119,11 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
             lines.append(Line("top", at, tip, k))
         else:
             lines.append(Line("top", at, STRINGS["top_tip"].format(n=line_n), None))
-    first_soon = next((i for i, row in enumerate(rows) if row.tier == "soon"), None)
-    if first_soon is not None and first_soon > 0:
+    soon_at = soon_line_after(rows)
+    if soon_at is not None:
         k = options.get("soon_line")
         tip = STRINGS["soon_tip"].format(n=k) if k else STRINGS["soon_tip_nocount"]
-        lines.append(Line("soon", first_soon - 1, tip, None))
+        lines.append(Line("soon", soon_at, tip, None))
     # Goal: titles are works, files all their items
     goal_items = tiers["goal"]
     # --- W3.2 Q2: the tiles read every Goal title (not only the strip's nine) and an untyped title's guess

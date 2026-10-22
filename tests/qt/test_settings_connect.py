@@ -752,3 +752,25 @@ def test_a_language_switch_checks_anki_miner_again_for_that_language(world):
     page.set_language("zh")
     assert wait_until(lambda: len(world.checked) == 2 and not rows.miner.checking, 5)
     assert world.checked[1][2] == "zh"
+
+
+# --- row 13 (laptop fixes): the card's check opens *Make cards for me* ------------------------------------------- #
+@pytest.mark.parametrize("state", ["missing", "setup", "ready"])
+def test_the_anki_miner_cards_check_opens_the_switch_only_once_anki_miner_is_installed(world, state):
+    """Row 13: the page's look found no Anki Miner, so *Make cards for me* waits as one line. The card's own check
+    (`setup.checks`, stood in for) then finds it installed — needing setup or ready — and the switch shows in the line's
+    place; still missing, the line stays. Nothing is saved by it (the page's store records no write)."""
+    world.miner = miner_result(state)
+    store = Store({"target_language": "ja", "junban_deck": DECK, "words_per_day": 5}, events=world.events)
+    shell = SimpleNamespace(services=SimpleNamespace(settings=store), bar_line=world.bar)
+    page = sp.SettingsPage(shell, "ja", found=EVERYTHING - {"miner_found"})
+    page.resize(1100, 700)
+    page.show()
+    assert wait_until(lambda: page.built, 20)
+    rows = scn.attach(page)
+    assert wait_until(lambda: world.checked and not rows.miner.checking, 10)
+    QApplication.processEvents()
+    shows = lambda row_id: catalog.visible(catalog.ROW[row_id], page._settings(), "ja", page._ctx())  # noqa: E731
+    assert shows("connect_enabled") is (state != "missing")
+    assert shows("connect_needs_miner") is (state == "missing")
+    assert store.calls == [], "the gate saved something"

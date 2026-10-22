@@ -27,6 +27,9 @@ from tests import services_helpers as h
 from tests.cli_helpers import same_token_store_as_the_children  # noqa: F401  (autouse: the child's store, in-process)
 
 
+_REAL_ANALYZER_ARGS = __import__("app.run_args", fromlist=["x"]).analyzer_args   # before any stand-in
+
+
 @pytest.fixture(autouse=True)
 def _real_runs_write_the_journey_but_never_open_it(monkeypatch):
     """A user's Generate opens the Journey in the browser when it ends (the app's, by design); these tests ask for that
@@ -34,8 +37,8 @@ def _real_runs_write_the_journey_but_never_open_it(monkeypatch):
     this desktop (tests/harness_guards.py fails a test that opens one)."""
     from app import run_args
     real = run_args.analyzer_args
-    monkeypatch.setattr(run_args, "analyzer_args", lambda settings, language=None, headless=False:
-                        real(settings, language, headless=True))
+    monkeypatch.setattr(run_args, "analyzer_args", lambda settings, language=None, headless=False, opens=True:
+                        real(settings, language, headless=True, opens=opens))
 
 
 def _settings(lang="ja"):
@@ -302,6 +305,46 @@ def test_a_launcher_that_raises_is_failed_and_the_next_request_runs():
     assert h.until(lambda: "run" in holder, seconds=10)
     holder["run"].ended(0)
     assert controller.state().state == G.CURRENT
+
+
+def test_neither_the_users_generate_nor_an_automatic_one_opens_the_journey():
+    """Laptop fixes (Sonic: "the journey should never automatically pop up anymore. It pops up after the first one on
+    load"): the window's runs — the setup wizard's first Generate and the button's, as well as the automatic ones —
+    write the journey with `--no-open`; it opens only from the header's *Journey ↗* (or a link the learner clicks)."""
+    controller = GenerateController(JobRegistry(), settle=0)
+    seen = []
+
+    def launcher(run):
+        seen.append((run.quiet, list(run.argv)))
+        raise OSError("stand-in: the argv is all this test reads")
+    for quiet in (False, True):
+        controller.request("ja", settings=_settings(), quiet=quiet, launcher=launcher)
+        assert h.until(lambda: len(seen) == (2 if quiet else 1) and controller.state().state == G.FAILED, seconds=10)
+    assert [q for q, _argv in seen] == [False, True]
+    for _quiet, argv in seen:
+        assert "--no-open" in argv and argv[0] == "analyzer.py" and G.PROGRESS_FLAG in argv
+
+
+def test_IK2_4_a_run_that_opens_nothing_is_one_rule_in_run_args():
+    """IK2-4: `--no-open` comes from `run_args` (`opens=False`), never added by hand beside it: the window's argv is
+    the builder's own plus the progress flag; a run that opens nothing never passes `--app-mode` either (the
+    command line's `headless` is the same rule). The run signature never reads either, so nothing re-runs."""
+    real = _REAL_ANALYZER_ARGS                      # the builder itself: this file's autouse stand-in makes every run headless
+    settings = dict(_settings(), open_app_mode=True)
+    opens = real(settings, "ja")
+    assert "--app-mode" in opens and "--no-open" not in opens                 # the Tk dashboard's Generate, as before
+    quiet = real(settings, "ja", opens=False)
+    assert "--no-open" in quiet and "--app-mode" not in quiet
+    assert quiet == real(settings, "ja", headless=True)
+    controller = GenerateController(JobRegistry(), settle=0)
+    seen = []
+
+    def launcher(run):
+        seen.append(list(run.argv))
+        raise OSError("stand-in: the argv is all this test reads")
+    controller.request("ja", settings=settings, launcher=launcher)
+    assert h.until(lambda: seen and controller.state().state == G.FAILED, seconds=10)
+    assert seen[0] == quiet + [G.PROGRESS_FLAG] and seen[0].count("--no-open") == 1
 
 
 def test_a_restart_request_asks_the_run_to_stop_and_runs_after():

@@ -1311,6 +1311,8 @@ class RowDelegate(QStyledItemDelegate):
         out = []
         half = max(4, round(5 * fz()))
         for k in range(1, len(eps)):
+            if view_rows.split_piece(row, k) is None:     # B2-2: the Soon line parts the show there already
+                continue
             r, ep = eps[k]
             cols = self._episode_cols(r)
             left = r.left() + EP_LABEL_IN

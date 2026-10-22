@@ -15,8 +15,10 @@ functions at the top, Qt-free); the GUI thread only paints the answer, and repai
   (`anki_connect.probe`, loopback) — and *Check* (also the status service's refresh). **Connections:** hato installed
   or not (its entry in the shared tools folder), jimaku *coming with hato*, AniList and More from Houseki *coming
   later*; no buttons (logos: package PL).
-- **App:** *Text size* through the shell's `set_text_size` (or its `set_look`) — it saves — then `page.restyle()`; with
-  neither, the page saves and *Restart to apply* is said. *Motion* saved by the page and set on the motion clock at once.
+- **App:** *Text size*: the page saves it and *Restart now to apply?* is asked — *Restart now* closes the window the
+  quit's way and the same program starts again on this tab (the shell's `restart`), *Later* says *Restart to apply*
+  (`LIVE_TEXT_SIZE` on: the shell's `set_text_size` or `set_look` — it saves — then `page.restyle()`). *Motion* saved
+  by the page and set on the motion clock at once.
   *Offer {version} again* beside *Update automatically* while `updates.skipped()` names a newer version. *Processing
   log* and *Data folder* open their folders; **Data credits** opens a layer-3 card (Esc, the mouse's Back, a click
   outside or *Done* close it; never modal: N6) with `credits.data_credits()` in read-only text, README's names it lacks
@@ -34,7 +36,7 @@ from PyQt6.QtCore import QObject, QPoint, QRectF, Qt
 from PyQt6.QtGui import QPainter
 from PyQt6.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QPlainTextEdit, QVBoxLayout
 
-from app import theme
+from app import settings_manager, theme
 from app.qt import applog, bridge, confirm, motion, shadow, strings, style, windows
 from app.qt import settings_catalog as catalog
 from app.qt import settings_controls as sc
@@ -47,7 +49,9 @@ EXPORTS = {"export_frequency_list": "frequency_list", "export_reading_words": "r
 COMING = {"jimaku": S.COMING_WITH_HATO, "anilist": S.COMING_LATER, "more_from_houseki": S.COMING_LATER}
 PROBE_TIMEOUT = 3                    # s: *Check*'s look at AnkiConnect (a worker's)
 # *Text size* applied live with the page alive took a median 813 ms (max 1056) on this desktop (P4, 2026-10-15): over
-# G1.2-21's ~300 ms, so the row saves the size and says *Restart to apply* (the lead's ruling; M4.1 may bring it back)
+# G1.2-21's ~300 ms, so the row saves the size and says *Restart to apply* (the lead's ruling; M4.1 may bring it back).
+# Laptop fixes row 15 (2026-10-21) kept it off — Current's, Finished's, Needs you's and the ported windows' cards set
+# their sizes once, as they are built, and none has a restyle — and asks *Restart now to apply?* instead
 LIVE_TEXT_SIZE = False
 
 
@@ -111,13 +115,10 @@ def probe_anki(settings):
 
 
 def read_hato():
-    """hato's version from its entry in the shared tools folder ("" when it names none), or None: not installed."""
-    from app import tools_entry
-    entry = tools_entry.read("hato")
-    if entry is None:
-        return None
-    version = entry.get("version")
-    return str(version) if isinstance(version, (str, int, float)) and not isinstance(version, bool) else ""
+    """hato's version from its entry in the shared tools folder ("" when it names none), or None: not installed — the
+    one look (`services.tools_found`, B2-7)."""
+    from app.services import tools_found
+    return tools_found.hato_version()
 
 
 def read_skipped(updates):
@@ -220,7 +221,7 @@ def setup_lines(settings, language, facts):
     lines["setup_known"] = S.SEP.join(parts)
     anki = facts.get("anki")
     lines["setup_anki"] = S.ANKI_WORDS[anki] if anki else ""
-    if not value("connect_enabled"):
+    if not settings_manager.connect_on(settings):       # B2-8: "is Connect on" is one rule (the switch and D29)
         lines["setup_mining"] = S.SETUP_CONNECT_OFF
     else:
         mine = S.OPTIONS["connect_mine_words"].get(value("connect_mine_words"), "")
@@ -451,6 +452,7 @@ class Live(QObject):
         self.said = []                    # every line said (the bar's or the row's), for the record
         self.card = None                  # the credits card while it is open
         self.pop = None                   # an export's format pop while it is open
+        self.asking = None                # *Restart now to apply?* while it is open (text size)
         self._exporting = None            # the export row running (one at a time)
         self._checking = False
         self._level = {"busy": False, "again": False, "asked": 0}
@@ -540,6 +542,11 @@ class Live(QObject):
             slot.addWidget(mark)
             slot.addWidget(check)
             self.parts[row_id] = {"mark": mark, "check": check}
+        elif row_id == "connect_needs_miner":           # row 13: Anki Miner not found — the way to its card
+            door = sc.Door(S.SET_UP_MINER, tooltip=S.SET_UP_MINER_TIP, name=f"{row.label}: {S.SET_UP_MINER}")
+            door.clicked.connect(lambda _c=False: self.page.reveal("anki_miner"))
+            self._slot(row_id).layout().addWidget(door)
+            self.parts[row_id] = {"door": door}
         elif row_id == "hato":
             mark = sc.StatusMark(False, S.NOT_INSTALLED, tooltip=row.tip, name=row.label)
             self._slot(row_id).layout().addWidget(mark)
@@ -764,10 +771,11 @@ class Live(QObject):
     # --- App ------------------------------------------------------------------------------------------------------- #
     def _text_size(self, size):
         """*Text size*: while `LIVE_TEXT_SIZE` is off (the signed ruling: a live switch with the page alive took ~0.8 s,
-        over G1.2-21's ~300 ms) the page saves it and *Restart to apply* is said -> False. On: the shell's own (it saves
-        through the service and applies it), then the page restyled -> True; no such method: as off."""
+        over G1.2-21's ~300 ms) the page saves it and *Restart now to apply?* is asked (`_ask_restart`) -> False. On:
+        the shell's own (it saves through the service and applies it), then the page restyled -> True; no such method:
+        as off."""
         if not LIVE_TEXT_SIZE:
-            self.say(strings.RESTART_TO_APPLY)
+            self._ask_restart(size)
             return False
         apply = getattr(self.shell, "set_text_size", None)
         if apply is not None:
@@ -780,6 +788,38 @@ class Live(QObject):
             look(text_size=size)
         self.page.restyle()
         return True
+
+    def _ask_restart(self, size):
+        """Laptop fixes row 15 (Sonic: "having it ask and then if they select yes to restart it would auto restart"):
+        *Restart now to apply?* over the window (`confirm.ask`: Esc, Back, a click outside are *Later*). *Restart now*:
+        the shell's `restart` — the page's save is queued already and the quit writes it; the window state (size,
+        place, the Settings tab) is saved by the close and read by the next start. *Later*, or a shell with no
+        `restart` (a page alone): *Restart to apply* in the bar, as before. The size the window shows now chosen
+        again: nothing to apply, nothing asked. While a Generate runs (or when one starts before the answer) nothing
+        restarts: the quit would stop it and nothing starts it again (B2-3) — the bar says to restart once it ends."""
+        if size == style.current()[1]:
+            return
+        restart = getattr(self.shell, "restart", None)
+        if restart is None:
+            self.say(strings.RESTART_TO_APPLY)
+            return
+        generating = getattr(self.shell, "generating", lambda: False)
+        if generating():
+            self.say(S.TEXT_SIZE_AFTER_GENERATE)
+            return
+
+        def answered(yes):
+            self.asking = None
+            if yes and generating():
+                self.say(S.TEXT_SIZE_AFTER_GENERATE)
+            elif yes:
+                restart()
+            else:
+                self.say(strings.RESTART_TO_APPLY)
+        label = S.OPTIONS["text_size"].get(size, size)
+        self.asking = confirm.ask(self.page, S.TEXT_SIZE_RESTART_ASK, S.TEXT_SIZE_RESTART_BODY.format(size=label),
+                                  S.TEXT_SIZE_RESTART_YES, S.TEXT_SIZE_RESTART_YES_TIP, no=S.TEXT_SIZE_RESTART_NO,
+                                  no_tip=S.TEXT_SIZE_RESTART_NO_TIP, on_answer=answered)
 
     def _motion(self, value):
         """*Motion*: set on the motion clock at once (in the window: a page alone leaves the app's clock be); the page

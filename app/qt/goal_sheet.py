@@ -555,12 +555,13 @@ class GoalSheet(motion.Overlay):
                     return writer.move(ids, "now", label=t)
                 return writer.move(ids, hero.tier, before_id=hero.episodes[0].id, label=t)
         else:
-            n = soon_slot(rows_, None)[0] + 1
+            slot, _files, after_id = soon_slot(rows_, None)     # Current's ⋯ *Soon*'s rule: after a show the line cuts
+            n = slot + 1
             words = strings.GOAL_SOON if rest else strings.GOAL_SOON_ALL
             text = words.format(title=work.title, first=piece.line, n=n)
 
             def command(t):
-                return writer.move(ids, "soon", label=t)
+                return writer.move(ids, "soon", after_id=after_id, label=t)
         self.close()
         seq = moves._give(Ticket(text, ids=ids), command)
         if seq is not None:

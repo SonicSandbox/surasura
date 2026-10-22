@@ -62,7 +62,7 @@ def test_episode_numbers_come_from_the_file_names_in_every_common_shape():
     assert vr.episode_number("[Group] 海辺の図書室 - 11 [1080p].srt") == 11
     assert vr.episode_number("なぜ人は行列に並ぶのか.srt") is None
     # a year in brackets, a date and a resolution are never an episode (W2.2 review A-11)
-    assert vr.episode_number("天気の子 (2019).srt") is None
+    assert vr.episode_number("雨音の子 (2019).srt") is None
     assert vr.episode_number("Hanashi Radio 2026-09-02.srt") is None
     assert vr.episode_number("海辺の図書室 - 05 [1080p] x264.mkv") == 5
     # a release's checksum in brackets is never an episode: [E04F4EFB] was read as "E04"
@@ -108,6 +108,114 @@ def test_current_is_now_then_soon_and_the_soon_line_sits_where_soon_starts():
     assert [r.tier for r in view.rows] == ["now", "soon"]
     soon = [ln for ln in view.lines if ln.kind == "soon"]
     assert soon and soon[0].after == 0 and "4" in soon[0].tip
+
+
+def _straddle(piece_ids=True):
+    """55 files in Current, the Soon line at 25 (the store's count): 星降る街 22 episodes, then 雲の上の郵便屋さん's 4
+    episodes at files 23–26 — its first 3 NOW, its 4th the first file of Soon (the store cuts a piece at the line) —
+    then 海辺の図書室's 29 episodes, wholly Soon."""
+    work(5, "海辺の図書室")
+    p = (lambda n: n) if piece_ids else (lambda n: None)
+    return items_of([("now", 1, p(10), eps("星降る街の小さな工房", 1, 22), {}),
+                     ("now", 2, p(11), eps("雲の上の郵便屋さん", 1, 3), {}),
+                     ("soon", 2, p(12), eps("雲の上の郵便屋さん", 4, 4), {}),
+                     ("soon", 5, p(13), eps("海辺の図書室", 1, 29), {})])
+
+
+@pytest.mark.parametrize("piece_ids", [True, False])
+def test_a_show_the_soon_line_runs_through_is_one_row_above_the_line_and_the_next_show_below(piece_ids):
+    """P-LF-16 (Sonic, 2026-10-21): the Soon line counts files, so it can fall mid-series; the tiers and Generate stay
+    per file, but the window never splits a show at the line — it is one row above the line, the line is drawn after
+    it, and the first Soon show comes after. Before, its 4th episode was a second row of the same show below the
+    line."""
+    view = vr.build(_straddle(piece_ids), WORKS, {"mine_line": 20, "soon_line": 25})
+    assert [r.title for r in view.rows] == ["星降る街の小さな工房", "雲の上の郵便屋さん", "海辺の図書室"]
+    show = view.rows[1]
+    assert show.tier == "now" and show.n_files == 4 and show.line == "Ep 1–4" and show.soon_from == 3
+    assert [e.number for e in show.episodes] == [1, 2, 3, 4]
+    soon = [ln for ln in view.lines if ln.kind == "soon"]
+    assert len(soon) == 1 and soon[0].after == 1 and "25" in soon[0].tip       # after the show, never inside it
+    assert view.rows[2].tier == "soon" and view.rows[2].soon_from is None
+    # the counts and place numbers are the rows as shown: 3 rows, every file still counted once
+    assert [r.index for r in view.rows] == [1, 2, 3]
+    assert view.counts.current_rows == 3 and view.counts.current_files == 55
+    assert "3 in Current · 55 files" in view.subline
+    # the top-20 line is the files' own: through the first row, its first 20 episodes mine themselves
+    top = [ln for ln in view.lines if ln.kind == "top"]
+    assert len(top) == 1 and top[0].after == 0 and top[0].split == 20
+    assert all(e.in_top for e in view.rows[0].episodes[:20]) and not any(e.in_top for e in show.episodes)
+
+
+def test_a_show_wholly_below_the_line_stays_below_and_a_show_apart_from_the_line_is_never_joined():
+    """Only a show the line runs through is kept whole: a show wholly in Soon stays below the line, and a later part of
+    the last NOW show with another show between them stays its own row (a split the learner made)."""
+    work(5, "海辺の図書室")
+    items = items_of([("now", 1, 10, eps("星降る街の小さな工房", 1, 4), {}),
+                      ("soon", 5, 13, eps("海辺の図書室", 1, 3), {}),
+                      ("soon", 1, 14, eps("星降る街の小さな工房", 5, 8), {})])
+    view = vr.build(items, WORKS, {"soon_line": 4})
+    assert [(r.title, r.tier, r.n_files) for r in view.rows] == [
+        ("星降る街の小さな工房", "now", 4), ("海辺の図書室", "soon", 3), ("星降る街の小さな工房", "soon", 4)]
+    assert all(r.soon_from is None for r in view.rows)
+    assert [ln.after for ln in view.lines if ln.kind == "soon"] == [0]
+
+
+def test_B2_9_a_show_holding_the_whole_of_soon_still_has_the_soon_line_drawn_after_it():
+    """B2-9: when Soon is nothing but the tail of the show the line runs through, the line is still drawn after that
+    show (before, no row was in Soon, so none was drawn) — by the one rule the drag's lines use too."""
+    items = _straddle()
+    items = {k: v for k, v in items.items() if v["work_id"] != 5}     # no other show in Soon
+    view = vr.build(items, WORKS, {"mine_line": 20, "soon_line": 25})
+    assert [(r.title, r.soon_from) for r in view.rows] == [("星降る街の小さな工房", None), ("雲の上の郵便屋さん", 3)]
+    soon = [ln for ln in view.lines if ln.kind == "soon"]
+    assert len(soon) == 1 and soon[0].after == 1 and "25" in soon[0].tip
+    assert vr.soon_line_after(view.rows) == 1
+    assert vr.soon_line_after(view.rows[:1]) is None                   # nothing in Soon, nothing cut: no line
+
+
+def test_B2_8_before_connects_first_look_the_rows_show_no_top_line_and_no_waiting():
+    """B2-8 (Michi's call): the reader builds with the feed's last look (`Provider.latest`); before any look Connect is
+    not known to be on (`feed.NOT_LOOKED`: `on` False, the one test), so the first screen never shows the top line and
+    *Waiting* only for them to go once a look finds Connect off. Nothing is read for it: no stamp, no record."""
+    from app.connect import feed
+    looked = []
+    provider = feed.Provider("ja", lambda: {"connect_enabled": False}, stamp=lambda **k: looked.append("stamp"),
+                             read=lambda **k: looked.append("read"))
+    first = provider.latest()
+    assert first is feed.NOT_LOOKED and first.on is False and first.line is None and looked == []
+    items = _straddle()
+    without = vr.build(items, WORKS, {"mine_line": 20, "soon_line": 25})
+    assert [ln.kind for ln in without.lines] == ["top", "soon"]           # no Feed at all: today's view
+    start = vr.build(items, WORKS, {"mine_line": 20, "soon_line": 25}, connect=first)
+    assert [ln.kind for ln in start.lines] == ["soon"]
+    assert not any(r.status is not None and r.status.kind == "waiting" for r in start.rows)
+    off = vr.build(items, WORKS, {"mine_line": 20, "soon_line": 25}, connect=provider.feed())
+    assert off.lines == start.lines and [r.status for r in off.rows] == [r.status for r in start.rows]   # no flash
+
+
+def test_B2_2_split_piece_names_each_episodes_own_piece_and_no_split_the_line_already_makes():
+    view = vr.build(_straddle(), WORKS, {"mine_line": 20, "soon_line": 25})
+    show = view.rows[1]
+    assert (show.piece_id, show.soon_from, show.soon_piece) == (11, 3, 12)
+    assert vr.split_piece(show, 1) == (11, 1) and vr.split_piece(show, 2) == (11, 2)
+    assert vr.split_piece(show, 3) is None                             # the Soon line parts it there already
+    assert vr.split_piece(show, 0) is None and vr.split_piece(view.rows[2], 5) == (13, 5)
+    one = vr.build(_straddle(piece_ids=False), WORKS, {"mine_line": 20, "soon_line": 25}).rows[1]
+    assert one.soon_from == 3 and vr.split_piece(one, 3) is None       # no piece: nothing to split
+
+
+def test_a_show_the_soon_line_runs_through_is_the_same_row_object_next_build_and_survives_the_first_screen_cache():
+    """S19: a build with nothing changed gives back the same row (the window repaints nothing); the first screen's
+    cache keeps the cut, so the first frame draws the line after the show too."""
+    import json
+    items = _straddle()
+    cache = vr.RowCache()
+    one = vr.build(items, WORKS, {"mine_line": 20, "soon_line": 25}, numbers=(1, {}), cache=cache)
+    two = vr.build(items, WORKS, {"mine_line": 20, "soon_line": 25}, numbers=(1, {}), cache=cache)
+    assert two.rows[1] is one.rows[1] and two.rows[1].soon_from == 3
+    back = vr.from_cache(json.loads(json.dumps(vr.to_cache(one))))
+    assert back.rows[1].soon_from == 3 and back.rows[2].soon_from is None
+    assert [ln.after for ln in back.lines if ln.kind == "soon"] == [1]
 
 
 def test_the_hero_is_the_first_row_and_up_next_skips_the_watched_episodes():
@@ -988,18 +1096,41 @@ def _job(item, state="waiting", reason=None, kind="mine", made=0, words=0):
             "words": words}
 
 
-def test_no_feed_or_an_off_feed_builds_todays_view_byte_for_byte():
-    """`connect=None` (no Connect in this window) and Connect off (`Feed.on` False: IK S7) leave every row, episode
-    and line as they are without the feed — a learner without Connect sees nothing new."""
-    from app.connect import feed
+def test_no_feed_builds_todays_view_byte_for_byte():
+    """`connect=None` (no Connect feed in this window) leaves every row, episode and line as they are without the
+    feed. (An off Feed no longer does: row 13, the next test.)"""
     items = items_of([("now", 1, 1, eps("星降る街の小さな工房", 1, 4), {2: {"availability": "missing"}}),
                       ("soon", 2, 2, eps("雲の上の郵便屋さん", 1, 3), {}),
                       ("graduated", 3, 3, ["白銀の書庫番 01 雨の街角.txt"], {})])
     plain = vr.build(items, WORKS, {"mine_line": 3})
-    off = feed._off({"connect_enabled": True, "logic": {"automation": False}})
     assert vr.build(items, WORKS, {"mine_line": 3}, connect=None) == plain
-    assert vr.build(items, WORKS, {"mine_line": 3}, connect=off)._replace(connect=None) == plain
     assert plain.connect is None
+
+
+@pytest.mark.parametrize("settings", [{}, {"connect_enabled": True, "logic": {"automation": False}}],
+                         ids=["switch-off", "automation-off"])
+def test_connect_off_shows_no_top_line_and_no_waiting_row(settings):
+    """Row 13 (laptop fixes): with Connect off (its switch, or D29's automation: `Feed.on` False) nothing mines by
+    itself, so no *Everything above this line mines itself* line and no *Waiting — it mines by itself* on a top row:
+    the rows read *Mine* / *Mine rest* with no "top" in their tips. Its cards in Anki and *No video* stay as they were.
+    What a wrong answer costs: every top row promising cards that never come. On (or no feed) the line stays."""
+    from app.connect import feed
+    items = items_of([("now", 1, 1, eps("星降る街の小さな工房", 1, 4), {}),
+                      ("soon", 2, 2, eps("雲の上の郵便屋さん", 1, 3), {}),
+                      ("now", 3, 3, eps("白銀の書庫番", 1, 2), {0: {"availability": "missing"},
+                                                             1: {"availability": "missing"}})])
+    cards = {1: 5}                                       # its first episode's cards are in Anki
+    plain = vr.build(items, WORKS, {"mine_line": 4}, cards=cards)
+    assert [ln.kind for ln in plain.lines].count("top") == 1                       # (the baseline: a line, Waiting)
+    assert any(r.status.kind == "waiting" for r in plain.rows)
+    off = vr.build(items, WORKS, {"mine_line": 4}, cards=cards, connect=feed._off(settings))
+    assert "top" not in [ln.kind for ln in off.lines]
+    statuses = [r.status for r in off.rows] + [e.status for r in off.rows for e in r.episodes]
+    assert not [s for s in statuses if s.kind == "waiting"]
+    assert not [s for s in statuses if "top" in s.tip]
+    assert {r.title: r.status.kind for r in off.rows} == {"星降る街の小さな工房": "mine_rest", "雲の上の郵便屋さん": "mine",
+                                                          "白銀の書庫番": "no_media"}
+    assert next(r for r in off.rows if r.title == "星降る街の小さな工房").status.tip == "1/4 mined"
 
 
 def test_each_of_connects_kinds_is_a_stone_with_its_own_words():

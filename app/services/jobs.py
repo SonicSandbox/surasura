@@ -90,6 +90,12 @@ def waits_at_quit(jobs):
     return tuple(j for j in jobs if j.on_quit == "wait" and j.state in (RUNNING, CANCELLING))
 
 
+def generating(jobs):
+    """Whether a Generate is waiting or under way among `jobs` (views or Jobs): the quit cancels one that can still stop
+    and nothing starts it again — so a restart is offered only without one (laptop fixes B2-3, *Text size*)."""
+    return any(j.kind == "generate" and j.state in LIVE for j in jobs)
+
+
 class Job:
     """One job. Its owner reports `progress(...)` and `finish(...)`; anyone may `cancel()`."""
 

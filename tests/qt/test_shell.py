@@ -607,6 +607,7 @@ def test_up_nexts_new_words_link_opens_the_journey_on_a_worker_and_says_why_when
         page.list.journey_requested.emit(row, row.episodes[0] if row.episodes else None)
         assert wait_until(lambda: opened == [False])                    # opened, off the window's thread
         assert win.bar_line.full() != strings.JOURNEY_NONE_TIP
+        assert wait_until(lambda: not win._journey_opening)             # (a click while one still opens is dropped)
         answer[0] = False
         page.list.journey_requested.emit(row, None)
         assert wait_until(lambda: win.bar_line.full() == strings.JOURNEY_NONE_TIP)

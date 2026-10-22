@@ -79,3 +79,164 @@ def test_without_a_live_switch_it_asks_for_a_restart(opened, monkeypatch):
     assert style.current()[:2] == (theme.DEFAULT_THEME, "M")  # unchanged until the next start
     assert win.bar_line.full() == strings.RESTART_TO_APPLY
     assert services.settings.get()["text_size"] == "L"       # saved for that start
+
+
+# --- laptop fixes row 15: *Restart now* closes the quit's way, then the same program starts again ------------------ #
+def test_restart_closes_the_window_saving_its_place_and_the_settings_tab(qapp):
+    """What a wrong answer would cost: a restart that loses the new size (unsaved), or comes back at another size, place
+    or tab than it left."""
+    from PyQt6.QtCore import QRect
+    from PyQt6.QtGui import QGuiApplication
+    services = shell.Services()
+    win = shell.open_window(qapp, services)
+    win.show()
+    screen = QGuiApplication.primaryScreen().availableGeometry()
+    win.setGeometry(QRect(screen.left() + 30, screen.top() + 30, 1000, 700))     # (offscreen: test_shell's size)
+    win.show_tab("settings")
+    QApplication.processEvents()
+    services.settings.set({"text_size": "L"})                  # the page's save, queued
+    assert win.restart_asked is False
+    win.restart()
+    assert win.restart_asked is True and not win.isVisible()
+    services.shutdown(0.5)                                     # main's quit: the settings written
+    assert json.load(open(path_utils.get_user_file("settings.json"), encoding="utf-8"))["text_size"] == "L"
+    saved = json.load(open(shell.state_path(), encoding="utf-8"))
+    assert saved["tab"] == "settings" and saved["geometry"][2:] == [1000, 700]
+    services = shell.Services()                                # the next start
+    again = shell.open_window(qapp, services)
+    assert again.current_tab() == "settings"
+    assert (again.geometry().width(), again.geometry().height()) == (1000, 700)
+    assert style.current()[1] == "L"                           # and at the new size
+    again.close()
+    services.shutdown(0.5)
+
+
+class _OneInstance:
+    """main()'s single-instance claim, recorded (never a real lock or pipe)."""
+
+    def __init__(self, log):
+        self.log = log
+
+    def claim(self, _argv):
+        return True
+
+    def release(self):
+        self.log.append("released")
+
+    def stop_listening(self):
+        pass
+
+    class _Signal:
+        def connect(self, _slot):
+            pass
+    activated = _Signal()
+
+
+@pytest.mark.parametrize("restart", [True, False])
+def test_main_starts_the_program_again_after_the_claim_goes_only_when_a_restart_was_asked(qapp, monkeypatch, restart):
+    from app.qt import single as single_module, start_gate
+    log, seen = [], {}
+    real_window = shell.open_window
+
+    def spy_window(app, services, state_file=None):
+        win = seen["win"] = real_window(app, services, state_file)
+        return win
+
+    def fake_exec(*_a):
+        win = seen["win"]
+        win.first_frame.disconnect(win.start_duties)           # (the real duties stay unmade)
+        if restart:
+            win.restart()
+        else:
+            win.close()
+        return 0
+
+    class Chores:                                              # the store's close trigger, recorded (B2-4)
+        def close(self, store=False):
+            pass
+
+        def close_store(self):
+            log.append("store closed")
+
+    def services(**_kw):
+        made = shell.Services()
+        made.chores, made.started = Chores(), True             # (as once the duties started: the close runs)
+        return made
+    monkeypatch.setattr(single_module, "SingleInstance", lambda: _OneInstance(log))
+    monkeypatch.setattr(start_gate, "gate", lambda _app: True)
+    monkeypatch.setattr(shell, "open_services", services)
+    monkeypatch.setattr(shell, "open_window", spy_window)
+    monkeypatch.setattr(QApplication, "exec", fake_exec)
+    monkeypatch.setattr(shell, "prepare_process", lambda: None)
+    monkeypatch.setattr(shell, "relaunch", lambda argv: log.append(("relaunch", list(argv))))   # never a real start
+    assert shell.main(["app_entry.py", "--hud"]) == 0
+    assert log[0] == "released" and log[1] == "store closed"     # the claim goes before the store's close trigger
+    if restart:
+        # B2-4: the new start only once the store's close has ended — never beside the old process's 7–15 s close
+        assert log[2:].count(("relaunch", ["app_entry.py", "--hud"])) == 1 and "relaunch" not in str(log[:2])
+        assert log.index(("relaunch", ["app_entry.py", "--hud"])) > log.index("store closed")
+    else:
+        assert all(entry in ("released", "store closed") for entry in log)
+
+
+def test_relaunch_starts_the_same_program_from_source_and_frozen(monkeypatch, tmp_path):
+    import subprocess
+    import sys
+    started = []
+
+    class FakePopen:
+        def __init__(self, args, **kw):
+            started.append((args, kw))
+    monkeypatch.setattr(subprocess, "Popen", FakePopen)        # never a real start
+    monkeypatch.delattr(sys, "frozen", raising=False)
+    assert isinstance(shell.relaunch(["app_entry.py", "--hud"]), FakePopen)
+    import os
+    assert started[-1][0] == [sys.executable, os.path.abspath("app_entry.py"), "--hud"]
+    assert started[-1][1]["stdin"] == subprocess.DEVNULL
+    shell.relaunch([shell.__file__])                           # `python -m app.qt.shell`
+    assert started[-1][0] == [sys.executable, "-m", "app.qt.shell"]
+    exe = str(tmp_path / "Surasura.exe")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", exe)
+    shell.relaunch([exe])
+    assert started[-1][0] == [exe]
+
+
+def test_a_failed_relaunch_is_logged_never_raised(monkeypatch):
+    import subprocess
+
+    def refused(*_a, **_k):
+        raise OSError("not found")
+    monkeypatch.setattr(subprocess, "Popen", refused)
+    assert shell.relaunch(["app_entry.py"]) is None
+
+
+def test_in_the_window_the_settings_row_asks_esc_is_later_and_restart_now_closes_it(qapp):
+    """The real page in the real window: the row's question is over the window (its router: Esc is *Later*), and
+    *Restart now* reaches the shell's `restart`."""
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtTest import QTest
+    from app.qt import settings_strings as S
+    from tests.qt.conftest import wait_until
+    services = shell.Services()
+    win = shell.open_window(qapp, services)
+    win.resize(1280, 800)
+    win.show()
+    win.open_setting("text_size")
+    page = win.settings_page
+    assert wait_until(lambda: page.built, 20)
+    control = page.row("text_size").controls[0]
+    control.changed.emit("L")
+    card = page.live.asking
+    assert card is not None and card.title.text() == S.TEXT_SIZE_RESTART_ASK and card.window() is win
+    QTest.keyClick(card, Qt.Key.Key_Escape)
+    QApplication.processEvents()
+    assert page.live.asking is None and win.isVisible() and win.restart_asked is False
+    assert win.bar_line.full() == strings.RESTART_TO_APPLY
+    control.changed.emit("S")
+    page.live.asking.yes.click()
+    QApplication.processEvents()
+    assert win.restart_asked is True and not win.isVisible()
+    services.shutdown(0.5)
+    assert json.load(open(path_utils.get_user_file("settings.json"), encoding="utf-8"))["text_size"] == "S"
+    assert json.load(open(shell.state_path(), encoding="utf-8"))["tab"] == "settings"

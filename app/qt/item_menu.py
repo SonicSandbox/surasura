@@ -41,6 +41,7 @@ from PyQt6.QtWidgets import QMenu
 
 from app import library_store
 from app.qt import bridge, confirm, drag, finished, rows, strings, windows
+from app.services import view_rows
 
 JOIN_EDGE = 0.3                                     # a part's top and bottom 30 %: a move beside it, not a join
 
@@ -168,17 +169,18 @@ class ItemActions(QObject):
             out.append(entry("type", children=kinds))
         if joinable(row) and len(row.episodes) >= 2:
             after = self._hovered_after(row)
-            if after is not None:
+            cuts = [k for k in range(1, len(row.episodes)) if view_rows.split_piece(row, k) is not None]   # B2-2
+            if after is not None and after in cuts:
                 out.append(entry("split", label=strings.ITEM_SPLIT_HERE.format(ep=row.episodes[after - 1].label),
                                  tip=strings.ITEM_SPLIT_AFTER_TIP.format(ep=row.episodes[after - 1].label,
                                                                          rest=rows._rest_of(row, after)),
                                  payload=row.episodes[after]))
-            else:
+            elif cuts:
                 out.append(entry("split", children=[
                     entry("split", label=strings.ITEM_SPLIT_AFTER.format(ep=row.episodes[k - 1].label),
                           tip=strings.ITEM_SPLIT_AFTER_TIP.format(ep=row.episodes[k - 1].label,
                                                                   rest=rows._rest_of(row, k)),
-                          payload=row.episodes[k]) for k in range(1, len(row.episodes))]))
+                          payload=row.episodes[k]) for k in cuts]))
         others = self.other_parts(row)
         if others:
             out.append(entry("join", children=[
@@ -280,13 +282,15 @@ class ItemActions(QObject):
                                 lambda t: self.writer.set_media_type([work], media, label=t))
 
     def split(self, row, ep):
-        """✂ *Split here*: a new part from `ep` to the part's end; nothing moves."""
+        """✂ *Split here*: a new part from `ep` to the end of `ep`'s own piece (a show the Soon line runs through holds
+        two: `view_rows.split_piece`); nothing moves. A split that would change nothing gives no toast and no Undo."""
         if not joinable(row) or self.moves.refused() is not None:
             return None
         k = next((i for i, e in enumerate(row.episodes) if e.id == ep.id), 0)
-        if k <= 0:
+        at = view_rows.split_piece(row, k)
+        if at is None:
             return None
-        piece = row.piece_id
+        piece = at[0]
         text = strings.ITEM_SPLIT_DONE.format(title=row.title, rest=rows._rest_of(row, k))
         return self.moves._give(drag.Ticket(text, (row.key,), drag.ids_of(row)),
                                 lambda t: self.writer.split(piece, ep.id, label=t))
@@ -445,5 +449,4 @@ class ItemActions(QObject):
 
 def _numbers(arrival):
     """An arrival's episode numbers, from its files' names (`view_rows.episode_number`)."""
-    from app.services import view_rows
     return [view_rows.episode_number(os.path.basename(rel or "")) for rel in arrival.rel_paths or ()]

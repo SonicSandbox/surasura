@@ -61,7 +61,7 @@ SLICE_MS = 4.0                  # the GUI thread's step (charter §4): what a sl
 BUILD_MS = 2.5                  # rows built and shown until then; the section's layout fills the rest
 BIG = 10 ** 6                   # a number field's ceiling where the catalog names none
 # What a store line reveals until P6 draws it (the RUNBOOK: until then, the switch's row / the Content section)
-FALLBACK = {"mine_line": "connect_enabled", "soon_line": "content"}
+FALLBACK = {"mine_line": "connect_enabled", "soon_line": "content", "connect_enabled": "connect_needs_miner"}
 PLACEHOLDER_KINDS = ("summary", "status", "custom", "action")
 SETTLE_MORE = 4                 # `hold`: layout passes after the first settle while the held row still moves
 
@@ -440,6 +440,7 @@ class SettingsPage(QWidget):
     door_asked = pyqtSignal(str)              # a door's opener name, when the page has no shell to open it in
     row_built = pyqtSignal(str)               # a row's widget placed (P4: its live words filled then)
     language_set = pyqtSignal(str)            # `set_language` done (P4: the live rows read again)
+    looked = pyqtSignal()                     # row 13: the tools' gates answered or moved (the rules row follows)
 
     def __init__(self, shell_or_services, language=None, parent=None, found=None):
         super().__init__(parent)
@@ -586,16 +587,27 @@ class SettingsPage(QWidget):
 
     def _ctx(self):
         ctx = set(self._found or ())
+        if self._found is not None:
+            ctx.add("looked")                 # row 13: a "needs <tool>" line waits for the look, never shown before it
         if self._road:
             ctx.add(self._road)
         return frozenset(ctx)
+
+    def set_found(self, token, on):
+        """Row 13: a tool's gate seen again since the look (Anki Miner's card checked: `miner_found`) — the rows shown
+        again when it moved. Before the look answers, nothing: the look finds it itself."""
+        if self._found is None or (token in self._found) == bool(on):
+            return
+        self._found = self._found | {token} if on else self._found - {token}
+        self._refresh_visibility()
+        self.looked.emit()
 
     def _look(self):
         """The optional modules and the Speech reveal gate, looked for on a worker (a file look); the doors' modules
         with them (`windows._FOUND`)."""
         wanted = sorted({op.module for op in windows.OPENERS if op.module} - set(windows._FOUND) - windows._LOOKING)
         windows._LOOKING.update(wanted)
-        bridge.run_in_worker(_look_for, wanted, then=self._looked,
+        bridge.run_in_worker(_look_for, wanted, self._settings(), then=self._looked,
                              failed=lambda info: applog.log("settings", f"looking for the modules: {info[1]}"))
 
     def _looked(self, answer):
@@ -606,6 +618,7 @@ class SettingsPage(QWidget):
             windows._found(doors)               # tells every door row, this page's `refresh` among them
         self._found = frozenset(found)
         self._refresh_visibility()
+        self.looked.emit()
 
     # --- building, in slices -------------------------------------------------------------------------------------- #
     def _slot(self, row):
@@ -1379,9 +1392,10 @@ def _warm():
     catalog.defaults()
 
 
-def _look_for(wanted):
-    """(A worker.) -> (the catalog's ctx: the modules found + "koe_revealed"; the doors' modules {name: found})."""
-    found = set(catalog.installed_modules())
+def _look_for(wanted, settings=None):
+    """(A worker.) -> (the catalog's ctx: the modules found + "koe_revealed" + the tools found, "hato_found" and
+    "miner_found" (row 13); the doors' modules {name: found})."""
+    found = set(catalog.installed_modules()) | _tools_found(settings)
     if "modules.koe" in found:
         try:
             import importlib
@@ -1390,6 +1404,14 @@ def _look_for(wanted):
         except Exception as e:                                   # the gate unread: Speech stays hidden
             applog.log("settings", f"the Speech gate: {e}")
     return found, windows._look_for(wanted)
+
+
+def _tools_found(settings):
+    """(A worker.) Row 13: hato and Anki Miner as the one look finds them (`services.tools_found`) -> their ctx
+    tokens. A look that fails leaves its tool out: its rows stay hidden, nothing written."""
+    from app.services import tools_found
+    found = tools_found.tools_found(settings, log=lambda text: applog.log("settings", text))
+    return ({"hato_found"} if found.hato else set()) | ({"miner_found"} if found.miner != tools_found.MISSING else set())
 
 
 def _live(text):

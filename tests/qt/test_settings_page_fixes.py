@@ -6,6 +6,8 @@ row that is a label and nothing (S1); "Anki & mining" shown as "Anki mining" wit
 text-size click that freezes the window for most of a second (S5); ✦ ⚖ 📖 that never say what they are (S8); a
 reveal that drags the page back after Tab moved it (H7); a row above the reader growing and sliding the page (`hold`).
 """
+import threading
+
 import pytest
 
 pytest.importorskip("PyQt6")
@@ -337,3 +339,68 @@ def test_a_search_keystroke_with_the_search_in_view_never_settles_the_layout_its
 def test_the_rows_that_import_on_first_use_wait_for_the_warming_worker():
     assert sp._WARM_ROWS(catalog.ROW["level"]) and sp._WARM_ROWS(catalog.ROW["connect_video_folders"])
     assert not sp._WARM_ROWS(catalog.ROW["split_length"])
+
+
+# --- row 13 (laptop fixes): the tools' gates, found on a worker --------------------------------------------------- #
+def _shown_ids(page):
+    return {row.id for row in catalog.ROWS if row.id in page.rows and page.rows[row.id].isVisibleTo(page)}
+
+
+@pytest.mark.parametrize("here", [False, True], ids=["tools-absent", "tools-found"])
+def test_the_page_looks_for_hato_and_anki_miner_on_a_worker_and_shows_their_rows_by_it(qapp, monkeypatch, here):
+    """Row 13: the page's look (the Speech gate's) also asks for hato (its entry in the shared tools folder) and Anki
+    Miner (`anki_miner.find`) — stand-ins here, never the real ones — on a worker, never the window's thread. Absent:
+    no *Make cards for me* but one line that needs Anki Miner, with a door to its card; jimaku, AniList and More from
+    Houseki never. Found: the switch, and no line. Nothing is written either way."""
+    from app import tools_entry
+    from app.connect import anki_miner
+    asked = []
+
+    def hato(tool):
+        asked.append(("hato", tool, threading.current_thread() is threading.main_thread()))
+        return {"cli": "hato.exe", "version": "1.2.0"} if here else None
+
+    def miner(settings):
+        asked.append(("miner", None, threading.current_thread() is threading.main_thread()))
+        return r"C:\Programs\Anki Miner\AnkiMiner.exe" if here else None
+    monkeypatch.setattr(tools_entry, "read", hato)
+    monkeypatch.setattr(anki_miner, "find", miner)
+    page, store = make_page({}, "ja", found=None)
+    assert wait_until(lambda: page._found is not None, 10)
+    QApplication.processEvents()
+    assert asked and not [a for a in asked if a[2]], "a tool was looked for on the window's thread"
+    assert ("hato_found" in page._ctx()) is here and ("miner_found" in page._ctx()) is here
+    page.reveal("anki")
+    assert wait_until(lambda: "anki_connection" in page.rows, 20)
+    QApplication.processEvents()
+    shown = _shown_ids(page)
+    assert not {"jimaku", "anilist", "more_from_houseki"} & shown
+    if here:
+        assert "connect_needs_miner" not in shown
+    else:
+        assert "connect_needs_miner" in shown
+        door = page.rows["connect_needs_miner"].slot.findChild(sc.Door)
+        assert door.text() == S.SET_UP_MINER and door.toolTip() == S.SET_UP_MINER_TIP
+        aimed = []
+        monkeypatch.setattr(page, "reveal", lambda target: aimed.append(target) or True)
+        door.click()
+        assert aimed == ["anki_miner"]
+    assert store.calls == [], "a gate writes nothing"
+
+
+def test_anki_miner_seen_after_the_look_shows_the_switch_in_place_of_the_line(qapp):
+    """Row 13: Anki Miner installed (or browsed to) after the look — its card's check opens the gate
+    (`set_found`): the needs line goes and *Make cards for me* shows; `looked` tells the rows that follow it."""
+    page, store = make_page({}, "ja", found=(EVERYTHING - {"miner_found"}))
+    page.reveal("anki")
+    assert wait_until(lambda: "connect_needs_miner" in page.rows, 20)
+    QApplication.processEvents()
+    assert "connect_needs_miner" in _shown_ids(page)
+    told = []
+    page.looked.connect(lambda: told.append(True))
+    page.set_found("miner_found", True)
+    QApplication.processEvents()
+    assert "connect_needs_miner" not in _shown_ids(page) and told == [True]
+    assert catalog.visible(catalog.ROW["connect_enabled"], page._settings(), "ja", page._ctx())
+    page.set_found("miner_found", True)                       # already open: nothing again
+    assert told == [True] and store.calls == []

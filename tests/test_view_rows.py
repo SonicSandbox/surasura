@@ -1153,8 +1153,11 @@ def test_each_of_connects_kinds_is_a_stone_with_its_own_words():
     assert (st[2].kind, st[2].label, st[2].tone) == ("no_media", "No video", "warn") and runner.NO_VIDEO in st[2].tip
     assert (st[3].kind, st[3].label, st[3].tone) == ("waiting", "Not timed", "warn")
     assert "Mine anyway" in st[3].tip and "Needs you" in st[3].tip and feed.WORDS[feed.NOT_TIMED] in st[3].tip
-    assert (st[4].kind, st[4].tip) == ("waiting", runner.ANKI_CLOSED)
-    assert (st[5].kind, st[5].tip) == ("waiting", runner.ON_BATTERY)
+    # M-3 A (Sonic 2026-10-22): a wait on Anki or on battery takes *Mine now*; its hover says what the press does
+    assert (st[4].kind, st[4].tip) == ("waiting", vr.STRINGS["tip_ask_anki"].format(tip=runner.ANKI_CLOSED))
+    assert st[4].tip.endswith("Click: it goes first once Anki answers")
+    assert (st[5].kind, st[5].tip) == ("waiting", vr.STRINGS["tip_ask_battery"].format(tip=runner.ON_BATTERY))
+    assert st[5].tip.endswith("Click to mine this one now, on battery")
     assert (st[6].kind, st[6].tip) == ("waiting", feed.WORDS[feed.WAITING])
     assert (st[7].kind, st[7].label) == ("mine", "Mine"), "no job: as without Connect"
     assert (st[8].kind, st[8].tip) == ("waiting", feed.WORDS[feed.ASKED]), "an ask below the line waits, first"

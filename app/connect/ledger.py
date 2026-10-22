@@ -101,7 +101,8 @@ _ADDED_COLUMNS = (("kind", "TEXT NOT NULL DEFAULT 'mine'"), ("words", "TEXT"),
                   ("store_id", "TEXT"), ("resume", "TEXT"), ("picked", "TEXT"),
                   ("attempt", "INTEGER NOT NULL DEFAULT 0"), ("failures", "INTEGER NOT NULL DEFAULT 0"),
                   ("skipped", "TEXT"), ("tag_pending", "TEXT"),
-                  ("asked_at", "TEXT"))         # P4.1: the ask the job answers (no SCHEMA bump: see the docstring)
+                  ("asked_at", "TEXT"),         # P4.1: the ask the job answers (no SCHEMA bump: see the docstring)
+                  ("progress", "TEXT"))         # laptop round 5 #23: where Anki Miner's run stands (JSON; as above)
 # P2.4's tables (made IF NOT EXISTS, like the rest)
 _RUNNER_SQL = (
     # N5, one Anki Miner call: `state` running · done · uncertain (words in doubt) · refused (it never ran)
@@ -159,7 +160,7 @@ PREPARE_KINDS = ("known-sync", "generate", "no-store", "no-profile")
 STANDING = ("not-timed", "no-profile", "no-store", "no-subtitle")
 # The columns `set_state` may write beside the state
 _STATE_COLUMNS = frozenset(("reason", "resume", "picked", "attempt", "failures", "skipped", "store_id", "tag_pending",
-                            "asked_at"))
+                            "asked_at", "progress"))
 # Anki Miner's outcomes that settle a word without a card (it turned it down): never sent again for the item
 _NOT_MADE = ("made", "uncertain", "not_attempted")
 
@@ -493,7 +494,7 @@ class Ledger:
             columns.setdefault("resume", None)
             if state not in FINISHED:
                 columns.setdefault("reason", None)
-        for name in ("picked", "skipped"):
+        for name in ("picked", "skipped", "progress"):
             if columns.get(name) is not None and not isinstance(columns[name], str):
                 columns[name] = json.dumps(columns[name], ensure_ascii=False)
         sets = "".join(f", {name} = ?" for name in columns)

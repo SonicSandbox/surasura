@@ -524,10 +524,11 @@ def generate_args(parser):
     parser.add_argument("--force", action="store_true", help="run the analysis even when nothing changed")
 
 
-def _backlog_read(loaded, lang):
+def _backlog_read(loaded, lang, after_cards=False):
     """The Anki backlog read the window fires before Generate (WP-B7), awaited here: the report marks the cards
-    waiting in Anki. Nothing without decks, with the switch off, or with Anki closed."""
-    if not loaded.get("anki_backlog_on_generate", True) or os.environ.get("SURASURA_NO_ANKI_SYNC"):
+    waiting in Anki. Nothing without decks, with the switch off, or with Anki closed. `after_cards`: Connect's read
+    once its cards landed (laptop round 5 #27: the window's count of new cards), whatever Generate's switch says."""
+    if (not after_cards and not loaded.get("anki_backlog_on_generate", True)) or os.environ.get("SURASURA_NO_ANKI_SYNC"):
         return
     decks = list((loaded.get("anki_sync_decks") or {}).get(lang) or [])
     if not decks:
@@ -1160,25 +1161,58 @@ def _connect_folder():
     return os.path.join(get_local_data_path(), "connect")
 
 
-def _anki_miner_setup(loaded, lang, run_dir):
+SETUP_FOR_S = 15 * 60      # a kept set of Anki Miner look-ups is read again once this old (LF-mining row 25)
+
+
+def _anki_miner_setup(loaded, lang, run_dir, held=None):
     """(Anki Miner's version answer, the profile's id, its field mapping) for the run file — or None when Anki Miner
-    isn't installed (E7: the mine step is skipped, never an error)."""
+    isn't installed (E7: the mine step is skipped, never an error).
+
+    `held`: Connect's run's set for this language (a dict, `runner.Steps._anki_miner_held`; LF-mining row 25). Holding
+    one younger than SETUP_FOR_S, Anki Miner isn't started: the kept export is written to `run_dir`'s
+    settings-export.json (a run after a kill reads the job's mapping there) and the note type still checked. Else
+    Anki Miner is read as always and the set kept in it; any failure here leaves it empty. This amends E10's "read
+    before every batch, never cached" to "once a run, again after any failure and every 15 min" (PROVISIONAL,
+    Michi's technical rule). The set is kept only while Anki Miner's files are as they were (`anki_miner.stamp`: its
+    program, gui_config.json — the active profile and the mapping — and its profiles): a profile switched, a mapping
+    edited or Anki Miner updated mid-run reads it all again, and the pick-to-mine guard sees the new profile
+    (P1.3-AM37 #5; IK-r2-3, R2-7). The command line's own `pick` holds none: read every call, as before."""
     from app.connect import anki_miner, fields
     miner = anki_miner.find(loaded)
     if miner is None:
         return None
-    name = loaded.get("connect_anki_miner_profile") or "Surasura"
-    try:
-        info = anki_miner.version(miner)
-        profile = anki_miner.choose_profile(info, anki_miner.profiles(miner), name)    # 3.7: else your active one
-        os.makedirs(run_dir, exist_ok=True)
-        mapping = fields.from_export(
-            anki_miner.settings_export(miner, lang, os.path.join(run_dir, "settings-export.json"), profile), lang)
-    except anki_miner.AnkiMinerError as e:
-        raise _miner_error(e) from None
-    except fields.NeedsYou as e:
-        raise CliError("needs-you", e.message, ask=e.message) from None
+    export_path = os.path.join(run_dir, "settings-export.json")
+    read_at = (held or {}).get("at")
+    now = anki_miner.stamp(miner) if held is not None else None    # taken before the reads: a save meanwhile shows
+    kept = (held.get("set") if held and time.monotonic() - read_at < SETUP_FOR_S and now is not None
+            and held.get("stamp") == now else None)
+    if held is not None:
+        held.clear()                    # filled again only once every look-up and the note type's check answered
+    if kept is not None:
+        try:
+            os.makedirs(run_dir, exist_ok=True)
+            with open(export_path, "w", encoding="utf-8") as f:
+                json.dump(kept[3], f, ensure_ascii=False)
+        except OSError:
+            kept = None                 # read from Anki Miner, which writes the file itself
+    if kept is not None:
+        info, profile, mapping, export = kept
+    else:
+        name = loaded.get("connect_anki_miner_profile") or "Surasura"
+        try:
+            info = anki_miner.version(miner)
+            profile = anki_miner.choose_profile(info, anki_miner.profiles(miner), name)    # 3.7: else your active one
+            os.makedirs(run_dir, exist_ok=True)
+            export = anki_miner.settings_export(miner, lang, export_path, profile)
+            mapping = fields.from_export(export, lang)
+        except anki_miner.AnkiMinerError as e:
+            raise _miner_error(e) from None
+        except fields.NeedsYou as e:
+            raise CliError("needs-you", e.message, ask=e.message) from None
     _check_note_type(loaded, mapping)
+    if held is not None:
+        held.update(set=(info, profile, mapping, export), stamp=now,
+                    at=read_at if kept is not None else time.monotonic())
     return info, profile, mapping
 
 
@@ -1251,7 +1285,8 @@ def pick(args):
     setup = None
     if args.video is not None:
         contract.emit_progress("asking Anki Miner", 1, 3)
-        setup = _anki_miner_setup(loaded, lang, run_dir)
+        # Connect's run hands in its set of look-ups (`held`, row 25: never on the command line)
+        setup = _anki_miner_setup(loaded, lang, run_dir, held=getattr(args, "held", None))
         if setup is None:
             out["skipped"] = "anki miner absent"
 

@@ -25,7 +25,7 @@ def test_a_timeout_leaves_the_batch_in_doubt_like_a_crash(monkeypatch):
     # Like a crash (test_runner_steps.py), a timeout is "the run may have written cards": the batch is in doubt,
     # every word is uncertain, and nothing is raised (a raise would stop the job or mark its words failed).
     monkeypatch.setattr(anki_miner, "find", lambda loaded: "AnkiMiner.exe")
-    monkeypatch.setattr(verbs, "_anki_miner_setup", lambda loaded, lang, run_dir: ({}, "p1", MAPPING))
+    monkeypatch.setattr(verbs, "_anki_miner_setup", lambda loaded, lang, run_dir, held=None: ({}, "p1", MAPPING))
 
     def stopped(*a, **k):
         raise anki_miner.AnkiMinerError("timeout", "Anki Miner didn't finish in time")

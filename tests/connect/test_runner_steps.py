@@ -92,7 +92,7 @@ def test_under_the_suites_anki_is_switched_off_and_the_job_waits_for_the_next_st
 ])
 def test_anki_miners_refusals_read_as_waits_a_re_pick_or_needs_you(monkeypatch, tmp_path, kind, expect):
     monkeypatch.setattr(anki_miner, "find", lambda loaded: "AnkiMiner.exe")
-    monkeypatch.setattr(verbs, "_anki_miner_setup", lambda loaded, lang, run_dir: ({}, "p1", MAPPING))
+    monkeypatch.setattr(verbs, "_anki_miner_setup", lambda loaded, lang, run_dir, held=None: ({}, "p1", MAPPING))
 
     def refuse(*a, **k):
         raise anki_miner.AnkiMinerError(kind, "Anki Miner said no")
@@ -107,7 +107,7 @@ def test_anki_miners_refusals_read_as_waits_a_re_pick_or_needs_you(monkeypatch, 
 
 def test_a_crash_leaves_the_batch_in_doubt_never_failed(monkeypatch):
     monkeypatch.setattr(anki_miner, "find", lambda loaded: "AnkiMiner.exe")
-    monkeypatch.setattr(verbs, "_anki_miner_setup", lambda loaded, lang, run_dir: ({}, "p1", MAPPING))
+    monkeypatch.setattr(verbs, "_anki_miner_setup", lambda loaded, lang, run_dir, held=None: ({}, "p1", MAPPING))
 
     def crash(*a, **k):
         raise anki_miner.AnkiMinerError("crashed", "Anki Miner stopped")

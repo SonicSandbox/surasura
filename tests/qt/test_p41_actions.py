@@ -454,20 +454,27 @@ def _ep(st, n=5):
                              play_tip="", can_play=True)
 
 
-def test_a_wait_is_no_mine_now_button_and_its_tip_names_the_wait_not_a_click():
-    """WF fix 3 (adversary S2 / IK S1, C3: an ask never overrides a wait): *Not timed* and a wait on Anki or on the
-    battery are warn *Waiting* stones with no *Mine now* — the tip is the wait's own, never "Click to mine it now"
-    (an ask there only stamps the job, which keeps waiting, and the toast would promise cards that don't come). A
-    *Waiting* for its turn stays the *Mine now* button."""
+def test_not_timed_is_no_mine_now_button_and_a_wait_on_anki_or_battery_is():
+    """WF fix 3 (adversary S2 / IK S1), as amended by Sonic 2026-10-22 (laptop round 5, M-3 A): *Not timed* is a warn
+    *Waiting* with no *Mine now* (its way on is *Mine anyway* in Needs you) — its tip the wait's own, never "Click to
+    mine it now". A wait on the battery or on Anki is *Mine now* as every *Waiting* is: on battery the press is the
+    yes for that one episode, waiting for Anki it goes first once Anki answers, and the tip says which. A *Waiting* for
+    its turn stays the *Mine now* button."""
     from app.connect import runner
     from app.services import view_rows
     plain = view_rows.Status("waiting", "Waiting", "In your top 20: it mines by itself, in turn", "dim")
-    for kind, reason in ((feed.NOT_TIMED, "not timed to its video"), (feed.ANKI, runner.ANKI_CLOSED),
-                         (feed.BATTERY, runner.ON_BATTERY)):
+    st = view_rows._connected(plain, feed.Item(feed.NOT_TIMED, feed.WORDS[feed.NOT_TIMED], "not timed to its video",
+                                               1, 0, 0), "video")
+    assert (st.kind, st.tone) == ("waiting", "warn")
+    name, tip, ask = rows.action_of(st, (_ep(st),))
+    assert (name, ask) == ("status", None) and tip == st.tip and "Click to mine it now" not in tip
+    for kind, reason, says in ((feed.ANKI, runner.ANKI_CLOSED, "goes first once Anki answers"),
+                               (feed.BATTERY, runner.ON_BATTERY, "mine this one now, on battery")):
         st = view_rows._connected(plain, feed.Item(kind, feed.WORDS[kind], reason, 1, 0, 0), "video")
         assert (st.kind, st.tone) == ("waiting", "warn"), kind
         name, tip, ask = rows.action_of(st, (_ep(st),))
-        assert (name, ask) == ("status", None) and tip == st.tip and "Click to mine it now" not in tip, kind
+        assert name == "mine-now" and ask is not None, kind
+        assert tip.startswith(reason) and says in tip, kind
     turn = view_rows._connected(plain, feed.Item(feed.WAITING, feed.WORDS[feed.WAITING], "", 1, 0, 0), "video")
     assert turn.tone == "dim" and rows.action_of(turn, (_ep(turn),))[0] == "mine-now"
 

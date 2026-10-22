@@ -813,9 +813,10 @@ def test_connects_feed_reaches_the_view_and_an_unchanged_feed_builds_nothing():
 
         def status_of_top():
             return next(e.status for r in views[-1][1].rows for e in r.episodes if e.id == top["id"])
-        assert status_of_top().tip != runner.ANKI_CLOSED, "no look yet: the view as without Connect"
+        assert runner.ANKI_CLOSED not in status_of_top().tip, "no look yet: the view as without Connect"
         provider.feed()                                       # the status line's tick
-        assert _wait(lambda: status_of_top().tip == runner.ANKI_CLOSED)
+        # M-3 A (Sonic 2026-10-22): a wait on Anki takes *Mine now*; its hover says what the press does
+        assert _wait(lambda: status_of_top().tip == view_rows.STRINGS["tip_ask_anki"].format(tip=runner.ANKI_CLOSED))
         assert views[-1][1].connect is provider.latest()
         time.sleep(0.1)
         builds, n = reader.builds, len(views)

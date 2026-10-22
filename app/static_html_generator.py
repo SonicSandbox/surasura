@@ -13,7 +13,8 @@ from app import settings_manager
 RESULTS_DIR = get_user_file("results")
 PROGRESSIVE_CSV = os.path.join(RESULTS_DIR, "progressive_learning_list.csv")
 PRIORITY_CSV = os.path.join(RESULTS_DIR, "priority_learning_list.csv")
-OUTPUT_FILE = os.path.join(RESULTS_DIR, "reading_list_static.html")
+REPORT_NAME = "reading_list_static.html"
+OUTPUT_FILE = os.path.join(RESULTS_DIR, REPORT_NAME)
 # Resources (Templates)
 WEB_APP_FILE = get_resource(os.path.join("templates", "web_app.html"))
 
@@ -48,13 +49,16 @@ def open_as_app(file_path):
 def open_report(app_mode=False):
     """Open the ALREADY-generated report without re-rendering it — the fast path when neither the
     analysis nor the presentation (theme / Zen limit / window) changed. Returns False if there is
-    no report on disk yet (caller should render instead)."""
-    if not os.path.exists(OUTPUT_FILE):
+    no report on disk yet (caller should render instead). The file is looked for in `results` as it is now, where the
+    window's journey check looks — never by the path fixed when this module was first imported (AD-4: a test's
+    earlier root, whose report then opened a browser in the next test)."""
+    path = os.path.join(get_user_file("results"), REPORT_NAME)
+    if not os.path.exists(path):
         return False
     if app_mode:
-        open_as_app(OUTPUT_FILE)
+        open_as_app(path)
     else:
-        webbrowser.open(f"file://{os.path.abspath(OUTPUT_FILE)}")
+        webbrowser.open(f"file://{os.path.abspath(path)}")
     return True
 
 

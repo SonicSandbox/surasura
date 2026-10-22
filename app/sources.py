@@ -37,8 +37,9 @@ folder, `Library/<show>/<file>` (SRC-4). One look (`scan`):
   than BOOK_MIN_CHARS characters of the script (T2-B4: counted `short` too); a text over IN_MEMORY is judged by its
   first HEAD bytes (B4), an EPUB whose encryption.xml locks more than its fonts is never split (B6). Each is skipped,
   never copied — a text unless an item already holds its bytes or video (check a / b) — and remembered by its stats
-  like an EPUB with no text, so an unchanged one is never read again. Dot files (a Mac's `._*` twins, `.DS_Store`)
-  are never listed, nor a `.ts` under TS_MIN as a video (B7, S9).
+  like an EPUB with no text, so an unchanged one is never read again. A Mac's `._*` twins are never listed
+  (`runner.mac_copy`: the one dot rule — a `.hack` title is a name, LF-21), and a video is what `runner.video_file`
+  says (never a `.ts` under its TS_MIN: B7, S9).
 - **An unreachable folder** (SRC-3): `{"reachable": False}`, nothing written or marked — one that goes while it is
   listed too (its folder times kept as they were).
 
@@ -77,7 +78,6 @@ EPUB = ".epub"
 MIN_SCRIPT = 20                 # a text holding fewer characters of the language's script is no content (K6)
 BOOK_MIN_CHARS = 1000           # a loose .txt / .md holding fewer of the script's characters is no content (T2-B4)
 HEAD = 1 << 20                  # a text over IN_MEMORY is judged by this much of its start, read with its hash (B4)
-TS_MIN = 1 << 20                # a `.ts` under this size is TypeScript, not a video (S9: by the listing's stat)
 _KANA = re.compile(f"[{KANA_LETTERS}]")      # kana letters: never ・ or ー (a Chinese name's separator, a dash)
 _HAN = re.compile(f"[{HAN}]")
 _BOOK_SCRIPT = {"ja": re.compile(f"[{KANA_LETTERS}{HAN}]"), "zh": _HAN}
@@ -456,8 +456,8 @@ def _listing(folder):
     try:
         with os.scandir(folder) as found:
             for entry in found:
-                if entry.name.startswith("."):               # a dot folder (`skip_dir`) or a dot file: a Mac's
-                    continue                                 # AppleDouble twin `._Show - 01.mkv`, `.DS_Store` (B7)
+                if runner.mac_copy(entry.name):              # a Mac's AppleDouble twin `._Show - 01.mkv` (B7, LF-21)
+                    continue
                 try:
                     if entry.is_dir(follow_symlinks=False):
                         st = entry.stat(follow_symlinks=False)  # first: `skip_dir` takes a failed stat for a skip
@@ -469,15 +469,15 @@ def _listing(folder):
                         continue
                     low = entry.name.lower()
                     kind = "text" if ls.is_content_name(low) else "epub" if low.endswith(EPUB) else \
-                        "video" if low.endswith(runner.VIDEO_EXTENSIONS) else None
+                        "video" if runner.video_name(entry.name) else None
                     if kind is None:
                         continue
                     st = entry.stat(follow_symlinks=False)
                 except OSError:
                     unread = True
                     continue
-                if kind == "video" and low.endswith(".ts") and st.st_size < TS_MIN:
-                    continue                                 # TypeScript, not MPEG-TS (S9)
+                if kind == "video" and not runner.video_file(entry.name, st.st_size):
+                    continue                                 # Connect's one video-file rule (a small `.ts`: S9)
                 if kind == "video":
                     vids[low] = (entry.path, st)             # a placeholder too: it is beside, its key never read
                 elif ls.is_placeholder(st):

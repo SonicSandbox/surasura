@@ -97,11 +97,17 @@ VIDEO_EXTENSIONS = (".mkv", ".mp4", ".webm", ".avi", ".m4v", ".mov", ".ts")
 TS_MIN = 1 << 20                # a `.ts` under this size is TypeScript, not a video (K6, S9: by the listing's stat)
 
 
+def mac_copy(name):
+    """Is this a Mac's `._` copy (AppleDouble, on a NAS or exFAT drive: metadata, never a video or a text)? The one dot
+    rule — Connect's video index and the library's look (`sources._listing`) both ask it; any other leading dot is a
+    name (`.hack SIGN - 01.mkv`, a `.hack` folder). The folders a Mac makes are `library_store.SKIP_DIRS`'."""
+    return name.startswith("._")
+
+
 def video_name(name):
-    """Can a file of this name be a video? One of VIDEO_EXTENSIONS, and never a Mac's `._` copy (on a NAS or exFAT
-    drive: metadata, never a video). Any other leading dot is a name (`.hack SIGN - 01.mkv`). The name's half of
-    `video_file`, for a listing before its stat."""
-    return not name.startswith("._") and name.lower().endswith(VIDEO_EXTENSIONS)
+    """Can a file of this name be a video? One of VIDEO_EXTENSIONS, and never a Mac's `._` copy (`mac_copy`). The
+    name's half of `video_file`, for a listing before its stat."""
+    return not mac_copy(name) and name.lower().endswith(VIDEO_EXTENSIONS)
 
 
 def video_file(name, size):

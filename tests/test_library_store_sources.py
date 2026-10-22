@@ -172,8 +172,9 @@ def test_a_source_may_never_be_or_hold_surasuras_own_folders(language):
         assert store.add_source(_source_root()) is not None                 # a folder beside them is fine
 
 
-@pytest.mark.parametrize("name", [".hidden", ".stversions", ".trash", "$RECYCLE.BIN", "$Recycle.Bin", "#recycle",
-                                  "@eaDir", "System Volume Information"])
+@pytest.mark.parametrize("name", [".AppleDouble", ".Trashes", ".Spotlight-V100", ".fseventsd", ".TemporaryItems",
+                                  ".stversions", ".trash", "$RECYCLE.BIN", "$Recycle.Bin", "#recycle", "@eaDir",
+                                  "System Volume Information"])
 def test_the_walk_skips_hidden_recycled_and_old_version_folders(name, tmp_path):
     """B3: Syncthing's .stversions, the recycle bins (Windows' and a NAS's), a NAS's @eaDir thumbnails and the trash
     hold removed or old versions: read, they would bring back episodes removed on purpose."""
@@ -182,7 +183,7 @@ def test_the_walk_skips_hidden_recycled_and_old_version_folders(name, tmp_path):
     assert ls.skip_dir(name, str(folder)) is True
 
 
-@pytest.mark.parametrize("name", ["フリーレン", "夜市", "Season 1", "Specials", "第2期"])
+@pytest.mark.parametrize("name", ["フリーレン", "夜市", "Season 1", "Specials", "第2期", ".hack Sign"])   # LF-21: a title
 def test_the_walk_reads_an_ordinary_show_folder(name, tmp_path):
     folder = tmp_path / name
     folder.mkdir()

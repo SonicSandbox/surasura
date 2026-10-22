@@ -709,7 +709,7 @@ def test_a_loose_files_show_comes_from_its_name_else_the_source_folders(language
 # --- B3: what a look skips ------------------------------------------------------------------------------------------ #
 
 @pytest.mark.parametrize("folder", [".stversions", "$RECYCLE.BIN", "#recycle", "@eaDir", ".trash",
-                                    "System Volume Information", ".hidden"])
+                                    "System Volume Information", ".Trashes"])   # LF-21: a Mac's, by name
 def test_a_look_skips_the_folders_no_show_lives_in(folder):
     language = "ja"
     store, data_dir = _empty(language)

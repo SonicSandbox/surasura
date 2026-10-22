@@ -9,14 +9,17 @@ anything that removes, replaces or restores — else the primary (a write the pr
 (`exec` is never called): the answer comes back as `on_answer(yes)`, once, on the GUI thread — and never after its
 window closed or was hidden (a window closing with a question open answers nothing: nothing happens). An optional
 `check` (K7's *Also forget my known words*) sits under the words, off; its state is the card's `checked` when the
-answer comes (No leaves it False).
+answer comes (No leaves it False). An optional `field` (LM11b G3: the group's *Rename…*) is a line of text under the
+words, prefilled with it, in focus and selected as the card opens; Enter in it is Yes; its text is the card's `text`
+when the answer comes (No leaves it None).
 
 The looks are the stylesheet's (`QLabel#confirmtitle` / `#confirmline`, `kind="primary"` / `kind="danger"`) and the
 theme's tokens (the `scrim` colour, the `dialog` radius and shadow): re-skinned with W3.3's surfaces.
 """
 from PyQt6.QtCore import QEvent, QRectF, Qt
 from PyQt6.QtGui import QPainter
-from PyQt6.QtWidgets import QApplication, QCheckBox, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import (QApplication, QCheckBox, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout,
+                             QWidget)
 
 from app import theme
 from app.qt import motion, shadow, strings, style
@@ -67,7 +70,7 @@ class Confirm(motion.Overlay):
     focus = True
 
     def __init__(self, window, title, body, yes, yes_tip, no=None, no_tip=None, default_no=False, danger=False,
-                 on_answer=None, check=None, check_tip=None):
+                 on_answer=None, check=None, check_tip=None, field=None):
         super().__init__(window)
         self.setObjectName("confirm")
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
@@ -77,6 +80,7 @@ class Confirm(motion.Overlay):
         self._on_answer = on_answer
         self.answer = None
         self.checked = False
+        self.text = None
         self._before = QApplication.focusWidget()
         f = theme.text_factor(style.current()[1])
         box = QVBoxLayout(self)
@@ -101,6 +105,12 @@ class Confirm(motion.Overlay):
             self.check.setAccessibleName(check)
             self.check.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
             box.addWidget(self.check)
+        self.field = None
+        if field is not None:                             # --- LM11b G3: a line of text, read as `text` with Yes
+            self.field = QLineEdit(field, self)
+            self.field.setAccessibleName(title)
+            self.field.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            box.addWidget(self.field)
         row = QHBoxLayout()
         row.setSpacing(round(10 * f))
         row.addStretch(1)
@@ -117,6 +127,8 @@ class Confirm(motion.Overlay):
             b.setAutoDefault(False)
             row.addWidget(b)
         box.addLayout(row)
+        if self.field is not None:
+            self.field.returnPressed.connect(self.yes.click)          # Enter in the field: Yes
         self.default = self.no if default_no else self.yes
         self.scrim = Scrim(window, self.close)
         self.shadow = shadow.Follower(self, self.shadow_name)
@@ -143,7 +155,11 @@ class Confirm(motion.Overlay):
 
     def _focus_default(self):
         if self.answer is None and self.isVisible():
-            self.default.setFocus(Qt.FocusReason.OtherFocusReason)
+            if self.field is not None:                    # the name to type over: in focus, selected
+                self.field.setFocus(Qt.FocusReason.OtherFocusReason)
+                self.field.selectAll()
+            else:
+                self.default.setFocus(Qt.FocusReason.OtherFocusReason)
 
     # --- the keyboard stays on the card while it is open --------------------------------------------------------- #
     def _focus_moved(self, _old, new):
@@ -152,9 +168,10 @@ class Confirm(motion.Overlay):
             self._focus_default()
 
     def focusNextPrevChild(self, next_):
-        """Tab and Shift+Tab go round the two buttons (and the check), never out to the window behind the scrim."""
+        """Tab and Shift+Tab go round the two buttons (and the check, the field), never out to the window behind the
+        scrim."""
         now = QApplication.focusWidget()
-        ring = [w for w in (self.check, self.no, self.yes) if w is not None]
+        ring = [w for w in (self.check, self.field, self.no, self.yes) if w is not None]
         if now in ring:
             target = ring[(ring.index(now) + (1 if next_ else -1)) % len(ring)]
         else:
@@ -177,6 +194,7 @@ class Confirm(motion.Overlay):
             return
         self.answer = bool(yes)
         self.checked = bool(yes) and self.check is not None and self.check.isChecked()
+        self.text = self.field.text() if yes and self.field is not None else None
         callback, self._on_answer = self._on_answer, None
         try:
             QApplication.instance().focusChanged.disconnect(self._focus_moved)
@@ -236,14 +254,14 @@ def _register(window, overlay):
 
 
 def ask(window, title, body, yes, yes_tip, *, no=None, no_tip=None, default_no=False, danger=False, on_answer=None,
-        check=None, check_tip=None):
+        check=None, check_tip=None, field=None):
     """Ask in `window` (a top-level: the main window or a secondary one). `yes` names the action ("Remove 2 lists");
     `default_no` for anything that removes, replaces or restores; `danger` paints the action as one; `check` a box
-    under the words (off; read as `card.checked` in `on_answer`). -> the card (answered later through
-    `on_answer(yes)`)."""
+    under the words (off; read as `card.checked` in `on_answer`); `field` a line of text prefilled with it (read as
+    `card.text` in `on_answer`; Enter in it is Yes). -> the card (answered later through `on_answer(yes)`)."""
     window = window.window()
     card = Confirm(window, title, body, yes, yes_tip, no=no, no_tip=no_tip, default_no=default_no, danger=danger,
-                   on_answer=on_answer, check=check, check_tip=check_tip)
+                   on_answer=on_answer, check=check, check_tip=check_tip, field=field)
     _register(window, card)
     card.open()
     return card

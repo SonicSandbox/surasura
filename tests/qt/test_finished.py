@@ -732,3 +732,35 @@ def test_H_T2_an_import_whose_writer_stopped_says_it_lands_later_and_frees_the_i
         holder.release()
     assert wait_until(lambda: win.bar_line.full() == strings.FIN_IMPORT_LATER, 5)
     assert win.page_widgets["finished"].importer.text() == strings.FIN_IMPORT
+
+
+# --- LM11b review fix round: H-C1 ---------------------------------------------------------------------------------- #
+@pytest.mark.parametrize("mods", ("ctrl", "shift", "ctrl-shift"))
+def test_LM11b_H_C1_ctrl_or_shift_on_a_finished_rows_part_never_acts(fin, mods):
+    """H-C1: Ctrl / Shift+click on a part never acts on any list — Finished's too, where nothing is picked: its *Put
+    back*, ▶ and ⋯ do nothing under Ctrl or Shift (the picks' promise kept beyond Current). Wrong, a Ctrl+click meant
+    as a pick on the wrong tab put a finished show back into Current."""
+    from tests.qt.test_drag import mouse
+    m = {"ctrl": Qt.KeyboardModifier.ControlModifier, "shift": Qt.KeyboardModifier.ShiftModifier,
+         "ctrl-shift": Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier}[mods]
+    _seed, win, writer, _e = fin()
+    lst = lst_of(win)
+    assert lst.pickable is None                                       # Finished picks nothing
+    i, _row = finished_rows(win)[0]
+    menus, plays = [], []
+    lst.menu_requested.connect(lambda *a: menus.append(a))
+    lst.play_requested.connect(lambda *a: plays.append(a))
+    for name in ("put-back", "more", "play"):
+        at = next((p for p in lst.delegate.parts(lst.model().entries[i], lst.visualRect(lst.model().index(i, 0)))
+                   if p[0] == name), None)
+        if at is None:
+            continue
+        pos = at[1].center()
+        mouse(lst.viewport(), QEvent.Type.MouseButtonPress, pos, Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+              m)
+        mouse(lst.viewport(), QEvent.Type.MouseButtonRelease, pos, Qt.MouseButton.LeftButton,
+              Qt.MouseButton.NoButton, m)
+        settle(20)
+    assert calls(writer) == [] and menus == [] and plays == []
+    click(lst, part(lst, i, "put-back")[1].center())                  # a plain click still acts
+    assert calls(writer, "put_back")

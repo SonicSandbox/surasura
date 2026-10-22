@@ -2080,6 +2080,7 @@ def test_L4_without_the_stones_sheet_a_click_on_the_string_opens_the_row(world, 
 # The real store: the writer, the numbers and the reader on one opener
 # ================================================================================================================== #
 from app import library_store as ls                                                  # noqa: E402
+from app import settings_manager                                                     # noqa: E402
 from tests.test_library_store_support import migrated                               # noqa: E402
 from tests.test_services_moves import LockHolder, short_lock_wait, write_plan       # noqa: E402,F401
 
@@ -2090,6 +2091,7 @@ def real(qapp):
 
     def make(language="ja", plan=False):
         store = migrated(language)                                     # the outside writer's handle (another program)
+        settings_manager.save_keys({"target_language": language})      # the window's language is its library's (P0)
         opener = moves_module.store_opener(language)
         plan_file = None
         if plan:
@@ -2377,3 +2379,301 @@ def test_R3_S2_a_lift_that_fails_lets_the_drag_go_and_holds_nothing(world, monke
     assert win.moves.running is None and writer.held == 0 and lst.parting is None
     seed.library.commit(items=[{"id": rows_of(win)[3].episodes[0].id, "watched": 1}])   # views still come in
     assert wait_until(lambda: rows_of(win)[3].episodes[0].watched, 3)
+
+
+# ================================================================================================================== #
+# LM11b G5: one show inside a group, all watched (GW-2 ⭐ A: the toast offers *Move {show} to Finished*)
+# ================================================================================================================== #
+from app.services import view_rows as vr                                            # noqa: E402
+from tests import test_view_rows as tvr                                             # noqa: E402
+
+SHOW_A, SHOW_B = "星降る街の小さな工房", "雲の上の郵便屋さん"
+
+
+def _group_view(a_watched=2, b_watched=0, source=None):
+    """A group (piece 10): SHOW_A Ep 1–3 (its first `a_watched` watched), SHOW_B Ep 7–8 (its first `b_watched`
+    watched); under it 白銀の書庫番 Part 1 as a run of its own. `source` "hato": the group's first show under hato's
+    folder (hato's mix)."""
+    tvr.WORKS.clear()
+    tvr.work(1, SHOW_A)
+    tvr.work(2, SHOW_B)
+    tvr.work(3, "白銀の書庫番", media="lightnovel")
+    folder = "HighPriority/Hato/" if source == "hato" else "HighPriority/"
+    a = {k: {"watched": int(k < a_watched), "rel_path": folder + n} for k, n in enumerate(tvr.eps(SHOW_A, 1, 3))}
+    b = {k: {"watched": 1} for k in range(b_watched)}
+    items = tvr.items_of([("now", 1, 10, tvr.eps(SHOW_A, 1, 3), a), ("now", 2, 10, tvr.eps(SHOW_B, 7, 8), b),
+                          ("now", 3, 11, ["白銀の書庫番 01 章.epub"], {0: {"source_type": "epub"}})])
+    pieces = {10: {"id": 10, "title": None, "kind": "group"}, 11: {"id": 11, "title": None, "kind": "run"}}
+    return vr.build(items, dict(tvr.WORKS), {"mine_line": 20}, pieces=pieces)
+
+
+def _show_group(win, **kw):
+    """The group's view shown in the window (the fake writer writes nothing back: no reader view replaces it)."""
+    win.moves._show(_group_view(**kw))
+    for _ in range(5):
+        QApplication.processEvents()
+    return rows_of(win)[0]
+
+
+def _shown_buttons(card):
+    return [b.text() for b in card.buttons if not b.isHidden()]
+
+
+def test_LM11b_G5_the_whole_group_watched_offers_the_rows_own_finish(world):
+    """Every show of the group watched by this Done: the row's own toast (*All 5 watched*), its *Move to Finished*
+    taking the whole row — never the one show's offer."""
+    seed, win, writer = world(apply=False)
+    row = _show_group(win, a_watched=3, b_watched=1)
+    win.moves.done(row, row.episodes[-1])
+    card = win.toasts.card
+    assert card.message == strings.DONE_ALL.format(n=5)
+    assert _shown_buttons(card) == [strings.TOAST_UNDO, strings.DONE_MOVE_FINISHED]
+    settle()
+    card.buttons[1].click()
+    assert calls(writer, "set_tier")[0][1] == drag.ids_of(row)
+    assert row.key not in [r.key for r in rows_of(win)]
+
+
+def test_LM11b_G5_a_show_with_a_file_left_hatos_mix_a_run_and_a_cache_from_before_offer_no_show_finish():
+    """`drag.show_finished` (pure): offered only for a group's show whose every other episode is watched while another
+    show still waits; never for hato's mix (it never finishes), a run (the store makes a group of one show a run: its
+    last Done is the row's own finish), or episodes from a cache from before (no show to name)."""
+    row = _group_view(a_watched=2).rows[0]
+    a = [e for e in row.episodes if e.work_id == 1]
+    assert drag.show_finished(row, a[-1]) == (SHOW_A, [e.id for e in a])
+    assert drag.show_finished(_group_view(a_watched=1).rows[0], a[-1]) is None           # SHOW_A's Ep 2 still waits
+    mix = _group_view(a_watched=2, source="hato").rows[0]
+    assert mix.source == "hato" and drag.show_finished(mix, mix.episodes[2]) is None
+    assert drag.show_finished(row._replace(group=False), a[-1]) is None
+    old = row._replace(episodes=tuple(e._replace(work_id=None, show=None) for e in row.episodes))
+    assert drag.show_finished(old, old.episodes[2]) is None
+    every = _group_view(a_watched=3, b_watched=1).rows[0]
+    assert drag.show_finished(every, every.episodes[-1]) is None                         # all of it: the row's own
+
+
+def _real_group(real):
+    """The real store: Current's first two shows grouped into one row, the first's Ep 1–3 watched; its Ep 4 marked
+    (the Done). -> (store, win, writer, the first show's row, the second's, the group row before the Done)."""
+    store, win, writer = real()
+    rs = rows_of(win)
+    first, second = rs[0], rs[1]
+    store.group(piece_ids=[first.piece_id, second.piece_id])
+    assert wait_until(lambda: rows_of(win)[0].group, 5)
+    store.set_watched(drag.ids_of(first)[:-1])
+    assert wait_until(lambda: rows_of(win)[0].n_watched == 3, 5)
+    row = rows_of(win)[0]
+    last = next(e for e in row.episodes if e.id == drag.ids_of(first)[-1])
+    win.moves.done(row, last)
+    return store, win, writer, first, second, row
+
+
+def _holding(win, ids):
+    return next((r for r in rows_of(win) if [e.id for e in r.episodes] == ids), None)
+
+
+def test_real_store_LM11b_G5_a_show_finished_inside_a_group_lands_in_finished_under_its_own_name(real, monkeypatch):
+    """GW-2 ⭐ A on the real store: the first show's last episode marked while the second's wait — its watched written
+    as any Done and the toast offers *Move <show> to Finished*. Pressed: only its four ids go, in one call, with the
+    Finished toast's Keep / Leave its new cards out (D14); they land in Finished as a run of their own show, and
+    Current's row holds the second show's four, built by the view's own rule (its cover and work the second show's).
+    Wrong, a finished show would sit in Current until the whole group is done — or the press would finish the second
+    show unwatched too."""
+    store, win, writer, first, second, row = _real_group(real)
+    a, b = drag.ids_of(first), drag.ids_of(second)
+    show = row.episodes[3].show
+    card = win.toasts.card
+    assert card.message == strings.DONE_SHOW_IN_GROUP.format(show=show, n=4)
+    assert _shown_buttons(card) == [strings.TOAST_UNDO, strings.DONE_MOVE_SHOW_FINISHED.format(show=show)]
+    assert card.buttons[1].toolTip() == strings.DONE_MOVE_SHOW_FINISHED_TIP.format(show=show, n=4)
+    assert wait_until(lambda: store.item(a[-1])["watched"] == 1, 5)
+    tiers = []
+    monkeypatch.setattr(writer, "set_tier", lambda ids, tier, label=None, real=writer.set_tier:
+                        tiers.append((list(ids), tier)) or real(ids, tier, label=label))
+    settle()
+    card.buttons[1].click()
+    assert tiers == [(a, drag.FINISHED)]
+    assert wait_until(lambda: all(store.item(i)["tier"] == "graduated" for i in a), 5)
+    assert {store.item(i)["work_id"] for i in a} == {first.work_id}
+    assert len({store.item(i)["piece_id"] for i in a}) == 1                  # one run, its own show's
+    assert all(store.item(i)["tier"] == "now" for i in b)
+    assert wait_until(lambda: win.moves.expect is None and _holding(win, b) is not None, 5)
+    kept = _holding(win, b)
+    assert (kept.work_id, kept.cover.work_id, kept.group) == (second.work_id, second.work_id, False)
+    assert not any(set(a) & {e.id for e in r.episodes} for r in rows_of(win))
+    assert win.toasts.card.message == strings.DRAG_FINISHED.format(title=show)
+    win.toasts.card.buttons[2].click()                                # Leave its new cards out
+    assert wait_until(lambda: all(store.item(i)["in_learning_order"] == 0 for i in a), 5)
+    assert all(store.item(i)["in_learning_order"] == 1 for i in b)
+
+
+def test_real_store_LM11b_G5_while_the_store_is_busy_the_row_is_the_readers_own_and_a_stale_view_is_held(
+        real, short_lock_wait):
+    """The press while another program holds the store: the finish waits in the writer's queue (*saving…*), but the
+    row on screen is already the second show's alone — built by the reader by the view's own rule (`expect`): its
+    work, cover and status the second show's, never the group's old ones for as long as the store stays busy. A view
+    still holding the first show's episodes is held. Released: the finish lands and the same row stands."""
+    store, win, writer, first, second, row = _real_group(real)
+    a, b = drag.ids_of(first), drag.ids_of(second)
+    assert wait_until(lambda: store.item(a[-1])["watched"] == 1 and writer.pending() == 0, 5)
+    settle()
+    before = win.page_widgets["current"].view_model
+    holder = LockHolder(store.db_path)
+    try:
+        win.toasts.card.buttons[1].click()
+        assert win.moves.view_in(before) is None                       # still holding the first show: held
+        assert wait_until(lambda: _holding(win, b) is not None, 5)
+        kept = _holding(win, b)
+        assert (kept.work_id, kept.cover.work_id, kept.title) == (second.work_id, second.work_id, second.title)
+        assert kept.status == second.status
+        settle(400)
+        assert writer.pending() == 1 and all(store.item(i)["tier"] == "now" for i in a)
+        assert _holding(win, b) is not None                            # past the settle: still the reader's own row
+    finally:
+        holder.release()
+    assert wait_until(lambda: all(store.item(i)["tier"] == "graduated" for i in a), 10)
+    assert wait_until(lambda: win.moves.expect is None and not win.moves.reader._expected, 5)
+    assert _holding(win, b) is not None and not any(set(a) & {e.id for e in r.episodes} for r in rows_of(win))
+
+
+# --- LM11b review fix round (package B): the settle and the reader's build of a show taken off ------------------- #
+def _finish_show_stuck(world, monkeypatch):
+    """A group shown, the store busy (the fake writer's commands wait), *Move SHOW_A to Finished* given -> (win, writer,
+    the reader's `expect` calls)."""
+    _seed, win, writer = world(apply=False)
+    row = _show_group(win, a_watched=2)
+    told = []
+    monkeypatch.setattr(win.moves.reader, "expect", lambda tiers: told.append(tiers))
+    writer.stuck = True
+    a = [e.id for e in row.episodes if e.work_id == 1]
+    win.moves.finish_show(row, SHOW_A, a)
+    assert writer.pending() == 1 and told == [{i: drag.FINISHED for i in a}]
+    return win, writer, told
+
+
+def test_LM11b_H_T1_a_writer_stopped_with_moves_left_ends_the_settle_and_lets_the_readers_build_go(world, monkeypatch):
+    """H-T1: the settle waits while the writer has moves pending — unbounded by design (a busy store's moves are queued,
+    never dropped) — but a writer stopped (a language switch, the quit) lands nothing more here: the settle ends, the
+    window's order is let go and the reader's build of the show taken off goes with it. Wrong, the timer ticked for
+    good and the reader kept building the show in Finished."""
+    win, writer, told = _finish_show_stuck(world, monkeypatch)
+    moves = win.moves
+    settle(drag.D["settle-ms"] * 2)
+    assert moves._settle.isActive() and told[-1] is not None          # waiting on the busy store, as designed
+    writer.stopped = lambda: True                                    # let go: its move stays in its journal
+    settle(drag.D["settle-ms"] * 3)
+    assert not moves._settle.isActive() and moves.expect is None and told[-1] is None
+
+
+def test_LM11b_H_T1_a_closed_controller_stops_its_settle_and_a_late_tick_shows_nothing(world, monkeypatch):
+    """H-T1: the window lets its controller go (its close, a language switch): the settle stops at once, and a tick
+    already queued past it shows nothing of that controller's."""
+    win, writer, told = _finish_show_stuck(world, monkeypatch)
+    moves = win.moves
+    shown = []
+    monkeypatch.setattr(moves, "_show", lambda view: shown.append(view))
+    moves.close()
+    assert not moves._settle.isActive()
+    moves._settled()
+    assert shown == [] and not moves._settle.isActive()
+
+
+def test_LM11b_H_C3_another_command_landing_as_nothing_never_lets_the_readers_build_go_before_its_own_lands(
+        world, monkeypatch):
+    """H-C3: a command that landed as nothing (`on_reread`) while the show's finish still waits for the busy store lets
+    the window's order go, never the reader's build of the show in Finished: the show stays off the group row until its
+    own command lands — then it goes. Wrong, the show came back into the group before its finish landed."""
+    win, writer, told = _finish_show_stuck(world, monkeypatch)
+    moves = win.moves
+    moves._reread()                                                   # the other command's answer: nothing to change
+    assert writer.pending() == 1 and told[-1] is not None
+    writer.free()                                                     # the finish lands
+    assert wait_until(lambda: told[-1] is None and not moves.tickets, 3)
+
+
+def test_LM11b_H_C3_the_finish_landing_as_nothing_lets_the_readers_build_go_though_another_command_still_waits(
+        world, monkeypatch):
+    """H-C3, the other side: the show's own finish lands as nothing (the store had nothing to change) while another
+    command still waits for the busy store — the reader's build of the show in Finished goes now, never only once the
+    queue is empty. Wrong, the show stayed off its group row for as long as the other command waited."""
+    win, writer, told = _finish_show_stuck(world, monkeypatch)
+    moves = win.moves
+    writer.move([987001], "goal")                                     # another command, waiting behind it
+    change, ticket = writer._waiting.pop(0)                           # the finish's own answer: nothing to change
+    writer.nothing.add(change.op)
+    monkeypatch.setattr(writer, "landed_empty", lambda: [ticket], raising=False)
+    writer._land(change, ticket)
+    assert wait_until(lambda: told[-1] is None, 3)
+    assert writer.pending() == 1 and ticket not in moves.tickets
+
+
+def test_LM11b_two_shows_finished_in_a_row_inside_one_group_both_stay_off_its_row_while_the_store_is_busy(
+        world, monkeypatch):
+    """A group of three shows, two of them watched through: *Move {show} to Finished* on each while the store is busy —
+    the window takes both off the group's row and the reader is told both are going to Finished. Wrong, the second
+    press replaced the first's: the first show came back onto the group's row while its finish still waited."""
+    _seed, win, writer = world(apply=False)
+    third = "風待ちの灯台守"
+    tvr.WORKS.clear()
+    tvr.work(1, SHOW_A)
+    tvr.work(2, SHOW_B)
+    tvr.work(5, third)
+    done = {0: {"watched": 1}, 1: {"watched": 1}}
+    items = tvr.items_of([("now", 1, 10, tvr.eps(SHOW_A, 1, 2), done), ("now", 5, 10, tvr.eps(third, 1, 2), done),
+                          ("now", 2, 10, tvr.eps(SHOW_B, 7, 8), {})])
+    view = vr.build(items, dict(tvr.WORKS), {"mine_line": 20}, pieces={10: {"id": 10, "title": None, "kind": "group"}})
+    win.moves._show(view)
+    for _ in range(5):
+        QApplication.processEvents()
+    row = rows_of(win)[0]
+    assert row.group
+    a = [e.id for e in row.episodes if e.work_id == 1]
+    c = [e.id for e in row.episodes if e.work_id == 5]
+    told = []
+    monkeypatch.setattr(win.moves.reader, "expect", lambda tiers: told.append(tiers))
+    writer.stuck = True
+    win.moves.finish_show(row, SHOW_A, a)
+    win.moves.finish_show(row, third, c)
+    assert writer.pending() == 2
+    assert win.moves.expect_off[row.key] == frozenset(a + c)
+    assert told[-1] == {i: drag.FINISHED for i in a + c}
+
+
+def test_LM11b_a_landed_show_finish_leaves_nothing_behind_for_the_next_move(world, monkeypatch):
+    """The show taken off its row is the window's order while its finish waits, and goes with it: once it landed, the
+    next move the window makes ahead of the store shows a view that holds that show's episodes again (an Undo of the
+    finish), never holding it back for a show it no longer takes off. Wrong, every view was held until that move
+    settled."""
+    win, writer, told = _finish_show_stuck(world, monkeypatch)
+    moves = win.moves
+    writer.free()
+    assert wait_until(lambda: told[-1] is None and moves.expect is None and not moves.tickets, 3)
+    view = _group_view(a_watched=2)                                   # the group holding SHOW_A's episodes again
+    moves._ahead(view)                                                # the next move, ahead of the store
+    assert moves.view_in(view) is not None
+
+
+def test_LM11b_a_settle_reached_while_a_drag_runs_keeps_the_held_view_under_the_hand(world):
+    """E6: the settle of an earlier move can come while the next drag runs — the reader's view it held stays held (the
+    rows under the hand never change), shown at the drop. Wrong, the held view was shown mid-drag."""
+    _seed, win, _writer = world()
+    lift(win, 3)
+    moves = win.moves
+    shown = win.page_widgets["current"].view_model
+    view = shown._replace(rows=shown.rows[::-1])
+    moves.held = view
+    moves._let_go()
+    assert moves.held is view and win.page_widgets["current"].view_model is shown
+    moves.cancel()
+
+
+def test_LM11b_every_write_landed_asks_the_reader_for_the_stores_own_view_again(world, monkeypatch):
+    """AD2-4: once every write landed the settle asks the reader to publish the store's view again — changed or not —
+    so a row the store placed otherwise than the window drew it comes back to where it is. Wrong, the window kept its
+    own drawing."""
+    _seed, win, writer = world()
+    asked = []
+    monkeypatch.setattr(win.moves.reader, "republish", lambda: asked.append(1))
+    rs = rows_of(win)
+    win.moves.nudge(rs[3], 1)
+    assert calls(writer)
+    assert wait_until(lambda: asked and win.moves.expect is None, 5)

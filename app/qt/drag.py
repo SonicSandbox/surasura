@@ -112,12 +112,13 @@ def soon_slot(rows_, src):
 
 def split_first(rows_, row):
     """A split's first part (A2: the Finished well stays unlit, ⋯ leaves Finished out): another Current row of the same
-    title whose files come after this one's. (Goal's parts aren't in the view: a later part waiting in Goal isn't seen.)"""
-    if row.work_id is None:
+    title whose files come after this one's. (Goal's parts aren't in the view: a later part waiting in Goal isn't seen.)
+    A group (LM11b G1: the learner's own row of several shows, its work_id its first show's) is never a part."""
+    if row.work_id is None or getattr(row, "group", False):
         return False
     mine = _last_number(row)
     for r in rows_:
-        if r.key != row.key and r.work_id == row.work_id:
+        if r.key != row.key and r.work_id == row.work_id and not getattr(r, "group", False):
             theirs = _first_number(r)
             if mine is None or theirs is None or theirs > mine:
                 return True
@@ -140,6 +141,20 @@ def is_mix(row):
 def finishes(row):
     """Whether Finished is offered for a row (the well lit, ⋯'s entry, the finish toast)."""
     return not is_mix(row)
+
+
+def show_finished(row, ep):
+    """LM11b G5 (GW-2 ⭐ A): marking `ep` leaves no episode of its show in a group unwatched while another show of the
+    group still waits -> (the show's name, its episodes' ids in the group), else None. Never hato's mix; a run's last
+    Done is the row's own finish (a group of one show is a run: the store's rule); episodes with no show to name (a
+    first screen's cache from before) are offered nothing."""
+    if not row.group or not finishes(row) or ep.work_id is None or not ep.show:
+        return None
+    mine = [e for e in row.episodes if e.work_id == ep.work_id]
+    if any(not e.watched and e.id != ep.id for e in mine) or \
+            not any(not e.watched for e in row.episodes if e.work_id != ep.work_id):
+        return None
+    return ep.show, [e.id for e in mine]
 
 
 def lines_for(view, rows_):
@@ -227,7 +242,7 @@ def without(view, key, where):
     if where == "goal" and view.goal is not None:
         g = view.goal
         cover = row.cover_title
-        titles = g.titles + (0 if cover in g.covers else 1)
+        titles = g.titles + (1 if getattr(row, "group", False) or cover not in g.covers else 0)   # LM11b G1
         covers = g.covers if cover in g.covers or len(g.covers) >= 9 else g.covers + (cover,)
         files = g.files + row.n_files
         line = view_rows.STRINGS["goal_one"].format(files=view_rows.thousands(files)) if titles == 1 else \
@@ -740,6 +755,9 @@ class DragController(QObject):
         self.expect = None                           # the key order the window shows ahead of the store
         self.expect_tiers = {}
         self.expect_gone = {}                        # key -> where it went (a well), until the reader says so
+        self.expect_off = {}                         # LM11b G5: key -> ids taken off its row (the reader builds it so)
+        self._reader_off = None                      # ... the ticket whose landing lets the reader's build go (H-C3)
+        self._closed = False                         # H-T1: let go by the window (its close, a language switch)
         self.held = None                             # the reader's newest view, not shown yet
         self.tickets = []                            # commands given, not settled yet (oldest first)
         self.saving_keys = frozenset()
@@ -839,6 +857,9 @@ class DragController(QObject):
         return out
 
     def _conform(self, view):
+        if any(r.key in self.expect_off and not self.expect_off[r.key].isdisjoint(e.id for e in r.episodes)
+               for r in view.rows):
+            return None                              # LM11b G5: still holding a show taken off — the reader's comes next
         keys = [r.key for r in view.rows]
         if tuple(keys) == self.expect:
             return view
@@ -862,27 +883,45 @@ class DragController(QObject):
         finally:
             self._own = False
 
-    def _ahead(self, view, gone=None):
-        """The window shows `view` (its own order) ahead of the store until the writer settles."""
+    def _ahead(self, view, gone=None, off=None):
+        """The window shows `view` (its own order) ahead of the store until the writer settles. `off` (LM11b G5): (key,
+        ids) — a row that stays with those episodes taken off."""
         self.expect = tuple(r.key for r in view.rows)
         self.expect_tiers = {r.key: r.tier for r in view.rows}
         if gone is not None:
             self.expect_gone[gone[0]] = gone[1]
+        if off is not None:
+            self.expect_off[off[0]] = self.expect_off.get(off[0], frozenset()) | frozenset(off[1])  # two in a row: both
         self._show(view)
         self._settle.start()
 
     def _settled(self):
-        if self.writer.pending():
+        if self._closed:                             # H-T1: the window let this controller go: nothing more of it shown
+            return
+        if self.writer.pending() and not self._writer_stopped():
+            # unbounded by design (G3): a busy store's moves are queued, never dropped, so the window keeps its own
+            # order until they land — however long another program holds the store. A writer stopped (a language
+            # switch, the quit) lands nothing more here: what is left stays in its journal, and the order is let go
             self._settle.start()
             return
-        self._let_go()
+        self._let_go(idle=True)
         republish = getattr(self.reader, "republish", None)
         if republish is not None:                    # every write landed: the store's own view once more, changed or
             republish()                              # not — where it placed a row otherwise than drawn (AD2-4)
 
-    def _let_go(self):
-        """The expectation ends: the reader's newest view stands (held, or the next one)."""
-        self.expect, self.expect_tiers, self.expect_gone = None, {}, {}
+    def _writer_stopped(self):
+        stopped = getattr(self.writer, "stopped", None)
+        return bool(stopped()) if stopped is not None else False
+
+    def _let_go(self, idle=False):
+        """The expectation ends: the reader's newest view stands (held, or the next one). The reader's own build of a
+        show taken off its row (`_reader_off`, LM11b G5) goes only once that command landed or failed (H-C3: never
+        while it still waits behind another that landed as nothing) — or the writer is idle or stopped."""
+        off = self._reader_off
+        if off is not None and (idle or off not in self.tickets or self._writer_stopped()):
+            self._reader_off = None
+            self._reader_expects(None)
+        self.expect, self.expect_tiers, self.expect_gone, self.expect_off = None, {}, {}, {}
         held, self.held = self.held, None
         if held is not None and self.running is None:
             self._show(held)
@@ -1034,6 +1073,7 @@ class DragController(QObject):
         d.at = global_pos
         lst._hover = None
         lst._retouch()                               # the hover look goes: nothing under the hand lifts now
+        lst.clear_picks()                            # --- LM11b G4: a drag lets the picks go
         anim, self._ghost_anim = self._ghost_anim, None
         if anim is not None and anim.alive:          # a lift within the last drop's glide / fade: that one ends now
             anim.stop()                              # (never hides this drag's ghost when it would have finished)
@@ -1383,7 +1423,7 @@ class DragController(QObject):
         your order*, each written as `set_finished` (live, never greyed)."""
         ticket = Ticket(strings.DRAG_FINISHED.format(title=title), keys, ids)
         if self._give(ticket, lambda t: self.writer.set_tier(list(ids), FINISHED, label=t), toast=False) is None:
-            return
+            return None
 
         def choose(keep):
             choice = Ticket(strings.DRAG_TAKEN_OUT.format(title=title), keys, ids)
@@ -1391,6 +1431,7 @@ class DragController(QObject):
             self._give(choice, lambda t: self._set_finished(list(ids), keep, t, ticket), toast=not keep)
         self._toast(ticket, buttons=[(strings.DRAG_KEEP, strings.DRAG_KEEP_TIP, lambda: choose(True)),
                                      (strings.DRAG_TAKE_OUT, strings.DRAG_TAKE_OUT_TIP, lambda: choose(False))])
+        return ticket
 
     def _set_finished(self, ids, keep, label, follows):
         """The Finished toast's choice, linked to the drop's change (`follows=`: the drop's Undo then undoes both). Chosen
@@ -1618,6 +1659,16 @@ class DragController(QObject):
             self._toast(ticket, buttons=[(strings.DONE_MOVE_FINISHED, strings.DONE_MOVE_FINISHED_TIP,
                                           lambda: self.to_finished(row))])
             return
+        shown = show_finished(row, ep)               # LM11b G5: one show of a group all watched, the rest not yet
+        if shown is not None:
+            show, ids = shown
+            ticket = Ticket(strings.DONE_SHOW_IN_GROUP.format(show=show, n=len(ids)), (row.key,), (ep.id,))
+            if self._give(ticket, lambda t: self.writer.set_watched([ep.id], True, label=t), toast=False) is None:
+                return
+            self._toast(ticket, buttons=[(strings.DONE_MOVE_SHOW_FINISHED.format(show=show),
+                                          strings.DONE_MOVE_SHOW_FINISHED_TIP.format(show=show, n=len(ids)),
+                                          lambda: self.finish_show(row, show, ids))])
+            return
         after = [e for e in row.episodes[row.episodes.index(ep) + 1:] if not e.watched] if ep in row.episodes else []
         nxt = after[0] if after else (left[0] if left else None)
         text = strings.DONE_NEXT.format(title=title, ep=ep.label, next=nxt.label) if nxt is not None else \
@@ -1632,6 +1683,26 @@ class DragController(QObject):
         if base is not None and any(r.key == row.key for r in base.rows):
             self._ahead(without(base, row.key, FINISHED), gone=(row.key, FINISHED))
         self._finish(row.title, ids_of(row), (row.key,))
+
+    def finish_show(self, row, show, ids):
+        """LM11b G5: *Move {show} to Finished* (the Done's toast) — the finish of that show's episodes in the group alone
+        (`_finish`: D14's Keep / Leave out kept). The store puts them in Finished under their own show and the group
+        keeps the rest; until it has, the reader builds every view with them there (`LibraryReader.expect`: each row by
+        the view's own rule, a busy store's wait included) and a view still holding them is held."""
+        if self.refused() is not None:
+            return
+        base = self.base()
+        if base is not None and any(r.key == row.key for r in base.rows):
+            self._ahead(base, off=(row.key, ids))
+        ticket = self._finish(show, ids, (row.key,))
+        if ticket is not None and self.expect_off:
+            self._reader_off = ticket
+            self._reader_expects({i: FINISHED for off in self.expect_off.values() for i in off})
+
+    def _reader_expects(self, tiers):
+        expect = getattr(self.reader, "expect", None)
+        if expect is not None:
+            expect(tiers)
 
     # --- ↑ ↓ and ⋯ ---------------------------------------------------------------------------------------------- #
     def nudge(self, row, step):
@@ -1784,7 +1855,10 @@ class DragController(QObject):
 
     # --- the quit ------------------------------------------------------------------------------------------------ #
     def close(self):
-        """The window closes: a drag running is let go."""
+        """The window closes (or a language switch lets this controller go): a drag running is let go, and the settle
+        stops — H-T1: nothing of this controller's is shown past it (its writer's moves left stay in its journal)."""
         if self.running is not None:
             self.cancel()
+        self._closed = True
+        self._settle.stop()
         self._filter(False)

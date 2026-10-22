@@ -1220,3 +1220,349 @@ def test_the_same_feed_gives_back_the_same_rows_and_a_new_one_rebuilds_only_the_
     moved = vr.build(items, WORKS, {"mine_line": 20}, numbers=(1, {}), cache=cache, connect=two)
     assert moved.rows[0] is again.rows[0] and moved.rows[1] is not again.rows[1]
     assert moved.rows[1].episodes[0].status.kind == "no_media"
+
+
+# --- LM11b G1: a group the learner made is one row ----------------------------------------------------------------- #
+def _group_items(names_b=None, wid_b=2, extra_b=None):
+    """Two shows in one group piece (10) at the top of Current — 星降る街の小さな工房 Ep 1–2, then another show's files —
+    and 白銀の書庫番 as a run (piece 3) below it."""
+    names_b = names_b if names_b is not None else eps("雲の上の郵便屋さん", 1, 3)
+    return items_of([("now", 1, 10, eps("星降る街の小さな工房", 1, 2), {}), ("now", wid_b, 10, names_b, extra_b or {}),
+                     ("now", 3, 3, [f"白銀の書庫番 0{k} 章.txt" for k in range(1, 3)], {})])
+
+
+def _group(title=None):
+    return {10: {"id": 10, "title": title, "kind": "group"}, 3: {"id": 3, "title": "白銀の書庫番", "kind": "run"}}
+
+
+def test_LM11b_G1_two_shows_grouped_are_one_row_named_after_the_first_show_plus_how_many_more():
+    """Sonic's G3: a group is one row named "<first show> + N more" until he names it, with the first episode's show's
+    cover and title (its work) — each episode still labelled and numbered by its own show, the line saying how many
+    files and shows it holds. Wrong, a group would read as two rows again, or as the first show alone."""
+    view = vr.build(_group_items(), WORKS, {"mine_line": 20}, pieces=_group())
+    assert [r.title for r in view.rows] == ["星降る街の小さな工房 + 1 more", "白銀の書庫番"]
+    row = view.rows[0]
+    assert row.group is True and view.rows[1].group is False
+    assert (row.work_id, row.cover_title, row.cover) == (1, "星降る街の小さな工房", vr.cover_of(WORKS[1]))
+    assert row.media == "anime" and row.media_word == "video"
+    assert [e.label for e in row.episodes] == ["Ep 1", "Ep 2", "Ep 1", "Ep 2", "Ep 3"]
+    assert row.line == "5 files · 2 shows" and row.n_files == 5
+    assert row.title_ep == "星降る街の小さな工房 · Ep 1"            # the next episode named with its own show
+
+
+def test_LM11b_G1_a_groups_next_episode_names_its_own_show_and_the_line_keeps_the_watched_count():
+    """The row's *next* is the first unwatched episode, whichever show it is of — named with that show, so "Ep 1" never
+    reads as the first show's; a part-watched group keeps the "· K of N watched" a part-watched show has."""
+    items = _group_items()
+    for i in (1, 2):                                       # the first show's two episodes watched
+        items[i] = dict(items[i], watched=1)
+    view = vr.build(items, WORKS, {"mine_line": 20}, pieces=_group())
+    row = view.rows[0]
+    assert row.title_ep == "雲の上の郵便屋さん · Ep 1" and row.next_index == 2
+    assert row.line == "5 files · 2 shows · 2 of 5 watched"
+
+
+def test_LM11b_G1_the_name_the_learner_gave_a_group_wins_and_a_runs_stored_title_is_never_shown():
+    """*Rename…* stores a group's own name: the row shows it. A run's piece title is its work's at cut time (Kura's
+    LM11 notes: never shown) — a run reads its work's title as before."""
+    pieces = _group("日曜の夜に見るもの")
+    pieces[3] = dict(pieces[3], title="古い書庫番")
+    view = vr.build(_group_items(), WORKS, {"mine_line": 20}, pieces=pieces)
+    assert [r.title for r in view.rows] == ["日曜の夜に見るもの", "白銀の書庫番"]
+    assert view.rows[0].cover_title == "星降る街の小さな工房"     # the cover stays the first episode's show's
+
+
+def test_LM11b_G1_a_youtube_video_in_a_group_is_labelled_as_a_video_and_the_anime_beside_it_as_episodes():
+    """Each episode is read by its own show's type: a video grouped with an anime keeps its own title (never "Ep 1"
+    from a number in it, never playable from here), the anime's files stay *Ep N*. Wrong, the video would be read by
+    the anime's rules or the anime's by the video's."""
+    video = "【検証】一週間お弁当を作り続けてみた [a1b2c3].srt"
+    items = _group_items([video], wid_b=4, extra_b={0: {"source_type": "youtube"}})
+    row = vr.build(items, WORKS, {"mine_line": 20}, pieces=_group()).rows[0]
+    assert [e.label for e in row.episodes] == ["Ep 1", "Ep 2", "【検証】一週間お弁当を作り続けてみた"]
+    assert row.episodes[2].number is None and not row.episodes[2].can_play
+    assert row.episodes[0].number == 1 and row.title == "星降る街の小さな工房 + 1 more"
+    assert row.line == "3 files · 2 shows"
+
+
+def test_LM11b_G1_a_group_whose_first_show_is_a_channel_takes_the_channels_name_type_and_cover():
+    """The first episode's show leads: a channel's video first gives the row the channel's name, cover and type (its
+    media word *video*), the anime after it still *Ep N*."""
+    items = items_of([("now", 4, 10, ["【検証】一週間お弁当を作り続けてみた [a1b2c3].srt"], {0: {"source_type": "youtube"}}),
+                      ("now", 1, 10, eps("星降る街の小さな工房", 1, 2), {})])
+    row = vr.build(items, WORKS, {"mine_line": 20}, pieces=_group()).rows[0]
+    assert (row.title, row.media, row.work_id) == ("Tsubasa no Kitchen + 1 more", "youtube", 4)
+    assert row.cover == vr.cover_of(WORKS[4]) and row.cover_title == "Tsubasa no Kitchen"
+    assert [e.label for e in row.episodes] == ["【検証】一週間お弁当を作り続けてみた", "Ep 1", "Ep 2"]
+    assert row.title_ep == "Tsubasa no Kitchen · 【検証】一週間お弁当を作り続けてみた"
+
+
+def test_LM11b_G1_a_run_row_is_the_same_with_or_without_the_feeds_pieces():
+    """A run's row never reads its piece's meta: built with the feed's pieces it equals the row built without them,
+    field for field (the window's other rules — split, join, the stones — read the same row as before)."""
+    items = items_of([("now", 1, 1, eps("星降る街の小さな工房", 1, 4), {}), ("now", 2, 2, eps("雲の上の郵便屋さん", 1, 3), {})])
+    pieces = {1: {"id": 1, "title": "古い名前", "kind": "run"}, 2: {"id": 2, "title": None, "kind": "run"}}
+    with_meta = vr.build(items, WORKS, {"mine_line": 20}, pieces=pieces)
+    without = vr.build(items, WORKS, {"mine_line": 20})
+    assert with_meta.rows == without.rows and not any(r.group for r in without.rows)
+
+
+def test_LM11b_G1_the_cache_keeps_an_unchanged_group_and_rebuilds_it_after_a_rename_or_its_second_shows_change():
+    """S19: an unchanged group comes back as the same object (nothing repainted); a new name (the feed's piece meta)
+    or a change to its second show's work (a new cover, a type said) rebuilds it — the first show's work alone would
+    leave a stale second show. The run beside it is kept throughout."""
+    items, pieces = _group_items(), _group()
+    cache = vr.RowCache()
+    first = vr.build(items, WORKS, {}, numbers=(1, {}), cache=cache, pieces=pieces)
+    again = vr.build(items, WORKS, {}, numbers=(1, {}), cache=cache, pieces=pieces)
+    assert again.rows[0] is first.rows[0] and again.rows[1] is first.rows[1]
+    renamed = {**pieces, 10: dict(pieces[10], title="日曜の夜に見るもの")}
+    third = vr.build(items, WORKS, {}, numbers=(1, {}), cache=cache, pieces=renamed)
+    assert third.rows[0] is not first.rows[0] and third.rows[0].title == "日曜の夜に見るもの"
+    assert third.rows[1] is first.rows[1]
+    works = {**WORKS, 2: dict(WORKS[2], cover_ref="anilist:21")}     # the second show's cover found
+    fourth = vr.build(items, works, {}, numbers=(1, {}), cache=cache, pieces=renamed)
+    assert fourth.rows[0] is not third.rows[0] and fourth.rows[1] is first.rows[1]
+    works2 = {**works, 2: dict(works[2], media_type="youtube")}       # its type said: its files read as videos
+    fifth = vr.build(items, works2, {}, numbers=(1, {}), cache=cache, pieces=renamed)
+    assert fifth.rows[0] is not fourth.rows[0] and fifth.rows[0].episodes[2].label == "雲の上の郵便屋さん - 01"
+
+
+def test_LM11b_G1_a_group_row_round_trips_through_the_first_screen_cache_and_an_older_cache_still_reads():
+    """The first screen's cache keeps a group a group; a cache written before groups (its rows without `group` and
+    `works`) still reads, every row a run."""
+    import json
+    view = vr.build(_group_items(), WORKS, {"mine_line": 20}, numbers={1: (9, 10, 1)}, pieces=_group())
+    data = json.loads(json.dumps(vr.to_cache(view)))
+    back = vr.from_cache(data)
+    assert back.rows == view.rows and back.rows[0].group is True
+    at = vr.Row._fields.index("group")
+    old = dict(data, rows=[r[:at] + r[at + 2:] for r in data["rows"]])     # `group`, `works`
+    before = vr.from_cache(old)
+    assert before is not None and not any(r.group for r in before.rows)
+    assert [r.title for r in before.rows] == [r.title for r in view.rows]
+
+
+def test_LM11b_G1_a_chinese_group_reads_the_same_way():
+    """zh: two Chinese shows in one group — the same name, line and per-show labels."""
+    WORKS[5] = dict(WORKS[1], id=5, title="雷鸣之剑与见习魔女")
+    WORKS[6] = dict(WORKS[2], id=6, title="山海经异闻录")
+    items = items_of([("now", 5, 10, ["雷鸣之剑与见习魔女 第3集.srt", "雷鸣之剑与见习魔女 第4集.srt"], {}),
+                      ("now", 6, 10, ["山海经异闻录 第1集.srt"], {})])
+    row = vr.build(items, WORKS, {"mine_line": 20}, language="zh", pieces=_group()).rows[0]
+    assert (row.title, row.line) == ("雷鸣之剑与见习魔女 + 1 more", "3 files · 2 shows")
+    assert [e.label for e in row.episodes] == ["Ep 3", "Ep 4", "Ep 1"]
+
+
+def test_LM11b_G1_a_group_at_the_soon_line_never_takes_its_last_shows_soon_files_into_its_row():
+    """P-LF-16 makes one row of a show the Soon line runs through; a group ending with a show whose next files wait in
+    Soon as a run of their own is not that show: the group stays one row above the line, the run one row below it
+    (the store's rule: a group never takes a run beside it). Wrong, the row would hold files that aren't in the group."""
+    items = items_of([("now", 1, 10, eps("星降る街の小さな工房", 1, 2), {}), ("now", 2, 10, eps("雲の上の郵便屋さん", 1, 2), {}),
+                      ("soon", 2, 12, eps("雲の上の郵便屋さん", 3, 4), {})])
+    view = vr.build(items, WORKS, {"mine_line": 20}, pieces=_group())
+    assert [(r.title, r.group, r.n_files) for r in view.rows] == [("星降る街の小さな工房 + 1 more", True, 4),
+                                                                ("雲の上の郵便屋さん", False, 2)]
+    assert view.rows[0].soon_from is None and [ln.after for ln in view.lines if ln.kind == "soon"] == [0]
+
+
+def test_LM11b_G1_a_group_the_soon_line_runs_through_is_one_row_with_its_key_once_even_between_its_shows():
+    """IK-1: the store keeps a group one piece across NOW and Soon (Kura's LM11), so the line can fall inside it — even
+    between its two shows, where no show runs through the line. Wrong, two rows would carry the same key `p10`
+    (the window finds rows by key) and the group would read as two."""
+    items = items_of([("now", 1, 10, eps("星降る街の小さな工房", 1, 2), {}), ("soon", 2, 10, eps("雲の上の郵便屋さん", 1, 3), {}),
+                      ("soon", 3, 3, [f"白銀の書庫番 0{k} 章.txt" for k in range(1, 3)], {})])
+    view = vr.build(items, WORKS, {"mine_line": 20, "soon_line": 2}, pieces=_group())
+    assert [r.key for r in view.rows] == ["p10", "p3"]
+    row = view.rows[0]
+    assert row.group and row.n_files == 5 and (row.soon_from, row.soon_piece) == (2, 10)
+    assert [ln.after for ln in view.lines if ln.kind == "soon"] == [0]
+    assert vr.split_piece(row, 3) == (10, 3)                # ✂ in its Soon files splits the one piece, at its place
+
+
+def test_LM11b_G1_a_group_in_goal_is_a_tile_of_its_own_never_its_first_shows():
+    """IK-7: a group in 6+ Months is its own tile, named as its row is, its cover its first episode's show's, its files
+    counted once — never folded into its first show's tile with the second show's files under the first's name."""
+    items = items_of([("goal", 1, 10, eps("星降る街の小さな工房", 1, 2), {}), ("goal", 2, 10, eps("雲の上の郵便屋さん", 1, 3), {}),
+                      ("goal", 1, 12, eps("星降る街の小さな工房", 3, 4), {})])
+    goal = vr.build(items, WORKS, {}, pieces=_group()).goal
+    assert [(t.key, t.title, t.n_files) for t in goal.works] == [("p10", "星降る街の小さな工房 + 1 more", 5),
+                                                                 ("w1", "星降る街の小さな工房", 2)]
+    tile = goal.works[0]
+    assert tile.cover == vr.cover_of(WORKS[1]) and tile.cover_title == "星降る街の小さな工房"
+    assert tile.line == "5 files · 2 shows" and tile.item_ids == (1, 2, 3, 4, 5)
+    assert sum(t.n_files for t in goal.works) == goal.files == 7
+
+
+def test_LM11b_G3_each_goal_piece_names_its_piece_so_same_show_as_can_offer_goals_shows():
+    """IK-6: *Same show as…* joins by piece, so each of a Goal tile's pieces carries its own `piece_id` (a show in two
+    parts: both, in Goal's order; a group's tile: the group's) — without it Goal's shows were never offered. A piece
+    made by hand without one stays None."""
+    items = items_of([("goal", 1, 10, eps("星降る街の小さな工房", 1, 2), {}), ("goal", 2, 10, eps("雲の上の郵便屋さん", 1, 3), {}),
+                      ("goal", 3, 12, [f"白銀の書庫番 0{k} 章.txt" for k in range(1, 3)], {}),
+                      ("goal", 3, 13, [f"白銀の書庫番 0{k} 章.txt" for k in range(3, 5)], {})])
+    tiles = vr.build(items, WORKS, {}, pieces=_group()).goal.works
+    assert [(t.key, [p.piece_id for p in t.pieces]) for t in tiles] == [("p10", [10]), ("w3", [12, 13])]
+    assert vr.GoalPiece((1, 2), "Ep 1–2").piece_id is None
+
+
+def test_LM11b_G1_a_group_of_channels_says_videos_and_channels_and_a_mixed_one_shows():
+    """IK-10: a group whose every show is a YouTube channel counts *videos · channels*; one channel and one anime
+    count *files · shows*, named from the channel when its video comes first."""
+    WORKS[7] = dict(WORKS[4], id=7, title="週末キャンプ日和", youtube_channel="週末キャンプ日和")
+    yt = {"source_type": "youtube"}
+    both = items_of([("now", 4, 10, ["【検証】一週間お弁当を作り続けてみた [a1b2c3].srt"], {0: yt}),
+                     ("now", 7, 10, ["雨の日の焚き火 [d4e5f6].srt", "冬の湖でテント泊 [g7h8i9].srt"], {0: yt, 1: yt})])
+    row = vr.build(both, WORKS, {}, pieces=_group()).rows[0]
+    assert (row.title, row.line) == ("Tsubasa no Kitchen + 1 more", "3 videos · 2 channels")
+    mixed = items_of([("now", 4, 10, ["【検証】一週間お弁当を作り続けてみた [a1b2c3].srt"], {0: yt}),
+                      ("now", 1, 10, eps("星降る街の小さな工房", 1, 2), {})])
+    row = vr.build(mixed, WORKS, {}, pieces=_group()).rows[0]
+    assert (row.title, row.line) == ("Tsubasa no Kitchen + 1 more", "3 files · 2 shows")
+
+
+def test_LM11b_G1_a_row_names_its_works_in_episode_order_and_keeps_them_through_the_cache():
+    """IK-3 (New arrivals' *After its show* reads it): a group's distinct works in episode order, a run's one, a row
+    of no work none — and the first screen's cache gives them back as they were."""
+    import json
+    items = items_of([("now", 1, 10, eps("星降る街の小さな工房", 1, 2), {}), ("now", 2, 10, eps("雲の上の郵便屋さん", 1, 3), {}),
+                      ("now", 3, 3, [f"白銀の書庫番 0{k} 章.txt" for k in range(1, 3)], {}),
+                      ("now", None, None, ["古い手紙.txt"], {})])
+    view = vr.build(items, WORKS, {}, pieces=_group())
+    assert [r.works for r in view.rows] == [(1, 2), (3,), ()]
+    back = vr.from_cache(json.loads(json.dumps(vr.to_cache(view))))
+    assert [r.works for r in back.rows] == [(1, 2), (3,), ()]
+
+
+def test_LM11b_G1_goals_strip_counts_a_group_as_one_title_with_its_first_shows_cover_once():
+    """A group is one row to the learner, so 6+ Months' strip counts it as one title (its first show's cover), even
+    beside a part of that same show on its own — never as two titles for its two shows."""
+    WORKS[5] = dict(WORKS[1], id=5, title="風の谷の薬草師")
+    items = items_of([("goal", 1, 10, eps("星降る街の小さな工房", 1, 2), {}), ("goal", 2, 10, eps("雲の上の郵便屋さん", 1, 3), {}),
+                      ("goal", 5, 12, eps("風の谷の薬草師", 1, 2), {}), ("goal", 1, 13, eps("星降る街の小さな工房", 3, 4), {})])
+    view = vr.build(items, WORKS, {}, pieces=_group())
+    goal = view.goal
+    assert (goal.titles, goal.files, goal.line) == (3, 9, "3 titles · 9 files") and view.counts.goal_titles == 3
+    assert goal.covers == ("星降る街の小さな工房", "風の谷の薬草師", "星降る街の小さな工房")
+    assert goal.cover_refs[0] == vr.cover_of(WORKS[1]) and len(goal.cover_refs) == 3
+    assert [t.group for t in goal.works] == [True, False, False]          # GoalWork.group: the group's tile
+
+
+def _mixed(missing=()):
+    """星降る街の小さな工房 (an anime: Ep 1–2) grouped with 白銀の書庫番 (a light novel: its EPUB, Part 1); `missing`:
+    the indexes whose file is gone."""
+    return items_of([("now", 1, 10, eps("星降る街の小さな工房", 1, 2), {k: {"availability": "missing"} for k in missing
+                                                                    if k < 2}),
+                     ("now", 3, 10, ["白銀の書庫番 01 章.epub"], {0: {"availability": "missing", "source_type": "epub"}}
+                      if 2 in missing else {0: {"source_type": "epub"}})])
+
+
+def test_LM11b_G1_a_video_and_epub_group_says_of_each_file_what_it_is():
+    """(4) A group of an anime's videos and a book's EPUB claims nothing false: each episode's status, ▶ tip and word
+    are its own type's — the EPUB gone is *No EPUB*, never *No video* — and the row's ⌀ mark speaks of the EPUB."""
+    row = vr.build(_mixed(missing=(2,)), WORKS, {"mine_line": 20}, pieces=_group()).rows[0]
+    book = row.episodes[2]
+    assert [e.media_word for e in row.episodes] == ["video", "video", "EPUB"]
+    assert (book.label, book.status.label) == ("Part 1", "No EPUB") and "video" not in book.status.tip
+    assert row.mark is not None and row.mark.tip.startswith("No EPUB on disk for Part 1")
+    assert "video" not in row.mark.tip
+
+
+def test_LM11b_G1_a_video_and_epub_group_with_both_gone_uses_the_neutral_word_on_its_row():
+    """When the files the row speaks of are of different types, its status says *media*: "No media · 3" — each
+    episode still its own *No video* / *No EPUB*; when only its videos are gone, its mark speaks of videos."""
+    row = vr.build(_mixed(missing=(0, 1, 2)), WORKS, {"mine_line": 20}, pieces=_group()).rows[0]
+    assert row.status.label == "No media · 3" and "No media on disk" in row.status.tip
+    assert [e.status.label for e in row.episodes] == ["No video", "No video", "No EPUB"]
+    videos = vr.build(_mixed(missing=(0, 1)), WORKS, {"mine_line": 20}, pieces=_group()).rows[0]
+    assert videos.mark.tip.startswith("No video on disk for Ep 1, Ep 2")    # only its videos gone: their word
+
+
+def test_LM11b_G1_a_cached_rows_fast_path_reads_the_type_guess_and_never_keeps_a_stale_one():
+    """(6) The cache's fast path (nothing global moved, the same items and work) compared Connect's part of the row's
+    signature where it meant the untyped title's guess: a title whose guess moved — another piece's files gone from
+    6+ Months — kept its old type. Its row must follow the guess."""
+    WORKS[9] = dict(WORKS[1], id=9, title="夏草の記憶", media_type=None, anilist_id=None, tmdb_id=None)
+    items = items_of([("now", 9, 1, eps("夏草の記憶", 1, 2), {}),
+                      ("goal", 9, 2, [f"夏草の記憶 第{k}章.txt" for k in range(1, 6)], {k: {"source_type": "text"}
+                                                                          for k in range(5)})])
+    cache, cards = vr.RowCache(), {1: 0}          # one dict both builds (an empty one is made anew): the fast path
+    first = vr.build(items, WORKS, {}, numbers=(1, {}), cards=cards, cache=cache)
+    assert first.rows[0].media == "text"                 # five text files outweigh two subtitles: a text
+    current = {i: r for i, r in items.items() if r["tier"] == "now"}         # the 6+ Months part removed
+    second = vr.build(current, WORKS, {}, numbers=(1, {}), cards=cards, cache=cache)
+    assert second.rows[0].media is None and second.rows[0].media_word == "video"
+
+
+def test_LM11b_G5_each_episode_names_its_own_show_and_keeps_it_through_the_first_screens_cache():
+    """G5 offers *Move {show} to Finished* for one show of a group: each episode says which show it is of (its work)
+    and that show's name as the group labels it — a run's episodes their work and no name. The first screen's cache
+    keeps both; a cache from before (episodes without them) still reads, with neither. Wrong, the toast could not tell
+    one show's episodes from the other's, or a restart would lose them."""
+    import json
+    items = items_of([("now", 1, 10, eps("星降る街の小さな工房", 1, 2), {}), ("now", 2, 10, eps("雲の上の郵便屋さん", 7, 8), {}),
+                      ("now", 3, 11, ["白銀の書庫番 01 章.epub"], {0: {"source_type": "epub"}})])
+    pieces = {10: {"id": 10, "title": None, "kind": "group"}, 11: {"id": 11, "title": None, "kind": "run"}}
+    view = vr.build(items, WORKS, {"mine_line": 20}, pieces=pieces)
+    group, run = view.rows
+    shows = [(1, "星降る街の小さな工房")] * 2 + [(2, "雲の上の郵便屋さん")] * 2
+    assert [(e.work_id, e.show) for e in group.episodes] == shows
+    assert [(e.work_id, e.show) for e in run.episodes] == [(3, None)]
+    back = vr.from_cache(json.loads(json.dumps(vr.to_cache(view))))
+    assert [(e.work_id, e.show) for e in back.rows[0].episodes] == shows
+    old = json.loads(json.dumps(vr.to_cache(view)))
+    at = vr.Row._fields.index("episodes")
+    for r in old["rows"]:
+        r[at] = [e[:vr.Episode._fields.index("work_id")] for e in r[at]]
+    before = vr.from_cache(old)
+    assert [(e.work_id, e.show) for e in before.rows[0].episodes] == [(None, None)] * 4
+    assert [e.id for e in before.rows[0].episodes] == [e.id for e in group.episodes]
+
+
+def test_LM11b_G5_a_group_holding_one_show_reads_as_its_run():
+    """The store makes a group left with one work's items a run (`_settle_kinds`); the view reads such a piece so too —
+    what the reader shows while a show's finish waits for a busy store: the show's own title and range, no group."""
+    items = items_of([("now", 2, 10, eps("雲の上の郵便屋さん", 7, 8), {})])
+    row = vr.build(items, WORKS, {"mine_line": 20}, pieces={10: {"id": 10, "title": None, "kind": "group"}}).rows[0]
+    assert (row.group, row.title, row.line, row.title_ep) == (False, "雲の上の郵便屋さん", "Ep 7–8", "Ep 7")
+    assert [e.show for e in row.episodes] == [None, None]
+
+
+# --- LM11b review fix round (H-B2 / H-B3 / H-B4) -------------------------------------------------------------------- #
+@pytest.mark.parametrize("with_pieces", (True, False))
+def test_LM11b_H_B2_goals_title_count_is_its_tiles_count_so_untitled_pieces_never_collapse_into_one_title(with_pieces):
+    """H-B2: three files with no title (no work), each its own piece, are three tiles in Goal; its strip counts three
+    titles — by the tiles' own key, one rule with or without the feed's pieces. Wrong, the strip said "1 title" over
+    three tiles (every untitled piece keyed as the one title None)."""
+    items = items_of([("goal", None, 21, ["古い手紙.txt"], {}), ("goal", None, 22, ["祖母の日記.txt"], {}),
+                      ("goal", None, 23, ["夏休みの記録.txt"], {}), ("goal", 1, 24, eps("星降る街の小さな工房", 1, 2), {})])
+    view = vr.build(items, WORKS, {}, pieces=_group() if with_pieces else None)
+    goal = view.goal
+    assert len(goal.works) == 4
+    assert (goal.titles, goal.line, view.counts.goal_titles) == (4, "4 titles · 5 files", 4)
+    assert len(goal.covers) == 4 and goal.covers[3] == "星降る街の小さな工房"
+
+
+def test_LM11b_H_B3_a_groups_goal_tile_holds_every_run_of_the_group_never_its_first_alone():
+    """H-B3: a group in Goal whose files sit in two runs (another title between them) is one tile holding all of its
+    files — counted, listed by id and brought up whole (its one GoalPiece). Wrong, the second run's files vanished
+    from the tile: never counted, never moved with it."""
+    items = items_of([("goal", 1, 10, eps("星降る街の小さな工房", 1, 2), {}), ("goal", 3, 12, ["白銀の書庫番 01 章.txt"], {}),
+                      ("goal", 2, 10, eps("雲の上の郵便屋さん", 1, 3), {})])
+    goal = vr.build(items, WORKS, {}, pieces=_group()).goal
+    assert [(t.key, t.n_files) for t in goal.works] == [("p10", 5), ("w3", 1)]
+    tile = goal.works[0]
+    assert tile.item_ids == (1, 2, 4, 5, 6) and tile.line == "5 files · 2 shows"
+    assert [(p.item_ids, p.piece_id) for p in tile.pieces] == [((1, 2, 4, 5, 6), 10)]
+    assert sum(t.n_files for t in goal.works) == goal.files == 6
+
+
+def test_LM11b_H_B4_a_group_holding_one_show_is_that_shows_run_in_goal_and_at_the_soon_line_too():
+    """H-B4 / H-C4: `_group_of` reads a group as `_row` does — one holding a single show is that show's run (the store
+    makes it one, `_settle_kinds`): its Goal tile is the show's, never "2 files · 1 shows" under the group's name.
+    Wrong, the tile said "1 shows" and was named as a group."""
+    items = items_of([("goal", 2, 10, eps("雲の上の郵便屋さん", 7, 8), {})])
+    tile = vr.build(items, WORKS, {}, pieces={10: {"id": 10, "title": None, "kind": "group"}}).goal.works[0]
+    assert (tile.group, tile.title, tile.line) == (False, "雲の上の郵便屋さん", "2 episodes")
+    assert "shows" not in tile.line and "1 show" not in tile.line
+    assert vr._group_of({10: {"id": 10, "title": None, "kind": "group"}}, [items[1], items[2]]) is None

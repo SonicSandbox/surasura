@@ -1060,11 +1060,13 @@ class ArrivalsTray(motion.Overlay):
         bridge.run_in_worker(os.path.isdir, path, then=found, failed=lambda _info: found(False))
 
     def _has_show(self, arrival):
-        """Whether a part of the arrival's title is in Current (the view's rows), N1."""
+        """Whether a part of the arrival's title is in Current (the view's rows), N1 — inside a group too (a row names
+        every show it holds: `Row.works`, LM11b IK-3)."""
         page = getattr(self.win, "page_widgets", {}).get("current")
         view = getattr(page, "view_model", None)
         return arrival.work_id is not None and view is not None and any(
-            r.work_id == arrival.work_id and r.tier in ("now", "soon") for r in view.rows)
+            arrival.work_id in (getattr(r, "works", None) or (r.work_id,)) and r.tier in ("now", "soon")
+            for r in view.rows)
 
     def menu(self, row):
         """⋯: a plain menu in the theme's style (Esc closes it), its entries' tips shown."""

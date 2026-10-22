@@ -781,6 +781,7 @@ def _video_only_show(lib):
     sources._LOOKED.clear()
     ids = [i for i in got["ids"] if lib.store.item(i)["availability"] == "waiting"]
     assert len(ids) == 3, got
+    assert {lib.store.item(i)["source_type"] for i in ids} == {"subtitle"}, "typed as the show's episodes it waits as"
     work = lib.work_of(ids[0])
     assert lib.store._work_row(work)["title"] == _VIDEO_ONLY[lib.language]
     lib.writer.set_finished(ids)
@@ -790,8 +791,9 @@ def _video_only_show(lib):
 
 def test_row18_a_video_only_show_from_setup_sent_to_finished_is_asked_online_and_its_cover_lands(lib, anilist):
     """Sonic, row 18: the shows he sent to Finished at the start got no cover, while a folder added on the Finished
-    page did. A show whose videos came in with no subtitles has items typed by the fallback ('text'), so its Want's
-    kind read 'text' and `fetchable` refused it in every place it stood — New arrivals, Current, Finished — for good."""
+    page did. A show whose videos came in with no subtitles is typed `subtitle` by the store as they come in, so its
+    Want's kind is a show's. Wrong, its items were typed by the fallback ('text'): its Want's kind read 'text' and
+    `fetchable` refused it in every place it stood — New arrivals, Current, Finished — for good."""
     work, _ids = _video_only_show(lib)
     w = _wants(lib)[work]
     assert w.kind == "subtitle" and O.fetchable(w), "a show waiting for its subtitles is a show, asked like one"

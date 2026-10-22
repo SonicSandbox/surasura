@@ -282,6 +282,33 @@ def test_a_store_that_turns_busy_keeps_its_rows_under_the_bar():
         reader.stop()
 
 
+def test_a_view_and_the_cached_first_screen_carry_the_stores_epoch(tmp_path):
+    """The window lets its picks go when the library is rebuilt or reset in the same language (picks are keyed by
+    piece id, and a new store numbers its pieces from 1), so every view names the epoch it was read at — the cached
+    first screen too (its key matched the store's). Wrong, a view carried none: a pick outlived its library."""
+    seed = window_seed.build()
+    epoch = seed.library._meta["epoch"]
+    cache = str(tmp_path / "window_cache_ja.json")
+    first = _reader(seed, cache_file=cache)
+    views, _ = _collect(first)
+    first.start()
+    try:
+        assert _wait(lambda: os.path.exists(cache))
+        assert views[-1][1].epoch == epoch and not views[-1][1].cached
+    finally:
+        first.stop()
+    again = _reader(seed, cache_file=cache)
+    views, _ = _collect(again)
+    again.start()
+    try:
+        assert _wait(lambda: views)
+        assert views[0][1].cached and views[0][1].epoch == epoch
+        seed.library.commit(new_epoch=True)                                  # rebuilt: the next view names it
+        assert _wait(lambda: views[-1][1].epoch == epoch + 1)
+    finally:
+        again.stop()
+
+
 def test_a_status_write_keeps_a_stale_cache_out(tmp_path):
     """A-9: the cache key is the store's (id, epoch, state version): a watched tick since it was written keeps it out."""
     seed = window_seed.build()
@@ -800,3 +827,361 @@ def test_connects_feed_reaches_the_view_and_an_unchanged_feed_builds_nothing():
         assert (reader.builds, len(views)) == (builds, n) and reads == [1, 1]
     finally:
         reader.stop()
+
+
+# --- LM11b G1: the feed's pieces (a group's kind and name) ---------------------------------------------------------- #
+import pytest                                                                         # noqa: E402
+
+
+def test_LM11b_G1_the_reader_keeps_the_feeds_pieces_replaced_on_a_full_read_and_merged_on_a_delta():
+    """The feed carries each piece's kind and name (Kura's LM11: every piece on a full read, a delta only the pieces
+    of the rows it changed). Wrong, a rename would never reach the row, or a delta would forget every other group."""
+    reader = library_reader.LibraryReader(None, language="ja")
+    group = {"id": 10, "title": None, "kind": "group"}
+    run = {"id": 3, "title": "白銀の書庫番", "kind": "run"}
+    reader._merge({"full": True, "items": [], "works": [], "gone": [], "version": 1, "epoch": "e",
+                   "pieces": [group, run]})
+    assert reader._pieces == {10: group, 3: run}
+    reader._merge({"full": False, "items": [], "works": [], "gone": [], "version": 2, "epoch": "e",
+                   "pieces": [{"id": 10, "title": "日曜の夜に見るもの", "kind": "group"}, dict(run)]})
+    assert reader._pieces[10]["title"] == "日曜の夜に見るもの"
+    assert reader._pieces[3] is run                   # an equal piece keeps its object: its row stays cached
+    reader._merge({"full": False, "items": [], "works": [], "gone": [], "version": 3, "epoch": "e"})  # no pieces
+    assert set(reader._pieces) == {10, 3}
+    reader._merge({"full": True, "items": [], "works": [], "gone": [], "version": 4, "epoch": "e2", "pieces": [run]})
+    assert reader._pieces == {3: run}                 # a full read replaces them
+
+
+@pytest.mark.parametrize("language", ("ja", "zh"))
+def test_LM11b_G1_on_a_real_store_two_shows_grouped_reach_the_view_as_one_row_and_a_rename_follows(language):
+    """End to end on a migrated store: another handle groups two Current shows (`Store.group`), the reader's delta read
+    brings one row "<first show> + 1 more" holding both shows' files; *Rename…*'s write (`rename_piece`) shows the name.
+    Wrong, the window would keep two rows, or a stale name, until a restart."""
+    from app.services import moves
+    from tests.test_library_store_support import migrated
+    store = migrated(language)
+    reader = library_reader.LibraryReader(moves.store_opener(language), language=language, poll=0.02)
+    views, _got = _collect(reader)
+    reader.start()
+    try:
+        assert _wait(lambda: views and views[-1][1].state == "full")
+        shows = [r for r in views[-1][1].rows if r.tier == "now" and r.n_files > 1 and r.piece_id is not None][:2]
+        assert len(shows) == 2
+        a, b = shows
+        before = len(views[-1][1].rows)
+        store.group(piece_ids=[a.piece_id, b.piece_id])
+        name = f"{a.title} + 1 more"
+        assert _wait(lambda: any(r.group and r.title == name for r in views[-1][1].rows))
+        row = next(r for r in views[-1][1].rows if r.group)
+        assert row.work_id == a.work_id and row.n_files == a.n_files + b.n_files
+        assert row.line == f"{row.n_files} files · 2 shows" and len(views[-1][1].rows) == before - 1
+        store.rename_piece(row.piece_id, "日曜の夜に見るもの")
+        assert _wait(lambda: any(r.group and r.title == "日曜の夜に見るもの" for r in views[-1][1].rows))
+    finally:
+        reader.stop()
+        store.close()
+
+
+def _grouped_store(language):
+    """A migrated store whose first two NOW shows (four episodes each) are grouped -> (store, group piece id)."""
+    from tests.test_library_store_support import migrated
+    store = migrated(language)
+    shows = []
+    for i in store.ids("now"):
+        it = store.item(i)
+        if it["parent_folder"] and it["piece_id"] not in shows:
+            shows.append(it["piece_id"])
+    return store, store.group(piece_ids=shows[:2]).piece_id
+
+
+@pytest.mark.parametrize("language", ("ja", "zh"))
+def test_LM11b_G1_on_a_real_store_a_group_the_soon_line_cuts_between_its_shows_is_one_row_with_one_key(language):
+    """IK-1 end to end: the store keeps the group one piece in NOW and Soon when the line falls inside it — here
+    between its two shows, so no show runs through the line. The view holds it once, above the line, its Soon files
+    from `soon_from` on. Wrong, two rows would share its key."""
+    from app.services import moves
+    store, group = _grouped_store(language)
+    store.set_soon_line(4)                            # after the first show's four episodes, inside the group
+    reader = library_reader.LibraryReader(moves.store_opener(language), language=language, poll=0.02)
+    views, _got = _collect(reader)
+    reader.start()
+    try:
+        assert _wait(lambda: views and views[-1][1].state == "full")
+        view = views[-1][1]
+        keys = [r.key for r in view.rows]
+        assert len(keys) == len(set(keys)) and keys.count(f"p{group}") == 1
+        row = next(r for r in view.rows if r.key == f"p{group}")
+        assert row.group and row.n_files == 8 and (row.soon_from, row.soon_piece) == (4, group)
+        assert [ln.after for ln in view.lines if ln.kind == "soon"] == [view.rows.index(row)]
+    finally:
+        reader.stop()
+        store.close()
+
+
+def test_LM11b_G1_after_a_restart_the_first_screen_shows_the_group_and_the_full_read_after_it_gives_it_again(
+        tmp_path):
+    """IK-10: the first screen's cache keeps a group a group (its name, `group` True), and the live full read that
+    replaces it gives the same group row. Wrong, a restart would flash the group as its first show, or lose it."""
+    from app.services import moves
+    store, group = _grouped_store("ja")
+    cache = str(tmp_path / "window_cache_ja.json")
+    at = view_rows.Row._fields.index("group")
+
+    def cached_group():
+        try:
+            rows = json.load(open(cache, encoding="utf-8"))["view"]["rows"]
+        except (OSError, ValueError, KeyError):
+            return False
+        return any(r[at] for r in rows)
+    reader = library_reader.LibraryReader(moves.store_opener("ja"), language="ja", poll=0.02, cache_file=cache)
+    views, _got = _collect(reader)
+    reader.start()
+    try:
+        assert _wait(lambda: views and views[-1][1].state == "full")
+        live = next(r for r in views[-1][1].rows if r.group)
+        assert _wait(cached_group)
+    finally:
+        reader.stop()
+    again = library_reader.LibraryReader(moves.store_opener("ja"), language="ja", poll=0.02, cache_file=cache)
+    views2, _ = _collect(again)
+    again.start()
+    try:
+        assert _wait(lambda: len(views2) >= 2 and not views2[-1][1].cached)
+        first = views2[0][1]
+        assert first.cached and [(r.key, r.title, r.group) for r in first.rows if r.group] == \
+            [(live.key, live.title, True)]
+        assert [(r.key, r.title, r.works) for r in views2[-1][1].rows if r.group] == [(live.key, live.title, live.works)]
+        assert live.key == f"p{group}" and len(live.works) == 2
+    finally:
+        again.stop()
+        store.close()
+
+
+def test_LM11b_G5_expect_builds_the_windows_command_in_until_the_feed_holds_it():
+    """`expect({id: tier})`: a command the window gave but the store hasn't written (a busy store) is in every view the
+    reader builds — the row by the view's own rule, Finished's count with it — until the feed holds it (then the
+    expectation is spent); `expect(None)` forgets it and the row comes back. Never written as the first screen's cache.
+    Wrong, the window would show the old row — or one it made up — for as long as the store stays busy."""
+    seed = window_seed.build()
+    reader = _reader(seed)
+    views, _got = _collect(reader)
+    reader.start()
+    try:
+        assert _wait(lambda: views and views[-1][1].state == "full")
+        view = views[-1][1]
+        row = view.rows[4]
+        ids = [e.id for e in row.episodes]
+        keys = [r.key for r in view.rows]
+        reader.expect({i: "graduated" for i in ids})
+        assert _wait(lambda: row.key not in [r.key for r in views[-1][1].rows])
+        assert views[-1][1].counts.finished == view.counts.finished + 1
+        reader.expect(None)
+        assert _wait(lambda: [r.key for r in views[-1][1].rows] == keys)
+        reader.expect({i: "graduated" for i in ids})
+        assert _wait(lambda: row.key not in [r.key for r in views[-1][1].rows])
+        seed.library.commit(items=[{"id": i, "tier": "graduated", "graduated_at": "2026-10-21T20:00:00Z"} for i in ids],
+                            order=True)                    # the store writes it: the feed holds it, the expectation spent
+        assert _wait(lambda: reader.builds and not reader._expected)
+        assert row.key not in [r.key for r in views[-1][1].rows]
+    finally:
+        reader.stop()
+
+
+@pytest.mark.parametrize("language", ("ja", "zh"))
+def test_LM11b_a_group_in_goal_renamed_through_the_writer_takes_its_new_name_on_its_goal_tile(language):
+    """Settled on the real store (a review asked whether Goal keeps a group's old name): a group sitting in Goal
+    renamed through the window's writer (`Writer.rename_piece`); the reader's delta read brings the name to its Goal
+    tile and line (the rename feeds the group's rows: one changed-set, Goal's kept section rebuilt). Wrong, Goal would
+    keep the old name until a restart."""
+    from app.qt.strings import MOVE_WORDS
+    from app.services import moves
+    store, group = _grouped_store(language)
+    ids = [i for i in store.ids("now") if store.item(i)["piece_id"] == group]
+    store.move(ids, "goal")
+    reader = library_reader.LibraryReader(moves.store_opener(language), language=language, poll=0.02)
+    writer = moves.Writer(moves.store_opener(language), language, words=MOVE_WORDS, retry=0.05)
+    views, _got = _collect(reader)
+    reader.start()
+    writer.start()
+    try:
+        assert _wait(lambda: views and views[-1][1].state == "full" and
+                     any(t.key == f"p{group}" for t in views[-1][1].goal.works))
+        tile = next(t for t in views[-1][1].goal.works if t.key == f"p{group}")
+        assert tile.group and tile.title.endswith("+ 1 more")
+        assert writer.rename_piece(group, "日曜の夜に見るもの") is not None
+        assert _wait(lambda: any(t.key == f"p{group}" and t.title == "日曜の夜に見るもの"
+                                 for t in views[-1][1].goal.works))
+        tile = next(t for t in views[-1][1].goal.works if t.key == f"p{group}")
+        assert "日曜の夜に見るもの" in tile.accessible and "日曜の夜に見るもの" in tile.tip
+    finally:
+        writer.finish(time.monotonic() + 2)
+        reader.stop()
+        store.close()
+
+
+def test_LM11b_H_W1_while_expect_holds_a_build_with_nothing_new_reuses_the_overlaid_rows_and_sorts_no_tier_again(
+        monkeypatch):
+    """H-W1 (S19): while the window's command waits for a busy store (`expect`), a build with nothing new for the rows
+    (here only New arrivals' numbers move) keeps the overlaid feed rows, Current's rows and the Finished section the
+    same objects (Finished's from the next such build) and sorts nothing in full — only the tiers the command moves
+    rows between are made again, and only when it changes. Wrong, every build copied all items, sorted every tier and
+    rebuilt the overlaid rows (new dicts)."""
+    seed = window_seed.build()
+    reader = _reader(seed)
+    views, _ = _collect(reader)
+    reader._look()
+    row = views[-1][1].rows[4]
+    ids = [e.id for e in row.episodes]
+    reader.expect({i: "graduated" for i in ids})
+    reader._look()
+    first = views[-1][1]
+    assert row.key not in [r.key for r in first.rows]
+    sorts = []
+    by_tier = library_reader.view_rows._by_tier
+    monkeypatch.setattr(library_reader.view_rows, "_by_tier", lambda items: (sorts.append(1), by_tier(items))[1])
+    reader.set_estimates({seed.items[0]["id"]: 3})       # something to build for, nothing for the rows
+    reader._look()
+    second = views[-1][1]
+    assert second is not first and sorts == []
+    assert all(a is b for a, b in zip(first.rows, second.rows)) and len(first.rows) == len(second.rows)
+    assert second.goal is first.goal
+    reader.set_estimates({seed.items[0]["id"]: 4})       # again: Finished's section is kept too (the build that took
+    reader._look()                                       # the command in moved the top: Finished's own rule, once)
+    third = views[-1][1]
+    assert sorts == [] and third.finished is second.finished and third.rows[0] is first.rows[0]
+    fin = [r for m in second.finished for r in m.rows if r.key == row.key]
+    assert len(fin) == 1 and [e.id for e in fin[0].episodes] == ids
+
+
+def test_LM11b_H_T2_the_first_screens_cache_is_never_skipped_for_good_while_a_command_waits_on_a_busy_store(tmp_path):
+    """H-T2: while the window's command waits (`expect`, a busy store: the wait is unbounded by design) no view holding
+    it is cached — but the cache is never left behind for good: the reader stopped meanwhile (a quit, a language switch)
+    writes the store's own view under the store's key now, without the waiting command's rows; and once the command
+    settles the next quiet look writes it. Wrong, a restart after a long busy spell found an old cache (or none) and
+    the first screen came up empty."""
+    seed = window_seed.build()
+    cache = tmp_path / "window_cache_ja.json"
+    def make():
+        return library_reader.LibraryReader(seed.opener, language=seed.language, numbers=seed.numbers,
+                                            mining=seed.mining, poll=5.0, cache_file=str(cache))
+    reader = make()
+    views, _ = _collect(reader)
+    reader._look()
+    reader._look()                                       # a quiet look: the cache written
+    row = views[-1][1].rows[4]
+    ids = [e.id for e in row.episodes]
+    reader.expect({i: "graduated" for i in ids})
+    reader._look()
+    assert row.key not in [r.key for r in views[-1][1].rows]
+    other = views[-1][1].rows[1].episodes[0].id
+    seed.library.commit(items=[{"id": other, "watched": 1}])        # another program writes meanwhile
+    reader._look()
+    reader._look()
+    h = seed.opener.handle()
+    key_now = reader._key_now(h)
+    reader.start()
+    reader.stop()                                        # the stop, the command still waiting
+    data = json.load(open(cache, encoding="utf-8"))
+    assert data["key"] == key_now
+    back = view_rows.from_cache(data["view"])
+    assert row.key in [r.key for r in back.rows]         # the store's own view: the waiting command not in it
+    hit = next(r for r in back.rows if any(e.id == other for e in r.episodes))
+    assert next(e for e in hit.episodes if e.id == other).watched
+
+    again = make()
+    views2, _ = _collect(again)
+    again._look()
+    again.expect({i: "graduated" for i in ids})
+    again._look()
+    seed.library.commit(items=[{"id": i, "tier": "graduated", "graduated_at": "2026-10-21T20:00:00Z"} for i in ids],
+                        order=True)                      # the command lands: the overlay settles
+    again._look()
+    again._look()                                        # the quiet look after it writes the cache
+    data = json.load(open(cache, encoding="utf-8"))
+    assert data["key"] == again._key_now(seed.opener.handle())
+    assert row.key not in [r.key for r in view_rows.from_cache(data["view"]).rows]
+
+
+# --- LM11b mutant pass: the gaps it found ----------------------------------------------------------------------- #
+def _expecting(seed):
+    """A reader that took in the window's expectation for Current's fifth row (a busy store: never written) -> (reader,
+    its views, that row, its ids)."""
+    reader = _reader(seed)
+    views, _ = _collect(reader)
+    reader._look()
+    row = views[-1][1].rows[4]
+    ids = [e.id for e in row.episodes]
+    reader.expect({i: "graduated" for i in ids})
+    reader._look()
+    assert row.key not in [r.key for r in views[-1][1].rows]
+    return reader, views, row, ids
+
+
+def _finished_row(view, key):
+    return next((r for m in view.finished for r in m.rows if r.key == key), None)
+
+
+def test_LM11b_the_same_expectation_asked_again_builds_nothing():
+    """S19: the window's settle asks for the expectation it already gave (or none, again): nothing is built or
+    published for it. Wrong, every settle tick built the whole view again."""
+    seed = window_seed.build()
+    reader, views, _row, ids = _expecting(seed)
+    n = len(views)
+    reader.expect({i: "graduated" for i in ids})
+    reader._look()
+    assert len(views) == n
+
+
+def test_LM11b_a_watched_mark_another_program_writes_on_an_expected_episode_shows_while_it_waits():
+    """H-W1 keeps an overlaid row only while its feed row is the same: another program marks one of the waiting show's
+    episodes watched — its Finished row shows it. Wrong, the overlaid row (and the tier list) were the old ones."""
+    seed = window_seed.build()
+    reader, views, row, ids = _expecting(seed)
+    unwatched = next(e.id for e in row.episodes if not e.watched)
+    seed.library.commit(items=[{"id": unwatched, "watched": 1}])
+    reader._look()
+    fin = _finished_row(views[-1][1], row.key)
+    assert fin is not None and next(e for e in fin.episodes if e.id == unwatched).watched
+
+
+def test_LM11b_a_show_another_program_finishes_while_one_is_expected_comes_into_finished_too():
+    """The overlaid Finished list is kept only while the reader's own is the same list: another program finishes a show
+    meanwhile — it is in Finished beside the expected one. Wrong, Finished kept its old list."""
+    seed = window_seed.build()
+    reader, views, row, _ids = _expecting(seed)
+    other = next(r for r in views[-1][1].rows if r.key != row.key and r.work_id != row.work_id)
+    seed.library.commit(items=[{"id": e.id, "tier": "graduated", "graduated_at": "2026-10-21T20:00:00Z"}
+                               for e in other.episodes], order=True)
+    reader._look()
+    view = views[-1][1]
+    assert _finished_row(view, other.key) is not None and _finished_row(view, row.key) is not None
+
+
+def test_LM11b_an_expected_finish_is_finished_now_this_months_row():
+    """A finish the store hasn't written reads as finished now: the show's Finished row stands under this month, as the
+    store will put it. Wrong, it had no date and fell under *Earlier*."""
+    seed = window_seed.build()
+    _reader_, views, row, _ids = _expecting(seed)
+    month = next(m for m in views[-1][1].finished if any(r.key == row.key for r in m.rows))
+    assert month.label == view_rows.month_label(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+
+
+def test_LM11b_two_finishes_waiting_on_a_busy_store_take_both_shows_off_current():
+    """Two *Move show to Finished* while the store is busy: the window's expectation grows to both shows (`expect_off`
+    holds each) — both leave Current and stand in Finished. Wrong (red on ff60b35): the second show stayed in Current
+    AND stood in Finished — `_overlay` reused Current's list as filtered for the first expectation (H-W1's reuse check
+    compares the tier lists and the rows built in, never the expected set itself)."""
+    seed = window_seed.build()
+    reader = _reader(seed)
+    views, _ = _collect(reader)
+    reader._look()
+    a, b = views[-1][1].rows[4], views[-1][1].rows[6]
+    first = {e.id: "graduated" for e in a.episodes}
+    reader.expect(first)
+    reader._look()
+    reader.expect({**first, **{e.id: "graduated" for e in b.episodes}})
+    reader._look()
+    view = views[-1][1]
+    keys = [r.key for r in view.rows]
+    assert a.key not in keys and b.key not in keys
+    assert _finished_row(view, a.key) is not None and _finished_row(view, b.key) is not None

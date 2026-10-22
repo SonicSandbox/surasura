@@ -551,6 +551,34 @@ def test_the_bulk_asks_never_name_a_file_in_anki_being_mined_or_whose_cards_were
     assert len(asks(writer)) == n and win.bar_line.full() == strings.MINE_NOTHING
 
 
+def test_mine_them_too_asks_for_an_arrivals_videos_only_and_leaves_its_epub_out_saying_so(act, monkeypatch):
+    """K67 (IK S3) on New arrivals: Anki Miner mines video only, so *Mine them too* over a video show and an EPUB that
+    came with it asks for the videos alone (`mine_actions.videos_of`, the rule *Mine now* uses), the toast saying the
+    other files were left out; an EPUB alone asks nothing and opens its *Mine text*. Wrong, the book's file made a job
+    Anki Miner can never finish."""
+    _seed, win, writer = act()
+    tray = win.arrivals_tray
+    assert wait_until(lambda: tray.watched(), 10)
+    shown = tray.watched()[0]
+    videos = [e._replace(cards=0, mining=False, deleted=False, missing=False) for e in shown.episodes]
+    book = next(r for r in win.page_widgets["current"].view_model.rows if r.media_word != "video" and r.episodes)
+    ep = book.episodes[0]
+    epub = ep._replace(id=max(e.id for e in videos) + 1000, cards=0, mining=False, deleted=False, missing=False,
+                       rel_path=f"HighPriority/Hato/{book.title}/{book.title}.epub", label=f"{book.title}.epub")
+    came = shown._replace(key="p-epub", work_id=book.work_id, title=book.title, media=book.media,
+                          media_word=book.media_word, item_ids=(epub.id,), episodes=(epub,))
+    tray.groups = tuple(g._replace(rows=(shown._replace(episodes=tuple(videos)), came)) if g.kind == "watched" else g
+                        for g in tray.groups)
+    tray.mine_them_too()
+    assert asks(writer)[-1][1] == [e.id for e in videos] and epub.id not in asks(writer)[-1][1]
+    assert win.toasts.card.message == strings.MINE_ASKED_N_VIDEOS[len(videos) == 1].format(n=len(videos))
+    opened = []
+    monkeypatch.setattr(win.mine, "mine_text", lambda label, rel_path: opened.append((label, rel_path)))
+    n = len(asks(writer))
+    win.mine.mine_ids([epub.id])                             # the EPUB alone: no ask, its Mine text
+    assert len(asks(writer)) == n and opened == [(epub.label, epub.rel_path)]
+
+
 def test_a_double_click_on_mine_now_asks_once(act):
     """WF fix 8 (adversary N1): a double-click on a part acts once — Qt turned the second click into a press whose
     release asked again (a second toast and Undo)."""
@@ -594,3 +622,51 @@ def test_two_switch_workers_asking_for_one_languages_feed_get_one_feed(monkeypat
     for w in workers:
         w.join(5)
     assert len(got) == 2 and got[0] is got[1]
+
+
+def test_LM11b_a_groups_epub_is_mine_text_though_the_group_is_led_by_a_video(act, monkeypatch):
+    """K67 judged by the file, not the row: a group led by an anime holding a light novel's EPUB — *Mine this* on the
+    EPUB is *Mine text* (Anki Miner's own window), never an ask Anki Miner can't do; on the anime's episode, the ask."""
+    from app.services import view_rows as vr
+    from tests import test_view_rows as tvr
+    _seed, win, writer = act()
+    tvr.WORKS.clear()
+    tvr.work(1, "星降る街の小さな工房")
+    tvr.work(3, "白銀の書庫番", media="lightnovel")
+    items = tvr.items_of([("now", 1, 10, tvr.eps("星降る街の小さな工房", 1, 2), {}),
+                          ("now", 3, 10, ["白銀の書庫番 01 章.epub"], {0: {"source_type": "epub"}})])
+    pieces = {10: {"id": 10, "title": None, "kind": "group"}}
+    row = vr.build(items, dict(tvr.WORKS), {"mine_line": 20}, pieces=pieces).rows[0]
+    book = row.episodes[2]
+    assert row.media_word == "video" and book.media_word == "EPUB"
+    texts = []
+    monkeypatch.setattr(win.mine, "mine_text", lambda label, rel: texts.append((label, rel)))
+    win.mine.mine_row(row, [book.id])
+    assert texts == [(book.label, book.rel_path)] and asks(writer) == []
+    win.mine.mine_row(row, [row.episodes[0].id])
+    assert texts == [(book.label, book.rel_path)] and [c[1] for c in asks(writer)] == [[row.episodes[0].id]]
+
+
+def test_LM11b_a_groups_mine_now_asks_its_videos_alone_and_says_the_rest_are_left_out(act):
+    """K67, one rule for one file and for many (`mine_actions.videos_of`): *Mine now* on a group of an anime's two
+    episodes and a light novel's EPUB asks for the two videos only — Anki Miner can't mine the EPUB — and its toast
+    says the others are left out; a group of videos only says its usual words."""
+    from app.qt import mine_actions
+    from app.services import view_rows as vr
+    from tests import test_view_rows as tvr
+    _seed, win, writer = act()
+    tvr.WORKS.clear()
+    tvr.work(1, "星降る街の小さな工房")
+    tvr.work(3, "白銀の書庫番", media="lightnovel")
+    items = tvr.items_of([("now", 1, 10, tvr.eps("星降る街の小さな工房", 1, 2), {}),
+                          ("now", 3, 10, ["白銀の書庫番 01 章.epub"], {0: {"source_type": "epub"}})])
+    row = vr.build(items, dict(tvr.WORKS), {"mine_line": 20}, pieces={10: {"id": 10, "title": None, "kind": "group"}}
+                   ).rows[0]
+    ids = [e.id for e in row.episodes]
+    assert mine_actions.videos_of(row, ids) == (ids[:2], row.episodes[2])
+    win.mine.mine_row(row, ids)
+    assert [c[1] for c in asks(writer)] == [ids[:2]]
+    assert win.toasts.card.message == strings.MINE_ASKED_VIDEOS.format(title=row.title)
+    win.mine.mine_row(row, ids[:2])
+    assert [c[1] for c in asks(writer)] == [ids[:2], ids[:2]]
+    assert win.toasts.card.message == strings.MINE_ASKED.format(title=row.title)

@@ -102,7 +102,31 @@ ITEM_MENU = {
     "cover": ("Change cover…", "Choose the picture it shows"),
     "folder": ("Open its folder", "Open the folder its files are in"),
     "remove": ("Remove…", "Take it out of your library: its files go to the trash for 30 days (asks first)"),
+    # LM11b G4: on what Ctrl+click picked ({n}: the rows and episodes picked)
+    "group": ("Group…", "Put these {n} into one row in Current\n• Undo takes them apart again"),
+    # LM11b G3: on a group's ⋯ (IK-5), and *Same show as…* on a show's own row (IK-6)
+    "rename": ("Rename…", "Give this group a name of its own (left empty, it is named after its shows again)"),
+    "ungroup": ("Ungroup", "Put each show back in a row of its own, where it is: nothing is lost\n"
+                           "• Undo groups them again"),
+    "same-show": ("Same show as…", "Make this part of another show: it and its new episodes go into that show "
+                                   "(asks first)"),
 }
+ITEM_UNGROUPED = "Ungrouped {title}"
+ITEM_RENAME_ASK = "Rename this group"
+ITEM_RENAME_BODY = "Leave it empty to name it after its shows again."
+ITEM_RENAME_YES = "Rename"
+ITEM_RENAME_YES_TIP = "Give the group this name"
+ITEM_RENAMED = "Renamed {title} to {name}"
+ITEM_RENAME_CLEARED = "{title} is named after its shows again"
+ITEM_SAME_SHOW_PICK = "{title} · {where}"
+ITEM_SAME_SHOW_PICK_TIP = "Make this part of {title} (asks first)"
+# the confirm's words as Sonic approved them (GW-1, 2026-10-21): {b} this row's show, {a} the one picked
+ITEM_SAME_SHOW_ASK = "Make {b} part of {a}?"
+ITEM_SAME_SHOW_BODY = "New episodes of {b} will go into {a}. Undo works until you close Surasura."
+ITEM_SAME_SHOW_YES = "Make one show"
+ITEM_SAME_SHOW_YES_TIP = "Make {b} part of {a}: one show from now on"
+ITEM_SAME_SHOW_DONE = "{b} is now part of {a}"
+ITEM_GROUPED = "Grouped {n} into one row"
 ITEM_TYPES = {"anime": "Anime", "drama": "Drama", "movie": "Movie", "youtube": "YouTube", "podcast": "Podcast",
               "audiobook": "Audiobook", "book": "Book", "lightnovel": "Light novel", "manga": "Manga", "game": "Game",
               "text": "Text"}
@@ -134,6 +158,9 @@ ITEM_REMOVED = "Removed {title}"
 SEAM_LABEL = "✂ Split here"
 SEAM_TIP = "✂ Split here\n• Click to make {rest} a part of its own"
 JOIN_LABEL = "Drop to join"
+# LM11b G2: another show dropped on a show once the hand rests on it (`item_menu.JOIN_REST_MS`): one row of both
+JOIN_GROUP_LABEL = "Drop to group"
+ITEM_GROUPED_WITH = "Grouped {other} with {title}"
 # --- end W3.2 Q8
 # K6: ⋯ › *Never read this folder* › the item's folder and each one above it inside its source folder
 ITEM_SKIP = ("Never read this folder", "Leave a folder out of your library for good: pick it")
@@ -387,7 +414,13 @@ ROWS_LINK_TIP = "Choose its video: its cards get their pictures and audio from i
 ROWS_MINE_TEXT = "Mine text"
 ROWS_MINE_TEXT_TIP = "Open Anki Miner to mine its text by hand: its file's path is copied for you"
 MINE_ASKED = "{title}: its cards come next"
+# LM11b G5 (K67): a group of videos and other files — only its videos asked
+MINE_ASKED_VIDEOS = "{title}: its videos' cards come next · Anki Miner mines video only, so its other files are left out"
 MINE_ASKED_N = "{n} files: their cards come next"
+# LM11b fix round: New arrivals' *Mine them too* with videos and other files — only the videos asked (`videos_of`)
+MINE_ASKED_N_VIDEOS = {True: "1 video: its cards come next · Anki Miner mines video only, so the other files are left out",
+                       False: "{n} videos: their cards come next · Anki Miner mines video only, so the other files are "
+                              "left out"}
 # --- P4.1 WF (the reviews' word fixes, IK S5): one file said as one; a book's button opens Anki Miner (never "mine it
 # now"); C6's toast says Connect waits while Anki Miner's window is open (the N1 disposition); a bulk ask with nothing
 # left to ask for; a gap's *Make their cards* as Connect's ordinary work (D-1 lean (a)), counted, no title pasted
@@ -491,6 +524,11 @@ DONE_UNDONE = "{title} {ep} marked not watched"
 DONE_ALL = "✓ All {n} watched — finished with it?"
 DONE_MOVE_FINISHED = "Move to Finished"
 DONE_MOVE_FINISHED_TIP = "Move it to Finished: a record of what you've worked through"
+# --- LM11b G5: one show of a group all watched, the group's other shows not yet (GW-2 ⭐ A)
+DONE_SHOW_IN_GROUP = "✓ {show}: all {n} watched — finished with it?"
+DONE_MOVE_SHOW_FINISHED = "Move {show} to Finished"
+DONE_MOVE_SHOW_FINISHED_TIP = "Move {show}'s {n} files to Finished, under its own name\n• The group keeps the rest"
+# --- end LM11b G5
 MENU_NAME = "What you can do with {title}"
 MENU_ITEMS = {
     "up-next": ("Up next", "Make it the next thing you watch or read"),

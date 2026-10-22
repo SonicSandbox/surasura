@@ -81,7 +81,7 @@ def test_every_mix_is_worked_out_and_none_is_left_for_a_retired_part():
         assert re.fullmatch(r"#[0-9a-f]{6}([0-9a-f]{2})?", c[name]), name
     for retired in ("arrivals-fill", "settings-even", "join-on", "finished-bucket-lit", "tab-bar", "header-top"):
         assert retired not in theme.MIXES
-    for new in ("frame-edge", "groove", "groove-lip", "cut-wall-top", "cut-wall-low", "well-lit"):
+    for new in ("frame-edge", "groove", "groove-lip", "cut-wall-top", "cut-wall-low", "well-lit", "row-picked"):
         assert new in theme.MIXES
 
 
@@ -126,6 +126,20 @@ def test_grey_text_on_an_overlay_clears_the_floor_even_under_the_hand():
         assert theme.contrast(c["overlay-ink-dim"], c[ground]) >= 4.5, ground
     assert theme.contrast(c["overlay-ink-faint"], c["overlay"]) > theme.contrast(c["ink-faint"], c["overlay"])
     assert c["overlay-ink-faint"] == "#6d7b97"                     # list-r14m :1979
+
+
+def test_a_picked_row_still_reads_and_shows_on_every_ground_it_lies_on():
+    """LM11b G4: the pick's wash lies on a row and Up Next (`surface`), a row under the hand (`row-hover`) and an opened
+    row's episodes (`open-row`): its text still clears the floor (Sonic: "Readability is critical"), the wash is seen
+    and its accent ring stands out as a control's edge does (3:1)."""
+    c = theme.colours()
+    for ground in ("surface", "row-hover", "open-row"):
+        under = c[ground] if ground in c else theme.ROW_COLOURS[ground]
+        washed = theme.over(c["row-picked"], under)
+        for ink in ("ink", "ink-dim"):
+            assert theme.contrast(c[ink], washed) >= 4.5, (ink, ground)
+        assert theme.contrast(washed, under) > 1.1, ground
+        assert theme.contrast(c["accent"], washed) >= 3, ground
 
 
 def test_a_hovered_row_takes_the_references_ground_as_written():

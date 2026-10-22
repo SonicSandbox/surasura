@@ -3656,7 +3656,8 @@ def _group_state(lib):
     store = lib.store
     return ({t: store.ids(t) for t in ls.TIERS}, dict(store.conn.execute("SELECT id, piece_id FROM items")),
             dict(store.conn.execute("SELECT id, work_id FROM items")),
-            sorted(store.conn.execute("SELECT id, title, kind FROM pieces")))
+            sorted(store.conn.execute("SELECT id, title, kind FROM pieces")),
+            sorted(store.conn.execute("SELECT id, title, titles FROM works")))     # LM11b: a merge's titles back
 
 
 def _kind_of(lib, piece):
@@ -3688,6 +3689,12 @@ def _group_op(lib, w, op, titles):
         pc, mc = _third(lib)
         w.add_to_group(pa, piece_ids=[pc], label=op)
         return lambda: {store.item(i)["piece_id"] for i in mc} == {pa}
+    if op == "merge_works":                     # LM11b fix round: the titles alone, every row where it was
+        wa, wb = _works_of(lib, ma[:1] + mb[:1])
+        where = {i: (store.item(i)["tier"], store.item(i)["ord"], store.item(i)["piece_id"]) for i in ma + mb}
+        w.merge_works(wa, [wb], label=op)
+        return lambda: _works_of(lib, ma + mb) == [wa] * (len(ma) + len(mb)) and store._work_row(wb) is None and \
+            {i: (store.item(i)["tier"], store.item(i)["ord"], store.item(i)["piece_id"]) for i in ma + mb} == where
     if op == "ungroup":
         w.ungroup(pa, label=op)
         return lambda: store.item(ma[0])["piece_id"] != store.item(mb[0])["piece_id"] and \
@@ -3699,12 +3706,12 @@ def _group_op(lib, w, op, titles):
 def _grouped_first(lib, op):
     """Two titles' parts (read before any group); for the commands that act on a group, grouped on the store first."""
     titles = _two_titles(lib)
-    if op not in ("join", "group"):
+    if op not in ("join", "group", "merge_works"):
         lib.store.join([titles[0], titles[2]], how="group")
     return titles
 
 
-GROUP_OPS = ["join", "group", "add_to_group", "ungroup", "rename_piece"]
+GROUP_OPS = ["join", "group", "add_to_group", "ungroup", "rename_piece", "merge_works"]
 
 
 @pytest.mark.parametrize("op", GROUP_OPS)
@@ -3790,6 +3797,156 @@ def test_LM11_a_group_command_that_landed_but_left_its_entry_is_let_go_quietly(l
     assert h.until(lambda: journal(lib.language) is None)
     time.sleep(0.3)
     assert heard2.notes == [] and _group_state(lib) == after
+
+
+# --- LM11b fix round: *Same show as…* through the writer — the titles alone, nothing moves (no file changes section) #
+def test_LM11b_same_show_as_is_one_journalled_merge_of_the_titles_and_moves_no_file(lib, make_writer,
+                                                                                    short_lock_wait):
+    """A busy store queues the merge (journalled with both titles and what they are as queued); freed, it lands as one
+    title — the kept one's name — and every file keeps its tier, place and part (the learner asked "make B part of A",
+    never "move B")."""
+    w, heard = make_writer()
+    pa, ma, pb, mb = _two_titles(lib)
+    store = lib.store
+    wa, wb = _works_of(lib, ma[:1] + mb[:1])
+    name = store._work_row(wa)["title"]
+    where = {t: store.ids(t) for t in ls.TIERS}
+    pieces = {i: store.item(i)["piece_id"] for i in ma + mb}
+    holder = LockHolder(lib.db)
+    try:
+        assert w.merge_works(wa, [wb], label="merged") is not None
+        assert h.until(lambda: journalled(lib.language) == [("merge_works", [])])
+        entry = journal(lib.language)["pending"][0]
+        assert entry["work_id"] == wa and entry["work_ids"] == [wb] and entry["before"], "kept with its titles"
+        assert _works_of(lib, mb) == [wb] * len(mb)                       # nothing written while busy
+    finally:
+        holder.release()
+    assert h.until(lambda: heard.saved)
+    assert heard.saved[0][1] == "merged" and journal(lib.language) is None
+    assert _works_of(lib, ma + mb) == [wa] * (len(ma) + len(mb)) and store._work_row(wa)["title"] == name
+    assert {t: store.ids(t) for t in ls.TIERS} == where
+    assert {i: store.item(i)["piece_id"] for i in ma + mb} == pieces
+
+
+def test_LM11b_a_merge_the_ids_refuse_says_why_and_writes_nothing(lib, make_writer):
+    w, heard = make_writer()
+    pa, ma, pb, mb = _two_titles(lib)
+    wa, wb = _works_of(lib, ma[:1] + mb[:1])
+    with lib.store._writing():
+        lib.store.conn.execute("UPDATE works SET tmdb_id = 7 WHERE id = ?", (wa,))
+        lib.store.conn.execute("UPDATE works SET tmdb_id = 8 WHERE id = ?", (wb,))
+    w.merge_works(wa, [wb])
+    assert h.until(lambda: heard.notes)
+    assert heard.notes == [WORDS["failed"].format(error=ls.TITLES_APART["tmdb_id"])]
+    assert _works_of(lib, mb) == [wb] * len(mb) and heard.saved == [] and lib.store._work_row(wb) is not None
+
+
+def test_LM11b_a_merge_is_refused_on_a_read_only_store_and_one_that_meets_it_says_why_and_writes_nothing(
+        lib, make_writer):
+    w, heard = make_writer()
+    pa, ma, pb, mb = _two_titles(lib)
+    wa, wb = _works_of(lib, ma[:1] + mb[:1])
+    w.hold()
+    assert w.merge_works(wa, [wb]) is not None                       # accepted while the store could be written
+    ls.mark_damaged(lib.db, "test: damaged mid-drag")
+    w.release()
+    assert h.until(lambda: heard.notes)
+    assert heard.notes == [WORDS["read_only"].format(reason="damaged")]
+    assert heard.saved == [] and w.pending() == 0
+    assert h.until(lambda: not w.can_write(), seconds=M.MODE_RECHECK_S * 3)
+    assert w.merge_works(wa, [wb]) is None and w.pending() == 0      # refused before anything is painted
+    os.remove(ls.damaged_marker(lib.db))
+    assert _works_of(lib, mb) == [wb] * len(mb)
+
+
+def test_LM11b_a_queued_merge_whose_title_changed_meanwhile_is_listed_and_never_written(lib, make_writer,
+                                                                                        short_lock_wait):
+    """Queued before a crash; meanwhile another window renamed the title it was to merge: the replay says it couldn't
+    be done and merges nothing (the learner may no longer mean it)."""
+    w, heard = make_writer()
+    pa, ma, pb, mb = _two_titles(lib)
+    wa, wb = _works_of(lib, ma[:1] + mb[:1])
+    holder = LockHolder(lib.db)
+    try:
+        w.merge_works(wa, [wb])
+        assert h.until(lambda: [e[0] for e in journalled(lib.language)] == ["merge_works"])
+        w._abandon()
+    finally:
+        holder.release()
+    lib.store.rename_work(wb, names(lib.language)[45])
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: journal(lib.language) is None and heard2.notes)
+    assert heard2.notes == [WORDS["crash_one"]]
+    assert _works_of(lib, mb) == [wb] * len(mb)
+
+
+def test_LM11b_a_queued_merge_whose_kept_title_changed_meanwhile_is_listed_and_never_written(lib, make_writer,
+                                                                                             short_lock_wait):
+    """The title the merge keeps counts as queued too: renamed meanwhile by another window, the learner's "make B part
+    of A" may no longer mean that A — the replay says it couldn't be done and merges nothing."""
+    w, heard = make_writer()
+    pa, ma, pb, mb = _two_titles(lib)
+    wa, wb = _works_of(lib, ma[:1] + mb[:1])
+    holder = LockHolder(lib.db)
+    try:
+        w.merge_works(wa, [wb])
+        assert h.until(lambda: [e[0] for e in journalled(lib.language)] == ["merge_works"])
+        w._abandon()
+    finally:
+        holder.release()
+    lib.store.rename_work(wa, names(lib.language)[45])
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: journal(lib.language) is None and heard2.notes)
+    assert heard2.notes == [WORDS["crash_one"]]
+    assert _works_of(lib, mb) == [wb] * len(mb)
+
+
+def test_LM11b_a_merge_moves_no_file_so_the_numbers_are_never_asked_again(lib, make_writer):
+    """A merge changes no order (S19: only what changed): once it lands, the drop numbers stand — never worked out
+    again, as after a rename or an ungroup."""
+    numbers = Recorder()
+    w, heard = make_writer(numbers=numbers)
+    pa, ma, pb, mb = _two_titles(lib)
+    wa, wb = _works_of(lib, ma[:1] + mb[:1])
+    w.merge_works(wa, [wb], label="merged")
+    assert h.until(lambda: heard.saved)
+    assert _works_of(lib, mb) == [wa] * len(mb)
+    time.sleep(0.2)
+    assert numbers.resyncs == 0 and numbers.moves == []
+
+
+def test_LM11b_a_merge_queued_behind_the_users_own_write_of_its_title_still_lands(lib, make_writer, short_lock_wait):
+    """His own two clicks are never a change "meanwhile": a merge queued behind a write of the same title takes what
+    that write left as its *as queued* (`_keys` names both titles)."""
+    w, heard = make_writer()
+    pa, ma, pb, mb = _two_titles(lib)
+    wa, wb = _works_of(lib, ma[:1] + mb[:1])
+    holder = LockHolder(lib.db)
+    try:
+        w.set_media_type([wb], "anime")
+        w.merge_works(wa, [wb])
+        assert h.until(lambda: [e[0] for e in journalled(lib.language)] == ["set_media_type", "merge_works"])
+        w._abandon()
+    finally:
+        holder.release()
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: journal(lib.language) is None)
+    time.sleep(0.3)
+    assert heard2.notes == [] and _works_of(lib, mb) == [wa] * len(mb)
+
+
+def test_LM11b_a_merge_naming_no_other_title_is_never_taken_as_done():
+    """`_done` on a merge naming only the kept title (or none): never "landed before the crash"."""
+    import contextlib
+
+    class Store:
+        def _reading(self):
+            return contextlib.nullcontext()
+    assert M._done(Store(), {"op": "merge_works", "work_id": 5, "work_ids": [5]}) is False
+    assert M._done(Store(), {"op": "merge_works", "work_id": 5, "work_ids": []}) is False
 
 
 def test_LM11_a_queued_group_whose_episode_changed_part_meanwhile_is_listed_and_never_written(lib, make_writer,

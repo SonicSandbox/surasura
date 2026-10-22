@@ -13,9 +13,9 @@ The rules, each a way the user's known words could be damaged otherwise (CLAUDE.
   * a dated, byte-verified copy of KnownWord.json is kept before the write (`path_utils.backup_to_trash`), and a
     backup that fails writes nothing;
   * a word the file already holds as known, or as IGNORED (the user's choice, under any other entry too), is left
-    alone — an IGNORED one only takes the Graduates' mark (`anki_sync.GRADUATED_MARK`, its status kept: ignored day
-    to day, kept known by a replacer, AD-1); nothing is ever written IGNORED, and IgnoreList.txt / Blacklist.txt are
-    never touched;
+    alone — it only takes the Graduates' mark (`anki_sync.GRADUATED_MARK`: its known entries, or, dismissed, its
+    IGNORED ones; the status kept, so an IGNORED one is ignored day to day; a replacer keeps it known, AD-1); nothing
+    is ever written IGNORED, and IgnoreList.txt / Blacklist.txt are never touched;
   * the write is atomic (`anki_sync._atomic_write_json`), and only after it the list moves to `.trash`
     (`backup_to_trash(move=True)`; never purged). A list with no words is moved there too, once.
 A second run finds no list and changes nothing; one interrupted between the write and the move finds every word
@@ -145,9 +145,12 @@ def _merge_held(language, words, result):
             new.append(entry)
         elif any(e.get("knownStatus") == "IGNORED" or anki_sync._is_known(e) for e in entries):
             result["present"] += 1
-            if not any(anki_sync._is_known(e) for e in entries):     # dismissed: a replacer keeps it known (AD-1)
-                mark += [e for e in entries if e.get("knownStatus") == "IGNORED"
-                         and e.get(anki_sync.GRADUATED_MARK) is not True and all(e is not m for m in mark)]
+            # A replacer keeps it known (AD-1): its known entries take the mark — known from another source, a
+            # replace whose source doesn't name it would drop it — or, dismissed, its IGNORED ones
+            known = [e for e in entries if anki_sync._is_known(e)]
+            mark += [e for e in known or [e for e in entries if e.get("knownStatus") == "IGNORED"]
+                     if e.get("source") != SOURCE and e.get(anki_sync.GRADUATED_MARK) is not True
+                     and all(e is not m for m in mark)]
         else:
             raise_ += [e for e in entries if e.get("knownStatus") in RAISED and all(e is not r for r in raise_)]
     if not new and not raise_ and not mark:
@@ -162,7 +165,7 @@ def _merge_held(language, words, result):
         entry["previousStatus"] = entry["knownStatus"]
         entry["knownStatus"] = "KNOWN"
         entry[anki_sync.GRADUATED_MARK] = True      # a replacer keeps it known (anki_sync.kept_graduated)
-    for entry in mark:                      # in place too: still IGNORED, only marked
+    for entry in mark:                      # in place too: the status kept, only marked
         entry[anki_sync.GRADUATED_MARK] = True
     if data is None:
         data = {"exportDate": now, "source": SOURCE, "statistics": {}, "words": new}

@@ -180,11 +180,11 @@ def test_unknown_and_learning_words_are_raised_known_ignored_and_known_ones_are_
         raised = next(w for w in old if w["dictForm"] == before[status]["dictForm"])
         assert raised == dict(before[status], knownStatus="KNOWN", previousStatus=status,   # every other field kept
                               graduated=True)
-    assert next(w for w in old if w["dictForm"] == before["KNOWN"]["dictForm"]) == before["KNOWN"]
-    # The dismissed one keeps its status and every field; it only takes the Graduates' mark (AD-1)
-    assert next(w for w in old if w["dictForm"] == before["IGNORED"]["dictForm"]) == dict(before["IGNORED"],
-                                                                                         graduated=True)
-    changed = (before["LEARNING"]["dictForm"], before["UNKNOWN"]["dictForm"], before["IGNORED"]["dictForm"])
+    # The known and the dismissed one keep their status and every field; each only takes the Graduates' mark (AD-1)
+    for status in ("KNOWN", "IGNORED"):
+        assert next(w for w in old if w["dictForm"] == before[status]["dictForm"]) == dict(before[status],
+                                                                                          graduated=True)
+    changed = tuple(before[s]["dictForm"] for s in ("LEARNING", "UNKNOWN", "KNOWN", "IGNORED"))
     untouched = [w for w in ja_known["words"] if w["dictForm"] not in changed]
     assert [w for w in old if w["dictForm"] not in changed] == untouched
     assert [w["dictForm"] for w in words[len(ja_known["words"]):]] == ["冒険"]
@@ -240,6 +240,36 @@ def test_a_past_graduates_word_also_dismissed_stays_ignored_and_a_replace_keeps_
         (incoming, "KNOWN", None), (dismissed, "KNOWN", "IGNORED")]
     assert (graduated, dropped) == (1, 0)
     assert anki_sync.replace_numbers(language, [{"dictForm": incoming, "knownStatus": "KNOWN"}]) == (1, 2, 1, 0)
+
+
+@pytest.mark.parametrize("language, graduate, other, incoming", [
+    ("ja", "冒険", "準備", "危険"),
+    ("zh", "冒险", "准备", "危险"),
+])
+def test_a_past_graduates_word_already_known_from_another_source_stays_known_through_a_replace(language, graduate,
+                                                                                              other, incoming):
+    """The same rule for a KNOWN entry (AD-1, its KNOWN case): a Graduated-list word the file already holds known from
+    another source (Migaku's) is left as it is but marked, so a replace whose source doesn't name it keeps it known
+    instead of dropping it with that source's words. A second merge finds it marked and writes nothing."""
+    entries = [{"dictForm": graduate, "knownStatus": "KNOWN", "hasCard": 0, "language": language},
+               {"dictForm": other, "knownStatus": "KNOWN", "hasCard": 0, "language": language}]
+    with open(_known_path(language), "w", encoding="utf-8") as f:
+        json.dump({"words": entries}, f, ensure_ascii=False)
+    before = _read_bytes(_known_path(language))
+    _write_list(language, HEADER + _graduated("a.txt", [graduate]))
+    result = graduated_merge.merge(language)
+    assert (result["added"], result["raised"], result["present"], result["error"]) == (0, 0, 1, None)
+    assert _read_bytes(os.path.join(_folder(language), ".trash", os.path.basename(result["backup"]))) == before
+    assert _words(language) == [dict(entries[0], graduated=True), entries[1]]      # status and fields as they were
+
+    marked = _read_bytes(_known_path(language))
+    _write_list(language, HEADER + _graduated("a.txt", [graduate]))
+    assert graduated_merge.merge(language)["backup"] is None and _read_bytes(_known_path(language)) == marked
+
+    final, graduated, dropped = anki_sync.replaced_words(_known_path(language), language,
+                                                         [{"dictForm": incoming, "knownStatus": "KNOWN"}])
+    assert [(w["dictForm"], w["knownStatus"]) for w in final] == [(incoming, "KNOWN"), (graduate, "KNOWN")]
+    assert (graduated, dropped) == (1, 0)                    # `other`, the other source's word, goes as before
 
 
 def test_a_replacer_naming_a_graduates_word_ignored_keeps_it_ignored_and_marked(tmp_path):

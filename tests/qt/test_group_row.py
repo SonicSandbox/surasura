@@ -43,3 +43,19 @@ def test_LM11b_G1_join_with_never_lists_a_group_and_a_group_lists_no_other_part(
     run = next(r for r in view.rows if not r.group)
     assert item_menu.ItemActions.other_parts(actions, run) == []
     assert item_menu.ItemActions.other_parts(actions, group) == []
+
+
+def test_LM11b_G1_a_group_moved_to_goal_counts_one_more_title_at_once_with_its_cover_once():
+    """`drag.without`'s quick update (the reader's next view says the same): a group is a title of its own even when
+    its first show already has a tile in 6+ Months, and its cover goes on the strip once."""
+    items = items_of([("now", 1, 10, eps("星降る街の小さな工房", 1, 2), {}), ("now", 2, 10, eps("雲の上の郵便屋さん", 1, 2), {}),
+                      ("goal", 1, 11, eps("星降る街の小さな工房", 3, 4), {})])
+    pieces = {10: {"id": 10, "title": None, "kind": "group"}, 11: {"id": 11, "title": None, "kind": "run"}}
+    view = vr.build(items, WORKS, {"mine_line": 20}, pieces=pieces)
+    assert (view.goal.titles, view.goal.covers) == (1, ("星降る街の小さな工房",))
+    after = drag.without(view, "p10", "goal")
+    assert (after.goal.titles, after.goal.files, after.counts.goal_titles) == (2, 6, 2)
+    assert after.goal.covers == ("星降る街の小さな工房",) and after.goal.line == "2 titles · 6 files"
+    run = vr.build(items_of([("now", 1, 12, eps("星降る街の小さな工房", 1, 2), {}),
+                             ("goal", 1, 11, eps("星降る街の小さな工房", 3, 4), {})]), WORKS, {"mine_line": 20})
+    assert drag.without(run, "p12", "goal").goal.titles == 1          # a show's part joins its own title, as before

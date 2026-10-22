@@ -1420,3 +1420,63 @@ def test_LM11b_G1_a_row_names_its_works_in_episode_order_and_keeps_them_through_
     assert [r.works for r in view.rows] == [(1, 2), (3,), ()]
     back = vr.from_cache(json.loads(json.dumps(vr.to_cache(view))))
     assert [r.works for r in back.rows] == [(1, 2), (3,), ()]
+
+
+def test_LM11b_G1_goals_strip_counts_a_group_as_one_title_with_its_first_shows_cover_once():
+    """A group is one row to the learner, so 6+ Months' strip counts it as one title (its first show's cover), even
+    beside a part of that same show on its own — never as two titles for its two shows."""
+    WORKS[5] = dict(WORKS[1], id=5, title="風の谷の薬草師")
+    items = items_of([("goal", 1, 10, eps("星降る街の小さな工房", 1, 2), {}), ("goal", 2, 10, eps("雲の上の郵便屋さん", 1, 3), {}),
+                      ("goal", 5, 12, eps("風の谷の薬草師", 1, 2), {}), ("goal", 1, 13, eps("星降る街の小さな工房", 3, 4), {})])
+    view = vr.build(items, WORKS, {}, pieces=_group())
+    goal = view.goal
+    assert (goal.titles, goal.files, goal.line) == (3, 9, "3 titles · 9 files") and view.counts.goal_titles == 3
+    assert goal.covers == ("星降る街の小さな工房", "風の谷の薬草師", "星降る街の小さな工房")
+    assert goal.cover_refs[0] == vr.cover_of(WORKS[1]) and len(goal.cover_refs) == 3
+    assert [t.group for t in goal.works] == [True, False, False]          # GoalWork.group: the group's tile
+
+
+def _mixed(missing=()):
+    """星降る街の小さな工房 (an anime: Ep 1–2) grouped with 白銀の書庫番 (a light novel: its EPUB, Part 1); `missing`:
+    the indexes whose file is gone."""
+    return items_of([("now", 1, 10, eps("星降る街の小さな工房", 1, 2), {k: {"availability": "missing"} for k in missing
+                                                                    if k < 2}),
+                     ("now", 3, 10, ["白銀の書庫番 01 章.epub"], {0: {"availability": "missing", "source_type": "epub"}}
+                      if 2 in missing else {0: {"source_type": "epub"}})])
+
+
+def test_LM11b_G1_a_video_and_epub_group_says_of_each_file_what_it_is():
+    """(4) A group of an anime's videos and a book's EPUB claims nothing false: each episode's status, ▶ tip and word
+    are its own type's — the EPUB gone is *No EPUB*, never *No video* — and the row's ⌀ mark speaks of the EPUB."""
+    row = vr.build(_mixed(missing=(2,)), WORKS, {"mine_line": 20}, pieces=_group()).rows[0]
+    book = row.episodes[2]
+    assert [e.media_word for e in row.episodes] == ["video", "video", "EPUB"]
+    assert (book.label, book.status.label) == ("Part 1", "No EPUB") and "video" not in book.status.tip
+    assert row.mark is not None and row.mark.tip.startswith("No EPUB on disk for Part 1")
+    assert "video" not in row.mark.tip
+
+
+def test_LM11b_G1_a_video_and_epub_group_with_both_gone_uses_the_neutral_word_on_its_row():
+    """When the files the row speaks of are of different types, its status says *media*: "No media · 3" — each
+    episode still its own *No video* / *No EPUB*; when only its videos are gone, its mark speaks of videos."""
+    row = vr.build(_mixed(missing=(0, 1, 2)), WORKS, {"mine_line": 20}, pieces=_group()).rows[0]
+    assert row.status.label == "No media · 3" and "No media on disk" in row.status.tip
+    assert [e.status.label for e in row.episodes] == ["No video", "No video", "No EPUB"]
+    videos = vr.build(_mixed(missing=(0, 1)), WORKS, {"mine_line": 20}, pieces=_group()).rows[0]
+    assert videos.mark.tip.startswith("No video on disk for Ep 1, Ep 2")    # only its videos gone: their word
+
+
+def test_LM11b_G1_a_cached_rows_fast_path_reads_the_type_guess_and_never_keeps_a_stale_one():
+    """(6) The cache's fast path (nothing global moved, the same items and work) compared Connect's part of the row's
+    signature where it meant the untyped title's guess: a title whose guess moved — another piece's files gone from
+    6+ Months — kept its old type. Its row must follow the guess."""
+    WORKS[9] = dict(WORKS[1], id=9, title="夏草の記憶", media_type=None, anilist_id=None, tmdb_id=None)
+    items = items_of([("now", 9, 1, eps("夏草の記憶", 1, 2), {}),
+                      ("goal", 9, 2, [f"夏草の記憶 第{k}章.txt" for k in range(1, 6)], {k: {"source_type": "text"}
+                                                                          for k in range(5)})])
+    cache, cards = vr.RowCache(), {1: 0}          # one dict both builds (an empty one is made anew): the fast path
+    first = vr.build(items, WORKS, {}, numbers=(1, {}), cards=cards, cache=cache)
+    assert first.rows[0].media == "text"                 # five text files outweigh two subtitles: a text
+    current = {i: r for i, r in items.items() if r["tier"] == "now"}         # the 6+ Months part removed
+    second = vr.build(current, WORKS, {}, numbers=(1, {}), cards=cards, cache=cache)
+    assert second.rows[0].media is None and second.rows[0].media_word == "video"

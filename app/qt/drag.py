@@ -228,7 +228,7 @@ def without(view, key, where):
     if where == "goal" and view.goal is not None:
         g = view.goal
         cover = row.cover_title
-        titles = g.titles + (0 if cover in g.covers else 1)
+        titles = g.titles + (1 if getattr(row, "group", False) or cover not in g.covers else 0)   # LM11b G1
         covers = g.covers if cover in g.covers or len(g.covers) >= 9 else g.covers + (cover,)
         files = g.files + row.n_files
         line = view_rows.STRINGS["goal_one"].format(files=view_rows.thousands(files)) if titles == 1 else \

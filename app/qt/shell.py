@@ -994,6 +994,7 @@ class ShellWindow(QMainWindow):
         self._journey_opening = False                     # an open on its worker: a second click waits for it
         self.duties = None                                # W3.5: the duties' controls, once the duties are attached
         self.show_status(services.status.snapshot())
+        self._epoch_shown = None                          # LM11b AD-5: the store's epoch of the view shown last
         # --- W2.2: the library (the reader's views, queued to this thread) ---------------------------------------- #
         if services.library is not None:
             self.library_bridge = bridge.Bridge(library=services.library, parent=self)
@@ -1274,6 +1275,11 @@ class ShellWindow(QMainWindow):
             view = moves.view_in(view)
             if view is None:
                 return
+        epoch = getattr(view, "epoch", None)
+        if epoch is not None:                       # LM11b AD-5: the library rebuilt or reset in this language
+            if self._epoch_shown is not None and epoch != self._epoch_shown:
+                self._forget_picks()
+            self._epoch_shown = epoch
         moved = False
         for name in screens.PAGES:
             page = self.page_widgets.get(name)
@@ -1406,6 +1412,14 @@ class ShellWindow(QMainWindow):
             else:
                 self.moves.switching(None)
 
+    def _forget_picks(self):
+        """LM11b AD-5: the picks are keyed p<piece id> (an episode's by its item id), and a store numbers its pieces from
+        1 — each language's, and one rebuilt or reset (a new epoch): none carried onto another library's rows."""
+        self._epoch_shown = None
+        lst = getattr(self.page_widgets.get("current"), "list", None)
+        if lst is not None:
+            lst.clear_picks()
+
     def _show_switched(self, reader, writer):
         self._reader_shown = reader
         self.language = getattr(reader, "language", None) or self.services.language
@@ -1427,8 +1441,7 @@ class ShellWindow(QMainWindow):
         if lst is not None and (lst.saving or lst.landing is not None):
             lst.saving, lst.landing = frozenset(), None     # AD0-6: never a mark of the language left on a row
             lst.viewport().update()
-        if lst is not None:                         # LM11b AD-5: the picks are keyed p<piece id>, and each language's
-            lst.clear_picks()                       # store numbers its pieces from 1: none carried onto its rows
+        self._forget_picks()
         self._follow_language_look()
         for page in self.page_widgets.values():     # ▶ opens a file of this language's library
             set_language = getattr(page, "set_language", None)

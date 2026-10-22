@@ -891,7 +891,7 @@ class DragController(QObject):
         if gone is not None:
             self.expect_gone[gone[0]] = gone[1]
         if off is not None:
-            self.expect_off[off[0]] = frozenset(off[1])
+            self.expect_off[off[0]] = self.expect_off.get(off[0], frozenset()) | frozenset(off[1])  # two in a row: both
         self._show(view)
         self._settle.start()
 

@@ -16,7 +16,7 @@ from PyQt6.QtCore import QPoint                                              # n
 
 from app.qt import drag, rows, shell                                         # noqa: E402
 from tests.qt.conftest import wait_until                                     # noqa: E402
-from tests.qt.test_drag import settle, title_point                                        # noqa: E402
+from tests.qt.test_drag import real, settle, title_point                         # noqa: E402,F401
 from tests.qt.test_item_menu import (ctrl_click, groupable, lst_of, open_row, rows_of, stone_of,  # noqa: E402,F401
                                      world)
 from tests.qt.test_shell_library import _ask, _state, _switched_to, opened   # noqa: E402,F401
@@ -77,6 +77,26 @@ def test_LM11b_H_W2_episode_at_works_out_an_opened_rows_episode_lines_once_while
     moved = (entry[0], entry[1]._replace(title=entry[1].title + " "), entry[2])
     delegate.episode_at(moved, rect.adjusted(0, 0, 0, 40), r.center())      # another row object: again
     assert len(built) == 3
+
+
+def test_LM11b_AD5_a_library_rebuilt_in_the_same_language_lets_the_picks_go(real):
+    """AD-5, the same language: the library rebuilt or reset (a new epoch) numbers its pieces again, so a pick keyed by
+    a piece id could light another row — the picks go when a view of the new epoch is shown. A view of the same epoch
+    (another program's watched mark) keeps them. Wrong, the picks outlived their library."""
+    store, win, _writer = real()
+    lst = lst_of(win)
+    rs = rows_of(win)
+    assert lst.pick_row(rs[1]) and lst.pick_row(rs[2])
+    picked = set(lst.picked_rows)
+    epoch = win.page_widgets["current"].view_model.epoch
+    assert epoch is not None
+    store.set_watched([rs[3].episodes[0].id])
+    assert wait_until(lambda: any(e.watched for e in rows_of(win)[3].episodes), 5)
+    assert lst.picked_rows == picked                                        # the same library: kept
+    with store._writing():
+        store._set_meta({"epoch": store._meta()["epoch"] + 1, "state_version": store._meta()["state_version"] + 1})
+    assert wait_until(lambda: win.page_widgets["current"].view_model.epoch != epoch, 10)
+    assert not lst.picked_rows and not lst.picked_eps
 
 
 def test_LM11b_AD5_and_H_T1_a_language_switch_during_a_busy_store_lets_the_picks_go_and_stops_the_old_settle(

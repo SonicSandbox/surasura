@@ -102,6 +102,9 @@ View = namedtuple("View", "language mode reason state busy loading cached rows l
 # its `on` tells the stones whether they may act (IK S7). Never in the first screen's cache
 View = namedtuple("View", View._fields + ("connect",), defaults=tuple(View._field_defaults.values()) + (None,))
 # --- end P4.1 L2
+# --- LM11b: `epoch`, the store's epoch the view was read at (a library rebuilt or reset has another: the window's picks
+# go with it), or None (no store read)
+View = namedtuple("View", View._fields + ("epoch",), defaults=tuple(View._field_defaults.values()) + (None,))
 #   worst: Current's rows below Up Next, the most-needing string per kind of Anki count beside it (`worst_needs`)
 #   arrivals: the tray's rows as it shows them (New, then Already watched; each newest first); arrival_groups: the
 #   groups that hold any, in that order. Neither is in the first screen's cache (the first frame shows no tray)

@@ -324,10 +324,11 @@ class ItemActions(QObject):
         return out
 
     def _to_group(self, row=None):
-        """(whole rows, episodes) *Group…* would take: picks from 2+ shows (one show's: the store would make no group
-        of them) and, asked from `row`'s ⋯, `row` among them (a row that isn't picked has its own menu) — else None."""
+        """(whole rows, episodes) *Group…* would take: 2+ picks from 2+ shows (one show's, or one group's row alone
+        though it spans two: the store would make no group of them) and, asked from `row`'s ⋯, `row` among them (a row
+        that isn't picked has its own menu) — else None."""
         whole, eps = self._picked()
-        if len(self._shows(whole, eps)) < 2:
+        if len(whole) + len(eps) < 2 or len(self._shows(whole, eps)) < 2:
             return None
         if row is not None and row.key not in {r.key for r in whole} | {r.key for r, _e in eps}:
             return None

@@ -1574,6 +1574,24 @@ def test_real_store_G3_ungroup_makes_two_rows_and_its_undo_one_again(real):
     assert wait_until(lambda: _state(store) == grouped, 5)
 
 
+def test_real_store_G4_a_group_picked_alone_offers_no_group_and_a_pick_writes_nothing(real):
+    # one group's row picked alone spans two shows, yet is one pick: the store makes no group of it (it returned
+    # nothing and the picks went, silently), so *Group…* isn't offered and the pick stays. Wrong: offered, then nothing
+    store, win, _writer = real()
+    group, _ids, _before = _grouped_outside(store, win)
+    lst = lst_of(win)
+    at = next(i for i, r in enumerate(rows_of(win)) if r.key == group.key)
+    ctrl_click(lst, title_point(lst, at))
+    assert lst.picked_rows == {group.key} and win.items.group_entry() is None
+    m = win.items.menu(group, win.mapToGlobal(QPoint(300, 300)))
+    assert strings.ITEM_MENU["group"][0] not in [x.text() for x in m.actions()]
+    m.close()
+    grouped = _state(store)
+    win.items.menu_pick(group, "group")
+    settle()
+    assert _state(store) == grouped and lst.picked_rows == {group.key}
+
+
 def test_real_store_G3_rename_names_the_group_and_undo_gives_back_its_shows_name(real):
     store, win, _writer = real()
     group, _ids, _before = _grouped_outside(store, win)

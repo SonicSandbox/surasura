@@ -144,7 +144,7 @@ class LibraryReader:
         self._expected = {}
         self._expected_new = None          # the window's newest, taken in by the next look
         self._overlaid = {}                # id -> (its feed row, tier, ord, the row as built in): kept while the same
-        self._overlay_tiers = {}           # tier -> (the reader's list, the ids built in, the list as built in)
+        self._overlay_tiers = {}           # tier -> (reader's list, ids built in, list as built in, ids taken out)
         self._cache_owed = None            # the store's key a view holding the expectation was built at (never cached)
         # --- end LM11b G5
         # --- W3.2 B: the bell and the tree watch (`watch`), the folders they report synced on a worker of its own
@@ -703,6 +703,7 @@ class LibraryReader:
                                estimates=self._estimates,     # W3.2 Q1
                                connect=connect,               # P4.1 L2
                                pieces=self._pieces)           # LM11b G1
+        view = view._replace(epoch=self._epoch)         # LM11b: a library rebuilt or reset lets the window's picks go
         self._built_numbers = self._numbers_version
         self._build_changed = set()                     # built: from here on, only what the feed changes
         self._build_works = set()
@@ -733,16 +734,18 @@ class LibraryReader:
         self._overlaid = built
         items = dict(items)
         items.update((i, b[3]) for i, b in built.items())
-        out, lists = dict(tiers), {}
+        out, lists, gone = dict(tiers), {}, frozenset(expected)
         for t in set(made) | {b[0].get("tier") for b in built.values()}:
             mine, src_list = made.get(t, []), tiers.get(t) or []
             old = self._overlay_tiers.get(t)
-            if old is not None and old[0] is src_list and len(old[1]) == len(mine) and \
+            # the ids taken out are part of the key — a second show expected out of the same tier list (two
+            # finishes in a row) has no row of its own there, and the first's filtered list kept it in
+            if old is not None and old[0] is src_list and old[3] == gone and len(old[1]) == len(mine) and \
                     all(a is b for a, b in zip(old[1], mine)):
                 rows = old[2]
             else:
                 rows = mine + [r for r in src_list if r["id"] not in expected]
-            lists[t] = (src_list, mine, rows)
+            lists[t] = (src_list, mine, rows, gone)
             out[t] = rows
         self._overlay_tiers = lists
         return items, out
@@ -798,6 +801,8 @@ class LibraryReader:
         if not isinstance(data, dict) or data.get("version") != CACHE_VERSION or data.get("key") != self._key_now(h):
             return
         view = view_rows.from_cache(data.get("view"), language=self.language)
+        if view is not None:
+            view = view._replace(epoch=data["key"][1])  # the key matched: the store's epoch now
         if view is not None and self._view is None:
             self._publish(view)
 

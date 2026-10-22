@@ -282,6 +282,33 @@ def test_a_store_that_turns_busy_keeps_its_rows_under_the_bar():
         reader.stop()
 
 
+def test_a_view_and_the_cached_first_screen_carry_the_stores_epoch(tmp_path):
+    """The window lets its picks go when the library is rebuilt or reset in the same language (picks are keyed by
+    piece id, and a new store numbers its pieces from 1), so every view names the epoch it was read at — the cached
+    first screen too (its key matched the store's). Wrong, a view carried none: a pick outlived its library."""
+    seed = window_seed.build()
+    epoch = seed.library._meta["epoch"]
+    cache = str(tmp_path / "window_cache_ja.json")
+    first = _reader(seed, cache_file=cache)
+    views, _ = _collect(first)
+    first.start()
+    try:
+        assert _wait(lambda: os.path.exists(cache))
+        assert views[-1][1].epoch == epoch and not views[-1][1].cached
+    finally:
+        first.stop()
+    again = _reader(seed, cache_file=cache)
+    views, _ = _collect(again)
+    again.start()
+    try:
+        assert _wait(lambda: views)
+        assert views[0][1].cached and views[0][1].epoch == epoch
+        seed.library.commit(new_epoch=True)                                  # rebuilt: the next view names it
+        assert _wait(lambda: views[-1][1].epoch == epoch + 1)
+    finally:
+        again.stop()
+
+
 def test_a_status_write_keeps_a_stale_cache_out(tmp_path):
     """A-9: the cache key is the store's (id, epoch, state version): a watched tick since it was written keeps it out."""
     seed = window_seed.build()
@@ -1137,3 +1164,24 @@ def test_LM11b_an_expected_finish_is_finished_now_this_months_row():
     _reader_, views, row, _ids = _expecting(seed)
     month = next(m for m in views[-1][1].finished if any(r.key == row.key for r in m.rows))
     assert month.label == view_rows.month_label(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+
+
+def test_LM11b_two_finishes_waiting_on_a_busy_store_take_both_shows_off_current():
+    """Two *Move show to Finished* while the store is busy: the window's expectation grows to both shows (`expect_off`
+    holds each) — both leave Current and stand in Finished. Wrong (red on ff60b35): the second show stayed in Current
+    AND stood in Finished — `_overlay` reused Current's list as filtered for the first expectation (H-W1's reuse check
+    compares the tier lists and the rows built in, never the expected set itself)."""
+    seed = window_seed.build()
+    reader = _reader(seed)
+    views, _ = _collect(reader)
+    reader._look()
+    a, b = views[-1][1].rows[4], views[-1][1].rows[6]
+    first = {e.id: "graduated" for e in a.episodes}
+    reader.expect(first)
+    reader._look()
+    reader.expect({**first, **{e.id: "graduated" for e in b.episodes}})
+    reader._look()
+    view = views[-1][1]
+    keys = [r.key for r in view.rows]
+    assert a.key not in keys and b.key not in keys
+    assert _finished_row(view, a.key) is not None and _finished_row(view, b.key) is not None

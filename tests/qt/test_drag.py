@@ -2606,6 +2606,38 @@ def test_LM11b_H_C3_the_finish_landing_as_nothing_lets_the_readers_build_go_thou
     assert writer.pending() == 1 and ticket not in moves.tickets
 
 
+def test_LM11b_two_shows_finished_in_a_row_inside_one_group_both_stay_off_its_row_while_the_store_is_busy(
+        world, monkeypatch):
+    """A group of three shows, two of them watched through: *Move {show} to Finished* on each while the store is busy —
+    the window takes both off the group's row and the reader is told both are going to Finished. Wrong, the second
+    press replaced the first's: the first show came back onto the group's row while its finish still waited."""
+    _seed, win, writer = world(apply=False)
+    third = "風待ちの灯台守"
+    tvr.WORKS.clear()
+    tvr.work(1, SHOW_A)
+    tvr.work(2, SHOW_B)
+    tvr.work(5, third)
+    done = {0: {"watched": 1}, 1: {"watched": 1}}
+    items = tvr.items_of([("now", 1, 10, tvr.eps(SHOW_A, 1, 2), done), ("now", 5, 10, tvr.eps(third, 1, 2), done),
+                          ("now", 2, 10, tvr.eps(SHOW_B, 7, 8), {})])
+    view = vr.build(items, dict(tvr.WORKS), {"mine_line": 20}, pieces={10: {"id": 10, "title": None, "kind": "group"}})
+    win.moves._show(view)
+    for _ in range(5):
+        QApplication.processEvents()
+    row = rows_of(win)[0]
+    assert row.group
+    a = [e.id for e in row.episodes if e.work_id == 1]
+    c = [e.id for e in row.episodes if e.work_id == 5]
+    told = []
+    monkeypatch.setattr(win.moves.reader, "expect", lambda tiers: told.append(tiers))
+    writer.stuck = True
+    win.moves.finish_show(row, SHOW_A, a)
+    win.moves.finish_show(row, third, c)
+    assert writer.pending() == 2
+    assert win.moves.expect_off[row.key] == frozenset(a + c)
+    assert told[-1] == {i: drag.FINISHED for i in a + c}
+
+
 def test_LM11b_a_landed_show_finish_leaves_nothing_behind_for_the_next_move(world, monkeypatch):
     """The show taken off its row is the window's order while its finish waits, and goes with it: once it landed, the
     next move the window makes ahead of the store shows a view that holds that show's episodes again (an Undo of the

@@ -650,10 +650,7 @@ def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, 
          connect=None, meta=None):
     first = piece[0]
     work = works.get(first.get("work_id")) or {}
-    group = meta is not None and meta.get("kind") == "group"      # LM11b G1: `meta`, the feed's piece (a group's)
-    # LM11b G5: one holding a single show is that show's run, as the store makes it (`_settle_kinds`) — read so while
-    # the reader builds in a write the store hasn't made yet (`LibraryReader.expect`)
-    group = group and any(_show_key(it) != _show_key(first) for it in piece)
+    group = _is_group(meta, piece)                       # LM11b G1: `meta`, the feed's piece (a group's)
     if group:                                            # each show by its own files and type; the row by the first's
         shows, kinds, names, group_title, group_line = _group(meta, piece, works, guessed)
         media = kinds[_show_key(first)]
@@ -775,10 +772,28 @@ class RowCache:
         self.rows = self._next
 
 
-def _group_of(metas, piece):
-    """The feed's piece (`build(pieces=)`) of a piece of kind 'group', else None (LM11b G1)."""
+def _is_group(meta, piece):
+    """Whether `piece` reads as a group (LM11b G1): its feed piece is of kind 'group' and holds two shows or more. LM11b
+    G5: one holding a single show is that show's run, as the store makes it (`_settle_kinds`) — read so while the
+    reader builds in a write the store hasn't made yet (`LibraryReader.expect`). One rule for its row, its Goal tile and
+    the Soon line (H-B4)."""
+    if meta is None or meta.get("kind") != "group":
+        return False
+    first = _show_key(piece[0])
+    return any(_show_key(it) != first for it in piece)
+
+
+def _group_meta(metas, piece):
+    """The feed's piece (`build(pieces=)`) of a piece of kind 'group', else None — its kind alone (a group the Soon line
+    cuts between its shows holds one show each side; Goal reads a group's runs together)."""
     meta = metas.get(piece[0].get("piece_id")) if metas else None
     return meta if meta is not None and meta.get("kind") == "group" else None
+
+
+def _group_of(metas, piece):
+    """The feed's piece of a piece that reads as a group (`_is_group`), else None (LM11b G1)."""
+    meta = _group_meta(metas, piece)
+    return meta if _is_group(meta, piece) else None
 
 
 _Sig = namedtuple("_Sig", "n line_n hero cards mining in_top guess connect")
@@ -1092,22 +1107,11 @@ def _arrivals(cache, tier_rows, works, cards, estimates, guessed, changed, chang
 
 
 # --- W3.2 Q2: Goal's sheet ----------------------------------------------------------------------------------------- #
-def _goal_titles(goal_items, metas):
-    """Goal's titles in order, each as its first file's work id: a show by its work, a group (LM11b G1) by its piece —
-    one title to the learner, as it is one row, its first show's cover."""
-    heads = {}
-    for r in goal_items:
-        pid = r.get("piece_id")
-        meta = metas.get(pid) if pid is not None else None
-        key = ("g", pid) if meta is not None and meta.get("kind") == "group" else ("w", r.get("work_id"))
-        if key not in heads:
-            heads[key] = r.get("work_id")
-    return list(heads.values())
-
-
-def _goal_group(key, piece, works, guessed, meta):
+def _goal_group(key, ps, works, guessed, meta):
     """A group in Goal (LM11b G1, IK-7): a tile of its own, named and counted as its row is (`_group`), its cover its
-    first episode's show's — never folded into that show's tile."""
+    first episode's show's — never folded into that show's tile. `ps`: every run of the group, in Goal's order (another
+    title may stand between them, H-B3) — its files one piece: one GoalPiece, brought up whole."""
+    piece = [it for p in ps for it in p]
     first = piece[0]
     work = works.get(first.get("work_id")) or {}
     shows, kinds, names, title, line = _group(meta, piece, works, guessed)
@@ -1162,7 +1166,7 @@ def goal_tiles(goal_items, works, guessed=None, before=None, metas=None):
     groups, order, group_meta = {}, [], {}
     for p in pieces(goal_items):
         first = p[0]
-        meta = _group_of(metas, p)
+        meta = _group_meta(metas, p)                 # its runs read together below (`_is_group`, H-B3 / H-B4)
         key = f"p{first['piece_id']}" if meta is not None else \
             f"w{first['work_id']}" if first.get("work_id") is not None else \
             f"p{first['piece_id']}" if first.get("piece_id") is not None else f"i{first['id']}"
@@ -1178,6 +1182,8 @@ def goal_tiles(goal_items, works, guessed=None, before=None, metas=None):
         ps = groups[key]
         items = tuple(it for p in ps for it in p)
         meta = group_meta.get(key)
+        if meta is not None and not _is_group(meta, items):
+            meta = None                              # one show (H-B4): that show's run tile, as its row reads
         if meta is None:
             work = works.get(ps[0][0].get("work_id"))
             guess = guessed.of(work) if guessed is not None and work and work.get("media_type") is None else None
@@ -1189,8 +1195,7 @@ def goal_tiles(goal_items, works, guessed=None, before=None, metas=None):
                 all(a is b for a, b in zip(old[0], items)):
             tile = old[3]
         else:
-            tile = _goal_work(key, ps, works, guessed) if meta is None else _goal_group(key, ps[0], works, guessed,
-                                                                                        meta)
+            tile = _goal_work(key, ps, works, guessed) if meta is None else _goal_group(key, ps, works, guessed, meta)
         entries[key] = (items, work, guess, tile)
         tiles.append(tile)
     return tuple(tiles), entries
@@ -1255,7 +1260,7 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
     straddle = False
     if now_pieces and soon_pieces:
         a, b = now_pieces[-1], soon_pieces[0]
-        if _group_of(pieces, a) is not None or _group_of(pieces, b) is not None:
+        if _group_meta(pieces, a) is not None or _group_meta(pieces, b) is not None:
             straddle = a[0].get("piece_id") == b[0].get("piece_id")
         else:
             straddle = _same_show(a[-1], b[0])
@@ -1304,16 +1309,17 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
     else:
         goal_works = list(dict.fromkeys(r.get("work_id") for r in goal_items))   # in order, one pass (a list's `in`
         # was quadratic: ~90 ms a build at 20,000 files, bench 7)
-        heads = _goal_titles(goal_items, pieces) if pieces else goal_works        # LM11b G1: a group one title
+        # --- W3.2 Q2: the tiles (a title unchanged gives back its tile), every title watched, an untyped one's guess
+        tiles, g_entries = goal_tiles(goal_items, works, guessed, g_hit[4][3] if g_hit is not None else None,
+                                      pieces)                                        # LM11b G1: a group's tile
+        heads = [t.work_id for t in tiles]          # a title is a tile, by its key (H-B2: an untitled piece its own,
+        #                                             a group one): its first file's work for the strip's covers
         covers = tuple((works.get(w) or {}).get("title") or "" for w in heads[:9])
         if goal_items:
             g_line = STRINGS["goal_one"].format(files=thousands(len(goal_items))) if len(heads) == 1 else \
                 STRINGS["goal_line"].format(titles=len(heads), files=thousands(len(goal_items)))
         else:
             g_line = STRINGS["goal_empty"]
-        # --- W3.2 Q2: the tiles (a title unchanged gives back its tile), every title watched, an untyped one's guess
-        tiles, g_entries = goal_tiles(goal_items, works, guessed, g_hit[4][3] if g_hit is not None else None,
-                                      pieces)                                        # LM11b G1: a group's tile
         old_goal = g_hit[4][0] if g_hit is not None else None
         if old_goal is not None and len(old_goal.works) == len(tiles) and \
                 all(a is b for a, b in zip(old_goal.works, tiles)):

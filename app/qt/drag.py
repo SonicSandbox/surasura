@@ -756,6 +756,8 @@ class DragController(QObject):
         self.expect_tiers = {}
         self.expect_gone = {}                        # key -> where it went (a well), until the reader says so
         self.expect_off = {}                         # LM11b G5: key -> ids taken off its row (the reader builds it so)
+        self._reader_off = None                      # ... the ticket whose landing lets the reader's build go (H-C3)
+        self._closed = False                         # H-T1: let go by the window (its close, a language switch)
         self.held = None                             # the reader's newest view, not shown yet
         self.tickets = []                            # commands given, not settled yet (oldest first)
         self.saving_keys = frozenset()
@@ -894,17 +896,30 @@ class DragController(QObject):
         self._settle.start()
 
     def _settled(self):
-        if self.writer.pending():
+        if self._closed:                             # H-T1: the window let this controller go: nothing more of it shown
+            return
+        if self.writer.pending() and not self._writer_stopped():
+            # unbounded by design (G3): a busy store's moves are queued, never dropped, so the window keeps its own
+            # order until they land — however long another program holds the store. A writer stopped (a language
+            # switch, the quit) lands nothing more here: what is left stays in its journal, and the order is let go
             self._settle.start()
             return
-        self._let_go()
+        self._let_go(idle=True)
         republish = getattr(self.reader, "republish", None)
         if republish is not None:                    # every write landed: the store's own view once more, changed or
             republish()                              # not — where it placed a row otherwise than drawn (AD2-4)
 
-    def _let_go(self):
-        """The expectation ends: the reader's newest view stands (held, or the next one)."""
-        if self.expect_off:
+    def _writer_stopped(self):
+        stopped = getattr(self.writer, "stopped", None)
+        return bool(stopped()) if stopped is not None else False
+
+    def _let_go(self, idle=False):
+        """The expectation ends: the reader's newest view stands (held, or the next one). The reader's own build of a
+        show taken off its row (`_reader_off`, LM11b G5) goes only once that command landed or failed (H-C3: never
+        while it still waits behind another that landed as nothing) — or the writer is idle or stopped."""
+        off = self._reader_off
+        if off is not None and (idle or off not in self.tickets or self._writer_stopped()):
+            self._reader_off = None
             self._reader_expects(None)
         self.expect, self.expect_tiers, self.expect_gone, self.expect_off = None, {}, {}, {}
         held, self.held = self.held, None
@@ -1679,7 +1694,9 @@ class DragController(QObject):
         base = self.base()
         if base is not None and any(r.key == row.key for r in base.rows):
             self._ahead(base, off=(row.key, ids))
-        if self._finish(show, ids, (row.key,)) is not None and self.expect_off:
+        ticket = self._finish(show, ids, (row.key,))
+        if ticket is not None and self.expect_off:
+            self._reader_off = ticket
             self._reader_expects({i: FINISHED for off in self.expect_off.values() for i in off})
 
     def _reader_expects(self, tiers):
@@ -1838,7 +1855,10 @@ class DragController(QObject):
 
     # --- the quit ------------------------------------------------------------------------------------------------ #
     def close(self):
-        """The window closes: a drag running is let go."""
+        """The window closes (or a language switch lets this controller go): a drag running is let go, and the settle
+        stops — H-T1: nothing of this controller's is shown past it (its writer's moves left stay in its journal)."""
         if self.running is not None:
             self.cancel()
+        self._closed = True
+        self._settle.stop()
         self._filter(False)

@@ -1526,3 +1526,43 @@ def test_LM11b_G5_a_group_holding_one_show_reads_as_its_run():
     row = vr.build(items, WORKS, {"mine_line": 20}, pieces={10: {"id": 10, "title": None, "kind": "group"}}).rows[0]
     assert (row.group, row.title, row.line, row.title_ep) == (False, "雲の上の郵便屋さん", "Ep 7–8", "Ep 7")
     assert [e.show for e in row.episodes] == [None, None]
+
+
+# --- LM11b review fix round (H-B2 / H-B3 / H-B4) -------------------------------------------------------------------- #
+@pytest.mark.parametrize("with_pieces", (True, False))
+def test_LM11b_H_B2_goals_title_count_is_its_tiles_count_so_untitled_pieces_never_collapse_into_one_title(with_pieces):
+    """H-B2: three files with no title (no work), each its own piece, are three tiles in Goal; its strip counts three
+    titles — by the tiles' own key, one rule with or without the feed's pieces. Wrong, the strip said "1 title" over
+    three tiles (every untitled piece keyed as the one title None)."""
+    items = items_of([("goal", None, 21, ["古い手紙.txt"], {}), ("goal", None, 22, ["祖母の日記.txt"], {}),
+                      ("goal", None, 23, ["夏休みの記録.txt"], {}), ("goal", 1, 24, eps("星降る街の小さな工房", 1, 2), {})])
+    view = vr.build(items, WORKS, {}, pieces=_group() if with_pieces else None)
+    goal = view.goal
+    assert len(goal.works) == 4
+    assert (goal.titles, goal.line, view.counts.goal_titles) == (4, "4 titles · 5 files", 4)
+    assert len(goal.covers) == 4 and goal.covers[3] == "星降る街の小さな工房"
+
+
+def test_LM11b_H_B3_a_groups_goal_tile_holds_every_run_of_the_group_never_its_first_alone():
+    """H-B3: a group in Goal whose files sit in two runs (another title between them) is one tile holding all of its
+    files — counted, listed by id and brought up whole (its one GoalPiece). Wrong, the second run's files vanished
+    from the tile: never counted, never moved with it."""
+    items = items_of([("goal", 1, 10, eps("星降る街の小さな工房", 1, 2), {}), ("goal", 3, 12, ["白銀の書庫番 01 章.txt"], {}),
+                      ("goal", 2, 10, eps("雲の上の郵便屋さん", 1, 3), {})])
+    goal = vr.build(items, WORKS, {}, pieces=_group()).goal
+    assert [(t.key, t.n_files) for t in goal.works] == [("p10", 5), ("w3", 1)]
+    tile = goal.works[0]
+    assert tile.item_ids == (1, 2, 4, 5, 6) and tile.line == "5 files · 2 shows"
+    assert [(p.item_ids, p.piece_id) for p in tile.pieces] == [((1, 2, 4, 5, 6), 10)]
+    assert sum(t.n_files for t in goal.works) == goal.files == 6
+
+
+def test_LM11b_H_B4_a_group_holding_one_show_is_that_shows_run_in_goal_and_at_the_soon_line_too():
+    """H-B4 / H-C4: `_group_of` reads a group as `_row` does — one holding a single show is that show's run (the store
+    makes it one, `_settle_kinds`): its Goal tile is the show's, never "2 files · 1 shows" under the group's name.
+    Wrong, the tile said "1 shows" and was named as a group."""
+    items = items_of([("goal", 2, 10, eps("雲の上の郵便屋さん", 7, 8), {})])
+    tile = vr.build(items, WORKS, {}, pieces={10: {"id": 10, "title": None, "kind": "group"}}).goal.works[0]
+    assert (tile.group, tile.title, tile.line) == (False, "雲の上の郵便屋さん", "2 episodes")
+    assert "shows" not in tile.line and "1 show" not in tile.line
+    assert vr._group_of({10: {"id": 10, "title": None, "kind": "group"}}, [items[1], items[2]]) is None

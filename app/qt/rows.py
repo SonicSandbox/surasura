@@ -776,6 +776,7 @@ class RowDelegate(QStyledItemDelegate):
         self._heights, self._h_entries, self._h_open, self._h_look = [], None, None, None
         self._bytes = {"row": 0, "ep": 0}
         self._infos, self._infos_look = {}, None     # a Current row's key -> its string's plan and needs (`_info`)
+        self._eps_at = None                          # LM11b H-W2: `episode_at`'s (row, rect, lines, its lines, look)
         self._stat_ws = {}                           # what shows right of a string -> its width, this look (`_info`)
         self._tw = None                              # (the reader's needs or the entries, width, look, the one title
         #                                              width) (`title_w`)
@@ -1239,10 +1240,15 @@ class RowDelegate(QStyledItemDelegate):
         kind, payload, lines = entry
         if kind not in (HERO, ROW) or self.view.model().open_key != payload.key:
             return None
-        if kind == HERO:
-            eps = self._episode_rows(payload, self._hero_geometry(payload, rect, lines)["eps"], hero=True)
+        hit, look = self._eps_at, style.current()    # H-W2 (S19): asked on every move of a drag's hand — the row's
+        if hit is not None and hit[0] is payload and hit[1] == rect and hit[2] is lines and hit[4] == look:
+            eps = hit[3]                             # lines kept while the same row stands in the same rect
         else:
-            eps = self._episode_rows(payload, self._open_area(rect, self.slab_of(rect)))
+            if kind == HERO:
+                eps = self._episode_rows(payload, self._hero_geometry(payload, rect, lines)["eps"], hero=True)
+            else:
+                eps = self._episode_rows(payload, self._open_area(rect, self.slab_of(rect)))
+            self._eps_at = (payload, QRect(rect), lines, eps, look)
         return next((ep for r, ep in eps if r.top() <= pos.y() <= r.bottom()), None)
 
     def _sheet_there(self):
@@ -2532,6 +2538,7 @@ class RowsView(QListView):
         self._press_pick = None                      # the press's pick: "ctrl", "shift" or None
         self._pick_anchor = None                     # the row key Ctrl picked last: a Shift range starts there
         # --- end LM11b G4
+        self.opened.connect(self._closed_picks)                         # --- LM11b H-B5
         stones.notifier().ready.connect(self._sheet_ready)
         qcovers.notifier().ready.connect(self._cover_ready)              # --- W3.2 Q6
 
@@ -3002,13 +3009,24 @@ class RowsView(QListView):
             self._repaint_key(key)
 
     def _trim_picks(self):
-        """A new view: the picks whose row (or episode in it) is gone let go."""
+        """A new view: the picks whose row (or episode in it) is gone let go — an episode's with its row closed too."""
         if not self.picked_rows and not self.picked_eps:
             return
         shown = {e[1].key: e[1] for e in self.model().entries if e[0] in (HERO, ROW)}
         self.picked_rows &= shown.keys()
+        open_key = self.model().open_key
         self.picked_eps = {(k, i) for k, i in self.picked_eps
-                           if k in shown and any(e.id == i for e in shown[k].episodes)}
+                           if k == open_key and k in shown and any(e.id == i for e in shown[k].episodes)}
+
+    def _closed_picks(self, _key=None):
+        """H-B5 (`opened`: a row opened or closed, here or by *Search*): an episode is picked only while its row is
+        open, so the picks of a row that closed let go, that row alone repainted — never a hidden pick grouped."""
+        open_key = self.model().open_key
+        gone = {k for k, _i in self.picked_eps if k != open_key}
+        if gone:
+            self.picked_eps = {(k, i) for k, i in self.picked_eps if k == open_key}
+            for key in gone:
+                self._repaint_key(key)
 
     def _pick_at(self, idx, part, how):
         """A Ctrl+ (`how` "ctrl"), Shift+ ("shift") or Ctrl+Shift+click's ("ctrl-shift") part of a row: Ctrl on an
@@ -3205,8 +3223,9 @@ class RowsView(QListView):
         if part is None or not idx.isValid() or idx.row() != row or part[0] != name or \
                 getattr(entries[row][1], "key", None) != key or not _same_payload(part[3], payload):
             return                                       # let go somewhere else: nothing happens
-        if self._press_pick is not None and self.pickable is not None and entries[row][0] in (HERO, ROW):
-            self._pick_at(idx, part, self._press_pick)       # --- LM11b G4: Ctrl / Shift+click picks, never acts
+        if self._press_pick is not None:             # --- LM11b G4: Ctrl / Shift+click picks, never acts — on any list
+            if self.pickable is not None and entries[row][0] in (HERO, ROW):     # (H-C1: Finished's Put back, ▶, ⋯ too)
+                self._pick_at(idx, part, self._press_pick)
             return
         if name == "play" and payload is not None:
             if payload.can_play:

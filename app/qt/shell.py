@@ -1427,6 +1427,8 @@ class ShellWindow(QMainWindow):
         if lst is not None and (lst.saving or lst.landing is not None):
             lst.saving, lst.landing = frozenset(), None     # AD0-6: never a mark of the language left on a row
             lst.viewport().update()
+        if lst is not None:                         # LM11b AD-5: the picks are keyed p<piece id>, and each language's
+            lst.clear_picks()                       # store numbers its pieces from 1: none carried onto its rows
         self._follow_language_look()
         for page in self.page_widgets.values():     # ▶ opens a file of this language's library
             set_language = getattr(page, "set_language", None)

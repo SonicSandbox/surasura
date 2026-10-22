@@ -2533,3 +2533,58 @@ def test_real_store_LM11b_G5_while_the_store_is_busy_the_row_is_the_readers_own_
     assert wait_until(lambda: all(store.item(i)["tier"] == "graduated" for i in a), 10)
     assert wait_until(lambda: win.moves.expect is None and not win.moves.reader._expected, 5)
     assert _holding(win, b) is not None and not any(set(a) & {e.id for e in r.episodes} for r in rows_of(win))
+
+
+# --- LM11b review fix round (package B): the settle and the reader's build of a show taken off ------------------- #
+def _finish_show_stuck(world, monkeypatch):
+    """A group shown, the store busy (the fake writer's commands wait), *Move SHOW_A to Finished* given -> (win, writer,
+    the reader's `expect` calls)."""
+    _seed, win, writer = world(apply=False)
+    row = _show_group(win, a_watched=2)
+    told = []
+    monkeypatch.setattr(win.moves.reader, "expect", lambda tiers: told.append(tiers))
+    writer.stuck = True
+    a = [e.id for e in row.episodes if e.work_id == 1]
+    win.moves.finish_show(row, SHOW_A, a)
+    assert writer.pending() == 1 and told == [{i: drag.FINISHED for i in a}]
+    return win, writer, told
+
+
+def test_LM11b_H_T1_a_writer_stopped_with_moves_left_ends_the_settle_and_lets_the_readers_build_go(world, monkeypatch):
+    """H-T1: the settle waits while the writer has moves pending — unbounded by design (a busy store's moves are queued,
+    never dropped) — but a writer stopped (a language switch, the quit) lands nothing more here: the settle ends, the
+    window's order is let go and the reader's build of the show taken off goes with it. Wrong, the timer ticked for
+    good and the reader kept building the show in Finished."""
+    win, writer, told = _finish_show_stuck(world, monkeypatch)
+    moves = win.moves
+    settle(drag.D["settle-ms"] * 2)
+    assert moves._settle.isActive() and told[-1] is not None          # waiting on the busy store, as designed
+    writer.stopped = lambda: True                                    # let go: its move stays in its journal
+    settle(drag.D["settle-ms"] * 3)
+    assert not moves._settle.isActive() and moves.expect is None and told[-1] is None
+
+
+def test_LM11b_H_T1_a_closed_controller_stops_its_settle_and_a_late_tick_shows_nothing(world, monkeypatch):
+    """H-T1: the window lets its controller go (its close, a language switch): the settle stops at once, and a tick
+    already queued past it shows nothing of that controller's."""
+    win, writer, told = _finish_show_stuck(world, monkeypatch)
+    moves = win.moves
+    shown = []
+    monkeypatch.setattr(moves, "_show", lambda view: shown.append(view))
+    moves.close()
+    assert not moves._settle.isActive()
+    moves._settled()
+    assert shown == [] and not moves._settle.isActive()
+
+
+def test_LM11b_H_C3_another_command_landing_as_nothing_never_lets_the_readers_build_go_before_its_own_lands(
+        world, monkeypatch):
+    """H-C3: a command that landed as nothing (`on_reread`) while the show's finish still waits for the busy store lets
+    the window's order go, never the reader's build of the show in Finished: the show stays off the group row until its
+    own command lands — then it goes. Wrong, the show came back into the group before its finish landed."""
+    win, writer, told = _finish_show_stuck(world, monkeypatch)
+    moves = win.moves
+    moves._reread()                                                   # the other command's answer: nothing to change
+    assert writer.pending() == 1 and told[-1] is not None
+    writer.free()                                                     # the finish lands
+    assert wait_until(lambda: told[-1] is None and not moves.tickets, 3)

@@ -701,3 +701,63 @@ def test_the_looks_first_summary_names_an_unfinished_reset_once_a_run():
         looks.close()
         looks.idle(5)
     assert [s.get("unfinished_reset") for s in seen] == [folder, None]
+
+
+# --- the delta adversary (D5, D7) ------------------------------------------------------------------------------------ #
+
+def test_the_copy_fallback_removes_only_the_files_it_checked_and_names_the_rest(tmp_path, monkeypatch):
+    """D5: rename refused -> copy, check, remove. A file that arrives after the check (hato writing, the drop copier)
+    and one changed after it are never removed — neither has a checked copy in the backup: they stay where they are
+    and are named (`_set_aside`'s answer, reset.json's `left`)."""
+    src = tmp_path / "data" / "HighPriority"
+    (src / "Hato").mkdir(parents=True)
+    (src / "Hato" / "old.srt").write_text(_text("ja", 1), encoding="utf-8")
+    (src / "Hato" / "edited.srt").write_text(_text("ja", 2), encoding="utf-8")
+    dst = tmp_path / "backup" / "HighPriority"
+    real_rename, real_same = os.rename, ls._same_bytes
+    late, edited = src / "Hato" / "arrived_late.srt", src / "Hato" / "edited.srt"
+
+    def no_rename(a, b, *args, **kw):
+        if os.path.abspath(a) == os.path.abspath(str(src)):
+            raise PermissionError(13, "held open by a watch")
+        return real_rename(a, b, *args, **kw)
+
+    def same_then_arrive(a, b):
+        ok = real_same(a, b)
+        if not late.exists() and os.path.basename(a) == "old.srt":
+            late.write_text(_text("ja", 3), encoding="utf-8")              # lands after the check
+            with open(edited, "a", encoding="utf-8") as f:                  # and an edit after its check
+                f.write("\n12\n00:10:00,000 --> 00:10:02,000\n直した一行。\n")
+        return ok
+    monkeypatch.setattr(ls.os, "rename", no_rename)
+    monkeypatch.setattr(ls, "_same_bytes", same_then_arrive)
+    left = ls._set_aside(str(src), str(dst))
+    monkeypatch.setattr(ls.os, "rename", real_rename)                      # (never `undo`: it drops the test root)
+    assert late.exists()
+    assert not (src / "Hato" / "old.srt").exists() and (dst / "Hato" / "old.srt").exists()
+    assert sorted(os.path.basename(p) for p in left) == ["arrived_late.srt", "edited.srt"]
+    assert edited.exists() and "直した一行" in edited.read_text(encoding="utf-8")
+
+
+def test_a_reset_that_moved_nothing_is_never_named_and_one_that_did_is_named_once():
+    """D7: a kill during the store copy (nothing moved) is no unfinished reset; one killed mid-move is named once —
+    told, its record says so, and the next start says nothing."""
+    store, data_dir, user_files_dir, src, root = _world("ja")
+
+    def kill_at(step):
+        def kill(name):
+            if name == step:
+                raise _Killed(name)
+        return kill
+    with pytest.raises(_Killed):
+        ls.start_fresh(store, _step=kill_at("folder"))                    # the folder and record made, nothing moved
+    assert ls.unfinished_reset(user_files_dir) is None
+    for folder in _backups(user_files_dir):
+        shutil.rmtree(folder)
+    with pytest.raises(_Killed):
+        ls.start_fresh(store, _step=kill_at("manifest"))                  # the JSON copy moved
+    store.close()
+    (folder,) = _backups(user_files_dir)
+    assert ls.unfinished_reset(user_files_dir, told=True) == folder
+    assert _record(folder)["told"] is True and _record(folder)["status"] == "started"
+    assert ls.unfinished_reset(user_files_dir, told=True) is None

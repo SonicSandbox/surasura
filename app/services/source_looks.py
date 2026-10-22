@@ -232,7 +232,7 @@ class SourceLooks:
             if not self._reset_told:                  # LF-11: a reset a kill left half done, named once a run
                 self._reset_told = True
                 from app import library_store as ls
-                totals["unfinished_reset"] = ls.unfinished_reset(store.user_files_dir)
+                totals["unfinished_reset"] = ls.unfinished_reset(store.user_files_dir, told=True)
             self._publish(store, totals)
         except Exception as e:                        # a look that failed waits for the next: never the window's fault
             print(f"Sources: the look stopped: {e!r}")

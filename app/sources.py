@@ -93,7 +93,10 @@ _SUBS = frozenset({"subs", "subtitles", "subtitle"})   # a folder of the subtitl
 # stays an unknown tag (an alternative translation is its own release)
 _RETIMED = frozenset({"synced", "sync", "resync", "resynced", "retimed", "timed"})
 _VERSIONS = _RETIMED | {"versions", "alt", "alternate"}
-_FOLDER_MARKS = re.compile(r"[\[\]()（）【】「」]|\b(?:subs?|subtitles?)\b|字幕")   # around a language folder's name
+_FOLDER_MARKS = re.compile(r"[\[\]()（）【】「」]|\b(?:subs?|subtitles?)\b|字幕")   # around a named folder's words
+_SUB_WORDS = frozenset({"sub", "subs", "subtitle", "subtitles"})                      # a word's piece: `JPN_Subs`
+# a language word's region or script code (`ja-JP`, `zh_CN`, `zh-Hant`: D2) — never any short word (`Chi-Bi`)
+_CODES = frozenset({"jp", "cn", "tw", "hk", "sg", "mo", "hans", "hant", "jpan", "chs", "cht"})
 
 # A subtitle's language tag (`Show - 05.ja.srt`, `.pt-BR`): ours is taken, another language's skipped (S7). ISO 639-1
 # and 639-2 (B and T), a few names; `sc` / `tc` are Chinese here, never Sardinian; a tag not listed is no tag.
@@ -115,7 +118,8 @@ _ISO_639_2 = ("aar abk ave afr aka amh arg ara asm ava aym aze bak bel bul bih b
 _LANGS = dict.fromkeys((_ISO_639_1 + " " + _ISO_639_2 + " english korean spanish french german portuguese russian "
                         "italian arabic vietnamese thai indonesian").split(), "other")
 _LANGS.update(dict.fromkeys("ja jp jpn jap japanese 日本語 日本语 日语 日文".split(), "ja"))
-_LANGS.update(dict.fromkeys("zh zho chi chs cht sc tc gb big5 chinese cmn yue 中文 简体 繁体 繁體 简中 繁中".split(), "zh"))
+_LANGS.update(dict.fromkeys("zh zho chi chs cht sc tc gb big5 chinese cmn yue 中文 简体 繁体 繁體 简中 繁中 简体中文 "
+                            "繁體中文 繁体中文 简繁 中文简体 中文繁体 simplified traditional".split(), "zh"))   # (D4)
 _FLAGS = frozenset({"forced", "sdh", "hi", "cc"})   # a track's flags (Plex, Jellyfin, Bazarr), never a language
 _RANK = {".ass": 0, ".ssa": 0, ".srt": 1}           # of one episode's subtitles in one language: the first taken
 # A folder that is only a season or the specials (S12): the source folder's name goes in front
@@ -273,16 +277,30 @@ def _subtitle_folder(name, parent, language):
     name) listed with it — its texts the folder's own — by its NAME alone (NFKC, casefolded), never by what it holds?
     -> "versions" (`_VERSIONS`: `synced`, `retimed`, `alt`…: other versions of the episodes above), "subs" (`Subs`,
     `Subtitles`; the show folder's own name — a download unpacked into it, LF-16), the library's language (a folder
-    named only for it — `JP`, `[Japanese]`, `Japanese Subs`, `中文字幕` — by the language names `Subs/<language>/`
-    reads, `_folder_language`, brackets and "Subs" / 字幕 around them allowed: its untagged texts are that language's,
-    LF-15), or None: `Part 2`, `Movie`, `English`, `<Show> [archive]` — a folder of its own."""
+    named only for it — `JP`, `[Japanese]`, `Japanese Subs`, `中文字幕`, `CHS&CHT`, `Chinese (Simplified)` — by the
+    language names `Subs/<language>/` reads, `_LANGS`: its untagged texts are that language's, LF-15), or None:
+    `Part 2`, `Movie`, `English`, `<Show> [archive]`, `JP-Story` — a folder of its own.
+    The name is read WHOLE (D2, D3): brackets and Subs / 字幕 off (`_FOLDER_MARKS`), split into words at spaces and
+    `& + ,`, each word into pieces at `-` / `_`. A versions folder: a versions word, the rest versions, language or
+    subtitle words (`Synced Subs`, `[Synced]`, `synced_ja`, `Retimed (JP)`). Our language's: every word ours — a
+    language word, alone or with region / script codes (`ja-JP`, `zh_CN`, `zh-Hant`, `JPN_Subs`: `_CODES`)."""
     folded = unicodedata.normalize("NFKC", name).strip().casefold()
-    if folded in _VERSIONS:
-        return "versions"
     if folded in _SUBS or folded == unicodedata.normalize("NFKC", parent).strip().casefold():
         return "subs"
-    bare = " ".join(_FOLDER_MARKS.sub(" ", folded).split())
-    return language if bare and _folder_language(bare) == language else None
+    words = [w for w in re.split(r"[\s&+,]+", _FOLDER_MARKS.sub(" ", folded)) if w]
+    pieces = [p for w in words for p in re.split(r"[-_]", w) if p]
+    if any(p in _VERSIONS for p in pieces) and all(p in _VERSIONS or p in _LANGS or p in _SUB_WORDS for p in pieces):
+        return "versions"
+    return language if words and all(_word_language(w) == language for w in words) else None
+
+
+def _word_language(word):
+    """The language one word of a folder's name names (`japanese`, `ja-jp`, `jpn_subs`, `中文`), or None — a word with
+    any piece that is no language, region / script code or subtitle word (`jp-story`, `chi-bi`) names none."""
+    head, *rest = re.split(r"[-_]", word)
+    if head in _LANGS and all(r in _CODES or r in _SUB_WORDS for r in rest):
+        return _LANGS[head]
+    return _LANGS.get(word)
 
 
 def _folder_language(name):
@@ -768,8 +786,13 @@ class _Look:
                 if self._skips(child):
                     continue
                 tongue = None if language else _folder_language(os.path.basename(child))
+                kind = _subtitle_folder(os.path.basename(child), os.path.basename(path), self.language)
                 if tongue:
                     todo.append((child, tongue))
+                elif kind:                                   # D1: the same named-folder rule all the way down
+                    if kind == "versions":                   # (`<Show>/<Show>/Subs/`, `…/synced/`)
+                        self.versions.setdefault(ls.path_key(folder), set()).add(ls.path_key(child))
+                    todo.append((child, kind if kind not in ("subs", "versions") else language))
                 else:
                     others.append(child)
         return sorted(others), listed_with
@@ -832,16 +855,22 @@ class _Look:
             for n, p, *_rest in sorted(out, key=lambda e: order(e[0], e[1]) + (e[1],)):
                 if p in read and read[p][1] == latest[read[p][0]]:
                     first.setdefault(read[p][0] + (read[p][2],), p)
-            kept = []
+            kept, lower, lead = [], [], {}
+            for k, p in first.items():                       # (in the order: the episode's first pick)
+                lead.setdefault(k[:2], p)
             for e in sorted(out, key=lambda e: order(e[0], e[1]) + (e[1],)):
                 r = read.get(e[1])
                 if r is not None and (r[1] < latest[r[0]] or first[r[0] + (r[2],)] != e[1]):
                     self.out["skipped"] += 1
+                    behind = [e[:3]] + self.runners_up.pop(e[1], [])
                     if r[1] == latest[r[0]]:                 # LF-9: the first's runner-up — the one language rule
-                        self.runners_up.setdefault(first[r[0] + (r[2],)], []).extend(   # (`_refusal`, at `_new`)
-                            [e[:3]] + self.runners_up.pop(e[1], []))                    # passes on it if it isn't ours
+                        self.runners_up.setdefault(first[r[0] + (r[2],)], []).extend(behind)   # (`_refusal`, at
+                    else:                                    # `_new`) passes on it if it isn't ours; D6: a lower
+                        lower.append((r[1], r[0], behind))   # version waits behind the latest, newest first
                 else:
                     kept.append(e)
+            for _v, k, behind in sorted(lower, key=lambda x: -x[0]):
+                self.runners_up.setdefault(lead[k], []).extend(behind)
             kept = {id(e) for e in kept}
             out = [e for e in out if id(e) in kept]       # (in the listing's order, as before)
         for n, p, st in epubs:

@@ -8730,12 +8730,15 @@ def _set_aside(src, dst):
     left beside the library, the disk sync would walk it back in. A folder left empty (held open) stays, empty.
     A link or junction anywhere in it stops the copy before anything is copied or removed (LF-4: Python 3.11 walks a
     junction as a plain folder, so the removal would delete the files of the folder it leads to — his own): the reset
-    is refused (`RESET_LINKED`) and everything already moved put back. A rename moves a link itself, never through it."""
+    is refused (`RESET_LINKED`) and everything already moved put back. A rename moves a link itself, never through it.
+    The removal takes only the files checked, each only while its size and time are as checked (D5: one that arrived
+    or changed after the check — hato's drop, the copier's — has no checked copy): -> those left where they are
+    ([] after a rename), named in `reset.json` (`left`)."""
     import shutil
     os.makedirs(os.path.dirname(dst), exist_ok=True)
     try:
         os.rename(src, dst)
-        return
+        return []
     except OSError:
         pass
     link = _links_under(src)
@@ -8748,15 +8751,29 @@ def _set_aside(src, dst):
     else:
         shutil.copy2(src, dst)
         pairs = [(src, dst)]
+    checked = {}
     for a, b in pairs:
+        st = os.stat(a)
         if not _same_bytes(a, b):
             raise OSError(f"the backup copy of {a} did not match it")
+        checked[a] = (st.st_size, st.st_mtime_ns)
+    left = []
+
+    def remove(path):                                   # D5: only a file checked, and unchanged since its check
+        try:
+            st = os.stat(path)
+        except OSError:
+            return
+        if checked.get(path) != (st.st_size, st.st_mtime_ns):
+            left.append(path)
+            return
+        os.remove(path)
     if not os.path.isdir(src):
-        os.remove(src)
-        return
+        remove(src)
+        return left
     for where, dirs, names in os.walk(src, topdown=False):
         for n in names:
-            os.remove(os.path.join(where, n))
+            remove(os.path.join(where, n))
         for d in dirs:
             try:
                 os.rmdir(os.path.join(where, d))
@@ -8766,6 +8783,7 @@ def _set_aside(src, dst):
         os.rmdir(src)
     except OSError:
         pass
+    return left
 
 
 def _put_back(dst, src):
@@ -8920,7 +8938,9 @@ def _start_fresh(store, forget_known, step):
                 for move in moves:
                     if move["step"] == name:
                         done.append(move)               # before it begins: one stopping part way is put back (H1)
-                        _set_aside(move["from"], move["to"])
+                        left = _set_aside(move["from"], move["to"])
+                        if left:
+                            move["left"] = left         # D5: never removed, no checked copy; named in reset.json
                 step(name)
             _reset_tables(store)
             step("wipe")
@@ -9057,20 +9077,29 @@ def fresh_counts(store):
     return out
 
 
-def unfinished_reset(user_files_dir):
+def unfinished_reset(user_files_dir, told=False):
     """LF-11: the newest backup folder of a fresh library a kill stopped part way (`reset.json` still "started": its
-    moves may be half done, the old library in the backup), or None. Read once a run, at the first look."""
+    moves may be half done, the old library in the backup), or None. Read once a run, at the first look. D7: only one
+    that moved something (a `moves[*].to` there: a kill during the store copy moved nothing) and wasn't told yet;
+    `told` (the looks', with the bar line): its record says `"told": true` from now on, so the line shows once."""
     trash = os.path.join(user_files_dir, ".trash")
     try:
         names = sorted((n for n in os.listdir(trash) if n.startswith(RESET_PREFIX)), reverse=True)
     except OSError:
         return None
     for name in names:
+        folder = os.path.join(trash, name)
         try:
-            with open(os.path.join(trash, name, RESET_RECORD), encoding="utf-8") as f:
-                if json.load(f).get("status") == "started":
-                    return os.path.join(trash, name)
-        except (OSError, ValueError, AttributeError):
+            with open(os.path.join(folder, RESET_RECORD), encoding="utf-8") as f:
+                record = json.load(f)
+            if record.get("status") != "started" or record.get("told") or \
+                    not any(os.path.lexists(m.get("to") or "") for m in record.get("moves") or ()):
+                continue
+            if told:
+                record["told"] = True
+                _after_commit("its record", _write_record, folder, record)
+            return folder
+        except (OSError, ValueError, AttributeError, TypeError):
             continue
     return None
 

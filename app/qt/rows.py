@@ -1149,7 +1149,7 @@ class RowDelegate(QStyledItemDelegate):
             ep = row.episodes[item.index]
             state = strings.ROWS_STONE_STATE[item.state].format(n=ep.cards)
             if ep.missing:
-                state += strings.ROWS_STONE_MISSING.format(word=row.media_word)
+                state += strings.ROWS_STONE_MISSING.format(word=ep.media_word or row.media_word)   # LM11b G1
             tip = strings.ROWS_STONE_TIP.format(label=ep.label, state=state, action=strings.ROWS_STONE_ACTION[ep.watched])
             out.append(("stone", QRect(round(room.left() + x - 13), round(mid - 15), 26, 30), tip, ep))
         return out
@@ -1169,7 +1169,8 @@ class RowDelegate(QStyledItemDelegate):
                         strings.ROWS_DONE_TIP.format(ep=nxt.label), nxt))
             out.append(("more", g["more"], strings.ROWS_MORE_TIP, None))
             if nxt.status is not None:                     # --- P4.1 L2: Up Next's status, a button as a row's
-                name, tip, ask = action_of(nxt.status, (nxt,), self.view.connect_off, payload.media_word)
+                name, tip, ask = action_of(nxt.status, (nxt,), self.view.connect_off,
+                                           nxt.media_word or payload.media_word)          # LM11b G1
                 out.append((name, g["status"], tip, ask))
             if g["journey"] is not None:
                 out.append(("journey", g["journey"], strings.ROWS_JOURNEY_TIP, nxt))
@@ -1297,7 +1298,8 @@ class RowDelegate(QStyledItemDelegate):
             out.append(("play", cols["play"], ep.play_tip, ep))
             if ep.status is not None:
                 size = pill_size(ep.status)
-                name, tip, ask = action_of(ep.status, (ep,), self.view.connect_off, row.media_word)   # --- P4.1 L2
+                name, tip, ask = action_of(ep.status, (ep,), self.view.connect_off,     # --- P4.1 L2; LM11b G1:
+                                           ep.media_word or row.media_word)              # its own type's word
                 out.append((name, QRect(cols["stat"].right() - size.width(), cols["stat"].center().y() -
                                         size.height() // 2, size.width(), size.height()), tip, ask))
             state = strings.ROWS_STONE_STATE["cut" if ep.watched else "raw" if ep.cards else "rock"].format(n=ep.cards)
@@ -2504,7 +2506,8 @@ class RowsView(QListView):
         self.ep_hover = None                         # --- W3.2 Q8: (row key, episode id) the hand was last on
         self.join_key = None                         # --- W3.2 Q8: the part a drag would join (outlined)
         # --- LM11b G4: the selection *Group…* takes — Ctrl+click on a row (or Ctrl+Space) picks the row, Shift+click
-        # the rows from the last one picked to this one, Ctrl+click on an opened row's stone that episode; under Ctrl or
+        # the rows from the last one Ctrl picked to this one instead (Ctrl+Shift+click adds them), Ctrl+click on an
+        # opened row's stone that episode; under Ctrl or
         # Shift a row's part never acts (no Done, no ▶, no ⋯). A plain click, a drag, Esc or Back (the shell's router,
         # through `picks`) and a view without its key let them go
         self.pickable = None                         # (row) -> whether it may be picked: Current's list only (item_menu)
@@ -2512,7 +2515,7 @@ class RowsView(QListView):
         self.picked_eps = set()                      # (row key, episode id)
         self.picks = _Picks(self)
         self._press_pick = None                      # the press's pick: "ctrl", "shift" or None
-        self._pick_anchor = None                     # the row key Ctrl / Shift picked last (a Shift range starts there)
+        self._pick_anchor = None                     # the row key Ctrl picked last: a Shift range starts there
         # --- end LM11b G4
         stones.notifier().ready.connect(self._sheet_ready)
         qcovers.notifier().ready.connect(self._cover_ready)              # --- W3.2 Q6
@@ -2939,21 +2942,28 @@ class RowsView(QListView):
         self._repaint_key(row.key)
         return True
 
-    def pick_range(self, row):
-        """Shift+click: every row from the last one Ctrl / Shift picked to `row` picked (with none, `row` alone); only
-        the rows that weren't picked repainted."""
+    def pick_range(self, row, add=False):
+        """Shift+click: the picks become every row from the anchor (the row Ctrl picked last; with none, `row` itself)
+        to `row`, as Explorer's; Ctrl+Shift+click (`add`) adds those rows to the picks. The anchor stays where it is.
+        Only the rows whose state changed repainted."""
         if self.pickable is None or not self.pickable(row):
             return False
         here = self._row_of_key(row.key)
         there = self._row_of_key(self._pick_anchor) if self._pick_anchor is not None else None
-        lo, hi = (here, here) if there is None else (min(here, there), max(here, there))
+        if there is None:
+            self._pick_anchor, there = row.key, here
         entries = self.model().entries
-        for i in range(lo, hi + 1):
-            kind, r, _lines = entries[i]
-            if kind in (HERO, ROW) and r.key not in self.picked_rows and self.pickable(r):
-                self.picked_rows.add(r.key)
-                self.update(self.model().index(i, 0))
-        self._pick_anchor = row.key
+        span = {entries[i][1].key for i in range(min(here, there), max(here, there) + 1)
+                if entries[i][0] in (HERO, ROW) and self.pickable(entries[i][1])}
+        before_rows, before_eps = self.picked_rows, self.picked_eps
+        if add:
+            self.picked_rows = before_rows | span
+            changed = span - before_rows
+        else:
+            self.picked_rows, self.picked_eps = span, set()
+            changed = (span ^ before_rows) | {k for k, _e in before_eps}
+        for key in changed:
+            self._repaint_key(key)
         return True
 
     def pick_episode(self, row, ep):
@@ -2984,17 +2994,18 @@ class RowsView(QListView):
                            if k in shown and any(e.id == i for e in shown[k].episodes)}
 
     def _pick_at(self, idx, part, how):
-        """A Ctrl+ (`how` "ctrl") or Shift+click's (`how` "shift") part of a row: Ctrl on an opened row's stone picks
-        its episode; a button (▶, ⋯, ↑ ↓, ✓ Done, a status's), a seam or a line does nothing; anything else picks the
-        row (a closed row's stone too), Shift the rows up to it. -> whether anything was picked."""
+        """A Ctrl+ (`how` "ctrl"), Shift+ ("shift") or Ctrl+Shift+click's ("ctrl-shift") part of a row: Ctrl on an
+        opened row's stone picks its episode; a button (▶, ⋯, ↑ ↓, ✓ Done, a status's), a seam or a line does nothing;
+        anything else picks the row (a closed row's stone too), Shift the rows from the anchor to it (Ctrl+Shift adds
+        them). -> whether anything was picked."""
         kind, row, _lines = self.model().entries[idx.row()]
         if kind not in (HERO, ROW):
             return False
         name, payload = part[0], part[3]
         if name in NO_DRAG or name == "seam" or name.endswith("-line"):
             return False
-        if how == "shift":
-            return self.pick_range(row)
+        if how in ("shift", "ctrl-shift"):
+            return self.pick_range(row, add=how == "ctrl-shift")
         if name == "stone" and payload is not None and self.model().open_key == row.key:
             return self.pick_episode(row, payload)
         return self.pick_row(row)
@@ -3141,8 +3152,8 @@ class RowsView(QListView):
         if event.button() == Qt.MouseButton.LeftButton:
             idx, part = self.part_at(event.pos())
             mods = event.modifiers()                 # --- LM11b G4
-            self._press_pick = "ctrl" if mods & Qt.KeyboardModifier.ControlModifier else \
-                "shift" if mods & Qt.KeyboardModifier.ShiftModifier else None
+            ctrl, shift = mods & Qt.KeyboardModifier.ControlModifier, mods & Qt.KeyboardModifier.ShiftModifier
+            self._press_pick = ("ctrl-shift" if shift else "ctrl") if ctrl else "shift" if shift else None
             if self._press_pick is None and (part is None or part[0] != "more"):
                 self.clear_picks()                   # a plain click lets the picks go (⋯ keeps them: *Group…*)
             if idx.isValid():

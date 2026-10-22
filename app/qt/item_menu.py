@@ -19,8 +19,9 @@ A3 `split`, 06 E4, E22).
 - a separator, then *Remove…*: the one modal kind (`confirm.ask`, Esc / Back / a click outside are No) naming its
   files; `Writer.remove` (the trash, 30 days) with Undo.
 **Group… (LM11b G4):** Ctrl+click picks Current's rows and an opened row's episodes (its stones), Shift+click the rows
-from the last one picked, Ctrl+Space the keyboard's row (`rows.RowsView.pick_row`); with things picked from 2+ shows
-(IK-4: one show's alone would be no group), ⋯ (a right-click opens it at the hand) starts with *Group…*: one
+from the last one Ctrl picked instead (Ctrl+Shift+click adds them), Ctrl+Space the keyboard's row
+(`rows.RowsView.pick_row`); with things picked from 2+ shows (IK-4: one show's alone would be no group), ⋯ on a picked
+row (a right-click opens it at the hand) starts with *Group…*: one
 `Writer.group` — the picked rows' pieces in the list's order (both of a show the Soon line runs through), then the
 picked episodes — its toast *Grouped N into one row* with Undo. Esc / Back (the shell's router), a plain click, a drag and a view without
 a picked key let the picks go.
@@ -234,22 +235,34 @@ class ItemActions(QObject):
         """The shows the picks span (a row with no title counts as its own: IK-4)."""
         return {r.work_id if r.work_id is not None else ("row", r.key) for r in whole + [r for r, _e in eps]}
 
-    def group_entry(self):
-        """⋯'s *Group…* (its first entry) when things are picked from 2+ shows, else None (one show's picks: the store
-        would make no group of them); greyed with the store's reason while it can't be written (E4)."""
+    def _to_group(self, row=None):
+        """(whole rows, episodes) *Group…* would take: picks from 2+ shows (one show's: the store would make no group
+        of them) and, asked from `row`'s ⋯, `row` among them (a row that isn't picked has its own menu) — else None."""
         whole, eps = self._picked()
         if len(self._shows(whole, eps)) < 2:
             return None
+        if row is not None and row.key not in {r.key for r in whole} | {r.key for r, _e in eps}:
+            return None
+        return whole, eps
+
+    def group_entry(self, row=None):
+        """`row`'s ⋯'s *Group…* (its first entry) when `_to_group` has something, else None; greyed with the store's
+        reason while it can't be written (E4)."""
+        picks = self._to_group(row)
+        if picks is None:
+            return None
+        n = len(picks[0]) + len(picks[1])
         reason = self._refused_tip()
         words, tip = strings.ITEM_MENU["group"]
-        return Entry("group", words, tip.format(n=len(whole) + len(eps)) if reason is None else reason, reason is None)
+        return Entry("group", words, tip.format(n=n) if reason is None else reason, reason is None)
 
-    def group(self):
-        """*Group…*: one `Writer.group` — the picked rows' pieces in the list's order, then the picked episodes — one
-        row in Current; its toast with Undo (which takes them apart again); the picks let go."""
-        whole, eps = self._picked()
-        if len(self._shows(whole, eps)) < 2 or self.moves.refused() is not None:
+    def group(self, row=None):
+        """*Group…* (from `row`'s ⋯): one `Writer.group` — the picked rows' pieces in the list's order, then the picked
+        episodes — one row in Current; its toast with Undo (which takes them apart again); the picks let go."""
+        picks = self._to_group(row)
+        if picks is None or self.moves.refused() is not None:
             return None
+        whole, eps = picks
         pieces = [p for r in whole for p in pieces_of(r)]
         items = [e.id for _r, e in eps]
         keys = list(dict.fromkeys([r.key for r in whole] + [r.key for r, _e in eps]))
@@ -274,7 +287,7 @@ class ItemActions(QObject):
         """⋯: the moves, these, a separator and *Remove…* — a plain menu in the theme's style (Esc closes it), every
         entry's tip shown."""
         m = drag.list_menu(self.lst, row.title)          # C4: the list's one menu, emptied as it hides
-        group = self.group_entry()                       # --- LM11b G4: *Group…* first, on what is picked
+        group = self.group_entry(row)                    # --- LM11b G4: *Group…* first, on a picked row
         if group is not None:
             self._action(m, row, group)
             m.addSeparator()
@@ -315,7 +328,7 @@ class ItemActions(QObject):
 
     def menu_pick(self, row, name, payload=None):
         if name == "group":                              # --- LM11b G4: what is picked, whichever row's ⋯
-            self.group()
+            self.group(row)
         elif name in ("pin", "unpin"):
             self.pin(row, name == "pin")
         elif name == "type-to":

@@ -1023,6 +1023,60 @@ def test_G4_IK10_shift_click_picks_the_rows_from_the_last_picked_to_this_one(wor
     assert lst.model().open_key not in want and writer.calls == []      # nothing opened, nothing written
 
 
+def click_with(lst, pos, modifiers):
+    mouse(lst.viewport(), QEvent.Type.MouseButtonPress, pos, Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+          modifiers)
+    mouse(lst.viewport(), QEvent.Type.MouseButtonRelease, pos, Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton,
+          modifiers)
+    settle(20)
+
+
+def test_G4_shift_click_replaces_the_picks_with_the_range_and_ctrl_shift_adds_it(world):
+    # as Explorer: Shift+click — the rows from the one Ctrl picked last to this one, and nothing else; Ctrl+Shift+click
+    # adds that range to what is picked; the anchor stays on the Ctrl-picked row
+    _seed, win, writer = world()
+    lst = lst_of(win)
+    rs = rows_of(win)
+    seen = lst.viewport().rect()
+    p = [i for i in range(1, len(rs)) if lst.pickable(rs[i]) and
+         seen.contains(lst.visualRect(lst.model().index(i, 0)))][:4]     # four rows on screen that can be picked
+    assert len(p) == 4
+
+    def span(i, j):
+        return {r.key for r in rs[i:j + 1] if lst.pickable(r)}
+    ctrl_click(lst, title_point(lst, p[0]))
+    ctrl_click(lst, title_point(lst, p[3]))                               # the anchor: the row Ctrl picked last
+    click_with(lst, title_point(lst, p[2]), Qt.KeyboardModifier.ShiftModifier)
+    assert lst.picked_rows == span(p[2], p[3]) and rs[p[0]].key not in lst.picked_rows   # replaced: p0 let go
+    ctrl_click(lst, title_point(lst, p[0]))                               # p0 again: now the anchor
+    click_with(lst, title_point(lst, p[1]), Qt.KeyboardModifier.ShiftModifier | CTRL)
+    assert lst.picked_rows == span(p[0], p[1]) | span(p[2], p[3])        # added: the rest kept
+    click_with(lst, title_point(lst, p[2]), Qt.KeyboardModifier.ShiftModifier)
+    assert lst.picked_rows == span(p[0], p[2])                            # Shift alone: the range from p0, alone
+    assert writer.calls == [] and lst.model().open_key not in lst.picked_rows
+
+
+def test_G4_a_rows_menu_offers_group_only_when_that_row_is_picked(world):
+    # ⋯ or a right-click on a row that isn't picked is that row's own menu: no *Group…*, and the picks stay
+    _seed, win, writer = world()
+    lst = lst_of(win)
+    a, b, other = groupable(win, 3)
+    rs = rows_of(win)
+    ctrl_click(lst, title_point(lst, a))
+    ctrl_click(lst, title_point(lst, b))
+    picks = set(lst.picked_rows)
+    at = win.mapToGlobal(QPoint(300, 300))
+    assert win.items.group_entry(rs[other]) is None and win.items.group_entry(rs[b]) is not None
+    m = win.items.menu(rs[other], at)
+    assert strings.ITEM_MENU["group"][0] not in [x.text() for x in m.actions()]
+    m.close()
+    win.items.menu_pick(rs[other], "group")
+    assert calls(writer, "group") == [] and lst.picked_rows == picks
+    m = win.items.menu(rs[b], at)
+    assert m.actions()[0].text() == strings.ITEM_MENU["group"][0]
+    m.close()
+
+
 def test_G4_IK11_a_pick_repaints_only_the_rows_whose_state_changed(world, monkeypatch):
     _seed, win, _w = world()
     lst = lst_of(win)

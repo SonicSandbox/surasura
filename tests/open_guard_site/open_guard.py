@@ -45,8 +45,11 @@ def record(route, target):
     if not path:
         sys.stderr.write(f"OPEN REFUSED (no {LOG}): {line}\n")
         return
-    with _LOCK, open(path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(line, ensure_ascii=False) + "\n")
+    try:
+        with _LOCK, open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(line, ensure_ascii=False) + "\n")
+    except OSError as e:        # the run's folders already gone (a child outliving it): said, never raised
+        sys.stderr.write(f"OPEN REFUSED (log not written: {e!r}): {line}\n")
 
 
 def _words(command):

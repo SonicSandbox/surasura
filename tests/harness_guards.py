@@ -588,16 +588,19 @@ def _guard_anki_port():
     which anything opened a browser or a viewer (refused), a child of it included. And one that undid its own
     monkeypatch mid-test (its root put back)."""
     yield
-    undone = _claim_undone()
-    assert not undone, ("monkeypatch.undo() in a test undoes the harness's sandbox too (its SURASURA_TEST_ROOT was put "
+    undone, tries, opened = _claim_undone(), _claim_anki_tries(), _claim_opens()    # all claimed: none left to the next
+    problems = []
+    if undone:
+        problems.append("monkeypatch.undo() in a test undoes the harness's sandbox too (its SURASURA_TEST_ROOT was put "
                         "back; the conftests' other patches stay undone): scope the test's own patches with "
                         "`with monkeypatch.context() as patched:` instead: " + "; ".join(undone))
-    tries = _claim_anki_tries()
-    assert not tries, ("the AnkiConnect port was tried, or a child that could was started unguarded (refused or "
-                       "flagged; a real Anki could have answered): " + "; ".join(tries))
-    opened = _claim_opens()
-    assert not opened, ("a browser or a file viewer was opened (refused: a test never opens one on this desktop; "
+    if tries:
+        problems.append("the AnkiConnect port was tried, or a child that could was started unguarded (refused or "
+                        "flagged; a real Anki could have answered): " + "; ".join(tries))
+    if opened:
+        problems.append("a browser or a file viewer was opened (refused: a test never opens one on this desktop; "
                         "pass --no-open, or hand the code its own opener): " + "; ".join(opened))
+    assert not problems, " | ".join(problems)
 
 
 # --- No test opens a browser or a file viewer (2026-10-21) ---------------------------------------------------------- #

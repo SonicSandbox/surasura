@@ -13,7 +13,9 @@ except Exception as e:          # never stop the child: say it, and the run's ow
 _here = os.path.normcase(os.path.dirname(os.path.abspath(__file__)))
 for _folder in sys.path:
     _hook = os.path.join(_folder or os.getcwd(), "sitecustomize.py")
-    if os.path.normcase(os.path.dirname(os.path.abspath(_hook))) != _here and os.path.isfile(_hook):
+    _there = os.path.dirname(os.path.abspath(_hook))
+    if (os.path.normcase(_there) != _here and os.path.isfile(_hook)
+            and not os.path.isfile(os.path.join(_there, "open_guard.py"))):     # a copy of this folder: never chained
         import runpy
         runpy.run_path(_hook, run_name="sitecustomize")
         break

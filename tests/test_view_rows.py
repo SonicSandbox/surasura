@@ -1480,3 +1480,28 @@ def test_LM11b_G1_a_cached_rows_fast_path_reads_the_type_guess_and_never_keeps_a
     current = {i: r for i, r in items.items() if r["tier"] == "now"}         # the 6+ Months part removed
     second = vr.build(current, WORKS, {}, numbers=(1, {}), cards=cards, cache=cache)
     assert second.rows[0].media is None and second.rows[0].media_word == "video"
+
+
+def test_LM11b_G5_each_episode_names_its_own_show_and_keeps_it_through_the_first_screens_cache():
+    """G5 offers *Move {show} to Finished* for one show of a group: each episode says which show it is of (its work)
+    and that show's name as the group labels it — a run's episodes their work and no name. The first screen's cache
+    keeps both; a cache from before (episodes without them) still reads, with neither. Wrong, the toast could not tell
+    one show's episodes from the other's, or a restart would lose them."""
+    import json
+    items = items_of([("now", 1, 10, eps("星降る街の小さな工房", 1, 2), {}), ("now", 2, 10, eps("雲の上の郵便屋さん", 7, 8), {}),
+                      ("now", 3, 11, ["白銀の書庫番 01 章.epub"], {0: {"source_type": "epub"}})])
+    pieces = {10: {"id": 10, "title": None, "kind": "group"}, 11: {"id": 11, "title": None, "kind": "run"}}
+    view = vr.build(items, WORKS, {"mine_line": 20}, pieces=pieces)
+    group, run = view.rows
+    shows = [(1, "星降る街の小さな工房")] * 2 + [(2, "雲の上の郵便屋さん")] * 2
+    assert [(e.work_id, e.show) for e in group.episodes] == shows
+    assert [(e.work_id, e.show) for e in run.episodes] == [(3, None)]
+    back = vr.from_cache(json.loads(json.dumps(vr.to_cache(view))))
+    assert [(e.work_id, e.show) for e in back.rows[0].episodes] == shows
+    old = json.loads(json.dumps(vr.to_cache(view)))
+    at = vr.Row._fields.index("episodes")
+    for r in old["rows"]:
+        r[at] = [e[:vr.Episode._fields.index("work_id")] for e in r[at]]
+    before = vr.from_cache(old)
+    assert [(e.work_id, e.show) for e in before.rows[0].episodes] == [(None, None)] * 4
+    assert [e.id for e in before.rows[0].episodes] == [e.id for e in group.episodes]

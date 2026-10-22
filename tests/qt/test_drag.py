@@ -2377,3 +2377,160 @@ def test_R3_S2_a_lift_that_fails_lets_the_drag_go_and_holds_nothing(world, monke
     assert win.moves.running is None and writer.held == 0 and lst.parting is None
     seed.library.commit(items=[{"id": rows_of(win)[3].episodes[0].id, "watched": 1}])   # views still come in
     assert wait_until(lambda: rows_of(win)[3].episodes[0].watched, 3)
+
+
+# ================================================================================================================== #
+# LM11b G5: one show inside a group, all watched (GW-2 ⭐ A: the toast offers *Move {show} to Finished*)
+# ================================================================================================================== #
+from app.services import view_rows as vr                                            # noqa: E402
+from tests import test_view_rows as tvr                                             # noqa: E402
+
+SHOW_A, SHOW_B = "星降る街の小さな工房", "雲の上の郵便屋さん"
+
+
+def _group_view(a_watched=2, b_watched=0, source=None):
+    """A group (piece 10): SHOW_A Ep 1–3 (its first `a_watched` watched), SHOW_B Ep 7–8 (its first `b_watched`
+    watched); under it 白銀の書庫番 Part 1 as a run of its own. `source` "hato": the group's first show under hato's
+    folder (hato's mix)."""
+    tvr.WORKS.clear()
+    tvr.work(1, SHOW_A)
+    tvr.work(2, SHOW_B)
+    tvr.work(3, "白銀の書庫番", media="lightnovel")
+    folder = "HighPriority/Hato/" if source == "hato" else "HighPriority/"
+    a = {k: {"watched": int(k < a_watched), "rel_path": folder + n} for k, n in enumerate(tvr.eps(SHOW_A, 1, 3))}
+    b = {k: {"watched": 1} for k in range(b_watched)}
+    items = tvr.items_of([("now", 1, 10, tvr.eps(SHOW_A, 1, 3), a), ("now", 2, 10, tvr.eps(SHOW_B, 7, 8), b),
+                          ("now", 3, 11, ["白銀の書庫番 01 章.epub"], {0: {"source_type": "epub"}})])
+    pieces = {10: {"id": 10, "title": None, "kind": "group"}, 11: {"id": 11, "title": None, "kind": "run"}}
+    return vr.build(items, dict(tvr.WORKS), {"mine_line": 20}, pieces=pieces)
+
+
+def _show_group(win, **kw):
+    """The group's view shown in the window (the fake writer writes nothing back: no reader view replaces it)."""
+    win.moves._show(_group_view(**kw))
+    for _ in range(5):
+        QApplication.processEvents()
+    return rows_of(win)[0]
+
+
+def _shown_buttons(card):
+    return [b.text() for b in card.buttons if not b.isHidden()]
+
+
+def test_LM11b_G5_the_last_of_one_show_in_a_group_offers_finished_for_that_show_alone(world):
+    """GW-2 ⭐ A: SHOW_A's last unwatched episode marked while SHOW_B's wait — its watched written as any Done, and the
+    toast offers *Move SHOW_A to Finished*. Pressed, only SHOW_A's three ids go to Finished, in one call, with the
+    Finished toast's Keep / Leave its new cards out (D14); the row stays, holding SHOW_B's episodes. Wrong, a finished
+    show would sit in Current until the whole group is done — or the press would finish SHOW_B unwatched too."""
+    seed, win, writer = world(apply=False)
+    row = _show_group(win, a_watched=2)
+    a = [e for e in row.episodes if e.work_id == 1]
+    b = [e for e in row.episodes if e.work_id == 2]
+    win.moves.done(row, a[-1])
+    assert calls(writer) == [("set_watched", [a[-1].id], {"on": True})]
+    card = win.toasts.card
+    assert card.message == strings.DONE_SHOW_IN_GROUP.format(show=SHOW_A, n=3)
+    assert _shown_buttons(card) == [strings.TOAST_UNDO, strings.DONE_MOVE_SHOW_FINISHED.format(show=SHOW_A)]
+    assert card.buttons[1].toolTip() == strings.DONE_MOVE_SHOW_FINISHED_TIP.format(show=SHOW_A, n=3)
+    settle()
+    finished = win.page_widgets["current"].view_model.counts.finished
+    card.buttons[1].click()
+    assert calls(writer, "set_tier") == [("set_tier", [e.id for e in a], {"tier": drag.FINISHED})]
+    shown = next(r for r in rows_of(win) if r.key == row.key)                # the row stays, with SHOW_B's alone
+    assert [e.id for e in shown.episodes] == [e.id for e in b] and shown.works == (2,)
+    assert (shown.n_files, shown.title, shown.title_ep, shown.group) == (2, SHOW_B, "Ep 7", False)
+    assert shown.next_index == 0 and (shown.string[0].n, row.string[0].n) == (2, 5)
+    assert win.page_widgets["current"].view_model.counts.finished == finished + 1
+    assert win.toasts.card.message == strings.DRAG_FINISHED.format(title=SHOW_A)
+    settle()
+    win.toasts.card.buttons[2].click()                                # Leave its new cards out
+    assert [(c[1], c[2]["keep_cards"]) for c in calls(writer, "finish")] == [([e.id for e in a], False)]
+
+
+def test_LM11b_G5_a_reader_view_still_holding_the_show_is_shown_without_it(world):
+    """The expectation (as for a row sent to a well): a view from the reader written before the store took the show
+    off — its episodes still in the group's row — is shown with them off, never the whole group again."""
+    seed, win, writer = world(apply=False)
+    row = _show_group(win, a_watched=2)
+    a = [e.id for e in row.episodes if e.work_id == 1]
+    win.moves.done(row, row.episodes[2])
+    settle()
+    win.toasts.card.buttons[1].click()
+    stale = _group_view(a_watched=3)
+    shown = win.moves.view_in(stale)
+    assert shown is not None and not set(a) & {e.id for r in shown.rows for e in r.episodes}
+    assert [r.key for r in shown.rows] == [r.key for r in stale.rows]
+
+
+def test_LM11b_G5_the_whole_group_watched_offers_the_rows_own_finish(world):
+    """Every show of the group watched by this Done: the row's own toast (*All 5 watched*), its *Move to Finished*
+    taking the whole row — never the one show's offer."""
+    seed, win, writer = world(apply=False)
+    row = _show_group(win, a_watched=3, b_watched=1)
+    win.moves.done(row, row.episodes[-1])
+    card = win.toasts.card
+    assert card.message == strings.DONE_ALL.format(n=5)
+    assert _shown_buttons(card) == [strings.TOAST_UNDO, strings.DONE_MOVE_FINISHED]
+    settle()
+    card.buttons[1].click()
+    assert calls(writer, "set_tier")[0][1] == drag.ids_of(row)
+    assert row.key not in [r.key for r in rows_of(win)]
+
+
+def test_LM11b_G5_a_show_with_a_file_left_hatos_mix_a_run_and_a_cache_from_before_offer_no_show_finish():
+    """`drag.show_finished` (pure): offered only for a group's show whose every other episode is watched while another
+    show still waits; never for hato's mix (it never finishes), a run (the store makes a group of one show a run: its
+    last Done is the row's own finish), or episodes from a cache from before (no show to name)."""
+    row = _group_view(a_watched=2).rows[0]
+    a = [e for e in row.episodes if e.work_id == 1]
+    assert drag.show_finished(row, a[-1]) == (SHOW_A, [e.id for e in a])
+    assert drag.show_finished(_group_view(a_watched=1).rows[0], a[-1]) is None           # SHOW_A's Ep 2 still waits
+    mix = _group_view(a_watched=2, source="hato").rows[0]
+    assert mix.source == "hato" and drag.show_finished(mix, mix.episodes[2]) is None
+    assert drag.show_finished(row._replace(group=False), a[-1]) is None
+    old = row._replace(episodes=tuple(e._replace(work_id=None, show=None) for e in row.episodes))
+    assert drag.show_finished(old, old.episodes[2]) is None
+    every = _group_view(a_watched=3, b_watched=1).rows[0]
+    assert drag.show_finished(every, every.episodes[-1]) is None                         # all of it: the row's own
+
+
+def test_LM11b_G5_without_takes_only_the_shows_episodes_off_the_row_and_counts_one_more_finished():
+    """`drag.without(…, ids=)`: the window's quick update takes the finished show's episodes off the group's row — the
+    row stays, read as the store will leave it (the other show alone, named after it); Finished counts one more."""
+    view = _group_view(a_watched=3)
+    row = view.rows[0]
+    a = [e.id for e in row.episodes if e.work_id == 1]
+    after = drag.without(view, row.key, drag.FINISHED, a)
+    assert [r.key for r in after.rows] == [r.key for r in view.rows]
+    kept = after.rows[0]
+    assert [e.work_id for e in kept.episodes] == [2, 2] and kept.cover_title == SHOW_B
+    assert kept.line == "Ep 7–8" and after.counts.finished == view.counts.finished + 1
+    assert after.counts.current_files == view.counts.current_files - 3
+    assert row.key not in [r.key for r in drag.without(view, row.key, drag.FINISHED, drag.ids_of(row)).rows]
+
+
+def test_real_store_LM11b_G5_a_show_finished_inside_a_group_lands_in_finished_under_its_own_name(real):
+    """The real store: two shows grouped into one row; the first's last episode marked, *Move <show> to Finished*
+    pressed — its four episodes are in Finished as a run of their own show, and Current's row holds the other show's
+    four episodes, none of the first's."""
+    store, win, writer = real()
+    rs = rows_of(win)
+    first, second = rs[0], rs[1]
+    store.group(piece_ids=[first.piece_id, second.piece_id])
+    assert wait_until(lambda: rows_of(win)[0].group, 5)
+    store.set_watched(drag.ids_of(first)[:-1])
+    assert wait_until(lambda: rows_of(win)[0].n_watched == 3, 5)
+    row = rows_of(win)[0]
+    last = next(e for e in row.episodes if e.id == drag.ids_of(first)[-1])
+    win.moves.done(row, last)
+    assert win.toasts.card.message == strings.DONE_SHOW_IN_GROUP.format(show=last.show, n=4)
+    settle()
+    win.toasts.card.buttons[1].click()
+    a = drag.ids_of(first)
+    assert wait_until(lambda: all(store.item(i)["tier"] == "graduated" for i in a), 5)
+    assert {store.item(i)["work_id"] for i in a} == {first.work_id}
+    assert len({store.item(i)["piece_id"] for i in a}) == 1                  # one run, its own show's
+    assert all(store.item(i)["tier"] == "now" for i in drag.ids_of(second))
+    assert wait_until(lambda: win.moves.expect is None and
+                      any([e.id for e in r.episodes] == drag.ids_of(second) for r in rows_of(win)), 5)
+    assert not any(set(a) & {e.id for e in r.episodes} for r in rows_of(win))

@@ -61,6 +61,10 @@ Episode = namedtuple("Episode", "id label number title watched cards mining miss
 #   waiting (SRC K5 / W1b): a video found in a source folder with no subtitle yet — never played, read or mined
 Episode = namedtuple("Episode", Episode._fields + ("media_word",), defaults=(False, False, None))
 #   media_word (LM11b G1): its own show's (`MEDIA_WORD`) — a group holds several types; None in a cache from before
+Episode = namedtuple("Episode", Episode._fields + ("work_id", "show"),
+                     defaults=tuple(Episode._field_defaults.values()) + (None, None))
+#   work_id, show (LM11b G5): the work it is of, and in a group its show's name as the group labels it (None in a
+#   run); both None in a cache from before. What *Move {show} to Finished* takes and names (`drag.show_finished`)
 Row = namedtuple("Row", "key index tier work_id piece_id media media_word verb title title_ep line source n_files n_watched "
                         "pct pct_tone n_new status mark episodes next_index studying date cover_title accessible "
                         "description chips more_chips play_tip can_play cards_out string", defaults=(False, None))
@@ -490,7 +494,7 @@ def status_of(eps, word, line_n):
 
 
 # --- building ------------------------------------------------------------------------------------------------------ #
-def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=None):
+def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=None, show=None):
     name = item.get("title") or (item.get("rel_path") or "").rsplit("/", 1)[-1]
     number = None if media == "youtube" else episode_number(name)
     if media == "youtube":
@@ -516,7 +520,7 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=
                  cards=c, mining=item["id"] in mining and not mined, missing=missing, removed=missing and mined,
                  in_top=in_top, pct=pct_of(known, counted), n_new=n_new, status=None, mark=None,
                  rel_path=item.get("rel_path"), play_tip="", can_play=not missing and not waiting, waiting=waiting,
-                 media_word=MEDIA_WORD.get(media, "video"))
+                 media_word=MEDIA_WORD.get(media, "video"), work_id=item.get("work_id"), show=show)
     asked = item.get("mine_asked")                    # asked again after it was mined: it mines again (Sonic's "unless asked")
     deleted = bool(item.get("mined_at")) and not mined and not (asked and str(asked) > str(item["mined_at"]))
     ep = ep._replace(deleted=deleted)
@@ -649,7 +653,7 @@ def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, 
         shows, kinds, names, group_title, group_line = _group(meta, piece, works, guessed)
         media = kinds[_show_key(first)]
         eps = [_episode(it, works.get(it.get("work_id")) or {}, kinds[_show_key(it)], numbers, cards, mining,
-                        it["id"] in in_top_ids, line_n, connect) for it in piece]
+                        it["id"] in in_top_ids, line_n, connect, names[_show_key(it)]) for it in piece]
     else:
         media = _media(work, piece, guessed)
         eps = [_episode(it, work, media, numbers, cards, mining, it["id"] in in_top_ids, line_n, connect)

@@ -43,7 +43,7 @@ from PyQt6.QtWidgets import QApplication, QMenu, QStyleOptionViewItem, QWidget
 
 from app import theme
 from app.qt import motion, rows, shadow, strings, style
-from app.services import view_rows
+from app.services import stone_plan, view_rows
 
 D = theme.DRAG
 FINISHED = "graduated"                              # the store's name for Finished
@@ -143,6 +143,20 @@ def finishes(row):
     return not is_mix(row)
 
 
+def show_finished(row, ep):
+    """LM11b G5 (GW-2 ⭐ A): marking `ep` leaves no episode of its show in a group unwatched while another show of the
+    group still waits -> (the show's name, its episodes' ids in the group), else None. Never hato's mix; a run's last
+    Done is the row's own finish (a group of one show is a run: the store's rule); episodes with no show to name (a
+    first screen's cache from before) are offered nothing."""
+    if not row.group or not finishes(row) or ep.work_id is None or not ep.show:
+        return None
+    mine = [e for e in row.episodes if e.work_id == ep.work_id]
+    if any(not e.watched and e.id != ep.id for e in mine) or \
+            not any(not e.watched for e in row.episodes if e.work_id != ep.work_id):
+        return None
+    return ep.show, [e.id for e in mine]
+
+
 def lines_for(view, rows_):
     """The top-20 line and the Soon line for `rows_` (the drop's order) as the reader would draw them: the top line
     after the row holding the same number of available files as before (split through it when it falls inside one),
@@ -217,20 +231,63 @@ def reordered(view, keys, tiers=None):
     return view._replace(rows=tuple(out), lines=lines_for(view, out), counts=counts, subline=subline, worst=worst)
 
 
-def without(view, key, where):
+# a one-show row's range by its files' word (`view_rows.range_text`): the media types that word stands for
+_RANGE_MEDIA = {"video": None, "audio": "podcast", "EPUB": "book", "file": "text"}
+
+
+def _less(row, keep):
+    """LM11b G5: a group's row holding only `keep` of its episodes, read as the store will leave it — named, counted,
+    labelled and strung by the group's rules (`view_rows._row`); one show left reads as its run (the store makes it
+    one). Its status, numbers and cover wait for the reader's next view."""
+    s = view_rows.STRINGS
+    eps, n = tuple(keep), len(keep)
+    was = list(dict.fromkeys(e.show for e in row.episodes))
+    shows = list(dict.fromkeys(e.show for e in eps))
+    n_watched = sum(1 for e in eps if e.watched)
+    nxt_i = next((i for i, e in enumerate(eps) if not e.watched), n - 1)
+    nxt = eps[nxt_i]
+    if len(shows) > 1:
+        named = row.title != s["group_name"].format(first=was[0], n=len(was) - 1)
+        title = row.title if named else s["group_name"].format(first=shows[0], n=len(shows) - 1)
+        channels = row.line.startswith(s["group_line_channels"].format(n=len(row.episodes), k=len(was)))
+        line = s["group_line_channels" if channels else "group_line"].format(n=n, k=len(shows))
+        title_ep = s["group_ep"].format(show=nxt.show, label=nxt.label)
+    else:
+        media = row.media if shows[0] == was[0] else _RANGE_MEDIA.get(nxt.media_word)
+        title = shows[0]
+        line = view_rows.range_text(media, [e.number for e in eps if e.number is not None], n)
+        title_ep = nxt.label if media != "youtube" else ""
+    if 0 < n_watched < n:
+        line = f"{line} · " + s["watched"].format(k=n_watched, n=n)
+    out = row._replace(episodes=eps, n_files=n, n_watched=n_watched, next_index=nxt_i, title=title, title_ep=title_ep,
+                       line=line, description=line, cover_title=shows[0], group=len(shows) > 1,
+                       works=tuple(dict.fromkeys(e.work_id for e in eps if e.work_id is not None)),
+                       play_tip=nxt.play_tip, can_play=nxt.can_play)
+    plan = stone_plan.plan_of(out)
+    return out._replace(string=(plan, max(stone_plan.tightest(plan), stone_plan.ahead(plan))))
+
+
+def without(view, key, where, ids=None):
     """`view` with Current's row `key` gone to a well (`where`: "goal" or "finished"): Goal's bar or Finished's count
-    takes it at once (the reader's next view says the same)."""
+    takes it at once (the reader's next view says the same). `ids` (LM11b G5: one show of a group finished): only those
+    episodes go — the row stays with the rest (`_less`), unless none is left."""
     row = next((r for r in view.rows if r.key == key), None)
     if row is None:
         return view
-    rest = tuple(r for r in view.rows if r.key != key)
+    keep = [e for e in row.episodes if e.id not in set(ids)] if ids is not None else []
+    if len(keep) == len(row.episodes):
+        return view
+    if keep:
+        rest = tuple(_less(r, keep) if r.key == key else r for r in view.rows)
+    else:
+        rest = tuple(r for r in view.rows if r.key != key)
     v = view._replace(rows=rest)
     if where == "goal" and view.goal is not None:
         g = view.goal
         cover = row.cover_title
         titles = g.titles + (1 if getattr(row, "group", False) or cover not in g.covers else 0)   # LM11b G1
         covers = g.covers if cover in g.covers or len(g.covers) >= 9 else g.covers + (cover,)
-        files = g.files + row.n_files
+        files = g.files + row.n_files - len(keep)
         line = view_rows.STRINGS["goal_one"].format(files=view_rows.thousands(files)) if titles == 1 else \
             view_rows.STRINGS["goal_line"].format(titles=titles, files=view_rows.thousands(files))
         v = v._replace(goal=g._replace(titles=titles, files=files, covers=covers, line=line),
@@ -741,6 +798,7 @@ class DragController(QObject):
         self.expect = None                           # the key order the window shows ahead of the store
         self.expect_tiers = {}
         self.expect_gone = {}                        # key -> where it went (a well), until the reader says so
+        self.expect_off = {}                         # key -> the ids taken off its row (LM11b G5), until the reader says so
         self.held = None                             # the reader's newest view, not shown yet
         self.tickets = []                            # commands given, not settled yet (oldest first)
         self.saving_keys = frozenset()
@@ -841,7 +899,9 @@ class DragController(QObject):
 
     def _conform(self, view):
         keys = [r.key for r in view.rows]
-        if tuple(keys) == self.expect:
+        off = {r.key for r in view.rows if r.key in self.expect_off and          # LM11b G5: still holding a show taken off
+               not self.expect_off[r.key].isdisjoint(e.id for e in r.episodes)}
+        if tuple(keys) == self.expect and not off:
             return view
         rest = [k for k in keys if k not in self.expect_gone]
         if sorted(rest) != sorted(self.expect):
@@ -850,6 +910,8 @@ class DragController(QObject):
         for k in keys:
             if k in self.expect_gone:
                 v = without(v, k, self.expect_gone[k])
+            elif k in off:
+                v = without(v, k, FINISHED, self.expect_off[k])
         if tuple(r.key for r in v.rows) == self.expect and all(
                 r.tier == self.expect_tiers.get(r.key, r.tier) for r in v.rows):
             return v
@@ -863,12 +925,15 @@ class DragController(QObject):
         finally:
             self._own = False
 
-    def _ahead(self, view, gone=None):
-        """The window shows `view` (its own order) ahead of the store until the writer settles."""
+    def _ahead(self, view, gone=None, off=None):
+        """The window shows `view` (its own order) ahead of the store until the writer settles. `off` (LM11b G5): (key,
+        ids) — a row that stays with those episodes taken off."""
         self.expect = tuple(r.key for r in view.rows)
         self.expect_tiers = {r.key: r.tier for r in view.rows}
         if gone is not None:
             self.expect_gone[gone[0]] = gone[1]
+        if off is not None:
+            self.expect_off[off[0]] = frozenset(off[1])
         self._show(view)
         self._settle.start()
 
@@ -883,7 +948,7 @@ class DragController(QObject):
 
     def _let_go(self):
         """The expectation ends: the reader's newest view stands (held, or the next one)."""
-        self.expect, self.expect_tiers, self.expect_gone = None, {}, {}
+        self.expect, self.expect_tiers, self.expect_gone, self.expect_off = None, {}, {}, {}
         held, self.held = self.held, None
         if held is not None and self.running is None:
             self._show(held)
@@ -1620,6 +1685,16 @@ class DragController(QObject):
             self._toast(ticket, buttons=[(strings.DONE_MOVE_FINISHED, strings.DONE_MOVE_FINISHED_TIP,
                                           lambda: self.to_finished(row))])
             return
+        shown = show_finished(row, ep)               # LM11b G5: one show of a group all watched, the rest not yet
+        if shown is not None:
+            show, ids = shown
+            ticket = Ticket(strings.DONE_SHOW_IN_GROUP.format(show=show, n=len(ids)), (row.key,), (ep.id,))
+            if self._give(ticket, lambda t: self.writer.set_watched([ep.id], True, label=t), toast=False) is None:
+                return
+            self._toast(ticket, buttons=[(strings.DONE_MOVE_SHOW_FINISHED.format(show=show),
+                                          strings.DONE_MOVE_SHOW_FINISHED_TIP.format(show=show, n=len(ids)),
+                                          lambda: self.finish_show(row, show, ids))])
+            return
         after = [e for e in row.episodes[row.episodes.index(ep) + 1:] if not e.watched] if ep in row.episodes else []
         nxt = after[0] if after else (left[0] if left else None)
         text = strings.DONE_NEXT.format(title=title, ep=ep.label, next=nxt.label) if nxt is not None else \
@@ -1634,6 +1709,21 @@ class DragController(QObject):
         if base is not None and any(r.key == row.key for r in base.rows):
             self._ahead(without(base, row.key, FINISHED), gone=(row.key, FINISHED))
         self._finish(row.title, ids_of(row), (row.key,))
+
+    def finish_show(self, row, show, ids):
+        """LM11b G5: *Move {show} to Finished* (the Done's toast) — the finish of that show's episodes in the group alone
+        (`_finish`: D14's Keep / Leave out kept); the row stays without them (`without(…, ids)`). The store puts them in
+        Finished under their own show and the group keeps the rest."""
+        if self.refused() is not None:
+            return
+        base = self.base()
+        if base is not None and any(r.key == row.key for r in base.rows):
+            new = without(base, row.key, FINISHED, ids)
+            if any(r.key == row.key for r in new.rows):
+                self._ahead(new, off=(row.key, ids))
+            else:
+                self._ahead(new, gone=(row.key, FINISHED))
+        self._finish(show, ids, (row.key,))
 
     # --- ↑ ↓ and ⋯ ---------------------------------------------------------------------------------------------- #
     def nudge(self, row, step):

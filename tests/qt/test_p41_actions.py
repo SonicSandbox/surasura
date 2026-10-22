@@ -594,3 +594,26 @@ def test_two_switch_workers_asking_for_one_languages_feed_get_one_feed(monkeypat
     for w in workers:
         w.join(5)
     assert len(got) == 2 and got[0] is got[1]
+
+
+def test_LM11b_a_groups_epub_is_mine_text_though_the_group_is_led_by_a_video(act, monkeypatch):
+    """K67 judged by the file, not the row: a group led by an anime holding a light novel's EPUB — *Mine this* on the
+    EPUB is *Mine text* (Anki Miner's own window), never an ask Anki Miner can't do; on the anime's episode, the ask."""
+    from app.services import view_rows as vr
+    from tests import test_view_rows as tvr
+    _seed, win, writer = act()
+    tvr.WORKS.clear()
+    tvr.work(1, "星降る街の小さな工房")
+    tvr.work(3, "白銀の書庫番", media="lightnovel")
+    items = tvr.items_of([("now", 1, 10, tvr.eps("星降る街の小さな工房", 1, 2), {}),
+                          ("now", 3, 10, ["白銀の書庫番 01 章.epub"], {0: {"source_type": "epub"}})])
+    pieces = {10: {"id": 10, "title": None, "kind": "group"}}
+    row = vr.build(items, dict(tvr.WORKS), {"mine_line": 20}, pieces=pieces).rows[0]
+    book = row.episodes[2]
+    assert row.media_word == "video" and book.media_word == "EPUB"
+    texts = []
+    monkeypatch.setattr(win.mine, "mine_text", lambda label, rel: texts.append((label, rel)))
+    win.mine.mine_row(row, [book.id])
+    assert texts == [(book.label, book.rel_path)] and asks(writer) == []
+    win.mine.mine_row(row, [row.episodes[0].id])
+    assert texts == [(book.label, book.rel_path)] and [c[1] for c in asks(writer)] == [[row.episodes[0].id]]

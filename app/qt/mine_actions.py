@@ -119,9 +119,9 @@ class MineActions(QObject):
         if not ids:
             self.win.say(strings.MINE_NOTHING)
             return None
-        if getattr(row, "media_word", "video") != "video":         # K67: Anki Miner mines video only
-            ep = next((e for e in row.episodes if e.id == ids[0]), row.episodes[0])
-            return self.mine_text(ep.label, ep.rel_path)
+        ep = next((e for e in row.episodes if e.id == ids[0]), row.episodes[0])
+        if (getattr(ep, "media_word", None) or getattr(row, "media_word", "video")) != "video":   # K67: video only;
+            return self.mine_text(ep.label, ep.rel_path)     # judged by the file's own type (LM11b: a group holds several)
         return self._ask(strings.MINE_ASKED.format(title=row.title), (row.key,), ids)
 
     def mine_ids(self, ids):

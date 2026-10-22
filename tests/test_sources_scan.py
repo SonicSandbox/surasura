@@ -140,6 +140,16 @@ def _items(store):
     return store.conn.execute("SELECT COUNT(*) FROM items").fetchone()[0]
 
 
+def _picks(store):
+    """LM1b: the origins that are their item's own (never another version of its episode)."""
+    return {k: o for k, o in store.origins().items() if not o.version}
+
+
+def _versions(store):
+    """LM1b: the origins recorded as another version of their item's episode."""
+    return {k: o for k, o in store.origins().items() if o.version}
+
+
 def _sha(path):
     with open(path, "rb") as f:
         return hashlib.sha256(f.read()).hexdigest()
@@ -607,8 +617,10 @@ def test_a_subtitle_of_a_video_already_in_is_that_episode_and_no_new_item(langua
         assert record["video_key"] == videos.content_key(os.path.join(src, a, "ep01.mkv"))
         second = store.add_source(other)
         result = _look(store, language, second)
-        assert (result["added"], result["attached"]) == (0, 1) and _items(store) == 1
-        assert store.origins()[ls.path_key(os.path.abspath(os.path.join(other, a, "ep01.srt")))].item_id == item
+        # moved: LM1b (A9): one episode per show across sources — the second source's is another version of it
+        assert (result["added"], result["attached"]) == (0, 0) and _items(store) == 1
+        theirs = store.origins()[ls.path_key(os.path.abspath(os.path.join(other, a, "ep01.srt")))]
+        assert theirs.item_id == item and theirs.version
         assert _library_files(data_dir) == [f"Library/{a}/ep01.srt"]
 
 
@@ -1012,8 +1024,8 @@ def test_a_v2_of_a_removed_episode_stays_out(language):
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_one_subtitle_per_video_per_language_tracked_by_the_video(language):
-    """K3 (1): two subtitles that both go with one video, in one look — one item; the other waits and the next look
-    records it on that item through its video (check a), never a second item."""
+    """K3 (1): two subtitles that both go with one video, in one look — one item, never a second; LM1b: the other is
+    that episode's other version, recorded in the same look (moved: it waited for the next look's check a)."""
     store, data_dir = _empty(language)
     a = _SHOWS[language][0]
     src = _drive("driveA")
@@ -1024,9 +1036,10 @@ def test_one_subtitle_per_video_per_language_tracked_by_the_video(language):
     with store:
         root = store.add_source(src)
         result = _look(store, language, root, first=True)
-        assert (result["added"], result["waiting"]) == (1, 1) and _items(store) == 1
+        assert (result["added"], result["waiting"]) == (1, 0) and _items(store) == 1
+        assert [os.path.basename(o.origin) for o in _versions(store).values()] == ["ep01.alt.srt"]
         again = _look(store, language, root)
-        assert (again["added"], again["attached"]) == (0, 1) and _items(store) == 1
+        assert (again["added"], again["attached"]) == (0, 0) and _items(store) == 1
         assert len(_library_files(data_dir)) == 1
 
 
@@ -1488,7 +1501,8 @@ def test_a_removed_waiting_video_stays_out():
 
 def test_a_waiting_video_is_no_release_of_its_episode():
     """The v2 rule reads text origins only: a subtitle `- 05v2` beside a waiting `- 05.mkv` is taken in (never read as
-    a re-copy over the video's name, which holds no file)."""
+    a re-copy over the video's name, which holds no file); LM1b (A4): it is that video's episode, so the waiting item
+    takes it in place (moved: it was a second item beside the waiting one)."""
     language = "ja"
     store, data_dir = _empty(language)
     show = _SHOWS[language][1]
@@ -1498,7 +1512,9 @@ def test_a_waiting_video_is_no_release_of_its_episode():
         root = store.add_source(src)
         _look(store, language, root, first=True)
         _write(os.path.join(src, show, f"[Grp] {show} - 05v2 (1080p).ja.srt"), _text(language, 1))
-        assert _look(store, language, root, full=True)["added"] == 1
+        assert _look(store, language, root, full=True)["added"] == 0 and _items(store) == 1
+        assert store.conn.execute("SELECT availability FROM items").fetchone()[0] == "available"
+        assert _library_files(data_dir) == [f"Library/{show}/[Grp] {show} - 05v2 (1080p).ja.srt"]
 
 
 def test_a_removed_waiting_videos_key_is_never_read_again(monkeypatch):
@@ -1841,8 +1857,9 @@ def test_a_v2_whose_copy_must_wait_after_take_in_is_followed_by_the_next_look(mo
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_another_release_of_an_episode_already_in_is_skipped_never_a_second_item(language):
     """H13 (SRC-7): `[GrpB] Show - 05 (720p)` beside `[GrpA] Show - 05 (1080p)` — the same episode, another release
-    of the same version, its name differing only in its tags — is skipped, found later or in the same look; a file
-    whose name says more than its tags (`- 05 特別編`) is its own."""
+    of the same version, its name differing only in its tags — is skipped, found later or in the same look (LM1b:
+    recorded as another version, never an item); a special's own word after the number (`- 05 特別編`, LM1b,
+    PROVISIONAL) is a special of its own."""
     store, data_dir = _empty(language)
     show = _SHOWS[language][1]
     src = _drive("driveA")
@@ -1862,6 +1879,8 @@ def test_another_release_of_an_episode_already_in_is_skipped_never_a_second_item
         names_in = sorted(os.path.basename(p) for p in _library_files(data_dir))
         assert names_in == sorted([f"[GrpA] {show} - 04 (1080p).{tag}.srt", f"[GrpA] {show} - 05 (1080p).{tag}.srt",
                                    f"[GrpB] {show} - 06 (720p).{tag}.srt", f"{show} - 05 特別編.{tag}.srt"])
+        assert sorted(os.path.basename(o.origin) for o in _versions(store).values()) == sorted([
+            f"[GrpB] {show} - 04 (720p).{tag}.srt", f"[GrpB] {show} - 05 (720p).{tag}.srt"])
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
@@ -2247,14 +2266,16 @@ def test_a_look_reads_the_origins_videos_once_whatever_its_take_ins(monkeypatch)
     with store:
         root = store.add_source(src)
         sql = []
-        store.conn.set_trace_callback(lambda s: sql.append(s) if "$.video_key" in s else None)
+        store.conn.set_trace_callback(lambda s: sql.append(s) if "$.video_key" in s and "substr(p.content_key" not in s
+                                      else None)     # (LM1b: `origins()` names each record's video too, read once)
         try:
             first = _look(store, language, root, first=True)
         finally:
             store.conn.set_trace_callback(None)
         assert first["added"] == 4 and len(sql) == 1, sql
         result = _look(store, language, store.add_source(other))
-        assert (result["added"], result["attached"]) == (0, 1) and _items(store) == 4
+        # moved: LM1b (A9): the second source's ep04 is another version of the episode in
+        assert (result["added"], result["attached"]) == (0, 0) and _items(store) == 4 and len(_versions(store)) == 1
 
 
 def test_a_video_taken_earlier_in_a_look_is_known_to_it_later():
@@ -3101,7 +3122,8 @@ def test_of_one_episodes_subtitles_listed_together_the_order_picks_the_one_taken
         files = _library_files(data_dir)
         assert files == [f"Library/{show}/{os.path.basename(taken)}"] and _sha(os.path.join(data_dir, files[0])) == \
             _sha(taken)
-        assert ls.path_key(os.path.abspath(taken)) in store.origins() and len(store.origins()) == 1
+        assert ls.path_key(os.path.abspath(taken)) in _picks(store) and len(_picks(store)) == 1
+        assert len(_versions(store)) == 1                    # LM1b: the other is that episode's other version
         _write(os.path.join(folder, f"[Third] {show} - 05 (720p).{tag}.srt"), _text(language, 5, "！"))
         later = _look(store, language, root)
         assert (later["added"], later["attached"]) == (0, 0) and _items(store) == 1

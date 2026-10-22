@@ -35,8 +35,9 @@ from tests.test_library_store_support import LANGUAGES, RESOURCES
 from tests.test_sources_scan import _drive, _empty, _fresh_module_state, _look, _settle, _write  # noqa: F401
 
 WAIT = "waiting"
-_NAMES = {"ja": {"S": "Hoshizora Kissa", "S2": "Tsukikage Tabibito", "N": "星の図書館", "T": "ja", "TU": "JA"},
-          "zh": {"S": "Lanterns of Qinghe", "S2": "Yeshi Xiaoji", "N": "灯下书简", "T": "zh", "TU": "ZH"}}
+_NAMES = {"ja": {"S": "Hoshizora Kissa", "S2": "Tsukikage Tabibito", "N": "星の図書館", "T": "ja", "TU": "JA",
+                 "HUA": "話"},
+          "zh": {"S": "Lanterns of Qinghe", "S2": "Yeshi Xiaoji", "N": "灯下书简", "T": "zh", "TU": "ZH", "HUA": "话"}}
 # A language's own subtitle folders that are not `Subs/` (the open case: a learner's `JP/` beside the videos)
 _LANG_FOLDERS = {"ja": ("JP", "ja", "[Japanese]", "Japanese Subs"), "zh": ("CHS", "zh", "[Chinese]", "中文字幕")}
 _SUBS_LANG = {"ja": "Japanese", "zh": "Chinese"}
@@ -52,6 +53,19 @@ ENGLISH = ("1\n00:00:01,000 --> 00:00:03,000\nWhere did you put the lantern?\n\n
            "3\n00:00:07,000 --> 00:00:09,000\nThen we'd better hurry before the tide comes in.\n")
 CONFIG = ("# look: plain\nbackground = plain.png\nfont_color = 255,255,255\nshow_covers = 1\n"
           "cover_style = flat\nlayout = grid4\n")
+# A6: a signs-only track in our language (two dialogue lines) beside the episode's full subtitle (`FULL`)
+_THIN = {"ja": "[Events]\nFormat: Layer, Start, End, Style, Text\n"
+               "Dialogue: 0,0:00:01.00,0:00:03.00,Sign,喫茶ほしぞら　ひらいています　どうぞおはいりください\n"
+               "Dialogue: 0,0:00:05.00,0:00:07.00,Sign,つぎのかい　ほしのよるに　またおあいしましょう\n",
+         "zh": "[Events]\nFormat: Layer, Start, End, Style, Text\n"
+               "Dialogue: 0,0:00:01.00,0:00:03.00,Sign,青河灯会今晚开始欢迎各位朋友光临\n"
+               "Dialogue: 0,0:00:05.00,0:00:07.00,Sign,下一集我们在河边的夜市再见面吧\n"}
+_FULL = {"ja": "placed_episode.srt", "zh": "night_market.srt"}
+# a songs track, one line per sung line (sixty), each its own text
+_SONGS = {"ja": "".join(f"Dialogue: 0,0:0{n // 10}:{n % 10}0.00,0:0{n // 10}:{n % 10}5.00,Song,ほしのうたを　うたいましょう"
+                        f"　{n}ばんめ\n" for n in range(60)),
+          "zh": "".join(f"Dialogue: 0,0:0{n // 10}:{n % 10}0.00,0:0{n // 10}:{n % 10}5.00,Song,我们一起唱河边的歌第{n}句\n"
+                        for n in range(60))}
 
 
 def _read(language, name):
@@ -62,8 +76,15 @@ def _read(language, name):
 def _content(code, language, rel):
     """A file's bytes by its code: `J` our language's subtitle text (each file its own: its path appended), `X` the
     other language's, `EN` English, `CFG` a loader's config, `SHORT` a short text of ours (a track list: under 1,000
-    script characters), `LONG` a long one of ours (a novel: over 1,000)."""
+    script characters), `LONG` a long one of ours (a novel: over 1,000), `FULL` an episode's full subtitle of ours
+    (its cues), `THIN` a signs-only track of ours (two lines: A6)."""
     pick = int(hashlib.sha256(rel.encode("utf-8")).hexdigest(), 16)
+    if code == "FULL":
+        return _read(language, _FULL[language]) + f"\n{rel}\n"
+    if code == "THIN":
+        return _THIN[language] + f"; {rel}\n"
+    if code == "SONGS":
+        return "[Events]\nFormat: Layer, Start, End, Style, Text\n" + _SONGS[language] + f"; {rel}\n"
     if code == "J":
         return _read(language, _RES[language][pick % 4]) + f"\n{rel}\n"
     if code == "X":
@@ -112,7 +133,8 @@ def _state(store, data_dir, src, made):
             got = made.get(hashlib.sha256(f.read()).hexdigest(), "?")
         seen = set()
         for (pairing,) in store.conn.execute("SELECT pairing FROM pairings WHERE item_id = ?", (item_id,)):
-            video = (json.loads(pairing) or {}).get("video_path") if pairing else None
+            record = (json.loads(pairing) or {}) if pairing else {}
+            video = None if record.get("version") else record.get("video_path")   # another version's is no one's
             if video:
                 seen.add(os.path.relpath(video, src).replace("\\", "/"))
         items[place] = got + "".join(f" @ {v}" for v in sorted(seen))
@@ -233,14 +255,12 @@ def _rows():
                   "{S}/Movie/{S} Movie (1080p).{T}.srt": _ep("{S}/Movie/{S} Movie (1080p).{T}.srt",
                                                              "{S}/Movie/{S} Movie (1080p).mkv")},
                  "the movie is its own show, never an episode"))
-    # open case 5, accepted for 3.0: today each folder is a show whose video waits; LM1b (A32) makes no waiting item
-    # for an NCOP / NCED / PV / CM / Menu video, and this row then asserts the episode alone
+    # open case 5 (LM1b, A32): an NCOP / NCED / PV / CM / Menu video never makes a waiting item
     rows.append(("NCOP / NCED videos only", "convention (open 5, LM1b)",
                  "`<Show>/NCOP/NCOP1.mkv`, `<Show>/NCED/NCED1.mkv` (creditless openings, no subtitles)", "",
                  _pairs("{S}", [ep(1)], ".{T}.srt") + [("{S}/NCOP/NCOP1.mkv", "V"), ("{S}/NCED/NCED1.mkv", "V")], None,
-                 {f"{{S}}/{ep(1)}.{{T}}.srt": _ep(f"{{S}}/{ep(1)}.{{T}}.srt", f"{{S}}/{ep(1)}.mkv"),
-                  "{S}/NCOP/NCOP1.mkv": WAIT, "{S}/NCED/NCED1.mkv": WAIT},
-                 "accepted until LM1b: each creditless video waits in a show of its own (LM1b, A32: no waiting item)"))
+                 {f"{{S}}/{ep(1)}.{{T}}.srt": _ep(f"{{S}}/{ep(1)}.{{T}}.srt", f"{{S}}/{ep(1)}.mkv")},
+                 "the episode alone: a creditless opening or ending is nothing to read, never a waiting item"))
     for layout, sub in (("Subs/", "{S}/Subs/{S} - 01.{T}.srt"), ("Subtitles/", "{S}/Subtitles/{S} - 01.{T}.srt"),
                         ("Subs/<lang>/", "{S}/Subs/{T}/{S} - 01.srt"), ("Subs/<Language>/", "{S}/Subs/{LANG}/{S} - 01.srt"),
                         ("SUBS/ upper case", "{S}/SUBS/{S} - 01.{T}.srt")):
@@ -249,15 +269,15 @@ def _rows():
                      [("{S}/{S} - 01.mkv", "V"), (sub, "J")], None,
                      {f"{{S}}/{sub.rsplit('/', 1)[1]}": _ep(sub, "{S}/{S} - 01.mkv")},
                      "the subtitle folder is the show's: one show, the episode paired with its video"))
-    # open case 6, accepted for 3.0: today `Subs/<video>/` is a show of its own and the video waits (the English file
-    # refused by the language rule); LM1b (A11) gives the folder to its video, and this row then asserts one paired item
+    # open case 6 (LM1b, A11): `Subs/<video>/` belongs to that video; its copy is named as the video
     rows.append(("Subs/<video name>/ per video", "convention (open 6, LM1b)",
                  "`<Show>/<Show> - 01.mkv` + `Subs/<Show> - 01/2_Japanese.srt` and `3_English.srt` (a rip's layout)",
                  "", [("{S}/{S} - 01.mkv", "V"), ("{S}/Subs/{S} - 01/2_{LANG}.srt", "J"),
-                      ("{S}/Subs/{S} - 01/3_English.srt", "EN")], None,
-                 {"{S}/Subs/{S} - 01/2_{LANG}.srt": "{S}/Subs/{S} - 01/2_{LANG}.srt", "{S}/{S} - 01.mkv": WAIT},
-                 "accepted until LM1b: the folder is its own show, the video waits (LM1b, A11: it belongs to its "
-                 "video)"))
+                      ("{S}/Subs/{S} - 01/3_English.srt", "EN"), ("{S}/{S} - 02.mkv", "V"),
+                      ("{S}/Subs/{S} - 02/2_{LANG}.srt", "J"), ("{S}/Subs/{S} - 02/3_English.srt", "EN")], None,
+                 {f"{{S}}/{{S}} - {n:02d}.srt": _ep(f"{{S}}/Subs/{{S}} - {n:02d}/2_{{LANG}}.srt", f"{{S}}/{{S}} - {n:02d}.mkv")
+                  for n in (1, 2)},
+                 "each folder is its video's: one show, each episode its Japanese file, paired; English skipped"))
     for i in range(4):
         rows.append((f"language folder {i + 1} beside the videos", "convention (open 1)",
                      "`<Show>/` videos only + `<Show>/<language folder>/` (`JP/`, `ja/`, `[Japanese]`, "
@@ -305,17 +325,16 @@ def _rows():
                  _pairs("{S}", [ep(1)], ".{T}.srt") + [(f"{{S}}/{ep(1)}.{{T}}.synced.srt", "J")], None,
                  {f"{{S}}/{ep(1)}.{{T}}.synced.srt": _ep(f"{{S}}/{ep(1)}.{{T}}.synced.srt", f"{{S}}/{ep(1)}.mkv")},
                  "ONE item for the episode (never two); the re-timed one read"))
-    # open case 2: a subfolder named as the show folder is a subtitle folder (its texts the show's); one named like the
-    # archive stays a show of its own. Pairing by episode number (names that differ) is LM1b's, so until then no
-    # subtitle in the show-named folder pairs (nor does a video wait: the folder has texts); LM1b turns both into one paired item per episode
+    # open case 2: a subfolder named as the show folder is a subtitle folder (its texts the show's), each paired with
+    # its video by its episode's number (LM1b, A4); one named like the archive stays a show of its own
     jimaku = lambda folder, n: f"{{S}}/{folder}/{{S}}.S01E{n:02d}.WEBRip.{{T}}.srt"      # noqa: E731
     rows.append(("jimaku zip unpacked like the show", "convention (open 2, LM1b)",
                  "`<Show>/` videos only; `<Show>/<Show>/` the downloaded subtitles, named their own way "
                  "(`<Show>.S01E01.WEBRip.ja.srt`)", "",
                  [(f"{{S}}/{ep(n)}.mkv", "V") for n in (1, 2)] + [(jimaku("{S}", n), "J") for n in (1, 2)], None,
-                 {f"{{S}}/{{S}}.S01E{n:02d}.WEBRip.{{T}}.srt": jimaku("{S}", n) for n in (1, 2)},
-                 "the subtitles are the show's: one show, one item per episode; unpaired until LM1b (no video "
-                 "waits as a second item: the folder has texts)"))
+                 {f"{{S}}/{{S}}.S01E{n:02d}.WEBRip.{{T}}.srt": _ep(jimaku("{S}", n), f"{{S}}/{ep(n)}.mkv") for n in (1, 2)},
+                 "the subtitles are the show's: one show, one item per episode, each paired with its video by its "
+                 "number"))
     rows.append(("jimaku zip unpacked like the archive", "convention (open 2, LM1b)",
                  "`<Show>/` videos only; `<Show>/<Show> [archive]/` the downloaded subtitles, named their own way",
                  "", [(f"{{S}}/{ep(n)}.mkv", "V") for n in (1, 2)]
@@ -376,8 +395,9 @@ def _rows():
                      "`[JP] <Show> - 05.ja.srt`", "",
                      [(f"{{S}}/{stem}.mkv", "V"), (f"{{S}}/{stem}.srt", code), ("{S}/[JP] {S} - 05.{T}.srt", "J")],
                      None,
-                     {"{S}/[JP] {S} - 05.{T}.srt": "{S}/[JP] {S} - 05.{T}.srt"},
-                     "the text in our language is the episode; a text we can't read never is"))
+                     {"{S}/[JP] {S} - 05.{T}.srt": _ep("{S}/[JP] {S} - 05.{T}.srt", f"{{S}}/{stem}.mkv")},
+                     "the text in our language is the episode, paired by its number (LM1b); a text we can't read "
+                     "never is"))
     rows.append(("only an English subtitle beside the video", "convention",
                  "`<Show> - 05.mkv` + `<Show> - 05.srt` (English, untagged)", "",
                  [(f"{{S}}/{stem}.mkv", "V"), (f"{{S}}/{stem}.srt", "EN")], None,
@@ -473,6 +493,114 @@ def _rows():
                   "{S}/{S} - 01.{T}.srt": _ep("{S}/{S} - 01.{T}.srt", "{S}/{S} - 01.mkv")},
                  "a title starting with a dot is read; a Mac's copies are not; a tiny .ts is no video (no waiting "
                  "item)"))
+
+    # (d) LM1b's layouts: one episode per key per show (PROVISIONAL, Sonic 2026-10-21)
+    rows.append(("two releases' videos of one episode + a jimaku subtitle", "convention (LM1b, A5)",
+                 "`[A] <Show> - 05 (1080p) [Dual Audio].mkv`, `[B] <Show> - 05 (720p).mkv` and `<title> 第5話.ja.srt`",
+                 "", [("{S}/[A] {S} - 05 (1080p) [Dual Audio].mkv", "V"), ("{S}/[B] {S} - 05 (720p).mkv", "V"),
+                      ("{S}/{N} 第5{HUA}.{T}.srt", "J")], None,
+                 {"{S}/{N} 第5{HUA}.{T}.srt": _ep("{S}/{N} 第5{HUA}.{T}.srt", "{S}/[B] {S} - 05 (720p).mkv")},
+                 "one episode with two videos: the subtitle joins it by number, on the video of our audio"))
+    rows.append(("two releases' videos of one episode, no subtitle yet", "convention (LM1b, A5)",
+                 "`[A] <Show> - 05 (1080p).mkv` and `[B] <Show> - 05 (720p).mkv`, nothing else", "",
+                 [("{S}/[A] {S} - 05 (1080p).mkv", "V"), ("{S}/[B] {S} - 05 (720p).mkv", "V")], None,
+                 {"{S}/[A] {S} - 05 (1080p).mkv": WAIT},
+                 "one episode waits for its subtitle, never two"))
+    rows.append(("a creditless opening beside a waiting episode", "convention (LM1b, A32)",
+                 "`<Show> - 01.mkv` and `<Show> - NCOP1.mkv`, no subtitles", "",
+                 [("{S}/{S} - 01.mkv", "V"), ("{S}/{S} - NCOP1.mkv", "V")], None,
+                 {"{S}/{S} - 01.mkv": WAIT},
+                 "only the episode waits"))
+    rows.append(("subtitle folder named sub / 字幕", "convention (LM1b, A11)",
+                 "`<Show>/<Show> - 01.mkv` + `sub/`, `<Show> - 02.mkv` + `字幕/` each holding its subtitle", "",
+                 [("{S}/{S} - 01.mkv", "V"), ("{S}/sub/{S} - 01.{T}.srt", "J"), ("{S2}/{S2} - 02.mkv", "V"),
+                  ("{S2}/字幕/{S2} - 02.{T}.srt", "J")], None,
+                 {"{S}/{S} - 01.{T}.srt": _ep("{S}/sub/{S} - 01.{T}.srt", "{S}/{S} - 01.mkv"),
+                  "{S2}/{S2} - 02.{T}.srt": _ep("{S2}/字幕/{S2} - 02.{T}.srt", "{S2}/{S2} - 02.mkv")},
+                 "the subtitle folder is the show's: each episode paired, nothing waits"))
+    rows.append(("a signs track and the full subtitle, both untagged", "convention (LM1b, A6)",
+                 "`<Show> - 05.mkv` + `<Show> - 05.ass` (two sign lines) + `<Show> - 05.srt` (the dialogue)", "",
+                 [("{S}/{S} - 05.mkv", "V"), ("{S}/{S} - 05.ass", "THIN"), ("{S}/{S} - 05.srt", "FULL")], None,
+                 {"{S}/{S} - 05.srt": _ep("{S}/{S} - 05.srt", "{S}/{S} - 05.mkv")},
+                 "the dialogue is the episode's text, never a track of signs (`.ass` first only between equals)"))
+    # PROVISIONAL: single files win wherever they are; a double episode is a version only where
+    # singles cover every number it claims
+    rows.append(("a double episode and its second number's own file", "convention (LM1b, A13)",
+                 "`<Show> - 05-06.ja.srt` and another group's `<Show> - 06.ja.ass`, no videos", "",
+                 [("{S}/{S} - 05-06.{T}.srt", "J"), ("{S}/{S} - 06.{T}.ass", "J")], None,
+                 {"{S}/{S} - 05-06.{T}.srt": "{S}/{S} - 05-06.{T}.srt", "{S}/{S} - 06.{T}.ass": "{S}/{S} - 06.{T}.ass"},
+                 "episode 5 is only in the double file: it stays an item; 6 keeps its own file"))
+    rows.append(("a double episode beside each number's video and subtitle", "convention (LM1b, A13)",
+                 "videos `<Show> - 05.mkv`, `- 06.mkv`; subtitles `- 05.ja.srt`, `- 06.ja.srt` and `[J] <Show> - 05-06.ja.ass`",
+                 "", _pairs("{S}", ["{S} - 05", "{S} - 06"], ".{T}.srt") + [("{S}/[J] {S} - 05-06.{T}.ass", "J")], None,
+                 {f"{{S}}/{{S}} - {n:02d}.{{T}}.srt": _ep(f"{{S}}/{{S}} - {n:02d}.{{T}}.srt", f"{{S}}/{{S}} - {n:02d}.mkv")
+                  for n in (5, 6)},
+                 "each video keeps the subtitle made for it: two items; the double file is a version"))
+    rows.append(("a folder of several shows' loose episodes", "convention (LM1b, A4)",
+                 "`Watching/<A> - 01.mkv`, `Watching/<B> - 01.mkv` and `Watching/<title> 第1話.ja.srt` (whose?)", "",
+                 [("Watching/{S} - 01.mkv", "V"), ("Watching/{S2} - 01.mkv", "V"), ("Watching/{N} 第1{HUA}.{T}.srt", "J")],
+                 None, {"Watching/{N} 第1{HUA}.{T}.srt": "Watching/{N} 第1{HUA}.{T}.srt"},
+                 "two shows' videos: a number joins no video (it could be either's); the subtitle is read, unpaired"))
+    rows.append(("two remakes' episodes in one downloads folder", "convention (LM1b, A3)",
+                 "`Downloads/<Show> (2009) - 05.ja.srt` and `<Show> (2023) - 05.ja.srt`, the folder read itself",
+                 "Downloads", [("Downloads/{S} (2009) - 05.{T}.srt", "J"), ("Downloads/{S} (2023) - 05.{T}.srt", "J")],
+                 None,
+                 {"{S}/{S} (2009) - 05.{T}.srt": "Downloads/{S} (2009) - 05.{T}.srt",
+                  "{S}/{S} (2023) - 05.{T}.srt": "Downloads/{S} (2023) - 05.{T}.srt"},
+                 "the year keeps the remakes' episodes apart: two items"))
+    rows.append(("a tagged .txt beside a video", "convention (LM1b, T2-B3)",
+                 "`<Show> - 02.mkv` + `<Show> - 02.ja.txt` (a long text of ours), beside episode 01 paired", "",
+                 _pairs("{S}", ["{S} - 01"], ".{T}.srt") + [("{S}/{S} - 02.mkv", "V"), ("{S}/{S} - 02.{T}.txt", "LONG")],
+                 None,
+                 {"{S}/{S} - 01.{T}.srt": _ep("{S}/{S} - 01.{T}.srt", "{S}/{S} - 01.mkv"),
+                  "{S}/{S} - 02.{T}.txt": "{S}/{S} - 02.{T}.txt"},
+                 "a text pairs with a video only by its exact name: the .txt is no subtitle of that video"))
+    rows.append(("another group's subtitle with a title arrives for an episode in", "convention (LM1b)",
+                 "a show 01 paired; later `[Other] <Show> - 01 - <Title>.ja.ass`", "",
+                 _pairs("{S}", [ep(1)], ".{T}.srt"), [("{S}/[Other] {S} - 01 - The First Words.{T}.ass", "J")],
+                 {f"{{S}}/{ep(1)}.{{T}}.srt": _ep(f"{{S}}/{ep(1)}.{{T}}.srt", f"{{S}}/{ep(1)}.mkv")},
+                 "another version of episode 1: never a second item"))
+    rows.append(("another group's v2 arrives for an episode in", "convention (LM1b, A8)",
+                 "a show 01 paired (`[Grp]`); later `[Other] <Show> - 01v2.ja.srt`", "",
+                 [(f"{{S}}/{ep(1)}.mkv", "V"), (f"{{S}}/{ep(1)}.{{T}}.srt", "FULL")],
+                 [("{S}/[Other] {S} - 01v2.{T}.srt", "FULL")],
+                 {f"{{S}}/{ep(1)}.{{T}}.srt": _ep(f"{{S}}/{ep(1)}.{{T}}.srt", f"{{S}}/{ep(1)}.mkv")},
+                 "the pick sticks: another group's v2 is a version, never written over our text"))
+    rows.append(("an episode's video arrives after its subtitle", "convention (LM1b, A19)",
+                 "a show 01–02 paired and 03's subtitle alone; later 03's video", "",
+                 _pairs("{S}", [ep(1), ep(2)], ".{T}.srt") + [(f"{{S}}/{ep(3)}.{{T}}.srt", "J")],
+                 [(f"{{S}}/{ep(3)}.mkv", "V")],
+                 {f"{{S}}/{ep(n)}.{{T}}.srt": _ep(f"{{S}}/{ep(n)}.{{T}}.srt", f"{{S}}/{ep(n)}.mkv") for n in (1, 2, 3)},
+                 "episode 3 gets its video: three items, all paired"))
+
+    # (e) a songs track, an extra, a second release, a year, `Subs/<video>/`
+    rows.append(("a songs track out-lining the dialogue", "convention (LM1b)",
+                 "`<Show> - 05.mkv` + `<Show> - 05.ja.srt` (the dialogue) + `<Show> - 05.ja.songs.ass` (sixty sung lines)",
+                 "", [("{S}/{S} - 05.mkv", "V"), ("{S}/{S} - 05.{T}.srt", "FULL"), ("{S}/{S} - 05.{T}.songs.ass", "SONGS")],
+                 None, {"{S}/{S} - 05.{T}.srt": _ep("{S}/{S} - 05.{T}.srt", "{S}/{S} - 05.mkv")},
+                 "a flagged track never takes the dialogue's place, however many lines it has"))
+    rows.append(("a creditless opening named after episode 1's number", "convention (LM1b)",
+                 "`<Show> - 01.mkv`, `<Show> - 01 - NCOP.mkv`, `<Show> - 02.mkv` and `<title> 第1話.ja.srt`", "",
+                 [("{S}/{S} - 01.mkv", "V"), ("{S}/{S} - 01 - NCOP.mkv", "V"), ("{S}/{S} - 02.mkv", "V"),
+                  ("{S}/{N} 第1{HUA}.{T}.srt", "J")], None,
+                 {"{S}/{N} 第1{HUA}.{T}.srt": _ep("{S}/{N} 第1{HUA}.{T}.srt", "{S}/{S} - 01.mkv")},
+                 "episode 1's subtitle goes with episode 1's video, never the creditless opening's"))
+    rows.append(("a subtitle named like the second release's waiting video", "convention (LM1b)",
+                 "`[A] <Show> - 05 (1080p).mkv` and `[B] <Show> - 05 (720p).mkv` wait; later `[B] … (720p).ja.srt`",
+                 "", [("{S}/[A] {S} - 05 (1080p).mkv", "V"), ("{S}/[B] {S} - 05 (720p).mkv", "V")],
+                 [("{S}/[B] {S} - 05 (720p).{T}.srt", "J")],
+                 {"{S}/[B] {S} - 05 (720p).{T}.srt": _ep("{S}/[B] {S} - 05 (720p).{T}.srt", "{S}/[B] {S} - 05 (720p).mkv")},
+                 "the waiting episode takes its subtitle in place: one item, never a second beside the waiting one"))
+    rows.append(("a year-named and a yearless subtitle of one episode", "convention (LM1b)",
+                 "`<Show> (2019) - 05.ja.srt` (a Plex name) and `[Grp] <Show> - 05.ja.srt` (a fansub's), no videos", "",
+                 [("{S}/{S} (2019) - 05.{T}.srt", "J"), ("{S}/[Grp] {S} - 05.{T}.srt", "J")], None,
+                 {"{S}/{S} (2019) - 05.{T}.srt": "{S}/{S} (2019) - 05.{T}.srt"},
+                 "one year in the show: the year is no remake's, one episode, the first by name (PROVISIONAL)"))
+    rows.append(("Subs/<video>/ beside a jimaku .ass", "convention (LM1b)",
+                 "`<Show> - 01.mkv` + `Subs/<Show> - 01/3_Japanese.srt` + `<title> 第1話.ja.ass` beside the video", "",
+                 [("{S}/{S} - 01.mkv", "V"), ("{S}/Subs/{S} - 01/3_{LANG}.srt", "J"), ("{S}/{N} 第1{HUA}.{T}.ass", "J")],
+                 None, {"{S}/{S} - 01.srt": _ep("{S}/Subs/{S} - 01/3_{LANG}.srt", "{S}/{S} - 01.mkv")},
+                 "the file made for that video counts as named like it (T2-A1): it is the episode's text"))
 
     # the two regressions over two looks
     three = [ep(n) for n in (1, 2, 3)]

@@ -432,6 +432,7 @@ def test_your_own_cards_choice_writes_order_all_and_their_tag_stays_open_under_i
 
 def test_phrases_and_i_plus_one_first_are_switches_hidden_for_chinese_and_at_the_back(qapp):
     """Q31: two plain switches, each writing its own key; no "First" heading; gone at the back and for Chinese."""
+    pytest.importorskip("modules.junban.reposition")     # Junban's rows show only with Junban installed (private)
     page, store = make_page(dict(ALL_ON, junban_phrases=True, junban_ready_first=False), "ja")
     phrases, ready = page.rows["junban_phrases"], page.rows["junban_ready_first"]
     assert isinstance(phrases.controls[0], sc.Toggle) and isinstance(ready.controls[0], sc.Toggle)
@@ -477,6 +478,8 @@ def test_no_multi_pick_on_the_page_paints_a_choices_vein(qapp, monkeypatch):
     tablets = {view.row.id: c for view in page.rows.values() for c in view.controls
                if isinstance(c, sc.Tablets) and not c.is_list}
     assert set(tablets) == {"known_from_anki", "junban_only_markers"}
+    tablets = {k: c for k, c in tablets.items() if c.isVisibleTo(page)}   # Junban's show only with it installed
+    assert "known_from_anki" in tablets
     veins, ticks = [], []
     monkeypatch.setattr(sc, "paint_vein", lambda *a, **k: veins.append(a))
     monkeypatch.setattr(sc, "paint_tick", lambda *a, **k: ticks.append(a))

@@ -163,8 +163,9 @@ def local_or_network(path):
 
 def scan(store, language, root, first=False, progress=None, stop=None, full=False, rules=None):
     """One look at the source `root` (its id) -> {reachable, found, shows, added, attached, skipped, short, waiting,
-    recopied, restored, paired, stopped, busy, ids} (`short`: of those skipped, the loose texts too short to be a book,
-    T2-B4; `paired`: known texts whose video was found and recorded on them, `_late` — "12 episodes found their videos").
+    recopied, restored, paired, switched, stopped, busy, ids} (`short`: of those skipped, the loose texts too short to
+    be a book, T2-B4; `paired`: known texts whose video was found and recorded on them, `_late` — "12 episodes found
+    their videos"; `switched`: items that took a better version or a book's new edition in place, LM3).
     `first`: setup's own first scan (SRC-1: Current, quiet); `full`: Refresh (S4); `progress(found, shows)` every
     PROGRESS_S; `stop()` is asked between files (a stopped look keeps what it took in, whole); `rules`: the placing
     rules `take_in` applies to an arrival. A source not being read raises NotASource.
@@ -187,7 +188,8 @@ def _store_key(store):
 
 def _result(**values):
     out = {"reachable": True, "found": 0, "shows": 0, "added": 0, "attached": 0, "skipped": 0, "short": 0,
-           "waiting": 0, "recopied": 0, "restored": 0, "paired": 0, "stopped": False, "busy": False, "ids": []}
+           "waiting": 0, "recopied": 0, "restored": 0, "paired": 0, "switched": 0, "stopped": False, "busy": False,
+           "ids": []}
     out.update(values)
     return out
 
@@ -273,6 +275,103 @@ def in_versions_folder(path, language):
     """Is `path` in a versions folder of its show's (item 11: `synced/`, `retimed/`, by the folder's name alone)?"""
     folder = os.path.dirname(path)
     return _subtitle_folder(os.path.basename(folder), os.path.basename(os.path.dirname(folder)), language) == "versions"
+
+
+def group_copies(picks, versions, language):
+    """LM2 / LM3, the ONE reading of an episode's copies by group (pure: the store's `_group_copies` and the look's
+    better-version check both ask it): `picks` / `versions` = [(key, record)] of the item's own origins and of its
+    other versions (a record's `origin`, `sha256`, `video_path`) -> (the pick's group, the pick's rank, {group: (key,
+    rank)} — of each group the version the look would pick: `version_rank` against the pick's video, never a flagged
+    track (signs, karaoke), a bilingual file, a double-episode file, the pick's own bytes or one the learner's Undo
+    declined, LM3)."""
+    pick = next((r for _k, r in picks if r.get("video_path")), picks[0][1])
+    video = pick.get("video_path")
+    like = video_names([video] if video else ())
+    shas = {r.get("sha256") for _k, r in picks}
+
+    def rank(origin):
+        name, folder = os.path.basename(origin), os.path.basename(os.path.dirname(origin))
+        return version_rank(name, language, named_like(name, like, folder), _folder_language(folder),
+                            in_versions_folder(origin, language))
+    best = {}
+    for key, record in versions:
+        origin = str(record.get("origin") or "")
+        if not origin or record.get("sha256") in shas or record.get("declined"):
+            continue
+        n = en.identity(os.path.basename(origin))
+        if n.flags or n.bilingual or len(n.episodes) > 1:
+            continue                                 # never the text: a signs track, two languages, two episodes
+        r, group = rank(origin), _group(os.path.basename(origin))
+        if group not in best or r < best[group][1]:
+            best[group] = (key, r)
+    origin = str(pick.get("origin") or "")
+    return _group(os.path.basename(origin)), rank(origin), best
+
+
+def better(rank, than):
+    """LM3 (answer 3; PROVISIONAL, to be checked in use): does a version ranked `rank` beat the item's text ranked
+    `than` in the look's own order (`version_rank`: a later release, named like its video, our tag, plain, a versions
+    folder or mark, `.ass` before `.srt`) — on more than the order's last step, its name, so two copies told apart by
+    their names alone never switch?"""
+    return tuple(rank[:-1]) < tuple(than[:-1])
+
+
+def dialogue_lines(text):
+    """A6: a subtitle's dialogue lines — the distinct texts of its `Dialogue:` lines (.ass / .ssa: override tags `{…}`
+    off, a sign drawn frame by frame once) or of its cues (.srt), by what it holds; 0 for none (a text, not a
+    subtitle). The look's thin rule (`_Look._lines`) and the store's better-version switch count with it."""
+    said = set()
+    for line in text.splitlines():
+        if line.lstrip().startswith("Dialogue:"):
+            said.add(_OVERRIDE.sub("", line.split(",", 9)[-1]).strip())
+    if not said and "-->" in text:
+        for cue in re.split(r"\n\s*\n", text.replace("\r\n", "\n")):
+            lines = cue.strip().split("\n")
+            at = next((i for i, x in enumerate(lines) if "-->" in x), None)
+            if at is not None:
+                said.add(" ".join(x.strip() for x in lines[at + 1:]))
+    said.discard("")
+    return len(said)
+
+
+# T2-B6 (LM3, PROVISIONAL): a book file's edition marks — a bracket holding an edition word (`(第2版)`, `【新装版】`,
+# `[Revised Edition]`, `(v2)`), or one ending the name after a space (`改訂版`, `第二版`, `2nd Edition`, `v2`); never a
+# bare number (`<book> 2` is its second volume)
+_EDITION_WORD = (r"(?:[^\s()\[\]【】]*版|\bedition\b|\bed\.|\brevised\b|\brev\.|\bv\d+\b|\bver\.?\s*\d+\b|改訂|改订|"
+                 r"増補|增补|修订|修訂|新装)")
+_EDITION_MARK = re.compile(rf"\s*[(\[【][^)\]】]*?{_EDITION_WORD}[^)\]】]*[)\]】]\s*$|"
+                           rf"[\s_\-]+(?:\d+(?:st|nd|rd|th)\s+)?{_EDITION_WORD}\s*$", re.IGNORECASE)
+
+
+def edition_name(name):
+    """T2-B6 (LM3, PROVISIONAL): a book file's name with its edition marks off (`_EDITION_MARK`, from its end, NFKC,
+    case-folded): two EPUBs in one folder whose names read the same are one book's editions. '' for nothing left."""
+    stem = unicodedata.normalize("NFKC", os.path.splitext(name)[0]).strip()
+    while True:
+        shorter = _EDITION_MARK.sub("", stem).strip()
+        if shorter == stem or not shorter:
+            return shorter.casefold() if shorter else ""
+        stem = shorter
+
+
+def book_parts(path, language):
+    """K8 / T2-B6 (LM3; LM7 calls it too), the ONE EPUB → parts splitter: the parts' bytes as a book's copies hold them
+    (Extract's reader and its default split, UTF-8) -> (parts, None), or (None, why): "locked" (its encryption.xml
+    locks more than its fonts: a shop's DRM, B6) or "text" (no text, or none of the library's language: K6, an English
+    translation). A new book (`_Look._book`), a book's new edition and a book whose parts' copies are lost (split again
+    from its EPUB when the EPUB's sha256 is the record's, LM7) all read their parts here."""
+    from app import extract
+    if _locked(path):
+        return None, "locked"
+    chunks, error = extract.chunks_of(path, language)
+    if error or not chunks or _refusal("".join(chunks), language):
+        return None, "text"
+    return [c.encode("utf-8") for c in chunks], None
+
+
+def part_names(base, count):
+    """A book's parts' file names (`book_parts`' order): `<base>.txt` for one part, else `<base>_01.txt` …"""
+    return [f"{base}_{i:02d}.txt" if count > 1 else f"{base}.txt" for i in range(1, count + 1)]
 
 
 def group_label(name):
@@ -595,6 +694,12 @@ class _Look:
         self.groups = {}             # LM2: {a show's folder key: its group}, recorded (`_load`) or decided this look
         self.decided = {}            # LM2: {a show's folder key: {group, label} decided this look}: `take_in` records it
         self.deciding = {}           # LM2: {a show's folder key: the episode whose taken file decides its group}
+        self.hato = None             # LM3 (A9): {a show's folder key: [Origin]} of hato's items (`Store.hato_items`)
+        self.hato_ids = set()        # LM3: their item ids (hato's text is never followed nor rewritten by a look)
+        self.better = set()          # LM3 (a): items a version was recorded on this look: a better one switched to
+        self.listed = set()          # LM3 (a): items whose known version a folder listed holds (checked here first)
+        self.by_item = None          # LM3: {item id: [its Origins]} (`_maybe_better`), grouped once a look
+        self.book_origins = None     # LM3 (c): {an EPUB's key: {part number: Origin}} of the books' parts' records
 
     # --- the look ------------------------------------------------------------------------------------------------- #
 
@@ -774,6 +879,9 @@ class _Look:
                     where = folder                           # a versions folder's: the folder's releases (S7, H12)
                 if kind == "known":
                     known.append((where, path, st))
+                    o = self.origins.get(_key(path))
+                    if o is not None and o.version:          # LM3 (a): a better version the switch held before
+                        self.listed.add(o.item_id)
                     self.late.append((where, path, name, vids))     # A19 / A20: its video asked after the changes
                 elif kind == "book":
                     books.append((where, name, path, st, show))
@@ -898,7 +1006,9 @@ class _Look:
         out, groups = [], {}
         for t in texts:
             k = _key(t[1]) if self.no_text else None
-            if k is not None and (self.no_text.get(k) or [])[:2] == [t[2].st_size, t[2].st_mtime_ns]:
+            gone = (self.no_text.get(k) or []) if k is not None else []
+            if gone[:2] == [t[2].st_size, t[2].st_mtime_ns] and (gone[2:3] != ["out"] or gone[3:4] and
+                                                                  gone[3] in self.ex_shas):   # (LM1b N5: kept out)
                 self.no_text_kept[k] = self.no_text[k]       # none of our script in it, or short, unchanged (K6)
                 self.out["skipped"] += 1
                 self.out["short"] += self.no_text[k][2:] == ["short"]
@@ -981,8 +1091,8 @@ class _Look:
             out = [e for e in out if id(e) in kept]       # (in the listing's order, as before)
         for n, p, st in epubs:
             k = _key(p)
-            if k in self._book_keys():                       # a known EPUB is never split again
-                continue
+            if k in self._book_keys() and not self._book_moved(k, st):   # a known EPUB is never split again (LM3:
+                continue                                     # one whose stats moved may be its new edition)
             if self.no_text.get(k) == [st.st_size, st.st_mtime_ns]:   # no text in it, and unchanged (K5)
                 self.no_text_kept[k] = self.no_text[k]
                 self.out["skipped"] += 1
@@ -1097,6 +1207,7 @@ class _Look:
             if self.out["stopped"]:
                 return
         self._refused_only()
+        self._switch_better()
 
     def _refused_only(self):
         """LF-19: a folder's videos whose every subtitle pick the one language rule refused (`_refusal` at `_new`: an
@@ -1123,6 +1234,39 @@ class _Look:
                 if f is not None:
                     batch.append(f)
             self._commit(batch)
+
+    def _switch_better(self):
+        """LM3 (a), answer 3 (PROVISIONAL): an item a version was recorded on this look — or whose version a folder
+        listed holds (a switch held before, a version recorded before LM3; checked first from the origins read,
+        `_maybe_better`) — switched to its better version IN PLACE when the look's own order ranks that above the
+        item's text, as the look would have picked it had both been there at once (`Store.switch_versions`: the one
+        rule `group_copies` / `better`, its own group's only, A6's thin rule; LM2's one swap path). A busy store: the
+        next look."""
+        todo = sorted(self.better | {i for i in self.listed - self.better if self._maybe_better(i)})
+        if not todo or self.stopped():
+            return
+        try:
+            change = self.store.switch_versions(todo)
+        except ls.StoreError:
+            return
+        self.out["switched"] += len(change.switched)
+
+    def _maybe_better(self, item_id):
+        """Might the item take a better version (`switch_versions` decides)? From the origins read (no read of the
+        store): its own text's group has a version the one rule ranks above it."""
+        if self.by_item is None:
+            self.by_item = {}
+            for o in self.origins.values():
+                self.by_item.setdefault(o.item_id, []).append(o)
+        found = self.by_item.get(item_id) or []
+        record = lambda o: (o.origin, {"origin": o.origin, "sha256": o.sha256, "video_path": o.video_path})  # noqa
+        picks = [record(o) for o in found if not o.version]
+        versions = [record(o) for o in found if o.version]
+        if not picks or not versions or found[0].availability != "available" or \
+                ls._EPUB_PART.search(str(picks[0][0] or "")):
+            return False
+        mine, rank, best = group_copies(picks, versions, self.language)
+        return mine in best and better(best[mine][1], rank)
 
     def _commit(self, found):
         """`take_in` of one batch; a copy no item holds (the source stopped meanwhile — this batch's copies — or the
@@ -1152,6 +1296,8 @@ class _Look:
                 log.warning("A checkpoint of the library failed (the look goes on): %r", e)
         self.out["added"] += len(change.added)
         self.out["ids"].extend(change.added)
+        added = set(change.added)                            # LM3 (a): an item in before took a version
+        self.better.update(i for i in getattr(change, "versions", None) or () if i not in added)
         self.out["attached"] += len(change.attached)
         self.out["skipped"] += sum(len(v) for v in change.skipped.values())
         for rel in change.unused:
@@ -1214,8 +1360,9 @@ class _Look:
             held = None                                      # a double episode of a number held by nothing
         held_name = os.path.basename(held[1].origin or "") if held is not None else ""
         forced = None
-        if held is not None and not (held[0] < version and _kind(name) <= _kind(held_name) and  # I9: a worse kind's
-                                     _group(name) == _group(held_name)):   # v2, A8: another group's, is a version
+        if held is not None and (held[1].item_id in self.hato_ids or not (    # LM3: hato's text is never followed
+                held[0] < version and _kind(name) <= _kind(held_name) and  # I9: a worse kind's v2, A8: another
+                _group(name) == _group(held_name))):                       # group's, is a version
             got = self.read[path] = self.read.get(path) or _read_text(path, st)
             if got[1] is None or got[1] != held[1].sha256:   # (A26: the pick's own bytes found again — a moved
                 self.out["skipped"] += 1                     # show — are its origin, with its video, never a version)
@@ -1328,15 +1475,17 @@ class _Look:
                 self.pending.append((os.path.dirname(p), p, s, show, n, item_id, of))
         if _key(path) in self.ex_paths:
             return None
-        if self._recent(st):
-            self.unsettled.add(ls.path_key(folder))
+        if self._recent(st):                                 # LM1b N5: it waits — counted waiting (every caller
+            self.out["skipped"] -= 1                         # counted it skipped)
+            self._wait(folder)
             return None
         data, sha, head = self.read.pop(path, None) or _read_text(path, st)
         if sha is None or not self._same(path, st):
             self.unsettled.add(ls.path_key(folder))
             return None
-        if sha in self.ex_shas:
-            return None
+        if sha in self.ex_shas:                              # LM1b N5: a removed item's bytes — remembered by its
+            self.no_text_kept[_key(path)] = [st.st_size, st.st_mtime_ns, "out", sha]   # stats, never read again
+            return None                                      # while they stay out
         why = _refusal(head, self.language, name.lower().endswith(_LOOSE), data is None)
         if why:
             self.no_text_kept[_key(path)] = [st.st_size, st.st_mtime_ns] + (["short"] if why == "short" else [])
@@ -1400,19 +1549,7 @@ class _Look:
         data, sha, head = self.read[path]
         if sha is None or _refusal(head, self.language, name.lower().endswith(_LOOSE), data is None):
             return None
-        text = decode_text(head, self.language, head=data is None)
-        said = set()
-        for line in text.splitlines():
-            if line.lstrip().startswith("Dialogue:"):
-                said.add(_OVERRIDE.sub("", line.split(",", 9)[-1]).strip())
-        if not said and "-->" in text:
-            for cue in re.split(r"\n\s*\n", text.replace("\r\n", "\n")):
-                lines = cue.strip().split("\n")
-                at = next((i for i, x in enumerate(lines) if "-->" in x), None)
-                if at is not None:
-                    said.add(" ".join(x.strip() for x in lines[at + 1:]))
-        said.discard("")
-        return len(said) or None
+        return dialogue_lines(decode_text(head, self.language, head=data is None)) or None
 
     def _video_for(self, path, name, vids):
         """LM1b, the ONE pairing rule of a look: the video a text found in a folder goes with -> (its key in `vids`,
@@ -1659,13 +1796,15 @@ class _Look:
         (`_keys`: its name's numbers, its video's). A `v2` found is that episode (followed, S5), an earlier one or
         another group's found later is a version. Worked out per show, once a look, from that show's origins alone
         (a look that found one new file read the names of every origin, 1.3 s at 20k): the origins grouped by
-        their copies' folder once, only names of the show asked read."""
+        their copies' folder once, only names of the show asked read. LM3 (A9, LM1b deferred): hato's items of the show's
+        title count as its episodes too (`_hato_origins`: their file's name and recorded video), so a folder file of
+        an episode hato holds is that item's version, never a second item."""
         fk = _show_key(show)
         origins = self._show_origins(fk)
         if fk in self.by_show:
             return self.by_show[fk]
         releases = self.by_show[fk] = {}
-        for o in origins:
+        for o in list(origins) + self._hato_origins(fk):    # LM3 (A9, LM1b deferred): hato's items are its episodes too
             name = os.path.basename(o.origin or "")
             if o.version or not ls.is_content_name(name.lower()):   # a version, a book's part, a waiting video (K5)
                 continue
@@ -1675,6 +1814,14 @@ class _Look:
                 if k not in releases or releases[k][0] < version:
                     releases[k] = (version, o)
         return releases
+
+    def _hato_origins(self, fk):
+        """LM3 (A9): hato's items of the show whose `Library` folder key is `fk` — read once a look, when a show's
+        episodes are first asked (`Store.hato_items`)."""
+        if self.hato is None:
+            self.hato = self.store.hato_items()
+            self.hato_ids = {o.item_id for found in self.hato.values() for o in found}
+        return self.hato.get(fk, [])
 
     # --- writing into Library -------------------------------------------------------------------------------------- #
 
@@ -1880,13 +2027,16 @@ class _Look:
     # --- an EPUB (S11) --------------------------------------------------------------------------------------------- #
 
     def _book(self, folder, name, path, st, show):
-        """An EPUB split by Extract's reader and default split into a free `Library/<book>` folder (each part via a
-        `.part`), each part's origin `<epub>#<n>`, all taken in at once — or none (a part that can't be written: the
-        parts already written to the trash, the book waits). Each part's record holds the EPUB file's sha256, so the
-        same book renamed or moved is known by its bytes — its parts recorded on the items already in, nothing read
-        or written — and a removed one's bytes stay out (K4, S6); a part whose text an item already holds is that
-        item (check b). A book that gave no text is remembered by its stats and not read again until it changes (K5)."""
-        from app import extract
+        """An EPUB split by the one splitter (`book_parts`: Extract's reader and default split) into a free
+        `Library/<book>` folder (each part via a `.part`), each part's origin `<epub>#<n>`, all taken in at once — or
+        none (a part that can't be written: the parts already written to the trash, the book waits). Each part's record
+        holds the EPUB file's sha256, so the same book renamed or moved is known by its bytes — its parts recorded on
+        the items already in (as versions where those bytes are an old edition's), nothing read or written — and a
+        removed one's bytes stay out (K4, S6); a part whose text an item already holds is that item (check b). A book
+        that gave no text is remembered by its stats and not read again until it changes (K5). LM3 (T2-B6 A): a known
+        book's new edition — this EPUB at its path with new bytes, or in its folder under its name with the edition
+        marks off (`edition_name`) — is switched to whole (`_edition`), never added beside it; the same bytes at its
+        path with new stats only rewrite its records' stats."""
         if self._recent(st):
             self._wait(folder)
             return
@@ -1902,24 +2052,31 @@ class _Look:
             return
         origin = os.path.abspath(path)
         known = self._books().get(sha)
+        mine = self._book_origins().get(_key(path)) or {}
+        if known and any(o.sha256 == sha for o in mine.values()):    # touched: its records' stats follow (LM3)
+            self.store.update_origins([(f"{origin}#{n}", st.st_size, st.st_mtime_ns, sha, None) for n in sorted(mine)
+                                       if mine[n].sha256 == sha])
+            return
         if known:
-            self._commit([{"origin": f"{origin}#{i}", "size": st.st_size, "mtime_ns": st.st_mtime_ns, "sha256": sha,
-                           "show": rel.split("/")[1] if rel.count("/") >= 2 else show, "item_id": item, "episode": i}
-                          for i, (item, rel) in sorted(known.items())])
+            self._commit([dict({"origin": f"{origin}#{i}", "size": st.st_size, "mtime_ns": st.st_mtime_ns,
+                                "sha256": sha, "show": rel.split("/")[1] if rel.count("/") >= 2 else show,
+                                "item_id": item, "episode": i}, **({"version": True} if version else {}))
+                          for i, (item, rel, version) in sorted(known.items())])
             return
-        if _locked(path):                                    # a shop's DRM: never split (B6)
+        target = self._edition_of(path)
+        if target:                                           # LM3 (T2-B6 A): this book's new edition
+            self._edition(folder, path, st, sha, target)
+            return
+        data, _why = book_parts(path, self.language)        # a shop's DRM (B6), no text, or none of the language:
+        if data is None:                                     # passed over until it changes (K5, K6)
             self._pass_over(path, st)
-            return
-        chunks, error = extract.chunks_of(path, self.language)
-        if error or not chunks or _refusal("".join(chunks), self.language):   # no text, or none of the language
-            self._pass_over(path, st)                        # (an English translation, B6): until it changes
             return
         if not self._same(path, st):
             self._wait(folder)
             return
+        from app import extract
         base = extract.clean_name(os.path.splitext(name)[0]) or "Book"
-        data = [c.encode("utf-8") for c in chunks]
-        names = [f"{base}_{i:02d}.txt" if len(data) > 1 else f"{base}.txt" for i in range(1, len(data) + 1)]
+        names = part_names(base, len(data))
         shas = [hashlib.sha256(d).hexdigest() for d in data]
         sizes = self.store.items_of_size([len(d) for d in data])
         held = [self._same_bytes(len(d), s, sizes) for d, s in zip(data, shas)]
@@ -1933,6 +2090,25 @@ class _Look:
             n += 1
             book = f"{base} ({n})"
         rels = [f"{ls.CONTENT_FOLDER}/{book}/{x}" for x in names]
+        if not self._write_parts(folder, rels, data, todo):
+            return
+        if todo:
+            write_source_marker(os.path.join(self.data_dir, ls.CONTENT_FOLDER, book), "epub", origin=name)
+        found = []
+        for i, (rel, item) in enumerate(zip(rels, held), 1):
+            f = {"origin": f"{origin}#{i}", "size": st.st_size, "mtime_ns": st.st_mtime_ns, "sha256": sha,
+                 "show": book, "episode": i}
+            if item is None:
+                f["rel"] = rel
+            else:
+                f["item_id"] = item
+            found.append(f)
+        self._commit(found)
+
+    def _write_parts(self, folder, rels, data, todo):
+        """A book's parts `todo` (their indexes) written at `rels` (each via a `.part`, then renamed; a file there
+        already is the same bytes a crash left) -> True; else every part written goes to the trash and the book waits
+        (False)."""
         written, parts = [], []
         try:
             for i in todo:
@@ -1956,20 +2132,102 @@ class _Look:
             for w in written:
                 self._trash(ls.library_rel(self.data_dir, w))
             self._wait(folder)
-            return
-        if todo:
-            write_source_marker(os.path.join(self.data_dir, ls.CONTENT_FOLDER, book), "epub", origin=name)
+            return False
         self.made.update(rels[i] for i in todo)
-        found = []
-        for i, (rel, item) in enumerate(zip(rels, held), 1):
-            f = {"origin": f"{origin}#{i}", "size": st.st_size, "mtime_ns": st.st_mtime_ns, "sha256": sha,
-                 "show": book, "episode": i}
-            if item is None:
-                f["rel"] = rel
-            else:
-                f["item_id"] = item
-            found.append(f)
-        self._commit(found)
+        return True
+
+    def _book_origins(self):
+        """LM3: {an EPUB's key: {part number: Origin}} of every book part recorded (its own text's and its old
+        editions', versions), gathered once a look."""
+        if self.book_origins is None:
+            self.book_origins = {}
+            for k, o in self.origins.items():
+                head, _sep, number = k.rpartition("#")
+                if head and number.isdigit() and ls._EPUB_PART.search(str(o.origin or "")):
+                    self.book_origins.setdefault(head, {})[int(number)] = o
+        return self.book_origins
+
+    def _book_moved(self, key, st):
+        """LM3 (T2-B6): is this known EPUB's text recorded with other stats (its bytes may be a new edition's)? Never
+        for an EPUB known only as an old edition (versions): that is never split again."""
+        picks = [o for o in (self._book_origins().get(key) or {}).values() if not o.version]
+        return bool(picks) and all((o.size, o.mtime_ns) != (st.st_size, st.st_mtime_ns) for o in picks)
+
+    def _edition_of(self, path):
+        """LM3 (T2-B6 A, PROVISIONAL): the known book this EPUB is the new edition of -> {part number: Origin} of its
+        parts (their own text's records), or None: the book recorded at this very path, else one in this EPUB's folder
+        whose name reads the same with the edition marks off (`edition_name`: `<book> (第2版)` is `<book>`'s; `<book>
+        2` is a second volume, never)."""
+        books = self._book_origins()
+        own = {n: o for n, o in (books.get(_key(path)) or {}).items() if not o.version}
+        if own:
+            return own
+        want = edition_name(os.path.basename(path))
+        here = ls.path_key(os.path.dirname(os.path.abspath(path)))
+        if not want:
+            return None
+        for key in sorted(books):
+            picks = {n: o for n, o in books[key].items() if not o.version}
+            if not picks:
+                continue
+            epub = str(next(iter(picks.values())).origin or "").rpartition("#")[0]
+            if ls.path_key(os.path.dirname(epub)) == here and edition_name(os.path.basename(epub)) == want:
+                return picks
+        return None
+
+    def _edition(self, folder, path, st, sha, target):
+        """LM3 (T2-B6 A, PROVISIONAL): the EPUB at `path` is the book `target`'s new edition — split by the one
+        splitter (`book_parts`) and switched WHOLE, in place (`Store.switch_parts`: each part keeps its item, place,
+        cards and file name and takes the new edition's part; the old copies to the trash; the new edition's records
+        the parts' own, the old ones versions): a part that can't switch leaves every part as it was and the book waits
+        for the next look. A new edition with more parts: its extra parts are new items of the book; with fewer: the
+        parts beyond its end are taken out, their copies in the trash (Put back brings them), never left holding the
+        old edition's text."""
+        data, _why = book_parts(path, self.language)
+        if data is None:
+            self._pass_over(path, st)
+            return
+        if not self._same(path, st):
+            self._wait(folder)
+            return
+        origin = os.path.abspath(path)
+        old = sorted(target.items())
+        first = old[0][1].rel_path or ""
+        book = first.split("/")[1] if first.count("/") >= 2 else os.path.splitext(os.path.basename(path))[0]
+        parts = [{"item": o.item_id, "data": d, "origin": f"{origin}#{i}", "size": st.st_size,
+                  "mtime_ns": st.st_mtime_ns, "sha256": sha, "show": book, "episode": i}
+                 for i, ((_n, o), d) in enumerate(zip(old, data), 1)]
+        try:
+            change = self.store.switch_parts(self.root_id, parts)
+        except ls.StoreError:                                # busy: the next look
+            self._wait(folder)
+            return
+        if not change.switched:                              # waits whole
+            self._wait(folder)
+            return
+        self.out["switched"] += len(change.switched)
+        if len(data) > len(old):                             # its extra parts: new items of the book
+            stem = os.path.splitext((old[-1][1].rel_path or "").rsplit("/", 1)[-1])[0]
+            base = re.sub(r"_[0-9]+$", "", stem) if len(old) > 1 else stem
+            rels = [f"{ls.CONTENT_FOLDER}/{book}/{base}_{i:02d}.txt" for i in range(1, len(data) + 1)]
+            todo = list(range(len(old), len(data)))
+            if self._write_parts(folder, rels, data, todo):
+                self._commit([{"origin": f"{origin}#{i + 1}", "size": st.st_size, "mtime_ns": st.st_mtime_ns,
+                               "sha256": sha, "show": book, "episode": i + 1, "rel": rels[i]} for i in todo])
+        surplus = [o for _n, o in old[len(data):]]
+        if surplus:                                          # the parts beyond the new edition's end: taken out
+            trashed = {}
+            for o in surplus:
+                try:
+                    gone = ls.trash_file(self.data_dir, o.rel_path)
+                except OSError as e:                         # held open: it stays, logged
+                    log.warning("A book's part past its new edition's end couldn't go to the trash (%s): %s",
+                                o.rel_path, e)
+                    gone = None
+                if gone:
+                    trashed[o.item_id] = gone
+            if trashed:
+                self.store.remove(sorted(trashed), trashed_paths=trashed, by=ls.SOURCE_PRODUCER, exclude=False)
 
     def _pass_over(self, path, st, why=None):
         """A file that is no content — an EPUB with no text or locked (K5, B6), a text none of the language's (K6), a
@@ -1980,11 +2238,12 @@ class _Look:
         self.out["short"] += why == "short"
 
     def _books(self):
-        """{an EPUB's sha256: {part number: (item_id, rel)}} of the books already in (their parts' records)."""
+        """{an EPUB's sha256: {part number: (item_id, rel, version)}} of the books already in (their parts' records;
+        `version`: an old edition's, LM3)."""
         if self.books_in is None:
             self.books_in = {}
             for o in self.origins.values():
                 head, _sep, number = (o.origin or "").rpartition("#")
                 if head and number.isdigit() and o.sha256:
-                    self.books_in.setdefault(o.sha256, {})[int(number)] = (o.item_id, o.rel_path or "")
+                    self.books_in.setdefault(o.sha256, {})[int(number)] = (o.item_id, o.rel_path or "", o.version)
         return self.books_in

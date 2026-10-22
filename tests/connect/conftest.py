@@ -16,6 +16,13 @@ def never_the_real_anki_miner(monkeypatch):
     monkeypatch.setattr(anki_miner, "_default_location", lambda: None)
 
 
+@pytest.fixture(autouse=True)
+def never_the_real_anki_miner_home(tmp_path, monkeypatch):
+    # Connect stamps Anki Miner's settings files (`anki_miner.home`): a test's own home, never ~/.anki_miner; the
+    # Anki Miner a test starts inherits it.
+    monkeypatch.setenv("ANKI_MINER_HOME", str(tmp_path / "anki-miner-home"))
+
+
 class FakeAnkiMiner:
     """The fake's program path, its plan (what it answers) and the calls it was given."""
 

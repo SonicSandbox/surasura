@@ -1173,50 +1173,45 @@ def _anki_miner_setup(loaded, lang, run_dir, held=None):
     settings-export.json (a run after a kill reads the job's mapping there) and the note type still checked. Else
     Anki Miner is read as always and the set kept in it; any failure here leaves it empty. This amends E10's "read
     before every batch, never cached" to "once a run, again after any failure and every 15 min" (PROVISIONAL,
-    Michi's technical rule). A set whose profile is Anki Miner's active one (no profile of the name Connect asks for:
-    3.7's fallback) is kept only while that profile stays active: `profiles` is read again each call (one start), so
-    a profile you switch to in Anki Miner mid-run is read in full and the pick-to-mine guard sees it (P1.3-AM37 #5,
-    IK-r2-3). The command line's own `pick` holds none: read every call, as before."""
+    Michi's technical rule). The set is kept only while Anki Miner's files are as they were (`anki_miner.stamp`: its
+    program, gui_config.json — the active profile and the mapping — and its profiles): a profile switched, a mapping
+    edited or Anki Miner updated mid-run reads it all again, and the pick-to-mine guard sees the new profile
+    (P1.3-AM37 #5; IK-r2-3, R2-7). The command line's own `pick` holds none: read every call, as before."""
     from app.connect import anki_miner, fields
     miner = anki_miner.find(loaded)
     if miner is None:
         return None
     export_path = os.path.join(run_dir, "settings-export.json")
-    name = loaded.get("connect_anki_miner_profile") or "Surasura"
-    read_at, named = (held or {}).get("at"), (held or {}).get("named")
-    kept = held.get("set") if held and time.monotonic() - read_at < SETUP_FOR_S else None
+    read_at = (held or {}).get("at")
+    now = anki_miner.stamp(miner) if held is not None else None    # taken before the reads: a save meanwhile shows
+    kept = (held.get("set") if held and time.monotonic() - read_at < SETUP_FOR_S and now is not None
+            and held.get("stamp") == now else None)
     if held is not None:
         held.clear()                    # filled again only once every look-up and the note type's check answered
-    try:
-        listed = None
-        if kept is not None and not named:      # your active profile: still the one the set was read for?
-            listed = anki_miner.profiles(miner)
-            if anki_miner.choose_profile(kept[0], listed, name) != kept[1]:
-                kept = None
-        if kept is not None:
-            try:
-                os.makedirs(run_dir, exist_ok=True)
-                with open(export_path, "w", encoding="utf-8") as f:
-                    json.dump(kept[3], f, ensure_ascii=False)
-            except OSError:
-                kept = None             # read from Anki Miner, which writes the file itself
-        if kept is not None:
-            info, profile, mapping, export = kept
-        else:
+    if kept is not None:
+        try:
+            os.makedirs(run_dir, exist_ok=True)
+            with open(export_path, "w", encoding="utf-8") as f:
+                json.dump(kept[3], f, ensure_ascii=False)
+        except OSError:
+            kept = None                 # read from Anki Miner, which writes the file itself
+    if kept is not None:
+        info, profile, mapping, export = kept
+    else:
+        name = loaded.get("connect_anki_miner_profile") or "Surasura"
+        try:
             info = anki_miner.version(miner)
-            listed = listed if listed is not None else anki_miner.profiles(miner)
-            profile = anki_miner.choose_profile(info, listed, name)    # 3.7: else your active one
-            named = anki_miner.profile_id(listed, name) is not None
+            profile = anki_miner.choose_profile(info, anki_miner.profiles(miner), name)    # 3.7: else your active one
             os.makedirs(run_dir, exist_ok=True)
             export = anki_miner.settings_export(miner, lang, export_path, profile)
             mapping = fields.from_export(export, lang)
-    except anki_miner.AnkiMinerError as e:
-        raise _miner_error(e) from None
-    except fields.NeedsYou as e:
-        raise CliError("needs-you", e.message, ask=e.message) from None
+        except anki_miner.AnkiMinerError as e:
+            raise _miner_error(e) from None
+        except fields.NeedsYou as e:
+            raise CliError("needs-you", e.message, ask=e.message) from None
     _check_note_type(loaded, mapping)
     if held is not None:
-        held.update(set=(info, profile, mapping, export), named=named,
+        held.update(set=(info, profile, mapping, export), stamp=now,
                     at=read_at if kept is not None else time.monotonic())
     return info, profile, mapping
 

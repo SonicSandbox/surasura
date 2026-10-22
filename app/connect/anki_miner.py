@@ -7,9 +7,9 @@ timeout and is killed at it; nothing opens a window (CREATE_NO_WINDOW).
 
 - `find(settings)` — where it is: `connect_anki_miner_path`, then its installer's uninstall key (InstallLocation), then
   its default folder (%LOCALAPPDATA%\\Programs\\AnkiMiner). Absent -> None: the mine step is `skipped`, never an error.
-- `version`, `profiles`, `settings_export` — read once a Connect run, again after any failure and every 15 min
-  (LF-mining row 25, amending E10's "read before every batch, never cached": PROVISIONAL, Michi's technical rule;
-  `verbs._anki_miner_setup`); `check` before every batch, never cached (E9, E10: it updates itself).
+- `version`, `profiles`, `settings_export` — read once a Connect run, again after any failure, every 15 min and
+  whenever Anki Miner's program or settings files change (`stamp`; LF-mining row 25, amending E10's "read before
+  every batch, never cached": PROVISIONAL, Michi's technical rule; `verbs._anki_miner_setup`); `check` before every batch, never cached (E9, E10: it updates itself).
 - `mine_batch(...)` — one batch, holding Surasura's Anki-write lock (`anki-writer`, E1.4) from start to end: the
   version and `features` read again (or handed in: `known`), the profile chosen (`choose_profile`), the whitelist
   file rewritten (N10, until Z-1), the run file written (`runfile`: from 3.7, one entry a word, its `surface` and
@@ -154,6 +154,36 @@ def installed_version():
 def _default_location():
     base = os.environ.get("LOCALAPPDATA")
     return os.path.join(base, "Programs", "AnkiMiner") if base and sys.platform == "win32" else None
+
+
+def home():
+    """Anki Miner's home as the Anki Miner Connect starts reads it (3.9 `config/paths.py`): ANKI_MINER_HOME in this
+    process's environment (the child inherits it), else ~/.anki_miner. Its gui_config.json holds the active profile
+    and the field mapping, `profiles/<id>.json` the named profiles — what `--api` reads."""
+    from pathlib import Path
+    return os.environ.get("ANKI_MINER_HOME") or str(Path.home() / ".anki_miner")
+
+
+def stamp(path):
+    """What Anki Miner's look-ups read, as a change signal (S19: update only what changed; LF-mining R2-7, IK-r2-3):
+    (mtime_ns, size) of its program `path`, its gui_config.json (written whole on every save), its profiles folder
+    and each file in it. A file that isn't there stamps as absent; one that can't be read -> None (a change)."""
+    def one(p):
+        try:
+            st = os.stat(p)
+        except FileNotFoundError:
+            return None
+        return st.st_mtime_ns, st.st_size
+    try:
+        folder = os.path.join(home(), "profiles")
+        try:
+            names = sorted(e.name for e in os.scandir(folder) if e.is_file())
+        except FileNotFoundError:
+            names = []
+        return (one(path), one(os.path.join(home(), "gui_config.json")), one(folder),
+                tuple((n, one(os.path.join(folder, n))) for n in names))
+    except OSError:
+        return None
 
 
 def find(settings):

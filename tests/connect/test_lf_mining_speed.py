@@ -114,22 +114,72 @@ def test_a_set_older_than_fifteen_minutes_is_read_again(library, fake_miner, mon
     assert fake_miner.commands() == LOOK_UPS + ["check", "mine"] * 2 + LOOK_UPS + ["check", "mine"]
 
 
+def _home(active, profiles=("anime", "drama")):
+    """Anki Miner's home as 3.9 keeps it (`config/paths.py`, `profile_store.py`): gui_config.json naming the active
+    profile beside the mapping, one `profiles/<id>.json` a named profile — the test's own home (conftest)."""
+    home = os.environ["ANKI_MINER_HOME"]
+    os.makedirs(os.path.join(home, "profiles"), exist_ok=True)
+    with open(os.path.join(home, "gui_config.json"), "w", encoding="utf-8") as f:
+        json.dump({"active_profile_id": active, "anki_note_type": "Lapis", "audio_field": "SentenceAudio"}, f)
+    for name in profiles:
+        with open(os.path.join(home, "profiles", f"{name}.json"), "w", encoding="utf-8") as f:
+            json.dump({"name": name.title()}, f)
+
+
+def _own_miner(fake_miner, tmp_path):
+    """The fake Anki Miner as a program file of the test's own (so the test can replace it)."""
+    import shutil
+    path = str(tmp_path / "AnkiMiner.py")
+    shutil.copy(fake_miner.path, path)
+    fake_miner.path = path
+    return path
+
+
 def test_your_active_profile_switched_mid_run_is_seen_before_the_next_batch(library, fake_miner):  # noqa: F811
-    # why (IK-r2-3): with no "Surasura" profile Connect mines with Anki Miner's active one; a kept set never read
-    # `profiles` again, so a switch in Anki Miner went unseen for up to 15 min (cards to the old deck and note type).
-    # The active profile is read again before each batch now (one start), and the pick-to-mine guard fires
+    # why (IK-r2-3): with no "Surasura" profile Connect mines with Anki Miner's active one; a kept set never looked
+    # again, so a switch in Anki Miner went unseen for up to 15 min (cards to the old deck and note type). Anki Miner
+    # saves the switch to gui_config.json: that file's stamp moved, so the set is read again and the pick-to-mine
+    # guard fires
     anime, drama = {"id": "anime", "name": "Anime"}, {"id": "drama", "name": "Drama"}
     fake_miner.plan(app="3.7.0", features=FEATURES_37, profiles=[anime, dict(drama, active=True)])
+    _home("drama")
     subtitle, video = library
     steps = _steps(fake_miner)
     _episode(steps, {"id": 1, "item_id": 1}, subtitle, video)
     picked, words = _pick(steps, {"id": 2, "item_id": 2}, subtitle, video)
     assert picked["profile"] == "drama"
-    assert fake_miner.commands() == LOOK_UPS + ["profiles", "check", "mine", "profiles"], "the active one again"
+    assert fake_miner.commands() == LOOK_UPS + ["check", "mine"], "nothing changed: kept, two starts an episode"
     fake_miner.plan(app="3.7.0", features=FEATURES_37, profiles=[dict(anime, active=True), drama])
+    _home("anime-switched")
     with pytest.raises(runner.Repick):
         steps.mine("ja", {"id": 2, "item_id": 2}, picked, words, 1)
-    assert fake_miner.commands()[-1] != "mine", "nothing mined for the old profile"
+    assert fake_miner.commands() == LOOK_UPS + ["check", "mine"] + LOOK_UPS + ["check"], "read again; none mined"
+
+
+def test_an_unchanged_anki_miner_keeps_its_set_with_its_files_there(library, fake_miner, tmp_path):  # noqa: F811
+    # why (S19, update only what changed): gui_config.json and the profiles folder untouched → no second profiles
+    # or settings-export, whether the profile is named or the active one
+    _home("p-surasura", profiles=("default", "p-surasura"))
+    _own_miner(fake_miner, tmp_path)
+    subtitle, video = library
+    steps = _steps(fake_miner)
+    for job in (1, 2, 3):
+        _episode(steps, {"id": job, "item_id": job}, subtitle, video)
+    assert fake_miner.commands() == LOOK_UPS + ["check", "mine"] * 3
+
+
+def test_an_anki_miner_replaced_mid_run_is_read_again(library, fake_miner, tmp_path):  # noqa: F811
+    # why (R2-7, E10): Anki Miner updated itself — its program file moved — and may name its features or fields
+    # otherwise: the next look-up reads it all again
+    _home("p-surasura", profiles=("default", "p-surasura"))
+    path = _own_miner(fake_miner, tmp_path)
+    subtitle, video = library
+    steps = _steps(fake_miner)
+    _episode(steps, {"id": 1, "item_id": 1}, subtitle, video)
+    with open(path, "a", encoding="utf-8") as f:
+        f.write("\n# 3.9.1\n")
+    _episode(steps, {"id": 2, "item_id": 2}, subtitle, video)
+    assert fake_miner.commands() == LOOK_UPS + ["check", "mine"] + LOOK_UPS + ["check", "mine"]
 
 
 def test_the_command_lines_pick_holds_no_set_and_reads_anki_miner_each_time(library, fake_miner):  # noqa: F811

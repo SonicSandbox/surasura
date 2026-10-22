@@ -293,6 +293,19 @@ def test_one_episodes_failing_request_never_holds_the_others(tmp_path, ledger):
     assert states[1] == ("waiting", runner.ANKI_SLOW) and states[2][0] == states[3][0] == "done"
 
 
+@pytest.mark.parametrize("answer", [None, ""])
+def test_a_recorded_profile_waits_while_anki_names_none(monkeypatch, tmp_path, answer):
+    # why (mutant LFM-B07): Connect's profile is recorded, but Anki doesn't say which one is open (no answer in 5 s,
+    # mid-switch): writing then could land in another profile (E3), so it waits as when none is recorded
+    monkeypatch.setattr(setup, "record_path", lambda: str(tmp_path / "setup.json"))
+    setup.keep_profile("日本語")
+    _anki(monkeypatch, answer)
+    assert runner.Steps({"connect_enabled": True}).blocked("ja") == anki_session.NO_PROFILE_YET
+    assert runner.holds_every(anki_session.NO_PROFILE_YET)
+    _anki(monkeypatch, "日本語")
+    assert runner.Steps({"connect_enabled": True}).blocked("ja") is None
+
+
 def test_a_profile_without_your_decks_is_never_taken_as_connects(monkeypatch, tmp_path):
     # why (review A3): DevTest open by chance at Connect's first look would have been Connect's profile for good;
     # the profile setup read your decks from holds them — that one is recorded

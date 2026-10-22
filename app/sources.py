@@ -23,7 +23,12 @@ folder, `Library/<show>/<file>` (SRC-4). One look (`scan`):
   that video's (A11); every other file of an episode is another VERSION — an origin on the same item flagged
   `version`, never an item, a count, the item's text or any reader's (`_version`, `library_store._VERSION_ROW`); a
   pick under a quarter of its episode's fullest candidate's lines gives way (A6); a known subtitle's video come
-  later, or renamed, is recorded on it (`_late`, A19, A20); creditless openings and the like never wait (A32). Then,
+  later, or renamed, is recorded on it (`_late`, A19, A20); creditless openings and the like never wait (A32). LM2
+  (PROVISIONAL, Sonic 2026-10-21: LM-1a, T2-A1, A29): ONE subtitle group per show (`episode_names.identity`'s
+  `group`: the leading `[tag]` and the name before the episode marker), recorded on its title at the first take-in
+  that reads it (`Store.show_groups`) and never decided again by a look — the group its earliest episode in was
+  picked from, else the earliest episode's pick in that look; the look's order takes it right after the file named
+  like its video (`subtitle_rank`); Connect's first cards may switch it once (`Store.switch_group`, T2-A2). Then,
   cheapest first, (a) a video beside it
   already paired → that item, (b) an item holding the same bytes → that item, a `v2` of an episode already in → that
   item, its copy followed (S5), else (c) a copy (`.part`, then renamed; a file changed in the last SETTLE_S seconds, or
@@ -228,6 +233,61 @@ def _kind(name):
     version (`_new`: it replaces a file of its own kind or a worse one, never a better) both read it."""
     n = en.identity(name)
     return n.bilingual, bool(n.flags)
+
+
+def subtitle_rank(name, language, named=False, folder_language=None, versions_folder=False, group=None):
+    """The ONE order of one episode's subtitles (Sonic, the library model 2, T2-A1, LM2; PROVISIONAL, to be checked in
+    use), lower first: a bilingual file after every one-language file (LM1a-Q1); named exactly like its video
+    (`named`: made for it, timed to it) and plain; then, among the rest, the show's `group` (LM2: once the show has
+    one; a flagged track is never helped by it); our language's tag (`folder_language`: the language its folder
+    names); plain before flagged; a versions folder's (`synced/`) or a re-timer's mark; `.ass` / `.ssa` before
+    `.srt`; the name. The look's pick (`_Look._episodes`) and the store's choice of a group's copy for an episode
+    (`Store.other_subtitles`, `Store.switch_group`) both read it."""
+    n, (bilingual, flagged) = en.identity(name), _kind(name)
+    return (bilingual, flagged or not named,
+            group is not None and (flagged or _group(name) != tuple(group)),
+            (n.language or folder_language) != language, flagged, not n.retimed and not versions_folder,
+            _RANK.get(os.path.splitext(name)[1].lower(), 2), name)
+
+
+def version_rank(name, language, named=False, folder_language=None, versions_folder=False, group=None):
+    """`subtitle_rank` after the release: the latest first (`- 05v2` over `- 05`, as the look keeps an episode's latest
+    version, D6) — the best of one group's files of an episode (`Store.other_subtitles`, `Store.switch_group`) and the
+    pick that decides a show's group (`_Look._decide_groups`)."""
+    return (-en.identity(name).version,) + subtitle_rank(name, language, named, folder_language, versions_folder, group)
+
+
+def video_names(paths):
+    """The names a subtitle is "named like" (`named_like`): each video's name without its extension, in NFC, lowered."""
+    return {_nfc(os.path.splitext(os.path.basename(v))[0]).lower() for v in paths}
+
+
+def named_like(name, like, folder=None):
+    """T2-A1: is the subtitle `name` named exactly like one of the videos `like` (`video_names`) — the names Connect
+    pairs (`video_stems`: `ep01.alt.srt`, a language tag or nothing added), or in the folder named as it
+    (`Subs/<video>/`, A11)? The look's order and the store's choice of a group's copy both ask it."""
+    return any(_nfc(s).lower() in like for s in en.video_stems(name)) or         (folder is not None and _nfc(folder).lower() in like)
+
+
+def in_versions_folder(path, language):
+    """Is `path` in a versions folder of its show's (item 11: `synced/`, `retimed/`, by the folder's name alone)?"""
+    folder = os.path.dirname(path)
+    return _subtitle_folder(os.path.basename(folder), os.path.basename(os.path.dirname(folder)), language) == "versions"
+
+
+def group_label(name):
+    """LM2: a subtitle group as a learner reads it — its leading `[tag]` as written (`SubsPlease`), else the name before
+    its episode marker (`星空喫茶`), else the file name."""
+    m = re.match(r"\s*\[([^\]]*)\]", unicodedata.normalize("NFKC", name))   # the leading tag `identity` reads
+    return m.group(1).strip() if m and m.group(1).strip() else (en.identity(name).show or os.path.splitext(name)[0])
+
+
+def _key_order(key):
+    """An episode key's place among a show's (LM2's "earliest episode"): numbered episodes by season, number and part
+    before specials; mixed types never compared."""
+    _show, season, episode, part, special = key
+    return (special is not False, str(special), season if isinstance(season, int) else 0,
+            episode if isinstance(episode, (int, float)) else 0, part or 0, str(key))
 
 
 def _show_key(show):
@@ -532,6 +592,9 @@ class _Look:
         self.origin_years = {}       # A3: {a show's folder key: the years its origins' names write}
         self.waits = None            # {video key or path key: item} of the items waiting for their text
         self.recorded = None         # the path keys of the videos the origins name
+        self.groups = {}             # LM2: {a show's folder key: its group}, recorded (`_load`) or decided this look
+        self.decided = {}            # LM2: {a show's folder key: {group, label} decided this look}: `take_in` records it
+        self.deciding = {}           # LM2: {a show's folder key: the episode whose taken file decides its group}
 
     # --- the look ------------------------------------------------------------------------------------------------- #
 
@@ -541,6 +604,11 @@ class _Look:
         if path is None:
             raise ls.NotASource("That folder isn't being read any more.")
         meta = self.store.meta()
+        if any(k.startswith(ls.SWITCH_PENDING) for k in meta):   # LM2: a crashed subtitle switch's files put back
+            try:
+                self.store.settle_switches()
+            except ls.StoreError:                    # busy: the next look
+                pass
         stamp = (meta.get("store_id"), meta.get("epoch"))
         looked = (_store_key(self.store), self.root_id)
         cache = _load_cache(self.language, stamp)
@@ -616,6 +684,7 @@ class _Look:
         if self.origins is not None:
             return
         self.origins = self.store.origins()
+        self.groups = dict(self.store.show_groups())
         excluded = self.store.excluded()
         self.ex_paths = set(excluded)
         self.ex_shas = {n["sha256"] for n in excluded.values() if n.get("sha256")}
@@ -816,18 +885,16 @@ class _Look:
         never keeps the `.ja.srt` out) -> [(name, path, stat, show, 'new' | 'known' | 'book')]. A file of two
         languages in one mark (`.chs&jpn`, `[简日双语]`: LM1a) is ours when ours is one of them, taken only where no
         file of one language is; names are compared in NFC (A24)."""
-        like = {_nfc(os.path.splitext(v)[0]) for v in (vids or ())}      # their names, lowered
+        like = video_names(vids or ())                                  # their names, lowered
 
         def order(name, path):
-            # PROVISIONAL (Sonic 2026-10-21: accepted for building, to be checked in use): this order and the grouping
-            # by the key below. I1: a bilingual file comes after every one-language file, even one named like the
-            # video (LM1a-Q1); I8: "named like a video" asks the names Connect pairs (`video_stems`: `ep01.alt.srt`)
-            n, (bilingual, flagged) = en.identity(name), _kind(name)
-            named = path in self.video_of or any(_nfc(s).lower() in like for s in en.video_stems(name))   # made for it
-            return (bilingual, flagged or not named,
-                    (n.language or (langs or {}).get(path)) != self.language, flagged,
-                    not n.retimed and ls.path_key(os.path.dirname(path)) not in versions,
-                    _RANK.get(os.path.splitext(name)[1].lower(), 2), name)
+            # PROVISIONAL (Sonic 2026-10-21: accepted for building, to be checked in use): this order (`subtitle_rank`)
+            # and the grouping by the key below. "Named like a video" asks the names Connect pairs (`video_stems`:
+            # `ep01.alt.srt`); LM2: the show's group, once it has one (`_show_group`), after that step
+            named = path in self.video_of or named_like(name, like)                                  # made for it
+            return subtitle_rank(name, self.language, named, (langs or {}).get(path),
+                                 ls.path_key(os.path.dirname(path)) in versions,
+                                 self.groups.get(_show_key(_show_of(root, parts, name))))
         out, groups = [], {}
         for t in texts:
             k = _key(t[1]) if self.no_text else None
@@ -889,6 +956,7 @@ class _Look:
             def rank(e):                                     # a double episode after the singles (PROVISIONAL)
                 o = order(e[0], e[1])
                 return o[:2] + (e[1] in read and len(read[e[1]][2]) > 1,) + o[2:] + (e[1],)
+            self._decide_groups(out, read, ep, rank)          # LM2: a show's group, before its episodes are picked
             latest, first = {}, {}
             for p, (_keys, version, _c) in read.items():
                 latest[ep[p]] = max(latest.get(ep[p], 0), version)
@@ -921,6 +989,32 @@ class _Look:
                 continue
             out.append((n, p, st, _show_of(root, parts, n), "book"))
         return out
+
+    def _decide_groups(self, out, read, ep, rank):
+        """LM2 (PROVISIONAL, Sonic 2026-10-21: LM-1a, A29): the group of each show this folder's new episodes belong to
+        that has none yet — the group its earliest episode in was picked from (`_held`), else the group of the file
+        this look takes for its earliest episode here (its latest release, ranked with no group: named like its video
+        first, T2-A1; `_new` names it once the language and thin rules let it in: `deciding`) — kept for the look
+        (`groups`) and handed to `take_in` with the show's files (`decided`), which records it on the show's title; a
+        show's recorded group is never decided again (an earlier episode arriving later changes nothing)."""
+        shows = {}
+        for e in out:
+            if e[1] in read:
+                fk = _show_key(e[3])
+                if fk not in self.groups:
+                    shows.setdefault(fk, []).append(e)
+        for fk, entries in shows.items():
+            held = self._held(entries[0][3])
+            if held:
+                name = os.path.basename(held[min(held, key=_key_order)][1].origin or "")
+                self.decided[fk] = {"group": list(_group(name)), "label": group_label(name)}
+            else:                                    # its latest release first, as the pick (D6)
+                first = min((ep[e[1]] for e in entries), key=_key_order)
+                cands = [e for e in entries if ep[e[1]] == first]
+                latest = max(read[e[1]][1] for e in cands)
+                name = min((e for e in cands if read[e[1]][1] == latest), key=rank)[0]
+                self.deciding[fk] = first            # recorded from the file `_new` takes for it (K6, A6 may refuse)
+            self.groups[fk] = _group(name)
 
     def _episode_key(self, name, show=None):
         """LM1a: the episode a file name reads (`episode_names.identity`'s key: show without its season, season,
@@ -992,6 +1086,10 @@ class _Look:
                 if f is not None:
                     batch.append(f)
                 batch.extend(self._pending())                # its versions in the same batch, after it (`take_in`)
+                decided = self.decided.get(_show_key(show))
+                if decided is not None:                      # LM2: the show's title records it at this take-in
+                    for f in batch:
+                        f.setdefault("show_group", decided)
                 if len(batch) >= BATCH:
                     self._commit(batch)
                     batch = []
@@ -1213,6 +1311,10 @@ class _Look:
             self.this_videos.add(track)
         for n, p, s in self.runners_up.pop(path, []):        # LM1b: the episode's other files are its versions
             self.pending.append((os.path.dirname(p), p, s, show, n, item, f["origin"]))
+        fk = _show_key(show)
+        if self.deciding.get(fk) in keys and fk not in self.decided:   # LM2: the file taken decides the show's group
+            self.groups[fk] = _group(name)
+            self.decided[fk] = {"group": list(_group(name)), "label": group_label(name)}
         return f
 
     def _version(self, folder, path, st, show, name, item_id=None, of=None, chain=False):

@@ -1245,3 +1245,20 @@ def test_every_stand_in_of_the_automation_service_has_only_its_real_methods():
     wrong = [(where, m) for where, methods in found for m in methods
              if not m.startswith("_") and not callable(getattr(A.Automation, m, None))]
     assert wrong == [], f"stand-ins answering what Automation lacks: {wrong}"
+
+
+def test_a_sync_by_hand_with_no_language_named_is_the_windows_language_and_nothing_once_closed(live, monkeypatch):
+    """Row 30 (planted-bug pass): the setup wizard's first sync names no language — its end is the window's language's;
+    and a sync by hand that ends after the window closed tells the closed service nothing (no bar, no queued work)."""
+    h.seed_library("ja")
+    auto, _registry, _c, _launches = _make(_settings())
+    ended = []
+    monkeypatch.setattr(auto.sync, "ended", lambda *a, **k: ended.append(a))
+    result = anki_sync.SyncResult(added=1, total_known=1, mode="delta")
+    auto.anki_synced(result, None)
+    assert ended == [(result, auto.language)], "no language named: the window's"
+    auto.anki_synced(result, "zh")
+    assert ended[-1] == (result, "zh"), "a language named: that one (D31)"
+    auto.close()
+    auto.anki_synced(result, "ja")
+    assert len(ended) == 2, "closed: nothing"

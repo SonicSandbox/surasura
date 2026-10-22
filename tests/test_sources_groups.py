@@ -816,3 +816,19 @@ def test_a_step_that_switches_nothing_records_nothing(monkeypatch):
             patched.setattr(ls, "_read_into_part", spoilt)
             change = store.switch_group(work, target)
         assert change.switched == [] and store.group_of(work) == before and store.last_switch(work) is None
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_undo_takes_the_trash_copy_when_the_old_original_was_edited_since(language):
+    """A's 02 edited after the switch (its bytes no longer the record's): Undo takes A's text from the copy the switch
+    sent to the trash, never the edited original."""
+    store, data_dir = _empty(language)
+    src = _drive("Anime")
+    show, a, b, v = _show(language, src)
+    with store:
+        _look(store, language, store.add_source(src), first=True)
+        copies = _picks(store, data_dir)
+        change = store.switch_group(_work(store), _group_b(store))
+        _write(a[2], _text(language, 2, " edited after the switch"))
+        undone = store.undo(change)
+        assert undone.switched == change.switched and _picks(store, data_dir) == copies

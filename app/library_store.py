@@ -9056,13 +9056,13 @@ def _swapped(picks, record, to_key):
 def _switch_rel(self, rel, origin, item_id):
     """Where the switched copy lives: named as the subtitle it now holds (`Library/<show>/<its name>`: its format the
     readers read by its extension — an `.srt`'s bytes never sit in an `.ass` — and the window names it), or None when
-    another file or item already has that name."""
+    another item already has that name."""
     to_rel = rel.rsplit("/", 1)[0] + "/" + os.path.basename(origin)
     if path_key(to_rel) == path_key(rel):
         return rel
     taken = self.conn.execute("SELECT 1 FROM items WHERE rel_key = ? AND id != ?", (path_key(to_rel), item_id))
-    if taken.fetchone() or os.path.exists(os.path.join(self.data_dir, _strip(to_rel))):
-        return None
+    if taken.fetchone():
+        return None                                  # (a file there that is no item's: the step holds it, unwritten)
     return to_rel
 
 
@@ -9214,7 +9214,7 @@ def _store_switch(self, kind, by, work_id, plans, missing, held, record, label_f
                 _remove_quietly(plan["part"])
         if step:
             written, expected = True, new
-    if written and not undoing and change.held:       # a step that stopped: the rest wait as the record's pending
+    if written and not undoing and change.held:       # the episodes held wait as the record's `pending`
         try:
             with self._writing():
                 groups = _groups_read(self)
@@ -9297,8 +9297,6 @@ def _store_switch_step(self, kind, by, work_id, ready, token, change, expected, 
                 groups = _groups_read(self)
                 if _unpended(groups.get(str(work_id))) == _unpended(expected):
                     record = dict(new) if new is not None else None
-                    if record is not None and not undoing and change.held:
-                        record["pending"] = sorted(set(change.held))
                     if record is None:
                         groups.pop(str(work_id), None)
                     else:

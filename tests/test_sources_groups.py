@@ -620,7 +620,8 @@ def test_a_v2_decides_and_is_taken_by_a_switch(language):
         _look(store, language, store.add_source(src), first=True)
         work = _work(store)
         assert store.group_of(work)["label"] == "SubsB"
-        assert _sha(b1) in _picks(store, data_dir)[0].values()
+        picks = sorted(_picks(store, data_dir)[0].items())
+        assert _sha(b1) == picks[0][1] and _sha(os.path.join(src, show, f"[SubsB] {show} - 02.{_OURS[language]}.srt"))             == picks[1][1], "02 from B too: the v2's group orders this look's other episodes"
         item = min(_picks(store, data_dir)[0])
         c = next(o for o in store.other_subtitles(item) if o["label"] == "SubsC")
         assert c["path"] == os.path.abspath(c1v2) and os.path.abspath(c1) not in [o["path"] for o in
@@ -672,6 +673,7 @@ def test_a_shows_switched_group_goes_with_it_into_another_title(language):
     store, data_dir = _empty(language)
     src = _drive("Anime")
     show, a, b, v = _show(language, src, video=False)
+    os.remove(b[1])                                  # 01 stays A's: its earliest episode never decides it again
     other = _SHOWS[language][0]
     _write(os.path.join(src, other, f"{other} - 01.{_OURS[language]}.srt"), _text(language, 3, " other"))
     with store:
@@ -679,7 +681,8 @@ def test_a_shows_switched_group_goes_with_it_into_another_title(language):
         _look(store, language, root, first=True)
         works = dict(store.conn.execute("SELECT parent_folder, work_id FROM items"))
         work, keep = works[show], works[other]
-        store.switch_group(work, _group_b(store))
+        ep2 = sorted(i for (i,) in store.conn.execute("SELECT id FROM items WHERE work_id = ?", (work,)))[1]
+        assert store.switch_group(work, store.other_subtitles(ep2)[0]["group"]).switched == [ep2]
         store.merge_works(keep, [work])
         assert store.group_of(keep)["label"] == "SubsB"
         _sub(src, show, "A", 4, "ass", language)
@@ -788,3 +791,28 @@ def test_a_switch_never_writes_over_a_file_with_the_new_name():
         assert (change.switched, change.held) == ([ids[1]], [ids[0]])
         with open(there, encoding="utf-8") as f:
             assert f.read() == "someone's own file\n"
+
+
+def test_a_step_that_switches_nothing_records_nothing(monkeypatch):
+    """Every episode read but changed before the swap (each part spoilt): nothing switched — no group recorded, no
+    switch kept to undo."""
+    language = "ja"
+    store, data_dir = _empty(language)
+    src = _drive("Anime")
+    show, a, b, v = _show(language, src)
+    with store:
+        _look(store, language, store.add_source(src), first=True)
+        work, target, before = _work(store), _group_b(store), None
+        before = store.group_of(work)
+        real = ls._read_into_part
+
+        def spoilt(self, plan, token):
+            done = real(self, plan, token)
+            if done:
+                with open(plan["part"], "ab") as f:
+                    f.write(b"+")
+            return done
+        with monkeypatch.context() as patched:
+            patched.setattr(ls, "_read_into_part", spoilt)
+            change = store.switch_group(work, target)
+        assert change.switched == [] and store.group_of(work) == before and store.last_switch(work) is None

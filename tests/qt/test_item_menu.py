@@ -25,7 +25,7 @@ from PyQt6.QtWidgets import QApplication
 
 from app import library_store as ls
 from app import path_utils
-from app.qt import drag, item_menu, rows, strings
+from app.qt import drag, item_menu, rows, strings, style
 from app.services import view_rows
 from tests.qt.conftest import wait_until
 from tests.qt.test_drag import (FakeWriter, lift, mouse, move, move_global, open_window, part_rect, press,  # noqa: F401
@@ -960,6 +960,73 @@ def test_G3_same_show_as_asks_first_cancel_is_the_default_and_writes_nothing_yes
     text = strings.ITEM_SAME_SHOW_DONE.format(b=row.title, a=show.title)
     assert wait_until(lambda: win.toasts.card.message == text, 5)
     assert win.toasts.card.buttons, "its Undo"
+
+
+def _pages(menu):
+    """A submenu's chain of pages: [QMenu] — each page's *More…* opens the next."""
+    out = [menu]
+    while True:
+        more = [a for a in out[-1].actions() if a.menu() is not None and a.text() == strings.MENU_MORE[0]]
+        if not more:
+            return out
+        out.append(more[0].menu())
+
+
+@pytest.mark.parametrize("size", ["M", "L"])
+def test_same_show_as_with_many_shows_pages_with_more_so_each_page_fits_the_window(world, monkeypatch, qapp, size):
+    """The follow-up (shots 6a): 20+ shows in *Same show as…* ran past an 800 px window, and at 150 % (a screen of
+    fewer logical pixels) Qt split the menu into two columns past the window's top. A submenu holds `MENU_PAGE` entries
+    and a *More…* opening the rest, page by page: each page fits the window (logical pixels: Windows' scaling leaves
+    them as they are) and every show is reachable, in order, each still asking first."""
+    theme_name, old_size, language = style.current()
+    style.apply(qapp, theme_name, size, language)
+    try:
+        _seed, win, writer = world()
+        win.resize(1280, 800)
+        settle()
+        b, _a = two_shows(win)
+        row = rows_of(win)[b]
+        many = [item_menu.Show(f"k{n}", 5000 + n, f"テスト作品{n}", strings.ITEM_JOIN_WHERE["goal"]) for n in range(30)]
+        monkeypatch.setattr(win.items, "same_shows", lambda r: many)
+        m = win.items.menu(row, win.mapToGlobal(QPoint(300, 100)))
+        sub = next(a.menu() for a in m.actions() if a.text() == strings.ITEM_MENU["same-show"][0])
+        pages = _pages(sub)
+        assert len(pages) == 3                                   # 12, 12, 6
+        reached = []
+        for page in pages:
+            assert page.sizeHint().height() <= win.height(), (page.sizeHint().height(), win.height())
+            places = [page.actionGeometry(a) for a in page.actions()]
+            assert len({r.x() for r in places}) == 1, "one column: Qt splits a menu taller than the screen"
+            assert max(r.bottom() for r in places) <= win.height()
+            shows = [a for a in page.actions() if a.menu() is None]
+            assert len(shows) <= item_menu.MENU_PAGE + 1           # (one left over never gets a page alone)
+            for a in shows:
+                assert a.toolTip().strip() and _connected(a), a.text()
+                reached.append(a.text())
+            for a in page.actions():
+                if a.menu() is not None:
+                    assert a.toolTip() == strings.MENU_MORE[1] and a.isEnabled()
+        assert reached == [strings.ITEM_SAME_SHOW_PICK.format(title=s.title, where=s.where) for s in many]
+        last = [a for a in pages[-1].actions() if a.menu() is None][-1]
+        last.trigger()
+        assert win.items.question is not None and writer.calls == [], "the last show still asks first"
+        win.items.question.no.click()
+        m.close()
+    finally:
+        style.apply(qapp, theme_name, old_size, language)
+
+
+def test_a_short_submenu_has_no_more(world):
+    """*What is it?* (12 entries) and a short *Split here…* list stay one page."""
+    _seed, win, _w = world()
+    a, _b = split_parts(win)
+    m = win.items.menu(rows_of(win)[a], win.mapToGlobal(QPoint(300, 300)))
+    short = [act for act in m.actions() if act.menu() is not None
+             and act.text() in (strings.ITEM_MENU["type"][0], strings.ITEM_MENU["split"][0])]
+    assert len(short) == 2
+    for act in short:
+        assert len(_pages(act.menu())) == 1, act.text()
+    m.close()
 
 
 def test_open_its_folder_opens_it_or_says_its_gone(world, monkeypatch):

@@ -81,6 +81,8 @@ Show = namedtuple("Show", "key work_id title where")
 #   LM11b G3: a show *Same show as…* offers — `work_id` the title it merges into, `where` its section as *Join with…*
 #   names it
 SAME_SHOW_MAX = 20                                  # (from each section: a full Current never hides the rest)
+MENU_PAGE = 12                                      # a submenu's entries before its *More…* (each page fits an
+#   800 px window at every text size, and at 150 % on a laptop's screen: Qt split a longer one into columns)
 #   a part of a title as ⋯ and the drop see it: `ids` its files' item ids in order, `numbers` their episode numbers
 #   (None where it has none), `tier` the store's, `place` its 1-based place in Current (None elsewhere)
 
@@ -390,13 +392,7 @@ class ItemActions(QObject):
             if e.name == "remove":
                 m.addSeparator()
             if e.children is not None:
-                sub = m.addMenu(e.label)
-                sub.setObjectName("rowmenu")
-                sub.setToolTipsVisible(True)
-                sub.menuAction().setToolTip(e.tip)
-                sub.menuAction().setEnabled(e.ok and any(c.ok for c in e.children))
-                for c in e.children:
-                    self._action(sub, row, c)
+                self._submenu(m, row, e.label, e.tip, e.ok and any(c.ok for c in e.children), e.children)
                 continue
             self._action(m, row, e)
         self.last_menu = m
@@ -404,6 +400,21 @@ class ItemActions(QObject):
             self._offer_skip(row, m)                 # K6: *Never read this folder*, once the looks' worker answers
         m.popup(at)
         return m
+
+    def _submenu(self, menu, row, label, tip, ok, children):
+        """`children` in a submenu of `menu`: `MENU_PAGE` of them, then *More…* holding the rest, page by page (a long
+        *Same show as…* or *Split here…* list never runs past the window). -> the submenu."""
+        sub = menu.addMenu(label)
+        sub.setObjectName("rowmenu")
+        sub.setToolTipsVisible(True)
+        sub.menuAction().setToolTip(tip)
+        sub.menuAction().setEnabled(ok)
+        page, rest = (children, []) if len(children) <= MENU_PAGE + 1 else (children[:MENU_PAGE], children[MENU_PAGE:])
+        for c in page:
+            self._action(sub, row, c)
+        if rest:
+            self._submenu(sub, row, strings.MENU_MORE[0], strings.MENU_MORE[1], any(c.ok for c in rest), rest)
+        return sub
 
     def _action(self, menu, row, e):
         act = QAction(e.label, menu)

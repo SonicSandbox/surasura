@@ -111,6 +111,8 @@ ITEM_MENU = {
     "same-show": ("Same show as…", "Make this part of another show: it and its new episodes go into that show "
                                    "(asks first)"),
 }
+# a submenu longer than a page (`item_menu.MENU_PAGE`) goes on in a submenu of its own, page by page
+MENU_MORE = ("More…", "The rest of this list")
 ITEM_UNGROUPED = "Ungrouped {title}"
 ITEM_RENAME_ASK = "Rename this group"
 ITEM_RENAME_BODY = "Leave it empty to name it after its shows again."

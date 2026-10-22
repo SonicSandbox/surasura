@@ -1742,12 +1742,9 @@ def beside_origin(pairing):
 def beside(subtitle, listings=None):
     """A video next to the subtitle with its name (`Show - 05.mkv` for `Show - 05.ja.srt`), on disk -> its path.
     `listings` ({folder: its names}, a caller's own — + Add's many files): each folder listed once across calls (H6)."""
+    from app.episode_names import video_stems
     folder, name = os.path.split(subtitle)
-    stem = os.path.splitext(name)[0]
-    stems = [stem]
-    base, tag = os.path.splitext(stem)
-    if base and 1 < len(tag) <= 4:
-        stems.append(base)                  # the language tag: .ja, .jpn, .zh
+    stems = video_stems(name)               # LM1a: its stem, without the marks the one rule reads, NFC and NFD
     names = listings.get(folder) if listings is not None else None
     if names is None:
         try:

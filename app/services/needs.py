@@ -658,7 +658,7 @@ def _find_one(line, data_dir, folders, title, lister):
     from app.connect import runner
     if line.number is None:
         return line.label, None, STRINGS["why_no_number"]
-    shown = f"{line.number:02d}"
+    shown = f"{line.number:02d}" if isinstance(line.number, int) else str(line.number)   # LM1a: `- 12.5` is 12.5
     show = os.path.join(data_dir, *[p for p in _norm(line.rel_path).split("/")[:-1] if p])
 
     def matching(paths):

@@ -231,42 +231,15 @@ def folder_key_of(rel):
     return path_key(below) if below else None
 
 
-_NAME_EXT = re.compile(r"\.[A-Za-z0-9]{1,5}$")
-_NAME_LANG = re.compile(r"\.(?:ja|jp|jpn|japanese|zh|zho|chi|chs|cht|sc|tc|en|eng|"
-                        r"ja-jp|zh-cn|zh-tw|zh-hk|zh-hans|zh-hant)$", re.I)
-_NAME_TAGS = re.compile(r"\[[^\]]*\]|\([^)]*\)")                 # [group], [ABCD1234], (1080p): never the show
-_NAME_JUNK = re.compile(r"\b(?:\d{3,4}[pi]|\d{3,4}x\d{3,4}|(?=[0-9A-F]*\d)[0-9A-F]{8})\b")
-_NAME_SEASON_EP = re.compile(r"\bS(\d{1,2})[ ._-]?E\d{1,4}", re.I)     # S01E13: season 1 is the show, S02 is " S2"
-_NAME_EPISODE = re.compile(r"(?:\s[-–~]\s*|\b(?:EP?\.?\s?)|#\s?)\d{1,4}(?:\.\d)?(?:v\d+)?\b"   # - 16, E13, #13
-                           r"|第\s?\d{1,4}\s?[話话集回]", re.I)                              # 第13話, 第13集
-_NAME_VERSION = re.compile(r"(?:(?<=\d)|\s)v\d+$", re.I)
-
-
 def show_of_name(file_name):
-    """A stranded episode's show, read from its file name (SRC-11): a leading `[group]`, every `[…]` / `(…)` tag, the
-    extension and a language tag (`.ja`), resolution and hash tags, a version (`v2`), and the episode marker with all
-    after it (` - 16`, `S01E13`, `E13`, `#13`, `第13話`) come off. A season stays part of the name, as `_work_by_record`
-    keeps seasons apart (`S2`, `Season 2`, `II`, `2期`; `S02E05` reads as `… S2`). As written (NFKC), never folded:
-    compare two with `search_fold`. None when nothing, or only digits and marks, is left. Pure."""
-    name = unicodedata.normalize("NFKC", str(file_name or "")).replace("\\", "/").rsplit("/", 1)[-1]
-    name = _NAME_EXT.sub("", name)
-    while _NAME_LANG.search(name):
-        name = _NAME_LANG.sub("", name)
-    name = _NAME_TAGS.sub(" ", name).replace("_", " ")
-    if " " not in name.strip() and name.count(".") >= 2:        # Show.Name.S01E13.1080p: dots are the spaces
-        name = name.replace(".", " ")
-    season = ""
-    m = _NAME_SEASON_EP.search(name)
-    if m:
-        season = "" if int(m.group(1)) <= 1 else f" S{int(m.group(1))}"
-        name = name[:m.start()]
-    m = _NAME_EPISODE.search(name)
-    if m:
-        name = name[:m.start()]
-    name = _NAME_JUNK.sub(" ", name)
-    name = _NAME_VERSION.sub("", name.strip())
-    name = _SPACES.sub(" ", name).strip(" -–~._")
-    return None if re.fullmatch(r"[\W\d_]*", name) else name + season
+    """A stranded episode's show, read from its file name (SRC-11) by LM1a's one rule (`episode_names.identity`): a
+    leading `[group]`, every `[…]` / `(…)` tag, the extension and a language tag (`.ja`), resolution and hash tags, a
+    version (`v2`), and the episode marker with all after it (` - 16`, `S01E13`, `E13`, `#13`, `第13話`) come off. A
+    season stays part of the name, as `_work_by_record` keeps seasons apart (`S2`, `Season 2`, `II`, `2期`; `S02E05`
+    reads as `… S2`). As written (NFKC), never folded: compare two with `search_fold`. None when nothing, or only
+    digits and marks, is left. Pure."""
+    from app.episode_names import identity
+    return identity(file_name).show
 
 
 def _test_root():

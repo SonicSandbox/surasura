@@ -92,6 +92,14 @@ def _per_test_window_state(request, monkeypatch):
     # here, while the root is still set; an idle one returns at once.
     for one in made:
         one.idle(10)
+    # The same for the window's thread-pool workers (`bridge.run_in_worker`): a closed window's Needs you gather still
+    # reading its seen file (`needs.seen_path` -> get_local_data_path) in the instant between pytest clearing
+    # PYTEST_CURRENT_TEST and the harness setting it again met neither guard and made the run's own local data folder
+    # (the next test's guard failed, about one run in four). Waited for as the app's quit waits (its answers dropped:
+    # the window is gone), while the root is still set.
+    qt_bridge = sys.modules.get("app.qt.bridge")
+    if qt_bridge is not None:
+        qt_bridge.wait_for_workers(10000)
     # A test's own filters and helpers parented to the app: only objects of classes written in Python (a test's or the
     # window's). Qt parents its own objects to the app as it goes (an input device on the first click, …); deleting
     # one of those corrupts Qt and crashes a later test (seen: a window made 80 tests on died in its constructor).

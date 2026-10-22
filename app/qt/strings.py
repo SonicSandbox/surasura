@@ -161,8 +161,6 @@ READ_ONLY_REASONS = {
 }
 READ_ONLY_IO = "Surasura can't read the library's file — check its drive is there, then restart Surasura"
 PLAY_FAILED = "Couldn't open {name}: {why}"
-PLAY_NOT_ON_DISK = "it isn't on disk"
-PLAY_NO_MEDIA_BESIDE = "no {word} beside it on disk"
 GOAL_ACCESSIBLE = "{name}: {line}"
 ROWS_PCT = "{pct}%"
 ROWS_MORE_CHIP = "+{n}"

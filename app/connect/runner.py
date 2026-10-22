@@ -1107,30 +1107,13 @@ class Steps:
             paired = isinstance(named, str) and bool(named)
             subtitle = None if paired else self.subtitle(lang, job)
         from app.connect import videos
-        if paired:
-            if _on_disk(named):
-                return named                # the named path is trusted as it is: never read (a stat only)
-            size = pairing.get("video_size")
-            found = self._videos(lang).find([os.path.basename(named)],
-                                            size if isinstance(size, int) and size > 0 else None)
-            # away from its named path, a file of that name and size is the paired video only when its bytes say so
-            # (09-hato-layer v2 §1.1): another episode under the same name is never mined as this one. A source
-            # folder's record keeps the video's key as `video_key` (its row is keyed by the origin: SRC B1), and one
-            # with no key takes no moved video; every other record is judged as before Sources (review H14)
-            if pairing.get("producer") == "source":
-                key = pairing.get("video_key")
-                refused = found is not None and (key is None or videos.content_key(found) != key)
-            else:
-                refused = found is not None and videos.content_key(found) != pairing.get("content_key")
-            if refused:
-                log.info("Connect: %s has the paired video's name and size but not its content; not used", found)
-                return None
-            return found
+        if paired:                          # the index is made (and listed) only once the named path isn't on disk
+            return paired_video(pairing, lambda names, size: self._videos(lang).find(names, size))
         if not subtitle:
             return None
         names = videos.names_for(subtitle)
-        origin = pairing.get("origin") if pairing.get("producer") == "source" else None
-        if isinstance(origin, str) and origin:
+        origin = origin_of(pairing)
+        if origin:
             names += videos.names_for(origin)   # a copy renamed `name (2)` in Library/: the original's name finds it
         return beside(subtitle) or beside_origin(pairing) or self._videos(lang).find(names)
 
@@ -1730,18 +1713,52 @@ def _on_disk(path):
     return not (getattr(st, "st_file_attributes", 0) & _PLACEHOLDER)
 
 
-def beside_origin(pairing):
-    """K21 (laptop fixes): the video beside the original an item's text was copied from — its origin record (`producer`
-    "source": a folder's look, or + Add's / a drop's, `via` "add") names it as `origin` — with its name, on disk -> its
-    path; else None (no record, another producer's, none there, a placeholder). A listing and a stat, never a read.
-    Qt-free: Connect's `video()` asks it after `beside(subtitle)`, and ▶ may ask it with `library.pairing_of`."""
+def paired_video(pairing, find):
+    """The video a pairing names (`video_path`), on this computer -> its path; else, moved, the one `find(names, size)`
+    (a video index's lookup) gives by its name and size, when its bytes say it is the paired video; else None. One
+    rule for Connect (`Runner.video`) and the window's ▶ (`app/services/play.py`): the two never disagree."""
+    from app.connect import videos
+    named = pairing.get("video_path")
+    if _on_disk(named):
+        return named                        # the named path is trusted as it is: never read (a stat only)
+    size = pairing.get("video_size")
+    found = find([os.path.basename(named)], size if isinstance(size, int) and size > 0 else None)
+    # away from its named path, a file of that name and size is the paired video only when its bytes say so
+    # (09-hato-layer v2 §1.1): another episode under the same name is never mined as this one. A source
+    # folder's record keeps the video's key as `video_key` (its row is keyed by the origin: SRC B1), and one
+    # with no key takes no moved video; every other record is judged as before Sources (review H14)
+    if pairing.get("producer") == "source":
+        key = pairing.get("video_key")
+        refused = found is not None and (key is None or videos.content_key(found) != key)
+    else:
+        refused = found is not None and videos.content_key(found) != pairing.get("content_key")
+    if refused:
+        log.info("Connect: %s has the paired video's name and size but not its content; not used", found)
+        return None
+    return found
+
+
+def origin_of(pairing):
+    """The original an item's text was copied from, as its origin record names it (`producer` "source": a folder's
+    look, or + Add's / a drop's, `via` "add") -> its path; else None. One rule for Connect and the window's ▶."""
     origin = (pairing or {}).get("origin") if (pairing or {}).get("producer") == "source" else None
-    return beside(origin) if isinstance(origin, str) and origin else None
+    return origin if isinstance(origin, str) and origin else None
 
 
-def beside(subtitle, listings=None):
-    """A video next to the subtitle with its name (`Show - 05.mkv` for `Show - 05.ja.srt`), on disk -> its path.
-    `listings` ({folder: its names}, a caller's own — + Add's many files): each folder listed once across calls (H6)."""
+def beside_origin(pairing, exts=None, unlisted=None):
+    """K21 (laptop fixes): the video beside the original an item's text was copied from (`origin_of`), with its name,
+    on disk -> its path; else None (no record, another producer's, none there, a placeholder). A listing and a stat,
+    never a read. Qt-free: Connect's `video()` asks it after `beside(subtitle)`; ▶ asks it too, with `exts` and
+    `unlisted` as `beside` takes them (an audio item's ▶; a share offline)."""
+    origin = origin_of(pairing)
+    return beside(origin, exts, unlisted) if origin else None
+
+
+def beside(subtitle, exts=None, unlisted=None, listings=None):
+    """A video next to the subtitle with its name (`Show - 05.mkv` for `Show - 05.ja.srt`), on disk -> its path; None
+    when there's none, `unlisted` when its folder can't be listed (a share offline: the window's ▶ says so). `exts`:
+    what is looked for, the video extensions unless given (an audio item's ▶ looks for audio). `listings` ({folder: its
+    names}, a caller's own — + Add's many files): each folder listed once across calls (H6)."""
     from app.episode_names import video_stems
     folder, name = os.path.split(subtitle)
     stems = video_stems(name)               # LM1a: its stem, without the marks the one rule reads, NFC and NFD
@@ -1750,11 +1767,11 @@ def beside(subtitle, listings=None):
         try:
             names = {n.lower(): n for n in os.listdir(folder or ".")}
         except OSError:
-            return None
+            return unlisted
         if listings is not None:
             listings[folder] = names
     for s in stems:
-        for ext in VIDEO_EXTENSIONS:
+        for ext in exts or VIDEO_EXTENSIONS:
             found = names.get((s + ext).lower())
             if found and _on_disk(os.path.join(folder, found)):
                 return os.path.join(folder, found)

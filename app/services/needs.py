@@ -623,7 +623,8 @@ class _Lister:
                             if entry.is_dir(follow_symlinks=False):
                                 if deep and depth < videos.DEPTH:
                                     todo.append((entry.path, depth + 1))
-                            elif entry.name.lower().endswith(runner.VIDEO_EXTENSIONS):
+                            elif runner.video_file(entry.name, entry.stat(follow_symlinks=False).st_size):
+                                # Connect's one rule for a video file: never a Mac `._` copy or a small `.ts`
                                 out.append(entry.path)
                         except OSError:
                             continue

@@ -1505,3 +1505,12 @@ def test_LM11b_G5_each_episode_names_its_own_show_and_keeps_it_through_the_first
     before = vr.from_cache(old)
     assert [(e.work_id, e.show) for e in before.rows[0].episodes] == [(None, None)] * 4
     assert [e.id for e in before.rows[0].episodes] == [e.id for e in group.episodes]
+
+
+def test_LM11b_G5_a_group_holding_one_show_reads_as_its_run():
+    """The store makes a group left with one work's items a run (`_settle_kinds`); the view reads such a piece so too —
+    what the reader shows while a show's finish waits for a busy store: the show's own title and range, no group."""
+    items = items_of([("now", 2, 10, eps("雲の上の郵便屋さん", 7, 8), {})])
+    row = vr.build(items, WORKS, {"mine_line": 20}, pieces={10: {"id": 10, "title": None, "kind": "group"}}).rows[0]
+    assert (row.group, row.title, row.line, row.title_ep) == (False, "雲の上の郵便屋さん", "Ep 7–8", "Ep 7")
+    assert [e.show for e in row.episodes] == [None, None]

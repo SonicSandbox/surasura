@@ -113,16 +113,19 @@ class MineActions(QObject):
         return [e.id for e in rows.asked_files("mine", episodes)]
 
     def mine_row(self, row, ids):
-        """*Mine now* / *Mine this* / Finished's *Mine* and *Mine it too*: the ask, or a non-video item's *Mine text*.
+        """*Mine now* / *Mine this* / Finished's *Mine* and *Mine it too*: the ask for the files Anki Miner can mine
+        (`videos_of`), the others left out and the toast saying so; none of them a video: the first one's *Mine text*.
         Nothing left to ask for: the bar says so."""
         ids = list(dict.fromkeys(ids))
         if not ids:
             self.win.say(strings.MINE_NOTHING)
             return None
-        ep = next((e for e in row.episodes if e.id == ids[0]), row.episodes[0])
-        if (getattr(ep, "media_word", None) or getattr(row, "media_word", "video")) != "video":   # K67: video only;
-            return self.mine_text(ep.label, ep.rel_path)     # judged by the file's own type (LM11b: a group holds several)
-        return self._ask(strings.MINE_ASKED.format(title=row.title), (row.key,), ids)
+        videos, other = videos_of(row, ids)
+        if not videos:
+            ep = other or row.episodes[0]
+            return self.mine_text(ep.label, ep.rel_path)
+        text = strings.MINE_ASKED if len(videos) == len(ids) else strings.MINE_ASKED_VIDEOS
+        return self._ask(text.format(title=row.title), (row.key,), videos)
 
     def mine_ids(self, ids):
         """The arrivals' *Mine them too*: of `ids`, the files the rows' rule may ask for (P4.1 WF, S5), told by the
@@ -223,6 +226,22 @@ class MineActions(QObject):
             service.answer(language, keys)
             return made
         bridge.run_in_worker(run, then=lambda made: needs._connect_done(_made_words(made)), failed=needs._failed)
+
+
+def videos_of(row, ids):
+    """K67 (IK S3: Anki Miner mines video only), one rule for one file and for many: of `ids`, the files that are
+    videos, each by its own type (`Episode.media_word`; the row's for a first screen's cache from before — LM11b: a
+    group holds several types) -> (their ids in order, the first other file's episode or None)."""
+    by = {e.id: e for e in row.episodes}
+    word = getattr(row, "media_word", "video")
+    videos, other = [], None
+    for i in ids:
+        ep = by.get(i)
+        if ((ep.media_word if ep is not None else None) or word) == "video":
+            videos.append(i)
+        elif other is None:
+            other = ep
+    return videos, other
 
 
 def _made_words(made):

@@ -649,6 +649,9 @@ def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, 
     first = piece[0]
     work = works.get(first.get("work_id")) or {}
     group = meta is not None and meta.get("kind") == "group"      # LM11b G1: `meta`, the feed's piece (a group's)
+    # LM11b G5: one holding a single show is that show's run, as the store makes it (`_settle_kinds`) — read so while
+    # the reader builds in a write the store hasn't made yet (`LibraryReader.expect`)
+    group = group and any(_show_key(it) != _show_key(first) for it in piece)
     if group:                                            # each show by its own files and type; the row by the first's
         shows, kinds, names, group_title, group_line = _group(meta, piece, works, guessed)
         media = kinds[_show_key(first)]

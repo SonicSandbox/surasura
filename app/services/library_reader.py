@@ -140,6 +140,10 @@ class LibraryReader:
         self._estimates = {}
         self._estimates_new = False
         # --- end W3.2 Q1
+        # --- LM11b G5: a window command not written yet ({item_id: tier}, `expect`), built in until the feed holds it
+        self._expected = {}
+        self._expected_new = None          # the window's newest, taken in by the next look
+        # --- end LM11b G5
         # --- W3.2 B: the bell and the tree watch (`watch`), the folders they report synced on a worker of its own
         self.watch = watch
         self._lookout = None
@@ -177,6 +181,28 @@ class LibraryReader:
             self._estimates_new = True
         self._wake.set()
     # --- end W3.2 Q1
+
+    # --- LM11b G5
+    def expect(self, tiers):
+        """{item_id: tier} a command of the window's will write (*Move {show} to Finished*), from any thread: every
+        build reads those items in that tier until the feed holds them — together at its top in the order given, a
+        Finished one finished now — their rows by the view's own rule (`_row`), a busy store's wait included. None or
+        {}: forgotten (the window let go of its order). Looked at now."""
+        with self._lock:
+            self._expected_new = dict(tiers or {})
+        self._wake.set()
+
+    def _take_expected(self):
+        """The window's newest `expect`, taken in: its items and those it replaces built again -> whether it moved."""
+        with self._lock:
+            new, self._expected_new = self._expected_new, None
+        if new is None or new == self._expected:
+            return False
+        if self._build_changed is not None:
+            self._build_changed.update(set(new) | set(self._expected))
+        self._expected = new
+        return True
+    # --- end LM11b G5
 
     def hold(self):
         """A drag starts (E6): the feed is still read, but nothing is built or published until `release()`."""
@@ -305,6 +331,7 @@ class LibraryReader:
         with self._lock:                                # W3.2 Q1: new estimates from the window
             estimates_new, self._estimates_new = self._estimates_new, False
         estimates_new = estimates_new or self._connect_moved()      # P4.1 L2: a new Connect feed rebuilds the same way
+        estimates_new = self._take_expected() or estimates_new      # LM11b G5: and the window's expectation
         dv = h.data_version()
         cards_due = self._cards_stale and not held and time.monotonic() - self._cards_all_at >= CARDS_ALL_S
         if not changed_mode and dv == self._data_version and version == self._numbers_version \
@@ -353,6 +380,8 @@ class LibraryReader:
         if mode == "store" and self.cache_file:
             # written at the next look that finds nothing new, not now: the window is taking this view in at this
             # very moment, and the cache's JSON would hold Python's lock against it (speed round 5)
+            if self._expected:                          # LM11b G5: a view of what isn't written yet is never cached
+                return
             if self._cache_due is None:
                 self._cache_due_at = time.monotonic()
             self._cache_due = (view, [self._store_id, feed["epoch"], feed["version"], version])
@@ -651,10 +680,24 @@ class LibraryReader:
                 numbers_changed = changed_since(self._built_numbers)
             except Exception:
                 numbers_changed = None
-        view = view_rows.build(self._items, self._works, self._options, numbers=(self._numbers_version, numbers),
+        items, tiers = self._items, (self._sorted_tiers() if self._items else None)
+        if self._expected:                              # LM11b G5: what the feed holds already is the feed's own
+            self._expected = {i: t for i, t in self._expected.items() if i in items and items[i].get("tier") != t}
+            if self._expected:                          # the rest read in their new tier (sorted anew, while it lasts)
+                items = dict(items)
+                top = {}
+                for r in items.values():
+                    if r.get("tier") in self._expected.values():
+                        top[r["tier"]] = min(top.get(r["tier"], 0.0), r.get("ord") or 0.0)
+                now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                for k, (i, t) in enumerate(self._expected.items()):
+                    items[i] = dict(items[i], tier=t, ord=top.get(t, 0.0) - 1024.0 + k / (len(self._expected) + 1),
+                                    **({"graduated_at": now} if t == "graduated" else {}))
+                tiers = None
+        view = view_rows.build(items, self._works, self._options, numbers=(self._numbers_version, numbers),
                                cards=self._cards, mining=set(self.mining()), language=self.language, mode=mode,
                                reason=reason, loading=not rows_known, cache=self.row_cache,
-                               tiers=self._sorted_tiers() if self._items else None, changed=self._build_changed,
+                               tiers=tiers, changed=self._build_changed,
                                changed_works=self._build_works, numbers_changed=numbers_changed,
                                estimates=self._estimates,     # W3.2 Q1
                                connect=connect,               # P4.1 L2

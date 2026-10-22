@@ -928,3 +928,33 @@ def test_LM11b_G1_after_a_restart_the_first_screen_shows_the_group_and_the_full_
     finally:
         again.stop()
         store.close()
+
+
+def test_LM11b_G5_expect_builds_the_windows_command_in_until_the_feed_holds_it():
+    """`expect({id: tier})`: a command the window gave but the store hasn't written (a busy store) is in every view the
+    reader builds — the row by the view's own rule, Finished's count with it — until the feed holds it (then the
+    expectation is spent); `expect(None)` forgets it and the row comes back. Never written as the first screen's cache.
+    Wrong, the window would show the old row — or one it made up — for as long as the store stays busy."""
+    seed = window_seed.build()
+    reader = _reader(seed)
+    views, _got = _collect(reader)
+    reader.start()
+    try:
+        assert _wait(lambda: views and views[-1][1].state == "full")
+        view = views[-1][1]
+        row = view.rows[4]
+        ids = [e.id for e in row.episodes]
+        keys = [r.key for r in view.rows]
+        reader.expect({i: "graduated" for i in ids})
+        assert _wait(lambda: row.key not in [r.key for r in views[-1][1].rows])
+        assert views[-1][1].counts.finished == view.counts.finished + 1
+        reader.expect(None)
+        assert _wait(lambda: [r.key for r in views[-1][1].rows] == keys)
+        reader.expect({i: "graduated" for i in ids})
+        assert _wait(lambda: row.key not in [r.key for r in views[-1][1].rows])
+        seed.library.commit(items=[{"id": i, "tier": "graduated", "graduated_at": "2026-10-21T20:00:00Z"} for i in ids],
+                            order=True)                    # the store writes it: the feed holds it, the expectation spent
+        assert _wait(lambda: reader.builds and not reader._expected)
+        assert row.key not in [r.key for r in views[-1][1].rows]
+    finally:
+        reader.stop()

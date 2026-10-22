@@ -2417,51 +2417,6 @@ def _shown_buttons(card):
     return [b.text() for b in card.buttons if not b.isHidden()]
 
 
-def test_LM11b_G5_the_last_of_one_show_in_a_group_offers_finished_for_that_show_alone(world):
-    """GW-2 ⭐ A: SHOW_A's last unwatched episode marked while SHOW_B's wait — its watched written as any Done, and the
-    toast offers *Move SHOW_A to Finished*. Pressed, only SHOW_A's three ids go to Finished, in one call, with the
-    Finished toast's Keep / Leave its new cards out (D14); the row stays, holding SHOW_B's episodes. Wrong, a finished
-    show would sit in Current until the whole group is done — or the press would finish SHOW_B unwatched too."""
-    seed, win, writer = world(apply=False)
-    row = _show_group(win, a_watched=2)
-    a = [e for e in row.episodes if e.work_id == 1]
-    b = [e for e in row.episodes if e.work_id == 2]
-    win.moves.done(row, a[-1])
-    assert calls(writer) == [("set_watched", [a[-1].id], {"on": True})]
-    card = win.toasts.card
-    assert card.message == strings.DONE_SHOW_IN_GROUP.format(show=SHOW_A, n=3)
-    assert _shown_buttons(card) == [strings.TOAST_UNDO, strings.DONE_MOVE_SHOW_FINISHED.format(show=SHOW_A)]
-    assert card.buttons[1].toolTip() == strings.DONE_MOVE_SHOW_FINISHED_TIP.format(show=SHOW_A, n=3)
-    settle()
-    finished = win.page_widgets["current"].view_model.counts.finished
-    card.buttons[1].click()
-    assert calls(writer, "set_tier") == [("set_tier", [e.id for e in a], {"tier": drag.FINISHED})]
-    shown = next(r for r in rows_of(win) if r.key == row.key)                # the row stays, with SHOW_B's alone
-    assert [e.id for e in shown.episodes] == [e.id for e in b] and shown.works == (2,)
-    assert (shown.n_files, shown.title, shown.title_ep, shown.group) == (2, SHOW_B, "Ep 7", False)
-    assert shown.next_index == 0 and (shown.string[0].n, row.string[0].n) == (2, 5)
-    assert win.page_widgets["current"].view_model.counts.finished == finished + 1
-    assert win.toasts.card.message == strings.DRAG_FINISHED.format(title=SHOW_A)
-    settle()
-    win.toasts.card.buttons[2].click()                                # Leave its new cards out
-    assert [(c[1], c[2]["keep_cards"]) for c in calls(writer, "finish")] == [([e.id for e in a], False)]
-
-
-def test_LM11b_G5_a_reader_view_still_holding_the_show_is_shown_without_it(world):
-    """The expectation (as for a row sent to a well): a view from the reader written before the store took the show
-    off — its episodes still in the group's row — is shown with them off, never the whole group again."""
-    seed, win, writer = world(apply=False)
-    row = _show_group(win, a_watched=2)
-    a = [e.id for e in row.episodes if e.work_id == 1]
-    win.moves.done(row, row.episodes[2])
-    settle()
-    win.toasts.card.buttons[1].click()
-    stale = _group_view(a_watched=3)
-    shown = win.moves.view_in(stale)
-    assert shown is not None and not set(a) & {e.id for r in shown.rows for e in r.episodes}
-    assert [r.key for r in shown.rows] == [r.key for r in stale.rows]
-
-
 def test_LM11b_G5_the_whole_group_watched_offers_the_rows_own_finish(world):
     """Every show of the group watched by this Done: the row's own toast (*All 5 watched*), its *Move to Finished*
     taking the whole row — never the one show's offer."""
@@ -2494,25 +2449,9 @@ def test_LM11b_G5_a_show_with_a_file_left_hatos_mix_a_run_and_a_cache_from_befor
     assert drag.show_finished(every, every.episodes[-1]) is None                         # all of it: the row's own
 
 
-def test_LM11b_G5_without_takes_only_the_shows_episodes_off_the_row_and_counts_one_more_finished():
-    """`drag.without(…, ids=)`: the window's quick update takes the finished show's episodes off the group's row — the
-    row stays, read as the store will leave it (the other show alone, named after it); Finished counts one more."""
-    view = _group_view(a_watched=3)
-    row = view.rows[0]
-    a = [e.id for e in row.episodes if e.work_id == 1]
-    after = drag.without(view, row.key, drag.FINISHED, a)
-    assert [r.key for r in after.rows] == [r.key for r in view.rows]
-    kept = after.rows[0]
-    assert [e.work_id for e in kept.episodes] == [2, 2] and kept.cover_title == SHOW_B
-    assert kept.line == "Ep 7–8" and after.counts.finished == view.counts.finished + 1
-    assert after.counts.current_files == view.counts.current_files - 3
-    assert row.key not in [r.key for r in drag.without(view, row.key, drag.FINISHED, drag.ids_of(row)).rows]
-
-
-def test_real_store_LM11b_G5_a_show_finished_inside_a_group_lands_in_finished_under_its_own_name(real):
-    """The real store: two shows grouped into one row; the first's last episode marked, *Move <show> to Finished*
-    pressed — its four episodes are in Finished as a run of their own show, and Current's row holds the other show's
-    four episodes, none of the first's."""
+def _real_group(real):
+    """The real store: Current's first two shows grouped into one row, the first's Ep 1–3 watched; its Ep 4 marked
+    (the Done). -> (store, win, writer, the first show's row, the second's, the group row before the Done)."""
     store, win, writer = real()
     rs = rows_of(win)
     first, second = rs[0], rs[1]
@@ -2523,14 +2462,72 @@ def test_real_store_LM11b_G5_a_show_finished_inside_a_group_lands_in_finished_un
     row = rows_of(win)[0]
     last = next(e for e in row.episodes if e.id == drag.ids_of(first)[-1])
     win.moves.done(row, last)
-    assert win.toasts.card.message == strings.DONE_SHOW_IN_GROUP.format(show=last.show, n=4)
+    return store, win, writer, first, second, row
+
+
+def _holding(win, ids):
+    return next((r for r in rows_of(win) if [e.id for e in r.episodes] == ids), None)
+
+
+def test_real_store_LM11b_G5_a_show_finished_inside_a_group_lands_in_finished_under_its_own_name(real, monkeypatch):
+    """GW-2 ⭐ A on the real store: the first show's last episode marked while the second's wait — its watched written
+    as any Done and the toast offers *Move <show> to Finished*. Pressed: only its four ids go, in one call, with the
+    Finished toast's Keep / Leave its new cards out (D14); they land in Finished as a run of their own show, and
+    Current's row holds the second show's four, built by the view's own rule (its cover and work the second show's).
+    Wrong, a finished show would sit in Current until the whole group is done — or the press would finish the second
+    show unwatched too."""
+    store, win, writer, first, second, row = _real_group(real)
+    a, b = drag.ids_of(first), drag.ids_of(second)
+    show = row.episodes[3].show
+    card = win.toasts.card
+    assert card.message == strings.DONE_SHOW_IN_GROUP.format(show=show, n=4)
+    assert _shown_buttons(card) == [strings.TOAST_UNDO, strings.DONE_MOVE_SHOW_FINISHED.format(show=show)]
+    assert card.buttons[1].toolTip() == strings.DONE_MOVE_SHOW_FINISHED_TIP.format(show=show, n=4)
+    assert wait_until(lambda: store.item(a[-1])["watched"] == 1, 5)
+    tiers = []
+    monkeypatch.setattr(writer, "set_tier", lambda ids, tier, label=None, real=writer.set_tier:
+                        tiers.append((list(ids), tier)) or real(ids, tier, label=label))
     settle()
-    win.toasts.card.buttons[1].click()
-    a = drag.ids_of(first)
+    card.buttons[1].click()
+    assert tiers == [(a, drag.FINISHED)]
     assert wait_until(lambda: all(store.item(i)["tier"] == "graduated" for i in a), 5)
     assert {store.item(i)["work_id"] for i in a} == {first.work_id}
     assert len({store.item(i)["piece_id"] for i in a}) == 1                  # one run, its own show's
-    assert all(store.item(i)["tier"] == "now" for i in drag.ids_of(second))
-    assert wait_until(lambda: win.moves.expect is None and
-                      any([e.id for e in r.episodes] == drag.ids_of(second) for r in rows_of(win)), 5)
+    assert all(store.item(i)["tier"] == "now" for i in b)
+    assert wait_until(lambda: win.moves.expect is None and _holding(win, b) is not None, 5)
+    kept = _holding(win, b)
+    assert (kept.work_id, kept.cover.work_id, kept.group) == (second.work_id, second.work_id, False)
     assert not any(set(a) & {e.id for e in r.episodes} for r in rows_of(win))
+    assert win.toasts.card.message == strings.DRAG_FINISHED.format(title=show)
+    win.toasts.card.buttons[2].click()                                # Leave its new cards out
+    assert wait_until(lambda: all(store.item(i)["in_learning_order"] == 0 for i in a), 5)
+    assert all(store.item(i)["in_learning_order"] == 1 for i in b)
+
+
+def test_real_store_LM11b_G5_while_the_store_is_busy_the_row_is_the_readers_own_and_a_stale_view_is_held(
+        real, short_lock_wait):
+    """The press while another program holds the store: the finish waits in the writer's queue (*saving…*), but the
+    row on screen is already the second show's alone — built by the reader by the view's own rule (`expect`): its
+    work, cover and status the second show's, never the group's old ones for as long as the store stays busy. A view
+    still holding the first show's episodes is held. Released: the finish lands and the same row stands."""
+    store, win, writer, first, second, row = _real_group(real)
+    a, b = drag.ids_of(first), drag.ids_of(second)
+    assert wait_until(lambda: store.item(a[-1])["watched"] == 1 and writer.pending() == 0, 5)
+    settle()
+    before = win.page_widgets["current"].view_model
+    holder = LockHolder(store.db_path)
+    try:
+        win.toasts.card.buttons[1].click()
+        assert win.moves.view_in(before) is None                       # still holding the first show: held
+        assert wait_until(lambda: _holding(win, b) is not None, 5)
+        kept = _holding(win, b)
+        assert (kept.work_id, kept.cover.work_id, kept.title) == (second.work_id, second.work_id, second.title)
+        assert kept.status == second.status
+        settle(400)
+        assert writer.pending() == 1 and all(store.item(i)["tier"] == "now" for i in a)
+        assert _holding(win, b) is not None                            # past the settle: still the reader's own row
+    finally:
+        holder.release()
+    assert wait_until(lambda: all(store.item(i)["tier"] == "graduated" for i in a), 10)
+    assert wait_until(lambda: win.moves.expect is None and not win.moves.reader._expected, 5)
+    assert _holding(win, b) is not None and not any(set(a) & {e.id for e in r.episodes} for r in rows_of(win))

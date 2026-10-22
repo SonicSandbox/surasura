@@ -617,3 +617,28 @@ def test_LM11b_a_groups_epub_is_mine_text_though_the_group_is_led_by_a_video(act
     assert texts == [(book.label, book.rel_path)] and asks(writer) == []
     win.mine.mine_row(row, [row.episodes[0].id])
     assert texts == [(book.label, book.rel_path)] and [c[1] for c in asks(writer)] == [[row.episodes[0].id]]
+
+
+def test_LM11b_a_groups_mine_now_asks_its_videos_alone_and_says_the_rest_are_left_out(act):
+    """K67, one rule for one file and for many (`mine_actions.videos_of`): *Mine now* on a group of an anime's two
+    episodes and a light novel's EPUB asks for the two videos only — Anki Miner can't mine the EPUB — and its toast
+    says the others are left out; a group of videos only says its usual words."""
+    from app.qt import mine_actions
+    from app.services import view_rows as vr
+    from tests import test_view_rows as tvr
+    _seed, win, writer = act()
+    tvr.WORKS.clear()
+    tvr.work(1, "星降る街の小さな工房")
+    tvr.work(3, "白銀の書庫番", media="lightnovel")
+    items = tvr.items_of([("now", 1, 10, tvr.eps("星降る街の小さな工房", 1, 2), {}),
+                          ("now", 3, 10, ["白銀の書庫番 01 章.epub"], {0: {"source_type": "epub"}})])
+    row = vr.build(items, dict(tvr.WORKS), {"mine_line": 20}, pieces={10: {"id": 10, "title": None, "kind": "group"}}
+                   ).rows[0]
+    ids = [e.id for e in row.episodes]
+    assert mine_actions.videos_of(row, ids) == (ids[:2], row.episodes[2])
+    win.mine.mine_row(row, ids)
+    assert [c[1] for c in asks(writer)] == [ids[:2]]
+    assert win.toasts.card.message == strings.MINE_ASKED_VIDEOS.format(title=row.title)
+    win.mine.mine_row(row, ids[:2])
+    assert [c[1] for c in asks(writer)] == [ids[:2], ids[:2]]
+    assert win.toasts.card.message == strings.MINE_ASKED.format(title=row.title)

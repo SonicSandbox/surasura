@@ -562,8 +562,10 @@ def test_a_new_edition_one_of_whose_parts_cant_switch_waits_whole(language, monk
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_a_new_editions_switch_that_fails_never_ends_the_look(language, monkeypatch):
-    """`switch_parts` raising (a file the system refuses, the database failing): the book keeps its old edition and
-    waits, the look goes on and takes in the other new book on the shelf; the next look switches the edition."""
+    """`switch_parts` raising (the database failing; a file the system refuses was already the book's own wait): the
+    book keeps its old edition and waits, the look goes on and takes in the other new book on the shelf; the next look
+    switches the edition."""
+    import sqlite3
     store, data_dir = _empty(language)
     src = _drive("Shelf")
     _book(language, src)
@@ -576,7 +578,7 @@ def test_a_new_editions_switch_that_fails_never_ends_the_look(language, monkeypa
         _epub(os.path.join(src, "Novels", f"{_OTHER[language]}.epub"), _chapters(language, "別"), language)
 
         def fails(*_a, **_k):
-            raise PermissionError(13, "The process cannot access the file")
+            raise sqlite3.DatabaseError("database disk image is malformed")
         with monkeypatch.context() as patched:
             patched.setattr(store, "switch_parts", fails)
             result = _look(store, language, root)

@@ -98,11 +98,13 @@ def _by_lemma(token):
 def card_front(token):
     """The word Anki Miner is named by (IS:234): a verb, adjective or helper verb by its dictionary form as the
     occurrence writes it (orthBase) — by its lemma where that form is another word's (`_by_lemma`: 行ける → 行く);
-    anything else exactly as written (伯父さん, not おじさん; クソ, not くそ)."""
+    anything else exactly as written (伯父さん, not おじさん; クソ, not くそ) — as the tagger reads it (`analyzer.tagger_text`:
+    ﾗｲﾌﾞﾊｳｽ is ライブハウス), for Anki Miner asks its dictionary for the front as named (laptop round 5: a half-width
+    name found its line and no definition); the file's own spelling goes as `surface`."""
     node = token.node
     if node is not None and node.feature.pos1 in CONJUGATED:
         return token.lemma if _by_lemma(token) else node.feature.orthBase or token.orth
-    return token.written
+    return analyzer.tagger_text(token.written)[0]
 
 
 def front_reading(occurrence, key, language):

@@ -68,6 +68,9 @@ WRITER_BUSY = "Another program is writing to Anki."
 SHELF_NO_JUNBAN = "The shelf is off: it needs Junban (順), which isn't installed. Connect waits at the cap."
 REVIEWING = "Waiting while you review in Anki."
 ANKI_CLOSED = "Waiting for Anki: it isn't open."
+# A call to Anki that failed while Anki answers (one slow or refused request: laptop round 5 review A1) — that
+# episode's own wait, amber as a wait on Anki, but never one that holds every episode
+ANKI_SLOW = "Waiting for Anki: it didn't answer in time."
 NO_VIDEO = "No video: its video isn't on this computer (or isn't downloaded yet)."
 CHINESE = "Chinese cards come later."
 # K67 (IK S3): Anki Miner's API mines video only — an asked job for a book or a text ends skipped with this line
@@ -1202,7 +1205,7 @@ class Steps:
         except Exception:
             log.exception("Connect couldn't note its write for Anki's sync")
         try:
-            verbs._backlog_read(self.loaded, lang)
+            verbs._backlog_read(self.loaded, lang, after_cards=True)
         except Exception:
             log.exception("Connect couldn't read Anki's new cards again")
 
@@ -1719,28 +1722,34 @@ def anki_wait(reason):
     reviewing, another program writing to it? (The window's feed shows these as *Waiting for Anki*.)"""
     from app.connect import anki_session
     return isinstance(reason, str) and (
-        reason in (ANKI_CLOSED, REVIEWING, WRITER_BUSY, anki_session.CLOSED, anki_session.BUSY, anki_session.UNUSABLE,
-                   anki_session.REVIEWING, anki_session.NO_PROFILE_YET)
+        reason in (ANKI_CLOSED, ANKI_SLOW, REVIEWING, WRITER_BUSY, anki_session.CLOSED, anki_session.BUSY,
+                   anki_session.UNUSABLE, anki_session.REVIEWING, anki_session.NO_PROFILE_YET,
+                   anki_session.NO_PROFILE_DECKS)
         or reason.startswith(anki_session.OTHER_PROFILE.split("{")[0]))
 
 
 def holds_every(reason):
-    """Does a wait with `reason` hold every episode, not only the one it stopped (laptop round 5 #24)? On battery, or
-    a wait on Anki: the pass ends there, every episode keeps its place, and the next look starts from the top — a
-    later episode (or the next show) is never mined before the ones that waited."""
-    return reason == ON_BATTERY or anki_wait(reason)
+    """Does a wait with `reason` hold every episode, not only the one it stopped (laptop round 5 #24)? On battery, a
+    wait on Anki (never ANKI_SLOW: Anki answers, one request of that episode's failed), Anki Miner's window open, or
+    your list in another language: the pass ends there, every episode keeps its place, and the next look starts from
+    the top — a later episode (or the next show) is never mined before the ones that waited."""
+    if not isinstance(reason, str) or reason == ANKI_SLOW:
+        return False
+    return (reason in (ON_BATTERY, ANKI_MINER_OPEN) or reason.startswith(OTHER_LIST.split("{")[0])
+            or anki_wait(reason))
 
 
 def _anki_wait(url, resume=None):
     """A call to Anki that failed, as the wait it is (laptop round 5 #26): Anki is called closed only when its port
-    refuses (`anki_session.look`); a slow answer — its own sync, a laptop under load — is *busy*. With Anki switched
-    off for the run (SURASURA_NO_ANKI_SYNC: the suites, a developer's run) it is never asked: *it isn't open*."""
+    refuses (`anki_session.look`); one that doesn't answer in time — its own sync, a laptop under load — is *busy*;
+    one that answers now (that one request failed) is ANKI_SLOW, the episode's own wait. With Anki switched off for
+    the run (SURASURA_NO_ANKI_SYNC: the suites, a developer's run) it is never asked: *it isn't open*."""
     from app.connect import anki_session
     if os.environ.get("SURASURA_NO_ANKI_SYNC"):
         return Wait(ANKI_CLOSED, resume=resume)
     state = anki_session.look(url)
-    return Wait({"closed": ANKI_CLOSED, "unusable": anki_session.UNUSABLE}.get(state, anki_session.BUSY),
-                resume=resume)
+    return Wait({"closed": ANKI_CLOSED, "unusable": anki_session.UNUSABLE, "open": ANKI_SLOW}.get(
+        state, anki_session.BUSY), resume=resume)
 
 
 def _wait_or_needs(error, resume, url=None):

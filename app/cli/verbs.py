@@ -524,10 +524,11 @@ def generate_args(parser):
     parser.add_argument("--force", action="store_true", help="run the analysis even when nothing changed")
 
 
-def _backlog_read(loaded, lang):
+def _backlog_read(loaded, lang, after_cards=False):
     """The Anki backlog read the window fires before Generate (WP-B7), awaited here: the report marks the cards
-    waiting in Anki. Nothing without decks, with the switch off, or with Anki closed."""
-    if not loaded.get("anki_backlog_on_generate", True) or os.environ.get("SURASURA_NO_ANKI_SYNC"):
+    waiting in Anki. Nothing without decks, with the switch off, or with Anki closed. `after_cards`: Connect's read
+    once its cards landed (laptop round 5 #27: the window's count of new cards), whatever Generate's switch says."""
+    if (not after_cards and not loaded.get("anki_backlog_on_generate", True)) or os.environ.get("SURASURA_NO_ANKI_SYNC"):
         return
     decks = list((loaded.get("anki_sync_decks") or {}).get(lang) or [])
     if not decks:

@@ -44,8 +44,9 @@ DEFAULT_PROFILE = "Surasura"    # connect_anki_miner_profile's default (settings
 PROGRESS = "progress.json"      # a run's progress, in its folder (API.md; written at most every 0.25 s)
 POLL_S = 1.0                    # how often a mine call's progress is read while it runs (laptop round 5 #23)
 # Each of a mine run's five stages (parsing, filtering, media, definitions, cards), as a share of its time: the
-# episode's percent (`percent`). PROVISIONAL even shares until the DevTest timing (work/LF-mining/timing.md).
-STAGE_SHARES = (0.2, 0.2, 0.2, 0.2, 0.2)
+# episode's percent (`percent`). Measured on DevTest, two episodes of 50 words (fresh media): media 51–63 %, cards
+# 30–43 %, the rest a few % (laptop round 5, 2026-10-22).
+STAGE_SHARES = (0.05, 0.01, 0.57, 0.01, 0.36)
 
 # Anki Miner's `features` names (Z-4; 3.7.0 `cli/api/contract.py` FEATURES), and the ask each answers. A name not
 # here is a later addition: ignored until Surasura knows it.

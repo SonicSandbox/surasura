@@ -551,6 +551,34 @@ def test_the_bulk_asks_never_name_a_file_in_anki_being_mined_or_whose_cards_were
     assert len(asks(writer)) == n and win.bar_line.full() == strings.MINE_NOTHING
 
 
+def test_mine_them_too_asks_for_an_arrivals_videos_only_and_leaves_its_epub_out_saying_so(act, monkeypatch):
+    """K67 (IK S3) on New arrivals: Anki Miner mines video only, so *Mine them too* over a video show and an EPUB that
+    came with it asks for the videos alone (`mine_actions.videos_of`, the rule *Mine now* uses), the toast saying the
+    other files were left out; an EPUB alone asks nothing and opens its *Mine text*. Wrong, the book's file made a job
+    Anki Miner can never finish."""
+    _seed, win, writer = act()
+    tray = win.arrivals_tray
+    assert wait_until(lambda: tray.watched(), 10)
+    shown = tray.watched()[0]
+    videos = [e._replace(cards=0, mining=False, deleted=False, missing=False) for e in shown.episodes]
+    book = next(r for r in win.page_widgets["current"].view_model.rows if r.media_word != "video" and r.episodes)
+    ep = book.episodes[0]
+    epub = ep._replace(id=max(e.id for e in videos) + 1000, cards=0, mining=False, deleted=False, missing=False,
+                       rel_path=f"HighPriority/Hato/{book.title}/{book.title}.epub", label=f"{book.title}.epub")
+    came = shown._replace(key="p-epub", work_id=book.work_id, title=book.title, media=book.media,
+                          media_word=book.media_word, item_ids=(epub.id,), episodes=(epub,))
+    tray.groups = tuple(g._replace(rows=(shown._replace(episodes=tuple(videos)), came)) if g.kind == "watched" else g
+                        for g in tray.groups)
+    tray.mine_them_too()
+    assert asks(writer)[-1][1] == [e.id for e in videos] and epub.id not in asks(writer)[-1][1]
+    assert win.toasts.card.message == strings.MINE_ASKED_N_VIDEOS[len(videos) == 1].format(n=len(videos))
+    opened = []
+    monkeypatch.setattr(win.mine, "mine_text", lambda label, rel_path: opened.append((label, rel_path)))
+    n = len(asks(writer))
+    win.mine.mine_ids([epub.id])                             # the EPUB alone: no ask, its Mine text
+    assert len(asks(writer)) == n and opened == [(epub.label, epub.rel_path)]
+
+
 def test_a_double_click_on_mine_now_asks_once(act):
     """WF fix 8 (adversary N1): a double-click on a part acts once — Qt turned the second click into a press whose
     release asked again (a second toast and Undo)."""

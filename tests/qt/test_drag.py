@@ -2080,6 +2080,7 @@ def test_L4_without_the_stones_sheet_a_click_on_the_string_opens_the_row(world, 
 # The real store: the writer, the numbers and the reader on one opener
 # ================================================================================================================== #
 from app import library_store as ls                                                  # noqa: E402
+from app import settings_manager                                                     # noqa: E402
 from tests.test_library_store_support import migrated                               # noqa: E402
 from tests.test_services_moves import LockHolder, short_lock_wait, write_plan       # noqa: E402,F401
 
@@ -2090,6 +2091,7 @@ def real(qapp):
 
     def make(language="ja", plan=False):
         store = migrated(language)                                     # the outside writer's handle (another program)
+        settings_manager.save_keys({"target_language": language})      # the window's language is its library's (P0)
         opener = moves_module.store_opener(language)
         plan_file = None
         if plan:

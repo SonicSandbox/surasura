@@ -129,18 +129,32 @@ class MineActions(QObject):
 
     def mine_ids(self, ids):
         """The arrivals' *Mine them too*: of `ids`, the files the rows' rule may ask for (P4.1 WF, S5), told by the
-        tray's own rows' episodes (a file the tray doesn't show isn't asked for); none left: the bar says so."""
+        tray's own rows' episodes (a file the tray doesn't show isn't asked for); none left: the bar says so. Of those,
+        the videos are asked for (`videos_of`, each tray row by its own files' types, as `mine_row`), the others left out
+        and the toast saying so; none of them a video: the first one's *Mine text*."""
         if self.off:                                 # Connect off: that is why nothing is asked, said first
             self.win.say(self.off)
             return None
         tray = getattr(self.win, "arrivals_tray", None)
-        known = {e.id: e for g in (getattr(tray, "groups", None) or ()) for a in g.rows for e in a.episodes}
+        arrivals = [a for g in (getattr(tray, "groups", None) or ()) for a in g.rows]
+        known = {e.id: e for a in arrivals for e in a.episodes}
         ids = self._askable([known[i] for i in dict.fromkeys(ids) if i in known])
         if not ids:
             self.win.say(strings.MINE_NOTHING)
             return None
-        text = strings.MINE_ASKED_ONE if len(ids) == 1 else strings.MINE_ASKED_N.format(n=len(ids))
-        return self._ask(text, (), ids)
+        videos, other = set(), None
+        for a in arrivals:
+            v, o = videos_of(a, [e.id for e in a.episodes if e.id in ids])
+            videos.update(v)
+            other = other or o
+        asked = [i for i in ids if i in videos]
+        if not asked:
+            return self.mine_text(other.label, other.rel_path)
+        if len(asked) < len(ids):
+            text = strings.MINE_ASKED_N_VIDEOS[len(asked) == 1].format(n=len(asked))
+        else:
+            text = strings.MINE_ASKED_ONE if len(ids) == 1 else strings.MINE_ASKED_N.format(n=len(ids))
+        return self._ask(text, (), asked)
 
     def _ask(self, text, keys, ids):
         """-> the writer's number, or None (Connect off: said in the bar; the store refused: the controller says)."""

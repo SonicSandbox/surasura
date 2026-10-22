@@ -81,7 +81,9 @@ Goal = namedtuple("Goal", "titles files covers line tip works", defaults=((),)) 
 # the first screen's cache (the first frame shows no sheet)
 GoalWork = namedtuple("GoalWork", "key work_id title cover_title media source n_files line pieces item_ids folder "
                                   "tip accessible")       # folder: its first file's, in the data folder (*Open its folder*)
-GoalPiece = namedtuple("GoalPiece", "item_ids line")
+GoalPiece = namedtuple("GoalPiece", "item_ids line piece_id", defaults=(None,))
+#   piece_id (LM11b G3, IK-6): the piece its files are — what *Same show as…* joins a Goal show by; None when made
+#   without one. Tiles never enter the first screen's cache
 # --- end W3.2 Q2
 Month = namedtuple("Month", "label rows")
 Need = namedtuple("Need", "key work_id title line episodes cover_title")
@@ -1112,7 +1114,7 @@ def _goal_group(key, piece, works, guessed, meta):
     ids = tuple(it["id"] for it in piece)
     return GoalWork(key=key, work_id=first.get("work_id"), title=title, cover_title=names[_show_key(first)],
                     media=kinds[_show_key(first)], source=source_of(first, work) or "disk", n_files=len(piece),
-                    line=line, pieces=(GoalPiece(item_ids=ids, line=line),), item_ids=ids,
+                    line=line, pieces=(GoalPiece(item_ids=ids, line=line, piece_id=first.get("piece_id")),), item_ids=ids,
                     folder=(first.get("rel_path") or "").rpartition("/")[0],
                     tip=STRINGS["goal_tile_tip"].format(title=title, line=line, first=title),
                     accessible=STRINGS["acc_goal_tile"].format(title=title, line=line), cover=cover_of(work),
@@ -1141,7 +1143,8 @@ def _goal_work(key, ps, works, guessed):
         nums = [] if media == "youtube" else \
             [episode_number(it.get("title") or (it.get("rel_path") or "").rsplit("/", 1)[-1]) for it in p]
         nums = [n for n in nums if n is not None]
-        pieces_.append(GoalPiece(item_ids=tuple(it["id"] for it in p), line=range_text(media, nums, len(p))))
+        pieces_.append(GoalPiece(item_ids=tuple(it["id"] for it in p), line=range_text(media, nums, len(p)),
+                                 piece_id=p[0].get("piece_id")))
     return GoalWork(key=key, work_id=first.get("work_id"), title=title, cover_title=work.get("title") or title,
                     media=media, source=source_of(first, work) or "disk", n_files=len(files), line=line,
                     pieces=tuple(pieces_), item_ids=tuple(it["id"] for it in files),

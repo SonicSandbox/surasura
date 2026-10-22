@@ -913,20 +913,29 @@ def test_G3_IK6_same_show_as_lists_each_other_show_once_from_current_goal_finish
     current = [s for s in shows if s.where.endswith(("in Current", "in Current (Soon)"))]
     first = next(r for r in view.rows if item_menu.joinable(r) and not r.group and r.work_id != row.work_id)
     assert current[0].key == first.key and current[0].pieces == tuple(item_menu.pieces_of(first))
-    wheres = {s.where for s in shows}
+    # Goal's tiles as `view_rows.build` makes them (the window's own view, never a hand-made tile): Goal's shows not in
+    # Current come next, each once, joined by its first piece (`GoalPiece.piece_id`)
+    in_current = {r.work_id for r in view.rows} | {row.work_id}
+    tiles = [t for t in view.goal.works if not t.group and t.work_id not in in_current]
+    assert tiles, "the seed's Goal holds shows Current doesn't"
+    goal = [s for s in shows if s.where == strings.ITEM_JOIN_WHERE["goal"]]
+    want = list(dict.fromkeys(t.work_id for t in tiles))[:item_menu.SAME_SHOW_MAX - len(current)]
+    assert [s.work_id for s in goal] == want
+    first_piece = {}
+    for t in tiles:
+        first_piece.setdefault(t.work_id, (t.pieces[0].piece_id,))
+    assert all(s.pieces == first_piece[s.work_id] and None not in s.pieces for s in goal)
+    # Finished's and New arrivals' come after Goal's (seen here with Goal's emptied: the seed's Goal fills the list)
+    with monkeypatch.context() as patched:
+        patched.setattr(win.items, "_view", lambda: view._replace(goal=view.goal._replace(works=())))
+        wheres = {c.payload.where for c in _same_show(win, row).children}
+    assert strings.ITEM_JOIN_WHERE["goal"] not in wheres
     assert strings.ITEM_JOIN_WHERE["graduated"] in wheres or not any(m.rows for m in view.finished or ())
     assert strings.ITEM_JOIN_WHERE["arrivals"] in wheres or not view.arrivals
-    # a group is no show of its own; a Goal tile is offered once the view names its piece (`GoalPiece.piece_id`)
+    # a group is no show of its own
     group = as_group(win, a)
     assert group.key not in [c.payload.key for c in _same_show(win, rows_of(win)[b]).children]
     assert _same_show(win, group) is None
-    tile = SimpleNamespace(key=("w", 4321), work_id=4321, title="風の谷の小さな図書館", source="disk", group=False,
-                           pieces=(SimpleNamespace(item_ids=(1,), line="Ep 1–2", piece_id=5432),))
-    goal_view = win.page_widgets["current"].view_model
-    monkeypatch.setattr(win.items, "_view", lambda: goal_view._replace(
-        goal=goal_view.goal._replace(works=(tile,))))
-    goal = [c.payload for c in _same_show(win, rows_of(win)[b]).children if c.payload.work_id == 4321]
-    assert [(s.pieces, s.where) for s in goal] == [((5432,), strings.ITEM_JOIN_WHERE["goal"])]
 
 
 def test_G3_same_show_as_asks_first_cancel_is_the_default_and_writes_nothing_yes_is_one_titles_join(world):
@@ -1502,10 +1511,11 @@ def _rest_and_drop(win, b, a):
     release_global(win, to)
 
 
-def test_real_store_G2_two_shows_rested_and_dropped_are_one_group_row_and_undo_and_ctrl_z_make_them_two(real):
+@pytest.mark.parametrize("language", ("ja", "zh"))
+def test_real_store_G2_two_shows_rested_and_dropped_are_one_group_row_and_undo_and_ctrl_z_make_them_two(real, language):
     # the dropped-on show keeps its place and its row's key; the group is one row holding both shows' files; the
-    # toast's Undo, and Ctrl+Z after a second drop, put every row and piece back exactly
-    store, win, _writer = real()
+    # toast's Undo, and Ctrl+Z after a second drop, put every row and piece back exactly — Japanese and Chinese
+    store, win, _writer = real(language)
     b, a = two_shows(win)
     rs = rows_of(win)
     kept, dragged = rs[a], rs[b]

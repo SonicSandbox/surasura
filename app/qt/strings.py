@@ -417,6 +417,10 @@ MINE_ASKED = "{title}: its cards come next"
 # LM11b G5 (K67): a group of videos and other files — only its videos asked
 MINE_ASKED_VIDEOS = "{title}: its videos' cards come next · Anki Miner mines video only, so its other files are left out"
 MINE_ASKED_N = "{n} files: their cards come next"
+# LM11b fix round: New arrivals' *Mine them too* with videos and other files — only the videos asked (`videos_of`)
+MINE_ASKED_N_VIDEOS = {True: "1 video: its cards come next · Anki Miner mines video only, so the other files are left out",
+                       False: "{n} videos: their cards come next · Anki Miner mines video only, so the other files are "
+                              "left out"}
 # --- P4.1 WF (the reviews' word fixes, IK S5): one file said as one; a book's button opens Anki Miner (never "mine it
 # now"); C6's toast says Connect waits while Anki Miner's window is open (the N1 disposition); a bulk ask with nothing
 # left to ask for; a gap's *Make their cards* as Connect's ordinary work (D-1 lean (a)), counted, no title pasted

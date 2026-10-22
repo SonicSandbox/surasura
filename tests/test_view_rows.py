@@ -1394,6 +1394,18 @@ def test_LM11b_G1_a_group_in_goal_is_a_tile_of_its_own_never_its_first_shows():
     assert sum(t.n_files for t in goal.works) == goal.files == 7
 
 
+def test_LM11b_G3_each_goal_piece_names_its_piece_so_same_show_as_can_offer_goals_shows():
+    """IK-6: *Same show as…* joins by piece, so each of a Goal tile's pieces carries its own `piece_id` (a show in two
+    parts: both, in Goal's order; a group's tile: the group's) — without it Goal's shows were never offered. A piece
+    made by hand without one stays None."""
+    items = items_of([("goal", 1, 10, eps("星降る街の小さな工房", 1, 2), {}), ("goal", 2, 10, eps("雲の上の郵便屋さん", 1, 3), {}),
+                      ("goal", 3, 12, [f"白銀の書庫番 0{k} 章.txt" for k in range(1, 3)], {}),
+                      ("goal", 3, 13, [f"白銀の書庫番 0{k} 章.txt" for k in range(3, 5)], {})])
+    tiles = vr.build(items, WORKS, {}, pieces=_group()).goal.works
+    assert [(t.key, [p.piece_id for p in t.pieces]) for t in tiles] == [("p10", [10]), ("w3", [12, 13])]
+    assert vr.GoalPiece((1, 2), "Ep 1–2").piece_id is None
+
+
 def test_LM11b_G1_a_group_of_channels_says_videos_and_channels_and_a_mixed_one_shows():
     """IK-10: a group whose every show is a YouTube channel counts *videos · channels*; one channel and one anime
     count *files · shows*, named from the channel when its video comes first."""

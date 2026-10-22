@@ -602,6 +602,42 @@ def _rows():
                  None, {"{S}/{S} - 01.srt": _ep("{S}/Subs/{S} - 01/3_{LANG}.srt", "{S}/{S} - 01.mkv")},
                  "the file made for that video counts as named like it (T2-A1): it is the episode's text"))
 
+    # (f) LM2's layouts: one subtitle group per show, picked once (PROVISIONAL, Sonic 2026-10-21: LM-1a, T2-A1, A29)
+    grp = lambda g, n, x: f"{{S}}/[Subs{g}] {{S}} - {n:02d}.{{T}}.{x}"                     # noqa: E731
+    rows.append(("two groups' subtitles for a whole show", "convention (LM2)",
+                 "`[SubsA] <Show> - 01.ja.srt` + `[SubsB] <Show> - 01.ja.ass`, then 02–03 with the formats the other "
+                 "way round (A `.ass`, B `.srt`), no videos", "",
+                 [(grp("A", 1, "srt"), "J"), (grp("B", 1, "ass"), "J")]
+                 + [(grp(g, n, x), "J") for n in (2, 3) for g, x in (("A", "ass"), ("B", "srt"))], None,
+                 {grp("B", 1, "ass"): grp("B", 1, "ass"), **{grp("B", n, "srt"): grp("B", n, "srt") for n in (2, 3)}},
+                 "the first episode's pick decides the show's group: every episode from B, never A for 02–03 because "
+                 "their A file is an `.ass`"))
+    rows.append(("the show's group and a subtitle named like its video", "convention (LM2, T2-A1)",
+                 "as above for 01 and 03; 02 has the video `[SubsA] <Show> - 02 (1080p).mkv` and its own "
+                 "`[SubsA] <Show> - 02 (1080p).ja.srt` beside `[SubsB] <Show> - 02.ja.ass`", "",
+                 [(grp("A", 1, "srt"), "J"), (grp("B", 1, "ass"), "J"), (grp("A", 3, "ass"), "J"),
+                  (grp("B", 3, "srt"), "J"), ("{S}/[SubsA] {S} - 02 (1080p).mkv", "V"),
+                  ("{S}/[SubsA] {S} - 02 (1080p).{T}.srt", "J"), (grp("B", 2, "ass"), "J")], None,
+                 {grp("B", 1, "ass"): grp("B", 1, "ass"), grp("B", 3, "srt"): grp("B", 3, "srt"),
+                  "{S}/[SubsA] {S} - 02 (1080p).{T}.srt": _ep("{S}/[SubsA] {S} - 02 (1080p).{T}.srt",
+                                                              "{S}/[SubsA] {S} - 02 (1080p).mkv")},
+                 "a subtitle made for its video comes first (timed to it); the show's group decides only the rest"))
+    rows.append(("another group's subtitles arrive for a show in", "convention (LM2)",
+                 "`[SubsA] <Show> - 01.ja.srt`, `- 02.ja.srt` in; later B's `.ass` for 01–03 and A's `- 03.ja.srt`",
+                 "", [(grp("A", n, "srt"), "J") for n in (1, 2)],
+                 [(grp("B", n, "ass"), "J") for n in (1, 2, 3)] + [(grp("A", 3, "srt"), "J")],
+                 {grp("A", n, "srt"): grp("A", n, "srt") for n in (1, 2, 3)},
+                 "the show is A's: B's are other versions of 01–02, and 03 comes from A too"))
+    rows.append(("a show starting mid-season with two groups", "convention (LM2, A29)",
+                 "first `[SubsA] <Show> - 13.ja.srt` + `[SubsB] <Show> - 13.ja.ass`; later A's `- 01.ja.ass` (A alone) "
+                 "and 14 from both (A `.ass`, B `.srt`)", "",
+                 [(grp("A", 13, "srt"), "J"), (grp("B", 13, "ass"), "J")],
+                 [(grp("A", 1, "ass"), "J"), (grp("A", 14, "ass"), "J"), (grp("B", 14, "srt"), "J")],
+                 {grp("B", 13, "ass"): grp("B", 13, "ass"), grp("A", 1, "ass"): grp("A", 1, "ass"),
+                  grp("B", 14, "srt"): grp("B", 14, "srt")},
+                 "the group fixed at the first take-in two groups met in (13: B) stays; episode 1 arriving later "
+                 "from A alone changes nothing"))
+
     # the two regressions over two looks
     three = [ep(n) for n in (1, 2, 3)]
     first = _pairs("{S}", three, ".{T}.srt") + [(f"{{S}}/synced/{s}.{{T}}.srt", "J") for s in three]

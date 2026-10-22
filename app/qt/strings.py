@@ -414,6 +414,8 @@ ROWS_LINK_TIP = "Choose its video: its cards get their pictures and audio from i
 ROWS_MINE_TEXT = "Mine text"
 ROWS_MINE_TEXT_TIP = "Open Anki Miner to mine its text by hand: its file's path is copied for you"
 MINE_ASKED = "{title}: its cards come next"
+# LM11b G5 (K67): a group of videos and other files — only its videos asked
+MINE_ASKED_VIDEOS = "{title}: its videos' cards come next · Anki Miner mines video only, so its other files are left out"
 MINE_ASKED_N = "{n} files: their cards come next"
 # --- P4.1 WF (the reviews' word fixes, IK S5): one file said as one; a book's button opens Anki Miner (never "mine it
 # now"); C6's toast says Connect waits while Anki Miner's window is open (the N1 disposition); a bulk ask with nothing
@@ -518,6 +520,11 @@ DONE_UNDONE = "{title} {ep} marked not watched"
 DONE_ALL = "✓ All {n} watched — finished with it?"
 DONE_MOVE_FINISHED = "Move to Finished"
 DONE_MOVE_FINISHED_TIP = "Move it to Finished: a record of what you've worked through"
+# --- LM11b G5: one show of a group all watched, the group's other shows not yet (GW-2 ⭐ A)
+DONE_SHOW_IN_GROUP = "✓ {show}: all {n} watched — finished with it?"
+DONE_MOVE_SHOW_FINISHED = "Move {show} to Finished"
+DONE_MOVE_SHOW_FINISHED_TIP = "Move {show}'s {n} files to Finished, under its own name\n• The group keeps the rest"
+# --- end LM11b G5
 MENU_NAME = "What you can do with {title}"
 MENU_ITEMS = {
     "up-next": ("Up next", "Make it the next thing you watch or read"),

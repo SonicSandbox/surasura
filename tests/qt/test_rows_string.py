@@ -227,6 +227,30 @@ def test_the_known_share_takes_its_band_colour(qapp, pct, ink):
         assert found[other] == 0, (other, found)
 
 
+@pytest.mark.parametrize("size, dpr", [("M", 1.0), ("L", 1.5)])
+@pytest.mark.parametrize("n_new, count_text", [(None, strings.ROWS_DASH), (44, "44")])
+def test_an_episode_whose_new_words_arent_counted_yet_says_a_dash_new(qapp, monkeypatch, size, dpr, n_new, count_text):
+    """Row 28: an episode whose plan can't follow the library yet (no plan, files came in since Generate) has no count;
+    its string read "91% ·" with nothing after. It reads "91% · — new" (as the hero's "— new words"); a count is drawn
+    whole."""
+    theme_name, old_size, language = style.current()
+    style.apply(qapp, theme_name, size, language)
+    drawn = []
+    real = rows.TEXT.draw
+    monkeypatch.setattr(rows.TEXT, "draw", lambda p, x, y, text, *a, **k: (drawn.append(text),
+                                                                             real(p, x, y, text, *a, **k))[1])
+    img = QImage(round(300 * dpr), round(30 * dpr), QImage.Format.Format_RGB32)
+    img.setDevicePixelRatio(dpr)
+    img.fill(rows.c("surface"))
+    p = QPainter(img)
+    try:
+        rows.paint_diff(p, 91, view_rows.pct_tone(91), n_new, 296, 15, dpr)
+    finally:
+        p.end()
+        style.apply(qapp, theme_name, old_size, language)
+    assert drawn == [" " + strings.ROWS_NEW_WORD, count_text, strings.ROWS_DOT, strings.ROWS_PCT.format(pct=91)]
+
+
 # --- one rule for a Done ------------------------------------------------------------------------------------------------
 def test_every_done_wherever_it_is_clicked_goes_through_the_pages_one_path(seeded):
     """S12: a click on a row's stone, on Up Next's stone or its ✓ Done, or on an open row's episode stone asks the page

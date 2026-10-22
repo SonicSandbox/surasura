@@ -677,3 +677,90 @@ def test_LM11b_a_groups_mine_now_asks_its_videos_alone_and_says_the_rest_are_lef
     win.mine.mine_row(row, ids[:2])
     assert [c[1] for c in asks(writer)] == [ids[:2], ids[:2]]
     assert win.toasts.card.message == strings.MINE_ASKED.format(title=row.title)
+
+
+# --- row 28 (Michi's row 24b ask): an episode's own ⋯ offers *Mine now* where its pill would be *Mine now* ----------- #
+def _waiting_episode(lst):
+    """A Current row and one of its episodes whose stone reads a plain (grey) *Waiting*: its turn, nothing else."""
+    for kind, row, _lines in lst.model().entries:
+        for ep in getattr(row, "episodes", ()) if kind in (rows.HERO, rows.ROW) else ():
+            if ep.status is not None and ep.status.kind == "waiting" and ep.status.tone != "warn":
+                return row, ep
+    raise AssertionError("the seed holds a grey Waiting episode")
+
+
+def _mine_now(entries):
+    return [e for e in entries if e.name == "ep-mine-now"]
+
+
+def test_row28_a_grey_waiting_episodes_menu_offers_mine_now_and_it_asks_for_that_episode_alone(act):
+    """One rule with the pill (`rows.action_of`): a grey *Waiting* episode's ⋯ offers *Mine now* — its words and tip the
+    pill's — and picking it is the pill's own ask (`mine_row`), for that episode's file alone, never its row's others."""
+    _seed, win, writer = act()
+    lst = lst_of(win)
+    row, ep = _waiting_episode(lst)
+    assert win.mine.episode_entries in win.items.episode_hooks
+    entry = _mine_now(win.items.episode_entries(row, ep))
+    assert [(e.label, e.tip, e.ok) for e in entry] == [(strings.ROWS_ACTION_NAMES["mine-now"],
+                                                         strings.ROWS_MINE_NOW_TIP.format(tip=ep.status.tip), True)]
+    win.items.episode_pick(row, ep, entry[0].name, entry[0].payload)
+    assert asks(writer) == [("ask_mining", [ep.id], {"on": True})]
+
+
+def test_row28_the_menu_offers_mine_now_exactly_where_the_pills_rule_does(act):
+    """IK-1: one rule with the pill — the episode's ⋯ offers *Mine now* exactly when `rows.action_of` says "mine-now"
+    for that episode, whatever the stone's status (a grey *Waiting*, a wait on Anki or on the battery, …): asked of the
+    rule itself, so a change to what the rule offers needs no change here. *Not timed*, a file in Anki, one being mined
+    and no status at all are fixed cases: nothing to ask, no entry, nothing asked."""
+    from app.connect import runner
+    from app.services import view_rows
+    _seed, win, writer = act()
+    lst = lst_of(win)
+    row, grey = _waiting_episode(lst)
+    plain = view_rows.Status("waiting", "Waiting", "In your top 20: it mines by itself, in turn", "dim")
+    waits = [view_rows._connected(plain, feed.Item(kind, feed.WORDS[kind], reason, 1, 0, 0), "video")
+             for kind, reason in ((feed.ANKI, runner.ANKI_CLOSED), (feed.BATTERY, runner.ON_BATTERY))]
+    for ep in [grey] + [_ep(st) for st in waits]:
+        rule = rows.action_of(ep.status, (ep,), win.mine.off, ep.media_word or row.media_word)[0]
+        offered = _mine_now(win.items.episode_entries(row, ep))
+        assert (len(offered) == 1) == (rule == "mine-now"), (ep.status, rule)
+    not_timed = view_rows._connected(plain, feed.Item(feed.NOT_TIMED, feed.WORDS[feed.NOT_TIMED],
+                                                      "not timed to its video", 1, 0, 0), "video")
+    in_anki = _ep(view_rows.Status("in_anki", "In Anki", "Its cards are in Anki", "ok"))._replace(cards=4)
+    mining = _ep(view_rows.Status("mining", "Mining", "Being mined now", "accent"))._replace(mining=True)
+    for ep in (_ep(not_timed), in_anki, mining, _ep(None)):
+        assert win.mine.episode_entries(row, ep) == [], ep.status
+        assert _mine_now(win.items.episode_entries(row, ep)) == [], ep.status
+    assert asks(writer) == []
+
+
+def test_row28_a_read_only_store_greys_the_episodes_mine_now_with_its_reason_after_a_separator(act):
+    """AD-8: *Mine now* asks the store for a write — while it is read-only the menu greys it with the store's reason, as
+    it greys *Mark watched* and *Split here…* (the menu's one rule, `_refused_tip`); the modules' entries stand after a
+    separator."""
+    _seed, win, writer = act()
+    lst = lst_of(win)
+    row, ep = _waiting_episode(lst)
+    m = win.items.episode_menu(row, ep, win.mapToGlobal(win.rect().center()))
+    acts = m.actions()
+    k = next(n for n, a in enumerate(acts) if a.text() == strings.ROWS_ACTION_NAMES["mine-now"])
+    assert acts[k - 1].isSeparator() and not any(a.isSeparator() for a in acts[:k - 1]), "the hooks apart, once"
+    m.close()
+    writer.writable, writer.why = False, "damaged"
+    reason = win.items._refused_tip()
+    assert reason
+    entry = _mine_now(win.items.episode_entries(row, ep))
+    assert [(e.ok, e.tip) for e in entry] == [(False, reason)]
+    assert win.items.episode_entries(row, ep)[0].tip == reason, "as Mark watched"
+
+
+def test_row28_while_connect_is_off_mine_now_is_offered_saying_why_and_asks_nothing(act):
+    """IK S7, as the pill: Connect off, the episode's *Mine now* is still there, its tip saying why in the feed's words;
+    picked, nothing is asked and the bar says why."""
+    _seed, win, writer = act(connect_off=feed.OFF_CONNECT)
+    lst = lst_of(win)
+    row, ep = _waiting_episode(lst)
+    entry = _mine_now(win.items.episode_entries(row, ep))
+    assert [e.tip for e in entry] == [strings.ROWS_ACTION_OFF.format(tip=ep.status.tip, why=feed.OFF_CONNECT)]
+    win.items.episode_pick(row, ep, entry[0].name, entry[0].payload)
+    assert asks(writer) == [] and win.bar_line.full() == feed.OFF_CONNECT

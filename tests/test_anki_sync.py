@@ -912,6 +912,26 @@ def test_replace_whose_numbers_changed_since_the_confirmation_writes_nothing_and
     assert result.error is None and not result.changed and result.mode == "replace" and result.total_known == 4
 
 
+def test_replace_whose_dismissed_count_alone_changed_since_the_confirmation_writes_nothing(ja_words, migaku_file):
+    """The dismissed count is one of the confirmed numbers too: a word dismissed (IGNORED) between the dry run and the
+    yes moves only that count — Anki's words, the known totals and the Graduates' are the same — and the replace
+    still stops before its backup, so the user is never told one number of words coming back and given another."""
+    fake = FakeCollection([{"word": w} for w in ja_words[:3]])
+    dry = _replace(fake, dry_run=True)
+    data = json.loads(_read_bytes(migaku_file).decode("utf-8"))
+    data["words"].append({"dictForm": "えっと", "knownStatus": "IGNORED", "hasCard": 0, "language": "ja"})
+    _write_json(migaku_file, data)
+    before = _read_bytes(migaku_file)
+
+    changed = _replace(fake, expect=anki_sync.confirmed(dry))
+
+    assert changed.changed and changed.error is None and changed.mode == "dry-run"
+    assert (changed.added, changed.kept_graduated, changed.total_after) == (dry.added, dry.kept_graduated,
+                                                                           dry.total_after)
+    assert changed.dropped_ignored == dry.dropped_ignored + 1
+    assert _read_bytes(migaku_file) == before and _trash_files() == [] and not os.path.exists(_state_path())
+
+
 def test_restore_of_another_backup_than_the_one_confirmed_writes_nothing(ja_words, migaku_file):
     """Restore names the list it puts back (its backup); if the state points at another one by the time it runs (a
     second Replace meanwhile), nothing is restored and the window asks again."""

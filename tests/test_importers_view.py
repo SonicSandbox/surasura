@@ -83,6 +83,19 @@ def test_one_rule_for_every_replace_drops_the_dismissed_words_and_counts_them():
     assert [w["knownStatus"] for w in final if w["dictForm"] == "あの"] == ["KNOWN"]   # never twice, the new one
 
 
+def test_a_dismissed_word_the_import_names_as_not_known_comes_back_and_is_counted():
+    """AD-3: えっと dismissed, and the import names it LEARNING / UNKNOWN (a Jiten card in learning, a Migaku word no
+    longer dismissed): the IGNORED entry is replaced, so えっと is back on the list — counted, as the confirmation
+    says. Named KNOWN or IGNORED, it is no word coming back, and not counted."""
+    from app import jiten_converter
+    path = _known(CURRENT)
+    for status, dropped in (("LEARNING", 2), ("UNKNOWN", 2), ("KNOWN", 1), ("IGNORED", 1)):
+        words = [{"dictForm": "猫", "knownStatus": "KNOWN"}, {"dictForm": "えっと", "knownStatus": status}]
+        assert anki_sync.replaced_words(path, "ja", words)[2] == dropped, status     # あの: never named, always back
+    cards = [{"wordText": "猫", "state": 5}, {"wordText": "えっと", "state": 2}, {"wordText": "あの", "state": 5}]
+    assert anki_sync.replace_numbers("ja", jiten_converter.words_from_cards(cards))[3] == 1   # えっと: learning
+
+
 def test_the_numbers_count_the_dismissed_words_dropped_and_none_when_there_are_none():
     _known(CURRENT)
     assert anki_sync.replace_numbers("ja", INCOMING)[3] == 1

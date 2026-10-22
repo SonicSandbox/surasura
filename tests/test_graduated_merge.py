@@ -180,12 +180,13 @@ def test_unknown_and_learning_words_are_raised_known_ignored_and_known_ones_are_
         raised = next(w for w in old if w["dictForm"] == before[status]["dictForm"])
         assert raised == dict(before[status], knownStatus="KNOWN", previousStatus=status,   # every other field kept
                               graduated=True)
-    for status in ("KNOWN", "IGNORED"):
-        assert next(w for w in old if w["dictForm"] == before[status]["dictForm"]) == before[status]
-    untouched = [w for w in ja_known["words"] if w["dictForm"] not in (before["LEARNING"]["dictForm"],
-                                                                      before["UNKNOWN"]["dictForm"])]
-    assert [w for w in old if w["dictForm"] not in (before["LEARNING"]["dictForm"],
-                                                    before["UNKNOWN"]["dictForm"])] == untouched
+    assert next(w for w in old if w["dictForm"] == before["KNOWN"]["dictForm"]) == before["KNOWN"]
+    # The dismissed one keeps its status and every field; it only takes the Graduates' mark (AD-1)
+    assert next(w for w in old if w["dictForm"] == before["IGNORED"]["dictForm"]) == dict(before["IGNORED"],
+                                                                                         graduated=True)
+    changed = (before["LEARNING"]["dictForm"], before["UNKNOWN"]["dictForm"], before["IGNORED"]["dictForm"])
+    untouched = [w for w in ja_known["words"] if w["dictForm"] not in changed]
+    assert [w for w in old if w["dictForm"] not in changed] == untouched
     assert [w["dictForm"] for w in words[len(ja_known["words"]):]] == ["冒険"]
     assert not any(w.get("knownStatus") == "IGNORED" and w["dictForm"] != before["IGNORED"]["dictForm"]
                    and w not in ja_known["words"] for w in words)
@@ -201,8 +202,55 @@ def test_a_word_held_ignored_under_one_entry_is_never_raised_under_another(ja_kn
     before = _read_bytes(_known_path("ja"))
     _write_list("ja", HEADER + "冒険\n")
     result = graduated_merge.merge("ja")
-    assert (result["raised"], result["present"], result["backup"]) == (0, 1, None)
-    assert _read_bytes(_known_path("ja")) == before
+    assert (result["raised"], result["present"]) == (0, 1)
+    # Never raised: only the IGNORED entry is marked (AD-1), after a byte-identical backup of the file as it was
+    assert _read_bytes(os.path.join(_folder("ja"), ".trash", os.path.basename(result["backup"]))) == before
+    assert _words("ja") == ja_known["words"][:-1] + [dict(learning, knownStatus="IGNORED", graduated=True)]
+
+
+@pytest.mark.parametrize("language, dismissed, known, incoming", [
+    ("ja", "冒険", "準備", "危険"),
+    ("zh", "冒险", "准备", "危险"),
+])
+def test_a_past_graduates_word_also_dismissed_stays_ignored_and_a_replace_keeps_it_known(language, dismissed, known,
+                                                                                        incoming):
+    """AD-1: a word on the Graduated list that the file holds IGNORED is left ignored day to day, but marked — so a
+    replace, which drops dismissed words, keeps it known as every past Graduate's word (`previousStatus: IGNORED`),
+    and never counts it among the words coming back. A second merge finds it marked and writes nothing."""
+    entries = [{"dictForm": known, "knownStatus": "KNOWN", "hasCard": 1, "language": language},
+               {"dictForm": dismissed, "knownStatus": "IGNORED", "hasCard": 0, "language": language}]
+    with open(_known_path(language), "w", encoding="utf-8") as f:
+        json.dump({"words": entries}, f, ensure_ascii=False)
+    before = _read_bytes(_known_path(language))
+    _write_list(language, HEADER + _graduated("a.txt", [dismissed]))
+    result = graduated_merge.merge(language)
+    assert (result["added"], result["raised"], result["present"], result["error"]) == (0, 0, 1, None)
+    assert _read_bytes(os.path.join(_folder(language), ".trash", os.path.basename(result["backup"]))) == before
+    assert _words(language) == [entries[0], dict(entries[1], graduated=True)]     # still IGNORED: ignored as before
+    from app import token_index
+    assert dismissed in token_index.ignored_entries(_folder(language), language)
+
+    marked = _read_bytes(_known_path(language))
+    _write_list(language, HEADER + _graduated("a.txt", [dismissed]))            # the list again: nothing to do
+    assert graduated_merge.merge(language)["backup"] is None and _read_bytes(_known_path(language)) == marked
+
+    final, graduated, dropped = anki_sync.replaced_words(_known_path(language), language,
+                                                         [{"dictForm": incoming, "knownStatus": "KNOWN"}])
+    assert [(w["dictForm"], w["knownStatus"], w.get("previousStatus")) for w in final] == [
+        (incoming, "KNOWN", None), (dismissed, "KNOWN", "IGNORED")]
+    assert (graduated, dropped) == (1, 0)
+    assert anki_sync.replace_numbers(language, [{"dictForm": incoming, "knownStatus": "KNOWN"}]) == (1, 2, 1, 0)
+
+
+def test_a_replacer_naming_a_graduates_word_ignored_keeps_it_ignored_and_marked(tmp_path):
+    # A Migaku import that names a past Graduate's word IGNORED (dismissed there): left ignored, as Migaku says, and
+    # marked — so a later replace that doesn't name it still keeps it known (AD-1).
+    path = tmp_path / "KnownWord.json"
+    path.write_text(json.dumps({"words": [{"dictForm": "冒険", "knownStatus": "KNOWN", "source": "GraduatedList"}]},
+                               ensure_ascii=False), encoding="utf-8")
+    words = [{"dictForm": "冒険", "knownStatus": "IGNORED", "source": "Migaku"}]
+    assert anki_sync.kept_graduated(str(path), "ja", words) == []
+    assert words == [{"dictForm": "冒険", "knownStatus": "IGNORED", "source": "Migaku", "graduated": True}]
 
 
 def test_a_raise_whose_write_fails_leaves_every_entry_as_it_was(ja_known, monkeypatch):

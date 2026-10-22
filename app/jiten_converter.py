@@ -118,8 +118,9 @@ def words_from_cards(cards):
 def replace_known(words, language=LANGUAGE, output_json=None, expect=None):
     """Replace KnownWord.json with Jiten's `words`, holding its lock: a dated backup first (none made: nothing
     written), then the words of past Graduates kept (`anki_sync.replaced_words`: the words the user dismissed are
-    dropped, the backup keeps them), written atomically. -> True when written. Prints each step. `expect`: the numbers the user confirmed
-    (`anki_sync.replace_numbers`); moved by now, nothing is written and `anki_sync.NumbersChanged` is raised."""
+    dropped, the backup keeps them), written atomically. -> True when written. Prints each step. `expect`: the
+    numbers the user confirmed (`anki_sync.replace_numbers`); moved by now, nothing is written and
+    `anki_sync.NumbersChanged` is raised."""
     refused_language = refuse_language(language)
     if refused_language:
         print(refused_language)

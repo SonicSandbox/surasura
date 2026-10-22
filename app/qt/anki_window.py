@@ -12,9 +12,10 @@ nothing:** the rules are `app/anki_window.py`'s and the engine's (`app/anki_sync
 - **Nothing is written by opening the window** (S16, IK-13): the first open's pick of decks is shown and saved on the
   user's first action — a Sync, a Replace, a deck or field changed, a switch flipped.
 - **Replace:** a dry run on a worker → the in-window confirmation with its true numbers (what Anki brings, the past
-  Graduates' words kept, the ignored words that come back on the list, the backup named; default Cancel) → the write, which carries those
-  numbers: Anki changed meanwhile, nothing is written and the window asks again. **Restore previous** says what it
-  puts back (its backup's time, both totals), default Cancel, and puts back only that backup.
+  Graduates' words kept, the words ignored in Migaku no longer ignored, the backup named; default Cancel) → the
+  write, which carries those numbers: Anki changed meanwhile, nothing is written and the window asks again.
+  **Restore previous** says what it puts back (its backup's time, both totals), default Cancel, and puts back only
+  that backup.
 - **The language:** the window follows the main window's language when idle; a job in flight finishes first (its
   result goes to the bottom bar too), then the window reads again (`SecondaryWindow`, 🧭 IK-12). Its doors —
   *Backfill cards…* and *Import an .apkg instead…* — are the openers named `backfill` (row 5) and `apkg_known` (row 2)
@@ -616,8 +617,8 @@ class AnkiWindow(windows.SecondaryWindow):
         if kind == "replaced":
             return (strings.ANKI_REPLACED.format(**n)
                     + (strings.ANKI_REPLACED_GRADUATED.format(**n) if n["graduated"] else "")
-                    + (strings.ANKI_REPLACED_IGNORED[1 if n["ignored"] == 1 else 0].format(**n) if n["ignored"]
-                       else ""))
+                    + (strings.ANKI_REPLACED_IGNORED[1 if n["ignored"] == 1 else 0].format(n=n["ignored"])
+                       if n["ignored"] else ""))
         if kind == "restored":
             return strings.ANKI_RESTORED.format(**n)
         if kind == "synced":
@@ -766,8 +767,8 @@ class AnkiWindow(windows.SecondaryWindow):
 
 
 def replace_body(dry):
-    """The Replace confirmation's body: now → after, what Anki brings, the Graduates' words kept and the ignored words
-    that come back, each line only when there are any (IK-44)."""
+    """The Replace confirmation's body: now → after, what Anki brings, the Graduates' words kept and the words ignored
+    in Migaku no longer ignored, each line only when there are any (IK-44)."""
     lines = [strings.ANKI_REPLACE_HEAD.format(now=dry.total_known, after=dry.total_after),
              strings.ANKI_REPLACE_ANKI.format(n=dry.added)]
     for n, words in ((dry.kept_graduated, strings.ANKI_REPLACE_GRADUATED),

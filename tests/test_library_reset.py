@@ -597,24 +597,29 @@ def test_known_words_that_couldnt_be_forgotten_are_never_recorded_as_forgotten(m
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_forgetting_known_words_keeps_the_words_he_dismissed(language):
-    # I-R4: a fresh library's "forget my known words" keeps the IGNORED entries (anki_sync.dismissed_words), so a
-    # dismissed word never comes back as a new one
+def test_forgetting_known_words_is_a_clean_slate_and_both_backups_keep_every_word(language):
+    # I-R4 / Q-1: a fresh library's "forget my known words" is a clean slate, as its tip says ("replaced by an empty
+    # one") — no dismissed (IGNORED) words, no past Graduates' words; the dated backup and the reset's copy, taken
+    # first and byte-identical, hold the file whole
     store, data_dir, user_files_dir, src, root = _world(language)
     path = os.path.join(user_files_dir, "KnownWord.json")
     words = names(language)
     dismissed = [{"dictForm": words[6], "knownStatus": "IGNORED"}, {"dictForm": words[7], "knownStatus": "IGNORED"}]
+    graduated = {"dictForm": words[5], "knownStatus": "KNOWN", "source": "GraduatedList"}
     with open(path, "w", encoding="utf-8") as f:
         json.dump({"exportDate": "2026-10-20T08:00:00", "source": "anki", "statistics": {},
-                   "words": [{"dictForm": w, "knownStatus": "KNOWN"} for w in words[:4]] + dismissed}, f,
-                  ensure_ascii=False)
+                   "words": [{"dictForm": w, "knownStatus": "KNOWN"} for w in words[:4]] + [graduated] + dismissed},
+                  f, ensure_ascii=False)
+    before = _bytes(path)
     with store:
         answer = ls.start_fresh(store, forget_known=True)
     assert answer["known"] == "forgotten"
     with open(path, encoding="utf-8") as f:
-        assert json.load(f)["words"] == dismissed
+        assert json.load(f)["words"] == []
     known = _record(answer["backup"])["known"]                          # the record names where the words went
-    assert known["ignored_kept"] == 2 and _bytes(known["copy"]) == _bytes(known["dated"])
+    assert _bytes(known["copy"]) == _bytes(known["dated"]) == before
+    from app.qt import settings_strings
+    assert "replaced by an empty one" in settings_strings.FRESH_KNOWN_TIP   # the tip says what it does
 
 
 def test_the_sheets_counts_are_what_a_fresh_library_never_brings_back():

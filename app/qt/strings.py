@@ -787,11 +787,12 @@ MIGAKU_ASK_BODY = ("{file} · saved {time}\n"
                    "Known words: {now:,} → {after:,}.{kept}\n"
                    "Words from Anki, Jiten or earlier imports that Migaku doesn't have are removed. Your current "
                    "list is backed up first.")
-# A replace's lines (one, many), each said only when there are any: past Graduates' words kept; the ignored words it
-# drops (every replace is a clean slate from its source), back on the list
+# A replace's lines (one, many), each said only when there are any: past Graduates' words kept; the words ignored in
+# Migaku it drops (every replace is a clean slate from its source; only Migaku writes ignored words, the Ignore list
+# file is never touched). IGNORED_BACK is the one wording of all three replaces: Anki's lines below are made from it.
 KEPT_GRADUATED = ("{n:,} word from past Graduates kept", "{n:,} words from past Graduates kept")
-IGNORED_BACK = ("{n:,} word you ignored comes back on your list (the backup keeps it)",
-                "{n:,} words you ignored come back on your list (the backup keeps them)")
+IGNORED_BACK = ("{n:,} word you ignored in Migaku is no longer ignored (the backup keeps it)",
+                "{n:,} words you ignored in Migaku are no longer ignored (the backup keeps them)")
 MIGAKU_ASK_YES = "Replace known words"
 MIGAKU_ASK_YES_TIP = "Replace your known words with Migaku's: the current list is kept as a dated backup"
 MIGAKU_DONE = "Known words replaced with Migaku's · the old list is backed up in the trash folder"
@@ -948,7 +949,7 @@ ANKI_UPDATE_WAITS = "An update is waiting to install, so Anki isn't read now: tr
 ANKI_SYNCED = "Synced just now · +{added:,} words · {scanned:,} cards checked"
 ANKI_REPLACED = "Replaced: {total:,} known words now — {added:,} from Anki"
 ANKI_REPLACED_GRADUATED = " · {graduated:,} from past Graduates"
-ANKI_REPLACED_IGNORED = {1: " · 1 ignored word back on your list", 0: " · {ignored:,} ignored words back on your list"}
+ANKI_REPLACED_IGNORED = {1: " · " + IGNORED_BACK[0], 0: " · " + IGNORED_BACK[1]}
 ANKI_RESTORED = "Restored your previous known words: {total:,} known"
 ANKI_NOTHING_TO_RESTORE = "There is no previous list to restore."
 ANKI_JOB_SYNC = "Syncing known words from Anki"
@@ -961,8 +962,7 @@ ANKI_REPLACE_AGAIN_TITLE = "Anki changed since you looked: replace with these nu
 ANKI_REPLACE_HEAD = "Known words: {now:,} → {after:,}"
 ANKI_REPLACE_ANKI = "• {n:,} from Anki"
 ANKI_REPLACE_GRADUATED = {1: "• 1 word from past Graduates kept", 0: "• {n:,} words from past Graduates kept"}
-ANKI_REPLACE_IGNORED = {1: "• 1 word you ignored comes back on your list (the backup keeps it)",
-                        0: "• {n:,} words you ignored come back on your list (the backup keeps them)"}
+ANKI_REPLACE_IGNORED = {1: "• " + IGNORED_BACK[0], 0: "• " + IGNORED_BACK[1]}
 ANKI_REPLACE_TAIL = ("Known words from Migaku, Jiten or other imports that Anki doesn't have are removed. Your current "
                      "list is backed up first; Restore previous puts it back.")
 ANKI_REPLACE_YES = "Replace"

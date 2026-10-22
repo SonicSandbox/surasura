@@ -10030,10 +10030,10 @@ def _reset_tables(store):
 
 def _forget_known(store, folder, record):
     """*Also forget my known words*: KnownWord.json kept dated in the trash (`backup_to_trash`, byte-checked) and
-    copied into the backup, then one in its own format (`anki_sync`'s) holding only the words he dismissed
-    (`anki_sync.dismissed_words`, I-R4). -> "forgotten", or "kept: <why>"
-    (the library is fresh either way). Words from his Anki cards come back at the next Anki sync (a file rewritten
-    outside the sync makes its next run a full one, D4)."""
+    copied into the backup, then an empty one in its own format (`anki_sync`'s): a clean slate — no dismissed words,
+    no past Graduates' words; both backups keep them all (I-R4, Q-1). -> "forgotten", or "kept: <why>" (the library
+    is fresh either way). Words from his Anki cards come back at the next Anki sync (a file rewritten outside the sync
+    makes its next run a full one, D4)."""
     from app import anki_sync
     path = os.path.join(store.user_files_dir, anki_sync.KNOWN_FILE)
     if not os.path.isfile(path):
@@ -10045,11 +10045,10 @@ def _forget_known(store, folder, record):
         shutil.copyfile(path, copy)
         if not _same_bytes(path, copy):
             raise OSError("the backup copy did not match it")
-        ignored = anki_sync.dismissed_words(path, store.language, [])   # his dismissed words stay dismissed (I-R4)
-        anki_sync._atomic_write_json(path, anki_sync._fresh_file(ignored))
+        anki_sync._atomic_write_json(path, anki_sync._fresh_file([]))    # a clean slate (I-R4)
     except OSError as e:
         return f"kept: {e}"
-    record["known"] = {"from": path, "dated": dated, "copy": copy, "ignored_kept": len(ignored)}   # once it happened
+    record["known"] = {"from": path, "dated": dated, "copy": copy}   # once it happened
     return "forgotten"
 
 

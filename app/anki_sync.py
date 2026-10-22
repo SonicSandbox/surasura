@@ -868,9 +868,10 @@ def _replace_held(language, result, known_path, words, url, decks, fields, inclu
 def kept_graduated(path, language, words):
     """The old GraduatedList.txt's words (merged once, app/graduated_merge.py: entries of `source: "GraduatedList"`,
     or raised and marked GRADUATED_MARK) in the KnownWord.json at `path`, kept known by every import that replaces
-    the file — Anki's Replace, the Jiten and Migaku imports (S3.1 D13, Q4-10): -> those `words` doesn't name, to add;
-    and an UNKNOWN / LEARNING entry of `words` one of them names is made KNOWN in place (marked too). A file that is
-    missing or can't be read keeps none (the replacer's backup holds them)."""
+    the file — Anki's Replace, the Jiten and Migaku imports (S3.1 D13, Q4-10): -> those `words` doesn't name, to add,
+    known (one the user also dismissed, a marked IGNORED entry, is added KNOWN, `previousStatus: IGNORED`: AD-1); and
+    an UNKNOWN / LEARNING entry of `words` one of them names is made KNOWN in place (marked too), an IGNORED one only
+    marked. A file that is missing or can't be read keeps none (the replacer's backup holds them)."""
     try:
         data = json.loads(read_text(path, language, errors="strict"))
     except (OSError, ValueError, UnicodeDecodeError):
@@ -893,18 +894,22 @@ def kept_graduated(path, language, words):
                 w["previousStatus"] = w["knownStatus"]
                 w["knownStatus"] = "KNOWN"
                 w[GRADUATED_MARK] = True
+            elif key in graduated and w.get("knownStatus") == "IGNORED":
+                w[GRADUATED_MARK] = True        # dismissed again by the import: ignored, still a past Graduate's word
     kept = []
     for key, entry in graduated.items():
         if key not in taken:
             taken.add(key)
+            if not _is_known(entry):            # a past Graduate's word the user dismissed: known (AD-1)
+                entry = dict(entry, previousStatus=entry.get("knownStatus"), knownStatus="KNOWN")
             kept.append(entry)
     return kept
 
 
 def dismissed_words(path, language, words):
-    """The IGNORED entries of the KnownWord.json at `path` — words the user dismissed (in Migaku, or on the list) —
-    that `words` doesn't name: what a replacing import drops (`replaced_words` counts them: they come back on the
-    list, the backup keeps them) and what *Also forget my known words* keeps (`library_store._forget_known`). -> those
+    """The IGNORED entries of the KnownWord.json at `path` — words the user dismissed in Migaku (an earlier import) —
+    that `words` doesn't hold known or IGNORED: what a replacing import drops (`replaced_words` counts them: they come
+    back on the list, the backup keeps them; one `words` names UNKNOWN / LEARNING comes back too, AD-3). -> those
     entries, first per word, in the file's order. A file missing or unreadable has none."""
     try:
         data = json.loads(read_text(path, language, errors="strict"))
@@ -913,7 +918,8 @@ def dismissed_words(path, language, words):
     current = data.get("words") if isinstance(data, dict) else data
     if not isinstance(current, list):
         return []
-    taken = {_norm(w.get("dictForm")) for w in words if isinstance(w, dict)}
+    taken = {_norm(w.get("dictForm")) for w in words
+             if _is_known(w) or (isinstance(w, dict) and w.get("knownStatus") == "IGNORED")}
     kept = []
     for entry in current:
         if isinstance(entry, dict) and entry.get("knownStatus") == "IGNORED":

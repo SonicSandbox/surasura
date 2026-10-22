@@ -104,8 +104,9 @@ def read_words(db_path, language=None):
 
 def convert_db_to_json(db_path, output_json=None, language=None, expect=None):
     """Replace KnownWord.json with the export's words, holding its lock: refused when the file can't be read, a dated
-    backup first, past Graduates' words kept (the words dismissed outside Migaku dropped), written atomically. -> True when written. `expect`: the
-    numbers the user confirmed; moved by now, nothing is written and `anki_sync.NumbersChanged` is raised."""
+    backup first, past Graduates' words kept (the dismissed words this export doesn't name dropped), written
+    atomically. -> True when written. `expect`: the numbers the user confirmed; moved by now, nothing is written and
+    `anki_sync.NumbersChanged` is raised."""
     if not output_json:
         # Save to User Files/<lang>/KnownWord.json
         user_files_dir = get_user_files_path(language)

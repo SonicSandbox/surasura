@@ -832,6 +832,8 @@ class AnkiSyncGui(tk.Toplevel):
             self._set_result(dry.error, ERROR)
             return
         self._set_result("")
+        # Left as 2.5 had it (its numbers, no line for the Migaku-ignored words a replace drops): the Tk dashboard
+        # retires in 3.0, and the Qt window (app/qt/anki_window.py) states the true numbers (AD-2 / IK-4).
         message = (f"Your known words will go from {dry.total_known:,} to {dry.added:,} "
                    f"(from Anki only).")
         details = ("Words from Migaku, Jiten or earlier imports will be removed. Your current list "

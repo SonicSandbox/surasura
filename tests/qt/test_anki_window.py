@@ -382,7 +382,8 @@ def test_replace_after_yes_backs_up_first_drops_the_ignored_words_and_says_so(ma
     assert len(ignored) == 3 and [x for x in _words() if x["knownStatus"] == "IGNORED"] == []
     assert len(_trash()) == 1 and _bytes(os.path.join(get_user_files_path("ja"), ".trash", _trash()[0])) == before
     assert w.status.text() == (strings.ANKI_REPLACED.format(total=3, added=3)
-                               + strings.ANKI_REPLACED_IGNORED[0].format(ignored=3))
+                               + strings.ANKI_REPLACED_IGNORED[0].format(n=3))
+    assert "3 words you ignored in Migaku are no longer ignored (the backup keeps them)" in w.status.text()   # IK-2
     assert "Graduates" not in w.status.text()
     assert wait_until(lambda: not w.btn_restore.isHidden()), "a backup to put back: Restore previous shows"
 

@@ -843,3 +843,79 @@ def test_G1_a_part_of_one_title_across_the_soon_line_is_rebuilt_as_two_parts(lan
     assert _piece(store, m2[-1]) != _piece(store, m2[0]) and _members(store, _piece(store, m2[0])) == m2[:-1]
     assert pieces_ok(store) is None
     store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_IK12_a_named_group_dropped_onto_a_show_keeps_its_name_and_one_undo_puts_it_all_back(language):
+    """The window's drop is `join([target, dragged], how="group")` (the target first keeps the place): a named group
+    dragged onto a show — or onto a group with no name of its own — must keep the learner's name, not fall back to the
+    derived "<first show> + N more"; one undo puts back both pieces, the name on the dragged group and every row."""
+    store = _three(language)
+    (ga, ma), (gb, mb), (gc, mc) = [r for r in _runs(store, "goal") if len(r[1]) == 4][:3]
+    (sa, msa), (sb, msb) = [r for r in _runs(store, "soon") if len(r[1]) == 4][:2]
+    store.join([ga, gb], how="group")
+    label = names(language)[44]
+    store.rename_piece(ga, label)
+    before = _state(store)
+    change = store.join([gc, ga], how="group")                  # the named group dragged onto show C
+    assert _kind(store, gc) == "group" and _title(store, gc) == label
+    assert _members(store, gc) == mc + ma + mb and _kind(store, ga) is None
+    assert pieces_ok(store) is None
+    store.undo(change)
+    assert _state(store) == before and _title(store, ga) == label
+    store.join([sa, sb], how="group")                           # an unnamed group as the target
+    change = store.join([sa, ga], how="group")
+    assert _title(store, sa) == label and _members(store, sa) == msa + msb + ma + mb
+    store.undo(change)
+    assert _title(store, ga) == label and _title(store, sa) is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_IK12_two_named_groups_onto_a_show_take_the_derived_name_and_a_named_target_keeps_its_own(language):
+    """Which name would be a guess when two named groups come in at once: neither (the derived name; Rename sets one).
+    A target with a name of its own keeps it, whatever comes in (LM11: a group joined onto keeps its name)."""
+    store = _three(language)
+    (ga, _ma), (gb, _mb), (gc, _mc) = [r for r in _runs(store, "goal") if len(r[1]) == 4][:3]
+    (sa, _msa), (sb, _msb), (sc, _msc) = [r for r in _runs(store, "soon") if len(r[1]) == 4][:3]
+    store.join([ga, gb], how="group")
+    store.rename_piece(ga, names(language)[44])
+    store.join([sa, sb], how="group")
+    store.rename_piece(sa, names(language)[46])
+    change = store.join([gc, ga, sa], how="group")
+    assert _kind(store, gc) == "group" and _title(store, gc) is None
+    store.undo(change)
+    change = store.join([ga, sa], how="group")
+    assert _title(store, ga) == names(language)[44]
+    store.undo(change)
+    store.rename_piece(sa, names(language)[44])                 # the same name on both: that name, not a guess
+    change = store.join([gc, ga, sa], how="group")
+    assert _title(store, gc) == names(language)[44]
+    store.undo(change)
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_IK12_rows_taken_out_of_a_show_with_a_whole_named_group_take_its_name_and_a_part_taken_gives_none(language):
+    """*Group…* on selected episodes: the first part carved out of its show (a new piece) with a whole named group
+    takes that group's name; a named group only partly taken keeps its name and gives none away. Ungroup after an
+    inherited name gives every show back, and its undo the named group again."""
+    store = _three(language)
+    (ga, ma), (gb, mb), (gc, mc) = [r for r in _runs(store, "goal") if len(r[1]) == 4][:3]
+    store.join([ga, gb], how="group")
+    label = names(language)[44]
+    store.rename_piece(ga, label)
+    before = _state(store)
+    change = store.group(piece_ids=(), item_ids=[mc[0], mc[1]] + ma + mb)
+    target = _piece(store, mc[0])
+    assert target != gc and _kind(store, target) == "group" and _title(store, target) == label
+    assert _members(store, gc) == mc[2:] and pieces_ok(store) is None
+    undone = store.ungroup(target)
+    assert {_kind(store, _piece(store, i)) for i in mc[:2] + ma + mb} == {"run"} and pieces_ok(store) is None
+    store.undo(undone)
+    assert _title(store, _piece(store, mc[0])) == label
+    store.undo(change)
+    assert _state(store) == before
+    part = store.group(item_ids=[mc[0], ma[0]])                 # one row of the named group: it keeps its name
+    assert part is not None and _title(store, _piece(store, mc[0])) is None and _title(store, ga) == label
+    store.close()

@@ -716,18 +716,21 @@ def test_the_looks_named_like_the_video_step_reads_the_names_connect_pairs(langu
 
 @pytest.mark.usefixtures("_fresh_look")
 @pytest.mark.parametrize("language", LANGUAGES)
-@pytest.mark.parametrize("mark, follows", [("signs.ass", False), ("chs&jpn.ass", False), ("{ours}.srt", True)])
-def test_a_later_version_replaces_only_a_file_of_its_own_kind(language, mark, follows):
-    """I9: `- 01.srt` is in; a v2 of its signs-only track (`- 01v2.signs.ass`) or of a bilingual file arrives — another
-    kind of file, never the episode's text: skipped, the copy untouched. A plain v2 is followed (S7)."""
+@pytest.mark.parametrize("first, mark, follows", [("srt", "signs.ass", False), ("srt", "chs&jpn.ass", False),
+                                                  ("srt", "{ours}.srt", True), ("signs.ass", "{ours}.srt", True),
+                                                  ("chs&jpn.ass", "{ours}.srt", True)])
+def test_a_later_version_replaces_only_a_file_of_its_own_kind_or_a_worse_one(language, first, mark, follows):
+    """I9: `- 01.srt` is in; a v2 of its signs-only track (`- 01v2.signs.ass`) or of a bilingual file arrives — a worse
+    kind of file, never the episode's text: skipped, the copy untouched. A plain v2 is followed (S7), also over a
+    signs-only or bilingual v1 that was all there was (the lead, 2026-10-21: the pick's order of kinds)."""
     store, data_dir = _empty(language)
     show = _SHOWS[language][0]
     src = _drive("driveA")
-    _write(os.path.join(src, show, f"{show} - 01.srt"), _text(language, 1))
+    _write(os.path.join(src, show, f"{show} - 01.{first}"), _text(language, 1))
     with store:
         root = store.add_source(src)
-        first = _look(store, language, root, first=True)["ids"][0]
-        copy = os.path.join(data_dir, *store.item(first)["rel_path"].split("/"))
+        first_id = _look(store, language, root, first=True)["ids"][0]
+        copy = os.path.join(data_dir, *store.item(first_id)["rel_path"].split("/"))
         before = _sha(copy)
         v2 = _write(os.path.join(src, show, f"{show} - 01v2.{mark.format(ours=_OURS[language])}"),
                     _text(language, 1, extra="、訂正"))

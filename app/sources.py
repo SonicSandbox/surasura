@@ -211,10 +211,11 @@ def _release(name):
 
 
 def _kind(name):
-    """I9: what a subtitle file holds as the one rule reads it — its flags (a signs-only track, karaoke) and whether it
-    is bilingual: a later version replaces only a file of the same kind."""
+    """I9: a subtitle file's kind as the one rule reads it, lower the better — (bilingual, flagged: a signs-only track,
+    karaoke): a plain one-language file first. The one order of kinds: the look's pick (`_episodes`' order) and a later
+    version (`_new`: it replaces a file of its own kind or a worse one, never a better) both read it."""
     n = en.identity(name)
-    return n.flags, n.bilingual
+    return n.bilingual, bool(n.flags)
 
 
 def _nfc(name):
@@ -764,9 +765,9 @@ class _Look:
             # PROVISIONAL (Sonic 2026-10-21: accepted for building, to be checked in use): this order and the grouping
             # by the key below. I1: a bilingual file comes after every one-language file, even one named like the
             # video (LM1a-Q1); I8: "named like a video" asks the names Connect pairs (`video_stems`: `ep01.alt.srt`)
-            n = en.identity(name)
-            return (n.bilingual, bool(n.flags) or not any(_nfc(s).lower() in like for s in en.video_stems(name)),
-                    (n.language or (langs or {}).get(path)) != self.language, bool(n.flags),
+            n, (bilingual, flagged) = en.identity(name), _kind(name)
+            return (bilingual, flagged or not any(_nfc(s).lower() in like for s in en.video_stems(name)),
+                    (n.language or (langs or {}).get(path)) != self.language, flagged,
                     not n.retimed and ls.path_key(os.path.dirname(path)) not in versions,
                     _RANK.get(os.path.splitext(name)[1].lower(), 2), name)
         out, groups = [], {}
@@ -1005,8 +1006,8 @@ class _Look:
         held = self._held(folder).get(self._episode_key(name)) if episode is not None else None
         held_name = os.path.basename(held[1].origin or "") if held is not None else ""
         if held is not None and (held[0] > version or (held[0] == version and  # an earlier release (K1), another
-                                 _release(held_name) == _release(name)) or   # (H13), or a later one of another kind
-                                 (held[0] < version and _kind(held_name) != _kind(name))):   # (I9: a signs-only v2)
+                                 _release(held_name) == _release(name)) or   # (H13), or a later one of a worse kind
+                                 (held[0] < version and _kind(name) > _kind(held_name))):   # (I9: a signs-only v2)
             self.out["skipped"] += 1                         # of an episode already in
             return None
         removed = self._removed(show, episode, ls.path_key(name))

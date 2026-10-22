@@ -20,7 +20,7 @@ from app.connect import videos
 from app.services import covers
 from app.services import view_rows as vr
 from tests.test_library_store_support import LANGUAGES
-from tests.test_sources_scan import _OTHER, _OURS, _SHOWS, _drive, _empty, _items, _look, _sha, _text, _write
+from tests.test_sources_scan import _OTHER, _OURS, _SHOWS, _drive, _empty, _items, _look, _sha, _text, _video, _write
 
 
 PINNED = [
@@ -92,11 +92,11 @@ PINNED = [
     ('Show - 05 - Title 12.srt', ('Show - 05 - Title 12', None, set()), (5, 1), 'show - 05 - title 12', 'Show', 5,
      ('Show - 05 - Title 12',)),   # moved: A33: the window read 12
     ('Show - 12.5.srt', ('Show - 12.5', None, set()), (12.5, 1), 'show - 12.5', 'Show', 12.5, ('Show - 12.5',)),   # moved: A33: the window read 12
-    ('Show OVA 01.srt', ('Show OVA 01', None, set()), (1, 1), 'show ova 01', 'Show OVA', 1, ('Show OVA 01',)),   # moved: A33: a special's own number; the look read none
-    ('Show OVA - 01.ass', ('Show OVA - 01', None, set()), (1, 1), 'show ova - 01', 'Show OVA', 1,
-     ('Show OVA - 01',)),
-    ('Show - 01 (OVA).ass', ('Show - 01 (OVA)', None, set()), (1, 1), 'show - 01', 'Show', 1,
-     ('Show - 01 (OVA)',)),
+    ('Show OVA 01.srt', ('Show OVA 01', None, set()), (1, 1), 'show ova 01', 'Show OVA', None, ('Show OVA 01',)),   # moved: A33: a special's own number; the look read none; review A4: the window shows none
+    ('Show OVA - 01.ass', ('Show OVA - 01', None, set()), (1, 1), 'show ova - 01', 'Show OVA', None,
+     ('Show OVA - 01',)),   # moved: review A4 (a special has no window number)
+    ('Show - 01 (OVA).ass', ('Show - 01 (OVA)', None, set()), (1, 1), 'show - 01', 'Show', None,
+     ('Show - 01 (OVA)',)),   # moved: review A4 (a special has no window number)
     ('Show - 05 Part 1.srt', ('Show - 05 Part 1', None, set()), (5, 1), 'show - 05 part 1', 'Show', 5,
      ('Show - 05 Part 1',)),   # moved: A3: the window read the part
     ('Show - 05 Part 2.srt', ('Show - 05 Part 2', None, set()), (5, 1), 'show - 05 part 2', 'Show', 5,
@@ -253,11 +253,12 @@ def test_a_range_claims_every_number_in_it():
     ("星空喫茶 番外編 第1話.srt", "番外編"), ("Hoshizora Kissa Recap.srt", "RECAP"),
     ("[Kumorisubs] Hoshizora Kissa - NCOP1 (1080p).mkv", "NCOP"), ("Hoshizora Kissa NCED.mkv", "NCED"),
     ("Hoshizora Kissa [PV].mkv", "PV"), ("Hoshizora Kissa CM01.mkv", "CM"), ("Hoshizora Kissa [Menu].mkv", "MENU"),
-    ("Hoshizora Kissa - 05 Preview.mkv", "PREVIEW"),
+    ("Hoshizora Kissa Preview - 05.mkv", "PREVIEW"),   # moved: A2 (`- 05 Preview` is a title, no special)
 ])
 def test_a_special_is_marked_wherever_its_mark_is(name, mark):
-    """A4: OVA OAD SP Special Movie 劇場版 総集編 特別編 番外編 Recap NCOP NCED PV CM Menu Preview — anywhere, brackets
-    included; a special's episode is never the show's episode of that number."""
+    """A4: OVA OAD SP Special Movie 劇場版 総集編 特別編 番外編 Recap NCOP NCED PV CM Menu Preview — before the episode
+    marker, as a special's own number, or a bracket holding just the mark (A2); a special's episode is never the
+    show's episode of that number."""
     n = en.identity(name)
     assert n.special == mark
     if n.episode is not None:
@@ -269,6 +270,73 @@ def test_no_special_where_no_mark_is_whole():
     for name in ("Hoshizora Kissa - 05.srt", "Spice Kissa - 05.srt", "Spring Rain - 05.srt", "Kissa 5cm.srt",
                  "Hoshizora Kissa - 12 [END].srt", "Hoshizora Kissa - 05 [Signs & Songs].ass"):
         assert en.identity(name).special is False, name
+
+
+def test_season_zero_is_a_season_of_its_own():
+    """A1: season 0 is how Plex and Sonarr name the specials (`S00E01`, `Season 0 - 01`, a `Season 0` folder); it was
+    keyed as season 1, so `S00E01` was hidden behind `S01E01v2` or followed as its v2. Only a name with no season
+    written is season 1."""
+    assert _key("Hoshizora Kissa - S00E01.srt") != _key("Hoshizora Kissa - S01E01.srt")
+    assert _key("Hoshizora Kissa Season 0 - 01.srt") == _key("Hoshizora Kissa - S00E01.srt")
+    assert _key("Hoshizora Kissa - 01.srt", folder_name="Season 0") == _key("Hoshizora Kissa - S00E01.srt")
+    assert _key("Hoshizora Kissa - 01.srt") == _key("Hoshizora Kissa - S01E01.srt")
+    assert en.identity("Hoshizora Kissa - S00E01.srt").key[1] == 0
+
+
+@pytest.mark.parametrize("name", [
+    "[SP-Fansub] Hoshizora Kissa - 05.srt", "[Movie-Subs] Hoshizora Kissa - 05.ass", "[CM-Subs] 星空喫茶 第05話.srt",
+    "Hoshizora Kissa - 05 (CMカット).srt", "Hoshizora Kissa - 05 [SP Ver].srt",
+    "Hoshizora Kissa - 05 [Special Edition].srt", "Hoshizora Kissa - S01E05 - A Very Special Day.mkv",
+    "Hoshizora Kissa - S01E05 - Movie Night.mkv", "Hoshizora Kissa - 05 - Recap of the Summer.srt",
+    "Hoshizora.Kissa.S01E05.Menu.720p.mkv", "[SP] Hoshizora Kissa - 05.srt",
+])
+def test_a_special_word_in_the_group_a_release_tag_or_the_title_is_no_special(name):
+    """A2: a special is read before the episode marker, from a special's own number (`OVA 01`) or from a bracket that
+    holds just the mark (`(OVA)`) — never from the leading `[group]`, a release tag (`(CMカット)`, `[SP Ver]`) or the
+    episode's title: two releases of one episode were two items."""
+    n = en.identity(name)
+    assert n.special is False and n.episode == 5, name
+
+
+@pytest.mark.parametrize("name, number", [
+    ("[字幕组][星空][第05话][1080P].ass", 5), ("[字幕组][星空][05話][1080P].ass", 5), ("星空喫茶 05話.srt", 5),
+    ("某部电视剧 05集.srt", 5), ("某部电视剧 第05集.srt", 5), ("星空喫茶 第5話.srt", 5), ("星空喫茶 5-6話.srt", 5),
+])
+def test_an_episode_written_with_its_counter_is_read_in_brackets_and_without_dai(name, number):
+    """A6: `[第05话]` (the Chinese bracketed layout, its counter inside the bracket) and `05話` / `05集` without 第
+    read the episode, and the bracket before the number is the show."""
+    n = en.identity(name)
+    assert n.episode == number, name
+    if name.startswith("[字幕组]"):
+        assert n.show == "星空"
+
+
+def test_a_counter_without_dai_reads_its_range_and_never_a_count_of_times():
+    """A6: `5-6話` claims both; `3回目` is 'the third time' (回 counts times: only 第N回 is an episode)."""
+    assert en.identity("星空喫茶 5-6話.srt").episodes == (5, 6)
+    assert en.identity("星空喫茶 3回目.srt").episode is None
+
+
+def test_the_window_shows_no_number_for_a_special():
+    """A4: `OVA 01` and `- 01 (OVA)` are no episode 1 in the window (*Ep 1*, and *Find the video* offering episode 1's
+    video): a special has no window number, as before LM1a; the look still records the special's own number."""
+    for name in ("Hoshizora Kissa OVA 01.srt", "Hoshizora Kissa - 01 (OVA).srt", "Hoshizora Kissa SP1.srt"):
+        assert vr.episode_number(name) is None, name
+        assert en.identity(name).episode == 1
+    assert vr.episode_number("Hoshizora Kissa - 01.srt") == 1
+
+
+def test_a_subtitles_version_tag_still_finds_its_video():
+    """A5: `Show - 05.v2.srt` goes with `Show - 05.mkv` (Connect's lookup took one short tag off before LM1a); `.5`
+    and `.2` stay (`Show 1.5` is no `Show 1`)."""
+    assert "Hoshizora Kissa - 05" in _stems("Hoshizora Kissa - 05.v2.srt")
+    assert "Hoshizora Kissa - 05" in _stems("Hoshizora Kissa - 05.V3.ja.srt")
+    assert "Hoshizora Kissa 1" not in _stems("Hoshizora Kissa 1.5.srt")
+
+
+def test_the_identity_cache_holds_a_big_librarys_names():
+    """I10: a 20k library's second look read every name again with 8,192 kept (1.2 s against 0.18 s)."""
+    assert en.identity.cache_info().maxsize >= 65536
 
 
 @pytest.mark.parametrize("name, flags", [
@@ -395,8 +463,8 @@ def test_every_reader_reads_a_name_by_the_one_rule(name):
     assert sources._episode_of(name) == (n.episode, n.version)
     assert sources._tag(name) == (n.stem, n.language, set(n.flags))
     assert ls.show_of_name(name) == n.show
-    assert vr.episode_number(name) == bare.episode
-    if n.episode is not None:
+    assert vr.episode_number(name) == (None if bare.special else bare.episode)      # A4: a special has none
+    if n.episode is not None and not n.special:
         assert vr.episode_number(name) == n.episode
     assert n.stem in _stems(name)
 
@@ -552,3 +620,159 @@ def test_a_retimers_mark_comes_off_the_stem_and_is_read_by_the_one_rule(name, st
     n = en.identity(name)
     assert (n.stem, n.language, n.retimed, n.episode) == (stem, language, retimed, 5)
     assert sources._marked(name) is retimed and sources._tag(name)[:2] == (stem, language)
+
+
+@pytest.mark.usefixtures("_fresh_look")
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_season_zeros_special_is_not_hidden_behind_season_ones_v2(language):
+    """A1: `S01E01v2.srt` is in; `S00E01.srt` arrives — the specials season's episode 1, an item of its own, never
+    skipped as an older release of season 1's."""
+    store, _data = _empty(language)
+    show = _SHOWS[language][0]
+    src = _drive("driveA")
+    _write(os.path.join(src, show, f"{show} - S01E01v2.srt"), _text(language, 1))
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        _write(os.path.join(src, show, f"{show} - S00E01.srt"), _text(language, 2))
+        result = _look(store, language, root, full=True)
+        assert result["added"] == 1 and _items(store) == 2, result
+
+
+@pytest.mark.usefixtures("_fresh_look")
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_season_zeros_v2_is_never_written_over_season_one(language):
+    """A1: `S01E01.srt` is in; `S00E01v2.srt` arrives — never followed as season 1's v2 (its copy untouched)."""
+    store, data_dir = _empty(language)
+    show = _SHOWS[language][0]
+    src = _drive("driveA")
+    _write(os.path.join(src, show, f"{show} - S01E01.srt"), _text(language, 1))
+    with store:
+        root = store.add_source(src)
+        first = _look(store, language, root, first=True)["ids"][0]
+        copy = os.path.join(data_dir, *store.item(first)["rel_path"].split("/"))
+        before = _sha(copy)
+        _write(os.path.join(src, show, f"{show} - S00E01v2.srt"), _text(language, 2))
+        result = _look(store, language, root, full=True)
+        assert (result["added"], result["attached"]) == (1, 0) and _items(store) == 2, result
+        assert _sha(copy) == before
+
+
+@pytest.mark.usefixtures("_fresh_look")
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("a, b", [("[SP-Fansub] {s} - 05.srt", "[Other] {s} - 05.srt"),
+                                  ("{s} - 05 (CMカット).srt", "{s} - 05.srt"),
+                                  ("[Movie-Subs] {s} - 05.ass", "[Other] {s} - 05.srt")])
+def test_two_releases_of_one_episode_with_a_special_word_in_their_marks_are_one_item(language, a, b):
+    """A2 / H13: two releases whose names differ only in their marks are one episode, whatever words their group tag
+    or release tag holds (before LM1a: one item; LM1a read `SP`, `CM`, `Movie` there as a special: two)."""
+    store, _data = _empty(language)
+    show = _SHOWS[language][0]
+    src = _drive("driveA")
+    _write(os.path.join(src, show, a.format(s=show)), _text(language, 1))
+    _write(os.path.join(src, show, b.format(s=show)), _text(language, 2))
+    with store:
+        root = store.add_source(src)
+        result = _look(store, language, root, first=True)
+        assert result["added"] == 1 and _items(store) == 1, result
+
+
+@pytest.mark.usefixtures("_fresh_look")
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_bilingual_file_named_like_the_video_never_beats_one_of_our_language(language):
+    """I1 (PROVISIONAL, LM1a-Q1): `[A] Show - 01.chs&jpn.ass` named like the video `[A] Show - 01.mkv` and another
+    group's `[B] Show - 01.<ours>.srt`: the one-language file is the text (the bilingual one's other language would
+    count as ours)."""
+    store, data_dir = _empty(language)
+    show = _SHOWS[language][0]
+    src = _drive("driveA")
+    _video(os.path.join(src, show, f"[A] {show} - 01.mkv"))
+    _write(os.path.join(src, show, f"[A] {show} - 01.chs&jpn.ass"), _text(language, 2))
+    ours = _write(os.path.join(src, show, f"[B] {show} - 01.{_OURS[language]}.srt"), _text(language, 1))
+    with store:
+        root = store.add_source(src)
+        result = _look(store, language, root, first=True)
+        assert result["added"] == 1 and _items(store) == 1, result
+        assert _sha(os.path.join(data_dir, *store.item(result["ids"][0])["rel_path"].split("/"))) == _sha(ours)
+
+
+@pytest.mark.usefixtures("_fresh_look")
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_looks_named_like_the_video_step_reads_the_names_connect_pairs(language):
+    """I8: Connect pairs `Show - 01.alt.srt` with `Show - 01.mkv` (`video_stems`); the look's "named like a video"
+    step read only the exact name, so another group's `.ass` of that release won over the file made for the video."""
+    store, data_dir = _empty(language)
+    show = _SHOWS[language][0]
+    src = _drive("driveA")
+    _video(os.path.join(src, show, f"{show} - 01.mkv"))
+    made = _write(os.path.join(src, show, f"{show} - 01.alt.srt"), _text(language, 1))
+    _write(os.path.join(src, show, f"[B] {show} - 01.alt.ass"), _text(language, 2))
+    with store:
+        root = store.add_source(src)
+        result = _look(store, language, root, first=True)
+        assert result["added"] == 1 and _items(store) == 1, result
+        assert _sha(os.path.join(data_dir, *store.item(result["ids"][0])["rel_path"].split("/"))) == _sha(made)
+
+
+@pytest.mark.usefixtures("_fresh_look")
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("mark, follows", [("signs.ass", False), ("chs&jpn.ass", False), ("{ours}.srt", True)])
+def test_a_later_version_replaces_only_a_file_of_its_own_kind(language, mark, follows):
+    """I9: `- 01.srt` is in; a v2 of its signs-only track (`- 01v2.signs.ass`) or of a bilingual file arrives — another
+    kind of file, never the episode's text: skipped, the copy untouched. A plain v2 is followed (S7)."""
+    store, data_dir = _empty(language)
+    show = _SHOWS[language][0]
+    src = _drive("driveA")
+    _write(os.path.join(src, show, f"{show} - 01.srt"), _text(language, 1))
+    with store:
+        root = store.add_source(src)
+        first = _look(store, language, root, first=True)["ids"][0]
+        copy = os.path.join(data_dir, *store.item(first)["rel_path"].split("/"))
+        before = _sha(copy)
+        v2 = _write(os.path.join(src, show, f"{show} - 01v2.{mark.format(ours=_OURS[language])}"),
+                    _text(language, 1, extra="、訂正"))
+        result = _look(store, language, root, full=True)
+        assert _items(store) == 1, result
+        assert (result["attached"], _sha(copy)) == ((1, _sha(v2)) if follows else (0, before)), result
+
+
+@pytest.mark.usefixtures("_fresh_look")
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_two_season_folders_with_the_same_file_names_stay_apart(language):
+    """Review H1 (refuted, kept as a guard): `Season 1/Show - 05.srt` is in; `Season 2/Show - 05v2.srt` arrives —
+    the folder's show keeps season 2's episode its own, never a v2 written over season 1's copy."""
+    store, data_dir = _empty(language)
+    show = _SHOWS[language][0]
+    src = _drive("driveA")
+    _write(os.path.join(src, show, "Season 1", f"{show} - 05.srt"), _text(language, 1))
+    with store:
+        root = store.add_source(src)
+        first = _look(store, language, root, first=True)["ids"][0]
+        copy = os.path.join(data_dir, *store.item(first)["rel_path"].split("/"))
+        before = _sha(copy)
+        _write(os.path.join(src, show, "Season 2", f"{show} - 05v2.srt"), _text(language, 2))
+        result = _look(store, language, root, full=True)
+        assert _items(store) == 2 and _sha(copy) == before, result
+
+
+def test_a_half_episodes_number_reaches_the_windows_menu_and_folder_match_as_itself(tmp_path):
+    """Review I5: the window's number can be 12.5 (`- 12.5`); the ⋯ menu's arrivals (`item_menu._numbers` →
+    `range_text`) and *Choose a folder…* (`qt.needs.match_folder`) take it as written — *Ep 12–12.5*, and the folder's
+    `- 12.5` video, never episode 12's. No guard was needed there (neither formats it as an int, as needs.py:661 did)."""
+    pytest.importorskip("PyQt6")
+    from collections import namedtuple
+    from app.qt import item_menu
+    from app.qt import needs as needs_ui
+    from app.services import needs
+    arrival = namedtuple("Arrival", "rel_paths")(("Show/Hoshizora Kissa - 12.srt", "Show/Hoshizora Kissa - 12.5.srt"))
+    numbers = item_menu._numbers(arrival)
+    assert numbers == [12, 12.5]
+    part = item_menu.Part(key="k", piece_id=1, ids=(1, 2), numbers=tuple(numbers), tier="arrivals", place=None,
+                          title="Hoshizora Kissa")
+    assert item_menu.range_text(part) == "Ep 12–12.5"
+    (tmp_path / "Hoshizora Kissa - 12.ja.srt").write_text("x", encoding="utf-8")
+    (tmp_path / "Hoshizora Kissa - 12.5.ja.srt").write_text("x", encoding="utf-8")
+    line = needs.NeedLine("k", "", 1, "Ep 12.5", vr.episode_number("Hoshizora Kissa - 12.5.srt"),
+                          "HighPriority/Hoshizora Kissa/[Old] Hoshizora Kissa - 12.5.ja.srt", ())
+    (_line, path), = needs_ui.match_folder(str(tmp_path), [line])
+    assert os.path.basename(path) == "Hoshizora Kissa - 12.5.ja.srt"

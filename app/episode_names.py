@@ -24,20 +24,25 @@ keeps a pattern of its own (Sonic: one shared rule, never a second copy).
   `… S2`); `[group][show][05]` reads the bracket before the number; None when nothing but digits and marks is left.
 - **season** (A2): `SxxEyy`, a show ending in `S2` / `Season 2` / `2nd Season` / `第2期` / `2期` / `II`, else the
   season folder `folder_name` names (`season_folder`); None when none is written (the key reads it as season 1).
-- **episode / episodes / version / part**: K4's markers (` - 05`, `E05`, `Ep 5`, `Episode 5`, `#05`, `第05話`,
-  `S01E05`; `- 05v2` is version 2), a special's own number (`OVA 01`), `[05]` in the bracketed layout; a range claims
-  every number in it (`05-06`, `S01E05-E06`, `第5-6話`: A13); a part written after the number (`Part 2`, `Pt 2`, `前編
-  / 中編 / 後編`, `CD2`, `05a / 05b`, in brackets too: A3) — one before it is the show's (`Final Season Part 2 - 05`).
+- **episode / episodes / version / part**: K4's markers (` - 05`, `E05`, `Ep 5`, `Episode 5`, `#05`, `第05話`, `05話`,
+  `05集`, `S01E05`; `- 05v2` is version 2), a special's own number (`OVA 01`), `[05]` / `[第05话]` in the bracketed
+  layout (A6); a range claims every number in it (`05-06`, `S01E05-E06`, `第5-6話`: A13); a part written after the
+  number (`Part 2`, `Pt 2`, `前編 / 中編 / 後編`, `CD2`, `05a / 05b`, in brackets too: A3) — one before it is the show's
+  (`Final Season Part 2 - 05`).
   With `bare_numbers` (the caller says every name of that pattern reads one: A10; the window, which has no folder to
   ask) the last bare number is the episode too — never a year (19xx / 20xx), a date or a resolution.
-- **special** (A4): `OVA OAD SP Special Movie 劇場版 総集編 特別編 番外編 Recap NCOP NCED PV CM Menu Preview` anywhere,
-  brackets included, as a whole word (`Spice` holds none): the mark (`'OVA'`), else False.
+- **special** (A4): `OVA OAD SP Special Movie 劇場版 総集編 特別編 番外編 Recap NCOP NCED PV CM Menu Preview` as a whole
+  word (`Spice` holds none) before the episode marker (`Show OVA - 01`), as a special's own number (`OVA 01`) or a
+  bracket holding just the mark (`(OVA)`, `[Menu]`) — never the leading `[group]` (`[SP-Fansub]`), a release tag
+  (`(CMカット)`, `[SP Ver]`) or the title after the number (review A2): the mark (`'OVA'`), else False.
 - **group** (A28, LM2): (the leading `[tag]`, the name before the episode marker, the folder), folded: two episodes of
   one release share it whatever comes after their numbers.
 - **release** (H13): the name without its release's marks (`[group]`, `(1080p)`, a hash, a version, its tags and
   extension), folded.
-- **key**: (show folded without its season, season (1 when none), episode, part, special) — the one thing every "same
-  episode?" question compares. A special is in it: an OVA's 01 is never episode 1.
+- **key**: (show folded without its season, season (1 when none written; `S00`, the specials season, is 0: review A1),
+  episode, part, special) — the one thing every "same episode?" question compares. A special is in it: an OVA's 01 is
+  never episode 1. PROVISIONAL (Sonic 2026-10-21: accepted for building, to be checked in use), as the look's grouping
+  by it is.
 
 Names are compared NFKC-folded (which composes: a Mac's NFD name is its NFC name, A24); `video_stems` gives both forms
 for the names compared as written. Pure: the standard library only (no Qt, no store), any thread may ask.
@@ -123,13 +128,16 @@ _JUNK = re.compile(r"\b(?:\d{3,4}[pi]|\d{3,4}x\d{3,4}|(?=[0-9A-F]*\d)[0-9A-F]{8}
 _SEASON_EP = re.compile(r"\bS(\d{1,2})[ ._-]?E(\d{1,4})(?:(?:-E?|E)(\d{1,4}))?", re.I)  # S01E13, S01E05-E06
 _EPISODE = re.compile(r"(?:\s[-–~]\s*|\b(?:EP(?:ISODE)?|E)\.?\s?|#\s?)(\d{1,4}(?:\.\d)?)([abc])?(?:v(\d+))?"
                       r"(?:[-~–](\d{1,4}))?\b"                                       # - 16, E13, #13, - 05a, - 05-06
-                      r"|第\s?(\d{1,4})(?:\s?[-~–]\s?(\d{1,4}))?\s?[話话集回]", re.I)   # 第13話, 第13集, 第5-6話
+                      r"|第\s?(\d{1,4})(?:\s?[-~–]\s?(\d{1,4}))?\s?[話话集回]"     # 第13話, 第13集, 第5-6話
+                      r"|(?<![\d.])(\d{1,4})(?:\s?[-~–]\s?(\d{1,4}))?\s?[話话集]", re.I)   # 13話, 05集 (A6)
 _SPECIAL_NUMBER = re.compile(r"(?<![A-Za-z0-9])(?:OVA|OAD|SP|Specials?|NC\s?OP|NC\s?ED|PV|CM|Recap|Preview)\s?"
                              r"(\d{1,3})(?:v(\d+))?\b", re.I)
-_BRACKET_NUMBER = re.compile(r"\[(\d{1,4}(?:\.\d)?)(?:v(\d+))?(?:[-~](\d{1,4}))?\s*(?:END|Fin|完)?\]", re.I)
+_BRACKET_NUMBER = re.compile(r"\[第?(\d{1,4}(?:\.\d)?)(?:v(\d+))?(?:[-~](\d{1,4}))?\s*[話话集回]?\s*(?:END|Fin|完)?\]",
+                             re.I)                              # [05], [05v2], [05 END], [第05话] (A6)
 _DATE = re.compile(r"(?:19|20)\d\d[-./]\d{1,2}[-./]\d{1,2}")
 _BARE = re.compile(r"(?:^|(?<=[\s\-#]))(\d{1,4})(?:v(\d+))?(?=\s|$)", re.I)
 _VERSION = re.compile(r"(?:(?<=\d)|\s)v\d+$", re.I)
+_DOT_VERSION = re.compile(r"\.v\d{1,2}", re.I)                   # `Show - 05.v2.srt`: its video is `Show - 05` (A5)
 _SPACES = re.compile(r"\s+")
 _SPECIAL = re.compile(r"(?<![A-Za-z0-9])(OVA|OAD|SP|Specials?|Movie|Recap|NC\s?OP|NC\s?ED|PV|CM|Menu|Preview)"
                       r"(?:\d{1,3})?(?![A-Za-z])|(劇場版|総集編|特別編|番外編)", re.I)
@@ -279,8 +287,8 @@ def season_folder(name):
     return _KANJI_NUMBER.get(value) or int(value)
 
 
-def _special(text):
-    m = _SPECIAL.search(text)
+def _special(text, whole=False):
+    m = (_SPECIAL.fullmatch if whole else _SPECIAL.search)(text.strip())
     if not m:
         return False
     if m.group(2):
@@ -297,7 +305,8 @@ def _part(texts):
     return None
 
 
-@lru_cache(maxsize=8192)          # a look asks of one name several times (its tag, episode, release, key)
+@lru_cache(maxsize=65536)         # a look asks of one name several times (its tag, episode, release, key); I10: a
+#                                   20k library's next look finds its names still kept (8,192 kept none of them)
 def identity(name, folder_name=None, bare_numbers=False):
     """The one reading of a file name (the module's docstring): `name` a file name or a path (its last part is read);
     `folder_name` the folder it sits in (a season folder gives a name without one its season; the group names it);
@@ -308,7 +317,6 @@ def identity(name, folder_name=None, bare_numbers=False):
     stem, langs, flags, two, track, retimed = _marks(stem)
     text = unicodedata.normalize("NFKC", stem)
     lead = re.match(r"\s*\[([^\]]*)\]", text)
-    special = _special(text)
     inside = [next(g for g in b.groups() if g is not None) for b in _BRACKET.finditer(text)]
     plain = _TAGS.sub(" ", text).replace("_", " ")
     if " " not in plain.strip() and plain.count(".") >= 2:        # Show.Name.S01E13.1080p: dots are the spaces
@@ -324,8 +332,8 @@ def identity(name, folder_name=None, bare_numbers=False):
     elif not track:
         m = _EPISODE.search(plain)
         if m:
-            number = m.group(1) or m.group(5)
-            letter, version, upto = m.group(2), m.group(3), m.group(4) or m.group(6)
+            number = m.group(1) or m.group(5) or m.group(7)
+            letter, version, upto = m.group(2), m.group(3), m.group(4) or m.group(6) or m.group(8)
             prefix, rest = plain[:m.start()], plain[m.end():]
         else:
             m = _SPECIAL_NUMBER.search(plain) or (_bare(plain) if bare_numbers else None)
@@ -333,6 +341,11 @@ def identity(name, folder_name=None, bare_numbers=False):
                 number, version = m.group(1), m.group(2)
                 prefix, rest = plain[:m.start(1)], plain[m.end():]
     show = None if track else _clean(prefix)
+    # A2: a special's mark before the episode marker (`Show OVA - 01`, `劇場版 …`; a special's own number's: `OVA 01`)
+    # or a bracket holding just the mark (`(OVA)`, `[Menu]`) — never the leading `[group]` (`[SP-Fansub]`), a release
+    # tag (`(CMカット)`, `[SP Ver]`) or the title after the number (`- S01E05 - A Very Special Day`)
+    special = _special(prefix) or next((s for s in (_special(g, whole=True) for g in inside[1 if lead else 0:]) if s),
+                                       False)
     if number is None and not track:
         b = next((b for b in _BRACKET_NUMBER.finditer(text)
                   if b.start() > 0 and not re.fullmatch(r"(?:19|20)\d\d", b.group(1))), None)
@@ -364,7 +377,8 @@ def identity(name, folder_name=None, bare_numbers=False):
     release = " ".join(release.replace("_", " ").split()).casefold()
     group = (fold(lead.group(1)) if lead and lead.start() == 0 else "", fold(_clean(prefix) or show or ""),
              fold(folder_name))
-    key = (fold(base), season or 1, episode, part, special)
+    # the key: what "the same episode" is (PROVISIONAL, Sonic 2026-10-21: to be checked in use); A1: S00 stays 0
+    key = (fold(base), 1 if season is None else season, episode, part, special)
     return Name(show, season, episode, episodes, part, int(version), special, group, language, langs, flags, two,
                 retimed, stem, release, key)
 
@@ -382,13 +396,16 @@ def video_stems(name):
     """The names (without an extension) a video this subtitle goes with may have: its own stem and its stem without
     the marks `identity` reads (`Show - 05.ja.forced.srt` → `Show - 05`, `Show - 05 [CHS].ass` → `Show - 05`), and
     without one dot tag of up to three letters no list holds (a release's own: `ep01.alt.srt` goes with `ep01.mkv`, as
-    it always did; `Show 1.5` never with `Show 1`), each in NFC and NFD (A24: a video from a Mac or a zip is named in
-    NFD)."""
+    it always did) or a version's (`.v2`, A5; `Show 1.5` never with `Show 1`), each in NFC and NFD (A24: a video from a
+    Mac or a zip is named in NFD)."""
     raw = str(name or "").replace("\\", "/").rsplit("/", 1)[-1]
     out = []
-    own = os.path.splitext(raw)[0]
-    base, tag = os.path.splitext(own)
-    for stem in (own, identity(raw).stem, base if base and tag[1:].isalpha() and len(tag) <= 4 else ""):
+    stems = [os.path.splitext(raw)[0], identity(raw).stem]
+    for stem in stems[:2]:                                      # (the stem as written, then without the marks read)
+        base, tag = os.path.splitext(stem)
+        if base and (tag[1:].isalpha() and len(tag) <= 4 or _DOT_VERSION.fullmatch(tag)):
+            stems.append(base)
+    for stem in stems:
         for form in (stem, unicodedata.normalize("NFC", stem), unicodedata.normalize("NFD", stem)):
             if form and form not in out:
                 out.append(form)

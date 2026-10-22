@@ -211,8 +211,10 @@ def stem(name):
 
 def episode_number(name):
     """The episode (or part) number a file's name gives, or None: `S01E05`, `第5話`, `ep05`, `Show - 05`, `Show 05 …` —
-    LM1a's one rule (`episode_names.identity`), a bare number read too (the window has no folder to ask)."""
-    return identity(name, bare_numbers=True).episode
+    LM1a's one rule (`episode_names.identity`), a bare number read too (the window has no folder to ask); a special
+    (`OVA 01`, `- 01 (OVA)`) has none here (A4: never *Ep 1*, nor episode 1's video offered for it)."""
+    n = identity(name, bare_numbers=True)
+    return None if n.special else n.episode
 
 
 def runs(numbers):

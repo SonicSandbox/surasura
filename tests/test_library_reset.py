@@ -25,7 +25,7 @@ import pytest
 
 from app import library_store as ls
 from app import locks, sources
-from tests.test_library_store_support import LANGUAGES, library, names, touch, write_manifest
+from tests.test_library_store_support import LANGUAGES, library, names, pieces_ok, touch, write_manifest
 from tests.test_sources_scan import _SHOWS, _drive, _look, _text, _tree, _write
 
 
@@ -761,3 +761,45 @@ def test_a_reset_that_moved_nothing_is_never_named_and_one_that_did_is_named_onc
     assert ls.unfinished_reset(user_files_dir, told=True) == folder
     assert _record(folder)["told"] is True and _record(folder)["status"] == "started"
     assert ls.unfinished_reset(user_files_dir, told=True) is None
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_group_and_its_name_go_with_the_library_and_nothing_queued_or_undone_brings_them_back(language):
+    """LM11: a group is library state like every piece — a reset empties `pieces` with the rest (its row, kind and name
+    kept in the backup's copy); its Group / Rename group can't be undone into the fresh library (the epoch moved); a
+    piece id is never issued again, a reset's new groups included (G3), so a Rename group / Ungroup a crash left queued
+    finds no group of its own: Ungroup is let go (nothing to take apart), Rename is listed — neither writes."""
+    from app.services import moves as M
+    store, data_dir, user_files_dir, src, root = _world(language)
+    with store:
+        rows = store.conn.execute("SELECT piece_id, work_id FROM items WHERE tier = 'now' ORDER BY piece_id").fetchall()
+        shows = [rows[0][0], next(p for p, w in rows if w != rows[0][1])]     # the first piece, another title's
+        grouped = store.join(shows, how="group")
+        group = grouped.piece_id
+        assert group == rows[0][0]
+        title = names(language)[46]
+        renamed = store.rename_piece(group, title)
+        queued = [{"op": "rename_piece", "piece_id": group, "title": names(language)[47]},
+                  {"op": "ungroup", "piece_id": group}]
+        for cmd in queued:
+            cmd["before"] = M._as_queued(store, cmd)
+        ls.start_fresh(store)
+        assert store.conn.execute("SELECT COUNT(*) FROM pieces").fetchone()[0] == 0
+        for change in (renamed, grouped):
+            with pytest.raises(ls.UndoRefused):
+                store.undo(change)
+        _sources_read_again(store, language)
+        assert not store.conn.execute("SELECT 1 FROM pieces WHERE kind = 'group'").fetchone()
+        assert pieces_ok(store) is None
+        again = [p for (p,) in store.conn.execute("SELECT DISTINCT piece_id FROM items ORDER BY piece_id")]
+        assert store.join(again[:2], how="group").piece_id > group, "never the old group's id"
+        rename, ungroup = queued                                        # `Writer._changed_since`'s two checks
+        assert not M._done(store, rename) and M._as_queued(store, rename) != rename["before"]
+        assert M._done(store, ungroup)
+        assert store.conn.execute("SELECT title FROM pieces WHERE kind = 'group'").fetchone()[0] is None
+    (folder,) = _backups(user_files_dir)
+    copy = sqlite3.connect(_record(folder)["db_copy"])
+    try:
+        assert copy.execute("SELECT kind, title FROM pieces WHERE id = ?", (group,)).fetchone() == ("group", title)
+    finally:
+        copy.close()

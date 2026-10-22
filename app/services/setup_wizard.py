@@ -26,7 +26,8 @@ each of the six pages starts with, what it writes on *Next*, and the reads and j
   own rule (`folder_refused`), then on *Next* added and given setup's first look (`read_folders`: `Store.add_source`,
   `sources.scan(first=True)` — Current, quietly), a worker's; anything taken in offers *Needs you*'s one line, *Make
   cards for your first 20 episodes?*, whose *Make cards* logs them as entering the mine line by the user's choice
-  (`first_cards`, after Connect's switch is on).
+  (`first_cards`, after Connect's switch is on). *Skip a folder…* (K6): a folder inside the picked ones checked by the
+  store's rule (`skip_refused`), skipped on *Next* before its folder's first look (`read_folders(skips=)`).
 
 Nothing here waits on the caller's thread except the calls named as a worker's.
 """
@@ -426,14 +427,32 @@ def folder_refused(language, path):
         store.close()
 
 
-def read_folders(language, paths, progress=None, stop=None):
+def skip_refused(language, path, chosen=()):
+    """(A worker; K6.) Why page 3 can't skip `path` (*Skip a folder…*) — the store's own rule
+    (`library_store.skip_refusal`'s plain words) over the folders already read and the ones `chosen` on the page — or
+    None. No library yet: the chosen folders alone. Nothing is written."""
+    from app import library_store
+    sources, skipped = [(None, p) for p in chosen or ()], []
+    store = _window_store(_language(language), role="reader")
+    if store is not None:
+        try:
+            sources += store._read_sources()
+            skipped = [f["key"] for f in store.skipped_folders()]
+        finally:
+            store.close()
+    return library_store.skip_refusal(path, sources, skipped)[0]
+
+
+def read_folders(language, paths, progress=None, stop=None, skips=()):
     """(A worker; SRC W1a.) *Next* on page 3 with folders picked: each one added (`Store.add_source`) and given its first
     look (`sources.scan(first=True)`: SRC-1 — Current, by show, quietly: no card is made for them by itself, S1) ->
     {"ready", "found", "shows", "added", "stopped", "busy", "read" [path], "refused" [(path, why)], "unreachable"
     [path], "failed" [(path, why)], "offered"}. `read`: the folders this call dealt with (taken in, refused,
     unreachable, failed); the others — after a Stop, or a look already running — weren't looked at, to read later.
     `progress(found, shows)`: every folder's so far; `stop()` is asked between files — a stopped look keeps what it
-    took in. `ready` False: no library yet (nothing done). Episodes taken into the mine line → the one *Needs you* line,
+    took in. `skips` (K6, *Skip a folder…*): folders inside them never read — each skipped (`Store.skip_folder`) as soon
+    as the folder holding it is added, before its look; one no folder read holds is refused (`refused`, its reason).
+    `ready` False: no library yet (nothing done). Episodes taken into the mine line → the one *Needs you* line,
     *Make cards for your first 20 episodes?* (D1); none there (Current was already full: *Set up again*, an upgrade)
     → no line."""
     from app import library_store, sources
@@ -445,7 +464,7 @@ def read_folders(language, paths, progress=None, stop=None):
     store = _window_store(language)
     if store is None:
         return dict(out, ready=False)
-    taken = []
+    taken, pending = [], list(skips or ())
     with store:
         for path in paths:
             if stop is not None and stop():
@@ -461,6 +480,15 @@ def read_folders(language, paths, progress=None, stop=None):
                 out["failed"].append((path, str(e)))
                 out["read"].append(path)
                 continue
+            for skip in list(pending):                   # K6: before its look, so nothing of it is ever read
+                try:
+                    store.skip_folder(skip)
+                    pending.remove(skip)
+                except library_store.NotASource:
+                    pass                                 # (inside a folder added later, perhaps)
+                except Exception as e:
+                    out["failed"].append((skip, str(e)))
+                    pending.remove(skip)
             before = (out["found"], out["shows"])
 
             def told(found, shows, before=before):
@@ -485,6 +513,8 @@ def read_folders(language, paths, progress=None, stop=None):
             if got.get("stopped"):
                 out["stopped"] = True
                 break
+        if not (out["stopped"] or out["busy"]):
+            out["refused"] += [(s, store.skip_refused(s) or library_store.SKIP_OUTSIDE) for s in pending]
         try:
             in_line = bool(set(taken) & set(library.mine_line(store))) if taken else False
         except Exception as e:

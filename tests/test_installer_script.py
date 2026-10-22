@@ -117,7 +117,8 @@ def test_launch_is_offered_after_an_interactive_install_only():
 def test_uninstall_deletes_exactly_what_an_update_may_add_and_never_a_wildcard():
     deletes = [(e["Type"], e["Name"]) for e in _entries("uninstalldelete")]
     assert deletes == [("filesandordirs", r"{app}\_internal"), ("files", r"{app}\Surasura.exe"),
-                       ("files", r"{app}\surasura-cli.exe"), ("files", r"{app}\updater.exe"),
+                       ("files", r"{app}\surasura-cli.exe"), ("files", r"{app}\tsubasa.exe"),
+                       ("files", r"{app}\updater.exe"),
                        ("files", r"{app}\RELEASE_NOTES.md"), ("files", r"{app}\LICENSE")]
     assert not any("*" in name or "?" in name for _t, name in deletes)
     assert "uninstallrun" not in _sections() and "dirs" not in _sections()
@@ -260,6 +261,7 @@ def _freeze_reached(tmp_path, monkeypatch, **build_args):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(package_app, "get_version", lambda: "3.0.0")
     monkeypatch.setattr(package_app, "_python_version", lambda: (3, 11, 2))
+    monkeypatch.setattr(package_app, "tsubasa_installed", package_app.tsubasa_pin)   # the pinned tsubasa (T1 B)
     reached = []
     monkeypatch.setattr(package_app.subprocess, "run",
                         lambda cmd, **k: reached.append(cmd) or subprocess.CompletedProcess(cmd, 1))

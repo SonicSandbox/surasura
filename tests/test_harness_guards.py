@@ -125,6 +125,208 @@ def test_helper_runs_second():
     pass
 
 
+GAP_PROBE = "SURASURA_HARNESS_GAP_PROBE"     # set only for the nested run below: its helpers run there alone
+GAP_SEEN = []
+GAP_STOP = threading.Event()
+
+
+def test_pytests_own_end_of_teardown_never_leaves_the_variable_unset(monkeypatch):
+    # pytest's last step of a teardown (`_update_current_test_var(item, None)`) popped PYTEST_CURRENT_TEST, and the
+    # wrapper above named the gap only after it: a worker reading a path in between met neither variable. Now that
+    # step writes BETWEEN_TESTS itself, in one assignment (Mado's Needs-you flake, 2026-10-21).
+    import _pytest.runner
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "x (teardown)")
+    _pytest.runner._update_current_test_var(None, None)
+    assert os.environ["PYTEST_CURRENT_TEST"] == harness_guards.BETWEEN_TESTS
+
+
+def test_a_worker_that_outlives_its_test_never_meets_a_moment_without_a_guard(tmp_path):
+    # A real pytest run: its first helper starts a worker that outlives it (as the Needs-you gather did) and watches,
+    # through 200 later tests' ends and starts, for a moment with neither the test root nor PYTEST_CURRENT_TEST set —
+    # where path_utils would hand out a per-user path. Thread switches every microsecond, so a gap is met if one is
+    # there (before the fix: thousands of moments in every run). The last helper fails the run if the worker saw one.
+    env = dict(os.environ, PYTHONPATH=PROJECT, PYTHONIOENCODING="utf-8")
+    env[GAP_PROBE] = "1"
+    env.pop("PYTEST_CURRENT_TEST", None)
+    env.pop("PYTEST_ADDOPTS", None)
+    env.pop("SURASURA_TEST_ROOT", None)
+    out = subprocess.run(
+        [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "-q", "tests/test_harness_guards.py",
+         "-k", "test_gap_helper"],
+        cwd=PROJECT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=300)
+    text = out.stdout.decode("utf-8", "replace")
+    assert out.returncode == 0 and "202 passed" in text, text
+
+
+def _watch_for_a_gap():
+    while not GAP_STOP.is_set():
+        if "PYTEST_CURRENT_TEST" not in os.environ and "SURASURA_TEST_ROOT" not in os.environ:
+            GAP_SEEN.append(os.environ.get("PYTEST_CURRENT_TEST"))
+
+
+@pytest.mark.skipif(not os.environ.get(GAP_PROBE), reason="a helper of the nested run above")
+def test_gap_helper_0_starts_a_worker_that_outlives_it():
+    sys.setswitchinterval(1e-6)
+    threading.Thread(target=_watch_for_a_gap, daemon=True, name="outlives its test").start()
+
+
+@pytest.mark.skipif(not os.environ.get(GAP_PROBE), reason="a helper of the nested run above")
+@pytest.mark.parametrize("n", range(200))
+def test_gap_helper_1_one_of_many(monkeypatch, n):
+    monkeypatch.setenv("SURASURA_TEST_ROOT", os.path.join(PROJECT, "never-made", str(n)))   # gone at its teardown
+
+
+@pytest.mark.skipif(not os.environ.get(GAP_PROBE), reason="a helper of the nested run above")
+def test_gap_helper_2_the_worker_met_no_gap():
+    GAP_STOP.set()
+    sys.setswitchinterval(0.005)
+    assert GAP_SEEN == [], f"{len(GAP_SEEN)} moments with neither PYTEST_CURRENT_TEST nor a test root"
+
+
+# --- no test opens a browser or a file viewer (2026-10-21) --------------------------------------------------------- #
+# Each target below opens nothing even unguarded (a BROWSER that does nothing, paths that don't exist, a browser that
+# isn't installed there), so the red run before the guard opened nothing on this desktop either.
+
+def _no_browser_at_all(monkeypatch):
+    import webbrowser
+    monkeypatch.setenv("BROWSER", f'"{sys.executable.replace(os.sep, "/")}" -c pass %s')
+    monkeypatch.setattr(webbrowser, "_tryorder", None, raising=False)       # read BROWSER again at the next open
+
+
+def _claimed(routes):
+    lines = harness_guards._claim_opens()
+    return [r for r in routes if not any(line.startswith(r) for line in lines)], lines
+
+
+def test_every_way_this_process_opens_a_page_or_a_folder_is_refused_and_named(monkeypatch, tmp_path):
+    import webbrowser
+    _no_browser_at_all(monkeypatch)
+    page = (tmp_path / "無い" / "reading_list_static.html").as_uri()
+    assert webbrowser.open(page) is True and webbrowser.open_new(page) is True and webbrowser.open_new_tab(page)
+    os.startfile(str(tmp_path / "無い"))                                         # Explorer at a folder, or a file
+    missing, lines = _claimed(["webbrowser.open ", "webbrowser.open_new ", "webbrowser.open_new_tab ",
+                               "os.startfile "])
+    assert missing == [], lines
+    assert all("test_every_way_this_process_opens" in line for line in lines), lines
+
+
+def test_qt_s_open_url_is_refused_and_named(tmp_path):
+    QtGui = pytest.importorskip("PyQt6.QtGui")
+    from PyQt6.QtCore import QUrl
+    assert QtGui.QDesktopServices.openUrl(QUrl.fromLocalFile(str(tmp_path / "無い.html"))) is True
+    missing, lines = _claimed(["QDesktopServices.openUrl "])
+    assert missing == [], lines
+
+
+@pytest.mark.parametrize("command", [
+    [r"C:\無い\Google\Chrome\Application\chrome.exe", "--app=file:///C:/無い/reading_list_static.html"],
+    r'"C:\無い\Microsoft\Edge\Application\msedge.exe" file:///C:/無い/x.html',
+    ["explorer", r"C:\無い"],
+    ["cmd", "/c", "exit", "0", "start"],
+])
+def test_a_browser_or_a_viewer_started_as_a_child_is_refused_and_named(command):
+    done = subprocess.run(command, capture_output=True)
+    assert done.returncode == 0, "started as a Python that does nothing in its place"
+    missing, lines = _claimed(["a browser or viewer started as a child "])
+    assert missing == [], lines
+
+
+def test_a_python_child_opening_a_page_its_way_is_refused_and_named_for_the_test_that_started_it(monkeypatch,
+                                                                                                tmp_path):
+    # The analyzer as a child opened the report through webbrowser, os.startfile or Chrome in app mode: out of any
+    # monkeypatch's reach. The child carries the guard (its PYTHONPATH), even with an environment of its own.
+    _no_browser_at_all(monkeypatch)
+    code = ("import app, os, subprocess, webbrowser; webbrowser.open('file:///C:/無い/x.html'); "
+            "os.startfile(r'C:\\無い\\x.html'); "
+            "subprocess.run([r'C:\\無い\\Google\\Chrome\\Application\\chrome.exe', '--app=file:///C:/無い/x.html'])")
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    env["PYTHONIOENCODING"] = "utf-8"
+    done = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, timeout=120, cwd=PROJECT)
+    assert done.returncode == 0, done.stderr.decode("utf-8", "replace")
+    missing, lines = _claimed(["webbrowser.open ", "os.startfile ", "a browser or viewer started as a child "])
+    assert missing == [], lines
+    assert all(f"pid {os.getpid()}" not in line and "test_a_python_child_opening" in line for line in lines), lines
+
+
+OPEN_PROBE = "SURASURA_HARNESS_OPEN_PROBE"     # set only for the nested run below: its helper runs there alone
+
+
+def test_a_test_that_opens_a_page_fails_naming_it(tmp_path):
+    # A real pytest run of the helper below: its open is refused, and the per-test guard fails it, naming the test.
+    env = dict(os.environ, PYTHONPATH=PROJECT, PYTHONIOENCODING="utf-8")
+    env[OPEN_PROBE] = "1"
+    env["BROWSER"] = f'"{sys.executable.replace(os.sep, "/")}" -c pass %s'      # nothing opens, guard or none
+    for name in ("PYTEST_CURRENT_TEST", "PYTEST_ADDOPTS", "SURASURA_TEST_ROOT"):
+        env.pop(name, None)
+    out = subprocess.run(
+        [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "-q",
+         "tests/test_harness_guards.py::test_open_helper_opens_the_report"],
+        cwd=PROJECT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=300)
+    text = out.stdout.decode("utf-8", "replace")
+    assert out.returncode == 1 and "a browser or a file viewer was opened" in text, text
+    assert "webbrowser.open " in text and "test_open_helper_opens_the_report" in text, text
+
+
+@pytest.mark.skipif(not os.environ.get(OPEN_PROBE), reason="a helper of the nested run above")
+def test_open_helper_opens_the_report(tmp_path):
+    import webbrowser
+    webbrowser.open((tmp_path / "reading_list_static.html").as_uri())
+
+
+# --- a test's own monkeypatch.undo() keeps the test root (2026-10-21) ---------------------------------------------- #
+# `monkeypatch.undo()` in a test undid the conftest's SURASURA_TEST_ROOT too: the rest of the test resolved its paths
+# with no root (the project's own data folder; a per-user one by a route past path_utils' refusal) — the likely maker,
+# with the teardown gap, of the empty real %APPDATA%\Houseki\Surasura in Kura's runs.
+
+def test_an_undo_in_the_test_keeps_its_test_root_and_names_the_test(monkeypatch):
+    from app import path_utils
+    root = os.environ["SURASURA_TEST_ROOT"]
+    monkeypatch.setenv("SURASURA_HARNESS_UNDO_PROBE", "patched")
+    monkeypatch.undo()
+    assert "SURASURA_HARNESS_UNDO_PROBE" not in os.environ          # the test's own patch is undone, as it asked
+    assert os.environ.get("SURASURA_TEST_ROOT") == root             # the sandbox's root is not
+    assert path_utils.get_user_data_path() == root
+    assert path_utils.get_persistent_user_data_path().startswith(root)
+    undone = harness_guards._claim_undone()                        # claimed here, so this test itself passes
+    assert len(undone) == 1 and "test_an_undo_in_the_test_keeps_its_test_root_and_names_the_test" in undone[0]
+
+
+def test_a_scoped_patch_and_a_monkeypatch_of_its_own_are_never_flagged(monkeypatch):
+    root = os.environ["SURASURA_TEST_ROOT"]
+    with monkeypatch.context() as patched:
+        patched.setenv("SURASURA_HARNESS_UNDO_PROBE", "patched")
+    own = pytest.MonkeyPatch()
+    own.setenv("SURASURA_HARNESS_UNDO_PROBE", "patched")
+    own.undo()
+    assert os.environ.get("SURASURA_TEST_ROOT") == root and harness_guards._claim_undone() == []
+
+
+UNDO_PROBE = "SURASURA_HARNESS_UNDO_RUN"       # set only for the nested run below: its helper runs there alone
+
+
+def test_a_test_that_undoes_its_monkeypatch_fails_naming_it():
+    # A real pytest run of the helper below: its paths stay under its root, and the per-test guard fails it by name.
+    env = dict(os.environ, PYTHONPATH=PROJECT, PYTHONIOENCODING="utf-8")
+    env[UNDO_PROBE] = "1"
+    for name in ("PYTEST_CURRENT_TEST", "PYTEST_ADDOPTS", "SURASURA_TEST_ROOT"):
+        env.pop(name, None)
+    out = subprocess.run(
+        [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "-q",
+         "tests/test_harness_guards.py::test_undo_helper_undoes_and_reads_a_path"],
+        cwd=PROJECT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=300)
+    text = out.stdout.decode("utf-8", "replace")
+    assert out.returncode == 1 and "1 passed, 1 error" in text, text           # the call passed; the guard failed it
+    assert "monkeypatch.undo()" in text and "test_undo_helper_undoes_and_reads_a_path" in text, text
+
+
+@pytest.mark.skipif(not os.environ.get(UNDO_PROBE), reason="a helper of the nested run above")
+def test_undo_helper_undoes_and_reads_a_path(monkeypatch):
+    from app import path_utils
+    root = os.environ["SURASURA_TEST_ROOT"]
+    monkeypatch.undo()
+    assert path_utils.get_persistent_user_data_path().startswith(root)
+
+
 # --- no pytest run reaches the real Houseki roots ------------------------------------------------------------------ #
 
 def test_a_plain_run_never_reaches_the_real_houseki_roots_even_outside_its_tests(tmp_path):

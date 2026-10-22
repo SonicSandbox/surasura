@@ -27,6 +27,17 @@ from tests import services_helpers as h
 from tests.cli_helpers import same_token_store_as_the_children  # noqa: F401  (autouse: the child's store, in-process)
 
 
+@pytest.fixture(autouse=True)
+def _real_runs_write_the_journey_but_never_open_it(monkeypatch):
+    """A user's Generate opens the Journey in the browser when it ends (the app's, by design); these tests ask for that
+    run and only read its state and files, so its child gets --no-open (run_args' headless argv): no page opens on
+    this desktop (tests/harness_guards.py fails a test that opens one)."""
+    from app import run_args
+    real = run_args.analyzer_args
+    monkeypatch.setattr(run_args, "analyzer_args", lambda settings, language=None, headless=False:
+                        real(settings, language, headless=True))
+
+
 def _settings(lang="ja"):
     return {"target_language": lang, "anki_connect_url": "http://127.0.0.1:9"}
 

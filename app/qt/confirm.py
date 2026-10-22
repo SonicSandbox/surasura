@@ -7,14 +7,16 @@ outside the card are always No** — Esc and Back through the shell's `EscapeRou
 overlay of its window); Enter presses the focused button, the default one at first: **Cancel when `default_no`** —
 anything that removes, replaces or restores — else the primary (a write the preview already showed). It is never modal
 (`exec` is never called): the answer comes back as `on_answer(yes)`, once, on the GUI thread — and never after its
-window closed or was hidden (a window closing with a question open answers nothing: nothing happens).
+window closed or was hidden (a window closing with a question open answers nothing: nothing happens). An optional
+`check` (K7's *Also forget my known words*) sits under the words, off; its state is the card's `checked` when the
+answer comes (No leaves it False).
 
 The looks are the stylesheet's (`QLabel#confirmtitle` / `#confirmline`, `kind="primary"` / `kind="danger"`) and the
 theme's tokens (the `scrim` colour, the `dialog` radius and shadow): re-skinned with W3.3's surfaces.
 """
 from PyQt6.QtCore import QEvent, QRectF, Qt
 from PyQt6.QtGui import QPainter
-from PyQt6.QtWidgets import QApplication, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QApplication, QCheckBox, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from app import theme
 from app.qt import motion, shadow, strings, style
@@ -65,7 +67,7 @@ class Confirm(motion.Overlay):
     focus = True
 
     def __init__(self, window, title, body, yes, yes_tip, no=None, no_tip=None, default_no=False, danger=False,
-                 on_answer=None):
+                 on_answer=None, check=None, check_tip=None):
         super().__init__(window)
         self.setObjectName("confirm")
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
@@ -74,6 +76,7 @@ class Confirm(motion.Overlay):
         self._window = window
         self._on_answer = on_answer
         self.answer = None
+        self.checked = False
         self._before = QApplication.focusWidget()
         f = theme.text_factor(style.current()[1])
         box = QVBoxLayout(self)
@@ -91,6 +94,13 @@ class Confirm(motion.Overlay):
         self.body.setWordWrap(True)
         self.body.setVisible(bool(body))
         box.addWidget(self.body)
+        self.check = None
+        if check:
+            self.check = QCheckBox(check, self)
+            self.check.setToolTip(check_tip or "")
+            self.check.setAccessibleName(check)
+            self.check.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            box.addWidget(self.check)
         row = QHBoxLayout()
         row.setSpacing(round(10 * f))
         row.addStretch(1)
@@ -142,9 +152,13 @@ class Confirm(motion.Overlay):
             self._focus_default()
 
     def focusNextPrevChild(self, next_):
-        """Tab and Shift+Tab go round the two buttons, never out to the window behind the scrim."""
+        """Tab and Shift+Tab go round the two buttons (and the check), never out to the window behind the scrim."""
         now = QApplication.focusWidget()
-        target = {self.no: self.yes, self.yes: self.no}.get(now, self.default)
+        ring = [w for w in (self.check, self.no, self.yes) if w is not None]
+        if now in ring:
+            target = ring[(ring.index(now) + (1 if next_ else -1)) % len(ring)]
+        else:
+            target = self.default
         target.setFocus(Qt.FocusReason.TabFocusReason)
         return True
 
@@ -162,6 +176,7 @@ class Confirm(motion.Overlay):
         if self.answer is not None:
             return
         self.answer = bool(yes)
+        self.checked = bool(yes) and self.check is not None and self.check.isChecked()
         callback, self._on_answer = self._on_answer, None
         try:
             QApplication.instance().focusChanged.disconnect(self._focus_moved)
@@ -220,13 +235,15 @@ def _register(window, overlay):
     return False
 
 
-def ask(window, title, body, yes, yes_tip, *, no=None, no_tip=None, default_no=False, danger=False, on_answer=None):
+def ask(window, title, body, yes, yes_tip, *, no=None, no_tip=None, default_no=False, danger=False, on_answer=None,
+        check=None, check_tip=None):
     """Ask in `window` (a top-level: the main window or a secondary one). `yes` names the action ("Remove 2 lists");
-    `default_no` for anything that removes, replaces or restores; `danger` paints the action as one. -> the card
-    (answered later through `on_answer(yes)`)."""
+    `default_no` for anything that removes, replaces or restores; `danger` paints the action as one; `check` a box
+    under the words (off; read as `card.checked` in `on_answer`). -> the card (answered later through
+    `on_answer(yes)`)."""
     window = window.window()
     card = Confirm(window, title, body, yes, yes_tip, no=no, no_tip=no_tip, default_no=default_no, danger=danger,
-                   on_answer=on_answer)
+                   on_answer=on_answer, check=check, check_tip=check_tip)
     _register(window, card)
     card.open()
     return card

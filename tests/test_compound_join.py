@@ -261,9 +261,9 @@ def test_a_stem_run_keeps_the_guards_of_any_compound(tokenizer, monkeypatch):
     # The phrases-and-titles switch: a marked phrase (flags 1 | 8) stays apart with the switch off, whichever path.
     table = {"待ち時間": _entry("待ち時間", "マチジカン", flags=9)}
     assert _surfaces(tokenizer, "駅での待ち時間はいつも長い。", table)[3] == "待ち時間"
-    monkeypatch.setitem(analyzer.LOGIC, "phrases_and_titles", False)
-    assert _surfaces(tokenizer, "駅での待ち時間はいつも長い。", table)[3:5] == ["待ち", "時間"]
-    monkeypatch.undo()
+    with monkeypatch.context() as patched:      # scoped: an undo() would also undo the harness's test root
+        patched.setitem(analyzer.LOGIC, "phrases_and_titles", False)
+        assert _surfaces(tokenizer, "駅での待ち時間はいつも長い。", table)[3:5] == ["待ち", "時間"]
     # Right after a number that counts its first part, never (10 + 円玉); a plural, never. The run below is 時間 + a
     # verb's stem, so only the stem path could join it.
     three, hours = tokenizer.tagger("三時間")
@@ -475,24 +475,24 @@ def test_the_dictionaries_marks_and_polite_words_are_merged_in(monkeypatch):
     # app/dictionary_data.py (the dictionaries' own part, CC BY-SA) adds flags to the compound table and お/ご words
     # to the affix table; without it both tables are reference_data's as they are. The real module is set aside
     # first — it lists お守り itself — so the base tables are reference_data's alone.
-    monkeypatch.setattr(analyzer, "_DICTIONARY", [None])
-    base = analyzer.compound_joins()
-    assert base and "お守り" not in analyzer.affix_joins()
-    entry = base["上層部"]
-    flags, polite = {"上層部": 1}, {"お守り": ["お守り", "オマモリ"]}
+    with monkeypatch.context() as patched:      # scoped: an undo() would also undo the harness's test root
+        patched.setattr(analyzer, "_DICTIONARY", [None])
+        base = analyzer.compound_joins()
+        assert base and "お守り" not in analyzer.affix_joins()
+        entry = base["上層部"]
+        flags, polite = {"上層部": 1}, {"お守り": ["お守り", "オマモリ"]}
 
-    class Dictionaries:             # its accessors decode once and hand out the same table, as reference_data's do
-        compound_flags = staticmethod(lambda: flags)
-        ogo_joins = staticmethod(lambda: polite)
-    monkeypatch.setattr(analyzer, "_DICTIONARY", [Dictionaries])
-    # The marks go into the one table, in place (no copy of it): a marked word gets a new entry.
-    assert analyzer.compound_joins() is base and base["上層部"][3] & 1 and entry[3] == 0
-    assert analyzer.affix_joins()["お守り"] == ["お守り", "オマモリ"]
-    assert analyzer.compound_joins() is analyzer.compound_joins()        # merged once
-    # Without the marks again, the table is as reference_data decoded it; with the real module, its marks.
-    monkeypatch.setattr(analyzer, "_DICTIONARY", [None])
-    assert analyzer.compound_joins()["上層部"] is entry
-    monkeypatch.undo()
+        class Dictionaries:         # its accessors decode once and hand out the same table, as reference_data's do
+            compound_flags = staticmethod(lambda: flags)
+            ogo_joins = staticmethod(lambda: polite)
+        patched.setattr(analyzer, "_DICTIONARY", [Dictionaries])
+        # The marks go into the one table, in place (no copy of it): a marked word gets a new entry.
+        assert analyzer.compound_joins() is base and base["上層部"][3] & 1 and entry[3] == 0
+        assert analyzer.affix_joins()["お守り"] == ["お守り", "オマモリ"]
+        assert analyzer.compound_joins() is analyzer.compound_joins()    # merged once
+        # Without the marks again, the table is as reference_data decoded it; with the real module, its marks.
+        patched.setattr(analyzer, "_DICTIONARY", [None])
+        assert analyzer.compound_joins()["上層部"] is entry
     assert analyzer.compound_joins()["上層部"] is entry and analyzer.compound_joins()["もののけ姫"][3] == 3
 
 

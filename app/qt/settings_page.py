@@ -989,6 +989,7 @@ class SettingsPage(QWidget):
             self.store.set(changes)
             from app.qt import settings_store
             settings_store.resume_connect(settings, changes)             # the automation row on: Connect's marks
+            settings_store.kick_on_trust(settings, changes, self.store)  # trust turned on: the waiting ones mine
         else:
             return
         self._refresh_visibility(anchor=control)

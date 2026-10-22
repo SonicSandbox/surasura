@@ -2429,6 +2429,9 @@ class ShellWindow(QMainWindow):
             return                                        # B2: a language left never paints over the one open
         self.sources = tuple(summary.get("sources") or ())
         self._show_offline()
+        if summary.get("unfinished_reset"):              # LF-11: a fresh library a kill stopped, once a run
+            from app.qt import settings_strings, windows
+            windows.say_in_bar(self, settings_strings.FRESH_UNFINISHED.format(folder=summary["unfinished_reset"]))
         self.sources_seen.emit(summary)
 
     def offline_text(self):

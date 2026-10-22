@@ -65,8 +65,9 @@ MODE_RECHECK_S = 2.0            # idle, the thread asks the store's mode this of
 JOURNAL_VERSION = 1
 JOURNAL_TRIES = 10              # a journal write Windows refuses (the file held a moment) is tried this many times
 JOURNALLED = ("move", "nudge", "set_tier", "finish", "set_watched",
-              "place", "put_back", "import_finished", "relink", "its_new", "link_video", "remove", "restore", "pin",
-              "keep_cards", "ask_mining", "split", "join", "set_media_type", "set_cover", "set_options")
+              "place", "put_back", "import_finished", "relink", "its_new", "link_video", "remove", "skip_folder",
+              "restore", "pin", "keep_cards", "ask_mining", "split", "join", "set_media_type", "set_cover",
+              "set_options")
 #   an undo needs its Change: never journalled; nor an Explorer drop (`insert_at`: no ids yet). Its files are copied into
 #   the content folder at once, on the copier's thread — a busy store or a drag never holds the copy back, and the copy
 #   never holds a move back (G1) — so a quit or a crash before it lands leaves them whole in the folder (AD-2; since SRC
@@ -93,6 +94,13 @@ KEPT = ("tier", "before_id", "after_id", "near", "direction", "on", "keep_cards"
 JOURNALLED += ("register",)
 KEPT += ("records", "rules")
 KEPT += ("soon_line", "mine_line")              # W3.3 P6: `set_options`'s values
+KEPT += ("titles",)                             # P-LF-4: a join of two titles (a replay merges them too)
+# --- LM11: user-made groups (Sonic's G1–G4) — the one piece rule's commands; a join's `how` ("titles": P-LF-4's
+# `titles`, which a journal the window's first build wrote still replays as)
+JOURNALLED += ("group", "add_to_group", "ungroup", "rename_piece")
+GUARDED += ("group", "add_to_group", "ungroup", "rename_piece")
+KEPT += ("how", "item_ids", "title")
+# --- end LM11
 # --- end W3.2 B
 PART = ".part"                  # a dropped file is copied under its name + this (no content name: no sync takes it up),
 #                                 then renamed whole
@@ -260,7 +268,7 @@ class Writer:
         return self._put({"op": "finish", "ids": list(ids), "keep_cards": bool(keep_cards), "label": label,
                           "follows": follows})
 
-    def insert_at(self, paths, tier, before_id=None, after_id=None, near=(), label=None, into=None):
+    def insert_at(self, paths, tier, before_id=None, after_id=None, near=(), label=None, into=None, origin=True):
         """An Explorer drop: `paths` (files from anywhere) copied at once, on the copier's own thread, into the data
         folder's `Library/<name>/` (SRC K3; never over a file: an identical one is already there, another comes in
         under a new name; a file already in a tier's folder or `Library` stays where it is; one whose bytes are an
@@ -274,11 +282,15 @@ class Writer:
         out; a drop that copied nothing (its files were in the tiers' folders already) isn't put on the Undo stack.
         # --- W3.2 Q3: `into` (+ Add): the folder each file is copied into instead of the tier's own, relative to the
         # data folder and inside one of the folders the disk sync walks — one for every file, or a list beside `paths`
-        # (a show's folder, so the file joins its show; a folder added, its own folders kept)."""
+        # (a show's folder, so the file joins its show; a folder added, its own folders kept).
+        # --- K21 (laptop fixes): each file copied in from outside the data folder gets an origin record on its new item,
+        # in the same command (`Store._add_origins`: where it came from, the video beside it); `origin=False` (a pasted
+        # text: its temporary file is removed once it lands) records none."""
         if not self._writable():
             return None                             # E4
         cmd = {"op": "insert_at", "ids": [], "files": [os.fspath(p) for p in paths], "tier": tier,
-               "before_id": before_id, "after_id": after_id, "near": [list(n) for n in near or ()], "label": label}
+               "before_id": before_id, "after_id": after_id, "near": [list(n) for n in near or ()], "label": label,
+               "origin": bool(origin)}
         if into is not None:                        # --- W3.2 Q3
             cmd["into"] = [into] * len(cmd["files"]) if isinstance(into, str) else list(into)
             if len(cmd["into"]) != len(cmd["files"]):
@@ -365,6 +377,15 @@ class Writer:
         file: a taken name comes back as `name_1.ext`, named in a note) and the rows where they stood."""
         return self._put({"op": "remove", "ids": list(ids), "label": label})
 
+    def skip_folder(self, path, label=None):
+        """*Never read this folder* (K6): `Store.skip_folder` — the folder's row, and the items whose every origin lies
+        under it removed as *Remove…* removes them (their copies to the data folder's trash, under the store's write
+        lock; nothing in the learner's own folders is touched), one change: Undo puts them back and reads the folder
+        again. Refused (`NotASource`: outside every source, a source itself) → `failed`'s note, nothing written.
+        Journalled as Remove is (its copies' trash moves): a crash before it lands replays it at the next start, one
+        that landed before the crash is let go quietly (`_changed_since`)."""
+        return self._put({"op": "skip_folder", "ids": [], "path": os.fspath(path), "label": label})
+
     def restore(self, trash_ids, label=None):
         """Put back from the trash (`Store.restore` by trash ids, the files first, as Undo of a remove does). Undo sends
         them back to the trash."""
@@ -387,13 +408,41 @@ class Writer:
         """`Store.split`: a new piece from `at_item_id` to the piece's end (*Split here*)."""
         return self._put({"op": "split", "ids": [at_item_id], "piece_id": piece_id, "label": label})
 
-    def join(self, piece_ids, label=None, ahead=False):
-        """`Store.join`: one piece of several of one title (a drop on a seam); two titles' pieces → `failed`'s note.
-        `ahead`: the others go just before the first piece (W3.2: the earlier episodes coming in, one command)."""
+    def join(self, piece_ids, label=None, ahead=False, how="parts", titles=False):
+        """`Store.join`, the one piece rule (LM11): `how` "parts" — one piece of several of one title (a drop on a seam;
+        two titles' pieces → `failed`'s note); "titles" — *Same show as…* (P-LF-4: the others' titles become the first
+        piece's in the same command; refused with the store's reason when the ids say two shows); "group" — a drop on
+        another show (G1). `titles=True` is `how="titles"` (the window's first build). `ahead`: the others go just
+        before the first piece (W3.2: the earlier episodes coming in, one command). Journalled and replayed as any
+        join: its pieces checked as queued."""
+        if how not in _ls().JOIN_HOW:
+            raise ValueError(f"unknown join {how!r}")
         cmd = {"op": "join", "ids": [], "piece_ids": list(piece_ids), "label": label}
         if ahead:
             cmd["ahead"] = True
+        if titles or how != "parts":
+            cmd["how"] = "titles" if titles else how
         return self._put(cmd)
+
+    # --- LM11: user-made groups (G1–G4) ---------------------------------------------------------------------- #
+    def group(self, piece_ids=(), item_ids=(), label=None):
+        """`Store.group`: *Group…* on selected episodes (`item_ids`, each taken out of its piece) and / or pieces, one
+        group at the first one's place; the change's `piece_id` is the group."""
+        return self._put({"op": "group", "ids": [], "piece_ids": list(piece_ids), "item_ids": list(item_ids),
+                          "label": label})
+
+    def add_to_group(self, piece_id, piece_ids=(), item_ids=(), label=None):
+        """A drop onto a group (`piece_id`): the dropped pieces and episodes join it after its last row."""
+        return self._put({"op": "add_to_group", "ids": [], "piece_ids": [piece_id] + list(piece_ids),
+                          "item_ids": list(item_ids), "label": label})
+
+    def ungroup(self, piece_id, label=None):
+        """`Store.ungroup`: each title's runs back as pieces of their own, in place."""
+        return self._put({"op": "ungroup", "ids": [], "piece_id": piece_id, "label": label})
+
+    def rename_piece(self, piece_id, title, label=None):
+        """`Store.rename_piece`: a group's own name; None or blank — back to "<first show> + N more"."""
+        return self._put({"op": "rename_piece", "ids": [], "piece_id": piece_id, "title": title, "label": label})
 
     def set_media_type(self, work_ids, media_type, label=None):
         """`Store.set_media_type`: *What is it?* for the titles (None: back to the guess)."""
@@ -794,6 +843,8 @@ class Writer:
                 change, note = self._insert(store, cmd)
             elif op in ("remove", "restore"):
                 change = self._remove(store, cmd) if op == "remove" else self._restore(store, cmd)
+            elif op == "skip_folder":
+                change = self._skip_folder(store, cmd)
             elif op == "register":                  # --- W3.2 B
                 change = self._register(store, cmd)
             else:
@@ -819,7 +870,7 @@ class Writer:
         elif op == "restore" and change is not None:           # ... and a Put back's: every file it brought back
             change.copied = [r["rel_path"] for r in map(store.item, change.added) if r is not None]
         self._refresh_seen(store, cmd["ids"])
-        self._refresh_before(store, cmd)
+        self._refresh_before(store, cmd, change)
         self._landed(cmd)
         if cmd.get("replay"):
             if change is not None:
@@ -878,7 +929,14 @@ class Writer:
         if op == "split":
             return store.split(cmd["piece_id"], ids[0])
         if op == "join":
-            return store.join(cmd["piece_ids"], ahead=bool(cmd.get("ahead")))
+            how = cmd.get("how") or ("titles" if cmd.get("titles") else "parts")     # LM11 (a P-LF-4 entry too)
+            return store.join(cmd["piece_ids"], ahead=bool(cmd.get("ahead")), how=how)
+        if op in ("group", "add_to_group"):                 # --- LM11
+            return store.group(cmd["piece_ids"], cmd.get("item_ids") or ())
+        if op == "ungroup":
+            return store.ungroup(cmd["piece_id"])
+        if op == "rename_piece":
+            return store.rename_piece(cmd["piece_id"], cmd["title"])  # --- end LM11
         if op == "set_media_type":
             return store.set_media_type(cmd["work_ids"], cmd["media_type"])
         if op == "set_cover":
@@ -913,6 +971,29 @@ class Writer:
                         trashed[item_id] = to
                         moved.append((_full(store, to), _full(store, row["rel_path"])))
                 return store.remove(cmd["ids"], trashed)
+        except BaseException:
+            _move_back(moved)
+            raise
+
+    def _skip_folder(self, store, cmd):
+        """K6: under the store's write lock, the refusal asked first (no file moves for a refused folder), then each
+        item's copy under the folder to the trash, as `_remove` does, then `Store.skip_folder` in the same transaction;
+        the files back where they were if anything fails."""
+        lib = _ls()
+        moved = []
+        try:
+            with store._writing():
+                reason = store.skip_refused(cmd["path"])
+                if reason:
+                    raise lib.NotASource(reason)
+                trashed = {}
+                for item_id in store.items_under(cmd["path"]):
+                    row = store.item(item_id)
+                    to = _trash(lib, store, row["rel_path"]) if row is not None else None
+                    if to:
+                        trashed[item_id] = to
+                        moved.append((_full(store, to), _full(store, row["rel_path"])))
+                return store.skip_folder(cmd["path"], trashed)
         except BaseException:
             _move_back(moved)
             raise
@@ -1053,7 +1134,9 @@ class Writer:
         (an identical one is the file already there; another comes in as `name (2).ext`); one already in a
         tier's folder or the content folder left where it is (one elsewhere in the data folder — its trash — is copied
         in); one whose bytes are a live item's file's (size first, then sha256) not added, its title in `already` (K3,
-        SRC-7: never a duplicate). `copied`: the files made here (the trash's, if the command is let go)."""
+        SRC-7: never a duplicate). `copied`: the files made here (the trash's, if the command is let go). `origins`
+        (K21): {copy: where it came from} for each file from outside the data folder (`_origin_of`), unless the
+        command's `origin` is off (a pasted text)."""
         import filecmp
         lib = _ls()
         folder = lib.FOLDER_OF_TIER.get(cmd["tier"])
@@ -1062,7 +1145,7 @@ class Writer:
         cmd["data_dir"] = data_dir
         cmd["started_at"] = lib._now()              # a sync that meets a copy made: the command takes the row over
         walked = {lib.path_key(f) for f in lib.WALK_FOLDERS}               # the folders the disk sync walks
-        out, made, left, already = [], [], [], []
+        out, made, left, already, origins, listings = [], [], [], [], {}, {}
         into = cmd.get("into") or [None] * len(cmd["files"])          # --- W3.2 Q3: + Add's folders
         rels = {p: lib.library_rel(data_dir, p) for p in cmd["files"]}
         inside = {p: r for p, r in rels.items() if r is not None and lib.path_key(r.split("/", 1)[0]) in walked}
@@ -1094,16 +1177,26 @@ class Writer:
                         continue
                 parts = _in_library(_into(sub, folder, walked, lib), path, lib)
                 dest = os.path.join(data_dir, *parts, os.path.basename(path))
+                try:                                # K21: before it is read
+                    st = os.stat(path) if rel is None and cmd.get("origin", True) else None
+                except OSError:                     # H16: no origin, the file still added
+                    st = None
                 if os.path.exists(dest) and filecmp.cmp(path, dest, shallow=False):
                     out.append(dest)
-                    continue
-                os.makedirs(os.path.dirname(dest), exist_ok=True)
-                dest = _copy_whole(path, dest)
-                made.append(dest)
-                out.append(dest)
+                else:
+                    os.makedirs(os.path.dirname(dest), exist_ok=True)
+                    dest = _copy_whole(path, dest)
+                    made.append(dest)
+                    out.append(dest)
+                if st is not None:
+                    try:
+                        origins[dest] = _origin_of(path, st, dest, parts, lib, listings)
+                    except OSError as e:            # H16: recording where it came from never stops the add
+                        print(f"+ Add: where {os.path.basename(path)} came from isn't kept ({e!r})")
         finally:
             cmd["copied"] = made
         cmd["files"] = out
+        cmd["origins"] = origins
         cmd["left_out"] = left
         cmd["already"] = already
 
@@ -1122,10 +1215,11 @@ class Writer:
                 if item is None or item["tier"] != cmd["tier"]:
                     continue
                 try:
-                    return store.insert_at(cmd["files"], a, before=before, started_at=cmd["started_at"]), note
+                    return store.insert_at(cmd["files"], a, before=before, started_at=cmd["started_at"],
+                                           origins=cmd.get("origins")), note
                 except lib.StoreConflict:           # gone between the look and the write
                     continue
-        change = store.insert(cmd["files"], cmd["tier"], "top", started_at=cmd["started_at"])
+        change = store.insert(cmd["files"], cmd["tier"], "top", started_at=cmd["started_at"], origins=cmd.get("origins"))
         return change, None if anchor is None else "top"
 
     def _trash_copies(self, cmd, unlisted=False):
@@ -1395,11 +1489,13 @@ class Writer:
         for cmd in later:
             cmd["seen"] = [[i, now.get(i) if i in ids else v] for i, v in cmd["seen"]]
 
-    def _refresh_before(self, store, cmd):
+    def _refresh_before(self, store, cmd, change=None):
         """A command landed: the GUARDED commands queued behind it that touch its items, titles or pieces take what it
         left as their *as queued* (the user's own two clicks are never a change "meanwhile"); one the journal holds is
-        written again."""
-        keys = _keys(cmd)
+        written again. LM11 G6: the pieces its rows left and entered (`change.repieced`, the settling step's) are what
+        it touched too — a move out of a group, then Rename group / Ungroup / a drop onto it, replay as his."""
+        keys = _keys(cmd) | {("p", p) for _i, old, new in getattr(change, "repieced", None) or ()
+                             for p in (old, new) if p is not None}
         with self._cond:
             later = [c for c in itertools.islice(self._pending, 1, None) if "before" in c and keys & _keys(c)]
         if not later:
@@ -1429,6 +1525,8 @@ class Writer:
                 return True
         if cmd["op"] == "remove" and _removed(store, cmd["ids"]):
             return "done"                           # W3.2 H (C3): its rows in the trash already, as it leaves them
+        if cmd["op"] == "skip_folder" and store.skip_refused(cmd["path"]) == _ls().SKIP_ALREADY:
+            return "done"                           # K6: the folder (or one holding it) skipped already, as it leaves
         seen = cmd.get("seen")
         if seen is not None:
             now = store.check([i for i, _v in seen]).items      # `changed_in` is never NULL: None is gone
@@ -1464,7 +1562,7 @@ class Writer:
 
 
 UNORDERED = ("set_watched", "pin", "keep_cards", "ask_mining", "set_cover", "set_media_type", "split",
-             "forget_covers")
+             "forget_covers", "ungroup", "rename_piece")
 #   commands that never change the order: the numbers aren't asked again after them
 
 
@@ -1476,14 +1574,16 @@ def _refused(change, out):
         return True
     if change.kind in ("finish", "put_back_finished") or (change.kind == "set_tier" and change.status):
         return not out.items and _skips(out) - len(change.items) >= len(change.status)
-    if change.kind == "remove":
-        return not out.restored                     # every row put back meanwhile
+    if change.kind == "remove":                     # every row put back meanwhile (a skip's folder row: read again)
+        return not out.restored and not getattr(out, "folder_dropped", False)
     if change.kind == "restore":
         return not out.trash_ids                    # every row it put back changed since
     if change.kind == "import_finished":
         return _skips(out) >= len(change.items) + len(change.added)
-    if change.kind in ("split", "join"):
+    if change.kind in ("split", "join", "ungroup"):
         return _skips(out) >= len(change.pieces["items"])
+    if change.kind == "rename_piece":               # LM11: renamed again since
+        return _skips(out) > 0
     if change.kind in ("relink", "register"):       # one item each: its undo skipped it (`link_video`'s is a register)
         return _skips(out) > 0
     return bool(change.status and not out.status)
@@ -1506,7 +1606,7 @@ def _journals(cmd):
 
 def _keys(cmd):
     """What a command touches, for `_refresh_before`: its items, titles and pieces."""
-    out = {("i", i) for i in cmd.get("ids") or ()}
+    out = {("i", i) for i in list(cmd.get("ids") or ()) + list(cmd.get("item_ids") or ())}
     out |= {("w", w) for w in cmd.get("work_ids") or ()} | {("p", p) for p in cmd.get("piece_ids") or ()}
     if cmd.get("work_id") is not None:
         out.add(("w", cmd["work_id"]))
@@ -1538,9 +1638,18 @@ def _as_queued(store, cmd):
                 row = store._work_row(w)
                 out.append([w] + ([row["feed_in"]] + [row[c] for c in cols] if row is not None else [None]))
             return out
-        if op == "join":
-            return [[p, [i for (i,) in store.conn.execute("SELECT id FROM items WHERE piece_id = ? ORDER BY id",
-                                                           (p,))]] for p in cmd["piece_ids"]]
+        if op in ("join", "group", "add_to_group"):
+            out = [[p, [i for (i,) in store.conn.execute("SELECT id FROM items WHERE piece_id = ? ORDER BY id",
+                                                          (p,))]] for p in cmd["piece_ids"]]
+            for i in cmd.get("item_ids") or ():             # LM11: each episode's piece
+                row = store.item(i)
+                out.append([i, row["piece_id"] if row is not None else None])
+            return out
+        if op in ("ungroup", "rename_piece"):              # LM11: the piece's kind, name and rows
+            row = store.conn.execute("SELECT kind, title FROM pieces WHERE id = ?", (cmd["piece_id"],)).fetchone()
+            return [cmd["piece_id"], list(row) if row else None,
+                    [i for (i,) in store.conn.execute("SELECT id FROM items WHERE piece_id = ? ORDER BY id",
+                                                      (cmd["piece_id"],))]]
         held = store.check(paths=cmd["paths"]).keys                 # import_finished
         out = []
         for key in sorted(held):
@@ -1580,6 +1689,24 @@ def _done(store, cmd):
             others = cmd["piece_ids"][1:]
             return bool(others) and not any(store.conn.execute("SELECT 1 FROM items WHERE piece_id = ? LIMIT 1",
                                                                (p,)).fetchone() for p in others)
+        if op in ("group", "add_to_group"):                # LM11: everything it names in one piece, as it asks (G7):
+            parts = [e[1] for e in cmd["before"] if isinstance(e[1], list)]     # side by side, part after part
+            part = {i: n for n, ids in enumerate(parts) for i in ids}
+            part.update((i, len(parts)) for i in cmd.get("item_ids") or () if i not in part)
+            rows = [store.item(i) for i in part]
+            if not rows or any(r is None for r in rows) or len({r["piece_id"] for r in rows}) != 1:
+                return False
+            order = [part.get(i) for (i,) in store.conn.execute("SELECT id FROM items WHERE piece_id = ? "
+                                                                "ORDER BY tier, ord, id", (rows[0]["piece_id"],))]
+            named = [n for n in order if n is not None]
+            first = next(k for k, n in enumerate(order) if n is not None)
+            return order[first:first + len(named)] == named and named == sorted(named)
+        if op == "ungroup":
+            return not store.conn.execute("SELECT 1 FROM pieces WHERE id = ? AND kind = 'group'",
+                                          (cmd["piece_id"],)).fetchone()
+        if op == "rename_piece":
+            row = store.conn.execute("SELECT title FROM pieces WHERE id = ?", (cmd["piece_id"],)).fetchone()
+            return row is not None and row[0] == ((cmd["title"] or "").strip() or None)
         held = store.check(paths=cmd["paths"]).keys                 # import_finished: every file in Finished
         rows = [store.item(i) if i is not None else None for i in held.values()]
         return all(r is not None and r["tier"] == "graduated" for r in rows)
@@ -1705,6 +1832,21 @@ def _into(sub, folder, walked, lib):
             lib.path_key("/".join(parts) + "/").startswith(lib.path_key(lib.HATO_FOLDER + "/")):
         raise ValueError(f"files can't be copied into {sub!r}")
     return parts
+
+
+def _origin_of(path, st, copy, parts, lib, listings=None):
+    """(K21) Where a file + Add or a drop copied in came from, for its origin record (`Store._add_origins`): the
+    original's absolute path, its size and time (`st`, taken before it was read), the sha256 of the bytes copied (the
+    copy's), the show its `Library` folder names, and the video beside the original with its name, found as Connect's
+    `runner.beside` finds it (a listing and a stat: the video is never opened; `listings`: the add's own, so each
+    folder is listed once per add, H6). An OSError is the caller's: no origin, the add goes on (H16)."""
+    from app.connect import runner
+    f = {"origin": os.path.abspath(path), "size": st.st_size, "mtime_ns": st.st_mtime_ns,
+         "sha256": lib.sha256_of(copy), "show": "/".join(parts[1:])}
+    video = runner.beside(path, listings)
+    if video:
+        f.update(video_path=os.path.abspath(video), video_size=os.path.getsize(video))
+    return f
 
 
 def _in_library(parts, path, lib):

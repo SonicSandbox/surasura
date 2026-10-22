@@ -75,6 +75,7 @@ Filename: "{app}\Surasura.exe"; Description: "{cm:LaunchProgram,{#AppName}}"; Fl
 Type: filesandordirs; Name: "{app}\_internal"
 Type: files; Name: "{app}\Surasura.exe"
 Type: files; Name: "{app}\surasura-cli.exe"
+Type: files; Name: "{app}\tsubasa.exe"
 Type: files; Name: "{app}\updater.exe"
 Type: files; Name: "{app}\RELEASE_NOTES.md"
 Type: files; Name: "{app}\LICENSE"

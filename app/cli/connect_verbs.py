@@ -84,7 +84,10 @@ def _kick(loaded):
 
 
 _SOURCE = re.compile(r"[a-z0-9_-]{1,32}")
-RESERVED = ("user", "undo", "sync")     # the names the store and the window log their own placements under
+# the names the store and the window log their own placements under, and the producers of the records only Surasura
+# writes (a folder's origin, a *Link…*: another program claiming one would be released by *Trust my subtitles'
+# timing*, `fit_check.OWN_PRODUCERS`). `youtube` stays open: the placing rules name it for a downloader that registers
+RESERVED = ("user", "undo", "sync", "source", "surasura")
 
 
 def _source(value):

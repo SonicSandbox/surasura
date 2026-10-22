@@ -90,11 +90,13 @@ def _list(folder, limit=None, skip=False):
                         if not (skip and skip_dir(entry.name, entry)):
                             subs.append(entry.path)
                         continue
-                    if not entry.name.lower().endswith(runner.VIDEO_EXTENSIONS):
+                    if not runner.video_name(entry.name):
                         continue
                     st = entry.stat(follow_symlinks=False)
                 except OSError:
                     continue
+                if not runner.video_file(entry.name, st.st_size):
+                    continue                    # a small `.ts`: TypeScript (the look's rule, `runner.video_file`)
                 # a cloud placeholder is indexed too (its download moves no folder's time) but never opened:
                 # `find` takes a file only once it is on this computer
                 videos[entry.name.lower()] = [entry.name, st.st_size]
@@ -253,10 +255,7 @@ def _key_body(path, size):
 
 
 def names_for(subtitle):
-    """The video names a subtitle without a pairing goes with (`Show - 05.mkv` for `Show - 05.ja.srt`)."""
-    stem = os.path.splitext(os.path.basename(subtitle))[0]
-    stems = [stem]
-    base, tag = os.path.splitext(stem)
-    if base and 1 < len(tag) <= 4:
-        stems.append(base)
-    return [s + ext for s in stems for ext in runner.VIDEO_EXTENSIONS]
+    """The video names a subtitle without a pairing goes with (`Show - 05.mkv` for `Show - 05.ja.srt`): its stem and its
+    stem without the marks LM1a's rule reads (`episode_names.video_stems`), each in NFC and NFD."""
+    from app.episode_names import video_stems
+    return [s + ext for s in video_stems(subtitle) for ext in runner.VIDEO_EXTENSIONS]

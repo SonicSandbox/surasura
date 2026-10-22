@@ -4,9 +4,11 @@ import subprocess
 import sys
 import argparse
 import json
+import re
 
 CLI_EXE_NAME = "surasura-cli.exe"   # the headless command line, built beside Surasura.exe (packaging/Surasura.spec)
-PROGRAM_EXES = ("Surasura.exe", CLI_EXE_NAME, "updater.exe")   # exactly these at the program folder's top (S3.1 D17)
+TSUBASA_EXE_NAME = "tsubasa.exe"    # tsubasa's command line, built beside them from the pinned tsubasa-sync (T1 B)
+PROGRAM_EXES = ("Surasura.exe", CLI_EXE_NAME, TSUBASA_EXE_NAME, "updater.exe")   # exactly these at the top (S3.1 D17)
 
 # The build's one configuration (S3.1 D15): the bundled modules, the Python and SQLite floors, UPX, the window's Qt
 # modules and update.json's parts. packaging/Surasura.spec reads the same file; neither reads a settings.json.
@@ -631,7 +633,7 @@ def check_program(final_dist, config):
     dist\\Surasura`. -> (failures, facts): failures a list of reasons (empty = all passed)."""
     failures, facts = [], {}
     internal = os.path.join(final_dist, "_internal")
-    # Exactly the three programs at the top, every build (updater.exe: the swapper, S3.1 D9).
+    # Exactly the four programs at the top, every build (updater.exe: the swapper, S3.1 D9; tsubasa.exe: T1 B).
     expected = set(PROGRAM_EXES)
     found = {n for n in os.listdir(final_dist) if n.lower().endswith(".exe")} if os.path.isdir(final_dist) else set()
     facts["exes"] = sorted(found)
@@ -691,6 +693,68 @@ def check_zip_licences(zip_path):
             if not any(f"/_internal/licenses/{dist}/" in n for n in names)]
 
 
+# --- tsubasa (T1 B, 2026-10-21) ----------------------------------------------------------------------------------------
+# tsubasa.exe is frozen from the installed tsubasa-sync, the one requirements.txt pins exactly (`tsubasa-sync==X.Y.Z`).
+# A build refuses an installed tsubasa-sync that isn't the pin (before freezing) and a built tsubasa.exe whose
+# `--version` isn't the pin or says it lost its data (after): a stale tsubasa never ships. The build ritual first moves
+# the pin to tsubasa's latest release (packaging/tsubasa_pin.py, Pre-build_check.md): a tsubasa fix reaches users in
+# Surasura's next update, its own part (build_config's "tsubasa"). Nothing here imports tsubasa (K1).
+TSUBASA_DIST = "tsubasa-sync"
+REQUIREMENTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "requirements.txt")
+_TSUBASA_LINE = re.compile(r"tsubasa[-_.]sync(?![\w.-])", re.I)
+_TSUBASA_PIN = re.compile(r"tsubasa[-_.]sync\s*==\s*(\d+(?:\.\d+){1,3})\Z", re.I)
+
+
+def tsubasa_pin(path=REQUIREMENTS):
+    """The tsubasa-sync version requirements.txt pins -> 'X.Y.Z', or None unless exactly one line pins it exactly
+    (a range, an extra, a marker or a second line is no pin)."""
+    found = []
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            for line in f:
+                line = line.split("#", 1)[0].strip()
+                if _TSUBASA_LINE.match(line):
+                    pinned = _TSUBASA_PIN.match(line)
+                    found.append(pinned.group(1) if pinned else None)
+    except OSError:
+        return None
+    return found[0] if len(found) == 1 else None
+
+
+def tsubasa_installed():
+    """The tsubasa-sync version this Python freezes -> 'X.Y.Z', or None when it isn't installed (its metadata: never
+    an import)."""
+    from importlib import metadata
+    try:
+        return metadata.version(TSUBASA_DIST)
+    except metadata.PackageNotFoundError:
+        return None
+
+
+def tsubasa_version_of(exe):
+    """`<exe> --version` -> (exit code, its first line). tsubasa says `tsubasa <version>` first and exits 0 when the
+    build is whole, 1 when its self-check found its name tables or numpy missing. (None, why) when it won't run."""
+    try:
+        done = subprocess.run([exe, "--version"], stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", timeout=120)
+    except (OSError, subprocess.SubprocessError) as e:
+        return None, f"it won't run ({type(e).__name__})"
+    lines = (done.stdout or "").splitlines()
+    return done.returncode, (lines[0].strip() if lines else "")
+
+
+def check_tsubasa(final_dist, pin=None, version_of=None):
+    """The program's tsubasa.exe is the pinned tsubasa, whole -> (failures, the first line it said, or None)."""
+    pin = tsubasa_pin() if pin is None else pin
+    if not pin:
+        return ["requirements.txt pins no tsubasa-sync==X.Y.Z"], None
+    code, said = (version_of or tsubasa_version_of)(os.path.join(final_dist, TSUBASA_EXE_NAME))
+    if code != 0 or said != f"tsubasa {pin}":
+        return [f"{TSUBASA_EXE_NAME} --version says {said!r} (exit {code}), not a whole 'tsubasa {pin}': the bundle's "
+                "tsubasa is stale or broken (pip install -r requirements.txt, then build again)"], said
+    return [], said
+
+
 def build(zip_output=False, skip_tests=False, release=False, full_update=False, data_name=None, installer=False,
           needs_installer=False):
     version = get_version()
@@ -731,6 +795,11 @@ def build(zip_output=False, skip_tests=False, release=False, full_update=False, 
         shape = install_shape()
     except OSError as e:
         print(f"Build aborted: packaging/surasura.iss can't be read for the install shape ({e}).")
+        return False
+    pin, have = tsubasa_pin(), tsubasa_installed()
+    if not pin or have != pin:
+        print(f"Build aborted: requirements.txt pins tsubasa-sync {pin or '(no exact ==X.Y.Z)'}, and this Python has "
+              f"{have or 'none'}: tsubasa.exe would be built from another tsubasa. Run pip install -r requirements.txt.")
         return False
 
     # Gate: everything being bundled must be testable first.
@@ -831,11 +900,13 @@ def build(zip_output=False, skip_tests=False, release=False, full_update=False, 
         print("Build failed: every build needs updater.exe.")
         return False
 
-    # 6. The post-build checks: exactly the three programs, no library, SQLite's floor, the stamp, PyQt6's modules and
-    #    licences. Any failure stops here (nothing is zipped).
+    # 6. The post-build checks: exactly the four programs, no library, SQLite's floor, the stamp, PyQt6's modules and
+    #    licences, and tsubasa.exe the pinned tsubasa. Any failure stops here (nothing is zipped).
     failures, facts = check_program(final_dist, config)
+    tsubasa_failures, facts["tsubasa"] = check_tsubasa(final_dist)
+    failures += tsubasa_failures
     print(f"Checks: programs {facts.get('exes')}, SQLite {facts.get('sqlite')}, "
-          f"PyQt6 {facts.get('qt_modules', 'not bundled')}")
+          f"PyQt6 {facts.get('qt_modules', 'not bundled')}, {facts['tsubasa']}")
     if failures:
         print("Build failed:\n  " + "\n  ".join(failures))
         return False
@@ -920,6 +991,8 @@ if __name__ == "__main__":
     args = parser.parse_known_args()[0]
     if args.check:
         checked, found = check_program(args.check, load_build_config())
+        tsubasa_failures, found["tsubasa"] = check_tsubasa(args.check)
+        checked += tsubasa_failures
         zips = [os.path.join(os.path.dirname(os.path.abspath(args.check)), n)
                 for n in os.listdir(os.path.dirname(os.path.abspath(args.check)))
                 if n.startswith("Surasura_v") and n.endswith(".zip")]

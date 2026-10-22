@@ -484,8 +484,8 @@ def test_junban_rows_follow_its_switch_but_put_anki_back_stays_and_backfill_leav
 
 def test_connects_rows_show_only_with_its_switch_on():
     connect_rows = {"connect_mine_words", "mine_line", "connect_send_grammar", "connect_open_anki",
-                    "connect_backlog_cap", "known_from_anki", "connect_video_folders", "junban_own_tag",
-                    "junban_order_all", "connect_anki_miner_profile"}
+                    "connect_backlog_cap", "known_from_anki", "connect_video_folders", "connect_trust_timing",
+                    "junban_own_tag", "junban_order_all", "connect_anki_miner_profile"}
     assert not connect_rows & _shown({}, "ja")
     assert connect_rows <= _shown({"connect_enabled": True}, "ja")
     # the switch itself, the sync minute, the automation switch and the address show either way

@@ -18,6 +18,8 @@ IK S3, S7). What the rows, Finished, the arrivals and *Needs you* ask for, route
   back — in the gap's own language, Connect is kicked, then the entry is answered as *Leave them* answers it.
 - **The bulk asks** (Finished's *Mine* / *Mine it too*, the arrivals' *Mine them too*) ask by the rows' rule
   (`rows.asked_files`): never a file in Anki, being mined, or whose cards were deleted (P4.1 WF, adversary S5).
+- **An episode's own ⋯** (row 28, Michi's row 24b ask): *Mine now* exactly where the episode's pill would be *Mine
+  now* (`rows.action_of`, its tip the pill's), picked as the pill is clicked (`mine_row`, its ids the pill's).
 Nothing here reads the store or the settings on the window's thread: the writes are the writer's, the looks a worker's.
 """
 import os
@@ -26,7 +28,7 @@ from PyQt6.QtCore import QObject
 from PyQt6.QtWidgets import QApplication, QFileDialog
 
 from app import path_utils
-from app.qt import bridge, drag, rows, strings, windows
+from app.qt import bridge, drag, item_menu, rows, strings, windows
 
 OFF_KEYS = frozenset(("connect_enabled", "logic.automation", "automation"))
 
@@ -87,6 +89,9 @@ class MineActions(QObject):
             needs.hooks["mine_text_only"] = self._needs_mine_text
             needs.hooks["make_cards"] = self._needs_make_cards
             needs.rewire()
+        items = getattr(win, "items", None)
+        if items is not None:                        # --- row 28 (Michi's row 24b ask): an episode's ⋯ offers *Mine now*
+            items.episode_hooks.append(self.episode_entries)
         win.bridge.settings_written.connect(self._settings_written)
         self.read_off()
 
@@ -166,6 +171,20 @@ class MineActions(QObject):
             return None
         writer = moves.writer
         return moves._give(drag.Ticket(text, keys, ids), lambda t: writer.ask_mining(ids, label=t))
+
+    # --- row 28 (Michi's row 24b ask): an episode's own ⋯ ----------------------------------------------------- #
+    def episode_entries(self, row, ep):
+        """`ep`'s ⋯ (`item_menu.ItemActions.episode_hooks`): *Mine now* exactly when its pill would be *Mine now*
+        (`rows.action_of`: a wait never is), its tip the pill's — Connect off, the entry is there and its tip says why;
+        picked, the pill's own path (`mine_row`: off, nothing is asked and the bar says why). -> [Entry]"""
+        if ep.status is None:
+            return []
+        name, tip, ask = rows.action_of(ep.status, (ep,), self.off, ep.media_word or row.media_word)
+        if name != "mine-now":
+            return []
+        return [item_menu.Entry("ep-mine-now", strings.ROWS_ACTION_NAMES["mine-now"], tip, True,
+                                payload=lambda: self.mine_row(row, list(ask.ids)))]
+    # --- end row 28
 
     # --- Link… ------------------------------------------------------------------------------------------------ #
     def link(self, row, ep):

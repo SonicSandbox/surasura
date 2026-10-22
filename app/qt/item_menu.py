@@ -17,13 +17,15 @@ A3 `split`, 06 E4, E22).
   with Undo;
 - *Open its folder* (`windows.open_url`, N3; looked for on a worker);
 - *Same show as…* › the other shows the view holds, one entry each (Current's in order, Goal's, Finished's, New
-  arrivals'; at most `SAME_SHOW_MAX`), each asking first (`confirm.ask`, Cancel the default: "Make <B> part of <A>?"):
-  one `Writer.join(how="titles")`, the show picked first — the store's refusal (two AniList ids, TMDB ids or YouTube
-  channels: `TITLES_APART`) said in the bar as the store words it, its toast only once the store saved it;
+  arrivals'; at most `SAME_SHOW_MAX` from each), each asking first (`confirm.ask`, Cancel the default: "Make <B> part of
+  <A>?"): one `Writer.merge_works` — <B>'s title made <A>'s, <A>'s name kept, and nothing moves (every file stays
+  in its section and place: he asked for one show, never for files to change section) — the store's refusal (two
+  AniList ids, TMDB ids or YouTube channels: `TITLES_APART`) said in the bar as the store words it, its toast only
+  once the store saved it;
 - a separator, then *Remove…*: the one modal kind (`confirm.ask`, Esc / Back / a click outside are No) naming its
   files; `Writer.remove` (the trash, 30 days) with Undo.
 **⋯ on a group (LM11b G3, IK-5):** the moves, *Study its cards first*, *Split here…*, *Rename…* (a card with the name
-shown in a field: `Writer.rename_piece`, empty = named after its shows again, the same name writes nothing), *Ungroup*
+shown in a field: `Writer.rename_piece`, empty = named after its shows again, the name it has writes nothing), *Ungroup*
 (`Writer.ungroup`: each show back in a row of its own, in place), a separator, *Remove…* — never *What is it?*, *Join
 with…*, *Same show as…*, *Change cover…*, *Never read this folder* or *Open its folder* (each is one show's). Its writes
 toast once the store saved them, with Undo.
@@ -32,8 +34,8 @@ from the last one Ctrl picked instead (Ctrl+Shift+click adds them), Ctrl+Space t
 (`rows.RowsView.pick_row`); with things picked from 2+ shows (IK-4: one show's alone would be no group), ⋯ on a picked
 row (a right-click opens it at the hand) starts with *Group…*: one
 `Writer.group` — the picked rows' pieces in the list's order (both of a show the Soon line runs through), then the
-picked episodes — its toast *Grouped N into one row* with Undo. Esc / Back (the shell's router), a plain click, a drag and a view without
-a picked key let the picks go.
+picked episodes — its toast *Grouped N into one row* with Undo once saved. Esc / Back (the shell's router), a plain
+click, a drag and a view without a picked key let the picks go.
 **Drop-to-join (G3):** a part dragged over the middle of another part of the same title (its top and bottom 30 % stay
 a move beside it, so a part can still be placed next to its other part): the rows hold still (no gap opens), that part
 shows a green dashed outline and *Drop to join*; the drop joins them in episode order, opens the result and toasts
@@ -41,10 +43,12 @@ shows a green dashed outline and *Drop to join*; the drop joins them in episode 
 **Drop to group (LM11b G2; Sonic's answers: a drop on another show makes a group, no question):** over the middle of
 another show's part, or of a group (either side a group), the hand rests `JOIN_REST_MS` before that row is outlined with
 *Drop to group* (a passing drag still reorders); the drop is one `Writer.join(..., how="group")`, the row dropped on
-first (it keeps its place, a group its name), never `ahead` — toasted *Grouped … with …* with Undo, the result
-opened.
-On an opened group, the hand on one of its episodes before its last lands it after that episode (`Writer.move`: the
-store takes it into the group there, LM11-Q1 / IK-2). A New arrivals file rested on a group joins it
+first (it keeps its place, a group its name), never `ahead` — toasted *Grouped … with …* with Undo once the store
+saved it (a refusal toasts nothing: no promise the store didn't keep), the result opened. A row in Finished or New
+arrivals is never a group's target (the store's `NO_GROUP_TIERS`).
+On an opened group, the hand on one of its episodes before its last lands a show's part after that episode
+(`Writer.move`: the store takes it into the group there, LM11-Q1); a group dragged there joins at its end (a group
+never moves into another, which would cut it in three). A New arrivals file rested on a group joins it
 (`Writer.add_to_group`, IK-3); on a show's part it is placed as before. A row the Soon line runs through names both its
 pieces (`pieces_of`, IK-1).
 
@@ -73,10 +77,10 @@ JOIN_REST_MS = 500                                  # LM11b G2: another show gro
 
 Entry = namedtuple("Entry", "name label tip ok children checked payload", defaults=(None, None, None))
 Part = namedtuple("Part", "key piece_id ids numbers tier place title")
-Show = namedtuple("Show", "key work_id title pieces where")
-#   LM11b G3: a show *Same show as…* offers — `pieces` what its join names (a row's: both of a show the Soon line runs
-#   through), `where` its section as *Join with…* names it
-SAME_SHOW_MAX = 20
+Show = namedtuple("Show", "key work_id title where")
+#   LM11b G3: a show *Same show as…* offers — `work_id` the title it merges into, `where` its section as *Join with…*
+#   names it
+SAME_SHOW_MAX = 20                                  # (from each section: a full Current never hides the rest)
 #   a part of a title as ⋯ and the drop see it: `ids` its files' item ids in order, `numbers` their episode numbers
 #   (None where it has none), `tier` the store's, `place` its 1-based place in Current (None elsewhere)
 
@@ -125,6 +129,30 @@ def ep_tier(row, ep):
 def joinable(row):
     """A part that can be joined or split: a title's piece (hato's mix never)."""
     return row is not None and row.piece_id is not None and row.work_id is not None and not drag.is_mix(row)
+
+
+def groups_there(row):
+    """Whether a group can live where `row` is: never Finished or New arrivals (the store's `NO_GROUP_TIERS`, which it
+    refuses — so the window never offers it, and never toasts what can't happen)."""
+    return getattr(row, "tier", None) not in library_store.NO_GROUP_TIERS
+
+
+def ep_name(row, ep):
+    """`ep` as ⋯ names it: in a group "<show> · Ep N", as the group's row labels it (two shows' Ep 1 never read
+    alike); else its own label."""
+    show = getattr(ep, "show", None)
+    return view_rows.STRINGS["group_ep"].format(show=show, label=ep.label) if getattr(row, "group", False) and show \
+        else ep.label
+
+
+def unnamed(row):
+    """Whether a group has no name of its own: its title is the one the store makes of its shows ("<first show> + N
+    more", `view_rows.STRINGS["group_name"]`) — what the rename compares with (its stored name is None)."""
+    eps = getattr(row, "episodes", None) or ()
+    if not getattr(row, "group", False) or not eps or not getattr(eps[0], "show", None):
+        return False
+    shows = {e.work_id if e.work_id is not None else ("s", e.show) for e in eps}
+    return row.title == view_rows.STRINGS["group_name"].format(first=eps[0].show, n=len(shows) - 1)
 
 
 class ItemActions(QObject):
@@ -240,14 +268,14 @@ class ItemActions(QObject):
             after = self._hovered_after(row)
             cuts = [k for k in range(1, len(row.episodes)) if view_rows.split_piece(row, k) is not None]   # B2-2
             if after is not None and after in cuts:
-                out.append(entry("split", label=strings.ITEM_SPLIT_HERE.format(ep=row.episodes[after - 1].label),
-                                 tip=strings.ITEM_SPLIT_AFTER_TIP.format(ep=row.episodes[after - 1].label,
-                                                                         rest=rows._rest_of(row, after)),
+                ep = ep_name(row, row.episodes[after - 1])
+                out.append(entry("split", label=strings.ITEM_SPLIT_HERE.format(ep=ep),
+                                 tip=strings.ITEM_SPLIT_AFTER_TIP.format(ep=ep, rest=rows._rest_of(row, after)),
                                  payload=row.episodes[after]))
             elif cuts:
                 out.append(entry("split", children=[
-                    entry("split", label=strings.ITEM_SPLIT_AFTER.format(ep=row.episodes[k - 1].label),
-                          tip=strings.ITEM_SPLIT_AFTER_TIP.format(ep=row.episodes[k - 1].label,
+                    entry("split", label=strings.ITEM_SPLIT_AFTER.format(ep=ep_name(row, row.episodes[k - 1])),
+                          tip=strings.ITEM_SPLIT_AFTER_TIP.format(ep=ep_name(row, row.episodes[k - 1]),
                                                                   rest=rows._rest_of(row, k)),
                           payload=row.episodes[k]) for k in cuts]))
         if group:                                    # --- LM11b G3 (IK-5): the rest is one show's
@@ -285,8 +313,15 @@ class ItemActions(QObject):
 
     @staticmethod
     def _shows(whole, eps):
-        """The shows the picks span (a row with no title counts as its own: IK-4)."""
-        return {r.work_id if r.work_id is not None else ("row", r.key) for r in whole + [r for r, _e in eps]}
+        """The shows the picks span (one show's alone would be no group): a whole row's every show (`works`: a group's each), an episode's own
+        (`work_id`: a group's second show's is that show) — a row or episode with no title counts as its row's own."""
+        out = set()
+        for r in whole:
+            out.update(getattr(r, "works", None) or (r.work_id if r.work_id is not None else ("row", r.key),))
+        for r, e in eps:
+            w = getattr(e, "work_id", None)
+            out.add(w if w is not None else r.work_id if r.work_id is not None else ("row", r.key))
+        return out
 
     def _to_group(self, row=None):
         """(whole rows, episodes) *Group…* would take: picks from 2+ shows (one show's: the store would make no group
@@ -321,7 +356,7 @@ class ItemActions(QObject):
         keys = list(dict.fromkeys([r.key for r in whole] + [r.key for r, _e in eps]))
         ids = [i for r in whole for i in drag.ids_of(r)] + items
         text = strings.ITEM_GROUPED.format(n=len(whole) + len(eps))
-        seq = self.moves._give(drag.Ticket(text, keys, ids),
+        seq = self._give_saved(drag.Ticket(text, keys, ids),
                                lambda t: self.writer.group(piece_ids=pieces, item_ids=items, label=t))
         if seq is not None:
             self.lst.clear_picks()
@@ -560,32 +595,33 @@ class ItemActions(QObject):
     # --- LM11b G3: a group's *Rename…* / *Ungroup*, a show's *Same show as…* ------------------------------------- #
     def same_shows(self, row):
         """*Same show as…*'s shows for `row` (a show's own row, never a group): [Show] — each other show the view holds
-        once, where it first stands: Current's runs in order, Goal's tiles (once the view names their pieces:
-        `GoalPiece.piece_id`), Finished's, New arrivals'; at most `SAME_SHOW_MAX`."""
+        once, by its title (`work_id`: the merge names no piece), where it first stands: Current's runs in order, Goal's
+        tiles, Finished's, New arrivals'; at most `SAME_SHOW_MAX` from each section."""
         view = self._view()
         if view is None or not joinable(row) or getattr(row, "group", False):
             return []
-        out, seen = [], {row.work_id}
+        out, seen, taken = [], {row.work_id}, {}
 
-        def add(work_id, key, title, pieces, where):
-            if work_id is not None and work_id not in seen and pieces and len(out) < SAME_SHOW_MAX:
-                seen.add(work_id)
-                out.append(Show(key, work_id, title, tuple(pieces), where))
+        def add(section, work_id, key, title, where):
+            if work_id is None or work_id in seen:
+                return
+            seen.add(work_id)                        # (past its section's cap too: listed where it first stands only)
+            if taken.get(section, 0) < SAME_SHOW_MAX:
+                taken[section] = taken.get(section, 0) + 1
+                out.append(Show(key, work_id, title, where))
         for n, r in enumerate(view.rows, 1):
             if joinable(r) and not getattr(r, "group", False):
-                add(r.work_id, r.key, r.title, pieces_of(r),
+                add("now", r.work_id, r.key, r.title,
                     strings.ITEM_JOIN_WHERE[r.tier if r.tier in ("now", "soon") else "now"].format(n=n))
         for w in getattr(getattr(view, "goal", None), "works", None) or ():
             if not getattr(w, "group", False):
-                first = next((getattr(p, "piece_id", None) for p in w.pieces), None)
-                add(w.work_id, w.key, w.title, (first,) if first is not None else (), strings.ITEM_JOIN_WHERE["goal"])
+                add("goal", w.work_id, w.key, w.title, strings.ITEM_JOIN_WHERE["goal"])
         for month in view.finished or ():
             for r in month.rows:
                 if joinable(r) and not getattr(r, "group", False):
-                    add(r.work_id, r.key, r.title, pieces_of(r), strings.ITEM_JOIN_WHERE["graduated"])
+                    add("graduated", r.work_id, r.key, r.title, strings.ITEM_JOIN_WHERE["graduated"])
         for a in view.arrivals or ():
-            add(a.work_id, a.key, a.title, (a.piece_id,) if a.piece_id is not None else (),
-                strings.ITEM_JOIN_WHERE["arrivals"])
+            add("arrivals", a.work_id, a.key, a.title, strings.ITEM_JOIN_WHERE["arrivals"])
         return out
 
     def _give_saved(self, ticket, command):
@@ -623,7 +659,7 @@ class ItemActions(QObject):
         if not getattr(row, "group", False) or self.moves.refused() is not None:
             return None
         name = (text or "").strip() or None
-        if name == row.title:
+        if name in (row.title, None if unnamed(row) else row.title):    # its name as shown, or as stored
             return None
         piece = row.piece_id
         words = strings.ITEM_RENAMED.format(title=row.title, name=name) if name is not None else \
@@ -647,27 +683,28 @@ class ItemActions(QObject):
         return self.question
 
     def same_show(self, row, show):
-        """`row`'s show made part of `show`: one `Writer.join(how="titles")`, `show`'s pieces first (it keeps its name
-        and place) — refused by the store when the ids say two shows (`TITLES_APART`, said in the bar through the writer's
-        `failed` note); its toast with Undo once saved."""
+        """`row`'s show made part of `show`: one `Writer.merge_works(show, [row's])` — the titles alone, `show`'s name
+        kept; no file moves, from whichever section either stands in — refused by the store when
+        the ids say two shows (`TITLES_APART`, said in the bar through the writer's `failed` note); its toast with Undo
+        once saved."""
         if not joinable(row) or getattr(row, "group", False) or self.moves.refused() is not None:
             return None
-        pieces = list(dict.fromkeys(list(show.pieces) + pieces_of(row)))
+        keep, other = show.work_id, row.work_id
         text = strings.ITEM_SAME_SHOW_DONE.format(b=row.title, a=show.title)
         return self._give_saved(drag.Ticket(text, (row.key, show.key), drag.ids_of(row)),
-                                lambda t: self.writer.join(pieces, label=t, how="titles"))
+                                lambda t: self.writer.merge_works(keep, [other], label=t))
     # --- end LM11b G3
 
     # --- LM11b G2: drop to group ------------------------------------------------------------------------------------ #
     def group_join(self, target, other):
         """`other` (a row) dropped on `target` (another show's part, or a group): one `Writer.join(how="group")`, the
-        target's pieces first (it keeps its place, a group its name), never `ahead`; its toast with Undo, the result
-        opened. -> the target's key."""
-        if self.moves.refused() is not None:
+        target's pieces first (it keeps its place, a group its name), never `ahead`; its toast with Undo once saved, the
+        result opened. -> the target's key."""
+        if not groups_there(target) or self.moves.refused() is not None:
             return None
         pieces = list(dict.fromkeys(pieces_of(target) + pieces_of(other)))
         text = strings.ITEM_GROUPED_WITH.format(other=other.title, title=target.title)
-        if self.moves._give(drag.Ticket(text, (target.key, other.key), drag.ids_of(target) + drag.ids_of(other)),
+        if self._give_saved(drag.Ticket(text, (target.key, other.key), drag.ids_of(target) + drag.ids_of(other)),
                             lambda t: self.writer.join(pieces, label=t, how="group")) is None:
             return None
         self._open(target.key)
@@ -675,27 +712,27 @@ class ItemActions(QObject):
 
     def into_group_at(self, group, ep, ids, title, keys=()):
         """Files `ids` dropped on the opened `group`'s episode `ep` (not its last): moved after it, in its tier — the
-        store takes them into the group there (GI1, LM11-Q1). -> the group's key."""
-        if self.moves.refused() is not None:
+        store takes them into the group there (GI1, LM11-Q1); its toast once saved. -> the group's key."""
+        if not groups_there(group) or self.moves.refused() is not None:
             return None
         ids = list(ids)
         tier = ep_tier(group, ep)
         text = strings.ITEM_GROUPED_WITH.format(other=title, title=group.title)
-        if self.moves._give(drag.Ticket(text, (group.key,) + tuple(keys), ids),
+        if self._give_saved(drag.Ticket(text, (group.key,) + tuple(keys), ids),
                             lambda t: self.writer.move(ids, tier, after_id=ep.id, label=t)) is None:
             return None
         self._open(group.key)
         return group.key
 
     def add_to_group(self, group, ids, title):
-        """New arrivals' files `ids` dropped on `group` (IK-3): one `Writer.add_to_group`, after its last row. -> its
-        key."""
-        if self.moves.refused() is not None:
+        """New arrivals' files `ids` dropped on `group`: one `Writer.add_to_group`, after its last row; its toast
+        once saved. -> its key."""
+        if not groups_there(group) or self.moves.refused() is not None:
             return None
         ids = list(ids)
         piece = group.piece_id
         text = strings.ITEM_GROUPED_WITH.format(other=title, title=group.title)
-        if self.moves._give(drag.Ticket(text, (group.key,), ids),
+        if self._give_saved(drag.Ticket(text, (group.key,), ids),
                             lambda t: self.writer.add_to_group(piece, item_ids=ids, label=t)) is None:
             return None
         self._open(group.key)
@@ -741,8 +778,8 @@ class ItemActions(QObject):
             return None
         entry = self.lst.model().entries[idx.row()]
         kind, other, _lines = entry
-        if kind not in (rows.HERO, rows.ROW) or other.key == d.key or not joinable(other):
-            return None
+        if kind not in (rows.HERO, rows.ROW) or other.key == d.key or not joinable(other) or not groups_there(other):
+            return None                              # (a stale row: no group lives there, no part joins Finished)
         group = getattr(other, "group", False)
         if d.external and not group:
             return None                              # a tray file on a show's part: placed in the list, as before
@@ -780,7 +817,7 @@ class ItemActions(QObject):
             return None
         if same_show(target, d.row):
             return self.join(part_of(target, self._place(target)), part_of(d.row))
-        if ep is not None:
+        if ep is not None and not getattr(d.row, "group", False):     # a group dragged there joins at its end
             return self.into_group_at(target, ep, drag.ids_of(d.row), d.row.title, (d.row.key,))
         return self.group_join(target, d.row)
 

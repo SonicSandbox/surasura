@@ -100,6 +100,10 @@ KEPT += ("titles",)                             # P-LF-4: a join of two titles (
 JOURNALLED += ("group", "add_to_group", "ungroup", "rename_piece")
 GUARDED += ("group", "add_to_group", "ungroup", "rename_piece")
 KEPT += ("how", "item_ids", "title")
+# --- LM11b fix round: *Same show as…* is the titles alone — `merge_works` (`work_id` the kept, `work_ids` the
+# others): nothing moves
+JOURNALLED += ("merge_works",)
+GUARDED += ("merge_works",)
 # --- end LM11
 # --- end W3.2 B
 PART = ".part"                  # a dropped file is copied under its name + this (no content name: no sync takes it up),
@@ -443,6 +447,13 @@ class Writer:
     def rename_piece(self, piece_id, title, label=None):
         """`Store.rename_piece`: a group's own name; None or blank — back to "<first show> + N more"."""
         return self._put({"op": "rename_piece", "ids": [], "piece_id": piece_id, "title": title, "label": label})
+
+    def merge_works(self, keep_id, other_ids, label=None):
+        """`Store.merge_works`: *Same show as…* (LM11b fix round) — the others' files and ids become `keep_id`'s
+        title (its name kept); no file moves, every piece stays where it is. Refused with the store's reason when the
+        ids say two shows (`TITLES_APART`). Journalled and replayed: its titles checked as queued."""
+        return self._put({"op": "merge_works", "ids": [], "work_id": keep_id, "work_ids": list(other_ids),
+                          "label": label})
 
     def set_media_type(self, work_ids, media_type, label=None):
         """`Store.set_media_type`: *What is it?* for the titles (None: back to the guess)."""
@@ -937,6 +948,8 @@ class Writer:
             return store.ungroup(cmd["piece_id"])
         if op == "rename_piece":
             return store.rename_piece(cmd["piece_id"], cmd["title"])  # --- end LM11
+        if op == "merge_works":                             # LM11b fix round: the titles alone
+            return store.merge_works(cmd["work_id"], cmd["work_ids"])
         if op == "set_media_type":
             return store.set_media_type(cmd["work_ids"], cmd["media_type"])
         if op == "set_cover":
@@ -1562,7 +1575,7 @@ class Writer:
 
 
 UNORDERED = ("set_watched", "pin", "keep_cards", "ask_mining", "set_cover", "set_media_type", "split",
-             "forget_covers", "ungroup", "rename_piece")
+             "forget_covers", "ungroup", "rename_piece", "merge_works")
 #   commands that never change the order: the numbers aren't asked again after them
 
 
@@ -1638,6 +1651,12 @@ def _as_queued(store, cmd):
                 row = store._work_row(w)
                 out.append([w] + ([row["feed_in"]] + [row[c] for c in cols] if row is not None else [None]))
             return out
+        if op == "merge_works":                            # LM11b: each title's `feed_in` and name (gone: None)
+            out = []
+            for w in [cmd["work_id"]] + list(cmd["work_ids"]):
+                row = store._work_row(w)
+                out.append([w] + ([row["feed_in"], row["title"]] if row is not None else [None]))
+            return out
         if op in ("join", "group", "add_to_group"):
             out = [[p, [i for (i,) in store.conn.execute("SELECT id FROM items WHERE piece_id = ? ORDER BY id",
                                                           (p,))]] for p in cmd["piece_ids"]]
@@ -1689,6 +1708,10 @@ def _done(store, cmd):
             others = cmd["piece_ids"][1:]
             return bool(others) and not any(store.conn.execute("SELECT 1 FROM items WHERE piece_id = ? LIMIT 1",
                                                                (p,)).fetchone() for p in others)
+        if op == "merge_works":                            # LM11b: no file left in any of the others
+            others = [w for w in cmd["work_ids"] if w != cmd["work_id"]]
+            return bool(others) and not any(store.conn.execute("SELECT 1 FROM items WHERE work_id = ? LIMIT 1",
+                                                               (w,)).fetchone() for w in others)
         if op in ("group", "add_to_group"):                # LM11: everything it names in one piece, as it asks (G7):
             parts = [e[1] for e in cmd["before"] if isinstance(e[1], list)]     # side by side, part after part
             part = {i: n for n, ids in enumerate(parts) for i in ids}

@@ -26,6 +26,7 @@ from PyQt6.QtWidgets import QApplication
 from app import library_store as ls
 from app import path_utils
 from app.qt import drag, item_menu, rows, strings
+from app.services import view_rows
 from tests.qt.conftest import wait_until
 from tests.qt.test_drag import (FakeWriter, lift, mouse, move, move_global, open_window, part_rect, press,  # noqa: F401
                                 real, release, release_global, row_point, settle, title_point)
@@ -62,6 +63,9 @@ class ItemWriter(FakeWriter):
 
     def group(self, piece_ids=(), item_ids=(), label=None):
         return self._put("group", [], label, piece_ids=list(piece_ids), item_ids=list(item_ids))
+
+    def merge_works(self, keep_id, other_ids, label=None):
+        return self._put("merge_works", [], label, keep_id=keep_id, other_ids=list(other_ids))
 
 
 @pytest.fixture
@@ -904,7 +908,7 @@ def test_G3_IK6_same_show_as_lists_each_other_show_once_from_current_goal_finish
     entry = _same_show(win, row)
     assert entry is not None and entry.tip == strings.ITEM_MENU["same-show"][1] and entry.ok
     shows = [c.payload for c in entry.children]
-    assert len({s.key for s in shows}) == len(shows) <= item_menu.SAME_SHOW_MAX
+    assert len({s.key for s in shows}) == len(shows)
     assert all(c.tip and c.ok and c.label == strings.ITEM_SAME_SHOW_PICK.format(title=c.payload.title,
                                                                                where=c.payload.where)
                for c in entry.children)
@@ -912,19 +916,17 @@ def test_G3_IK6_same_show_as_lists_each_other_show_once_from_current_goal_finish
     assert row.work_id not in works and len(set(works)) == len(works)          # one entry per show, never its own
     current = [s for s in shows if s.where.endswith(("in Current", "in Current (Soon)"))]
     first = next(r for r in view.rows if item_menu.joinable(r) and not r.group and r.work_id != row.work_id)
-    assert current[0].key == first.key and current[0].pieces == tuple(item_menu.pieces_of(first))
+    assert current[0].key == first.key and current[0].work_id == first.work_id
     # Goal's tiles as `view_rows.build` makes them (the window's own view, never a hand-made tile): Goal's shows not in
-    # Current come next, each once, joined by its first piece (`GoalPiece.piece_id`)
+    # Current come next, each once, by its title (the merge names no piece), at most 20 of them (the cap
+    # is each section's, never Current's first)
     in_current = {r.work_id for r in view.rows} | {row.work_id}
     tiles = [t for t in view.goal.works if not t.group and t.work_id not in in_current]
     assert tiles, "the seed's Goal holds shows Current doesn't"
     goal = [s for s in shows if s.where == strings.ITEM_JOIN_WHERE["goal"]]
-    want = list(dict.fromkeys(t.work_id for t in tiles))[:item_menu.SAME_SHOW_MAX - len(current)]
+    want = list(dict.fromkeys(t.work_id for t in tiles))[:item_menu.SAME_SHOW_MAX]
     assert [s.work_id for s in goal] == want
-    first_piece = {}
-    for t in tiles:
-        first_piece.setdefault(t.work_id, (t.pieces[0].piece_id,))
-    assert all(s.pieces == first_piece[s.work_id] and None not in s.pieces for s in goal)
+    assert len(current) <= item_menu.SAME_SHOW_MAX
     # Finished's and New arrivals' come after Goal's (seen here with Goal's emptied: the seed's Goal fills the list)
     with monkeypatch.context() as patched:
         patched.setattr(win.items, "_view", lambda: view._replace(goal=view.goal._replace(works=())))
@@ -938,7 +940,7 @@ def test_G3_IK6_same_show_as_lists_each_other_show_once_from_current_goal_finish
     assert _same_show(win, group) is None
 
 
-def test_G3_same_show_as_asks_first_cancel_is_the_default_and_writes_nothing_yes_is_one_titles_join(world):
+def test_G3_same_show_as_asks_first_cancel_is_the_default_and_writes_nothing_yes_is_one_titles_merge(world):
     _seed, win, writer = world()
     b, _a = two_shows(win)
     row = rows_of(win)[b]
@@ -953,8 +955,8 @@ def test_G3_same_show_as_asks_first_cancel_is_the_default_and_writes_nothing_yes
     assert writer.calls == []
     win.items.menu_pick(row, "same-show", show)
     win.items.question.yes.click()
-    assert calls(writer) == [("join", [], {"piece_ids": list(show.pieces) + item_menu.pieces_of(row), "ahead": False,
-                                           "how": "titles"})]
+    # the titles alone — the picked show (A) keeps its name, nothing moves, no piece named
+    assert calls(writer) == [("merge_works", [], {"keep_id": show.work_id, "other_ids": [row.work_id]})]
     text = strings.ITEM_SAME_SHOW_DONE.format(b=row.title, a=show.title)
     assert wait_until(lambda: win.toasts.card.message == text, 5)
     assert win.toasts.card.buttons, "its Undo"
@@ -1621,3 +1623,307 @@ def test_real_store_G3_same_show_as_refused_by_anilist_says_why_in_the_bar_and_c
     assert _state(store) == before
     done = strings.ITEM_SAME_SHOW_DONE.format(b=row.title, a=show.title)
     assert win.toasts.card is None or win.toasts.card.message != done          # no toast for what never happened
+
+
+# --- LM11b fix round A ---------------------------------------------------------------------------------------------- #
+def test_same_show_as_offers_twenty_from_each_section_never_twenty_in_all(world):
+    # a library with more than 20 shows in Current: Goal's are still offered (20 per section), and a show past
+    # Current's 20 is never listed again under Goal (where it first stands only)
+    _seed, win, _w = world()
+    view = win.page_widgets["current"].view_model
+    b, _a = two_shows(win)
+    row = view.rows[b]
+    many = list(view.rows) + [r._replace(key=f"x{n}", work_id=900000 + n)
+                              for n, r in enumerate([view.rows[b]] * (item_menu.SAME_SHOW_MAX + 5))]
+    big = view._replace(rows=type(view.rows)(many))
+    win.items._view = lambda: big
+    shows = win.items.same_shows(row)
+    current = [s for s in shows if s.where not in (strings.ITEM_JOIN_WHERE["goal"], strings.ITEM_JOIN_WHERE["graduated"],
+                                                   strings.ITEM_JOIN_WHERE["arrivals"])]
+    goal = [s for s in shows if s.where == strings.ITEM_JOIN_WHERE["goal"]]
+    assert len(current) == item_menu.SAME_SHOW_MAX
+    assert goal, "Goal's shows offered with Current full"
+    in_current = {r.work_id for r in many}
+    assert all(s.work_id not in in_current for s in goal)
+
+
+def _shown(win, view, rs):
+    win.show_library(view._replace(rows=type(view.rows)(rs)))
+    settle()
+
+
+def _two_show_group(win, title=None):
+    """A Current row (2+ episodes) shown as a group of two of the seed's shows: its episodes its own show's, its last
+    another's (each episode's `work_id` / `show`, as `view_rows` makes a group's), named `title` (None: as the store
+    names an unnamed group, "<first> + 1 more"). -> (the group row, the other show's row)."""
+    view = win.page_widgets["current"].view_model
+    rs = list(view.rows)
+    b, a = two_shows(win)
+    g, o = rs[a], rs[b]
+    eps = [e._replace(work_id=g.work_id, show=g.title) for e in g.episodes]
+    eps[-1] = eps[-1]._replace(work_id=o.work_id, show=o.title)
+    name = title if title is not None else view_rows.STRINGS["group_name"].format(first=g.title, n=1)
+    rs[a] = g._replace(group=True, works=(g.work_id, o.work_id), episodes=tuple(eps), title=name)
+    _shown(win, view, rs)
+    return rows_of(win)[a], o
+
+
+def test_G3_an_unnamed_groups_rename_cleared_or_to_its_starting_name_writes_nothing(world):
+    # its stored name is None: clearing the field, or Rename with the name it was shown, is no change — no journal
+    # entry, no toast
+    _seed, win, writer = world()
+    group, _o = _two_show_group(win)
+    assert item_menu.unnamed(group)
+    assert win.items.rename(group, "") is None and win.items.rename(group, "   ") is None
+    assert win.items.rename(group, f" {group.title} ") is None
+    assert writer.calls == []
+    assert win.items.rename(group, "雲の上の郵便屋さんと仲間たち") is not None
+    assert calls(writer) == [("rename_piece", [], {"piece_id": group.piece_id, "title": "雲の上の郵便屋さんと仲間たち"})]
+
+
+def test_G3_a_named_groups_rename_cleared_names_it_after_its_shows_again(world):
+    _seed, win, writer = world()
+    group, _o = _two_show_group(win, title="雲の上の郵便屋さんと仲間たち")
+    assert not item_menu.unnamed(group)
+    assert win.items.rename(group, group.title) is None and writer.calls == []
+    assert win.items.rename(group, "") is not None
+    assert calls(writer) == [("rename_piece", [], {"piece_id": group.piece_id, "title": None})]
+
+
+def test_split_in_a_group_names_each_episode_with_its_show(world):
+    # two shows' Ep 1 must never read alike: "<show> · Ep N", as the group's row labels them
+    _seed, win, _w = world()
+    group, other = _two_show_group(win)
+    split = next(e for e in win.items.entries(group) if e.name == "split")
+    eps = group.episodes
+    cuts = [k for k in range(1, len(eps)) if view_rows.split_piece(group, k) is not None]
+    assert cuts
+    labels = [c.label for c in split.children]
+    assert labels == [strings.ITEM_SPLIT_AFTER.format(ep=f"{eps[k - 1].show} · {eps[k - 1].label}") for k in cuts]
+    assert all(f"{eps[k - 1].show} · {eps[k - 1].label}" in c.tip for k, c in zip(cuts, split.children))
+    # a show's own row keeps its plain labels
+    row = next(r for r in rows_of(win) if not r.group and len(r.episodes) >= 2 and item_menu.joinable(r))
+    assert item_menu.ep_name(row, row.episodes[0]) == row.episodes[0].label
+
+
+def test_G4_group_counts_a_groups_second_show_by_its_episodes_own_title(world):
+    # a group's SECOND show's episode, and a part of its first show, are two shows — Group… is offered
+    _seed, win, _w = world()
+    view = win.page_widgets["current"].view_model
+    rs = list(view.rows)
+    ok = [i for i, r in enumerate(rs) if i > 0 and item_menu.joinable(r) and len(r.episodes) >= 2]
+    a = ok[0]
+    b = next(i for i in ok if rs[i].work_id != rs[a].work_id)
+    other_work, g = rs[b].work_id, rs[a]
+    eps = list(g.episodes)
+    eps[-1] = eps[-1]._replace(work_id=other_work, show=rs[b].title)
+    rs[a] = g._replace(group=True, works=(g.work_id, other_work), episodes=tuple(eps))
+    rs[b] = rs[b]._replace(work_id=g.work_id, works=(g.work_id,))     # a run of the group's FIRST show elsewhere
+    _shown(win, view, rs)
+    lst = lst_of(win)
+    lst.picked_eps = {(rs[a].key, eps[-1].id)}
+    lst.picked_rows = {rs[b].key}
+    assert win.items._to_group() is not None, "picks of two shows offer Group…"
+    # and a whole group alone is its every show: with a part of one of them, still two shows
+    lst.picked_eps, lst.picked_rows = set(), {rs[a].key, rs[b].key}
+    assert len(win.items._shows([rows_of(win)[a], rows_of(win)[b]], [])) == 2
+    # one show's two parts are still one show (no group of them)
+    lst.picked_rows = {rs[b].key}
+    lst.picked_eps = {(rs[a].key, eps[0].id)}
+    assert win.items._to_group() is None
+
+
+GROUP_WRITES = {
+    "group": lambda win, g, o: (setattr(lst_of(win), "picked_rows", {g.key, o.key}), win.items.group(g))[1],
+    "group_join": lambda win, g, o: win.items.group_join(g, o),
+    "into_group_at": lambda win, g, o: win.items.into_group_at(g, g.episodes[0], drag.ids_of(o), o.title, (o.key,)),
+    "add_to_group": lambda win, g, o: win.items.add_to_group(g, drag.ids_of(o), o.title),
+    "same_show": lambda win, g, o: win.items.same_show(o, item_menu.Show(g.key, g.work_id, g.title, "")),
+}
+GROUP_TEXT = {
+    "group": lambda g, o: strings.ITEM_GROUPED.format(n=2),
+    "same_show": lambda g, o: strings.ITEM_SAME_SHOW_DONE.format(b=o.title, a=g.title),
+}
+
+
+@pytest.mark.parametrize("name", list(GROUP_WRITES))
+def test_every_group_write_toasts_only_once_saved_and_never_for_nothing_landed(world, name):
+    # a busy store: no toast (and no Undo) until the store saved it; one that lands as nothing toasts nothing
+    _seed, win, writer = world()
+    b, a = two_shows(win)
+    rs = rows_of(win)
+    g, o = (as_group(win, a), rs[b]) if name in ("into_group_at", "add_to_group") else (rs[a], rs[b])
+    text = GROUP_TEXT.get(name, lambda g, o: strings.ITEM_GROUPED_WITH.format(other=o.title, title=g.title))(g, o)
+    shown = lambda: win.toasts.card is not None and win.toasts.card.message == text     # noqa: E731
+    writer.stuck = True
+    assert GROUP_WRITES[name](win, g, o) is not None
+    settle(200)
+    assert not shown(), "toasted before the store saved it"
+    writer.free()
+    assert wait_until(shown, 5) and win.toasts.card.buttons, "its toast and Undo once saved"
+    win.toasts.close()
+    settle()
+    op = calls(writer)[-1][0]
+    writer.nothing = {op}
+    writer.calls.clear()
+    lst_of(win).clear_picks()
+    win.moves.toasted = None
+    assert GROUP_WRITES[name](win, g, o) is not None and calls(writer)
+    assert wait_until(lambda: not win.moves.tickets, 5)
+    settle(200)
+    assert win.moves.toasted is None, "toasted for what never happened"
+
+
+def test_a_target_in_finished_or_new_arrivals_is_never_a_groups(world):
+    # the store refuses a group there (`NO_GROUP_TIERS`): the window never offers or writes it
+    _seed, win, writer = world()
+    b, a = two_shows(win)
+    rs = rows_of(win)
+    for tier in ls.NO_GROUP_TIERS:
+        target = as_group(win, a)._replace(tier=tier)
+        assert not item_menu.groups_there(target)
+        assert win.items.group_join(rs[a]._replace(tier=tier), rs[b]) is None
+        assert win.items.into_group_at(target, target.episodes[0], drag.ids_of(rs[b]), rs[b].title) is None
+        assert win.items.add_to_group(target, drag.ids_of(rs[b]), rs[b].title) is None
+    assert writer.calls == []
+    assert item_menu.groups_there(rs[a]) and item_menu.groups_there(rs[a]._replace(tier="soon"))
+
+
+# --- real store: the review's cases, red on the code before this round ---------------------------- #
+def _tiers(store, ids):
+    return [store.item(i)["tier"] for i in ids]
+
+
+def _same_show_to(win, row, where):
+    entry = _same_show(win, row)
+    assert entry is not None, "no Same show as… on the row"
+    return next((c.payload for c in entry.children if c.payload.where == where), None)
+
+
+def _said(win, monkeypatch):
+    said = []
+    say = win.say
+    monkeypatch.setattr(win, "say", lambda text: (said.append(text), say(text)))
+    return said
+
+
+@pytest.mark.parametrize("where", ["arrivals", "goal", "graduated"])
+def test_real_store_same_show_as_a_show_elsewhere_makes_one_title_and_moves_no_file(real, where, monkeypatch):
+    # "Make B part of A" — never "send B's Current files to New arrivals / Goal", and a show in Finished merges too
+    # (every join into Finished was refused before)
+    store, win, _w = real()
+    b, a = two_shows(win)
+    rs = rows_of(win)
+    row, other = rs[b], rs[a]
+    mine = list(drag.ids_of(row))
+    if where == "graduated":
+        store.finish(list(drag.ids_of(other)))
+    else:
+        store.set_tier(list(drag.ids_of(other)), where)
+    assert wait_until(lambda: all(r.work_id != other.work_id for r in rows_of(win)), 10)
+    row = next(r for r in rows_of(win) if list(drag.ids_of(r)) == mine)
+    before = {i: (store.item(i)["tier"], store.item(i)["ord"], store.item(i)["piece_id"]) for i in mine}
+    name = store._work_row(other.work_id)["title"]
+    show = _same_show_to(win, row, strings.ITEM_JOIN_WHERE[where])
+    assert show is not None, f"{where}'s show offered"
+    said = _said(win, monkeypatch)
+    win.items.menu_pick(row, "same-show", show)
+    win.items.question.yes.click()
+    assert wait_until(lambda: {store.item(i)["work_id"] for i in mine} == {other.work_id}, 5), "made one show"
+    assert {i: (store.item(i)["tier"], store.item(i)["ord"], store.item(i)["piece_id"]) for i in mine} == before
+    assert store._work_row(other.work_id)["title"] == name, "A keeps its name"
+    assert not said, said
+    text = strings.ITEM_SAME_SHOW_DONE.format(b=row.title, a=show.title)
+    assert wait_until(lambda: win.toasts.card is not None and win.toasts.card.message == text, 5)
+
+
+def test_real_store_same_show_in_current_is_one_call_nothing_moves_and_undo_makes_two_shows_again(real):
+    store, win, w = real()
+    b, a = two_shows(win)
+    rs = rows_of(win)
+    row, other = rs[b], rs[a]
+    mine, theirs = list(drag.ids_of(row)), list(drag.ids_of(other))
+    order = {t: store.ids(t) for t in ("now", "soon", "goal")}
+    pieces = {i: store.item(i)["piece_id"] for i in mine + theirs}
+    show = next(c.payload for c in _same_show(win, row).children if c.payload.work_id == other.work_id)
+    given = []
+    real_merge = w.merge_works
+    w.merge_works = lambda *a, **k: (given.append((a, k)), real_merge(*a, **k))[1]
+    win.items.menu_pick(row, "same-show", show)
+    win.items.question.yes.click()
+    assert wait_until(lambda: {store.item(i)["work_id"] for i in mine} == {other.work_id}, 5)
+    assert [g[0] for g in given] == [(other.work_id, [row.work_id])], "one call, A kept"
+    assert {t: store.ids(t) for t in ("now", "soon", "goal")} == order
+    assert {i: store.item(i)["piece_id"] for i in mine + theirs} == pieces
+    text = strings.ITEM_SAME_SHOW_DONE.format(b=row.title, a=other.title)
+    assert wait_until(lambda: win.toasts.card is not None and win.toasts.card.message == text, 5)
+    win.toasts.card.buttons[0].click()                                # its Undo: two shows again
+    assert wait_until(lambda: {store.item(i)["work_id"] for i in mine} == {row.work_id}, 5)
+    assert {t: store.ids(t) for t in ("now", "soon", "goal")} == order
+
+
+def test_real_store_same_show_the_ids_refuse_says_why_in_the_bar_and_toasts_nothing(real, monkeypatch):
+    store, win, _w = real()
+    b, a = two_shows(win)
+    rs = rows_of(win)
+    row, other = rs[b], rs[a]
+    mine = list(drag.ids_of(row))
+    with store._writing():
+        store.conn.execute("UPDATE works SET anilist_id = 7 WHERE id = ?", (other.work_id,))
+        store.conn.execute("UPDATE works SET anilist_id = 8 WHERE id = ?", (row.work_id,))
+    show = next(c.payload for c in _same_show(win, row).children if c.payload.work_id == other.work_id)
+    said = _said(win, monkeypatch)
+    win.items.menu_pick(row, "same-show", show)
+    win.items.question.yes.click()
+    assert wait_until(lambda: any(ls.TITLES_APART["anilist_id"] in t for t in said), 5), said
+    assert wait_until(lambda: not win.moves.tickets, 5)
+    settle(200)
+    assert {store.item(i)["work_id"] for i in mine} == {row.work_id}
+    text = strings.ITEM_SAME_SHOW_DONE.format(b=row.title, a=other.title)
+    assert win.toasts.card is None or win.toasts.card.message != text
+
+
+def test_real_store_a_group_dropped_on_an_opened_groups_episode_joins_it_whole_never_cuts_it(real):
+    store, win, _w = real()
+    rs = rows_of(win)
+    ok = [i for i, r in enumerate(rs) if i > 0 and item_menu.joinable(r) and len(r.episodes) >= 2]
+    works, pick = set(), []
+    for i in ok:
+        if rs[i].work_id not in works:
+            works.add(rs[i].work_id)
+            pick.append(i)
+    assert len(pick) >= 4, "four shows in Current"
+    a1, a2, c1, c2 = (rs[i] for i in pick[:4])
+    store.join([a1.piece_id, a2.piece_id], how="group")
+    store.join([c1.piece_id, c2.piece_id], how="group")
+    g1_ids = list(drag.ids_of(a1)) + list(drag.ids_of(a2))
+    g2_ids = list(drag.ids_of(c1)) + list(drag.ids_of(c2))
+    assert wait_until(lambda: sum(1 for r in rows_of(win) if r.group) == 2, 10)
+    g1 = next(r for r in rows_of(win) if r.group and set(drag.ids_of(r)) == set(g1_ids))
+    g2 = next(r for r in rows_of(win) if r.group and set(drag.ids_of(r)) == set(g2_ids))
+    win.items._ep_at = (g1.key, g1.episodes[0])         # as `target()` leaves it with the hand on that episode
+    d = SimpleNamespace(external=False, row=g2, ids=list(drag.ids_of(g2)), title=g2.title)
+    assert win.items.drop(d, g1.key) == g1.key
+    assert wait_until(lambda: not win.moves.tickets, 5)
+    settle(200)
+    text = strings.ITEM_GROUPED_WITH.format(other=g2.title, title=g1.title)
+    assert win.toasts.card is not None and win.toasts.card.message == text
+    assert len({store.item(i)["piece_id"] for i in g1_ids + g2_ids}) == 1, \
+        {i: store.item(i)["piece_id"] for i in g1_ids + g2_ids}
+
+
+def test_real_store_a_group_join_the_store_refuses_is_never_toasted_as_grouped(real, monkeypatch):
+    # the target's piece gone (another program grouped it meanwhile): the bar says why, no Grouped toast, no Undo
+    store, win, _w = real()
+    b, a = two_shows(win)
+    rs = rows_of(win)
+    target, dragged = rs[a], rs[b]
+    c = next(r for r in rs[1:] if item_menu.joinable(r) and r.work_id not in (target.work_id, dragged.work_id))
+    store.join([c.piece_id, target.piece_id], how="group")
+    said = _said(win, monkeypatch)
+    win.items.group_join(target, dragged)               # the drop, from the row the window still shows
+    assert wait_until(lambda: not win.moves.tickets, 5)
+    settle(200)
+    assert any("gone" in t for t in said), said
+    grouped = strings.ITEM_GROUPED_WITH.format(other=dragged.title, title=target.title)
+    assert win.toasts.card is None or win.toasts.card.message != grouped

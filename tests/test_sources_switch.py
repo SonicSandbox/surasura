@@ -253,11 +253,87 @@ def test_switch_versions_is_one_change_and_one_undo_puts_everything_back(languag
         assert {i: _copy(data_dir, rel) for i, rel in _items(store)} == copies and _items(store) == before
         now, target = _records(store), ls.origin_key(synced)
         assert {k: v for k, v in now.items() if k != target} == {k: v for k, v in versions_in.items() if k != target}
-        assert json.loads(now[target]) == dict(json.loads(versions_in[target]), declined=True)
+        was = json.loads(versions_in[target])
+        assert json.loads(now[target]) == dict(was, declined=[was["size"], was["mtime_ns"]]), "declined, by its stats"
         assert set(records) < set(versions_in)
         assert _look(store, language, root, full=True)["switched"] == 0, "the learner's Undo stands"
         assert {i: _copy(data_dir, rel) for i, rel in _items(store)} == copies
         assert store.group_of(store.item(item)["work_id"])["by"] == "look", "a version switch never touches the group"
+
+
+def _watch_reads(monkeypatch, store):
+    """Every read a look or a switch makes of a source file (`sources._read_text`, the switch's bytes, the thin
+    check) and every `switch_versions` asked -> (paths read, items asked)."""
+    reads, asked = [], []
+    real_text, real_part, real_thin = sources._read_text, ls._read_into_part, ls._thin_switch
+    monkeypatch.setattr(sources, "_read_text", lambda p, st: reads.append(os.path.abspath(p)) or real_text(p, st))
+    monkeypatch.setattr(ls, "_read_into_part", lambda st_, plan, token: reads.extend(plan["origins"]) or
+                        real_part(st_, plan, token))
+    monkeypatch.setattr(ls, "_thin_switch", lambda st_, plan: reads.extend(plan["origins"]) or real_thin(st_, plan))
+    real_switch = store.switch_versions
+    monkeypatch.setattr(store, "switch_versions", lambda ids, **k: asked.append(list(ids)) or real_switch(ids, **k))
+    return reads, asked
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_declined_version_is_never_read_again_until_its_file_changes(language, monkeypatch):
+    """S19 (update only what changed): after the learner's Undo declined a better version, a look reads nothing of it
+    and asks no switch — the record remembers the file by its size and time; the same file with new bytes is judged
+    again, and switched to."""
+    store, data_dir = _empty(language)
+    src = _drive("Anime")
+    show, v, s = _synced_show(language, src)
+    t = _OURS[language]
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        before = _items(store)
+        synced = _write(os.path.join(src, show, f"{show} - 01.{t}.synced.srt"), _text(language, 1, " synced"))
+        held_off = ls.Change("switch_version", 0, 0)
+        held_off.switched = []
+        with monkeypatch.context() as patched:
+            patched.setattr(store, "switch_versions", lambda *a, **k: held_off)
+            _look(store, language, root)
+        store.undo(store.switch_versions([before[0][0]]))
+        with monkeypatch.context() as patched:
+            reads, asked = _watch_reads(patched, store)
+            again = _look(store, language, root, full=True)
+        assert again["switched"] == 0 and os.path.abspath(synced) not in reads and asked == [], "nothing read again"
+        _write(synced, _text(language, 1, " synced again, re-timed once more"), age=30)
+        with monkeypatch.context() as patched:
+            reads, asked = _watch_reads(patched, store)
+            changed = _look(store, language, root, full=True)
+        assert changed["switched"] == 1 and os.path.abspath(synced) in reads
+        assert _copy(data_dir, before[0][1]) == _text(language, 1, " synced again, re-timed once more").encode("utf-8")
+        assert _items(store) == before
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_thin_version_is_judged_once_and_again_only_when_its_file_changes(language, monkeypatch):
+    """A6 with S19: the pick's own group's signs-only `.ass` (better by its format, too thin to be the text) is read
+    once and remembered by its stats — the next look reads neither file nor asks a switch; the same file holding the
+    episode's dialogue later is judged again and switched to."""
+    store, data_dir = _empty(language)
+    src = _drive("Anime")
+    show, t = _SHOWS[language][1], _OURS[language]
+    _write(os.path.join(src, show, f"[SubsA] {show} - 01.{t}.srt"), _text(language, 4, " A"))
+    with store:
+        root = store.add_source(src)
+        (item,) = _look(store, language, root, first=True)["ids"]
+        rel = store.item(item)["rel_path"]
+        thin = _write(os.path.join(src, show, f"[SubsA] {show} - 01.{t}.ass"), _THIN[language] + "; signs\n")
+        assert _look(store, language, root)["switched"] == 0
+        record = _record(store, thin)
+        assert record["version"] is True and record["thin"] == [record["size"], record["mtime_ns"]]
+        with monkeypatch.context() as patched:
+            reads, asked = _watch_reads(patched, store)
+            again = _look(store, language, root, full=True)
+        assert again["switched"] == 0 and os.path.abspath(thin) not in reads and asked == []
+        full = _text(language, 8, " A, the full release")             # (the dialogue, as the pick holds it)
+        _write(thin, full, age=30)
+        changed = _look(store, language, root, full=True)
+        assert changed["switched"] == 1 and _copy(data_dir, store.item(item)["rel_path"]) == full.encode("utf-8")
+        assert store.item(item)["rel_path"] != rel, "the copy takes the `.ass` name (its format changed)"
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
@@ -473,6 +549,10 @@ def test_a_new_edition_beside_the_book_is_switched_whole_in_place(language, monk
         again = _look(store, language, root, full=True)
         assert (again["added"], again["switched"]) == (0, 0)
         assert [_copy(data_dir, rel) for _i, rel in before] == _parts(old, language)
+        _epub(new, _chapters(language, "再"), language, age=30)          # the declined edition's file changed
+        changed = _look(store, language, root, full=True)
+        assert (changed["added"], changed["switched"]) == (0, len(before)), "judged again once its file changed"
+        assert [_copy(data_dir, rel) for _i, rel in before] == _parts(new, language)
 
 
 @pytest.mark.parametrize("language", LANGUAGES)

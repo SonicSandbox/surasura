@@ -557,10 +557,12 @@ def paint_diff(p, pct, tone, n_new, right, y_mid, dpr=1.0):
     if pct is None and n_new is None:
         TEXT.draw(p, right - 60 * f, y_mid, strings.ROWS_DASH, "diff", 60 * f, dim, align="right", dpr=dpr)
         return
+    TEXT.draw(p, x, y_mid, " " + new_txt, "diff", new_w + 2, dim, dpr=dpr)
     if n_new is not None:
-        TEXT.draw(p, x, y_mid, " " + new_txt, "diff", new_w + 2, dim, dpr=dpr)
         TEXT.draw(p, x - cnt_w, y_mid, str(n_new), "diff", cnt_w, style.qcolor(col["ink"]), weight=600, align="right",
                   dpr=dpr)
+    else:                                               # not counted yet (no plan, files came in): "— new", as the hero
+        TEXT.draw(p, x - cnt_w, y_mid, strings.ROWS_DASH, "diff", cnt_w, dim, align="right", dpr=dpr)
     x -= cnt_w
     TEXT.draw(p, x - dot_w, y_mid, strings.ROWS_DOT, "diff", dot_w, dim, align="centre", dpr=dpr)
     x -= dot_w

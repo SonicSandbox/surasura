@@ -105,6 +105,7 @@ class FakeAutomation(_Duty):
     def activated(self): self._record("automation.activated")
     def language_changed(self, language): self._record("automation.language_changed", language)
     def recheck(self): self._record("automation.recheck")
+    def sync_now(self, then=None): self._record("automation.sync_now", then)
     def before_generate(self): self._record("automation.before_generate")
     def update_cancelled(self): self._record("automation.update_cancelled")
     def close(self): self._record("automation.close")
@@ -515,6 +516,61 @@ def test_bar_marks_show_the_automation_state_and_repaint_only_on_change(world):
     assert wait_until(lambda: d.anki.key == "anki-closed" and not d.anki.lit)    # the dark emerald, its hover says so
     assert "Anki closed — work waits" in d.anki.toolTip()
     assert d.paints[d.known] == painted[0]                                        # the count didn't move: not repainted
+
+
+@pytest.mark.parametrize("why, opens, says", [
+    (None, False, None), ("running", False, strings.FOOT_KNOWN_REFUSED["running"]), ("no-decks", True, None),
+    ("never-synced", True, None), ("update-staged", False, strings.FOOT_KNOWN_REFUSED["update-staged"]),
+])
+def test_a_click_on_the_known_count_syncs_now_or_opens_the_anki_window(world, monkeypatch, why, opens, says):
+    """Q30: one click is one `sync_now` (the automation's one sync path); the answer comes back on the window's thread —
+    no decks chosen yet, or the first sync not made, opens the Anki window instead; a sync started opens nothing; a
+    refused one (AD-6: an update staged, one running already) says why in the bar, never nothing."""
+    from app.qt import windows
+    opened = []
+    monkeypatch.setattr(windows, "launch", lambda shell, op: opened.append(op.name))
+    world.start()
+    world.automation.push(sync=A.SYNCED, added=0, known=12345)
+    d = world.d
+    assert wait_until(lambda: not d.known.isHidden())
+    QTest.mouseClick(d.known, Qt.MouseButton.LeftButton)
+    asks = world.automation.called("automation.sync_now")
+    assert len(asks) == 1
+    then = asks[0][1]
+    t = threading.Thread(target=then, args=(why,))           # the automation's worker answers
+    t.start()
+    t.join()
+    if opens:
+        assert wait_until(lambda: opened == ["anki"])
+    else:
+        QTest.qWait(50)
+        assert opened == []
+    if says is not None:
+        assert wait_until(lambda: world.win.bar_line.full() == says)
+    else:
+        assert world.win.bar_line.full() not in strings.FOOT_KNOWN_REFUSED.values()
+
+
+def test_the_known_counts_hover_names_what_a_click_does_on_each_road(world):
+    """IK-7: the page's known-words road, one rule — no decks for this language yet, a click opens the Anki window and
+    the hover says so; decks chosen, a click syncs; a sync running (any live `anki-sync` job: the automatic one, a
+    click's, the Anki window's *Sync now*) says that. The words are the screen reader's description too."""
+    world.automation.push(sync=A.SYNCED, added=0, known=40)
+    d = world.d
+    assert wait_until(lambda: not d.known.isHidden())
+    assert d.known.toolTip().endswith(strings.FOOT_KNOWN_CLICK_ANKI)
+    assert d.known.accessibleDescription() == strings.FOOT_KNOWN_CLICK_ANKI
+    world.services.settings.set({"anki_sync_decks": {"ja": ["日本語::アニメ"]}})
+    assert wait_until(lambda: d.known.toolTip().endswith(strings.FOOT_KNOWN_CLICK))
+    assert d.known.accessibleDescription() == strings.FOOT_KNOWN_CLICK
+    world.services.settings.set({"anki_sync_decks": {"ja": ["日本語::アニメ"], "zh": []}, "target_language": "zh"})
+    assert wait_until(lambda: d.known.toolTip().endswith(strings.FOOT_KNOWN_CLICK_ANKI))     # the language's own
+    world.services.settings.set({"target_language": "ja"})
+    assert wait_until(lambda: d.known.toolTip().endswith(strings.FOOT_KNOWN_CLICK))
+    job = world.registry.record("anki-sync", "Updating known words from Anki")
+    assert wait_until(lambda: d.known.toolTip().endswith(strings.FOOT_KNOWN_SYNCING))
+    job.finish(ok=True)
+    assert wait_until(lambda: d.known.toolTip().endswith(strings.FOOT_KNOWN_CLICK))
 
 
 @pytest.mark.parametrize("lang", ["ja", "zh"])

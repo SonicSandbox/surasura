@@ -1623,6 +1623,8 @@ class ShellWindow(QMainWindow):
         self.anki_mark = frame.AnkiMark(footer)
         row.addWidget(self.anki_mark)
         self.known = frame.KnownCorner(footer)
+        self.known.clicked.connect(self._known_clicked)    # Q30: a click syncs now
+        self._known_relay = None
         row.addWidget(self.known)
         self._logs_folder = None
         self.status_paints = {}             # row 7's statuses (the bar's lines, the journey dot) -> repaints (S19)
@@ -2033,6 +2035,8 @@ class ShellWindow(QMainWindow):
             self._previews_moved()                          # W3.1b: a key the bands' numbers read (Settings' set)
         if "anki_sync_auto" in keys:
             self._show_automation(s.automation.state())
+        elif "anki_sync_decks" in keys or "target_language" in keys:
+            self._known_road()                              # the count's click line follows the road (IK-7)
         try:
             stale = s.settings.stales(keys, language)
         except Exception:
@@ -2132,6 +2136,7 @@ class ShellWindow(QMainWindow):
             d.junban_said = junban
             self.toasts.show(junban)
         known = getattr(state, "known", None)
+        self._known_road()
         if d.known.set_known(known, strings.BAR_KNOWN_TIP):     # W3.1a: the known corner (repainted on a change only)
             d.paints[d.known] = d.paints.get(d.known, 0) + 1
         if not self.services.settings.get().get("anki_sync_auto"):
@@ -2149,6 +2154,40 @@ class ShellWindow(QMainWindow):
         # hover. *N waiting* (W31A-2) comes from the status service's `backlog`, in `show_status`.
         if d.anki.show_state(key, words, tip):
             d.paints[d.anki] = d.paints.get(d.anki, 0) + 1
+
+    def _known_clicked(self):
+        """Q30: a click on the known-words count syncs now, through the automation's one sync path (`sync_now`: the
+        automatic sync's own job, forced, and with the automatic sync off too — the user asked; it ends as every sync
+        does). A click while one runs adds nothing. With no decks chosen yet, or the first sync not made (always the
+        user's own, in the Anki window), the Anki window opens instead."""
+        automation = self.services.automation
+        if automation is None:
+            return
+        if self._known_relay is None:
+            self._known_relay = bridge.Relay(self)
+            self._known_relay.said.connect(self._known_answer)
+        automation.sync_now(then=self._known_relay.call)
+
+    def _known_answer(self, why):
+        """The click's answer (AutoSync's own): no decks or no first sync opens the Anki window; a refusal is said in
+        the bar (AD-6: an update staged, a sync already running), never nothing."""
+        if why in ("no-decks", "never-synced"):
+            from app.qt import windows
+            op = next((op for op in windows.OPENERS if op.name == "anki"), None)
+            if op is not None:
+                windows.launch(self, op)
+        elif why in strings.FOOT_KNOWN_REFUSED:
+            self.say(strings.FOOT_KNOWN_REFUSED[why])
+
+    def _known_road(self):
+        """IK-7: the count's hover names what a click does — the page's known-words road, one rule
+        (`settings_catalog.known_road`): this language's Anki decks chosen, a sync; none, the Anki window."""
+        d = self.duties
+        if d is None:
+            return
+        from app.qt import settings_catalog as catalog
+        settings = self.services.settings.get()
+        d.known.set_road(catalog.known_road(settings, settings.get("target_language") or "ja"))
 
     def _read_level(self):
         d = self.duties
@@ -2668,6 +2707,10 @@ class ShellWindow(QMainWindow):
 
     def _jobs_changed(self, views):
         self._jobs = views
+        # Q30: the count's hover says a sync is running — the automatic one, a click's or the Anki window's
+        known = getattr(self, "known", None)
+        if known is not None:
+            known.set_syncing(any(v.kind == "anki-sync" and v.state in jobs_module.LIVE for v in views))
         if self._quit == "waiting" and self._replan_waited and getattr(self, "_moves_waited", True) and \
                 not jobs_module.waits_at_quit(views):
             self._close_now()

@@ -63,6 +63,7 @@ FOLDER_PICK_TITLE = "Where videos are looked for"
 ADD = "Add"                                      # an empty bed's words when the page names none
 REMOVE_NAME = "Remove {item}"                    # a list tablet's ✕, for screen readers (the accessible description)
 CROSS = "✕"
+TICK = "✓"                                       # a multi-pick tablet's mark when lit (Q31: never a choice's vein)
 PICKED_NONE = "None picked"                       # a set of tablets with none picked, for screen readers
 STATUS_NAME = "{name}: {words}"                  # the status mark, for screen readers
 
@@ -78,7 +79,7 @@ SECTIONS = {
 GROUPS = {
     "counts_as_known": "What counts as known", "from_library": "Cards from your library",
     "in_anki": "Cards already in Anki", "anki": "Anki", "names": "Names", "words_phrases": "Words and phrases",
-    "houseki": "Houseki tools",
+    "houseki": "Houseki tools", "not_on_list": "Cards not on your list",
 }
 
 # --- the doors (a window, or an action, a row opens) ---------------------------------------------------------------- #
@@ -178,14 +179,16 @@ ROWS = {
                              "play in time with the video. With neither on this PC, every episode waits for Mine "
                              "anyway. Turn this on if your subtitles are already synced. hato’s untimed subtitles "
                              "still wait", "trust timing synced subtitles not timed tsubasa"),
-    "junban_own_tag": ("Your own cards first",
-                       "Cards you made yourself go before Surasura’s, in the order you made them — never suspended",
-                       "Cards you mine yourself go ahead of the ones Surasura Connect makes, in the order you mined "
-                       "them, and are never suspended. Type a tag (immersion) and every card carrying it is yours too",
-                       "own cards first tag manual yomitan"),
-    "junban_order_all": ("Order all cards by the list", "Your own cards in your list’s order too, never suspended",
-                         "Put your own cards in your list's order too, among Connect's, instead of ahead of them. They "
-                         "are still never suspended", "order all cards list own"),
+    # Q29: one choice — where your own cards go — and the tag that marks them under it
+    "junban_order_all": ("Your own cards", "The cards you make yourself, never marked or suspended as not on your list",
+                         "First: the cards you made yourself go ahead of the ones Surasura Connect makes, in the order "
+                         "you made them. In your list's order: they go among Connect's, by your list. Either way they "
+                         "are never marked or suspended as not on your list", "own cards first order all list manual "
+                         "yomitan"),
+    "junban_own_tag": ("Their tag", "Every card carrying it is yours too, whenever you made it",
+                       "Type a tag (immersion): every card carrying it counts as your own, even one made before "
+                       "Connect's first card, so it goes as chosen above and is never suspended. Empty: your own cards "
+                       "are the ones you made after Connect's first", "own cards tag immersion manual yomitan"),
     "anki_sync_delay_min": ("Sync Anki after tomorrow's cards change",
                             "Surasura asks Anki to sync before its first write of a session, then this long after a "
                             "change",
@@ -223,12 +226,25 @@ ROWS = {
                         "After it: every word on your list comes first, the rarer cards after it by their own sentence. "
                         "Mixed in: each where your journey meets it, among the list's words. At the back: in their "
                         "own order, behind the list's", "list first rare unlisted mixed back"),
-    "junban_first": ("First", "What leads the order",
-                     "Phrases: phrase cards you meet as often as your list's words are placed as if on it. i+1 first: "
-                     "a card's new word in its sentence gets its card first", "first phrases i+1 ready"),
-    "junban_later": ("Cards not on your list", "Placed after your list, and marked. Restore takes it back",
-                     "Tag them Surasura::later, flag them purple, or suspend them (tagged too). Restore puts each back",
-                     "not on list later suspend flag tag"),
+    # Q31: switches that work together, never one pick-one row
+    "junban_phrases": ("Idioms and set phrases go with your list",
+                       "A phrase card you meet as often as your list's words is placed as if on it",
+                       "On: an idiom or set phrase card (気がつく) your library meets as often as your list's words is "
+                       "placed among them, as if on your list. Off: it goes by its own sentence, with the rarer cards",
+                       "phrases idioms set phrase list first"),
+    "junban_ready_first": ("i+1 first: bring the word a card's sentence needs right before it",
+                           "A card's new word in its sentence gets its card first",
+                           "On: when a card's own sentence holds a word of your list that comes after it, that word's "
+                           "card is brought right before it when it is i+1 there; otherwise the card waits with the "
+                           "cards of more new words. Off: your list's order alone", "first i+1 ready sentence needs"),
+    "junban_later_tag": ("Tag them Surasura::later", "Placed after your list, and marked. Restore takes it back",
+                         "Cards not on your list get the tag Surasura::later. Restore takes it back off",
+                         "not on list later tag"),
+    "junban_later_flag": ("Flag them purple", "", "Cards not on your list get Anki's purple flag. Restore takes it off",
+                          "not on list later flag purple"),
+    "junban_later_suspend": ("Suspend them", "Tagged too, so you can always find them",
+                             "Cards not on your list are suspended, and tagged Surasura::later too. Restore puts each "
+                             "back", "not on list later suspend"),
     "junban_auto_reorder": ("Reorder by itself after Generate", "",
                             "After a Generate, and when you come back to Surasura, the deck saved in Junban is "
                             "reordered on its own", "auto reorder automatic generate"),
@@ -250,16 +266,21 @@ ROWS = {
     "junban_tag_markers": ("Tag ✦ ⚖ 📖 markers", "As sub-tags of the tag below",
                            "Also adds the word's markers as sub-tags — Surasura::star, ::lopsided, ::reading — so you "
                            "can build a filtered deck on one of them", "markers star lopsided reading tag"),
+    # IK-4: glyph tablets again — a tick on each one picked (Q31's rule), never a choice's vein
     "junban_only_markers": ("Only words marked", "None picked: every word",
                             "Reorder only the words carrying one of these marks; the rest keep their order, at the "
-                            "back", "only markers star lopsided reading filter"),
+                            "back. While one is picked, Idioms and set phrases and i+1 first don't apply",
+                            "only markers star lopsided reading filter high leverage"),
     "junban_tag": ("Tag the notes I move", "Empty: no tag",
                    "Adds this tag to every note whose card moved. Restore takes it back off", "tag notes moved"),
     "junban_chunk_size": ("Cards per write", "", "How many cards go to Anki in one request", "chunk cards per write"),
 
     # Backfill
-    "junban_backfill_fills": ("Fill", "パターン: how the word is used · 例文: two more sentences from your own content",
-                              "Which fields Backfill fills", "patterns sentences fill パターン 例文"),
+    "backfill_patterns": ("Fill パターン", "How the word is used",
+                          "Backfill fills each card's パターン field: how the word is used", "patterns fill パターン"),
+    "backfill_sentence": ("Fill 例文", "Two more sentences from your own content",
+                          "Backfill fills each card's 例文 field: two more sentences from your own content",
+                          "sentences examples fill 例文"),
     "junban_backfill_cards": ("Which cards", "The deck is chosen in Backfill’s window",
                               "All: every card except new ones whose word you know. New only: cards you haven't "
                               "studied yet", "deck cards new all"),
@@ -461,21 +482,23 @@ ROWS = {
     # --- end W3.2 L3
 }
 
+# Backfill's fills by name (`junban_backfill_fills`' values): its two switches, and Your setup's line
+FILLS = {"patterns": "パターン", "sentence": "例文"}
+
 # --- the choices: row id -> {value: label}; choice cards also have a line under each -------------------------------- #
 OPTIONS = {
     "known_road": {"anki": "Anki", "import": "Import a list"},
     "connect_mine_words": {"list": "Your list", "unknown": "Every unknown word", "i1": "Only i+1"},
     "connect_open_anki": {False: "Wait for me", True: "Open Anki for me"},
+    "junban_order_all": {False: "First, in the order you made them", True: "In your list’s order"},
     "known_from_anki": {"suspended": "Suspended", "marked": "Marked", "flag:1": "Flag 1 (Red)",
                         "flag:2": "Flag 2 (Orange)", "flag:3": "Flag 3 (Green)", "flag:4": "Flag 4 (Blue)",
                         "flag:5": "Flag 5 (Pink)", "flag:6": "Flag 6 (Turquoise)", "flag:7": "Flag 7 (Purple)"},
     "junban_scope": {"deck": "This deck", "all": "All decks"},
     "junban_order": {"content": "As I’ll meet it", "priority": "By leverage"},
     "junban_unlisted": {"list_first": "After it", "journey": "Mixed in", "back": "At the back"},
-    "junban_first": {"junban_phrases": "Phrases", "junban_ready_first": "i+1 first"},
-    "junban_later": {"junban_later_tag": "Tag", "junban_later_flag": "Flag purple", "junban_later_suspend": "Suspend"},
     "junban_only_markers": {"star": "✦", "lopsided": "⚖", "reading": "📖"},
-    "junban_backfill_fills": {"patterns": "パターン", "sentence": "例文"},
+    "backfill_patterns": {"patterns": FILLS["patterns"]}, "backfill_sentence": {"sentence": FILLS["sentence"]},
     "junban_backfill_cards": {"all": "All", "new": "New only"},
     "strategy": {"freq": "Level", "coverage": "Coverage %"},
     "zh_script": {"asis": "As written", "s": "Simplified", "t": "Traditional"},
@@ -496,11 +519,13 @@ OPTION_LINES = {
                            "unknown": "Every word of the episode you don't know yet.",
                            "i1": "Only words with a line whose other words you know."},
 }
-# A tablet's tooltip, where its glyph alone doesn't say it
+# An option's own tooltip (a choice's or a tablet's), where its label alone doesn't say it
 OPTION_TIPS = {
     "junban_only_markers": {"star": "High leverage: the words the report stars",
                             "lopsided": "Lopsided: words that come almost entirely from one part of your library",
                             "reading": "Reading: words you'll read but essentially never hear"},
+    "junban_order_all": {False: "Your own cards go ahead of Connect's, in the order you made them",
+                         True: "Your own cards go among Connect's, in your list's order"},
 }
 
 # --- P4: the live rows (settings_live.py): Your setup, the level readout, the statuses, App's rows, the credits, Export

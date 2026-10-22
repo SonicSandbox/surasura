@@ -112,6 +112,9 @@ def test_each_status_that_is_a_button_names_its_click_and_its_hover_tip_comes_th
         i = row_with(lst, kind, None)
         row = lst.model().entries[i][1]
         p = action(lst, i)
+        if isinstance(words, dict):                     # a mining ask counts its files when more than one (AD-2)
+            n = len(p[3].ids)
+            words = words[n == 1].replace("{n}", str(n))
         assert p[0] == name and p[2] == words.format(tip=row.status.tip), kind
         ev = QHelpEvent(QEvent.Type.ToolTip, p[1].center(), lst.viewport().mapToGlobal(p[1].center()))
         lst.viewportEvent(ev)
@@ -701,8 +704,8 @@ def test_row28_a_grey_waiting_episodes_menu_offers_mine_now_and_it_asks_for_that
     row, ep = _waiting_episode(lst)
     assert win.mine.episode_entries in win.items.episode_hooks
     entry = _mine_now(win.items.episode_entries(row, ep))
-    assert [(e.label, e.tip, e.ok) for e in entry] == [(strings.ROWS_ACTION_NAMES["mine-now"],
-                                                         strings.ROWS_MINE_NOW_TIP.format(tip=ep.status.tip), True)]
+    tip = rows.action_of(ep.status, (ep,), None, ep.media_word or row.media_word)[1]     # the pill's own words
+    assert [(e.label, e.tip, e.ok) for e in entry] == [(strings.ROWS_ACTION_NAMES["mine-now"], tip, True)]
     win.items.episode_pick(row, ep, entry[0].name, entry[0].payload)
     assert asks(writer) == [("ask_mining", [ep.id], {"on": True})]
 

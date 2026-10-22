@@ -368,6 +368,17 @@ def never_moves(text_size="M", language="ja"):
     open_all_folds(page)
     QApplication.processEvents()
     vp, bar = page.scroll.viewport(), page.scroll.verticalScrollBar()
+    # AD-1: how far Your setup's own line re-flows the page — the top of the section under it (Known words), in the body
+    below_setup = page.slabs[list(page.slabs)[1]]
+
+    def setup_end():
+        return below_setup.mapTo(page.body, QPoint(0, 0)).y()
+
+    def shown_above(control):
+        """The rows shown above `control` now: id -> height (a hidden row's place is stale, so it is never counted)."""
+        y = control.mapTo(page.body, QPoint(0, 0)).y()
+        return {r: v.height() for r, v in page.rows.items()
+                if v.isVisibleTo(page) and v.mapTo(page.body, QPoint(0, 0)).y() < y}
     problems, checked = [], 0
     views = [v for v in reversed(shown_views(page)) if v.row.id != "target_language"]
     views.append(page.rows["target_language"])            # the language last: rows above it change (Parsing's)
@@ -380,36 +391,45 @@ def never_moves(text_size="M", language="ja"):
             middle = control.mapTo(page.body, QPoint(0, 0)).y() - vp.height() // 2
             bar.setValue(max(0, min(bar.maximum(), middle)))
             QApplication.processEvents()
-            v0, y0 = bar.value(), control.mapTo(vp, QPoint(0, 0)).y()
+            v0, y0, h0 = bar.value(), control.mapTo(vp, QPoint(0, 0)).y(), setup_end()
+            above = shown_above(control)
             new, _payload = other_value(page, view, control, page._settings())
             change(control, new)
             y1 = control.mapTo(vp, QPoint(0, 0)).y()
             QApplication.processEvents()
             store.land()
             QApplication.processEvents()
-            y2, v2 = control.mapTo(vp, QPoint(0, 0)).y(), bar.value()
+            y2, v2, h2 = control.mapTo(vp, QPoint(0, 0)).y(), bar.value(), setup_end()
+            now = shown_above(control)
+            # rows above that the change showed or hid (the catalog's `when`: Only words marked hides Junban's First
+            # switches) move the page by their own height, as `hold` keeps the control under the hand
+            flipped = sum(h for r, h in now.items() if r not in above) - sum(h for r, h in above.items() if r not in now)
             checked += 1
             if (y1, y2) != (y0, y0):
                 problems.append(f"{view.row.id}: y {y0} -> {y1} -> {y2}")
-            if view.row.id != "target_language" and v2 != v0:
-                problems.append(f"{view.row.id}: scroll {v0} -> {v2}")
+            # AD-1: the scroll follows Your setup's own height change (`hold` keeps the control under the hand while
+            # its line re-flows) and the rows the change showed or hid, nothing else — any other re-flow above (a
+            # row growing, a label appearing), or a scroll on its own, is a problem
+            if view.row.id != "target_language" and v2 - v0 != (h2 - h0) + flipped:
+                problems.append(f"{view.row.id}: scroll {v0} -> {v2} (Your setup {h2 - h0:+}, rows shown or hidden "
+                                f"{flipped:+})")
     page.close()
     return problems, checked
 
 
 def test_a_choice_never_moves_the_page_at_100_percent(qapp):
     problems, checked = never_moves("M")
-    assert checked > 60 and problems == []
+    assert checked > 60 and problems == [], "; ".join(problems)
 
 
 def test_a_choice_never_moves_the_page_at_text_size_large(qapp):
     problems, checked = never_moves("L")
-    assert checked > 60 and problems == []
+    assert checked > 60 and problems == [], "; ".join(problems)
 
 
 def test_a_choice_never_moves_the_page_in_chinese(qapp):
     problems, checked = never_moves("M", "zh")
-    assert checked > 60 and problems == []
+    assert checked > 60 and problems == [], "; ".join(problems)
 
 
 @pytest.mark.parametrize("scale", ["1.5", "1.75"])
@@ -436,7 +456,7 @@ def test_a_choice_never_moves_the_page_at_150_and_175_percent(scale, tmp_path):
     assert line is not None, done.stdout[-2000:] + done.stderr[-4000:]
     problems, checked, dpr = json.loads(line[len("RESULT "):])
     assert abs(dpr - float(scale)) < 0.01
-    assert checked > 60 and problems == []
+    assert checked > 60 and problems == [], "; ".join(problems)
 
 
 def test_a_click_never_scrolls_a_field_into_view_but_tab_may(qapp):
@@ -478,8 +498,8 @@ def test_search_reads_japanese_words_and_opens_a_fold_where_a_row_matches_then_r
     page, store = make_page(ALL_ON, "ja")
     page.fold("level")                                    # the user opened Level's More options
     assert page.folds() == {"level"}
-    page.search.edit.setText("例文")                       # a choice's label in Japanese: Backfill's fills
-    assert page.rows["junban_backfill_fills"].isVisibleTo(page)
+    page.search.edit.setText("例文")                       # a label in Japanese: Backfill's fills
+    assert page.rows["backfill_sentence"].isVisibleTo(page)
     page.search.edit.setText("suspended")                 # Known words' + row, its fold closed by the user
     assert page.rows["anki_sync_include_suspended"].isVisibleTo(page)
     assert page.slabs["known"].adv.isVisibleTo(page)

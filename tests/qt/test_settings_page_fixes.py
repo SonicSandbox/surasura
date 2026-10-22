@@ -404,3 +404,106 @@ def test_anki_miner_seen_after_the_look_shows_the_switch_in_place_of_the_line(qa
     assert catalog.visible(catalog.ROW["connect_enabled"], page._settings(), "ja", page._ctx())
     page.set_found("miner_found", True)                       # already open: nothing again
     assert told == [True] and store.calls == []
+
+
+# --- Q29 / Q31 (laptop build 2): your own cards as one choice; the multi-picks as switches ------------------------ #
+def _written(store, control, new):
+    """A person's change on `control` -> what the page handed the settings service."""
+    before = len(store.calls)
+    control.set_value(new)
+    control.changed.emit(new)
+    return [changes for changes, _update in store.calls[before:]]
+
+
+@pytest.mark.parametrize("chosen, written", [(True, {"junban_order_all": True}), (False, {"junban_order_all": False})])
+def test_your_own_cards_choice_writes_order_all_and_their_tag_stays_open_under_it(qapp, chosen, written):
+    """Q29: *First, in the order you made them* writes False, *In your list's order* True — through the service only;
+    *Their tag* is indented under it and never greyed, under either choice, and writes its own key."""
+    page, store = make_page(dict(ALL_ON, junban_order_all=not chosen, junban_own_tag="immersion"), "ja")
+    view, tag = page.rows["junban_order_all"], page.rows["junban_own_tag"]
+    choice = view.controls[0]
+    assert isinstance(choice, sc.Choice) and choice.values() == [False, True]
+    assert choice.toolTip() and tag.controls[0].toolTip()
+    assert _written(store, choice, chosen) == [written]
+    store.land()
+    assert tag.row.sub and tag.isVisibleTo(page) and tag.controls[0].isEnabled()
+    assert _written(store, tag.controls[0], "immersion 日本語") == [{"junban_own_tag": "immersion 日本語"}]
+
+
+def test_phrases_and_i_plus_one_first_are_switches_hidden_for_chinese_and_at_the_back(qapp):
+    """Q31: two plain switches, each writing its own key; no "First" heading; gone at the back and for Chinese."""
+    pytest.importorskip("modules.junban.reposition")     # Junban's rows show only with Junban installed (private)
+    page, store = make_page(dict(ALL_ON, junban_phrases=True, junban_ready_first=False), "ja")
+    phrases, ready = page.rows["junban_phrases"], page.rows["junban_ready_first"]
+    assert isinstance(phrases.controls[0], sc.Toggle) and isinstance(ready.controls[0], sc.Toggle)
+    assert phrases.controls[0].value() is True and ready.controls[0].value() is False
+    assert _written(store, ready.controls[0], True) == [{"junban_ready_first": True}]     # both on: they work together
+    assert _written(store, phrases.controls[0], False) == [{"junban_phrases": False}]
+    store.land()
+    assert phrases.isVisibleTo(page) and ready.isVisibleTo(page)
+    store.outside({"junban_unlisted": "back"})
+    assert not phrases.isVisibleTo(page) and not ready.isVisibleTo(page)
+    store.outside({"junban_unlisted": "journey"})
+    assert phrases.isVisibleTo(page) and ready.isVisibleTo(page)
+    store.outside({"target_language": "zh"})
+    assert not phrases.isVisibleTo(page) and not ready.isVisibleTo(page)
+
+
+def test_only_words_marked_is_glyph_tablets_again_writing_one_list(qapp):
+    """IK-4: with the tick rule, ✦ ⚖ 📖 are tablets again — more pictures, fewer words — one list, each tablet's own
+    tip and its name in words for a screen reader."""
+    page, store = make_page(dict(ALL_ON, junban_only_markers=["Reading"]), "ja")      # hand-edited: read as Junban does
+    control = page.rows["junban_only_markers"].controls[0]
+    assert isinstance(control, sc.Tablets) and control.multi and control.value() == ["reading"]
+    assert [label for _v, label, _t in control._options] == ["✦", "⚖", "📖"]
+    assert all(tip for _v, _l, tip in control._options)
+    assert _written(store, control, ["star", "reading"]) == [{"junban_only_markers": ["star", "reading"]}]
+
+
+def test_backfills_fills_are_two_switches_writing_one_list(qapp):
+    """Q31's check: パターン and 例文 were two tablets under "Fill" — a pick-one look; now a switch each."""
+    page, store = make_page(dict(ALL_ON, junban_backfill_fills=["patterns"]), "ja")
+    patterns, sentence = (page.rows[r].controls[0] for r in ("backfill_patterns", "backfill_sentence"))
+    assert isinstance(patterns, sc.Toggle) and patterns.value() is True and sentence.value() is False
+    assert _written(store, sentence, True) == [{"junban_backfill_fills": ["patterns", "sentence"]}]
+    store.land()
+    assert patterns.value() is True and sentence.value() is True
+    assert _written(store, patterns, False) == [{"junban_backfill_fills": ["sentence"]}]
+
+
+def test_no_multi_pick_on_the_page_paints_a_choices_vein(qapp, monkeypatch):
+    """Q31 / IK-1, as drawn: Sonic's "the line like what i expected for mutually exclusive options" — every tablets
+    row on the page is a multi-pick, and each paints a tick on each lit tablet and no vein at all."""
+    page, _store = make_page(dict(ALL_ON, known_from_anki=["suspended", "flag:3"], junban_only_markers=["star"]), "ja")
+    tablets = {view.row.id: c for view in page.rows.values() for c in view.controls
+               if isinstance(c, sc.Tablets) and not c.is_list}
+    assert set(tablets) == {"known_from_anki", "junban_only_markers"}
+    tablets = {k: c for k, c in tablets.items() if c.isVisibleTo(page)}   # Junban's show only with it installed
+    assert "known_from_anki" in tablets
+    veins, ticks = [], []
+    monkeypatch.setattr(sc, "paint_vein", lambda *a, **k: veins.append(a))
+    monkeypatch.setattr(sc, "paint_tick", lambda *a, **k: ticks.append(a))
+    for row_id, control in tablets.items():
+        assert control.multi, row_id
+        control.resize(control.sizeHint())
+        del veins[:], ticks[:]
+        control.grab()                                        # one paint of this control alone
+        assert veins == [], row_id
+        assert len(ticks) == len(control.value()), row_id
+
+
+def test_a_change_settles_through_the_deepest_widget_in_the_same_turn(qapp):
+    """AD-1's stricter check found it: a size change climbs one level a layout pass, and Your setup's line sits 5 levels
+    under the body — four passes left the body a turn late, the page squeezed a row above to fit, then slid 8 px under
+    the hand. One pass per level, from the deepest widget the page builds, and one for the body the scroll area
+    resizes."""
+    from PyQt6.QtWidgets import QWidget
+    page, _store = make_page(ALL_ON, "ja")
+
+    def depth(widget):
+        levels = 0
+        while widget is not None and widget is not page.body:
+            widget, levels = widget.parentWidget(), levels + 1
+        return levels
+    deepest = max(depth(w) for w in page.body.findChildren(QWidget))
+    assert depth(page.rows["setup_cards"].help) <= deepest < sp.SETTLE_PASSES

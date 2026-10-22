@@ -14,8 +14,9 @@ W3.3 block. Flat (RS-1): a cut is a floor darker than its slab, its top wall dar
 - **`Cards(options)`** — the same one-of as choice cards (a label in bold, its line under it), the chosen one lit by
   the vein along its left edge.
 - **`Toggle()`** — on or off: a hewn channel in a slate tablet, a rough gem in it, dark off, lit on. Space toggles.
-- **`Tablets(options, multi=True)`** — adding: the values as tablets (lit = on, its vein at its foot); a list value's
-  items each carry a ✕ (Delete), and an empty bed where the next one stands calls `on_add()`.
+- **`Tablets(options, multi=True)`** — adding: the values as tablets (lit = on; a multi-pick's lit tablet carries a
+  tick, never the vein — the vein is a choice's one pick, and a one-pick's tablet keeps it: Q31); a list value's items
+  each carry a ✕ (Delete), and an empty bed where the next one stands calls `on_add()`.
 - **`LevelSlider(bands)`** — a well with a channel from the common blue to the rare purple, a chamber at each band, the
   band names under it, its gem. Click a chamber, drag the gem, or Left / Right / Home / End.
 - **`NumberField`**, **`Range`**, **`TextField`** — the mock's field (a cut); a value commits on Enter, on leaving the
@@ -42,7 +43,7 @@ from PyQt6.QtWidgets import QApplication, QHBoxLayout, QLabel, QLineEdit, QMenu,
 
 from app import theme
 from app.qt import freeze, motion, style
-from app.qt.settings_strings import ADD, CROSS, PICKED_NONE, RANGE_TO, REMOVE_NAME, STATUS_NAME
+from app.qt.settings_strings import ADD, CROSS, PICKED_NONE, RANGE_TO, REMOVE_NAME, STATUS_NAME, TICK
 
 
 M = theme.SETTINGS_MOTION
@@ -141,6 +142,15 @@ def paint_ring(p, rect, radius):
     p.setPen(QPen(_c("accent"), 2.0))
     p.setBrush(Qt.BrushStyle.NoBrush)
     p.drawRoundedRect(QRectF(rect).adjusted(1, 1, -1, -1), radius, radius)
+    p.restore()
+
+
+def paint_tick(p, rect, colour):
+    """A multi-pick's mark (Q31): the tick across `rect` in `colour` — one of several picks, never the vein a choice
+    draws under its one."""
+    p.save()
+    p.setPen(colour)
+    p.drawText(QRectF(rect), Qt.AlignmentFlag.AlignCenter, TICK)
     p.restore()
 
 
@@ -674,11 +684,12 @@ class Toggle(_Control):
 
 # --- adding ----------------------------------------------------------------------------------------------------------- #
 class Tablets(_Control):
-    """Adding: values as tablets. With `options` ((value, label[, tip])), each a tablet lit when picked (its vein at its
-    foot), dim when not — any number picked (`multi`), or exactly one. Without `options`, a list value: each item a lit
-    tablet with a small ✕ (Delete removes it from the keyboard), then an empty bed where the next one stands, which
-    calls `on_add()` (the page opens its folder picker or text entry there, then calls `add_item`). One Tab stop:
-    Left / Right move, Space / Enter picks or adds, Delete removes."""
+    """Adding: values as tablets. With `options` ((value, label[, tip])), each a tablet lit when picked, dim when not —
+    any number picked (`multi`: a tick before its label, in a slot every option keeps so nothing moves; never the vein,
+    which reads as a choice's one pick — Q31), or exactly one (its vein at its foot). Without `options`, a list value:
+    each item a lit tablet with a small ✕ (Delete removes it from the keyboard), then an empty bed where the next one
+    stands, which calls `on_add()` (the page opens its folder picker or text entry there, then calls `add_item`). One
+    Tab stop: Left / Right move, Space / Enter picks or adds, Delete removes."""
 
     def __init__(self, options=None, multi=True, value=None, on_add=None, add_label=None, tooltip=None, name=None,
                  parent=None):
@@ -794,6 +805,10 @@ class Tablets(_Control):
             return [("option", v, l) for v, l, _t in self._options]
         return [("item", it, it) for it in self._items] + [("bed", None, self.add_label)]
 
+    def _tick_w(self, fm, pad):
+        """A multi-pick option's tick slot (its tick and the space after it); 0 for a one-pick or a list."""
+        return fm.horizontalAdvance(TICK) + pad * 0.4 if self.multi and not self.is_list else 0.0
+
     def _layout(self, width):
         """[(kind, key, label, rect, cross rect or None)] flowed into `width` (one line when it fits)."""
         fm = QFontMetricsF(_font("chip", 400))
@@ -801,10 +816,12 @@ class Tablets(_Control):
         pad = _px("settings-pill-pad-x")
         gap = round(6 * _f())
         cross_w = fm.horizontalAdvance(CROSS) + pad * 0.6
+        tick_w = self._tick_w(fm, pad)
         x = y = 0.0
         out = []
         for kind, key, label in self._entries():
-            w = math.ceil(fm.horizontalAdvance(label) + 2 * pad + (cross_w if kind == "item" else 0))
+            w = math.ceil(fm.horizontalAdvance(label) + 2 * pad + (cross_w if kind == "item" else 0) +
+                          (tick_w if kind == "option" else 0))
             if x > 0 and width > 0 and x + w > width:
                 x, y = 0.0, y + h + gap
             r = QRectF(x, y, w, h)
@@ -908,6 +925,8 @@ class Tablets(_Control):
         radius = theme.RADII["button-sm"]
         pad = _px("settings-pill-pad-x")
         enabled = self.isEnabled()
+        fm = QFontMetricsF(font)
+        tick_w = self._tick_w(fm, pad)
         for i, (kind, key, label, r, cross) in enumerate(self._parts()):
             lit = kind == "item" or (kind == "option" and key in self._picked)
             if kind == "bed":
@@ -918,13 +937,18 @@ class Tablets(_Control):
                 p.setPen(Qt.PenStyle.NoPen)
                 p.setBrush(_c("settings-tablet-on" if lit and enabled else "settings-tablet"))
                 p.drawRoundedRect(r, radius, radius)
-                text = QRectF(r.left() + pad, r.top(), r.width() - 2 * pad - (cross.width() if cross else 0), r.height())
+                tick = tick_w if kind == "option" else 0.0
+                text = QRectF(r.left() + pad + tick, r.top(),
+                              r.width() - 2 * pad - tick - (cross.width() if cross else 0), r.height())
                 p.setPen(self._ink(lit))
                 p.drawText(text, Qt.AlignmentFlag.AlignCenter, label)
+                if tick and lit:                        # Q31: a multi-pick's lit tablet, ticked
+                    paint_tick(p, QRectF(r.left() + pad, r.top(), fm.horizontalAdvance(TICK), r.height()),
+                               self._ink(True))
                 if cross is not None:
                     p.setPen(_c(theme.SETTINGS_TEXT["chosen-line" if enabled else "greyed"]))
                     p.drawText(cross, Qt.AlignmentFlag.AlignCenter, CROSS)
-                if lit and enabled and kind == "option":
+                if lit and enabled and kind == "option" and not self.multi:        # a one-pick's vein alone
                     vh = max(2.0, round(2 * _f()))
                     paint_vein(p, QRectF(r.left() + pad * 0.6, r.bottom() - vh - 1, r.width() - pad * 1.2, vh))
             if self.hasFocus() and i == self._cursor:

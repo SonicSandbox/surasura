@@ -296,3 +296,93 @@ def test_a_profile_without_your_decks_is_never_taken_as_connects(monkeypatch, tm
     _anki(monkeypatch, "日本語", decks=["Default", "日本語::アニメ", "日本語::文"])
     assert runner.Steps(loaded).blocked("ja") is None
     assert setup.anki_profile() == "日本語"
+
+
+# --- 24b / M-3 (Sonic 2026-10-22, A): *Mine now* on battery is the yes for that one episode --------------------- #
+def _asked(ledger, item):
+    from app.connect.ledger import stamp
+    with ledger.transaction():
+        ledger.ask("ja", item, stamp(), store_id="store-1")
+
+
+def test_on_battery_an_asked_episode_mines_and_the_rest_wait_for_the_plug(tmp_path, ledger):
+    # why: the press is the learner's yes for that episode alone; the others never start unplugged
+    plan = {"line": {"ja": [1, 2, 3]}, "queue": {"ja": [1, 2, 3]}, "blocked": runner.ON_BATTERY}
+    steps = FakeSteps(str(tmp_path), plan)
+    runner.run({}, ["ja"], steps=steps, ledger=ledger, sleep=lambda s: None, looks=1)   # all wait, unasked
+    _asked(ledger, 3)
+    steps = FakeSteps(str(tmp_path), plan)
+    summary = runner.run({}, ["ja"], steps=steps, ledger=ledger, sleep=lambda s: None, looks=1)
+    assert _mined(steps) == [3]
+    assert [e[1] for e in steps.log if e[0] == "pick"] == [3], "the unasked ones are never picked on battery"
+    assert summary["languages"]["ja"]["waiting"] == {1: runner.ON_BATTERY, 2: runner.ON_BATTERY}
+
+
+class _AnkiClosedToo(FakeSteps):
+    def session_blocked(self, lang):
+        return runner.ANKI_CLOSED
+
+
+def test_an_asked_episode_on_battery_still_waits_for_anki(tmp_path, ledger):
+    # why: the press overrides the battery, never Anki's own state: it goes first once Anki answers
+    plan = {"line": {"ja": [1, 2]}, "queue": {"ja": [1, 2]}, "blocked": runner.ON_BATTERY}
+    runner.run({}, ["ja"], steps=FakeSteps(str(tmp_path), plan), ledger=ledger, sleep=lambda s: None, looks=1)
+    _asked(ledger, 2)
+    steps = _AnkiClosedToo(str(tmp_path), plan)
+    summary = runner.run({}, ["ja"], steps=steps, ledger=ledger, sleep=lambda s: None, looks=1)
+    assert _mined(steps) == []
+    assert summary["languages"]["ja"]["waiting"][2] == runner.ANKI_CLOSED
+
+
+# --- 34: the plug back ends the pause at once ----------------------------------------------------------------- #
+def test_the_plug_back_ends_the_pause_while_episodes_wait_on_battery(tmp_path, ledger):
+    # why (row 34): the skipped episodes came back only at the next 2-minute look (or a restart); now within seconds
+    plan = {"line": {"ja": [1, 2]}, "queue": {"ja": [1, 2]}, "blocked": runner.ON_BATTERY}
+    steps = FakeSteps(str(tmp_path), plan)
+    runner.run({}, ["ja"], steps=steps, ledger=ledger, sleep=lambda s: None, looks=1)
+    steps.on_battery = lambda: False
+    assert runner._plugged_in(steps, ledger, ["ja"]) is True
+    steps.on_battery = lambda: True
+    assert runner._plugged_in(steps, ledger, ["ja"]) is False
+
+
+def test_no_battery_wait_never_ends_the_pause_early(tmp_path, ledger):
+    # why: a wait on Anki keeps its 2-minute look: no early wake (no look every 5 s at a closed Anki)
+    plan = {"line": {"ja": [1]}, "queue": {"ja": [1]}, "blocked": runner.ANKI_CLOSED}
+    steps = FakeSteps(str(tmp_path), plan)
+    runner.run({}, ["ja"], steps=steps, ledger=ledger, sleep=lambda s: None, looks=1)
+    steps.on_battery = lambda: False
+    assert runner._plugged_in(steps, ledger, ["ja"]) is False
+    assert runner._plugged_in(FakeSteps(str(tmp_path), plan), ledger, ["ja"]) is False, "no power look: no wake"
+
+
+def test_the_pause_ends_within_its_look_step_once_plugged_in(monkeypatch):
+    # why: `_pause` asks every UPDATE_LOOK_S; the wake ends it at the first ask that finds the plug back
+    import threading
+    monkeypatch.setattr(runner, "UPDATE_LOOK_S", 0.01)
+    asks = []
+    woke = lambda: asks.append(1) or len(asks) >= 3  # noqa: E731
+    assert runner._pause(120, None, threading.Event(), woke) is True
+    assert len(asks) == 3
+
+
+def test_a_request_anki_turns_down_is_needs_you_not_a_wait(monkeypatch):
+    # why (review IK #3): a deck or note type gone answers `action`; retried every 2 minutes in silence before
+    monkeypatch.delenv("SURASURA_NO_ANKI_SYNC", raising=False)
+    monkeypatch.setattr(anki_session, "look", lambda url: pytest.fail("Anki answered: no look"))
+    got = runner._anki_wait("http://127.0.0.1:8765", "mining", anki_connect.AnkiError("deck not found", kind="action"))
+    assert isinstance(got, runner.Needs) and got.kind == "anki-refused"
+    monkeypatch.setattr(anki_session, "look", lambda url: "closed")
+    got = runner._anki_wait("http://127.0.0.1:8765", "mining", anki_connect.AnkiError("refused", kind="offline"))
+    assert isinstance(got, runner.Wait) and got.reason == runner.ANKI_CLOSED
+
+
+def test_an_episode_waiting_for_its_video_keeps_its_own_wait_when_all_wait(tmp_path, ledger):
+    # why (review IK #5): unplugged, the episode with no video was relabelled "On battery"
+    plan = {"line": {"ja": [1, 2]}, "queue": {"ja": [1, 2]}, "videos": {"1": None}}
+    runner.run({}, ["ja"], steps=FakeSteps(str(tmp_path), plan), ledger=ledger, sleep=lambda s: None, looks=1)
+    plan = dict(plan, blocked=runner.ON_BATTERY)
+    summary = runner.run({}, ["ja"], steps=FakeSteps(str(tmp_path), plan), ledger=ledger, sleep=lambda s: None,
+                         looks=1)
+    assert summary["languages"]["ja"]["waiting"][1] == runner.NO_VIDEO
+    assert {j["item_id"]: j["reason"] for j in ledger.jobs("ja")}[1] == runner.NO_VIDEO

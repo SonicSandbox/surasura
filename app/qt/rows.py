@@ -451,16 +451,19 @@ def action_of(status, episodes, off=None, word="video"):
     """(part name, tip, payload) for a status shown as an icon: a button while Connect may run, its tip naming the
     click; Connect off (`off`: why, `feed.OFF_*`) the same part, its tip saying why nothing happens (an ask only:
     `asks_connect`). `word`: the row's media word — a non-video item's button opens Anki Miner, and its tip says so.
-    Not a button: ("status", its tip, None) — a warn *Waiting* too (*Not timed*, a wait on Anki or on the battery):
-    an ask never overrides a wait (C3; P4.1 WF, reviews S2 / IK S1), so its tip names the wait, never a click."""
+    Not a button: ("status", its tip, None) — *Not timed* too (its way on is *Mine anyway* in Needs you), so its tip
+    names the wait, never a click. A wait on Anki or on the battery is *Mine now* as every *Waiting* is (P4.1's C3
+    as amended by Sonic 2026-10-22, M-3 A): its tip, worded by `view_rows`, already says what the click does."""
     name = ACTIONS.get(status.kind)
-    if status.kind == "waiting" and status.tone == "warn":
+    if status.kind == "waiting" and status.label == view_rows.STRINGS["not_timed"]:
         name = None
     files = asked_files(status.kind, episodes) if name is not None else ()
     if not files:
         return "status", status.tip, None
     if off and asks_connect(name, word):
         tip = strings.ROWS_ACTION_OFF.format(tip=status.tip, why=off)
+    elif status.kind == "waiting" and status.tone == "warn":
+        tip = status.tip                # a wait on Anki or on the battery: `view_rows` names the click (M-3)
     elif word != "video" and name != "no-media":
         tip = strings.ROWS_MINE_TEXT_THIS_TIP.format(tip=status.tip)
     else:

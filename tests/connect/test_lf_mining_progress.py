@@ -138,24 +138,48 @@ def test_a_new_batch_starts_with_no_progress(tmp_path, ledger):
 
 
 # --- status, feed, row ------------------------------------------------------------------------------------------- #
-def test_the_status_record_carries_a_mining_jobs_progress_and_its_start_up(monkeypatch):
+def test_one_percent_runs_through_the_whole_episode(monkeypatch):
+    # why (Sonic 2026-10-22, M-2 A): one number from choosing words to ordering, the step on hover — never stuck
+    # at a count while words are chosen, the clips named or the fields filled
     monkeypatch.setattr(anki_miner, "STAGE_SHARES", (0.2, 0.2, 0.2, 0.2, 0.2))
-    got = status._progress({"progress": json.dumps({"stage": 3, "stages": 5, "done": 3, "total": 6})})
-    assert got == {"stage": 3, "stages": 5, "done": 3, "total": 6, "percent": 50}
-    assert status._progress({"progress": None}) == {"stage": 0, "stages": 0, "done": 0, "total": 0, "percent": 0}
-    assert status._progress({"progress": "{broken"})["percent"] == 0
+    seq = [status._progress({"state": "picking"}), status._progress({"state": "fit-check"}),
+           status._progress({"state": "mining", "progress": None}),
+           status._progress({"state": "mining", "progress": json.dumps({"stage": 3, "stages": 5, "done": 3,
+                                                                        "total": 6})}),
+           status._progress({"state": "mining", "progress": json.dumps({"step": "naming"})}),
+           status._progress({"state": "filling"}), status._progress({"state": "ordering"})]
+    percents = [p["percent"] for p in seq]
+    assert percents == sorted(percents) and len(set(percents)) == len(percents), percents
+    assert [p["doing"] for p in seq] == ["Choosing words", "Checking the timing", "Starting Anki Miner",
+                                         "Cutting clips (3 of 6)", "Naming the clips", "Filling fields",
+                                         "Ordering your cards"]
+    assert seq[3]["percent"] == status.MINE_FROM + (status.MINE_TO - status.MINE_FROM) // 2
+    assert status._progress({"state": "mining", "progress": "{broken"})["doing"] == "Starting Anki Miner"
 
 
 def test_the_row_shows_the_percent_and_the_step_on_hover():
     rec = {"running": True, "languages": {"ja": {"jobs": [
         {"item": 4, "job": 9, "state": "mining", "words": 57, "made": 0,
-         "progress": {"stage": 3, "stages": 5, "done": 12, "total": 57, "percent": 41}}]}}}
+         "progress": {"stage": 3, "stages": 5, "done": 12, "total": 57, "percent": 41,
+                      "doing": "Cutting clips (12 of 57)"}}]}}}
     item = feed.build(rec, "ja").items[4]
     assert (item.kind, item.progress, item.doing) == (feed.MINING, 41, "Cutting clips (12 of 57)")
     plain = view_rows.Status("waiting", "Waiting", "In your top 20", "dim")
     st = view_rows._connected(plain, item, "video")
     assert (st.kind, st.label) == ("mining", "Mining · 41%")
     assert "Cutting clips (12 of 57)" in st.tip
+
+
+def test_the_runner_marks_the_clips_naming_before_it(tmp_path, ledger):
+    # why: the rename after Anki Miner's run is a third of an episode's time: the row says so
+    steps = _Reports(str(tmp_path), {"line": {"ja": [1]}, "queue": {"ja": [1]}})
+    steps.ledger = ledger
+    seen = []
+    real = steps.name_media
+    steps.name_media = lambda lang, job, picked, lines: (seen.append(json.loads(
+        ledger.job_by_id(job["id"])["progress"])), real(lang, job, picked, lines))
+    runner.run({}, ["ja"], steps=steps, ledger=ledger, sleep=lambda s: None, looks=2)
+    assert seen and seen[0] == {"step": "naming"}
 
 
 def test_a_job_waiting_carries_no_progress():

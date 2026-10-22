@@ -136,6 +136,8 @@ STRINGS = {
     # a status's words (its glyph is painted beside them: check · spinner · hourglass · card-plus · no-video)
     "in_anki": "{n}", "in_anki_words": "{n} in Anki", "mining_kn": "Mining · {k}/{n}", "mining": "Mining…",
     "mining_pct": "Mining · {pct}%", "tip_mining_doing": "Making its cards now: {doing}",
+    "tip_ask_battery": "{tip}\n• Click to mine this one now, on battery",
+    "tip_ask_anki": "{tip}\n• Click: it goes first once Anki answers",
     "waiting": "Waiting", "waiting_kn": "{k}/{n} · Waiting", "mine_rest": "{k}/{n} · Mine rest", "mine": "Mine",
     "no_media": "No {word}", "no_media_n": "No {word} · {n}", "removed": "{Word} removed",
     "deleted": "No cards in Anki", "deleted_n": "No cards in Anki · {n}",
@@ -541,10 +543,14 @@ def _connected(st, item, word):
                       STRINGS["tip_connect_no_media"].format(tip=item.tip), "warn")
     if item.kind == connect_feed.NOT_TIMED:
         return Status("waiting", STRINGS["not_timed"], STRINGS["tip_not_timed"].format(words=item.words), "warn")
-    # a wait on Anki or on the battery is a warn *Waiting*, as *Not timed* is: an ask can't hurry it (P4.1 WF, C3:
-    # an ask never overrides a wait — the rows offer no *Mine now* on it)
+    # a wait on Anki or on the battery is a warn *Waiting*, and takes *Mine now* as every *Waiting* does (P4.1's C3,
+    # "an ask never overrides a wait", as amended by Sonic 2026-10-22, M-3 A): on battery the press is the yes for
+    # that one episode; waiting for Anki it goes first once Anki answers — its hover says which
     tone = "warn" if item.kind in (connect_feed.ANKI, connect_feed.BATTERY) else "dim"
-    return Status("waiting", st.label if st.kind == "waiting" else STRINGS["waiting"], item.tip, tone)
+    tip = item.tip
+    if item.kind in (connect_feed.ANKI, connect_feed.BATTERY):
+        tip = STRINGS["tip_ask_battery" if item.kind == connect_feed.BATTERY else "tip_ask_anki"].format(tip=item.tip)
+    return Status("waiting", st.label if st.kind == "waiting" else STRINGS["waiting"], tip, tone)
 
 
 def _row_connected(st, eps, connect, word):

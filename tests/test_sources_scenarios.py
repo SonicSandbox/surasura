@@ -40,6 +40,10 @@ _NAMES = {"ja": {"S": "Hoshizora Kissa", "S2": "Tsukikage Tabibito", "N": "星�
 # A language's own subtitle folders that are not `Subs/` (the open case: a learner's `JP/` beside the videos)
 _LANG_FOLDERS = {"ja": ("JP", "ja", "[Japanese]", "Japanese Subs"), "zh": ("CHS", "zh", "[Chinese]", "中文字幕")}
 _SUBS_LANG = {"ja": "Japanese", "zh": "Chinese"}
+_REGION_FOLDERS = {"ja": ("ja-JP", "ja_JP"), "zh": ("zh_CN", "zh-Hant")}
+# The common Chinese subtitle-folder names (a Chinese library only), and Japanese ones beside them (a Japanese one)
+_ZH_FOLDERS = ("简体中文", "繁體中文", "Chinese (Simplified)", "中文字幕(简体)", "CHS&CHT")
+_JA_FOLDERS = ("日本語字幕", "JPN_Subs")
 _RES = {"ja": ("placed_episode.srt", "library_episode.ass", "phrases_sample.srt", "tv_captions.ass"),
         "zh": ("night_market.srt", "chinese_text_1.txt", "traditional_news.txt", "mixed_script_transcript.txt")}
 _OTHER = {"ja": "zh", "zh": "ja"}
@@ -394,6 +398,82 @@ def _rows():
                   f"{{S}}/{ep(1)}.{{T}}.srt": _ep(f"{{S}}/{ep(1)}.{{T}}.srt", f"{{S}}/{ep(1)}.mkv")},
                  "the novel is a book; a loose note under 1,000 characters is not"))
 
+    # (c) the delta adversary's layouts (2026-10-21, after the fix round)
+    eps = [ep(1), ep(2)]
+    for inner in ("Subs", "synced", "{LF0}"):
+        # D1: a torrent saved into a folder of the same name: the inner folder is the outer one's, and so is the
+        # pack's own subtitle folder inside it
+        rows.append((f"show inside its namesake, with {inner.replace('{LF0}', 'a language folder')}", "convention (D1)",
+                     f"`<Show>/<Show>/` videos, its subtitles in `<Show>/<Show>/{inner.replace('{LF0}', 'JP')}/`", "",
+                     [(f"{{S}}/{{S}}/{s}.mkv", "V") for s in eps]
+                     + [(f"{{S}}/{{S}}/{inner}/{s}.{{T}}.srt", "J") for s in eps], None,
+                     {f"{{S}}/{s}.{{T}}.srt": _ep(f"{{S}}/{{S}}/{inner}/{s}.{{T}}.srt", f"{{S}}/{{S}}/{s}.mkv")
+                      for s in eps},
+                     "one show, each episode paired: nothing waits"))
+    for show in ("JP-Story", "Ja_Ja Days", "Chi-Bi Nights"):
+        # D2: a show whose name begins with a language code is a show, never a subtitle folder
+        rows.append((f"show named {show}", "convention (D2)",
+                     f"a show folder `{show}/` (`Episode 01.mkv` + `.ja.srt`) beside another show", "",
+                     _pairs(show, ["Episode 01", "Episode 02"], ".{T}.srt") + _pairs("{S2}", ["Episode 01"], ".{T}.srt"),
+                     None,
+                     {**{f"{show}/Episode {n:02d}.{{T}}.srt": _ep(f"{show}/Episode {n:02d}.{{T}}.srt",
+                                                                  f"{show}/Episode {n:02d}.mkv") for n in (1, 2)},
+                      "{S2}/Episode 01.{T}.srt": _ep("{S2}/Episode 01.{T}.srt", "{S2}/Episode 01.mkv")},
+                     "each show by its own name; its episodes never loose files of the folder above"))
+    for i in range(2):
+        # D2: a language-and-region folder beside the videos is our language's folder
+        rows.append((f"language and region folder {i + 1} beside the videos", "convention (D2)",
+                     "`<Show>/` videos only + `<Show>/ja-JP/` (ja: `ja-JP`, `ja_JP`; zh: `zh_CN`, `zh-Hant`) "
+                     "holding their subtitles", "",
+                     [(f"{{S}}/{s}.mkv", "V") for s in eps] + [(f"{{S}}/{{RF{i}}}/{s}.{{T}}.srt", "J") for s in eps],
+                     None,
+                     {f"{{S}}/{s}.{{T}}.srt": _ep(f"{{S}}/{{RF{i}}}/{s}.{{T}}.srt", f"{{S}}/{s}.mkv") for s in eps},
+                     "the folder is our language's: one show, each episode paired"))
+    for name in ("Synced Subs", "[Synced]", "synced_{T}", "Retimed ({LF0})"):
+        # D3: a versions folder's name written with marks is still a versions folder
+        rows.append((f"versions folder {name.replace('{T}', 'ja').replace('{LF0}', 'JP')}", "convention (D3)",
+                     f"`<Show>/` videos + `.ja.srt` 01–02; `<Show>/{name.replace('{T}', 'ja').replace('{LF0}', 'JP')}/`"
+                     " the same names", "",
+                     _pairs("{S}", eps, ".{T}.srt") + [(f"{{S}}/{name}/{s}.{{T}}.srt", "J") for s in eps], None,
+                     {f"{{S}}/{s}.{{T}}.srt": _ep(f"{{S}}/{name}/{s}.{{T}}.srt", f"{{S}}/{s}.mkv") for s in eps},
+                     "versions of the show's episodes: one item per episode, the versions folder's text read"))
+    for name in _ZH_FOLDERS + _JA_FOLDERS:
+        # D4: the common Chinese subtitle-folder names (and the Japanese ones that held) beside the videos
+        rows.append((f"subtitle folder named {name}", "convention (D4)",
+                     f"`<Show>/` videos only + `<Show>/{name}/` holding their subtitles"
+                     f" ({'Chinese' if name in _ZH_FOLDERS else 'Japanese'} library only)", "",
+                     [(f"{{S}}/{s}.mkv", "V") for s in eps] + [(f"{{S}}/{name}/{s}.{{T}}.srt", "J") for s in eps],
+                     None,
+                     {f"{{S}}/{s}.{{T}}.srt": _ep(f"{{S}}/{name}/{s}.{{T}}.srt", f"{{S}}/{s}.mkv") for s in eps},
+                     "the folder is our language's: one show, each episode paired, nothing waits"))
+    rows.append(("an untagged English v2 beside our v1", "convention (D6)",
+                 "`<Show> - 05.mkv` + `<Show> - 05.ja.srt` + `<Show> - 05v2.srt` (English, untagged)", "",
+                 [("{S}/{S} - 05.mkv", "V"), ("{S}/{S} - 05.{T}.srt", "J"), ("{S}/{S} - 05v2.srt", "EN")], None,
+                 {"{S}/{S} - 05.{T}.srt": _ep("{S}/{S} - 05.{T}.srt", "{S}/{S} - 05.mkv")},
+                 "a v2 we can't read never keeps our v1 out: episode 5 is ours after ONE look"))
+    rows.append(("a category folder named for the language", "convention (D9)",
+                 "`<Japanese>/<Show>/` episodes, and loose episodes of another show directly in `<Japanese>/`", "",
+                 _pairs("{LANG}/{S}", [ep(1)], ".{T}.srt") + _pairs("{LANG}", [ep(1, "{S2}")], ".{T}.srt"), None,
+                 # today's behaviour, recorded: the category folder is the source root's subtitle folder, so its
+                 # subfolders are shows as before (`Japanese/<Show>`) and its loose files are read like the root's own
+                 # (their show from their names)
+                 {f"{{LANG}}/{{S}}/{ep(1)}.{{T}}.srt": _ep(f"{{LANG}}/{{S}}/{ep(1)}.{{T}}.srt",
+                                                          f"{{LANG}}/{{S}}/{ep(1)}.mkv"),
+                  f"{{S2}}/{ep(1, '{S2}')}.{{T}}.srt": _ep(f"{{LANG}}/{ep(1, '{S2}')}.{{T}}.srt",
+                                                           f"{{LANG}}/{ep(1, '{S2}')}.mkv")},
+                 "shows named as before; the loose files read by their names (recorded)"))
+    rows.append(("a show named with a leading dot, Mac copies and a tiny .ts", "convention (LF-21)",
+                 "`.<title>/.<title> - 01.mkv` + `.ja.srt`; beside another show: `._<ep>.mkv`, `._<ep>.ja.srt`, "
+                 "`.AppleDouble/`, and a `.ts` under 1 MB", "",
+                 _pairs(".zero Line", [".zero Line - 01"], ".{T}.srt") + _pairs("{S}", ["{S} - 01"], ".{T}.srt")
+                 + [("{S}/._{S} - 01.mkv", "V"), ("{S}/._{S} - 01.{T}.srt", "J"),
+                    ("{S}/.AppleDouble/{S} - 01.{T}.srt", "J"), ("{S}/{S} - 02.ts", "V")], None,
+                 {".zero Line/.zero Line - 01.{T}.srt": _ep(".zero Line/.zero Line - 01.{T}.srt",
+                                                            ".zero Line/.zero Line - 01.mkv"),
+                  "{S}/{S} - 01.{T}.srt": _ep("{S}/{S} - 01.{T}.srt", "{S}/{S} - 01.mkv")},
+                 "a title starting with a dot is read; a Mac's copies are not; a tiny .ts is no video (no waiting "
+                 "item)"))
+
     # the two regressions over two looks
     three = [ep(n) for n in (1, 2, 3)]
     first = _pairs("{S}", three, ".{T}.srt") + [(f"{{S}}/synced/{s}.{{T}}.srt", "J") for s in three]
@@ -422,12 +502,21 @@ ROWS = _rows()
 
 def _fill(value, language):
     names = dict(_NAMES[language], LANG=_SUBS_LANG[language],
-                 **{f"LF{i}": f for i, f in enumerate(_LANG_FOLDERS[language])})
+                 **{f"LF{i}": f for i, f in enumerate(_LANG_FOLDERS[language])},
+                 **{f"RF{i}": f for i, f in enumerate(_REGION_FOLDERS[language])})
     return value.format(**names)
 
 
-@pytest.mark.parametrize("language", LANGUAGES)
-@pytest.mark.parametrize("row", ROWS, ids=[r[0] for r in ROWS])
+def _languages(row):
+    """A row naming a folder of one language's own (D4) runs in that language's library only; the rest in both."""
+    folder = row[0][len("subtitle folder named "):] if row[0].startswith("subtitle folder named ") else None
+    return ("zh",) if folder in _ZH_FOLDERS else ("ja",) if folder in _JA_FOLDERS else LANGUAGES
+
+
+CASES = [pytest.param(row, language, id=f"{row[0]}-{language}") for row in ROWS for language in _languages(row)]
+
+
+@pytest.mark.parametrize("row,language", CASES)
 def test_a_layout_is_read_as_a_learner_would_want(row, language, record_property):
     """One row of the scenario matrix, end to end through the real scan: the shows, each item and the file its copy
     holds (by bytes) with the video it is paired with — after the first look, after the later files' look, and the

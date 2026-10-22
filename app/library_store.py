@@ -3275,9 +3275,10 @@ class Store:
         moved out of a piece, and new items, join the piece of their own work they land inside or beside, else start
         one (3, 4); a piece something foreign landed inside splits there — its first run keeps the id (5); an undo
         puts items back in the pieces they came from (`cmd.hints`); an emptied piece row is deleted (7).
-        LM11 (groups, kind 'group'): a group never takes a row by itself — nothing joins one by landing beside or
-        inside it (a drop onto it is `group`'s), and a group never folds into a piece beside it; an item moved within
-        its own group stays in it, one whose title changed in place (*Not part of this title*) too; a group's items
+        LM11 (groups, kind 'group'): a row landing beside a group stays outside it, and a group never folds into a piece
+        beside it; a row (or a whole part) landing between two of its rows joins it (GI1, PROVISIONAL); an item moved
+        within its own group stays in it — NOW and Soon one tier for that (G1) — one whose title changed in place
+        (*Not part of this title*) too; a group's items
         that land in Finished or New arrivals leave it (each to its own work's piece there: G4 "a finishing item goes
         to Finished under its own work"); what is left is settled by `_settle_kinds`, an emptied group's row kept on the
         change for its undo (`cmd.dropped`, a run's too: ids are never reused, G3)."""

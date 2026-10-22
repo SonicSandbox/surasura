@@ -2211,7 +2211,18 @@ class Store:
             return self.move(moving, tier, before_id=target)
         return self.move(moving, tier, after_id=target)
 
+    def soon_top(self, item_ids):
+        """Where rows sent to Soon's top land (`_soon_top`, THE rule — the window's paint asks it before the write; a
+        `move(ids, "soon")` with no place lands there) -> ("top",) | ("after", item id) | ("end",)."""
+        with self._reading():
+            return self._soon_top(set(item_ids))
+
     def _tier_top(self, tier, excl):
+        """Where "the top of `tier`" is (`_line_slot`); Soon's never inside a show the line runs through
+        (`_soon_top`)."""
+        return self._soon_top(excl) if tier == "soon" else self._line_slot(tier, excl)
+
+    def _line_slot(self, tier, excl):
         """Where "the top of `tier`" is. Soon's top is the first slot below the Soon line (L2.2 05 §5.1), counted
         without the rows being placed: rows leaving NOW let the line take Soon's first rows up, so the slot is after
         Current's `soon_line`-th row once they're gone; with fewer rows than the line nothing can sit below it (the
@@ -2230,6 +2241,69 @@ class Store:
         rows = [r[0] for r in self.conn.execute("SELECT id FROM items WHERE tier = 'soon' ORDER BY ord, id LIMIT ?",
                                                 (need + len(excl),)) if r[0] not in excl]
         return ("after", rows[need - 1]) if len(rows) >= need else ("end",)
+
+    def _soon_top(self, excl, mine=None, slots=None):
+        """THE rule for where Soon's top lands (B2-1: the store's one rule; the window asks it, `soon_top`, or passes no
+        place): the first slot below the line (`_line_slot`) — unless the rows either side of it are one show the line
+        runs through (`_one_show`: one group's piece, else one title, else one folder — the view's one row, P-LF-16),
+        then after that show's last file in Soon (`_soon_slots`). Rows that are all of that show (`mine`, default
+        `excl`: per row in `set_tier`, the block in `move`) keep the slot: a reorder within their own show; any other
+        row, or a block holding one, goes after it, so the show is never cut. `slots`: `_soon_slots(excl)` already
+        read (one read for a whole `set_tier`)."""
+        slot, past, below = self._soon_slots(excl) if slots is None else slots
+        if past is None:
+            return slot
+        rows = self._show_rows(excl if mine is None else mine)
+        return slot if rows and all(_one_show(r, below) for r in rows) else past
+
+    _SHOW_COLS = ("SELECT i.id, i.piece_id, i.work_id, i.parent_folder, p.kind, i.ord FROM items i "
+                  "LEFT JOIN pieces p ON p.id = i.piece_id WHERE ")
+
+    def _show_rows(self, ids):
+        out = []
+        for chunk in _chunks(list(ids), 500):
+            out += self.conn.execute(self._SHOW_COLS + f"i.id IN ({','.join('?' * len(chunk))})", chunk).fetchall()
+        return out
+
+    def _soon_slots(self, excl):
+        """(the line's slot, the slot past the show it cuts or None, that show's first Soon row) for rows `excl` sent
+        to Soon's top. The show's Soon files are walked from its first one while they are one show with it (pieces
+        or none: a row with no piece is its title's, else its folder's), skipping `excl`."""
+        where = self._line_slot("soon", excl)
+        if where[0] == "end":
+            return where, None, None
+        cols, lim = self._SHOW_COLS, len(excl) + 1
+        if where[0] == "top":
+            above = next((r for r in self.conn.execute(cols + "i.tier = 'now' ORDER BY i.ord DESC, i.id DESC LIMIT ?",
+                                                       (lim,)) if r[0] not in excl), None)
+            start = None
+        else:
+            above = self.conn.execute(cols + "i.id = ?", (where[1],)).fetchone()
+            start = above
+        if above is None:
+            return where, None, None
+        below, last = None, None
+        while True:
+            if start is None:
+                batch = self.conn.execute(cols + "i.tier = 'soon' ORDER BY i.ord, i.id LIMIT ?", (lim + 200,))
+            else:
+                batch = self.conn.execute(cols + "i.tier = 'soon' AND (i.ord, i.id) > (?, ?) ORDER BY i.ord, i.id "
+                                          "LIMIT ?", (start[5], start[0], lim + 200))
+            batch = batch.fetchall()
+            for r in batch:
+                if r[0] in excl:
+                    continue
+                if below is None:
+                    if not _one_show(above, r):
+                        return where, None, None
+                    below = r
+                elif not _one_show(r, below):
+                    return where, ("after", last), below
+                last = r[0]
+            if len(batch) < lim + 200:
+                break
+            start = batch[-1]
+        return (where, None, None) if below is None else (where, ("after", last), below)
 
     def _folder_last(self, tier, folder, excl):
         """The last row of `folder` (the placement key) in `tier`, skipping `excl`: (id, ord) or None."""
@@ -2255,11 +2329,17 @@ class Store:
             change = self._change(cmd, "set_tier")
             self._before(change, [rows[i] for i in moving])
             excl = set(moving)
-            groups = {}
+            groups, slots = {}, None
             for item_id in moving:
                 folder = rows[item_id][4]
                 last = self._folder_last(tier, folder, excl) if folder else None
-                where = ("after", self._past_group(last[0])) if last else self._tier_top(tier, excl)   # LM11 (G4)
+                if last:
+                    where = ("after", self._past_group(last[0]))                        # LM11 (G4)
+                elif tier == "soon":                                                    # B2-1: per row, by show
+                    slots = self._soon_slots(excl) if slots is None else slots
+                    where = self._soon_top(excl, mine=[item_id], slots=slots)
+                else:
+                    where = self._tier_top(tier, excl)
                 groups.setdefault(where, []).append(item_id)
             for where, group in groups.items():
                 self._put(tier, group, where, cmd.version)
@@ -3953,10 +4033,10 @@ class Store:
         return self.move([item_id], tier, by=by, explicit=explicit) is not None
 
     def place(self, item_ids, where, by="user", explicit=None):
-        """`place --where` (04 §4.2): `soon` — the first slot below the Soon line; `after-show` — after the title's
-        episode before it in Current (before its next one when only later ones are there), a title only in Finished
-        or 6+ Months goes to the top of Current (Q4-9), a title with nothing anywhere stays where it is; `top`, `goal`,
-        `finished` — the rule targets. One command; undone as a move. Returns the change, or None."""
+        """`place --where` (04 §4.2): `soon` — Soon's top (`_soon_top`: below the line, past a show it cuts);
+        `after-show` — after the title's episode before it in Current (before its next one when only later ones are
+        there), a title only in Finished or 6+ Months goes to the top of Current (Q4-9), a title with nothing anywhere
+        stays where it is; `top`, `goal`, `finished` — the rule targets. One command; undone as a move. Returns the change, or None."""
         ids = list(dict.fromkeys(item_ids))
         if not ids:
             return None
@@ -5451,6 +5531,16 @@ def _work_ids_of(record):
 
 
 Pin = namedtuple("Pin", "item_id rel_path tier pinned_at")
+def _one_show(a, b):
+    """Two rows (id, piece, work, folder, piece kind, ord) of one row in the view across the Soon line (P-LF-16,
+    `view_rows._same_show` and its group rule): a group's piece, else one title, else one folder."""
+    if a[4] == "group" or b[4] == "group":
+        return a[1] is not None and a[1] == b[1]
+    if a[2] is not None or b[2] is not None:
+        return a[2] == b[2]
+    return a[3] is not None and a[3] == b[3]
+
+
 PLACING_TARGETS = ("wait", "top", "after-show", "soon", "goal", "finished")
 
 

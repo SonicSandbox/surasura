@@ -80,7 +80,9 @@ from app.services import view_rows
 JOIN_EDGE = 0.3                                     # a part's top and bottom 30 %: a move beside it, not a join
 JOIN_REST_MS = 500                                  # LM11b G2: another show groups only once the hand rests this long
 
-Entry = namedtuple("Entry", "name label tip ok children checked payload", defaults=(None, None, None))
+Entry = namedtuple("Entry", "name label tip ok children checked payload writes", defaults=(None, None, None, False))
+#   writes: a hook's entry that asks the store for a write — greyed by the menu, with the store's reason, while the
+#   store is read-only (`_refused_tip`: one rule, the menu's)
 Part = namedtuple("Part", "key piece_id ids numbers tier place title")
 Show = namedtuple("Show", "key work_id title where")
 #   LM11b G3: a show *Same show as…* offers — `work_id` the title it merges into, `where` its section as *Join with…*
@@ -463,15 +465,17 @@ class ItemActions(QObject):
         """An opened row's episode `ep`'s ⋯: [Entry] — *Mark watched* ↔ *Mark not watched*, *Play* (when it can play),
         *Split here…* after it (when that split is allowed), then each hook's entries (a hook that fails is left out)."""
         reason = self._refused_tip()
-        name = ep_name(row, ep)
+        return self._episode_own(row, ep, reason) + self._episode_hooked(row, ep, reason)
 
-        def entry(key, writes=True, **kw):
-            words, tip = strings.ITEM_EP_MENU[key]
-            ok = reason is None or not writes
-            return Entry(key, words, tip.format(ep=name) if ok else reason, ok, **kw)
-        out = [entry("ep-unwatched" if ep.watched else "ep-watched")]
-        if ep.can_play:
-            out.append(entry("ep-play", writes=False))
+    def _episode_own(self, row, ep, reason):
+        name = ep_name(row, ep)
+        action = strings.ROWS_STONE_ACTION[ep.watched]       # IK-10: the stone's own words for its click
+        words, tip = strings.ITEM_EP_MARK
+        out = [Entry("ep-unwatched" if ep.watched else "ep-watched", words.format(action=action),
+                     tip.format(ep=name, action=action) if reason is None else reason, reason is None)]
+        if ep.can_play:                              # IK-2: ▶'s own verb and tip (`view_rows`: the episode's media)
+            out.append(Entry("ep-play", view_rows.VERB.get(ep.media_word or row.media_word, view_rows.VERB["video"]),
+                             ep.play_tip, True))
         k = next((i for i, e in enumerate(row.episodes) if e.id == ep.id), None)
         if joinable(row) and k is not None and k + 1 < len(row.episodes) and \
                 view_rows.split_piece(row, k + 1) is not None:
@@ -479,9 +483,15 @@ class ItemActions(QObject):
                 strings.ITEM_SPLIT_AFTER_TIP.format(ep=name, rest=rows._rest_of(row, k + 1))
             out.append(Entry("split", words, tip if reason is None else reason, reason is None,
                              payload=row.episodes[k + 1]))
+        return out
+
+    def _episode_hooked(self, row, ep, reason):
+        """Each hook's entries; one that writes greyed with the store's reason while it is read-only (AD-8)."""
+        out = []
         for hook in list(self.episode_hooks):
             try:
-                out += list(hook(row, ep) or ())
+                out += [e._replace(ok=False, tip=reason) if e.writes and reason is not None else e
+                        for e in hook(row, ep) or ()]
             except Exception as e:                   # an optional module's entry never takes the menu down
                 print(f"Episode menu: an entry couldn't be made ({e})")
         return out
@@ -490,7 +500,11 @@ class ItemActions(QObject):
         """The episode's ⋯: its entries in the list's one menu (C4), every entry's tip shown."""
         m = drag.list_menu(self.lst, row.title)
         m.setAccessibleName(strings.ITEM_EP_MENU_NAME.format(ep=ep_name(row, ep)))
-        for e in self.episode_entries(row, ep):
+        reason = self._refused_tip()
+        own, hooked = self._episode_own(row, ep, reason), self._episode_hooked(row, ep, reason)
+        for e in own + hooked:
+            if hooked and e is hooked[0]:
+                m.addSeparator()                     # the modules' entries apart from the episode's own (AD-8)
             act = QAction(e.label, m)
             act.setToolTip(e.tip)
             act.setEnabled(e.ok)

@@ -175,15 +175,16 @@ class MineActions(QObject):
     # --- row 28 (Michi's row 24b ask): an episode's own ⋯ ----------------------------------------------------- #
     def episode_entries(self, row, ep):
         """`ep`'s ⋯ (`item_menu.ItemActions.episode_hooks`): *Mine now* exactly when its pill would be *Mine now*
-        (`rows.action_of`: a wait never is), its tip the pill's — Connect off, the entry is there and its tip says why;
-        picked, the pill's own path (`mine_row`: off, nothing is asked and the bar says why). -> [Entry]"""
+        (`rows.action_of`, the pill's one rule — whatever it offers *Mine now* on), its tip the pill's — Connect off,
+        the entry is there and its tip says why; a write, so greyed by the menu while the store is read-only; picked,
+        the pill's own path (`mine_row`: off, nothing is asked and the bar says why). -> [Entry]"""
         if ep.status is None:
             return []
         name, tip, ask = rows.action_of(ep.status, (ep,), self.off, ep.media_word or row.media_word)
         if name != "mine-now":
             return []
         return [item_menu.Entry("ep-mine-now", strings.ROWS_ACTION_NAMES["mine-now"], tip, True,
-                                payload=lambda: self.mine_row(row, list(ask.ids)))]
+                                payload=lambda: self.mine_row(row, list(ask.ids)), writes=True)]
     # --- end row 28
 
     # --- Link… ------------------------------------------------------------------------------------------------ #

@@ -1056,6 +1056,11 @@ def _ep_more(lst, i):
     return [pt for pt in part(lst, i) if pt[0] == "more-ep"]
 
 
+def _entries_of(m):
+    """A menu's entries, its separators left out."""
+    return [a for a in m.actions() if not a.isSeparator()]
+
+
 def part(lst, i):
     entry = lst.model().entries[i]
     return lst.delegate.parts(entry, lst.visualRect(lst.model().index(i, 0)))
@@ -1090,11 +1095,11 @@ def test_row28_a_hovered_episode_shows_its_own_more_inside_the_list_and_opens_it
         settle()
         m = win.items.last_menu
         want = win.items.episode_entries(row, ep)
-        assert [a.text() for a in m.actions()] == [e.label for e in want]
+        assert [a.text() for a in _entries_of(m)] == [e.label for e in want]
         assert [e.name for e in want][:1] == ["ep-unwatched" if ep.watched else "ep-watched"]
         assert "split" in [e.name for e in want] and want[-1].name == "mine-one"
         assert ("ep-play" in [e.name for e in want]) == ep.can_play
-        for a in m.actions():
+        for a in _entries_of(m):
             assert a.toolTip().strip() and _connected(a), a.text()
         m.actions()[-1].trigger()
         assert ran == [ep.id], "the hook's callback ran"
@@ -1151,6 +1156,29 @@ def test_row28_a_failing_hook_leaves_the_rest_of_the_menu(world):
     assert win.items.episode_entries(row, row.episodes[0])[0].name in ("ep-watched", "ep-unwatched")
 
 
+def test_row28_the_episode_menus_words_are_the_stones_and_plays_own(world):
+    """IK-2, IK-10: one source each. *Mark watched* / *Mark not watched* say the stone's own click
+    (`ROWS_STONE_ACTION`, as the stone's tip does); *Play* is ▶'s own verb and tip, by the episode's media — never a
+    second wording ("in your video player" on a podcast)."""
+    from app.services import view_rows as vr
+    _seed, win, _w = world()
+    i, row, _on = _long_row_scrolled(win)
+    first = row.episodes[0]
+    for ep in (first._replace(watched=False), first._replace(watched=True)):
+        mark = win.items.episode_entries(row, ep)[0]
+        action = strings.ROWS_STONE_ACTION[ep.watched]
+        assert mark.label == strings.ITEM_EP_MARK[0].format(action=action)
+        assert mark.tip.startswith(f"Mark {ep.label} {action}\n")
+        stone = strings.ROWS_STONE_TIP.format(label=ep.label, state="", action=action)
+        assert stone.endswith(action) and mark.label.endswith(action)
+    for word in ("video", "audio", "EPUB"):
+        tip = vr.STRINGS["play"].format(verb=vr.VERB[word], name=first.label, player=vr.STRINGS["player"][word],
+                                        word=word)
+        ep = first._replace(media_word=word, can_play=True, play_tip=tip)
+        play = [e for e in win.items.episode_entries(row, ep) if e.name == "ep-play"]
+        assert [(e.label, e.tip, e.ok) for e in play] == [(vr.VERB[word], tip, True)], word
+
+
 def _on_screen(lst, i):
     """Row `i`'s episode lines fully in the list's view, as laid out now: [(QRect, Episode)]."""
     vp = lst.viewport().rect()
@@ -1195,7 +1223,7 @@ def test_row28_a_click_on_an_episodes_more_opens_that_episodes_menu_at_every_tex
         i, row, on = _long_row_scrolled(win)
         for line in (on[0], on[-1]):
             m = _click_ep_more(win, lst, i, line)
-            assert [a.text() for a in m.actions()] == [e.label for e in win.items.episode_entries(row, line[1])]
+            assert [a.text() for a in _entries_of(m)] == [e.label for e in win.items.episode_entries(row, line[1])]
             assert m.accessibleName() == strings.ITEM_EP_MENU_NAME.format(ep=line[1].label)
             m.close()
     finally:
@@ -1214,7 +1242,7 @@ def test_row28_up_nexts_opened_episode_lines_show_their_own_more_and_a_click_ope
     assert on and _ep_more(lst, 0) == []
     m = _click_ep_more(win, lst, 0, on[-1])
     want = win.items.episode_entries(hero, on[-1][1])
-    assert [a.text() for a in m.actions()] == [e.label for e in want]
+    assert [a.text() for a in _entries_of(m)] == [e.label for e in want]
     assert m.accessibleName() == strings.ITEM_EP_MENU_NAME.format(ep=on[-1][1].label)
     m.close()
 
@@ -1257,7 +1285,8 @@ def test_row28_mark_watched_is_the_pages_one_done_path_with_its_undo(world, monk
     seen, real_done = [], win.items.page.done
     monkeypatch.setattr(win.items.page, "done", lambda r, e: (seen.append((r.key, e.id)), real_done(r, e)))
     m = _click_ep_more(win, lst, i, line)
-    act = next(a for a in m.actions() if a.text() == strings.ITEM_EP_MENU["ep-watched"][0])
+    act = next(a for a in m.actions() if a.text() == strings.ITEM_EP_MARK[0].format(
+        action=strings.ROWS_STONE_ACTION[False]))
     act.trigger()
     m.close()
     assert seen == [(row.key, line[1].id)]
@@ -1283,7 +1312,7 @@ def test_row28_enter_on_the_keyboards_episode_opens_the_same_menu_the_click_does
     settle()
     m = win.items.last_menu
     assert m is not None and m.isVisible()
-    assert [a.text() for a in m.actions()] == [e.label for e in win.items.episode_entries(row, ep)]
+    assert [a.text() for a in _entries_of(m)] == [e.label for e in win.items.episode_entries(row, ep)]
     m.close()
 
 

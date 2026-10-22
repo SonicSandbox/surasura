@@ -113,12 +113,9 @@ ITEM_MENU = {
 }
 # a submenu longer than a page (`item_menu.MENU_PAGE`) goes on in a submenu of its own, page by page
 MENU_MORE = ("More…", "The rest of this list")
-# row 28: an opened row's episode's own ⋯ ({ep}: the episode as ⋯ names it)
-ITEM_EP_MENU = {
-    "ep-watched": ("Mark watched", "Mark {ep} watched\n• Undo takes it back"),
-    "ep-unwatched": ("Mark not watched", "Mark {ep} not watched again\n• Undo takes it back"),
-    "ep-play": ("Play", "Open {ep} in your video player"),
-}
+# row 28: an opened row's episode's own ⋯ ({ep}: the episode as ⋯ names it; {action}: its stone's click,
+# `ROWS_STONE_ACTION`) — its *Play* is ▶'s own verb and tip
+ITEM_EP_MARK = ("Mark {action}", "Mark {ep} {action}\n• Undo takes it back")
 ITEM_EP_MENU_NAME = "What you can do with {ep}"
 ITEM_UNGROUPED = "Ungrouped {title}"
 ITEM_RENAME_ASK = "Rename this group"

@@ -700,24 +700,51 @@ def test_row28_a_grey_waiting_episodes_menu_offers_mine_now_and_it_asks_for_that
     assert asks(writer) == [("ask_mining", [ep.id], {"on": True})]
 
 
-def test_row28_not_timed_in_anki_or_mining_offers_no_mine_now(act):
-    """A wait (*Not timed*, Anki closed, on battery) is never an ask (C3); a file in Anki or being mined has nothing to
-    ask for: no *Mine now* in its ⋯, and nothing asked."""
+def test_row28_the_menu_offers_mine_now_exactly_where_the_pills_rule_does(act):
+    """IK-1: one rule with the pill — the episode's ⋯ offers *Mine now* exactly when `rows.action_of` says "mine-now"
+    for that episode, whatever the stone's status (a grey *Waiting*, a wait on Anki or on the battery, …): asked of the
+    rule itself, so a change to what the rule offers needs no change here. *Not timed*, a file in Anki, one being mined
+    and no status at all are fixed cases: nothing to ask, no entry, nothing asked."""
     from app.connect import runner
     from app.services import view_rows
     _seed, win, writer = act()
     lst = lst_of(win)
-    row, _ep0 = _waiting_episode(lst)
+    row, grey = _waiting_episode(lst)
     plain = view_rows.Status("waiting", "Waiting", "In your top 20: it mines by itself, in turn", "dim")
-    said = [view_rows._connected(plain, feed.Item(kind, feed.WORDS[kind], reason, 1, 0, 0), "video")
-            for kind, reason in ((feed.NOT_TIMED, "not timed to its video"), (feed.ANKI, runner.ANKI_CLOSED),
-                                 (feed.BATTERY, runner.ON_BATTERY))]
+    waits = [view_rows._connected(plain, feed.Item(kind, feed.WORDS[kind], reason, 1, 0, 0), "video")
+             for kind, reason in ((feed.ANKI, runner.ANKI_CLOSED), (feed.BATTERY, runner.ON_BATTERY))]
+    for ep in [grey] + [_ep(st) for st in waits]:
+        rule = rows.action_of(ep.status, (ep,), win.mine.off, ep.media_word or row.media_word)[0]
+        offered = _mine_now(win.items.episode_entries(row, ep))
+        assert (len(offered) == 1) == (rule == "mine-now"), (ep.status, rule)
+    not_timed = view_rows._connected(plain, feed.Item(feed.NOT_TIMED, feed.WORDS[feed.NOT_TIMED],
+                                                      "not timed to its video", 1, 0, 0), "video")
     in_anki = _ep(view_rows.Status("in_anki", "In Anki", "Its cards are in Anki", "ok"))._replace(cards=4)
     mining = _ep(view_rows.Status("mining", "Mining", "Being mined now", "accent"))._replace(mining=True)
-    for ep in [_ep(st) for st in said] + [in_anki, mining, _ep(None)]:
+    for ep in (_ep(not_timed), in_anki, mining, _ep(None)):
         assert win.mine.episode_entries(row, ep) == [], ep.status
         assert _mine_now(win.items.episode_entries(row, ep)) == [], ep.status
     assert asks(writer) == []
+
+
+def test_row28_a_read_only_store_greys_the_episodes_mine_now_with_its_reason_after_a_separator(act):
+    """AD-8: *Mine now* asks the store for a write — while it is read-only the menu greys it with the store's reason, as
+    it greys *Mark watched* and *Split here…* (the menu's one rule, `_refused_tip`); the modules' entries stand after a
+    separator."""
+    _seed, win, writer = act()
+    lst = lst_of(win)
+    row, ep = _waiting_episode(lst)
+    m = win.items.episode_menu(row, ep, win.mapToGlobal(win.rect().center()))
+    acts = m.actions()
+    k = next(n for n, a in enumerate(acts) if a.text() == strings.ROWS_ACTION_NAMES["mine-now"])
+    assert acts[k - 1].isSeparator() and not any(a.isSeparator() for a in acts[:k - 1]), "the hooks apart, once"
+    m.close()
+    writer.writable, writer.why = False, "damaged"
+    reason = win.items._refused_tip()
+    assert reason
+    entry = _mine_now(win.items.episode_entries(row, ep))
+    assert [(e.ok, e.tip) for e in entry] == [(False, reason)]
+    assert win.items.episode_entries(row, ep)[0].tip == reason, "as Mark watched"
 
 
 def test_row28_while_connect_is_off_mine_now_is_offered_saying_why_and_asks_nothing(act):

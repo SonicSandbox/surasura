@@ -2492,6 +2492,7 @@ def whole_step(dpr):
 
 NO_DRAG = frozenset(("play", "more", "more-ep", "up", "down", "done", "journey", "put-back")) | ACTION_NAMES   # buttons (W3.2 Q4:
 #                                                                                       put-back; P4.1 L2: the statuses')
+NO_DRAG = NO_DRAG | {"no-play"}     # row 55: Up Next's dashed *No video* / *Online* stands in ▶'s place — no handle, no pick
 
 
 def _rest_of(row, k):                                # --- W3.2 Q8: the files from episode `k` on, in words

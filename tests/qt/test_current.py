@@ -362,6 +362,9 @@ def test_nothing_the_screens_do_writes_to_the_library(seeded):
     lst.play_requested.emit(lst.model().entries[0][1].episodes[0])
     QApplication.processEvents()
     assert writes == []
+    # Up Next's ↗ clicked above looks for the journey on a worker: its answer lands before the window closes (it said
+    # into a bar already deleted at teardown, now and then — once row 55 took the parts ▶ no longer has off the click)
+    assert wait_until(lambda: not win._journey_opening)
 
 
 def test_play_looks_for_the_video_beside_the_file_on_a_worker_and_says_why_it_cant(seeded, tmp_path):
@@ -1885,6 +1888,14 @@ def test_row55_play_is_drawn_and_pressable_only_where_its_file_is_found(qapp, mo
         assert not hero.episodes[hero.next_index].can_play
         assert part(lst, 0, "play") == [] and part(lst, 0, "no-play")[0][2] == hero.play_tip
         QTest.mouseClick(lst.viewport(), Qt.MouseButton.LeftButton, pos=part(lst, 0, "no-play")[0][1].center())
+        # ... nor a drag handle: it stands where ▶ stands, and the card's rule is that no button's place starts a drag
+        # (NO_DRAG) — its title, a step left, still does; Ctrl+click on it picks nothing either
+        label = part(lst, 0, "no-play")[0][1].center()
+        title = part(lst, 0, "title")[0][1].center()
+        lst.drag = lst.drag or object()                       # (no writer here: a stand-in, `drag_from` asks only that)
+        assert lst.drag_from((0, "title", None, title, hero.key))
+        assert not lst.drag_from((0, "no-play", hero.episodes[hero.next_index], label, hero.key))
+        assert not lst._pick_at(lst.model().index(0, 0), part(lst, 0, "no-play")[0], "ctrl")
         # an opened row with both
         i, (_kind, row, _l) = next((i, e) for i, e in enumerate(lst.model().entries) if e[0] == rows.ROW and
                                    len({ep.can_play for ep in e[1].episodes}) == 2)

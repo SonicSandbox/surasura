@@ -802,15 +802,10 @@ class AnkiSyncGui(tk.Toplevel):
     def _sync_worker(self, full, snap):
         from app import anki_sync
         with self._lock():
-            result = anki_sync.sync(self.language, snap["url"], snap["decks"], snap["fields"],
-                                    include_suspended=snap["suspended"], full=full)
-            # The same decks' new cards, as the automatic sync reads them (read-only on Anki). Only a
-            # count here, so it can never cost the sync its result.
-            if not result.error:
-                try:
-                    anki_sync.sync_backlog(self.language, snap["url"], snap["decks"], snap["fields"])
-                except Exception:
-                    pass
+            # The one sync order (`anki_sync.sync_all`): the studied words, the same decks' new cards (read-only,
+            # never costing the sync its result), then Known from Anki (laptop round 7 #43).
+            result, _signal = anki_sync.sync_all(self.language, snap["url"], snap["decks"], snap["fields"],
+                                                 self._saved_settings(), include_suspended=snap["suspended"], full=full)
         self.q.put(("__RESULT__", result, anki_sync.load_state(self.language),
                     anki_sync.count_backlog(self.language)))
 

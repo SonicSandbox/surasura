@@ -3989,13 +3989,12 @@ class MasterDashboardApp:
                 from app import anki_connect, anki_sync
                 url = anki_connect.address(s)
                 if anki_connect.probe(url).get("ok"):
-                    result = anki_sync.sync(lang, url, decks, fields, include_suspended=suspended)
-                    # The same decks' new cards, for the report's backlog marks (read-only).
-                    anki_sync.sync_backlog(lang, url, decks, fields)
-                    # Known from Anki (P2.4): only with Connect's preview on; its window when the record has news
-                    # not yet shown (a Connect run may have read first, with no window: adversary B #3) — read here,
-                    # on this worker; a pending offer once a dashboard session until answered (intent keeper #4, #5)
-                    signal = anki_sync.read_known_signal(lang, url, decks, fields, s)
+                    # The one sync order (`anki_sync.sync_all`): the studied words, the same decks' new cards (the
+                    # report's backlog marks, read-only), then Known from Anki (P2.4): only with Connect's preview on;
+                    # its window when the record has news not yet shown (a Connect run may have read first, with no
+                    # window: adversary B #3) — read here, on this worker; a pending offer once a dashboard session
+                    # until answered (intent keeper #4, #5)
+                    result, signal = anki_sync.sync_all(lang, url, decks, fields, s, include_suspended=suspended)
                     if signal and signal.get("news"):
                         from app.connect import known_signal_window
                         seen = known_signal_window.view(lang, with_offer=lang not in self.__dict__.setdefault("_known_offer_seen", set()))

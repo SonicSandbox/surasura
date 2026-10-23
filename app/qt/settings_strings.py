@@ -99,6 +99,8 @@ DOORS = {
     "koe": ("Speech settings…", "Set the API key, voice and delivery for spoken sentences"),
     "sentence-dictionary": ("Export", "Exports Surasura Corpus for Yomitan"),
     "frequency-lists": ("Add…", "Add or remove a frequency list"),
+    "library-folders": ("Manage folders…", "Opens your folders: stop reading one, read a skipped one again, or look "
+                                           "in them all again"),
 }
 # A row whose door says something else than the opener's own words: row id -> {opener: (label, tooltip)}
 ROW_DOORS = {
@@ -164,9 +166,10 @@ ROWS = {
     "connect_open_anki": ("When Anki is closed", "New cards wait until you open Anki — or Surasura opens it for you",
                           "When you open Surasura and Anki is closed, Surasura can open it, so your phone's reviews "
                           "come in and your cards get made and ordered", "closed open anki start session"),
-    "connect_backlog_cap": ("Keep up to", "Surasura cards waiting in Anki, for this language. 0: no limit",
-                            "Connect makes cards while fewer of its own new cards wait in Anki, for this language. 0: "
-                            "no limit. Your own cards never count", "cap backlog waiting keep up to limit"),
+    "connect_backlog_cap": ("Keep up to", "new cards waiting in Anki, for this language. 0: no limit",
+                            "Surasura makes cards while fewer new cards wait in Anki for this language: yours and "
+                            "Surasura's. Suspended cards never count. 0: no limit",
+                            "cap backlog waiting keep up to limit"),
     "known_from_anki": ("Count as known in Anki", "A card in every state you pick marks its word known",
                         "A card in every state you pick here marks its word known (all must hold: Suspended + Marked "
                         "is both). None picked: off", "known from anki suspended marked flag"),
@@ -366,7 +369,8 @@ ROWS = {
     "library_folders": ("Library folders", "Read where they are: Surasura keeps its own copy of their text and "
                                            "looks in them again for new episodes",
                         "The folders Surasura reads where they are", "library folders source read where they are "
-                                                                     "stop reading look again"),
+                                                                     "stop reading look again manage skipped "
+                                                                     "read again"),
     "fresh_library": ("Start a fresh library",
                       "Your library set aside in one backup and your folders read again from scratch",
                       "Empty your library and read your folders again; the old one is kept in a backup",
@@ -690,6 +694,13 @@ SOURCES_READ_AGAIN_NAME = "Read {path} again"
 SOURCES_READ_AGAIN_TIP = ("Read {path} again\nIts files come back into your library at once; a show you haven't had "
                           "yet waits in New arrivals")
 SOURCES_READ_AGAIN_DONE = "{path} is read again: its files come back into your library"
+# Row 32 (laptop round 4): the page's summary, and the folders in their own window (*Manage folders…*)
+SOURCES_FOLDERS = "{n:,} folders"
+SOURCES_FOLDERS_ONE = "1 folder"
+SOURCES_AWAY_N = "{n:,} not reachable now"
+SOURCES_SKIPPED_N = "{n:,} skipped"
+FOLDERS_NAME = "Library folders"
+FOLDERS_LINE = "Surasura reads these folders where they are and looks in them again for new episodes."
 
 # --- K7: *Start a fresh library…* (settings_sources.py: FreshRow; the store's `start_fresh`) ------------------------ #
 FRESH_OPEN = "Start a fresh library…"

@@ -2144,6 +2144,9 @@ class ShellWindow(QMainWindow):
     # the bar's marks
     def _show_automation(self, state):
         d = self.duties
+        if (getattr(state, "sync", None) == "synced" and getattr(d.auto_state, "sync", None) != "synced"
+                and getattr(self, "needs_you", None) is not None):
+            self.needs_you.synced()             # laptop round 7 #43: Known from Anki's question may have come or gone
         known = getattr(state, "known", None)
         if known is not None and known != getattr(d.auto_state, "known", None):
             self._previews_moved()                         # W3.1b: new known words move the bands' numbers
@@ -2475,7 +2478,10 @@ class ShellWindow(QMainWindow):
         self._named.clear()
         self._named_groups = None
         self._show_offline()
-        self.sources_seen.emit({"language": self.language, "sources": []})     # Settings' lines: the language open's
+        # Settings' lines: the language open's, its listing asked for (never "No folders yet" while it is on its way)
+        self.sources_seen.emit({"language": self.language, "sources": [], "listing": self.looks is not None})
+        if self.looks is not None:
+            self.looks.listing()
         if self._first_painted:
             self.look_at_sources(focused=True)
 
@@ -3089,6 +3095,11 @@ def main(argv=None):
             instance.release()                            # (once: done already unless the quit failed before it)
             if window.restart_asked:                      # *Restart now* (`ShellWindow.restart`): the new start only
                 relaunch(argv)                            # once the store's close has ended (or its wait ran out, B2-4)
+            if meter is not None:                         # the HUD's native filter taken off here, on the GUI thread:
+                try:                                      # left to the collector, it can go on a worker, where Qt's
+                    meter.stop()                          # removal misses and the next message crashes (0xC0000005)
+                except Exception as e:
+                    applog.log("shell", f"the HUD at quit: {e!r}")
             quiet_exit(gone=(window,))                    # W3.4: nothing of Qt's or a worker's left for the teardown
     return code
 

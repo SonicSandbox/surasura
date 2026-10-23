@@ -293,7 +293,8 @@ ROWS = (
     # Content
     _row("target_language", "content", "choice", ("target_language",), options=LANGUAGES),
     _row("soon_line", "content", "custom"),                                                 # P6: the store's line
-    _row("library_folders", "content", "custom"),                     # SRC W1b: the store's sources, read where they are
+    # SRC W1b: the store's sources, read where they are; row 32: a summary here, the folders in their own window
+    _row("library_folders", "content", "custom", door=("library-folders",)),
     _row("fresh_library", "content", "custom"),                       # K7: the library set aside, the folders read again
     _row("split_length", "content", "number", ("split_length",), bounds=(1, None)),
     _row("enable_youtube_transcripts", "content", "toggle", ("enable_youtube_transcripts",), when=_YOUTUBE),

@@ -61,6 +61,8 @@ def signal(settings):
     value = (settings or {}).get("known_from_anki", ["suspended"])
     if isinstance(value, str):
         value = [value]
+    if isinstance(value, tuple):        # the 3.0 window's settings are frozen: its lists are tuples (review r2 #1)
+        value = list(value)
     if not isinstance(value, list):
         print("Known from Anki is off: known_from_anki isn't a list of terms.")
         return []

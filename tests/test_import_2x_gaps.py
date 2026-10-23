@@ -27,13 +27,14 @@ def test_a_library_reached_through_a_junction_into_the_old_folder_is_refused(tmp
 
 
 @pytest.mark.parametrize("only", ["User Files", "data"])
-def test_a_folder_holding_either_library_folder_is_a_2x_library(tmp_path, only):
-    # A 2.x library is `User Files\` OR `data\` (the module's rule): a 2.x folder whose other half was moved or
-    # deleted still holds the user's words or content, and must be offered for import, never refused as "not 2.x".
+def test_only_a_folder_holding_user_files_is_a_2x_library_to_bring_over(tmp_path, only):
+    # What comes over is `User Files\` alone (no content, 2026-10-23): a 2.x folder whose `data\` was moved or deleted
+    # still holds the user's words and is offered; one holding only `data\` would import nothing and be recorded as
+    # done, refusing the real folder later (`already_imported`), so it is "not 2.x".
     folder = tmp_path / "旧すらすら"
     (folder / only / "ja").mkdir(parents=True)
-    assert import_2x.is_2x_folder(str(folder)) is True
-    assert import_2x.check_source(str(folder))["reason"] != "not_2x"
+    assert import_2x.is_2x_folder(str(folder)) is (only == "User Files")
+    assert (import_2x.check_source(str(folder))["reason"] == "not_2x") is (only == "data")
 
 
 def test_a_comment_only_list_saved_with_a_bom_is_not_content(tmp_path):

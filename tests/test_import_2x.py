@@ -679,11 +679,12 @@ def test_no_content_comes_over_so_the_new_store_starts_empty_even_from_2_5s_stor
     _write(os.path.join(uf_old, ".trash", "master_manifest.20260901-101010.json"),
            json.dumps(_manifest("ja", old), ensure_ascii=False), mtime=time.time() - 86400)
     _write(os.path.join(uf_old, "master_manifest.json.bak"), json.dumps(_manifest("ja", old), ensure_ascii=False))
+    _write(os.path.join(uf_old, "Master_Manifest-PC.JSON"), json.dumps(_manifest("ja", old), ensure_ascii=False))
     library = str(tmp_path / "図書館 3.0")
     result = import_2x.run_import(old, library)
     assert result["status"] == "done" and "store" not in result
     copied = {rel for rel in _tree(library) if not rel.endswith(os.sep)}
-    assert not [rel for rel in copied if "master_manifest" in rel]
+    assert not [rel for rel in copied if "master_manifest" in rel.lower()]   # a sync client's copy, any case
     assert not [rel for rel in copied if rel.split(os.sep)[0] != "User Files" and rel != "settings.json"], copied
     assert os.path.isfile(os.path.join(library, "User Files", "ja", ".trash", "KnownWord.20260901-101010.json"))
     assert _store_items("ja", library) == 0, "the new store found 2.x's content"

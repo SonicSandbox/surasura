@@ -688,7 +688,7 @@ def check_program(final_dist, config):
     for dirpath, _dirs, files in os.walk(internal):
         parts = os.path.relpath(dirpath, internal).replace(os.sep, "/").split("/")
         if any(parts[i:i + 2] == ["modules", m] for i in range(len(parts)) for m in left_out):
-            stray += [os.path.join(dirpath, n) for n in files]
+            stray += [os.path.join(dirpath, n) for n in files] or [dirpath]     # an empty folder imports too
     if stray:
         failures.append(f"_internal holds files of modules the build config leaves out: {stray[:5]}")
     # PyQt6: only the window's modules, with PyQt6's and Qt's licence notices.
@@ -708,7 +708,8 @@ def check_program(final_dist, config):
 
 def frozen_modules(exe):
     """The Python modules frozen into a built program (PyInstaller's PYZ archive inside `exe`) -> a set of names, or
-    None when `exe` holds no archive this PyInstaller can read."""
+    None when `exe` holds no archive this PyInstaller can read, or one that names none of Surasura's own `app`
+    modules (a PYZ renamed or split by another PyInstaller: a reading that saw nothing proves nothing)."""
     try:
         from PyInstaller.archive.readers import CArchiveReader
         archive = CArchiveReader(exe)
@@ -716,7 +717,7 @@ def frozen_modules(exe):
         for entry in archive.toc:
             if entry.endswith(".pyz"):
                 names.update(archive.open_embedded_archive(entry).toc)
-        return names
+        return names if any(n == "app" or n.startswith("app.") for n in names) else None
     except Exception:
         return None
 

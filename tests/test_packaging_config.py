@@ -581,6 +581,43 @@ def test_the_archive_reader_says_none_for_a_file_that_is_no_archive(tmp_path):
         assert _REAL_FROZEN_MODULES(str(tmp_path / name)) is None
 
 
+def test_an_archive_naming_none_of_surasuras_modules_is_no_reading(monkeypatch):
+    """A PyInstaller that renames or splits the PYZ leaves the reader nothing to read: an empty set would pass the
+    left-out check unread, so a reading without Surasura's own `app` modules is None (the fail-closed failure)."""
+    readers = pytest.importorskip("PyInstaller.archive.readers")
+
+    class Archive:
+        def __init__(self, exe):
+            self.toc = {"PYZ-00.pyz": None, "base_library.zip": None} if "pyz" in exe else {"other.bin": None}
+
+        def open_embedded_archive(self, entry):
+            return type("Pyz", (), {"toc": {"json": None, "encodings": None}})()       # the stdlib alone
+
+    monkeypatch.setattr(readers, "CArchiveReader", Archive)
+    assert _REAL_FROZEN_MODULES("no archive.exe") is None
+    assert _REAL_FROZEN_MODULES("pyz without app.exe") is None
+
+
+def test_the_real_reader_reads_the_built_program_when_there_is_one():
+    """Against this copy's own build, when one is there: the reader finds Surasura's own modules in it."""
+    pytest.importorskip("PyInstaller.archive.readers")
+    exes = [os.path.join(PROJECT, "dist", "Surasura", n) for n in ("Surasura.exe", "surasura-cli.exe")]
+    exes = [e for e in exes if os.path.isfile(e)]
+    if not exes:
+        pytest.skip("no dist/Surasura build in this copy")
+    for exe in exes:
+        names = _REAL_FROZEN_MODULES(exe)
+        assert names and "app.analyzer" in names, exe
+
+
+def test_an_empty_folder_of_a_left_out_module_under_internal_fails_the_check(tmp_path):
+    """An empty _internal/modules/koe/ would be found as a namespace package (`find_spec`): Koe would look present."""
+    folder, config = _program(tmp_path)
+    (folder / "_internal" / "modules" / "koe").mkdir(parents=True)
+    failures, _facts = package_app.check_program(str(folder), config)
+    assert len(failures) == 1 and "leaves out" in failures[0] and "koe" in failures[0]
+
+
 def test_missing_qt_licences_fail_the_folder_and_the_zip(tmp_path):
     import shutil
     folder, config = _program(tmp_path, licences=False)

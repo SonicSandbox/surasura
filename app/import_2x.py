@@ -43,7 +43,7 @@ LIBRARY_FOLDERS = ("User Files", "data")        # what makes a folder a library 
 COPIED_FOLDERS = ("User Files",)                # what is copied from the 2.x folder: no content (Sonic 2026-10-23)
 LEFT_BEHIND = "master_manifest"                 # 2.x's library order and its backups: 3.0's store would rebuild from it
 LANGUAGES = ("ja", "zh")
-ROAMING_FILES = ("koe_credentials.json", "koe_usage.json", "telemetry_id.json")
+ROAMING_FILES = ("koe_credentials.json", "koe_usage.json", "telemetry_id.json")   # Koe's kept for its return (3.1)
 SECRET_FILES = ("koe_credentials.json",)        # never logged, never hashed into the summary
 REPLACED_FILES = ("telemetry_id.json",)         # carried over even when 3.0 made its own (S3.1-4: the same user)
 STORE_SUFFIXES = ("", "-wal", "-shm")           # a store is moved as a set (first_run's set-aside): a .db alone
@@ -88,8 +88,9 @@ def _inside(path, folder):
 
 
 def is_2x_folder(folder):
-    """A folder holding a 2.x library: `User Files\\` or `data\\` in it."""
-    return any(os.path.isdir(os.path.join(folder, name)) for name in LIBRARY_FOLDERS)
+    """A folder holding a 2.x library the import can bring over: `User Files\\` in it (a `data\\` alone holds only
+    content, which never comes over: offered, it would import nothing and be recorded as done)."""
+    return any(os.path.isdir(os.path.join(folder, name)) for name in COPIED_FOLDERS)
 
 
 def holds_program(folder):
@@ -140,13 +141,13 @@ def running_from(folder):
 
 def check_source(folder):
     """Can `folder` be imported now? -> {ok, reason, message, running: [{pid, image}]}. Reasons: `missing` (no such
-    folder), `not_2x` (no User Files\\ or data\\), `running` (a program from it runs: close it first)."""
+    folder), `not_2x` (no User Files\\), `running` (a program from it runs: close it first)."""
     result = {"ok": False, "reason": None, "message": None, "running": []}
     if not folder or not os.path.isdir(folder):
         result.update(reason="missing", message=f"The folder {folder} isn't there.")
         return result
     if not is_2x_folder(folder):
-        result.update(reason="not_2x", message=f"{folder} holds no Surasura library (no User Files or data folder).")
+        result.update(reason="not_2x", message=f"{folder} holds no Surasura word lists (no User Files folder).")
         return result
     running = running_from(folder)
     if running:
@@ -293,7 +294,7 @@ def _plan_files(source):
             if not names and not dirs:
                 folders.append(rel_dir)
             for name in sorted(names):
-                if not name.startswith(LEFT_BEHIND):
+                if not name.lower().startswith(LEFT_BEHIND):
                     files.append((os.path.join(rel_dir, name), os.path.getsize(os.path.join(dirpath, name))))
     return files, folders
 

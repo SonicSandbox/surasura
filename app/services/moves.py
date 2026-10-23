@@ -1577,7 +1577,8 @@ class Writer:
             return
         try:                                        # W-1: `order`, the tier's ids from this thread's handle (read only
             self.numbers.after_move(cmd["ids"], cmd["tier"], before_id=cmd["before_id"],   # for an anchor the numbers
-                                    after_id=cmd["after_id"], order=lambda tier: store.ids(tier))    # don't hold)
+                                    after_id=cmd["after_id"], order=lambda tier: store.ids(tier),    # don't hold)
+                                    aside=lambda ids: _set_aside(store, ids))
         except Exception as e:
             print(f"Window writer: the numbers couldn't follow the move: {e!r}")
 
@@ -1618,10 +1619,11 @@ def _order_version(store):
 def _refused(change, out):
     """An undo that wrote nothing: no answer, or a status undo that restored nothing. A finish: no row put back and
     every one of its values skipped — the store doesn't hand a finish's restored values back, but its notes count what
-    it skipped, its rows' and its values' (AD-15)."""
+    it skipped, its rows' and its values' (AD-15). A tier change or a move that carries values (out of Finished: its
+    cards back in the order, its stones cleared) is undone the same way, so it is read the same way."""
     if out is None:
         return True
-    if change.kind in ("finish", "put_back_finished") or (change.kind == "set_tier" and change.status):
+    if change.kind in ("finish", "put_back_finished") or (change.kind in ("set_tier", "move") and change.status):
         return not out.items and _skips(out) - len(change.items) >= len(change.status)
     if change.kind == "remove":                     # every row put back meanwhile (a skip's folder row: read again)
         return not out.restored and not getattr(out, "folder_dropped", False)
@@ -2070,19 +2072,32 @@ class Numbers:
         self.worker.put(self._close_handle)
         self.worker.close()
 
-    def after_move(self, ids, tier, before_id=None, after_id=None, order=None):
+    def after_move(self, ids, tier, before_id=None, after_id=None, order=None, aside=None):
         """The window's drop, as `Store.move` places it: the touched rows' new figures {item_id: (known, counted,
         n_new)} — the moved items and every item whose *N new* changed — and a new version; {} when the engine can't
         follow (see `why()`), the rows keeping their figures.
-        W-1 (K-W4): an item the engine doesn't hold — one that doesn't count (a watched episode while *Keep studying
-        watched episodes* is off), out of its order as out of a Generate's — moves no number: it leaves the block, and
-        an anchor it doesn't hold gives way to the nearest neighbour it does, in the tier's order as the store holds it
-        (`order(tier)`: the store's ids in order, read only then, before the lock) — so a drag of a show holding
+        W-1 (K-W4): an item the engine doesn't hold that the store sets aside (`aside(ids)`: a watched episode of a
+        studied tier while *Keep studying watched episodes* is off — out of a Generate's order) moves no number: it
+        leaves the block. Any other item the engine doesn't hold (a Finished or New arrivals item, a file added since
+        the last Generate) will count, so the numbers are worked out again, as before. An anchor the engine doesn't
+        hold gives way to the nearest neighbour it does, in the tier's order as the store holds it (`order(tier)`: the
+        store's ids in order, read only when the drop will be followed, before the lock) — so a drag of a show holding
         watched episodes keeps its numbers at the drop instead of a resync."""
         from app import plan_engine
+        ids = list(dict.fromkeys(ids))
         anchor = before_id if before_id is not None else after_id
+        eng = self._engine
+        studied = eng is not None and tier in ANALYSED
+        unheld = [i for i in ids if not _holds(eng, i)] if studied else []
+        dropped = set()
+        if unheld and aside is not None:
+            try:
+                dropped = set(aside(unheld)) & set(unheld)
+            except Exception as e:                  # none dropped: the drop is followed by a resync (as before)
+                print(f"Window numbers: what is set aside couldn't be read: {e!r}")
+        follows = studied and len(dropped) == len(unheld) and len(ids) > len(dropped)
         seq = None
-        if order is not None and anchor is not None and anchor not in ids and not _holds(self._engine, anchor):
+        if follows and order is not None and anchor is not None and anchor not in ids and not _holds(eng, anchor):
             try:
                 seq = list(order(tier))
             except Exception as e:                  # the drop is followed by a resync instead (as before)
@@ -2094,7 +2109,7 @@ class Numbers:
             if tier not in ANALYSED:
                 self.worker.put(self._resync)       # Finished / New arrivals: out of the order
                 return {}
-            block = [i for i in dict.fromkeys(ids) if _holds(eng, i)]
+            block = [i for i in ids if i not in dropped]
             if not block:
                 return {}                           # nothing that counts moved: every row keeps its figures
             if seq is not None and not _holds(eng, anchor):
@@ -2303,6 +2318,22 @@ class Numbers:
 def _plan_engine():
     from app import plan_engine
     return plan_engine
+
+
+def _set_aside(store, ids):
+    """W-1: those of `ids` the store's one rule sets aside — a studied tier's item that would count but for its watched
+    mark (`library_store.counts`, the library's `keep_watched` read once); one item read each (a drop's few)."""
+    from app.library_store import counts
+    try:
+        keep = int((store.meta() or {}).get("keep_watched") or 0)
+    except (TypeError, ValueError):
+        keep = 0
+    out = set()
+    for item in ids:
+        row = store.item(item)
+        if row is not None and counts(row["tier"], 0, keep) and not counts(row["tier"], row["watched"], keep):
+            out.add(item)
+    return out
 
 
 def _holds(eng, item):

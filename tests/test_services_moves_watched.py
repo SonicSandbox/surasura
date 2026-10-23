@@ -21,8 +21,8 @@ from app.services import moves as M
 from tests import services_helpers as h
 from tests.fixtures import window_seed
 from tests.test_services_chores import _make as _make_chores, indexing_on  # noqa: F401 (a fixture)
-from tests.test_services_moves import (Recorder, _engine_from_scratch, _in_order, big, lib,  # noqa: F401 (fixtures)
-                                       make_writer, write_plan)
+from tests.test_services_moves import (WORDS, Recorder, _engine_from_scratch, _in_order, big,  # noqa: F401
+                                       lib, make_writer, write_plan)
 
 BENCH = os.environ.get("SURASURA_STORE_BENCH") == "1"
 
@@ -183,7 +183,8 @@ def test_W1_a_drag_holding_watched_episodes_and_a_drop_beside_one_keep_their_num
         hero = _hero(seed)
         goal = sorted((r for r in seed.library.items() if r["tier"] == "goal"), key=lambda r: (r["ord"], r["id"]))
 
-        touched = numbers.after_move(hero, "goal", after_id=goal[3]["id"], order=order)   # watched ids in the block
+        touched = numbers.after_move(hero, "goal", after_id=goal[3]["id"], order=order,   # watched ids in the block
+                                     aside=_aside(seed))
         assert touched and hero[2] in touched and hero[0] not in touched and resyncs == []
         _store_move(seed, hero, "goal", after_id=goal[3]["id"])
         _matches_referee(numbers, plan_file, seed)
@@ -206,7 +207,8 @@ def test_W1_a_drag_holding_watched_episodes_and_a_drop_beside_one_keep_their_num
         _store_move(seed, [mover], "now", after_id=hero[1])
         _matches_referee(numbers, plan_file, seed)
 
-        assert numbers.after_move(hero[:2], "goal", order=order) == {} and resyncs == []   # only watched: no number
+        assert numbers.after_move(hero[:2], "goal", order=order, aside=_aside(seed)) == {}  # only watched: no number
+        assert resyncs == []
         numbers.close()
 
 
@@ -228,6 +230,7 @@ def test_W1_the_numbers_follow_a_drop_with_watched_episodes_within_50_ms_on_2000
     (`SURASURA_STORE_BENCH=1`, under the `timed` lock); otherwise the same drops, checked for their answers alone."""
     seed, _analysed, plan_file, _per_file = big
     numbers, resyncs, order = _loaded(seed, plan_file)
+    aside = _aside(seed)
     hero = _hero(seed)
     rnd = random.Random(5)
     times = []
@@ -242,7 +245,7 @@ def test_W1_the_numbers_follow_a_drop_with_watched_episodes_within_50_ms_on_2000
             mover = rnd.choice([r for r in rows["goal"] if r["id"] not in hero])["id"]
             args = ([mover], "now"), {"before_id": hero[0]}
         start = time.perf_counter()
-        touched = numbers.after_move(*args[0], order=order, **args[1])
+        touched = numbers.after_move(*args[0], order=order, aside=aside, **args[1])
         times.append((time.perf_counter() - start) * 1000)
         assert touched and resyncs == []
         _store_move(seed, *args[0], **args[1])
@@ -251,4 +254,110 @@ def test_W1_the_numbers_follow_a_drop_with_watched_episodes_within_50_ms_on_2000
     _matches_referee(numbers, plan_file, seed)
     if BENCH:
         assert times[len(times) // 2] <= 50, times
+    numbers.close()
+
+
+# --- 3. an undo the store did is never reported refused ------------------------------------------------------------ #
+def test_W1_undoing_a_drag_out_of_finished_that_cleared_its_stone_is_not_reported_refused(lib, make_writer):
+    """A watched item in Finished, dragged back into NOW: the move clears its stone (Put back's rule) on the move's own
+    change. Its Undo puts the item back in Finished, watched — the store undid it, so the writer must never answer
+    *can't undo* (the learner would think the drag stuck)."""
+    s = lib.store
+    item = lib.ids("now")[-1]
+    s.set_tier([item], "graduated")
+    s.set_watched([item], True)
+    s.set_learning_order([item], True)                  # only the stone changes on the way out
+    change = s.move([item], "now", after_id=lib.ids("now")[0])
+    assert s.item(item)["watched"] == 0 and change.status
+    out = s.undo(change)
+    assert s.item(item)["tier"] == "graduated" and s.item(item)["watched"] == 1
+    assert not M._refused(change, out)
+    w, heard, _numbers, _counted = _writer(make_writer)  # the writer's own Undo of the same drag
+    w.move([item], "now", after_id=lib.ids("now")[0])
+    assert h.until(lambda: len(heard.saved) == 1) and s.item(item)["tier"] == "now"
+    w.undo()
+    assert h.until(lambda: len(heard.undone) == 1 or heard.notes)
+    assert s.item(item)["tier"] == "graduated" and s.item(item)["watched"] == 1
+    assert WORDS["cant_undo"] not in heard.notes and len(heard.undone) == 1
+
+
+def test_W1_undoing_a_drag_out_of_finished_changed_since_is_still_refused(lib):
+    """The other side of the same rule: the dragged item moved again since (and its stone set again), so the undo
+    restores nothing — that one is refused, as before."""
+    s = lib.store
+    item = lib.ids("now")[-1]
+    s.set_tier([item], "graduated")
+    s.set_watched([item], True)
+    change = s.move([item], "now", after_id=lib.ids("now")[0])
+    s.move([item], "soon")                              # another window moved it since
+    s.set_watched([item], True)
+    out = s.undo(change)
+    assert s.item(item)["tier"] == "soon"
+    assert M._refused(change, out)
+
+
+# --- 4. after a drop, an item the plan doesn't hold resyncs unless the one rule sets it aside -------------------- #
+def _aside(seed):
+    store = seed.opener.handle()
+    return lambda ids: M._set_aside(store, ids)
+
+
+class _Counting:
+    """The tier's order, counted: a drop that can't use it never reads it."""
+
+    def __init__(self, order):
+        self.order, self.reads = order, 0
+
+    def __call__(self, tier):
+        self.reads += 1
+        return self.order(tier)
+
+
+def test_W1_a_finished_item_or_a_file_added_since_generate_dragged_into_now_still_resyncs(tmp_path):
+    """The plan holds neither a Finished item nor a file added since the last Generate: dragged into NOW (alone, or
+    with a counted episode) they'll count, so the numbers are worked out again — only a watched episode of a studied
+    tier (set aside) leaves the block quietly. New arrivals the same as Finished."""
+    for language in ("ja", "zh"):
+        seed, plan_file = _small_plan(tmp_path / language, language)
+        numbers, resyncs, order = _loaded(seed, plan_file)
+        aside = _aside(seed)
+        rows = seed.library.items()
+        fin = sorted((r for r in rows if r["tier"] == "graduated"), key=lambda r: (r["ord"], r["id"]))
+        arr = [r for r in rows if r["tier"] == "arrivals"]
+        now = [r["id"] for r in _in_order(rows) if r["tier"] == "now"]
+        hero = _hero(seed)
+        added = dict(next(r for r in rows if r["id"] == now[5]))    # a NOW file that came in after the Generate
+        added.update(id=max(r["id"] for r in rows) + 1, rel_path=added["rel_path"] + ".new.srt", ord=added["ord"] + 1)
+        seed.library.commit(items=[added], order=True)
+
+        assert numbers.after_move([fin[0]["id"]], "now", after_id=now[2], order=order, aside=aside) == {}
+        assert resyncs == [1]
+        assert numbers.after_move([fin[1]["id"], now[0]], "now", after_id=now[3], order=order, aside=aside) == {}
+        assert resyncs == [1, 1]
+        assert numbers.after_move([arr[0]["id"]], "now", after_id=now[2], order=order, aside=aside) == {}
+        assert resyncs == [1, 1, 1]
+        assert numbers.after_move([added["id"]], "soon", order=order, aside=aside) == {}
+        assert resyncs == [1, 1, 1, 1]
+        assert numbers.after_move(hero[:2] + [added["id"]], "goal", order=order, aside=aside) == {}
+        assert resyncs == [1, 1, 1, 1, 1]               # the watched ones alone are set aside; the new file isn't
+        assert numbers.after_move(hero[:2], "goal", order=order, aside=aside) == {}
+        assert resyncs == [1, 1, 1, 1, 1]               # only watched: nothing counts moved, no resync
+        numbers.close()
+
+
+def test_W1_after_a_drop_the_tiers_order_is_read_only_when_the_anchor_is_needed(tmp_path):
+    """The store's order is read for an anchor the engine doesn't hold, and only when the drop will be followed: never
+    for a drop into Finished, a block of watched episodes alone, or a block that resyncs anyway."""
+    seed, plan_file = _small_plan(tmp_path, "ja")
+    numbers, resyncs, order = _loaded(seed, plan_file)
+    aside, counting = _aside(seed), _Counting(order)
+    hero = _hero(seed)
+    fin = sorted((r for r in seed.library.items() if r["tier"] == "graduated"), key=lambda r: (r["ord"], r["id"]))
+    goal = sorted((r for r in seed.library.items() if r["tier"] == "goal"), key=lambda r: (r["ord"], r["id"]))
+    assert numbers.after_move([goal[-1]["id"]], "graduated", after_id=fin[0]["id"], order=counting, aside=aside) == {}
+    assert numbers.after_move(hero[:2], "now", before_id=hero[2], order=counting, aside=aside) == {}
+    assert numbers.after_move([fin[0]["id"]], "now", after_id=hero[1], order=counting, aside=aside) == {}
+    assert counting.reads == 0 and resyncs == [1, 1]
+    touched = numbers.after_move([goal[-1]["id"]], "now", after_id=hero[1], order=counting, aside=aside)
+    assert touched and counting.reads == 1 and resyncs == [1, 1]
     numbers.close()

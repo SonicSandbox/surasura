@@ -436,6 +436,11 @@ def _eps_list(eps):
     return ", ".join(labels) + (STRINGS["eps_more"].format(n=more) if more > 0 else "")
 
 
+def _said(line):
+    """A row's spoken line with an empty part left out (row 36: no *N new* yet says nothing, never a dash)."""
+    return line.replace(" ·  · ", " · ")
+
+
 def spoken(status):
     """A status as a screen reader says it: the pill shows ✓ and the number only (G2.3 R2), the words go with it."""
     if status is not None and status.kind == "in_anki":
@@ -724,8 +729,9 @@ def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, 
     studying = bool(first.get("pinned")) and any(it.get("pinned") for it in piece)
     stamp = max((it.get("graduated_at") or "" for it in piece), default="") or None
     acc_pct = STRINGS["acc_pct_none"] if pct is None else STRINGS["pct"].format(pct=round(pct))
-    acc_new = STRINGS["new"].format(n=n_new if n_new is not None else 0) if n_new is not None else STRINGS["dash"]
-    accessible = STRINGS["acc_row"].format(title=title, pct=acc_pct, new=acc_new, status=spoken(st)) if not finished \
+    acc_new = STRINGS["new"].format(n=n_new) if n_new is not None else ""          # row 36: the number or nothing
+    accessible = _said(STRINGS["acc_row"].format(title=title, pct=acc_pct, new=acc_new, status=spoken(st))) \
+        if not finished \
         else f"{title} · {spoken(st) if st.kind in ('in_anki', 'mining') else line}"
     key = f"p{first['piece_id']}" if first.get("piece_id") is not None else f"i{first['id']}"
     string = None
@@ -875,10 +881,10 @@ def _as_hero(h):
     """The hero reads as it's painted: its next episode's numbers with the episode, and its row's own status (Q33: as
     every row) said as the whole's — "all of it", never in one breath with the episode's (AD-9)."""
     nxt = h.episodes[h.next_index]
-    return h._replace(accessible=STRINGS["acc_hero"].format(
+    return h._replace(accessible=_said(STRINGS["acc_hero"].format(
         title=h.title, ep=h.title_ep, status=spoken(h.status),
         pct=STRINGS["acc_pct_none"] if nxt.pct is None else STRINGS["pct"].format(pct=round(nxt.pct)),
-        new=STRINGS["dash"] if nxt.n_new is None else STRINGS["new"].format(n=nxt.n_new)).replace("  ", " "))
+        new="" if nxt.n_new is None else STRINGS["new"].format(n=nxt.n_new))).replace("  ", " "))
 
 
 def _by_tier(items):

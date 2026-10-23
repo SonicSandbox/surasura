@@ -191,7 +191,8 @@ class Services:
             return
         replan, get = self.replan, self.settings.get
         providers.update(replan=replan.line,
-                         connect=status_service.connect_line(language, get, feed=connect_feed(language, self.settings)),
+                         connect=status_service.connect_line(language, get, feed=connect_feed(language, self.settings),
+                                                             registry=self.registry),       # row 40: in the line
                          # P4.1 L2 (row 4.1.13): the feed the library's stones are built from — one stamp a tick
                          ankiweb=status_service.ankiweb_line(get), journey=status_service.journey_pending(language),
                          backlog=status_service.anki_backlog(language))
@@ -2834,6 +2835,7 @@ def library_for(language, settings, freeze_gc=False):
     feed = connect_feed(language, settings)                 # --- P4.1 L2: Connect's feed (row 4.1.10)
     _opener, numbers, reader = moves.open_library(
         language, check=moves.plan_check(language, lambda: settings_service.thaw(settings.get())),
+        log=lambda line: applog.log("numbers", line),       # row 36: why *N new* waits, in the app's log
         cache_file=library_reader.cache_path(language), freeze_gc=freeze_gc,
         watch=library_lookout,                              # W3.2 B: woken by the bell + the tree watch (IK0-5)
         connect=feed.latest)                                # P4.1 L2: the stones from the status line's last look

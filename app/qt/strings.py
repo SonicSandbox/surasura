@@ -419,6 +419,7 @@ ROWS_MOVE_TIP = {"up": "Move up one\n• Click to move it up one place",
                  "down": "Move down one\n• Click to move it down one place"}
 # a click that asks for more than one file says how many (AD-2: Up Next's status acts on its whole row, as every row's
 # does), one string with the count as the toasts' (`MAKE_CARDS_QUEUED`): {one file?: words}
+ROWS_WAITING_TIP = "{label}\n{tip}"                  # row 38: *Waiting* is its icon alone; its hover names it first
 ROWS_MINE_NOW_TIP = {True: "{tip}\n• Click to mine it now", False: "{tip}\n• Click to mine its {n} waiting files now"}
 # --- P4.1 L2: the stones' actions (4.1.11): Mine this, No video's Link… · Mine text, and why nothing happens while
 # Connect is off (IK S7); the window's routing (`app/qt/mine_actions.py`)

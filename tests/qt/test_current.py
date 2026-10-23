@@ -362,9 +362,30 @@ def test_nothing_the_screens_do_writes_to_the_library(seeded):
     lst.play_requested.emit(lst.model().entries[0][1].episodes[0])
     QApplication.processEvents()
     assert writes == []
-    # Up Next's ↗ clicked above looks for the journey on a worker: its answer lands before the window closes (it said
-    # into a bar already deleted at teardown, now and then — once row 55 took the parts ▶ no longer has off the click)
-    assert wait_until(lambda: not win._journey_opening)
+
+
+def test_a_workers_answer_landing_after_the_window_closed_and_went_touches_nothing(qapp, qt_errors):
+    """A worker's answer that lands after the window closed and was deleted (the tests' teardown; any close whose
+    answers are still on their way) is dropped where answers come back, never handed to a callback writing into a
+    deleted widget: *N new words ↗*'s journey said into the bar already gone ("wrapped C/C++ object of type
+    ElidingLabel has been deleted", round 8 — the kind of thing that crashes natively)."""
+    import threading
+    from PyQt6 import sip
+    from PyQt6.QtCore import QThreadPool
+    seed = window_seed.build()
+    win, services = open_on(qapp, seed)
+    gate = threading.Event()
+    services.open_journey = lambda: gate.wait(5) and False       # none on disk: its answer says so in the bar
+    win._open_journey(asked=True)
+    win.close()
+    assert not win.isVisible()
+    sip.delete(win)
+    gate.set()
+    assert QThreadPool.globalInstance().waitForDone(5000)
+    for _ in range(20):
+        QApplication.processEvents()
+    services.shutdown(0.5)
+    assert qt_errors == []
 
 
 def test_play_looks_for_the_video_beside_the_file_on_a_worker_and_says_why_it_cant(seeded, tmp_path):

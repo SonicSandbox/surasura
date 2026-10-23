@@ -2850,6 +2850,7 @@ class ShellWindow(QMainWindow):
         if self.looks is not None:
             self.looks.close()
         self.bridge.stop()                                # the quit's service callbacks reach no slot from here
+        bridge.drop_answers()                             # ... nor a worker's answer still on its way (row 55)
         state = self.state_now()
         self.hide()
         try:

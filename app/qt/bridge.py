@@ -147,13 +147,21 @@ def run_in_worker(fn, *args, then=None, failed=None, pool=None):
     return relay
 
 
-def wait_for_workers(timeout_ms):
-    """At the app's quit (W3.4; row 6's find): every answer still to come is dropped (the window is going), then the
-    global pool is waited for, up to `timeout_ms` — a worker still running Python as the process ends can crash it.
-    Called after the window closed, never while it shows. -> True when every worker ended in time."""
+def drop_answers():
+    """The window closed (its `closeEvent`, row 55's follow-up): every answer still to come is dropped where it comes
+    back — never handed to a callback writing into a widget deleted by the time it lands (round 8: the journey's
+    answer said into a bar already gone; a callback into a deleted widget raises at best, and can crash natively).
+    One guard for every `run_in_worker` caller, never a check in each callback."""
     for relay in list(_pending):
         try:
             relay.blockSignals(True)
         except RuntimeError:
             pass
+
+
+def wait_for_workers(timeout_ms):
+    """At the app's quit (W3.4; row 6's find): every answer still to come is dropped (the window is going), then the
+    global pool is waited for, up to `timeout_ms` — a worker still running Python as the process ends can crash it.
+    Called after the window closed, never while it shows. -> True when every worker ended in time."""
+    drop_answers()
     return QThreadPool.globalInstance().waitForDone(int(timeout_ms))

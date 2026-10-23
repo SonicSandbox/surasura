@@ -23,6 +23,11 @@ Tk-free, pandas-free (the import guard); nothing here reads or writes the store.
   and its kind's action — `not-timed` *Mine anyway* (`connect.actions.mine_anyway`), `no-pairing` *Ask hato again*
   (`connect.hato.backfill`), a failure Connect logged *Open the logs folder*; every one *Dismiss* (`status.dismiss`). A
   gap (*lost track*) offers *Make their cards* (no callable yet: hidden, `WIRED_LATER`) and *Leave them* (answered here).
+- **Known from Anki's one-time question** (laptop round 7 #43, ⭐ B3-1 A): the cards you had already suspended / marked
+  when *Count as known in Anki* first read them (or first after its states, decks or profile changed) are kept as an
+  offer, never marked by themselves (`connect/known_signal.py`); this is where 3.0 asks it — *You'd already suspended
+  and marked 40 cards in Anki: mark their words known?* · *Mark them known* (`known_signal.accept_offer`) · *Leave them*
+  (`decline_offer`). Read with Connect's record (`known_offer`, read-only); answered, it is gone.
 - **setup's first cards** (SRC S1 + D1, Sonic ✅ 2026-10-16): setup's first scan of the folders the shows and books are in
   logs nothing, so Connect makes no card for them by itself; once it took something in, it offers ONE line (`offer`,
   kept in the seen file): *Make cards for your first 20 episodes?* · *Not now* — either answer takes it off for good.
@@ -66,7 +71,8 @@ Root = namedtuple("Root", "path rel label files", defaults=(None,))
 BULK, GONE, NO_VIDEO, ASK, OFFLINE, FAILURE, GAP = ("bulk", "file-gone", "no-video", "rename-ask", "offline", "failure",
                                                     "gap")
 FIRST_CARDS = "first-cards"         # D1: setup's first scan took shows in; their cards are made only if you say so
-KINDS = (BULK, GONE, NO_VIDEO, ASK, OFFLINE, FAILURE, GAP, FIRST_CARDS)
+KNOWN_OFFER = "known-offer"         # #43: Known from Anki's first read, asked once (B3-1 A)
+KINDS = (BULK, GONE, NO_VIDEO, ASK, OFFLINE, FAILURE, GAP, FIRST_CARDS, KNOWN_OFFER)
 # action names the window hides until P4.1 sets their callable (RUNBOOK §2; IK-2: *Mine the text only*)
 WIRED_LATER = frozenset(("mine_text_only", "make_cards"))
 # Connect's kinds and their one action beside *Dismiss* (`connect_window.HOW`'s, as the Qt window offers them now)
@@ -97,6 +103,10 @@ STRINGS = {
     "gap_span": "from {a} to {b}", "gap_until": "until {b}",
     "first_title": "Make cards for your first {n} episodes?", "first_title_one": "Make cards for your first episode?",
     "first_say": "Your shows came in from your folders without cards: Surasura asks before it makes any.",
+    "known_title": "You'd already {states} {n} cards in Anki: mark their words known?",
+    "known_title_one": "You'd already {states} a card in Anki: mark its word known?",
+    "known_say": "Count as known in Anki (Settings › Anki) found them there when it first looked, so it asks once. "
+                 "Every card you {states} from now on counts by itself.",
     "why_found": "→ …\\{name} ✓ found", "why_found_own": "→ …\\{name} ✓ found in its own folder ({k} more in your "
                                                          "video folders)",
     "why_found_named": "→ …\\{name} ✓ found: the one in a folder named like the show",
@@ -190,6 +200,9 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
     out = []
     if FIRST_CARDS in frozenset(offers or ()) and FIRST_CARDS not in answered and miner_found:
         out.append(_first_cards_entry(rows, seen, mine_line, cards_on))
+    offer = (connect or {}).get("known_offer")
+    if offer:
+        out.append(_known_entry(offer, seen))
     bulk = _bulk(shows)
     if bulk is not None:
         out.append(bulk)
@@ -362,6 +375,29 @@ def _first_cards_entry(rows, seen, mine_line, cards_on=False):
                  unseen=FIRST_CARDS not in seen, say=STRINGS["first_say"], data={"n": n})
 
 
+FLAG_WORDS = ("red", "orange", "green", "blue", "pink", "turquoise", "purple")
+
+
+def signal_words(terms):
+    """Known from Anki's states as the question says them: *suspended and marked*, *flagged red*."""
+    words = []
+    for term in terms or ("suspended",):
+        if term.startswith("flag:") and term[5:].isdigit() and 1 <= int(term[5:]) <= len(FLAG_WORDS):
+            words.append(f"flagged {FLAG_WORDS[int(term[5:]) - 1]}")
+        else:
+            words.append(term)
+    return " and ".join(words)
+
+
+def _known_entry(offer, seen):
+    n, states = int(offer.get("cards") or 0), signal_words(offer.get("terms"))
+    title = (STRINGS["known_title_one"].format(states=states) if n == 1
+             else STRINGS["known_title"].format(states=states, n=n))
+    key = f"{KNOWN_OFFER}:{offer.get('id') or n}"         # the offer's own cards: a new offer counts again
+    return Entry(key=key, kind=KNOWN_OFFER, title=title, lines=(), actions=("mark_known", "leave_known"),
+                 unseen=key not in seen, say=STRINGS["known_say"].format(states=states), data={"cards": n})
+
+
 def badge(entries_):
     """The tab's number: the unseen entries (P1.2-1: a seen one stays listed and stops counting)."""
     return sum(1 for e in entries_ if e.unseen)
@@ -473,7 +509,7 @@ def prune(language, view, offline_roots=None, connect=None, asks=None):
     if view is None or view.mode != "store":
         return 0
     judged = {"item", "gone"} | ({"offline"} if offline_roots is not None else set()) | \
-        ({"video", "gap"} if connect is not None else set()) | ({"ask"} if asks is not None else set())
+        ({"video", "gap", KNOWN_OFFER} if connect is not None else set()) | ({"ask"} if asks is not None else set())
     roots = [r if isinstance(r, Root) else Root(*r) for r in offline_roots or ()]
     with _lock:
         data = _read(language, strict=True)
@@ -514,9 +550,27 @@ def read_connect(language, path=None):
         from app.connect import ledger, status
         rec = status.language_record(status.read([language], path=path), language)
         rec["gaps"] = _gaps(language, path or ledger.path())
+        rec["known_offer"] = known_offer(language)
         return rec
     except Exception:
         return None
+
+
+def known_offer(language):
+    """Known from Anki's one-time question still to answer (#43) -> {"cards": n, "terms": [...], "id": its cards'
+    digest}, or None (none, an
+    answered one, an empty one, a record that can't be read). Read-only: the record is `known_signal`'s."""
+    try:
+        from app.connect import known_signal
+        state = known_signal.load(language)
+    except Exception:
+        return None
+    offer = state.get("offer") or {}
+    cards = offer.get("cards") or ()
+    if offer.get("state") != "pending" or not cards:
+        return None
+    ids = sorted(str(c.get("card")) for c in cards if isinstance(c, dict))
+    return {"cards": len(cards), "terms": list(state.get("terms") or ()), "id": _digest(ids)}
 
 
 def _gaps(language, path):

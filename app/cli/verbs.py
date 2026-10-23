@@ -468,7 +468,9 @@ def known_sync_args(parser):
 def known_sync(args):
     """New known words from Anki into KnownWord.json (append-only), and the decks' new cards into the backlog — the
     window's automatic sync, with its gates (`anki_sync.may_sync`), under the `known-words-<lang>` lock. Connect's
-    preview on: its session's sync first, so the phone's reviews are in before what you studied is read (P2.3)."""
+    preview on: its session's sync first, so the phone's reviews are in before what you studied is read (P2.3).
+    `added` / `total` count the words Known from Anki marked too (`anki_sync.sync_all`); `known_from_anki.marked` says
+    how many of `added` they were — never to be added to it again."""
     from app import anki_connect, anki_sync
     loaded = settings()
     lang = language(args, loaded)
@@ -495,17 +497,15 @@ def known_sync(args):
                            detail=str(e)) from None
         if not anki_connect.probe(url).get("ok"):
             raise CliError("anki-closed", "Anki isn't open (or AnkiConnect isn't installed). Open Anki, then try again.")
-        contract.emit_progress("reading Anki", 0, 2)
-        result = anki_sync.sync(lang, url, decks, fields,
-                                include_suspended=bool(loaded.get("anki_sync_include_suspended", False)),
-                                full=args.full)
+        # the one sync order (`anki_sync.sync_all`): the studied words, the new cards, then Known from Anki (P2.4:
+        # only with Connect on)
+        result, signal = anki_sync.sync_all(lang, url, decks, fields, loaded,
+                                            include_suspended=bool(loaded.get("anki_sync_include_suspended", False)),
+                                            full=args.full, progress=contract.emit_progress)
         if result.error:
             raise CliError("failed", result.error)
-        contract.emit_progress("reading Anki's new cards", 1, 2)
-        anki_sync.sync_backlog(lang, url, decks, fields)
     out = {"language": lang, "added": result.added, "total": result.total_known,
            "backlog": anki_sync.count_backlog(lang), "last_sync": anki_sync.load_state(lang).get("last_sync")}
-    signal = anki_sync.read_known_signal(lang, url, decks, fields, loaded)       # P2.4: only with Connect on
     if signal is not None:
         out["known_from_anki"] = {"marked": len(signal.get("marked") or ()), "offered": signal.get("offered", 0)}
     return out

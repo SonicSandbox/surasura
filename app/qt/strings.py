@@ -1122,6 +1122,10 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
                                      "• What comes into your top 20 later gets its cards already: Settings › Anki"),
     "not_now_on": ("Not now", "Make no cards for these episodes. Nothing else changes:\n"
                               "• What comes into your top 20 later still gets its cards"),
+    "mark_known": ("Mark them known", "Their words count as known from now on: your list and journey follow at the "
+                                      "next Generate"),
+    "leave_known": ("Leave them", "Their words stay as they are, and these cards stop asking. Cards you suspend or "
+                                  "mark from now on still count"),
     "mine_text_only": ("Mine the text only", "Make its cards from the subtitles alone, with no picture or audio"),
     "open_logs": ("Open the logs folder", "Open the folder where Surasura keeps its logs, to look at them or send them"),
     "save_logs": ("Save logs to a file…", "Save the last week's logs into one zip file you can send"),
@@ -1148,6 +1152,9 @@ NEEDS_FIRST_CARDS_LATER = "Turn it on any time in Settings › Anki"
 NEEDS_FIRST_CARDS_MADE_ON = "Cards are being made for them"
 NEEDS_FIRST_CARDS_LATER_ON = "No cards for them · what comes into your top 20 later still gets its cards"
 NEEDS_FIRST_CARDS_NOT_ON = "No cards were made: {why}"
+NEEDS_KNOWN_MARKED = "{n} words are known now · your list follows at the next Generate"
+NEEDS_KNOWN_MARKED_NONE = "Their words were known already"
+NEEDS_KNOWN_LEFT = "Left as they are · cards you suspend or mark from now on still count"
 NEEDS_FIRST_CARDS_AUTOMATION_OFF = "automatic actions are off in Settings; turn them on, then ask again"
 NEEDS_ITS_NEW = "{name} joins your library as a new file"
 NEEDS_ASKED_HATO = "Asked hato for its videos"

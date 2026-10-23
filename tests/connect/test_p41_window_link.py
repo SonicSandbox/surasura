@@ -71,6 +71,37 @@ def test_connect_running_is_never_kicked():
     assert kicks.calls == []
 
 
+def test_a_running_connect_is_woken_once_per_new_ask_never_started():
+    """Laptop round 7 #42: a *Mine now* while Connect waits at the cap must end its 2-minute pause — one wake per
+    newest ask or event, no process started; nothing new, no wake."""
+    _library()
+    kicks, wakes = Kicks(), []
+    link = window_link.Link("ja", lambda: dict(ON), kick=kicks, running=lambda: True, wake=lambda: wakes.append(1))
+    assert link.after_change() == window_link.RUNNING and wakes == [], "nothing unread: no wake"
+    with c.store() as s:
+        s.ask_mining([s.ids("now")[-1]])                # *Mine now*
+    assert link.after_change() == window_link.RUNNING
+    assert link.after_change() == window_link.RUNNING
+    assert wakes == [1], "one wake for that ask"
+    _move_to_top()
+    assert link.after_change() == window_link.RUNNING and wakes == [1, 1], "a newer event: one more"
+    assert kicks.calls == [], "running: never a second process"
+
+
+def test_a_wake_no_one_read_never_stops_the_next_kick():
+    """Review r2 #6: woken while it was exiting, Connect never read the ask; once it isn't running, the same ask
+    still starts it."""
+    _library()
+    kicks, wakes, running = Kicks(), [], [True]
+    link = window_link.Link("ja", lambda: dict(ON), kick=kicks, running=lambda: running[0],
+                            wake=lambda: wakes.append(1))
+    with c.store() as s:
+        s.ask_mining([s.ids("now")[-1]])
+    assert link.after_change() == window_link.RUNNING and wakes == [1]
+    running[0] = False
+    assert link.after_change() == window_link.KICKED and len(kicks.calls) == 1
+
+
 def test_an_ask_kicks_once_against_the_real_store():
     _library()
     kicks = Kicks()
@@ -147,3 +178,16 @@ def test_the_link_imports_neither_tk_nor_qt():
     proc = subprocess.run([sys.executable, "-c", code], cwd=h.PROJECT_ROOT, env=h.child_env(), capture_output=True,
                           text=True, timeout=60)
     assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_the_windows_own_link_wakes_through_connects_wake_mark(monkeypatch):
+    """The window builds its Link with no `wake` of its own (`shell.connect_after_commit`): the wake must be
+    `kick.wake`, the mark a running Connect's pause looks at (mutant LF-b3 M5)."""
+    from app.connect import kick
+    _library()
+    woke = []
+    monkeypatch.setattr(kick, "wake", lambda: woke.append(1))
+    link = window_link.Link("ja", lambda: dict(ON), kick=Kicks(), running=lambda: True)
+    with c.store() as s:
+        s.ask_mining([s.ids("now")[-1]])
+    assert link.after_change() == window_link.RUNNING and woke == [1]

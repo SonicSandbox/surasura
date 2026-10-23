@@ -5,7 +5,8 @@ mining (*Mine now*, *Mine this*, *Mine it too*) — one look, and Connect kicked
   of the placement log Connect hasn't read, or an ask it hasn't taken (`inbox.newest_unread_ask`), Connect not
   running and switched on → one `kick.kick`, **once per newest event or ask**. A kick refused (an update staged,
   Connect starting) uses nothing up: the next change tries again. Running, Connect reads the log and the asks again
-  before it exits, so nothing is kicked for.
+  before it exits, so no process is started — but its pause is woken (`kick.wake`), once per newest event or ask,
+  so a *Mine now* is read within seconds, never at its 2-minute look (laptop round 7 #42).
 - **A worker's call**, never the window's thread: two read-only looks (the library file and the ledger, `mode=ro`,
   never made) and at most one process started. Qt- and Tk-free: the Qt window (W-A2's after-commit hook) and the Tk
   row both hold one.
@@ -79,13 +80,14 @@ def _on(settings):
 
 class Link:
     """`language`: the window's language (a code, or a callable answering it now); `settings_get()`: the window's
-    settings now; `kick(settings)` / `unread(language)` / `running()`: Connect's, handed in by the tests."""
+    settings now; `kick(settings)` / `unread(language)` / `running()` / `wake()`: Connect's, handed in by the tests."""
 
-    def __init__(self, language, settings_get, kick=None, unread=None, running=None):
+    def __init__(self, language, settings_get, kick=None, unread=None, running=None, wake=None):
         self.language = language
         self.settings_get = settings_get or (lambda: {})
-        self._kick, self._unread, self._running = kick, unread, running
+        self._kick, self._unread, self._running, self._wake = kick, unread, running, wake
         self.kicked = None              # (language, the newest unread) a kick started Connect for
+        self.woken = None               # (language, the newest unread) a running Connect was woken for (#42)
 
     def _language(self):
         return self.language() if callable(self.language) else self.language
@@ -101,9 +103,18 @@ class Link:
         if running is None:
             from app.connect import kick
             running = (self._running or kick.running)()
-        if running:
-            return RUNNING              # it reads the log and the asks again before it exits
         language = language or self._language()
+        if running:
+            # it reads the log and the asks again before it exits; something new wakes its pause (#42), once
+            newest = (self._unread or unread)(language)
+            if newest is not None and (language, newest) != self.woken:
+                if self._wake is not None:
+                    self._wake()
+                else:
+                    from app.connect import kick
+                    kick.wake()
+                self.woken = (language, newest)     # never `kicked`: a Connect exiting now is started next time
+            return RUNNING
         newest = (self._unread or unread)(language)
         if newest is None or (language, newest) == self.kicked:
             return NOTHING

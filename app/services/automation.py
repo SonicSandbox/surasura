@@ -261,8 +261,10 @@ class AutoSync:
             from app import anki_connect, anki_sync
             url = anki_connect.address(settings)
             if anki_connect.probe(url).get("ok"):
-                result = anki_sync.sync(language, url, decks, fields, include_suspended=suspended)
-                anki_sync.sync_backlog(language, url, decks, fields)      # for the report's backlog marks
+                # the one sync order: the studied words, the new cards (the report's backlog marks), then Known from
+                # Anki — your suspended / marked cards (laptop round 7 #43: the window's sync never read it)
+                result, _signal = anki_sync.sync_all(language, url, decks, fields, settings,
+                                                     include_suspended=suspended)
             else:
                 closed = True
         except Exception as e:

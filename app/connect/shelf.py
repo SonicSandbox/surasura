@@ -2,11 +2,13 @@
 *Windows' change reports; Connect's card rules*, *the shelf*, *the swap-in*; 2026-10-08 *P2.4's six*, *the big gap*).
 
 - **The cap** (`connect_backlog_cap`, default 300, "keep up to N Surasura cards waiting"), **one per language** (✅
-  SD4 changed, charter D31: a number is each language's, `{lang: n}` each its own): *waiting* = Connect's own notes
-  (its tag `surasura::connect::<job>`), new, not suspended, made by this language's store (`waiting_count`). Connect tops up:
+  SD4 changed, charter D31: a number is each language's, `{lang: n}` each its own): *waiting* = **every new, unsuspended
+  note in the decks you chose plus Connect's own** (laptop round 7 #41, Sonic's B3-2 A, 2026-10-22: one count, the
+  bottom bar's; `runner.Steps.waiting_count` over `anki_sync.backlog_query`) — before, Connect's own notes alone
+  (`waiting_count` here, still the shelf's own count of its cards). Connect tops up:
   it mines while fewer than N wait, checked before a job's first batch (never mid-episode), and waits (*Your N cards are waiting*) at the cap; as
   you study, the next look tops up. A whole episode at a time: one batch can take it over N by its own words. The
-  learner's own cards never count and are never touched (they don't carry Connect's tag).
+  learner's own cards count toward N but are never touched (they don't carry Connect's tag).
 - **The shelf** (in 2.x too, ✅ P2.4-1): at the cap, once a run, Connect's waiting cards are ranked by Junban's order
   (the list's: a word's place on it, a word no longer listed behind every listed one) against the words the next batch
   needs. Only on **a big gap** — at least a quarter of the cap (`gap_needed`: 75 at 300, ✅ P2.4-2) of the waiting

@@ -240,14 +240,16 @@ def update_holds():
 
 
 def run_sync(language, url, decks, chosen, suspended, full=False):
-    """(The job's thread.) *Sync now* (Shift-click: `full`, every card read again), then the same decks' new cards, as
-    the automatic sync reads them — a backlog read that fails never costs the sync its result."""
-    result = anki_sync.sync(language, url, decks, chosen, include_suspended=suspended, full=full)
-    if not result.error:
-        try:
-            anki_sync.sync_backlog(language, url, decks, chosen)
-        except Exception as e:
-            print(f"Anki window: the backlog read failed ({e})")
+    """(The job's thread.) *Sync now* (Shift-click: `full`, every card read again): the one sync order
+    (`anki_sync.sync_all`: the studied words, the same decks' new cards, then Known from Anki — laptop round 7 #43),
+    as the automatic sync reads them; settings.json as it is now says whether Known from Anki is on."""
+    from app import settings_manager
+    try:
+        settings = settings_manager.load_settings()
+    except Exception:
+        settings = {}
+    result, _signal = anki_sync.sync_all(language, url, decks, chosen, settings, include_suspended=suspended,
+                                         full=full)
     return result
 
 

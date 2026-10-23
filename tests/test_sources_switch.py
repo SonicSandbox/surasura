@@ -254,7 +254,7 @@ def test_switch_versions_is_one_change_and_one_undo_puts_everything_back(languag
         now, target = _records(store), ls.origin_key(synced)
         assert {k: v for k, v in now.items() if k != target} == {k: v for k, v in versions_in.items() if k != target}
         was = json.loads(versions_in[target])
-        assert json.loads(now[target]) == dict(was, declined=[was["size"], was["mtime_ns"]]), "declined, by its stats"
+        assert json.loads(now[target]) == dict(was, declined=was["sha256"]), "declined, by its bytes"
         assert set(records) < set(versions_in)
         assert _look(store, language, root, full=True)["switched"] == 0, "the learner's Undo stands"
         assert {i: _copy(data_dir, rel) for i, rel in _items(store)} == copies
@@ -324,7 +324,7 @@ def test_a_thin_version_is_judged_once_and_again_only_when_its_file_changes(lang
         thin = _write(os.path.join(src, show, f"[SubsA] {show} - 01.{t}.ass"), _THIN[language] + "; signs\n")
         assert _look(store, language, root)["switched"] == 0
         record = _record(store, thin)
-        assert record["version"] is True and record["thin"] == [record["size"], record["mtime_ns"]]
+        assert record["version"] is True and record["thin"] == record["sha256"]
         with monkeypatch.context() as patched:
             reads, asked = _watch_reads(patched, store)
             again = _look(store, language, root, full=True)

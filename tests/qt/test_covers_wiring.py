@@ -148,7 +148,7 @@ def test_paste_a_link_and_a_picked_candidate_are_the_users_locked_with_undo(real
     names = [e[0] for e in qcovers.change_cover_entries(row)]
     assert names == ["cover-choose", "cover-generated", "cover-online", "cover-paste"]
     said = []
-    win.say = said.append
+    win.say = lambda text, **_kw: said.append(text)                  # (a press holds its line: `hold=`)
     QApplication.clipboard().setText("https://example.com/表紙.jpg")
     assert qcovers.paste_link(row) is False and said[-1] == strings.COVER_PASTE_NOT_A_LINK
     settle(20)
@@ -173,6 +173,39 @@ def test_paste_a_link_and_a_picked_candidate_are_the_users_locked_with_undo(real
     assert wait_until(lambda: (settle() or True) and store._work_row(row.work_id)["cover_ref"] == "400002", 10)
     assert store._work_row(row.work_id)["cover_locked"]
     qcovers._online["menu"].close()
+
+
+def test_find_it_online_reacts_at_the_press_and_says_found_none_or_unreachable(real, anilist, monkeypatch):
+    """Sonic (2026-10-23, through the press rule): *Find it online…* reacts at once — the bar holds *Looking … up on
+    AniList…* from the click while the lookup runs on a worker, a second press meanwhile does nothing — and ends in
+    the menu of covers, *No cover found on AniList*, or *AniList couldn't be reached* (before, a lookup that didn't
+    answer said "found no cover", and nothing showed it was working but a passing line)."""
+    import threading
+    from app.qt import press as qpress
+    store, win, writer, _switch = real("ja", anilist, on=True)
+    view = win.page_widgets["current"].view_model
+    row = next(r for r in view.rows if r.work_id is not None)
+    f = qcovers._online["fetcher"]
+    go, real_candidates = threading.Event(), f.candidates
+
+    def held(w, *a, **k):
+        go.wait(10)
+        return real_candidates(w, *a, **k)
+    monkeypatch.setattr(f, "candidates", held)
+    key = ("cover-online", row.work_id)
+    title = qcovers._want_of(row).title
+    assert qcovers.find_online(row, at=QPoint(200, 200))
+    assert qpress.presses_of(win).find(key).live()                     # pressed in the click's own frame
+    assert win.bar_line.full() == strings.COVER_LOOKING.format(title=title)
+    assert qcovers.find_online(row, at=QPoint(200, 200)) is False      # a second press while it looks: nothing
+    go.set()                                                           # AniList answers: no such title
+    assert wait_until(lambda: (settle() or True) and not qpress.presses_of(win).find(key).live(), 10)
+    assert wait_until(lambda: win.bar_line.full() == strings.COVER_NONE_FOUND.format(title=title), 5)
+    anilist.down = True                                                # AniList unreachable
+    assert qcovers.find_online(row, at=QPoint(200, 200))
+    assert wait_until(lambda: (settle() or True) and win.bar_line.full() ==
+                      strings.COVER_LOOKUP_FAILED.format(title=title), 10)
+    assert qcovers._online.get("menu") is None or not qcovers._online["menu"].isVisible()
 
 
 def test_the_fetcher_is_made_with_the_library_again_for_another_writer_and_stopped_at_close(real, anilist):

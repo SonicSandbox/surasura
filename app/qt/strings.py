@@ -1207,7 +1207,9 @@ COVER_ONLINE = ("Find it online…", "Look its name up on AniList and choose one
 COVER_PASTE = ("Paste a link", "Use the cover of the AniList, TMDB or YouTube page whose link you copied")
 COVER_LOOKING = "Looking {title} up on AniList…"
 COVER_CANDIDATE_TIP = "Use this cover for {title}. It's kept, even when another picture is found"
-COVER_NONE_FOUND = "AniList found no cover for {title}"
+COVER_NONE_FOUND = "No cover found on AniList for {title}"
+COVER_LOOKUP_FAILED = "AniList couldn't be reached, so no cover was looked up for {title}. Try again later"
+COVER_FETCHING = "Fetching the cover for {title}…"
 COVER_PASTE_NOT_A_LINK = "Copy an AniList, TMDB or YouTube link first, then choose Paste a link"
 COVER_PASTE_WHY = {
     "off": "Download covers is off in Settings → Connections, so nothing was fetched",

@@ -592,21 +592,26 @@ def add_cover_menu(menu, row, writable=True, reason=None):
 
 
 def find_online(row, at=None):
-    """*Find it online…*: the top five candidates read on a worker, then a menu of them at the hand (`at`) — a pick
-    fetched and kept as the user's (locked, its toast's Undo)."""
-    from app.qt import bridge, strings
+    """*Find it online…*: a menu's press (`press.run`: the hairline turns and *Looking … up on AniList…* holds the bar
+    from the click), the top five candidates read on a worker, then a menu of them at the hand (`at`) — or *No cover
+    found*, or *couldn't be reached* (a lookup that didn't answer is never "nothing found"). A pick is fetched and kept
+    as the user's (locked, its toast's Undo). A second press while it looks does nothing."""
+    from app.qt import press as qpress
+    from app.qt import strings
     f, writer = _online["fetcher"], _library["writer"]
     if f is None or writer is None or not writer.can_write():
         _say(strings.COVER_CANT)
         return False
     want = _want_of(row)
-    _say(strings.COVER_LOOKING.format(title=want.title))
     if at is None:
         from PyQt6.QtGui import QCursor
         at = QCursor.pos()
-    bridge.run_in_worker(f.candidates, want, then=lambda found: _offer(row, want, found, at),
-                         failed=lambda _info: _offer(row, want, [], at))
-    return True
+
+    def failed(_info):                              # (`LookupFailed`, or any fault: never "nothing found")
+        _say(strings.COVER_LOOKUP_FAILED.format(title=want.title))
+    return qpress.run(None, ("cover-online", want.id), f.candidates, want,
+                      busy=strings.COVER_LOOKING.format(title=want.title), win=_library["window"],
+                      then=lambda found: _offer(row, want, found, at), failed=failed) is not None
 
 
 def _offer(row, want, found, at):
@@ -657,7 +662,8 @@ def paste_link(row, link=None):
 
 
 def _kept(row, want, fetch):
-    from app.qt import bridge, strings
+    from app.qt import press as qpress
+    from app.qt import strings
     writer = _library["writer"]
     if _online["fetcher"] is None or writer is None or not writer.can_write():
         _say(strings.COVER_CANT)
@@ -671,6 +677,7 @@ def _kept(row, want, fetch):
         args, kw = deferred.call
         _give(strings.COVER_CHOSEN.format(title=want.title), row,
               lambda label: writer.set_cover(*args, label=label, **kw))
-    bridge.run_in_worker(fetch, deferred, then=done, failed=lambda _info: done(None))
-    return True
+    return qpress.run(None, ("cover-fetch", want.id), fetch, deferred, win=_library["window"],
+                      busy=strings.COVER_FETCHING.format(title=want.title), then=done,
+                      failed=lambda _info: done(None)) is not None
 # --- end W3.2 L3

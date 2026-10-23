@@ -816,3 +816,13 @@ def test_row18_a_coverless_finished_show_is_asked_once_a_session_never_a_storm(l
         f.want([_wants(lib)[work]])
         f.run_once()
     assert len(anilist.posts) == 1 and anilist.gets == [] and lib.row(work)[0] is None
+
+
+def test_a_candidates_search_that_didnt_answer_raises_and_one_that_found_nothing_is_empty(anilist):
+    """The press rule (Sonic, 2026-10-23: the AniList lookup reacts at once — found, *No cover found on AniList*, or
+    failed): a search AniList didn't answer (503 here, offline alike) is never told as "nothing found"."""
+    f = fetcher(Pen(), anilist)
+    assert f.candidates(want(1, "星送りのリーフェン")) == []           # AniList answered: no such title
+    anilist.down = True
+    with pytest.raises(O.LookupFailed):
+        f.candidates(want(1, "星送りのリーフェン"))

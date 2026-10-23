@@ -284,6 +284,10 @@ class _Failed(Exception):
     """A request that didn't answer (offline, refused, a server's error, an answer that isn't one): retried later."""
 
 
+class LookupFailed(Exception):
+    """`candidates`' search didn't answer (offline, refused, a server's error): never told as "nothing found"."""
+
+
 class _Redirects(urllib.request.HTTPRedirectHandler):
     """A redirect followed only where the request itself may go (the request's `allowed`): never another host, never
     plain http."""
@@ -591,14 +595,15 @@ class Fetcher:
     # --- *Change cover…* (a worker's calls: each waits for its answer) ------------------------------------------------ #
     def candidates(self, want, n=CANDIDATES):
         """The top `n` AniList answers for the title's cleaned name ([Candidate], AniList's order); [] with the switch
-        off, offline, or nothing found."""
+        off or nothing found. Raises `LookupFailed` when the search didn't answer (offline, a server's error): a
+        press that asked says so, never "nothing found"."""
         name, _year = clean_title(want.title)
         if not name or not self._go():
             return []
         try:
             media = self._find(name, first=True)
-        except _Failed:
-            return []
+        except _Failed as e:
+            raise LookupFailed() from e
         out = []
         for m in media:
             url = _cover_url(m)

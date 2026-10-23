@@ -213,7 +213,7 @@ class FakeSteps:
                    "line_text": f"{w}の台詞", "predicted_class": "word"}
                   for n, (w, r) in enumerate(candidates) if w not in carded]
         return {"words": chosen, "file": f"/library/{job['item_id']}.ja.srt", "subtitle": "/runs/copy.srt",
-                "profile": self.plan.get("profile_at_pick", "p1"), "anki_miner": "3.7.0",
+                "profile": self.plan.get("profile_at_pick", "p1"), "anki_miner": self.plan.get("app", "3.7.0"),
                 "absent": "anki-miner" in (self.plan.get("absent") or ())}
 
     def fit(self, lang, job, pairing, video, subtitle):
@@ -241,6 +241,9 @@ class FakeSteps:
             if crash is not None and n >= crash:
                 self.plan["crash_mid_batch"] = None if not self.plan.get("crash_always") else crash
                 return {"outcomes": [_unsure(x) for x in words], "app": "3.7.0", "doubt": True}
+            if w["word"] in (self.plan.get("no_definition") or ()):
+                out.append(dict(_unsure(w), outcome="no_definition"))     # no dictionary entry: no card (a name)
+                continue
             if w["word"] in (self.plan.get("unknown_status") or ()):
                 out.append(_unsure(w))      # a status Anki Miner's caller doesn't know: no card, no crash
                 continue
@@ -250,7 +253,7 @@ class FakeSteps:
         self._kill("after-mine")
         # names_tag_refused: Anki didn't take the names' tag, so every made note comes back tag_pending
         pending = [o["note_id"] for o in out if o["outcome"] == "made"] if self.plan.get("names_tag_refused") else []
-        return {"outcomes": out, "app": "3.7.0", "doubt": False, "tag_pending": pending}
+        return {"outcomes": out, "app": self.plan.get("app", "3.7.0"), "doubt": False, "tag_pending": pending}
 
     def by_tag(self, lang, job, picked, words):
         self.log.append(("by_tag", job["item_id"]))

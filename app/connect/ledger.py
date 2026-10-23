@@ -573,6 +573,20 @@ class Ledger:
             f"SELECT o.word, o.reading FROM outcomes o JOIN jobs j ON j.id = o.job_id WHERE j.language = ? AND "
             f"j.item_id = ? AND o.outcome NOT IN ({marks})", (language, item_id) + _NOT_MADE)}
 
+    def uncardable(self, language, app=None):
+        """(word, reading) of every word Anki Miner answered *no definition* for in this language, in any episode
+        (laptop round 8 #52, LF4-4 ⭐ A: a name its dictionary has no entry for — ルーデウス — is no card in any
+        episode): a pick never sends one again, and the window marks it on the journey. `app`: only the answers of that
+        Anki Miner version (a new one, with another dictionary, is asked again); None: every version's."""
+        query = ("SELECT DISTINCT o.word, o.reading FROM outcomes o JOIN jobs j ON j.id = o.job_id "
+                 "JOIN batches b ON b.job_id = o.job_id AND b.attempt = o.attempt "
+                 "WHERE j.language = ? AND o.outcome = 'no_definition'")
+        args = (language,)
+        if app is not None:
+            query += " AND b.anki_miner = ?"
+            args += (str(app),)
+        return {(w, r) for w, r in self.conn.execute(query, args)}
+
     def skipped_for(self, language, reason):
         """Is any job of the language `skipped` for `reason`?"""
         return self.conn.execute("SELECT 1 FROM jobs WHERE language = ? AND state = 'skipped' AND reason = ? LIMIT 1",

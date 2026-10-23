@@ -1,7 +1,7 @@
 """Laptop round 8 #49 (LF4-1 ⭐ A, PROVISIONAL): a level raise never mines an episode you've watched, and never waits
 for (or asks for) a video.
 
-What Sonic met: Yomi no Tsugai 13 and 15 were mined, watched, their videos deleted; the list gained words overnight,
+What Sonic met: two episodes were mined, watched, their videos deleted; the list gained words overnight,
 so the level raise queued "the new words' cards" for both, and their picks waited on the video — *Needs you* asked
 him to choose a video or mine the text only, for episodes Connect had already mined. What a wrong answer costs: a
 question about an episode that needs nothing, and the newest words carded from scenes already seen instead of the
@@ -42,7 +42,7 @@ def test_a_watched_mined_episode_gets_no_level_job_and_its_new_word_goes_to_the_
     with c.store() as s:
         s.receipt(a, "2026-10-22T07:01:55Z")
         s.receipt(b, "2026-10-22T07:05:55Z")
-        s.set_watched([a])                          # Yomi no Tsugai 13: mined and watched
+        s.set_watched([a])                          # mined and watched
     files = {fa: ["眼鏡", "老婆"], fb: ["眼鏡"]}
     with c.store() as s:
         level.check(s, "ja", BEFORE, "run-1", files)
@@ -103,3 +103,34 @@ def test_an_asked_job_on_a_watched_episode_still_mines(tmp_path, ledger):
     plan = {"line": {"ja": [1]}, "queue": {"ja": [1]}, "watched": [1]}
     _steps, summary = _run(tmp_path, ledger, plan)
     assert summary["languages"]["ja"]["done"] == [1]
+
+
+# --- laptop round 8 #52 (LF4-4 ⭐ A): a word Anki Miner has no definition for is no card in any episode ----------- #
+# What Sonic met: a name at the top of his journey with no card; Anki Miner answers "no definition" for a name its
+# dictionary lacks, and Connect sent the same names again with every episode. Cost of a wrong answer: a word sent and
+# refused once an episode forever — or, the other way, a word a new Anki Miner could card never sent again.
+
+NAME_WORDS = {"21": [("ルーデウス", "ルーデウス"), ("魔術", "マジュツ")],
+              "22": [("ルーデウス", "ルーデウス"), ("剣術", "ケンジュツ")]}
+
+
+def _sent(steps):
+    return [(e[1], e[3]) for e in steps.log if e[0] == "mine"]
+
+
+def test_a_word_with_no_definition_in_one_episode_is_never_sent_from_the_next(tmp_path, ledger):
+    plan = {"line": {"ja": [21, 22]}, "queue": {"ja": [21, 22]}, "words": NAME_WORDS, "no_definition": ["ルーデウス"]}
+    steps, _summary = _run(tmp_path, ledger, plan)
+    assert _sent(steps) == [(21, ["ルーデウス", "魔術"]), (22, ["剣術"])]
+    assert ledger.uncardable("ja") == {("ルーデウス", "ルーデウス")}
+    assert ledger.uncardable("zh") == set(), "one language's answers never another's"
+
+
+def test_a_new_anki_miner_version_is_asked_again(tmp_path, ledger):
+    plan = {"line": {"ja": [21]}, "queue": {"ja": [21]}, "words": NAME_WORDS, "no_definition": ["ルーデウス"]}
+    _run(tmp_path, ledger, plan)
+    plan = {"line": {"ja": [22]}, "queue": {"ja": [22]}, "words": NAME_WORDS, "app": "3.11.0"}
+    steps, _summary = _run(tmp_path, ledger, plan)
+    assert _sent(steps) == [(22, ["ルーデウス", "剣術"])], "another dictionary may know it"
+    assert ledger.uncardable("ja", "3.7.0") == {("ルーデウス", "ルーデウス")}
+    assert ledger.uncardable("ja", "3.11.0") == set()

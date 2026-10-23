@@ -691,6 +691,10 @@ def _pick(steps, ledger, lang, job, record=True):
     pairing = steps.pairing(lang, job)
     got = steps.pick(lang, job, video)
     declined = ledger.declined(lang, job["item_id"])     # Anki Miner turned them down once: never sent again (#19)
+    if got.get("anki_miner"):
+        # laptop round 8 #52 (LF4-4 ⭐ A): a word this Anki Miner has no definition for, in any episode, is no card here
+        # either (a name: sent once a version, never again with every episode)
+        declined |= ledger.uncardable(lang, got["anki_miner"])
     words = [w for w in got.get("words") or [] if (w.get("word"), w.get("reading")) not in declined]
     picked = {"words": words, "file": got.get("file"), "subtitle": got.get("subtitle"),
               "video": video, "pairing": fit_check.version(pairing), "profile": got.get("profile"),

@@ -37,6 +37,7 @@ from PyQt6.QtWidgets import (QApplication, QButtonGroup, QDialog, QHBoxLayout, Q
 from app import path_utils, theme
 from app.qt import applog, bridge, frame, hud, motion, strings, style, titlebar, toast, tooltip
 from app.services import jobs as jobs_module
+from app.services import press as press_service
 from app.services import settings as settings_service
 from app.services import status as status_service
 from app.qt import screens                                # W2.2: the pages a library fills
@@ -1203,6 +1204,9 @@ class ShellWindow(QMainWindow):
         # --- end W3.2 Q3
         self.progress = frame.Progress(header)             # W3.1a: the jobs' hairline along its foot (no pulsing dot)
         self._busy, self._share = False, None              # ... the bar's lines running, Generate's share
+        self.presses = press_service.Presses()             # round 8 row 45: a live press runs the hairline too,
+        self._holds = {}                                   # ... and a menu's press holds the bar's slot (`say`)
+        self.presses.subscribe(self._presses_changed)
         return header                                      # W3.5's with the duties (`_attach_duties`)
 
     def _build_tabs(self):
@@ -1698,7 +1702,7 @@ class ShellWindow(QMainWindow):
         self._busy = bool(lines)
         self._paint_progress()
         self._status_line = " · ".join(lines)
-        if not self._saying() or self._quit == "waiting":       # (a line just said keeps the slot: `say`)
+        if not (self._saying() or self._holds) or self._quit == "waiting":     # (a line said keeps the slot: `say`)
             self.bar_line.set_full(self._status_line)
         failure = snap.failure or ""
         self.bar_failure.set_full(strings.BAR_FAILURE_PREFIX + failure if failure else "")
@@ -1723,15 +1727,25 @@ class ShellWindow(QMainWindow):
             self._show_update(self.duties.update_state, force_cards=True)     # the cards' *Open the logs folder*
         self._paint_needs()
 
+    def _presses_changed(self, _press):
+        from PyQt6 import sip
+        if not sip.isdeleted(self.progress):            # (an answer coming in after the window closed paints nothing)
+            self._paint_progress()
+
     def _paint_progress(self):
         """W3.1a: the header's hairline — Generate's share while it has one, else whole and quiet while any job runs."""
-        self.progress.set(self._busy, self._share)
+        self.progress.set(self._busy or self.presses.any_live(), self._share)
 
-    def say(self, text):
+    def say(self, text, hold=None):
         """A line for the bar that answers what the user just did (a file ▶ couldn't open, the journey's absence, a
         move the store placed elsewhere): it takes the footer's slot for `DRAG["message-ms"]`, over the update chip and
-        the failure line, then the slot is as it was (AD-7: said into a hidden line, it was never seen)."""
+        the failure line, then the slot is as it was (AD-7: said into a hidden line, it was never seen). `hold`: a live
+        press's key (round 8 row 45) — the line keeps the slot until `unsay(hold)`."""
         self.bar_line.set_full(text)
+        if hold is not None:
+            self._holds[hold] = text
+            self._paint_slot()
+            return
         self._message_until = time.monotonic() + theme.DRAG["message-ms"] / 1000.0
         if getattr(self, "_message_timer", None) is None:
             self._message_timer = QTimer(self)
@@ -1739,6 +1753,18 @@ class ShellWindow(QMainWindow):
             self._message_timer.timeout.connect(self._paint_slot)
         self._message_timer.start(theme.DRAG["message-ms"] + 1)
         self._paint_slot()
+
+    def unsay(self, key):
+        """A press's held line let go: the newest line still held, else a line said meanwhile, else the slot as it was."""
+        if self._holds.pop(key, None) is None:
+            return
+        if not self._saying():
+            self.bar_line.set_full(self._held_or_status())
+        self._paint_slot()
+
+    def _held_or_status(self):
+        held = list(self._holds.values())
+        return held[-1] if held else getattr(self, "_status_line", "")
 
     def _saying(self):
         until = getattr(self, "_message_until", None)
@@ -1751,8 +1777,9 @@ class ShellWindow(QMainWindow):
         the slot for a few seconds over both."""
         saying = self._saying()
         if not saying and getattr(self, "_message_until", None) is not None:
-            self._message_until = None               # the line said has had its time: the status line is back
-            self.bar_line.set_full(getattr(self, "_status_line", ""))
+            self._message_until = None               # the line said has had its time: the status line is back (or a
+            self.bar_line.set_full(self._held_or_status())       # live press's held line)
+        saying = saying or bool(self._holds)
         failure = bool(self.bar_failure.full()) and self._quit != "waiting" and not saying
         d = self.duties
         update = d is not None and d.update_applies and not failure and self._quit != "waiting" and not saying

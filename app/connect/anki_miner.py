@@ -540,7 +540,7 @@ def tag_names(url, words, outcomes):
 
 def mine_batch(path, language, job, video, subtitle, words, mapping, profile_name, run_dir, url, attempt=1,
                subtitle_offset=0.0, timeout=MINE_TIMEOUT, wait=0.0, expect_profile=None, on_progress=None,
-               known=None):
+               known=None, should_stop=None, show=None):
     """One batch of one episode, end to end (§ above), holding `anki-writer` (waiting up to `wait` s for another
     writer; still held -> AnkiMinerError `busy`). `words`: pick's; `mapping`: fields.Mapping (from this profile's
     export); `profile_name`: `connect_anki_miner_profile`; `url`: AnkiConnect's address, for the names' tag. Returns
@@ -548,7 +548,11 @@ def mine_batch(path, language, job, video, subtitle, words, mapping, profile_nam
     (busy, anki-closed, needs-you, setup, refused, crashed …). `expect_profile`: the profile id the words were
     picked for (P1.3-AM37 #5, the runner's half): another one active now -> AnkiMinerError `profile-changed`, before
     anything is mined (the runner picks again). `on_progress(progress)`: while the mine call runs, each `read_progress`
-    of its run that answered (laptop round 5 #23: the row moves while Anki Miner works). `known`: `preflight`'s."""
+    of its run that answered (laptop round 5 #23: the row moves while Anki Miner works). `known`: `preflight`'s.
+    `should_stop()` (laptop round 8 #47, *Stop*): asked at every poll; True -> the run's cancel file (`cancel`), once:
+    Anki Miner ends at its own next check (0.2 s), every note it wrote whole. The answer then carries `stopped`
+    (an AnkiMinerError `cancelled` too, its `stopped` set). `show` (laptop round 8 #50, LF4-3): the title of the show
+    the episode belongs to: every card it makes also carries `runfile.from_tag(show)`."""
     from app import anki_connect, locks
     try:
         held = anki_connect.writer("Connect's mine step", wait=wait)
@@ -559,7 +563,7 @@ def mine_batch(path, language, job, video, subtitle, words, mapping, profile_nam
             raise AnkiMinerError("reviewing", "You're reviewing in Anki. Cards are made once you've finished.")
         try:
             done = _mine_held(path, language, job, video, subtitle, words, mapping, profile_name, run_dir, attempt,
-                              subtitle_offset, timeout, expect_profile, on_progress, known)
+                              subtitle_offset, timeout, expect_profile, on_progress, known, should_stop, show)
         except runfile.RunFileError as e:
             raise AnkiMinerError("refused", f"The run file for Anki Miner couldn't be written: {e}") from None
         done["tagged"], done["tag_pending"] = [], []
@@ -574,7 +578,8 @@ def mine_batch(path, language, job, video, subtitle, words, mapping, profile_nam
 
 
 def _mine_held(path, language, job, video, subtitle, words, mapping, profile_name, run_dir, attempt,
-               subtitle_offset, timeout, expect_profile=None, on_progress=None, known=None):
+               subtitle_offset, timeout, expect_profile=None, on_progress=None, known=None, should_stop=None,
+               show=None):
     info, profile = preflight(path, language, profile_name, known)
     if expect_profile is not None and profile != expect_profile:
         raise AnkiMinerError("profile-changed", "Anki Miner's profile changed since the words were picked.")
@@ -583,19 +588,42 @@ def _mine_held(path, language, job, video, subtitle, words, mapping, profile_nam
         write_whitelist(language, [name for word in words for name in runfile.entries(word, named)])
     run_id = f"{job}-{attempt}"
     episode = runfile.episode(run_id, video, subtitle, runfile.word_requests(words, named),
-                              tags=runfile.job_tag(job), subtitle_offset=subtitle_offset)
+                              tags=" ".join(t for t in (runfile.job_tag(job), runfile.from_tag(show)) if t),
+                              subtitle_offset=subtitle_offset)
     data = runfile.build(run_dir, language, [episode], profile=profile,
                          run_config=runfile.config(mapping, info.get("app"), named))
     run_path = runfile.write(os.path.join(run_dir, f"run-{attempt}.json"), data)
     before = result_names(run_dir, run_id)
+    try:            # review A2: a cancel file left by a stopped call of this run id (a refused attempt is reused)
+        os.remove(os.path.join(run_dir, run_id, "cancel"))
+    except OSError:
+        pass
     done = {"run_file": run_path, "run": None, "result": None, "app": info.get("app"), "features": sorted(asks),
-            "error": None}
+            "error": None, "_before": before}
+
+    cancelled = []                  # #47: the cancel file written (once)
 
     def poll():
-        progress = read_progress(run_dir, run_id)
-        if progress is not None:
-            on_progress(progress)
-    poll = poll if on_progress is not None else None
+        if should_stop is not None and not cancelled and should_stop():
+            cancel(run_dir, run_id)
+            cancelled.append(True)
+        if on_progress is not None:
+            progress = read_progress(run_dir, run_id)
+            if progress is not None:
+                on_progress(progress)
+    poll = poll if (on_progress is not None or should_stop is not None) else None
+    try:
+        return _mine_call(path, run_dir, run_id, run_path, data, done, words, named, timeout, poll, cancelled)
+    except AnkiMinerError as e:
+        e.stopped = bool(cancelled)
+        raise
+
+
+def _mine_call(path, run_dir, run_id, run_path, data, done, words, named, timeout, poll, cancelled):
+    """`_mine_held`'s call to Anki Miner and the reading of its answer -> `done` (with `stopped`: a *Stop* cancelled
+    the run)."""
+    before = done.pop("_before")
+    done["stopped"] = False
     try:
         verdict = api(path, ["mine", run_path], timeout=timeout, on_poll=poll)
         refused = (not verdict.get("ok") and verdict.get("error") == "BAD_RUN_FILE"
@@ -612,14 +640,16 @@ def _mine_held(path, language, job, video, subtitle, words, mapping, profile_nam
         result = read_result(run_dir, run_id, before=before)
         if result is None:
             raise
-        done.update(result=result, error=e.kind, outcomes=outcomes(words, result.get("words"), True, named))
+        done.update(result=result, error=e.kind, outcomes=outcomes(words, result.get("words"), True, named),
+                    stopped=bool(cancelled))
         return done
     run = next((r for r in verdict.get("runs") or [] if r.get("run_id") == run_id), None)
     if not verdict.get("ok") and run is None:
         result = read_result(run_dir, run_id, before=before) if verdict.get("error") == "INTERNAL" else None
         if result is None:
             _result(verdict)                # a refusal of the whole call: busy, anki-closed, refused, setup …
-        done.update(result=result, error="crashed", outcomes=outcomes(words, result.get("words"), True, named))
+        done.update(result=result, error="crashed", outcomes=outcomes(words, result.get("words"), True, named),
+                    stopped=bool(cancelled))
         return done
     if run is not None and not run.get("ok") and not run.get("file") and run.get("error") in BEFORE_ANKI:
         # stopped before anything reached Anki (a video or subtitle it can't read, Anki gone at its own check,
@@ -627,7 +657,8 @@ def _mine_held(path, language, job, video, subtitle, words, mapping, profile_nam
         raise AnkiMinerError(KINDS.get(run["error"], "failed"), run.get("message") or run["error"], code=run["error"])
     result = read_result(run_dir, run_id, run["file"]) if run is not None and run.get("file") else None
     done.update(run=run, result=result,
-                outcomes=outcomes(words, (result or {}).get("words"), run is None or not run.get("ok"), named))
+                outcomes=outcomes(words, (result or {}).get("words"), run is None or not run.get("ok"), named),
+                stopped=bool(cancelled))
     return done
 
 

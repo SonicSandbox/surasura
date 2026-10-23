@@ -136,6 +136,9 @@ class FakeSteps:
     def title(self, lang, job):
         return f"Example Show - {job['item_id']:02d}"
 
+    def watched(self, lang, job):
+        return job["item_id"] in (self.plan.get("watched") or ())
+
     def pairing(self, lang, job):
         return (self.plan.get("pairings") or {}).get(str(job["item_id"]))
 
@@ -210,7 +213,7 @@ class FakeSteps:
                    "line_text": f"{w}の台詞", "predicted_class": "word"}
                   for n, (w, r) in enumerate(candidates) if w not in carded]
         return {"words": chosen, "file": f"/library/{job['item_id']}.ja.srt", "subtitle": "/runs/copy.srt",
-                "profile": self.plan.get("profile_at_pick", "p1"), "anki_miner": "3.7.0",
+                "profile": self.plan.get("profile_at_pick", "p1"), "anki_miner": self.plan.get("app", "3.7.0"),
                 "absent": "anki-miner" in (self.plan.get("absent") or ())}
 
     def fit(self, lang, job, pairing, video, subtitle):
@@ -233,11 +236,23 @@ class FakeSteps:
         out = []
         crash = self.plan.get("crash_mid_batch")
         for n, w in enumerate(words):
+            hook = self.plan.get("on_word")           # a test's press while the batch runs (#47's Stop)
+            if hook is not None:
+                hook(n, job)
+            should_stop = getattr(self, "should_stop", None)
+            if should_stop is not None and should_stop():
+                # Anki Miner read its cancel file: the words so far are made, the rest never attempted
+                rest = [dict(_unsure(x), outcome="not_attempted") for x in words[n:]]
+                return {"outcomes": out + rest, "app": self.plan.get("app", "3.7.0"), "doubt": False,
+                        "stopped": True}
             if self.plan.get("kill") == f"mid-batch:{n}":
                 self._kill(f"mid-batch:{n}")
             if crash is not None and n >= crash:
                 self.plan["crash_mid_batch"] = None if not self.plan.get("crash_always") else crash
                 return {"outcomes": [_unsure(x) for x in words], "app": "3.7.0", "doubt": True}
+            if w["word"] in (self.plan.get("no_definition") or ()):
+                out.append(dict(_unsure(w), outcome="no_definition"))     # no dictionary entry: no card (a name)
+                continue
             if w["word"] in (self.plan.get("unknown_status") or ()):
                 out.append(_unsure(w))      # a status Anki Miner's caller doesn't know: no card, no crash
                 continue
@@ -247,7 +262,7 @@ class FakeSteps:
         self._kill("after-mine")
         # names_tag_refused: Anki didn't take the names' tag, so every made note comes back tag_pending
         pending = [o["note_id"] for o in out if o["outcome"] == "made"] if self.plan.get("names_tag_refused") else []
-        return {"outcomes": out, "app": "3.7.0", "doubt": False, "tag_pending": pending}
+        return {"outcomes": out, "app": self.plan.get("app", "3.7.0"), "doubt": False, "tag_pending": pending}
 
     def by_tag(self, lang, job, picked, words):
         self.log.append(("by_tag", job["item_id"]))

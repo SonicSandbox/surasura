@@ -712,7 +712,12 @@ def backup_to_trash(path, move=False):
 
     A copy is verified byte-for-byte; `move=True` moves the file instead (for one that is being set
     aside, not overwritten). Returns the backup path, or None when there is no file. Raises OSError
-    when the backup can't be made — the caller must then leave the original alone."""
+    when the backup can't be made — the caller must then leave the original alone.
+
+    A copy is whole or absent: it is written under a `.part` name of this writer's own, flushed to disk
+    and checked, and only then renamed to its dated name. Written in place, a copy cut off part way (the
+    store's helper ended by Stop and quit, a crash, a power cut) left a short file that looked like a
+    good backup; now it can leave only a `.part`, which nothing reads."""
     if not os.path.isfile(path):
         return None
     trash = os.path.join(os.path.dirname(path), ".trash")
@@ -728,10 +733,21 @@ def backup_to_trash(path, move=False):
     if move:
         os.replace(path, dst)
         return dst
-    shutil.copyfile(path, dst)
-    with open(path, "rb") as a, open(dst, "rb") as b:
-        if a.read() != b.read():
-            raise OSError("the backup copy did not match the original")
+    part = f"{dst}.{os.getpid()}-{threading.get_ident()}.part"
+    try:
+        shutil.copyfile(path, part)
+        with open(part, "rb+") as f:
+            os.fsync(f.fileno())
+        with open(path, "rb") as a, open(part, "rb") as b:
+            if a.read() != b.read():
+                raise OSError("the backup copy did not match the original")
+        os.replace(part, dst)
+    except BaseException:
+        try:
+            os.remove(part)
+        except OSError:
+            pass
+        raise
     return dst
 
 

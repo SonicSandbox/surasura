@@ -112,7 +112,14 @@ def test_a_failed_backup_writes_nothing(migaku_file):
 
 def test_a_failed_write_leaves_the_original_and_no_temp_file(migaku_file):
     before = _bytes(_known())
-    with mock.patch("app.anki_sync.os.replace", side_effect=OSError("held by a reader")), \
+    real_replace = os.replace
+
+    def refuse(src, dst):
+        # Only the known words' own swap is held: the backup before it (a `.part` renamed into `.trash`) goes through
+        if os.path.basename(os.path.dirname(dst)) == ".trash":
+            return real_replace(src, dst)
+        raise OSError("held by a reader")
+    with mock.patch("app.anki_sync.os.replace", side_effect=refuse), \
             mock.patch("app.anki_sync.time.sleep"):
         merge = anki_db_import.merge_known("ja", {("冒険", "ボウケン")})
     assert merge.error and "saved" in merge.error

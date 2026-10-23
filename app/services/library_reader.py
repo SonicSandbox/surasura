@@ -225,6 +225,11 @@ class LibraryReader:
         with self._lock:
             return self._view
 
+    def store_id(self):
+        """The library's own id (its meta's `store_id`) once a read found it, else None (W-1: a hint shown once per
+        library). Any thread."""
+        return self._store_id
+
     def republish(self):
         """The window let go of its own order once every write landed: the next look builds and publishes the store's
         view, changed or not (where the store placed a row otherwise than the window drew it, round 2 AD2-4): the last

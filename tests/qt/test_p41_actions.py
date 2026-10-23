@@ -757,6 +757,25 @@ def test_row28_a_read_only_store_greys_the_episodes_mine_now_with_its_reason_aft
     assert win.items.episode_entries(row, ep)[0].tip == reason, "as Mark watched"
 
 
+def test_W1_a_watched_episodes_mine_now_is_greyed_while_the_library_keeps_no_watched_episode(act):
+    """W-1: a watched episode's words left the list while *Keep studying watched episodes* is off — its ⋯ *Mine now* is
+    there but greyed, its tip saying there is nothing to mine and how to bring it back; picked anyway, nothing is asked.
+    With the option on (another window's write, read by the reader) it is offered as the pill offers it."""
+    seed, win, writer = act()
+    lst = lst_of(win)
+    row, ep = _waiting_episode(lst)
+    watched = ep._replace(watched=True)
+    entry = _mine_now(win.items.episode_entries(row, watched))
+    assert [(e.label, e.tip, e.ok) for e in entry] == [(strings.ROWS_ACTION_NAMES["mine-now"],
+                                                         strings.MINE_NOW_WATCHED_TIP, False)]
+    assert _mine_now(win.items.episode_entries(row, ep))[0].ok, "not watched: offered as before"
+    win.items.episode_pick(row, watched, entry[0].name, entry[0].payload)
+    assert asks(writer) == []
+    seed.library.commit(meta={"keep_watched": 1})
+    assert wait_until(lambda: win.page_widgets["current"].view_model.keep_watched, 3)
+    assert _mine_now(win.items.episode_entries(row, watched))[0].ok
+
+
 def test_row28_while_connect_is_off_mine_now_is_offered_saying_why_and_asks_nothing(act):
     """IK S7, as the pill: Connect off, the episode's *Mine now* is still there, its tip saying why in the feed's words;
     picked, nothing is asked and the bar says why."""

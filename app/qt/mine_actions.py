@@ -19,7 +19,9 @@ IK S3, S7). What the rows, Finished, the arrivals and *Needs you* ask for, route
 - **The bulk asks** (Finished's *Mine* / *Mine it too*, the arrivals' *Mine them too*) ask by the rows' rule
   (`rows.asked_files`): never a file in Anki, being mined, or whose cards were deleted (P4.1 WF, adversary S5).
 - **An episode's own ⋯** (row 28, Michi's row 24b ask): *Mine now* exactly where the episode's pill would be *Mine
-  now* (`rows.action_of`, its tip the pill's), picked as the pill is clicked (`mine_row`, its ids the pill's).
+  now* (`rows.action_of`, its tip the pill's), picked as the pill is clicked (`mine_row`, its ids the pill's). W-1: on a
+  watched episode while the library's *Keep studying watched episodes* is off it is greyed, its tip saying why and how
+  to bring it back (un-mark it, or the setting).
 Nothing here reads the store or the settings on the window's thread: the writes are the writer's, the looks a worker's.
 """
 import os
@@ -183,8 +185,16 @@ class MineActions(QObject):
         name, tip, ask = rows.action_of(ep.status, (ep,), self.off, ep.media_word or row.media_word)
         if name != "mine-now":
             return []
+        if ep.watched and not self._keep_watched():         # W-1: its words left the list, nothing left to mine
+            return [item_menu.Entry("ep-mine-now", strings.ROWS_ACTION_NAMES["mine-now"], strings.MINE_NOW_WATCHED_TIP,
+                                    False)]
         return [item_menu.Entry("ep-mine-now", strings.ROWS_ACTION_NAMES["mine-now"], tip, True,
                                 payload=lambda: self.mine_row(row, list(ask.ids)), writes=True)]
+
+    def _keep_watched(self):
+        """W-1: the library's *Keep studying watched episodes*, from the view Current shows (off without one)."""
+        page = getattr(self.win, "page_widgets", {}).get("current")
+        return bool(getattr(getattr(page, "view_model", None), "keep_watched", False))
     # --- end row 28
 
     # --- Link… ------------------------------------------------------------------------------------------------ #

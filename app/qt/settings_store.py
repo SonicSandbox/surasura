@@ -12,6 +12,10 @@ into the slots the page leaves for them (`custom_row`).
   written by showing it); a mine line not set shows the store's default (`MINE_LINE_DEFAULT`, 20). No library, no
   writer, or the library not read yet: the field is greyed and says why; a change the writer refuses (read-only)
   goes back to the library's value, the reason in the bar.
+- ***Keep studying watched episodes*** (`keep_watched`, Content; W-1): the library's own option too, a toggle — shown
+  from the reader's options (absent: off), written through `Writer.set_options(keep_watched=)` (one command). It flips in
+  the frame of the press; a refused write flips it back, the reason in the bar. Greyed with no library (as the lines)
+  and with a library that can't be saved (its tip the store's reason).
 - ***Set up again*** (App): the setup wizard over the window, preselected from the settings now
   (`first_run.open_again`).
 - **`resume_connect(before, changes)`** (Michi's W-A7 / the intent keeper's B2, G1.1-2): a write through the settings
@@ -29,10 +33,11 @@ GUI_Design_Guidelines_Qt: the page's controls (no new rules), a tooltip on every
 from PyQt6 import sip
 from PyQt6.QtCore import QObject
 
-from app.qt import applog, bridge, windows
+from app.qt import applog, bridge, strings, windows
 from app.qt import settings_catalog as catalog
 from app.qt import settings_controls as sc
 from app.qt import settings_strings as S
+from app.services.view_rows import keep_watched          # W-1: the feed's option, read one way
 
 LINES = ("soon_line", "mine_line")
 CONNECT_KEYS = ("connect_enabled", "logic.automation")      # the two keys `settings_manager.connect_on` reads
@@ -146,6 +151,11 @@ class StoreRows(QObject):
             field.changed.connect(lambda n, r=row_id: self._changed(r, n))
             page.custom_row(row_id).layout().addWidget(field)
             self.fields[row_id] = field
+        row = catalog.ROW["keep_watched"]                   # --- W-1
+        self.keep = sc.Toggle(False, tooltip=row.tip, name=row.label)
+        self.keep.changed.connect(self._keep_changed)
+        page.custom_row("keep_watched").layout().addWidget(self.keep)
+        self._keep_asked = None                             # the value pressed, until the library holds it
         row = catalog.ROW["set_up_again"]
         self.again = sc.Door(S.SET_UP_AGAIN_OPEN, tooltip=row.tip, name=row.label)
         self.again.clicked.connect(lambda _c=False: self.set_up_again())
@@ -186,6 +196,58 @@ class StoreRows(QObject):
             value = shown(options, view, row_id)
             if (turned or field.value() != value) and not field.edit.hasFocus():
                 field.set_value(value)
+        self._follow_keep(options, writable)
+
+    def _follow_keep(self, options, writable):
+        """W-1's toggle: greyed with why (no library; a library that can't be saved: the store's reason), else the
+        library's value — repainted only when it moved (S19), never back over a press still on its way to the store."""
+        why = None if writable else S.STORE_NO_LIBRARY_TIP
+        if why is None:
+            raw = self._writer().reason() or ""               # (None while it can be written, busy too: it queues)
+            if raw:
+                why = strings.MENU_REFUSED_TIP.format(reason=strings.READ_ONLY_REASONS.get(raw) or raw)
+        tip = why or catalog.ROW["keep_watched"].tip
+        if self.keep.isEnabled() != (why is None):
+            self.keep.setEnabled(why is None)
+        if self.keep.toolTip() != tip:
+            self.keep.setToolTip(tip)
+        if not options:
+            return
+        value = keep_watched(options)
+        if self._keep_asked is not None:
+            if value != self._keep_asked and self._pending():
+                return                                         # the press not in the store yet: shown as pressed
+            self._keep_asked = None
+        if self.keep.value() != value:
+            self.keep.set_value(value)
+
+    def _pending(self):
+        writer = self._writer()
+        try:
+            return bool(writer.pending()) if writer is not None else False
+        except Exception:
+            return False
+
+    def _keep_changed(self, on):
+        """The toggle pressed (already shown flipped) -> one command on the writer's queue; refused: back as it was,
+        the reason in the bar."""
+        writer = self._writer()
+        seq = None
+        if writer is not None:
+            try:
+                seq = writer.set_options(keep_watched=bool(on))
+            except (ValueError, TypeError) as e:
+                applog.log("settings", f"keep_watched: {e}")
+        if seq is not None:
+            self._keep_asked = bool(on)
+            return
+        reason = ""
+        try:
+            reason = writer.reason() if writer is not None else ""
+        except Exception:
+            pass
+        windows.say_in_bar(self.shell, S.STORE_NOT_SAVED.format(reason=reason or S.STORE_NO_LIBRARY_TIP))
+        self.keep.set_value(not on)
 
     def _changed(self, row_id, n):
         """A typed value (on Enter, leaving the field, a step: never while typing) -> the writer's queue."""

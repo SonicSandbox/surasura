@@ -109,6 +109,9 @@ View = namedtuple("View", View._fields + ("connect",), defaults=tuple(View._fiel
 # --- LM11b: `epoch`, the store's epoch the view was read at (a library rebuilt or reset has another: the window's picks
 # go with it), or None (no store read)
 View = namedtuple("View", View._fields + ("epoch",), defaults=tuple(View._field_defaults.values()) + (None,))
+# --- W-1: `keep_watched`, the library's *Keep studying watched episodes* as the feed's options gave it (the stones' tip
+# line, the first mark's toast, an episode's *Mine now*); False in the first screen's cache
+View = namedtuple("View", View._fields + ("keep_watched",), defaults=tuple(View._field_defaults.values()) + (False,))
 #   worst: Current's rows below Up Next, the most-needing string per kind of Anki count beside it (`worst_needs`)
 #   arrivals: the tray's rows as it shows them (New, then Already watched; each newest first); arrival_groups: the
 #   groups that hold any, in that order. Neither is in the first screen's cache (the first frame shows no tray)
@@ -991,14 +994,24 @@ def worst_needs(rows):
     return out
 
 
-def _mine_ids(current, n):
+def keep_watched(options):
+    """W-1: the library's *Keep studying watched episodes* in the feed's `options` (absent: off)."""
+    try:
+        return bool(int((options or {}).get("keep_watched") or 0))
+    except (TypeError, ValueError):
+        return False
+
+
+def _mine_ids(current, n, keep=False):
     """The store's `_mine_ids`: the top `n` available files of Current, in order (a video waiting for its subtitle is
-    never one: SRC W1b)."""
+    never one: SRC W1b) that count by the store's one rule (`library_store.counts`, W-1: a watched one while `keep`,
+    the library's `keep_watched`, is off has nothing left to mine)."""
+    from app.library_store import counts
     out = []
     for r in current:
         if len(out) >= n:
             break
-        if r.get("availability") not in ("missing", "waiting"):
+        if r.get("availability") not in ("missing", "waiting") and counts(r.get("tier"), r.get("watched"), keep):
             out.append(r["id"])
     return out
 
@@ -1261,7 +1274,8 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
     line_n = 20 if line_n is None else int(line_n)
     tiers = tiers if tiers is not None else _by_tier(items)
     current = tiers["now"] + tiers["soon"]
-    top_ids = [] if off else _mine_ids(current, line_n)          # row 13: Connect off → nothing "in the top"
+    keep = keep_watched(options)                                  # W-1
+    top_ids = [] if off else _mine_ids(current, line_n, keep)    # row 13: Connect off → nothing "in the top"
     # every item above the line's place (missing ones included) is "in the top": the line falls after the n-th available
     in_top = set()
     if top_ids:
@@ -1448,7 +1462,8 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
     return View(language=language, mode=mode, reason=reason, state=state, busy=busy, loading=loading, cached=False,
                 rows=tuple(rows), lines=tuple(lines), goal=goal, finished=finished, needs=tuple(needs), counts=counts,
                 subline=subline, badges=badges, worst=worst, arrivals=arrival_rows, arrival_groups=arrival_groups,
-                connect=connect)                    # --- P4.1 L2
+                connect=connect,                    # --- P4.1 L2
+                keep_watched=keep)                  # --- W-1
 
 
 # --- the first screen's cache (02 §2.1) ---------------------------------------------------------------------- #

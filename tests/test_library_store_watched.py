@@ -21,7 +21,7 @@ from unittest.mock import patch
 
 import pytest
 
-from app import indexer, library_store as ls, token_index as ti
+from app import indexer, library_store as ls, sentence_corpus as sc, token_index as ti
 from tests.test_library_store_commands import _events, _four_in_two, _last_log
 from tests.test_library_store_groups import _library as _grouped_library, _members, _shows
 from tests.test_library_store_support import LANGUAGES, migrated, pieces_ok, read_doc, roots
@@ -361,3 +361,57 @@ def test_the_indexer_sets_a_watched_file_aside_and_un_marking_brings_it_back_wit
     assert tokenized == [], "no move re-tokenizes"
     store.close()
     finished.close()
+
+
+# --- the sentence sources (K-W3: counted + set aside) ----------------------------------------------------------- #
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_watched_episode_still_gives_sentences_and_a_finished_show_none(language, tmp_path):
+    """A stone never takes a sentence away: 例文 (`best_for`) and the sentence dictionary (`build`) still pick a watched
+    episode's sentences — the dictionary right after the stone, before the indexer, its row set aside with nothing
+    tokenized — while a Finished show's stay out, as ever. With Keep studying watched episodes on, 例文 is exactly what it
+    was before the stone."""
+    store, _data_dir, ids = _real_library(language)
+    _run_indexer(language)
+    watched, finished = list(ids)[0], list(ids)[2]
+    with ti.open_store(language) as tokens:
+        cached = {p: tokens.file_tokens(p) for p in ids}
+
+    def only(path):
+        """The sentences no other file holds."""
+        return {s for s, _t in cached[path]} - {s for p in ids if p != path for s, _t in cached[p]}
+
+    wanted = {(t[0], t[1]) for p in (watched, finished) for _s, toks in cached[p] for t in toks}
+
+    def picked():
+        return {text for found in sc.best_for(language, wanted).values() for _o, text, _s, _f in found}
+
+    before = sc.best_for(language, wanted)
+    assert only(watched) & picked() and only(finished) & picked(), "both files give sentences before"
+    store.set_library_options(keep_watched=True)
+    store.set_watched([ids[watched]])
+    assert sc.best_for(language, wanted) == before, "Keep studying watched episodes: as before the stone"
+
+    store.set_library_options(keep_watched=False)
+    store.finish([ids[finished]])
+    dictionary, tokenized = [], []
+    real_export, real_tokenized = sc.export_dictionary, ti._tokenized
+
+    def export(words, sources, *args, **kwargs):
+        dictionary.extend(text for w in words.values() if w.best is not None for _r, text, _f, _s in w.best.result())
+        return real_export(words, sources, *args, **kwargs)
+
+    def spy(paths, tokenize_file, workers):
+        tokenized.extend(paths)
+        return real_tokenized(paths, tokenize_file, workers)
+
+    with patch.object(sc, "export_dictionary", export), patch.object(ti, "_tokenized", spy):
+        assert sc.build(language, str(tmp_path / "corpus.zip"), progress=lambda message: None)
+    assert only(watched) & set(dictionary), "the sentence dictionary keeps a watched episode's sentences"
+    assert not only(finished) & set(dictionary), "and leaves a Finished show's out"
+    assert tokenized == [], "the stone re-tokenizes nothing"
+    with ti.open_store(language) as tokens:
+        assert tokens.aside_files() == [ti._norm(watched)], "its row set aside, never dropped"
+    assert only(watched) & picked(), "例文 still picks a watched episode's sentence"
+    assert not only(finished) & picked(), "and never a Finished show's"
+    store.close()

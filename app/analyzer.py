@@ -3995,6 +3995,19 @@ def resolve_found_files(language, verbose=True, schedule=None, read_store=True, 
     return found_files
 
 
+def resolve_sentence_files(language):
+    """The files that give sentences — 例文 (`sentence_corpus.best_for`) and the sentence dictionary (`build`): (counted,
+    aside), absolute paths; the sentences come from counted + aside, in that order. Counted: Generate's list
+    (`resolve_found_files`, a missing item too). Aside (W-1): the library store's set-aside files (`text_lists`: watched
+    episodes while *Keep studying watched episodes* is off) — off the list, still sentences, as before a stone; Finished
+    stays out of both. None when there is no library store (JSON mode) or its lists can't be read now — the token
+    store's `reconcile(..., aside=None)`, its set-aside rows left as they are."""
+    counted = [p for p, _label, _weight, _type in resolve_found_files(language, verbose=False, missing=True)]
+    from app.indexer import token_store_lists
+    _counted, more = token_store_lists(language, get_data_path(language), counted)
+    return counted, (more or {}).get("aside")
+
+
 def journey_is_current(args, language):
     """Would Generate compute anything new? True when the last run still describes this library, these
     known words and these analysis settings; False when it would not (or never ran); None when it cannot

@@ -414,8 +414,11 @@ def read_progress(run_dir, run_id):
     parsing, filtering, media, definitions, cards) -> {"stage", "stages", "done", "total"} (ints), or None (none yet,
     or one that can't be read: the next look reads it again)."""
     try:
-        with open(os.path.join(run_dir, run_id, PROGRESS), encoding="utf-8") as f:
-            data = json.load(f)
+        # read whole and closed before the parse: the file is held open as briefly as it can be, since on Windows
+        # Anki Miner's replace of it is refused while it is open
+        with open(os.path.join(run_dir, run_id, PROGRESS), "rb") as f:
+            text = f.read()
+        data = json.loads(text.decode("utf-8"))
         out = {key: data[key] for key in ("stage", "stages", "done", "total")}
     except (OSError, ValueError, TypeError, KeyError):
         return None

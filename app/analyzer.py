@@ -4300,8 +4300,6 @@ def run_signature_parts(language, found_files, args, aside=()):
         from app import __version__ as _app_version
         _sig_parts = {
             "files": [[fp, _fsig(fp), _l, _w, _st] for (fp, _l, _w, _st) in found_files],
-            # path and stat only: the store and the copy may name a file's type differently, never its text
-            "reference": sorted(plan_rules.file_digest([fp, _fsig(fp), None, None, None]) for fp, _st in aside or ()),
             "known": known_sig,
             "lists": [_fsig(p) for p in (ignore_list_file, black_list_file, graduated_list_file)],
             "freq": sorted([_fsig(p) for p in available_freq_lists.values()]),
@@ -4314,6 +4312,11 @@ def run_signature_parts(language, found_files, args, aside=()):
             "engine": f"{_app_version}|schema{_token_index.SCHEMA_VERSION}|rev{ENGINE_REVISION}",
             "debug_word_stats": bool(os.environ.get("SURASURA_DEBUG_WORD_STATS")),
         }
+        if aside:
+            # W-1: the set-aside files, a part of its own present only then, so a library with none signs as before.
+            # Path and stat only: the store and the copy may name a file's type differently, never its text.
+            _sig_parts["reference"] = sorted(plan_rules.file_digest([fp, _fsig(fp), None, None, None])
+                                             for fp, _st in aside)
         # Q4-3: with Automatic rarity on, the band the library's store remembers helps pick the list (the second
         # threshold): a part of its own, present only then, so no other library's signature moves.
         try:

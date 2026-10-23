@@ -2677,3 +2677,43 @@ def test_LM11b_every_write_landed_asks_the_reader_for_the_stores_own_view_again(
     win.moves.nudge(rs[3], 1)
     assert calls(writer)
     assert wait_until(lambda: asked and win.moves.expect is None, 5)
+
+
+def test_round8_a_write_landing_after_the_window_closed_and_was_deleted_tells_no_one_and_never_a_deleted_relay(qapp):
+    """Round 8's native crash (`--all` at 46e9dc1, in test_finished): the window's close never let the writer's callbacks
+    go, so a write landing after the window was deleted (the quit's last moves, on the writer's thread) emitted on a
+    relay deleted with it — an access violation when the deletion met the emit. The close now lets go of every writer
+    callback and the reader's `subscribe_gone` (`MovesController.unwire`, as a language switch does). Red first: the
+    landing called the deleted relay (RuntimeError here, deterministically; a crash under load)."""
+    from PyQt6.QtCore import QCoreApplication
+    seed = window_seed.build()
+    writer = FakeWriter(seed.library)
+    win, services = open_window(qapp, seed, writer)
+    reader = services.library
+    assert writer.on_saving is not None and reader._gone_subscribers           # wired while the window is open
+    win.close()
+    win.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
+    QApplication.processEvents()
+    told = []
+    errors = []
+
+    def land():                                                     # the writer's own thread, as `_landed` calls them
+        for name in drag.WRITER_CALLBACKS:
+            try:
+                getattr(writer, name)(*((False,) if name == "on_saving" else (None, None)))
+                told.append(name)
+            except Exception as e:
+                errors.append((name, e))
+        try:
+            reader._tell_gone(["gone-item"])
+        except Exception as e:
+            errors.append(("gone", e))
+    t = threading.Thread(target=land)
+    t.start()
+    t.join(5)
+    QApplication.processEvents()
+    assert errors == [] and len(told) == len(drag.WRITER_CALLBACKS)
+    assert all(getattr(writer, name) is drag._no_callback for name in drag.WRITER_CALLBACKS)
+    assert reader._gone_subscribers == []                            # the reader tells it no more
+    services.shutdown(0.5)

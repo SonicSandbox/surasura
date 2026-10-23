@@ -688,6 +688,13 @@ def _empty_menu(m):
 
 
 # --- the writer's callbacks, on the window's thread -------------------------------------------------------------- #
+WRITER_CALLBACKS = ("on_saved", "on_undone", "on_saving", "on_reread", "on_note")     # what a controller wires
+
+
+def _no_callback(*_args):
+    pass
+
+
 class _Relay(QObject):
     saved = pyqtSignal(object, object)
     undone = pyqtSignal(object, object)
@@ -787,9 +794,11 @@ class DragController(QObject):
         writer.on_saving = self.relay.saving.emit
         writer.on_reread = self.relay.reread.emit
         writer.on_note = self.relay.note.emit
+        self._gone_told = None                       # the very callback the reader holds (`unwire` lets it go)
         subscribe = getattr(reader, "subscribe_gone", None)
         if subscribe is not None:
-            subscribe(self.relay.gone.emit)
+            self._gone_told = self.relay.gone.emit
+            subscribe(self._gone_told)
         self.page.on_done = self.done
         self.page.on_nudge = self.nudge
         self.page.on_menu = self.menu
@@ -1867,6 +1876,19 @@ class DragController(QObject):
         return idx.row() if y < lst.visualRect(idx).center().y() else idx.row() + 1
 
     # --- the quit ------------------------------------------------------------------------------------------------ #
+    def unwire(self):
+        """The writer's callbacks and the reader's `subscribe_gone` let go — a language switch and the window's close,
+        before any widget of this controller's can be deleted: a write landing later (the quit's last moves, on the
+        writer's thread) tells no one, and one telling right now reaches the relay, kept by the application from here
+        (never a deleted one: round 8's crash, the writer emitting on a relay deleted with the window)."""
+        for name in WRITER_CALLBACKS:
+            setattr(self.writer, name, _no_callback)
+        unsubscribe = getattr(self.reader, "unsubscribe_gone", None)
+        if unsubscribe is not None and self._gone_told is not None:
+            unsubscribe(self._gone_told)
+        self._gone_told = None
+        self.relay.setParent(QApplication.instance())
+
     def close(self):
         """The window closes (or a language switch lets this controller go): a drag running is let go, and the settle
         stops — H-T1: nothing of this controller's is shown past it (its writer's moves left stay in its journal)."""

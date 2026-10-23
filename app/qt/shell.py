@@ -1467,9 +1467,7 @@ class ShellWindow(QMainWindow):
             self.toasts.close()                     # a move's toast and its Undo: the language left's
             moves.undo_key.setEnabled(False)        # (the window's own Ctrl+Z goes to the new controller's)
             moves.undo_key.deleteLater()
-            for name in ("on_saved", "on_undone", "on_saving", "on_reread", "on_note"):
-                setattr(moves.writer, name, _no_callback)   # a write still in hand past the switch's wait tells no one
-            moves.relay.setParent(self)             # ... and one telling now reaches a live relay (never a deleted one)
+            moves.unwire()                          # a write still in hand past the switch's wait tells no one
             moves.deleteLater()
         lst = getattr(self.page_widgets.get("current"), "list", None)
         if lst is not None and (lst.saving or lst.landing is not None):
@@ -2988,6 +2986,8 @@ class ShellWindow(QMainWindow):
             event.ignore()                                # E20: what can't stop part-way ends first
             self._finish_first()
             return
+        if moves is not None:                             # round 8: a write landing after the window is gone (the quit's
+            moves.unwire()                                # last moves) tells no one — never a deleted relay
         self.closing.emit()                               # single instance stops listening before the window hides
         from app.qt import windows
         windows.close_all(self)                           # W3.4 AD4-4: the ported windows' own closes run (their clean-up)
@@ -3057,10 +3057,6 @@ def open_window(app, services, state_file=None):
 
 
 # --- W3.2 P0: the library main() opens (W3.1a's R3-L7) -------------------------------------------------------------- #
-def _no_callback(*_args):
-    pass
-
-
 def _set_estimates(reader, estimates):
     """New arrivals' numbers to the reader open now (any thread); none with no reader or one without them."""
     set_estimates = getattr(reader, "set_estimates", None)

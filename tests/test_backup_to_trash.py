@@ -190,14 +190,16 @@ def test_a_part_left_by_an_earlier_kill_does_not_stop_the_next_backup(tmp_path):
     assert _dated(trash) == [os.path.basename(dst)]
 
 
-def test_two_backups_in_one_second_keep_both_whole(tmp_path):
+def test_two_backups_in_one_second_keep_both_whole(tmp_path, monkeypatch):
     """Two backups of one file in the same second take two dated names (`-1` for the second), both whole."""
     path = _known_words(tmp_path, "zh")
+    monkeypatch.setattr(path_utils.time, "strftime", lambda _f: "20261022-221900")
     first = path_utils.backup_to_trash(path)
     with open(path, "ab") as f:
         f.write("\r\n".encode("utf-8"))
     second = path_utils.backup_to_trash(path)
-    assert first != second
+    assert os.path.basename(first) == "KnownWord.20261022-221900.json"
+    assert os.path.basename(second) == "KnownWord.20261022-221900-1.json"
     assert open(second, "rb").read() == open(path, "rb").read()
     assert open(first, "rb").read() == open(path, "rb").read()[:-2]
 

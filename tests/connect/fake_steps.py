@@ -136,6 +136,9 @@ class FakeSteps:
     def title(self, lang, job):
         return f"Example Show - {job['item_id']:02d}"
 
+    def watched(self, lang, job):
+        return job["item_id"] in (self.plan.get("watched") or ())
+
     def pairing(self, lang, job):
         return (self.plan.get("pairings") or {}).get(str(job["item_id"]))
 

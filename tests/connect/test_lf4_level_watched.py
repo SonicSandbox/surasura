@@ -1,0 +1,105 @@
+"""Laptop round 8 #49 (LF4-1 ⭐ A, PROVISIONAL): a level raise never mines an episode you've watched, and never waits
+for (or asks for) a video.
+
+What Sonic met: Yomi no Tsugai 13 and 15 were mined, watched, their videos deleted; the list gained words overnight,
+so the level raise queued "the new words' cards" for both, and their picks waited on the video — *Needs you* asked
+him to choose a video or mine the text only, for episodes Connect had already mined. What a wrong answer costs: a
+question about an episode that needs nothing, and the newest words carded from scenes already seen instead of the
+episodes ahead.
+
+The store tests use the suite's real subtitles (`connect_helpers.library`); the runner tests `FakeSteps` (real
+Japanese words, synthetic titles). Never a live Anki.
+"""
+import os
+
+import pytest
+
+from app.connect import level, library, runner
+from app.connect.ledger import LEVEL, Ledger
+from tests import connect_helpers as c
+from tests.cli_helpers import same_token_store_as_the_children  # noqa: F401  (autouse)
+from tests.connect.fake_steps import FakeSteps
+
+BEFORE = {("冒険", "ボウケン"), ("散歩", "サンポ")}
+RAISED = BEFORE | {("眼鏡", "メガネ"), ("老婆", "ロウバ")}
+
+
+def _line(n=3):
+    c.library()
+    with c.store() as s:
+        s.bookkeeping({"mine_line": n}, copy_carries=True)
+        line = library.mine_line(s)
+        return [(i, os.path.basename(s.item(i)["rel_path"])) for i in line]
+
+
+def _level_jobs():
+    with Ledger() as ledger:
+        return [ledger.job_by_id(j["id"]) for j in ledger.jobs("ja") if j["kind"] == LEVEL]
+
+
+def test_a_watched_mined_episode_gets_no_level_job_and_its_new_word_goes_to_the_next_mined_one():
+    (a, fa), (b, fb), _d = _line()
+    with c.store() as s:
+        s.receipt(a, "2026-10-22T07:01:55Z")
+        s.receipt(b, "2026-10-22T07:05:55Z")
+        s.set_watched([a])                          # Yomi no Tsugai 13: mined and watched
+    files = {fa: ["眼鏡", "老婆"], fb: ["眼鏡"]}
+    with c.store() as s:
+        level.check(s, "ja", BEFORE, "run-1", files)
+        out = level.check(s, "ja", RAISED, "run-2", files)
+    assert out["queued"] == [b], "the watched episode is passed over; the one ahead of you takes the new word"
+    assert [(j["item_id"], j["words"]) for j in _level_jobs()] == [(b, [("眼鏡", "メガネ")])]
+
+
+def test_wants_is_the_one_rule_for_watched_and_taken_out_items():
+    assert level.wants({"watched": 0, "in_learning_order": 1})
+    assert not level.wants({"watched": 1, "in_learning_order": 1})
+    assert not level.wants({"watched": 0, "in_learning_order": 0})
+    assert not level.wants(None)
+
+
+@pytest.fixture
+def ledger(tmp_path):
+    with Ledger(str(tmp_path / "ledger.sqlite")) as led:
+        yield led
+
+
+def _run(tmp_path, ledger, plan):
+    steps = FakeSteps(str(tmp_path), plan)
+    summary = runner.run({}, ["ja"], steps=steps, ledger=ledger, sleep=lambda s: None, looks=1)
+    return steps, summary
+
+
+def test_a_level_job_whose_video_is_gone_ends_quietly_never_asking_for_it(tmp_path, ledger):
+    plan = {"line": {"ja": [13]}, "level": [("ja", 13, [("血族", "ケツゾク")])], "videos": {"13": None}}
+    steps, summary = _run(tmp_path, ledger, plan)
+    job = ledger.jobs("ja")[0]
+    assert (job["state"], job["reason"]) == ("skipped", runner.LEVEL_NO_VIDEO)
+    assert summary["languages"]["ja"]["waiting"] == {}, "no *No video* wait: Needs you lists nothing"
+    assert summary["languages"]["ja"]["skipped"] == [13]
+    assert not any(e[0] == "mine" for e in steps.log)
+
+
+def test_a_first_mining_with_no_video_still_waits_for_it(tmp_path, ledger):
+    # the rule is the level raise's alone: an episode not mined yet still asks for its video (E15)
+    plan = {"line": {"ja": [16]}, "queue": {"ja": [16]}, "videos": {"16": None}}
+    _steps, summary = _run(tmp_path, ledger, plan)
+    job = ledger.jobs("ja")[0]
+    assert (job["state"], job["reason"]) == ("waiting", runner.NO_VIDEO)
+    assert summary["languages"]["ja"]["waiting"] == {16: runner.NO_VIDEO}
+
+
+def test_a_level_job_queued_before_its_episode_was_watched_is_dropped_when_it_starts(tmp_path, ledger):
+    plan = {"line": {"ja": [15]}, "level": [("ja", 15, [("好く", "スク")])], "watched": [15]}
+    steps, summary = _run(tmp_path, ledger, plan)
+    job = ledger.jobs("ja")[0]
+    assert (job["state"], job["reason"]) == ("dropped", runner.WATCHED)
+    assert summary["languages"]["ja"]["dropped"] == [15]
+    assert not any(e[0] in ("pick", "mine") for e in steps.log)
+
+
+def test_an_asked_job_on_a_watched_episode_still_mines(tmp_path, ledger):
+    # *Mine this* is yours: watched or not, it is mined (the rule is the automatic level raise's only)
+    plan = {"line": {"ja": [1]}, "queue": {"ja": [1]}, "watched": [1]}
+    _steps, summary = _run(tmp_path, ledger, plan)
+    assert summary["languages"]["ja"]["done"] == [1]

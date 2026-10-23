@@ -52,7 +52,7 @@ import time
 from types import SimpleNamespace
 
 from app.connect import fit_check, inbox
-from app.connect.ledger import ASKED, BEFORE_MINING, IN_FLIGHT, PREPARE_KINDS, Ledger
+from app.connect.ledger import ASKED, BEFORE_MINING, IN_FLIGHT, LEVEL, PREPARE_KINDS, Ledger
 
 log = logging.getLogger("surasura-cli")
 
@@ -73,6 +73,9 @@ ANKI_CLOSED = "Waiting for Anki: it isn't open."
 ANKI_SLOW = "Waiting for Anki: it didn't answer in time."
 NO_VIDEO = "No video: its video isn't on this computer (or isn't downloaded yet)."
 CHINESE = "Chinese cards come later."
+# Laptop round 8 #49 (LF4-1 ⭐ A, PROVISIONAL): a level raise's job for an episode you've watched, or whose video is gone
+WATCHED = "you've watched it: its new words go to the episodes ahead of you"
+LEVEL_NO_VIDEO = "its video isn't on this computer: its new words go to the other episodes"
 # K67 (IK S3): Anki Miner's API mines video only — an asked job for a book or a text ends skipped with this line
 TEXT_ONLY = ("Anki Miner makes cards from videos only: open Anki Miner's own window to mine this one by hand "
              "(Mine text).")
@@ -622,6 +625,12 @@ def _job(steps, ledger, lang, job, store_now, line, out):
         ledger.set_state(jid, "dropped", reason="left the top 20")
         out["dropped"].append(item_id)
         return
+    if droppable and job.get("kind") == LEVEL and getattr(steps, "watched", lambda _l, _j: False)(lang, job):
+        # laptop round 8 #49 (LF4-1 ⭐ A, PROVISIONAL): a level raise never mines an episode you've watched — one marked
+        # watched since its job was queued ends here, its words left for the episodes that hold them (`level.wants`)
+        ledger.set_state(jid, "dropped", reason=WATCHED)
+        out["dropped"].append(item_id)
+        return
     if droppable and job.get("kind") == ASKED and getattr(steps, "text_only", lambda _l, _j: False)(lang, job):
         # K67 (IK S3, defensive: the window sends *Mine this* on a book to Anki Miner's own window, no ask): ended,
         # the ask used up with it
@@ -672,6 +681,11 @@ def _pick(steps, ledger, lang, job, record=True):
     jid = job["id"]
     ledger.set_state(jid, "picking")
     video = steps.video(lang, job)
+    if video is None and job.get("kind") == LEVEL:
+        # laptop round 8 #49 (LF4-1 ⭐ A): a level raise never waits for, nor asks for, a video — an episode already
+        # mined whose video is gone is passed over quietly (never *Needs you*), its words left for the other jobs
+        ledger.set_state(jid, "skipped", reason=LEVEL_NO_VIDEO, skipped={"mining": LEVEL_NO_VIDEO})
+        raise _Finished("skipped")
     if video is None:
         raise Wait(NO_VIDEO, look=False)
     pairing = steps.pairing(lang, job)
@@ -1188,6 +1202,17 @@ class Steps:
         if not item:
             return False
         return infer_source_type(item.get("rel_path") or "", declared=item.get("source_type")) in ("epub", "text")
+
+    def watched(self, lang, job):
+        """Laptop round 8 #49: is the job's episode marked watched (the store's `watched`)? A busy store -> False (the
+        job goes on as before)."""
+        try:
+            store = self._open(lang)
+        except (Wait, Needs):
+            return False
+        with store:
+            item = store.item(job["item_id"]) or {}
+        return bool(item.get("watched"))
 
     def title(self, lang, job):
         try:

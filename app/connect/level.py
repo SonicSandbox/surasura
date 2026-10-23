@@ -97,13 +97,20 @@ def _queue(store, language, ledger, new, file_words):
         if library.mined_at(store, item_id) is None and not ledger.mined(language, item_id):
             continue                        # its first mining (when it runs) reads the list as it is now
         item = store.item(item_id)
-        if item is None or item.get("in_learning_order") == 0:
-            continue                        # taken out of the learning order (D14): never mined again
+        if not wants(item):
+            continue                        # taken out of the learning order (D14), or watched (#49): no level job
         lemmas = set(file_words.get(os.path.basename(item.get("rel_path") or "")) or ())
         words = {key for lemma in lemmas if lemma not in made for key in by_lemma.get(lemma, ())}
         if words and ledger.queue_level(language, item_id, words, store_id=library.store_id(store)) is not None:
             queued.append(item_id)
     return queued
+
+
+def wants(item):
+    """Does a level raise mine this (already mined) item? Never one taken out of the learning order (D14), never one
+    you've watched (laptop round 8 #49, LF4-1 ⭐ A, PROVISIONAL: its new words go to the episodes ahead of you, so the
+    card comes before the word; the runner drops a job whose episode was marked watched since, `runner.WATCHED`)."""
+    return item is not None and item.get("in_learning_order") != 0 and not item.get("watched")
 
 
 def _walk(store):

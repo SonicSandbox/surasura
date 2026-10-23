@@ -70,14 +70,38 @@ def _run(tmp_path, ledger, plan):
     return steps, summary
 
 
-def test_a_level_job_whose_video_is_gone_ends_quietly_never_asking_for_it(tmp_path, ledger):
+def test_a_level_job_whose_video_is_gone_waits_quietly_never_asking_for_it(tmp_path, ledger):
     plan = {"line": {"ja": [13]}, "level": [("ja", 13, [("血族", "ケツゾク")])], "videos": {"13": None}}
     steps, summary = _run(tmp_path, ledger, plan)
     job = ledger.jobs("ja")[0]
-    assert (job["state"], job["reason"]) == ("skipped", runner.LEVEL_NO_VIDEO)
-    assert summary["languages"]["ja"]["waiting"] == {}, "no *No video* wait: Needs you lists nothing"
-    assert summary["languages"]["ja"]["skipped"] == [13]
+    assert (job["state"], job["reason"]) == ("waiting", runner.LEVEL_NO_VIDEO)
+    assert runner.LEVEL_NO_VIDEO != runner.NO_VIDEO, "Needs you's *No video* lists NO_VIDEO's waits only"
     assert not any(e[0] == "mine" for e in steps.log)
+    # review A8: the video back on this computer at a later start, its new words' cards are made
+    plan.pop("videos")
+    steps, summary = _run(tmp_path, ledger, plan)
+    assert ledger.jobs("ja")[0]["state"] == "done" and [e[3] for e in steps.log if e[0] == "mine"] == [["血族"]]
+
+
+def test_your_ask_on_a_level_job_is_a_yes_watched_or_without_its_video(tmp_path, ledger):
+    # review A1: *Mine now* moved onto an open level job — watched, it still mines; with no video it asks for it
+    plan = {"line": {"ja": [15]}, "level": [("ja", 15, [("好く", "スク")])], "watched": [15]}
+    steps = FakeSteps(str(tmp_path), plan)
+    steps.consume("ja", ledger)
+    with ledger.transaction():
+        ledger.ask("ja", 15, "2026-10-22T23:10:00.000000Z", store_id="store-1")
+    plan.pop("level")
+    _run(tmp_path, ledger, plan)
+    assert ledger.jobs("ja")[0]["state"] == "done"
+    plan = {"line": {"ja": [16]}, "level": [("ja", 16, [("存在感", "ソンザイカン")])], "videos": {"16": None}}
+    steps = FakeSteps(str(tmp_path), plan)
+    steps.consume("ja", ledger)
+    with ledger.transaction():
+        ledger.ask("ja", 16, "2026-10-22T23:11:00.000000Z", store_id="store-1")
+    plan.pop("level")
+    _run(tmp_path, ledger, plan)
+    job = [j for j in ledger.jobs("ja") if j["item_id"] == 16][0]
+    assert (job["state"], job["reason"]) == ("waiting", runner.NO_VIDEO)
 
 
 def test_a_first_mining_with_no_video_still_waits_for_it(tmp_path, ledger):
@@ -118,19 +142,23 @@ def _sent(steps):
     return [(e[1], e[3]) for e in steps.log if e[0] == "mine"]
 
 
-def test_a_word_with_no_definition_in_one_episode_is_never_sent_from_the_next(tmp_path, ledger):
-    plan = {"line": {"ja": [21, 22]}, "queue": {"ja": [21, 22]}, "words": NAME_WORDS, "no_definition": ["ルーデウス"]}
+def test_a_word_with_no_definition_in_two_episodes_is_never_sent_from_a_third(tmp_path, ledger):
+    words = dict(NAME_WORDS, **{"23": [("ルーデウス", "ルーデウス"), ("杖", "ツエ")]})
+    plan = {"line": {"ja": [21, 22, 23]}, "queue": {"ja": [21, 22, 23]}, "words": words,
+            "no_definition": ["ルーデウス"]}
     steps, _summary = _run(tmp_path, ledger, plan)
-    assert _sent(steps) == [(21, ["ルーデウス", "魔術"]), (22, ["剣術"])]
+    # one episode's answer is no verdict on the word (review A6: Anki Miner reads it from its line); two are
+    assert _sent(steps) == [(21, ["ルーデウス", "魔術"]), (22, ["ルーデウス", "剣術"]), (23, ["杖"])]
     assert ledger.uncardable("ja") == {("ルーデウス", "ルーデウス")}
     assert ledger.uncardable("zh") == set(), "one language's answers never another's"
 
 
 def test_a_new_anki_miner_version_is_asked_again(tmp_path, ledger):
-    plan = {"line": {"ja": [21]}, "queue": {"ja": [21]}, "words": NAME_WORDS, "no_definition": ["ルーデウス"]}
+    plan = {"line": {"ja": [21, 22]}, "queue": {"ja": [21, 22]}, "words": NAME_WORDS, "no_definition": ["ルーデウス"]}
     _run(tmp_path, ledger, plan)
-    plan = {"line": {"ja": [22]}, "queue": {"ja": [22]}, "words": NAME_WORDS, "app": "3.11.0"}
+    words = {"24": [("ルーデウス", "ルーデウス"), ("杖", "ツエ")]}
+    plan = {"line": {"ja": [24]}, "queue": {"ja": [24]}, "words": words, "app": "3.11.0"}
     steps, _summary = _run(tmp_path, ledger, plan)
-    assert _sent(steps) == [(22, ["ルーデウス", "剣術"])], "another dictionary may know it"
+    assert _sent(steps) == [(24, ["ルーデウス", "杖"])], "another dictionary may know it"
     assert ledger.uncardable("ja", "3.7.0") == {("ルーデウス", "ルーデウス")}
     assert ledger.uncardable("ja", "3.11.0") == set()

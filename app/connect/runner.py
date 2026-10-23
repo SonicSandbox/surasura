@@ -77,7 +77,7 @@ CHINESE = "Chinese cards come later."
 STOPPED_BY_YOU = STOPPED_REASON
 # Laptop round 8 #49 (LF4-1 ⭐ A, PROVISIONAL): a level raise's job for an episode you've watched, or whose video is gone
 WATCHED = "you've watched it: its new words go to the episodes ahead of you"
-LEVEL_NO_VIDEO = "its video isn't on this computer: its new words go to the other episodes"
+LEVEL_NO_VIDEO = "Its video isn't on this computer: its new words' cards wait for it."
 # K67 (IK S3): Anki Miner's API mines video only — an asked job for a book or a text ends skipped with this line
 TEXT_ONLY = ("Anki Miner makes cards from videos only: open Anki Miner's own window to mine this one by hand "
              "(Mine text).")
@@ -571,6 +571,8 @@ def _wait(ledger, job, wait, out, parked=None):
     resume = wait.resume
     if resume in BEFORE_MINING or resume == "mining":
         resume = "mining" if _started(ledger, job["id"]) else None
+    if wait.reason != STOPPED_BY_YOU and ledger.is_stopped(job["id"]):
+        wait = Wait(STOPPED_BY_YOU, look=False, resume=wait.resume)     # review A10: a stop's stone says so
     now = ledger.job_by_id(job["id"]) or {}
     if (now.get("state"), now.get("reason"), now.get("resume")) != ("waiting", wait.reason, resume):
         ledger.set_state(job["id"], "waiting", reason=wait.reason, resume=resume)   # the same wait: nothing written (S19)
@@ -628,7 +630,8 @@ def _job(steps, ledger, lang, job, store_now, line, out):
         ledger.set_state(jid, "dropped", reason="left the top 20")
         out["dropped"].append(item_id)
         return
-    if droppable and job.get("kind") == LEVEL and getattr(steps, "watched", lambda _l, _j: False)(lang, job):
+    if (droppable and job.get("kind") == LEVEL and not job.get("asked_at")
+            and getattr(steps, "watched", lambda _l, _j: False)(lang, job)):     # your ask on it is a yes (A1)
         # laptop round 8 #49 (LF4-1 ⭐ A, PROVISIONAL): a level raise never mines an episode you've watched — one marked
         # watched since its job was queued ends here, its words left for the episodes that hold them (`level.wants`)
         ledger.set_state(jid, "dropped", reason=WATCHED)
@@ -700,11 +703,11 @@ def _pick(steps, ledger, lang, job, record=True):
     jid = job["id"]
     ledger.set_state(jid, "picking")
     video = steps.video(lang, job)
-    if video is None and job.get("kind") == LEVEL:
-        # laptop round 8 #49 (LF4-1 ⭐ A): a level raise never waits for, nor asks for, a video — an episode already
-        # mined whose video is gone is passed over quietly (never *Needs you*), its words left for the other jobs
-        ledger.set_state(jid, "skipped", reason=LEVEL_NO_VIDEO, skipped={"mining": LEVEL_NO_VIDEO})
-        raise _Finished("skipped")
+    if video is None and job.get("kind") == LEVEL and not job.get("asked_at"):
+        # laptop round 8 #49 (LF4-1 ⭐ A): a level raise never asks for a video — an episode already mined whose video
+        # is gone waits quietly (its own reason: never *Needs you*'s *No video*), and goes on at a start that finds the
+        # video again (review A8: its new words aren't lost); your ask on it asks for the video as any (A1)
+        raise Wait(LEVEL_NO_VIDEO, look=False)
     if video is None:
         raise Wait(NO_VIDEO, look=False)
     pairing = steps.pairing(lang, job)
@@ -898,14 +901,20 @@ def _stopped_mid_batch(steps, ledger, lang, job, record):
     """#47: the batch Anki Miner ended at your *Stop*: its cards recorded in the store (made words, no receipt: the
     episode isn't mined yet) and renamed, then the job waits for your next ask at mining (the words still unmade).
     A store busy now is no matter: the resumed job records them all."""
+    words = (ledger.picked(job["id"]) or {}).get("words") or []
+    if not any(_outcome(ledger, job["id"], w) in UNSETTLED for w in words):
+        # every word settled before the cancel took (review A3): nothing left to stop — the job finishes its cards
+        ledger.forget_stop(job["id"])
+        return
     now = ledger.job_by_id(job["id"]) or {}
     ledger.mark_stopped(job["id"], now.get("asked_at"))
     made = _made(ledger, job["id"])
     if made and record:
         try:
             steps.record(lang, job, made, None, _tag(job))
-        except Wait:
-            log.info("Connect: the store was busy; job %s's cards are recorded when it goes on", job["id"])
+        except (Wait, Needs):               # review A7: the resumed job records them all
+            log.info("Connect: the store couldn't take job %s's cards now; they're recorded when it goes on",
+                     job["id"])
         _name_media_at_end(steps, ledger, lang, job)
     log.info("Connect: job %s stopped by you mid-batch (%d words made)", job["id"], len(made))
     raise Wait(STOPPED_BY_YOU, look=False, resume="mining")

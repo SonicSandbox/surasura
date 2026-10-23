@@ -177,3 +177,85 @@ def test_no_stop_asked_is_the_call_as_before(batch, fake_miner, words):  # noqa:
     done = batch(should_stop=lambda: False)
     assert done["stopped"] is False
     assert [o["outcome"] for o in done["outcomes"]] == ["made"] * len(words)
+
+
+# --- the review's walks (reviews/LF-build4-adversary.md) ----------------------------------------------------------- #
+def test_a_job_waiting_to_fill_its_made_cards_is_never_stopped(tmp_path, ledger):
+    # A3: its cards are made; it finishes once Anki answers (a stop would leave them unfilled, unordered)
+    job_id = _queue(ledger, 1)
+    ledger.set_state(job_id, "waiting", reason=runner.ANKI_CLOSED, resume="filling")
+    assert not actions.stoppable("waiting", "filling") and actions.stoppable("waiting", None)
+    assert ledger.ask_stop(job_id) is False
+    assert actions.stop("ja", job_id, path=str(tmp_path / "ledger.sqlite")) is False
+
+
+def test_a_stop_that_lands_after_every_word_was_made_lets_the_job_finish(tmp_path, ledger):
+    # A3: the cancel came too late to stop anything: the episode is finished, never held at mining with nothing left
+    job_id = _queue(ledger, 1)
+
+    def press(n, _job):
+        if n == len(WORDS[1]) - 1:
+            ledger.ask_stop(job_id)
+    steps = FakeSteps(str(tmp_path), {"line": {"ja": [1]}, "on_word": press})
+    real = steps.mine
+
+    def mine_all_then_report_stopped(*a):
+        got = real(*a)
+        if got.get("stopped"):                      # Anki Miner had made every word before it read the cancel file
+            return got
+        return dict(got, stopped=True)
+    steps.mine = mine_all_then_report_stopped
+    steps.plan["on_word"] = None
+    runner.run({}, ["ja"], steps=steps, ledger=ledger, sleep=lambda s: None, looks=1)
+    assert ledger.job_by_id(job_id)["state"] == "done"
+    assert sorted(steps.anki.words()) == sorted(w for w, _r in WORDS[1])
+
+
+def test_mine_now_pressed_after_stop_before_connect_reached_it_wins(tmp_path, ledger):
+    # A4: Stop, then Mine now, both before the runner's next step: your later press decides — it goes on
+    job_id = _queue(ledger, 1)
+    ledger.set_state(job_id, "picking")
+    ledger.ask_stop(job_id)
+    _ask(ledger, 1, "2026-10-22T23:58:00.000000Z")
+    assert not ledger.stop_asked(job_id)
+    _run(tmp_path, ledger, {"line": {"ja": [1]}})
+    assert ledger.job_by_id(job_id)["state"] == "done"
+
+
+def test_an_ask_undone_never_lets_a_stopped_job_go_on(tmp_path, ledger):
+    # A5: Mine now, Stop, then the ask undone (its asked_at cleared): still held — only a newer ask lets it go
+    job_id = _queue(ledger, 1)
+    _ask(ledger, 1, "2026-10-22T23:40:00.000000Z")
+    ledger.ask_stop(job_id)
+    with ledger.transaction():
+        assert ledger.unask(job_id) == "cleared"
+    steps, _summary = _run(tmp_path, ledger, {"line": {"ja": [1]}})
+    assert not any(e[0] == "pick" for e in steps.log)
+    assert ledger.job_by_id(job_id)["reason"] == runner.STOPPED_BY_YOU
+
+
+def test_an_ended_job_keeps_no_stop_record(tmp_path, ledger):
+    # A9: skipped, dropped or failed — a job queued again later is never held by an old stop
+    job_id = _queue(ledger, 1)
+    ledger.ask_stop(job_id)
+    ledger.set_state(job_id, "skipped", reason=runner.MINER_ABSENT)
+    assert not ledger.stop_asked(job_id) and not ledger.is_stopped(job_id)
+
+
+def test_a_stopped_jobs_own_wait_keeps_saying_stopped(tmp_path, ledger):
+    # A10: the window stopped a waiting job the runner held; the runner's wait (Anki closed) never hides the stop
+    job_id = _queue(ledger, 1)
+    ledger.ask_stop(job_id)
+    out = {"waiting": {}}
+    runner._wait(ledger, ledger.job_by_id(job_id), runner.Wait(runner.ANKI_CLOSED), out)
+    assert ledger.job_by_id(job_id)["reason"] == runner.STOPPED_BY_YOU
+
+
+def test_a_cancel_file_left_by_a_stopped_call_never_cancels_the_next(batch, fake_miner, words, tmp_path):  # noqa: F811
+    # A2: a refused attempt's number is reused; the stopped call's cancel file must not end the new one at once
+    folder = tmp_path / "runs" / "job-1" / "job-1-1"
+    folder.mkdir(parents=True)
+    (folder / "cancel").write_text("")
+    fake_miner.plan(cancel_at=0)                    # it would cancel at its first word if the file were there
+    done = batch(should_stop=lambda: False)
+    assert [o["outcome"] for o in done["outcomes"]] == ["made"] * len(words)

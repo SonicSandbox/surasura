@@ -76,14 +76,10 @@ def make_cards(language, gap_id, path=None, store_id=None):
     return queued
 
 
-# Laptop round 8 #47: the states a job can still be stopped in (its cards not all made yet)
-STOPPABLE = ("queued", "waiting", "picking", "fit-check", "mining")
-
-
-def stoppable(state):
-    """Can a job in `state` still be stopped (the window offers *Stop* only then)? Until its cards are made: queued,
-    waiting, picking, the fit check, mining. Filling and ordering finish (seconds)."""
-    return state in STOPPABLE
+def stoppable(state, resume=None):
+    """Can a job in `state` (waiting at `resume`) still be stopped (the window offers *Stop* only then)? The ledger's
+    one rule (`ledger.stoppable`): until its cards are made."""
+    return book.stoppable(state, resume)
 
 
 def stop(language, job_id, path=None):
@@ -94,7 +90,7 @@ def stop(language, job_id, path=None):
         return False
     with book.Ledger(path) as ledger:
         job = ledger.job_by_id(job_id)
-        if job is None or job.get("language") != language or not stoppable(job.get("state")):
+        if job is None or job.get("language") != language or not stoppable(job.get("state"), job.get("resume")):
             return False
         if not ledger.ask_stop(job_id):
             return False

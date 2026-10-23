@@ -591,6 +591,10 @@ def _mine_held(path, language, job, video, subtitle, words, mapping, profile_nam
                          run_config=runfile.config(mapping, info.get("app"), named))
     run_path = runfile.write(os.path.join(run_dir, f"run-{attempt}.json"), data)
     before = result_names(run_dir, run_id)
+    try:            # review A2: a cancel file left by a stopped call of this run id (a refused attempt is reused)
+        os.remove(os.path.join(run_dir, run_id, "cancel"))
+    except OSError:
+        pass
     done = {"run_file": run_path, "run": None, "result": None, "app": info.get("app"), "features": sorted(asks),
             "error": None, "_before": before}
 

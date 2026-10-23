@@ -94,7 +94,7 @@ def build(record, language):
             mining.add(item_id)
         step = (job.get("progress") or None) if kind == MINING else None      # `status._progress`'s
         progress, doing = (step.get("percent"), step.get("doing")) if step else (None, None)
-        stoppable = (True if job.get("job") is not None and actions.stoppable(job.get("state"))
+        stoppable = (True if job.get("job") is not None and actions.stoppable(job.get("state"), job.get("resume"))
                      and reason != runner.STOPPED_BY_YOU else None)
         items[item_id] = Item(kind=kind, words=WORDS[kind], tip=reason or WORDS[kind], job=job.get("job"),
                               made=job.get("made") or 0, total=job.get("words") or 0, progress=progress, doing=doing,
@@ -107,12 +107,16 @@ def with_asks(feed, asked):
     """Laptop round 8 #45 (a press shows at once): the Feed with an ASKED stone on every item you asked for (`asked`:
     item ids — the store's unanswered asks, `library.asked`, or the ones the window just wrote) that Connect's record
     doesn't show yet. Connect reads an ask at its next look (seconds, or after the step it is in); until then the stone
-    says *Asked: its cards come next* from your own press. An item Connect already shows keeps Connect's stone. Off
+    says *Asked: its cards come next* from your own press. An item Connect already shows keeps Connect's stone, but
+    one you stopped shows your *Mine now* at once. Pass the asks you just made (or ones newer than Connect's asks
+    watermark, `ledger.asks_from_in`): an ask made while Connect was off is never mined (C1). Off
     (`feed.on` False: Connect won't run) -> the Feed as it is (no promise it can't keep). Nothing new -> the same Feed
     object (S19)."""
     if not feed.on:
         return feed
-    new = [i for i in dict.fromkeys(asked or ()) if i is not None and i not in feed.items]
+    from app.connect import runner
+    new = [i for i in dict.fromkeys(asked or ()) if i is not None
+           and (i not in feed.items or feed.items[i].tip == runner.STOPPED_BY_YOU)]   # *Mine now* on a stopped one
     if not new:
         return feed
     items = dict(feed.items)

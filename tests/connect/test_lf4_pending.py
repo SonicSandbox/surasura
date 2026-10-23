@@ -74,3 +74,11 @@ def test_mark_them_known_with_nothing_in_the_way_says_nothing(anki, known_file):
     said = []
     assert sorted(known_signal.accept_offer("ja", URL, on_wait=said.append)) == ["一生懸命", "上層部"]
     assert said == []
+
+
+def test_mine_now_on_a_stopped_episode_shows_at_once():
+    # review A11: the press the stopped stone asks for shows before Connect reads it
+    got = feed.build(_record({"job": 3, "item": 3, "state": "waiting", "reason": runner.STOPPED_BY_YOU}), "ja")
+    assert feed.with_asks(got, [3]).items[3].kind == feed.ASKED
+    waiting = feed.build(_record({"job": 4, "item": 4, "state": "waiting", "reason": runner.ANKI_CLOSED}), "ja")
+    assert feed.with_asks(waiting, [4]) is waiting, "Connect's own wait keeps its reason"

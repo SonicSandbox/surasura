@@ -46,7 +46,8 @@ def token_store_lists(language, data_dir, files):
     """The token store's two lists (L2.2 05 §5.10, 9b) for `files`, the run's list (`_content_files`, Generate's
     found files): (counted, {"kept", "elsewhere", "forgotten"}) — `Store.reconcile(counted, ..., **more)`, and
     `needs_reconcile`. With a ready library store: counted = `files` as given, then the store's counted items they lack
-    (a missing item keeps counting until the user decides); kept = `text_lists()`' kept list (Finished, New arrivals,
+    (a missing item keeps counting until the user decides) and its set-aside ones (W-1: watched; summed as counted
+    until K-W2 gives the token store its own class for them); kept = `text_lists()`' kept list (Finished, New arrivals,
     removed items whose text wasn't forgotten); elsewhere = {a removed item's path: where its file is in the trash};
     forgotten = the removed items whose sentences the user forgot. Absolute paths under `data_dir`. Without one (JSON
     mode, no library store): (`files`, {}) — the kept rows and their text left as they are. (None, None) when a
@@ -65,7 +66,7 @@ def token_store_lists(language, data_dir, files):
         if store is None:
             return None, None
         with store:
-            counted_rel, kept_rel = store.text_lists()
+            counted_rel, kept_rel, aside_rel = store.text_lists()
             trashed, forgotten = store.text_elsewhere(), store.text_forgotten()
     except Exception:
         return None, None
@@ -76,7 +77,9 @@ def token_store_lists(language, data_dir, files):
     from app.token_index import _norm
     seen = {_norm(p) for p in files}
     counted = list(files)
-    for rel in counted_rel:
+    # K-W2: the set-aside (watched) files go in as counted until the token store keeps them apart (`reconcile(...,
+    # aside=)`), so nothing in it changes yet — and a watched file never falls out of every list
+    for rel in counted_rel + aside_rel:
         path = full(rel)
         if _norm(path) not in seen:
             seen.add(_norm(path))

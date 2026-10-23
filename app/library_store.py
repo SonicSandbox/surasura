@@ -79,6 +79,31 @@ TIERS = {
     "arrivals":  (None,            None,           False, 0),
 }
 ANALYSED = tuple(t for t, v in TIERS.items() if v[2])                    # now, soon, goal
+
+
+# --- W-1 (K-W1; Sonic 2026-10-22): ONE rule for what counts ------------------------------------------------------- #
+# An item COUNTS (a list use: Generate's files, the Rarity preview's sums, the mine line) when its tier is analysed and
+# it isn't watched, or the library's own option `keep_watched` is on (meta; absent = off). A watched item of an analysed
+# tier while it's off is SET ASIDE (`text_lists`): its text kept, never summed. Finished takes a show off the list by
+# its tier, a stone one episode by this rule. Written once in Python (`counts`: the window's `view_rows._mine_ids` calls
+# it) and once in SQL (`counts_sql`), from the same constants; a test holds the two equal.
+def _tiers_sql(tiers):
+    return ", ".join(f"'{t}'" for t in tiers)
+
+
+def counts(tier, watched, keep_watched=False):
+    """Does an item of `tier` whose `watched` is 0 / 1 count, while the library's `keep_watched` is `keep_watched`?"""
+    return tier in ANALYSED and (not watched or bool(keep_watched))
+
+
+def counts_sql(keep_watched=False, alias=""):
+    """`counts` as an SQL condition on `items` (`alias`: the table's name in the query)."""
+    col = f"{alias}." if alias else ""
+    tiers = f"{col}tier IN ({_tiers_sql(ANALYSED)})"
+    return f"({tiers})" if keep_watched else f"({tiers} AND {col}watched = 0)"
+# --- end W-1
+
+
 TIER_OF_PHASE = {v[0]: t for t, v in TIERS.items() if v[0]}
 TIER_OF_FOLDER = {v[1]: t for t, v in TIERS.items() if v[1]}
 FOLDER_OF_TIER = {t: v[1] for t, v in TIERS.items() if v[1]}
@@ -134,7 +159,7 @@ TWIN_HASHES = 8                  # hato's file is checked by its bytes against t
 INT_META = ("epoch", "state_version", "order_version", "availability_version", "pins_version",
             "analysed_order_version", "planned_order_version", "planned_pins_version",
             "last_export_version", "copy_dirty", "log_seq", "mine_line", "arrivals_on", "soon_line",
-            "feed_floor", "search_fold")
+            "feed_floor", "search_fold", "keep_watched")
 
 
 class StoreError(Exception):
@@ -662,7 +687,8 @@ COPY_TABLES = ("roots", "pieces", "trash", "exclusions", "anki_links", "anki_cha
                "placement_log", "made_words", "made_lines", "works")
 WORK_NOT_COPIED = ("search_key", "feed_in")
 # Meta keys the copy carries when the store holds them (beside epoch, log_seq, mine_line, arrivals_on and the readers)
-COPY_META_KEYS = ("soon_line", "auto_band", "rename_asks", "kept_apart", "show_groups")   # LM2
+COPY_META_KEYS = ("soon_line", "auto_band", "rename_asks", "kept_apart", "show_groups",   # LM2
+                  "keep_watched")                                                          # W-1
 ITEM_FIELDS = ("id", "root_id", "rel_path", "tier", "availability", "size", "mtime_ns", "added_at",
                "graduated_at", "piece_id", "watched", "mined_at", "pinned", "in_learning_order", "work_id",
                "mine_asked")
@@ -1729,15 +1755,25 @@ class Store:
         return rows
 
     def _mine_ids(self, n):
-        """The mine line: the top N of Current's AVAILABLE items (a missing item never counts)."""
+        """The mine line: the top N of Current's AVAILABLE items (a missing item never counts) that count (W-1: a
+        watched one while `keep_watched` is off has nothing left to mine)."""
+        rule = counts_sql(self._keep_watched())
         ids = [r[0] for r in self.conn.execute(
-            "SELECT id FROM items WHERE tier = 'now' AND availability = 'available' ORDER BY ord, id LIMIT ?",
-            (n,))]
+            f"SELECT id FROM items WHERE tier = 'now' AND availability = 'available' AND {rule} ORDER BY ord, id "
+            "LIMIT ?", (n,))]
         if len(ids) < n:
             ids += [r[0] for r in self.conn.execute(
-                "SELECT id FROM items WHERE tier = 'soon' AND availability = 'available' ORDER BY ord, id "
+                f"SELECT id FROM items WHERE tier = 'soon' AND availability = 'available' AND {rule} ORDER BY ord, id "
                 "LIMIT ?", (n - len(ids),))]
         return ids
+
+    def _keep_watched(self):
+        """The library's `keep_watched` option (W-1): 1 when on; absent (every library before it) is off."""
+        row = self.conn.execute("SELECT value FROM meta WHERE key = 'keep_watched'").fetchone()
+        try:
+            return 1 if row and int(row[0]) else 0
+        except (TypeError, ValueError):
+            return 0
 
     def _root_id(self):
         row = self.conn.execute("SELECT id FROM roots WHERE kind = 'library' ORDER BY id LIMIT 1").fetchone()
@@ -1746,14 +1782,16 @@ class Store:
     def schedule(self, with_versions=False):
         """{phase_key: [entries]} for the analysed tiers in (ord, id) order — what `resolve_found_files`
         loads — each entry {physical_path, source_type, title, parent_folder} straight from the columns; a video
-        waiting for its subtitle (K5) is never in it. With `with_versions`, also the versions, read in the same transaction."""
+        waiting for its subtitle (K5) is never in it, nor an item that doesn't count (W-1: watched, `keep_watched` off).
+        With `with_versions`, also the versions, read in the same transaction."""
         out = {}
         with self._reading():
+            rule = counts_sql(self._keep_watched())
             for tier in ANALYSED:
                 out[TIERS[tier][0]] = [
                     {"physical_path": p, "source_type": s, "title": t, "parent_folder": f}
                     for p, s, t, f in self.conn.execute(
-                        "SELECT rel_path, source_type, title, parent_folder FROM items WHERE tier = ? "
+                        f"SELECT rel_path, source_type, title, parent_folder FROM items WHERE tier = ? AND {rule} "
                         "AND availability != 'waiting' ORDER BY ord, id", (tier,))]
             versions = self._versions() if with_versions else None
         return (out, versions) if with_versions else out
@@ -1798,8 +1836,8 @@ class Store:
         (True: every item and work — the first read, a new epoch, or `seen` older than the tombstones kept,
         `feed_floor`), `epoch`, `version` (the window's next `seen`), `items` and `works` (rows of FEED_ITEM_FIELDS /
         FEED_WORK_FIELDS as dicts: every row when full, else those whose `feed_in` > `seen`), `gone` ([(kind, id)] left
-        since) and `options` (the Soon line, the mine line, New arrivals). Applying it by id is idempotent: a window's
-        own commits come back through it too.
+        since) and `options` (the Soon line, the mine line, New arrivals, W-1's `keep_watched`). Applying it by id is
+        idempotent: a window's own commits come back through it too.
         LM11: `pieces` (rows of FEED_PIECE_FIELDS: id, title, kind) — every piece when full, else the pieces its
         changed rows sit in (a piece's kind or name written feeds its rows: `_set_piece`). A piece no row names is gone.
         A group's `title` None: the window derives "<first item's work's title> + N more"; a run's title is never shown
@@ -1832,7 +1870,7 @@ class Store:
                 "works": [dict(zip(FEED_WORK_FIELDS, r)) for r in works], "gone": gone,
                 "pieces": [dict(zip(FEED_PIECE_FIELDS, r)) for r in pieces],
                 "options": {"soon_line": meta.get("soon_line"), "mine_line": meta.get("mine_line", MINE_LINE_DEFAULT),
-                            "arrivals_on": meta.get("arrivals_on", 0)}}
+                            "arrivals_on": meta.get("arrivals_on", 0), "keep_watched": meta.get("keep_watched", 0)}}
 
     def prune_gone(self, now=None):
         """In the helper's run (04 §4.1 #3): tombstones older than a day go, and `feed_floor` rises to the newest
@@ -1900,7 +1938,8 @@ class Store:
 
     def changed_since(self, token):
         """Did anyone ELSE change what a view draws since `token`? A version that moved further than this
-        process's own bumps did; a new epoch always did. A receipt, a pin or a watched mark never does."""
+        process's own bumps did; a new epoch always did. A receipt or a pin never does; a watched mark only when it
+        moves what counts (W-1: `set_watched`)."""
         epoch, order, avail, own_order, own_avail = token
         with self._reading():
             meta = self._meta()
@@ -2116,17 +2155,24 @@ class Store:
         Promote / Demote — not only *Put back* and a join): `in_learning_order` 1, as `put_back_finished` and `join` set
         it (G1.6-10: anything taken out comes back), the values replaced on the change for its undo, and `pins_version`
         bumped (T-4: its cards are owed back to Anki). Without it a Finished item taken out and moved to Current kept
-        its new cards suspended at every re-order."""
+        its new cards suspended at every re-order. W-1 (Q1 A, Sonic 2026-10-22): its stones clear too (`watched` 0),
+        or a show put back would bring none of its words back; on the same change, so one Undo puts both back."""
         status = []
         for part in _chunks(list(ids), 500):
-            status += [(i, "in_learning_order", old, 1) for i, old in self.conn.execute(
-                f"SELECT id, in_learning_order FROM items WHERE id IN ({','.join('?' * len(part))})", part).fetchall()
-                if old != 1]
+            marks = ",".join("?" * len(part))
+            for i, order, watched in self.conn.execute(
+                    f"SELECT id, in_learning_order, watched FROM items WHERE id IN ({marks})", part):
+                if order != 1:
+                    status.append((i, "in_learning_order", order, 1))
+                if watched != 0:
+                    status.append((i, "watched", watched, 0))
         if not status:
             return
-        self.conn.executemany("UPDATE items SET in_learning_order = 1 WHERE id = ?", [(i,) for i, *_r in status])
+        for column, value in (("in_learning_order", 1), ("watched", 0)):
+            self.conn.executemany(f"UPDATE items SET {column} = ? WHERE id = ?",
+                                  [(value, i) for i, c, *_r in status if c == column])
         cmd.feed(i for i, *_r in status)
-        cmd.touch(pins=True)
+        cmd.touch(pins=any(c == "in_learning_order" for _i, c, *_r in status))
         change.status = list(change.status) + status
     # --- end P4.1 L2 ---
 
@@ -3723,17 +3769,8 @@ class Store:
             self._put(tier, [r[0] for r in moving], ("before" if ahead else "after", last[0]), cmd.version)
             cmd.touch({r[1] for r in moving} | {tier})
         # --- W3.2 (IK-L2-1): a part from Finished comes back with its cards; one from New arrivals is placed
-        back = [r[0] for r in moving if r[1] == "graduated" and tier != "graduated"]
-        if back:
-            change.status = [(i, "in_learning_order", old, 1) for i, old in self.conn.execute(
-                f"SELECT id, in_learning_order FROM items WHERE id IN ({','.join('?' * len(back))})",
-                back).fetchall() if old != 1]
-            self.conn.executemany("UPDATE items SET in_learning_order = 1 WHERE id = ?",
-                                  [(i,) for i, *_r in change.status])
-            # --- P4.1 L2: cards back in the learning order are owed to Anki (T-4: through `pins_version`) ---
-            if change.status:
-                cmd.touch(pins=True)
-            # --- end P4.1 L2 ---
+        # (W-1: through the one "leaving Finished" place, `_back_in_order`: its cards owed to Anki, its stones cleared)
+        self._back_in_order(cmd, change, [r[0] for r in moving if r[1] == "graduated" and tier != "graduated"])
         for r in moving:
             if r[1] == "arrivals" and tier != "arrivals":
                 cmd.event(r[0], "placed", 1)
@@ -3860,8 +3897,22 @@ class Store:
             cmd.feed(i for i, _ in changes)
             change = self._change(cmd, kind)
             change.status = [(i, column, old, value) for i, old in changes]
-            cmd.touch(pins=pins)
+            cmd.touch(pins=pins, order=column == "watched" and self._moves_counted([i for i, _ in changes]))
             return change
+
+    def _moves_counted(self, ids):
+        """W-1: does a watched mark (set or taken back) on `ids` move what counts? Only while `keep_watched` is off,
+        and only for an item whose tier the rule reads it in (an analysed one): a mark in Finished or New arrivals, or
+        with the option on, is a status write."""
+        keep = self._keep_watched()
+        tiers = {r[0] for chunk in _chunks(list(ids), 500) for r in self.conn.execute(
+            f"SELECT DISTINCT tier FROM items WHERE id IN ({','.join('?' * len(chunk))})", chunk)}
+        return any(counts(t, 0, keep) != counts(t, 1, keep) for t in tiers)
+
+    def _watched_aside(self):
+        """W-1: is a watched item in an analysed tier — would `keep_watched` flipping move what counts?"""
+        return self.conn.execute(f"SELECT EXISTS (SELECT 1 FROM items WHERE {counts_sql(True)} AND NOT "
+                                 f"{counts_sql(False)})").fetchone()[0] == 1
 
     # --- the library's options (L2.2 04 §4.2): the Soon line, the mine line, New arrivals ------------ #
 
@@ -3882,9 +3933,10 @@ class Store:
             change.options = [("soon_line", old, n)]
             return change
 
-    def set_library_options(self, mine_line=None, arrivals_on=None):
-        """The user's two library options (Mado's gap 3): how many of Current's top rows Connect mines, and whether
-        drops wait in New arrivals (D30). Undo by the value check."""
+    def set_library_options(self, mine_line=None, arrivals_on=None, keep_watched=None):
+        """The user's library options (Mado's gap 3): how many of Current's top rows Connect mines, whether drops wait
+        in New arrivals (D30), and (W-1) whether watched episodes keep counting (`keep_watched`, absent = off): flipping
+        it bumps `order_version` only when a watched item sits in an analysed tier. Undo by the value check."""
         wanted = {}
         if mine_line is not None:
             if int(mine_line) < 0:
@@ -3892,17 +3944,20 @@ class Store:
             wanted["mine_line"] = int(mine_line)
         if arrivals_on is not None:
             wanted["arrivals_on"] = 1 if arrivals_on else 0
+        if keep_watched is not None:
+            wanted["keep_watched"] = 1 if keep_watched else 0
         if not wanted:
             return None
         with self._command("set_library_options") as cmd:
             meta = self._meta()
-            options = [(k, meta.get(k), v) for k, v in wanted.items() if meta.get(k) != v]
+            options = [(k, meta.get(k), v) for k, v in wanted.items()
+                       if meta.get(k, 0 if k == "keep_watched" else None) != v]      # W-1: absent is off
             if not options:
                 return None
             self._set_meta({k: v for k, _o, v in options})
             if "mine_line" in wanted:
                 cmd.mine_n = wanted["mine_line"]               # the log's crossings read the new line
-            cmd.touch()
+            cmd.touch(order=any(k == "keep_watched" for k, _o, _v in options) and self._watched_aside())
             change = self._change(cmd, "set_library_options")
             change.options = options
             return change
@@ -3922,7 +3977,7 @@ class Store:
             cmd.line_set = "soon_line" in back
             if "mine_line" in back:
                 cmd.mine_n = int(back["mine_line"])
-            cmd.touch()
+            cmd.touch(order="keep_watched" in back and self._watched_aside())     # W-1
             out.options = [(k, change_new, back[k]) for k, _o, change_new in change.options if k in back]
         return out, skipped
 
@@ -4535,26 +4590,34 @@ class Store:
         return self.sync_disk(folders=[_rel_dir(rel)] if _rel_dir(rel) else None)
 
     def text_lists(self):
-        """9b (05 §5.10): (counted, kept) — the paths, relative to data/<lang>, whose text the token store keeps. Counted:
-        the analysed tiers' items, a missing one too (it keeps counting until the user decides). Kept, never counted:
-        Finished, New arrivals, and removed items whose sentences weren't forgotten (`trash.text_forgotten` 0). The token
-        store (E2.2) takes these two lists in place of a run's one list: it keeps a kept file's text (in
+        """9b (05 §5.10): (counted, kept, aside) — the paths, relative to data/<lang>, whose text the token store
+        keeps. Counted: the items that count (`counts`), a missing one too (it keeps counting until the user decides).
+        Kept, never counted: Finished, New arrivals, and removed items whose sentences weren't forgotten
+        (`trash.text_forgotten` 0). Aside (W-1): an analysed tier's watched items while `keep_watched` is off, a missing
+        one too (watched wins) — their text kept and still the name tables' and the sentences' evidence, never summed
+        (the token store's K-W2).
+        The token store (E2.2) takes these lists in place of a run's one list: it keeps a kept file's text (in
         `kept_text_<lang>.db`, through any wipe) and sums only counted files. One read transaction."""
         with self._reading():
-            counted = [r[0] for r in self.conn.execute(
-                "SELECT rel_path FROM items WHERE tier IN ('now', 'soon', 'goal') ORDER BY tier, ord, id")]
+            keep = self._keep_watched()
+            counted, aside = [], []
+            for rel, tier, watched in self.conn.execute(
+                    f"SELECT rel_path, tier, watched FROM items WHERE tier IN ({_tiers_sql(ANALYSED)}) "
+                    "ORDER BY tier, ord, id"):
+                (counted if counts(tier, watched, keep) else aside).append(rel)
             kept = [r[0] for r in self.conn.execute(
-                "SELECT rel_path FROM items WHERE tier IN ('graduated', 'arrivals') ORDER BY tier, ord, id")]
+                f"SELECT rel_path FROM items WHERE tier IN ({_tiers_sql(t for t in TIERS if t not in ANALYSED)}) "
+                "ORDER BY tier, ord, id")]
             kept += [r[0] for r in self.conn.execute(
                 "SELECT rel_path FROM trash WHERE restored_at IS NULL AND text_forgotten = 0 ORDER BY id")]
-        have = {path_key(r) for r in counted}
+        have = {path_key(r) for r in counted + aside}
         out, seen = [], set()
         for rel in kept:
             key = path_key(rel)
             if key not in have and key not in seen:
                 seen.add(key)
                 out.append(rel)
-        return counted, out
+        return counted, out, aside
 
     def text_elsewhere(self):
         """{rel_path: trashed_path} for the removed items in `text_lists`' kept list: where each one's file went
@@ -4587,7 +4650,9 @@ class Store:
             return n
 
     def set_watched(self, ids, watched=True):
-        """The store's Watched record (✅ G1.1-5)."""
+        """The store's Watched record (✅ G1.1-5). W-1: a watched item in an analysed tier stops counting while
+        `keep_watched` is off, so there a mark (and its undo) bumps `order_version` (the journey's Generate and the
+        re-plan follow); anywhere else it stays a status write."""
         return self._status("set_watched", ids, "watched", 1 if watched else 0)
 
     def pin(self, ids):
@@ -4967,7 +5032,8 @@ class Store:
             self.conn.execute(f"UPDATE items SET {column} = ? WHERE id = ?", (old, item_id))
         cmd.feed(i for _c, _o, i in back)
         if back:
-            cmd.touch(pins=any(c in ("pinned", "in_learning_order") for c, _o, _i in back))   # P4.1 L2 (T-4)
+            cmd.touch(pins=any(c in ("pinned", "in_learning_order") for c, _o, _i in back),   # P4.1 L2 (T-4)
+                      order=self._moves_counted([i for c, _o, i in back if c == "watched"]))   # W-1
             news = {s[0]: s[3] for s in change.status}
             out.status = [(i, c, news[i], o) for c, o, i in back]
         return out, skipped
@@ -7377,8 +7443,8 @@ WHERE h.head IS NULL OR h.head NOT IN (SELECT value FROM json_each(:disk))
 
 
 def _store_has_content(self):
-    """Does an analysed tier hold a file that is there? (The dashboard's Generate button, §7.)"""
-    return self.conn.execute("SELECT EXISTS (SELECT 1 FROM items WHERE tier IN ('now', 'soon', 'goal') "
+    """Does an item that counts (`counts`, W-1) have a file that is there? (The dashboard's Generate button, §7.)"""
+    return self.conn.execute(f"SELECT EXISTS (SELECT 1 FROM items WHERE {counts_sql(self._keep_watched())} "
                              "AND availability = 'available')").fetchone()[0] == 1
 
 
@@ -7447,7 +7513,9 @@ def maintain_at_close(language, data_dir=None, user_files_dir=None):
 def read_only_schedule(language, data_dir, user_files_dir):
     """Read-only mode (§6.9): the copy's schedule, with the walk's untracked files added in memory by
     §6.10 rule 3 (never saved), so a file dropped into a tier folder is still analysed. Every file the
-    copy knows, in any tier, counts as known (D6). None when the copy can't be read."""
+    copy knows, in any tier, counts as known (D6). W-1: an item that doesn't count by the copy's own records and
+    meta (`counts`: watched, `keep_watched` off) leaves the list, as `Store.schedule` leaves it out — still known,
+    never added back as untracked. None when the copy can't be read."""
     try:
         doc, _st, _p = read_manifest(manifest_path(user_files_dir))
     except ManifestUnreadable:
@@ -7509,6 +7577,15 @@ def read_only_schedule(language, data_dir, user_files_dir):
             if where[2] < tops[where[1]]:
                 tops[where[1]] += 1
         with_items.add(dkey)
+    try:                                                   # W-1: the one rule, read from the copy
+        keep = bool((lib.get("meta") or {}).get("keep_watched"))
+    except AttributeError:
+        keep = False
+    watched = {key for key, rec in _records(lib).items() if rec.get("watched") == 1}
+    if watched:
+        for tier in ANALYSED:
+            lists[tier][:] = [e for e in lists[tier] if not isinstance(e, dict) or counts(
+                tier, path_key(_strip(str(e.get("physical_path") or ""))) in watched, keep)]
     return schedule
 
 
@@ -9649,7 +9726,8 @@ RESET_WAIT = 2.0                  # s: another writer's commit is waited for thi
 # — but never Connect's never-again sets (`made_words`, `made_lines`, G1.3-4: a word whose card he deleted is never made
 # again; item ids are never reused, so their stale ids meet no new item: I-R1 / LF-5)
 RESET_TABLES = ("anki_links", "pairings", "placement_log", "trash", "anki_changes", "gone", "items", "pieces", "works")
-RESET_KEEP_META = ("mine_line", "arrivals_on", "log_seq")     # his library options, and the log's numbering (+ readers)
+# His library options (W-1's `keep_watched` too), and the log's numbering (+ readers)
+RESET_KEEP_META = ("mine_line", "arrivals_on", "keep_watched", "log_seq")
 # Why a reset is refused (nothing changed), in the window's words
 RESET_UPDATE = "An update is being installed: start a fresh library once it has finished."
 RESET_GENERATE = "A Generate is running: start a fresh library once it has finished."

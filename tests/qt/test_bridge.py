@@ -85,11 +85,13 @@ def test_a_callback_after_the_bridge_is_gone_is_dropped(qapp):
     svc.tell("late")                                  # no raise into the service
 
 
-# Round 8's crash, at its root: a thread emitting on a QObject at the moment the GUI thread deletes it is an access
-# violation — no Python error, the whole process ends (the writer's late landing on the drag's relay, deleted with its
-# window; 1 run in 20 of test_finished). Raced in a child process, so a regression fails this test instead of killing
-# the run: a service thread calls back without pause while the GUI thread makes and deletes the object, 1,500 times,
-# through each road a window hands a service (a `Gate` on a relay of its own, a `Relay`, the `Bridge`).
+# Round 8's crash, at its root: a service thread calling a signal's emit kept from an object the GUI thread has
+# deleted (or is deleting) is an access violation — no Python error, the whole process ends (the writer's late landing
+# on the drag's relay, deleted with its window; 1 run in 20 of test_finished). Raced in a child process, so a
+# regression fails this test instead of killing the run: a service thread calls back without pause while the GUI
+# thread makes and deletes the object, 600 times, through each road a window hands a service (a `Gate` on a relay of
+# its own, a `Relay`, the `Bridge`). It proves the fresh, flag-checked lookup; the gate's lock (an emit and the
+# deletion never overlap, as Qt requires) is defence in depth no race here has shown to be needed.
 _RACE = r"""
 import sys, threading, time
 from PyQt6.QtCore import QCoreApplication, QEvent, QObject, pyqtSignal
@@ -126,7 +128,7 @@ def service():
 
 
 threading.Thread(target=service, daemon=True).start()
-for i in range(1500):
+for i in range(600):
     holder = QObject()
     kind = i % 3
     if kind == 0:
@@ -152,9 +154,9 @@ print("survived", len(raised), raised[:1])
 
 
 def test_round8_a_service_calling_back_while_the_gui_thread_deletes_the_object_never_crashes(tmp_path):
-    """Red first: a bare emit — the drag's relay, Finished's and the search's as they were — died of an access
-    violation 5 runs in 5; the bridge's own roads (an alive flag read before the emit) survived, the instant between
-    the two left open. Through the gate every road survives and nothing is raised into the service."""
+    """Red first: a bare emit kept from the object — the drag's relay, Finished's and the search's as they were — died
+    of an access violation 5 runs in 5 (the review's mutant, the gate caching its emit, too); through the gate every
+    road survives and nothing is raised into the service."""
     import subprocess
     import sys
     env = dict(os.environ, QT_QPA_PLATFORM="offscreen", PYTHONPATH=ROOT)

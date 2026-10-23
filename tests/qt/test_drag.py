@@ -2723,7 +2723,7 @@ def test_round8_a_write_landing_after_the_window_closed_and_was_deleted_tells_no
     services.shutdown(0.5)
 
 
-def test_round8_a_write_landing_after_the_window_was_deleted_without_its_close_reaches_a_live_relay(qapp):
+def test_round8_a_write_landing_after_the_window_was_deleted_without_its_close_is_dropped_at_the_gate(qapp):
     """The same crash by the other road (12 runs of test_finished under load, 2 crashed after the close fix): a close
     the quit's wait ignored (E20: a move still pending) never reached `unwire`, then the window was deleted and the
     writer's thread — still retrying that move — emitted on the relay deleted with it. The writer reaches the relay
@@ -2734,6 +2734,8 @@ def test_round8_a_write_landing_after_the_window_was_deleted_without_its_close_r
     writer = FakeWriter(seed.library)
     win, services = open_window(qapp, seed, writer)
     win.hide()                                                      # no close: the controller never let go
+    gate = win.moves._gate
+    assert gate.open
     win.deleteLater()
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
     QApplication.processEvents()
@@ -2755,4 +2757,5 @@ def test_round8_a_write_landing_after_the_window_was_deleted_without_its_close_r
     t.join(5)
     QApplication.processEvents()
     assert errors == []
+    assert not gate.open                                            # closed as the relay went: nothing was told
     services.shutdown(0.5)

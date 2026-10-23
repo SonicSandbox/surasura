@@ -3559,6 +3559,9 @@ def plan_lines(run):
         # Each part of the order-free signature on its own, so a re-plan can name what moved since (E1.3: the known
         # words, the word lists, files only removed — or anything else, a Generate first).
         "order_free_parts": plan_rules.part_digests(run["signature_parts"]),
+        # The set-aside files' own digests (W-1): a re-plan can tell one that only left (removed, or a watched episode
+        # moved to Finished) from one set aside, brought back or edited.
+        "reference": list(run["signature_parts"].get("reference") or ()),
     }
     yield _plan_json(header)
     prefix = os.path.join(data_dir, "")
@@ -3803,10 +3806,10 @@ def read_library_schedule(language, data_dir=None, user_files_dir=None):
             # Read-only mode: every reader takes the list Generate takes (§6.9), so the journey check, the indexer
             # and the report never disagree with it about a file dropped in since.
             if ls.check_mode(language, data_dir, busy_wait=0.0)[0] == "read-only":
-                return ls.read_only_schedule(language, data_dir, user_files_dir), None
+                return ls.read_only_schedule(language, data_dir, user_files_dir, with_aside=True), None
             return None, None
         with store:
-            return store.schedule(with_versions=True)
+            return store.schedule(with_versions=True, with_aside=True)
     except Exception:
         return None, None
 
@@ -4045,6 +4048,10 @@ def journey_is_current(args, language):
                                    epoch=versions["epoch"])
                 except Exception:
                     pass
+        if library["schedule"] is None:
+            # Read-only mode (or a store busy): the list Generate reads, with its set-aside files, read once here so
+            # the files and the "reference" part are signed from the same read, as Generate signs them
+            library["schedule"] = read_library_schedule(language)[0]
         found = resolve_found_files(language, verbose=False, schedule=library["schedule"], missing=True)
         if not found:
             return None
@@ -4292,7 +4299,8 @@ def run_signature_parts(language, found_files, args, aside=()):
         from app import __version__ as _app_version
         _sig_parts = {
             "files": [[fp, _fsig(fp), _l, _w, _st] for (fp, _l, _w, _st) in found_files],
-            "reference": sorted(plan_rules.file_digest([fp, _fsig(fp), None, None, _st]) for fp, _st in aside or ()),
+            # path and stat only: the store and the copy may name a file's type differently, never its text
+            "reference": sorted(plan_rules.file_digest([fp, _fsig(fp), None, None, None]) for fp, _st in aside or ()),
             "known": known_sig,
             "lists": [_fsig(p) for p in (ignore_list_file, black_list_file, graduated_list_file)],
             "freq": sorted([_fsig(p) for p in available_freq_lists.values()]),

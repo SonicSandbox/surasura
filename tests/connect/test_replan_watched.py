@@ -10,7 +10,8 @@ generated per test:
   - its un-marking → the same (never "new files" mined around the Generate);
   - *Keep studying watched episodes* flipped either way → the same;
   - a stone and a Finished drag together → Generate "first" (the stricter wins);
-  - a Finished drag alone → today's re-plan now, Generate "after" (unchanged).
+  - a Finished drag alone → today's re-plan now, Generate "after" (unchanged); so is a show finished with a watched
+    episode in it, or the watched episode alone: an episode that only leaves the set-aside files moves nothing ahead.
 
 What a wrong answer would cost: Connect ordering Anki (and suspending) from a list the mark already changed while the
 window waits for the Generate — the two disagreeing about the same cards.
@@ -74,4 +75,19 @@ def test_a_finished_drag_alone_still_re_plans_now(lib):
     store.finish([store.ids("now")[0]])
     got = _current(store, language)
     assert got.verdict == ("replan-now", ("files-removed",)) and got.generate == "after", got.verdict
+    assert got.result is not None
+
+
+@pytest.mark.parametrize("finished", ["the show", "its watched episode"])
+def test_finishing_a_watched_episode_after_its_generate_still_re_plans_now(lib, finished):
+    # why: stone, Generate, then Finish is the usual order; the watched episode only leaves the set-aside files (it
+    # counted for nothing ahead already), so the Finished drag keeps today's fast re-plan
+    root, store, case, language = lib
+    now = store.ids("now")
+    store.set_watched([now[0]])
+    _generate(root, case, language)
+    store.finish([now[0], now[1]] if finished == "the show" else [now[0]])
+    got = _current(store, language)
+    want = ("files-removed", "reference-removed") if finished == "the show" else ("reference-removed",)
+    assert got.verdict == ("replan-now", want) and got.generate == "after", got.verdict
     assert got.result is not None

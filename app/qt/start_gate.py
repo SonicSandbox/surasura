@@ -38,12 +38,13 @@ from app.services import first_run
 
 # --- start_gate: the strings (RS-7: short, what it does for the user; a tip holds anything longer) ------------------ #
 TITLE = "Surasura"
-BRINGING = "Bringing your library over from Surasura 2…"
+BRINGING = "Bringing your known words and settings over from Surasura 2…"
+BRINGING_LINE = "Shows and books stay behind: add the folders they're in once it's done."
 GETTING_READY = "Getting your library ready…"
 STARTING = "Starting…"
 STOPPING = "Stopping after this file…"
-STAGES = {"files": "Copying your shows and books", "settings": "Bringing your settings",
-          "store": "Keeping your order", "roaming": "Bringing your extras",
+STAGES = {"files": "Copying your known words and lists", "settings": "Bringing your settings",
+          "roaming": "Bringing your extras",
           "graduated": "Adding the words you'd marked known"}      # D23: Finished never marks known (IK-16)
 STAGE_COUNT = "{stage} · {done:,} of {total:,}"
 MISSING_HEADING = "Your library isn't there"
@@ -64,13 +65,14 @@ READY_STOPPED_HEADING = "Surasura couldn't get your library ready"
 SET_ASIDE_FAILED = ("Surasura couldn't move what was brought over into a folder of its own ({error}). Close anything "
                     "using your library folder, then try again.")
 CHECK_HEADING = "Surasura couldn't look at your library"
-ASK_HEADING = "Bring your library over from Surasura 2?"
+ASK_HEADING = "Bring your known words and settings over from Surasura 2?"
 ASK_LINE = "Choose the folder your old Surasura is in, or start fresh."
 ASK_SEVERAL_LINE = "You have more than one Surasura 2. Choose the one to bring over, or start fresh."
 ELSEWHERE_LINE = "Your library was brought over to {folder} on {when}. Bring it over here too, or start fresh."
 ASK_PICK = "Your old Surasura folder"
 INSTALL_LABEL = "{folder}  ·  Surasura {version}  ·  last used {when}"
-INSTALL_TIP = "Bring your shows, books and known words over from this Surasura."
+INSTALL_TIP = ("Bring your known words, word lists and settings over from this Surasura.\n"
+               "• Shows and books stay behind: add the folders they're in with Add → A folder…")
 LOOKING = "Looking…"
 CANCEL = "Cancel"
 CANCEL_TIP = "Stop bringing your library over.\n• Your old Surasura stays as it is; finish next time."
@@ -80,7 +82,9 @@ BLOCKED_TRY_TIP = "Look again once Surasura is allowed.\n• No need to restart.
 QUIT = "Quit"
 QUIT_TIP = "Close Surasura for now.\n• Nothing is lost."
 CHOOSE = "Choose the old folder…"
-CHOOSE_TIP = "Bring your shows, books and known words from Surasura 2.\n• Pick the folder Surasura.exe is in."
+CHOOSE_TIP = ("Bring your known words, word lists and settings from Surasura 2.\n"
+              "• Pick the folder Surasura.exe is in.\n"
+              "• Shows and books stay behind: add the folders they're in with Add → A folder…")
 CHOOSE_OTHER = "Choose another folder…"
 CHOOSE_AGAIN = "Choose the old folder again…"
 CHOOSE_AGAIN_TIP = "Pick where your old Surasura is now.\n• Bringing your library over finishes from there."
@@ -235,7 +239,7 @@ class Gate(QWidget):
         st = self.st or {}
         library = st.get("library") or ""
         heading, line = {
-            "working": (BRINGING, None),
+            "working": (BRINGING, BRINGING_LINE),
             "preparing": (GETTING_READY, None),
             "missing": (MISSING_HEADING, MISSING_LINE.format(folder=library)),
             "new": (NEW_HEADING, NEW_LINE.format(folder=library)),

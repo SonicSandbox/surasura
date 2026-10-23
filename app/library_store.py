@@ -91,6 +91,9 @@ def _tiers_sql(tiers):
     return ", ".join(f"'{t}'" for t in tiers)
 
 
+STONES_COUNTED = "stones_counted"   # meta: this library's old watched marks were counted once (`count_old_stones`)
+
+
 def counts(tier, watched, keep_watched=False):
     """Does an item of `tier` whose `watched` is 0 / 1 count, while the library's `keep_watched` is `keep_watched`?"""
     return tier in ANALYSED and (not watched or bool(keep_watched))
@@ -1885,6 +1888,22 @@ class Store:
             n = self.conn.execute("DELETE FROM gone WHERE at < ?", (cutoff,)).rowcount
             self._set_meta({"feed_floor": floor})
             return n
+
+    def count_old_stones(self):
+        """In the helper's run, once per library (meta `STONES_COUNTED`): watched marks made before a mark counted (build
+        2's stones) leave the list at the first start (Q3 A), so the journey must hear it — `order_version` moves once
+        when such a stone sits in a studied tier while `keep_watched` is off (the background Generate follows); a
+        library without one is only stamped. One transaction. Returns True when it moved the order."""
+        if STONES_COUNTED in self._meta():
+            return False
+        with self._command("count_old_stones", "sync") as cmd:
+            if STONES_COUNTED in self._meta():       # another helper got there first
+                return False
+            self._set_meta({STONES_COUNTED: 1})
+            moved = not self._keep_watched() and self._watched_aside()
+            if moved:
+                cmd.touch(order=True)
+            return moved
 
     def tidy_works(self):
         """In the helper's run (06 §6.5): a work with no item and no trash row of one (Put back would find it) goes,
@@ -6827,6 +6846,7 @@ def _maintain_locked(db_path, language, data_dir, user_files_dir, from_folders, 
             did = bool(store.prune_log()) or did
         did = bool(store.prune_gone()) or did
         did = bool(store.tidy_works()) or did
+        did = store.count_old_stones() or did
         store.checkpoint()
         return EXIT_DONE if did else EXIT_NOTHING
     finally:

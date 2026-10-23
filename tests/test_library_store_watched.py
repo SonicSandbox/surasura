@@ -169,6 +169,62 @@ def test_stones_marked_before_the_option_existed_count_as_watched_from_the_first
     store.close()
 
 
+def _as_build_2(store):
+    """The library as build 2 left it: no stamp saying its old stones were counted once."""
+    with store._writing():
+        store.conn.execute("DELETE FROM meta WHERE key = ?", (ls.STONES_COUNTED,))
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_stones_marked_before_the_option_existed_start_one_generate_at_the_first_start(language):
+    """Q3 A: build 2's stones in Current leave the list at the first start, so the journey must hear it once — the
+    helper's first run moves `order_version` (the background Generate follows) and stamps the library; its next runs
+    move nothing. A library whose stones sit only in Finished or New arrivals, or with *Keep studying watched episodes*
+    on, is stamped without a move (no needless Generate)."""
+    data_dir, user_files_dir = roots(language)
+    store = migrated(language)
+    now = store.ids("now")
+    _mark_raw(store, now[:2])
+    _as_build_2(store)
+    with store._writing():
+        store._set_meta({"analysed_order_version": store.versions()["order_version"]})   # Generated before the start
+    before = store.versions()["order_version"]
+    assert not store.journey_pending()
+    store.close()
+    ls.maintain(language, data_dir, user_files_dir)
+    store = ls.open_store(language, data_dir, user_files_dir)
+    assert store.versions()["order_version"] == before + 1 and store.journey_pending()
+    assert ls.STONES_COUNTED in store.meta()
+    store.close()
+    ls.maintain(language, data_dir, user_files_dir)               # the second start
+    store = ls.open_store(language, data_dir, user_files_dir)
+    assert store.versions()["order_version"] == before + 1
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("where", ["finished", "arrivals", "keep_watched", "none"])
+def test_a_library_with_no_old_stone_in_a_studied_tier_is_stamped_without_a_move(language, where):
+    data_dir, user_files_dir = roots(language)
+    store = migrated(language)
+    goal = store.ids("goal")
+    if where == "finished":
+        store.finish(goal[:1])
+    elif where == "arrivals":
+        store.set_tier(goal[:1], "arrivals")
+    elif where == "keep_watched":
+        store.set_library_options(keep_watched=True)
+    if where != "none":
+        _mark_raw(store, goal[:1])
+    _as_build_2(store)
+    before = store.versions()["order_version"]
+    store.close()
+    ls.maintain(language, data_dir, user_files_dir)
+    store = ls.open_store(language, data_dir, user_files_dir)
+    assert store.versions()["order_version"] == before and ls.STONES_COUNTED in store.meta()
+    store.close()
+
+
 # --- the readers ------------------------------------------------------------------------------------------------ #
 
 @pytest.mark.parametrize("language", LANGUAGES)

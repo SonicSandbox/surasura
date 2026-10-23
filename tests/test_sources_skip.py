@@ -1120,3 +1120,99 @@ def test_an_extras_junction_is_never_followed_and_skipping_it_writes_only_its_ro
         assert change.trash_ids == []
         assert _look(store, language, root, full=True)["added"] == 0
         assert _tree(target) == before
+
+
+# --- K6 from New arrivals: extras found after setup arrive there first ---------------------------------------------- #
+# Setup read the show and one interview (placed in Current); a later look finds a featurette video with no subtitle in
+# `Extras/` (it waits in New arrivals for its text) and a commentary track in `Extras/Commentary/` (a text arrival).
+
+def _extras_arrive(language, store, src, root):
+    """-> (the show folder, {"waiting", "text", "placed": item id})."""
+    show = _SHOWS[language][1]
+    top = os.path.join(src, show)
+    for n in (1, 2):
+        _video(os.path.join(top, f"{show} - {n:02d}.mkv"), body=b"\x1a\x45\xdf\xa3 ep %d " % n)
+        _write(os.path.join(top, f"{show} - {n:02d}.srt"), _text(language, n))
+    placed = _write(os.path.join(top, "Extras", "Interviews", "Cast Talk.srt"), _text(language, 6, " talk"))
+    _settle(src)
+    _look(store, language, root, first=True)
+    making = _video(os.path.join(top, "Extras", "Making Of.mkv"), body=b"\x1a\x45\xdf\xa3 making ")
+    _video(os.path.join(top, "Extras", f"{show} - NCOP.mkv"), body=b"\x1a\x45\xdf\xa3 ncop ")   # an extra: never waits
+    text = _write(os.path.join(top, "Extras", "Commentary", "Commentary 01.srt"), _text(language, 5, " commentary"))
+    _settle(src)
+    got = _look(store, language, root)
+    held = store.origins()
+    ids = {k: held[ls.origin_key(p)[4:]].item_id for k, p in (("waiting", making), ("text", text), ("placed", placed))}
+    assert sorted(got["ids"]) == sorted([ids["waiting"], ids["text"]]), got
+    return top, ids
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_new_arrivals_from_a_shows_extras_offer_their_folder_and_each_above_it(language):
+    """⋯ on an arrival (the same entry a list row has): a waiting featurette offers `Extras`, then the show; the
+    commentary `Commentary`, `Extras`, the show — never the source folder."""
+    store, _data = _empty(language)
+    src = _drive("Media")
+    with store:
+        root = store.add_source(src)
+        top, ids = _extras_arrive(language, store, src, root)
+        assert store.item(ids["waiting"])["tier"] == "arrivals" and store.item(ids["text"])["tier"] == "arrivals"
+        extras = ls.folder_path(os.path.join(top, "Extras"))
+        assert store.skip_choices([ids["waiting"]]) == [extras, ls.folder_path(top)]
+        assert store.skip_choices([ids["text"]]) == [os.path.join(extras, "Commentary"), extras, ls.folder_path(top)]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_writers_skip_of_extras_takes_the_arrivals_and_the_placed_extra_in_one_change_with_one_undo(language):
+    """`Writer.skip_folder` on `Extras/`: the waiting featurette, the commentary (both New arrivals) and the interview
+    placed in Current leave in ONE change (Put back-able), the show stays; the next looks never bring the waiting video
+    back; one Undo puts all three back where they were — the two arrivals in New arrivals."""
+    from tests import services_helpers as h
+    store, data_dir = _empty(language)
+    src = _drive("Media")
+    root = store.add_source(src)                                                 # (closed at the end)
+    top, ids = _extras_arrive(language, store, src, root)
+    tiers = {k: store.item(i)["tier"] for k, i in ids.items()}
+    assert tiers["placed"] != "arrivals"
+    current, rels, before = _current(store), _rels(store), _tree(src)
+    w, heard = _writer(language)
+    try:
+        w.skip_folder(os.path.join(top, "Extras"), label="skipped")
+        assert h.until(lambda: heard.saved)
+        (change, _label), = heard.saved
+        assert sorted(it["id"] for it in change.items) == sorted(ids.values())
+        rows = store.trash_rows(change.trash_ids)
+        assert len(rows) == 3 and not any(r["restored_at"] for r in rows)        # Put back-able
+        assert all(store.item(i) is None for i in ids.values()) and _tree(src) == before
+        assert _look(store, language, root)["added"] == 0
+        sources._LOOKED.clear()                                                  # a start
+        assert _look(store, language, root, full=True)["added"] == 0             # the waiting video stays out
+        w.undo()
+        assert h.until(lambda: heard.undone)
+        assert heard.notes == [] and store.skipped_folders() == []
+        assert {k: store.item(i)["tier"] for k, i in ids.items()} == tiers
+        assert _current(store) == current and _rels(store) == rels
+        assert _look(store, language, root, full=True)["added"] == 0             # nothing twice
+    finally:
+        w.finish(time.monotonic() + 5)
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_read_again_brings_skipped_extras_back_as_new_arrivals(language):
+    """*Read again* after the skip: the next quick look takes the featurette (waiting again), the commentary and the
+    interview back in, each in New arrivals (shows never shown, SRC-2), once."""
+    store, _data = _empty(language)
+    src = _drive("Media")
+    with store:
+        root = store.add_source(src)
+        top, ids = _extras_arrive(language, store, src, root)
+        change = store.skip_folder(os.path.join(top, "Extras"))
+        assert len(change.trash_ids) == 3
+        assert store.read_folder_again(change.folder)
+        back = _look(store, language, root)
+        assert back["added"] == 3
+        assert all(store.item(i)["tier"] == "arrivals" for i in back["ids"])
+        names = sorted(os.path.basename(store.item(i)["rel_path"]) for i in back["ids"])
+        assert names == ["Cast Talk.srt", "Commentary 01.srt", "Making Of.mkv"]
+        assert _look(store, language, root, full=True)["added"] == 0

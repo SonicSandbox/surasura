@@ -91,7 +91,9 @@ def test_each_jobs_state_is_its_kind_with_its_own_reason_as_the_tip(running, lan
     assert got.items[at["closed"]].tip == runner.ANKI_CLOSED, "C7: a waiting stone's hover is its own job's reason"
     assert got.items[at["no_video"]].tip == runner.NO_VIDEO
     assert got.items[at["not_timed"]].tip.endswith("Not timed to its video, so no cards.")
-    assert got.items[at["queued"]].tip == feed.WORDS[feed.WAITING], "no reason: the kind's own words"
+    # laptop round 9 #56: no reason of its own while Connect mines another episode: waiting its turn (was the kind's
+    # own words; those stay for a job with no reason while nothing is in flight)
+    assert got.items[at["queued"]].tip == runner.TURN, "no reason, another in flight: waiting its turn"
     mining = got.items[at["mining"]]
     assert (mining.made, mining.total, mining.words) == (1, 3, feed.WORDS[feed.MINING]), "*Mining 1 of 3*"
     assert all(item.words == feed.WORDS[item.kind] for item in got.items.values()), "read out as words (RS-6)"

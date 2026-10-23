@@ -51,7 +51,7 @@ import os
 import time
 from types import SimpleNamespace
 
-from app.connect import fit_check, inbox
+from app.connect import fit_check, inbox, stopping
 from app.connect.ledger import ASKED, BEFORE_MINING, IN_FLIGHT, LEVEL, PREPARE_KINDS, STOPPED_REASON, Ledger
 
 log = logging.getLogger("surasura-cli")
@@ -75,6 +75,9 @@ NO_VIDEO = "No video: its video isn't on this computer (or isn't downloaded yet)
 CHINESE = "Chinese cards come later."
 # Laptop round 8 #47 (LF4-5 ⭐ A): a job you stopped waits for your next ask; the cards it made are kept
 STOPPED_BY_YOU = STOPPED_REASON
+# Laptop round 9 #56: an open job with no reason of its own while Connect works on another (`status` computes it for
+# the record; never written to the ledger)
+TURN = "Waiting its turn: Connect is making another episode's cards now."
 # Laptop round 8 #49 (LF4-1 ⭐ A, PROVISIONAL): a level raise's job for an episode you've watched, or whose video is gone
 WATCHED = "you've watched it: its new words go to the episodes ahead of you"
 LEVEL_NO_VIDEO = "Its video isn't on this computer: its new words' cards wait for it."
@@ -653,31 +656,41 @@ def _job(steps, ledger, lang, job, store_now, line, out):
         if full is not None:
             raise full
     try:
-        for _ in range(3):          # a profile or pairing that changed since the pick: picked again (at most twice)
-            try:
-                if step in (None, "picking"):
-                    _stop_here(ledger, job, step)
-                    got = _pick(steps, ledger, lang, job, record)
-                    if got is None:
-                        out["done"].append(item_id)
-                        return
-                    step = "filling" if got == "filling" else "fit-check"
-                if step == "fit-check":
-                    _stop_here(ledger, job, step)
-                    _fit(steps, ledger, lang, job)
-                    step = "mining"
-                if step == "mining":
-                    _stop_here(ledger, job, step)
-                    _mine(steps, ledger, lang, job, record=record)
-                    step = "filling"
-                break
-            except Repick:
-                step = "picking"
-        else:
-            raise Needs("repick", "Anki Miner's profile or the episode's pairing keeps changing; nothing was mined.")
+        # laptop round 9 #56: the job's Stop asked by every program waited on in these steps (`stopping.wait`): a
+        # look-up still under way at a press is ended, and the job stops before the step it was in
+        with stopping.watching(lambda: _stop_pressed(ledger, jid)):
+            for _ in range(3):      # a profile or pairing that changed since the pick: picked again (at most twice)
+                try:
+                    if step in (None, "picking"):
+                        _stop_here(ledger, job, step)
+                        got = _pick(steps, ledger, lang, job, record)
+                        if got is None:
+                            out["done"].append(item_id)
+                            return
+                        step = "filling" if got == "filling" else "fit-check"
+                    if step == "fit-check":
+                        _stop_here(ledger, job, step)
+                        _fit(steps, ledger, lang, job)
+                        step = "mining"
+                    if step == "mining":
+                        _stop_here(ledger, job, step)
+                        _mine(steps, ledger, lang, job, record=record)
+                        step = "filling"
+                    break
+                except Repick:
+                    step = "picking"
+            else:
+                raise Needs("repick", "Anki Miner's profile or the episode's pairing keeps changing; nothing was "
+                            "mined.")
     except _Finished as f:
         out["skipped" if f.state == "skipped" else "failed"].append(item_id)
         return
+    except stopping.Stopped:
+        ended = True                        # #56: a program it waited on ended at your press
+    else:
+        ended = False
+    if ended:
+        _stopped(ledger, job, step)         # outside the handler: the Wait keeps no frame of the ended program (#17)
     if step == "filling":
         _fill(steps, ledger, lang, job)
         step = "ordering"
@@ -693,6 +706,12 @@ def _stop_here(ledger, job, step):
     press used up, the job waits for your next ask (`Ledger.held_by_stop`), resuming at `step`."""
     if step in ("filling", "ordering") or not ledger.stop_asked(job["id"]):
         return                              # its cards are made: it finishes (seconds), the press forgotten at its end
+    _stopped(ledger, job, step)
+
+
+def _stopped(ledger, job, step):
+    """The job stops before `step` at your press (`_stop_here`'s, and a program ended mid-step: laptop round 9 #56):
+    the press used up, the ask it carried kept (`Ledger.mark_stopped`) -> Wait for your next ask."""
     now = ledger.job_by_id(job["id"]) or {}
     ledger.mark_stopped(job["id"], now.get("asked_at"))
     log.info("Connect: job %s stopped by you before %s", job["id"], step or "its pick")
@@ -825,13 +844,14 @@ def _mine(steps, ledger, lang, job, record=True):
         ledger.start_batch(jid, attempt, steps.run_dir(job))
         ran = True
         steps.on_progress = _Progress(ledger, jid)
-        steps.should_stop = lambda: _stop_pressed(ledger, jid)      # #47: Anki Miner's batch cancelled at a press
+        steps.should_stop = stopping.pressed    # #47: Anki Miner's batch cancelled at a press (the job's one check)
         try:
             got = steps.mine(lang, job, picked, todo, attempt)
         except Wait as w:
             ledger.end_batch(jid, attempt, "refused")
             raise Wait(w.reason, w.look, "mining") from None
-        except (Repick, Needs):
+        except (Repick, Needs, stopping.Stopped):
+            # #56: a look-up ended at your press is refused too: the batch never ran, never a failure
             ledger.end_batch(jid, attempt, "refused")
             raise
         except Skip as s:
@@ -890,8 +910,9 @@ def _mine(steps, ledger, lang, job, record=True):
 
 
 def _stop_pressed(ledger, jid):
-    """(Anki Miner's poll, on the runner's thread, every POLL_S.) Has *Stop* been pressed on the job? A read that
-    fails is no press (logged): the batch goes on."""
+    """(The job's check, `stopping.watching`: asked by every program the runner waits on, every second — Anki Miner's
+    poll and look-ups, tsubasa.) Has *Stop* been pressed on the job? A read that fails is no press (logged): the job
+    goes on."""
     try:
         return ledger.stop_asked(jid)
     except Exception:

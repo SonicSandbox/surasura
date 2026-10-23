@@ -180,11 +180,15 @@ def _language(conn, lang, is_running, words):
                  "kind": job.get("kind") or "mine", "state": job["state"], "reason": job.get("reason"),
                  "step": STEP_WORDS.get(job["state"]) or STEP_WORDS.get(job.get("resume") or ""),
                  "words": len(_picked_words(job.get("picked"))), "made": counts.pop("made", 0),
-                 "not_made": counts, "progress": _progress(job) if job["state"] in book.IN_FLIGHT else None}
+                 "not_made": counts, "progress": _progress(job) if job["state"] in book.IN_FLIGHT else None,
+                 # laptop round 9 #56: *Stop* pressed, the job not stopped yet (the window shows *Stopping…*)
+                 "stopping": job["state"] in book.IN_FLIGHT and conn.execute(
+                     "SELECT 1 FROM meta WHERE key = ?", (f"{book.STOP}{int(job['id'])}",)).fetchone() is not None}
         if words:
             entry["not_made_words"] = _rows(conn, "SELECT word, reading, outcome FROM outcomes WHERE job_id = ? AND "
                                                   "outcome != 'made' ORDER BY rowid", (job["id"],))
         rec["jobs"].append(entry)
+    _turns(rec["jobs"], is_running)
 
     rec["needs"] = [{"id": n["id"], "kind": n["kind"], "say": n["say"], "item": n["item_id"],
                      "title": items.get(n["item_id"], {}).get("title") if n["item_id"] is not None else None,
@@ -204,6 +208,18 @@ def _language(conn, lang, is_running, words):
                                                          (f"generating:{lang}",)).fetchone() or [None])[0])
     rec["line"], rec["state"] = _line(conn, lang, rec, open_jobs, items, is_running, {n["say"] for n in needs})
     return rec
+
+
+def _turns(entries, is_running):
+    """Laptop round 9 #56: while Connect works on one job, every other open job with no reason of its own waits its
+    turn — `reason` runner.TURN and `behind` the item in flight, in the record only (never the ledger's)."""
+    working = next((e for e in entries if e["state"] in book.IN_FLIGHT), None)
+    if not is_running or working is None:
+        return
+    from app.connect import runner
+    for entry in entries:
+        if entry is not working and entry["state"] not in book.IN_FLIGHT and not entry["reason"]:
+            entry.update(reason=runner.TURN, behind=working["item"])
 
 
 # An episode's way through Connect as one percent (laptop round 5 #23, Sonic 2026-10-22 M-2 A: "one number that moves

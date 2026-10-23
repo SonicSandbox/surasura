@@ -488,9 +488,10 @@ class Ledger:
     # --- laptop round 8 #47: *Stop* — the current episode's job, at its next safe point ------------------------- #
 
     def ask_stop(self, job_id):
-        """You pressed *Stop* on a job (the window, any process) -> True when the job is open: the runner stops it at its
-        next safe point — before its next step, or Anki Miner's batch cancelled within a second (`anki_miner.cancel`),
-        what it made kept — and it waits until you ask again. A job not under way (queued, or waiting) is stopped here
+        """You pressed *Stop* on a job (the window, any process) -> True when the job is open: the runner stops it within
+        a second or so — before its next step; a program it waits on ended within a second (tsubasa's check, Anki
+        Miner's look-ups: laptop round 9 #56, `stopping`) and the job stopped before that step; or Anki Miner's batch
+        cancelled (`anki_miner.cancel`), what it made kept — and it waits until you ask again. A job not under way (queued, or waiting) is stopped here
         and now, in the same transaction, so its stone says so at once even with Connect not running; the press is
         kept too, so a runner that took the job up meanwhile stops it at its next step. A job already ended -> False,
         nothing written. A press twice is one stop."""

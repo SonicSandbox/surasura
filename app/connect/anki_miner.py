@@ -30,9 +30,8 @@ import json
 import os
 import subprocess
 import sys
-import time
 
-from app.connect import runfile
+from app.connect import runfile, stopping
 
 API_SCHEMA = 1
 QUICK_TIMEOUT = 60.0            # version / profiles / check / settings-export
@@ -45,6 +44,9 @@ WINERROR_VIRUS = 225            # "Operation did not complete successfully becau
 DEFAULT_PROFILE = "Surasura"    # connect_anki_miner_profile's default (settings_manager)
 PROGRESS = "progress.json"      # a run's progress, in its folder (API.md; written at most every 0.25 s)
 POLL_S = 1.0                    # how often a mine call's progress is read while it runs (laptop round 5 #23)
+# The read-only verbs (row 56): one still under way at a job's *Stop* is ended (`stopping.wait`), the job stopped
+# before its step. Never `mine`, nor any verb that may write: Anki Miner's run is cancelled through its cancel file.
+LOOK_UPS = frozenset(("version", "profiles", "check", "settings-export"))
 # Each of a mine run's five stages (parsing, filtering, media, definitions, cards), as a share of its time: the
 # episode's percent (`percent`). Measured on DevTest, two episodes of 50 words (fresh media): media 51–63 %, cards
 # 30–43 %, the rest a few % (laptop round 5, 2026-10-22).
@@ -250,41 +252,23 @@ def _bind(proc):
 
 
 def _stop(proc):
-    """Stop a call past its timeout with every process it started (Anki Miner's ffmpeg children too)."""
-    if sys.platform == "win32":
-        try:
-            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], stdin=subprocess.DEVNULL,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30,
-                           creationflags=CREATE_NO_WINDOW)
-        except (OSError, subprocess.SubprocessError):
-            pass
-    proc.kill()
-    proc.communicate()
+    """Stop a call past its timeout with every process it started (Anki Miner's ffmpeg children too): Connect's one
+    process-ender (`stopping.end`; row 56)."""
+    stopping.end(proc)
 
 
-def _communicate(proc, timeout, on_poll=None):
-    """`proc`'s stdout once it ends, waiting at most `timeout` s (TimeoutExpired past it). `on_poll()`, when given, is
-    called every POLL_S while it runs (a mine call's progress, laptop round 5 #23); its failure never stops the wait.
-    Retrying `communicate` after its TimeoutExpired loses no output (the subprocess docs)."""
-    if on_poll is None:
-        return proc.communicate(timeout=timeout)[0]
-    deadline = time.monotonic() + timeout
-    while True:
-        try:
-            return proc.communicate(timeout=max(0.0, min(POLL_S, deadline - time.monotonic())))[0]
-        except subprocess.TimeoutExpired:
-            if time.monotonic() >= deadline:
-                raise
-        try:
-            on_poll()
-        except Exception:
-            pass
+def _communicate(proc, timeout, on_poll=None, look_up=False):
+    """`proc`'s stdout once it ends, waiting at most `timeout` s (TimeoutExpired past it): `stopping.wait` in slices of
+    POLL_S — `on_poll()` each (a mine call's progress, laptop round 5 #23; its failure never stops the wait), and for a
+    look-up the job's *Stop* asked (row 56)."""
+    return stopping.wait(proc, timeout, on_poll, _stop, look_up=look_up, every=POLL_S)[0]
 
 
 def api(path, args, timeout=QUICK_TIMEOUT, on_poll=None):
     """Run `<path> --api <args…>` and return its verdict (a dict). Raises AnkiMinerError for a call with no verdict
     (absent, quarantined, crashed, timeout, unknown-version); a verdict with `ok: false` is returned as it is.
-    `on_poll`: called every POLL_S while the call runs (`_communicate`)."""
+    `on_poll`: called every POLL_S while the call runs. A look-up (LOOK_UPS) still under way at the job's *Stop* is
+    ended and raises `stopping.Stopped` (row 56: never an AnkiMinerError — nothing of it is kept)."""
     flags = CREATE_NO_WINDOW if sys.platform == "win32" else 0
     try:
         proc = subprocess.Popen(_command(path) + ["--api", *args], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -298,7 +282,7 @@ def api(path, args, timeout=QUICK_TIMEOUT, on_poll=None):
                                  "Protection history, then allow it if you trust it.") from None
         raise AnkiMinerError("crashed", f"Anki Miner couldn't be started: {e}") from None
     try:
-        stdout = _communicate(proc, timeout, on_poll)
+        stdout = _communicate(proc, timeout, on_poll, look_up=args[0] in LOOK_UPS)
     except subprocess.TimeoutExpired:
         _stop(proc)
         raise AnkiMinerError("timeout", f"Anki Miner didn't answer within {int(timeout)} s, so it was stopped.") \

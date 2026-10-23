@@ -84,7 +84,9 @@ def stoppable(state, resume=None):
 
 def stop(language, job_id, path=None):
     """*Stop* -> True when the press was recorded (the job is open, of this language, not yet past mining); False
-    (nothing written) otherwise. Wakes a running Connect so it acts within a second or two, not at its next look."""
+    (nothing written) otherwise. Wakes a running Connect so it acts within a second or two, not at its next look: a
+    program the job waits on is ended within a second (tsubasa's check, Anki Miner's look-ups; laptop round 9 #56) or
+    cancelled (Anki Miner's run, its cards so far kept)."""
     path = path or book.path()
     if not os.path.exists(path):
         return False

@@ -23,6 +23,7 @@ What it does is read from the plan file named by FAKE_ANKI_MINER_PLAN (JSON; eve
      "progress_every": 0.3,                                # … this many seconds apart (API.md's stage/stages/done/total)
      "cancel_at": 1}                                       # waits (≤ 5 s) for the run's cancel file before this row:
                                                            # 0 -> CANCELLED, no result; n -> rows from n not_attempted
+    {"slow": {"<command>": 30}}                            # row 56: sleeps this long before it answers that command
 
 Every call is appended to FAKE_ANKI_MINER_LOG (one JSON line: argv, and the run file's bytes' facts for `mine`), so a
 test can see what was asked and in what order. The run file is checked as Anki Miner checks it: strict UTF-8 with no
@@ -239,6 +240,7 @@ def main(argv):
         return 2
     argv = argv[1:]
     command = argv[0] if argv else None
+    time.sleep(float((plan.get("slow") or {}).get(command, 0)))     # row 56: a look-up still under way at a Stop
     if plan.get("mine") == "garbage" and command == "mine":
         sys.stdout.write("Traceback (most recent call last): …\n")
         return 0

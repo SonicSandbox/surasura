@@ -252,18 +252,22 @@ class StandinStore:
             return [(r["id"], {"title": r["title"], "physical_path": r["rel_path"], "parent_folder": r["parent_folder"],
                                "source_type": r["source_type"]}, r["availability"]) for r in self._tier_rows(tier)]
 
-    def schedule(self):
+    def schedule(self, with_aside=False):
         """`Store.schedule`'s shape ({phase_key: [entries]}, each tier in order) for the items that count — the store's
         one rule (`library_store.counts`: W-1, a watched item only while the meta's `keep_watched` is on); a video
-        waiting for its subtitle never."""
-        from app.library_store import ANALYSED, TIERS, counts
+        waiting for its subtitle never. `with_aside`: also `ASIDE`, the analysed tiers' items that don't count."""
+        from app.library_store import ANALYSED, ASIDE, TIERS, counts
         self._here()
         with self._lib._lock:
             keep = self._lib._meta.get("keep_watched", 0)
-            return {TIERS[t][0]: [{"physical_path": r["rel_path"], "source_type": r["source_type"], "title": r["title"],
-                                   "parent_folder": r["parent_folder"]} for r in self._tier_rows(t)
-                                  if counts(t, r["watched"], keep) and r["availability"] != "waiting"]
-                    for t in ANALYSED}
+            out = {TIERS[t][0]: [{"physical_path": r["rel_path"], "source_type": r["source_type"], "title": r["title"],
+                                  "parent_folder": r["parent_folder"]} for r in self._tier_rows(t)
+                                 if counts(t, r["watched"], keep) and r["availability"] != "waiting"]
+                   for t in ANALYSED}
+            if with_aside:
+                out[ASIDE] = [{"physical_path": r["rel_path"], "source_type": r["source_type"]}
+                              for t in ANALYSED for r in self._tier_rows(t) if not counts(t, r["watched"], keep)]
+            return out
 
     def ids(self, tier):
         self._here()

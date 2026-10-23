@@ -2995,6 +2995,11 @@ def main(argv=None):
             instance.release()                            # (once: done already unless the quit failed before it)
             if window.restart_asked:                      # *Restart now* (`ShellWindow.restart`): the new start only
                 relaunch(argv)                            # once the store's close has ended (or its wait ran out, B2-4)
+            if meter is not None:                         # the HUD's native filter taken off here, on the GUI thread:
+                try:                                      # left to the collector, it can go on a worker, where Qt's
+                    meter.stop()                          # removal misses and the next message crashes (0xC0000005)
+                except Exception as e:
+                    applog.log("shell", f"the HUD at quit: {e!r}")
             quiet_exit(gone=(window,))                    # W3.4: nothing of Qt's or a worker's left for the teardown
     return code
 

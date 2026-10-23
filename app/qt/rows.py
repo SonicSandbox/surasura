@@ -458,27 +458,48 @@ def action_of(status, episodes, off=None, word="video"):
     if status.kind == "waiting" and status.label == view_rows.STRINGS["not_timed"]:
         name = None
     files = asked_files(status.kind, episodes) if name is not None else ()
+    said = status_tip(status)
     if not files:
-        return "status", status.tip, None
+        return "status", said, None
     if off and asks_connect(name, word):
-        tip = strings.ROWS_ACTION_OFF.format(tip=status.tip, why=off)
+        tip = strings.ROWS_ACTION_OFF.format(tip=said, why=off)
     elif status.kind == "waiting" and status.tone == "warn":
-        tip = status.tip                # a wait on Anki or on the battery: `view_rows` names the click (M-3)
+        tip = said                      # a wait on Anki or on the battery: `view_rows` names the click (M-3)
     elif word != "video" and name != "no-media":
-        tip = strings.ROWS_MINE_TEXT_THIS_TIP.format(tip=status.tip)
+        tip = strings.ROWS_MINE_TEXT_THIS_TIP.format(tip=said)
     else:
         words = getattr(strings, _ACTION_TIPS[name])
         if isinstance(words, dict):                 # a mining ask: how many files the click asks for (AD-2)
             words = words[len(files) == 1]
-        tip = words.format(tip=status.tip, n=len(files))
+        tip = words.format(tip=said, n=len(files))
     return name, tip, Ask(files[0].id, tuple(e.id for e in files), files[0])
 # --- end P4.1 L2
 
 
+def pill_text(status):
+    """The words a pill shows. Laptop row 36's sibling, row 38 ("i don't need the words 'waiting' only the icon. It
+    should tell you what it means when hover"): every *Waiting* is its icon alone — a k/n count stays, being no word —
+    and says itself in its hover (`status_tip`). *Not timed* keeps its words: it asks for the learner, it doesn't wait."""
+    if status.kind != "waiting" or status.label == view_rows.STRINGS["not_timed"]:
+        return status.label
+    return status.label.replace(view_rows.STRINGS["waiting"], "").strip(" ·")
+
+
+def status_tip(status):
+    """A status's hover: what it is first when its pill doesn't say it (row 38: *Waiting*'s icon alone), then its tip."""
+    if pill_text(status) == status.label:
+        return status.tip
+    return strings.ROWS_WAITING_TIP.format(label=status.label, tip=status.tip)
+
+
 def pill_size(status, dpr=1.0):
     f = fz()
-    w_text = TEXT.metrics("status-pill", dpr=dpr).horizontalAdvance(status.label)
+    text = pill_text(status)
     pad = 8 if status.kind == "no_media" else 9
+    if not text:                                    # row 38: the icon alone, in a round pill
+        h = round(theme.SIZES["status-pill"] * f)
+        return QSize(max(h, round(13 + 12 * f)), h)
+    w_text = TEXT.metrics("status-pill", dpr=dpr).horizontalAdvance(text)
     return QSize(round(pad * 2 * f + 13 + 6 * f + w_text), round(theme.SIZES["status-pill"] * f))
 
 
@@ -520,12 +541,17 @@ def paint_pill(p, status, rect, dpr=1.0, audio=False):
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawRoundedRect(r, radius, radius)
     pad = (8 if status.kind == "no_media" else 9) * f
-    ic = QRectF(rect.x() + pad, rect.center().y() - 6.5, 13, 13)
+    text = pill_text(status)
+    if text:
+        ic = QRectF(rect.x() + pad, rect.center().y() - 6.5, 13, 13)
+    else:                                           # row 38: the icon alone, centred
+        ic = QRectF(rect.center().x() - 6.5, rect.center().y() - 6.5, 13, 13)
     colour = style.qcolor(col[ink])
     kind = STATUS_ICON.get(status.kind, "dot")
     icon(p, "no_audio" if audio and kind == "no_media" else kind, ic, colour)
-    TEXT.draw(p, ic.right() + 6 * f, rect.center().y(), status.label, "status-pill", rect.right() - ic.right() - 6 * f,
-              colour, dpr=dpr)
+    if text:
+        TEXT.draw(p, ic.right() + 6 * f, rect.center().y(), text, "status-pill", rect.right() - ic.right() - 6 * f,
+                  colour, dpr=dpr)
     p.restore()
 
 
@@ -560,21 +586,18 @@ def paint_diff(p, pct, tone, n_new, right, y_mid, dpr=1.0):
     x = right - new_w
     pct_colour = c(PCT_INK[tone])                       # the % bands: >= 97 ok, 93–96 ink (S11), < 93 warn
     dim = style.qcolor(col["ink-dim"])
-    if pct is None and n_new is None:
-        TEXT.draw(p, right - 60 * f, y_mid, strings.ROWS_DASH, "diff", 60 * f, dim, align="right", dpr=dpr)
-        return
-    TEXT.draw(p, x, y_mid, " " + new_txt, "diff", new_w + 2, dim, dpr=dpr)
+    # Laptop row 36: a number or nothing — never a placeholder that sits ("— new" never filled on an i+1 plan). The %
+    # keeps its slot either way, so the column still lines up row to row.
     if n_new is not None:
+        TEXT.draw(p, x, y_mid, " " + new_txt, "diff", new_w + 2, dim, dpr=dpr)
         TEXT.draw(p, x - cnt_w, y_mid, str(n_new), "diff", cnt_w, style.qcolor(col["ink"]), weight=600, align="right",
                   dpr=dpr)
-    else:                                               # not counted yet (no plan, files came in): "— new", as the hero
-        TEXT.draw(p, x - cnt_w, y_mid, strings.ROWS_DASH, "diff", cnt_w, dim, align="right", dpr=dpr)
-    x -= cnt_w
-    TEXT.draw(p, x - dot_w, y_mid, strings.ROWS_DOT, "diff", dot_w, dim, align="centre", dpr=dpr)
-    x -= dot_w
-    TEXT.draw(p, x - pct_w, y_mid, strings.ROWS_DASH if pct is None else strings.ROWS_PCT.format(pct=round(pct)),
-              "diff", pct_w,
-              pct_colour if pct is not None else dim, align="right", dpr=dpr)
+        if pct is not None:                             # (no % beside it: no dot hanging)
+            TEXT.draw(p, x - cnt_w - dot_w, y_mid, strings.ROWS_DOT, "diff", dot_w, dim, align="centre", dpr=dpr)
+    x -= cnt_w + dot_w
+    if pct is not None:
+        TEXT.draw(p, x - pct_w, y_mid, strings.ROWS_PCT.format(pct=round(pct)), "diff", pct_w, pct_colour,
+                  align="right", dpr=dpr)
 
 
 # --- the model ------------------------------------------------------------------------------------------------------ #
@@ -1206,7 +1229,7 @@ class RowDelegate(QStyledItemDelegate):
             if not is_open and self._sheet_there():    # L4: a stone is hit only where it is drawn
                 out += self._stone_parts(payload, self._info(payload)[0], g["gstr"], slab.top() + slab.height() / 2)
             if g["stat"].width():
-                out.append(("status", g["stat"], payload.status.tip, None))
+                out.append(("status", g["stat"], status_tip(payload.status), None))
             out.append(("title", QRect(slab.left(), slab.top(), g["main"].right() - slab.left() + 1, slab.height()),
                         payload.title + ("\n" + payload.line if payload.line else ""), None))
             if is_open:
@@ -1222,7 +1245,7 @@ class RowDelegate(QStyledItemDelegate):
             if payload.status is None or payload.status.kind not in ("in_anki", "mining"):
                 st_rect = None                         # Finished: only Mining… / ✓ N (words in its tip), no mark
             if st_rect is not None:
-                out.append(("status", st_rect, payload.status.tip, None))
+                out.append(("status", st_rect, status_tip(payload.status), None))
             if payload.studying:
                 x0 = self.lead(kind, row_line.left())[2]
                 out.append(("studying", QRect(x0, row_line.center().y(), self._studying_w(), round(19 * f) + 4),
@@ -1384,7 +1407,7 @@ class RowDelegate(QStyledItemDelegate):
             y = eps[k - 1][0].bottom() + 1           # LM11b: under the run before, above a show line where one stands —
             if k in starts:                          # there wholly above it, so its ✂ chip never covers the show's name
                 y -= half                            # and its hover takes none of the show line (AD-5)
-            out.append(("seam", QRect(left, y - half, max(1, cols["play"].left() - 8 - left), 2 * half),
+            out.append(("seam", QRect(left, y - half, max(1, cols["more"].left() - 8 - left), 2 * half),
                         strings.SEAM_TIP.format(rest=_rest_of(row, k)), ep))
         return out
 
@@ -1469,11 +1492,13 @@ class RowDelegate(QStyledItemDelegate):
         stat_w = round(theme.SIZES["col-stat"] * f)
         stat = QRect(diff.left() - g - stat_w, r.top(), stat_w, r.height())
         side = round(theme.SIZES["icon-button"] * f)
-        more = QRect(stat.left() - g - side, r.center().y() - side // 2, side, side)    # row 28: its own ⋯, shown
-        play = QRect(more.left() - rl("hover-gap") - side, more.top(), side, side)     # while hovered or the keyboard's
+        play = QRect(stat.left() - g - side, r.center().y() - side // 2, side, side)
+        # row 28: its own ⋯, shown while hovered or the keyboard's — left of ▶, so ▶ keeps its place whether or not ⋯
+        # shows (IK-6: in ⋯'s room ▶ sat one button left on every episode line)
+        more = QRect(play.left() - rl("hover-gap") - side, play.top(), side, side)
         tick = QRect(r.left() + 12, r.center().y() - 10, 20, 20)
         return {"play": play, "more": more, "stat": stat, "diff": diff, "tick": tick,
-                "text_left": r.left() + EP_LABEL_IN, "text_right": play.left() - 12}
+                "text_left": r.left() + EP_LABEL_IN, "text_right": more.left() - 12}
 
     def _hero_geometry(self, row, rect, lines=()):
         """Up Next, the old mock's card flat (W3.1a §1 *Up Next*; ref-extract §7): a slab, the cover, the text column
@@ -1520,9 +1545,9 @@ class RowDelegate(QStyledItemDelegate):
             y += sub_h + 5
         g["stats"] = QRect(main.left(), y, main.width(), stats_h)
         g["journey"] = None
-        if nxt.pct is not None:                        # *N new words ↗*: the link into the journey (A3; S6)
-            known = strings.ROWS_HERO_KNOWN.format(pct=round(nxt.pct))
-            link = strings.ROWS_HERO_NEW_LINK.format(n=nxt.n_new if nxt.n_new is not None else strings.ROWS_DASH)
+        if nxt.pct is not None and nxt.n_new is not None:     # *N new words ↗*: the link into the journey (A3; S6);
+            known = strings.ROWS_HERO_KNOWN.format(pct=round(nxt.pct))   # no number, no link (row 36)
+            link = strings.ROWS_HERO_NEW_LINK.format(n=nxt.n_new)
             hs = TEXT.metrics("hero-sub")
             x0 = main.left() + hs.horizontalAdvance(known)
             g["journey"] = QRect(x0, y, min(hs.horizontalAdvance(link) + 2, max(0, main.right() - x0)), stats_h)
@@ -2310,16 +2335,18 @@ class RowDelegate(QStyledItemDelegate):
                                                                                     theme.SIZES["channel-cap"] * fz()),
                           c("ink-dim"), dpr=dpr)
         st = g["stats"]
-        if g["journey"] is None:
+        if nxt.pct is None:
             TEXT.draw(p, st.left(), st.center().y(), strings.ROWS_HERO_STATS_NONE, "hero-sub", st.width(),
                       c("ink-dim"), dpr=dpr)
         else:
             known = strings.ROWS_HERO_KNOWN.format(pct=round(nxt.pct))
-            TEXT.draw(p, st.left(), st.center().y(), known, "hero-sub", st.width(), c("ink-dim"), dpr=dpr)
             j = g["journey"]
-            TEXT.draw(p, j.left(), st.center().y(), strings.ROWS_HERO_NEW_LINK.format(
-                n=nxt.n_new if nxt.n_new is not None else strings.ROWS_DASH), "hero-sub", j.width(), c("accent"),
-                dpr=dpr)
+            if j is None:                               # row 36: no *N new* yet, so no link — the % alone
+                known = known.rstrip(" ·")
+            TEXT.draw(p, st.left(), st.center().y(), known, "hero-sub", st.width(), c("ink-dim"), dpr=dpr)
+            if j is not None:
+                TEXT.draw(p, j.left(), st.center().y(), strings.ROWS_HERO_NEW_LINK.format(n=nxt.n_new), "hero-sub",
+                          j.width(), c("accent"), dpr=dpr)
         if self.view.model().open_key != row.key:   # G16: the string where the chips were, hidden while open
             s = g["string"]
             self._paint_string(p, self._info(row)[0], s, s.top() + s.height() / 2, sheet, ring=True, big=True)

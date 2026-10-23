@@ -229,7 +229,7 @@ def run_screens(scale, out_dir):
             if screen == "current-open":             # an episode's No video tooltip: its action on its own line (T1)
                 ep = next(e for e in lst.model().entries[amber][1].episodes if e.missing)
                 parts = [pt for pt in lst.delegate.parts(lst.model().entries[amber], lst.visualRect(
-                    lst.model().index(amber, 0))) if pt[0] == "status" and pt[2] == ep.status.tip]
+                    lst.model().index(amber, 0))) if pt[0] in ("status", "no-media") and ep.status.tip in (pt[2] or "")]
                 rect, tip = parts[-1][1], parts[-1][2]      # by its tip: not every episode has a status (H-1)
                 win.tooltips.request(lst.viewport(), rect, tip)
                 settle(5)

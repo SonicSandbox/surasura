@@ -1059,6 +1059,65 @@ def test_a_plan_that_stands_aside_keeps_percent_known_and_gives_no_new_count(tmp
     numbers.close()
 
 
+def test_an_i_plus_one_plan_gives_new_counts_that_follow_every_move(tmp_path):
+    """Laptop row 36: Sonic's settings carry *Only i+1 sentences* (`only_i_plus_one`), so every plan stood aside and
+    every row read "— new" for good. The engine follows an i+1 plan's numbers exactly (`Engine(numbers_only=True)`,
+    proven in test_plan_engine), so *N new* shows, follows a drop and an outside move like any plan's, and the app's
+    log says once that it follows the order."""
+    seed, analysed, path = _small(tmp_path, header={"only_i_plus_one": True})
+    said = []
+    numbers = M.Numbers(seed.opener, "ja", plan_file=path, log=said.append)
+    numbers.load()
+    assert numbers.idle(30) and numbers.why() is None, numbers.why()
+    assert all(numbers()[1][r["id"]][2] is not None for r in analysed)
+    mover = analysed[-1]
+    assert mover["tier"] != "now"
+    top = min(r["ord"] for r in seed.library.items() if r["tier"] == "now")
+    v = numbers.version
+    touched = numbers.after_move([mover["id"]], "now")                 # the window's drop: followed at once
+    assert mover["id"] in touched and numbers.version == v + 1
+    seed.library.commit(items=[{"id": mover["id"], "tier": "now", "ord": top - 1}], order=True)
+    numbers.resync()
+    assert numbers.idle(30) and numbers.why() is None
+    referee = plan_engine.Engine(plan_engine.load(path), [r["id"] for r in analysed], numbers_only=True)
+    referee._numbers([(r["id"], r["tier"]) for r in _in_order(seed.library.items())])
+    table = numbers()[1]
+    assert all(table[r["id"]][2] == referee._n_new[referee._f_of[r["id"]]] for r in analysed)
+    assert said == ["N new (ja): follows the order"]
+    numbers.close()
+
+
+def test_a_video_waiting_for_its_subtitle_never_makes_the_numbers_stale(tmp_path):
+    """Round 7 review A-3: a video waiting for its subtitle (K5, `availability` "waiting") sits in an analysed tier but
+    in no Generate (`Store.schedule`), so it is out of the order the numbers follow — before, one such video made
+    *N new* "stale: files came in" for the whole library."""
+    seed, analysed, path = _small(tmp_path, drop=1)
+    seed.library.commit(items=[{"id": analysed[0]["id"], "availability": "waiting"}], availability=True)
+    numbers = M.Numbers(seed.opener, "ja", plan_file=path)
+    numbers.load()
+    assert numbers.idle(30) and numbers.why() is None, numbers.why()
+    assert all(numbers()[1][r["id"]][2] is not None for r in analysed[1:])
+    numbers.resync()
+    assert numbers.idle(30) and numbers.why() is None
+    numbers.close()
+
+
+def test_the_numbers_log_why_after_their_lock_when_a_move_cant_be_followed(tmp_path):
+    """Review A-4: an item the plan doesn't hold comes in: the numbers go (stale), the log says why — written after the
+    numbers' lock is let go (a read of the numbers never waits on a file write)."""
+    seed, analysed, path = _small(tmp_path)
+    held = []
+    numbers = M.Numbers(seed.opener, "ja", plan_file=path, log=lambda line: held.append(numbers._lock.locked()))
+    numbers.load()
+    assert numbers.idle(30) and numbers.why() is None
+    seed.library.commit(items=[dict(analysed[0], id=10 ** 6, rel_path="ja/HighPriority/新しい回.srt",
+                                    ord=analysed[0]["ord"] - 1)], order=True)
+    numbers.resync()
+    assert numbers.idle(30) and numbers.why().startswith("stale:")
+    assert held == [False, False]
+    numbers.close()
+
+
 def test_a_plan_missing_a_file_the_library_counts_is_stale(tmp_path):
     seed, analysed, path = _small(tmp_path, drop=1)
     numbers = M.Numbers(seed.opener, "ja", plan_file=path)

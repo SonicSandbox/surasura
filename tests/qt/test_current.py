@@ -1837,7 +1837,8 @@ def test_a_status_button_says_how_many_files_its_click_asks_for_up_next_too(seed
             if name in ("mine-now", "mine-this") and row.media_word == "video":
                 words = strings.ROWS_MINE_NOW_TIP if name == "mine-now" else strings.ROWS_MINE_THIS_TIP
                 n = len(ask.ids)
-                assert tip == words[n == 1].format(tip=row.status.tip, n=n), row.title
+                said = rows.status_tip(ask.episode.status or row.status)        # row 38: the icon names itself
+                assert tip == words[n == 1].format(tip=said, n=n), row.title
                 counted.append(n)
     assert any(n > 1 for n in counted) and any(n == 1 for n in counted)
     # Up Next asked as its whole row: its waiting files counted in its tip, the same rule
@@ -1850,4 +1851,4 @@ def test_a_status_button_says_how_many_files_its_click_asks_for_up_next_too(seed
                                                               lst.visualRect(lst.model().index(0, 0)))
                                 if p[0] == "mine-now"]
     assert ask.ids == tuple(e.id for e in asked)
-    assert tip == strings.ROWS_MINE_NOW_TIP[len(asked) == 1].format(tip=waiting.tip, n=len(asked))
+    assert tip == strings.ROWS_MINE_NOW_TIP[len(asked) == 1].format(tip=rows.status_tip(waiting), n=len(asked))

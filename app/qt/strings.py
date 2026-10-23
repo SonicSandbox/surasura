@@ -227,6 +227,9 @@ BAR_FAILURE_PREFIX = "⚠ "
 BAR_LOGS = "Open the logs folder"
 BAR_LOGS_TIP = "Open the folder where Surasura keeps its logs, to look at them or send them"
 BAR_FAILURE_TIP = "The newest problem a command-line run reported. Its details are in the logs folder"
+STANDING_HIDE = "✕"                                         # round 8 row 54: every standing line's (app/qt/standing.py)
+STANDING_HIDE_TIP = "Hide this until it changes"
+STANDING_HIDE_NAME = "Hide"
 
 # The look (G1.2-21): shown only if a live switch is ever too slow.
 RESTART_TO_APPLY = "Restart Surasura to apply"
@@ -1087,6 +1090,8 @@ SOURCES_OFFLINE = "{path} isn't reachable; its {n:,} episodes are kept"
 SOURCES_OFFLINE_ONE = "{path} isn't reachable; its episode is kept"
 SOURCES_OFFLINE_NONE = "{path} isn't reachable"
 SOURCES_OFFLINE_TIP = "Nothing is moved or marked while a folder is away: Surasura looks again when it's back"
+SOURCES_KEEP_WAITING = "Keep waiting"                       # round 8 row 54: the offline line's ✕, in words
+SOURCES_KEEP_WAITING_TIP = "Hide this until the folder is back"
 SOURCES_READING = "Reading {name}: {found:,} found in {shows:,} shows…"
 SOURCES_READ = "Reading {name} where it is: {added:,} new"
 SOURCES_READ_ARRIVALS = "Reading {name} where it is: {added:,} new · the shows you haven't seen wait in New " \

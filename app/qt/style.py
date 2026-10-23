@@ -89,6 +89,9 @@ QLabel#barline {{ color: {c['ink-dim']}; {font('footer')} font-weight: 400; }}
 QLabel#barfailure {{ color: {c['warn']}; {font('footer')} font-weight: 400; }}
 QLabel#barmark {{ color: {c['ink-dim']}; {font('footer')} font-weight: 400; }}
 QLabel#sourcesline {{ color: {c['ink-dim']}; {font('footer')} font-weight: 400; }}
+QToolButton#standingclose {{ color: {c['ink-dim']}; padding: 0; border-radius: {px(5)}; min-width: {px(16)};
+  max-width: {px(16)}; min-height: {px(16)}; max-height: {px(16)}; {font('key-hint')} font-weight: 400; }}
+QToolButton#standingclose:hover {{ color: {c['ink']}; }}
 QLabel#journeydot {{ color: {c['accent']}; {font('badge')} }}
 QLabel#pagewaiting {{ color: {c['ink-dim']}; {font('body')} font-weight: 400; }}
 QLabel#pagetitle {{ color: {c['ink']}; {font('page-heading')} }}
@@ -163,8 +166,8 @@ QLabel#pageheading {{ color: {c['ink']}; {font('page-heading')} font-weight: 700
 QLabel#helpmark {{ color: {c['ink-faint']}; border: 1px solid {c['line-hi']}; border-radius: {px(8)};
   min-width: {px(16)}; max-width: {px(16)}; min-height: {px(16)}; max-height: {px(16)}; {font('key-hint')} }}
 QLabel#helpmark:hover {{ color: {c['ink']}; border-color: {c['accent']}; }}
-QLabel#statebar {{ color: {c['ink-dim']}; background: {c['raised']}; border-radius: 7px; padding: {px(5)} {px(10)};
-  {font('row-sub')} }}
+QWidget#statebar {{ background: {c['raised']}; border-radius: 7px; }}
+QLabel#statebartext {{ color: {c['ink-dim']}; padding: {px(5)} {px(10)}; {font('row-sub')} }}
 QListView#rows {{ background: {c['bg']}; border: 0; }}
 QListView#rows:focus {{ border: 0; }}
 /* --- end W2.2 --- */

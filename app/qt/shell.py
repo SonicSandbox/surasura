@@ -42,6 +42,8 @@ from app.services import settings as settings_service
 from app.services import status as status_service
 from app.qt import screens                                # W2.2: the pages a library fills
 from app.qt import press as qpress                        # round 8 row 45: a press reacts at once
+from app.qt import standing as standing_qt                # round 8 row 54: every standing line's ✕
+from app.services import standing as standing_service
 from app.qt import covers as qcovers                      # --- W3.2 Q6: the titles' own pictures
 
 TABS = ("current", "finished", "needs", "settings")
@@ -923,6 +925,7 @@ class _Duties:
     def __init__(self):
         self.module = None
         self.generate = self.journey = self.help = self.known = self.anki = self.level = self.update_mark = None
+        self.update_cross = None                                   # round 8 row 54: the chip's ✕
         self.journey_button = None                                 # the header's *Journey ↗*, beside the level ▾
         self.sheet = self.cards = self.journey_dot = self.pop = None
         self.level_text = self.level_tip = strings.LEVEL_WAITING   # W3.1a: the ▾'s words and the level's tip
@@ -975,19 +978,26 @@ class ShellWindow(QMainWindow):
         self.pages = QStackedWidget(central)
         self.pages.setObjectName("pages")
         self.page_widgets = {}
-        for name in TABS:
+        self.standing = standing_service.Hidden()             # round 8 row 54: the run lines ✕ hid (this session)
+        self.offline_hidden = set()                           # ... the offline line's (the seen file's, and ✕ since)
+        self._failure_hidden = None                           # ... the bar's failure ✕ took off (until the service's
+        for name in TABS:                                     # snapshot says so too)
             page = self._page(name)
+            if isinstance(page, screens.Page):                # the read-only line's ✕ hides it on every page
+                page.hidden = self.standing
+                page.state_dismissed.connect(self._state_dismissed)
             self.page_widgets[name] = page
             self.pages.addWidget(page)
         root.addWidget(self.pages, 1)
         self.dock = self._build_bottom_band()                 # W3.1a: each page's bottom edge; Current's Goal dock
         # --- SRC W1b: the offline line, quiet, under the library: a source folder a look couldn't reach (SRC-3)
-        self.offline_line = QLabel(central)
-        self.offline_line.setObjectName("sourcesline")
-        self.offline_line.setTextFormat(Qt.TextFormat.PlainText)
-        self.offline_line.setToolTip(strings.SOURCES_OFFLINE_TIP)
-        self.offline_line.setContentsMargins(16, 2, 16, 2)
-        self.offline_line.setVisible(False)
+        # round 8 row 54: its ✕ and *Keep waiting* hide it until the folder is back and goes again (`_keep_waiting`)
+        self.offline_line = standing_qt.StandingLine("sourcesline", central, margins=(16, 2, 16, 2))
+        self.offline_line.label.setToolTip(strings.SOURCES_OFFLINE_TIP)
+        # P8's *They're gone — remove them* is the line's other answer (`add_answer("gone", …)`, `_offline_answered`)
+        self.offline_line.add_answer("keep", strings.SOURCES_KEEP_WAITING, strings.SOURCES_KEEP_WAITING_TIP)
+        self.offline_line.dismissed.connect(self._keep_waiting)
+        self.offline_line.answered.connect(self._offline_answered)
         root.addWidget(self.offline_line)
         # --- end SRC W1b
         root.addWidget(self._build_footer())
@@ -1639,6 +1649,10 @@ class ShellWindow(QMainWindow):
         self.logs_button.clicked.connect(self.open_logs)
         self.logs_button.setVisible(False)
         row.addWidget(self.logs_button)
+        self.bar_failure_cross = standing_qt.Cross(footer)       # round 8 row 54: the failure off the bar (still listed)
+        self.bar_failure_cross.clicked.connect(self._failure_dismissed)
+        self.bar_failure_cross.setVisible(False)
+        row.addWidget(self.bar_failure_cross)
         row.addStretch(0)                                 # the room left of the marks while the chip holds the slot
         # W31A-1: the re-order host's line and Connect's as quiet marks, their words in the hover, while they have any
         self.bar_replan = frame.QuietMark(strings.FOOT_REPLAN_MARK, strings.FOOT_REPLAN_NAME, footer)
@@ -1711,6 +1725,8 @@ class ShellWindow(QMainWindow):
         if not (self._saying() or self._holds) or self._quit == "waiting":     # (a line said keeps the slot: `say`)
             self.bar_line.set_full(self._status_line)
         failure = snap.failure or ""
+        if failure and self._failure_key(snap) == self._failure_hidden:
+            failure = ""                                  # round 8 row 54: ✕ took it off (the service's next snapshot too)
         self.bar_failure.set_full(strings.BAR_FAILURE_PREFIX + failure if failure else "")
         self.bar_failure.setToolTip(strings.BAR_FAILURE_TIP + ("\n\n" + failure if failure else ""))
         logs_before, self._logs_folder = self._logs_folder, snap.logs
@@ -1790,13 +1806,67 @@ class ShellWindow(QMainWindow):
         d = self.duties
         update = d is not None and d.update_applies and not failure and self._quit != "waiting" and not saying
         parts = [(self.bar_failure, failure, self.status_paints), (self.logs_button, failure and bool(self._logs_folder),
-                 self.status_paints), (self.bar_line, not failure and not update, self.status_paints)]
+                 self.status_paints), (self.bar_failure_cross, failure, self.status_paints),
+                 (self.bar_line, not failure and not update, self.status_paints)]
         if d is not None:
-            parts.append((d.update_mark, update, d.paints))
+            parts += [(d.update_mark, update, d.paints), (d.update_cross, update, d.paints)]
         for part, shown, paints in parts:
             if part.isHidden() == shown:
                 part.setVisible(shown)
                 paints[part] = paints.get(part, 0) + 1
+
+    # --- round 8 row 54: the standing lines' ✕ (app/services/standing.py) -------------------------------------- #
+    @staticmethod
+    def _failure_key(snap):
+        failure = snap.failure if snap is not None else None
+        if not failure:
+            return None
+        return getattr(snap, "failure_key", None) or standing_service.failure_key(None, failure)
+
+    def _failure_dismissed(self):
+        """✕ on the bar's failure line: off the bar now, for this session, still listed in Needs you; a newer failure
+        shows again (the status service's `dismiss_failure`, on a worker)."""
+        key = self._failure_key(self._status_snap)
+        if key is None:
+            return
+        self._failure_hidden = key
+        self.bar_failure.set_full("")
+        self._paint_slot()
+        bridge.run_in_worker(self.services.status.dismiss_failure, key,
+                             failed=lambda info: applog.log("shell", f"the failure's ✕: {info[0]!r}"))
+
+    def _update_dismissed(self):
+        """✕ on the update chip: hidden for this session (*Later* for this run) until its version or state changes."""
+        d = self.duties
+        if d is None or d.update_state is None:
+            return
+        self.standing.hide(d.module.update_mark_key(d.update_state))
+        d.update_applies = False
+        self._paint_slot()
+
+    def _state_dismissed(self, key):
+        """✕ on a page's read-only line: hidden on every page for this session, until its reason changes."""
+        if key and self.standing.hide(key):
+            for page in self.page_widgets.values():
+                if isinstance(page, screens.Page):
+                    page.paint_state()
+
+    def _keep_waiting(self):
+        """✕ or *Keep waiting* on the offline line: the folders it names hidden now, and kept in the seen file (a
+        worker) — hidden across restarts until each is back, then asked again the next time it goes."""
+        keys = tuple(k for k, _path, _n in self._offline_shown())
+        if not keys:
+            return
+        self.offline_hidden.update(keys)
+        self._show_offline()
+        bridge.run_in_worker(standing_service.keep, self.language, keys,
+                             failed=lambda info: applog.log("shell", f"the offline line's ✕: {info[0]!r}"))
+
+    def _offline_answered(self, name):
+        """The offline line's answers: *Keep waiting* (the ✕ in words). P8 adds *They're gone — remove them* here
+        (`Writer.forget_source` through `drag._give`, once Kura's `Store.forget_source` lands)."""
+        if name == "keep":
+            self._keep_waiting()
 
     def _status_mark(self, label, text, tip):
         """One of row 7's statuses (the re-order's line, Connect's — quiet marks, their words in the hover — the
@@ -2009,7 +2079,11 @@ class ShellWindow(QMainWindow):
         d.update_mark.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         d.update_mark.clicked.connect(self.open_update_sheet)
         d.update_mark.setVisible(False)
-        row.insertWidget(row.indexOf(self.logs_button) + 1, d.update_mark)
+        row.insertWidget(row.indexOf(self.bar_failure_cross) + 1, d.update_mark)
+        d.update_cross = standing_qt.Cross(self.footer)      # round 8 row 54: the chip hidden for this session
+        d.update_cross.clicked.connect(self._update_dismissed)
+        d.update_cross.setVisible(False)
+        row.insertWidget(row.indexOf(d.update_mark) + 1, d.update_cross)
         # the update sheet (an overlay: Esc and Back close it — and cancel an update under way, IK-2)
         d.sheet = duties_module.UpdateSheet(self.centralWidget())
         d.sheet.action.connect(self._update_action)
@@ -2396,7 +2470,8 @@ class ShellWindow(QMainWindow):
         d.update_state = state
         look = d.module.update_mark_look(state)
         m = d.update_mark
-        d.update_applies = look is not None                # nothing to say: hidden, its last words kept
+        d.update_applies = look is not None and self.standing.shows(d.module.update_mark_key(state),  # nothing to
+                                                                   standing_service.UPDATE)   # say, or ✕: hidden
         if look is not None and (m.text() != look[0] or m.toolTip() != look[1]):
             m.setText(look[0])
             m.setToolTip(look[1])
@@ -2520,14 +2595,20 @@ class ShellWindow(QMainWindow):
         if old is not None and old is not looks:
             old.close()
         if looks is not None:
-            looks.on_result = self._sources_relay.call
+            looks.on_result = self._looks_said
             looks.on_progress = lambda path, found, shows: self._progress_relay.call((path, found, shows))
         return looks
+
+    def _looks_said(self, summary):
+        """(The looks' worker.) A look's summary, with the offline lines hidden (round 8 row 54: the seen file, pruned
+        by it first — `standing.looked`), to the window's thread."""
+        self._sources_relay.call(standing_service.looked(self.language, summary))
 
     def _follow_looks(self, writer):
         """A language switch: that library's folders, looked at once (its own cadence); the last one's line goes."""
         self._open_looks(writer)
         self.sources = ()
+        self.offline_hidden = set()
         self._folders_of.clear()
         self._folders_asked.clear()
         self._named.clear()
@@ -2560,17 +2641,24 @@ class ShellWindow(QMainWindow):
         if not isinstance(summary, dict) or summary.get("language", self.language) != self.language:
             return                                        # B2: a language left never paints over the one open
         self.sources = tuple(summary.get("sources") or ())
+        self.offline_hidden = (self.offline_hidden | set(summary.get("kept_lines") or ())) & \
+            standing_service.not_back(self.sources)       # round 8 row 54: a folder back lets its ✕ go
         self._show_offline()
         if summary.get("unfinished_reset"):              # LF-11: a fresh library a kill stopped, once a run
             from app.qt import settings_strings, windows
             windows.say_in_bar(self, settings_strings.FRESH_UNFINISHED.format(folder=summary["unfinished_reset"]))
         self.sources_seen.emit(summary)
 
-    def offline_text(self):
-        """The offline line's words for `sources` (empty: every folder reachable, or not looked at yet)."""
+    def _offline_shown(self):
+        """[(key, path, items)] of the folders the offline line names: away, and not hidden by its ✕."""
         from app.services.source_looks import offline
+        shown = ((standing_service.offline_key(path), path, n) for path, n in offline(self.sources))
+        return [s for s in shown if s[0] not in self.offline_hidden]
+
+    def offline_text(self):
+        """The offline line's words for `sources` (empty: every folder reachable, not looked at yet, or hidden)."""
         lines = []
-        for path, n in offline(self.sources):
+        for _key, path, n in self._offline_shown():
             if n == 1:
                 lines.append(strings.SOURCES_OFFLINE_ONE.format(path=path))
             elif n:
@@ -2581,12 +2669,7 @@ class ShellWindow(QMainWindow):
 
     def _show_offline(self):
         """Repainted only when its words moved (S19); shown while there are any."""
-        text = self.offline_text() if self.sources else ""
-        if self.offline_line.text() != text:
-            self.offline_line.setText(text)
-            self.offline_line.setAccessibleName(text)
-        if self.offline_line.isHidden() == bool(text):
-            self.offline_line.setVisible(bool(text))
+        self.offline_line.show_line(self.offline_text() if self.sources else "")
 
     def _sources_progress(self, said):
         """A folder being read for the first time (+ Add): its count so far, in the bar."""

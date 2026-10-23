@@ -114,6 +114,7 @@ MEDIA_TYPES = ("anime", "drama", "movie", "youtube", "podcast", "audiobook", "bo
                "game", "text")
 COVER_SOURCES = ("anilist", "tmdb", "youtube", "file", "user", "generated")
 SKIP_NAMES = ("master_manifest.json", "_order.json", "desktop.ini")
+OLD_SURASURA_OWN = ("User Files", "_internal", "results")   # in a Surasura program's folder: never a source
 
 # maintain's exit codes (spec §6.7); register_headless adds 6: the path can't be registered (not in the library)
 EXIT_DONE, EXIT_FAILED, EXIT_USAGE, EXIT_NOTHING, EXIT_NEEDS_YOU, EXIT_BUSY = 0, 1, 2, 3, 4, 5
@@ -8063,6 +8064,16 @@ def _store_not_a_source(self, path):
         for up in list(_ancestors(o))[1:]:
             if path_key(up).rstrip("/") in keys or _folder_id(up) in ids:
                 return "That folder holds Surasura's own; choose the folder inside it your shows and books are in."
+    from app import import_2x                        # a Surasura program's folder, or an old one's (the 2.x import
+    for f in forms:                                  # brings no shows: they're added from where 2.x kept them)
+        for up in _ancestors(f):
+            if not (import_2x.holds_program(up) or import_2x.is_2x_folder(up)):
+                continue
+            below = os.path.relpath(f, up).replace(os.sep, "/").split("/")
+            inside_own = below[0] in OLD_SURASURA_OWN or ".trash" in below or (below[0] == "data" and len(below) <= 2)
+            if up == f or inside_own:
+                return ("That's a Surasura folder: its program, word lists and trash would be read as books. Choose "
+                        "the folders your shows and books are in (an old Surasura keeps them in its data folder).")
     return None
 
 

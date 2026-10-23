@@ -9429,9 +9429,11 @@ def _store_undo_switch(self, change, decline=True):
     it again by itself), where its record is still the switch's. One that changed since stays, with a note. LM3's
     `switch_version` (a better version, a book's new edition): the title's group is left alone, and the version it
     switched to stays a version marked declined (`_declined`; `decline` False: a book's edition put back because it
-    couldn't switch whole, tried again by the next look)."""
+    couldn't switch whole, tried again by the next look). A book's new edition: `_undo_edition` (ONE change)."""
     if getattr(change, "epoch", None) != self.meta()["epoch"]:
         raise UndoRefused("the library was rebuilt since; that change can't be undone")
+    if getattr(change, "edition", False):
+        return _undo_edition(self, change)
     self.settle_switches()
     plans, skipped = [], []
     with self._reading():
@@ -9463,44 +9465,82 @@ def _store_undo_switch(self, change, decline=True):
         out.notes.append(f"{n} episode{'s' if n != 1 else ''} changed since and {'were' if n != 1 else 'was'} left as "
                          f"{'they are' if n != 1 else 'it is'}")
     if change.kind == "switch_version":
-        _undo_edition_rest(self, change, out)
         _drop_last_switch(self, change)
     return out
 
 
-def _undo_edition_rest(self, change, out):
-    """LM3: an edition's Undo, beyond its parts: the extra parts it added taken out (their copies to the trash; no
-    exclusion: their EPUB stays known by the parts' declined records) and the parts past its end put back (their files
-    from the trash, their rows as they were). What can't is said in a note."""
+def _undo_edition(self, change):
+    """LM3 (fix round 2; PROVISIONAL, Kura / the lead 2026-10-23): a book's new edition undone as ONE change, journalled
+    as the edition was (an `EDITION_PENDING` note marked `undo`, carried by `_edition_go`): every part back to the old
+    edition's bytes (the copy its switch sent to the trash, checked by its sha256) and records (the new edition's kept a
+    version, declined: `_declined`), then the parts it added taken out (copies to the trash first, one removal), then
+    the parts past its end put back (one restore) — all or none: a part held open → every part keeps the new edition,
+    the Undo waits (`waiting`, said in its notes; the title keeps its last switch, so Undo stays) and the next look's
+    `settle_editions` finishes it, as it finishes a crashed one; the last switch goes in the write that ends it. Pressed
+    again while it waits, the same Undo is carried on. A part the learner removed since stays removed; a part changed
+    since (its records, its name, its copy gone), an old copy no longer in the trash, or another switch of the book
+    under way → `UndoRefused`, nothing changed. -> the Change (kind `undo`: `switched` the parts put back)."""
+    self.settle_switches()
+    sid = getattr(change, "switch_id", None)
+    with self._reading():
+        notes = [(k, _json_dict(v) or {}) for k, v in self.conn.execute(
+            "SELECT key, value FROM meta WHERE key >= ? AND key < ?", (EDITION_PENDING, EDITION_PENDING[:-1] + ";"))]
+    waiting = next((k for k, n in notes if sid is not None and n.get("undo") == sid), None)
+    if waiting is not None:                                  # this very Undo waits: carried on now
+        with self._writing():
+            note = _edition_note(self, waiting)
+            if note is not None:
+                self._set_meta({waiting: _dumps(dict(note, waiting=False, at=time.time()))})
+        return self._edition_go(waiting)
+    full = lambda rel: os.path.join(self.data_dir, _strip(rel))      # noqa: E731
+    token = uuid.uuid4().hex[:8]
+    parts, changed, epubs = [], 0, set()
     added = [i for i in getattr(change, "added", None) or () if isinstance(i, int)]
-    if added:
-        try:
-            with self._reading():
-                rels = dict(self.conn.execute(f"SELECT id, rel_path FROM items WHERE id IN "
-                                              f"({','.join('?' * len(added))})", added).fetchall())
-            trashed = {}
-            for i, rel in rels.items():
-                gone = trash_file(self.data_dir, rel)
-                if gone:
-                    trashed[i] = gone
-            if rels:
-                self.remove(sorted(rels), trashed_paths=trashed, by="undo", exclude=False)
-        except (OSError, StoreError) as e:
-            out.notes.append(f"the new edition's extra parts couldn't all be taken out ({e})")
     back = [t for t in getattr(change, "removed_trash", None) or () if isinstance(t, int)]
-    if back:
-        try:
-            rows = [r for r in self.trash_rows(back) if not r["restored_at"]]
-            rel_paths = {}
-            for r in rows:
-                if r["trashed_path"]:
-                    rel, _note = put_back(self.data_dir, r["trashed_path"], r["rel_path"])
-                    if rel is not None and rel != r["rel_path"]:
-                        rel_paths[r["id"]] = rel
-            if rows:
-                self.restore([r["id"] for r in rows], rel_paths, by="undo", kind="undo")
-        except (OSError, StoreError) as e:
-            out.notes.append(f"the book's parts past the new edition's end couldn't all be put back ({e})")
+    with self._reading():
+        for n, swap in enumerate(change.swaps):
+            item = self.conn.execute("SELECT rel_path, availability FROM items WHERE id = ?",
+                                     (swap["item"],)).fetchone()
+            if item is None:
+                continue                                     # removed by the learner since: stays removed
+            now = dict(self.conn.execute("SELECT content_key, pairing FROM pairings WHERE item_id = ?",
+                                         (swap["item"],)).fetchall())
+            if item[0] != swap["rel"] or item[1] != "available" or \
+                    any(now.get(k) != t for k, t in swap["after"].items()):
+                changed += 1
+                continue
+            for text in list(swap["before"].values()) + list(swap["after"].values()):
+                epub = str((_json_dict(text) or {}).get("origin") or "").rpartition("#")[0]
+                if epub:
+                    epubs.add(origin_key(epub)[len(SOURCE_KEY):])
+            parts.append({"item": swap["item"], "rel": swap["rel"], "sha256": swap.get("old_sha256"),
+                          "old_sha256": swap.get("sha256"), "part": swap["trash"],
+                          "trash": _trash_name(swap["rel"], f"{token}u{n}"), "expect": dict(swap["after"]),
+                          "write": {k: _row_text(v) for k, v in _declined(swap["before"], swap["after"]).items()}})
+        rels = dict(self.conn.execute(f"SELECT id, rel_path FROM items WHERE id IN ({','.join('?' * len(added))})",
+                                      added).fetchall()) if added else {}
+    if changed:
+        raise UndoRefused(f"{changed} part{'s' if changed != 1 else ''} of the book changed since its new edition came "
+                          f"in; nothing was undone")
+    if not parts and not rels and not back:
+        return _edition_change(self, {"undo": sid or token})
+    for p in parts:                                          # outside the lock: the old bytes, the new ones' sha256
+        if not p["sha256"] or not _part_holds(full(p["part"]), p["sha256"]):
+            raise UndoRefused("the old edition's text is no longer in the trash; nothing was undone")
+        if not p["old_sha256"]:
+            try:
+                p["old_sha256"] = sha256_of(full(p["rel"]))
+            except OSError:
+                raise UndoRefused("a part of the book can't be read just now; nothing was undone - try again")
+    note = {"at": time.time(), "waiting": False, "undo": sid or token, "by": "undo", "work": change.work_id,
+            "epubs": sorted(epubs), "parts": parts, "extras": [], "back": back,
+            "surplus": [{"item": i, "rel": rels[i], "trash": _trash_name(rels[i], f"{token}a{n}")}
+                        for n, i in enumerate(sorted(rels))]}
+    key = EDITION_PENDING + token
+    if not _edition_claim(self, key, note):
+        raise UndoRefused("the book is switching to another edition just now; nothing was undone - try again after "
+                          "the next look")
+    return self._edition_go(key)
 
 
 def _drop_last_switch(self, change):
@@ -9535,8 +9575,10 @@ def _declined(before, after):
         old = _json_dict(before.get(key)) if key in before else None
         if old is None:
             out[key] = dict(record, version=True, declined=record.get("sha256"))
-        elif old.get("version"):
-            out[key] = dict({k: v for k, v in old.items() if k != "fit"}, declined=old.get("sha256"))
+        elif old.get("version"):                     # a version already (declined once: its file may have changed
+            out[key] = dict({k: v for k, v in old.items() if k != "fit"},    # since) — declined as its bytes are now
+                            **{k: record[k] for k in ("sha256", "size", "mtime_ns") if k in record},
+                            declined=record.get("sha256"))
         else:                                        # A3: the same path's — the old text's sha, the file's stats
             out[key] = dict(old, size=record.get("size"), mtime_ns=record.get("mtime_ns"),
                             declined=record.get("sha256"))
@@ -9571,6 +9613,7 @@ def _store_undo_switch_of(self, work_id):
     change.work_id, change.swaps = work_id, list(record.get("swaps") or ())
     change.group_before, change.group_after = record.get("group_before"), record.get("group_after")
     change.switch_id, change.switched_works = record.get("id"), [work_id]
+    change.edition = record.get("kind") == "edition"
     change.added, change.removed_trash = list(record.get("added") or ()), list(record.get("removed_trash") or ())
     return self._undo_switch(change)
 
@@ -9632,7 +9675,8 @@ def _store_switch_versions(self, item_ids, by=SOURCE_PRODUCER, stop=None):
     dialogue lines (A6, B4: `_thin_switch`, reading each file once and handing the version's bytes
     to the swap; remembered on its record by its sha256, `thin`, so it is read again only once its bytes changed); one
     whose original can't be read (a drive offline, A9) or whose copy is held is `held` — a later look tries it again,
-    its verdict kept by both files (`fit`: no thin read while they are as judged). `stop()` is asked between
+    its verdict kept by both files (`fit`: no thin read while they are as judged), and nothing read at all while its
+    copy is still held (moved aside and back first, `_free_to_move`). `stop()` is asked between
     candidates (a stopped look switches no more). The title's group record is never touched; each title switched keeps
     the switch as its last one (`last_switch`, kind "version", by `by`: the window's note and its Undo,
     `undo_switch`). -> the Change (kind `switch_version`; `switched_works`: the titles; `Store.undo` puts it back)."""
@@ -9663,6 +9707,9 @@ def _store_switch_versions(self, item_ids, by=SOURCE_PRODUCER, stop=None):
     for plan in plans:
         if stop is not None and stop():
             break
+        if plan["judged"] and not _free_to_move(os.path.join(self.data_dir, _strip(plan["rel"]))):
+            held.append(plan["item"])                        # held last time and still: not read again
+            continue
         if not plan["judged"]:
             verdict, data = _thin_switch(self, plan)
             if verdict:
@@ -9808,7 +9855,8 @@ def _store_switch_parts(self, root_id, parts, extras=(), surplus=(), by=SOURCE_P
                 _stage(self, part, x["data"])
                 staged.append(part)
             found = {k: x[k] for k in ("origin", "size", "mtime_ns", "sha256", "show", "episode") if k in x}
-            more.append({"rel": rel, "part": part, "sha256": sha, "found": dict(found, rel=rel)})
+            more.append({"rel": rel, "part": part, "sha256": sha, "bytes": len(x["data"]),
+                         "found": dict(found, rel=rel)})
     except OSError as e:                                     # an old part unreadable, the trash unwritable: waits
         for s in staged:
             _remove_quietly(full(s))
@@ -9824,13 +9872,34 @@ def _store_switch_parts(self, root_id, parts, extras=(), surplus=(), by=SOURCE_P
             "surplus": [{"item": i, "rel": rows[i][0], "trash": _trash_name(rows[i][0], f"{token}s{n}")}
                         for n, i in enumerate(surplus)]}
     key = EDITION_PENDING + token
+    claimed = False
     try:
-        self.bookkeeping({key: _dumps(note)})
-    except BaseException:
-        for s in staged:
-            _remove_quietly(full(s))
-        raise
+        claimed = _edition_claim(self, key, note)
+    finally:
+        if not claimed:
+            for s in staged:
+                _remove_quietly(full(s))
+    if not claimed:                                          # another switch of the book under way: it goes first
+        change.held, change.waiting = ids, True
+        return change
     return self._edition_go(key)
+
+
+def _note_items(note):
+    return {p.get("item") for p in list(note.get("parts") or ()) + list(note.get("surplus") or ())} - {None}
+
+
+def _edition_claim(self, key, note):
+    """The note written in one write — unless another note (an edition or its Undo) already holds one of its items:
+    one change of a book at a time. -> True when written."""
+    mine = _note_items(note)
+    with self._writing():
+        for (value,) in self.conn.execute("SELECT value FROM meta WHERE key >= ? AND key < ?",
+                                          (EDITION_PENDING, EDITION_PENDING[:-1] + ";")).fetchall():
+            if mine & _note_items(_json_dict(value) or {}):
+                return False
+        self._set_meta({key: _dumps(note)})
+    return True
 
 
 def _row_text(value):
@@ -9852,10 +9921,12 @@ def _stage(self, rel, data):
 
 def _edition_change(self, note=None):
     meta = self.meta()
-    change = Change("switch_version", meta["epoch"], meta["state_version"])
+    undo = bool((note or {}).get("undo"))
+    change = Change("undo" if undo else "switch_version", meta["epoch"], meta["state_version"])
     change.work_id = (note or {}).get("work")
     change.switched, change.missing, change.held, change.swaps, change.removed = [], [], [], [], []
     change.waiting, change.switched_works, change.removed_trash = False, [], []
+    change.edition = not undo                                # (its Undo is `_undo_edition`)
     return change
 
 
@@ -9889,24 +9960,27 @@ def _edition_state(self, note):
     return state, taken, gone
 
 
-def _edition_steps(self, plans, by):
+def _edition_steps(self, plans, kind, by, touch=None):
     """The parts' swaps through LM2's one step (`_switch_step`, SWITCH_BATCH a command: a 60-part book in one command
     held the write lock ~195 ms, in steps of 3 ~35–49 ms each — measured 2026-10-22), each part's new bytes taken from
-    its staged file and put back there if the step fails (`keep_part`). -> (the items swapped, the items held)."""
+    its staged file and put back there if the step fails (`keep_part`); `touch()` before each step (the note's time
+    renewed). -> (the items swapped, the items held)."""
     scratch = _edition_change(self)
     for i in range(0, len(plans), SWITCH_BATCH):
+        if touch is not None:
+            touch()
         chunk = [dict(p) for p in plans[i:i + SWITCH_BATCH]]
-        self._switch_step("switch_version", by, None, chunk, uuid.uuid4().hex[:8], scratch, None, None, False, False,
+        self._switch_step(kind, by, None, chunk, uuid.uuid4().hex[:8], scratch, None, None, False, False,
                           None, None, keep=False)
         if scratch.held:
             break
     return scratch.switched, scratch.held
 
 
-def _edition_unswap(self, note, by):
-    """Every part of the edition that took its new bytes back to the old edition's (the new bytes back to their staged
-    file, the old copy back from the trash, the records as read): the whole old edition again. -> the parts that
-    couldn't go back (held open meanwhile: they stay new; the next look finishes the edition forward)."""
+def _edition_unswap(self, note, kind, by, touch=None):
+    """Every part of the edition (or of its Undo) that took its new bytes back to the bytes it had (the new bytes back
+    to their staged file, the old copy back from the trash, the records as read): the whole book as it was. -> the
+    parts that couldn't go back (held open meanwhile: they stay; the next look finishes it forward)."""
     full = lambda rel: os.path.join(self.data_dir, _strip(rel))      # noqa: E731
     with self._reading():
         state, _taken, _gone = _edition_state(self, note)
@@ -9915,20 +9989,44 @@ def _edition_unswap(self, note, by):
               "keep_part": True} for p in note["parts"] if state[p["item"]] == "new"]
     if not plans:
         return []
-    _swapped_back, held = _edition_steps(self, plans, by)
+    _swapped_back, held = _edition_steps(self, plans, kind, by, touch)
     if held:
-        print(f"Library store: {len(held)} part(s) of a book's new edition couldn't go back yet; the next look "
-              f"finishes the edition")
+        print(f"Library store: {len(held)} part(s) of a book couldn't go back yet; the next look finishes the change")
     return held
 
 
 def _edition_wait(self, key, note, held=()):
-    """The edition waits for the next look (`settle_editions`): its note marked so, the files held named."""
+    """The edition (or its Undo) waits for the next look (`settle_editions`): its note marked so, the files held
+    named."""
     note = dict(note, waiting=True, at=time.time(), held=sorted(set(held)))
     try:
         self.bookkeeping({key: _dumps(note)})
     except StoreError:                                       # it goes stale and is taken up the same way
         pass
+
+
+def _edition_touch(self, key, note, at):
+    """A running edition's (or Undo's) note gets its time renewed — at most every SWITCH_STALE_S / 4 — so another
+    process's `settle_editions` never takes it for a crashed one while it works. -> the time the note holds."""
+    now = time.time()
+    if now - at < SWITCH_STALE_S / 4:
+        return at
+    try:
+        with self._writing():
+            if _edition_note(self, key) is None:
+                return at
+            self._set_meta({key: _dumps(dict(note, waiting=False, at=now))})
+    except StoreError:                                       # busy: renewed at the next step
+        return at
+    return now
+
+
+def _waits(change, held=(), why="a file of the book is open elsewhere"):
+    """The Change of an edition (or its Undo) left waiting for the next look: its held items, and an Undo says so."""
+    change.held, change.waiting = sorted(set(held)), True
+    if change.kind == "undo":
+        change.notes.append(f"the Undo waits ({why}); the next look finishes it")
+    return change
 
 
 def _free_to_move(path):
@@ -9948,55 +10046,69 @@ def _free_to_move(path):
     return True
 
 
+EDITION_TRIES = 3    # looks an extra part's failing move may wait before the edition finishes without it
+
+
 def _store_edition_go(self, key):
-    """Carry a book's new edition (its note `key`) as far as it goes: forward when every part not switched yet still
-    holds the old edition's records and its staged bytes (else every part goes back, the note dropped: the next look
-    judges the book again), the files held last time free first (`_free_to_move`). The parts' swaps a step at a time;
-    a part held → every part back (`_edition_unswap`): the whole old edition, the edition waits. Then the parts past its end
-    in ONE removal (their copies to the trash first; any failing → moved back, every part back, waits). Then the extra
-    parts in ONE take-in (failing → waits: forward next look). Done: in ONE write the note goes and the title's last
-    switch is this edition (`last_switch`, kind "edition"). -> the Change."""
+    """Carry a book's new edition — or its Undo (a note marked `undo`, `_undo_edition`) — (its note `key`) as far as it
+    goes: forward when every part not switched yet still holds the records as read and its staged bytes (else every
+    part goes back, the note dropped: the next look judges the book again), the files held last time free first
+    (`_free_to_move`). The parts' swaps a step at a time (the note's time renewed as it works, `_edition_touch`); a part
+    held → every part back (`_edition_unswap`): the whole book as it was, the change waits. Then the parts past its end
+    (an Undo: the parts the edition added) in ONE removal (their copies to the trash first; any failing → moved back,
+    every part back, waits). Then an Undo's parts past the edition's end put back in ONE restore, an edition's extra
+    parts in ONE take-in (busy → waits: forward next look; one that can never go in — its name taken meanwhile gets a
+    free one, the source no longer read, a move failing EDITION_TRIES looks — is left out, said in the notes: never a
+    wait for ever). Done: in ONE write the note goes and the title's last switch is this edition (`last_switch`, kind
+    "edition") — or, an Undo, is gone. -> the Change."""
     with self._reading():
         note = _edition_note(self, key)
     change = _edition_change(self, note)
     if note is None:
         return change
-    by = note.get("by") or SOURCE_PRODUCER
+    undo = bool(note.get("undo"))
+    kind, by = ("undo", "undo") if undo else ("switch_version", note.get("by") or SOURCE_PRODUCER)
     full = lambda rel: os.path.join(self.data_dir, _strip(rel))      # noqa: E731
+    clock = [float(note.get("at") or 0)]
+
+    def touch():
+        clock[0] = _edition_touch(self, key, note, clock[0])
     with self._reading():
         state, taken, gone = _edition_state(self, note)
     items = [p["item"] for p in note["parts"]]
     old = [p for p in note["parts"] if state[p["item"]] == "old"]
     if "changed" in state.values() or not all(_part_holds(full(p["part"]), p["sha256"]) for p in old):
-        held = _edition_unswap(self, note, by)              # changed meanwhile (the learner's): judged again
+        held = _edition_unswap(self, note, kind, by, touch)  # changed meanwhile (the learner's): judged again
         if held:
             _edition_wait(self, key, note, held)
         else:
             _edition_drop(self, key, note)
         change.held = items
+        if undo:
+            change.notes.append("the book changed since; nothing was undone")
         return change
     for i in note.get("held") or ():
         rel = next((p["rel"] for p in note["parts"] + note["surplus"] if p["item"] == i), None)
         if rel is not None and not _free_to_move(full(rel)):
             _edition_wait(self, key, note, note["held"])
-            change.held, change.waiting = list(note["held"]), True
-            return change
+            return _waits(change, note["held"])
     plans = [{"item": p["item"], "rel": p["rel"], "to_rel": p["rel"], "sha256": p["sha256"], "origins": [],
               "expect": p["expect"], "write": p["write"], "part": full(p["part"]), "trash": p["trash"],
               "keep_part": True} for p in old]
     try:
-        _done, held = _edition_steps(self, plans, by) if plans else ([], [])
+        _done, held = _edition_steps(self, plans, kind, by, touch) if plans else ([], [])
     except Exception as e:                                   # a step failing: its own moves were put back
         print(f"Library store: a book's new edition stopped switching ({e!a}); it goes back whole and waits")
         held = [p["item"] for p in old]
     if held:
-        still = _edition_unswap(self, note, by)
+        still = _edition_unswap(self, note, kind, by, touch)
         _edition_wait(self, key, note, held + still)
-        change.held, change.waiting = sorted(set(held)), True
-        return change
+        return _waits(change, held)
     left = [s for s in note["surplus"] if s["item"] not in gone]
     moved, failing = [], None
     try:
+        if left:
+            touch()
         for s in left:
             failing = s["item"]
             if os.path.isfile(full(s["trash"])) and not os.path.exists(full(s["rel"])):
@@ -10012,54 +10124,106 @@ def _store_edition_go(self, key):
             self.remove([s["item"] for s in left], trashed_paths={s["item"]: s["trash"] for s in moved}, by=by,
                         exclude=False)
     except Exception as e:                                   # held open (B2), or the store failing (S3): back whole
-        print(f"Library store: a book's part past its new edition's end couldn't go ({e!a}); the edition waits")
+        print(f"Library store: a book's part couldn't be taken out ({e!a}); the change waits")
         for s in moved:
             _switch_back(full(s["trash"]), full(s["rel"]))
-        still = _edition_unswap(self, note, by)
+        still = _edition_unswap(self, note, kind, by, touch)
         _edition_wait(self, key, note, ([failing] if failing is not None else []) + still)
-        change.held, change.waiting = ([failing] if failing is not None else []), True
+        return _waits(change, [failing] if failing is not None else [])
+    if note.get("back") and not _edition_put_back(self, key, note, change):
         return change
-    found = []
+    found, lost = [], []
     for x in note["extras"]:
         if x["rel"] in taken:
             continue
         at = full(x["rel"])
-        if not (os.path.isfile(at) and _part_holds(at, x["sha256"])):
-            if not x.get("part") or not _part_holds(full(x["part"]), x["sha256"]):
-                print(f"Library store: a new edition's part is lost before it went in ({x['rel']!a}): left out")
-                continue
-            try:
-                os.makedirs(os.path.dirname(at), exist_ok=True)
-                rename_no_overwrite(full(x["part"]), at)
-            except OSError as e:
+        if os.path.isfile(at) and _part_holds(at, x["sha256"]):
+            found.append(x["found"])
+            continue
+        part = full(x["part"]) if x.get("part") else None
+        try:
+            size = x.get("bytes") or (os.path.getsize(part) if part and os.path.isfile(part) else None)
+            rel, same = content_target(self.data_dir, x["rel"], size, x["sha256"])   # a name taken meanwhile: a free
+            if not same:                                     # one (never another's bytes taken for the part)
+                if part is None or not _part_holds(part, x["sha256"]):
+                    print(f"Library store: a new edition's part is lost before it went in ({x['rel']!a}): left out")
+                    lost.append(x["rel"])
+                    continue
+                os.makedirs(os.path.dirname(full(rel)), exist_ok=True)
+                rename_no_overwrite(part, full(rel))
+        except OSError as e:
+            tries = int(note.get("tries") or 0) + 1
+            if tries < EDITION_TRIES:
                 print(f"Library store: a new edition's part waits ({x['rel']!a}): {e!a}")
-                _edition_wait(self, key, note)
-                change.waiting = True
-                return change
-        found.append(x["found"])
+                _edition_wait(self, key, dict(note, tries=tries))
+                return _waits(change, why="a new part couldn't be written yet")
+            print(f"Library store: a new edition's part couldn't go in after {tries} looks ({x['rel']!a}): left out")
+            lost.append(x["rel"])
+            continue
+        found.append(dict(x["found"], rel=rel))
     if found:
+        touch()
         try:
             took = self.take_in(note["root"], found, rules=note.get("rules"))
-        except Exception as e:                               # busy (S1): the next look takes them in
+        except StoreBusy as e:                               # busy (S1): the next look takes them in
             print(f"Library store: a new edition's extra parts wait for the next look: {e!a}")
             _edition_wait(self, key, note)
-            change.waiting = True
-            return change
+            return _waits(change, why="the library was busy")
+        except Exception as e:                               # the source no longer read, a part refused: never a
+            print(f"Library store: a new edition's extra parts can't go in ({e!a}): left out")   # wait for ever
+            took = None
+            lost += [f["rel"] for f in found]
+            for f in found:
+                try:
+                    trash_file(self.data_dir, f["rel"])
+                except OSError:
+                    pass
         for rel in getattr(took, "unused", None) or ():
             try:
                 trash_file(self.data_dir, rel)
             except OSError:
                 pass
+    if lost:
+        change.notes.append(f"{len(lost)} new part{'s' if len(lost) != 1 else ''} of the book couldn't go in")
+    if undo:
+        return _undo_done(self, key, note, change)
     return _edition_done(self, key, note, change)
 
 
+def _edition_put_back(self, key, note, change):
+    """An edition's Undo, its last step: the parts past the edition's end put back (their files from the trash, their
+    rows as they were: ONE restore). Busy → the Undo waits (forward next look: what is put back reads from the trash
+    rows). Anything else (a part purged meanwhile) → said in its notes, the Undo done. -> True when it goes on."""
+    try:
+        rows = [r for r in self.trash_rows(note["back"]) if not r["restored_at"]]
+        rel_paths = {}
+        for r in rows:
+            if r["trashed_path"]:
+                rel, _why = put_back(self.data_dir, r["trashed_path"], r["rel_path"])
+                if rel is not None and rel != r["rel_path"]:
+                    rel_paths[r["id"]] = rel
+        if rows:
+            self.restore([r["id"] for r in rows], rel_paths, by="undo", kind="undo")
+    except StoreBusy as e:
+        print(f"Library store: an edition's Undo waits to put its parts back: {e!a}")
+        _edition_wait(self, key, note)
+        _waits(change, why="the library was busy")
+        return False
+    except (OSError, StoreError) as e:
+        change.notes.append(f"the book's parts past the new edition's end couldn't all be put back ({e})")
+    return True
+
+
 def _edition_drop(self, key, note):
-    """The note dropped and its staged files with it (nothing of the edition left in)."""
+    """The note dropped and its staged files with it (nothing of the edition left in; an Undo's own staged files are
+    the old edition's copies in the trash: kept)."""
     full = lambda rel: os.path.join(self.data_dir, _strip(rel))      # noqa: E731
     try:
         with self._writing():
             self.conn.execute("DELETE FROM meta WHERE key = ?", (key,))
     except StoreError:
+        return
+    if note.get("undo"):
         return
     for p in note["parts"]:
         _remove_quietly(full(p["part"]))
@@ -10070,10 +10234,11 @@ def _edition_drop(self, key, note):
 
 def _edition_done(self, key, note, change):
     """The whole new edition is in: in ONE write the note goes and the title's last switch is this edition (its swaps
-    rebuilt from the note, the extra parts' items, the surplus items' trash rows), the staged files left removed."""
+    rebuilt from the note, with each new part's sha256 for its Undo; the extra parts' items, the surplus items' trash
+    rows), the staged files left removed."""
     full = lambda rel: os.path.join(self.data_dir, _strip(rel))      # noqa: E731
     swaps = [{"item": p["item"], "rel": p["rel"], "to_rel": p["rel"], "trash": p["trash"], "before": p["expect"],
-              "after": p["write"], "old_sha256": p["old_sha256"]} for p in note["parts"]]
+              "after": p["write"], "old_sha256": p["old_sha256"], "sha256": p["sha256"]} for p in note["parts"]]
     switched = [p["item"] for p in note["parts"]]
     removed = [s["item"] for s in note["surplus"]]
     with self._writing():
@@ -10102,6 +10267,21 @@ def _edition_done(self, key, note, change):
     change.switched, change.swaps, change.added, change.removed = switched, swaps, added, removed
     change.removed_trash = trash_ids
     change.switched_works = [note["work"]] if note.get("work") is not None else []
+    return change
+
+
+def _undo_done(self, key, note, change):
+    """An edition's Undo is whole (every part back, its added parts out, the parts past its end back): in ONE write
+    its note goes and so does the title's last switch it undid. -> the Change (`switched`: the parts put back)."""
+    with self._writing():
+        self.conn.execute("DELETE FROM meta WHERE key = ?", (key,))
+        if note.get("work") is not None:
+            row = self.conn.execute("SELECT value FROM meta WHERE key = ?",
+                                    (LAST_SWITCH + str(note["work"]),)).fetchone()
+            if row and (_json_dict(row[0]) or {}).get("id") == note.get("undo"):
+                self.conn.execute("DELETE FROM meta WHERE key = ?", (LAST_SWITCH + str(note["work"]),))
+    change.switched = [p["item"] for p in note["parts"]]
+    change.removed = [s["item"] for s in note["surplus"]]
     return change
 
 
@@ -10146,11 +10326,15 @@ def _store_settle_editions(self, now=None):
 
 
 def _store_pending_editions(self):
-    """The EPUBs (their keys as the look gives them) whose new edition is still waiting: never hashed nor split again
-    while their note stands (`settle_editions` carries it)."""
+    """The EPUBs (their keys as the look gives them) whose new edition — or its Undo: each EPUB its records name — is
+    still waiting: never hashed nor split again while their note stands (`settle_editions` carries it)."""
     rows = self.conn.execute("SELECT value FROM meta WHERE key >= ? AND key < ?",
                              (EDITION_PENDING, EDITION_PENDING[:-1] + ";")).fetchall()
-    return {n["epub"] for n in (_json_dict(v) for (v,) in rows) if n and n.get("epub")}
+    out = set()
+    for n in (_json_dict(v) for (v,) in rows):
+        if n:
+            out.update(([n["epub"]] if n.get("epub") else []) + list(n.get("epubs") or ()))
+    return out
 
 
 def _store_other_groups(self, work_id):

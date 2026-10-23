@@ -715,10 +715,13 @@ class _Look:
             try:
                 for change in self.store.settle_editions():
                     self._switched(change)
-                self.pending_books = self.store.pending_editions()
             except Exception as e:                   # never the end of the look: the next one tries again
                 log.warning("A book's waiting new edition couldn't be finished (the next look tries again): %r", e,
                             exc_info=True)
+            try:                                     # read on its own: a settling that failed still waits
+                self.pending_books = self.store.pending_editions()
+            except Exception as e:
+                log.warning("The books' waiting new editions couldn't be read: %r", e, exc_info=True)
         stamp = (meta.get("store_id"), meta.get("epoch"))
         looked = (_store_key(self.store), self.root_id)
         cache = _load_cache(self.language, stamp)
@@ -1282,7 +1285,10 @@ class _Look:
                             exc_info=True)
 
     def _switched(self, change):
-        """A switch's Change counted in the look's result (`switched`, `switched_works`)."""
+        """A switch's Change counted in the look's result (`switched`, `switched_works`); an edition's Undo the
+        look finished (kind `undo`) is none."""
+        if change.kind == "undo":
+            return
         self.out["switched"] += len(change.switched)
         added = [i for i in getattr(change, "added", None) or () if i not in self.out["ids"]]
         self.out["added"] += len(added)                  # (a new edition's extra parts: new items of the book)

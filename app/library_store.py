@@ -6852,10 +6852,11 @@ def _helper_args(language, command, *extra):
     """The helper's command line, frozen (`Surasura.exe library_maintain <command> …`, app_entry's branch)
     or from source (`python app/library_store.py <command> …`). Frozen, it names the Surasura beside the running
     program, never `sys.executable`: Connect's receipts and the command line's writes start the helper from
-    surasura-cli.exe, which has no `library_maintain` verb (it refused every one on the laptop's build)."""
+    surasura-cli.exe, which has no `library_maintain` verb (it refused every one on the laptop's build). `--headless`:
+    no window stands behind a detached helper, so its start check logs a version skew and never shows a box."""
     if getattr(sys, "frozen", False):
         from app.path_utils import program_beside
-        return [program_beside("Surasura"), "library_maintain", command, "--language", language, *extra]
+        return [program_beside("Surasura"), "library_maintain", "--headless", command, "--language", language, *extra]
     return [sys.executable, os.path.abspath(__file__), command, "--language", language, *extra]
 
 

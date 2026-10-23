@@ -858,7 +858,7 @@ class Recorder:
     def __init__(self):
         self.moves, self.resyncs = [], 0
 
-    def after_move(self, ids, tier, before_id=None, after_id=None, order=None):
+    def after_move(self, ids, tier, before_id=None, after_id=None, order=None, aside=None):
         self.moves.append((list(ids), tier, before_id, after_id))
         return {}
 

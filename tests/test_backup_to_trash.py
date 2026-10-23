@@ -218,3 +218,18 @@ def test_move_sets_the_file_aside_whole(tmp_path):
     dst = path_utils.backup_to_trash(path, move=True)
     assert not os.path.exists(path)
     assert open(dst, "rb").read() == before
+
+
+@pytest.mark.skipif(os.name != "nt", reason="only Windows' rename refuses a taken name")
+def test_a_name_taken_between_the_look_and_the_rename_steps_to_the_next(tmp_path, monkeypatch):
+    """Another writer takes the dated name after this one looked (exists() said free): Windows' rename refuses it, and
+    the backup steps to `-1` instead of failing or overwriting the other backup."""
+    path = _known_words(tmp_path, "ja")
+    first = path_utils.backup_to_trash(path)
+    real_exists = os.path.exists
+    monkeypatch.setattr(path_utils.os.path, "exists", lambda p: False if p.endswith(".json") and ".trash" in p
+                        else real_exists(p))
+    monkeypatch.setattr(path_utils.time, "strftime", lambda _f: os.path.basename(first).split(".")[1])
+    second = path_utils.backup_to_trash(path)
+    assert second == first[:-len(".json")] + "-1.json"
+    assert open(first, "rb").read() == open(second, "rb").read() == open(path, "rb").read()

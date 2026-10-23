@@ -650,6 +650,50 @@ def test_catch_up_places_newly_mined_cards_and_asks_for_the_journey_after_moves(
     assert store.versions()["planned_order_version"] == store.versions()["order_version"]
 
 
+class EditedCollection(SyncCollection):
+    """`SyncCollection` plus `findNotes` for the catch-up's `edited:1` look: the notes `edited` names, in scope."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.edited = set()
+
+    def _dispatch(self, action, params):
+        if action == "findNotes" and "edited:1" in (params.get("query") or ""):
+            return sorted(self.edited)
+        return super()._dispatch(action, params)
+
+
+def test_catch_up_re_places_a_card_whose_note_was_edited_since_the_last_run(lib):
+    """Drill A3 gap 3 (the lead, 2026-10-23): a note's word edited in Anki after a re-order (its mod time only) moved
+    nothing — the host owed nothing. Now the catch-up holds the notes Anki says were edited lately (`edited:1`)
+    against the mod time its card map read: an edit makes it owed, the card goes where its new word belongs, and the
+    next catch-up owes nothing again."""
+    root, store = lib
+    words = _list_words(root, 60)
+    cards, notes, _ = _collection(words, dues=list(range(3059, 2999, -1)), deck=DECK)
+    fake = EditedCollection(cards, notes)
+    dash, _ = _host(generate=lambda reason: None)
+    with _patched(fake):
+        dash._job("catch-up")
+        last = max(fake.notes, key=lambda n: words.index(fake.notes[n]["fields"]["Expression"]["value"]))
+        card = next(c for c in fake.cards.values() if c["note"] == last)
+        due_before = card["due"]
+        fake.notes[last]["fields"]["Expression"]["value"] = words[0]          # the card is now the list's first word
+        fake.note_mods[last] += 7
+        fake.edited = {last}
+        dash._anki_looked = -1e9
+        fake.write_requests.clear()
+        dash._job("catch-up")
+        assert fake.write_requests, "the edited note's card wasn't re-placed"
+        first_dues = sorted(c["due"] for c in fake.cards.values())[:2]
+        assert card["due"] != due_before and card["due"] in first_dues, "beside the list's first word now"
+        dash._anki_looked = -1e9
+        fake.requests.clear()
+        dash._job("catch-up")
+    sent = [r for r in fake.requests if r["action"] == "multi" and "setSpecificValueOfCard" in str(r)]
+    assert not sent, "read again: nothing owed"
+
+
 def test_no_plan_at_all_asks_for_one_generate_once(lib):
     root, store = lib
     os.remove(os.path.join(root, "results", analyzer.PLAN_FILE))

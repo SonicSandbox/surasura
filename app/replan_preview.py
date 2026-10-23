@@ -826,8 +826,9 @@ class Host:
 
     def _unplaced(self, settings):
         """New cards in the deck the last spaced run didn't place (03 §6: newly mined) — one `findCards`, at most
-        every CHECK_ANKI_S, asking for exactly the cards a run places (not suspended, buried or in a filtered deck).
-        Never raises."""
+        every CHECK_ANKI_S, asking for exactly the cards a run places (not suspended, buried or in a filtered deck) —
+        or a new card's note edited since the last run read it (drill A3 gap 3: its word changed, so may its place;
+        `_edited`). Never raises."""
         now = time.monotonic()
         if now - self._anki_looked < CHECK_ANKI_S:
             return False
@@ -845,9 +846,26 @@ class Host:
             ids = anki_connect.find_cards(url, f'deck:"{anki_connect.escape_query(deck)}" is:new -is:suspended '
                                                "-is:buried -deck:filtered")
             seen = undo.ladder(self.language, [deck]).get("seen")
-            return bool(ids) and (seen is None or max(ids) > seen)
+            return (bool(ids) and (seen is None or max(ids) > seen)) or self._edited(url, deck)
         except Exception:
             return False
+
+    def _edited(self, url, deck):
+        """Drill A3 gap 3 (the lead, 2026-10-23): has a new card's note been edited since the last run read it? Anki's
+        `edited:1` (as the Anki sync's delta reads edits) narrows it to the notes edited lately — one `findNotes`, and
+        `notesModTime` only for those — then each is held against the mod time the card map read (`CardMap.note_mods`):
+        one it never read, or read at another time (an edit here, or one a sync brought from your phone), is owed. No
+        map yet: the first job reads everything anyway."""
+        from app import anki_connect
+        known = getattr(self._cards, "note_mods", None)
+        if not known:
+            return False
+        notes = anki_connect.find_notes(url, f'deck:"{anki_connect.escape_query(deck)}" is:new -is:suspended '
+                                             "-is:buried -deck:filtered edited:1")
+        if not notes:
+            return False
+        mods = anki_connect.invoke("notesModTime", url, notes=list(notes))
+        return any(isinstance(m, dict) and known.get(m.get("noteId")) != m.get("mod") for m in mods or ())
 
     def _journey(self, plan, parts, verdict, store):
         """The dashboard's automatic Generate beyond a re-order the plan can't serve (04 §3, ✅ G1.5-2 / G1.5-5): no

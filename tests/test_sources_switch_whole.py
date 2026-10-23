@@ -960,3 +960,253 @@ def test_an_unreadable_old_part_keeps_the_whole_old_edition_until_it_reads(langu
         assert _whole(data_dir, before, _parts(new, language))
         store.undo_switch(work)
         assert [_copy(data_dir, rel) for _i, rel in before] == olds
+
+
+# --- an edition's Undo carried by one runner at a time; what is left out stays Put back-able --------------------- #
+
+def _switched(store, data_dir, language, src, root, more=1):
+    """The book in, then its new edition switched -> (the items, the old copies, the new edition's parts, the title)."""
+    _look(store, language, root, first=True)
+    before = _items(store)
+    olds = [_copy(data_dir, rel) for _i, rel in before]
+    work = store.item(before[0][0])["work_id"]
+    new = _epub(os.path.join(src, "Books", f"{_EDITION[language]}.epub"), _chapters(language, "改", more), language)
+    _look(store, language, root)
+    news = _parts(new, language)
+    assert news != olds
+    return before, olds, news, work
+
+
+def _notes(store):
+    return [k for k in store.meta() if k.startswith(ls.EDITION_PENDING)]
+
+
+def _press_again_while_it_runs(store, before, olds, news, work, monkeypatch):
+    """Undo pressed (runner A: a look's settle, a worker thread, another process); between two of A's part steps —
+    the next part's copy mid-move — Undo is pressed again (B). -> B's Change."""
+    monkeypatch.setattr(ls, "SWITCH_BATCH", 1)
+    real = ls.Store._switch_step
+    calls, inner, out = [], [False], []
+    at = next(i for i, (o, n) in enumerate(zip(olds, news)) if o != n) + 2    # once a part that differs went back
+    assert at <= len(before)
+
+    def step(self, kind, by, work_id, ready, *a, **k):
+        if kind == "undo" and not inner[0] and ready:
+            calls.append(1)
+            if len(calls) == at:
+                part = ready[0]["part"]
+                os.replace(part, part + ".moving")           # A's move of this part under way
+                inner[0] = True
+                try:
+                    out.append(store.undo_switch(work))
+                finally:
+                    inner[0] = False
+                    os.replace(part + ".moving", part)
+        return real(self, kind, by, work_id, ready, *a, **k)
+    with monkeypatch.context() as patched:
+        patched.setattr(ls.Store, "_switch_step", step)
+        store.undo_switch(work)
+    return out[0]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_undo_pressed_again_while_it_runs_is_told_it_is_under_way_and_never_runs_twice(language, monkeypatch):
+    """An edition's Undo running (between two of its part steps) when Undo is pressed again: the second press is
+    told the Undo is under way (waiting) and changes nothing — never a second runner of the same note, which undid
+    what the first had done and left the book half old with no Undo. The first ends it whole: the old edition, no
+    note, no last switch."""
+    store, data_dir = _empty(language)
+    src = _drive("Shelf")
+    _book(language, src)
+    with store:
+        root = store.add_source(src)
+        before, olds, news, work = _switched(store, data_dir, language, src, root)
+        assert [_copy(data_dir, rel) for _i, rel in before] == news
+        second = _press_again_while_it_runs(store, before, olds, news, work, monkeypatch)
+        assert second.waiting and second.notes and not second.switched
+        assert [_copy(data_dir, rel) for _i, rel in before] == olds
+        assert store.last_switch(work) is None and not _notes(store) and not _pending(store)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_two_runners_of_one_undo_still_end_whole_at_the_next_look(language, monkeypatch):
+    """Under the claim: should two runners ever carry one Undo (the claim forced open here), the one that finishes
+    drops the note and the last switch only once every part reads the old edition — else the note waits, the Undo
+    stays, and the next look ends the book whole."""
+    store, data_dir = _empty(language)
+    src = _drive("Shelf")
+    _book(language, src)
+    with store:
+        root = store.add_source(src)
+        before, olds, news, work = _switched(store, data_dir, language, src, root)
+        monkeypatch.setattr(ls, "_edition_take", lambda *a, **k: True, raising=False)
+        _press_again_while_it_runs(store, before, olds, news, work, monkeypatch)
+        now = [_copy(data_dir, rel) for _i, rel in before]
+        assert now == olds or (_notes(store) and store.last_switch(work) is not None), "a mixed book with no Undo"
+        _look(store, language, root, full=True)
+        assert [_copy(data_dir, rel) for _i, rel in before] == olds
+        assert store.last_switch(work) is None and not _notes(store) and not _pending(store)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_undo_pressed_again_soon_after_a_crash_inside_it_waits_for_the_look(language, monkeypatch):
+    """Killed inside the Undo's second part step, the learner restarts and presses Undo again before the crashed
+    step counts as crashed: the press is told the Undo is under way and changes nothing (never carrying the note
+    past the crashed step, which the next look would then put back over it: a mixed book, records disagreeing with
+    the copy, no Undo). The next look puts the step back and finishes the Undo: the whole old edition."""
+    store, data_dir = _empty(language)
+    src = _drive("Shelf")
+    _book(language, src)
+    with store:
+        root = store.add_source(src)
+        before, olds, news, work = _switched(store, data_dir, language, src, root)
+        uf = store.user_files_dir
+    _crash(language, data_dir, uf, root, "undo-before", 2, work)
+    store = ls.open_store(language, data_dir, uf)
+    with store:
+        assert _notes(store) and _pending(store)
+        held = [_copy(data_dir, rel) for _i, rel in before]
+        again = store.undo_switch(work)
+        assert again.waiting and again.notes
+        assert [_copy(data_dir, rel) for _i, rel in before] == held and _notes(store)
+        monkeypatch.setattr(ls, "SWITCH_STALE_S", 0)                # a minute later
+        _look(store, language, root, full=True)
+        assert [_copy(data_dir, rel) for _i, rel in before] == olds
+        assert store.last_switch(work) is None and not _notes(store) and not _pending(store)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_running_undos_time_renewal_never_rewrites_what_another_runner_wrote(language):
+    """A runner renewing its note's time writes the time only: the note's waiting mark, its held files and its
+    tries as the store holds them stay (never put back from the runner's own older copy of the note)."""
+    store, data_dir = _empty(language)
+    src = _drive("Shelf")
+    _book(language, src)
+    with store:
+        root = store.add_source(src)
+        before, _olds, _news, work = _switched(store, data_dir, language, src, root)
+        key = ls.EDITION_PENDING + "renewal"
+        mine = {"at": 0, "waiting": False, "parts": [], "extras": [], "surplus": [], "work": work}
+        store.bookkeeping({key: ls._dumps(dict(mine, waiting=True, held=[before[0][0]], tries=2))})
+        at = ls._edition_touch(store, key, mine, 0)
+        now = ls._json_dict(store.meta()[key])
+        assert at > 0 and now["at"] == at
+        assert (now["waiting"], now["held"], now["tries"]) == (True, [before[0][0]], 2)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_extra_part_whose_move_in_fails_look_after_look_is_in_the_trash_to_put_back(language, monkeypatch):
+    """A longer edition's extra part whose move in fails look after look (EDITION_TRIES): the edition finishes
+    without it, and the part sits in the trash with its row — Put back brings it into the library with its text, as
+    after any removal (never a file in the trash nothing can bring back)."""
+    store, data_dir = _empty(language)
+    src = _drive("Shelf")
+    _book(language, src)
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        before = _items(store)
+        work = store.item(before[0][0])["work_id"]
+        longer = _epub(os.path.join(src, "Books", f"{_EDITION[language]}.epub"), _chapters(language, "改", 2),
+                       language)
+        parts = _parts(longer, language)
+        assert len(parts) == len(before) + 1
+        rows = len(store.trash_rows())
+        real = ls.rename_no_overwrite
+
+        def refused(a, b):
+            if ".trash" in a.replace("\\", "/").split("/"):
+                raise PermissionError(a)          # the staged extra part can't be moved in
+            return real(a, b)
+        with monkeypatch.context() as patched:
+            patched.setattr(ls, "rename_no_overwrite", refused)
+            _look(store, language, root)
+            for _n in range(ls.EDITION_TRIES):
+                if _notes(store):
+                    _look(store, language, root, full=True)
+        assert not _notes(store) and (store.last_switch(work) or {}).get("kind") == "edition"
+        assert _items(store) == before and _whole(data_dir, before, parts[:len(before)])
+        (row,) = store.trash_rows()[rows:]
+        assert row["trashed_path"] and os.path.isfile(os.path.join(data_dir, *row["trashed_path"].split("/")))
+        rel, _why = ls.put_back(data_dir, row["trashed_path"], row["rel_path"])
+        store.restore([row["id"]], {row["id"]: rel})
+        now = _items(store)
+        assert len(now) == len(parts) and [_copy(data_dir, r) for _i, r in now] == parts
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_short_failure_taking_the_extra_parts_in_is_waited_out(language, monkeypatch):
+    """A longer edition's extra parts the store fails to take in once (a short failure, not a busy store): the
+    edition waits for the next look, which takes them in — never left out at once."""
+    store, data_dir = _empty(language)
+    src = _drive("Shelf")
+    _book(language, src)
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        before = _items(store)
+        work = store.item(before[0][0])["work_id"]
+        longer = _epub(os.path.join(src, "Books", f"{_EDITION[language]}.epub"), _chapters(language, "改", 2),
+                       language)
+        parts = _parts(longer, language)
+        real = store.take_in
+
+        def flaky(root_id, found, **k):
+            if any(str(f.get("origin", "")).startswith(os.path.abspath(longer)) for f in found):
+                raise ls.StoreError("disk I/O error")
+            return real(root_id, found, **k)
+        with monkeypatch.context() as patched:
+            patched.setattr(store, "take_in", flaky)
+            _look(store, language, root)
+        assert _notes(store), "a short failure waits for the next look"
+        _look(store, language, root, full=True)
+        now = _items(store)
+        assert now[:len(before)] == before and [_copy(data_dir, r) for _i, r in now] == parts
+        assert not _notes(store) and (store.last_switch(work) or {}).get("kind") == "edition"
+
+
+@pytest.mark.parametrize("gone", ["file", "row"])
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_undo_whose_parts_past_the_end_are_gone_for_good_is_refused(language, gone):
+    """A shorter edition's Undo when a part past its end is gone from the trash for good (its file purged, or its
+    row deleted): refused in plain words before anything is written — never an old edition back without its tail
+    and no Undo left. The new edition and its last switch stay."""
+    store, data_dir = _empty(language)
+    src = _drive("Shelf")
+    _epub(os.path.join(src, "Books", f"{_BOOKS[language]}.epub"), _chapters(language, "", 2), language)
+    with store:
+        root = store.add_source(src)
+        before, _olds, news, work = _switched(store, data_dir, language, src, root)
+        now = _items(store)
+        assert len(now) == len(news) < len(before)
+        (row,) = [r for r in store.trash_rows() if r["item_id"] == before[-1][0]]
+        if gone == "file":
+            os.remove(os.path.join(data_dir, *row["trashed_path"].split("/")))
+        else:
+            with store._writing():
+                store.conn.execute("DELETE FROM trash WHERE id = ?", (row["id"],))
+        last = store.last_switch(work)
+        with pytest.raises(ls.UndoRefused) as refused:
+            store.undo_switch(work)
+        assert "nothing was undone" in str(refused.value)
+        assert _items(store) == now and [_copy(data_dir, rel) for _i, rel in now] == news
+        assert store.last_switch(work) == last and not _notes(store) and not _pending(store)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows refuses to move a file held open")
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_held_check_never_moves_the_learners_copy(language, tmp_path, monkeypatch):
+    """Is a copy held open? Asked without moving it: a crash or a failing move can never leave the copy under
+    another name (the item missing). Held → not free; let go → free; the copy never renamed either way."""
+    copy = str(tmp_path / "第01話.txt")
+    _write(copy, _text(language, 1))
+    moved = []
+    for name in ("rename", "replace"):
+        def watch(a, b, *x, _real=getattr(os, name), **k):
+            moved.append(a)
+            return _real(a, b, *x, **k)
+        monkeypatch.setattr(os, name, watch)
+    with open(copy, "rb"):
+        assert ls._free_to_move(copy) is False
+    assert ls._free_to_move(copy) is True
+    assert moved == [] and os.listdir(str(tmp_path)) == ["第01話.txt"]

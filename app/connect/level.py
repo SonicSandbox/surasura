@@ -106,11 +106,23 @@ def _queue(store, language, ledger, new, file_words):
     return queued
 
 
+# 3.0's rule (laptop round 8 #49, LF4-1 = A; Sonic 2026-10-22: "new words never come from a watched episode YET. This
+# is critical, as in 3.1, it will pick the best sentence which often may come from watched episodes / series"): Connect
+# makes no new cards on its own from an episode you've watched — neither its first mining nor a level raise; your ask
+# (*Mine this*, *Mine now*) always does. 3.1's best-sentence pick (P6.1, Swap and the sentence library) lifts it: False.
+WATCHED_GIVES_NO_NEW_CARDS = True
+
+
+def watched_out(item):
+    """Is this item one Connect makes no new cards from on its own (`WATCHED_GIVES_NO_NEW_CARDS`: you've watched it)?"""
+    return WATCHED_GIVES_NO_NEW_CARDS and bool((item or {}).get("watched"))
+
+
 def wants(item):
     """Does a level raise mine this (already mined) item? Never one taken out of the learning order (D14), never one
-    you've watched (laptop round 8 #49, LF4-1 ⭐ A, PROVISIONAL: its new words go to the episodes ahead of you, so the
-    card comes before the word; the runner drops a job whose episode was marked watched since, `runner.WATCHED`)."""
-    return item is not None and item.get("in_learning_order") != 0 and not item.get("watched")
+    you've watched (`watched_out`: its new words go to the episodes ahead of you, so the card comes before the word; the
+    runner drops a job whose episode was marked watched since, `runner.WATCHED`)."""
+    return item is not None and item.get("in_learning_order") != 0 and not watched_out(item)
 
 
 def _walk(store):

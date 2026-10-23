@@ -123,10 +123,26 @@ def test_a_level_job_queued_before_its_episode_was_watched_is_dropped_when_it_st
 
 
 def test_an_asked_job_on_a_watched_episode_still_mines(tmp_path, ledger):
-    # *Mine this* is yours: watched or not, it is mined (the rule is the automatic level raise's only)
-    plan = {"line": {"ja": [1]}, "queue": {"ja": [1]}, "watched": [1]}
-    _steps, summary = _run(tmp_path, ledger, plan)
+    # *Mine this* is yours: watched or not, it is mined (3.0's rule is Connect's own mining only)
+    with ledger.transaction():
+        ledger.ask("ja", 1, "2026-10-22T23:00:00.000000Z", store_id="store-1")
+    _steps, summary = _run(tmp_path, ledger, {"line": {"ja": [1]}, "watched": [1]})
     assert summary["languages"]["ja"]["done"] == [1]
+
+
+def test_connects_own_first_mining_of_a_watched_episode_makes_no_cards_yet(tmp_path, ledger):
+    # Sonic (LF4-1 = A): "new words never come from a watched episode YET" — 3.0's rule, lifted by 3.1's pick
+    steps, summary = _run(tmp_path, ledger, {"line": {"ja": [1]}, "queue": {"ja": [1]}, "watched": [1]})
+    job = ledger.jobs("ja")[0]
+    assert (job["state"], job["reason"]) == ("dropped", runner.WATCHED)
+    assert not any(e[0] == "mine" for e in steps.log)
+    assert level.WATCHED_GIVES_NO_NEW_CARDS is True, "3.0's rule; 3.1's best-sentence pick sets it False"
+
+
+def test_with_the_rule_lifted_a_watched_episode_is_mined_again(tmp_path, ledger, monkeypatch):
+    monkeypatch.setattr(level, "WATCHED_GIVES_NO_NEW_CARDS", False)
+    assert level.wants({"watched": 1, "in_learning_order": 1})
+    assert not level.watched_out({"watched": 1})
 
 
 # --- laptop round 8 #52 (LF4-4 ⭐ A): a word Anki Miner has no definition for is no card in any episode ----------- #

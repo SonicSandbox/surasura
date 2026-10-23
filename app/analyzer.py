@@ -4843,10 +4843,19 @@ def main():
     # here on — the known words included — is read with.
     if _store is not None:
         try:
-            _store.reconcile([_fp for (_fp, _l, _w, _st) in found_files],
+            # The token store's lists, as the indexer hands them (W-1): a Generate before the indexer keeps every kept
+            # and set-aside (watched) file's row, never dropping one the indexer would only tokenize again. A library
+            # store that can't be read now: the run's list alone, every kept and set-aside row left as it is.
+            from app.indexer import token_store_lists
+            _run_files = [_fp for (_fp, _l, _w, _st) in found_files]
+            _counted, _more = token_store_lists(language, data_dir, _run_files)
+            if _counted is None:
+                _counted, _more = _run_files, {}
+            _store.reconcile(_counted,
                              _cancellable(_token_index.make_tokenizer(language, reinforce=args.reinforce,
                                                                       script=script)),
-                             build_signature=_token_index.build_signature(language, args.reinforce, script))
+                             build_signature=_token_index.build_signature(language, args.reinforce, script),
+                             data_dir=data_dir, **_more)
         except Exception as e:
             print(f"Warning: token store reconcile failed; using direct tokenization: {e}")
             try:

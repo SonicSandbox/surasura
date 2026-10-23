@@ -17,6 +17,7 @@ words from tests/Test Resources/ (the token store's test reads real subtitles an
 """
 import os
 import sqlite3
+from unittest.mock import patch
 
 import pytest
 
@@ -313,12 +314,13 @@ def test_leaving_finished_clears_the_stones_and_one_undo_puts_back_the_stones_an
     store.close()
 
 
-# --- the token store's lists (until K-W2) ----------------------------------------------------------------------- #
+# --- the token store's lists (K-W2: set aside) ------------------------------------------------------------------ #
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_the_indexer_still_counts_a_watched_file_until_the_token_store_sets_it_aside(language):
-    """Until K-W2 the indexer hands the set-aside files to the token store as counted: a stone changes nothing there
-    (the same counts, names, phrases and cut-off, nothing tokenized again) though Generate's list loses the file."""
+def test_the_indexer_sets_a_watched_file_aside_and_un_marking_brings_it_back_with_no_tokenizing(language, tmp_path):
+    """The indexer hands the token store the set-aside list: a stone moves the episode out of every count — the counts,
+    phrases and cut-off a Finished file leaves — keeps the name tables as they were, and tokenizes nothing; un-marked
+    (or with Keep studying watched episodes on) it counts again, exactly as before, still with nothing tokenized."""
     store, data_dir, ids = _real_library(language)
     _run_indexer(language)
     with ti.open_store(language) as tokens:
@@ -328,9 +330,34 @@ def test_the_indexer_still_counts_a_watched_file_until_the_token_store_sets_it_a
     files = [os.path.join(data_dir, p) for p in _scheduled(store)]
     assert ti._norm(watched) not in {ti._norm(p) for p in files}
     counted, more = indexer.token_store_lists(language, data_dir, files)
-    assert ti._norm(watched) in {ti._norm(p) for p in counted} and watched not in more["kept"]
+    assert ti._norm(watched) not in {ti._norm(p) for p in counted}
+    assert [ti._norm(p) for p in more["aside"]] == [ti._norm(watched)] and watched not in more["kept"]
+    finished = ti.open_store(language, path=str(tmp_path / "finished.db"))
+    finished.reconcile(counted, ti.make_tokenizer(language), kept=[watched])
+    tokenized, real = [], ti._tokenized
+
+    def spy(paths, tokenize_file, workers):
+        tokenized.extend(paths)
+        return real(paths, tokenize_file, workers)
+
+    with patch.object(ti, "_tokenized", spy):
+        _run_indexer(language)
+        with ti.open_store(language) as tokens:
+            now = _everything_counted(tokens, language)
+            assert tokens.aside_files() == [ti._norm(watched)]
+            assert now.pop("names") == reference["names"], "a stone never changes the name tables"
+            alone = _everything_counted(finished, language)
+            alone.pop("names")
+            assert now == alone, "set aside: every count a Finished file leaves"
+        store.set_watched([ids[watched]], False)
+        _run_indexer(language)
+        with ti.open_store(language) as tokens:
+            assert _everything_counted(tokens, language) == reference and tokens.aside_files() == []
+        store.set_watched([ids[watched]])
+        store.set_library_options(keep_watched=True)
+        _run_indexer(language)
+        with ti.open_store(language) as tokens:
+            assert _everything_counted(tokens, language) == reference and tokens.aside_files() == []
+    assert tokenized == [], "no move re-tokenizes"
     store.close()
-    _run_indexer(language)
-    with ti.open_store(language) as tokens:
-        assert _everything_counted(tokens, language) == reference
-        assert ti._norm(watched) in set(tokens.counted_files())
+    finished.close()

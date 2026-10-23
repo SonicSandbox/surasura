@@ -142,6 +142,36 @@ def test_a_file_moves_counted_aside_kept_and_back_with_no_tokenizing(language, t
     finished.close()
 
 
+def test_a_kept_aside_flip_reads_the_names_again_and_leaves_the_phrase_table_alone(monkeypatch):
+    """Finished to watched and back (kept <-> aside) moves no count but the names' evidence: the name tables are
+    computed again; the phrase table reads counted files alone, so it is neither counted again nor written (S19). A
+    counted file set aside still moves it (not vacuous)."""
+    a, b, _c, c, *_rest = _files("ja")         # c: its names change nothing the name tables join (a flip of
+    tok = _counting("ja")                       # one that does reads the phrases again: they read through them)
+    store = ti.open_store("ja")
+    store.reconcile([a, b], tok, kept=[c])
+    assert store.get_meta("phrases_state"), "the phrase table is counted here"
+    written, names = [], []
+    set_meta, update_names = ti.Store.set_meta, ti.Store._update_names_tables
+
+    def spy_meta(self, key, value):
+        written.append(key)
+        return set_meta(self, key, value)
+
+    def spy_names(self, *args, **kw):
+        names.append(1)
+        return update_names(self, *args, **kw)
+    with monkeypatch.context() as patched:
+        patched.setattr(ti.Store, "set_meta", spy_meta)
+        patched.setattr(ti.Store, "_update_names_tables", spy_names)
+        store.reconcile([a, b], tok, kept=[], aside=[c])                 # Finished -> watched in Current
+        store.reconcile([a, b], tok, kept=[c], aside=[])                 # ... and back
+        assert names == [1, 1] and [k for k in written if k.startswith("phrase")] == []
+        store.reconcile([a], tok, kept=[c], aside=[b])                   # a counted episode watched
+        assert names == [1, 1, 1] and "phrases" in written
+    store.close()
+
+
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_a_new_or_changed_aside_file_is_read_once_and_never_summed(language, tmp_path):
     """An episode that arrives already watched is tokenized once (as a counted file is: no kept text while its file is

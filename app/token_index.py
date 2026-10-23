@@ -1057,8 +1057,9 @@ class Store:
         texts = self._kept_text(data_dir)
         cur = self.conn.cursor()
         cur.execute("BEGIN IMMEDIATE")
-        changed = False         # what the counted (or set-aside) files hold changed: the name tables and the phrases
-        try:                    # are read again
+        changed = False         # what the counted (or set-aside) files hold changed: the name tables are read again
+        phrased = False         # what the counted files hold changed: the phrases too (they read counted files alone)
+        try:
             # "counted": the file's class (KEPT / COUNTED / ASIDE, `_STATE`)
             existing = {
                 r[0]: {"mtime": r[1], "size": r[2], "total": r[3], "counts": r[4], "bound": r[5], "counted": r[6]}
@@ -1103,6 +1104,7 @@ class Store:
                     existing[key] = existing.pop(old)
                     if existing[key]["counted"]:
                         changed = True              # the phrase table and matches follow the new path
+                        phrased = phrased or existing[key]["counted"] == COUNTED
                     leaving.pop(old, None)
                     if old in held:
                         del held[old], listed[old], signatures[old]
@@ -1139,7 +1141,7 @@ class Store:
                 cur.execute("DELETE FROM files")
                 cur.execute("DELETE FROM aggregate")
                 cur.execute("DELETE FROM bound")
-                existing, leaving, changed = {}, {}, True
+                existing, leaving, changed, phrased = {}, {}, True, True
             # What the files change in the aggregate, summed over the whole pass and written once at the end: a full
             # rebuild wrote a million rows (every word of every file) where the library has some 50,000 words.
             # Keys stay in the order they are first met, so new words are added in the same order as file by file.
@@ -1153,12 +1155,13 @@ class Store:
                 if row["counted"] == COUNTED:
                     delta.subtract(_decode_counts(row["counts"]))
                     pieces.subtract(_decode_counts(row["bound"]))
+                    phrased = True
                 if row["counted"] != KEPT:
                     changed = True
                 cur.execute("DELETE FROM files WHERE path=?", (key,))
 
             def write(key, mtime, size, result, row, flag):
-                nonlocal changed
+                nonlocal changed, phrased
                 counts = {k: n for k, n in result["counts"].items() if n > 0}
                 bound = {k: n for k, n in (result.get("bound") or {}).items() if n > 0}
                 total = sum(counts.values())
@@ -1170,6 +1173,8 @@ class Store:
                     pieces.update(bound)
                 if flag != KEPT or (row is not None and row["counted"] != KEPT):
                     changed = True
+                if flag == COUNTED or (row is not None and row["counted"] == COUNTED):
+                    phrased = True
                 names = result.get("names")
                 cur.execute(
                     "INSERT OR REPLACE INTO files(path, mtime, size, total, counts, tokens, names, bound, counted, "
@@ -1187,6 +1192,7 @@ class Store:
                 if row is not None and (signature is None or (row["mtime"], row["size"]) == signature):
                     if row["counted"] != flag:          # unchanged, in another list: its counts move, no tokenizing
                         if COUNTED in (flag, row["counted"]):   # kept <-> aside: no count moves, the evidence does
+                            phrased = True
                             counts, bound = _decode_counts(row["counts"]), _decode_counts(row["bound"])
                             if flag == COUNTED:
                                 delta.update(counts)
@@ -1255,7 +1261,7 @@ class Store:
             # The sentences the user forgot leave the kept text too — only once the store's own change is committed.
             texts.drop([key for key in texts.held() if key in gone])
         texts.close()
-        self._update_phrases(changed)
+        self._update_phrases(phrased)
         return self
 
     def _text_of(self, cur, key, row, source, read):

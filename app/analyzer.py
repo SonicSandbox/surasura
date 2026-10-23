@@ -4858,12 +4858,9 @@ def main():
         try:
             # The token store's lists, as the indexer hands them (W-1): a Generate before the indexer keeps every kept
             # and set-aside (watched) file's row, never dropping one the indexer would only tokenize again. A library
-            # store that can't be read now: the run's list alone, every kept and set-aside row left as it is.
-            from app.indexer import token_store_lists
-            _run_files = [_fp for (_fp, _l, _w, _st) in found_files]
-            _counted, _more = token_store_lists(language, data_dir, _run_files)
-            if _counted is None:
-                _counted, _more = _run_files, {}
+            # store that can't be read now: the run's list, every other row kept as it is or set aside (`run_lists`).
+            from app.indexer import run_lists
+            _counted, _more = run_lists(language, data_dir, [_fp for (_fp, _l, _w, _st) in found_files], _store)
             _store.reconcile(_counted,
                              _cancellable(_token_index.make_tokenizer(language, reinforce=args.reinforce,
                                                                       script=script)),

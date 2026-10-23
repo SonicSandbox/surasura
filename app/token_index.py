@@ -389,10 +389,14 @@ def open_reader(language, path=None):
         c.execute("PRAGMA busy_timeout=5000")
         c.execute("PRAGMA query_only=ON")
         c.execute("SELECT 1 FROM meta LIMIT 1")
+        have = {r[1] for r in c.execute("PRAGMA table_info(files)")}
     except sqlite3.Error:
         c.close()
         return None
-    return Store(c, language, db_path)
+    store = Store(c, language, db_path)
+    if "aside" not in have:         # a store no writer has opened since the set-aside mark: read as it was (no column
+        store._evidence = "counted = 1" if "counted" in have else "1"   # added here: a reader never writes)
+    return store
 
 
 # SQLite's primary result codes (Python 3.11's sqlite3.SQLITE_*), read from an error's `sqlite_errorcode`.
@@ -613,6 +617,8 @@ def _rebuilt_text(sentences, names=None):
 # The store
 # --------------------------------------------------------------------------- #
 class Store:
+    _evidence = _EVIDENCE       # the name tables' evidence, as this store's columns can say it (`open_reader`)
+
     def __init__(self, conn, language=None, path=None):
         self.conn = conn
         self.language = language
@@ -1441,7 +1447,7 @@ class Store:
     def iter_names_records(self):
         """`names_records` one at a time: a reader that only sums them never holds every file's record at once."""
         for (blob,) in self.conn.execute(
-                f"SELECT names FROM files WHERE names IS NOT NULL AND {_EVIDENCE} ORDER BY rowid"):
+                f"SELECT names FROM files WHERE names IS NOT NULL AND {self._evidence} ORDER BY rowid"):
             yield _decode_counts(blob)
 
     def names_record(self, path):

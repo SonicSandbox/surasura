@@ -185,6 +185,34 @@ def test_a_caller_with_one_list_leaves_the_aside_rows_alone(language):
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
+def test_generate_with_the_library_store_unreadable_drops_no_row_its_list_doesnt_name(language, monkeypatch, tmp_path):
+    """A stone on b after the last index, then a Generate while the library store is busy (or read-only): the run's
+    list holds a alone (b and c are watched). b's row is still counted in the token store — it must not go (its
+    tokens read again at the un-mark): every row the run's list doesn't name is handed on set aside, summed nowhere,
+    so the list's counts are a's alone; the indexer's next pass, with the library's lists, tokenizes nothing."""
+    from app import indexer
+    a, b, c, *_rest = _files(language)
+    tok = _counting(language)
+    store = ti.open_store(language)
+    store.reconcile([a, b], tok, aside=[c])                              # indexed: c watched earlier
+    tokens = {p: store.file_tokens(p) for p in (b, c)}
+    tok.calls.clear()
+    with monkeypatch.context() as patched:
+        patched.setattr(indexer, "token_store_lists", lambda *_a: (None, None))     # the library store can't be read
+        counted, more = indexer.run_lists(language, os.path.dirname(a), [a], store)
+    store.reconcile(counted, tok, **more)
+    assert tok.calls == [] and {p: store.file_tokens(p) for p in (b, c)} == tokens
+    assert store.counted_files() == [ti._norm(a)] and set(store.aside_files()) == {ti._norm(b), ti._norm(c)}
+    alone = ti.open_store(language, path=str(tmp_path / "alone.db"))
+    alone.reconcile([a], ti.make_tokenizer(language))
+    assert _counts_only(store, language) == _counts_only(alone, language), "the list counts a alone"
+    assert store.needs_reconcile([a], aside=[b, c]) is False, "the indexer's pass has nothing to do"
+    assert indexer.run_lists(language, os.path.dirname(a), [a], store) == ([a], {})  # no library store: as before
+    store.close()
+    alone.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 def test_a_store_before_the_aside_column_opens_with_no_rebuild(language, tmp_path):
     """A 3.0 store from before K-W2 (the counted flag, no aside column) gets the column in place — nothing aside,
     nothing wiped or re-tokenized, every number as it was (no SCHEMA_VERSION bump)."""
@@ -212,6 +240,43 @@ def test_a_store_before_the_aside_column_opens_with_no_rebuild(language, tmp_pat
     store.reconcile(files[:3], tok, build_signature=ti.build_signature(language), kept=files[3:])
     assert tok.calls == [] and _everything_counted(store, language) == before
     store.close()
+
+
+def _before_the_aside_column(db):
+    """The store at `db` as a 3.0 build before the set-aside mark left it: the counted flag, no aside column."""
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        "CREATE TABLE files_old (path TEXT PRIMARY KEY, mtime REAL, size INTEGER, total INTEGER, counts BLOB, "
+        "tokens BLOB, names BLOB, bound BLOB, counted INTEGER NOT NULL DEFAULT 1);"
+        "INSERT INTO files_old SELECT path, mtime, size, total, counts, tokens, names, bound, counted FROM files "
+        "ORDER BY rowid; DROP TABLE files; ALTER TABLE files_old RENAME TO files;")
+    conn.commit()
+    conn.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_reader_of_a_store_before_the_aside_column_reads_the_names_evidence_and_writes_nothing(language, tmp_path):
+    """The arrivals worker opens the token store to read only: on a store no writer has opened since the set-aside
+    mark came in, its name records are the counted files' (as that store reads them), never "no such column" — and the
+    reader adds no column (readers never write)."""
+    files = _files(language)[:4]
+    db = str(tmp_path / "before.db")
+    store = ti.open_store(language, path=db)
+    store.reconcile(files[:3], ti.make_tokenizer(language), build_signature=ti.build_signature(language),
+                    kept=files[3:])
+    counted = [ti._decode_counts(r[0]) for r in store.conn.execute(
+        "SELECT names FROM files WHERE names IS NOT NULL AND counted = 1 ORDER BY rowid")]
+    store.close()
+    _before_the_aside_column(db)
+    reader = ti.open_reader(language, path=db)
+    try:
+        assert reader.names_records() == counted
+        assert list(reader.iter_names_records()) == counted
+    finally:
+        reader.close()
+    conn = sqlite3.connect(db)
+    assert "aside" not in [r[1] for r in conn.execute("PRAGMA table_info(files)")]
+    conn.close()
 
 
 def test_a_build_before_the_aside_column_reads_an_aside_row_as_kept(tmp_path):

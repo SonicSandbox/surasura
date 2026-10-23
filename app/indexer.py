@@ -89,6 +89,19 @@ def token_store_lists(language, data_dir, files):
                      "forgotten": [full(rel) for rel in forgotten]}
 
 
+def run_lists(language, data_dir, files, store):
+    """Generate's lists for `store.reconcile` (the token store `store`): `token_store_lists`; when the library store
+    can't be read now (busy, read-only), the run's list alone, with every other counted or set-aside row the token
+    store holds handed on as set aside — summed nowhere, dropped never (a watched episode the indexer hasn't moved
+    yet keeps its tokens); the indexer's next pass, with the library's lists, puts each where it belongs."""
+    counted, more = token_store_lists(language, data_dir, files)
+    if counted is not None:
+        return counted, more
+    from app.token_index import _norm
+    named = {_norm(p) for p in files}
+    return list(files), {"aside": [p for p in store.counted_files() + store.aside_files() if p not in named]}
+
+
 def _holding_indexer(run):
     """Run `run` holding the `indexer` lock (`app/locks.py`): informative — `surasura-cli status` reports the indexer
     busy while it is held (P0.3 03) — and one index run at a time per install: a second waits for the first, then

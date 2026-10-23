@@ -659,15 +659,21 @@ def test_B2_after_a_language_switch_settings_shows_that_librarys_folders_and_a_s
                                                                   "items": 5, "reachable": True}]})
     assert 2 in folders.lines and row.summary.text() == S.SOURCES_FOLDERS_ONE
     new = RecordingLooks()
+    listed = []
+    new.listing = lambda: listed.append(True) or True
     win.services.source_looks = new
     win.language = "zh"
     win._follow_looks(None)
-    assert folders.lines == {} and not folders.none.isHidden()  # the zh library's folders, none yet
-    assert row.summary.text() == S.SOURCES_NONE
+    assert listed == [True]                                   # the zh library's listing asked for at once
+    assert folders.lines == {} and folders.none.text() == S.SOURCES_LISTING   # on its way: never "No folders yet"
+    assert row.summary.text() == S.SOURCES_LISTING
     win._sources_looked({"language": "ja", "sources": [{"id": 2, "path": r"D:\アニメ", "on": True, "items": 5,
                                                         "reachable": False}]})
     assert folders.lines == {} and win.offline_line.isHidden()  # the language left's late answer: dropped
-    assert row.summary.text() == S.SOURCES_NONE
+    assert row.summary.text() == S.SOURCES_LISTING
+    win._sources_looked({"language": "zh", "sources": [], "skipped": []})     # the zh listing: none yet
+    assert row.summary.text() == S.SOURCES_NONE and folders.none.text() == S.SOURCES_NONE
+    assert not folders.none.isHidden()
     opener, _d, _u = _library()
     looks = source_looks.SourceLooks(opener, "zh", kind=lambda _p: "network")
     try:

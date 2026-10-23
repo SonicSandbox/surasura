@@ -40,6 +40,7 @@ from app.qt import style, windows
 from app.qt import settings_controls as sc
 from app.qt import settings_strings as S
 from app.qt.settings_rules import _SourceWords
+from app.services.source_looks import offline
 
 ROW_ID = "library_folders"
 FRESH_ID = "fresh_library"
@@ -72,26 +73,32 @@ def count_words(source):
     return S.SOURCES_AWAY.format(count=words) if source.get("reachable") is False else words
 
 
-def summary_words(sources, skipped=0, known=True):
-    """The page's summary of the folders being read (`sources`, the stopped ones left out) and the skipped ones:
-    *4 folders · 1 not reachable now · 2 skipped*; no folder: the line saying so; `known` False: still looking."""
+def summary_words(sources, skipped=(), known=True):
+    """The page's summary of the folders being read (`sources`, the stopped ones left out) and the skipped folders
+    under them (`skipped`: {id, root, path}; one under a stopped folder isn't counted): *4 folders · 1 not reachable
+    now · 2 skipped*; no folder: the line saying so, alone; `known` False: still looking."""
     if not known:
         return S.SOURCES_LISTING
     wanted = [s for s in sources if s.get("on", True)]
+    if not wanted:
+        return S.SOURCES_NONE
     n = len(wanted)
-    parts = [S.SOURCES_NONE if not n else S.SOURCES_FOLDERS_ONE if n == 1 else S.SOURCES_FOLDERS.format(n=n)]
-    away = sum(1 for s in wanted if s.get("reachable") is False)
+    parts = [S.SOURCES_FOLDERS_ONE if n == 1 else S.SOURCES_FOLDERS.format(n=n)]
+    away = len(offline(wanted))                           # the offline line's own rule
     if away:
         parts.append(S.SOURCES_AWAY_N.format(n=away))
-    if skipped:
-        parts.append(S.SOURCES_SKIPPED_N.format(n=skipped))
+    roots = {s["id"] for s in wanted}
+    under = sum(1 for f in skipped if f.get("root") in roots)
+    if under:
+        parts.append(S.SOURCES_SKIPPED_N.format(n=under))
     return " · ".join(parts)
 
 
 def _heard(holder, summary):
     """A look's summary as `holder` (the page's row, the window) takes it — one rule for both: None for a language
     left's late answer (or no summary), else whether it is another language's library than the one shown (`reset`);
-    `holder.lines_of` follows it."""
+    `holder.lines_of` follows it, and `holder.known` (False while the summary only says a listing is on its way: the
+    shell's language switch)."""
     if not isinstance(summary, dict):
         return None
     language = summary.get("language", holder.lines_of)
@@ -99,6 +106,7 @@ def _heard(holder, summary):
         return None
     reset = language != holder.lines_of
     holder.lines_of = language
+    holder.known = not summary.get("listing")
     return reset
 
 
@@ -106,20 +114,43 @@ def _looks(shell):
     return getattr(shell, "looks", None) if shell is not None else None
 
 
-def _enable(buttons, on):
-    """*Look again* and *Add a folder…* (`buttons`: (button, its tip)) act while there are looks (a library open);
-    greyed with why when not. Repainted only when one turned."""
-    for button, tip in buttons:
-        if button.isEnabled() != on:
-            button.setEnabled(on)
-            button.setToolTip(tip if on else S.STORE_NO_LIBRARY_TIP)
+def cant_write(services):
+    """Why the library open can't be written now (the writer's reason, in the page's words), or None — the one rule
+    for *Start a fresh library*, *Add a folder…*, *Stop reading* and *Read again*."""
+    writer = getattr(services, "writer", None)
+    try:
+        reason = writer.reason() if writer is not None else None
+    except Exception:
+        reason = None
+    return S.FRESH_NOT_WRITABLE.format(reason=reason) if reason else None
+
+
+def why_not(shell):
+    """Why the folders can't be added, stopped or read again now (a button's greyed tip), or None."""
+    if _looks(shell) is None:
+        return S.STORE_NO_LIBRARY_TIP
+    return cant_write(getattr(shell, "services", None))
+
+
+def _turn(button, on, tip):
+    """`button` on or greyed, with `tip` (its own words, or why it is greyed). Repainted only when it moved (S19)."""
+    if button.isEnabled() != on:
+        button.setEnabled(on)
+    if button.toolTip() != tip:
+        button.setToolTip(tip)
+
+
+def _acting(shell):
+    """The stops and read-agains under way, kept on the shell — ("stop" | "read", language, id) — so a window opened
+    again before one answered shows its button greyed, never a second press."""
+    return shell.__dict__.setdefault("_folders_acting", set()) if shell is not None else set()
 
 
 def add_folder(shell, parent, folder=None):
     """*Add a folder…* (the page's and the window's): the picker over `parent` (or `folder`, tests), then + Add's *read
     it where it is*."""
     adder = getattr(shell, "adder", None)
-    if adder is None:
+    if adder is None or why_not(shell) is not None:
         return False
     if folder is None:
         folder = QFileDialog.getExistingDirectory(parent, S.SOURCES_PICK_TITLE)
@@ -133,13 +164,14 @@ def look_again(shell):
 
 
 class SourceLine(QWidget):
-    """One folder's line: its path, its count and *Stop reading* (`on_stop(root_id)`)."""
+    """One folder's line: its path, its count and *Stop reading* (`on_stop(root_id)`; `tip`: its own words)."""
 
     def __init__(self, source, on_stop, parent=None):
         super().__init__(parent)
         self.setObjectName("settingssource")
         self.root = source["id"]
         self.source = None
+        self.tip = ""
         line = QHBoxLayout(self)
         line.setContentsMargins(0, 0, 0, 0)
         line.setSpacing(round(8 * _f()))
@@ -155,19 +187,19 @@ class SourceLine(QWidget):
         self.show_source(source)
 
     def show_source(self, source):
-        """-> True when anything it shows moved (repainted only then)."""
+        """-> True when anything it shows moved (repainted only then; the button's tip by the window's `_enable`)."""
         if source == self.source:
             return False
         self.source = dict(source)
         words = count_words(source)
         if self.count.text() != words:
             self.count.setText(words)
-        self.stop.setToolTip(S.SOURCES_STOP_TIP.format(path=source["path"], n=source.get("items") or 0))
+        self.tip = S.SOURCES_STOP_TIP.format(path=source["path"], n=source.get("items") or 0)
         return True
 
 
 class SkippedLine(QWidget):
-    """K6: one skipped folder's line: its path and *Read again* (`on_read(folder_id)`)."""
+    """K6: one skipped folder's line: its path and *Read again* (`on_read(folder_id)`; `tip`: its own words)."""
 
     def __init__(self, folder, on_read, parent=None):
         super().__init__(parent)
@@ -179,8 +211,9 @@ class SkippedLine(QWidget):
         self.words = _SourceWords(folder["path"], self)
         self.words.setObjectName("settingsaffix")
         line.addWidget(self.words, 1)
-        self.read = sc.Door(S.SOURCES_READ_AGAIN, tooltip=S.SOURCES_READ_AGAIN_TIP.format(path=folder["path"]),
-                            name=S.SOURCES_READ_AGAIN_NAME.format(path=folder["path"]), parent=self)
+        self.tip = S.SOURCES_READ_AGAIN_TIP.format(path=folder["path"])
+        self.read = sc.Door(S.SOURCES_READ_AGAIN, name=S.SOURCES_READ_AGAIN_NAME.format(path=folder["path"]),
+                            parent=self)
         self.read.clicked.connect(lambda _c=False: on_read(self.folder["id"]))
         line.addWidget(self.read)
 
@@ -195,8 +228,9 @@ class SourcesRow(QObject):
         self.shell = page.shell
         self.lines_of = getattr(self.shell, "language", None)     # the library the summary is of
         self.sources = tuple(getattr(self.shell, "sources", ()) or ())
-        self.skipped = 0                                  # how many folders are skipped (K6), as the last summary said
-        self.known = bool(self.sources)                   # a listing has landed (until then: the waiting words)
+        self.skipped = ()                                 # the skipped folders (K6), as the last summary said
+        looks = _looks(self.shell)
+        self.known = bool(self.sources) or looks is None  # a listing has landed, or there is none to wait for
         self.paints = 0
         slot = page.custom_row(ROW_ID)
         self.summary = QLabel(slot)
@@ -206,10 +240,7 @@ class SourcesRow(QObject):
         self.add = sc.Door(S.SOURCES_ADD, tooltip=S.SOURCES_ADD_TIP, parent=slot)
         self.add.clicked.connect(lambda _c=False: self.add_folder())
         slot.layout().addWidget(self.add)
-        looks = _looks(self.shell)
-        if looks is None:
-            self.known = True                             # no library: nothing to wait for
-        _enable(((self.add, S.SOURCES_ADD_TIP),), looks is not None)
+        self._enable()
         seen = getattr(self.shell, "sources_seen", None)
         if seen is not None:
             seen.connect(self._seen)
@@ -221,17 +252,20 @@ class SourcesRow(QObject):
     def alive(self):
         return _alive(self.page)
 
+    def _enable(self):
+        why = why_not(self.shell)
+        _turn(self.add, why is None, why or S.SOURCES_ADD_TIP)
+
     def _seen(self, summary):
         if not self.alive():
             return
         reset = _heard(self, summary)
         if reset is None:
             return
-        _enable(((self.add, S.SOURCES_ADD_TIP),), _looks(self.shell) is not None)
-        self.known = True
+        self._enable()
         self.sources = tuple(summary.get("sources") or ())
         if "skipped" in summary or reset:
-            self.skipped = len(summary.get("skipped") or ())
+            self.skipped = tuple(summary.get("skipped") or ())
         self._paint()
 
     def _paint(self):
@@ -259,7 +293,8 @@ class FoldersWindow(windows.SecondaryWindow):
         self.skipped = {}
         self.reads = 0
         self.lines_of = getattr(shell, "language", None)         # the library the lines are of
-        self.known = bool(getattr(shell, "sources", ()))          # a listing has landed (until then: the waiting words)
+        looks = _looks(shell)
+        self.known = bool(getattr(shell, "sources", ())) or looks is None
         intro = QLabel(S.FOLDERS_LINE, self)
         intro.setObjectName("windowline")
         intro.setWordWrap(True)
@@ -267,6 +302,7 @@ class FoldersWindow(windows.SecondaryWindow):
         self.scroll = QScrollArea(self)
         self.scroll.setObjectName("foldersscroll")
         self.scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)          # its buttons take Tab, never the scroll itself
         self.scroll.setWidgetResizable(True)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.box = QWidget()
@@ -274,7 +310,7 @@ class FoldersWindow(windows.SecondaryWindow):
         column = QVBoxLayout(self.box)
         column.setContentsMargins(0, 0, 0, 0)
         column.setSpacing(round(6 * _f()))
-        self.none = QLabel(S.SOURCES_NONE, self.box)
+        self.none = QLabel(self.box)
         self.none.setObjectName("windowline")
         self.none.setVisible(False)
         column.addWidget(self.none)
@@ -300,19 +336,37 @@ class FoldersWindow(windows.SecondaryWindow):
         self.add.clicked.connect(lambda _c=False: add_folder(self.shell, self))
         foot.addWidget(self.add)
         self.body.addLayout(foot)
-        looks = _looks(shell)
-        self._enable()
-        if looks is not None and not self.known:
-            self.none.setText(S.SOURCES_LISTING)            # waiting for the first listing, never "No folders yet"
         seen = getattr(shell, "sources_seen", None)
         if seen is not None:
             seen.connect(self._seen)
         self.show_sources(getattr(shell, "sources", ()) or ())
+        self._enable()
         if looks is not None:
             looks.listing()                               # the counts and the skipped folders, on the looks' worker
 
     def _enable(self):
-        _enable(((self.look, S.SOURCES_LOOK_TIP), (self.add, S.SOURCES_ADD_TIP)), _looks(self.shell) is not None)
+        """Every button greyed with why while nothing can be written (*Look again* only without a library); a stop
+        or a read-again under way keeps its button greyed. Only what moved is touched (S19)."""
+        why = why_not(self.shell)
+        no_library = _looks(self.shell) is None
+        _turn(self.look, not no_library, S.STORE_NO_LIBRARY_TIP if no_library else S.SOURCES_LOOK_TIP)
+        _turn(self.add, why is None, why or S.SOURCES_ADD_TIP)
+        acting = _acting(self.shell)
+        for root, line in self.lines.items():
+            _turn(line.stop, why is None and ("stop", self.lines_of, root) not in acting, why or line.tip)
+        for folder_id, line in self.skipped.items():
+            _turn(line.read, why is None and ("read", self.lines_of, folder_id) not in acting, why or line.tip)
+
+    def _tab_order(self):
+        """Tab as the window reads: the folders' *Stop reading*, the skipped folders' *Read again*, *Look again*,
+        *Add a folder…* (lines made later would otherwise join the chain's end)."""
+        def shown(layout):
+            return [layout.itemAt(i).widget() for i in range(layout.count())]
+        chain = [w.stop for w in shown(self.box.layout()) if isinstance(w, SourceLine)]
+        chain += [w.read for w in shown(self.skip_box.layout()) if isinstance(w, SkippedLine)]
+        chain += [self.look, self.add]
+        for a, b in zip(chain, chain[1:]):
+            QWidget.setTabOrder(a, b)
 
     # --- showing ---------------------------------------------------------------------------------------------- #
     def _seen(self, summary):
@@ -321,26 +375,32 @@ class FoldersWindow(windows.SecondaryWindow):
         reset = _heard(self, summary)
         if reset is None:
             return
-        self._enable()
-        if not self.known:
-            self.known = True
-            self.none.setText(S.SOURCES_NONE)
         self.show_sources(summary.get("sources") or (), reset=reset)
         if "skipped" in summary or reset:
             self.show_skipped(summary.get("skipped") or (), reset=reset)
+        self._enable()
 
     def _grow(self):
-        """New lines shown: the window grows to hold them (never shrinks; past the scroll's own bound they scroll)."""
-        if self.isVisible():
-            want = self.sizeHint().height()
-            if want > self.height():
-                self.resize(self.width(), want)
+        """New lines shown: the window grows to hold them, up to the screen's room below it, then they scroll (it never
+        shrinks). Measured from the lines themselves (the scroll area keeps the size it first asked for)."""
+        if not self.isVisible():
+            return
+        self.box.layout().activate()
+        need = self.box.sizeHint().height() - self.scroll.viewport().height()
+        screen = self.screen()
+        room = screen.availableGeometry().bottom() - self.frameGeometry().bottom() if screen is not None else need
+        grow = min(need, room)
+        if grow > 0:
+            self.resize(self.width(), self.height() + grow)
 
     def show_sources(self, sources, reset=False):
         """The lines made to match `sources` (being read): only a line that changed is touched; `reset` (another
-        language's library): every line made again."""
+        language's library): every line made again. The empty state says *Looking…* until a listing has landed."""
         if self.gone:
             return
+        empty_words = S.SOURCES_NONE if self.known else S.SOURCES_LISTING
+        if self.none.text() != empty_words:
+            self.none.setText(empty_words)
         wanted = [s for s in sources if s.get("on", True)]
         ids = [s["id"] for s in wanted]
         gone = [r for r in self.lines if reset or r not in ids]
@@ -366,6 +426,8 @@ class FoldersWindow(windows.SecondaryWindow):
         if self.none.isHidden() == empty:
             self.none.setVisible(empty)
         if added:
+            self._enable()
+            self._tab_order()
             self._grow()
 
     def show_skipped(self, folders, reset=False):
@@ -392,39 +454,51 @@ class FoldersWindow(windows.SecondaryWindow):
         if self.skip_box.isHidden() == bool(ids):
             self.skip_box.setVisible(bool(ids))
         if added:
+            self._enable()
+            self._tab_order()
             self._grow()
 
     # --- acting ----------------------------------------------------------------------------------------------- #
+    def _answered(self, key):
+        """A stop's or a read-again's answer landed: no longer under way; its button as the rule says (the window
+        may have closed meanwhile: the bar was told all the same)."""
+        _acting(self.shell).discard(key)
+        if not self.gone:
+            self._enable()
+
     def read_again(self, folder_id):
         """K6 *Read again*: on the looks' worker; the line goes and the bar says its files come back once it landed."""
         looks = _looks(self.shell)
         line = self.skipped.get(folder_id)
-        if looks is None or line is None or not hasattr(looks, "read_again"):
+        if looks is None or line is None or not hasattr(looks, "read_again") or why_not(self.shell) is not None:
             return False
         path = line.folder["path"]
+        key = ("read", self.lines_of, folder_id)
         from app.qt import bridge
-        relay = bridge.Relay(self.shell)               # the bar told even once the window closed
+        relay = bridge.Relay(self.shell)                 # the bar told even once the window closed
 
         def done(answer):
             relay.deleteLater()
             if answer.get("read") and self.shell is not None:
                 windows.say_in_bar(self.shell, S.SOURCES_READ_AGAIN_DONE.format(path=path))
-            elif _alive(line):
-                line.read.setEnabled(True)
+            self._answered(key)
         relay.said.connect(done)
+        _acting(self.shell).add(key)                      # before the ask: an answer may land at once
+        line.read.setEnabled(False)                       # one press per click
         if not looks.read_again(folder_id, relay.call, language=self.lines_of):
             relay.deleteLater()
+            self._answered(key)
             return False
-        line.read.setEnabled(False)                       # one press per click
         return True
 
     def stop(self, root_id):
         """*Stop reading*: on the looks' worker; the bar says its episodes stay; the line goes once the stop landed."""
         looks = _looks(self.shell)
         line = self.lines.get(root_id)
-        if looks is None or line is None:
+        if looks is None or line is None or why_not(self.shell) is not None:
             return False
         source = dict(line.source)
+        key = ("stop", self.lines_of, root_id)
         from app.qt import bridge
         relay = bridge.Relay(self.shell)
 
@@ -435,14 +509,15 @@ class FoldersWindow(windows.SecondaryWindow):
                 S.SOURCES_STOPPED.format(path=source["path"], n=n)
             if answer.get("stopped") and self.shell is not None:
                 windows.say_in_bar(self.shell, text)
-            elif _alive(line):
-                line.stop.setEnabled(True)
+            self._answered(key)
         relay.said.connect(stopped)
         busy = looks.busy() if hasattr(looks, "busy") else False
+        _acting(self.shell).add(key)
+        line.stop.setEnabled(False)                       # one stop per click
         if not looks.stop(root_id, relay.call, language=self.lines_of):
             relay.deleteLater()                           # refused (closed, another language): nothing stopped
+            self._answered(key)
             return False
-        line.stop.setEnabled(False)                       # one stop per click
         if busy and self.shell is not None:               # S6: a look under way lets it go after the file it's on
             windows.say_in_bar(self.shell, S.SOURCES_STOPPING.format(path=source["path"]))
         return True
@@ -480,12 +555,7 @@ class FreshRow(QObject):
             return S.FRESH_RUNNING_TIP
         if self._looks() is None:
             return S.STORE_NO_LIBRARY_TIP
-        writer = getattr(getattr(self.page, "services", None), "writer", None)
-        try:
-            reason = writer.reason() if writer is not None else None
-        except Exception:
-            reason = None
-        return S.FRESH_NOT_WRITABLE.format(reason=reason) if reason else None
+        return cant_write(getattr(self.page, "services", None))
 
     def enable(self):
         """Greyed with why while it can't run; repainted only when it turned (S19)."""

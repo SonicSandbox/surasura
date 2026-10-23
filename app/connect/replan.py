@@ -26,8 +26,8 @@ recipe: `replan_preview`'s `_snapshot`, `plan_path`, `places`) decides —
     is (its words keep their places; the raise only adds words) — and Generate after mining ("after");
   * anything else (no plan, another language or engine, a run that didn't finish, a changed or removed file, the store
     set up again, a level lowered — its Generate drops words the old list would have mined — another setting, the
-    args, a frequency list, the band with any of them, a band not found) and `stand-aside`: today's path, Generate
-    first ("first").
+    args, a frequency list, the band with any of them, a band not found, the set-aside files — W-1: a watched mark
+    either way, as the window's host reads it) and `stand-aside`: today's path, Generate first ("first").
 
 Any error reading it is "first" (logged): never worse than today. Read-only: nothing here writes the store, the plan
 or Anki. Light: no Qt, Tk or pandas (the analyzer's signature, the engine and the store are the command line's own).
@@ -126,7 +126,7 @@ def _current(language, settings, store, previous):
         return Current(("generate-first", "no-plan"), "first", "no plan yet", versions=versions,
                        key=key(store, versions))
     # One read of the store: the order, the files the run signature counts and the versions, in one transaction
-    schedule, versions = store.schedule(with_versions=True)
+    schedule, versions = store.schedule(with_versions=True, with_aside=True)
     order = replan_preview._order(schedule)
     at = key(store, versions)
     if previous is not None and previous.plan is not None and previous.plan_key == plan_key:
@@ -140,7 +140,7 @@ def _current(language, settings, store, previous):
     # The run signature's parts for the library as it stands (`Host._parts`): a missing item keeps its place
     found = analyzer.resolve_found_files(language, verbose=False, schedule=schedule, missing=True)
     args = analyzer.parse_analysis_args(run_args.analyzer_args(settings, language)[1:])
-    parts = analyzer.run_signature_parts(language, found, args)
+    parts = analyzer.run_signature_parts(language, found, args, analyzer.aside_files(language, schedule))
     engine_id, stamp = analyzer.engine_id(), analyzer.read_run_stamp(get_user_file("results"))
     verdict = plan_engine.check(plan, language, engine_id, stamp, parts, versions.get("epoch"))
     added = _added(plan, parts) if verdict == ("generate-first", "files") else ()

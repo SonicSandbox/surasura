@@ -298,7 +298,8 @@ def check(plan, language, engine, run_stamp, signature_parts, epoch=None, added=
                                   counted tiers ("files-removed") or files the engine added, none changed or removed
                                   ("files-added") moved: re-plan now from the plan, then Generate;
       ("generate-first", reason)  anything else — another language, another app version, a run that didn't finish,
-                                  files added or changed, a setting: a Generate first;
+                                  files added or changed, a setting, the set-aside files ("reference", W-1: a
+                                  watched mark either way): a Generate first;
       ("stand-aside", reason)     the plan is current but the engine can't replay it exactly: coverage mode
                                   ("coverage"), i+1 mode ("i+1"), a row two set phrases share ("shared-phrase") or a
                                   weight that isn't a whole number ("weights") — the preview stands aside (D7)."""

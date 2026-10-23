@@ -9,6 +9,13 @@
   gap's episodes queued as Connect's ordinary jobs (kind `mine`, by `user`), never an ask: a word Connect ever made,
   a deleted card's included, is never made again (`library.made_words_for`, N15 / G1.3-4); the gap marked noticed.
 
+- `stop(language, job_id)` (laptop round 8 #47): *Stop* on the episode Connect is making cards for: the press
+  recorded at once (`Ledger.ask_stop`) and Connect woken (`kick.wake`). Connect stops the job at its next safe
+  point: before its next step, or Anki Miner's batch cancelled within a second, every card it made kept, whole and
+  recorded (what reached Anki is found by the job's tag: never half-written, never made twice). The episode then waits
+  (`runner.STOPPED_BY_YOU`) until you press *Mine now*; Connect goes on with the next one. Once its cards are being
+  filled and ordered (seconds) the job finishes (`stoppable`).
+
 Each runs on the window's worker, one short ledger transaction; the caller kicks Connect after (`kick.kick`). No
 ledger → nothing written (the window never makes one). Light: the standard library and the ledger.
 """
@@ -67,6 +74,33 @@ def make_cards(language, gap_id, path=None, store_id=None):
                 queued += 1
         ledger.mark_noticed([gap_id])
     return queued
+
+
+# Laptop round 8 #47: the states a job can still be stopped in (its cards not all made yet)
+STOPPABLE = ("queued", "waiting", "picking", "fit-check", "mining")
+
+
+def stoppable(state):
+    """Can a job in `state` still be stopped (the window offers *Stop* only then)? Until its cards are made: queued,
+    waiting, picking, the fit check, mining. Filling and ordering finish (seconds)."""
+    return state in STOPPABLE
+
+
+def stop(language, job_id, path=None):
+    """*Stop* -> True when the press was recorded (the job is open, of this language, not yet past mining); False
+    (nothing written) otherwise. Wakes a running Connect so it acts within a second or two, not at its next look."""
+    path = path or book.path()
+    if not os.path.exists(path):
+        return False
+    with book.Ledger(path) as ledger:
+        job = ledger.job_by_id(job_id)
+        if job is None or job.get("language") != language or not stoppable(job.get("state")):
+            return False
+        if not ledger.ask_stop(job_id):
+            return False
+    from app.connect import kick
+    kick.wake()
+    return True
 
 
 def _store_id(language):

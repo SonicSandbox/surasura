@@ -52,7 +52,7 @@ import time
 from types import SimpleNamespace
 
 from app.connect import fit_check, inbox
-from app.connect.ledger import ASKED, BEFORE_MINING, IN_FLIGHT, LEVEL, PREPARE_KINDS, Ledger
+from app.connect.ledger import ASKED, BEFORE_MINING, IN_FLIGHT, LEVEL, PREPARE_KINDS, STOPPED_REASON, Ledger
 
 log = logging.getLogger("surasura-cli")
 
@@ -73,6 +73,8 @@ ANKI_CLOSED = "Waiting for Anki: it isn't open."
 ANKI_SLOW = "Waiting for Anki: it didn't answer in time."
 NO_VIDEO = "No video: its video isn't on this computer (or isn't downloaded yet)."
 CHINESE = "Chinese cards come later."
+# Laptop round 8 #47 (LF4-5 ⭐ A): a job you stopped waits for your next ask; the cards it made are kept
+STOPPED_BY_YOU = STOPPED_REASON
 # Laptop round 8 #49 (LF4-1 ⭐ A, PROVISIONAL): a level raise's job for an episode you've watched, or whose video is gone
 WATCHED = "you've watched it: its new words go to the episodes ahead of you"
 LEVEL_NO_VIDEO = "its video isn't on this computer: its new words go to the other episodes"
@@ -275,7 +277,8 @@ def _open_jobs(ledger, lang, parked, tried=()):
     """The open jobs this pass may try: never one `tried`, nor one parked for the next start — unless you asked for it
     since it was parked (a *Mine now* on it: your press tries it again in this run, laptop round 7 #42)."""
     return [j for j in ledger.open_jobs(lang)
-            if not (j["id"] in parked and parked[j["id"]] == j.get("asked_at")) and j["id"] not in tried]
+            if not (j["id"] in parked and parked[j["id"]] == j.get("asked_at")) and j["id"] not in tried
+            and not ledger.held_by_stop(j)]     # laptop round 8 #47: one you stopped waits for your next ask
 
 
 def _empty():
@@ -638,6 +641,7 @@ def _job(steps, ledger, lang, job, store_now, line, out):
         out["skipped"].append(item_id)
         return
     record = not foreign
+    _stop_here(ledger, job, step)
     if droppable:
         # at the cap, the shelf tried: one count, no pick and no write (S19, review B adv #2); never an ask (#42)
         full = _full(steps, lang, asked=bool(job.get("asked_at")))
@@ -647,15 +651,18 @@ def _job(steps, ledger, lang, job, store_now, line, out):
         for _ in range(3):          # a profile or pairing that changed since the pick: picked again (at most twice)
             try:
                 if step in (None, "picking"):
+                    _stop_here(ledger, job, step)
                     got = _pick(steps, ledger, lang, job, record)
                     if got is None:
                         out["done"].append(item_id)
                         return
                     step = "filling" if got == "filling" else "fit-check"
                 if step == "fit-check":
+                    _stop_here(ledger, job, step)
                     _fit(steps, ledger, lang, job)
                     step = "mining"
                 if step == "mining":
+                    _stop_here(ledger, job, step)
                     _mine(steps, ledger, lang, job, record=record)
                     step = "filling"
                 break
@@ -672,7 +679,19 @@ def _job(steps, ledger, lang, job, store_now, line, out):
     if step == "ordering":
         _order(steps, ledger, lang, job)
     ledger.set_state(jid, "done", reason=None)
+    ledger.forget_stop(jid)                 # a *Stop* pressed while its cards were filled and ordered: nothing left
     out["done"].append(item_id)
+
+
+def _stop_here(ledger, job, step):
+    """Laptop round 8 #47: *Stop* pressed on this job -> it stops here, before `step` (nothing of the step done): the
+    press used up, the job waits for your next ask (`Ledger.held_by_stop`), resuming at `step`."""
+    if step in ("filling", "ordering") or not ledger.stop_asked(job["id"]):
+        return                              # its cards are made: it finishes (seconds), the press forgotten at its end
+    now = ledger.job_by_id(job["id"]) or {}
+    ledger.mark_stopped(job["id"], now.get("asked_at"))
+    log.info("Connect: job %s stopped by you before %s", job["id"], step or "its pick")
+    raise Wait(STOPPED_BY_YOU, look=False, resume=step)
 
 
 def _pick(steps, ledger, lang, job, record=True):
@@ -788,6 +807,7 @@ def _mine(steps, ledger, lang, job, record=True):
             wait = _at_cap(steps, ledger, lang, todo, asked=bool(job.get("asked_at")))
             if wait is not None:
                 raise wait
+        _stop_here(ledger, job, "mining")   # #47: between two batches too
         if ran and steps.update_staged():
             # between two Anki Miner batches (K99): stopped here, every outcome saved; the next run resumes at mining
             # and sends only the words still unsettled
@@ -800,6 +820,7 @@ def _mine(steps, ledger, lang, job, record=True):
         ledger.start_batch(jid, attempt, steps.run_dir(job))
         ran = True
         steps.on_progress = _Progress(ledger, jid)
+        steps.should_stop = lambda: _stop_pressed(ledger, jid)      # #47: Anki Miner's batch cancelled at a press
         try:
             got = steps.mine(lang, job, picked, todo, attempt)
         except Wait as w:
@@ -815,12 +836,15 @@ def _mine(steps, ledger, lang, job, record=True):
             ledger.set_state(jid, "skipped", reason=s.why, skipped=_skipped(ledger, jid, "mining", s.why))
             raise _Finished("skipped") from None
         finally:
-            steps.on_progress = None
+            steps.on_progress = steps.should_stop = None
+        stopped = bool(got.get("stopped"))
         if got.get("tag_pending"):          # the names' tag Anki didn't take: added before filling (adversary #7)
             pending = sorted(set(_pending(ledger, jid)) | set(got["tag_pending"]))
             ledger.set_state(jid, "mining", tag_pending=json.dumps(pending))
         try:
-            if got.get("doubt") or any(o["outcome"] == "uncertain" for o in got["outcomes"]):
+            if stopped or got.get("doubt") or any(o["outcome"] == "uncertain" for o in got["outcomes"]):
+                # #47: a batch you stopped is read back by the job's tag like one in doubt: every card that reached
+                # Anki recorded, none sent twice
                 # a word Anki Miner doesn't account for may be in Anki: found by the job's tag first, never sent twice
                 found = steps.by_tag(lang, job, picked, [w for w in todo if _row(got, w) in UNSETTLED])
                 got["outcomes"] = _merge(got["outcomes"], found)
@@ -832,15 +856,17 @@ def _mine(steps, ledger, lang, job, record=True):
         except Wait as w:
             # Anki went away before the tag check: Anki Miner's own outcomes kept, the rest in doubt (adversary #16)
             ledger.end_batch(jid, attempt, "uncertain", _enriched(got["outcomes"], by_key), anki_miner=got.get("app"))
-            if got.get("doubt"):
+            if got.get("doubt") and not stopped:
                 _count_failure(ledger, jid)
             raise Wait(w.reason, w.look, "mining") from None
         state = "uncertain" if any(o["outcome"] == "uncertain" for o in got["outcomes"]) else "done"
         ledger.end_batch(jid, attempt, state, _enriched(got["outcomes"], by_key), anki_miner=got.get("app"))
-        if got.get("doubt"):
+        if got.get("doubt") and not stopped:
             _count_failure(ledger, jid)     # only a run that crashed or timed out: an unknown status is no crash
         if any(o["outcome"] == "made" for o in got["outcomes"]):
             steps.after_write(lang)         # new cards: the session's sync clock (S3), Junban or not (adversary #12)
+        if stopped:
+            _stopped_mid_batch(steps, ledger, lang, job, record)
     left = [w for w in words if _outcome(ledger, jid, w) in UNSETTLED]
     if _failures(ledger, jid) >= 2 and any(_outcome(ledger, jid, w) == "uncertain" for w in left):
         _fail_mining(steps, ledger, lang, job, record)     # a second crash in the last try
@@ -856,6 +882,33 @@ def _mine(steps, ledger, lang, job, record=True):
     # look (adversary B #6, S19)
     _record_made(steps, ledger, lang, job, record)
     ledger.set_state(jid, "filling")
+
+
+def _stop_pressed(ledger, jid):
+    """(Anki Miner's poll, on the runner's thread, every POLL_S.) Has *Stop* been pressed on the job? A read that
+    fails is no press (logged): the batch goes on."""
+    try:
+        return ledger.stop_asked(jid)
+    except Exception:
+        log.warning("Connect couldn't look for a Stop on job %s", jid, exc_info=True)
+        return False
+
+
+def _stopped_mid_batch(steps, ledger, lang, job, record):
+    """#47: the batch Anki Miner ended at your *Stop*: its cards recorded in the store (made words, no receipt: the
+    episode isn't mined yet) and renamed, then the job waits for your next ask at mining (the words still unmade).
+    A store busy now is no matter: the resumed job records them all."""
+    now = ledger.job_by_id(job["id"]) or {}
+    ledger.mark_stopped(job["id"], now.get("asked_at"))
+    made = _made(ledger, job["id"])
+    if made and record:
+        try:
+            steps.record(lang, job, made, None, _tag(job))
+        except Wait:
+            log.info("Connect: the store was busy; job %s's cards are recorded when it goes on", job["id"])
+        _name_media_at_end(steps, ledger, lang, job)
+    log.info("Connect: job %s stopped by you mid-batch (%d words made)", job["id"], len(made))
+    raise Wait(STOPPED_BY_YOU, look=False, resume="mining")
 
 
 PROGRESS_STEP = 5               # percent: the job's progress is saved when it moves this far, or its stage changes
@@ -1764,11 +1817,15 @@ class Steps:
                                          run_dir, self.url, attempt=attempt, wait=WAIT_S,
                                          subtitle_offset=float(picked.get("offset") or 0.0),
                                          expect_profile=picked.get("profile"),
-                                         on_progress=getattr(self, "on_progress", None), known=setup[:2])
+                                         on_progress=getattr(self, "on_progress", None), known=setup[:2],
+                                         should_stop=getattr(self, "should_stop", None))
         except anki_miner.AnkiMinerError as e:
             held.clear()                        # any Anki Miner failure (a profile changed too): read again next time
             if e.kind == "profile-changed":
                 raise Repick() from None
+            if e.kind == "cancelled" and getattr(e, "stopped", False):
+                # #47: you stopped it before its result was written: what reached Anki is found by the job's tag
+                return {"outcomes": [dict(_unsure(w)) for w in words], "app": None, "doubt": True, "stopped": True}
             if e.kind in ("crashed", "timeout"):
                 return {"outcomes": [dict(_unsure(w)) for w in words], "app": None, "doubt": True}
             raise _miner_wait_or_needs(e, self.url) from None
@@ -1776,7 +1833,7 @@ class Steps:
         run = done.get("run") or {}
         doubt = bool(done.get("error")) or (bool(run) and not run.get("ok"))
         return {"outcomes": done.get("outcomes") or [], "app": done.get("app"), "doubt": doubt,
-                "tag_pending": done.get("tag_pending") or []}
+                "tag_pending": done.get("tag_pending") or [], "stopped": bool(done.get("stopped"))}
 
     def by_tag(self, lang, job, picked, words):
         """Which of `words` reached Anki, found by the job's tag (read-only) -> outcomes (made / uncertain)."""

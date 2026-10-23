@@ -236,6 +236,15 @@ class FakeSteps:
         out = []
         crash = self.plan.get("crash_mid_batch")
         for n, w in enumerate(words):
+            hook = self.plan.get("on_word")           # a test's press while the batch runs (#47's Stop)
+            if hook is not None:
+                hook(n, job)
+            should_stop = getattr(self, "should_stop", None)
+            if should_stop is not None and should_stop():
+                # Anki Miner read its cancel file: the words so far are made, the rest never attempted
+                rest = [dict(_unsure(x), outcome="not_attempted") for x in words[n:]]
+                return {"outcomes": out + rest, "app": self.plan.get("app", "3.7.0"), "doubt": False,
+                        "stopped": True}
             if self.plan.get("kill") == f"mid-batch:{n}":
                 self._kill(f"mid-batch:{n}")
             if crash is not None and n >= crash:

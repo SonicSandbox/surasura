@@ -20,7 +20,9 @@ What it does is read from the plan file named by FAKE_ANKI_MINER_PLAN (JSON; eve
      "filter": {"<word>": "duplicate-expression"},         # (filter-names) why a not_found word was dropped
      "replay": {"<command>": {...}},                       # answer a command with a recorded verdict, as it is
      "progress": [[1, 5, 0, 0], [3, 5, 2, 6], …],         # each episode's progress.json, written in turn …
-     "progress_every": 0.3}                                # … this many seconds apart (API.md's stage/stages/done/total)
+     "progress_every": 0.3,                                # … this many seconds apart (API.md's stage/stages/done/total)
+     "cancel_at": 1}                                       # waits (≤ 5 s) for the run's cancel file before this row:
+                                                           # 0 -> CANCELLED, no result; n -> rows from n not_attempted
 
 Every call is appended to FAKE_ANKI_MINER_LOG (one JSON line: argv, and the run file's bytes' facts for `mine`), so a
 test can see what was asked and in what order. The run file is checked as Anki Miner checks it: strict UTF-8 with no
@@ -160,8 +162,17 @@ def _mine(argv, plan):
             os.replace(tmp, os.path.join(folder, "progress.json"))
             time.sleep(plan.get("progress_every", 0.3))
         rows, note = [], 1727000000000
+        cancelled = False
         for n, request in enumerate(episode["words"]):
+            if plan.get("cancel_at") == n and not cancelled:
+                cancelled = _cancel_seen(folder)
+                if cancelled and n == 0:            # nothing reached Anki: CANCELLED, no result file
+                    runs.append({"run_id": episode["run_id"], "ok": False, "error": "CANCELLED",
+                                 "message": "Cancelled.", "file": None})
+                    break
             status = plan.get("statuses", {}).get(request["word"], "created")
+            if cancelled:
+                status = "not_attempted"
             if how == "mining-failed" and n >= plan.get("fail_after", 0):
                 status = "uncertain" if n == plan.get("fail_after", 0) else "not_attempted"
             if dry and status == "created":
@@ -179,6 +190,18 @@ def _mine(argv, plan):
                 row["from_line"] = status not in ("not_found", "not_attempted") and \
                     request["word"] in plan.get("from_line", [])
             rows.append(row)
+        if cancelled and not rows:
+            continue
+        if cancelled:
+            result = {"schema": 1, "run_id": episode["run_id"], "outcome": "cancelled", "anki_write_state": "partial",
+                      "failure_is_transient": False, "error": "CANCELLED", "message": "Cancelled.",
+                      "media_store_failures": 0, "words": rows}
+            name = "result-1.json"
+            with open(os.path.join(folder, name), "w", encoding="utf-8") as f:
+                json.dump(result, f, ensure_ascii=False)
+            runs.append({"run_id": episode["run_id"], "ok": False, "error": "CANCELLED", "message": "Cancelled.",
+                         "file": name})
+            continue
         failed = how == "mining-failed"
         result = {"schema": 1, "run_id": episode["run_id"], "outcome": "failed" if failed else "success",
                   "anki_write_state": "partial" if failed else "complete", "failure_is_transient": False,
@@ -197,6 +220,16 @@ def _mine(argv, plan):
     if how == "internal-after-result":  # shared.close() raising after the runs: INTERNAL, runs []
         return _failed("mine", "INTERNAL", "RuntimeError: closing the lookup services failed")
     return {**_ok("mine", runs=runs), "ok": all(r["ok"] for r in runs)}
+
+
+def _cancel_seen(folder, wait=5.0):
+    """API.md: Anki Miner polls `<run_dir>/<run_id>/cancel` every 0.2 s."""
+    deadline = time.monotonic() + wait
+    while time.monotonic() < deadline:
+        if os.path.exists(os.path.join(folder, "cancel")):
+            return True
+        time.sleep(0.05)
+    return False
 
 
 def main(argv):

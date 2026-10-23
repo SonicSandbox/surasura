@@ -61,6 +61,10 @@ BEFORE_MINING = (None, "picking", "fit-check")
 MINE, LEVEL, ASKED = "mine", "level", "asked"
 # P4.1: the asks watermark's meta key, `asks_from:<lang>` (C1 / IK B2: `resume.turned_on` writes it at every off → on)
 ASKS_FROM = "asks_from:"
+# Laptop round 8 #47 (*Stop*): `stop:<job id>` — you asked the job to stop (the window's press, `ask_stop`); `stopped:<job
+# id>` — the runner stopped it, holding the ask it carried then: it waits until a newer ask (*Mine now*) (`held_by_stop`)
+STOP, STOPPED = "stop:", "stopped:"
+STOPPED_REASON = "Stopped: its cards so far are kept. Press Mine now to go on."      # `runner.STOPPED_BY_YOU`
 
 _SCHEMA_SQL = (
     "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
@@ -466,6 +470,54 @@ class Ledger:
                                 "kind, store_id, asked_at) VALUES (?, ?, 'queued', 'user', NULL, ?, ?, ?, ?, ?)",
                                 (language, item_id, now, now, ASKED, store_id, asked_at))
         return "queued", cur.lastrowid
+
+    # --- laptop round 8 #47: *Stop* — the current episode's job, at its next safe point ------------------------- #
+
+    def ask_stop(self, job_id):
+        """You pressed *Stop* on a job (the window, any process) -> True when the job is open: the runner stops it at its
+        next safe point — before its next step, or Anki Miner's batch cancelled within a second (`anki_miner.cancel`),
+        what it made kept — and it waits until you ask again. A job not under way (queued, or waiting) is stopped here
+        and now, in the same transaction, so its stone says so at once even with Connect not running; the press is
+        kept too, so a runner that took the job up meanwhile stops it at its next step. A job already ended -> False,
+        nothing written. A press twice is one stop."""
+        with self.transaction():
+            row = self.conn.execute("SELECT state, asked_at FROM jobs WHERE id = ?", (job_id,)).fetchone()
+            if row is None or row[0] not in OPEN:
+                return False
+            self.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                              (f"{STOP}{int(job_id)}", _now()))
+            if row[0] in NOT_STARTED:
+                self.conn.execute("UPDATE jobs SET state = 'waiting', reason = ?, updated_at = ? WHERE id = ?",
+                                  (STOPPED_REASON, _now(), job_id))
+                self.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                                  (f"{STOPPED}{int(job_id)}", row[1] or ""))
+        return True
+
+    def stop_asked(self, job_id):
+        """Has *Stop* been pressed on this job, not yet acted on? (one indexed read: the runner asks it often)"""
+        return self.conn.execute("SELECT 1 FROM meta WHERE key = ?", (f"{STOP}{int(job_id)}",)).fetchone() is not None
+
+    def mark_stopped(self, job_id, asked_at):
+        """The runner stopped the job (inside the caller's transaction or alone): the press used up, the ask it carried
+        then (`asked_at`, or none) kept, so only a newer ask lets it go on (`held_by_stop`)."""
+        self.conn.execute("DELETE FROM meta WHERE key = ?", (f"{STOP}{int(job_id)}",))
+        self.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                          (f"{STOPPED}{int(job_id)}", asked_at or ""))
+
+    def held_by_stop(self, job):
+        """Does a job you stopped still wait (no ask newer than the one it carried when it stopped)? A newer ask — your
+        *Mine now* — lets it go on: the stop's record is taken off then."""
+        row = self.conn.execute("SELECT value FROM meta WHERE key = ?", (f"{STOPPED}{int(job['id'])}",)).fetchone()
+        if row is None:
+            return False
+        if (job.get("asked_at") or "") == row[0]:
+            return True
+        self.forget_stop(job["id"])         # your newer ask: the stop and any press it answered are over
+        return False
+
+    def forget_stop(self, job_id):
+        """The job ended: its *Stop* records go (a press it outlived, or the stop it waited by)."""
+        self.conn.execute("DELETE FROM meta WHERE key IN (?, ?)", (f"{STOP}{int(job_id)}", f"{STOPPED}{int(job_id)}"))
 
     def unask(self, job_id):
         """The ask a job carried, undone before its mining started: a job the ask made is dropped (*left: ask undone*);

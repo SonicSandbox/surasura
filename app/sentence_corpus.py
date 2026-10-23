@@ -722,8 +722,8 @@ def best_for(language, wanted, progress=None, young=None, phrases=None, prefer=N
     settings = settings_manager.load_settings()
     # As every run sets it, before the known words are read (a new cache is tokenized with it).
     analyzer.SANITIZE_JA = (language == "ja")
-    # The library as `build` lists it: Generate's (a missing item still counts, its cached sentences), then the
-    # watched episodes set aside (W-1).
+    # The library as `build` lists it: Generate's (a missing item still counts, its cached sentences), then what is
+    # set aside as reference (Finished, watched episodes).
     counted, aside = analyzer.resolve_sentence_files(language)
     files = counted + (aside or [])
     if not files:
@@ -759,8 +759,8 @@ def build(language, save_path, progress=print, show_source=False):
     # The same normalization a run uses, before anything is tokenized or any list is read.
     analyzer.SANITIZE_JA = (language == "ja")
 
-    # A missing item keeps counting (9b), as Generate lists it — its row and sentences stay; a watched episode set
-    # aside (W-1) still gives sentences, its row kept aside.
+    # A missing item keeps counting (9b), as Generate lists it — its row and sentences stay; what is set aside as
+    # reference (Finished, a watched episode) still gives sentences, its row kept aside.
     counted, aside = analyzer.resolve_sentence_files(language)
     files = counted + (aside or [])
     if not files:

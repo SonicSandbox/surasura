@@ -36,17 +36,19 @@ never re-tokenized: invariant 3 holds), `total_tokens`, `has_tokens`, `file_coun
 adjustment, the phrase table and its matches. A file in neither list leaves. A store made before the flag gets the
 column by an `ALTER TABLE`, every row counted (it was counted before): nothing is rebuilt.
 
-A third class, **set aside** (W-1, K-W2: `files.aside` 1, `counted` 0 — a watched episode while the library's *Keep
-studying watched episodes* is off; `reconcile(..., aside=)`): tokenized and cached as a counted file is, never summed
-— every count above leaves it exactly as it leaves a kept file — but still the name tables' evidence (their sums, the
-names Ignore names reads, the arrivals gate's records: `_EVIDENCE`), so a stone never changes what a word is. A file
-moves between the three classes with no tokenizing. Its own column, added in place like `counted` (no SCHEMA_VERSION):
-a build before it reads an aside row as kept — never summed — so neither build's sums go wrong in the other.
+A third class, **set aside** (W-1, K-W2: `files.aside` 1, `counted` 0 — reference: Finished (W-1b) and a watched
+episode while the library's *Keep studying watched episodes* is off; `reconcile(..., aside=)`): tokenized and cached as
+a counted file is, its text kept as a kept file's, never summed — every count above leaves it exactly as it leaves a
+kept file — but still the name tables' evidence (their sums, the names Ignore names reads, the arrivals gate's records:
+`_EVIDENCE`), so a stone never changes what a word is and a finished show keeps its names whole in the episodes ahead.
+A file moves between the three classes with no tokenizing. Its own column, added in place like `counted` (no
+SCHEMA_VERSION): a build before it reads an aside row as kept — never summed — so neither build's sums go wrong in the
+other.
 
-A kept file's text lives in `kept_text_<lang>_<key>.db` beside the library store (`_KeptText`), never in this cache:
-invariant 4 stays true for this file — a wipe or a reset deletes only it, and the next reconcile reads a kept file that
-is gone from the disk back in from its kept text. Kept rows and kept text go only when the user forgets a file
-(`reconcile`'s `forgotten`), never because a list left them out. A file that moves keeps its row (`reconcile`'s
+A kept or set-aside file's text lives in `kept_text_<lang>_<key>.db` beside the library store (`_KeptText`), never in
+this cache: invariant 4 stays true for this file — a wipe or a reset deletes only it, and the next reconcile reads a
+kept file that is gone from the disk back in from its kept text. Kept rows and kept text go only when the user forgets
+a file (`reconcile`'s `forgotten`), never because a list left them out. A file that moves keeps its row (`reconcile`'s
 re-key: one leaving row and one new path with the same name, size and modified time).
 """
 
@@ -461,13 +463,13 @@ def kept_text_path(language, data_dir):
 
 
 class _KeptText:
-    """`kept_text_<lang>_<key>.db` (`kept_text_path`): the text of each kept file, and of each counted file gone from the
-    disk, so a wipe of the token store (a cache: it deletes itself when damaged, a new schema or tokenizer identity
-    empties it) can read them back in. Its own file, `synchronous=FULL`, never touched by the store's wipe or reset; a
-    file's text goes only when the user forgets it (`reconcile`'s `forgotten`). Opened only
-    when something is kept, read or dropped — a reconcile with nothing kept never makes it. A file that isn't a
-    database any more is set aside once (renamed, with a printed line) and a new one started, never fatal; any other
-    error (locked, the disk full) is raised, so the reconcile rolls back and deletes nothing."""
+    """`kept_text_<lang>_<key>.db` (`kept_text_path`): the text of each kept or set-aside file, and of each counted file
+    gone from the disk, so a wipe of the token store (a cache: it deletes itself when damaged, a new schema or tokenizer
+    identity empties it) can read them back in. Its own file, `synchronous=FULL`, never touched by the store's wipe or
+    reset; a file's text goes only when the user forgets it (`reconcile`'s `forgotten`). Opened only when something is
+    kept, read or dropped — a reconcile with nothing kept never makes it. A file that isn't a database any more is set
+    aside once (renamed, with a printed line) and a new one started, never fatal; any other error (locked, the disk
+    full) is raised, so the reconcile rolls back and deletes nothing."""
 
     def __init__(self, path, data_dir=None):
         self.path = path
@@ -1040,17 +1042,18 @@ class Store:
         whose sentences the user forgot (*This file is junk*) — their rows and kept text go, unless a list names them.
         `elsewhere`: {listed path: where its file is now} (a removed item's, in the trash). `data_dir`: what the kept
         text is keyed relative to (default the language's data folder). A listed file gone from the disk keeps its row
-        as it is. `aside` (W-1): the set-aside list — read as the counted list is (tokenized in the pool, its text kept
-        only once its file is gone), never summed, the name tables' evidence; a file moving to or from it moves its
-        counts (or none, from kept), never re-tokenized. An aside row no list names stays aside with `aside` None, and
-        goes, as a counted row does, when the caller names the list.
+        as it is. `aside` (W-1): the set-aside list — tokenized in the pool as the counted list is, its text kept as a
+        kept file's (W-1b: Finished is set aside, and its files are the ones most often deleted), never summed, the
+        name tables' evidence; a file moving to or from it moves its counts (or none, from kept), never re-tokenized.
+        An aside row no list names stays aside with `aside` None, and goes, as a counted row does, when the caller
+        names the list.
 
-        Before anything is deleted or wiped, the text of every kept file and of every counted file gone from the disk
-        is kept (`_KeptText`, its own file, written first): read from its file (or `elsewhere`), else — the file gone
-        — rebuilt from its cached sentences. A wipe reads such a file back in from it (`tokenize_file.tokenize_text`).
-        A listed file the store lacks takes the row of a leaving one — or of a kept row no list names whose file is
-        gone — when they are the only two with that name, size and modified time (the file moved, 9a): re-keyed with
-        its kept text, never re-tokenized. Two or more alike: each read as it is.
+        Before anything is deleted or wiped, the text of every kept or set-aside file and of every counted file gone
+        from the disk is kept (`_KeptText`, its own file, written first): read from its file (or `elsewhere`), else —
+        the file gone — rebuilt from its cached sentences. A wipe reads such a file back in from it
+        (`tokenize_file.tokenize_text`). A listed file the store lacks takes the row of a leaving one — or of a kept
+        row no list names whose file is gone — when they are the only two with that name, size and modified time (the
+        file moved, 9a): re-keyed with its kept text, never re-tokenized. Two or more alike: each read as it is.
         """
         read = getattr(tokenize_file, "read_text", None)
         from_text = getattr(tokenize_file, "tokenize_text", None)
@@ -1110,18 +1113,19 @@ class Store:
                         del held[old], listed[old], signatures[old]
                     texts.rekey(old, key)
 
-            # Kept text first — before anything below is deleted or wiped: each kept file, and each counted file gone
-            # from the disk, whose row the store holds and whose text isn't kept yet (one rebuilt from cached sentences
-            # is read again once its file can be read). And each row about to leave whose file is gone from the disk,
-            # unless the user forgot it: a caller that can't see the library's missing items (the sentence dictionary
-            # before its list was read, Generate without the library store) or a removed item met before the indexer
-            # keeps it never takes its only sentences with it — a later list naming it reads it back from them.
+            # Kept text first — before anything below is deleted or wiped: each kept or set-aside file, and each
+            # counted file gone from the disk, whose row the store holds and whose text isn't kept yet (one rebuilt from
+            # cached sentences is read again once its file can be read). And each row about to leave whose file is gone
+            # from the disk, unless the user forgot it: a caller that can't see the library's missing items (the
+            # sentence dictionary before its list was read, Generate without the library store) or a removed item met
+            # before the indexer keeps it never takes its only sentences with it — a later list naming it reads it back
+            # from them.
             lost = [key for key in leaving if key not in gone and not os.path.exists(key)]
-            have = texts.held(stamps=True) if (held or lost or None in signatures.values()) else {}
+            have = texts.held(stamps=True) if (held or put or lost or None in signatures.values()) else {}
             keep_now = {}
             for key in listed:
                 signature, row = signatures[key], existing.get(key)
-                if row is None or ((key in current or key in put) and signature is not None):
+                if row is None or (key in current and signature is not None):
                     continue
                 if signature is not None and (wipe or (row["mtime"], row["size"]) != signature):
                     continue                                # read from its file below, its text kept then
@@ -1220,13 +1224,18 @@ class Store:
                 if kept_text is not None:
                     by_hand.append((key, None, kept_text[2:], None, flag, kept_text[:2]))
             tokenized = _tokenized([t[1] for t in todo], tokenize_file, workers)
+            keep_read = {}
             try:
                 for (key, realpath, (mtime, size), row, flag), result in zip(todo, tokenized):
                     write(key, mtime, size, result, row, flag)
+                    # A set-aside file, tokenized in the pool as a counted one is: its text kept as a kept file's
+                    # (W-1b), read from its file — unless the text kept is already this file's, read from it.
+                    if flag == ASIDE and not (key in have and have[key][1:] == (mtime, size) and not have[key][0]):
+                        keep_read[key] = self._text_of(cur, key, {"mtime": mtime, "size": size}, realpath, read,
+                                                       result)
             finally:
                 tokenized.close()                 # the pool's workers end here, before the tables below
             # A kept file, or one read back from elsewhere or from its kept text: here, its text kept as it is read.
-            keep_read = {}
             for key, path, (mtime, size), row, flag, text_facts in by_hand:
                 if text_facts is not None:
                     write(key, mtime, size, from_text(*text_facts), row, flag)
@@ -1238,7 +1247,7 @@ class Store:
                     result = tokenize_file(path)
                     text, facts = _rebuilt_text(result["sentences"], result.get("names"))
                 write(key, mtime, size, result, row, flag)
-                if flag == KEPT or signatures[key] is None:
+                if flag != COUNTED or signatures[key] is None:
                     keep_read[key] = (text, facts, mtime, size)
             texts.put(keep_read)
 
@@ -1264,9 +1273,10 @@ class Store:
         self._update_phrases(phrased)
         return self
 
-    def _text_of(self, cur, key, row, source, read):
+    def _text_of(self, cur, key, row, source, read, result=None):
         """(text, facts, mtime, size) to keep for a listed file the store holds: read from `source` (its file, or where
-        it is now) when it can be, else rebuilt from its cached sentences (`_rebuilt_text`)."""
+        it is now) when it can be, else rebuilt from its cached sentences (`_rebuilt_text`) — `result`'s, a file just
+        tokenized, when given."""
         if source and read is not None:
             try:
                 mtime, size = file_signature(source)
@@ -1274,6 +1284,8 @@ class Store:
                 return text, facts, mtime, size
             except Exception:
                 pass
+        if result is not None:
+            return (*_rebuilt_text(result["sentences"], result.get("names")), row["mtime"], row["size"])
         blob, names = cur.execute("SELECT tokens, names FROM files WHERE path=?", (key,)).fetchone()
         return (*_rebuilt_text(_decode_tokens(blob), _decode_counts(names) if names else None),
                 row["mtime"], row["size"])

@@ -84,8 +84,9 @@ ANALYSED = tuple(t for t, v in TIERS.items() if v[2])                    # now, 
 # --- W-1 (K-W1; Sonic 2026-10-22): ONE rule for what counts ------------------------------------------------------- #
 # An item COUNTS (a list use: Generate's files, the Rarity preview's sums, the mine line) when its tier is analysed and
 # it isn't watched, or the library's own option `keep_watched` is on (meta; absent = off). A watched item of an analysed
-# tier while it's off is SET ASIDE (`text_lists`): its text kept, never summed. Finished takes a show off the list by
-# its tier, a stone one episode by this rule. Written once in Python (`counts`: the window's numbers read it through
+# tier while it's off is SET ASIDE (`text_lists`, `sets_aside`): its text kept, never summed, still the name tables'
+# evidence and a sentence source — as Finished is (W-1b). Finished takes a show off the list by its tier, a stone one
+# episode by this rule. Written once in Python (`counts`: the window's numbers read it through
 # `moves._set_aside`; the window's drawn mine line, `view_rows._mine_ids`, and Connect's, `level._walk`, don't read it
 # yet) and once in SQL (`counts_sql`), from the same constants; a test holds the two equal.
 def _tiers_sql(tiers):
@@ -105,6 +106,19 @@ def counts_sql(keep_watched=False, alias=""):
     col = f"{alias}." if alias else ""
     tiers = f"{col}tier IN ({_tiers_sql(ANALYSED)})"
     return f"({tiers})" if keep_watched else f"({tiers} AND {col}watched = 0)"
+
+
+# W-1b (Sonic 2026-10-23): Finished content is reference, as a watched episode is — never a list use, but the name
+# tables' evidence and a sentence source. Its tier is REFERENCE: every item in it is set aside, watched or not, the
+# option on or off. New arrivals (waiting to be placed) and removed items stay kept: text only.
+REFERENCE = ("graduated",)
+
+
+def sets_aside(tier, watched, keep_watched=False):
+    """Is an item of `tier` (`watched` 0 / 1, the library's `keep_watched`) set aside — its text the name tables'
+    evidence and a sentence source, never counted? A REFERENCE tier's item, and an analysed tier's item that doesn't
+    count (`counts`: watched, the option off)."""
+    return tier in REFERENCE or (tier in ANALYSED and not counts(tier, watched, keep_watched))
 # --- end W-1
 
 
@@ -4614,22 +4628,19 @@ class Store:
     def text_lists(self):
         """9b (05 §5.10): (counted, kept, aside) — the paths, relative to data/<lang>, whose text the token store
         keeps. Counted: the items that count (`counts`), a missing one too (it keeps counting until the user decides).
-        Kept, never counted: Finished, New arrivals, and removed items whose sentences weren't forgotten
-        (`trash.text_forgotten` 0). Aside (W-1): an analysed tier's watched items while `keep_watched` is off, a missing
-        one too (watched wins) — their text kept and still the name tables' and the sentences' evidence, never summed
-        (the token store's K-W2).
-        The token store (E2.2) takes these lists in place of a run's one list: it keeps a kept file's text (in
-        `kept_text_<lang>.db`, through any wipe) and sums only counted files. One read transaction."""
+        Aside (`sets_aside`): reference — Finished (W-1b) and an analysed tier's watched items while `keep_watched` is
+        off (W-1), a missing one too — never summed, still the name tables' evidence and a sentence source (the token
+        store's set-aside class). Kept, text only: New arrivals, and removed items whose sentences weren't forgotten
+        (`trash.text_forgotten` 0).
+        The token store (E2.2) takes these lists in place of a run's one list: it keeps a kept or set-aside file's text
+        (in `kept_text_<lang>.db`, through any wipe) and sums only counted files. One read transaction."""
         with self._reading():
             keep = self._keep_watched()
-            counted, aside = [], []
+            counted, aside, kept = [], [], []
             for rel, tier, watched in self.conn.execute(
-                    f"SELECT rel_path, tier, watched FROM items WHERE tier IN ({_tiers_sql(ANALYSED)}) "
-                    "ORDER BY tier, ord, id"):
-                (counted if counts(tier, watched, keep) else aside).append(rel)
-            kept = [r[0] for r in self.conn.execute(
-                f"SELECT rel_path FROM items WHERE tier IN ({_tiers_sql(t for t in TIERS if t not in ANALYSED)}) "
-                "ORDER BY tier, ord, id")]
+                    "SELECT rel_path, tier, watched FROM items ORDER BY tier, ord, id"):
+                (counted if counts(tier, watched, keep) else aside if sets_aside(tier, watched, keep)
+                 else kept).append(rel)
             kept += [r[0] for r in self.conn.execute(
                 "SELECT rel_path FROM trash WHERE restored_at IS NULL AND text_forgotten = 0 ORDER BY id")]
         have = {path_key(r) for r in counted + aside}

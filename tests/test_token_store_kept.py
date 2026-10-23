@@ -546,16 +546,17 @@ def _run_indexer(language):
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_the_indexer_takes_both_lists_from_the_library_store(language, tmp_path):
-    """D5: the indexer hands the token store the library store's two lists — Finished and a removed file kept (its
-    text read from the trash), a forgotten one dropped, a missing one still counted — and the counts are exactly those
-    of the counted files alone."""
+    """D5: the indexer hands the token store the library store's lists — a removed file kept (its text read from the
+    trash), Finished set aside (reference, W-1b: its text kept too, still the names' evidence), a forgotten one
+    dropped, a missing one still counted — and the counts are exactly those of the counted files alone."""
     store, data_dir, ids = _library(language)
     now1, now2, soon1, soon2, goal1, goal2 = list(ids)
-    # The reference: the same history with no kept list — every file counted, then the three that stay counted (the
-    # name tables keep a name through a flip guard: they remember the last tables, so both must have the same past).
+    # The reference: the same history with no kept list — every file counted, then the three that stay counted and
+    # the Finished one set aside (the name tables keep a name through a flip guard: they remember the last tables, so
+    # both must have the same past).
     reference = ti.open_store(language, path=str(tmp_path / "ref.db"))
     reference.reconcile(list(ids), ti.make_tokenizer(language))
-    reference.reconcile([now1, now2, soon2], ti.make_tokenizer(language))
+    reference.reconcile([now1, now2, soon2], ti.make_tokenizer(language), aside=[soon1])
     _run_indexer(language)
     with ti.open_store(language) as tokens:
         assert len(tokens.counted_files()) == 6 and tokens.kept_files() == []
@@ -568,7 +569,8 @@ def test_the_indexer_takes_both_lists_from_the_library_store(language, tmp_path)
     store.sync_disk()
     counted, more = indexer.token_store_lists(language, data_dir, [now1, soon2])
     assert {ti._norm(p) for p in counted} == {ti._norm(p) for p in (now1, now2, soon2)}
-    assert {ti._norm(p) for p in more["kept"]} == {ti._norm(soon1), ti._norm(goal1)}
+    assert {ti._norm(p) for p in more["kept"]} == {ti._norm(goal1)}
+    assert {ti._norm(p) for p in more["aside"]} == {ti._norm(soon1)}
     assert {ti._norm(p) for p in more["elsewhere"]} == {ti._norm(goal1)}
     assert {ti._norm(p) for p in more["forgotten"]} == {ti._norm(goal2)}
     store.close()
@@ -577,7 +579,7 @@ def test_the_indexer_takes_both_lists_from_the_library_store(language, tmp_path)
     _run_indexer(language)
     tokens = ti.open_store(language)
     assert set(tokens.counted_files()) == {ti._norm(p) for p in (now1, now2, soon2)}
-    assert set(tokens.kept_files()) == {ti._norm(soon1), ti._norm(goal1)}
+    assert set(tokens.kept_files()) == {ti._norm(goal1)} and tokens.aside_files() == [ti._norm(soon1)]
     assert tokens.file_tokens(goal2) == [], "forgotten: its row goes"
     assert tokens.word_counts() == reference.word_counts() and tokens.total_tokens() == reference.total_tokens()
     assert tokens.names_tables() == reference.names_tables()

@@ -174,8 +174,9 @@ def test_a_kept_aside_flip_reads_the_names_again_and_leaves_the_phrase_table_alo
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_a_new_or_changed_aside_file_is_read_once_and_never_summed(language, tmp_path):
-    """An episode that arrives already watched is tokenized once (as a counted file is: no kept text while its file is
-    there) and summed nowhere; edited while watched, it is read again and still summed nowhere."""
+    """An episode that arrives already watched is tokenized once (in the pool, as a counted file is), its text kept as
+    a kept file's (W-1b: reference text outlives its file), and summed nowhere; edited while watched, it is read again,
+    its kept text follows the edit, and it is still summed nowhere."""
     a, b, c, *_rest = _files(language)
     tok = _counting(language)
     store = ti.open_store(language)
@@ -184,12 +185,13 @@ def test_a_new_or_changed_aside_file_is_read_once_and_never_summed(language, tmp
     alone = ti.open_store(language, path=str(tmp_path / "alone.db"))
     alone.reconcile([a, b], ti.make_tokenizer(language))
     assert _counts_only(store, language) == _counts_only(alone, language)
-    assert _kept_text(store).held() == {}, "its file is there: nothing to keep"
+    assert _kept_text(store).held() == {ti._norm(c): False}, "its text kept, read from its file"
     with open(c, "a", encoding="utf-8") as f:
         f.write({"ja": "\n今日は雨が降っている。\n", "zh": "\n今天下雨了。\n"}[language])
     assert store.needs_reconcile([a, b], aside=[c]) is True
     store.reconcile([a, b], tok, aside=[c])
     assert tok.calls.count(("file", ti._norm(c))) == 2 and _counts_only(store, language) == _counts_only(alone, language)
+    assert "今" in _kept_text(store).get(ti._norm(c))[0], "the kept text is the edited file's"
     store.close()
     alone.close()
 
@@ -333,8 +335,9 @@ def test_a_build_before_the_aside_column_reads_an_aside_row_as_kept(tmp_path):
 def test_the_name_tables_are_byte_identical_with_every_episode_watched_and_with_none(tmp_path):
     """A recurring name, once an episode: three uses — the floor — only with every episode. Watched one by one (and
     all of them, and from scratch), the name tables, the names Ignore names reads and the arrivals gate's records are
-    byte for byte those of no episode watched, and the episode still ahead reads the name whole. Finished episodes,
-    which aren't evidence, would split it: the proof the evidence is what holds it."""
+    byte for byte those of no episode watched, and the episode still ahead reads the name whole. Finished episodes are
+    evidence too (W-1b); kept text alone (a New arrival, a removed item) isn't, and would split it: the proof the
+    evidence is what holds it."""
     eps = _show()
     sig = ti.build_signature("ja")
     tok = _counting("ja")
@@ -363,11 +366,19 @@ def test_the_name_tables_are_byte_identical_with_every_episode_watched_and_with_
     assert _names_bytes(every) == reference, "a library indexed with every episode already watched"
     every.close()
 
+    # Finished is reference too (W-1b): the library hands its episodes over as set aside, so they hold the name whole.
     finished = ti.open_store("ja", path=str(tmp_path / "finished.db"))
-    finished.reconcile(eps[2:], ti.make_tokenizer("ja"), sig, kept=eps[:2])
-    assert NAME not in finished.names_tables()["k"], "Finished episodes are no evidence: one use is under the floor"
-    assert NAME not in _surfaces(finished, eps[2])
+    finished.reconcile(eps[2:], ti.make_tokenizer("ja"), sig, aside=eps[:2])
+    # The tables and the names as stored; the records as a set (this store met the episode ahead first).
+    assert _names_bytes(finished)[:2] == reference[:2], "Finished episodes are evidence, as watched ones are"
+    assert sorted(map(repr, finished.names_records())) == sorted(map(repr, reference[2]))
+    assert NAME in _surfaces(finished, eps[2])
     finished.close()
+    # Kept text alone (New arrivals, removed items) is no evidence: one use is under the floor (the test can fail).
+    kept = ti.open_store("ja", path=str(tmp_path / "kept.db"))
+    kept.reconcile(eps[2:], ti.make_tokenizer("ja"), sig, kept=eps[:2])
+    assert NAME not in kept.names_tables()["k"] and NAME not in _surfaces(kept, eps[2])
+    kept.close()
     none.close()
 
 

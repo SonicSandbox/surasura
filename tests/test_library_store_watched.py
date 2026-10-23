@@ -330,8 +330,8 @@ def test_a_library_with_no_old_stone_in_a_studied_tier_is_stamped_without_a_move
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_the_text_lists_set_watched_files_aside_and_never_drop_one(language):
     """(counted, kept, aside): a watched file of Current (a missing one too: watched wins over "a missing item keeps
-    counting") is aside, never counted; a watched file in Finished is kept, as Finished is; every item is in exactly
-    one list. With the option on, nothing is aside. Counted is Generate's list."""
+    counting") is aside, never counted; a file in Finished, watched or not, is aside too (reference, W-1b); every item
+    is in exactly one list. With the option on, only Finished is aside. Counted is Generate's list."""
     store = migrated(language)
     data_dir, _u = roots(language)
     now, soon, goal = store.ids("now"), store.ids("soon"), store.ids("goal")
@@ -341,13 +341,15 @@ def test_the_text_lists_set_watched_files_aside_and_never_drop_one(language):
     store.finish([goal[0]])
     store.set_watched([now[0], soon[0], goal[0]])
     counted, kept, aside = store.text_lists()
-    assert set(aside) == {_rel(store, now[0]), _rel(store, soon[0])} and _rel(store, goal[0]) in kept
+    finished = {_rel(store, i) for i in store.ids("graduated")}
+    assert _rel(store, goal[0]) in finished
+    assert set(aside) == {_rel(store, now[0]), _rel(store, soon[0])} | finished and not finished & set(kept)
     every = [r[0] for r in store.conn.execute("SELECT rel_path FROM items")]
     assert sorted(counted + kept + aside) == sorted(every), "each file in exactly one list"
     assert set(counted) == set(_scheduled(store))
     store.set_library_options(keep_watched=True)
     counted, kept, aside = store.text_lists()
-    assert aside == [] and {_rel(store, now[0]), _rel(store, soon[0])} <= set(counted)
+    assert set(aside) == finished and {_rel(store, now[0]), _rel(store, soon[0])} <= set(counted)
     store.close()
 
 
@@ -539,11 +541,11 @@ def test_the_indexer_sets_a_watched_file_aside_and_un_marking_brings_it_back_wit
 # --- the sentence sources (K-W3: counted + set aside) ----------------------------------------------------------- #
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_a_watched_episode_still_gives_sentences_and_a_finished_show_none(language, tmp_path):
+def test_a_watched_episode_and_a_finished_show_still_give_sentences(language, tmp_path):
     """A stone never takes a sentence away: 例文 (`best_for`) and the sentence dictionary (`build`) still pick a watched
     episode's sentences — the dictionary right after the stone, before the indexer, its row set aside with nothing
-    tokenized — while a Finished show's stay out, as ever. With Keep studying watched episodes on, 例文 is exactly what it
-    was before the stone."""
+    tokenized — and a Finished show's too (W-1b: Finished is reference, set aside as a watched episode is). With Keep
+    studying watched episodes on, 例文 is exactly what it was before the stone."""
     store, _data_dir, ids = _real_library(language)
     _run_indexer(language)
     watched, finished = list(ids)[0], list(ids)[2]
@@ -581,10 +583,10 @@ def test_a_watched_episode_still_gives_sentences_and_a_finished_show_none(langua
     with patch.object(sc, "export_dictionary", export), patch.object(ti, "_tokenized", spy):
         assert sc.build(language, str(tmp_path / "corpus.zip"), progress=lambda message: None)
     assert only(watched) & set(dictionary), "the sentence dictionary keeps a watched episode's sentences"
-    assert not only(finished) & set(dictionary), "and leaves a Finished show's out"
+    assert only(finished) & set(dictionary), "and a Finished show's (reference)"
     assert tokenized == [], "the stone re-tokenizes nothing"
     with ti.open_store(language) as tokens:
-        assert tokens.aside_files() == [ti._norm(watched)], "its row set aside, never dropped"
+        assert set(tokens.aside_files()) == {ti._norm(watched), ti._norm(finished)}, "set aside, never dropped"
     assert only(watched) & picked(), "例文 still picks a watched episode's sentence"
-    assert not only(finished) & picked(), "and never a Finished show's"
+    assert only(finished) & picked(), "and a Finished show's"
     store.close()

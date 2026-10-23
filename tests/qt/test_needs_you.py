@@ -766,7 +766,7 @@ def test_the_page_shows_readable_cards_when_first_opened_after_its_entries_chang
         style.apply(qapp, "night", "M", "ja")
 
 
-def test_known_from_ankis_question_marks_them_known_or_leaves_them_on_a_worker(world):
+def test_known_from_ankis_question_marks_them_known_or_leaves_them_on_a_worker(world, monkeypatch):
     # Laptop round 7 #43 (B3-1 A): the cards already suspended and marked when Count as known in Anki first looked
     # are asked about once; 3.0 had nowhere to ask, so they never counted. *Mark them known* accepts (on a worker),
     # then the known words' count and the journey are asked again as an import's end asks them; *Leave them* declines.
@@ -778,7 +778,12 @@ def test_known_from_ankis_question_marks_them_known_or_leaves_them_on_a_worker(w
                                               ["一緒に", "やがる"])[1]
     ny.decline_known = lambda lang: got.append(("decline", lang, threading.current_thread() is not main))
     changed = []
-    win.services.automation = SimpleNamespace(known_changed=lambda: changed.append(True))
+    automation = getattr(win.services, "automation", None)
+    if automation is not None:              # the window's own automation kept (its shutdown stops its threads)
+        monkeypatch.setattr(automation, "known_changed", lambda: changed.append(True))
+    else:
+        monkeypatch.setattr(win.services, "automation", SimpleNamespace(known_changed=lambda: changed.append(True)),
+                            raising=False)
     entry = entry_of(ny, service.KNOWN_OFFER)
     assert "40" in entry.title and "suspended and marked" in entry.title
     assert {b.property("action") for b in ny.cards.buttons(entry.key)} == {"mark_known", "leave_known"}

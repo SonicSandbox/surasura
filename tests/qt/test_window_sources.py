@@ -28,7 +28,7 @@ from PyQt6.QtWidgets import QApplication
 
 from app import library_store as ls
 from app import sources
-from app.qt import add_menu, rows, settings_sources, strings
+from app.qt import add_menu, rows, settings_sources, strings, windows
 from app.qt import settings_strings as S
 from app.services import source_looks, view_rows as vr
 from tests import services_helpers as h
@@ -458,22 +458,36 @@ def _sources_row(win):
     return page, page.findChildren(settings_sources.SourcesRow)[0]
 
 
+def _folders_window(win):
+    """Settings' row, then its *Manage folders…* door pressed -> (page, row, the *Library folders* window)."""
+    page, row = _sources_row(win)
+    assert wait_until(lambda: page.row(settings_sources.ROW_ID) is not None, 20)
+    door = page.row(settings_sources.ROW_ID).doors[settings_sources.WINDOW]
+    assert door.text() == S.DOORS["library-folders"][0] and door.toolTip()
+    door.click()
+    folders = windows.opened(win, settings_sources.WINDOW)
+    assert isinstance(folders, settings_sources.FoldersWindow) and folders.isVisible()
+    return page, row, folders
+
+
 def test_settings_lists_the_folders_and_stop_reading_keeps_every_episode(window):
     opener, data_dir, user_files_dir = _library()
     looks = source_looks.SourceLooks(opener, "ja", kind=lambda _p: "network")
     seed, win = window(looks)
     folder = _source()
     answer = _added(looks, folder)
-    page, row = _sources_row(win)
-    assert wait_until(lambda: answer["root"] in row.lines, 10)
-    line = row.lines[answer["root"]]
+    page, row, folders = _folders_window(win)
+    assert wait_until(lambda: answer["root"] in folders.lines, 10)
+    assert row.summary.text() == S.SOURCES_FOLDERS_ONE
+    line = folders.lines[answer["root"]]
     assert line.count.text() == S.SOURCES_COUNT.format(n=2)
     assert "stay in your library" in line.stop.toolTip()       # the words say the items stay
-    assert row.add.toolTip() and row.look.toolTip()
+    assert row.add.toolTip() and folders.add.toolTip() and folders.look.toolTip()
     line.stop.click()
-    assert wait_until(lambda: not row.lines, 10)
+    assert wait_until(lambda: not folders.lines, 10)
     assert win.bar_line.full() == S.SOURCES_STOPPED.format(path=ls.folder_path(folder), n=2)
-    assert not row.none.isHidden()                            # the empty state, its Add a folder… beside it
+    assert not folders.none.isHidden()                        # the empty state, its Add a folder… beside it
+    assert row.summary.text() == S.SOURCES_NONE                # the page's summary followed the stop
     store = _read_store(data_dir, user_files_dir)
     try:
         assert store.sources() == [] and store.sources(all=True)[0]["on"] is False
@@ -640,18 +654,20 @@ def test_B1_S7_a_long_download_is_one_look_at_its_end_never_one_per_burst(looks_
 def test_B2_after_a_language_switch_settings_shows_that_librarys_folders_and_a_stale_stop_is_refused(window):
     old = RecordingLooks()
     seed, win = window(old)
-    page, row = _sources_row(win)
+    page, row, folders = _folders_window(win)
     win._sources_looked({"language": win.language, "sources": [{"id": 2, "path": r"D:\アニメ", "on": True,
                                                                   "items": 5, "reachable": True}]})
-    assert 2 in row.lines
+    assert 2 in folders.lines and row.summary.text() == S.SOURCES_FOLDERS_ONE
     new = RecordingLooks()
     win.services.source_looks = new
     win.language = "zh"
     win._follow_looks(None)
-    assert row.lines == {} and not row.none.isHidden()        # the zh library's folders, none yet
+    assert folders.lines == {} and not folders.none.isHidden()  # the zh library's folders, none yet
+    assert row.summary.text() == S.SOURCES_NONE
     win._sources_looked({"language": "ja", "sources": [{"id": 2, "path": r"D:\アニメ", "on": True, "items": 5,
                                                         "reachable": False}]})
-    assert row.lines == {} and win.offline_line.isHidden()     # the language left's late answer: dropped
+    assert folders.lines == {} and win.offline_line.isHidden()  # the language left's late answer: dropped
+    assert row.summary.text() == S.SOURCES_NONE
     opener, _d, _u = _library()
     looks = source_looks.SourceLooks(opener, "zh", kind=lambda _p: "network")
     try:
@@ -735,23 +751,25 @@ def test_S6_stop_reading_lets_a_running_look_go_between_files(looks_world, monke
 
 def test_S15_an_equal_summary_repaints_no_line(window):
     seed, win = window(RecordingLooks())
-    page, row = _sources_row(win)
+    page, row, folders = _folders_window(win)
     summary = {"language": win.language, "sources": [{"id": 3, "path": r"D:\Shows", "on": True, "items": 9,
                                                        "reachable": True}]}
     win._sources_looked(summary)
-    reads = row.reads
+    reads, paints = folders.reads, row.paints
     win._sources_looked(dict(summary, sources=[dict(s) for s in summary["sources"]]))
-    assert row.reads == reads
+    assert folders.reads == reads and row.paints == paints
     win._sources_looked(dict(summary, sources=[dict(summary["sources"][0], items=10)]))
-    assert row.reads == reads + 1 and row.lines[3].count.text() == S.SOURCES_COUNT.format(n=10)
+    assert folders.reads == reads + 1 and folders.lines[3].count.text() == S.SOURCES_COUNT.format(n=10)
+    assert row.paints == paints                                # one folder still: the page's words never moved
 
 
 def test_settings_waits_for_the_first_listing_before_saying_no_folders(window):
     seed, win = window(RecordingLooks())
-    page, row = _sources_row(win)
-    assert row.none.text() == S.SOURCES_LISTING
+    page, row, folders = _folders_window(win)
+    assert row.summary.text() == S.SOURCES_LISTING and folders.none.text() == S.SOURCES_LISTING
     win._sources_looked({"language": win.language, "sources": []})
-    assert row.none.text() == S.SOURCES_NONE and not row.none.isHidden()
+    assert folders.none.text() == S.SOURCES_NONE and not folders.none.isHidden()
+    assert row.summary.text() == S.SOURCES_NONE
 
 
 # --- ▶ on an episode a source folder holds (laptop fix "play", FEEDBACK row 5) ------------------------------------ #

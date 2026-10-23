@@ -76,10 +76,10 @@ def make_cards(language, gap_id, path=None, store_id=None):
     return queued
 
 
-def stoppable(state, resume=None):
-    """Can a job in `state` (waiting at `resume`) still be stopped (the window offers *Stop* only then)? The ledger's
-    one rule (`ledger.stoppable`): until its cards are made."""
-    return book.stoppable(state, resume)
+def stoppable(state, resume=None, progress=None):
+    """Can a job in `state` (waiting at `resume`; mining at `progress`) still be stopped (the window offers *Stop* only
+    then)? The ledger's one rule (`ledger.stoppable`): until its cards are made — never once their clips are named."""
+    return book.stoppable(state, resume, progress)
 
 
 def stop(language, job_id, path=None):
@@ -92,7 +92,8 @@ def stop(language, job_id, path=None):
         return False
     with book.Ledger(path) as ledger:
         job = ledger.job_by_id(job_id)
-        if job is None or job.get("language") != language or not stoppable(job.get("state"), job.get("resume")):
+        if job is None or job.get("language") != language or not stoppable(job.get("state"), job.get("resume"),
+                                                                           job.get("progress")):
             return False
         if not ledger.ask_stop(job_id):
             return False

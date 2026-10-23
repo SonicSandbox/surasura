@@ -98,7 +98,8 @@ def build(record, language):
         step = (job.get("progress") or None) if kind == MINING else None      # `status._progress`'s
         progress, doing = (step.get("percent"), step.get("doing")) if step else (None, None)
         stopping = True if job.get("stopping") else None
-        stoppable = (True if job.get("job") is not None and actions.stoppable(job.get("state"), job.get("resume"))
+        stoppable = (True if job.get("job") is not None
+                     and actions.stoppable(job.get("state"), job.get("resume"), job.get("progress"))
                      and reason != runner.STOPPED_BY_YOU and not stopping else None)
         items[item_id] = Item(kind=kind, words=WORDS[kind], tip=reason or WORDS[kind], job=job.get("job"),
                               made=job.get("made") or 0, total=job.get("words") or 0, progress=progress, doing=doing,

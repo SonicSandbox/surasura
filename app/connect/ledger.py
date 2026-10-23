@@ -69,13 +69,28 @@ STOPPED_REASON = "Stopped: its cards so far are kept. Press Mine now to go on." 
 UNCARDABLE_AFTER = 2
 
 
-def stoppable(state, resume=None):
-    """Can a job in `state` (waiting at `resume`) still be stopped? Until its cards are made: queued, waiting before
-    filling, picking, the fit check, mining. Filling and ordering finish (seconds), and a job waiting to fill or order
-    (Anki closed) finishes too once it can (review A3)."""
+def stoppable(state, resume=None, progress=None):
+    """Can a job in `state` (waiting at `resume`; mining at `progress`, its saved step) still be stopped? Until its
+    cards are made: queued, waiting before filling, picking, the fit check, mining up to Anki Miner's run's end.
+    Naming the clips, filling and ordering finish (review A3; row 56: naming is past the stop point — its cards are
+    made, and their clips are named before Anki's next sync), and a job waiting to fill or order (Anki closed)
+    finishes too once it can."""
     if state == "waiting":
         return resume not in ("filling", "ordering")
+    if state == "mining" and naming(progress):
+        return False
     return state in ("queued", "picking", "fit-check", "mining")
+
+
+def naming(progress):
+    """Row 56: is a mining job naming its clips (Anki Miner's run over)? `progress`: the job's saved progress, as the
+    ledger keeps it (JSON text) or read (a dict; the status record's carries the same `step`)."""
+    if isinstance(progress, str):
+        try:
+            progress = json.loads(progress)
+        except ValueError:
+            return False
+    return isinstance(progress, dict) and progress.get("step") == "naming"
 
 _SCHEMA_SQL = (
     "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
@@ -501,8 +516,9 @@ class Ledger:
             return self._ask_stop(job_id)
 
     def _ask_stop(self, job_id):
-        row = self.conn.execute("SELECT state, asked_at, resume FROM jobs WHERE id = ?", (job_id,)).fetchone()
-        if row is None or not stoppable(row[0], row[2]):
+        row = self.conn.execute("SELECT state, asked_at, resume, progress FROM jobs WHERE id = ?",
+                                (job_id,)).fetchone()
+        if row is None or not stoppable(row[0], row[2], row[3]):
             return False
         self.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (f"{STOP}{int(job_id)}", _now()))
         if row[0] in NOT_STARTED:

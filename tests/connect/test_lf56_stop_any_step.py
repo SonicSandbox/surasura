@@ -16,7 +16,9 @@ words and a real ledger. Never a live Anki, never a real tsubasa or Anki Miner.
 import importlib
 import json
 import logging
+import subprocess
 import sys
+import threading
 import time
 
 import pytest
@@ -316,3 +318,260 @@ def test_every_other_open_job_reads_waiting_its_turn_behind_the_one_in_flight(le
         led.set_state(working, "done")
     _record, jobs = _ja(ledger_path)
     assert jobs[202]["reason"] is None and "behind" not in jobs[202]
+
+
+# --- after review: every stop at mining keeps what the earlier batches made --------------------------------------- #
+def _press_after_by_tag(steps, ledger, job_id):
+    """A press as the first batch (in doubt: two words made, then a crash) is read back by the job's tag."""
+    real = steps.by_tag
+
+    def by_tag_then_press(*a):
+        got = real(*a)
+        ledger.ask_stop(job_id)
+        return got
+    steps.by_tag = by_tag_then_press
+
+
+def _kept(steps, ledger, job_id):
+    job = ledger.job_by_id(job_id)
+    assert (job["state"], job["reason"], job["resume"]) == ("waiting", runner.STOPPED_BY_YOU, "mining")
+    assert [(item, sorted(made), mined) for item, made, mined in steps.records] == [
+        (1, ["一生懸命", "上層部"], False)], "the first batch's cards recorded (no receipt: not mined yet)"
+    assert ("name_media", 1, 2) in steps.log, "and their clips named before Anki's next sync"
+
+
+def test_a_press_between_two_batches_records_and_names_the_first_batchs_cards(tmp_path, ledger):
+    # the review: a stop before the second batch left the first batch's cards unrecorded and unnamed until Mine now
+    # (an Anki sync meanwhile syncs unnamed files)
+    job_id = _queue(ledger, 1)
+    steps = FakeSteps(str(tmp_path), {"line": {"ja": [1]}, "crash_mid_batch": 2})
+    _press_after_by_tag(steps, ledger, job_id)
+    _run(steps, ledger)
+    _kept(steps, ledger, job_id)
+    assert [e[2] for e in steps.log if e[0] == "mine"] == [1], "no second batch"
+
+
+def test_a_look_up_ended_in_the_second_batch_records_and_names_the_first_batchs_cards(tmp_path, ledger):
+    stopping = _stopping()
+    job_id = _queue(ledger, 1)
+    steps = FakeSteps(str(tmp_path), {"line": {"ja": [1]}, "crash_mid_batch": 2})
+    real, calls = steps.mine, []
+
+    def mine(lang, job, picked, todo, attempt):
+        calls.append(attempt)
+        if len(calls) == 1:
+            return real(lang, job, picked, todo, attempt)
+        ledger.ask_stop(job_id)                 # pressed while the second batch's look-ups run: ended there
+        raise stopping.Stopped()
+    steps.mine = mine
+    _run(steps, ledger)
+    _kept(steps, ledger, job_id)
+    assert [b["state"] for b in ledger.batches(job_id)][-1] == "refused"
+
+
+# --- after review: *Stopping…* from the press until the job has stopped, never past the stop point ---------------- #
+def _entry(ledger_file, item):
+    record = status.read(["ja"], path=ledger_file)
+    entry = next(j for j in record["languages"]["ja"]["jobs"] if j["item"] == item)
+    return entry, feed.build(record, "ja").items[item]
+
+
+def test_the_tidy_up_after_a_stopped_batch_reads_stopping_with_no_second_stop(tmp_path, ledger, monkeypatch):
+    # the batch Anki Miner ended at the press: its cards are read back, recorded and named — all of it *Stopping…*,
+    # never *Mining* with Stop offered again
+    monkeypatch.setattr(status, "running", lambda: True)
+    job_id = _queue(ledger, 1)
+    ledger_file = str(tmp_path / "ledger.sqlite")
+
+    def press(n, job):
+        if n == 1:
+            ledger.ask_stop(job_id)
+    steps = FakeSteps(str(tmp_path), {"line": {"ja": [1]}, "on_word": press})
+    seen = []
+    for name in ("by_tag", "record", "name_media"):
+        real = getattr(steps, name)
+
+        def look(*a, _name=name, _real=real):
+            entry, item = _entry(ledger_file, 1)
+            seen.append((_name, entry["stopping"], item.stopping, item.stoppable))
+            return _real(*a)
+        setattr(steps, name, look)
+    _run(steps, ledger)
+    assert [s[0] for s in seen] == ["by_tag", "record", "name_media"]
+    assert all(s[1:] == (True, True, None) for s in seen), seen
+    job = ledger.job_by_id(job_id)
+    assert (job["state"], job["reason"]) == ("waiting", runner.STOPPED_BY_YOU)
+    entry, item = _entry(ledger_file, 1)
+    assert (entry["stopping"], item.stopping, item.stoppable) == (False, None, None), "stopped: Mine now, no Stop"
+
+
+def test_naming_the_clips_is_past_the_stop_point(tmp_path, ledger, monkeypatch):
+    # the review: a press during naming (a third of an episode) was taken and never acted on — *Stopping…*
+    # through naming, filling and ordering, then done. Naming is past the stop point: a pending press is forgotten as
+    # it begins, a press then is refused, and no Stop is offered
+    stopping = _stopping()
+    monkeypatch.setattr(status, "running", lambda: True)
+    job_id = _queue(ledger, 1)
+    ledger_file = str(tmp_path / "ledger.sqlite")
+    steps = FakeSteps(str(tmp_path), {"line": {"ja": [1]}})
+    real_after, real_name = steps.after_write, steps.name_media
+
+    def after_write(lang):                      # pressed as Anki Miner's run ends, before naming
+        real_after(lang)
+        assert ledger.ask_stop(job_id)
+    seen = []
+
+    def name_media(lang, job, picked, lines):
+        entry, item = _entry(ledger_file, 1)
+        seen.append((ledger.stop_asked(job_id), entry["stopping"], item.stoppable, ledger.ask_stop(job_id),
+                     stopping.pressed()))
+        return real_name(lang, job, picked, lines)
+    steps.after_write, steps.name_media = after_write, name_media
+    _run(steps, ledger)
+    assert seen == [(False, False, None, False, False)]
+    assert ledger.job_by_id(job_id)["state"] == "done"
+    assert sorted(steps.anki.words()) == sorted(w for w, _r in WORDS[1])
+    from app.connect import actions
+    assert actions.stoppable("mining", None, {"step": "naming"}) is False
+    assert actions.stoppable("mining", None, json.dumps({"step": "naming"})) is False
+    assert actions.stoppable("mining", None, json.dumps({"stage": 3, "stages": 5, "done": 2, "total": 6})) is True
+
+
+def test_with_connect_not_running_a_pending_press_never_reads_stopping(ledger_path, monkeypatch):
+    # the review: a job left in flight by a Connect that isn't running read *Stopping…* until it ran again
+    monkeypatch.setattr(status, "running", lambda: False)
+    with Ledger(ledger_path) as led:
+        job_id = led.queue("ja", 301, "test", "ev-1")
+        led.set_state(job_id, "fit-check")
+        assert led.ask_stop(job_id)
+    _record, jobs = _ja(ledger_path)
+    assert jobs[301]["stopping"] is False
+    monkeypatch.setattr(status, "running", lambda: True)
+    _record, jobs = _ja(ledger_path)
+    assert jobs[301]["stopping"] is True
+
+
+# --- after review: the one program-ender and the one wait --------------------------------------------------------- #
+def test_ending_a_program_whose_child_holds_its_pipe_returns_within_its_bound(monkeypatch):
+    # the review: taskkill failed (or timed out) and a child the program started survives, holding its output pipe:
+    # the final wait for its output had no limit, so the runner never reached its stop
+    stopping = _stopping()
+    monkeypatch.setattr(stopping, "END_WAIT_S", 1.0, raising=False)
+
+    def taskkill_refused(*a, **k):
+        raise OSError("taskkill refused")
+    monkeypatch.setattr(subprocess, "run", taskkill_refused)
+    code = ("import subprocess, sys, time; subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(12)']); "
+            "time.sleep(30)")
+    proc = subprocess.Popen([sys.executable, "-c", code], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE)
+    time.sleep(1.0)                             # the program started its own child
+    ended = threading.Event()
+
+    def end():
+        stopping.end(proc)
+        ended.set()
+    threading.Thread(target=end, daemon=True).start()
+    assert ended.wait(5.0), "the end waited on a pipe a surviving child holds"
+    assert proc.returncode is not None, "the program itself was ended"
+
+
+def test_a_progress_read_that_keeps_failing_is_logged_once_a_wait(caplog):
+    # a poll that always failed froze the bar unseen
+    stopping = _stopping()
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(0.5); print('verdict')"],
+                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    calls = []
+
+    def poll():
+        calls.append(1)
+        raise OSError("progress.json held open")
+    with caplog.at_level(logging.WARNING, logger="surasura-cli"):
+        out, _err = stopping.wait(proc, 30, on_poll=poll, every=0.05)
+    assert out.strip() == b"verdict" and len(calls) >= 3
+    logged = [r for r in caplog.records if r.exc_info and "progress.json held open" in str(r.exc_info[1])]
+    assert len(logged) == 1, "once a wait: never every slice, never not at all"
+
+
+def test_hatos_stop_is_connects_one_program_ender(monkeypatch):
+    # a second copy of the ender (taskkill /T, kill, a bounded wait) lived in hato.py
+    stopping = _stopping()
+    from app.connect import hato
+    seen = []
+    monkeypatch.setattr(stopping, "end", lambda proc, **kw: seen.append((proc, kw)))
+    proc = object()
+    hato._stop(proc)
+    assert seen == [(proc, {"collect": False})], "hato's own thread reads its output: never collected by the ender"
+
+
+# --- after review: Anki Miner's look-ups -------------------------------------------------------------------------- #
+def test_an_export_ended_mid_write_leaves_the_last_whole_export(fake_miner, tmp_path):
+    # the review: a press ended `settings-export` while it wrote --out; the run folder's export (the mapping a run
+    # after a kill reads) was left cut in half and read as {}
+    stopping = _stopping()
+    out = tmp_path / "run" / "settings-export.json"
+    out.parent.mkdir()
+    out.write_text(json.dumps({"anki_miner_settings": 1, "settings": {"anki_deck_name": "前の設定"}},
+                              ensure_ascii=False), encoding="utf-8")
+    before = out.read_bytes()
+    fake_miner.plan(export_cut=True)
+    with stopping.watching(_press_after(0.5)):
+        with pytest.raises(stopping.Stopped):
+            anki_miner.settings_export(fake_miner.path, "ja", str(out))
+    assert out.read_bytes() == before, "the last whole export stands"
+    assert sorted(p.name for p in out.parent.iterdir()) == ["settings-export.json"], "no part left behind"
+    fake_miner.plan()
+    assert anki_miner.settings_export(fake_miner.path, "ja", str(out))["settings"]["anki_deck_name"] == "DevTest"
+    assert json.loads(out.read_text(encoding="utf-8"))["settings"]["anki_deck_name"] == "DevTest"
+    assert sorted(p.name for p in out.parent.iterdir()) == ["settings-export.json"]
+
+
+def test_a_call_with_no_verb_starts_nothing_it_cant_end(fake_miner, monkeypatch):
+    # the verb was read after the program started: no verb raised IndexError and left the program running
+    started = []
+    real = subprocess.Popen
+
+    def popen(*a, **k):
+        started.append(a[0])
+        return real(*a, **k)
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    verdict = anki_miner.api(fake_miner.path, [])
+    assert verdict["ok"] is False and len(started) == 1
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows refuses a replace onto a file held open")
+def test_the_fake_logs_each_progress_step_it_skips_as_anki_miner_warns(batch, fake_miner, tmp_path,  # noqa: F811
+                                                                      monkeypatch):
+    # Anki Miner's progress file write catches OSError, logs a warning and goes on: the fake does the same and says so
+    # in its call log, so a test sees a collision rather than have it absorbed
+    monkeypatch.setattr(anki_miner, "POLL_S", 0.05)
+    fake_miner.plan(progress=[[1, 5, 0, 0], [2, 5, 0, 0], [3, 5, 2, 6], [3, 5, 4, 6], [5, 5, 3, 6]],
+                    progress_every=0.25)
+    held = []
+
+    def hold(progress):
+        if held:
+            return
+        path = next((tmp_path / "runs").rglob("progress.json"))
+        with open(path, "rb"):
+            held.append(path)
+            time.sleep(0.9)                     # Connect's read held open across the fake's next replaces
+    done = batch(on_progress=hold)
+    assert held and [o["outcome"] for o in done["outcomes"]] == ["made"] * len(done["outcomes"])
+    assert any("progress_skipped" in c for c in fake_miner.calls()), "each skipped step in the call log"
+
+
+def test_a_job_waiting_to_fill_or_order_is_never_offered_a_stop(ledger_path, monkeypatch):
+    # the record carried no `resume`: a job waiting to fill its made cards (Anki closed) was offered a Stop that the
+    # ledger refuses — a press that does nothing
+    monkeypatch.setattr(status, "running", lambda: True)
+    with Ledger(ledger_path) as led:
+        filling = led.queue("ja", 401, "test", "ev-1")
+        picking = led.queue("ja", 402, "test", "ev-1")
+        led.set_state(filling, "waiting", reason=runner.ANKI_CLOSED, resume="filling")
+        led.set_state(picking, "waiting", reason=runner.ANKI_CLOSED, resume=None)
+        assert not led.ask_stop(filling)
+    record, jobs = _ja(ledger_path)
+    assert (jobs[401]["resume"], jobs[402]["resume"]) == ("filling", None)
+    items = feed.build(record, "ja").items
+    assert (items[401].stoppable, items[402].stoppable) == (None, True)

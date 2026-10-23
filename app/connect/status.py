@@ -178,12 +178,17 @@ def _language(conn, lang, is_running, words):
             counts[outcome] = n
         entry = {"job": job["id"], "item": job["item_id"], "title": items.get(job["item_id"], {}).get("title"),
                  "kind": job.get("kind") or "mine", "state": job["state"], "reason": job.get("reason"),
+                 "resume": job.get("resume"),  # row 56: the step a waiting job goes on at (the feed's Stop rule)
                  "step": STEP_WORDS.get(job["state"]) or STEP_WORDS.get(job.get("resume") or ""),
                  "words": len(_picked_words(job.get("picked"))), "made": counts.pop("made", 0),
                  "not_made": counts, "progress": _progress(job) if job["state"] in book.IN_FLIGHT else None,
-                 # laptop round 9 #56: *Stop* pressed, the job not stopped yet (the window shows *Stopping…*)
-                 "stopping": job["state"] in book.IN_FLIGHT and conn.execute(
-                     "SELECT 1 FROM meta WHERE key = ?", (f"{book.STOP}{int(job['id'])}",)).fetchone() is not None}
+                 # laptop round 9 #56: *Stop* pressed, the job not stopped yet (the window shows *Stopping…*): from
+                 # the press until the runner has stopped it (it keeps the press through the tidy-up), only while
+                 # Connect runs, and never past the stop point (naming the clips)
+                 "stopping": bool(is_running and job["state"] in book.IN_FLIGHT
+                                  and book.stoppable(job["state"], job.get("resume"), job.get("progress"))
+                                  and conn.execute("SELECT 1 FROM meta WHERE key = ?",
+                                                   (f"{book.STOP}{int(job['id'])}",)).fetchone() is not None)}
         if words:
             entry["not_made_words"] = _rows(conn, "SELECT word, reading, outcome FROM outcomes WHERE job_id = ? AND "
                                                   "outcome != 'made' ORDER BY rowid", (job["id"],))
@@ -245,8 +250,8 @@ def _progress(job):
         got = json.loads(job.get("progress") or "null")
     except (TypeError, ValueError):
         got = None
-    if isinstance(got, dict) and got.get("step") == "naming":
-        return {"percent": NAMING[0], "doing": NAMING[1]}
+    if book.naming(got):
+        return {"percent": NAMING[0], "doing": NAMING[1], "step": "naming"}    # row 56: past the stop point
     keys = ("stage", "stages", "done", "total")
     if not (isinstance(got, dict) and all(isinstance(got.get(k), int) and not isinstance(got.get(k), bool)
                                           and got[k] >= 0 for k in keys)) or not got["stage"]:

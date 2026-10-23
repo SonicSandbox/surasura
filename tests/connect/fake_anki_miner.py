@@ -24,9 +24,11 @@ What it does is read from the plan file named by FAKE_ANKI_MINER_PLAN (JSON; eve
      "cancel_at": 1}                                       # waits (≤ 5 s) for the run's cancel file before this row:
                                                            # 0 -> CANCELLED, no result; n -> rows from n not_attempted
     {"slow": {"<command>": 30}}                            # row 56: sleeps this long before it answers that command
+    {"export_cut": true}                                   # row 56: half its export written, then it hangs
 
 Every call is appended to FAKE_ANKI_MINER_LOG (one JSON line: argv, and the run file's bytes' facts for `mine`), so a
-test can see what was asked and in what order. The run file is checked as Anki Miner checks it: strict UTF-8 with no
+test can see what was asked and in what order; so is each progress step it couldn't write (`progress_skipped`, as
+Anki Miner warns and goes on). The run file is checked as Anki Miner checks it: strict UTF-8 with no
 BOM, the 3.5.0 keys only (and, with refuse-sentence-keys, main's refusal of the two sentence keys).
 """
 import json
@@ -162,11 +164,11 @@ def _mine(argv, plan):
                            "total": total}, f)
             try:
                 os.replace(tmp, os.path.join(folder, "progress.json"))
-            except PermissionError:
-                # under a full run's load (2026-10-23): on Windows a replace onto a file Connect's poll holds open
-                # that instant is refused ([WinError 5]); the progress file is a hint, so that one step is skipped
-                # (the real Anki Miner's own handling isn't checked yet)
-                pass
+            except OSError as e:
+                # on Windows a replace onto a file Connect's poll holds open that instant is refused ([WinError 5]).
+                # Anki Miner's own progress file write catches OSError, logs a warning and goes on (the file is a
+                # hint): so does the fake, its warning a line in the call log, so a test sees each skipped step
+                _log({"progress_skipped": [stage, stages, done, total], "error": type(e).__name__})
             time.sleep(plan.get("progress_every", 0.3))
         rows, note = [], 1727000000000
         cancelled = False
@@ -268,8 +270,13 @@ def main(argv):
             {"name": "anki", "ok": True, "message": None}]})}
     elif command == "settings-export":
         out = argv[argv.index("--out") + 1]
+        text = json.dumps(plan.get("export", LAPIS_EXPORT), ensure_ascii=False)
         with open(out, "w", encoding="utf-8") as f:
-            json.dump(plan.get("export", LAPIS_EXPORT), f, ensure_ascii=False)
+            if plan.get("export_cut"):  # row 56: still writing when the job's Stop ends it — half on disk
+                f.write(text[:len(text) // 2])
+                f.flush()
+                time.sleep(30)
+            f.write(text)
         verdict = _ok("settings-export")
     elif command == "mine":
         verdict = _mine(argv, plan)

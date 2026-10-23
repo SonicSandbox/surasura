@@ -649,7 +649,7 @@ def _job(steps, ledger, lang, job, store_now, line, out):
         out["skipped"].append(item_id)
         return
     record = not foreign
-    _stop_here(ledger, job, step)
+    _stop_here(steps, ledger, lang, job, step, record)
     if droppable:
         # at the cap, the shelf tried: one count, no pick and no write (S19, review B adv #2); never an ask (#42)
         full = _full(steps, lang, asked=bool(job.get("asked_at")))
@@ -662,18 +662,18 @@ def _job(steps, ledger, lang, job, store_now, line, out):
             for _ in range(3):      # a profile or pairing that changed since the pick: picked again (at most twice)
                 try:
                     if step in (None, "picking"):
-                        _stop_here(ledger, job, step)
+                        _stop_here(steps, ledger, lang, job, step, record)
                         got = _pick(steps, ledger, lang, job, record)
                         if got is None:
                             out["done"].append(item_id)
                             return
                         step = "filling" if got == "filling" else "fit-check"
                     if step == "fit-check":
-                        _stop_here(ledger, job, step)
+                        _stop_here(steps, ledger, lang, job, step, record)
                         _fit(steps, ledger, lang, job)
                         step = "mining"
                     if step == "mining":
-                        _stop_here(ledger, job, step)
+                        _stop_here(steps, ledger, lang, job, step, record)
                         _mine(steps, ledger, lang, job, record=record)
                         step = "filling"
                     break
@@ -690,7 +690,8 @@ def _job(steps, ledger, lang, job, store_now, line, out):
     else:
         ended = False
     if ended:
-        _stopped(ledger, job, step)         # outside the handler: the Wait keeps no frame of the ended program (#17)
+        # outside the handler: the Wait keeps no frame of the ended program (#17)
+        _stopped(steps, ledger, lang, job, step, record)
     if step == "filling":
         _fill(steps, ledger, lang, job)
         step = "ordering"
@@ -701,21 +702,40 @@ def _job(steps, ledger, lang, job, store_now, line, out):
     out["done"].append(item_id)
 
 
-def _stop_here(ledger, job, step):
+def _stop_here(steps, ledger, lang, job, step, record):
     """Laptop round 8 #47: *Stop* pressed on this job -> it stops here, before `step` (nothing of the step done): the
     press used up, the job waits for your next ask (`Ledger.held_by_stop`), resuming at `step`."""
     if step in ("filling", "ordering") or not ledger.stop_asked(job["id"]):
         return                              # its cards are made: it finishes (seconds), the press forgotten at its end
-    _stopped(ledger, job, step)
+    _stopped(steps, ledger, lang, job, step, record)
 
 
-def _stopped(ledger, job, step):
-    """The job stops before `step` at your press (`_stop_here`'s, and a program ended mid-step: laptop round 9 #56):
-    the press used up, the ask it carried kept (`Ledger.mark_stopped`) -> Wait for your next ask."""
+def _stopped(steps, ledger, lang, job, step, record):
+    """The job stops before `step` at your press. Every stop comes here: `_stop_here`'s, a program ended mid-step
+    (laptop round 9 #56) and the batch Anki Miner ended (`_stopped_mid_batch`). The cards its batches made so far
+    are kept first (`_keep_made`); only then is the press used up, so the job reads *Stopping…* until it has
+    stopped (row 56), the ask it carried kept (`Ledger.mark_stopped`) -> Wait for your next ask."""
+    made = _keep_made(steps, ledger, lang, job, record)
     now = ledger.job_by_id(job["id"]) or {}
     ledger.mark_stopped(job["id"], now.get("asked_at"))
-    log.info("Connect: job %s stopped by you before %s", job["id"], step or "its pick")
+    log.info("Connect: job %s stopped by you before %s (%d words made so far)", job["id"], step or "its pick",
+             len(made))
     raise Wait(STOPPED_BY_YOU, look=False, resume=step)
+
+
+def _keep_made(steps, ledger, lang, job, record):
+    """A job you stopped keeps the cards its batches made (#47's batch you stopped; row 56: any stop once a batch has
+    made some): recorded in the store (made words, no receipt: the episode isn't mined yet) and their clips named,
+    before Anki's next sync. A store busy now is no matter: the resumed job records them all. -> {word: [note id]}"""
+    made = _made(ledger, job["id"])
+    if made and record:
+        try:
+            steps.record(lang, job, made, None, _tag(job))
+        except (Wait, Needs):               # review A7: the resumed job records them all
+            log.info("Connect: the store couldn't take job %s's cards now; they're recorded when it goes on",
+                     job["id"])
+        _name_media_at_end(steps, ledger, lang, job)
+    return made
 
 
 def _pick(steps, ledger, lang, job, record=True):
@@ -831,7 +851,7 @@ def _mine(steps, ledger, lang, job, record=True):
             wait = _at_cap(steps, ledger, lang, todo, asked=bool(job.get("asked_at")))
             if wait is not None:
                 raise wait
-        _stop_here(ledger, job, "mining")   # #47: between two batches too
+        _stop_here(steps, ledger, lang, job, "mining", record)     # #47: between two batches too
         if ran and steps.update_staged():
             # between two Anki Miner batches (K99): stopped here, every outcome saved; the next run resumes at mining
             # and sends only the words still unsettled
@@ -899,7 +919,9 @@ def _mine(steps, ledger, lang, job, record=True):
         never = f"{len(left)} words Anki Miner never made or turned down"
         ledger.set_state(jid, "mining", skipped=_skipped(ledger, jid, "mining", never))
     try:
-        ledger.set_state(jid, "mining", progress={"step": "naming"})     # the row's step (laptop round 5 #23)
+        with ledger.transaction():
+            ledger.set_state(jid, "mining", progress={"step": "naming"})     # the row's step (laptop round 5 #23)
+            ledger.forget_stop(jid)     # row 56: naming is past the stop point (`ledger.stoppable`): a press is over
         _name_media(steps, ledger, lang, job, picked)   # P2.4-4: one file a line, before Anki's next sync
     except Wait as w:
         raise Wait(w.reason, w.look, "mining") from None
@@ -921,26 +943,14 @@ def _stop_pressed(ledger, jid):
 
 
 def _stopped_mid_batch(steps, ledger, lang, job, record):
-    """#47: the batch Anki Miner ended at your *Stop*: its cards recorded in the store (made words, no receipt: the
-    episode isn't mined yet) and renamed, then the job waits for your next ask at mining (the words still unmade).
-    A store busy now is no matter: the resumed job records them all."""
+    """#47: the batch Anki Miner ended at your *Stop*: the job stops at mining as every stop does (`_stopped`: its
+    cards recorded and renamed, then it waits for your next ask, the words still unmade)."""
     words = (ledger.picked(job["id"]) or {}).get("words") or []
     if not any(_outcome(ledger, job["id"], w) in UNSETTLED for w in words):
         # every word settled before the cancel took (review A3): nothing left to stop — the job finishes its cards
         ledger.forget_stop(job["id"])
         return
-    now = ledger.job_by_id(job["id"]) or {}
-    ledger.mark_stopped(job["id"], now.get("asked_at"))
-    made = _made(ledger, job["id"])
-    if made and record:
-        try:
-            steps.record(lang, job, made, None, _tag(job))
-        except (Wait, Needs):               # review A7: the resumed job records them all
-            log.info("Connect: the store couldn't take job %s's cards now; they're recorded when it goes on",
-                     job["id"])
-        _name_media_at_end(steps, ledger, lang, job)
-    log.info("Connect: job %s stopped by you mid-batch (%d words made)", job["id"], len(made))
-    raise Wait(STOPPED_BY_YOU, look=False, resume="mining")
+    _stopped(steps, ledger, lang, job, "mining", record)
 
 
 PROGRESS_STEP = 5               # percent: the job's progress is saved when it moves this far, or its stage changes

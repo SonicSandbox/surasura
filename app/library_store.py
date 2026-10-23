@@ -85,14 +85,21 @@ ANALYSED = tuple(t for t, v in TIERS.items() if v[2])                    # now, 
 # An item COUNTS (a list use: Generate's files, the Rarity preview's sums, the mine line) when its tier is analysed and
 # it isn't watched, or the library's own option `keep_watched` is on (meta; absent = off). A watched item of an analysed
 # tier while it's off is SET ASIDE (`text_lists`): its text kept, never summed. Finished takes a show off the list by
-# its tier, a stone one episode by this rule. Written once in Python (`counts`: the window's numbers read it through
-# `moves._set_aside`; the window's drawn mine line, `view_rows._mine_ids`, and Connect's, `level._walk`, don't read it
-# yet) and once in SQL (`counts_sql`), from the same constants; a test holds the two equal.
+# its tier, a stone one episode by this rule. Written once in Python (`counts`) and once in SQL (`counts_sql`), from
+# the same constants; a test holds the two equal. Who reads it today: here, `Store.schedule` (Generate's list, and its
+# set-aside items for the run signature's "reference" part), `_mine_ids`, `text_lists`, `_moves_counted`,
+# `_watched_aside`, `_store_has_content` and `read_only_schedule` (the copy); outside, `moves._set_aside` (the window's
+# numbers). Not yet: the window's drawn lines (`view_rows._mine_ids`, `drag.lines_for`) and Connect's `level._walk`,
+# which keeps its own watched test (`level.watched_out`).
 def _tiers_sql(tiers):
     return ", ".join(f"'{t}'" for t in tiers)
 
 
 STONES_COUNTED = "stones_counted"   # meta: this library's old watched marks were counted once (`count_old_stones`)
+# `schedule(with_aside=True)`'s key: the SET-ASIDE items' entries, read in the same transaction as the list — the run
+# signature's "reference" part (`analyzer.aside_files`): their text is the name tables' evidence and 例文's sentences, so
+# a mark, its Undo, the option flipped or a set-aside file edited is a Generate first, never the fast re-plan.
+ASIDE = "SET_ASIDE"
 
 
 def counts(tier, watched, keep_watched=False):
@@ -1783,11 +1790,13 @@ class Store:
         row = self.conn.execute("SELECT id FROM roots WHERE kind = 'library' ORDER BY id LIMIT 1").fetchone()
         return row[0]
 
-    def schedule(self, with_versions=False):
+    def schedule(self, with_versions=False, with_aside=False):
         """{phase_key: [entries]} for the analysed tiers in (ord, id) order — what `resolve_found_files`
         loads — each entry {physical_path, source_type, title, parent_folder} straight from the columns; a video
         waiting for its subtitle (K5) is never in it, nor an item that doesn't count (W-1: watched, `keep_watched` off).
-        With `with_versions`, also the versions, read in the same transaction."""
+        With `with_versions`, also the versions, read in the same transaction; with `with_aside`, also `ASIDE`: the
+        set-aside items (`text_lists`' aside: an analysed tier's items that don't count), each {physical_path,
+        source_type}, in the same transaction."""
         out = {}
         with self._reading():
             rule = counts_sql(self._keep_watched())
@@ -1797,6 +1806,10 @@ class Store:
                     for p, s, t, f in self.conn.execute(
                         f"SELECT rel_path, source_type, title, parent_folder FROM items WHERE tier = ? AND {rule} "
                         "AND availability != 'waiting' ORDER BY ord, id", (tier,))]
+            if with_aside:
+                out[ASIDE] = [{"physical_path": p, "source_type": s} for p, s in self.conn.execute(
+                    f"SELECT rel_path, source_type FROM items WHERE tier IN ({_tiers_sql(ANALYSED)}) AND NOT {rule} "
+                    "ORDER BY tier, ord, id")]
             versions = self._versions() if with_versions else None
         return (out, versions) if with_versions else out
 
@@ -7544,12 +7557,13 @@ def maintain_at_close(language, data_dir=None, user_files_dir=None):
         lock.close()
 
 
-def read_only_schedule(language, data_dir, user_files_dir):
+def read_only_schedule(language, data_dir, user_files_dir, with_aside=False):
     """Read-only mode (§6.9): the copy's schedule, with the walk's untracked files added in memory by
     §6.10 rule 3 (never saved), so a file dropped into a tier folder is still analysed. Every file the
     copy knows, in any tier, counts as known (D6). W-1: an item that doesn't count by the copy's own records and
     meta (`counts`: watched, `keep_watched` off) leaves the list, as `Store.schedule` leaves it out — still known,
-    never added back as untracked. None when the copy can't be read."""
+    never added back as untracked. `with_aside`: also `ASIDE`, those items' entries (`Store.schedule`'s). None when the
+    copy can't be read."""
     try:
         doc, _st, _p = read_manifest(manifest_path(user_files_dir))
     except ManifestUnreadable:
@@ -7616,10 +7630,19 @@ def read_only_schedule(language, data_dir, user_files_dir):
     except AttributeError:
         keep = False
     watched = {key for key, rec in _records(lib).items() if rec.get("watched") == 1}
+    aside = []
     if watched:
         for tier in ANALYSED:
-            lists[tier][:] = [e for e in lists[tier] if not isinstance(e, dict) or counts(
-                tier, path_key(_strip(str(e.get("physical_path") or ""))) in watched, keep)]
+            kept = []
+            for e in lists[tier]:
+                if not isinstance(e, dict) or counts(tier, path_key(_strip(str(e.get("physical_path") or ""))) in
+                                                     watched, keep):
+                    kept.append(e)
+                else:
+                    aside.append({"physical_path": e.get("physical_path"), "source_type": e.get("source_type")})
+            lists[tier][:] = kept
+    if with_aside:
+        schedule[ASIDE] = aside
     return schedule
 
 
@@ -7672,7 +7695,8 @@ def read_only_view(language, data_dir, user_files_dir):
     built, synced, repaired, re-derived or marked damaged — and read in one transaction. -> (mode, schedule, versions,
     pending):
 
-      * ("store", schedule, versions, pending): a ready store, its analysed tiers as `Store.schedule` reads them;
+      * ("store", schedule, versions, pending): a ready store, its analysed tiers as `Store.schedule` reads them (its
+        set-aside items too: `ASIDE`, the run signature's "reference" part);
         `pending` is True when the disk holds a change its last sync hasn't taken in (a file dropped in since,
         renamed or gone): the walk a sync would make, its delta computed and never applied;
       * ("json", None, None, False): no ready store — the file is the list, as every reader takes it;
@@ -7707,7 +7731,7 @@ def read_only_view(language, data_dir, user_files_dir):
         store.role, store.conn, store._depth, store._cmd, store._repairing = "reader", conn, 0, None, False
         walk = walk_library(data_dir)
         with store._reading():
-            schedule, versions = store.schedule(with_versions=True)
+            schedule, versions = store.schedule(with_versions=True, with_aside=True)
             known, _version = _known(store)
         delta = _sync_delta(store, walk, known)
         pending = bool(delta["new"] or delta["renames"] or delta["respell"] or delta["went"] or delta["came"] or

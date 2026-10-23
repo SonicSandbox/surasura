@@ -2462,7 +2462,10 @@ class ShellWindow(QMainWindow):
         self._named.clear()
         self._named_groups = None
         self._show_offline()
-        self.sources_seen.emit({"language": self.language, "sources": []})     # Settings' lines: the language open's
+        # Settings' lines: the language open's, its listing asked for (never "No folders yet" while it is on its way)
+        self.sources_seen.emit({"language": self.language, "sources": [], "listing": self.looks is not None})
+        if self.looks is not None:
+            self.looks.listing()
         if self._first_painted:
             self.look_at_sources(focused=True)
 

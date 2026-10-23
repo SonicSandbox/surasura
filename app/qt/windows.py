@@ -225,6 +225,10 @@ OPENERS = [
 from app.qt import word_lists_strings as _wls  # noqa: E402  (W3.3 P10, n16: Words to leave out)
 OPENERS += [Opener("word-lists", _wls.WORD_LISTS_NAME, _wls.WORD_LISTS_TIP, always,
                    lambda shell: importlib.import_module("app.qt.word_lists_window").open_window(shell))]
+# laptop row 32: Settings › Content › Library folders' *Manage folders…* (the folders in their own window)
+from app.qt import settings_strings as _ss  # noqa: E402
+OPENERS += [Opener("library-folders", _ss.FOLDERS_NAME, _ss.DOORS["library-folders"][1], always,
+                   lambda shell: importlib.import_module("app.qt.settings_sources").open_window(shell))]
 # row 2: the known-word importers and Extract (app/qt/importers.py, imported when a door opens)
 def _importers(opener_name):
     def open_it(shell):

@@ -99,6 +99,8 @@ DOORS = {
     "koe": ("Speech settings…", "Set the API key, voice and delivery for spoken sentences"),
     "sentence-dictionary": ("Export", "Exports Surasura Corpus for Yomitan"),
     "frequency-lists": ("Add…", "Add or remove a frequency list"),
+    "library-folders": ("Manage folders…", "Opens your folders: stop reading one, read a skipped one again, or look "
+                                           "in them all again"),
 }
 # A row whose door says something else than the opener's own words: row id -> {opener: (label, tooltip)}
 ROW_DOORS = {
@@ -367,7 +369,8 @@ ROWS = {
     "library_folders": ("Library folders", "Read where they are: Surasura keeps its own copy of their text and "
                                            "looks in them again for new episodes",
                         "The folders Surasura reads where they are", "library folders source read where they are "
-                                                                     "stop reading look again"),
+                                                                     "stop reading look again manage skipped "
+                                                                     "read again"),
     "fresh_library": ("Start a fresh library",
                       "Your library set aside in one backup and your folders read again from scratch",
                       "Empty your library and read your folders again; the old one is kept in a backup",
@@ -691,6 +694,13 @@ SOURCES_READ_AGAIN_NAME = "Read {path} again"
 SOURCES_READ_AGAIN_TIP = ("Read {path} again\nIts files come back into your library at once; a show you haven't had "
                           "yet waits in New arrivals")
 SOURCES_READ_AGAIN_DONE = "{path} is read again: its files come back into your library"
+# Row 32 (laptop round 4): the page's summary, and the folders in their own window (*Manage folders…*)
+SOURCES_FOLDERS = "{n:,} folders"
+SOURCES_FOLDERS_ONE = "1 folder"
+SOURCES_AWAY_N = "{n:,} not reachable now"
+SOURCES_SKIPPED_N = "{n:,} skipped"
+FOLDERS_NAME = "Library folders"
+FOLDERS_LINE = "Surasura reads these folders where they are and looks in them again for new episodes."
 
 # --- K7: *Start a fresh library…* (settings_sources.py: FreshRow; the store's `start_fresh`) ------------------------ #
 FRESH_OPEN = "Start a fresh library…"

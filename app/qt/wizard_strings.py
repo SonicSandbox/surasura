@@ -96,7 +96,8 @@ COVERS_LINE = "Sends each show's AniList id or name to AniList, and a video's id
 COVERS_TIP = ("Covers for your shows, looked up by each show's name.\n"
               "• Turn it off any time: Settings")
 COVERS_PICTURE_NAME = "A plain tile becomes the show's cover"
-UPGRADE_SHOWS_LINE = "Your library came over from Surasura 2."
+UPGRADE_SHOWS_LINE = ("Your known words and settings came over from Surasura 2. "
+                      "Add the folders your shows and books are in.")
 # the folders your shows and books are in (SRC W1a): read where they are, each text copied into your library
 FOLDERS = "Where are your shows and books?"
 FOLDERS_NAME = "The folders your shows and books are in"

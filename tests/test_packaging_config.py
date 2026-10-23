@@ -165,12 +165,14 @@ def test_a_settings_json_that_enables_everything_changes_nothing(tmp_path):
     assert "modules.junban.patterns_build" not in main["hiddenimports"]
 
 
-def test_the_shipped_config_bundles_what_2_5_0_shipped(tmp_path):
-    main, _cli, _tsubasa = _run_spec(tmp_path, json.loads(_source(CONFIG)), {})
-    for module in ("modules.junban", "modules.youtube_downloader", "modules.koe"):
+def test_the_shipped_config_bundles_junban_and_youtube_and_leaves_koe_out(tmp_path):
+    """2.5.0 shipped junban, koe and youtube_downloader; from the 2.9 alpha and 3.0 on Koe is left out (Sonic
+    2026-10-23: its code stays in the private repo), even with its folder present, as `_run_spec` makes it."""
+    main, cli, _tsubasa = _run_spec(tmp_path, json.loads(_source(CONFIG)), {})
+    for module in ("modules.junban", "modules.youtube_downloader"):
         assert module not in main["excludes"]
-    for module in ("modules.reels", "modules.immersion_architect"):
-        assert module in main["excludes"]
+    for module in ("modules.koe", "modules.reels", "modules.immersion_architect"):
+        assert module in main["excludes"] and module in cli["excludes"]
     assert "modules.junban.patterns_build" in main["hiddenimports"]
 
 
@@ -197,7 +199,7 @@ def test_the_window_gets_five_qt_modules_and_their_licences(tmp_path):
 
 def test_the_build_config_reads_and_carries_the_floors():
     config = package_app.load_build_config()
-    assert config["modules"] == {"junban": True, "koe": True, "youtube_downloader": True, "reels": False,
+    assert config["modules"] == {"junban": True, "koe": False, "youtube_downloader": True, "reels": False,
                                  "immersion_architect": False}
     assert config["python_min"] == "3.11.4" and config["sqlite_min"] == "3.51.3"
     assert config["upx"] is False
@@ -272,6 +274,18 @@ def _program(tmp_path, qt=True, licences=True):
                 (internal / "licenses" / dist).mkdir(parents=True)
                 (internal / "licenses" / dist / "LICENSE").write_text("GNU GENERAL PUBLIC LICENSE\n", encoding="utf-8")
     return folder, config
+
+
+@pytest.fixture(autouse=True)
+def _stand_in_archives(monkeypatch):
+    """`_program`'s programs are two-byte stand-ins, not PyInstaller archives: they freeze no module unless a test
+    says otherwise (FROZEN[exe name] = {module names}); the real reader is tested on its own below."""
+    FROZEN.clear()
+    monkeypatch.setattr(package_app, "frozen_modules", lambda exe: set(FROZEN.get(os.path.basename(exe), ())))
+
+
+FROZEN = {}
+_REAL_FROZEN_MODULES = package_app.frozen_modules      # taken at import, before the fixture
 
 
 def _restamp(folder, change):
@@ -514,6 +528,94 @@ def test_a_build_whose_iss_cant_be_read_stops_before_freezing(tmp_path, monkeypa
     frozen, seen = _stubbed_build(tmp_path, monkeypatch, release=True)
     assert frozen == [] and seen == {"returned": False}
     assert "Build aborted: packaging/surasura.iss can't be read" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("exe", ["Surasura.exe", "surasura-cli.exe"])
+def test_a_left_out_module_frozen_into_either_program_fails_the_check(tmp_path, exe):
+    """Koe is left out (Sonic 2026-10-23): a build that still froze it into either Python program must fail, a
+    sub-module alone too; the modules the config ships (Junban, the YouTube module) never do."""
+    folder, config = _program(tmp_path)
+    FROZEN[exe] = {"modules", "modules.junban", "modules.junban.reposition", "modules.youtube_downloader"}
+    assert package_app.check_program(str(folder), config)[0] == []
+    FROZEN[exe] |= {"modules.koe.tts"}
+    failures, facts = package_app.check_program(str(folder), config)
+    assert facts["left_out"] == ["koe", "reels", "immersion_architect"]
+    assert [f for f in failures if "leaves out" in f] == [f"{exe} holds modules the build config leaves out: "
+                                                           "['modules.koe.tts']"]
+
+
+def test_a_module_named_like_a_left_out_one_is_not_mistaken_for_it(tmp_path):
+    """`modules.koe` is a prefix of `modules.koe_extra`'s name, not its package: only the package and its children
+    count."""
+    folder, config = _program(tmp_path)
+    FROZEN["Surasura.exe"] = {"modules.koe_extra", "modules.reelsfeed"}
+    assert package_app.check_program(str(folder), config)[0] == []
+
+
+def test_a_program_whose_archive_cant_be_read_fails_closed(tmp_path, monkeypatch):
+    """No reading, no proof the left-out modules are absent: a failure, never a silent pass."""
+    folder, config = _program(tmp_path)
+    monkeypatch.setattr(package_app, "frozen_modules", lambda exe: None)
+    failures, _facts = package_app.check_program(str(folder), config)
+    assert sum("archive can't be read" in f for f in failures) == 2
+
+
+def test_files_of_a_left_out_module_under_internal_fail_the_check(tmp_path):
+    """A data file collected beside the code (_internal/modules/koe/…) is the module shipping too."""
+    folder, config = _program(tmp_path)
+    (folder / "_internal" / "modules" / "junban").mkdir(parents=True)
+    (folder / "_internal" / "modules" / "junban" / "パターン.json").write_text("{}", encoding="utf-8")
+    assert package_app.check_program(str(folder), config)[0] == []
+    (folder / "_internal" / "modules" / "koe").mkdir(parents=True)
+    (folder / "_internal" / "modules" / "koe" / "voices.json").write_text("{}", encoding="utf-8")
+    failures, _facts = package_app.check_program(str(folder), config)
+    assert len(failures) == 1 and "files of modules the build config leaves out" in failures[0] and "voices.json"         in failures[0]
+
+
+def test_the_archive_reader_says_none_for_a_file_that_is_no_archive(tmp_path):
+    """The real reader (PyInstaller's): a stand-in program, an empty file and a missing one are no archive."""
+    pytest.importorskip("PyInstaller.archive.readers")
+    (tmp_path / "Surasura.exe").write_bytes(b"MZ")
+    (tmp_path / "empty.exe").write_bytes(b"")
+    for name in ("Surasura.exe", "empty.exe", "missing.exe"):
+        assert _REAL_FROZEN_MODULES(str(tmp_path / name)) is None
+
+
+def test_an_archive_naming_none_of_surasuras_modules_is_no_reading(monkeypatch):
+    """A PyInstaller that renames or splits the PYZ leaves the reader nothing to read: an empty set would pass the
+    left-out check unread, so a reading without Surasura's own `app` modules is None (the fail-closed failure)."""
+    readers = pytest.importorskip("PyInstaller.archive.readers")
+
+    class Archive:
+        def __init__(self, exe):
+            self.toc = {"PYZ-00.pyz": None, "base_library.zip": None} if "pyz" in exe else {"other.bin": None}
+
+        def open_embedded_archive(self, entry):
+            return type("Pyz", (), {"toc": {"json": None, "encodings": None}})()       # the stdlib alone
+
+    monkeypatch.setattr(readers, "CArchiveReader", Archive)
+    assert _REAL_FROZEN_MODULES("no archive.exe") is None
+    assert _REAL_FROZEN_MODULES("pyz without app.exe") is None
+
+
+def test_the_real_reader_reads_the_built_program_when_there_is_one():
+    """Against this copy's own build, when one is there: the reader finds Surasura's own modules in it."""
+    pytest.importorskip("PyInstaller.archive.readers")
+    exes = [os.path.join(PROJECT, "dist", "Surasura", n) for n in ("Surasura.exe", "surasura-cli.exe")]
+    exes = [e for e in exes if os.path.isfile(e)]
+    if not exes:
+        pytest.skip("no dist/Surasura build in this copy")
+    for exe in exes:
+        names = _REAL_FROZEN_MODULES(exe)
+        assert names and "app.analyzer" in names, exe
+
+
+def test_an_empty_folder_of_a_left_out_module_under_internal_fails_the_check(tmp_path):
+    """An empty _internal/modules/koe/ would be found as a namespace package (`find_spec`): Koe would look present."""
+    folder, config = _program(tmp_path)
+    (folder / "_internal" / "modules" / "koe").mkdir(parents=True)
+    failures, _facts = package_app.check_program(str(folder), config)
+    assert len(failures) == 1 and "leaves out" in failures[0] and "koe" in failures[0]
 
 
 def test_missing_qt_licences_fail_the_folder_and_the_zip(tmp_path):

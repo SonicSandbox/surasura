@@ -5,7 +5,7 @@ import hashlib
 import pytest
 
 import package_app
-from tests.test_packaging_config import _program
+from tests.test_packaging_config import _program, _stand_in_archives  # noqa: F401 (autouse: the stand-in programs freeze no module)
 
 SEED = hashlib.sha256("スラスラ test signing key (tests only)".encode("utf-8")).digest()
 

@@ -13,6 +13,7 @@ The tree (`Old Backups/Console Card/loader/skins/blue/skin.txt`, made-up names) 
 The text is real Japanese / Chinese from tests/Test Resources/; the skin file is a loader's ASCII config.
 """
 import os
+import sys
 import time
 
 import pytest
@@ -859,3 +860,263 @@ def test_a_macs_copies_are_skipped_and_a_small_ts_is_no_video():
         root = store.add_source(src)
         _look(store, language, root, first=True)
         assert _items(store) == 0
+
+
+# --- K6 inside a show: *Never read this folder* on a show's `Extras/` ---------------------------------------------- #
+# A show folder with three episodes (video + our subtitle each) and an `Extras/` folder beside them: a creditless opening
+# and a trailer with no subtitle (never waiting: extras), a creditless ending and a featurette with ours, and a nested
+# `Interviews/` with one more. What a learner wants: the extras gone and never read again, the show exactly as it was.
+
+def _show_with_extras(language, src, show=None, extras="Extras"):
+    """-> (the show folder, its three episodes' subtitles, {name: the extras' subtitles})."""
+    show = show or _SHOWS[language][1]
+    top = os.path.join(src, show)
+    eps = []
+    for n in (1, 2, 3):
+        _video(os.path.join(top, f"{show} - {n:02d}.mkv"), body=b"\x1a\x45\xdf\xa3 ep %d " % n)
+        eps.append(_write(os.path.join(top, f"{show} - {n:02d}.srt"), _text(language, n)))
+    ex = os.path.join(top, extras)
+    _video(os.path.join(ex, f"{show} - NCOP.mkv"), body=b"\x1a\x45\xdf\xa3 ncop ")
+    _video(os.path.join(ex, f"{show} - Trailer.mkv"), body=b"\x1a\x45\xdf\xa3 trailer ")
+    _video(os.path.join(ex, f"{show} - NCED.mkv"), body=b"\x1a\x45\xdf\xa3 nced ")
+    _video(os.path.join(ex, "Making Of.mkv"), body=b"\x1a\x45\xdf\xa3 making ")
+    _video(os.path.join(ex, "Interviews", "Cast Talk.mkv"), body=b"\x1a\x45\xdf\xa3 talk ")
+    subs = {"nced": _write(os.path.join(ex, f"{show} - NCED.srt"), _text(language, 4, " nced")),
+            "making": _write(os.path.join(ex, "Making Of.srt"), _text(language, 5, " making")),
+            "talk": _write(os.path.join(ex, "Interviews", "Cast Talk.srt"), _text(language, 6, " talk"))}
+    _settle(src)                                                                 # folder times the cache trusts
+    return top, eps, subs
+
+
+def _show_state(store, origins):
+    """The show's own items as the learner sees them: tier, order, watched, pin, its title and piece, its file — and
+    the groups the look reads."""
+    held = store.origins()
+    ids = [held[ls.origin_key(p)[4:]].item_id for p in origins]
+    return [store.conn.execute("SELECT id, tier, ord, watched, pinned, work_id, piece_id, rel_path FROM items "
+                               "WHERE id = ?", (i,)).fetchone() for i in ids], store.show_groups()
+
+
+def _under_extras(store, top, extras="Extras"):
+    """The items recorded from a file under the show's extras folder."""
+    key = ls.path_key(ls.folder_path(os.path.join(top, extras))) + "/"
+    return sorted({o.item_id for k, o in store.origins().items() if k.startswith(key)})
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_skipping_a_shows_extras_removes_only_the_extras_and_one_undo_puts_them_back(language):
+    """`Show/Extras/` skipped: its three subtitled extras leave (to the store's trash: Put back can find them); the
+    show's three episodes keep their tier, place, watched mark, title and piece; one Undo puts the extras back where
+    they stood and reads the folder again. ⋯ on an extra offers `Extras` first, then the show's folder."""
+    store, _data = _empty(language)
+    src = _drive("Media")
+    top, eps, subs = _show_with_extras(language, src)
+    with store:
+        root = store.add_source(src)
+        first = _look(store, language, root, first=True)
+        extras = _under_extras(store, top)
+        assert len(extras) == 3 and first["added"] == 6, first                   # no item for NCOP / the trailer
+        ep_ids = [store.origins()[ls.origin_key(p)[4:]].item_id for p in eps]
+        store.set_watched([ep_ids[0]])
+        shown, current, rels = _show_state(store, eps), _current(store), _rels(store)
+        making = store.origins()[ls.origin_key(subs["making"])[4:]].item_id
+        talk = store.origins()[ls.origin_key(subs["talk"])[4:]].item_id
+        assert store.skip_choices([making]) == [ls.folder_path(os.path.join(top, "Extras")), ls.folder_path(top)]
+        assert store.skip_choices([talk]) == [ls.folder_path(os.path.join(top, "Extras", p)) for p in
+                                              ("Interviews", "")] + [ls.folder_path(top)]
+        change = store.skip_folder(os.path.join(top, "Extras"))
+        assert sorted(it["id"] for it in change.items) == extras
+        rows = store.trash_rows(change.trash_ids)
+        assert len(rows) == 3 and not any(r["restored_at"] for r in rows)        # Put back-able
+        assert all(store.item(i) is None for i in extras)
+        assert _show_state(store, eps) == shown                                  # the show untouched
+        out = store.undo(change)
+        assert len(out.restored) == 3 and out.folder_dropped
+        assert _rels(store) == rels and _current(store) == current and _show_state(store, eps) == shown
+        assert store.skipped_folders() == [] and store.excluded() == {}
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_skipped_extras_folder_and_everything_under_it_is_never_listed_by_any_later_look(language, monkeypatch):
+    """Every later look — a quick one, the first after a start, a Refresh — after a new extra lands in it and in a
+    folder nested two deep under it, never lists `Extras/` or anything under it, nor counts their files as found."""
+    store, _data = _empty(language)
+    src = _drive("Media")
+    top, eps, subs = _show_with_extras(language, src)
+    show = os.path.basename(top)
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        store.skip_folder(os.path.join(top, "Extras"))
+        spy = _ScandirSpy(monkeypatch)
+        _write(os.path.join(top, "Extras", f"{show} - PV.srt"), _text(language, 7, " pv"), age=30)
+        _write(os.path.join(top, "Extras", "Interviews", "Deep", "Staff Talk.srt"), _text(language, 8, " st"), age=30)
+        looks = [_look(store, language, root)]
+        sources._LOOKED.clear()                                                  # a start
+        looks.append(_look(store, language, root))
+        looks.append(_look(store, language, root, full=True))                   # a Refresh
+        for got in looks:
+            assert got["added"] == 0 and got["found"] == 3, got                  # the three episodes alone
+        for folder in ("Extras", os.path.join("Extras", "Interviews"), os.path.join("Extras", "Interviews", "Deep")):
+            assert not spy.saw(os.path.join(top, folder)), folder
+        assert spy.saw(top)
+        assert _under_extras(store, top) == []
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_read_again_brings_a_shows_extras_back_once_and_the_episodes_stay_as_they_were(language):
+    """*Read again*: the next quick look (the show folder's time never moved) takes the three extras in again, once;
+    the episodes are as they were."""
+    store, _data = _empty(language)
+    src = _drive("Media")
+    top, eps, subs = _show_with_extras(language, src)
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        change = store.skip_folder(os.path.join(top, "Extras"))
+        shown = _show_state(store, eps)
+        assert store.read_folder_again(change.folder) is True
+        back = _look(store, language, root)                                      # quick: the show folder unchanged
+        assert back["added"] == 3 and len(_under_extras(store, top)) == 3
+        assert _show_state(store, eps) == shown
+        assert _look(store, language, root, full=True)["added"] == 0             # once
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_skipping_the_show_after_its_extras_and_reading_it_again_keeps_the_extras_skipped(language):
+    """Extras skipped, then the whole show: both rows held, the episodes leave too; an Undo of the show's skip, and
+    *Read again* on it, bring the episodes back and never the extras (still skipped)."""
+    store, _data = _empty(language)
+    src = _drive("Media")
+    top, eps, subs = _show_with_extras(language, src)
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        extras = store.skip_folder(os.path.join(top, "Extras"))
+        assert store.skip_refused(top) is None
+        whole = store.skip_folder(top)
+        assert len(whole.trash_ids) == 3
+        assert [f["id"] for f in store.skipped_folders()] == [extras.folder, whole.folder]
+        assert _look(store, language, root, full=True)["found"] == 0
+        out = store.undo(whole)
+        assert len(out.restored) == 3 and [f["id"] for f in store.skipped_folders()] == [extras.folder]
+        again = _look(store, language, root, full=True)
+        assert again["added"] == 0 and again["found"] == 3 and _under_extras(store, top) == []
+        whole = store.skip_folder(top)
+        assert store.read_folder_again(whole.folder)
+        back = _look(store, language, root, full=True)
+        assert back["added"] == 3 and _under_extras(store, top) == []
+        assert [f["id"] for f in store.skipped_folders()] == [extras.folder]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_extras_of_a_skipped_show_are_refused_as_skipped_already_and_come_back_with_the_show(language):
+    """The show skipped first: its extras (and a folder under them) are refused as skipped already; *Read again* on
+    the show brings all six back."""
+    store, _data = _empty(language)
+    src = _drive("Media")
+    top, eps, subs = _show_with_extras(language, src)
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        whole = store.skip_folder(top)
+        assert len(whole.trash_ids) == 6
+        assert store.skip_refused(os.path.join(top, "Extras")) == ls.SKIP_ALREADY
+        with pytest.raises(ls.NotASource):
+            store.skip_folder(os.path.join(top, "Extras", "Interviews"))
+        assert store.read_folder_again(whole.folder)
+        assert _look(store, language, root)["added"] == 6
+
+
+@pytest.mark.parametrize("spelling", ["case", "slashes", "trailing"])
+def test_a_skip_of_extras_spelled_another_way_is_the_same_folder(spelling):
+    """The folder as a dialog or a typed path may spell it: another case (Windows), forward slashes, a trailing
+    separator — one folder, its items gone, and the look still never lists it."""
+    language = "ja"
+    store, _data = _empty(language)
+    src = _drive("Media")
+    top, eps, subs = _show_with_extras(language, src)
+    path = {"case": os.path.join(top, "EXTRAS") if sys.platform == "win32" else os.path.join(top, "Extras"),
+            "slashes": os.path.join(top, "Extras").replace("\\", "/"),
+            "trailing": os.path.join(top, "Extras") + os.sep}[spelling]
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        change = store.skip_folder(path)
+        assert len(change.trash_ids) == 3
+        assert store.skip_refused(os.path.join(top, "Extras")) == ls.SKIP_ALREADY
+        got = _look(store, language, root, full=True)
+        assert got["added"] == 0 and got["found"] == 3
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_mixed_script_extras_folder_with_crlf_subtitles_is_skipped_and_never_read(language):
+    """A show named in the library's script with a mixed-script extras folder (`特典 Extras・映像` / `特典 花絮・影像`) and
+    CRLF subtitles: ⋯ offers it, the skip takes its three extras, no look reads it; the episodes stay."""
+    store, _data = _empty(language)
+    src = _drive("Media")
+    show = _SHOWS[language][0]
+    extras = {"ja": "特典 Extras・映像", "zh": "特典 花絮・影像"}[language]
+    top, eps, subs = _show_with_extras(language, src, show=show, extras=extras)
+    for p in list(subs.values()) + eps:
+        with open(p, encoding="utf-8") as f:
+            body = f.read()
+        with open(p, "w", encoding="utf-8", newline="\r\n") as f:
+            f.write(body)
+        t = time.time() - 60                                                     # settled, as `_write` leaves one
+        os.utime(p, (t, t))
+    _settle(src)
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        inside = _under_extras(store, top, extras)
+        assert len(inside) == 3
+        shown = _show_state(store, eps)
+        assert ls.folder_path(os.path.join(top, extras)) in store.skip_choices(inside[:1])
+        store.skip_folder(os.path.join(top, extras))
+        got = _look(store, language, root, full=True)
+        assert got["added"] == 0 and got["found"] == 3 and _show_state(store, eps) == shown
+
+
+@pytest.mark.parametrize("name", ["node_modules", ".trash", "@eaDir"])
+def test_a_show_subfolder_named_like_one_no_look_reads_can_be_skipped_harmlessly(name):
+    """A show's subfolder no look reads anyway (a name `skip_dir` names): its skip is accepted, removes nothing and
+    changes no look; *Read again* leaves it unread (the name rule still holds)."""
+    language = "ja"
+    store, _data = _empty(language)
+    src = _drive("Media")
+    top, eps, subs = _show_with_extras(language, src)
+    _write(os.path.join(top, name, "ep99.srt"), _text(language, 9))
+    _settle(src)
+    with store:
+        root = store.add_source(src)
+        assert _look(store, language, root, first=True)["added"] == 6
+        change = store.skip_folder(os.path.join(top, name))
+        assert change.trash_ids == [] and len(store.skipped_folders()) == 1
+        assert _look(store, language, root, full=True)["added"] == 0
+        assert store.read_folder_again(change.folder)
+        assert _look(store, language, root, full=True)["added"] == 0
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="a junction is Windows' folder link")
+def test_an_extras_junction_is_never_followed_and_skipping_it_writes_only_its_row():
+    """`Show/Extras` a junction to a folder on another drive: no look follows it, skipped or not; its skip is accepted
+    (it's inside the source) and removes nothing; the junction's target is never touched."""
+    import _winapi
+    language = "ja"
+    store, _data = _empty(language)
+    src, target = _drive("Media"), _drive("Elsewhere")
+    show = _SHOWS[language][1]
+    top = os.path.join(src, show)
+    for n in (1, 2):
+        _write(os.path.join(top, f"{show} - {n:02d}.srt"), _text(language, n))
+    _write(os.path.join(target, "Making Of.srt"), _text(language, 5))
+    _winapi.CreateJunction(target, os.path.join(top, "Extras"))
+    with store:
+        root = store.add_source(src)
+        assert _look(store, language, root, first=True)["added"] == 2
+        before = _tree(target)
+        change = store.skip_folder(os.path.join(top, "Extras"))
+        assert change.trash_ids == []
+        assert _look(store, language, root, full=True)["added"] == 0
+        assert _tree(target) == before

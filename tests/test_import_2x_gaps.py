@@ -27,13 +27,14 @@ def test_a_library_reached_through_a_junction_into_the_old_folder_is_refused(tmp
 
 
 @pytest.mark.parametrize("only", ["User Files", "data"])
-def test_a_folder_holding_either_library_folder_is_a_2x_library(tmp_path, only):
-    # A 2.x library is `User Files\` OR `data\` (the module's rule): a 2.x folder whose other half was moved or
-    # deleted still holds the user's words or content, and must be offered for import, never refused as "not 2.x".
+def test_only_a_folder_holding_user_files_is_a_2x_library_to_bring_over(tmp_path, only):
+    # What comes over is `User Files\` alone (no content, 2026-10-23): a 2.x folder whose `data\` was moved or deleted
+    # still holds the user's words and is offered; one holding only `data\` would import nothing and be recorded as
+    # done, refusing the real folder later (`already_imported`), so it is "not 2.x".
     folder = tmp_path / "旧すらすら"
     (folder / only / "ja").mkdir(parents=True)
-    assert import_2x.is_2x_folder(str(folder)) is True
-    assert import_2x.check_source(str(folder))["reason"] != "not_2x"
+    assert import_2x.is_2x_folder(str(folder)) is (only == "User Files")
+    assert (import_2x.check_source(str(folder))["reason"] == "not_2x") is (only == "data")
 
 
 def test_a_comment_only_list_saved_with_a_bom_is_not_content(tmp_path):
@@ -97,16 +98,16 @@ def test_a_resumed_import_copies_again_a_file_that_changed_since_whatever_its_si
     old = _old_install(tmp_path, store=False, languages=("ja",))
     done, there = [], set(_tree(_root()))
     import_2x.run_import(old, _root(), progress=lambda s, d, t: done.append(d) if s == "files" else None,
-                         cancel=lambda: len(done) >= 8)
+                         cancel=lambda: len(done) >= 2)
     copied = sorted(p for p in set(_tree(_root())) - there if os.path.isfile(os.path.join(old, p)))
-    content = [p for p in copied if p.startswith("data" + os.sep)]          # a book or an episode, never merged
-    assert len(copied) == 8 and content
+    content = [p for p in copied if os.path.basename(p) == "IgnoreList.txt"]      # a word list, never merged
+    assert len(copied) == 2 and content
     changed = os.path.join(_root(), content[0])
     raw = open(changed, "rb").read()
     open(changed, "wb").write(raw[:-1] + (b"?" if raw[-1:] != b"?" else b"!"))
     assert os.path.getsize(changed) == len(raw)
     resumed = import_2x.run_import(old, _root())
-    assert resumed["status"] == "done" and resumed["counts"]["kept"] == 7
+    assert resumed["status"] == "done" and resumed["counts"]["kept"] == 1
     assert open(changed, "rb").read() == raw
 
 
@@ -120,7 +121,7 @@ def test_a_copy_the_disk_refuses_fails_the_import_saying_so(tmp_path, roaming, m
     real = shutil.copy2
 
     def refused(src, dst, **kw):
-        if src.endswith("context_test.txt"):
+        if src.endswith("IgnoreList.txt"):
             raise PermissionError(13, "simulated: access denied", dst)
         return real(src, dst, **kw)
     monkeypatch.setattr(shutil, "copy2", refused)

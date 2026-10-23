@@ -127,16 +127,17 @@ def wants(item):
 
 def _walk(store):
     """The items a raise looks at, in order: the top 20; on the 3.0 line (`BEYOND_LINE`) then the rest of Current
-    (NOW, then Soon) and Goal in the store's order (`store.ordered`), each available on disk — never Finished, never
-    New arrivals (not placed)."""
+    (NOW, then Soon) and Goal in the store's order, each available on disk and counting (`library.counting`, W-1's
+    one rule: a stone's episode while *Keep studying watched episodes* is off is passed, as the line passes it) —
+    never Finished, never New arrivals (not placed). `wants` still passes a watched one when the option is on (LF4-1)."""
     line = library.mine_line(store)
     if not BEYOND_LINE:
         return line
     seen, out = set(line), list(line)
     with store._reading():
         for tier in ("now", "soon", "goal"):
-            for item_id, _entry, availability in store.ordered(tier):
-                if item_id not in seen and availability == "available":
+            for item_id in library.counting(store, tier):
+                if item_id not in seen:
                     seen.add(item_id)
                     out.append(item_id)
     return out

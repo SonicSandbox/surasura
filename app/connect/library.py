@@ -52,6 +52,24 @@ def mine_line(store):
         return store._mine_ids(n)
 
 
+def counting(store, tier):
+    """[item ids] of `tier` in the store's order, available on disk, that count — W-1's one rule
+    (`library_store.counts_sql` with the library's `keep_watched`): a watched one while it's off has nothing left to
+    mine, as the mine line itself (`Store._mine_ids`)."""
+    from app import library_store
+    with store._reading():
+        rule = library_store.counts_sql(store._keep_watched())
+        return [r[0] for r in store.conn.execute(
+            f"SELECT id FROM items WHERE tier = ? AND availability = 'available' AND {rule} ORDER BY ord, id",
+            (tier,))]
+
+
+def counts(store, item):
+    """Does this item (a `store.item` dict) count (W-1's `library_store.counts`, the library's `keep_watched`)?"""
+    from app import library_store
+    return library_store.counts(item.get("tier"), item.get("watched"), store._keep_watched())
+
+
 def log_seq(store):
     """The placement log's last id (a reader caught up to it has read everything)."""
     with store._reading():

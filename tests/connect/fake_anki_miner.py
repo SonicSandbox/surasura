@@ -160,7 +160,13 @@ def _mine(argv, plan):
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump({"schema": 1, "run_id": episode["run_id"], "stage": stage, "stages": stages, "done": done,
                            "total": total}, f)
-            os.replace(tmp, os.path.join(folder, "progress.json"))
+            try:
+                os.replace(tmp, os.path.join(folder, "progress.json"))
+            except PermissionError:
+                # under a full run's load (2026-10-23): on Windows a replace onto a file Connect's poll holds open
+                # that instant is refused ([WinError 5]); the progress file is a hint, so that one step is skipped
+                # (the real Anki Miner's own handling isn't checked yet)
+                pass
             time.sleep(plan.get("progress_every", 0.3))
         rows, note = [], 1727000000000
         cancelled = False

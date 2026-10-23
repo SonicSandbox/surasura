@@ -22,12 +22,18 @@ import json
 import math
 import os
 import re
+import unicodedata
 
 SCHEMA = 1
 MAX_BYTES = 8 * 1024 * 1024
 RUN_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 TAG_PREFIX = "surasura::connect::"
 NAME_TAG = "surasura::name"     # on every card of a name (G1.3), added after mining: Anki Miner tags by episode
+# Laptop round 8 #50 (LF4-3 = A, Sonic: "the show title it came from, and … the show that it's targeted for"): the show a
+# card was mined from (fixed: Connect's run file, with the job's tag) and the show it is ordered for (Junban's, moving
+# with the order: `modules/junban/show_tags.py`). Anki's tags are whitespace-separated: `show_slug` makes one tag.
+FROM_PREFIX = "Surasura::from::"
+FOR_PREFIX = "Surasura::for::"
 
 # The keys `config` may hold (Anki Miner 3.5.0 `cli/api/settings.py` ALLOWED_OVERLAY_KEYS; 3.7.0 adds the bold, and
 # takes the two sentence keys only as false)
@@ -86,6 +92,27 @@ def config(mapping, app, features=(), sentence_keys=None):
     if BOLD_TARGET in (features or ()):
         out["bold_target_in_sentence"] = True
     return out
+
+
+def show_slug(title):
+    """A show's title as one Anki tag's last part: in NFC (Anki keeps its tags so: a title from a macOS folder, in NFD,
+    would never match its own label), whitespace runs to `_`, the hierarchy mark `::` to `:`, quotes off
+    (`Hibike Euphonium 3` -> `Hibike_Euphonium_3`); "" for no title, or one that can't be written as UTF-8."""
+    text = re.sub(r"\s+", "_", unicodedata.normalize("NFC", str(title or "")).strip()).replace('"', "")
+    while "::" in text:
+        text = text.replace("::", ":")
+    text = text.strip(":_")
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:          # round 2 B8: a name holding a lone surrogate (NTFS) is no tag: none, never a refusal
+        return ""
+    return text
+
+
+def from_tag(title):
+    """The tag naming the show a card was mined from, or "" for no title."""
+    slug = show_slug(title)
+    return FROM_PREFIX + slug if slug else ""
 
 
 def job_tag(job):

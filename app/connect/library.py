@@ -63,6 +63,14 @@ def mined_at(store, item_id):
     return None if item is None else item.get("mined_at")
 
 
+def show_title(store, item_id):
+    """The title of the show (its work) an item belongs to, or None (laptop round 8 #50: the cards' show tags)."""
+    with store._reading():
+        row = store.conn.execute("SELECT w.title FROM items i JOIN works w ON w.id = i.work_id WHERE i.id = ?",
+                                 (item_id,)).fetchone()
+    return row[0] if row and row[0] else None
+
+
 def made_words_all(store):
     """Every word Connect has made a card for in this language's library, whatever the episode (N15, the store's
     `made_words`, keyed by the lemma; G1.3-4: a word made once is never made again automatically, even when its card

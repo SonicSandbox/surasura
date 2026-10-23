@@ -6784,9 +6784,12 @@ def spawn_maintain(language, *extra):
 
 def _helper_args(language, command, *extra):
     """The helper's command line, frozen (`Surasura.exe library_maintain <command> …`, app_entry's branch)
-    or from source (`python app/library_store.py <command> …`)."""
+    or from source (`python app/library_store.py <command> …`). Frozen, it names the Surasura beside the running
+    program, never `sys.executable`: Connect's receipts and the command line's writes start the helper from
+    surasura-cli.exe, which has no `library_maintain` verb (it refused every one on the laptop's build)."""
     if getattr(sys, "frozen", False):
-        return [sys.executable, "library_maintain", command, "--language", language, *extra]
+        from app.path_utils import program_beside
+        return [program_beside("Surasura"), "library_maintain", command, "--language", language, *extra]
     return [sys.executable, os.path.abspath(__file__), command, "--language", language, *extra]
 
 

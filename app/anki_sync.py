@@ -671,22 +671,23 @@ def sync_all(language, url, decks, fields, settings, include_suspended=False, fu
     — which the window's 5-minute sync nearly always throttled — and a card you suspended and marked never counted
     (laptop round 7 #43). The words the signal marks are words this sync made known: they join its `added` and
     `total_known`, so whoever acts on a sync that added words (the window's automatic Generate) acts on them too. A
-    sync that failed reads no signal (`signal` None): KnownWord.json or Anki can't be trusted this time.
+    sync that failed reads neither the new cards nor the signal (`signal` None): KnownWord.json or Anki can't be
+    trusted this time.
     `progress(what, done, total)`: the command line's progress lines. Never raises (each part keeps its own rule)."""
     if progress is not None:
         progress("reading Anki", 0, 2)
     result = sync(language, url, decks, fields, include_suspended=include_suspended, full=full)
+    if getattr(result, "error", None):
+        return result, None                 # Anki or KnownWord.json can't be trusted this time: nothing more read
     if progress is not None:
         progress("reading Anki's new cards", 1, 2)
     try:
         sync_backlog(language, url, decks, fields)
     except Exception as e:                  # a backlog read that fails never costs the sync its result
         print(f"Anki sync: the backlog read failed ({e})")
-    if result.error:
-        return result, None
     signal = read_known_signal(language, url, decks, fields, settings)
     marked = len((signal or {}).get("marked") or ())
-    if marked:
+    if marked and result is not None:
         result.added += marked
         result.total_known += marked
     return result, signal

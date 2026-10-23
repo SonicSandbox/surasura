@@ -404,10 +404,20 @@ class Chores:
         return True
 
     def _watch(self, proc):
-        """A detached helper (`spawn_maintain`'s Popen) listed as a job until it ends; quitting leaves it running."""
+        """A detached helper (`spawn_maintain`'s Popen) listed as a job until it ends; quitting leaves it running —
+        unless the close's *Stop and quit* cancels it (row 35, `jobs.STOPPABLE_AT_QUIT`): ended through this Popen,
+        whose open handle keeps its pid from being reused, and alone (`maintain` starts no child; a kill mid-way
+        rolls its transaction back)."""
         if proc is None:
             return
-        job = self.registry.record("library-maintain", MAINTAIN_LABEL, on_quit="detach")
+        lock = threading.Lock()
+
+        def stop(_job):
+            with lock:
+                if proc.poll() is None:
+                    proc.kill()
+        job = self.registry.record("library-maintain", MAINTAIN_LABEL, cancel=stop, on_quit="detach")
+        job.started_process(getattr(proc, "pid", None))     # the update's wait list: this job's row alone
 
         def wait():
             try:

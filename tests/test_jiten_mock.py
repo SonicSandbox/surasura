@@ -354,7 +354,12 @@ def test_a_failed_write_leaves_the_known_words_as_they_were_and_no_temp_file(tmp
     known = _known_words_file(tmp_path)
     before = known.read_bytes()
 
-    def refuse(*_a, **_k):
+    real_replace = os.replace
+
+    def refuse(src, dst):
+        # Only the known words' own swap is held: the backup before it (a `.part` renamed into `.trash`) goes through
+        if os.path.basename(os.path.dirname(dst)) == ".trash":
+            return real_replace(src, dst)
         raise PermissionError("the file is held open")
     monkeypatch.setattr(os, "replace", refuse)
     monkeypatch.setattr("app.anki_sync.time.sleep", lambda _s: None)

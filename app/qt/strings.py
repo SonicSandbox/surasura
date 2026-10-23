@@ -352,6 +352,17 @@ QUIT_FINISHING = "Finishing with Anki first… the window closes by itself"
 QUIT_FINISHING_LIST = "Finishing your list first… the window closes by itself"
 QUIT_HELD = "Surasura is closing"
 QUIT_CLOSING_TIP = "Surasura is closing: it finishes what can't stop part-way, then closes by itself"
+# --- row 35: closing while helpers go on without the window (`jobs.detached_at_quit`; the shell's sheet)
+QUIT_DETACHED_TITLE = "Still finishing: {labels}"
+QUIT_DETACHED_JOIN = " · "
+QUIT_DETACHED_BODY = "They finish by themselves."
+QUIT_DETACHED_CONNECT = "Connect finishes the cards it's making by itself."
+QUIT_DETACHED_QUIT = "Quit"
+QUIT_DETACHED_QUIT_TIP = "Close Surasura now: what is still finishing goes on and ends by itself (Esc does the same)"
+QUIT_DETACHED_STOP = "Stop and quit"
+QUIT_DETACHED_STOP_TIP = ("End the library's upkeep now, then close. Surasura picks it up again as it closes, or at "
+                          "its next start. Connect isn't stopped")
+# --- end row 35
 
 # --- W3.1a frame (app/qt/frame.py): the level ▾ and its pop, the footer's emerald and known corner, the Goal dock and
 # its wells. The level's words are the old chip's (BAR_LEVEL_*); Generate's are the button's (GENERATE_*).

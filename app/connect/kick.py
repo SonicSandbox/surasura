@@ -14,12 +14,14 @@ asked of Haya at P2.4's build.
 Under a test root nothing is started unless the test asks for it (`SURASURA_CONNECT_KICK=1`): a detached process
 outliving its test would hold the test's folder.
 """
+import itertools
 import os
 import subprocess
 import sys
 
 LOCK = "connect"
 WAKE = "wake"
+_STAMPS = itertools.count(1)    # this process's kicks: two in one tick of Windows' clock (~16 ms) still differ
 DETACHED_PROCESS = 0x00000008
 CREATE_NEW_PROCESS_GROUP = 0x00000200
 CREATE_BREAKAWAY_FROM_JOB = 0x01000000      # outlives a caller's job object (hato closing its own children)
@@ -49,14 +51,14 @@ def wake_stamp():
 
 
 def wake():
-    """Stamp the wake mark (the time and this process, unique a kick): a running Connect's pause ends at its next look at it. A mark
+    """Stamp the wake mark (the time, this process and its kick's number: unique a kick): a running Connect's pause ends at its next look at it. A mark
     that can't be written is no error — the 2-minute look still comes."""
     import time
     path = wake_path()
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:     # a look that reads it half-written wakes once more: harmless
-            f.write(f"{time.time_ns()}-{os.getpid()}")
+            f.write(f"{time.time_ns()}-{os.getpid()}-{next(_STAMPS)}")
     except OSError:
         pass
 

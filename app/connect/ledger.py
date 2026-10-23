@@ -61,6 +61,21 @@ BEFORE_MINING = (None, "picking", "fit-check")
 MINE, LEVEL, ASKED = "mine", "level", "asked"
 # P4.1: the asks watermark's meta key, `asks_from:<lang>` (C1 / IK B2: `resume.turned_on` writes it at every off → on)
 ASKS_FROM = "asks_from:"
+# Laptop round 8 #47 (*Stop*): `stop:<job id>` — you asked the job to stop (the window's press, `ask_stop`); `stopped:<job
+# id>` — the runner stopped it, holding the ask it carried then: it waits until a newer ask (*Mine now*) (`held_by_stop`)
+STOP, STOPPED = "stop:", "stopped:"
+STOPPED_REASON = "Stopped: its cards so far are kept. Press Mine now to go on."      # `runner.STOPPED_BY_YOU`
+# Laptop round 8 #52 (review A6): a word Anki Miner had no definition for in this many episodes is no card anywhere
+UNCARDABLE_AFTER = 2
+
+
+def stoppable(state, resume=None):
+    """Can a job in `state` (waiting at `resume`) still be stopped? Until its cards are made: queued, waiting before
+    filling, picking, the fit check, mining. Filling and ordering finish (seconds), and a job waiting to fill or order
+    (Anki closed) finishes too once it can (review A3)."""
+    if state == "waiting":
+        return resume not in ("filling", "ordering")
+    return state in ("queued", "picking", "fit-check", "mining")
 
 _SCHEMA_SQL = (
     "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
@@ -461,11 +476,72 @@ class Ledger:
         now = _now()
         if row is not None:
             self.conn.execute("UPDATE jobs SET asked_at = ?, updated_at = ? WHERE id = ?", (asked_at, now, row[0]))
+            # laptop round 8 #47 (review A4): *Mine now* after a *Stop* the runner hasn't reached yet — your later
+            # press wins: the pending stop is dropped (a stop already made is released by `held_by_stop`)
+            self.conn.execute("DELETE FROM meta WHERE key = ?", (f"{STOP}{int(row[0])}",))
             return "moved", row[0]
         cur = self.conn.execute("INSERT INTO jobs (language, item_id, state, source, event_id, created_at, updated_at, "
                                 "kind, store_id, asked_at) VALUES (?, ?, 'queued', 'user', NULL, ?, ?, ?, ?, ?)",
                                 (language, item_id, now, now, ASKED, store_id, asked_at))
         return "queued", cur.lastrowid
+
+    # --- laptop round 8 #47: *Stop* — the current episode's job, at its next safe point ------------------------- #
+
+    def ask_stop(self, job_id):
+        """You pressed *Stop* on a job (the window, any process) -> True when the job is open: the runner stops it at its
+        next safe point — before its next step, or Anki Miner's batch cancelled within a second (`anki_miner.cancel`),
+        what it made kept — and it waits until you ask again. A job not under way (queued, or waiting) is stopped here
+        and now, in the same transaction, so its stone says so at once even with Connect not running; the press is
+        kept too, so a runner that took the job up meanwhile stops it at its next step. A job already ended -> False,
+        nothing written. A press twice is one stop."""
+        if self.conn.in_transaction:
+            return self._ask_stop(job_id)
+        with self.transaction():
+            return self._ask_stop(job_id)
+
+    def _ask_stop(self, job_id):
+        row = self.conn.execute("SELECT state, asked_at, resume FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        if row is None or not stoppable(row[0], row[2]):
+            return False
+        self.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (f"{STOP}{int(job_id)}", _now()))
+        if row[0] in NOT_STARTED:
+            self.conn.execute("UPDATE jobs SET state = 'waiting', reason = ?, updated_at = ? WHERE id = ?",
+                              (STOPPED_REASON, _now(), job_id))
+            self.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                              (f"{STOPPED}{int(job_id)}", row[1] or ""))
+        return True
+
+    def stop_asked(self, job_id):
+        """Has *Stop* been pressed on this job, not yet acted on? (one indexed read: the runner asks it often)"""
+        return self.conn.execute("SELECT 1 FROM meta WHERE key = ?", (f"{STOP}{int(job_id)}",)).fetchone() is not None
+
+    def mark_stopped(self, job_id, asked_at):
+        """The runner stopped the job (inside the caller's transaction or alone): the press used up, the ask it carried
+        then (`asked_at`, or none) kept, so only a newer ask lets it go on (`held_by_stop`)."""
+        self.conn.execute("DELETE FROM meta WHERE key = ?", (f"{STOP}{int(job_id)}",))
+        self.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                          (f"{STOPPED}{int(job_id)}", asked_at or ""))
+
+    def held_by_stop(self, job):
+        """Does a job you stopped still wait (no ask newer than the one it carried when it stopped)? A newer ask — your
+        *Mine now* — lets it go on: the stop's record is taken off then."""
+        row = self.conn.execute("SELECT value FROM meta WHERE key = ?", (f"{STOPPED}{int(job['id'])}",)).fetchone()
+        if row is None:
+            return False
+        asked = job.get("asked_at")
+        if not asked or (row[0] and stamp_key(asked) <= stamp_key(row[0])):
+            return True                     # no ask, the one it stopped with, or an older one (an ask undone: A5)
+        self.forget_stop(job["id"])         # your newer ask: the stop and any press it answered are over
+        return False
+
+    def is_stopped(self, job_id):
+        """Does the job wait because you stopped it (its `stopped:` record)? A look only, nothing released."""
+        return self.conn.execute("SELECT 1 FROM meta WHERE key = ?",
+                                 (f"{STOPPED}{int(job_id)}",)).fetchone() is not None
+
+    def forget_stop(self, job_id):
+        """The job ended: its *Stop* records go (a press it outlived, or the stop it waited by)."""
+        self.conn.execute("DELETE FROM meta WHERE key IN (?, ?)", (f"{STOP}{int(job_id)}", f"{STOPPED}{int(job_id)}"))
 
     def unask(self, job_id):
         """The ask a job carried, undone before its mining started: a job the ask made is dropped (*left: ask undone*);
@@ -501,10 +577,15 @@ class Ledger:
         sql = f"UPDATE jobs SET state = ?, updated_at = ?{sets} WHERE id = ?"
         params = (state, _now()) + tuple(columns.values()) + (job_id,)
         if self.conn.in_transaction:
-            self.conn.execute(sql, params)
+            self._set(sql, params, job_id, state)
         else:
             with self.transaction():
-                self.conn.execute(sql, params)
+                self._set(sql, params, job_id, state)
+
+    def _set(self, sql, params, job_id, state):
+        self.conn.execute(sql, params)
+        if state in FINISHED:               # #47 (review A9): an ended job keeps no *Stop* record
+            self.forget_stop(job_id)
 
     def picked(self, job_id):
         """What the job's pick chose (a dict), or None."""
@@ -572,6 +653,24 @@ class Ledger:
         return {(w, r) for w, r in self.conn.execute(
             f"SELECT o.word, o.reading FROM outcomes o JOIN jobs j ON j.id = o.job_id WHERE j.language = ? AND "
             f"j.item_id = ? AND o.outcome NOT IN ({marks})", (language, item_id) + _NOT_MADE)}
+
+    def uncardable(self, language, app=None):
+        """(word, reading) of every word Anki Miner answered *no definition* for in this language, in any episode
+        (laptop round 8 #52, LF4-4 ⭐ A: a name its dictionary has no entry for — ルーデウス — is no card in any
+        episode): a pick never sends one again, and the window marks it on the journey. `app`: only the answers of that
+        Anki Miner version (a new one, with another dictionary, is asked again); None: every version's."""
+        query = ("SELECT o.word, o.reading FROM outcomes o JOIN jobs j ON j.id = o.job_id "
+                 "JOIN batches b ON b.job_id = o.job_id AND b.attempt = o.attempt "
+                 "WHERE j.language = ? AND o.outcome = 'no_definition'")
+        args = (language,)
+        if app is not None:
+            query += " AND b.anki_miner = ?"
+            args += (str(app),)
+        # in two episodes or more (review A6): Anki Miner reads a word from its line, and one odd line's answer is no
+        # verdict on the word
+        query += " GROUP BY o.word, o.reading HAVING COUNT(DISTINCT j.item_id) >= ?"
+        args += (UNCARDABLE_AFTER,)
+        return {(w, r) for w, r in self.conn.execute(query, args)}
 
     def skipped_for(self, language, reason):
         """Is any job of the language `skipped` for `reason`?"""

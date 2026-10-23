@@ -372,6 +372,7 @@ NOT_SHOWN = {
     "add_graduated_words": "retired with Graduate (D23)",
     "index_pool_workers": "speed only: every file's tokens are the same either way",
     "koe_port": "settings.json only: the speech helper's port",
+    "junban_show_tags": "settings.json only: Junban's show labels, off for a positions-only run",
     "junban_replan_preview": "2.x's preview: 3.0 writes the plan always",
     "junban_replan_language": "2.x's preview: 3.0 writes the plan always",
     "junban_replan_deck": "2.x's preview: 3.0 writes the plan always",

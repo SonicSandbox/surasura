@@ -73,7 +73,7 @@ PLACED = {
     "junban_own_tag": "neither", "junban_order_all": "neither",      # P1.4-1: Junban reads them, no run does
     "junban_later_tag": "neither", "junban_only_markers": "neither", "junban_order": "neither",
     "junban_phrases": "neither", "junban_ready_first": "neither", "junban_scope": "neither", "junban_tag": "neither",
-    "junban_tag_markers": "neither", "junban_unlisted": "neither",
+    "junban_tag_markers": "neither", "junban_show_tags": "neither", "junban_unlisted": "neither",
     "junban_replan_preview": "neither", "junban_replan_language": "neither", "junban_replan_deck": "neither",
                                             # the fast re-plan's preview (E1.1 04 §1): 2.x's runs read it for the plan
                                             # file (3.0 writes the plan always), which no output and no signature holds

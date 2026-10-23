@@ -204,7 +204,7 @@ def test_the_switch_turned_off_after_a_title_was_asked_for_stops_the_next_reques
     f.switch["covers_download"] = False
     assert f.run_once() == 0 and anilist.posts == [] and pen.covers == []
     candidate = O.Candidate(900101, f"{anilist.base}/img/900101.jpg", "星送りのリーフェン", 2023, "TV")
-    assert f.candidates(want(1, "星送りのリーフェン")) == [] and f.pick(want(1, "星送りのリーフェン"), candidate) is None
+    assert f.candidates(want(1, "星送りのリーフェン")) is None and f.pick(want(1, "星送りのリーフェン"), candidate) is None
     assert f.paste(want(1, "星送りのリーフェン"), "https://anilist.co/anime/900101") == (None, "off")
     assert anilist.posts == [] and anilist.gets == []
 

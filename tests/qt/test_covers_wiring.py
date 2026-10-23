@@ -206,6 +206,54 @@ def test_find_it_online_reacts_at_the_press_and_says_found_none_or_unreachable(r
     assert wait_until(lambda: (settle() or True) and win.bar_line.full() ==
                       strings.COVER_LOOKUP_FAILED.format(title=title), 10)
     assert qcovers._online.get("menu") is None or not qcovers._online["menu"].isVisible()
+    anilist.down = False
+    # a library / language switch while it looks: the old library's answer is dropped, never offered here
+    go.clear()
+    assert qcovers.find_online(row, at=QPoint(200, 200))
+    win.say(strings.COVER_CANT)                                        # (any other line, to see it isn't replaced)
+    qcovers._online["fetcher"] = SimpleNamespace(on=lambda: True)      # the switch's new fetcher
+    go.set()
+    assert wait_until(lambda: (settle() or True) and not qpress.presses_of(win).find(key).live(), 10)
+    settle(10)
+    assert win.bar_line.full() == strings.COVER_CANT
+    qcovers._online["fetcher"] = f
+
+
+def test_cover_presses_answered_at_once_need_no_pending_and_a_fetch_shows_its_wait(real, anilist, monkeypatch):
+    """Sonic's rule (2026-10-23): an instant answer needs no pending — Download covers off, or a TMDB link pasted
+    (no key in 3.0), is said at the press with nothing turning; a picked or pasted cover's fetch holds *Fetching the
+    cover for …* from the press, and a second press meanwhile does nothing."""
+    import threading
+    from app.qt import press as qpress
+    store, win, writer, switch = real("ja", anilist, on=True)
+    view = win.page_widgets["current"].view_model
+    row = next(r for r in view.rows if r.work_id is not None)
+    title = qcovers._want_of(row).title
+    QApplication.clipboard().setText("https://www.themoviedb.org/tv/12345-show")
+    assert qcovers.paste_link(row) is False
+    assert win.bar_line.full() == strings.COVER_PASTE_WHY["no_key"]
+    assert qpress.presses_of(win).find(("cover-fetch", row.work_id)) is None or         not qpress.presses_of(win).find(("cover-fetch", row.work_id)).live()
+    switch["covers_download"] = False
+    assert qcovers.find_online(row, at=QPoint(200, 200)) is False
+    assert win.bar_line.full() == strings.COVER_PASTE_WHY["off"]
+    assert qpress.presses_of(win).find(("cover-online", row.work_id)) is None
+    switch["covers_download"] = True
+    f = qcovers._online["fetcher"]
+    go, real_paste = threading.Event(), f.paste
+
+    def held(*a, **k):
+        go.wait(10)
+        return real_paste(*a, **k)
+    monkeypatch.setattr(f, "paste", held)
+    anilist.add(154587, "Sousou no Frieren", "葬送のフリーレン")
+    QApplication.clipboard().setText("https://anilist.co/anime/154587/Sousou-no-Frieren/")
+    assert qcovers.paste_link(row)
+    assert qpress.presses_of(win).find(("cover-fetch", row.work_id)).live()
+    assert win.bar_line.full() == strings.COVER_FETCHING.format(title=title)
+    assert qcovers.paste_link(row) is False                            # a second press while it fetches: nothing
+    go.set()
+    assert wait_until(lambda: (settle() or True) and store._work_row(row.work_id)["cover_source"] == "anilist", 10)
+    assert not qpress.presses_of(win).find(("cover-fetch", row.work_id)).live()
 
 
 def test_the_fetcher_is_made_with_the_library_again_for_another_writer_and_stopped_at_close(real, anilist):

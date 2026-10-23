@@ -2,8 +2,10 @@
 
 What a wrong answer would cost, in order:
   * the old 2.x folder, or 2.x's own per-user folders, changed in any way — the user's way back to 2.x (CLAUDE.md §4);
-  * a library that arrives incomplete without saying so: a file whose copy differs, committed library-store rows still
-    in the old store's `-wal` left behind, a cancelled import that looks finished;
+  * a library that arrives incomplete without saying so: a file whose copy differs, a cancelled import that looks
+    finished;
+  * 2.x's content brought over after all (Sonic 2026-10-23: no content migration): `data\\`, the library store, or
+    `master_manifest.json` — the library order 3.0's store would rebuild every show and book from;
   * an import over a 3.0 library that already holds the user's content, or a second import on top of the first;
   * the AnkiConnect address a 2.x user set in `junban_url` lost;
   * the Gemini key (Koe) written to a log.
@@ -209,10 +211,6 @@ def roaming(tmp_path, monkeypatch):
 def test_a_2_5_install_arrives_whole_and_the_old_folders_stay_byte_identical(tmp_path, roaming, capsys):
     old = _old_install(tmp_path)
     library = _root()
-    # The old store's `.db` alone lacks the committed row: only the `-wal` holds it.
-    alone = str(tmp_path / "alone.db")
-    shutil.copyfile(import_2x.legacy_store_path(old, "ja"), alone)
-    assert _meta(alone, WAL_KEY) is None
     before = {f: _tree(f) for f in [old] + _protected()}
     stages = []
 
@@ -220,8 +218,9 @@ def test_a_2_5_install_arrives_whole_and_the_old_folders_stay_byte_identical(tmp
 
     assert result["status"] == "done", result
     assert {f: _tree(f) for f in [old] + _protected()} == before, "the old folders were written"
-    # Every byte of User Files\ and data\, with its date (the trash clock, the store's copy check)
-    olds = {k: v for k, v in _tree(old).items() if k.split(os.sep)[0] in import_2x.LIBRARY_FOLDERS}
+    # Every byte of User Files\ with its date (the trash clock), but the library order
+    olds = {k: v for k, v in _tree(old).items() if k.split(os.sep)[0] == "User Files"
+            and not os.path.basename(k.rstrip(os.sep)).startswith("master_manifest")}
     news = _tree(library)
     merged = {os.path.join("User Files", lang, n) for lang in ("ja", "zh") for n in ("KnownWord.json",
                                                                                       "GraduatedList.txt")}
@@ -231,7 +230,8 @@ def test_a_2_5_install_arrives_whole_and_the_old_folders_stay_byte_identical(tmp
         assert news.get(rel) == value, rel
     assert result["counts"]["files"] == result["counts"]["copied"] == len([v for v in olds.values() if v])
     assert result["counts"]["bytes"] == sum(v[1] for v in olds.values() if v)
-    assert os.path.isdir(os.path.join(library, "data", "ja", "Graduated")), "an empty tier folder comes too"
+    assert not os.path.exists(os.path.join(library, "data")), "no content: shows and books come in again"
+    assert not [rel for rel in news if "master_manifest" in rel], "no library order: the store would rebuild from it"
     assert not os.path.exists(os.path.join(library, "results")), "results\\ is regenerated, never copied"
 
     # GraduatedList merged once into the known words; the list itself set aside, byte for byte
@@ -255,14 +255,10 @@ def test_a_2_5_install_arrives_whole_and_the_old_folders_stay_byte_identical(tmp
     assert settings["junban_deck"] == "日本語::冒険" and settings["logic"] == {"exclude_single": True}
     assert result["settings"] == "converted"
 
-    # the store: the copied set, the -wal's row included, under the new library's name; the copy is its own
+    # the store: nothing under the new library's name, nor a staging folder
     for lang in ("ja", "zh"):
-        data, uf = os.path.join(library, "data", lang), os.path.join(library, "User Files", lang)
-        db = ls.library_db_path(lang, data)
-        assert result["store"][lang] == "copied"
-        assert _meta(db, WAL_KEY) == f"{lang} 冒険 pending", "the -wal's committed row was lost"
-        assert ls.check_mode(lang, data)[0] == "store"
-        assert ls.maintain(lang, data, uf) == ls.EXIT_NOTHING, "the store took its own copy for an outside edit"
+        assert not os.path.exists(ls.library_db_path(lang, os.path.join(library, "data", lang)))
+    assert "store" not in result
     assert not os.path.exists(os.path.join(path_utils.local_data_root(), "import_staging"))
 
     # roaming: パターン, Koe, the telemetry id over; the token store and yt-dlp left behind
@@ -281,7 +277,7 @@ def test_a_2_5_install_arrives_whole_and_the_old_folders_stay_byte_identical(tmp
     with open(import_2x.note_path(), encoding="utf-8") as f:
         assert SECRET not in f.read()
     assert SECRET not in capsys.readouterr().out
-    assert stages[0] == "files" and stages[-1] == "graduated"
+    assert stages[0] == "files" and stages[-1] == "graduated" and "store" not in stages
 
 
 def test_the_sha256_summary_names_every_file_and_its_hash(tmp_path, roaming):
@@ -431,14 +427,14 @@ def test_an_old_folder_that_cant_be_read_is_refused_before_anything_is_written(t
     real = os.path.getsize
 
     def denied(path):
-        if os.path.basename(path) == "context_test.txt":
+        if os.path.basename(path) == "IgnoreList.txt":
             raise PermissionError(13, "Access is denied", path)
         return real(path)
 
     monkeypatch.setattr(os.path, "getsize", denied)
     result = import_2x.run_import(old, _root())
     assert result["status"] == "refused" and result["reason"] == "error"
-    assert "could not be read" in result["message"] and "context_test.txt" in result["message"]
+    assert "could not be read" in result["message"] and "IgnoreList.txt" in result["message"]
     assert import_2x.read_import_note() is None and import_2x.library_content(_root()) is None
     assert {f: _tree(f) for f in [old] + _protected()} == before
 
@@ -520,7 +516,6 @@ def test_cancel_midway_marks_the_library_incomplete_and_the_next_run_resumes(tmp
     assert resumed["status"] == "done" and resumed["resumed"] is True
     assert resumed["counts"]["kept"] == 3 and resumed["counts"]["copied"] == resumed["counts"]["files"] - 3
     assert import_2x.read_import_note()["complete"] is True
-    assert result["store"] == {"ja": "copy", "zh": "copy"} and resumed["store"] == {"ja": "copied", "zh": "copied"}
     assert {f: _tree(f) for f in [old] + _protected()} == before
 
 
@@ -591,15 +586,15 @@ def test_a_copy_that_does_not_match_its_source_stops_the_import(tmp_path, roamin
 
     def damaged(src, dst, **kw):
         real(src, dst, **kw)
-        if src.endswith("context_test.txt"):
+        if src.endswith("IgnoreList.txt"):
             with open(dst, "ab") as f:
                 f.write(b"\x00")
 
     monkeypatch.setattr(shutil, "copy2", damaged)
     result = import_2x.run_import(old, _root())
-    assert result["status"] == "failed" and "context_test.txt" in result["message"]
+    assert result["status"] == "failed" and "IgnoreList.txt" in result["message"]
     assert import_2x.read_import_note()["complete"] is False
-    target = os.path.join(_root(), "data", "ja", "GoalContent", "context_test.txt")
+    target = os.path.join(_root(), "User Files", "ja", "IgnoreList.txt")
     assert not os.path.exists(target) and not os.path.exists(target + import_2x.TMP_SUFFIX)
 
 
@@ -642,18 +637,15 @@ def test_another_write_error_is_not_called_controlled_folder_access(tmp_path, mo
 
 # --- 2.4, the store, settings and roaming files -----------------------------------------------------------------------
 
-def test_a_2_4_install_with_no_store_and_no_note_copies_and_leaves_the_store_to_rebuild(tmp_path, roaming):
+def test_a_2_4_install_with_no_note_brings_its_lists_to_a_library_chosen_by_hand(tmp_path, roaming):
     old = _old_install(tmp_path, store=False, note=False, name="Surasura 2.4.0")
     assert import_2x.find_installs() == []
     library = str(tmp_path / "図書館 2.4")                     # not this program's library: chosen by hand
     result = import_2x.run_import(old, library)
-    assert result["status"] == "done" and result["store"] == {"ja": "rebuild", "zh": "rebuild"}
-    assert result["from_version"] is None
+    assert result["status"] == "done" and result["from_version"] is None
     for lang in ("ja", "zh"):
-        data, uf = os.path.join(library, "data", lang), os.path.join(library, "User Files", lang)
-        assert not os.path.exists(ls.library_db_path(lang, data))
-        assert ls.maintain(lang, data, uf) == ls.EXIT_DONE                   # the store's own migration
-        assert ls.check_mode(lang, data)[0] == "store"
+        assert os.path.isfile(os.path.join(library, "User Files", lang, "KnownWord.json"))
+    assert not os.path.exists(os.path.join(library, "data"))
     # another library than this program's: settings beside it, the merge at that library's first start
     assert os.path.isfile(os.path.join(library, "settings.json"))
     assert not os.path.exists(path_utils.get_settings_path())
@@ -661,12 +653,46 @@ def test_a_2_4_install_with_no_store_and_no_note_copies_and_leaves_the_store_to_
     assert os.path.isfile(os.path.join(library, "User Files", "ja", "GraduatedList.txt"))
 
 
-def test_a_damaged_old_store_is_not_copied(tmp_path, roaming):
+def _store_items(language, library):
+    """The 3.0 store's own first start on `library` (`maintain --from-folders`, as the window's helper runs it: the
+    library order when there is one, else the library's folders) -> its item count."""
+    data, uf = os.path.join(library, "data", language), os.path.join(library, "User Files", language)
+    os.makedirs(data, exist_ok=True)                   # the library's first start makes its folders
+    assert ls.maintain(language, data, uf, from_folders=True) in (ls.EXIT_DONE, ls.EXIT_NOTHING)
+    db = ls.library_db_path(language, data)
+    if not os.path.exists(db):
+        return 0
+    conn = sqlite3.connect(db)
+    try:
+        return conn.execute("SELECT COUNT(*) FROM items").fetchone()[0]
+    finally:
+        conn.close()
+
+
+def test_no_content_comes_over_so_the_new_store_starts_empty_even_from_2_5s_store_and_order(tmp_path, roaming):
+    """Sonic 2026-10-23: no 2.x content migration. A 2.5 install with its store (a committed row in its `-wal`), its
+    library order and the order's backups in `.trash` brings none of them, and the 3.0 store's own first start on the
+    library finds nothing to rebuild. The control: the same library order alone, put where 2.x kept it, would bring
+    every show back (the back door this closes)."""
     old = _old_install(tmp_path, languages=("ja",))
-    _write(import_2x.legacy_store_path(old, "ja") + ".damaged", "quick_check: page 3")
-    result = import_2x.run_import(old, _root())
-    assert result["store"] == {"ja": "rebuild"}
-    assert not os.path.exists(ls.library_db_path("ja", os.path.join(_root(), "data", "ja")))
+    uf_old = os.path.join(old, "User Files", "ja")
+    _write(os.path.join(uf_old, ".trash", "master_manifest.20260901-101010.json"),
+           json.dumps(_manifest("ja", old), ensure_ascii=False), mtime=time.time() - 86400)
+    _write(os.path.join(uf_old, "master_manifest.json.bak"), json.dumps(_manifest("ja", old), ensure_ascii=False))
+    library = str(tmp_path / "図書館 3.0")
+    result = import_2x.run_import(old, library)
+    assert result["status"] == "done" and "store" not in result
+    copied = {rel for rel in _tree(library) if not rel.endswith(os.sep)}
+    assert not [rel for rel in copied if "master_manifest" in rel]
+    assert not [rel for rel in copied if rel.split(os.sep)[0] != "User Files" and rel != "settings.json"], copied
+    assert os.path.isfile(os.path.join(library, "User Files", "ja", ".trash", "KnownWord.20260901-101010.json"))
+    assert _store_items("ja", library) == 0, "the new store found 2.x's content"
+
+    control = str(tmp_path / "control")
+    os.makedirs(os.path.join(control, "User Files", "ja"))
+    shutil.copyfile(os.path.join(uf_old, ls.MANIFEST_NAME), os.path.join(control, "User Files", "ja",
+                                                                          ls.MANIFEST_NAME))
+    assert _store_items("ja", control) > 0, "the control: the library order alone brings the shows back"
 
 
 def test_settings_conversion_follows_anki_connects_address():
@@ -712,7 +738,10 @@ def test_a_dry_run_plans_and_writes_nothing(tmp_path, roaming):
     library = str(tmp_path / "plan only")
     before = _tree(_root())
     result = import_2x.run_import(old, library, dry_run=True)
-    assert result["status"] == "dry-run" and result["store"] == {"ja": "copy", "zh": "copy"}
+    assert result["status"] == "dry-run" and "store" not in result
+    assert result["counts"]["files"] == len(import_2x._plan_files(old)[0])
+    assert all(rel.split(os.sep)[0] == "User Files" and "master_manifest" not in rel
+               for rel, _size in import_2x._plan_files(old)[0])
     assert result["settings"] == "convert" and "koe_credentials.json" in result["roaming"]
     assert "token_store_ja.db" not in result["roaming"]
     assert not os.path.exists(library) and _tree(_root()) == before and not os.path.exists(roaming)
@@ -745,34 +774,6 @@ def test_a_resumed_import_copies_again_a_file_that_differs_from_its_source(tmp_p
     resumed = import_2x.run_import(old, _root())
     assert resumed["status"] == "done" and resumed["counts"]["kept"] == 1
     assert _sha(second) == _sha(os.path.join(old, files[1][0]))
-
-
-def test_a_store_that_does_not_copy_whole_stops_the_import(tmp_path, roaming, monkeypatch):
-    old = _old_install(tmp_path, languages=("ja",))
-    real, calls = import_2x._tables, []
-
-    def short(conn):
-        calls.append(1)
-        counts = real(conn)
-        return counts if len(calls) == 1 else dict(counts, items=counts["items"] - 1)
-
-    monkeypatch.setattr(import_2x, "_tables", short)
-    result = import_2x.run_import(old, _root())
-    assert result["status"] == "failed" and "library store" in result["message"]
-    assert import_2x.read_import_note()["complete"] is False
-
-
-def test_an_unreadable_old_store_is_left_to_the_rebuild(tmp_path, roaming):
-    old = _old_install(tmp_path, languages=("zh",))
-    legacy = import_2x.legacy_store_path(old, "zh")
-    with open(legacy, "r+b") as f:                       # every page after the first overwritten
-        f.seek(4096)
-        f.write(bytes([0xFF]) * (os.path.getsize(legacy) - 4096))
-    for suffix in ("-wal", "-shm"):
-        os.remove(legacy + suffix)
-    result = import_2x.run_import(old, _root())
-    assert result["status"] == "done" and result["store"] == {"zh": "rebuild"}
-    assert not os.path.exists(os.path.join(path_utils.local_data_root(), "import_staging"))
 
 
 def test_a_crash_midway_leaves_the_library_marked_incomplete(tmp_path, roaming):

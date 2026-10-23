@@ -10,16 +10,17 @@ ever read, so the user can go back to 2.x at any time (CLAUDE.md §4: user data 
   * `probe_library(folder)` — D12: the folder is made if missing and a test file written and deleted there; access
     denied names Controlled Folder Access and the steps to allow Surasura.exe.
   * `run_import(source, library, progress, cancel)` — only into an empty or new library (never over a 3.0 library
-    holding content): `User Files\\` and `data\\` copied with their dates (the 30-day trash clock, the store's own copy
-    check), every file's sha256 checked against its source; settings.json converted in the copy (`junban_url` ->
-    `anki_connect_url`, as `anki_connect.address` reads them); each language's library store copied as a set (`.db`,
-    `-wal`, `-shm` into a staging folder, opened only there, SQLite's backup API to the new library's store name),
-    else left to the store's own rebuild from `master_manifest.json`; the パターン databases, Koe's files (the key is a
-    secret: never logged) and the telemetry id copied into the Houseki roaming root; token stores, `results\\` and
-    `bin\\` left behind (caches); the GraduatedList merged (`graduated_merge.merge_all`) when the library is this
-    program's own. `import.json` in the Houseki local root records it: from, to, when, counts, a sha256 summary and
-    `complete`. A cancel (between files) or a failure leaves `"complete": false`: the next run into that folder from
-    the same install resumes (files already copied whole are kept) or, with `restart`, copies every file again.
+    holding content): `User Files\\` copied with its dates (the 30-day trash clock), every file's sha256 checked
+    against its source: the known words, the word lists, Junban's and the Anki sync's files. No content (Sonic
+    2026-10-23: shows and books come in again through library folders): `data\\`, the library store and
+    `master_manifest.json` (2.x's library order and its backups: 3.0's store would rebuild 2.x's content from it) are
+    left behind. settings.json converted in the copy (`junban_url` -> `anki_connect_url`, as `anki_connect.address`
+    reads them); the パターン databases, Koe's files (the key is a secret: never logged) and the telemetry id copied
+    into the Houseki roaming root; token stores, `results\\` and `bin\\` left behind (caches); the GraduatedList merged
+    (`graduated_merge.merge_all`) when the library is this program's own. `import.json` in the Houseki local root
+    records it: from, to, when, counts, a sha256 summary and `complete`. A cancel (between files) or a failure leaves
+    `"complete": false`: the next run into that folder from the same install resumes (files already copied whole are
+    kept) or, with `restart`, copies every file again.
 
 `python -m app.import_2x --from <2.x folder> [--to <library>] [--dry-run]` runs it for tests and support.
 """
@@ -31,7 +32,6 @@ import hashlib
 import json
 import os
 import shutil
-import sqlite3
 import sys
 import time
 
@@ -39,12 +39,15 @@ from app import path_utils
 
 IMPORT_NOTE = "import.json"
 NOTE_VERSION = 1
-LIBRARY_FOLDERS = ("User Files", "data")        # what is copied from the 2.x folder, whole
+LIBRARY_FOLDERS = ("User Files", "data")        # what makes a folder a library (a 2.x one, or a 3.0 one with content)
+COPIED_FOLDERS = ("User Files",)                # what is copied from the 2.x folder: no content (Sonic 2026-10-23)
+LEFT_BEHIND = "master_manifest"                 # 2.x's library order and its backups: 3.0's store would rebuild from it
 LANGUAGES = ("ja", "zh")
 ROAMING_FILES = ("koe_credentials.json", "koe_usage.json", "telemetry_id.json")
 SECRET_FILES = ("koe_credentials.json",)        # never logged, never hashed into the summary
 REPLACED_FILES = ("telemetry_id.json",)         # carried over even when 3.0 made its own (S3.1-4: the same user)
-STORE_SUFFIXES = ("", "-wal", "-shm")           # a store is copied as a set: a .db alone loses committed rows
+STORE_SUFFIXES = ("", "-wal", "-shm")           # a store is moved as a set (first_run's set-aside): a .db alone
+                                                # loses committed rows
 PROGRAM_SKIP = ("User Files", "data", "results", ".trash", ".update_staging", ".update_backup")
 EMPTY_LISTS = ("Blacklist.txt", "IgnoreList.txt")   # a new library's start writes these with comments only
 TMP_SUFFIX = ".import-tmp"
@@ -279,10 +282,10 @@ def sha256_file(path):
 
 
 def _plan_files(source):
-    """[(relative path, size)] of every file under the 2.x folder's `User Files\\` and `data\\`, sorted; the empty
-    folders too ([relative folder])."""
+    """[(relative path, size)] of every file under the 2.x folder's `User Files\\` but its library order (LEFT_BEHIND:
+    `master_manifest.json` and its backups), sorted; the empty folders too ([relative folder])."""
     files, folders = [], []
-    for top in LIBRARY_FOLDERS:
+    for top in COPIED_FOLDERS:
         base = os.path.join(source, top)
         for dirpath, dirs, names in os.walk(base):
             dirs.sort()
@@ -290,7 +293,8 @@ def _plan_files(source):
             if not names and not dirs:
                 folders.append(rel_dir)
             for name in sorted(names):
-                files.append((os.path.join(rel_dir, name), os.path.getsize(os.path.join(dirpath, name))))
+                if not name.startswith(LEFT_BEHIND):
+                    files.append((os.path.join(rel_dir, name), os.path.getsize(os.path.join(dirpath, name))))
     return files, folders
 
 
@@ -370,72 +374,6 @@ def _import_settings(source, library):
             held.release()
 
 
-def legacy_store_path(source, language):
-    """2.x's library store for `source`'s `data\\<language>`: `<legacy local root>\\libraries\\` + the name the store
-    keys on that data folder's real path (`library_store.library_db_path`)."""
-    from app import library_store
-    name = os.path.basename(library_store.library_db_path(language, os.path.join(source, "data", language)))
-    return os.path.join(path_utils.legacy_local_root(), "libraries", name)
-
-
-def _tables(conn):
-    names = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")]
-    return {n: conn.execute(f'SELECT COUNT(*) FROM "{n}"').fetchone()[0] for n in names}
-
-
-def _store_plan(source, library, language):
-    old = legacy_store_path(source, language)
-    if os.path.isfile(old) and not os.path.exists(old + ".damaged"):
-        return "copy"
-    manifest = os.path.join(source, "User Files", language, "master_manifest.json")
-    return "rebuild" if os.path.isfile(manifest) else "none"
-
-
-def _import_store(source, library, language, staging):
-    """2.x's store for `language` into the new library's store name -> 'copied' | 'rebuild' (left to the store's own
-    rebuild from master_manifest.json: no store, a damaged one, one whose copy fails its check) | 'none'. The old
-    files are copied as bytes, never opened: SQLite opens only the staged set."""
-    plan = _store_plan(source, library, language)
-    if plan != "copy":
-        return plan
-    from app import library_store
-    old = legacy_store_path(source, language)
-    os.makedirs(staging, exist_ok=True)
-    staged = os.path.join(staging, os.path.basename(old))
-    for suffix in STORE_SUFFIXES:
-        if os.path.exists(staged + suffix):
-            os.remove(staged + suffix)
-        if os.path.isfile(old + suffix):
-            shutil.copyfile(old + suffix, staged + suffix)
-    target = library_store.library_db_path(language, os.path.join(library, "data", language))
-    os.makedirs(os.path.dirname(target), exist_ok=True)
-    src = sqlite3.connect(staged)
-    try:
-        try:
-            sound = src.execute("PRAGMA quick_check").fetchone()[0] == "ok"
-            before = _tables(src) if sound else None
-        except sqlite3.DatabaseError:
-            sound = False
-        if not sound:
-            print(f"2.x import: the old {language} library store failed its check; it will be rebuilt from its copy.")
-            return "rebuild"
-        dst = sqlite3.connect(target)
-        try:
-            src.backup(dst)
-            if dst.execute("PRAGMA quick_check").fetchone()[0] != "ok" or _tables(dst) != before:
-                raise ImportFailed(f"the {language} library store did not copy whole")
-        finally:
-            dst.close()
-    finally:
-        src.close()
-        for suffix in STORE_SUFFIXES:
-            try:
-                os.remove(staged + suffix)
-            except OSError:
-                pass
-    return "copied"
-
-
 def _roaming_plan():
     root = path_utils.legacy_persistent_root()
     if not os.path.isdir(root):
@@ -470,9 +408,9 @@ def _refused(reason, message, **extra):
 def run_import(source, library, progress=None, cancel=None, dry_run=False, restart=False, again=False):
     """Copy the 2.x install at `source` into the 3.0 library folder `library` (see the module docstring).
 
-    `progress(stage, done, total)`, when given, is called as it goes (stage: files, settings, store, roaming,
-    graduated); `cancel()`, when it returns True, stops it between two files. `dry_run`: every check, nothing written
-    (no probe either) -> the plan. `restart`: an incomplete import into this folder copies every file again instead
+    `progress(stage, done, total)`, when given, is called as it goes (stage: files, settings, roaming, graduated);
+    `cancel()`, when it returns True, stops it between two files. `dry_run`: every check, nothing written (no probe
+    either) -> the plan. `restart`: an incomplete import into this folder copies every file again instead
     of keeping those already whole. `again`: a second import after a complete one (into an empty folder).
 
     -> a dict: `status` done | cancelled | failed | refused | dry-run, `reason` and `message` (a plain sentence)
@@ -512,7 +450,7 @@ def run_import(source, library, progress=None, cancel=None, dry_run=False, resta
     except OSError as e:
         return _refused("error", f"Your old Surasura folder could not be read ({e}). Nothing was copied.")
     languages = [lang for lang in LANGUAGES if any(
-        os.path.isdir(os.path.join(source, top, lang)) for top in LIBRARY_FOLDERS)]
+        os.path.isdir(os.path.join(source, top, lang)) for top in COPIED_FOLDERS)]
     entry = _note_entry(source)
     result = {"status": "dry-run" if dry_run else "done", "reason": None, "message": None,
               "from": source, "to": library, "from_version": (entry or {}).get("version"),
@@ -520,7 +458,6 @@ def run_import(source, library, progress=None, cancel=None, dry_run=False, resta
               "counts": {"files": len(files), "bytes": sum(s for _r, s in files), "copied": 0, "kept": 0,
                          "folders": len(folders)},
               "settings": "convert" if os.path.isfile(os.path.join(source, "settings.json")) else "none",
-              "store": {lang: _store_plan(source, library, lang) for lang in languages},
               "roaming": {name: "copy" for name in _roaming_plan()},
               "graduated": None, "sha256": None}
     if dry_run:
@@ -569,16 +506,7 @@ def run_import(source, library, progress=None, cancel=None, dry_run=False, resta
         result["settings"] = _import_settings(source, library)
         tick("settings", 1, 1)
 
-        staging = os.path.join(path_utils.local_data_root(), "import_staging")
-        for i, lang in enumerate(languages):
-            stop()
-            result["store"][lang] = _import_store(source, library, lang, staging)
-            tick("store", i + 1, len(languages))
-        try:
-            os.rmdir(staging)
-        except OSError:
-            pass
-        if running_from(source):        # started meanwhile: its store may have moved under the copy
+        if running_from(source):        # started meanwhile: its lists may have changed under the copy
             raise ImportFailed("your old Surasura was started during the import; close it, then run the import again")
 
         names = list(result["roaming"])
@@ -596,12 +524,12 @@ def run_import(source, library, progress=None, cancel=None, dry_run=False, resta
     except _Cancelled:
         result.update(status="cancelled", reason="cancelled",
                       message="The import was stopped. Your old Surasura is unchanged; run it again to finish.")
-    except (ImportFailed, OSError, sqlite3.Error) as e:
+    except (ImportFailed, OSError) as e:
         result.update(status="failed", reason="failed",
                       message=f"The import stopped: {e}. Your old Surasura is unchanged; run it again to finish.")
     record.update({"finished": _now(), "complete": result["status"] == "done", "status": result["status"],
                    "languages": languages, "counts": result["counts"], "settings": result["settings"],
-                   "store": result["store"], "roaming": result["roaming"], "sha256": result["sha256"],
+                   "roaming": result["roaming"], "sha256": result["sha256"],
                    "graduated": result["graduated"]})
     if result["message"]:
         record["message"] = result["message"]

@@ -97,16 +97,16 @@ def test_a_resumed_import_copies_again_a_file_that_changed_since_whatever_its_si
     old = _old_install(tmp_path, store=False, languages=("ja",))
     done, there = [], set(_tree(_root()))
     import_2x.run_import(old, _root(), progress=lambda s, d, t: done.append(d) if s == "files" else None,
-                         cancel=lambda: len(done) >= 8)
+                         cancel=lambda: len(done) >= 2)
     copied = sorted(p for p in set(_tree(_root())) - there if os.path.isfile(os.path.join(old, p)))
-    content = [p for p in copied if p.startswith("data" + os.sep)]          # a book or an episode, never merged
-    assert len(copied) == 8 and content
+    content = [p for p in copied if os.path.basename(p) == "IgnoreList.txt"]      # a word list, never merged
+    assert len(copied) == 2 and content
     changed = os.path.join(_root(), content[0])
     raw = open(changed, "rb").read()
     open(changed, "wb").write(raw[:-1] + (b"?" if raw[-1:] != b"?" else b"!"))
     assert os.path.getsize(changed) == len(raw)
     resumed = import_2x.run_import(old, _root())
-    assert resumed["status"] == "done" and resumed["counts"]["kept"] == 7
+    assert resumed["status"] == "done" and resumed["counts"]["kept"] == 1
     assert open(changed, "rb").read() == raw
 
 
@@ -120,7 +120,7 @@ def test_a_copy_the_disk_refuses_fails_the_import_saying_so(tmp_path, roaming, m
     real = shutil.copy2
 
     def refused(src, dst, **kw):
-        if src.endswith("context_test.txt"):
+        if src.endswith("IgnoreList.txt"):
             raise PermissionError(13, "simulated: access denied", dst)
         return real(src, dst, **kw)
     monkeypatch.setattr(shutil, "copy2", refused)

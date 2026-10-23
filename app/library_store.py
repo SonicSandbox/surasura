@@ -4793,11 +4793,16 @@ class Store:
 
     def record_analysed(self, order_version):
         """At the end of a successful Generate that read the store (never after a JSON fallback). Keeps
-        the larger of the stored value and the one given."""
+        the larger of the stored value and the one given. W-1: that Generate read this build's list, the old watched
+        marks already out of it — so they are counted (`STONES_COUNTED`): the helper's count, coming after, moves no
+        version (no second Generate with nothing changed)."""
         with self._writing():
             meta = self._meta()
+            values = {} if STONES_COUNTED in meta else {STONES_COUNTED: 1}
             if order_version > meta.get("analysed_order_version", 0):
-                self._set_meta({"analysed_order_version": order_version})
+                values["analysed_order_version"] = order_version
+            if values:
+                self._set_meta(values)
 
     def record_planned(self, order_version, pins_version):
         """At the end of a successful re-plan (2.6; Haya's E2.2). Keeps the larger values."""
@@ -6841,6 +6846,7 @@ def _maintain_locked(db_path, language, data_dir, user_files_dir, from_folders, 
         if found == "backup failed":
             return EXIT_FAILED
         did = did or found not in ("same", "stale", "unchanged", "newer")
+        did = store.count_old_stones() or did   # before the export: the copy carries its version
         if export:
             did = export_copy(store) or did
             _cleanup_temps(manifest_path(user_files_dir))
@@ -6849,7 +6855,6 @@ def _maintain_locked(db_path, language, data_dir, user_files_dir, from_folders, 
             did = bool(store.prune_log()) or did
         did = bool(store.prune_gone()) or did
         did = bool(store.tidy_works()) or did
-        did = store.count_old_stones() or did
         store.checkpoint()
         return EXIT_DONE if did else EXIT_NOTHING
     finally:
@@ -7501,6 +7506,8 @@ def maintain_due(store, handed=""):
     newer = meta.get("newer_copy_seen")
     if newer is not None:                        # a newer store's copy: due only once it changes or goes
         return seen != newer and (not seen or seen != handed), seen     # gone ("") is always due
+    if STONES_COUNTED not in meta:
+        return True, seen                        # W-1: the first start's count of old watched marks (`count_old_stones`)
     if store.export_due():
         return True, seen
     return bool(seen) and seen != store.meta().get("last_export_stat") and seen != handed, seen

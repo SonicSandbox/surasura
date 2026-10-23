@@ -230,6 +230,78 @@ def test_stones_marked_before_the_option_existed_start_one_generate_at_the_first
     store.close()
 
 
+class _Ran:
+    """`spawn_maintain`'s Popen when the helper ran in this process to its end."""
+    pid = None
+
+    def __init__(self, code):
+        self.returncode = code
+
+    def poll(self):
+        return self.returncode
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+    def kill(self):
+        pass
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_quiet_first_start_still_starts_the_helper_that_counts_the_old_stones(language, monkeypatch):
+    """Build 2 closed with its copy exported, so at the first start the copy's own rule finds nothing to do — but the
+    old stones were never counted: the window's trigger (`Chores._maintain` → `maintain_due`) starts the helper, which
+    moves `order_version` once (the background Generate follows), and leaves the copy current, so the next trigger
+    starts none."""
+    from tests.test_services_chores import _make
+    data_dir, user_files_dir = roots(language)
+    store = migrated(language)
+    _mark_raw(store, store.ids("now")[:2])
+    _as_build_2(store)
+    with store._writing():
+        store._set_meta({"analysed_order_version": store.versions()["order_version"]})   # Generated before the start
+    ls.export_copy(store)
+    assert not store.export_due(), "precondition: build 2's last close exported the copy"
+    before = store.versions()["order_version"]
+    store.close()
+    ran = []
+    monkeypatch.setattr(ls, "spawn_maintain",
+                        lambda lang, *extra: ran.append(lang) or _Ran(ls.maintain(lang, data_dir, user_files_dir)))
+    chores, _registry, _popen = _make(lang=language)
+    chores._maintain()
+    assert ran == [language], "the helper is due while the old stones were never counted"
+    store = ls.open_store(language, data_dir, user_files_dir)
+    assert store.versions()["order_version"] == before + 1 and store.journey_pending()
+    assert ls.STONES_COUNTED in store.meta() and ls.maintain_due(store)[0] is False
+    store.close()
+    chores._maintain()
+    assert ran == [language], "counted once: the next trigger starts no helper"
+    chores.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_generate_that_read_the_list_before_the_count_leaves_it_nothing_to_move(language):
+    """A Generate (or the Generate button's check finding the results current) that read the store's list under this
+    build already left the old stones out: recording it counts them, so the helper's later count moves nothing — no
+    second Generate with nothing changed, and the helper isn't due for the count."""
+    data_dir, user_files_dir = roots(language)
+    store = migrated(language)
+    now = store.ids("now")
+    _mark_raw(store, now[:2])
+    _as_build_2(store)
+    schedule, versions = store.schedule(with_versions=True)
+    assert not {_rel(store, i) for i in now[:2]} & {e["physical_path"] for rows in schedule.values() for e in rows}
+    store.record_analysed(versions["order_version"])                 # the Generate's end
+    assert ls.STONES_COUNTED in store.meta()
+    ls.export_copy(store)
+    assert ls.maintain_due(store)[0] is False
+    store.close()
+    ls.maintain(language, data_dir, user_files_dir)
+    store = ls.open_store(language, data_dir, user_files_dir)
+    assert store.versions()["order_version"] == versions["order_version"] and not store.journey_pending()
+    store.close()
+
+
 @pytest.mark.parametrize("language", LANGUAGES)
 @pytest.mark.parametrize("where", ["finished", "arrivals", "keep_watched", "none"])
 def test_a_library_with_no_old_stone_in_a_studied_tier_is_stamped_without_a_move(language, where):
@@ -276,6 +348,23 @@ def test_the_text_lists_set_watched_files_aside_and_never_drop_one(language):
     store.set_library_options(keep_watched=True)
     counted, kept, aside = store.text_lists()
     assert aside == [] and {_rel(store, now[0]), _rel(store, soon[0])} <= set(counted)
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_removed_file_added_again_and_watched_is_aside_not_also_kept(language):
+    """A file removed earlier keeps its text through its trash row; added again and then watched, it is set aside — and
+    its old trash row must not also list it kept: the token store would get one file in two lists."""
+    store = migrated(language)
+    data_dir, _u = roots(language)
+    x = store.ids("goal")[0]
+    rel = _rel(store, x)
+    store.remove([x])
+    assert rel in store.text_lists()[1], "precondition: a removed file's text is kept"
+    (again,) = store.insert([os.path.join(data_dir, rel)], "now").added
+    store.set_watched([again])
+    counted, kept, aside = store.text_lists()
+    assert rel in aside and rel not in kept and rel not in counted
     store.close()
 
 

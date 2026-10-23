@@ -138,19 +138,35 @@ def test_the_read_only_lines_x_hides_it_on_every_page_until_the_reason_changes(s
     view = page.view_model
     page.state_bar.cross.click()
     assert all(p.state_bar.isHidden() for p in pages)
-    page.set_view(view)                                         # the next view, the same reason: still hidden
-    assert page.state_bar.isHidden()
+    for p in pages:
+        p.set_view(view)                                        # the next view, the same reason: still hidden —
+    assert all(p.state_bar.isHidden() for p in pages)           # Needs you's too (A-1 / IK-1: it skipped the rule)
     page.set_view(view._replace(reason="io:disk full"))         # another reason: back
     assert page.state_bar.isVisible() and page.state_bar.text()
-    page.set_view(view._replace(state="ready", reason=None))    # its trouble ended ...
-    page.set_view(view)                                         # ... and came back: it says so again
-    assert page.state_bar.isVisible() and "the library needs a repair" in page.state_bar.text()
+    win.show_library(view._replace(state="ready", reason=None))     # its trouble ended ...
+    win.show_library(view)                                          # ... and came back: it says so again
+    assert all(not p.state_bar.isHidden() and "the library needs a repair" in p.state_bar.text() for p in pages)
+
+
+def test_a_page_whose_view_lags_never_lets_the_read_only_lines_x_go_for_the_others(seeded):
+    """Round 8 (A-9): reading whether a line is hidden let the kind's keys go when that page's view had no read-only
+    line — one page with a view behind (or none) un-hid the line for every page after it. The window says when the
+    trouble ended (`show_library`); a page only reads."""
+    _seed, win = seeded(mode="read-only", reason="damaged")
+    pages = [win.page_widgets[n] for n in ("current", "finished", "needs")]
+    view = pages[0].view_model
+    pages[0].state_bar.cross.click()
+    pages[0].set_view(view._replace(state="ready", reason=None))    # one page's view behind (no line on it)
+    for p in pages[1:]:
+        p.set_view(view)
+    assert all(p.state_bar.isHidden() for p in pages[1:])
 
 
 def test_a_line_of_work_running_has_no_x(seeded):
     _seed, win = seeded(mode="json", reason="not ready")
-    bar = win.page_widgets["current"].state_bar
-    assert bar.text() == strings.STATE_LINES["getting-ready"] and bar.cross.isHidden()
+    for name in ("current", "needs"):                           # Needs you's too (A-1: its ✕ there did nothing)
+        bar = win.page_widgets[name].state_bar
+        assert bar.text() == strings.STATE_LINES["getting-ready"] and bar.cross.isHidden(), name
 
 
 def test_the_x_is_one_widget_every_line_shares(window):

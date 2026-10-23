@@ -405,7 +405,7 @@ class NeedsYou(QObject):
                               "kick": _connect_callable("kick", "kick")}
         self.cards = page.cards
         self.cards.shown = self.available
-        self.cards.adopt = lambda b, name, entry: qpress.adopt(b, self._press_key(name, entry))
+        self.cards.adopt = lambda b, name, entry: qpress.adopt(b, self._press_key(name, entry), win=self.win)
         self.cards.action.connect(self.act)
         heard = getattr(win, "bridge", None)
         if heard is not None and hasattr(heard, "settings_written"):
@@ -572,7 +572,9 @@ class NeedsYou(QObject):
         self._say(strings.NEEDS_FAILED.format(why=error))
 
     def _press_key(self, name, entry):
-        return f"needs:{name}:{entry.key}"
+        """A card's answers are one press (A-5: one card, one answer at a time — the other answer pressed meanwhile
+        asks nothing), of this language's card (A-11); the arc on the button pressed (`qpress.adopt`)."""
+        return f"needs:{self.language}:{'answer' if name in PRESSED else name}:{entry.key}"
 
     def _press(self, name, entry, fn, *args, then):
         """Round 8 row 45: an answer whose work waits — the arc turns on its button, painted before `fn` goes to the

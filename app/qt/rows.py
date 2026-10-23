@@ -1143,7 +1143,7 @@ class RowDelegate(QStyledItemDelegate):
         st = row.status
         if st is not None and st.kind not in ("in_anki", "mining", "none"):
             name, tip, ask = action_of(st, row.episodes, self.view.connect_off, row.media_word)    # --- P4.1 L2
-            if name in ASKS and self.view.pressed_ids and any(e.id in self.view.pressed_ids for e in row.episodes):
+            if name in ASKS and self.view.pressed(row.episodes):
                 tip = strings.ROWS_ASKED_TIP             # round 8 row 45: asked, starting
             if st.kind == "waiting":
                 out.append((name, "waiting", "ink-dim", tip, ask, iw, ih))
@@ -1239,6 +1239,8 @@ class RowDelegate(QStyledItemDelegate):
             out.append(("more", g["more"], strings.ROWS_MORE_TIP, None))
             if payload.status is not None:                 # --- P4.1 L2: the row's status, a button as a row's (Q33)
                 name, tip, ask = action_of(payload.status, payload.episodes, self.view.connect_off, payload.media_word)
+                if name in ASKS and self.view.pressed(payload.episodes):
+                    tip = strings.ROWS_ASKED_TIP         # round 8 row 45 (A-3): asked, starting — as a row's
                 out.append((name, g["status"], tip, ask))
             if g["journey"] is not None:
                 out.append(("journey", g["journey"], strings.ROWS_JOURNEY_TIP, nxt))
@@ -1626,6 +1628,8 @@ class RowDelegate(QStyledItemDelegate):
             pix, box = self._closed(kind, payload, lines, rect, dpr, hovered or focused, p)
             if pix is not None:
                 p.drawPixmap(box.topLeft(), pix)
+            if payload.status is not None and self.view.pressed(payload.episodes):     # round 8 row 45 (A-3): over
+                self._paint_pressed(p, self._hero_geometry(payload, rect, lines)["status"])   # its cached picture
             if focused:
                 self._focus_ring(p, box, theme.RADII["r-sm"])
         elif kind == HERO:
@@ -1689,7 +1693,7 @@ class RowDelegate(QStyledItemDelegate):
         self._paint_number(p, row, slab, dpr)
         if fade > 0:
             self._paint_movers(p, row, slab, fade)
-        if self.view.pressed_ids and any(e.id in self.view.pressed_ids for e in row.episodes):      # round 8 row 45
+        if self.view.pressed(row.episodes):          # round 8 row 45
             at = next((r for name, r, *_rest in self.line_geometry(row, slab)["hover"] if name in ASKS), None)
             if at is not None:                       # (the Mine now button's place, at rest too: it turns there)
                 self._paint_pressed(p, at, radius=theme.RADII["icon-button"])
@@ -2715,6 +2719,9 @@ class RowsView(QListView):
         self._pressed_at = {}                        # ... each one's status at the press (it leaves when that changes)
         self._turn = None                            # ... their marks' phase (`motion.Turn`) while any is pressed
         self._turn_rects = []                        # ... where they were painted last (repainted alone as they turn)
+        self._turn_idle = False                      # ... a frame found none painted (two: the clock stops, A-6)
+        self.press_moved = None                      # ... `press_moved(ids)`: their status moved — the presses' owner
+                                                     # ends them (`mine_actions`); None: this list lets them go
         self.seam = None                             # --- W3.2 Q8: (row key, episode id) of the ✂ seam under the hand
         self.ep_hover = None                         # --- W3.2 Q8: (row key, episode id) the hand was last on
         self.ep_hot = None                           # --- row 28: (row key, episode id) under the hand now
@@ -2930,43 +2937,67 @@ class RowsView(QListView):
 
     # entries ---------------------------------------------------------------------------------------------------- #
     # --- round 8 row 45: *Mine now* pressed (`mine_actions._ask`) --------------------------------------------- #
-    def _episodes_by_id(self):
-        return {ep.id: (i, ep) for i, (kind, row, _lines) in enumerate(self.model().entries)
-                for ep in (getattr(row, "episodes", ()) if kind in (HERO, ROW) else ())}
+    def _where(self, ids, keys=None):
+        """{id: (row index, its episode)} of the files `ids` this list shows. `keys` ({id: the row's key it was in}):
+        looked up in those rows alone, the whole list walked only for one not found there (A-12: a view while one is
+        pressed never walks every episode)."""
+        entries, found = self.model().entries, {}
+        if keys:
+            at = {row.key: n for n, (kind, row, _lines) in enumerate(entries) if kind in (HERO, ROW)}
+            for i in ids:
+                n = at.get(keys.get(i))
+                ep = None if n is None else next((e for e in entries[n][1].episodes if e.id == i), None)
+                if ep is not None:
+                    found[i] = (n, ep)
+        left = set(ids) - set(found)
+        if left:
+            for n, (kind, row, _lines) in enumerate(entries):
+                for ep in (row.episodes if kind in (HERO, ROW) else ()):
+                    if ep.id in left:
+                        found[ep.id] = (n, ep)
+        return found
+
+    def pressed(self, episodes):
+        """Whether any of `episodes` is pressed (its row's *Mine now* turns)."""
+        return bool(self.pressed_ids) and any(e.id in self.pressed_ids for e in episodes)
 
     def press_ids(self, ids):
-        """The files `ids` asked for: their pills turn from now — painted before this returns — until Connect's feed
-        says something new of each (`_prune_pressed`), or the ask is refused or undone (`unpress`). Files this list
-        doesn't show are no business of its. -> the ids it marks."""
-        shown = self._episodes_by_id()
-        at = {i: shown[i][1].status for i in ids if i in shown}
-        if not at:
+        """The files `ids` asked for: their pills turn from now — painted before this returns — until their status
+        moves (`_prune_pressed`) or their press ends (`unpress`: refused, undone, or given way to Connect's own state —
+        `mine_actions`). Files this list doesn't show are no business of its. -> the ids it marks."""
+        shown = self._where(ids)
+        if not shown:
             return ()
-        self._pressed_at.update(at)
-        self._set_pressed(self.pressed_ids | set(at))
-        for row_i in sorted({shown[i][0] for i in at}):
+        entries = self.model().entries
+        self._pressed_at.update({i: (ep.status, entries[n][1].key) for i, (n, ep) in shown.items()})
+        self._set_pressed(self.pressed_ids | set(shown))
+        for row_i in sorted({n for n, _ep in shown.values()}):
             self.viewport().repaint(self.visualRect(self.model().index(row_i, 0)))
-        return tuple(at)
+        return tuple(shown)
 
     def unpress(self, ids):
         gone = self.pressed_ids & set(ids)
-        if gone:
-            for i in gone:
-                self._pressed_at.pop(i, None)
-            self._set_pressed(self.pressed_ids - gone)
+        if not gone:
+            return
+        shown = self._where(gone, {i: self._pressed_at[i][1] for i in gone if i in self._pressed_at})
+        for i in gone:
+            self._pressed_at.pop(i, None)
+        self._set_pressed(self.pressed_ids - gone)
+        for row_i in sorted({n for n, _ep in shown.values()}):  # the rows that stop turning: their pills as they are
+            self.update(self.model().index(row_i, 0))
 
     def _prune_pressed(self):
         """A new view: a pressed file whose status moved from what it was at the press (Connect read the ask: asked, a
-        wait, mining), or that this list no longer shows, stops turning."""
+        wait, mining), or that this list no longer shows, stops turning — its press ended by its owner."""
         if not self.pressed_ids:
             return
-        shown = self._episodes_by_id()
-        moved = {i for i in self.pressed_ids if i not in shown or shown[i][1].status != self._pressed_at.get(i)}
+        shown = self._where(self.pressed_ids, {i: key for i, (_st, key) in self._pressed_at.items()})
+        moved = {i for i in self.pressed_ids if i not in shown or shown[i][1].status != self._pressed_at[i][0]}
         if moved:
-            self.unpress(moved)
+            (self.press_moved or self.unpress)(moved)
 
     def _set_pressed(self, ids):
-        before, self.pressed_ids = self.pressed_ids, frozenset(ids)
+        self.pressed_ids = frozenset(ids)
         if self.pressed_ids and self._turn is None:
             self._turn = motion.Turn(self.viewport(), self._turned)
             self._turn.show()
@@ -2975,21 +3006,29 @@ class RowsView(QListView):
             self._turn.set_running(False)
             self._turn.deleteLater()
             self._turn, self._turn_rects = None, []
-        if before - self.pressed_ids:                    # the rows that stop turning: their pills as they are
-            shown = self._episodes_by_id()
-            for row_i in sorted({shown[i][0] for i in before - self.pressed_ids if i in shown}):
-                self.update(self.model().index(row_i, 0))
 
     def turning(self):
         """The pressed marks' phase (0–1), or None: still (Reduced motion, the freeze switch)."""
         return self._turn.turning if self._turn is not None else None
 
     def turned_at(self, rect):
+        """A mark painted in `rect` (by the delegate, on the viewport): repainted alone at the next frame; the clock on
+        again if it stopped with none on screen (A-6)."""
         self._turn_rects.append(rect)
+        if self._turn is not None and not self._turn.running:
+            self._turn.set_running(True)
 
     def _turned(self):
-        """A frame of the turn: only the boxes the marks were painted in are painted again."""
+        """A frame of the turn: only the boxes the marks were painted in are painted again. Two frames running with
+        none painted (scrolled away, a row closed, a file this list doesn't draw): the clock stops until one is
+        painted again (A-6; S19: nothing ticks for nothing on screen)."""
         rects, self._turn_rects = self._turn_rects, []
+        if not rects:
+            if self._turn_idle and self._turn is not None:
+                self._turn.set_running(False)
+            self._turn_idle = True
+            return
+        self._turn_idle = False
         for r in rects:
             self.viewport().update(r)
     # --- end round 8 row 45

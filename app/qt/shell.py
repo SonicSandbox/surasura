@@ -1312,6 +1312,8 @@ class ShellWindow(QMainWindow):
             if self._epoch_shown is not None and epoch != self._epoch_shown:
                 self._forget_picks()
             self._epoch_shown = epoch
+        if screens.state_key(view) is None:         # round 8 (A-9): the read-only line's trouble ended — its ✕
+            self.standing.only(standing_service.READ_ONLY, ())     # answers go, once, here (the pages only read them)
         moved = False
         for name in screens.PAGES:
             page = self.page_widgets.get(name)
@@ -1473,10 +1475,8 @@ class ShellWindow(QMainWindow):
         if lst is not None and (lst.saving or lst.landing is not None):
             lst.saving, lst.landing = frozenset(), None     # AD0-6: never a mark of the language left on a row
             lst.viewport().update()
-        for page in self.page_widgets.values():     # round 8 row 45: nor a pressed Mine now
-            unpress = getattr(getattr(page, "list", None), "unpress", None)
-            if unpress is not None:
-                unpress(page.list.pressed_ids)
+        if getattr(self, "mine", None) is not None:  # round 8 row 45: nor a pressed Mine now (its presses end)
+            self.mine.settle_all()
         self._forget_picks()
         self._follow_language_look()
         for page in self.page_widgets.values():     # ▶ opens a file of this language's library
@@ -1749,14 +1749,18 @@ class ShellWindow(QMainWindow):
             self._show_update(self.duties.update_state, force_cards=True)     # the cards' *Open the logs folder*
         self._paint_needs()
 
-    def _presses_changed(self, _press):
+    def _presses_changed(self, press):
         from PyQt6 import sip
-        if not sip.isdeleted(self.progress):            # (an answer coming in after the window closed paints nothing)
-            self._paint_progress()
+        if sip.isdeleted(self.progress):                # (an answer coming in after the window closed paints nothing)
+            return
+        if self._paint_progress() and press.state == press_service.QUEUED:
+            self.progress.repaint()                     # R-2: a press's hairline in the frame of the press, before its
+                                                        # work is handed over (not at the next frame)
 
     def _paint_progress(self):
-        """W3.1a: the header's hairline — Generate's share while it has one, else whole and quiet while any job runs."""
-        self.progress.set(self._busy or self.presses.any_live(), self._share)
+        """W3.1a: the header's hairline — Generate's share while it has one, else whole and quiet while any job runs.
+        -> True when it changed."""
+        return self.progress.set(self._busy or self.presses.any_live(), self._share)
 
     def say(self, text, hold=None):
         """A line for the bar that answers what the user just did (a file ▶ couldn't open, the journey's absence, a
@@ -2288,7 +2292,9 @@ class ShellWindow(QMainWindow):
         does). A click while one runs adds nothing. With no decks chosen yet, or the first sync not made (always the
         user's own, in the Anki window), the Anki window opens instead. Round 8 row 45 (the trial): the press's arc
         turns in the count's slot from the frame of the click, before the sync is asked for, until that sync (or the
-        one already running) ends or the answer says why not; a click meanwhile asks nothing."""
+        one already running) ends or the answer says why not; a click meanwhile asks nothing. Every ask is answered
+        (A-2: a sync that couldn't be asked for says "failed", a closed automation "closed"), so the press always ends.
+        Its job is followed by hand (`_known_followed`) until P3's `press.follow`."""
         automation = self.services.automation
         if automation is None:
             return
@@ -2307,7 +2313,7 @@ class ShellWindow(QMainWindow):
         running: the arc turns on until its job ends (`_known_followed`)."""
         self._known_answered = True
         if why not in (None, "running"):
-            self._known_followed(ended=True)
+            self._known_followed(ended=True, failed=why == "failed")
         else:
             self._known_followed()
         if why in ("no-decks", "never-synced"):
@@ -2318,15 +2324,15 @@ class ShellWindow(QMainWindow):
         elif why in strings.FOOT_KNOWN_REFUSED:
             self.say(strings.FOOT_KNOWN_REFUSED[why])
 
-    def _known_followed(self, ended=False):
+    def _known_followed(self, ended=False, failed=False):
         """Round 8 row 45: the click's press ends once it was answered and no sync runs (the registry's views), or at
-        once (`ended`: nothing was started)."""
+        once (`ended`: nothing was started; `failed`: it couldn't be asked for)."""
         p = self._known_press
         if p is None or not p.live() or not self._known_answered:
             return
         if ended or not self.known.syncing:
             self._known_press = None
-            qpress.end(p, self)
+            qpress.end(p, self, failed=failed, why=strings.FOOT_KNOWN_REFUSED.get("failed") if failed else None)
 
     def _known_road(self):
         """IK-7: the count's hover names what a click does — the page's known-words road, one rule

@@ -77,6 +77,11 @@ class Hidden:
             return False
         return line_key not in self._keys
 
+    def hid(self, line_key):
+        """Whether ✕ hid the line `line_key` — a read, nothing let go (a page's: the window says when its trouble
+        ended, `only`)."""
+        return line_key in self._keys
+
     def only(self, kind, keys):
         """Only `keys` of `kind` stay hidden (the rest of that kind went with their trouble) -> how many went."""
         keys = set(keys)

@@ -605,6 +605,29 @@ def test_a_click_on_the_known_count_turns_its_arc_at_once_until_its_sync_ends_an
                       win.bar_line.full() == strings.FOOT_KNOWN_REFUSED["update-staged"])
 
 
+def test_a_known_count_click_whose_sync_couldnt_be_asked_for_ends_its_arc_says_why_and_asks_again(world):
+    """Round 8 (A-2): a sync that raised as it was asked for never answered, so the count's arc turned and the hairline
+    ran all session, and every later click asked nothing. Every press reaches done or failed: "failed" ends the arc,
+    the bar says why, and the next click asks again. Red first: no line, the arc kept turning."""
+    from app.qt import press as qpress
+    from app.services import press as press_service
+    world.start()
+    world.automation.push(sync=A.SYNCED, added=0, known=12345)
+    d, win = world.d, world.win
+    assert wait_until(lambda: not d.known.isHidden())
+    QTest.mouseClick(d.known, Qt.MouseButton.LeftButton)
+    calls = world.automation.called("automation.sync_now")
+    assert len(calls) == 1 and qpress.arc(d.known) is not None
+    t = threading.Thread(target=calls[0][1], args=("failed",))         # the automation's worker: it couldn't ask
+    t.start()
+    t.join()
+    assert wait_until(lambda: qpress.arc(d.known) is None and
+                      win.bar_line.full() == strings.FOOT_KNOWN_REFUSED["failed"])
+    assert win.presses.find("known:sync").state == press_service.FAILED and not win.presses.any_live()
+    QTest.mouseClick(d.known, Qt.MouseButton.LeftButton)
+    assert len(world.automation.called("automation.sync_now")) == 2
+
+
 def test_the_known_counts_hover_names_what_a_click_does_on_each_road(world):
     """IK-7: the page's known-words road, one rule — no decks for this language yet, a click opens the Anki window and
     the hover says so; decks chosen, a click syncs; a sync running (any live `anki-sync` job: the automatic one, a

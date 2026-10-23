@@ -283,3 +283,63 @@ def test_a_menu_press_without_words_says_nothing_in_the_bar_but_runs_the_hairlin
     assert win.progress.busy is True and win.bar_line.full() == line
     handed[0].then(None)
     assert win.progress.busy is False
+
+
+# --- round 8's reviews: one card, one answer (A-5); an arc that can't be painted (A-10); the hairline's frame (R-2) - #
+def test_a_cards_two_answers_are_one_press_the_other_asks_nothing_and_a_rebuilt_card_turns_the_pressed_one(
+        stage, handed):
+    """A-5: *Mark them known* and *Leave them* were two keys, so pressing the other answer while one worked ran both
+    and the bar said both lines (*2 words are known now*, then *Left them*). One card is one answer at a time: the
+    other button asks nothing, and a card rebuilt meanwhile puts the arc back on the button that was pressed."""
+    b, leave = stage.button, stage.leave
+    b.setProperty("action", "mark_known")
+    leave.setProperty("action", "leave_known")
+    key = "needs:ja:answer:known-offer:1"                         # (as `NeedsYou._press_key` makes it)
+    qpress.run(b, key, lambda: ["一緒に", "やがる"], goes=True)
+    assert qpress.run(leave, key, lambda: None, goes=True) is None and len(handed) == 1
+    assert arc_shown(b) and qpress.arc(leave) is None
+    again_leave, again_mark = QPushButton("Leave them", stage.host), QPushButton(MARK, stage.host)
+    again_leave.setProperty("action", "leave_known")
+    again_mark.setProperty("action", "mark_known")
+    assert qpress.adopt(again_leave, key) is False                # not the one pressed
+    assert qpress.adopt(again_mark, key) is True and qpress.arc(again_mark) is not None
+    handed[0].then(handed[0].fn())
+    assert qpress.arc(again_mark) is None
+
+
+def test_the_needs_cards_answers_share_one_key_of_its_language():
+    from app.qt import needs
+    ny = needs.NeedsYou.__new__(needs.NeedsYou)
+    ny.language = "zh"
+    entry = SimpleNamespace(key="known-offer:40")
+    assert ny._press_key("mark_known", entry) == ny._press_key("leave_known", entry) == "needs:zh:answer:known-offer:40"
+    assert ny._press_key("find_videos", entry) == "needs:zh:find_videos:known-offer:40"
+
+
+def test_an_arc_that_cant_be_painted_never_holds_the_press_the_work_still_starts_and_ends_it(stage, handed,
+                                                                                               monkeypatch):
+    """A-10: the press went live (the hairline on) before its arc was painted; a paint error escaped with the press
+    still live, so every later press of it asked nothing. Now the work starts all the same, and its end ends it."""
+    def broken(_control):
+        raise RuntimeError("the button's style isn't ready")
+    monkeypatch.setattr(qpress, "arc_rect", broken)
+    p = qpress.run(stage.button, "needs:ja:answer:known-offer:1", lambda: None)
+    assert p is not None and len(handed) == 1 and p.live()
+    handed[0].then(None)
+    assert p.state == service.DONE and not p.live() and qpress.arc(stage.button) is None
+
+
+def test_a_menu_press_paints_the_hairline_in_the_frame_of_the_press_before_the_work(window, handed):
+    """R-2: a menu's press (its menu closed) showed itself by the header's hairline alone — painted at the next frame,
+    after the work was handed over, and the test checked its state, not a paint. Now the hairline is painted before
+    the hand-over."""
+    win = window
+    paints = Paints(win.progress)
+    QApplication.processEvents()
+    assert win.progress.busy is False
+    before = paints.n
+    handed.look = lambda: (win.progress.busy, paints.n - before)
+    qpress.run(None, "menu:open-logs", lambda: None, win=win)
+    busy, painted = handed[0].look
+    assert busy is True and painted >= 1
+    handed[0].then(None)

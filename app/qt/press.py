@@ -33,7 +33,7 @@ from app.services import press as service
 ARC = 14                        # px: the arc's side (the spinner's own)
 
 _loose = service.Presses()      # the presses of a control with no window
-_painted = {}                   # Press -> (control or None, the arc or None)
+_painted = {}                   # Press -> (control or None, the arc or None, which control: its "action" property)
 
 
 def room(control):
@@ -83,13 +83,16 @@ def begin(control, key, busy=None, win=None, goes=False):
         return None
     if not p.press():
         return None
-    _painted[p] = (control, None)
+    _painted[p] = (control, None, _which(control))
     if busy and win is not None:
         win.say(busy, hold=key)
         win.bar_line.repaint()
     if control is not None:
-        _paint(p, control)
-        control.repaint()
+        try:
+            _paint(p, control)
+            control.repaint()
+        except Exception as e:              # A-10: an arc that couldn't be painted never holds the press — the work
+            print(f"A press's arc wasn't painted: {e!r}", file=sys.stderr)    # still starts, and its end ends it
     return p
 
 
@@ -102,20 +105,22 @@ def end(p, win=None, failed=False, why=None):
     _restore(p, win)
 
 
-def adopt(control, key):
-    """A control made again while its press is live (a card rebuilt): the arc on it, and it is the one put back.
-    -> True when it did."""
-    p = next((q for q in _painted if q.key == key and q.live()), None)
-    if p is None or _painted[p][0] is None:
+def adopt(control, key, win=None):
+    """A control made again while its press is live (a card rebuilt): the arc on it, and it is the one put back — the
+    control that was pressed (its "action" property: one key may stand for a card's answers, A-5). Only `win`'s
+    presses (A-11). -> True when it did."""
+    p = presses_of(win).find(key)
+    got = _painted.get(p) if p is not None and p.live() else None
+    if got is None or got[0] is None or got[2] != _which(control):
         return False
-    _unspin(_painted[p][1])
+    _unspin(got[1])
     _paint(p, control)
     return True
 
 
 def arc(control):
     """The turning arc on `control` while its press is live, or None (tests, captures)."""
-    for p, (c, spinner) in _painted.items():
+    for c, spinner, _which_one in _painted.values():
         if c is control and spinner is not None and not sip.isdeleted(spinner):
             return spinner
     return None
@@ -146,15 +151,19 @@ class _Follow(QObject):
         return False
 
 
+def _which(control):
+    return None if control is None else control.property("action")
+
+
 def _paint(p, control):
     r = arc_rect(control)
     spinner = motion.Spinner("spin", control, size=r.width())
+    _painted[p] = (control, spinner, _which(control))
     _place(spinner, r)                      # over the control's own room: no layout, nothing moves
     _Follow(control, spinner)
     spinner.raise_()
     spinner.show()
     spinner.set_running(True)
-    _painted[p] = (control, spinner)
 
 
 def _place(spinner, r):

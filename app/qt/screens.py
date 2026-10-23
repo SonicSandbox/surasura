@@ -149,9 +149,8 @@ class Page(QWidget):
         ended and came back); repainted only when it changes."""
         view = self.view_model
         line, key = state_line(view), state_key(view)
-        shows = self.hidden.shows(key, standing.READ_ONLY) if self.hidden is not None else True
-        if key is not None and not shows:
-            line = ""
+        if key is not None and self.hidden is not None and self.hidden.hid(key):    # read only (A-9): the window lets
+            line = ""                                                               # the kind go as its trouble ends
         if line != self.state_bar.text() or self.state_bar.isHidden() == bool(line):   # only when it changes
             self.state_bar.show_line(line, closable=key is not None)
 
@@ -299,9 +298,7 @@ class NeedsPage(Page):
         if self.controller is None:
             return super().set_view(view)
         self.view_model = view
-        line = state_line(view)
-        if line != self.state_bar.text() or self.state_bar.isHidden() == bool(line):
-            self.state_bar.show_line(line)
+        self.paint_state()                              # round 8 (A-1): the ✕ rule, as every page's
         self.controller.view_in(view)
         self.list.looks_changed = False
         return "same"                                   # its cards repaint on their own entries (`show_entries`)

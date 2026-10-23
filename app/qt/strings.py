@@ -415,7 +415,8 @@ FOOT_KNOWN_SYNCING = "Syncing with Anki now…"
 # A click's sync refused (AD-6): AutoSync's own answer, said in the bar ("no-decks" / "never-synced" open the Anki window)
 FOOT_KNOWN_REFUSED = {"update-staged": "Not synced: an update is waiting to install, and Anki waits for it",
                       "running": "A sync with Anki is running already",
-                      "off": "Not synced: Anki is switched off for this run"}
+                      "off": "Not synced: Anki is switched off for this run",
+                      "failed": "Not synced: the sync with Anki couldn't be started (the log says why)"}
 WELLS = {"soon": "Soon", "goal": "Goal", "finished": "Finished"}
 WELL_SUBS = {"soon": "next in line", "goal": "someday · in no order", "finished": "newest first"}
 WELL_TIPS = {"soon": "Soon: drop it here and it comes up next in line",

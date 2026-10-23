@@ -790,6 +790,8 @@ def test_known_from_ankis_question_marks_them_known_or_leaves_them_on_a_worker(w
     button(ny, entry.key, "mark_known").click()
     assert wait_until(lambda: got and changed, 5)
     assert got[0] == ("accept", "ja", True) and changed == [True]
+    from app.services import press as press_service           # (round 8, A-5: a card's answers are one press — the
+    monkeypatch.setattr(press_service, "LINGER_S", 0.0)      # question asked again later answers again)
     button(ny, entry.key, "leave_known").click()
     assert wait_until(lambda: len(got) == 2, 5)
     assert got[1] == ("decline", "ja", True)

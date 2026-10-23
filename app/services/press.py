@@ -85,6 +85,10 @@ class Presses:
             p.subscribe(self._changed)
         return p
 
+    def find(self, key):
+        """The press for `key`, or None when none was ever asked for (nothing made)."""
+        return self._by_key.get(key)
+
     def any_live(self):
         return any(p.live() for p in self._by_key.values())
 

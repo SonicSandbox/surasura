@@ -667,6 +667,30 @@ def check_program(final_dist, config):
                             f"{stamp}")
     except (OSError, ValueError) as e:
         failures.append(f"_internal/build_stamp.json can't be read ({e})")
+    # The optional modules the build config leaves out (Koe since the 2.9 alpha, Sonic 2026-10-23; Reels; the Immersion
+    # Architect): none of their code frozen into either Python program, none of their files under _internal.
+    left_out = [m for m in OPTIONAL_MODULES if (config.get("modules") or {}).get(m) is not True]
+    facts["left_out"] = left_out
+    prefixes = tuple(f"modules.{m}" for m in left_out)
+    for exe in ("Surasura.exe", CLI_EXE_NAME):
+        path = os.path.join(final_dist, exe)
+        if not os.path.isfile(path):
+            continue                                        # the programs' own check names it
+        frozen = frozen_modules(path)
+        if frozen is None:
+            failures.append(f"{exe}'s Python archive can't be read, so the modules left out ({left_out}) can't be "
+                            "checked")
+            continue
+        inside = sorted(n for n in frozen if any(n == p or n.startswith(p + ".") for p in prefixes))
+        if inside:
+            failures.append(f"{exe} holds modules the build config leaves out: {inside[:5]}")
+    stray = []
+    for dirpath, _dirs, files in os.walk(internal):
+        parts = os.path.relpath(dirpath, internal).replace(os.sep, "/").split("/")
+        if any(parts[i:i + 2] == ["modules", m] for i in range(len(parts)) for m in left_out):
+            stray += [os.path.join(dirpath, n) for n in files]
+    if stray:
+        failures.append(f"_internal holds files of modules the build config leaves out: {stray[:5]}")
     # PyQt6: only the window's modules, with PyQt6's and Qt's licence notices.
     qt_folder = os.path.join(internal, "PyQt6")
     if os.path.isdir(qt_folder):
@@ -680,6 +704,21 @@ def check_program(final_dist, config):
             if not (os.path.isdir(folder) and os.listdir(folder)):
                 failures.append(f"_internal/licenses/{dist} holds no licence notice")
     return failures, facts
+
+
+def frozen_modules(exe):
+    """The Python modules frozen into a built program (PyInstaller's PYZ archive inside `exe`) -> a set of names, or
+    None when `exe` holds no archive this PyInstaller can read."""
+    try:
+        from PyInstaller.archive.readers import CArchiveReader
+        archive = CArchiveReader(exe)
+        names = set()
+        for entry in archive.toc:
+            if entry.endswith(".pyz"):
+                names.update(archive.open_embedded_archive(entry).toc)
+        return names
+    except Exception:
+        return None
 
 
 def check_zip_licences(zip_path):

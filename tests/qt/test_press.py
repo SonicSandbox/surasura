@@ -13,6 +13,7 @@ import pytest
 
 pytest.importorskip("PyQt6")
 from PyQt6.QtCore import QEvent, QObject
+from PyQt6.QtGui import QImage
 from PyQt6.QtWidgets import QApplication, QHBoxLayout, QPushButton, QWidget
 
 from app.qt import press as qpress
@@ -196,13 +197,105 @@ def test_nothing_moves_while_the_arc_turns_not_the_button_its_words_or_its_neigh
         qpress.run(b, key, lambda: None)
         QApplication.processEvents()
         assert handed[-1].look == rest and (b.geometry(), leave.geometry(), b.sizeHint()) == rest, scale_text
-        arc = qpress.arc(b).geometry()
+        arc, box = qpress.arc(b).geometry(), qpress.arc_box(b)
         words_end = (b.width() + b.fontMetrics().horizontalAdvance(b.text())) / 2
         assert b.rect().contains(arc), (scale_text, arc, b.rect())                # inside the button …
-        assert arc.left() > words_end, (scale_text, arc, words_end)                # … right of its words
-        assert arc.width() == qpress.ARC
+        assert box.left() > words_end, (scale_text, box, words_end)                # … right of its words
+        assert box.width() == qpress.ARC
         handed[-1].then(None)
         assert (b.geometry(), leave.geometry()) == rest[:2]
+
+
+def _render(host, dpr):
+    """`host` drawn as a screen at `dpr` draws it (its painters' device transforms at that ratio)."""
+    img = QImage(round(host.width() * dpr), round(host.height() * dpr), QImage.Format.Format_ARGB32_Premultiplied)
+    img.setDevicePixelRatio(dpr)
+    img.fill(0xFF000000)
+    host.render(img)
+    return img
+
+
+def _rows_cols(img, idle):
+    """The device pixels that differ between two drawings: (min x, max x, min y, max y), or None."""
+    xs, ys = [], []
+    for y in range(img.height()):
+        for x in range(img.width()):
+            if img.pixel(x, y) != idle.pixel(x, y):
+                xs.append(x)
+                ys.append(y)
+    return (min(xs), max(xs), min(ys), max(ys)) if xs else None
+
+
+@pytest.mark.parametrize("dpr", [1.0, 1.25, 1.5, 2.0])
+def test_the_arc_is_centred_on_the_button_as_the_screen_draws_it_at_every_scale(qapp, handed, dpr):
+    # Sonic, round 2: "it's not centered. It MUST be centered." A box's edges land on whole device pixels (half up) and
+    # an antialiased arc lands anywhere, so an arc centred in logical px sat half a device pixel high or low at 150 %
+    # and 225 % wherever the button's top fell on a half pixel. Measured, not computed: the button's drawn rows and the
+    # arc's drawn ink, at each ratio and four places of the button. Its middle is the button's (to the pixel), and it
+    # sits midway between the words' end and the right border. Red first: off by half a device pixel.
+    host = QWidget()
+    b = QPushButton(MARK, host)
+    b.setProperty("size", "sm")
+    qpress.room(b)
+    b.resize(b.sizeHint())
+    host.resize(b.width() + 24, 70)
+    host.show()
+    QApplication.processEvents()
+    for k, y in enumerate((7, 8, 9, 10)):
+        b.move(5 + k, y)
+        QApplication.processEvents()
+        idle = _render(host, dpr)
+        p = qpress.begin(b, f"needs:mark_known:centre:{k}")
+        QApplication.processEvents()
+        on = _render(host, dpr)
+        x0, x1, y0, y1 = _rows_cols(on, idle)
+        mid_x = round((x0 + x1) / 2)
+        bg = idle.pixel(1, 1)
+        drawn = [yy for yy in range(idle.height()) if idle.pixel(mid_x, yy) != bg]       # the button's rows there
+        button_mid, arc_mid = (drawn[0] + drawn[-1] + 1) / 2, (y0 + y1 + 1) / 2
+        assert abs(arc_mid - button_mid) < 0.5, (dpr, y, arc_mid, button_mid)
+        row = round((y0 + y1) / 2)
+        border = next(xx for xx in range(x1 + 1, idle.width()) if idle.pixel(xx, row) != idle.pixel(x1 + 1, row))
+        words_end = (b.x() + (b.width() + b.fontMetrics().horizontalAdvance(b.text())) / 2) * dpr
+        left, right = x0 - words_end, border - (x1 + 1)                     # its air: to the words, to the border
+        assert abs(left - right) <= 1.0, (dpr, left, right)
+        assert right >= 1                                                   # never on the border
+        qpress.end(p)
+    host.close()
+
+
+def test_the_arcs_room_is_no_more_than_the_arc_and_a_little_air(stage, handed):
+    # Sonic, round 2: "The one thing i dislike is the space it takes up." The room a button keeps at rest for its arc
+    # is the arc and about 2 px of air each side, never more — and never scaled with the text, as the arc isn't. Red
+    # first: 22 px × the text size each side (~6 px of air each side at the default size, ~8 at the largest).
+    from app.qt import style
+    b = stage.button
+    for scale_text in ("S", "M", "L"):
+        style.apply(QApplication.instance(), style.current()[0], scale_text)
+        stage.host.layout().activate()
+        QApplication.processEvents()
+        box = qpress.arc_box(b)
+        words_end = (b.width() + b.fontMetrics().horizontalAdvance(b.text())) / 2
+        assert box.width() == qpress.ARC
+        assert 1 <= box.left() - words_end <= 3.5, (scale_text, box.left() - words_end)       # to the words
+        assert 1 <= (b.width() - 1) - box.right() <= 3.5, (scale_text, (b.width() - 1) - box.right())  # to the border
+
+
+def test_a_press_changes_no_pixel_but_the_arcs_the_words_and_the_neighbour_stay_put(stage, handed):
+    # Nothing moves, to the pixel: pressed, only the arc's own box is drawn anew — the words, the button's left of
+    # them and *Leave them* beside it are the same pixels as at rest. (At 150 % too: a half pixel moved would show.)
+    b, leave = stage.button, stage.leave
+    QApplication.processEvents()
+    for dpr in (1.0, 1.5):
+        idle = _render(stage.host, dpr)
+        p = qpress.begin(b, f"needs:mark_known:still:{dpr}")
+        QApplication.processEvents()
+        on = _render(stage.host, dpr)
+        x0, x1, y0, y1 = _rows_cols(on, idle)
+        words_end = (b.x() + (b.width() + b.fontMetrics().horizontalAdvance(b.text())) / 2) * dpr
+        assert x0 > words_end and x1 < (b.x() + b.width() - 1) * dpr, (dpr, x0, x1, words_end)
+        assert x1 < leave.x() * dpr
+        qpress.end(p)
 
 
 def test_a_failure_takes_the_arc_off_and_keeps_the_reason(stage, handed):

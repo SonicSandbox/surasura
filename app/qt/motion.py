@@ -1352,9 +1352,10 @@ class Spinner(QWidget):
 
     DOT = 7
 
-    def __init__(self, kind="pulse", parent=None, size=None):
+    def __init__(self, kind="pulse", parent=None, size=None, period=None):
         super().__init__(parent)
         self.kind = kind
+        self.period = period or ("footer-pulse" if kind == "pulse" else "mining-spin")     # its `MOTION` token
         self.running = False
         self.phase = 0.0
         self._anim = None
@@ -1387,8 +1388,7 @@ class Spinner(QWidget):
             return
         if self._wanted():
             if not self.on_clock:
-                period = duration("footer-pulse" if self.kind == "pulse" else "mining-spin")
-                self._anim = clock().animate(period, self._on_frame, kind="loop", repeat=True, owner=self)
+                self._anim = clock().animate(duration(self.period), self._on_frame, kind="loop", repeat=True, owner=self)
         elif self._anim is not None:
             self._anim.stop()
             self._anim = None
@@ -1465,13 +1465,14 @@ def spin_arc(p, r, phase, colour):
 
 
 class Turn(Spinner):
-    """A spin's phase for a view that paints its own turning mark (round 8 row 45: a pressed pill in the rows): the
-    spinner's clock and rules — on the clock only while running, shown and its window not minimised; still under
-    Reduced motion and the freeze switch (`phase` None) — and nothing painted of its own. `on_frame()` after each frame
-    asks the view to repaint only what turns. A child of the view, 0 × 0, shown."""
+    """A spin's phase for a view that paints its own turning mark (round 8 row 45: a pressed pill in the rows, the known
+    count's glint): the spinner's clock and rules — on the clock only while running, shown
+    and its window not minimised; still under Reduced motion and the freeze switch (`phase` None) — and nothing painted
+    of its own. `on_frame()` after each frame asks the view to repaint only what turns. A child of the view, 0 × 0,
+    shown. `period`: a `MOTION` token (the spin's by default)."""
 
-    def __init__(self, parent, on_frame):
-        super().__init__("spin", parent)
+    def __init__(self, parent, on_frame, period=None):
+        super().__init__("spin", parent, period=period)
         self.setFixedSize(0, 0)
         self._told = on_frame
 

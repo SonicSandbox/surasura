@@ -7,9 +7,16 @@ arc … subtle but clean." So a pressed control keeps its colours and its words:
 
 **Nothing moves** (the round 8 trial; P1 widened the button as it was pressed, and its neighbour slid ~17 px): the arc
 takes no layout space. A button that will be pressed keeps the arc's room at rest (`room`: its padding, both sides, so
-its words stay centred — `theme.SIZES["press-room"]`), and the arc, a child of the button laid over it, turns centred
-in its right padding: the button keeps its size, its words stay where they are, no neighbour moves. A control with a
-place of its own for it says where (`press_arc()`: the known-words corner's slot at its left).
+its words stay centred — `theme.SIZES["press-room"]`, the arc and a little air, never scaled with the text), and the
+arc, a child of the button laid over it, turns in its right padding: the button keeps its size, its words stay where
+they are, no neighbour moves.
+
+**Centred** (Sonic, round 2: "it's not centered. It MUST be centered"): the arc's middle is the button's middle as the
+screen draws it — the box's edges land on whole device pixels (half up) while an antialiased arc lands anywhere, so a
+logical centre missed by half a device pixel at 150 % and 225 % — and midway between the words' end and the right
+border (`arc_box`, worked out where it is painted, at that paint's device ratio). The arc is the one look for a
+pressed button (round 2's set-in sheen was not taken). A control with a look of its own paints it instead
+(`press_look(on)`: the known count's underline filling).
 
 `run(control, key, fn, …)` does, in order: the press, the arc on the control, `control.repaint()` — which paints
 before it returns — and only then hands `fn` to the worker. Its answer ends the press (done, or failed with why) and
@@ -21,10 +28,12 @@ to the bar through the caller's `failed`. A control rebuilt while its press is l
 Left for P3: a worker's report of a wait or a step (`relay`), a registry job followed (`follow`), another program
 opened off the window's thread (`open`).
 """
+import math
 import sys
 
 from PyQt6 import sip
-from PyQt6.QtCore import QEvent, QObject, QRect
+from PyQt6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF
+from PyQt6.QtGui import QPainter, QTransform
 
 from app import theme
 from app.qt import bridge, motion, style
@@ -33,7 +42,8 @@ from app.services import press as service
 ARC = 14                        # px: the arc's side (the spinner's own)
 
 _loose = service.Presses()      # the presses of a control with no window
-_painted = {}                   # Press -> (control or None, the arc or None, which control: its "action" property)
+_painted = {}                   # Press -> (control or None, its mark or None: an _Arc or an _Own, which control: its
+#                                 "action" property)
 
 
 def room(control):
@@ -113,42 +123,99 @@ def adopt(control, key, win=None):
     got = _painted.get(p) if p is not None and p.live() else None
     if got is None or got[0] is None or got[2] != _which(control):
         return False
-    _unspin(got[1])
+    _unmark(got[1])
     _paint(p, control)
     return True
 
 
-def arc(control):
-    """The turning arc on `control` while its press is live, or None (tests, captures)."""
-    for c, spinner, _which_one in _painted.values():
-        if c is control and spinner is not None and not sip.isdeleted(spinner):
-            return spinner
+def mark(control):
+    """What shows `control`'s live press (its arc, or its own look), or None (tests, captures)."""
+    for c, got, _which_one in _painted.values():
+        if c is control and got is not None and not (isinstance(got, QObject) and sip.isdeleted(got)):
+            return got
     return None
 
 
+def arc(control):
+    """The turning arc on `control` while its press is live, or None (tests, captures)."""
+    got = mark(control)
+    return got if isinstance(got, _Arc) else None
+
+
 def arc_rect(control):
-    """Where the arc sits in `control`, taking no room of the layout's: the control's own place for it
-    (`press_arc()`), else centred in a button's right padding (`room`'s, × the text size; the border's 1 px outside)."""
-    own = getattr(control, "press_arc", None)
-    if own is not None:
-        return own()
-    pad = theme.size("press-room", style.current()[1])
-    x = round(control.width() - 1 - (pad + ARC) / 2)
-    return QRect(x, (control.height() - ARC) // 2, ARC, ARC)
+    """The arc's widget in `control`, taking no room of the layout's: around `arc_box` at the screen's own ratio, a
+    pixel spare each side (where the arc is snapped to is worked out again as it is painted)."""
+    box = arc_box(control)
+    left, top = math.floor(box.left()) - 1, math.floor(box.top()) - 1
+    return QRect(left, top, math.ceil(box.right()) + 1 - left, math.ceil(box.bottom()) + 1 - top)
+
+
+def arc_box(control, to_device=None):
+    """Where the arc is drawn in `control` (logical px, ARC square): its middle on the button's middle as the screen
+    draws it, and midway between the end of its words (centred in it) and its right border's inner edge (2 px while it
+    has focus, as a click gives it: the words never move, the arc keeps its middle).
+    `to_device` (a painter's `deviceTransform`, mapped from `control`'s top left; None: the screen's ratio at the
+    control's place in its window) says where the device's pixels fall — a box's edges land on whole ones, half up, so
+    the arc's middle is put on theirs, on a half pixel (an antialiased arc's ink is then even on both sides)."""
+    if to_device is None:
+        at, dpr = control.mapTo(control.window(), QPoint(0, 0)), control.devicePixelRatioF()
+        to_device = QTransform(dpr, 0, 0, dpr, at.x() * dpr, at.y() * dpr)
+    back, _ok = to_device.inverted()
+    w, h = control.width(), control.height()
+    top_left, bottom_right = to_device.map(QPointF(0, 0)), to_device.map(QPointF(w, h))
+    snap = lambda v: math.floor(v + 0.5)                     # noqa: E731 — an edge as it is drawn (half up)
+    cy = (snap(top_left.y()) + snap(bottom_right.y())) / 2
+    words = to_device.map(QPointF((w + control.fontMetrics().horizontalAdvance(control.text())) / 2, 0)).x()
+    line = 2 if control.hasFocus() else 1                   # the border: 1 px, 2 focused (a click focuses it)
+    border = to_device.map(QPointF(w - line, 0)).x()       # its inner edge (drawn antialiased: not snapped)
+    cx = math.floor((words + border) + 0.5) / 2              # midway, on a half pixel
+    centre = back.map(QPointF(cx, cy))
+    return QRectF(centre.x() - ARC / 2, centre.y() - ARC / 2, ARC, ARC)
+
+
+class _Arc(motion.Spinner):
+    """The spin's arc on a pressed button: the spinner's clock and rules, drawn in `arc_box` — worked out at each paint,
+    so it lands on the device's pixels as the button does wherever the button is and whatever the ratio."""
+
+    def __init__(self, control):
+        super().__init__("spin", control, size=ARC)
+        self.control = control
+
+    def paintEvent(self, _event):
+        if not self.running or sip.isdeleted(self.control):
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        box = arc_box(self.control, QTransform.fromTranslate(-self.x(), -self.y()) * p.deviceTransform())
+        motion.spin_arc(p, box.translated(-self.x(), -self.y()), self.phase if self.on_clock else None,
+                        style.qcolor(style.colours()["accent"]))
+        p.end()
 
 
 class _Follow(QObject):
-    """The arc kept on its place as its control is resized (a card's width follows the window)."""
+    """A mark kept on its place as its control is resized (a card's width follows the window)."""
 
-    def __init__(self, control, spinner):
-        super().__init__(spinner)
-        self.control, self.spinner = control, spinner
+    def __init__(self, control, widget, place):
+        super().__init__(widget)
+        self.control, self.widget, self.place = control, widget, place
         control.installEventFilter(self)
 
     def eventFilter(self, obj, event):
-        if obj is self.control and event.type() == QEvent.Type.Resize and not sip.isdeleted(self.spinner):
-            _place(self.spinner, arc_rect(self.control))
+        if obj is self.control and event.type() == QEvent.Type.Resize and not sip.isdeleted(self.widget):
+            self.place()
         return False
+
+
+class _Own:
+    """A control's own look for its press (`press_look(on)`: the known count's underline filling)."""
+
+    def __init__(self, control):
+        self.control = control
+        control.press_look(True)
+
+    def stop(self):
+        if not sip.isdeleted(self.control):
+            self.control.press_look(False)
 
 
 def _which(control):
@@ -156,11 +223,13 @@ def _which(control):
 
 
 def _paint(p, control):
-    r = arc_rect(control)
-    spinner = motion.Spinner("spin", control, size=r.width())
+    if hasattr(control, "press_look"):
+        _painted[p] = (control, _Own(control), _which(control))
+        return
+    spinner = _Arc(control)
     _painted[p] = (control, spinner, _which(control))
-    _place(spinner, r)                      # over the control's own room: no layout, nothing moves
-    _Follow(control, spinner)
+    _place(spinner, arc_rect(control))      # over the control's own room: no layout, nothing moves
+    _Follow(control, spinner, lambda: _place(spinner, arc_rect(control)))
     spinner.raise_()
     spinner.show()
     spinner.set_running(True)
@@ -171,11 +240,16 @@ def _place(spinner, r):
     spinner.move(r.topLeft())
 
 
-def _unspin(spinner):
-    if spinner is not None and not sip.isdeleted(spinner):
-        spinner.set_running(False)
-        spinner.hide()
-        spinner.deleteLater()
+def _unmark(got):
+    if got is None:
+        return
+    if isinstance(got, _Own):
+        got.stop()
+        return
+    if not sip.isdeleted(got):
+        got.set_running(False)
+        got.hide()
+        got.deleteLater()
 
 
 def _restore(p, win):
@@ -183,4 +257,4 @@ def _restore(p, win):
     if win is not None and not sip.isdeleted(win) and hasattr(win, "unsay"):
         win.unsay(p.key)
     if got is not None:
-        _unspin(got[1])
+        _unmark(got[1])

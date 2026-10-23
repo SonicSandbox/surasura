@@ -360,7 +360,8 @@ def font(name, text_size=DEFAULT_TEXT_SIZE):
 SIZES = {
     "row": 56, "episode-row": 36, "row-cover-w": 31, "row-cover-h": 44, "hero-cover-w": 88, "hero-cover-h": 126,
     "col-diff": 118, "col-stat": 150, "col-acts": 118, "button": 32, "button-sm": 26, "icon-button": 28,
-    "press-room": 22,                       # round 8 row 45: a pressed button's padding, both sides, its arc's room
+    "press-room": 18,                       # round 8 row 45: a pressed button's padding, both sides: its arc's room
+    #                                         (`press.ARC`, 14, and ~2 px of air each side; fixed, as the arc is)
     "status-pill": 24, "search-w": 230, "search-w-narrow": 172, "search-h": 32, "generate": 34, "footer": 39,
     "goal-strip": 46, "bucket": 58, "tray": 452, "search-results": 470, "side-panel": 360, "side-panel-narrow": 316,
     "side-rail": 330, "settings-nav": 228, "settings-card-max": 820, "settings-search-max": 520,
@@ -369,7 +370,7 @@ SIZES = {
     "wizard-steps": 244,
 }
 # the footer: 39 px + the 1 px line above it = the Windows taskbar's 40 px at 100 % (Windows' scale only; G2.3 C3)
-FIXED_SIZES = frozenset({"hero-cover-w", "hero-cover-h", "switch-w", "switch-h", "footer"})
+FIXED_SIZES = frozenset({"hero-cover-w", "hero-cover-h", "switch-w", "switch-h", "footer", "press-room"})
 ICON_PX = (13, 20)                       # icons are fixed sizes in this range
 WINDOW_MIN = (1000, 620)
 NARROW_BELOW = 1150
@@ -405,7 +406,9 @@ MOTION = MappingProxyType({
     "tray-pop": 160, "side-panel": 260, "side-panel-shift": 24, "sheet": 260, "buckets": 260, "buckets-rise": 40,
     "dialog-scrim": 160, "dialog-card": 180, "toast-rise": 260, "toast-rise-px": 12, "toast-shown": 6500,
     "toast-shown-anki": 12000, "row-flash": 1600, "switch-knob": 260, "chevron": 260, "hover": FAST,
-    "mining-spin": 1200, "footer-pulse": 1400, "generate-bar": 300, "tooltip-delay": 380, "tooltip-again": 60,
+    "mining-spin": 1200, "footer-pulse": 1400, "generate-bar": 300,
+    "press-glint": 2400,                 # round 8 row 45: the known count's glint running along its underline once
+    "tooltip-delay": 380, "tooltip-again": 60,
     "tooltip-again-within": 500, "fit-debounce": 80, "drag-start-px": 6, "click-swallow-after-drag": 50,
     "auto-scroll-px-per-frame": 12, "auto-scroll-edge": 50, "auto-scroll-dock": 48,
     "auto-scroll-tick": 16,              # ms between a drag's auto-scroll steps (the hand's, kept under Reduced motion)

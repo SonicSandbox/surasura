@@ -201,11 +201,12 @@ QPushButton[size="sm"] {{ min-height: {px(24)}; padding: 0 {px(10)}; border-radi
 QPushButton[size="sm"]:focus {{ padding: 0 {round(10 * f) - 1}px; }}
 """
     # --- round 8 row 45 (the trial): a button whose press turns an arc (`app/qt/press.py` `room`) keeps the arc's room
-    # at rest, both sides (its words centred): pressed, the arc turns in its right padding and nothing moves
-    room = theme.SIZES["press-room"]
+    # at rest, both sides (its words centred): pressed, the arc turns in its right padding and nothing moves. The room is
+    # the arc's (fixed, never scaled with the text: the arc isn't), never less than the button's own padding
+    room = max(round(theme.size("press-room", text_size)), round(10 * f))
     rules += f"""
-QPushButton[presses="true"] {{ padding: 0 {px(room)}; }}
-QPushButton[presses="true"]:focus {{ padding: 0 {round(room * f) - 1}px; }}
+QPushButton[presses="true"] {{ padding: 0 {room}px; }}
+QPushButton[presses="true"]:focus {{ padding: 0 {room - 1}px; }}
 """
     # --- W3.5: Generate's states, the update sheet's text, Needs you's update cards (looks to re-skin: duties.py)
     rules += f"""

@@ -555,12 +555,13 @@ def test_a_click_on_the_known_count_syncs_now_or_opens_the_anki_window(world, mo
         assert world.win.bar_line.full() not in strings.FOOT_KNOWN_REFUSED.values()
 
 
-def test_a_click_on_the_known_count_turns_its_arc_at_once_until_its_sync_ends_and_nothing_moves(world):
-    """Round 8 row 45 (the trial): the count is the bar's button that starts work — a click shows the press's accent arc
-    in the slot kept at the count's left, painted before the sync is asked for (no words, never greyed), and the arc
-    turns until that sync's job ends; a click meanwhile asks nothing; the count and its neighbour never move.
-    Red first: before the trial a click painted nothing until the sync's answer (no arc at the ask)."""
-    from app.qt import press as qpress
+def test_a_click_on_the_known_count_lights_its_hairline_at_once_fills_it_as_the_sync_goes_and_nothing_moves(world):
+    """Round 8 row 45, round 2 (Sonic: "the underline glow the surasura colors as it goes, so a bar that fills up until
+    it's done"): the count is the bar's button that starts work — a click lights its own hairline, painted before the
+    sync is asked for (no arc, no words, never greyed); the iris fills it to the sync job's share when the registry has
+    one, glints along it while none is known, and the milestone's share is back when that job ends; a click meanwhile
+    asks nothing; the count and its neighbour never move. Red first: the trial showed an arc in a slot at its left
+    (the count wider by that slot) and nothing on the hairline."""
     from tests.qt.test_press import Paints
     world.start()
     world.automation.push(sync=A.SYNCED, added=0, known=12345)
@@ -568,21 +569,19 @@ def test_a_click_on_the_known_count_turns_its_arc_at_once_until_its_sync_ends_an
     assert wait_until(lambda: not d.known.isHidden())
     QApplication.processEvents()
     rest = (d.known.geometry(), d.anki.geometry())
+    assert d.known.width() == d.known.sizeHint().width() or d.known.sizeHint().width() < 140    # no slot kept
     paints = Paints(d.known)
     asked = []
     automation = win.services.automation
     real = automation.sync_now
 
     def sync_now(then=None):
-        arc = qpress.arc(d.known)
-        asked.append((arc is not None and arc.isVisible() and arc.running, paints.n, arc and arc.geometry()))
+        asked.append((d.known.working, paints.n))
         real(then=then)
     automation.sync_now = sync_now
     QTest.mouseClick(d.known, Qt.MouseButton.LeftButton)
-    assert len(asked) == 1
-    shown, painted, at = asked[0]
-    assert shown and painted >= 1                                     # the arc, painted before the sync was asked for
-    assert at.left() == 0 and at.width() == d.known.ARC                 # in the slot kept at the count's left
+    assert asked == [(True, asked[0][1])] and asked[0][1] >= 1      # lit and painted before the sync was asked for
+    assert d.known.findChildren(QAbstractButton) == [] and d.known.isEnabled()
     assert (d.known.geometry(), d.anki.geometry()) == rest            # nothing moved
     then = world.automation.called("automation.sync_now")[0][1]
     job = world.registry.record("anki-sync", "Updating known words from Anki")      # the sync's own job runs
@@ -590,25 +589,28 @@ def test_a_click_on_the_known_count_turns_its_arc_at_once_until_its_sync_ends_an
     t.start()
     t.join()
     QTest.qWait(50)
-    assert qpress.arc(d.known) is not None                            # still turning while its job runs
+    assert d.known.working and d.known.work_share is None             # no share known: the glint along it
+    job.progress("Reading your decks", 3, 12)
+    assert wait_until(lambda: d.known.work_share == 25.0)             # the registry's share: the iris fills to it
     QTest.mouseClick(d.known, Qt.MouseButton.LeftButton)
     assert len(asked) == 1                                            # a click meanwhile asks nothing
     job.finish(ok=True)
-    assert wait_until(lambda: qpress.arc(d.known) is None)            # the sync ended: the arc goes
+    assert wait_until(lambda: not d.known.working)                    # the sync ended: the milestone's hairline again
     assert (d.known.geometry(), d.anki.geometry()) == rest
     QTest.mouseClick(d.known, Qt.MouseButton.LeftButton)              # and a click asks again, with a refusal at once
     assert len(asked) == 2
     t = threading.Thread(target=world.automation.called("automation.sync_now")[1][1], args=("update-staged",))
     t.start()
     t.join()
-    assert wait_until(lambda: qpress.arc(d.known) is None and
+    assert wait_until(lambda: not d.known.working and
                       win.bar_line.full() == strings.FOOT_KNOWN_REFUSED["update-staged"])
 
 
-def test_a_known_count_click_whose_sync_couldnt_be_asked_for_ends_its_arc_says_why_and_asks_again(world):
-    """Round 8 (A-2): a sync that raised as it was asked for never answered, so the count's arc turned and the hairline
-    ran all session, and every later click asked nothing. Every press reaches done or failed: "failed" ends the arc,
-    the bar says why, and the next click asks again. Red first: no line, the arc kept turning."""
+def test_a_known_count_click_whose_sync_couldnt_be_asked_for_ends_its_press_says_why_and_asks_again(world):
+    """Round 8 (A-2): a sync that raised as it was asked for never answered, so the count's press (its arc then, its lit
+    underline since round 2) showed and the hairline ran all session, and every later click asked nothing. Every press
+    reaches done or failed: "failed" ends it, the bar says why, and the next click asks again. Red first: no line, the
+    press kept showing."""
     from app.qt import press as qpress
     from app.services import press as press_service
     world.start()
@@ -617,11 +619,11 @@ def test_a_known_count_click_whose_sync_couldnt_be_asked_for_ends_its_arc_says_w
     assert wait_until(lambda: not d.known.isHidden())
     QTest.mouseClick(d.known, Qt.MouseButton.LeftButton)
     calls = world.automation.called("automation.sync_now")
-    assert len(calls) == 1 and qpress.arc(d.known) is not None
+    assert len(calls) == 1 and qpress.mark(d.known) is not None and d.known.working
     t = threading.Thread(target=calls[0][1], args=("failed",))         # the automation's worker: it couldn't ask
     t.start()
     t.join()
-    assert wait_until(lambda: qpress.arc(d.known) is None and
+    assert wait_until(lambda: qpress.mark(d.known) is None and not d.known.working and
                       win.bar_line.full() == strings.FOOT_KNOWN_REFUSED["failed"])
     assert win.presses.find("known:sync").state == press_service.FAILED and not win.presses.any_live()
     QTest.mouseClick(d.known, Qt.MouseButton.LeftButton)

@@ -1665,7 +1665,7 @@ class ShellWindow(QMainWindow):
         self.known = frame.KnownCorner(footer)
         self.known.clicked.connect(self._known_clicked)    # Q30: a click syncs now
         self._known_relay = None
-        self._known_press, self._known_answered = None, False     # round 8 row 45: the click's arc, until its sync ends
+        self._known_press, self._known_answered = None, False     # round 8 row 45: the click's press, until its sync ends
         row.addWidget(self.known)
         self._logs_folder = None
         self.status_paints = {}             # row 7's statuses (the bar's lines, the journey dot) -> repaints (S19)
@@ -2290,11 +2290,11 @@ class ShellWindow(QMainWindow):
         """Q30: a click on the known-words count syncs now, through the automation's one sync path (`sync_now`: the
         automatic sync's own job, forced, and with the automatic sync off too — the user asked; it ends as every sync
         does). A click while one runs adds nothing. With no decks chosen yet, or the first sync not made (always the
-        user's own, in the Anki window), the Anki window opens instead. Round 8 row 45 (the trial): the press's arc
-        turns in the count's slot from the frame of the click, before the sync is asked for, until that sync (or the
-        one already running) ends or the answer says why not; a click meanwhile asks nothing. Every ask is answered
-        (A-2: a sync that couldn't be asked for says "failed", a closed automation "closed"), so the press always ends.
-        Its job is followed by hand (`_known_followed`) until P3's `press.follow`."""
+        user's own, in the Anki window), the Anki window opens instead. Round 8 row 45: the press shows on the count's
+        hairline from the frame of the click (`KnownCorner.press_look`), before the sync is asked for, until that sync
+        (or the one already running) ends or the answer says why not; a click meanwhile asks nothing. Every ask is
+        answered (A-2: a sync that couldn't be asked for says "failed", a closed automation "closed"), so the press
+        always ends. Its job is followed by hand (`_known_followed`) until P3's `press.follow`."""
         automation = self.services.automation
         if automation is None:
             return
@@ -2310,7 +2310,7 @@ class ShellWindow(QMainWindow):
     def _known_answer(self, why):
         """The click's answer (AutoSync's own): no decks or no first sync opens the Anki window; a refusal is said in
         the bar (AD-6: an update staged, a sync already running), never nothing. A sync started, or one already
-        running: the arc turns on until its job ends (`_known_followed`)."""
+        running: its hairline shows it until its job ends (`_known_followed`)."""
         self._known_answered = True
         if why not in (None, "running"):
             self._known_followed(ended=True, failed=why == "failed")
@@ -2877,8 +2877,12 @@ class ShellWindow(QMainWindow):
         # Q30: the count's hover says a sync is running — the automatic one, a click's or the Anki window's
         known = getattr(self, "known", None)
         if known is not None:
-            known.set_syncing(any(v.kind == "anki-sync" and v.state in jobs_module.LIVE for v in views))
-            self._known_followed()                          # round 8 row 45: the click's arc, until its sync ends
+            sync = next((v for v in views if v.kind == "anki-sync" and v.state in jobs_module.LIVE), None)
+            known.set_syncing(sync is not None)
+            got = getattr(sync, "progress", None)           # round 8 row 45: the click's hairline fills as it goes
+            if got is not None and got.total:
+                known.set_work_share(100.0 * (got.done or 0) / got.total)
+            self._known_followed()                          # ... until its sync ends
         if self._quit == "waiting" and self._replan_waited and getattr(self, "_moves_waited", True) and \
                 not jobs_module.waits_at_quit(views):
             self._close_now()

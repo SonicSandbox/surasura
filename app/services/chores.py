@@ -333,9 +333,11 @@ class Chores:
         return again
 
     def _cancel_indexer(self, job):
-        """The registry's cancel (a quit, or a cancel before it started): the child stopped; nothing left busy."""
+        """The registry's cancel (a quit, or a cancel before it started): the child stopped; nothing left busy, and no
+        follow-up run (a forced ask remembered before the cancel goes with it)."""
         with self._lock:
             proc = self._proc
+            self._again = False
             if job.state == jobs_module.DONE:
                 self._indexing = False      # ended before it started: its thread never runs
         if proc is not None and proc.poll() is None:

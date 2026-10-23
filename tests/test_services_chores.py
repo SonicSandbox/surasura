@@ -281,6 +281,40 @@ def test_a_cancel_before_it_starts_leaves_nothing_busy(indexing_on):
     chores.close()
 
 
+def test_a_cancelled_indexer_takes_its_follow_up_with_it(indexing_on):
+    """A forced ask while the indexer runs is remembered for one more run — but *Stop it* on that indexer stops the
+    indexing: no run starts again at its end."""
+    chores, registry, popen = _make()
+    assert chores.index(force=True) is None
+    assert h.until(lambda: len(popen) == 1 and chores._proc is not None, seconds=5)
+    assert chores.index(force=True) == "busy"                   # remembered for its end
+    job = [j for j in registry._jobs if j.kind == "indexer"][0]
+    job.cancel()
+    assert popen[0].terminated
+    assert h.until(lambda: not registry.live("indexer") and not chores._indexing, seconds=5)
+    assert not h.until(lambda: len(popen) > 1, seconds=1), "the stopped indexer never restarts"
+    chores.close()
+
+
+def test_a_cancel_before_it_starts_leaves_no_follow_up_for_a_later_run(indexing_on):
+    """Cancelled while it waits for a Generate, with a forced ask remembered meanwhile: that ask went with it. A later
+    indexer, asked on its own, runs once — never one extra run at its end."""
+    chores, registry, popen = _make()
+    generate = registry.submit("generate", "Generating", start=lambda job: None)
+    chores.index(force=True)
+    assert h.until(lambda: registry.live("indexer"), seconds=5) and chores.worker.idle(5)
+    assert chores.index(force=True) == "busy"
+    [j for j in registry._jobs if j.kind == "indexer"][0].cancel()
+    generate.finish(ok=True)
+    assert chores.worker.idle(5) and popen == []
+    assert chores.index(force=True) is None                      # a later, unrelated run
+    assert h.until(lambda: len(popen) == 1, seconds=5)
+    popen[0].end(0)
+    assert h.until(lambda: not registry.live("indexer") and not chores._indexing, seconds=5)
+    assert not h.until(lambda: len(popen) > 1, seconds=1), "no extra run left over from the cancelled one"
+    chores.close()
+
+
 def test_index_needed_reads_the_real_library(indexing_on, monkeypatch):
     """The ported `_index_needed` over the suite's Japanese files: a library never indexed needs the indexer; a check
     that fails answers False (the next trigger asks again)."""

@@ -2679,6 +2679,10 @@ def test_LM11b_every_write_landed_asks_the_reader_for_the_stores_own_view_again(
     assert wait_until(lambda: asked and win.moves.expect is None, 5)
 
 
+LANDING_ARGS = {"on_saved": (None, None), "on_undone": (None, None), "on_saving": (False,), "on_reread": (),
+                "on_note": ("Saved",)}                  # each writer callback as `moves.Writer` calls it
+
+
 def test_round8_a_write_landing_after_the_window_closed_and_was_deleted_tells_no_one_and_never_a_deleted_relay(qapp):
     """Round 8's native crash (`--all` at 46e9dc1, in test_finished): the window's close never let the writer's callbacks
     go, so a write landing after the window was deleted (the quit's last moves, on the writer's thread) emitted on a
@@ -2701,7 +2705,7 @@ def test_round8_a_write_landing_after_the_window_closed_and_was_deleted_tells_no
     def land():                                                     # the writer's own thread, as `_landed` calls them
         for name in drag.WRITER_CALLBACKS:
             try:
-                getattr(writer, name)(*((False,) if name == "on_saving" else (None, None)))
+                getattr(writer, name)(*LANDING_ARGS[name])
                 told.append(name)
             except Exception as e:
                 errors.append((name, e))
@@ -2716,4 +2720,39 @@ def test_round8_a_write_landing_after_the_window_closed_and_was_deleted_tells_no
     assert errors == [] and len(told) == len(drag.WRITER_CALLBACKS)
     assert all(getattr(writer, name) is drag._no_callback for name in drag.WRITER_CALLBACKS)
     assert reader._gone_subscribers == []                            # the reader tells it no more
+    services.shutdown(0.5)
+
+
+def test_round8_a_write_landing_after_the_window_was_deleted_without_its_close_reaches_a_live_relay(qapp):
+    """The same crash by the other road (12 runs of test_finished under load, 2 crashed after the close fix): a close
+    the quit's wait ignored (E20: a move still pending) never reached `unwire`, then the window was deleted and the
+    writer's thread — still retrying that move — emitted on the relay deleted with it. The relay is the application's
+    from the start: a landing after the window is gone emits on a live relay whose queued connections went with the
+    controller, and tells no one. Red first: the deleted relay (RuntimeError here; an access violation under load)."""
+    from PyQt6.QtCore import QCoreApplication
+    seed = window_seed.build()
+    writer = FakeWriter(seed.library)
+    win, services = open_window(qapp, seed, writer)
+    win.hide()                                                      # no close: the controller never let go
+    win.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
+    QApplication.processEvents()
+    errors = []
+
+    def land():
+        for name in drag.WRITER_CALLBACKS:
+            try:
+                getattr(writer, name)(*LANDING_ARGS[name])
+            except Exception as e:
+                errors.append((name, e))
+        try:
+            for cb in list(services.library._gone_subscribers):
+                cb(["gone-item"])
+        except Exception as e:
+            errors.append(("gone", e))
+    t = threading.Thread(target=land)
+    t.start()
+    t.join(5)
+    QApplication.processEvents()
+    assert errors == []
     services.shutdown(0.5)

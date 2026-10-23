@@ -781,7 +781,9 @@ class DragController(QObject):
         self._swallow_until = 0.0
         self._filtering = False
         self.drops = 0                               # drops handed to the writer (tests)
-        self.relay = _Relay(self)
+        self.relay = _Relay(QApplication.instance())  # the application's, never the window's: a write landing after the
+        #   window is gone (a close the quit's wait put off, then the window deleted) emits on a live relay, and its
+        #   queued connections went with this controller — it tells no one (round 8's crash)
         q = Qt.ConnectionType.QueuedConnection
         self.relay.saved.connect(self._saved, q)
         self.relay.undone.connect(self._undone, q)
@@ -1879,15 +1881,14 @@ class DragController(QObject):
     def unwire(self):
         """The writer's callbacks and the reader's `subscribe_gone` let go — a language switch and the window's close,
         before any widget of this controller's can be deleted: a write landing later (the quit's last moves, on the
-        writer's thread) tells no one, and one telling right now reaches the relay, kept by the application from here
-        (never a deleted one: round 8's crash, the writer emitting on a relay deleted with the window)."""
+        writer's thread) tells no one; one telling right now reaches the relay, the application's (never a deleted
+        one: round 8's crash)."""
         for name in WRITER_CALLBACKS:
             setattr(self.writer, name, _no_callback)
         unsubscribe = getattr(self.reader, "unsubscribe_gone", None)
         if unsubscribe is not None and self._gone_told is not None:
             unsubscribe(self._gone_told)
         self._gone_told = None
-        self.relay.setParent(QApplication.instance())
 
     def close(self):
         """The window closes (or a language switch lets this controller go): a drag running is let go, and the settle

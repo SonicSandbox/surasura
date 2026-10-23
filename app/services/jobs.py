@@ -90,6 +90,41 @@ def waits_at_quit(jobs):
     return tuple(j for j in jobs if j.on_quit == "wait" and j.state in (RUNNING, CANCELLING))
 
 
+# --- row 35: what goes on after the window closes, and *Stop and quit* -------------------------------------------- #
+# What outlives the window, by kind — never by "a detach job with a pid" (a Content Manager opened from the setup
+# wizard is one, mid-import). STOPPABLE_AT_QUIT: the kinds *Stop and quit* may cancel (their owner ends its own child
+# through the handle it holds: never a pid, never a tree, never a process looked up by name) — the library's upkeep
+# alone; nothing else, ever, by default. CONNECT_KIND: Connect's mining as the window lists it
+# (`status.CONNECT_JOB_KIND`): named, never stopped from here — Connect has no stop request a window can send (it
+# stops only at a step boundary, for an update staged or Connect switched off), and a card batch is Anki's to finish
+# (a decision, row 35's review R35-7: the sheet says Connect finishes by itself).
+STOPPABLE_AT_QUIT = ("library-maintain",)
+CONNECT_KIND = "mine"
+
+
+def detached_at_quit(jobs):
+    """Of `jobs` (views or Jobs), those that outlive the window: a `detach` job under way of a kind *Stop and quit* may
+    stop (`STOPPABLE_AT_QUIT`: the library's upkeep — it keeps the program's folder busy) or Connect making cards
+    (`CONNECT_KIND`). A sync or the backlog read runs on the window's own threads and ends with it; one not started
+    yet starts nothing once the window is gone; the update is cancelled by the quit itself. The one rule, for the
+    close's sheet. -> a tuple."""
+    return tuple(j for j in jobs if j.on_quit == "detach" and j.state in (RUNNING, CANCELLING)
+                 and (j.kind in STOPPABLE_AT_QUIT or j.kind == CONNECT_KIND))
+
+
+def stop_at_quit(registry):
+    """*Stop and quit*: each live `detach` job of a `STOPPABLE_AT_QUIT` kind is cancelled — read from the registry now,
+    never from a window's older view — so its owner ends its own child through the handle it holds. Connect never.
+    Returns at once (a cancel callback must). -> the ids asked to stop."""
+    asked = []
+    for view in registry.live():
+        if view.kind in STOPPABLE_AT_QUIT and view.kind != CONNECT_KIND and view.on_quit == "detach" \
+                and view.state == RUNNING and registry.cancel(view.id):
+            asked.append(view.id)
+    return tuple(asked)
+# --- end row 35
+
+
 def generating(jobs):
     """Whether a Generate is waiting or under way among `jobs` (views or Jobs): the quit cancels one that can still stop
     and nothing starts it again — so a restart is offered only without one (laptop fixes B2-3, *Text size*)."""

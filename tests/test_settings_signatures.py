@@ -502,6 +502,18 @@ def _dashboard_saved():
     return saved
 
 
+def test_W1_the_dashboards_save_keeps_the_hints_seen_and_never_writes_them_when_there_are_none():
+    """W-1: `hints_seen` (the window's one-time hints, each per library) isn't the dashboard's key. Its save writes only
+    its own keys onto the file as it is (`app/main.py` `save_settings`: `changes` from its widgets alone), so a hint
+    seen in the window survives it — never set back to unseen, which would show the first mark's toast again — and a
+    file without any gets none written."""
+    _write({"target_language": "ja"})
+    assert "hints_seen" not in _dashboard_saved()
+    seen = ["keep_watched:standin-0001", "keep_watched:a-fresh-library"]
+    _write({"target_language": "ja", "hints_seen": seen})
+    assert _dashboard_saved()["hints_seen"] == seen
+
+
 VALUE_DICTS = {"bands_ppm", "anki_sync_decks", "anki_sync_fields", "junban_word_fields", "junban_backfill_fields",
                "junban_backfill_note_languages", "placing_rules"}
 

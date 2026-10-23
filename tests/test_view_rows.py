@@ -269,6 +269,29 @@ def test_W1_the_top_line_skips_a_watched_file_while_the_library_keeps_none_by_th
     assert top and top[0].after == 1 and view.keep_watched            # 12 + 8: the line after row 2
 
 
+def test_W1_the_first_screens_cache_keeps_the_librarys_option_and_an_older_cache_reads_off():
+    """Review W-3: the cached first screen is shown before the store is read — it carries *Keep studying watched
+    episodes*, or a library with it on would show the stones' and the mark's words for it off (and spend its hint)."""
+    items = items_of([("now", 1, 1, eps("星降る街の小さな工房", 1, 3), {})])
+    for keep in (0, 1):
+        view = vr.build(items, WORKS, {"mine_line": 20, "keep_watched": keep})
+        assert vr.from_cache(vr.to_cache(view)).keep_watched is bool(keep)
+    older = vr.to_cache(vr.build(items, WORKS, {"keep_watched": 1}))
+    older.pop("keep_watched")
+    assert vr.from_cache(older).keep_watched is False
+
+
+def test_W1_a_mark_moves_the_list_only_where_the_stores_rule_says():
+    """Review W-6: one rule (`library_store.counts`) for the stone's line, the mark's words and its hint — a studied
+    tier's episode while the option is off; never with it on, never in Finished or New arrivals, never a video waiting
+    for its subtitle."""
+    ep = vr.build(items_of([("now", 1, 1, eps("雲の上の郵便屋さん", 1, 2), {})]), WORKS, {}).rows[0].episodes[0]
+    assert [t for t in ("now", "soon", "goal", "graduated", "arrivals") if vr.mark_moves_list(t, ep, False)] == [
+        "now", "soon", "goal"]
+    assert not any(vr.mark_moves_list(t, ep, True) for t in ("now", "soon", "goal"))
+    assert not vr.mark_moves_list("now", ep._replace(waiting=True), False)
+
+
 def test_no_top_line_when_current_has_fewer_files_than_the_line():
     items = items_of([("now", 1, 1, eps("星降る街の小さな工房", 1, 5), {})])
     assert not [ln for ln in vr.build(items, WORKS, {"mine_line": 20}).lines if ln.kind == "top"]

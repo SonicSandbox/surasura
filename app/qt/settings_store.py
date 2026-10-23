@@ -160,9 +160,33 @@ class StoreRows(QObject):
         self.again = sc.Door(S.SET_UP_AGAIN_OPEN, tooltip=row.tip, name=row.label)
         self.again.clicked.connect(lambda _c=False: self.set_up_again())
         page.custom_row("set_up_again").layout().addWidget(self.again)
+        self._heard = None
+        self._hear()
+        switched = getattr(self.shell, "library_switched", None)
+        if switched is not None:                            # W-1 (review W-1): a language switch's new bridge
+            switched.connect(self._switched)
+        self.follow()
+
+    def _hear(self):
+        """One rule for the three store fields: follow the views of the library the window shows now (its bridge — a
+        language switch makes another; the old one goes silent)."""
         heard = getattr(self.shell, "library_bridge", None)
+        if heard is self._heard:
+            return
+        old, self._heard = self._heard, heard
+        if old is not None:
+            try:
+                old.library_changed.disconnect(self.follow)
+            except (TypeError, RuntimeError):               # already gone (deleteLater) or never connected
+                pass
         if heard is not None:
             heard.library_changed.connect(self.follow)
+
+    def _switched(self):
+        """Another language's library shown: its bridge heard, its values shown now (a press of the language left is
+        never held over the new one's value)."""
+        self._keep_asked = None
+        self._hear()
         self.follow()
 
     def alive(self):
@@ -241,13 +265,19 @@ class StoreRows(QObject):
         if seq is not None:
             self._keep_asked = bool(on)
             return
-        reason = ""
+        self._say_refused(writer)
+        self.keep.set_value(not on)
+
+    def _say_refused(self, writer):
+        """A refused write's line in the bar: the store's reason in the words the greyed tips and the menus use
+        (`READ_ONLY_REASONS`), or that there is no library."""
+        raw = ""
         try:
-            reason = writer.reason() if writer is not None else ""
+            raw = (writer.reason() if writer is not None else "") or ""
         except Exception:
             pass
-        windows.say_in_bar(self.shell, S.STORE_NOT_SAVED.format(reason=reason or S.STORE_NO_LIBRARY_TIP))
-        self.keep.set_value(not on)
+        reason = (strings.READ_ONLY_REASONS.get(raw) or raw) if raw else S.STORE_NO_LIBRARY_TIP
+        windows.say_in_bar(self.shell, S.STORE_NOT_SAVED.format(reason=reason))
 
     def _changed(self, row_id, n):
         """A typed value (on Enter, leaving the field, a step: never while typing) -> the writer's queue."""
@@ -259,12 +289,7 @@ class StoreRows(QObject):
             except (ValueError, TypeError) as e:
                 applog.log("settings", f"{row_id}: {e}")
         if seq is None:                                   # refused (read-only, no library): the library's value back
-            reason = ""
-            try:
-                reason = writer.reason() if writer is not None else ""
-            except Exception:
-                pass
-            windows.say_in_bar(self.shell, S.STORE_NOT_SAVED.format(reason=reason or S.STORE_NO_LIBRARY_TIP))
+            self._say_refused(writer)
             reader = self._reader()
             if reader is not None:
                 self.fields[row_id].set_value(shown(reader.options(), reader.view(), row_id))

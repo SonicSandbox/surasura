@@ -2035,10 +2035,72 @@ def test_W1_the_hint_seen_in_one_library_is_never_shown_there_again_but_another_
     win.moves.done(row, row.episodes[0])
     assert win.toasts.card.message == strings.DONE_NEXT.format(title=row.title, ep=row.episodes[0].label,
                                                                 next=row.episodes[1].label)
-    win.services.library._store_id = "a-fresh-library"                # another library: its own once
-    win.moves.done(row, row.episodes[2])
-    assert win.toasts.card.message == strings.DONE_LEFT.format(ep=row.episodes[2].label)
+    # *Start a fresh library* (review W-5): a new store id at a new epoch — the reader follows it, its own once
+    seed.library.commit(meta={"store_id": "a-fresh-library"}, new_epoch=True)
+    assert wait_until(lambda: win.services.library.store_id() == "a-fresh-library", 3)
+    row = rows_of(win)[4]
+    ep = next(e for e in row.episodes if not e.watched)
+    win.moves.done(row, ep)
+    assert win.toasts.card.message == strings.DONE_LEFT.format(ep=ep.label)
     assert list(win.services.settings.get()["hints_seen"])[-1] == "keep_watched:a-fresh-library"
+
+
+@pytest.mark.parametrize("odd", [1, True, "keep_watched:standin-0001", {"x": 1}])
+def test_W1_a_hand_edited_hints_seen_never_blocks_a_mark_and_is_written_back_clean(world, odd):
+    """Review W-2: settings.json's `hints_seen` as a number, true, a text or a dict reads as none seen — the mark is
+    written, the hint shown, and the value replaced by a clean list (never a text split into characters)."""
+    seed, win, writer = world(hint_seen=False)
+    win.services.settings.set({"hints_seen": odd})
+    row = rows_of(win)[4]
+    ep = row.episodes[0]
+    win.moves.done(row, ep)
+    assert calls(writer, "set_watched") == [("set_watched", [ep.id], {"on": True})]
+    assert win.toasts.card.message == strings.DONE_LEFT.format(ep=ep.label)
+    assert list(win.services.settings.get()["hints_seen"]) == [hint_of(seed)]
+
+
+def test_W1_before_the_library_is_known_no_hint_is_shown_or_spent(world, monkeypatch):
+    """Review W-3: until a read has found the library's id (the cached first screen), the hint waits — never keyed by
+    the language, so it is never shown twice in one library."""
+    _seed, win, writer = world(hint_seen=False)
+    monkeypatch.setattr(win.services.library, "store_id", lambda: None)
+    row = rows_of(win)[4]
+    win.moves.done(row, row.episodes[0])
+    assert calls(writer, "set_watched")
+    assert win.toasts.card.message == strings.DONE_NEXT.format(title=row.title, ep=row.episodes[0].label,
+                                                                next=row.episodes[1].label)
+    assert not win.services.settings.get().get("hints_seen")
+
+
+def test_W1_a_video_waiting_for_its_subtitle_says_nothing_left_or_came_back_and_spends_no_hint(world):
+    """Review W-6: a video still waiting for its subtitle is in no list, watched or not (`Store.schedule`): its mark
+    and its un-mark say today's words and the once-per-library hint is kept for a mark that moves the list."""
+    _seed, win, writer = world(hint_seen=False)
+    row = rows_of(win)[4]
+    ep = row.episodes[0]._replace(waiting=True)
+    win.moves.done(row, ep)
+    assert calls(writer, "set_watched")[-1] == ("set_watched", [ep.id], {"on": True})
+    assert win.toasts.card.message == strings.DONE_NEXT.format(title=row.title, ep=ep.label,
+                                                                next=row.episodes[1].label)
+    assert not win.services.settings.get().get("hints_seen")
+    win.moves.done(row, ep._replace(watched=True))
+    assert win.toasts.card.message == strings.DONE_UNDONE.format(title=row.title, ep=ep.label)
+
+
+def test_W1_keep_studying_them_reaches_the_rows_place_in_settings(world):
+    """Review W-8: no stand-in — the toast's button shows Settings with *Keep studying watched episodes* found
+    (`SettingsPage.reveal` on the store's custom row) and in view."""
+    _seed, win, _writer = world(hint_seen=False)
+    row = rows_of(win)[4]
+    win.moves.done(row, row.episodes[0])
+    keep = next(b for b in win.toasts.card.buttons if b.text() == strings.DONE_KEEP)
+    keep.click()
+    assert win.current_tab() == "settings"
+    page = win.settings_page
+    assert wait_until(lambda: page.built and page.row("keep_watched") is not None, 20)
+    assert win.open_setting("keep_watched") is True
+    view = page.row("keep_watched")
+    assert wait_until(lambda: view.isVisible() and view.visibleRegion().boundingRect().height() > 0, 5)
 
 
 def test_W1_keep_studying_them_opens_the_setting_row(world, monkeypatch):

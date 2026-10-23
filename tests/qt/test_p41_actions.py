@@ -757,23 +757,39 @@ def test_row28_a_read_only_store_greys_the_episodes_mine_now_with_its_reason_aft
     assert win.items.episode_entries(row, ep)[0].tip == reason, "as Mark watched"
 
 
-def test_W1_a_watched_episodes_mine_now_is_greyed_while_the_library_keeps_no_watched_episode(act):
-    """W-1: a watched episode's words left the list while *Keep studying watched episodes* is off — its ⋯ *Mine now* is
-    there but greyed, its tip saying there is nothing to mine and how to bring it back; picked anyway, nothing is asked.
-    With the option on (another window's write, read by the reader) it is offered as the pill offers it."""
-    seed, win, writer = act()
+def test_W1_a_hand_ask_still_mines_an_episode_marked_watched_while_the_option_is_off(act):
+    """W-1 (the lead's ruling from Sonic's LF4-1, "Your own Mine this / Mine now on it still makes its cards"): a watched
+    episode leaves the list, but a hand ask always mines it. Marked through the real path (its Done → the writer's
+    `set_watched` → the store, read back by the reader), its pill, its ⋯ and its row's button stay as they were: one
+    rule (`rows.action_of`), nothing greyed."""
+    _seed, win, writer = act()
     lst = lst_of(win)
-    row, ep = _waiting_episode(lst)
-    watched = ep._replace(watched=True)
-    entry = _mine_now(win.items.episode_entries(row, watched))
-    assert [(e.label, e.tip, e.ok) for e in entry] == [(strings.ROWS_ACTION_NAMES["mine-now"],
-                                                         strings.MINE_NOW_WATCHED_TIP, False)]
-    assert _mine_now(win.items.episode_entries(row, ep))[0].ok, "not watched: offered as before"
-    win.items.episode_pick(row, watched, entry[0].name, entry[0].payload)
-    assert asks(writer) == []
-    seed.library.commit(meta={"keep_watched": 1})
-    assert wait_until(lambda: win.page_widgets["current"].view_model.keep_watched, 3)
-    assert _mine_now(win.items.episode_entries(row, watched))[0].ok
+    # a grey *Waiting* episode whose row's own button asks for it too (the pill, the ⋯ and the row, all three)
+    row, ep = next((r, e) for kind, r, _l in lst.model().entries if kind in (rows.HERO, rows.ROW)
+                   for e in r.episodes if e.status is not None and e.status.kind == "waiting" and e.status.tone != "warn"
+                   and (rows.action_of(r.status, r.episodes, None, r.media_word)[2] or rows.Ask(0, (), None)).ids
+                   and e.id in rows.action_of(r.status, r.episodes, None, r.media_word)[2].ids)
+    before = rows.action_of(ep.status, (ep,), None, ep.media_word or row.media_word)
+    assert before[0] == "mine-now"
+    row_before = rows.action_of(row.status, row.episodes, None, row.media_word)
+    writer.apply = True                                       # the stand-in store takes this write
+    win.moves.done(row, ep)
+    assert writer.calls[-1][:2] == ("set_watched", [ep.id])
+
+    def now():
+        for r in win.page_widgets["current"].view_model.rows:
+            for e in r.episodes:
+                if e.id == ep.id:
+                    return r, e
+    assert wait_until(lambda: now()[1].watched, 3)
+    assert not win.page_widgets["current"].view_model.keep_watched
+    row2, ep2 = now()
+    pill = rows.action_of(ep2.status, (ep2,), None, ep2.media_word or row2.media_word)
+    assert pill[:2] == before[:2] and list(pill[2].ids) == [ep.id]          # the pill: Mine now, as before the mark
+    entry = _mine_now(win.items.episode_entries(row2, ep2))
+    assert [(e.tip, e.ok) for e in entry] == [(pill[1], True)]              # the ⋯: live, the pill's own words
+    name, _tip, ask = rows.action_of(row2.status, row2.episodes, None, row2.media_word)
+    assert name == row_before[0] and ep.id in ask.ids                      # the row's button: still asks for it
 
 
 def test_row28_while_connect_is_off_mine_now_is_offered_saying_why_and_asks_nothing(act):

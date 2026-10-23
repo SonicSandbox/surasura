@@ -370,8 +370,8 @@ class LibraryReader:
         self._data_version = dv
         self._numbers_version = version
         self._moved(h)
-        if self._store_id is None and hasattr(h, "meta"):
-            self._store_id = h.meta().get("store_id")
+        if (self._store_id is None or feed["full"]) and hasattr(h, "meta"):
+            self._store_id = h.meta().get("store_id")      # W-1 (W-5): a fresh library has an id of its own
         if held:                                        # E6: merged, never built or shown under the hand; a quiet
             if changed:                                 # look later in the drag never forgets what came in (AD-1)
                 self._held_dirty = True

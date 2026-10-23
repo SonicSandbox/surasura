@@ -65,6 +65,10 @@ class Heard(QObject):
     library_changed = pyqtSignal(object)
 
 
+class Switched(QObject):
+    library_switched = pyqtSignal()               # the shell's: another language's library shown (its own bridge)
+
+
 class Bar:
     def __init__(self):
         self.lines = []
@@ -77,7 +81,9 @@ def make(options=None, reader=True, writer=None, data=None, view=None):
     store = Recorder(dict({"target_language": "ja"}, **(data if data is not None else ALL_ON)))
     services = SimpleNamespace(settings=store, library=Reader(options, view) if reader else None,
                                writer=writer if writer is not None else (Writer() if reader else None))
-    shell = SimpleNamespace(services=services, bar_line=Bar(), library_bridge=Heard())
+    switcher = Switched()
+    shell = SimpleNamespace(services=services, bar_line=Bar(), library_bridge=Heard(), switcher=switcher,
+                            library_switched=switcher.library_switched)
     page = sp.SettingsPage(shell, "ja", found=EVERYTHING)
     rows = store_rows.attach(page)
     page.resize(1100, 700)
@@ -132,7 +138,8 @@ def test_a_refused_line_goes_back_to_the_librarys_value_and_the_bar_says_why(qap
         change(rows.fields["soon_line"], 3)
         assert writer.calls == [{"soon_line": 3}]
         assert rows.fields["soon_line"].value() == 25
-        assert shell.bar_line.lines == [S.STORE_NOT_SAVED.format(reason="damaged")]
+        # review W-9: the store's reason in the words the greyed tips use
+        assert shell.bar_line.lines == [S.STORE_NOT_SAVED.format(reason=strings.READ_ONLY_REASONS["damaged"])]
     finally:
         _close(page)
 
@@ -382,7 +389,34 @@ def test_W1_a_refused_press_flips_back_and_the_bar_says_why(qapp):
         QTest.mouseClick(rows.keep, Qt.MouseButton.LeftButton)
         assert writer.calls == [{"keep_watched": True}]
         assert rows.keep.value() is False
-        assert shell.bar_line.lines == [S.STORE_NOT_SAVED.format(reason="damaged")]
+        assert shell.bar_line.lines == [S.STORE_NOT_SAVED.format(reason=strings.READ_ONLY_REASONS["damaged"])]
+    finally:
+        _close(page)
+
+
+def test_W1_after_a_language_switch_all_three_fields_follow_the_new_library_and_its_bridge(qapp):
+    """Review W-1: a language switch makes a new bridge (the old one goes silent) and new services. The store rows
+    follow the library shown now — the toggle and the two lines alike — and a press writes the new library from its
+    own value."""
+    writer = Writer()
+    page, rows, shell, _store = make(dict(LINES), writer=writer)
+    try:
+        zh = Reader(dict(LINES, soon_line=7, mine_line=3, keep_watched=1))
+        zh_writer = Writer()
+        old = shell.library_bridge
+        shell.library_bridge = Heard()                                 # `_show_switched`: the new language's bridge
+        page.services.library, page.services.writer = zh, zh_writer
+        shell.library_switched.emit()
+        assert rows.keep.value() is True
+        assert rows.fields["soon_line"].value() == 7 and rows.fields["mine_line"].value() == 3
+        zh._options["keep_watched"] = 0                                # the new library's next view is heard
+        shell.library_bridge.library_changed.emit(_view())
+        assert rows.keep.value() is False
+        zh._options["keep_watched"] = 1
+        old.library_changed.emit(_view())                              # the old bridge is no longer heard
+        assert rows.keep.value() is False
+        QTest.mouseClick(rows.keep, Qt.MouseButton.LeftButton)
+        assert zh_writer.calls == [{"keep_watched": True}] and writer.calls == []
     finally:
         _close(page)
 

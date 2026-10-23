@@ -1002,6 +1002,14 @@ def keep_watched(options):
         return False
 
 
+def mark_moves_list(tier, ep, keep):
+    """W-1: does marking `ep` (an episode of a row in `tier`) watched, or not, move what the list counts? The store's
+    one rule (`library_store.counts`, `keep` the library's `keep_watched`); a video waiting for its subtitle is in no
+    list, watched or not (`Store.schedule`). What the stone's tip, the mark's toast and its one-time hint say."""
+    from app.library_store import counts
+    return not getattr(ep, "waiting", False) and counts(tier, False, keep) != counts(tier, True, keep)
+
+
 def _mine_ids(current, n, keep=False):
     """The store's `_mine_ids`: the top `n` available files of Current, in order (a video waiting for its subtitle is
     never one: SRC W1b) that count by the store's one rule (`library_store.counts`, W-1: a watched one while `keep`,
@@ -1485,7 +1493,7 @@ def to_cache(view, rows=CACHE_ROWS):
     return {"rows": _plain([r._replace(string=None) for r in kept]),     # planned again as it's read (`_row_from`)
             "lines": _plain([ln for ln in view.lines if ln.after < len(kept)]),
             "goal": _plain(view.goal)[:5], "counts": _plain(view.counts), "subline": view.subline,   # (W3.2 Q2: no tiles)
-            "badges": dict(view.badges)}
+            "badges": dict(view.badges), "keep_watched": bool(view.keep_watched)}                # W-1
 
 
 def _row_from(data):
@@ -1510,6 +1518,7 @@ def from_cache(data, language="ja"):
         return View(language=language, mode="store", reason=None, state="loading", busy=False, loading=True,
                     cached=True, rows=rows, lines=tuple(Line(*ln) for ln in data["lines"]), goal=Goal(*data["goal"]),
                     finished=(), needs=(), counts=Counts(*data["counts"]), subline=data["subline"],
-                    badges=dict(data.get("badges") or {}), worst=worst_needs(rows[1:]))
+                    badges=dict(data.get("badges") or {}), worst=worst_needs(rows[1:]),
+                    keep_watched=bool(data.get("keep_watched")))           # W-1: absent (an older cache): off
     except (KeyError, TypeError, ValueError):
         return None

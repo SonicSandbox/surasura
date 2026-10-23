@@ -1652,10 +1652,11 @@ class DragController(QObject):
                 self.win.toasts.show(strings.DONE_ALL.format(n=len(row.episodes)), buttons=[
                     (strings.DONE_MOVE_FINISHED, strings.DONE_MOVE_FINISHED_TIP, lambda: self.to_finished(row))])
             return
-        keep = bool(getattr(self.page.view_model, "keep_watched", False))       # W-1: the library's option
+        # W-1: does this mark move what the list counts (the store's one rule; never a video waiting for its subtitle)
+        moves_list = view_rows.mark_moves_list(row.tier, ep, getattr(self.page.view_model, "keep_watched", False))
         if ep.watched:
-            text = strings.DONE_UNDONE.format(title=title, ep=ep.label) if keep else \
-                strings.DONE_UNDONE_BACK.format(ep=ep.label)
+            text = strings.DONE_UNDONE_BACK.format(ep=ep.label) if moves_list else \
+                strings.DONE_UNDONE.format(title=title, ep=ep.label)
             ticket = Ticket(text, (row.key,), (ep.id,))
             self._give(ticket, lambda t: self.writer.set_watched([ep.id], False, label=t))
             return
@@ -1679,7 +1680,7 @@ class DragController(QObject):
                                           strings.DONE_MOVE_SHOW_FINISHED_TIP.format(show=show, n=len(ids)),
                                           lambda: self.finish_show(row, show, ids))])
             return
-        hint = None if keep else self._unseen(HINT_LEFT)             # --- W-1: the first mark, once per library
+        hint = self._unseen(HINT_LEFT) if moves_list else None   # --- W-1: the first mark, once per library
         if hint is not None:
             ticket = Ticket(strings.DONE_LEFT.format(ep=ep.label), (row.key,), (ep.id,))
             if self._give(ticket, lambda t: self.writer.set_watched([ep.id], True, label=t), toast=False) is None:
@@ -1697,28 +1698,37 @@ class DragController(QObject):
 
     # --- W-1: a hint shown once per library (settings.json's `hints_seen`: hint ids, each with the library's id) -- #
     def _hint_id(self, name):
+        """`name`'s hint id for the library shown (its store id), or None before a read has found it: never keyed by
+        the language, so a hint is never shown twice in one library."""
         store_id = None
         try:
             store_id = self.reader.store_id() if self.reader is not None else None
         except Exception:
             pass
-        return f"{name}:{store_id or self.win.language}"
+        return f"{name}:{store_id}" if store_id else None
+
+    def _hints_seen(self):
+        """settings.json's `hints_seen` as a list of ids — a hand-edited value that isn't a list (a number, true, a text)
+        reads as none seen, its odd entries left out; the next write puts a clean list in its place."""
+        value = self.win.services.settings.get().get("hints_seen")
+        return [h for h in value if isinstance(h, str)] if isinstance(value, (list, tuple)) else []
 
     def _unseen(self, name):
         """`name`'s hint id for this library when it hasn't been shown here yet, else None."""
         hint = self._hint_id(name)
+        if hint is None:
+            return None
         try:
-            seen = self.win.services.settings.get().get("hints_seen") or ()
+            seen = self._hints_seen()
         except Exception:
             return None                              # no settings to keep it in: never a hint shown every time
         return None if hint in seen else hint
 
     def _seen(self, hint):
         """`hint` recorded as shown: its key alone written (`save_keys`' rule, the settings service's)."""
-        settings = self.win.services.settings
-        seen = list(settings.get().get("hints_seen") or ())
+        seen = self._hints_seen()
         if hint not in seen:
-            settings.set({"hints_seen": seen + [hint]})
+            self.win.services.settings.set({"hints_seen": seen + [hint]})
     # --- end W-1
 
     def to_finished(self, row):

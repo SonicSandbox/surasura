@@ -553,15 +553,13 @@ DONE_NEXT = "✓ {title} {ep} watched · next: {next}"
 DONE_ONE = "✓ {title} {ep} watched"
 DONE_UNDONE = "{title} {ep} marked not watched"
 # --- W-1 (Sonic 2026-10-22, Q4): while *Keep studying watched episodes* is off — the first mark (once per library), the
-# un-mark, and an episode's *Mine now* with nothing left to mine
+# un-mark
 DONE_LEFT = "✓ {ep} watched — its words left your list."
 DONE_KEEP = "Keep studying them"
 DONE_KEEP_TIP = "Opens Settings at Keep studying watched episodes"
 DONE_OK = "OK"
 DONE_OK_TIP = "Leave them off your list"
 DONE_UNDONE_BACK = "{ep} not watched — its words are back."
-MINE_NOW_WATCHED_TIP = ("Watched: its words left your list, so there's nothing to mine\n"
-                        "• Mark it not watched, or turn on Keep studying watched episodes in Settings")
 # --- end W-1
 DONE_ALL = "✓ All {n} watched — finished with it?"
 DONE_MOVE_FINISHED = "Move to Finished"

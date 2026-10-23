@@ -38,6 +38,7 @@ The window's providers for Connect, AnkiWeb and the dot are the plain functions 
 import os
 import threading
 import time
+import weakref
 from collections import namedtuple
 
 from app.services import jobs as jobs_module
@@ -60,10 +61,11 @@ def job_line(view):
     if view.state == jobs_module.WAITING and view.reason:
         return f"{view.label} · {view.reason}"
     progress = view.progress
-    if progress is None or not progress.step:
+    if progress is None or not (progress.step or progress.total):
         return view.label
-    if progress.total:
-        return f"{view.label} · {progress.step} {progress.done or 0} / {progress.total}"
+    if progress.total:                                  # (a count with no step: *Making cards · 3 / 12*, row 40)
+        step = f"{progress.step} " if progress.step else ""
+        return f"{view.label} · {step}{progress.done or 0} / {progress.total}"
     return f"{view.label} · {progress.step}"
 
 
@@ -275,7 +277,44 @@ def _content(snap):
 
 
 # --- the window's providers (W3.5 row 7): plain functions, each made once per window and language ---------------- #
-def connect_line(language, settings, stamp=None, read=None, feed=None):
+CONNECT_JOB_KIND = "mine"                 # Connect's mining as the window's registry lists it (laptop row 40)
+CONNECT_JOB_LABEL = "Making cards"
+CONNECT_JOB_MISSED = 2                    # looks without mining before its job ends (a gap between two batches)
+_mirrored = weakref.WeakKeyDictionary()   # registry -> [its Connect job or None, its step, looks missed]
+
+
+def mirror_connect(registry, got):
+    """Laptop row 40 ("I can't tell what my actions trigger"): Connect mines in its own process, so its work was a quiet
+    mark the bottom-left line never named. While the feed says an item is being mined, the window's one job registry
+    lists it as a recorded job (`record`: never holding a job back; `detach` at quit: Connect goes on) — the line reads
+    *Making cards · <its step> 40%* — told only when its step moved (S19), and ended after `CONNECT_JOB_MISSED` looks
+    with none (no blink between two batches), or at once when the feed is gone (`got` None: another language's, the
+    window's provider replaced). `connect_line(registry=)` calls it each look. A worker's call (the status service's
+    refresh, one at a time)."""
+    if registry is None:
+        return
+    held = _mirrored.setdefault(registry, [None, None, 0])
+    item = next((it for it in (got.items.values() if got is not None and got.on else ())
+                 if it.kind == "mining"), None)
+    if item is None:
+        held[2] += 1
+        if held[0] is not None and (got is None or held[2] >= CONNECT_JOB_MISSED):
+            held[0].finish()
+            held[:] = [None, None, 0]
+        return
+    held[2] = 0
+    if held[0] is None or held[0].state not in jobs_module.LIVE:
+        held[:] = [registry.record(CONNECT_JOB_KIND, CONNECT_JOB_LABEL, automatic=True, on_quit="detach"), None, 0]
+    if item.progress is not None:
+        step = (f"{item.doing} {item.progress}%" if item.doing else f"{item.progress}%", None, None)
+    else:
+        step = (item.doing, item.made, item.total) if item.total else (item.doing, None, None)
+    if step != held[1] and any(x is not None for x in step):
+        held[1] = step
+        held[0].progress(*step)
+
+
+def connect_line(language, settings, stamp=None, read=None, feed=None, registry=None):
     """Connect's line for `language` (gap 9; the Tk `status_row.StatusRow`'s look) -> a provider. `settings()`: the
     settings now (the settings service's `get`). P4.1 L2 (row 4.1.13, W-A5): it is the window's Connect feed's
     (`app/connect/feed.Provider`, `feed`: the one the library reader's stones are built from, else one made here) —
@@ -289,9 +328,11 @@ def connect_line(language, settings, stamp=None, read=None, feed=None):
     from app.connect import feed as connect_feed
     if feed is None:
         feed = connect_feed.Provider(language, settings, stamp=stamp, read=read)
+    mirror_connect(registry, None)                      # the language before's job, if any, ends
 
     def provider():
         got = feed.feed()
+        mirror_connect(registry, got)
         if not got.on and got.line == connect_feed.OFF_CONNECT:
             return None                                 # not set up (`connect_enabled` off): no Connect mark at all
         return got.line

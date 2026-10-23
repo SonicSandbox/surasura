@@ -278,9 +278,9 @@ def test_the_show_lines_stand_where_the_services_show_key_changes_and_a_cache_wi
     assert rows.show_starts(one) == {}
 
 
-def test_a_closed_rows_line_says_a_dash_new_when_its_count_is_unknown(show_list, monkeypatch):
-    """AD-7: a closed Current row whose new words aren't counted yet (no plan, files came in since Generate) reads
-    "— new" on its own line, as an episode's and the hero's do; a counted row draws its count."""
+def test_a_closed_rows_line_says_nothing_of_new_words_while_its_count_is_unknown(show_list, monkeypatch):
+    """AD-7, then laptop row 36: a closed Current row whose new words aren't counted (no plan, files came in, moved on
+    an i+1 plan) shows its % alone — no "— new" that sits; a counted row draws its count."""
     from PyQt6.QtGui import QImage, QPainter
     from app.qt import rows, strings
     rs = _shows_rows()
@@ -288,7 +288,7 @@ def test_a_closed_rows_line_says_a_dash_new_when_its_count_is_unknown(show_list,
     d = lst.delegate
     slab = d.slab_of(lst.visualRect(lst.model().index(1, 0)))
     real = rows.TEXT.draw
-    for n_new, count in ((None, strings.ROWS_DASH), (44, "44")):
+    for n_new, count in ((None, None), (44, "44")):
         row = rs["run"]._replace(n_new=n_new, pct=91)
         drawn = []
         monkeypatch.setattr(rows.TEXT, "draw", lambda p, x, y, text, *a, **k: (drawn.append(text),
@@ -301,8 +301,12 @@ def test_a_closed_rows_line_says_a_dash_new_when_its_count_is_unknown(show_list,
         finally:
             p.end()
             monkeypatch.setattr(rows.TEXT, "draw", real)
-        k = drawn.index(" " + strings.ROWS_NEW_WORD)
-        assert drawn[k + 1] == count, drawn
+        assert strings.ROWS_DASH not in drawn, drawn
+        if count is None:
+            assert " " + strings.ROWS_NEW_WORD not in drawn and strings.ROWS_PCT.format(pct=91) in drawn, drawn
+        else:
+            k = drawn.index(" " + strings.ROWS_NEW_WORD)
+            assert drawn[k + 1] == count, drawn
 
 
 # --- row 28 follow-up A: the hand's and the keyboard's episode ---------------------------------------------------- #

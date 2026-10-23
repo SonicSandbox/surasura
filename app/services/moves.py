@@ -143,11 +143,11 @@ def plan_check(language, settings):
     return check
 
 
-def open_library(language, check=None, **reader_kw):
+def open_library(language, check=None, log=None, **reader_kw):
     """The window's library on one opener: the reader, and the numbers it shows — told of every move of
     the order (another program's, hato's drop, an undo elsewhere) and refreshing the reader when they change. Nothing
     started: the caller calls `numbers.load()` and `reader.start()`, and hands the same opener to the `Writer`.
-    `check`: `Numbers`' verdict (`plan_check`). The numbers hold the reader weakly (W3.2 P0, AD0-2): never a cycle
+    `check`: `Numbers`' verdict (`plan_check`); `log`: the numbers' (`Numbers`). The numbers hold the reader weakly (W3.2 P0, AD0-2): never a cycle
     reader → numbers → reader, so a reader a language switch let go is freed by its count alone. -> (opener, numbers,
     reader)."""
     import weakref
@@ -159,7 +159,7 @@ def open_library(language, check=None, **reader_kw):
         reader = held[0]() if held else None
         if reader is not None:
             reader.refresh()
-    numbers = Numbers(opener, language, check=check, on_change=refresh)
+    numbers = Numbers(opener, language, check=check, on_change=refresh, log=log)
     reader = LibraryReader(opener, language, numbers=numbers, **reader_kw)
     held.append(weakref.ref(reader))
     reader.subscribe_moves(lambda _language, _versions: numbers.resync())
@@ -1965,10 +1965,12 @@ class Numbers:
     provider's own worker); `plan_file`: the plan (default: the results folder's); `check(plan, store)`: the caller's
     full staleness verdict — None when current, else the reason (the replan host's `plan_engine.check` with the run
     signature's parts; it stats every file, so it runs here, on the worker); `on_change()`: a new version (the reader's
-    `refresh`)."""
+    `refresh`); `log(line)`: why *N new* stops or starts following the order, each time that changes (the app's log).
+    """
 
-    def __init__(self, opener, language="ja", plan_file=None, check=None, on_change=None):
+    def __init__(self, opener, language="ja", plan_file=None, check=None, on_change=None, log=None):
         self.opener = opener
+        self._log = log or _nothing
         self.language = language
         self.plan_file = plan_file
         self._check = check
@@ -2115,7 +2117,7 @@ class Numbers:
             self._set(None, counts, why, key)
             return
         try:
-            eng = plan_engine.Engine(plan, ids)
+            eng = plan_engine.Engine(plan, ids, numbers_only=True)  # an i+1 plan: its numbers (row 36)
             del plan                                # the per-file lines go: the engine keeps its own tables
             order = self._order(store)
             eng._numbers(order)
@@ -2127,8 +2129,8 @@ class Numbers:
 
     def _stale(self, plan, store, ids):
         aside = _plan_engine().stands_aside(plan)
-        if aside:
-            return f"stands aside: {aside}"
+        if aside and not all(r in _plan_engine().NUMBERS_EXACT for r in _plan_engine().aside_reasons(plan)):
+            return f"stands aside: {aside}"                               # (i+1 alone: *N new* follows it, row 36)
         epoch = (plan.header.get("store") or {}).get("epoch")
         if epoch is not None and epoch != store.versions().get("epoch"):
             return "stale: the library was rebuilt since the last Generate"
@@ -2145,7 +2147,10 @@ class Numbers:
         return None
 
     def _order(self, store):
-        return [(item, tier) for tier in ANALYSED for item in store.ids(tier)]
+        """The analysed tiers' items as a Generate counts them: a video waiting for its subtitle (K5) is in none
+        (`Store.schedule`), so it never makes the numbers stale (round 7 review A-3)."""
+        return [(item, tier) for tier in ANALYSED for item, _entry, availability in store.ordered(tier)
+                if availability != "waiting"]
 
     def _resync(self):
         path = self._plan_path()
@@ -2166,6 +2171,7 @@ class Numbers:
             return
         order = self._order(store)
         plan_engine = _plan_engine()
+        said = None
         with self._lock:
             if self._engine is not eng:
                 return
@@ -2177,6 +2183,7 @@ class Numbers:
             except plan_engine.PlanError as e:      # an item the plan doesn't hold came in: Generate first
                 self._engine, self._why = None, f"stale: {e}"
                 self._publish({i: (k, c, None) for i, (k, c, _n) in counts.items()}, None)
+                said = self._why                    # logged after the lock (a file write: never while a read waits)
             else:
                 self.renumbered += 1
                 table = self._figures(eng, counts)
@@ -2184,6 +2191,8 @@ class Numbers:
                 if not changed:
                     return
                 self._publish(table, changed)
+        if said is not None:
+            self._say(said)
         self._call_change()
 
     def _figures(self, eng, counts):
@@ -2196,9 +2205,18 @@ class Numbers:
 
     def _set(self, eng, table, why, key):
         with self._lock:
+            said = self._why
             self._engine, self._why, self._plan_key = eng, why, key
             self._publish(table, None)
+        if why != said:
+            self._say(why)
         self._call_change()
+
+    def _say(self, why):
+        try:
+            self._log(f"N new ({self.language}): {why or 'follows the order'}")
+        except Exception:
+            pass
 
     def _publish(self, table, changed):
         """(Under the lock.) A new table — a new dict: the reader may still hold the old one — and its version."""

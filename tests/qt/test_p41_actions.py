@@ -115,7 +115,7 @@ def test_each_status_that_is_a_button_names_its_click_and_its_hover_tip_comes_th
         if isinstance(words, dict):                     # a mining ask counts its files when more than one (AD-2)
             n = len(p[3].ids)
             words = words[n == 1].replace("{n}", str(n))
-        assert p[0] == name and p[2] == words.format(tip=row.status.tip), kind
+        assert p[0] == name and p[2] == words.format(tip=rows.status_tip(row.status)), kind   # row 38
         ev = QHelpEvent(QEvent.Type.ToolTip, p[1].center(), lst.viewport().mapToGlobal(p[1].center()))
         lst.viewportEvent(ev)
         assert wait_until(lambda: win.tooltips.showing() == p[2]), kind
@@ -262,7 +262,7 @@ def test_while_connect_is_off_the_buttons_ask_nothing_and_say_why(act):
     i = row_with(lst, "waiting")
     row = lst.model().entries[i][1]
     p = action(lst, i)
-    assert p[2] == strings.ROWS_ACTION_OFF.format(tip=row.status.tip, why=feed.OFF_CONNECT)
+    assert p[2] == strings.ROWS_ACTION_OFF.format(tip=rows.status_tip(row.status), why=feed.OFF_CONNECT)
     click(lst, p)
     assert wait_until(lambda: win.tooltips.showing() == p[2])
     lst.setFocus()
@@ -477,7 +477,7 @@ def test_not_timed_is_no_mine_now_button_and_a_wait_on_anki_or_battery_is():
         assert (st.kind, st.tone) == ("waiting", "warn"), kind
         name, tip, ask = rows.action_of(st, (_ep(st),))
         assert name == "mine-now" and ask is not None, kind
-        assert tip.startswith(reason) and says in tip, kind
+        assert tip.startswith(st.label + "\n" + reason) and says in tip, kind     # row 38: the icon's name first
     turn = view_rows._connected(plain, feed.Item(feed.WAITING, feed.WORDS[feed.WAITING], "", 1, 0, 0), "video")
     assert turn.tone == "dim" and rows.action_of(turn, (_ep(turn),))[0] == "mine-now"
 
@@ -764,6 +764,7 @@ def test_row28_while_connect_is_off_mine_now_is_offered_saying_why_and_asks_noth
     lst = lst_of(win)
     row, ep = _waiting_episode(lst)
     entry = _mine_now(win.items.episode_entries(row, ep))
-    assert [e.tip for e in entry] == [strings.ROWS_ACTION_OFF.format(tip=ep.status.tip, why=feed.OFF_CONNECT)]
+    assert [e.tip for e in entry] == [strings.ROWS_ACTION_OFF.format(tip=rows.status_tip(ep.status),
+                                                                    why=feed.OFF_CONNECT)]
     win.items.episode_pick(row, ep, entry[0].name, entry[0].payload)
     assert asks(writer) == [] and win.bar_line.full() == feed.OFF_CONNECT

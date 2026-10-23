@@ -228,10 +228,11 @@ def test_the_known_share_takes_its_band_colour(qapp, pct, ink):
 
 
 @pytest.mark.parametrize("size, dpr", [("M", 1.0), ("L", 1.5)])
-@pytest.mark.parametrize("n_new, count_text", [(None, strings.ROWS_DASH), (44, "44")])
-def test_an_episode_whose_new_words_arent_counted_yet_says_a_dash_new(qapp, monkeypatch, size, dpr, n_new, count_text):
-    """Row 28: an episode whose plan can't follow the library yet (no plan, files came in since Generate) has no count;
-    its string read "91% ·" with nothing after. It reads "91% · — new" (as the hero's "— new words"); a count is drawn
+@pytest.mark.parametrize("n_new", [None, 44])
+def test_an_episode_whose_new_words_arent_counted_draws_its_percent_alone(qapp, monkeypatch, size, dpr, n_new):
+    """Row 28, then laptop row 36: an episode whose plan can't follow the library (no plan, files came in, moved on an
+    i+1 plan) has no count. Row 28's "91% ·" left a dot hanging; "91% · — new" then sat there for good on an i+1 plan
+    ("ugly and just sits there"): the number or nothing — "91%" alone, no dot, no dash, no word; a count is drawn
     whole."""
     theme_name, old_size, language = style.current()
     style.apply(qapp, theme_name, size, language)
@@ -248,7 +249,48 @@ def test_an_episode_whose_new_words_arent_counted_yet_says_a_dash_new(qapp, monk
     finally:
         p.end()
         style.apply(qapp, theme_name, old_size, language)
-    assert drawn == [" " + strings.ROWS_NEW_WORD, count_text, strings.ROWS_DOT, strings.ROWS_PCT.format(pct=91)]
+    counted = [" " + strings.ROWS_NEW_WORD, "44", strings.ROWS_DOT] if n_new is not None else []
+    assert drawn == counted + [strings.ROWS_PCT.format(pct=91)]
+    assert strings.ROWS_DASH not in drawn
+    del drawn[:]                                    # review A-9: a count with no % beside it leaves no dot hanging
+    img = QImage(round(300 * dpr), round(30 * dpr), QImage.Format.Format_RGB32)
+    img.setDevicePixelRatio(dpr)
+    p = QPainter(img)
+    try:
+        rows.paint_diff(p, None, view_rows.pct_tone(None), n_new, 296, 15, dpr)
+    finally:
+        p.end()
+    assert drawn == ([" " + strings.ROWS_NEW_WORD, "44"] if n_new is not None else [])
+
+
+@pytest.mark.parametrize("label, shown", [("Waiting", ""), ("2/5 · Waiting", "2/5")])
+def test_a_waiting_pill_is_its_icon_alone_and_says_itself_on_hover(qapp, monkeypatch, label, shown):
+    """Laptop row 38: "i don't need the words 'waiting' only the icon. It should tell you what it means when hover".
+    Every *Waiting* — its turn, a wait on Anki or the battery — draws its icon alone (a k/n count stays: no word), in a
+    pill no wider than tall when alone; its hover names it first, then what it means. *Not timed* keeps its words (it
+    asks for the learner), as every other pill does."""
+    st = view_rows.Status("waiting", label, "In your top 20: it mines by itself, in turn", "dim")
+    assert rows.pill_text(st) == shown
+    assert rows.status_tip(st) == f"{label}\nIn your top 20: it mines by itself, in turn"
+    for keeps in (view_rows.Status("waiting", view_rows.STRINGS["not_timed"], "Not timed to its video", "warn"),
+                  view_rows.Status("mine", "Mine", "Mine it", "ink")):
+        assert rows.pill_text(keeps) == keeps.label and rows.status_tip(keeps) == keeps.tip
+    drawn = []
+    real = rows.TEXT.draw
+    monkeypatch.setattr(rows.TEXT, "draw", lambda p, x, y, text, *a, **k: (drawn.append(text),
+                                                                             real(p, x, y, text, *a, **k))[1])
+    size = rows.pill_size(st)
+    img = QImage(size.width() + 4, size.height() + 4, QImage.Format.Format_RGB32)
+    img.fill(rows.c("surface"))
+    p = QPainter(img)
+    try:
+        rows.paint_pill(p, st, QRect(2, 2, size.width(), size.height()))
+    finally:
+        p.end()
+    assert not any("Waiting" in t for t in drawn), drawn
+    assert drawn == ([shown] if shown else [])
+    if not shown:
+        assert size.width() <= size.height() + 1 < rows.pill_size(view_rows.Status("mine", "Mine", "", "ink")).width()
 
 
 # --- one rule for a Done ------------------------------------------------------------------------------------------------

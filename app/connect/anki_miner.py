@@ -540,7 +540,7 @@ def tag_names(url, words, outcomes):
 
 def mine_batch(path, language, job, video, subtitle, words, mapping, profile_name, run_dir, url, attempt=1,
                subtitle_offset=0.0, timeout=MINE_TIMEOUT, wait=0.0, expect_profile=None, on_progress=None,
-               known=None, should_stop=None):
+               known=None, should_stop=None, show=None):
     """One batch of one episode, end to end (§ above), holding `anki-writer` (waiting up to `wait` s for another
     writer; still held -> AnkiMinerError `busy`). `words`: pick's; `mapping`: fields.Mapping (from this profile's
     export); `profile_name`: `connect_anki_miner_profile`; `url`: AnkiConnect's address, for the names' tag. Returns
@@ -551,7 +551,8 @@ def mine_batch(path, language, job, video, subtitle, words, mapping, profile_nam
     of its run that answered (laptop round 5 #23: the row moves while Anki Miner works). `known`: `preflight`'s.
     `should_stop()` (laptop round 8 #47, *Stop*): asked at every poll; True -> the run's cancel file (`cancel`), once:
     Anki Miner ends at its own next check (0.2 s), every note it wrote whole. The answer then carries `stopped`
-    (an AnkiMinerError `cancelled` too, its `stopped` set)."""
+    (an AnkiMinerError `cancelled` too, its `stopped` set). `show` (laptop round 8 #50, LF4-3): the title of the show
+    the episode belongs to: every card it makes also carries `runfile.from_tag(show)`."""
     from app import anki_connect, locks
     try:
         held = anki_connect.writer("Connect's mine step", wait=wait)
@@ -562,7 +563,7 @@ def mine_batch(path, language, job, video, subtitle, words, mapping, profile_nam
             raise AnkiMinerError("reviewing", "You're reviewing in Anki. Cards are made once you've finished.")
         try:
             done = _mine_held(path, language, job, video, subtitle, words, mapping, profile_name, run_dir, attempt,
-                              subtitle_offset, timeout, expect_profile, on_progress, known, should_stop)
+                              subtitle_offset, timeout, expect_profile, on_progress, known, should_stop, show)
         except runfile.RunFileError as e:
             raise AnkiMinerError("refused", f"The run file for Anki Miner couldn't be written: {e}") from None
         done["tagged"], done["tag_pending"] = [], []
@@ -577,7 +578,8 @@ def mine_batch(path, language, job, video, subtitle, words, mapping, profile_nam
 
 
 def _mine_held(path, language, job, video, subtitle, words, mapping, profile_name, run_dir, attempt,
-               subtitle_offset, timeout, expect_profile=None, on_progress=None, known=None, should_stop=None):
+               subtitle_offset, timeout, expect_profile=None, on_progress=None, known=None, should_stop=None,
+               show=None):
     info, profile = preflight(path, language, profile_name, known)
     if expect_profile is not None and profile != expect_profile:
         raise AnkiMinerError("profile-changed", "Anki Miner's profile changed since the words were picked.")
@@ -586,7 +588,8 @@ def _mine_held(path, language, job, video, subtitle, words, mapping, profile_nam
         write_whitelist(language, [name for word in words for name in runfile.entries(word, named)])
     run_id = f"{job}-{attempt}"
     episode = runfile.episode(run_id, video, subtitle, runfile.word_requests(words, named),
-                              tags=runfile.job_tag(job), subtitle_offset=subtitle_offset)
+                              tags=" ".join(t for t in (runfile.job_tag(job), runfile.from_tag(show)) if t),
+                              subtitle_offset=subtitle_offset)
     data = runfile.build(run_dir, language, [episode], profile=profile,
                          run_config=runfile.config(mapping, info.get("app"), named))
     run_path = runfile.write(os.path.join(run_dir, f"run-{attempt}.json"), data)

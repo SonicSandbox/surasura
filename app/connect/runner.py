@@ -1270,6 +1270,17 @@ class Steps:
             return False
         return infer_source_type(item.get("rel_path") or "", declared=item.get("source_type")) in ("epub", "text")
 
+    def show(self, lang, job):
+        """The title of the show the job's episode belongs to (its work's), for the cards' `Surasura::from::` tag; None
+        when the store can't say (busy, no work): the cards then carry no show tag, never a wrong one."""
+        from app.connect import library
+        try:
+            store = self._open(lang)
+        except (Wait, Needs):
+            return None
+        with store:
+            return library.show_title(store, job["item_id"])
+
     def watched(self, lang, job):
         """Laptop round 8 #49: is the job's episode one Connect makes no new cards from on its own (`level.watched_out`:
         marked watched, while 3.0's rule holds)? A busy store -> False (the job goes on as before)."""
@@ -1829,7 +1840,8 @@ class Steps:
                                          subtitle_offset=float(picked.get("offset") or 0.0),
                                          expect_profile=picked.get("profile"),
                                          on_progress=getattr(self, "on_progress", None), known=setup[:2],
-                                         should_stop=getattr(self, "should_stop", None))
+                                         should_stop=getattr(self, "should_stop", None),
+                                         show=self.show(lang, job))
         except anki_miner.AnkiMinerError as e:
             held.clear()                        # any Anki Miner failure (a profile changed too): read again next time
             if e.kind == "profile-changed":

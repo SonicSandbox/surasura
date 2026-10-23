@@ -668,6 +668,9 @@ class StubStore:
     def check(self, ids):
         return ls.Check({i: self.changed_in.get(i, 1) for i in ids}, {}, None)
 
+    def versions(self):                                 # W-1: a status write here never moves the order
+        return {"order_version": 1}
+
 
 class StubOpener:
     def __init__(self, store, mode="store", reason=None):
@@ -855,7 +858,7 @@ class Recorder:
     def __init__(self):
         self.moves, self.resyncs = [], 0
 
-    def after_move(self, ids, tier, before_id=None, after_id=None):
+    def after_move(self, ids, tier, before_id=None, after_id=None, order=None):
         self.moves.append((list(ids), tier, before_id, after_id))
         return {}
 
@@ -875,8 +878,10 @@ def test_the_numbers_follow_a_drop_once_before_its_write_even_when_the_store_is_
     w.set_watched([5], True)
     assert h.until(lambda: len(heard.saved) == 4)
     assert numbers.resyncs == 2                          # the nudge and Finished; a watched mark moves no number
-    w.undo()
+    w.undo()                                             # ... nor its undo (W-1: a status write; the order didn't move)
     assert h.until(lambda: heard.undone)
+    w.undo()                                             # Finished's undo does
+    assert h.until(lambda: len(heard.undone) == 2)
     assert numbers.resyncs == 3
 
 
@@ -926,9 +931,10 @@ def write_plan(path, rel_paths, tiers, language="ja", seed=3, n_words=3000, head
     return per_file
 
 
-def _in_order(items):
-    """The analysed items as a Generate reads them (NOW, Soon, 6+ Months, each in order): the plan's files' order."""
-    return sorted((r for r in items if r["tier"] in M.ANALYSED),
+def _in_order(items, keep_watched=False):
+    """The items that count as a Generate reads them (NOW, Soon, 6+ Months, each in order): the plan's files' order —
+    W-1: never a watched one while `keep_watched` is off (the seed's hero has two watched episodes in NOW)."""
+    return sorted((r for r in items if ls.counts(r["tier"], r["watched"], keep_watched)),
                   key=lambda r: (M.ANALYSED.index(r["tier"]), r["ord"], r["id"]))
 
 

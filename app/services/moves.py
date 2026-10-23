@@ -94,6 +94,7 @@ KEPT = ("tier", "before_id", "after_id", "near", "direction", "on", "keep_cards"
 JOURNALLED += ("register",)
 KEPT += ("records", "rules")
 KEPT += ("soon_line", "mine_line")              # W3.3 P6: `set_options`'s values
+KEPT += ("keep_watched",)                       # W-1 (K-W4): the library's *Keep studying watched episodes*
 KEPT += ("titles",)                             # P-LF-4: a join of two titles (a replay merges them too)
 # --- LM11: user-made groups (Sonic's G1–G4) — the one piece rule's commands; a join's `how` ("titles": P-LF-4's
 # `titles`, which a journal the window's first build wrote still replays as)
@@ -178,7 +179,7 @@ def _ls():
 class Writer:
     def __init__(self, opener, language="ja", journal_file=None, numbers=None, on_saved=None, on_saving=None,
                  on_reread=None, on_note=None, on_undone=None, depth=UNDO_DEPTH, retry=RETRY_S,
-                 saving_after=SAVING_AFTER_S, words=None, after_commit=None):
+                 saving_after=SAVING_AFTER_S, words=None, after_commit=None, on_counted=None):
         missing = [k for k in WORDS if k not in (words or {})]
         if missing:                                 # the window's words (`strings.MOVE_WORDS`): never a key shown
             raise ValueError(f"the writer's words lack {missing}")
@@ -194,6 +195,8 @@ class Writer:
         self.on_undone = on_undone or _nothing
         self.after_commit = after_commit or _nothing    # (change, op) after every write the store committed, a replay's
         #                                                 too, on this thread (P4.1 hangs `window_link.Link.after_change`)
+        self.on_counted = on_counted or _nothing    # W-1 (K-W4): () after a write that moved what counts (a watched mark,
+        #                                             its undo, the option), on this thread: the window asks the indexer
         self.retry = retry
         self.saving_after = saving_after
         self._cond = threading.Condition()
@@ -311,17 +314,20 @@ class Writer:
             return None
         return cmd["seq"]
 
-    def set_options(self, soon_line=None, mine_line=None):
+    def set_options(self, soon_line=None, mine_line=None, keep_watched=None):
         """Settings' two store lines (W3.3 P6): `soon_line` -> `Store.set_soon_line(n)`, `mine_line` ->
-        `Store.set_library_options(mine_line=n)` (each an int >= 0, or None to leave it). -> the command's number, or
-        None when refused (read-only) or there is nothing to set."""
-        if soon_line is None and mine_line is None:
+        `Store.set_library_options(mine_line=n)` (each an int >= 0, or None to leave it); W-1's `keep_watched` (True /
+        False, None to leave it) -> `Store.set_library_options(keep_watched=)`. -> the command's number, or None when
+        refused (read-only) or there is nothing to set."""
+        if soon_line is None and mine_line is None and keep_watched is None:
             return None
         cmd = {"op": "set_options", "ids": []}
         if soon_line is not None:
             cmd["soon_line"] = int(soon_line)
         if mine_line is not None:
             cmd["mine_line"] = int(mine_line)
+        if keep_watched is not None:
+            cmd["keep_watched"] = bool(keep_watched)
         for value in (cmd.get("soon_line"), cmd.get("mine_line")):
             if value is not None and value < 0:
                 raise ValueError("a line can't be negative")
@@ -812,7 +818,7 @@ class Writer:
                     return
             elif cmd["op"] == "move" and not cmd.get("numbered"):
                 cmd["numbered"] = (cmd["before_id"], cmd["after_id"])   # the numbers follow the drop once, before its
-                self._numbers_move(cmd)                                 # first write
+                self._numbers_move(cmd, store)                          # first write
             self._apply(store, cmd)
         except lib.StoreBusy:
             self._busy(cmd)
@@ -846,7 +852,9 @@ class Writer:
             elif op == "finish":
                 change = store.finish(cmd["ids"], keep_cards=cmd["keep_cards"])
             elif op == "set_watched":
+                order = _order_version(store)       # W-1 (K-W4): a mark that moved what counts moved `order_version`
                 change = store.set_watched(cmd["ids"], cmd["on"])
+                cmd["counted"] = change is not None and _order_version(store) != order
             elif op == "set_options":
                 self._set_options(store, cmd)
                 return
@@ -913,6 +921,8 @@ class Writer:
         if op not in UNORDERED and (op != "move" or change is None or note is not None or
                                     cmd.get("numbered") not in (None, (cmd["before_id"], cmd["after_id"]))):
             self._numbers_resync()                  # (a tier's end that moved between the numbers and the write too)
+        elif cmd.get("counted"):                    # W-1 (K-W4): a watched mark that moved what counts, only then
+            self._counted()
 
     def _w32(self, store, cmd):
         """W3.2's store commands, each one store call. -> the change, or None."""
@@ -1068,8 +1078,12 @@ class Writer:
         if cmd.get("soon_line") is not None:
             changes.append(store.set_soon_line(cmd["soon_line"]))
             moved = changes[-1] is not None
-        if cmd.get("mine_line") is not None:
-            changes.append(store.set_library_options(mine_line=cmd["mine_line"]))
+        counted = False
+        if cmd.get("mine_line") is not None or cmd.get("keep_watched") is not None:
+            order = _order_version(store) if cmd.get("keep_watched") is not None else None
+            changes.append(store.set_library_options(mine_line=cmd.get("mine_line"),
+                                                     keep_watched=cmd.get("keep_watched")))
+            counted = order is not None and changes[-1] is not None and _order_version(store) != order   # W-1
         if moved:                                   # the rows it moved changed tier: the moves queued behind it
             with self._cond:                        # compare against what it left (a crash's replay keeps them)
                 later = {i for c in itertools.islice(self._pending, 1, None) for i in c.get("ids") or ()}
@@ -1083,7 +1097,9 @@ class Writer:
                 self._call(self.after_commit, change, "set_options")
                 break
         # --- end P4.1 L2
-        if moved:
+        if counted:                                 # W-1 (K-W4): the option moved what counts
+            self._counted()
+        elif moved:
             self._numbers_resync()
 
     def _nearest(self, store, cmd):
@@ -1304,6 +1320,7 @@ class Writer:
             self._landed(cmd)
             return
         refused = False
+        order = _order_version(store) if change.kind in COUNTING else None    # W-1 (K-W4)
         then = getattr(change, "follow_up", None)   # the cards' choice made after this drop (AD-6): undone first
         tried = False                               # the choice's undo asked: it leaves the stack (else it stays there)
         try:
@@ -1342,7 +1359,10 @@ class Writer:
             self._call(self.after_commit, change, "undo")
             if cmd.get("renamed"):
                 self._call(self.on_note, self.words["put_back_as"].format(names=", ".join(cmd["renamed"])))
-            self._numbers_resync()
+            if order is None:
+                self._numbers_resync()
+            elif _order_version(store) != order:    # W-1 (K-W4): a watched mark's undo, only when it moved what counts
+                self._counted()
         self._call(self.on_reread)
 
     def _undo_one(self, store, change):
@@ -1552,13 +1572,21 @@ class Writer:
         return False
 
     # --- the numbers ---------------------------------------------------------------------------------------------- #
-    def _numbers_move(self, cmd):
+    def _numbers_move(self, cmd, store):
         if self.numbers is None:
             return
-        try:
-            self.numbers.after_move(cmd["ids"], cmd["tier"], before_id=cmd["before_id"], after_id=cmd["after_id"])
+        try:                                        # W-1: `order`, the tier's ids from this thread's handle (read only
+            self.numbers.after_move(cmd["ids"], cmd["tier"], before_id=cmd["before_id"],   # for an anchor the numbers
+                                    after_id=cmd["after_id"], order=lambda tier: store.ids(tier))    # don't hold)
         except Exception as e:
             print(f"Window writer: the numbers couldn't follow the move: {e!r}")
+
+    def _counted(self):
+        """W-1 (K-W4): a write moved what counts (a watched mark, its undo, *Keep studying watched episodes*): the
+        numbers asked again, as after a move that changes the order, and `on_counted` (the window asks the indexer,
+        so the Rarity preview follows)."""
+        self._numbers_resync()
+        self._call(self.on_counted)
 
     def _numbers_resync(self):
         if self.numbers is not None:
@@ -1576,7 +1604,15 @@ class Writer:
 
 UNORDERED = ("set_watched", "pin", "keep_cards", "ask_mining", "set_cover", "set_media_type", "split",
              "forget_covers", "ungroup", "rename_piece", "merge_works")
-#   commands that never change the order: the numbers aren't asked again after them
+#   commands that never change the order: the numbers aren't asked again after them — W-1 (K-W4): but a watched mark
+#   that moved `order_version` (it changed what counts) is (`_counted`)
+COUNTING = ("set_watched",)
+#   W-1 (K-W4): the changes whose undo asks the numbers again only when it moved `order_version` (else a status write)
+
+
+def _order_version(store):
+    """The store's `order_version` (one meta read): a status write that moved it moved what counts (W-1)."""
+    return store.versions().get("order_version")
 
 
 def _refused(change, out):
@@ -2034,11 +2070,23 @@ class Numbers:
         self.worker.put(self._close_handle)
         self.worker.close()
 
-    def after_move(self, ids, tier, before_id=None, after_id=None):
+    def after_move(self, ids, tier, before_id=None, after_id=None, order=None):
         """The window's drop, as `Store.move` places it: the touched rows' new figures {item_id: (known, counted,
         n_new)} — the moved items and every item whose *N new* changed — and a new version; {} when the engine can't
-        follow (see `why()`), the rows keeping their figures."""
+        follow (see `why()`), the rows keeping their figures.
+        W-1 (K-W4): an item the engine doesn't hold — one that doesn't count (a watched episode while *Keep studying
+        watched episodes* is off), out of its order as out of a Generate's — moves no number: it leaves the block, and
+        an anchor it doesn't hold gives way to the nearest neighbour it does, in the tier's order as the store holds it
+        (`order(tier)`: the store's ids in order, read only then, before the lock) — so a drag of a show holding
+        watched episodes keeps its numbers at the drop instead of a resync."""
         from app import plan_engine
+        anchor = before_id if before_id is not None else after_id
+        seq = None
+        if order is not None and anchor is not None and anchor not in ids and not _holds(self._engine, anchor):
+            try:
+                seq = list(order(tier))
+            except Exception as e:                  # the drop is followed by a resync instead (as before)
+                print(f"Window numbers: the tier's order couldn't be read: {e!r}")
         with self._lock:
             eng = self._engine
             if eng is None:
@@ -2046,9 +2094,16 @@ class Numbers:
             if tier not in ANALYSED:
                 self.worker.put(self._resync)       # Finished / New arrivals: out of the order
                 return {}
+            block = [i for i in dict.fromkeys(ids) if _holds(eng, i)]
+            if not block:
+                return {}                           # nothing that counts moved: every row keeps its figures
+            if seq is not None and not _holds(eng, anchor):
+                at = _nearest_held(eng, seq, anchor, before_id is not None, set(ids), tier)
+                if at is not None:
+                    before_id, after_id = at
             before = list(eng._n_new)
             try:
-                _words, moved = eng.move(list(ids), tier, before_id=before_id, after_id=after_id)
+                _words, moved = eng.move(block, tier, before_id=before_id, after_id=after_id)
             except plan_engine.PlanError as e:
                 self.worker.put(self._resync)
                 print(f"Window numbers: the move couldn't be followed: {e}")
@@ -2147,10 +2202,17 @@ class Numbers:
         return None
 
     def _order(self, store):
-        """The analysed tiers' items as a Generate counts them: a video waiting for its subtitle (K5) is in none
-        (`Store.schedule`), so it never makes the numbers stale (round 7 review A-3)."""
-        return [(item, tier) for tier in ANALYSED for item, _entry, availability in store.ordered(tier)
-                if availability != "waiting"]
+        """The analysed tiers' items as a Generate counts them — the store's one rule, read through `Store.schedule`:
+        a video waiting for its subtitle (K5) is in none, so it never makes the numbers stale (round 7 review A-3);
+        nor (W-1) an item that doesn't count, a watched episode while *Keep studying watched episodes* is off."""
+        from app.library_store import TIERS, path_key
+        schedule = store.schedule()
+        out = []
+        for tier in ANALYSED:
+            counted = {path_key(e["physical_path"]) for e in schedule.get(TIERS[tier][0], ())}
+            out += [(item, tier) for item, entry, _availability in store.ordered(tier)
+                    if path_key(entry.get("physical_path") or "") in counted]
+        return out
 
     def _resync(self):
         path = self._plan_path()
@@ -2241,3 +2303,34 @@ class Numbers:
 def _plan_engine():
     from app import plan_engine
     return plan_engine
+
+
+def _holds(eng, item):
+    """W-1: does the engine hold `item` in its order (an item that counts, as the last order it read)?"""
+    if eng is None:
+        return False
+    f = eng._f_of.get(item)
+    return f is not None and eng._pos[f] is not None
+
+
+def _nearest_held(eng, seq, anchor, before, moving, tier):
+    """W-1: for an `anchor` the engine doesn't hold, the nearest item of `tier` that it holds and the block doesn't
+    move, in the store's order `seq`: the block lands where the store puts it among what counts. Before `anchor`: before
+    the first such item after it, else after the last before it; after `anchor`: the other way round. -> (before_id,
+    after_id) — (None, None) is the top of the tier (none held there) — or None (`anchor` not in `seq`)."""
+    try:
+        k = seq.index(anchor)
+    except ValueError:
+        return None
+    slot = ANALYSED.index(tier)
+
+    def held(i):
+        f = eng._f_of.get(i)
+        return i not in moving and f is not None and eng._pos[f] is not None and eng._tier[f] == slot
+    after = next((i for i in seq[k + 1:] if held(i)), None)
+    if before and after is not None:
+        return after, None
+    ahead = next((i for i in reversed(seq[:k]) if held(i)), None)
+    if ahead is not None:
+        return None, ahead
+    return (after, None) if after is not None else (None, None)

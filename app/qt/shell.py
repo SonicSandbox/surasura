@@ -99,6 +99,7 @@ class Services:
         # or None — then nothing in the window writes. The window starts it (and its replay) and wires its callbacks;
         # the quit waits for its queue (`finish_moves`). The real `main()`'s: `open_services` (W3.2 P0).
         self.writer = writer
+        self._wire_writer(writer)
         # --- W3.2 P0: `library_for(language)` -> (reader, writer): another language's library at a switch
         # (`_switch_library`); None (a test's library, or none) — the window keeps the library it was given
         self.library_for = library_for
@@ -203,6 +204,19 @@ class Services:
         refresh = getattr(self.status, "refresh_soon", None)
         if refresh is not None:
             refresh("replan")
+
+    def _wire_writer(self, writer):
+        """W-1 (K-W4): a mark that moved what counts (`Writer.on_counted`) asks the indexer, so the Rarity preview
+        follows."""
+        if writer is not None:
+            writer.on_counted = self._counted
+
+    def _counted(self):
+        """(The writer's thread.) The indexer asked, forced (`Chores.index`: one check and one indexer at a time, so a
+        burst of marks is one run while it is under way); nothing before the duties are made or once the quit began."""
+        chores = self.chores
+        if chores is not None and not self.closing.is_set():
+            chores.index(force=True)
 
     def _store_moved(self, language, versions):
         """(The library reader's thread.) The order or the pins moved, whoever moved them: one poke, one `changed`;
@@ -520,6 +534,7 @@ class Services:
                 return None, None
             if self._replan_wired:
                 reader.subscribe_moves(self._store_moved)
+            self._wire_writer(writer)
             self.library, self.writer = reader, writer
             self.load_numbers()
             return reader, writer

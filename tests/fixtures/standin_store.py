@@ -2,8 +2,8 @@
 real scale (2,000 and 20,000 files) before the window meets the real store (W3.1).
 
 It mirrors `app/library_store.py`'s **read** API as the window uses it — names, signatures and shapes, nothing invented:
-- 3.0-dev's reads: `check_mode`, `ordered`, `ids`, `item`, `versions`, `meta`, `token`, `changed_since`, `plan_current`,
-  `journey_pending`;
+- 3.0-dev's reads: `check_mode`, `ordered`, `schedule` (W-1: the numbers' order), `ids`, `item`, `versions`, `meta`,
+  `token`, `changed_since`, `plan_current`, `journey_pending`;
 - L3.1's (Kura, `kura/L3.1-store-additions`; its Inbox lines name them for the window): the change feed —
   `data_version()` and `read_feed(seen, epoch)` with `FEED_ITEM_FIELDS` / `FEED_WORK_FIELDS`, `FEED_POLL` — `pinned()`,
   `cards_of(item_ids)`, `MEDIA_TYPES`, `COVER_SOURCES`, and the Soon line as a count of files (`options["soon_line"]`).
@@ -251,6 +251,19 @@ class StandinStore:
         with self._lib._lock:
             return [(r["id"], {"title": r["title"], "physical_path": r["rel_path"], "parent_folder": r["parent_folder"],
                                "source_type": r["source_type"]}, r["availability"]) for r in self._tier_rows(tier)]
+
+    def schedule(self):
+        """`Store.schedule`'s shape ({phase_key: [entries]}, each tier in order) for the items that count — the store's
+        one rule (`library_store.counts`: W-1, a watched item only while the meta's `keep_watched` is on); a video
+        waiting for its subtitle never."""
+        from app.library_store import ANALYSED, TIERS, counts
+        self._here()
+        with self._lib._lock:
+            keep = self._lib._meta.get("keep_watched", 0)
+            return {TIERS[t][0]: [{"physical_path": r["rel_path"], "source_type": r["source_type"], "title": r["title"],
+                                   "parent_folder": r["parent_folder"]} for r in self._tier_rows(t)
+                                  if counts(t, r["watched"], keep) and r["availability"] != "waiting"]
+                    for t in ANALYSED}
 
     def ids(self, tier):
         self._here()

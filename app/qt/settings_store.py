@@ -19,8 +19,10 @@ into the slots the page leaves for them (`custom_row`).
   (Settings' automation row) — then calls `app/connect/resume.turned_on(before, after)` on a worker: off → on moves
   Connect's watermarks, so nothing that arrived while it was off is mined; anything else does nothing there. Connect's
   own switch (`settings_connect`) needs none: `switch.turn_on` sets the watermarks before its save.
-- **`kick_on_trust(before, changes)`** (laptop try row 9, P-LF-9): *Trust my subtitles' timing* turned on starts
-  Connect (`kick.kick`, on a worker), so the episodes waiting as *Not timed* are picked again now, not at its next start.
+- **`kick_on_release(before, changes)`** (laptop try rows 9 and 42): a setting that lets waiting episodes go —
+  *Trust my subtitles' timing* turned on (P-LF-9), or *Keep up to N cards waiting* changed — kicks Connect (`kick.kick`,
+  on a worker): started if it isn't running, woken if it is (its wake mark), so the episodes waiting as *Not timed* or
+  at the cap are tried again now, never at its next start or its 2-minute look.
 
 GUI_Design_Guidelines_Qt: the page's controls (no new rules), a tooltip on every field and button.
 """
@@ -58,12 +60,24 @@ def resume_connect(before, changes):
     return True
 
 
-def kick_on_trust(before, changes, store=None):
-    """After a settings write of `changes` onto `before`: `connect_trust_timing` off -> on starts Connect on a worker,
-    once `store`'s queued write has landed (the started Connect reads settings.json from disk). `kick.kick` does nothing
-    while Connect is off or running: a running Connect reads the switch at its next episode, and the ones it set aside
-    this run mine at its next start (the same gap as *Mine anyway*'s, P4.1 follow-up F-3). -> True when it was asked."""
-    if changes.get("connect_trust_timing") is not True or (before or {}).get("connect_trust_timing") is True:
+RELEASE_KEYS = ("connect_backlog_cap",)      # changed at all: Connect looks again (a cap read live, laptop round 7 #42)
+
+
+def releases(before, changes):
+    """Does this write let episodes Connect holds go? `connect_trust_timing` off -> on, or a RELEASE_KEYS value changed."""
+    before = before or {}
+    if changes.get("connect_trust_timing") is True and before.get("connect_trust_timing") is not True:
+        return True
+    return any(key in changes and changes[key] != before.get(key) for key in RELEASE_KEYS)
+
+
+def kick_on_release(before, changes, store=None):
+    """After a settings write of `changes` onto `before` that `releases` episodes: Connect kicked on a worker, once
+    `store`'s queued write has landed (Connect reads settings.json from disk). `kick.kick` starts it, or wakes the one
+    running (it reads the trust switch at its next episode and the cap at its next look); nothing while Connect is
+    off. The ones a running Connect set aside this run as *Not timed* still mine at its next start (the same gap as
+    *Mine anyway*'s, P4.1 follow-up F-3). -> True when it was asked."""
+    if not releases(before, changes):
         return False
     from app.services import settings as settings_service
     after = settings_service.thaw(before) if before is not None else {}
@@ -78,11 +92,11 @@ FLUSH_S = 10            # the longest the start waits for the switch's write (an
 
 
 def _kick(settings, store=None):
-    """(A worker.) Connect started for the episodes the trust switch releases, after the write landed."""
+    """(A worker.) Connect kicked for the episodes the write releases, after the write landed."""
     from app.connect import kick
     flush = getattr(store, "flush", None)
     if flush is not None and not flush(FLUSH_S):
-        applog.log("settings", "Trust my subtitles' timing: its write hadn't landed; Connect starts anyway")
+        applog.log("settings", "A setting for Connect: its write hadn't landed; Connect is kicked anyway")
     return kick.kick(settings)
 
 

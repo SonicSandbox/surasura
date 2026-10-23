@@ -238,9 +238,9 @@ class Panel:
         self.spin_cap.pack(side=tk.LEFT, padx=5)
         self.spin_cap.bind("<FocusOut>", lambda _e: self._save_cap())
         self.spin_cap.bind("<Return>", lambda _e: self._save_cap())
-        ttk.Label(row, text="Surasura cards waiting", style="CP.TLabel").pack(side=tk.LEFT)
-        self.tooltip(self.spin_cap, "Connect makes cards while fewer of its own new cards wait in Anki, for this "
-                                    "language. 0: no limit. Your own cards never count.")
+        ttk.Label(row, text="new cards waiting", style="CP.TLabel").pack(side=tk.LEFT)
+        self.tooltip(self.spin_cap, "Connect makes cards while fewer new cards wait in Anki for this language: yours "
+                                    "and Connect's. Suspended cards never count. 0: no limit.")
 
         row = ttk.Frame(f, style="CP.TFrame")
         row.pack(fill=tk.X, pady=(6, 0))

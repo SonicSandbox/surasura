@@ -111,6 +111,9 @@ class _Anki:
         monkeypatch.setattr(anki_connect, "probe", lambda url, *a, **k: {"ok": self.open})
         monkeypatch.setattr(anki_sync, "sync", self._sync)
         monkeypatch.setattr(anki_sync, "sync_backlog", self._backlog)
+        # Known from Anki, the one sync order's last part (`sync_all`, laptop round 7 #43): never a real Anki here
+        self.signals = []
+        monkeypatch.setattr(anki_sync, "read_known_signal", lambda *a, **k: self.signals.append(a[0]))
 
     def _sync(self, language, url, decks, fields, include_suspended=False, full=False):
         with self.lock:

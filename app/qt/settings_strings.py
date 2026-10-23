@@ -164,9 +164,10 @@ ROWS = {
     "connect_open_anki": ("When Anki is closed", "New cards wait until you open Anki — or Surasura opens it for you",
                           "When you open Surasura and Anki is closed, Surasura can open it, so your phone's reviews "
                           "come in and your cards get made and ordered", "closed open anki start session"),
-    "connect_backlog_cap": ("Keep up to", "Surasura cards waiting in Anki, for this language. 0: no limit",
-                            "Connect makes cards while fewer of its own new cards wait in Anki, for this language. 0: "
-                            "no limit. Your own cards never count", "cap backlog waiting keep up to limit"),
+    "connect_backlog_cap": ("Keep up to", "new cards waiting in Anki, for this language. 0: no limit",
+                            "Surasura makes cards while fewer new cards wait in Anki for this language: yours and "
+                            "Surasura's. Suspended cards never count. 0: no limit",
+                            "cap backlog waiting keep up to limit"),
     "known_from_anki": ("Count as known in Anki", "A card in every state you pick marks its word known",
                         "A card in every state you pick here marks its word known (all must hold: Suspended + Marked "
                         "is both). None picked: off", "known from anki suspended marked flag"),

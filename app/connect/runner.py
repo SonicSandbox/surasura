@@ -158,7 +158,7 @@ def run(loaded, languages, steps=None, ledger=None, sleep=None, cancel=None, loo
     "looks" and, when it stopped early, "stopped". `looks`: at most this many looks (tests); `cancel`: an Event;
     `sleep`: a test's own pause, called once with the whole of it (default: `time.sleep` in UPDATE_LOOK_S steps,
     ended early by an update staged)."""
-    steps = steps or Steps(loaded)
+    steps = steps or Steps(loaded, live=True)
     steps.lower_priority()
     _release_check(loaded)
     own = ledger is None
@@ -169,10 +169,12 @@ def run(loaded, languages, steps=None, ledger=None, sleep=None, cancel=None, loo
     prepared = set()            # the languages whose sync, known-sync and Generate ran this run (02 §4: once)
     begun = set()               # the languages this run has worked on (the status line's *i of n* counts from then)
     undos_looked = set()        # the languages whose half-done undos this run has finished (once a run)
-    parked = set()              # jobs waiting for the next start: never tried again this run (adversary P2.4-A #11)
+    parked = {}                 # jobs waiting for the next start: never tried again this run (adversary P2.4-A #11)
+                                # — {job id: its ask when parked}; a newer ask tries it again (#42, review r42 #3)
     try:
         while True:
             summary["looks"] += 1
+            _kicked(steps)                  # a kick before this look is answered by it: no extra look after (S19)
             outside = work = battery = False
             for lang in languages:
                 stop = _stop(steps)
@@ -204,7 +206,8 @@ def run(loaded, languages, steps=None, ledger=None, sleep=None, cancel=None, loo
                 break
             if looks is not None and summary["looks"] >= looks:
                 break
-            if not _pause(LOOK_EVERY_S, sleep, cancel, lambda: steps.update_staged() or _plugged_in(steps, battery)):
+            if not _pause(LOOK_EVERY_S, sleep, cancel,
+                          lambda: steps.update_staged() or _plugged_in(steps, battery) or _kicked(steps)):
                 summary["stopped"] = "cancelled"
                 break
         return summary
@@ -266,7 +269,10 @@ def _consume(steps, ledger, lang):
 
 
 def _open_jobs(ledger, lang, parked, tried=()):
-    return [j for j in ledger.open_jobs(lang) if j["id"] not in parked and j["id"] not in tried]
+    """The open jobs this pass may try: never one `tried`, nor one parked for the next start — unless you asked for it
+    since it was parked (a *Mine now* on it: your press tries it again in this run, laptop round 7 #42)."""
+    return [j for j in ledger.open_jobs(lang)
+            if not (j["id"] in parked and parked[j["id"]] == j.get("asked_at")) and j["id"] not in tried]
 
 
 def _empty():
@@ -304,6 +310,20 @@ def _plugged_in(steps, battery):
         return not on_battery()
     except Exception:
         log.warning("Connect couldn't look at the power; the pause goes on", exc_info=True)
+        return False
+
+
+def _kicked(steps):
+    """Was Connect kicked during the pause (a *Mine now*, a placement, a setting that lets waiting episodes go:
+    `kick.kick` stamps its wake mark when Connect already runs)? The pause ends, so the next look reads the ask within
+    seconds, never at the 2-minute look (laptop round 7 #42). A look that fails is no wake (logged)."""
+    kicked = getattr(steps, "kicked", None)
+    if kicked is None:
+        return False
+    try:
+        return kicked()
+    except Exception:
+        log.warning("Connect couldn't look at its wake mark; the pause goes on", exc_info=True)
         return False
 
 
@@ -550,7 +570,7 @@ def _wait(ledger, job, wait, out, parked=None):
         ledger.set_state(job["id"], "waiting", reason=wait.reason, resume=resume)   # the same wait: nothing written (S19)
     out["waiting"][job["item_id"]] = wait.reason
     if parked is not None and not wait.look:
-        parked.add(job["id"])
+        parked[job["id"]] = now.get("asked_at")
 
 
 def _held():
@@ -610,7 +630,8 @@ def _job(steps, ledger, lang, job, store_now, line, out):
         return
     record = not foreign
     if droppable:
-        full = _full(steps, lang)       # at the cap, the shelf tried: one count, no pick and no write (S19, review B adv #2)
+        # at the cap, the shelf tried: one count, no pick and no write (S19, review B adv #2); never an ask (#42)
+        full = _full(steps, lang, asked=bool(job.get("asked_at")))
         if full is not None:
             raise full
     try:
@@ -746,7 +767,7 @@ def _mine(steps, ledger, lang, job, record=True):
         if wait is not None:
             raise wait
         if not _started(ledger, jid):       # P2.4 Part B: the cap before a job's first batch, never mid-episode
-            wait = _at_cap(steps, ledger, lang, todo)
+            wait = _at_cap(steps, ledger, lang, todo, asked=bool(job.get("asked_at")))
             if wait is not None:
                 raise wait
         if ran and steps.update_staged():
@@ -902,11 +923,18 @@ def _fail_mining(steps, ledger, lang, job, record=True):
     raise _Finished("failed")
 
 
-def _full(steps, lang):
+def held_by_cap(asked):
+    """Does the cap hold this job? Never one carrying an ask (*Mine now*, *Mine this*, *Mine it too*): your press is the
+    yes for that episode's cards, past the cap as past the battery (Sonic's M-3 A, laptop round 7 #42). The one rule
+    `_full` and `_at_cap` read."""
+    return not asked
+
+
+def _full(steps, lang, asked=False):
     """Before a job's pick: a Wait when Connect's waiting cards are at the cap and this run's shelf has had its try (it
     can free nothing more until you study), else None — one request, so a job waiting at the cap is never picked
-    again at every look."""
-    if not getattr(steps, "shelf_tried", lambda _lang: False)(lang):
+    again at every look. `asked`: the job carries an ask (`held_by_cap`)."""
+    if not held_by_cap(asked) or not getattr(steps, "shelf_tried", lambda _lang: False)(lang):
         return None
     cap = steps.cap(lang)
     if not cap:
@@ -917,9 +945,12 @@ def _full(steps, lang):
     return Wait(f"Your {count} cards are waiting: Connect makes more as you study them.", resume="mining")
 
 
-def _at_cap(steps, ledger, lang, todo):
+def _at_cap(steps, ledger, lang, todo, asked=False):
     """P2.4 Part B (the cap, the shelf): a Wait when Connect's waiting cards are at the learner's cap, else None. At the
-    cap the shelf is asked first (once a run, only on a big gap); what it frees may let this batch go."""
+    cap the shelf is asked first (once a run, only on a big gap); what it frees may let this batch go. `asked`: the
+    job carries an ask — never held, nothing shelved for it (`held_by_cap`)."""
+    if not held_by_cap(asked):
+        return None
     cap = steps.cap(lang)
     if not cap:
         return None
@@ -1050,8 +1081,12 @@ class Steps:
     """What the loop asks of Anki, Anki Miner, the store and the list. Each method raises Wait / Needs / Skip /
     Repick as the loop reads them; a test hands its own (`tests/connect/test_runner.py`)."""
 
-    def __init__(self, loaded):
+    def __init__(self, loaded, live=False):
         self.loaded = loaded
+        self.live = live            # the run's own steps: what may change while it runs (the cap) read from the file
+        from app.connect import kick
+        self._woken = kick.wake_stamp()     # the wake mark as the run found it: a kick since ends a pause (#42)
+        self._began = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())     # the ledger's stamps' form
         from app import anki_connect
         self.url = anki_connect.address(loaded)
         self._current = {}          # {lang: replan.Current}: the plan this run mines and orders from (P3.3)
@@ -1068,6 +1103,16 @@ class Steps:
     def update_staged(self):
         from app import library_store
         return library_store.update_staged(looks=library_store.PROBE_LOOKS)
+
+    def kicked(self):
+        """Has a kick stamped the wake mark since the last look at it (`kick.wake_stamp`)? Then the mark is taken as
+        seen: one wake a kick."""
+        from app.connect import kick
+        now = kick.wake_stamp()
+        if now == self._woken:
+            return False
+        self._woken = now
+        return True
 
     def enabled(self):
         """Connect's switch as settings.json holds it now (read again at every look and before each job): off, or
@@ -1413,26 +1458,33 @@ class Steps:
     def cap(self, lang=None):
         """`connect_backlog_cap` for `lang` — one cap per language (Sonic 2026-10-08, P2.4-B-SD4 changed; charter D31):
         a number is every language's cap, `{lang: n}` each its own (300 for one it doesn't name); 0: no cap; not a
-        number: the default (review B #1)."""
-        value = self.loaded.get("connect_backlog_cap", 300)
-        if isinstance(value, dict):
-            value = value.get(lang, 300)
-        try:
-            return max(0, int(value))
-        except (TypeError, ValueError):
-            return 300
+        number: the default (review B #1) — `settings_values.cap_of`, Settings' own reading. The run's steps (`live`)
+        read settings.json as it is now (`_settings`), so a cap raised in Settings reaches a Connect already waiting
+        at the old one (laptop round 7 #42); a test's steps read the dict they were handed."""
+        from app.connect.settings_values import cap_of
+        loaded = self._settings(lang) if self.live else self.loaded
+        return cap_of(loaded.get("connect_backlog_cap", 300), lang)
 
     def waiting_count(self, lang):
-        """Connect's waiting cards of `lang`: its tagged new, unsuspended cards whose notes this language's store made
-        (one cap per language, D31)."""
-        from app import anki_connect
+        """The cards waiting in Anki for `lang` — one count everywhere (laptop round 7 #41, Sonic's B3-2 A, 2026-10-22):
+        every new, unsuspended note in the decks you chose for it plus Connect's own, wherever they are
+        (`anki_sync.backlog_query(decks, connect=True)`: the bottom bar's *Anki · N waiting* is that search's saved
+        answer, `anki_backlog.json`). A suspended card isn't waiting: your suspend says "known", Surasura's sets it
+        aside. Your own new cards count toward the cap too. One cap per language (D31): Connect's notes count only
+        those this language's store made (the tag spans every language; review r2 #2). Decks read as settings.json
+        holds them now (`live`). Notes, as the bottom bar counts them."""
+        from app import anki_connect, anki_sync
         from app.connect import shelf
+        loaded = self._settings(lang) if self.live else self.loaded
+        decks = list((loaded.get("anki_sync_decks") or {}).get(lang) or [])
         with self._open(lang) as store:
             made = shelf.made_notes(store)
         try:
-            return shelf.waiting_count(self._anki(), made)
+            notes = set(anki_connect.find_notes(self.url, anki_sync.backlog_query(decks))) if decks else set()
+            notes |= set(anki_connect.find_notes(self.url, anki_sync.backlog_query([], connect=True))) & set(made)
         except anki_connect.AnkiError as e:
             raise _anki_wait(self.url, "mining", e) from None
+        return len(notes)
 
     def _list_order(self, lang):
         """{(Word, Reading): place} in the list's own order (Junban's), or None: the re-plan's (P3.3) when the plan
@@ -1479,7 +1531,11 @@ class Steps:
         ranks = shelf.ranks(order)
         with self._open(lang) as store:
             made = shelf.made_notes(store)
-            pinned = shelf.pinned_items(store)
+            # never the cards of an episode you asked for (*Mine now*: mined past the cap, `held_by_cap`) — the shelf
+            # taking them would undo your press (laptop round 7 #42, review r42 #2); the ledger keeps every ask
+            pinned = shelf.pinned_items(store) | {j["item_id"] for j in ledger.jobs(lang)       # this run's asks
+                                                  if j.get("asked_at") and (j["state"] not in ENDED
+                                                                            or (j.get("updated_at") or "") >= self._began)}
             finished = shelf.finished_items(store, made)
             holder = self._top_words(lang, store)
         anki = self._anki()
@@ -1490,6 +1546,11 @@ class Steps:
         needed = [ranks.get(w["word"], shelf.NOT_LISTED) for w in todo]
         chosen = shelf.plan(waiting, needed, cap, count, pinned, holder, finished)
         if not chosen:
+            return 0
+        if len(chosen) < count + len(needed) - cap:
+            # the count holds your own new cards too (B3-2 A), the shelf takes only Connect's: shelving that can't
+            # bring the batch under the cap suspends cards for nothing (review r2 #3) — nothing is shelved
+            self._say(lang, f"the shelf can't make room: {count} cards wait, {len(chosen)} of Connect's could go.")
             return 0
         run = shelf.shelve(anki, ledger, lang, chosen, "the cap: less relevant than the top 20's next words")
         self._say(lang, f"{len(chosen)} of Connect's waiting cards went to the shelf (suspended in Anki, tagged "

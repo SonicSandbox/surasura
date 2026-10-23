@@ -989,11 +989,13 @@ class SettingsPage(QWidget):
             key = row.keys[0]
             self._overlay[key] = [changes[key], self._landings]          # shown until the merge lands (S1)
             self.store.set({}, update=update)
+            from app.qt import settings_store
+            settings_store.kick_on_release(settings, changes, self.store)   # the cap changed: Connect looks again
         elif changes:
             self.store.set(changes)
             from app.qt import settings_store
             settings_store.resume_connect(settings, changes)             # the automation row on: Connect's marks
-            settings_store.kick_on_trust(settings, changes, self.store)  # trust turned on: the waiting ones mine
+            settings_store.kick_on_release(settings, changes, self.store)  # trust turned on: the waiting ones mine
         else:
             return
         self._refresh_visibility(anchor=control)

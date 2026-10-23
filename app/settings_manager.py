@@ -121,8 +121,8 @@ DEFAULT_SETTINGS = {
     "setup_passed": [],
     # Connect's backlog (P2.4, Sonic 2026-10-07: "keep up to N Surasura cards waiting"; one per language, 2026-10-08:
     # a number is each language's, {"ja": n, "zh": m} each its own): Connect makes cards while fewer
-    # than this many of its own new, unsuspended cards of that language wait in Anki, and tops up as you study; at the cap the least
-    # relevant go to the shelf (suspended) only on a big gap (a quarter of it). Your own cards never count. Never in a
+    # than this many new, unsuspended cards of that language wait in Anki (its decks + its own), and tops up as you study; at the cap the least
+    # relevant go to the shelf (suspended) only on a big gap (a quarter of it). Your own new cards count too (B3-2 A). Never in a
     # signature.
     "connect_backlog_cap": 300,
     # Where Connect looks for an episode's video when it isn't where its pairing says (P2.5, G1.3-12): these folders and

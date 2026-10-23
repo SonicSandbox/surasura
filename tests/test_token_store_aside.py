@@ -195,11 +195,13 @@ def test_a_new_or_changed_aside_file_is_read_once_and_never_summed(language, tmp
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_a_caller_with_one_list_leaves_the_aside_rows_alone(language):
+def test_a_caller_with_one_list_leaves_the_aside_rows_alone(language, tmp_path):
     """Generate with the library store busy and the sentence dictionary (`reconcile_language`) know only the run's
     list: a set-aside row stays aside, its tokens and its place in no count; a caller that names the aside list
-    (the indexer) drops one it no longer names, as a counted file leaves."""
+    (the indexer) drops one it no longer names, as a counted file leaves — taking no count with it."""
     a, b, c, *_rest = _files(language)
+    alone = ti.open_store(language, path=str(tmp_path / "alone.db"))
+    alone.reconcile([a, b], ti.make_tokenizer(language))
     with ti.open_store(language) as store:
         store.reconcile([a, b], ti.make_tokenizer(language), aside=[c])
         before = (_everything_counted(store, language), store.file_tokens(c))
@@ -212,6 +214,9 @@ def test_a_caller_with_one_list_leaves_the_aside_rows_alone(language):
         assert (_everything_counted(store, language), store.file_tokens(c)) == before
         store.reconcile([a, b], ti.make_tokenizer(language), aside=[])
         assert store.aside_files() == [] and store.file_tokens(c) == []
+        # An aside row was never summed: its leaving takes nothing away (the counts are a and b's alone).
+        assert _counts_only(store, language) == _counts_only(alone, language)
+    alone.close()
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
@@ -364,6 +369,31 @@ def test_the_name_tables_are_byte_identical_with_every_episode_watched_and_with_
     assert NAME not in _surfaces(finished, eps[2])
     finished.close()
     none.close()
+
+
+def test_a_watched_episode_edited_to_hold_the_name_makes_the_name_tables_count_it(tmp_path):
+    """The first episode, watched, holds no use of the show's name: two uses, under the floor, so the name isn't joined.
+    Its subtitle is then edited (a corrected line holding the name): the episode is read again while still set aside,
+    and its new use is the names' evidence at once — the third use, so the name tables join it and the episode still
+    ahead reads it whole, as a library that never lacked the line does."""
+    eps = _show()
+    sig = ti.build_signature("ja")
+    with open(eps[0], encoding="utf-8") as f:
+        whole = f.read()
+    with open(eps[0], "w", encoding="utf-8", newline="\n") as f:
+        f.write(whole.replace(NAME_LINES[0], "公園で待ち合わせよう。"))
+    store = ti.open_store("ja")
+    store.reconcile(eps[1:], ti.make_tokenizer("ja"), sig, aside=eps[:1])
+    assert NAME not in store.names_tables()["k"], "precondition: two uses are under the floor"
+    with open(eps[0], "w", encoding="utf-8", newline="\n") as f:
+        f.write(whole)
+    store.reconcile(eps[1:], ti.make_tokenizer("ja"), sig, aside=eps[:1])
+    reference = ti.open_store("ja", path=str(tmp_path / "reference.db"))
+    reference.reconcile(eps[1:], ti.make_tokenizer("ja"), sig, aside=eps[:1])
+    assert NAME in store.names_tables()["k"] and _names_bytes(store) == _names_bytes(reference)
+    assert NAME in _surfaces(store, eps[2])
+    store.close()
+    reference.close()
 
 
 def test_the_rarity_preview_counts_what_the_list_counts_with_watched_episodes(tmp_path):

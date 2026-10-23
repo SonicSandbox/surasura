@@ -120,6 +120,34 @@ def test_a_mark_in_finished_in_new_arrivals_or_with_the_option_on_is_a_status_wr
     store.close()
 
 
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_mark_on_a_video_waiting_for_its_subtitle_moves_nothing_that_counts(language):
+    """A video still waiting for its subtitle is in no list (Generate's skips it, watched or not): its stone, its undo,
+    the option flipped with it the only watched item, and the first start's count of old stones move no
+    `order_version` — no Generate for nothing. A counted episode marked beside it still moves the order."""
+    data_dir, user_files_dir = roots(language)
+    store = migrated(language)
+    now = store.ids("now")
+    with store._writing():
+        store.conn.execute("UPDATE items SET availability = 'waiting' WHERE id = ?", (now[0],))
+    before, order = _scheduled(store), store.versions()["order_version"]
+    change = store.set_watched([now[0]])
+    assert change is not None and store.item(now[0])["watched"] == 1
+    store.undo(change)
+    store.set_watched([now[0]])
+    on = store.set_library_options(keep_watched=True)
+    store.undo(on)
+    _as_build_2(store)
+    store.close()
+    ls.maintain(language, data_dir, user_files_dir)
+    store = ls.open_store(language, data_dir, user_files_dir)
+    assert store.versions()["order_version"] == order and _scheduled(store) == before
+    store.set_watched([now[0], now[1]], False)
+    store.set_watched([now[0], now[1]])
+    assert store.versions()["order_version"] == order + 1
+    store.close()
+
+
 # --- the option ------------------------------------------------------------------------------------------------- #
 
 @pytest.mark.parametrize("language", LANGUAGES)

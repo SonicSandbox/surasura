@@ -85,8 +85,9 @@ ANALYSED = tuple(t for t, v in TIERS.items() if v[2])                    # now, 
 # An item COUNTS (a list use: Generate's files, the Rarity preview's sums, the mine line) when its tier is analysed and
 # it isn't watched, or the library's own option `keep_watched` is on (meta; absent = off). A watched item of an analysed
 # tier while it's off is SET ASIDE (`text_lists`): its text kept, never summed. Finished takes a show off the list by
-# its tier, a stone one episode by this rule. Written once in Python (`counts`: the window's `view_rows._mine_ids` calls
-# it) and once in SQL (`counts_sql`), from the same constants; a test holds the two equal.
+# its tier, a stone one episode by this rule. Written once in Python (`counts`: the window's numbers read it through
+# `moves._set_aside`; the window's drawn mine line, `view_rows._mine_ids`, and Connect's, `level._walk`, don't read it
+# yet) and once in SQL (`counts_sql`), from the same constants; a test holds the two equal.
 def _tiers_sql(tiers):
     return ", ".join(f"'{t}'" for t in tiers)
 
@@ -3921,17 +3922,19 @@ class Store:
 
     def _moves_counted(self, ids):
         """W-1: does a watched mark (set or taken back) on `ids` move what counts? Only while `keep_watched` is off,
-        and only for an item whose tier the rule reads it in (an analysed one): a mark in Finished or New arrivals, or
-        with the option on, is a status write."""
+        and only for an item whose tier the rule reads it in (an analysed one) and that `schedule()` lists: a mark in
+        Finished or New arrivals, on a video waiting for its subtitle, or with the option on, is a status write."""
         keep = self._keep_watched()
         tiers = {r[0] for chunk in _chunks(list(ids), 500) for r in self.conn.execute(
-            f"SELECT DISTINCT tier FROM items WHERE id IN ({','.join('?' * len(chunk))})", chunk)}
+            f"SELECT DISTINCT tier FROM items WHERE id IN ({','.join('?' * len(chunk))}) AND availability != 'waiting'",
+            chunk)}
         return any(counts(t, 0, keep) != counts(t, 1, keep) for t in tiers)
 
     def _watched_aside(self):
-        """W-1: is a watched item in an analysed tier — would `keep_watched` flipping move what counts?"""
+        """W-1: is a watched item in an analysed tier, one `schedule()` would list (no video waiting for its subtitle)
+        — would `keep_watched` flipping move what counts?"""
         return self.conn.execute(f"SELECT EXISTS (SELECT 1 FROM items WHERE {counts_sql(True)} AND NOT "
-                                 f"{counts_sql(False)})").fetchone()[0] == 1
+                                 f"{counts_sql(False)} AND availability != 'waiting')").fetchone()[0] == 1
 
     # --- the library's options (L2.2 04 §4.2): the Soon line, the mine line, New arrivals ------------ #
 

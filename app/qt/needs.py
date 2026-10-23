@@ -138,6 +138,9 @@ def _label(text, name, parent, wrap=True):
     return lab
 
 
+PRESSED = ("mark_known", "leave_known")    # round 8 row 45: the answers whose press turns an arc (`app/qt/press.py`)
+
+
 class NeedsCards(QWidget):
     """The page's cards, in the entries' order; a card is rebuilt only when its own entry (or its find results, or its
     look running) changed (S19), and only while the page shows (C1: entries given while it is hidden are built when it
@@ -230,6 +233,8 @@ class NeedsCards(QWidget):
         b.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         b.setCursor(Qt.CursorShape.PointingHandCursor)
         b.clicked.connect(lambda _c=False, n=name, e=entry, ln=line: self.action.emit(n, e, ln))
+        if name in PRESSED:
+            qpress.room(b)                      # round 8 row 45: its arc's room kept at rest, so nothing moves
         self.adopt(b, name, entry)
         return b
 

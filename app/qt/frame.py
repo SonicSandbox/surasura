@@ -30,7 +30,7 @@ import math
 import random
 from collections import OrderedDict
 
-from PyQt6.QtCore import QEvent, QObject, QPointF, QRectF, QSize, Qt, pyqtSignal
+from PyQt6.QtCore import QEvent, QObject, QPointF, QRect, QRectF, QSize, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QImage, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
 from PyQt6.QtWidgets import QApplication, QHBoxLayout, QLabel, QSizePolicy, QToolButton, QVBoxLayout, QWidget
 
@@ -847,7 +847,11 @@ class KnownCorner(QToolButton):
     sync now (`clicked`: the shell hands it to `Automation.sync_now`, or opens the Anki window while there is nothing
     to sync from yet). Its hover's last line, and its accessible description, say what a click does on the road shown
     (`set_road`, the page's known-words road: Anki's decks chosen, a sync; none, the Anki window), or, while a sync
-    runs (`set_syncing`), that one is running (IK-7)."""
+    runs (`set_syncing`), that one is running (IK-7). Round 8 row 45 (the trial): a click's sync shows at once as the
+    press's accent arc in the slot kept at its left (`press_arc`, empty at rest, so nothing moves), no words, until the
+    sync ends."""
+
+    ARC, ARC_GAP = 14, 6                 # the press's arc and the room after it, kept at the left (round 8 row 45)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -951,7 +955,14 @@ class KnownCorner(QToolButton):
         number, word = self._parts()
         w = rows.TEXT.metrics("known-number").horizontalAdvance(number) + 6 + \
             rows.TEXT.metrics("foot-chip").horizontalAdvance(word) + 4
-        return QSize(w, rows.TEXT.metrics("known-number").height())
+        return QSize(self._room() + w, rows.TEXT.metrics("known-number").height())
+
+    def _room(self):
+        return self.ARC + self.ARC_GAP
+
+    def press_arc(self):
+        """Where a press's arc turns (`app/qt/press.py`): the slot at the left, beside the number."""
+        return QRect(0, (self.height() - self.ARC) // 2, self.ARC, self.ARC)
 
     def paintEvent(self, _event):
         if self.n is None:
@@ -961,6 +972,7 @@ class KnownCorner(QToolButton):
         number, word = self._parts()
         big, small = rows.TEXT.metrics("known-number"), rows.TEXT.metrics("foot-chip")
         base = round((self.height() + big.ascent() - big.descent()) / 2) - 2
+        p.translate(self._room(), 0)                     # (the press's slot at the left)
         p.setFont(_font("known-number"))
         p.setPen(style.qcolor(theme.FRAME_COLOURS["known-ink"]))
         p.drawText(QPointF(2, base), number)
@@ -970,7 +982,7 @@ class KnownCorner(QToolButton):
         p.drawText(QPointF(x, base), word)
         _nxt, share = milestone(self.n)
         y = min(self.height() - 1, base + max(3, small.descent()) + 1)
-        span = self.width() - 4
+        span = self.width() - self._room() - 4
         p.setOpacity(F["known-hairline-alpha"])
         p.fillRect(QRectF(2, y, span, 1), style.qcolor(theme.FRAME_COLOURS["milestone-left"]))
         p.fillRect(QRectF(2, y, span * share, 1), style.qcolor(theme.IRIS["night"][1][1]))
@@ -979,8 +991,8 @@ class KnownCorner(QToolButton):
             p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
             p.setPen(QPen(rows.c("accent"), 2))
             p.setBrush(Qt.BrushStyle.NoBrush)
-            p.drawRoundedRect(QRectF(self.rect()).adjusted(1, 1, -1, -1), theme.RADII["icon-button"],
-                              theme.RADII["icon-button"])
+            p.drawRoundedRect(QRectF(0, 0, self.width() - self._room(), self.height()).adjusted(1, 1, -1, -1),
+                              theme.RADII["icon-button"], theme.RADII["icon-button"])
         p.end()
 
 

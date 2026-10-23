@@ -1446,12 +1446,43 @@ class Spinner(QWidget):
             p.setPen(Qt.PenStyle.NoPen)
             p.drawEllipse(dot)
         elif self.running:
-            from PyQt6.QtGui import QPen
-            pen = QPen(style.qcolor(c["accent"]), max(1.5, r.width() / 8))
-            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-            p.setPen(pen)
-            inset = pen.widthF()
-            arc = r.adjusted(inset, inset, -inset, -inset)
-            start = -int(self.phase * 360 * 16) if self.on_clock else 90 * 16
-            p.drawArc(arc, start, 270 * 16)
+            spin_arc(p, r, self.phase if self.on_clock else None, style.qcolor(c["accent"]))
         p.end()
+
+
+def spin_arc(p, r, phase, colour):
+    """The spin's arc in `r` (a 270° accent arc, round-capped): turned to `phase` (0–1), or None — still, its gap at the
+    top right (Reduced motion, the freeze switch). One look for a `Spinner` and a mark a painted view turns itself (a
+    pressed row's, round 8 row 45: `Turn`)."""
+    from PyQt6.QtGui import QPen
+    pen = QPen(colour, max(1.5, r.width() / 8))
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    p.setPen(pen)
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    inset = pen.widthF()
+    arc = r.adjusted(inset, inset, -inset, -inset)
+    p.drawArc(arc, -int(phase * 360 * 16) if phase is not None else 90 * 16, 270 * 16)
+
+
+class Turn(Spinner):
+    """A spin's phase for a view that paints its own turning mark (round 8 row 45: a pressed pill in the rows): the
+    spinner's clock and rules — on the clock only while running, shown and its window not minimised; still under
+    Reduced motion and the freeze switch (`phase` None) — and nothing painted of its own. `on_frame()` after each frame
+    asks the view to repaint only what turns. A child of the view, 0 × 0, shown."""
+
+    def __init__(self, parent, on_frame):
+        super().__init__("spin", parent)
+        self.setFixedSize(0, 0)
+        self._told = on_frame
+
+    @property
+    def turning(self):
+        """The phase to paint (0–1), or None: still."""
+        return self.phase if self.on_clock else None
+
+    def _on_frame(self, phase):
+        self.phase = phase
+        self._told()
+
+    def paintEvent(self, _event):
+        pass

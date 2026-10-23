@@ -439,6 +439,9 @@ ROWS_NO_MEDIA_TIP = "{tip}\n• Click to link its video, or to mine its text in 
 ROWS_ACTION_OFF = "{tip}\n{why}"
 ROWS_ACTION_KEY = "→ then Enter: {action}"
 ROWS_ACTION_NAMES = {"mine-now": "Mine now", "mine-this": "Mine this", "no-media": "Link… or Mine text"}
+# round 8 row 45 (trial): *Mine now* pressed — its pill turns from the frame of the press until Connect says more; its
+# hover is the one place words show (Sonic: "there are sometimes when text may be useful but be intentional")
+ROWS_ASKED_TIP = "Asked · starting…"
 ROWS_LINK = "Link…"
 ROWS_LINK_TIP = "Choose its video: its cards get their pictures and audio from it"
 ROWS_MINE_TEXT = "Mine text"

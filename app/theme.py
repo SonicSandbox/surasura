@@ -360,6 +360,7 @@ def font(name, text_size=DEFAULT_TEXT_SIZE):
 SIZES = {
     "row": 56, "episode-row": 36, "row-cover-w": 31, "row-cover-h": 44, "hero-cover-w": 88, "hero-cover-h": 126,
     "col-diff": 118, "col-stat": 150, "col-acts": 118, "button": 32, "button-sm": 26, "icon-button": 28,
+    "press-room": 22,                       # round 8 row 45: a pressed button's padding, both sides, its arc's room
     "status-pill": 24, "search-w": 230, "search-w-narrow": 172, "search-h": 32, "generate": 34, "footer": 39,
     "goal-strip": 46, "bucket": 58, "tray": 452, "search-results": 470, "side-panel": 360, "side-panel-narrow": 316,
     "side-rail": 330, "settings-nav": 228, "settings-card-max": 820, "settings-search-max": 520,

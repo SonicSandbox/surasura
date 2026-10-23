@@ -197,10 +197,12 @@ QLabel#toasttext {{ color: {c['ink']}; {font('body')} }}
 QPushButton[size="sm"] {{ min-height: {px(24)}; padding: 0 {px(10)}; border-radius: 7px; {font('button-sm')} }}
 QPushButton[size="sm"]:focus {{ padding: 0 {round(10 * f) - 1}px; }}
 """
-    # --- round 8 row 45: a press under way — room at the right for its arc (`app/qt/press.py`: 8 + 14 + 6 px)
+    # --- round 8 row 45 (the trial): a button whose press turns an arc (`app/qt/press.py` `room`) keeps the arc's room
+    # at rest, both sides (its words centred): pressed, the arc turns in its right padding and nothing moves
+    room = theme.SIZES["press-room"]
     rules += f"""
-QPushButton[pressing="true"] {{ padding-right: {px(28)}; }}
-QPushButton[pressing="true"]:focus {{ padding-right: {round(28 * f) - 1}px; }}
+QPushButton[presses="true"] {{ padding: 0 {px(room)}; }}
+QPushButton[presses="true"]:focus {{ padding: 0 {round(room * f) - 1}px; }}
 """
     # --- W3.5: Generate's states, the update sheet's text, Needs you's update cards (looks to re-skin: duties.py)
     rules += f"""

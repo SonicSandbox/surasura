@@ -555,6 +555,56 @@ def test_a_click_on_the_known_count_syncs_now_or_opens_the_anki_window(world, mo
         assert world.win.bar_line.full() not in strings.FOOT_KNOWN_REFUSED.values()
 
 
+def test_a_click_on_the_known_count_turns_its_arc_at_once_until_its_sync_ends_and_nothing_moves(world):
+    """Round 8 row 45 (the trial): the count is the bar's button that starts work — a click shows the press's accent arc
+    in the slot kept at the count's left, painted before the sync is asked for (no words, never greyed), and the arc
+    turns until that sync's job ends; a click meanwhile asks nothing; the count and its neighbour never move.
+    Red first: before the trial a click painted nothing until the sync's answer (no arc at the ask)."""
+    from app.qt import press as qpress
+    from tests.qt.test_press import Paints
+    world.start()
+    world.automation.push(sync=A.SYNCED, added=0, known=12345)
+    d, win = world.d, world.win
+    assert wait_until(lambda: not d.known.isHidden())
+    QApplication.processEvents()
+    rest = (d.known.geometry(), d.anki.geometry())
+    paints = Paints(d.known)
+    asked = []
+    automation = win.services.automation
+    real = automation.sync_now
+
+    def sync_now(then=None):
+        arc = qpress.arc(d.known)
+        asked.append((arc is not None and arc.isVisible() and arc.running, paints.n, arc and arc.geometry()))
+        real(then=then)
+    automation.sync_now = sync_now
+    QTest.mouseClick(d.known, Qt.MouseButton.LeftButton)
+    assert len(asked) == 1
+    shown, painted, at = asked[0]
+    assert shown and painted >= 1                                     # the arc, painted before the sync was asked for
+    assert at.left() == 0 and at.width() == d.known.ARC                 # in the slot kept at the count's left
+    assert (d.known.geometry(), d.anki.geometry()) == rest            # nothing moved
+    then = world.automation.called("automation.sync_now")[0][1]
+    job = world.registry.record("anki-sync", "Updating known words from Anki")      # the sync's own job runs
+    t = threading.Thread(target=then, args=(None,))                    # the automation's worker: it started
+    t.start()
+    t.join()
+    QTest.qWait(50)
+    assert qpress.arc(d.known) is not None                            # still turning while its job runs
+    QTest.mouseClick(d.known, Qt.MouseButton.LeftButton)
+    assert len(asked) == 1                                            # a click meanwhile asks nothing
+    job.finish(ok=True)
+    assert wait_until(lambda: qpress.arc(d.known) is None)            # the sync ended: the arc goes
+    assert (d.known.geometry(), d.anki.geometry()) == rest
+    QTest.mouseClick(d.known, Qt.MouseButton.LeftButton)              # and a click asks again, with a refusal at once
+    assert len(asked) == 2
+    t = threading.Thread(target=world.automation.called("automation.sync_now")[1][1], args=("update-staged",))
+    t.start()
+    t.join()
+    assert wait_until(lambda: qpress.arc(d.known) is None and
+                      win.bar_line.full() == strings.FOOT_KNOWN_REFUSED["update-staged"])
+
+
 def test_the_known_counts_hover_names_what_a_click_does_on_each_road(world):
     """IK-7: the page's known-words road, one rule — no decks for this language yet, a click opens the Anki window and
     the hover says so; decks chosen, a click syncs; a sync running (any live `anki-sync` job: the automatic one, a

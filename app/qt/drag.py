@@ -698,8 +698,10 @@ class _Relay(QObject):
 
 
 class Ticket:
-    """A command the window gave (its toast's words and its Undo): `change` once the writer saved it."""
-    __slots__ = ("text", "keys", "ids", "change", "undo_asked", "toast", "follows", "then")
+    """A command the window gave (its toast's words and its Undo): `change` once the writer saved it. `told(event)`,
+    if set: "saved", "refused" (nothing written) or "undone" (its Undo asked, or the change undone) — round 8 row 45: a
+    pressed *Mine now* stops turning when its ask is refused or undone, and asks Connect's feed again once saved."""
+    __slots__ = ("text", "keys", "ids", "change", "undo_asked", "toast", "follows", "then", "told")
 
     def __init__(self, text, keys=(), ids=()):
         self.text, self.keys, self.ids = text, tuple(keys), tuple(ids)
@@ -708,6 +710,12 @@ class Ticket:
         self.toast = False
         self.follows = None                          # the ticket this one's command follows (a Finished choice)
         self.then = None                             # a command waiting for this one's change (a Finished choice)
+        self.told = None
+
+
+def _tell(ticket, event):
+    if ticket.told is not None:
+        ticket.told(event)
 
 
 class _Drag:
@@ -1496,6 +1504,7 @@ class DragController(QObject):
         """Hand a command to the writer (`command(label)` -> its number, or None when refused); its toast with Undo."""
         seq = command(ticket)
         if seq is None:                              # refused (E4 meanwhile): nothing written, the store's view stands
+            _tell(ticket, "refused")
             if self.refused() is None:               # W3.2 P0 (AD0-5): never silent — a writer let go at a switch
                 self.say(strings.MOVE_NOT_SAVED)
             held = self.held
@@ -1519,6 +1528,7 @@ class DragController(QObject):
 
     def undo(self, ticket):
         """A toast's Undo: that change (once the writer saved it; asked before, it is undone as it lands)."""
+        _tell(ticket, "undone")
         if ticket.change is not None:
             self.writer.undo(ticket.change)
             self._let_go()
@@ -1542,6 +1552,7 @@ class DragController(QObject):
     def _saved(self, change, label):
         if isinstance(label, Ticket):
             label.change = change
+            _tell(label, "saved")
             then, label.then = label.then, None
             if label.undo_asked:
                 label.undo_asked = False
@@ -1557,6 +1568,8 @@ class DragController(QObject):
             self.reader.refresh()
 
     def _undone(self, change, label):
+        if isinstance(label, Ticket):
+            _tell(label, "undone")
         if self.toasted is not None and self.toasted.change is change:
             self.win.toasts.close()                  # its toast goes with it
             self.toasted = None

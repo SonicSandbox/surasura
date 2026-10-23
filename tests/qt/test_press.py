@@ -112,11 +112,18 @@ def stage(qapp):
     row = QHBoxLayout(host)
     b = QPushButton(MARK, host)
     b.setToolTip(MARK_TIP)
+    b.setProperty("size", "sm")                         # as Needs you's card makes its answers
+    qpress.room(b)
     row.addWidget(b)
+    leave = QPushButton(strings.NEEDS_ACTIONS["leave_known"][0], host)
+    leave.setToolTip(strings.NEEDS_ACTIONS["leave_known"][1])
+    leave.setProperty("size", "sm")
+    qpress.room(leave)
+    row.addWidget(leave)
     row.addStretch(1)
     host.show()
     assert wait_until(lambda: b.isVisible() and b.width() > 10, 5)
-    yield SimpleNamespace(host=host, button=b, paints=Paints(b))
+    yield SimpleNamespace(host=host, button=b, leave=leave, paints=Paints(b))
     host.close()
 
 
@@ -163,7 +170,7 @@ def test_pending_is_the_arc_painted_on_the_button_before_the_work_is_handed_to_t
     assert p.state == service.QUEUED and p.live()
     spinner = qpress.arc(b)
     assert spinner.geometry().right() < b.width() and spinner.geometry().left() > b.width() // 2   # its right edge
-    assert b.geometry().left() == left                     # the button keeps its place (it grows to the right)
+    assert b.geometry().left() == left                     # the button keeps its place
     # a second press while it works starts nothing, though the button is still enabled
     b.click()
     assert qpress.run(b, "needs:mark_known:known-offer:1", lambda: None) is None
@@ -171,7 +178,31 @@ def test_pending_is_the_arc_painted_on_the_button_before_the_work_is_handed_to_t
     handed[0].then(handed[0].fn())
     assert answers == [["一緒に", "やがる"]] and p.state == service.DONE
     assert qpress.arc(b) is None and not spinner.isVisible() and b.text() == MARK and b.isEnabled()
-    assert b.property("pressing") is False
+
+
+def test_nothing_moves_while_the_arc_turns_not_the_button_its_words_or_its_neighbour(stage, handed):
+    # The round 8 trial: P1's arc widened the button's right padding while it turned, so *Leave them* beside it slid
+    # about 17 px. The button now keeps the arc's room at rest (`room`) and the arc turns in it, taking no space of the
+    # layout's: the button, its neighbour and the words stay exactly where they were.
+    b, leave = stage.button, stage.leave
+    for scale_text in ("M", "L"):
+        from app.qt import style
+        style.apply(QApplication.instance(), style.current()[0], scale_text)
+        stage.host.layout().activate()
+        QApplication.processEvents()
+        rest = (b.geometry(), leave.geometry(), b.sizeHint())
+        handed.look = lambda: (b.geometry(), leave.geometry(), b.sizeHint())
+        key = f"needs:mark_known:known-offer:{scale_text}"
+        qpress.run(b, key, lambda: None)
+        QApplication.processEvents()
+        assert handed[-1].look == rest and (b.geometry(), leave.geometry(), b.sizeHint()) == rest, scale_text
+        arc = qpress.arc(b).geometry()
+        words_end = (b.width() + b.fontMetrics().horizontalAdvance(b.text())) / 2
+        assert b.rect().contains(arc), (scale_text, arc, b.rect())                # inside the button …
+        assert arc.left() > words_end, (scale_text, arc, words_end)                # … right of its words
+        assert arc.width() == qpress.ARC
+        handed[-1].then(None)
+        assert (b.geometry(), leave.geometry()) == rest[:2]
 
 
 def test_a_failure_takes_the_arc_off_and_keeps_the_reason(stage, handed):
@@ -212,7 +243,7 @@ def test_a_button_made_again_while_its_press_is_live_takes_the_arc(stage, handed
     assert arc_shown(again)
     assert qpress.adopt(QPushButton(MARK), "needs:leave_known:known-offer:1") is False     # no live press: untouched
     handed[0].failed((RuntimeError("Anki isn't open"), ""))
-    assert qpress.arc(again) is None and again.property("pressing") is False
+    assert qpress.arc(again) is None and again.isEnabled()
 
 
 # --- a menu's press: the bar holds its words (the shell) ---------------------------------------------------------- #

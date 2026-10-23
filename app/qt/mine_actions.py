@@ -20,6 +20,10 @@ IK S3, S7). What the rows, Finished, the arrivals and *Needs you* ask for, route
   (`rows.asked_files`): never a file in Anki, being mined, or whose cards were deleted (P4.1 WF, adversary S5).
 - **An episode's own ⋯** (row 28, Michi's row 24b ask): *Mine now* exactly where the episode's pill would be *Mine
   now* (`rows.action_of`, its tip the pill's), picked as the pill is clicked (`mine_row`, its ids the pill's).
+- **Pressed, its pills turn at once** (round 8 row 45, the trial): an ask marks its files in each list
+  (`RowsView.press_ids`, painted before the ask is handed to the writer) until Connect's feed says something new of
+  them, or the ask is refused or undone (the ticket's `told`); saved, the feed is looked at now. Asked again while they
+  turn, nothing is asked.
 Nothing here reads the store or the settings on the window's thread: the writes are the writer's, the looks a worker's.
 """
 import os
@@ -169,8 +173,25 @@ class MineActions(QObject):
         moves = self.win.moves
         if moves is None or moves.refused() is not None:
             return None
+        if set(ids) <= set().union(*(lst.pressed_ids for lst in self.lists)):
+            return None                              # round 8 row 45: asked already, still turning — asked once
+        for lst in self.lists:                       # ... its pills turn now, painted before the ask is handed over
+            lst.press_ids(ids)
+        ticket = drag.Ticket(text, keys, ids)
+        ticket.told = lambda event: self._told(event, ids)
         writer = moves.writer
-        return moves._give(drag.Ticket(text, keys, ids), lambda t: writer.ask_mining(ids, label=t))
+        return moves._give(ticket, lambda t: writer.ask_mining(ids, label=t))
+
+    def _told(self, event, ids):
+        """Round 8 row 45: the ask saved — Connect's feed looked at now, not at its next tick; refused or undone — its
+        pills stop turning."""
+        if event == "saved":
+            refresh = getattr(getattr(self.win.services, "status", None), "refresh_soon", None)
+            if refresh is not None:
+                refresh("connect")
+            return
+        for lst in self.lists:
+            lst.unpress(ids)
 
     # --- row 28 (Michi's row 24b ask): an episode's own ⋯ ----------------------------------------------------- #
     def episode_entries(self, row, ep):

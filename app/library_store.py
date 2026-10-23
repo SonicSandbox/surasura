@@ -1795,8 +1795,8 @@ class Store:
         loads — each entry {physical_path, source_type, title, parent_folder} straight from the columns; a video
         waiting for its subtitle (K5) is never in it, nor an item that doesn't count (W-1: watched, `keep_watched` off).
         With `with_versions`, also the versions, read in the same transaction; with `with_aside`, also `ASIDE`: the
-        set-aside items (`text_lists`' aside: an analysed tier's items that don't count), each {physical_path,
-        source_type}, in the same transaction."""
+        set-aside items (`text_lists`' aside: an analysed tier's items that don't count; a video still waiting for
+        its subtitle has no text yet, so never), each {physical_path, source_type}, in the same transaction."""
         out = {}
         with self._reading():
             rule = counts_sql(self._keep_watched())
@@ -1809,7 +1809,7 @@ class Store:
             if with_aside:
                 out[ASIDE] = [{"physical_path": p, "source_type": s} for p, s in self.conn.execute(
                     f"SELECT rel_path, source_type FROM items WHERE tier IN ({_tiers_sql(ANALYSED)}) AND NOT {rule} "
-                    "ORDER BY tier, ord, id")]
+                    "AND availability != 'waiting' ORDER BY tier, ord, id")]
             versions = self._versions() if with_versions else None
         return (out, versions) if with_versions else out
 

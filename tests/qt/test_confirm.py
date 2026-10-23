@@ -313,3 +313,37 @@ def test_a_card_without_a_field_has_none_and_no_text(second):
     assert card.field is None
     card.yes.click()
     assert answers == [True] and card.text is None
+
+
+# --- row 35: a card with no action to offer (the close with only Connect going on) ------------------------------ #
+def test_a_card_without_an_action_has_one_button_and_every_answer_is_no(second):
+    """`yes=None`: one button (`no`), the default; Tab stays on it; Enter on it, like Esc, answers No."""
+    answers = []
+    card = confirm.ask(second, "Still finishing: Making cards", "Connect finishes the cards it's making by itself.",
+                       None, None, no="Quit", no_tip="Close now", default_no=True, on_answer=answers.append)
+    QApplication.processEvents()
+    assert card.yes is None and card.default is card.no
+    assert [b.text() for b in card.findChildren(QPushButton)] == ["Quit"]
+    assert QApplication.focusWidget() is card.no
+    QTest.keyClick(QApplication.focusWidget(), Qt.Key.Key_Tab)
+    assert QApplication.focusWidget() is card.no
+    QTest.keyClick(QApplication.focusWidget(), Qt.Key.Key_Return)
+    assert answers == [False] and _gone(card)
+
+
+def test_a_second_card_in_the_same_window_holds_the_keyboard_and_the_first_never_takes_it_back(second):
+    """R35-1: each open card took focus back to itself, so two in one window recursed until the stack ran out (the
+    process died). Only the newest holds the keyboard; once it is answered, the older one holds it again."""
+    first, first_answers = _ask(second)
+    newer, newer_answers = _ask(second)
+    assert wait_until(lambda: QApplication.focusWidget() is newer.no)
+    first.no.setFocus()                                   # a move the older card would have fought over
+    QApplication.processEvents()
+    assert QApplication.focusWidget() is newer.no         # the newest takes it back; the older never fights it
+    newer.no.click()
+    assert newer_answers == [False] and first.answer is None
+    second.field.setFocus()
+    QApplication.processEvents()
+    assert QApplication.focusWidget() is first.default    # the older card holds the keyboard again
+    first.no.click()
+    assert first_answers == [False]

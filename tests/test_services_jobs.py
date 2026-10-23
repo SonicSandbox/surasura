@@ -370,3 +370,57 @@ def test_a_users_job_held_by_a_gate_keeps_its_turn_before_a_later_conflicting_on
     assert gen.state == J.RUNNING and idx.state == J.WAITING and started == ["Generating"]
     gen.finish()
     assert idx.state == J.RUNNING and started == ["Generating", "Indexing"]
+
+
+# --- row 35: what goes on after the window closes, and *Stop and quit* ------------------------------------------- #
+# What a wrong answer would cost: a sheet at every close (or none while Surasura's helpers hold its folder), and —
+# worst — *Stop and quit* ending something it must not: a Content Manager mid-import, Connect mid-batch (Anki's), or a
+# process the window never started.
+def test_what_outlives_the_window_is_the_upkeep_or_connect_and_nothing_else():
+    """`detached_at_quit`, by kind: the library's upkeep (`STOPPABLE_AT_QUIT`) and Connect making cards
+    (`CONNECT_KIND`) go on without the window; a sync on the window's own thread, a Content Manager child (`detach`,
+    with a pid), the update, Generate (`cancel`) and an Anki write (`wait`) are never named."""
+    registry = JobRegistry()
+    upkeep = registry.record("library-maintain", "Tidying your library", on_quit="detach")
+    upkeep.started_process(4321)
+    sync = registry.submit("anki-sync", "Updating known words from Anki", lambda j: None, on_quit="detach")
+    manager = registry.record("child", "Content Manager", on_quit="detach")
+    manager.started_process(5555)                             # a pid is no reason: it may be mid-import
+    registry.submit("generate", "Generating", lambda j: None, on_quit="cancel")
+    registry.submit("junban", "Re-ordering Anki", lambda j: None, on_quit="wait")
+    mine = registry.record(J.CONNECT_KIND, "Making cards", on_quit="detach")
+    update = registry.submit("update", "Downloading the update", lambda j: None, on_quit="detach")
+    update.started_process(6666)
+    assert sync.state == J.RUNNING and update.state == J.RUNNING
+    assert [v.id for v in J.detached_at_quit(registry.snapshot())] == [upkeep.id, mine.id]
+    upkeep.finish()
+    mine.finish()
+    assert J.detached_at_quit(registry.snapshot()) == ()
+    assert J.detached_at_quit(()) == ()
+    assert J.CONNECT_KIND == "mine" and J.STOPPABLE_AT_QUIT == ("library-maintain",)
+
+
+def test_the_rule_reads_jobs_as_well_as_views():
+    registry = JobRegistry()
+    upkeep = registry.record("library-maintain", "Tidying your library", on_quit="detach")
+    assert J.detached_at_quit([upkeep]) == (upkeep,)
+
+
+def test_stop_and_quit_cancels_the_upkeep_alone_through_its_owner_never_connect_nor_another_child():
+    """`stop_at_quit` reads the registry now and asks the owner (its cancel callback, which holds the Popen) — only for
+    a `STOPPABLE_AT_QUIT` kind: never Connect (even one with a pid and a cancel), never a Content Manager child, never
+    a sync, never a job already ended."""
+    registry, asked = JobRegistry(), []
+    upkeep = registry.record("library-maintain", "Tidying your library", cancel=lambda j: asked.append(j.kind),
+                             on_quit="detach")
+    registry.record(J.CONNECT_KIND, "Making cards", cancel=lambda j: asked.append(j.kind), on_quit="detach")
+    registry.record("child", "Content Manager", cancel=lambda j: asked.append(j.kind), on_quit="detach")
+    registry.submit("anki-sync", "Updating known words from Anki", lambda j: None,
+                    cancel=lambda j: asked.append(j.kind), on_quit="detach")
+    ended = registry.record("library-maintain", "Tidying your library", cancel=lambda j: asked.append("ended"),
+                            on_quit="detach")
+    ended.finish()
+    assert J.stop_at_quit(registry) == (upkeep.id,)
+    assert asked == ["library-maintain"] and upkeep.state == J.CANCELLING
+    assert J.stop_at_quit(registry) == ()                     # asked once: a second answer asks nothing again
+    assert J.stop_at_quit(JobRegistry()) == ()

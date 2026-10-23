@@ -11,6 +11,7 @@ The indexer's child is a fake `Popen` (the claim is about when and how often it 
 stat-only `index_needed` over the suite's Japanese files where the claim is about the library.
 """
 import os
+import subprocess
 import sys
 import threading
 import types
@@ -444,6 +445,7 @@ def test_the_store_helper_once_per_burst_and_detached(monkeypatch, timers_on):
     assert len(spawned) == 1 and handed == [""]
     job = registry.live("library-maintain")[0]
     assert job.on_quit == "detach"
+    assert job.pid == _Proc.pid, "row 35: *Stop and quit* ends the helper by its own pid"
     registry.quit(timeout=0.5)
     assert spawned[0].returncode is None, "quitting leaves the helper running"
     spawned[0].end(0)
@@ -639,3 +641,28 @@ def test_after_close_no_trigger_arms_a_timer_or_asks_the_indexer(indexing_on, ti
     assert timers == []
     assert chores.index(force=True) == "busy"
     assert popen == [] and not registry.snapshot()
+
+
+# --- row 35: *Stop and quit* ends the upkeep helper through its own Popen --------------------------------------- #
+def test_stop_and_quit_ends_the_real_upkeep_helper_and_never_another_process():
+    """The helper (`_watch`: a real child here) is ended through the Popen chores holds — its pid can't be reused
+    while held — and the job ends cancelled; a live child the registry doesn't hold is left alone."""
+    chores, registry, _p = _make()
+    helper, bystander = (subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
+                                          stdin=subprocess.DEVNULL) for _ in range(2))
+    try:
+        chores._watch(helper)
+        job = registry.live("library-maintain")[0]
+        assert job.pid == helper.pid and job.can_cancel
+        assert J.stop_at_quit(registry) == (job.id,)
+        assert helper.wait(10) is not None
+        assert h.until(lambda: not registry.live("library-maintain"), seconds=5)
+        assert registry.snapshot()[-1].cancelled
+        assert bystander.poll() is None, "never a process the registry doesn't hold"
+        assert J.stop_at_quit(registry) == ()                 # ended: nothing asked again
+    finally:
+        for proc in (helper, bystander):
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait(10)
+        chores.close(store=False)

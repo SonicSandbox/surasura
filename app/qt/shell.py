@@ -118,6 +118,7 @@ class Services:
         self.started = False
         self._quit_lock = threading.Lock()
         self._quit_began = None           # when the quit began (`_stop_starting`): E20's wait counts from it
+        self._held = False                # row 35: gated jobs held while the close's sheet asks (`hold_starting`)
         # W3.5 part 3 (AD-8 / IK2-7): set while the setup wizard is up — no quiet Generate (the automatic one, the
         # journey keeper's) before its last page sets the level; an upgrader's library has no journey yet
         self.setup_open = threading.Event()
@@ -408,7 +409,8 @@ class Services:
                 return False
             self._quit_began = time.monotonic()
             self.closing.set()
-            self.registry.gate(self._closing_gate)
+            if not self._held:                    # (row 35's sheet held them already)
+                self.registry.gate(self._closing_gate)
             if self.updates is not None:
                 try:
                     self.updates.quit()
@@ -425,6 +427,18 @@ class Services:
                 except Exception as e:
                     applog.log("shell", f"the re-order host at quit: {e}")
         return True
+
+    def hold_starting(self):
+        """(Row 35: the close's sheet asks; every answer quits.) Once: every gated job held from now on (the registry's
+        gate, the quit's own reason) and the chores' timers taken back — nothing is spawned that *Stop and quit* would
+        miss. Not the quit's start (`_stop_starting`: E20's wait still counts from the answer). Returns at once."""
+        with self._quit_lock:
+            if self._held or self._quit_began is not None:
+                return
+            self._held = True
+        self.registry.gate(self._closing_gate)
+        if self.chores is not None:
+            self.chores.halt()
 
     @staticmethod
     def _closing_gate(_kind):
@@ -986,6 +1000,8 @@ class ShellWindow(QMainWindow):
         self.restart_asked = False                        # *Restart now* (text size): main starts the program again
         self._quit_line = strings.QUIT_FINISHING          # the bar's one line while it waits
         self._quit_timer = None
+        self._detached_card = None                        # row 35: the close's *Still finishing* sheet, while open
+        self._detached_answered = False                   # ... answered (Quit or Stop and quit): asked once a close
         self.bridge.jobs_changed.connect(self._jobs_changed)
         self._library_needs = 0
         self._status_snap = None
@@ -2729,6 +2745,75 @@ class ShellWindow(QMainWindow):
         self._quit_timer.stop()
         self.close()
 
+    # --- row 35: closing while helpers go on without the window ------------------------------------------------- #
+    def _ask_detached(self):
+        """The close with jobs that outlive the window (`jobs.detached_at_quit`: the library's upkeep, Connect making
+        cards — each keeps the program's folder in use until it ends): the window's sheet names them — *Quit* (the
+        default, and Esc, Back, a click outside: today's close, they go on) or *Stop and quit* (offered only when one
+        is of a kind it may stop, `jobs.STOPPABLE_AT_QUIT`: Connect alone → Quit is the one button). Asked once a close,
+        first in it (before E20's wait); never for the update's hand-over, *Restart now* or the session ending (a
+        logoff never waits on a sheet). Any other card open in the window is dropped first: the sheet never stacks on
+        one. While it asks nothing new starts (every answer quits). A close while it is open is Quit. None under way →
+        nothing asked, the close as before. -> True when the close waits for the answer."""
+        card = self._detached_card
+        if self._quit is not None or self.restart_asked or _session_ending():
+            if card is not None:                          # the question no longer stands
+                self._detached_card = None
+                card.drop()
+            return False
+        if card is not None:                              # a second close (✕ again) while it asks: Quit
+            card.close()
+            return True
+        if self._detached_answered:
+            return False
+        detached = jobs_module.detached_at_quit(self._jobs)
+        if not detached:
+            return False
+        from app.qt import confirm
+        for other in self.findChildren(confirm.Confirm):  # R35-1: a card already open is dropped, as a close drops it
+            if other.answer is None:
+                other.drop()
+        self._hold_for_sheet()
+        labels = strings.QUIT_DETACHED_JOIN.join(dict.fromkeys(j.label for j in detached))
+        stoppable = any(j.kind in jobs_module.STOPPABLE_AT_QUIT for j in detached)   # Connect alone: Quit alone
+        body = strings.QUIT_DETACHED_BODY if stoppable else ""
+        if any(j.kind == jobs_module.CONNECT_KIND for j in detached):       # Connect is never stopped from here
+            body = f"{body} {strings.QUIT_DETACHED_CONNECT}".strip()
+        self._detached_card = confirm.ask(
+            self, strings.QUIT_DETACHED_TITLE.format(labels=labels), body,
+            strings.QUIT_DETACHED_STOP if stoppable else None, strings.QUIT_DETACHED_STOP_TIP,
+            no=strings.QUIT_DETACHED_QUIT, no_tip=strings.QUIT_DETACHED_QUIT_TIP, default_no=True, danger=True,
+            on_answer=self._detached_answer)
+        return True
+
+    def _hold_for_sheet(self):
+        """While the sheet asks: nothing new starts — gated jobs held, the chores' timers taken back (no new upkeep
+        helper the stop wouldn't know), the duties' controls held. Not the quit's start: E20's wait counts from the
+        answer."""
+        try:
+            self.services.hold_starting()
+        except Exception as e:
+            applog.log("shell", f"holding at the close: {e}")
+        if self.duties is not None:
+            self.duties.generate.hold(strings.QUIT_CLOSING_TIP)
+            self.duties.sheet.hold(strings.QUIT_CLOSING_TIP)
+            self.duties.cards.hold(strings.QUIT_CLOSING_TIP)
+
+    def _detached_answer(self, stop):
+        self._detached_card = None
+        self._detached_answered = True
+        if stop:
+            # Stop and quit: the registry's live upkeep cancelled — its owner ends its own child through the Popen it
+            # holds (at once: no worker, so no close can pass it). Connect is never stopped (`jobs.CONNECT_KIND`).
+            try:
+                asked = jobs_module.stop_at_quit(self.services.registry)
+                if asked:
+                    applog.log("shell", f"stopped at the close: {len(asked)} helper(s)")
+            except Exception as e:
+                applog.log("shell", f"stopping at the close: {e}")
+        QTimer.singleShot(0, self.close)                  # the close as before (never inside the card's close)
+    # --- end row 35
+
     def _moves_pending(self):
         """W3.1a: moves the window gave that the store hasn't taken yet (04 §4.5: closing waits for them)."""
         writer = getattr(self.services, "writer", None)
@@ -2738,6 +2823,9 @@ class ShellWindow(QMainWindow):
             return False
 
     def closeEvent(self, event):
+        if self._ask_detached():                          # row 35: what outlives the window, named — first
+            event.ignore()
+            return
         moves = getattr(self, "moves", None)
         if moves is not None:
             moves.close()                                 # a drag running at the close is let go
@@ -2769,6 +2857,15 @@ class ShellWindow(QMainWindow):
         app.removeEventFilter(self.router)
         self.tooltips.uninstall(app)
         super().closeEvent(event)
+
+
+def _session_ending():
+    """Row 35: Windows is logging off or shutting down (the session manager's close): no sheet waits on it."""
+    app = QApplication.instance()
+    try:
+        return bool(app is not None and app.isSavingSession())
+    except Exception:
+        return False
 
 
 # --- W3.2 B: how the window wakes (IK0-5, L3.1-4) ----------------------------------------------------------------- #

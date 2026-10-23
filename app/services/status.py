@@ -277,7 +277,7 @@ def _content(snap):
 
 
 # --- the window's providers (W3.5 row 7): plain functions, each made once per window and language ---------------- #
-CONNECT_JOB_KIND = "mine"                 # Connect's mining as the window's registry lists it (laptop row 40)
+CONNECT_JOB_KIND = jobs_module.CONNECT_KIND   # Connect's mining as the window's registry lists it (row 40; row 35's sheet)
 CONNECT_JOB_LABEL = "Making cards"
 CONNECT_JOB_MISSED = 2                    # looks without mining before its job ends (a gap between two batches)
 _mirrored = weakref.WeakKeyDictionary()   # registry -> [its Connect job or None, its step, looks missed]

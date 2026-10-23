@@ -25,6 +25,7 @@ from app import theme
 from app.qt import motion, shadow, strings, style
 
 MARGIN = 24                              # px kept between the card and its window's edges
+_OPEN = []                               # the open cards, oldest first: only a window's newest holds its keyboard
 
 
 class Scrim(QWidget):
@@ -117,19 +118,21 @@ class Confirm(motion.Overlay):
         self.no = QPushButton(no or strings.CONFIRM_NO, self)
         self.no.setToolTip(no_tip or strings.CONFIRM_NO_TIP)
         self.no.clicked.connect(lambda _c=False: self._answer(False))
-        self.yes = QPushButton(yes, self)
-        self.yes.setProperty("kind", "danger" if danger else "primary")
-        self.yes.setToolTip(yes_tip)
-        self.yes.clicked.connect(lambda _c=False: self._answer(True))
-        for b in (self.no, self.yes):
+        self.yes = None                                   # row 35: no action to offer → the one answer, No
+        if yes is not None:
+            self.yes = QPushButton(yes, self)
+            self.yes.setProperty("kind", "danger" if danger else "primary")
+            self.yes.setToolTip(yes_tip)
+            self.yes.clicked.connect(lambda _c=False: self._answer(True))
+        for b in (b for b in (self.no, self.yes) if b is not None):
             b.setAccessibleName(b.text())
             b.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
             b.setAutoDefault(False)
             row.addWidget(b)
         box.addLayout(row)
-        if self.field is not None:
+        if self.field is not None and self.yes is not None:
             self.field.returnPressed.connect(self.yes.click)          # Enter in the field: Yes
-        self.default = self.no if default_no else self.yes
+        self.default = self.no if default_no or self.yes is None else self.yes
         self.scrim = Scrim(window, self.close)
         self.shadow = shadow.Follower(self, self.shadow_name)
         window.installEventFilter(self)
@@ -151,6 +154,7 @@ class Confirm(motion.Overlay):
         self.scrim.show()
         self.scrim.raise_()
         QApplication.instance().focusChanged.connect(self._focus_moved)
+        _OPEN.append(self)
         return motion.open_overlay(self, self.how, self.shadow_name, on_done=self._focus_default, focus=True)
 
     def _focus_default(self):
@@ -163,9 +167,17 @@ class Confirm(motion.Overlay):
 
     # --- the keyboard stays on the card while it is open --------------------------------------------------------- #
     def _focus_moved(self, _old, new):
+        if self._covered():                               # a newer card in this window holds the keyboard (row 35)
+            return
         if (self.answer is None and new is not None and new is not self and not self.isAncestorOf(new)
                 and new.window() is self._window and self.isVisible()):
             self._focus_default()
+
+    def _covered(self):
+        """Whether a card opened after this one in the same window is still open: two cards taking focus back from
+        each other would recurse until the stack ran out (row 35's review, R35-1)."""
+        after = _OPEN[_OPEN.index(self) + 1:] if self in _OPEN else ()
+        return any(card._window is self._window for card in after)
 
     def focusNextPrevChild(self, next_):
         """Tab and Shift+Tab go round the two buttons (and the check, the field), never out to the window behind the
@@ -182,7 +194,7 @@ class Confirm(motion.Overlay):
     def keyPressEvent(self, event):
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             now = QApplication.focusWidget()
-            (now if now in (self.no, self.yes) else self.default).click()
+            (now if now is not None and now in (self.no, self.yes) else self.default).click()
             event.accept()
             return
         super().keyPressEvent(event)
@@ -196,6 +208,8 @@ class Confirm(motion.Overlay):
         self.checked = bool(yes) and self.check is not None and self.check.isChecked()
         self.text = self.field.text() if yes and self.field is not None else None
         callback, self._on_answer = self._on_answer, None
+        if self in _OPEN:
+            _OPEN.remove(self)
         try:
             QApplication.instance().focusChanged.disconnect(self._focus_moved)
         except TypeError:
@@ -207,7 +221,11 @@ class Confirm(motion.Overlay):
         self.scrim.deleteLater()
         self.deleteLater()
         before = self._before
-        if alive and before is not None and before.window() is self._window and before.isVisible():
+        try:
+            back = alive and before is not None and before.window() is self._window and before.isVisible()
+        except RuntimeError:                              # gone meanwhile (a card dropped as this one opened, row 35)
+            back = False
+        if back:
             before.setFocus(Qt.FocusReason.OtherFocusReason)
         if alive and callback is not None:                # never once its window closed or was hidden
             callback(self.answer)
@@ -258,7 +276,8 @@ def ask(window, title, body, yes, yes_tip, *, no=None, no_tip=None, default_no=F
     """Ask in `window` (a top-level: the main window or a secondary one). `yes` names the action ("Remove 2 lists");
     `default_no` for anything that removes, replaces or restores; `danger` paints the action as one; `check` a box
     under the words (off; read as `card.checked` in `on_answer`); `field` a line of text prefilled with it (read as
-    `card.text` in `on_answer`; Enter in it is Yes). -> the card (answered later through `on_answer(yes)`)."""
+    `card.text` in `on_answer`; Enter in it is Yes); `yes=None` offers no action — the card's one button is `no`, its
+    answer always No (row 35's close with only Connect going on). -> the card (answered later through `on_answer(yes)`)."""
     window = window.window()
     card = Confirm(window, title, body, yes, yes_tip, no=no, no_tip=no_tip, default_no=default_no, danger=danger,
                    on_answer=on_answer, check=check, check_tip=check_tip, field=field)

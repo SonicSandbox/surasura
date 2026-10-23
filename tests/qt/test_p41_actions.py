@@ -870,3 +870,27 @@ def test_round8_the_episode_menus_mine_now_turns_that_episodes_pill_before_the_a
     j = next(n for n, e in enumerate(lst.model().entries) if getattr(e[1], "key", None) == row.key)
     pill = next(p for p in parts_of(lst, j) if p[3] is not None and getattr(p[3], "ids", None) == (ep.id,))
     assert pill[2] == strings.ROWS_ASKED_TIP
+
+
+def test_round8_the_turning_hourglass_is_a_little_smaller_than_the_still_one_in_the_same_box(qapp):
+    """Round 2 (Sonic: "the spin and slightly smaller"): a pressed pill's hourglass is drawn at `TURNING_SCALE` in the
+    same box (nothing around it moves), so the difference shows even still (Reduced motion). Red first: the trial drew
+    it at full size."""
+    from PyQt6.QtCore import QRect, QRectF
+    from PyQt6.QtGui import QImage, QPainter
+
+    def ink_height(draw):
+        img = QImage(48, 48, QImage.Format.Format_ARGB32)
+        img.fill(0)
+        q = QPainter(img)
+        draw(q)
+        q.end()
+        accent = rows.c("accent")
+        ys = [y for y in range(48) for x in range(48) if abs(img.pixelColor(x, y).blue() - accent.blue()) < 40 and
+              img.pixelColor(x, y).alpha() > 200 and img.pixelColor(x, y).green() > 100]
+        return max(ys) - min(ys) + 1
+
+    box = QRect(12, 12, 24, 24)
+    full = ink_height(lambda q: rows.icon(q, "waiting", QRectF(17.5, 17.5, 13, 13), rows.c("accent")))
+    turning = ink_height(lambda q: rows.paint_pressed(q, box, None))
+    assert rows.TURNING_SCALE < 1 and turning < full and turning >= full * 0.75, (turning, full)

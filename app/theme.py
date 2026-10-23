@@ -405,7 +405,9 @@ MOTION = MappingProxyType({
     "tray-pop": 160, "side-panel": 260, "side-panel-shift": 24, "sheet": 260, "buckets": 260, "buckets-rise": 40,
     "dialog-scrim": 160, "dialog-card": 180, "toast-rise": 260, "toast-rise-px": 12, "toast-shown": 6500,
     "toast-shown-anki": 12000, "row-flash": 1600, "switch-knob": 260, "chevron": 260, "hover": FAST,
-    "mining-spin": 1200, "footer-pulse": 1400, "generate-bar": 300, "tooltip-delay": 380, "tooltip-again": 60,
+    "mining-spin": 1200, "footer-pulse": 1400, "generate-bar": 300,
+    "press-sheen": 2400,                 # round 8 row 45: a working button's sheen crossing it once, slowly ("thinking")
+    "tooltip-delay": 380, "tooltip-again": 60,
     "tooltip-again-within": 500, "fit-debounce": 80, "drag-start-px": 6, "click-swallow-after-drag": 50,
     "auto-scroll-px-per-frame": 12, "auto-scroll-edge": 50, "auto-scroll-dock": 48,
     "auto-scroll-tick": 16,              # ms between a drag's auto-scroll steps (the hand's, kept under Reduced motion)
@@ -545,6 +547,8 @@ ROW_LINE = MappingProxyType({
     "hero-trillion": 20,            # ▶ Play's trillion, in its kind's gem
     "hero-string": 30,              # * the Up Next string's band, under its numbers
     "sheen-alpha": 0.05,            # an opened row's one sheen, at its brightest
+    "press-sheen-alpha": 0.12,      # ... the same sheen crossing a working button (round 8 row 45, round 2)
+    "press-inset": 6, "press-inset-alpha": 0.45,    # ... which is set in: a shadow down from its top edge (px, alpha)
 })
 ROW_COLOURS = MappingProxyType({
     "string": "#2c3a4e",            # the string's hairline (list-r14m :675)

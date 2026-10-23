@@ -8,8 +8,14 @@ arc … subtle but clean." So a pressed control keeps its colours and its words:
 **Nothing moves** (the round 8 trial; P1 widened the button as it was pressed, and its neighbour slid ~17 px): the arc
 takes no layout space. A button that will be pressed keeps the arc's room at rest (`room`: its padding, both sides, so
 its words stay centred — `theme.SIZES["press-room"]`), and the arc, a child of the button laid over it, turns centred
-in its right padding: the button keeps its size, its words stay where they are, no neighbour moves. A control with a
-place of its own for it says where (`press_arc()`: the known-words corner's slot at its left).
+in its right padding: the button keeps its size, its words stay where they are, no neighbour moves.
+
+**Round 2 (Sonic judged the trial):** the arc is fine "for now"; beside it, a button may look *set* instead — "the
+button acted as set or indented on click, and has the surasura sheen … that slowly moves across like it's thinking":
+`BUTTON_LOOK` "sheen" sets it in (a shadow falling from its top edge inside it, painted over it: no restyle, which
+would change its size hint) and sweeps the opened row's sheen (`rows.paint_sheen`) across it once each
+`MOTION["press-sheen"]`, on the spinner's clock (`motion.Turn`: still under Reduced motion). A control with a look of its own paints it
+(`press_look(on)`: the known count's underline filling).
 
 `run(control, key, fn, …)` does, in order: the press, the arc on the control, `control.repaint()` — which paints
 before it returns — and only then hands `fn` to the worker. Its answer ends the press (done, or failed with why) and
@@ -24,16 +30,20 @@ opened off the window's thread (`open`).
 import sys
 
 from PyQt6 import sip
-from PyQt6.QtCore import QEvent, QObject, QRect
+from PyQt6.QtCore import QEvent, QObject, QPointF, QRect, QRectF, Qt
+from PyQt6.QtGui import QBrush, QLinearGradient, QPainter, QPainterPath
+from PyQt6.QtWidgets import QWidget
 
 from app import theme
 from app.qt import bridge, motion, style
 from app.services import press as service
 
 ARC = 14                        # px: the arc's side (the spinner's own)
+BUTTON_LOOK = "arc"             # a pressed button: "arc" (the turning arc) or "sheen" (set in, a sheen crossing it):
+#                                 PROVISIONAL, both kept for Sonic to compare (round 8, round 2)
 
 _loose = service.Presses()      # the presses of a control with no window
-_painted = {}                   # Press -> (control or None, the arc or None)
+_painted = {}                   # Press -> (control or None, its mark or None: a Spinner, a _Sheen or an _Own)
 
 
 def room(control):
@@ -108,49 +118,111 @@ def adopt(control, key):
     p = next((q for q in _painted if q.key == key and q.live()), None)
     if p is None or _painted[p][0] is None:
         return False
-    _unspin(_painted[p][1])
+    _unmark(_painted[p][1])
     _paint(p, control)
     return True
 
 
-def arc(control):
-    """The turning arc on `control` while its press is live, or None (tests, captures)."""
-    for p, (c, spinner) in _painted.items():
-        if c is control and spinner is not None and not sip.isdeleted(spinner):
-            return spinner
+def mark(control):
+    """What shows `control`'s live press (its arc, its sheen, its own look), or None (tests, captures)."""
+    for _p, (c, got) in _painted.items():
+        if c is control and got is not None and not (isinstance(got, QObject) and sip.isdeleted(got)):
+            return got
     return None
 
 
+def arc(control):
+    """The turning arc on `control` while its press is live, or None (tests, captures)."""
+    got = mark(control)
+    return got if isinstance(got, motion.Spinner) else None
+
+
 def arc_rect(control):
-    """Where the arc sits in `control`, taking no room of the layout's: the control's own place for it
-    (`press_arc()`), else centred in a button's right padding (`room`'s, × the text size; the border's 1 px outside)."""
-    own = getattr(control, "press_arc", None)
-    if own is not None:
-        return own()
+    """Where the arc sits in `control`, taking no room of the layout's: centred in a button's right padding (`room`'s,
+    × the text size; the border's 1 px outside)."""
     pad = theme.size("press-room", style.current()[1])
     x = round(control.width() - 1 - (pad + ARC) / 2)
     return QRect(x, (control.height() - ARC) // 2, ARC, ARC)
 
 
 class _Follow(QObject):
-    """The arc kept on its place as its control is resized (a card's width follows the window)."""
+    """A mark kept on its place as its control is resized (a card's width follows the window)."""
 
-    def __init__(self, control, spinner):
-        super().__init__(spinner)
-        self.control, self.spinner = control, spinner
+    def __init__(self, control, widget, place):
+        super().__init__(widget)
+        self.control, self.widget, self.place = control, widget, place
         control.installEventFilter(self)
 
     def eventFilter(self, obj, event):
-        if obj is self.control and event.type() == QEvent.Type.Resize and not sip.isdeleted(self.spinner):
-            _place(self.spinner, arc_rect(self.control))
+        if obj is self.control and event.type() == QEvent.Type.Resize and not sip.isdeleted(self.widget):
+            self.place()
         return False
 
 
+class _Sheen(QWidget):
+    """Round 2's button look: the button set in (a shadow down from its top edge) and the sheen sweeping across it,
+    laid over the whole button (no layout; it takes no clicks), clipped to its rounded box."""
+
+    def __init__(self, control):
+        super().__init__(control)
+        self.control = control
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setGeometry(control.rect())
+        _Follow(control, self, lambda: self.setGeometry(self.control.rect()))
+        self.turn = motion.Turn(self, self.update, period="press-sheen")
+        self.turn.show()
+        self.turn.set_running(True)
+
+    def stop(self):
+        self.turn.set_running(False)
+
+    def paintEvent(self, _event):
+        from app.qt import rows
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        radius = theme.RADII["button-sm" if self.control.property("size") == "sm" else "button"]
+        clip = QPainterPath()
+        clip.addRoundedRect(QRectF(self.rect()).adjusted(1, 1, -1, -1), radius - 1, radius - 1)
+        p.setClipPath(clip)
+        depth = rows.rl("press-inset")                  # set in: the shadow falling from the top edge
+        shade = QLinearGradient(QPointF(0, 1), QPointF(0, 1 + depth))
+        shade.setColorAt(0, rows.faded("shadow", rows.rl("press-inset-alpha")))
+        shade.setColorAt(1, rows.faded("shadow", 0.0))
+        p.fillRect(QRectF(0, 1, self.width(), depth), QBrush(shade))
+        w = self.width()
+        band = w * 0.4 * 0.46                   # the band's centre along its gradient (`rows.paint_sheen`)
+        phase = self.turn.turning
+        # still (Reduced motion, the freeze switch): the band at the middle; turning: from past the left to past the right
+        dx = w / 2 - band if phase is None else -band - w * 0.2 + phase * w * 1.4
+        rows.paint_sheen(p, self.rect(), rows.rl("press-sheen-alpha"), dx)
+        p.end()
+
+
+class _Own:
+    """A control's own look for its press (`press_look(on)`)."""
+
+    def __init__(self, control):
+        self.control = control
+        control.press_look(True)
+
+    def stop(self):
+        if not sip.isdeleted(self.control):
+            self.control.press_look(False)
+
+
 def _paint(p, control):
-    r = arc_rect(control)
-    spinner = motion.Spinner("spin", control, size=r.width())
-    _place(spinner, r)                      # over the control's own room: no layout, nothing moves
-    _Follow(control, spinner)
+    if hasattr(control, "press_look"):
+        _painted[p] = (control, _Own(control))
+        return
+    if BUTTON_LOOK == "sheen":
+        sheen = _Sheen(control)
+        sheen.raise_()
+        sheen.show()
+        _painted[p] = (control, sheen)
+        return
+    spinner = motion.Spinner("spin", control, size=ARC)
+    _place(spinner, arc_rect(control))      # over the control's own room: no layout, nothing moves
+    _Follow(control, spinner, lambda: _place(spinner, arc_rect(control)))
     spinner.raise_()
     spinner.show()
     spinner.set_running(True)
@@ -162,11 +234,20 @@ def _place(spinner, r):
     spinner.move(r.topLeft())
 
 
-def _unspin(spinner):
-    if spinner is not None and not sip.isdeleted(spinner):
-        spinner.set_running(False)
-        spinner.hide()
-        spinner.deleteLater()
+def _unmark(got):
+    if got is None:
+        return
+    if isinstance(got, _Own):
+        got.stop()
+        return
+    if sip.isdeleted(got):
+        return
+    if isinstance(got, _Sheen):
+        got.stop()
+    else:
+        got.set_running(False)
+    got.hide()
+    got.deleteLater()
 
 
 def _restore(p, win):
@@ -174,4 +255,4 @@ def _restore(p, win):
     if win is not None and not sip.isdeleted(win) and hasattr(win, "unsay"):
         win.unsay(p.key)
     if got is not None:
-        _unspin(got[1])
+        _unmark(got[1])

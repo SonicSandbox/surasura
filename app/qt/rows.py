@@ -429,17 +429,17 @@ Ask = namedtuple("Ask", "id ids episode")
 
 # --- round 8 row 45 (the trial): *Mine now* pressed. From the frame of the press until Connect's feed says something new
 # of the file (`mine_actions`; `RowsView.press_ids`), its pill (and a closed row's Mine now) shows a turning accent mark
-# in the hourglass's place, no words — its hover says *Asked · starting…*. Two looks for Sonic to judge, PROVISIONAL:
-# "hourglass" (A) — the hourglass itself turns over in place, an eased half-turn each `MOTION["mining-spin"]`;
-# "arc" (B) — the spinner's turning arc in its place. Reduced motion and the freeze switch: the mark still.
-PRESSED_LOOK = "hourglass"
+# in the hourglass's place, no words — its hover says *Asked · starting…*. Sonic chose the hourglass itself turning over
+# in place (round 8 trial, his look A: an eased half-turn each `MOTION["mining-spin"]`), and a little smaller while it
+# turns ("so the spin and slightly smaller": `TURNING_SCALE`), full size again once it stops. Reduced motion and the
+# freeze switch: the mark still, upright, still smaller — the difference shows without motion.
+TURNING_SCALE = 0.85                # an icon's size while it turns (PROVISIONAL, ~85 %: Sonic's "slightly smaller")
 
 
-def paint_pressed(p, rect, turning, look=None, radius=None):
+def paint_pressed(p, rect, turning, radius=None):
     """A pressed *Mine now*'s mark in `rect` (the pill's box, round; or a closed row's icon button, `radius`): its
-    ground, then the accent hourglass turned over to `turning` (0–1; None: still, upright) or the accent arc turned to
-    it."""
-    look = look or PRESSED_LOOK
+    ground, then the accent hourglass at `TURNING_SCALE`, turned over to `turning` (0–1; None: still, upright). The box
+    keeps its size: only the glyph inside it is smaller."""
     r = QRectF(rect)
     p.save()
     p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
@@ -447,15 +447,23 @@ def paint_pressed(p, rect, turning, look=None, radius=None):
     p.setBrush(c("raised"))
     radius = r.height() / 2 if radius is None else radius
     p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
-    centre = r.center()
-    if look == "arc":
-        motion.spin_arc(p, QRectF(centre.x() - 7, centre.y() - 7, 14, 14), turning, c("accent"))
-    else:
-        p.translate(centre)
-        if turning is not None:
-            p.rotate(180.0 * motion.ease(turning, theme.EASE_IN_OUT))
-        icon(p, "waiting", QRectF(-6.5, -6.5, 13, 13), c("accent"))
+    p.translate(r.center())
+    p.scale(TURNING_SCALE, TURNING_SCALE)
+    if turning is not None:
+        p.rotate(180.0 * motion.ease(turning, theme.EASE_IN_OUT))
+    icon(p, "waiting", QRectF(-6.5, -6.5, 13, 13), c("accent"))
     p.restore()
+
+
+def paint_sheen(p, r, alpha, dx=0.0):
+    """The sheen (list-r14m :705): a band of light across `r` at 112°, at `alpha` at its brightest, moved `dx` px along
+    (an opened row's head bakes it still; a working button sweeps it across: `app/qt/press.py`)."""
+    r = QRectF(r)
+    x = r.left() + dx
+    grad = QLinearGradient(QPointF(x, r.top()), QPointF(x + r.width() * 0.4, r.bottom() + r.width() * 0.16))
+    for at, k in ((0.3, 0.0), (0.42, 0.5), (0.46, 1.0), (0.5, 0.5), (0.62, 0.0)):
+        grad.setColorAt(at, faded("sheen", alpha * k))
+    p.fillRect(r, QBrush(grad))
 
 
 def asked_files(kind, episodes):
@@ -1782,12 +1790,7 @@ class RowDelegate(QStyledItemDelegate):
 
     def _sheen(self, p, r):
         """An opened row's one sheen (list-r14m :705, flat): a band of light across it at 112°, baked into its head."""
-        grad = QLinearGradient(QPointF(r.left(), r.top()), QPointF(r.left() + r.width() * 0.4, r.bottom() + r.width()
-                                                                    * 0.16))
-        top = rl("sheen-alpha")
-        for at, k in ((0.3, 0.0), (0.42, 0.5), (0.46, 1.0), (0.5, 0.5), (0.62, 0.0)):
-            grad.setColorAt(at, faded("sheen", top * k))
-        p.fillRect(QRectF(r), QBrush(grad))
+        paint_sheen(p, r, rl("sheen-alpha"))
 
     def _paint_string(self, p, plan, room, mid, sheet, ring=False, big=False):
         """The string of stones in `room` (its plan laid out once per width: `stone_plan.layout`), each a blit from

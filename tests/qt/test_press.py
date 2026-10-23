@@ -13,6 +13,7 @@ import pytest
 
 pytest.importorskip("PyQt6")
 from PyQt6.QtCore import QEvent, QObject
+from PyQt6.QtGui import QImage
 from PyQt6.QtWidgets import QApplication, QHBoxLayout, QPushButton, QWidget
 
 from app.qt import press as qpress
@@ -203,6 +204,32 @@ def test_nothing_moves_while_the_arc_turns_not_the_button_its_words_or_its_neigh
         assert arc.width() == qpress.ARC
         handed[-1].then(None)
         assert (b.geometry(), leave.geometry()) == rest[:2]
+
+
+def test_the_sheen_look_sets_the_button_in_and_sweeps_its_sheen_painted_before_the_worker_and_nothing_moves(
+        stage, handed, monkeypatch):
+    # Round 2 (Sonic: "the button acted as set or indented on click, and has the surasura sheen … that slowly moves
+    # across like it's thinking"): `BUTTON_LOOK` "sheen" — the button set in (colours only) and the sheen over it, both
+    # painted before the work is handed over; its words, its colours' kind (never greyed) and every place kept; all of
+    # it gone when the work ends. Red first: the trial had only the arc.
+    monkeypatch.setattr(qpress, "BUTTON_LOOK", "sheen")
+    b, leave = stage.button, stage.leave
+    QApplication.processEvents()
+    rest = (b.geometry(), leave.geometry(), b.sizeHint())
+    before = stage.paints.n
+    handed.look = lambda: (qpress.mark(b), stage.paints.n - before, b.text(), b.isEnabled(), b.styleSheet())
+    qpress.run(b, "needs:mark_known:known-offer:1", lambda: None)
+    sheen, painted, text, enabled, own_style = handed[0].look
+    assert sheen is not None and sheen.isVisible() and sheen.geometry() == b.rect() and qpress.arc(b) is None
+    assert painted >= 1 and text == MARK and enabled and own_style == ""      # painted over it: never restyled
+    img = QImage(sheen.size(), QImage.Format.Format_ARGB32_Premultiplied)
+    img.fill(0)
+    sheen.render(img)
+    assert sum(1 for x in range(0, img.width(), 3) if img.pixelColor(x, 3).alpha() > 0) > 10     # its top edge set in
+    assert (b.geometry(), leave.geometry(), b.sizeHint()) == rest
+    handed[0].then(None)
+    assert qpress.mark(b) is None and not sheen.isVisible()
+    assert (b.geometry(), leave.geometry()) == rest[:2]
 
 
 def test_a_failure_takes_the_arc_off_and_keeps_the_reason(stage, handed):

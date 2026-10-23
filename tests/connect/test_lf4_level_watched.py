@@ -178,3 +178,16 @@ def test_a_new_anki_miner_version_is_asked_again(tmp_path, ledger):
     assert _sent(steps) == [(24, ["ルーデウス", "杖"])], "another dictionary may know it"
     assert ledger.uncardable("ja", "3.7.0") == {("ルーデウス", "ルーデウス")}
     assert ledger.uncardable("ja", "3.11.0") == set()
+
+
+def test_your_mine_anyway_on_a_watched_episode_still_mines(tmp_path, ledger):
+    # round 2 B6: *Mine anyway* queues the job again with `picked.forced` and no ask — it is your yes all the same
+    plan = {"line": {"ja": [1]}, "queue": {"ja": [1]}}
+    steps = FakeSteps(str(tmp_path), plan)
+    steps.consume("ja", ledger)
+    job = ledger.jobs("ja")[0]
+    with ledger.transaction():
+        ledger.set_state(job["id"], "queued", picked={"forced": True})
+    plan.pop("queue")
+    _steps, summary = _run(tmp_path, ledger, dict(plan, watched=[1]))
+    assert summary["languages"]["ja"]["done"] == [1]

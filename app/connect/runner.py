@@ -631,6 +631,7 @@ def _job(steps, ledger, lang, job, store_now, line, out):
         out["dropped"].append(item_id)
         return
     if (droppable and job.get("kind") != ASKED and not job.get("asked_at")
+            and not (ledger.picked(jid) or {}).get("forced")             # your *Mine anyway* on it too (round 2 B6)
             and getattr(steps, "watched", lambda _l, _j: False)(lang, job)):     # your ask on it is a yes (A1)
         # laptop round 8 #49 (LF4-1 = A): 3.0's rule, `level.WATCHED_GIVES_NO_NEW_CARDS` — no new cards on Connect's
         # own from an episode you've watched, a first mining or a level raise; its words go to the episodes that hold
@@ -1278,8 +1279,11 @@ class Steps:
             store = self._open(lang)
         except (Wait, Needs):
             return None
-        with store:
-            return library.show_title(store, job["item_id"])
+        try:
+            with store:
+                return library.show_title(store, job["item_id"])
+        except Exception:               # round 2 B8: a store that can't be read here never fails the mining
+            return None
 
     def watched(self, lang, job):
         """Laptop round 8 #49: is the job's episode one Connect makes no new cards from on its own (`level.watched_out`:

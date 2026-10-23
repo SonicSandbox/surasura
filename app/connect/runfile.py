@@ -22,6 +22,7 @@ import json
 import math
 import os
 import re
+import unicodedata
 
 SCHEMA = 1
 MAX_BYTES = 8 * 1024 * 1024
@@ -94,12 +95,18 @@ def config(mapping, app, features=(), sentence_keys=None):
 
 
 def show_slug(title):
-    """A show's title as one Anki tag's last part: whitespace runs to `_`, the hierarchy mark `::` to `:`, quotes off
-    (`Hibike Euphonium 3` -> `Hibike_Euphonium_3`); "" for no title."""
-    text = re.sub(r"\s+", "_", str(title or "").strip()).replace('"', "")
+    """A show's title as one Anki tag's last part: in NFC (Anki keeps its tags so: a title from a macOS folder, in NFD,
+    would never match its own label), whitespace runs to `_`, the hierarchy mark `::` to `:`, quotes off
+    (`Hibike Euphonium 3` -> `Hibike_Euphonium_3`); "" for no title, or one that can't be written as UTF-8."""
+    text = re.sub(r"\s+", "_", unicodedata.normalize("NFC", str(title or "")).strip()).replace('"', "")
     while "::" in text:
         text = text.replace("::", ":")
-    return text.strip(":_")
+    text = text.strip(":_")
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:          # round 2 B8: a name holding a lone surrogate (NTFS) is no tag: none, never a refusal
+        return ""
+    return text
 
 
 def from_tag(title):

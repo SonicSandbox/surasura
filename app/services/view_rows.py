@@ -72,6 +72,10 @@ Episode = namedtuple("Episode", Episode._fields + ("show_key",),
 Episode = namedtuple("Episode", Episode._fields + ("ask",), defaults=tuple(Episode._field_defaults.values()) + (None,))
 #   ask (row 55): what ▶'s lookup is asked for it — (rel_path, media) — or None where ▶ can't be anyway (missing,
 #   waiting for its subtitle, online, Connect's *No video*); `play.Looks` answers it, `build(playable=)` reads the answer
+Episode = namedtuple("Episode", Episode._fields + ("looking",),
+                     defaults=tuple(Episode._field_defaults.values()) + (False,))
+#   looking (row 55, R55-A): asked and not answered yet — Up Next says *Looking…*, never *No video* before the check
+#   answered; False with no looker and in a cache from before
 Row = namedtuple("Row", "key index tier work_id piece_id media media_word verb title title_ep line source n_files n_watched "
                         "pct pct_tone n_new status mark episodes next_index studying date cover_title accessible "
                         "description chips more_chips play_tip can_play cards_out string", defaults=(False, None))
@@ -191,6 +195,8 @@ STRINGS = {
     "play_online": "Its video is online: opening it from here comes in a later build",
     # row 55: ▶'s own lookup found nothing to open (PROVISIONAL words)
     "play_not_found": "No {word} found for it on this computer, so there is nothing to {verb_l} from here",
+    # R55-A (Sonic): before the check has answered, Up Next says *Looking…*; its tip says only that (A-11)
+    "play_looking": "Looking for its {word} on this computer…",
     # --- W3.2 Q5: an item whose content file is gone says so (its *video* is Connect's, S3), never "no video"
     "play_missing": "Its file is gone from your library folder\n• Point it at its file in Needs you",
     "play_missing_plain": "Its file is gone from your library folder, so it can't {verb_l} from here",
@@ -543,16 +549,18 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=
     said = connect.get(item["id"]) if connect is not None else None
     # row 55 (Sonic: "if it doesn't find the media, there shouldn't be a play button"): ▶ only where ▶'s own lookup
     # (`play.Looks`, its answers `playable`) found the file — never asked where it can't be, nor where Connect says
-    # *No video* (the two never disagree); with no looker (`playable` None) as before
-    ask = None if missing or waiting or online or (said is not None and said.kind == connect_feed.NO_VIDEO) \
-        else (item.get("rel_path"), media)
+    # *No video* of what ▶ would open as a video (the two never disagree; Connect's lookup is a video's: IK-3); with
+    # no looker (`playable` None) as before. Asked and not answered yet: `looking` (R55-A)
+    no_video = said is not None and said.kind == connect_feed.NO_VIDEO and word == "video"
+    ask = None if missing or waiting or online or no_video else (item.get("rel_path"), media)
+    looking = ask is not None and playable is not None and item["id"] not in playable
     can_play = ask is not None and (playable is None or bool(playable.get(item["id"])))
     ep = Episode(id=item["id"], label=label, number=number, title=stem(name), watched=bool(item.get("watched")),
                  cards=c, mining=item["id"] in mining and not mined, missing=missing, removed=missing and mined,
                  in_top=in_top, pct=pct_of(known, counted), n_new=n_new, status=None, mark=None,
                  rel_path=item.get("rel_path"), play_tip="", can_play=can_play, waiting=waiting,
                  media_word=MEDIA_WORD.get(media, "video"), work_id=item.get("work_id"), show=show, show_key=show_key,
-                 ask=ask)
+                 ask=ask, looking=looking)
     asked = item.get("mine_asked")                    # asked again after it was mined: it mines again (Sonic's "unless asked")
     deleted = bool(item.get("mined_at")) and not mined and not (asked and str(asked) > str(item["mined_at"]))
     ep = ep._replace(deleted=deleted)
@@ -566,6 +574,8 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=
     elif missing:
         tip = (STRINGS["play_removed"] if mined else STRINGS["play_missing_plain"] if deleted else
                STRINGS["play_missing"]).format(word=word, verb_l=verb.lower())
+    elif looking:
+        tip = STRINGS["play_looking"].format(word=word)                          # R55-A (A-11): nothing said yet
     elif not can_play:
         tip = STRINGS["play_not_found"].format(word=word, verb_l=verb.lower())    # row 55 (or Connect's *No video*)
     else:
@@ -872,8 +882,8 @@ def _cached_row(cache, index, tier, piece, works, numbers, cards, mining, in_top
     hit = cache.rows.get(key)
     same_items = hit is not None and _same(hit[1], made) and len(hit[2]) == len(piece) and \
         all(a is b for a, b in zip(hit[2], piece))
-    # row 55: as shown — not answered yet and not found draw the same row
-    play = None if playable is None else tuple(bool(playable.get(it["id"])) for it in piece)
+    # row 55: as shown — found, not found, and not answered yet (R55-A: Up Next's *Looking…*, its tip) each its own
+    play = None if playable is None else tuple(playable.get(it["id"]) for it in piece)
     if same_items and cache.same_global and hit[0].hero == hero and hit[0].guess == guess and hit[0].play == play:
         sig = hit[0]                                 # nothing global moved: the same objects are the same row
     else:

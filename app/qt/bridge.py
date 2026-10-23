@@ -153,6 +153,7 @@ def drop_answers():
     answer said into a bar already gone; a callback into a deleted widget raises at best, and can crash natively).
     One guard for every `run_in_worker` caller, never a check in each callback."""
     for relay in list(_pending):
+        _pending.discard(relay)                     # its `finish` never runs now: never kept (row 55 A-13)
         try:
             relay.blockSignals(True)
         except RuntimeError:

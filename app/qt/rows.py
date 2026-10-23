@@ -1516,7 +1516,10 @@ class RowDelegate(QStyledItemDelegate):
                     theme.SIZES["hero-cover-w"], theme.SIZES["hero-cover-h"])
         btn_h = round(theme.SIZES["button"] * f)
         fm = TEXT.metrics("button")
-        play_w = round(13 + rl("hero-trillion") + 7 + fm.horizontalAdvance(self._watch_label(row)) + 13)
+        if row.episodes[row.next_index].can_play:
+            play_w = round(13 + rl("hero-trillion") + 7 + fm.horizontalAdvance(self._watch_label(row)) + 13)
+        else:                                       # R55-B: plain words, no trillion — their own width
+            play_w = round(13 + fm.horizontalAdvance(self._watch_label(row)) + 13)
         done_w = round(13 + 14 + 7 + fm.horizontalAdvance(strings.ROWS_DONE) + 13)
         side_w = play_w + 8 + done_w
         side = QRect(head.right() - pad_r - side_w + 1, head.top() + pad_y, side_w, head_h - 2 * pad_y)
@@ -2368,34 +2371,35 @@ class RowDelegate(QStyledItemDelegate):
 
     @staticmethod
     def _watch_label(row):
-        """Up Next's ▶ button's words: its verb (Watch / Listen / Read), *Online*, or *No <its media word>* (No video)."""
-        if row.episodes[row.next_index].can_play:
+        """Up Next's ▶ button's words: its verb (Watch / Listen / Read); with nothing to play, the plain words in its
+        place — *Looking…* until the video check answered (R55-A), *Online*, or *No <its media word>* (No video)."""
+        nxt = row.episodes[row.next_index]
+        if nxt.can_play:
             return row.verb
+        if nxt.looking:
+            return strings.ROWS_LOOKING_BUTTON
         if row.media == "youtube":
             return strings.ROWS_ONLINE_BUTTON
         return strings.ROWS_NO_MEDIA_BUTTON.format(word=row.media_word)
 
     def _paint_play(self, p, r, row, nxt, dpr, sheet):
         """▶ Play (W3.1a §1 *Up Next*): the trillion in its kind's gem and the verb, on the kind's base colour; with
-        nothing to play, the muted *No video* (S6)."""
+        nothing to play, plain muted words in its place — *Looking…*, *No video*, *Online* (R55-B, Sonic: no frame, no
+        triangle, nothing button-shaped; its tip says why)."""
+        if not nxt.can_play:
+            x = r.left() + 13                         # the room the verb has beside the trillion: never elided
+            TEXT.draw(p, x, r.center().y(), self._watch_label(row), "button", r.right() - x, c("ink-dim"), dpr=dpr)
+            return
         rr = QRectF(r).adjusted(0.5, 0.5, -0.5, -0.5)
         gem = stone_plan.gem_of(row.media, row.source == "hato")
         side = rl("hero-trillion")
-        if nxt.can_play:
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(style.qcolor(theme.GEM[gem][0]))
-            p.drawRoundedRect(rr, theme.RADII["button"], theme.RADII["button"])
-            ink, label = c("ink"), row.verb
-        else:
-            pen = QPen(c("line-hi"), 1)
-            pen.setStyle(Qt.PenStyle.DashLine)
-            p.setPen(pen)
-            p.setBrush(Qt.BrushStyle.NoBrush)
-            p.drawRoundedRect(rr, theme.RADII["button"], theme.RADII["button"])
-            ink, label = c("ink-dim"), self._watch_label(row)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(style.qcolor(theme.GEM[gem][0]))
+        p.drawRoundedRect(rr, theme.RADII["button"], theme.RADII["button"])
+        ink, label = c("ink"), row.verb
         x = r.left() + 13
         box = QRectF(x, r.center().y() - side / 2, side, side)
-        what = ("trillion", gem if nxt.can_play else stones.UNLINKED)
+        what = ("trillion", gem)
         if sheet is not None:                         # the trillion: a blit, shrunk into its box
             size = sheet.size_of(what)
             k = side / max(size.width(), size.height())
@@ -2492,7 +2496,9 @@ def whole_step(dpr):
 
 NO_DRAG = frozenset(("play", "more", "more-ep", "up", "down", "done", "journey", "put-back")) | ACTION_NAMES   # buttons (W3.2 Q4:
 #                                                                                       put-back; P4.1 L2: the statuses')
-NO_DRAG = NO_DRAG | {"no-play"}     # row 55: Up Next's dashed *No video* / *Online* stands in ▶'s place — no handle, no pick
+# row 55, R55-B: Up Next's *No video* / *Online* / *Looking…* in ▶'s place is plain words on the card, a tip-only part
+# ("no-play"): never a button's place — a press there is the card's (it drags it, Ctrl+click picks it), and `_act`
+# does nothing with it
 
 
 def _rest_of(row, k):                                # --- W3.2 Q8: the files from episode `k` on, in words

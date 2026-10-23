@@ -62,17 +62,19 @@ def _pairings(language, ids):
     return {i: r if isinstance(r, dict) else {} for i, r in records.items()}
 
 
-def _finder(language):
+def _finder(language, listings=None):
     """Connect's video index, as last saved (`videos.Index.find` with no refresh: nothing listed, nothing written),
-    read once, at its first lookup -> find(names, size=None)."""
+    read once, at its first lookup -> find(names, size=None). With a round's `listings`, an indexed video in a folder
+    the round couldn't reach is never stat'ed again (`_on_disk`, fix round A-5)."""
     from app.connect import videos
     held = []
+    there = None if listings is None else (lambda path: _on_disk(path, listings))
 
     def find(names, size=None):
         try:
             if not held:
                 held.append(videos.Index(language))
-            return held[0].find(names, size)
+            return held[0].find(names, size, on_disk=there)
         except Exception as e:
             print(f"Play: Connect's video index couldn't be read ({e!r})")
             return None
@@ -81,11 +83,29 @@ def _finder(language):
 
 def _reachable(path, listings=None):
     """Whether the folder holding `path` is there (one stat; none for a folder this round listed, or failed to): an
-    original's that isn't is a share offline."""
+    original's that isn't is a share offline — remembered in `listings` (False), so it is waited on once a round."""
     folder = os.path.dirname(path)
     if listings is not None and folder in listings:
         return listings[folder] is not False
-    return os.path.isdir(folder)
+    there = os.path.isdir(folder)
+    if not there and listings is not None:
+        listings[folder] = False
+    return there
+
+
+def _on_disk(path, listings, check=None):
+    """`check(path)` (Connect's `runner._on_disk` unless given) — never for a file in a folder this round couldn't
+    reach; a miss whose folder isn't there either is remembered (`_reachable`): a share offline is waited on once a
+    round, never once an episode (fix round A-5: hato's video, a book's original, an indexed video)."""
+    from app.connect import runner
+    folder = os.path.dirname(path)
+    if listings.get(folder) is False:
+        return False
+    if (check or runner._on_disk)(path):
+        return True
+    if folder not in listings:
+        _reachable(path, listings)
+    return False
 
 
 def to_open(language, item_id, rel_path, media):
@@ -93,17 +113,22 @@ def to_open(language, item_id, rel_path, media):
     return _find(language, rel_path, media, pairing(language, item_id), {}, _finder(language))
 
 
+_UNSURE = (WHY["unreachable"], WHY["unreadable"])     # `look`'s None: can't tell just now (a share offline, a busy store)
+
+
 def look(language, asks, listings=None, find=None):
-    """{item_id: (rel_path, media)} -> {item_id: True when ▶ has a file to open}: `_find`, ▶'s own lookup, for each —
-    the pairings read through one store open, each folder listed once (`listings`: a round's, across calls), Connect's
+    """{item_id: (rel_path, media)} -> {item_id: True when ▶ has a file to open, False when it hasn't, None when it
+    can't tell just now (its folder unreachable, its record unread: A-2)}: `_find`, ▶'s own lookup, for each — the
+    pairings read through one store open, each folder listed once (`listings`: a round's, across calls), Connect's
     index read once (`find`). A worker's; never writes."""
     records = _pairings(language, list(asks))
     listings = {} if listings is None else listings
-    find = find or _finder(language)
+    find = find or _finder(language, listings)
     out = {}
     for item_id, (rel_path, media) in asks.items():
         try:
-            out[item_id] = _find(language, rel_path, media, records.get(item_id), listings, find)[0] is not None
+            path, why = _find(language, rel_path, media, records.get(item_id), listings, find)
+            out[item_id] = True if path is not None else None if why in _UNSURE else False
         except Exception as e:                      # one episode's fault never stops the others
             print(f"Play: an episode's file couldn't be looked for ({e!r})")
             out[item_id] = False
@@ -125,7 +150,7 @@ def _find(language, rel_path, media, record, listings, find):
     word = MEDIA_WORD.get(media, "video")
     if word in ("EPUB", "file"):
         book = origin and re.sub(r"#\d+$", "", origin)              # an EPUB's part (`<book>.epub#3`): the book
-        if book and os.path.exists(book):
+        if book and _on_disk(book, listings, os.path.exists):
             return book, None
         if book and not _reachable(book, listings):
             return None, WHY["unreachable"]                         # never the copy in its place, unsaid (R2-6)
@@ -134,7 +159,7 @@ def _find(language, rel_path, media, record, listings, find):
         return None, WHY["unreadable" if unread else "not-on-disk"]
     named = record.get("video_path")
     if isinstance(named, str) and os.path.isabs(named):             # AD-4: a relative one is no pairing here
-        found = runner.paired_video(record, find)
+        found = runner.paired_video(record, find, on_disk=lambda p: _on_disk(p, listings))
         if found:
             return found, None
         return None, WHY["no-media"].format(word=word) if _reachable(named, listings) else WHY["unreachable"]
@@ -165,12 +190,18 @@ class Looks:
 
     - `want(asks)` (the reader's thread, after a build: the asks of the rows it built anew — {item_id: (rel_path,
       media)}, or None where ▶ can't be anyway): an ask unlike the one last answered is looked at; None forgets it.
-    - `again(folders)`: the episodes in those library folders (the watch's sync: '/'-separated, any case);
-      `again()`: every one not found (a full sync, a source folder's look). `index_moved()`: every one not found, once
-      Connect's index file changed on disk (asked when Connect's feed moves).
+      `forget(ids)`: episodes that left Current (fix round A-8: never looked at again).
+    - `again(folders)`: the episodes in those library folders and every folder under them (the watch's sync:
+      '/'-separated, any case — A-4); `again()`: every one not found (a full sync, a source folder's look that found
+      a video). `recheck(ids)`: those episodes (a ▶ press that found nothing: A-7). `index_moved()`: every one not
+      found, once Connect's index file changed on disk (asked when Connect's feed moves; each round checks it too:
+      A-3). All three walk on the looks' worker, after any round running (IK-6, A-1).
     - The looks run on a worker of their own (`look`), `BATCH` at a time in the order asked (the first screen's rows
       first); each batch that moved an answer hands them all on (`on_change({item_id: found})`, the reader's
-      `set_playable`). An answer stays until its new one lands: ▶ never goes and comes back.
+      `set_playable`). An answer stays until its new one lands: ▶ never goes and comes back. A round's listings are
+      made afresh when a new ask came meanwhile (A-1); an episode it can't tell for just now (a share offline, a busy
+      store: `look`'s None) is never kept as looked at — tried once more that round, then at its next ask (A-2), its
+      last answer kept meanwhile (none yet: not found). `close()` ends a round at its next batch (A-6).
     - `seed(found)`: answers known before any look (the first screen's cache), kept until a look answers."""
 
     def __init__(self, language, on_change=None, worker=None):
@@ -183,7 +214,10 @@ class Looks:
         self._looked = {}                   # item_id -> the ask its answer was looked for
         self._found = {}                    # item_id -> found
         self._owed = {}                     # item_id -> None: to look at, in the order asked
+        self._flight = {}                   # item_id -> the ask being looked at now (A-12)
+        self._stale = False                 # an ask owed since the round's listings were made (A-1)
         self._busy = False
+        self._closed = False
         self._index = _NEVER                # Connect's index file (size, time) as the last round found it
         self.looked = 0                     # episodes looked at (tests)
 
@@ -203,12 +237,38 @@ class Looks:
                 if ask is None:
                     self._looked.pop(item_id, None)     # back from missing (or online): looked at afresh
                     self._owed.pop(item_id, None)
-                elif self._looked.get(item_id, _NEVER) != ask:
+                elif self._looked.get(item_id, _NEVER) != ask and self._flight.get(item_id, _NEVER) != ask:
                     self._owed[item_id] = None
+                    self._stale = True
         self._kick()
 
+    def forget(self, ids):
+        with self._lock:
+            for item_id in ids:
+                for kept in (self._asks, self._looked, self._found, self._owed):
+                    kept.pop(item_id, None)
+
     def again(self, folders=None):
-        wanted = None if folders is None else {f.lower() for f in folders}
+        wanted = None if folders is None else {f.lower().rstrip("/") for f in folders}
+        self._worker.put(self._again, wanted)
+
+    def recheck(self, ids):
+        self._worker.put(self._recheck, list(ids))
+
+    def index_moved(self):
+        self._worker.put(self._check_index)
+
+    def close(self):
+        with self._lock:
+            self._closed = True
+        self._worker.close()
+
+    def idle(self, timeout=None):
+        """Everything asked looked at (a test's)."""
+        return self._worker.idle(timeout)
+
+    def _again(self, wanted):
+        """(The worker.) `again`'s walk."""
         with self._lock:
             for item_id, ask in self._asks.items():
                 if ask is None:
@@ -216,21 +276,21 @@ class Looks:
                 if wanted is None:
                     hit = not self._found.get(item_id)
                 else:
-                    hit = (ask[0] or "").rsplit("/", 1)[0].lower() in wanted
+                    folder = (ask[0] or "").rsplit("/", 1)[0].lower()
+                    hit = any(folder == f or folder.startswith(f + "/") for f in wanted)
                 if hit:
                     self._looked.pop(item_id, None)
                     self._owed[item_id] = None
         self._kick()
 
-    def index_moved(self):
-        self._worker.put(self._check_index)
-
-    def close(self):
-        self._worker.close()
-
-    def idle(self, timeout=None):
-        """Everything asked looked at (a test's)."""
-        return self._worker.idle(timeout)
+    def _recheck(self, ids):
+        """(The worker.) `recheck`'s episodes owed again."""
+        with self._lock:
+            for item_id in ids:
+                if self._asks.get(item_id) is not None:
+                    self._looked.pop(item_id, None)
+                    self._owed[item_id] = None
+        self._kick()
 
     def _index_now(self):
         from app.connect import videos
@@ -245,11 +305,11 @@ class Looks:
         now = self._index_now()
         if self._index is not _NEVER and now != self._index:
             self._index = now
-            self.again()
+            self._again(None)
 
     def _kick(self):
         with self._lock:
-            if self._busy or not self._owed:
+            if self._busy or self._closed or not self._owed:
                 return
             self._busy = True
         if not self._worker.put(self._round):
@@ -257,11 +317,28 @@ class Looks:
                 self._busy = False
 
     def _round(self):
-        """(The worker.) Every owed episode looked at, `BATCH` at a time: one listing a folder, one index read."""
-        listings, find = {}, _finder(self.language)
+        """(The worker.) Every owed episode looked at; a fault never leaves it thought running (IK-9)."""
+        try:
+            self._look_owed()
+        except BaseException:
+            with self._lock:
+                self._busy = False
+                self._flight = {}
+            raise
+
+    def _look_owed(self):
+        """`BATCH` at a time: one listing a folder, one index read — both made afresh when an ask came meanwhile."""
+        self._check_index()                 # A-3: an index saved since the last round is noticed here too
         self._index = self._index_now()
+        listings, find, retried = None, None, set()
         while True:
             with self._lock:
+                if self._closed:
+                    self._busy = False
+                    return
+                if listings is None or self._stale:
+                    listings, self._stale = {}, False
+                    find = _finder(self.language, listings)
                 ids = list(itertools.islice(self._owed, BATCH))
                 if not ids:
                     self._busy = False
@@ -269,17 +346,32 @@ class Looks:
                 for item_id in ids:
                     del self._owed[item_id]
                 batch = {i: self._asks[i] for i in ids if self._asks.get(i) is not None}
+                self._flight = dict(batch)
             found = look(self.language, batch, listings, find) if batch else {}
             with self._lock:
+                self._flight = {}
+                if self._closed:
+                    self._busy = False
+                    return
                 self.looked += len(found)
                 moved = False
                 for item_id, f in found.items():
-                    self._looked[item_id] = batch[item_id]
+                    if item_id not in self._asks:
+                        continue                    # forgotten meanwhile (A-8)
+                    if f is None:                   # can't tell just now: tried once more this round, never kept
+                        if item_id not in retried:
+                            retried.add(item_id)
+                            self._owed[item_id] = None
+                        if item_id in self._found:
+                            continue                # its last answer stays
+                        f = False
+                    elif self._asks[item_id] == batch[item_id]:
+                        self._looked[item_id] = batch[item_id]      # A-12: never for an ask gone meanwhile
                     if self._found.get(item_id) is not f:
                         self._found[item_id] = f
                         moved = True
                 out = dict(self._found) if moved else None
-            if out is not None and self.on_change is not None:
+            if out is not None and self.on_change is not None and not self._closed:
                 try:
                     self.on_change(out)
                 except Exception as e:

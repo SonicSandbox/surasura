@@ -125,7 +125,7 @@ def test_a_share_offline_is_listed_once_a_round_never_once_an_episode(monkeypatc
         return real(folder)
     monkeypatch.setattr(os, "listdir", offline)
     found = play.look("ja", {n: (rel, "anime") for n, rel in copies.items()})
-    assert found == {1: False, 2: False, 3: False}
+    assert found == {1: None, 2: None, 3: None}                          # can't tell: never a lasting no (A-2)
     assert listed.count(share) == 1 and len(listed) == 2                 # the copies' folder once, the share once
 
 
@@ -256,7 +256,8 @@ def test_the_view_shows_play_only_where_the_lookup_found_the_file():
     first, second, third = view.rows[0].episodes
     assert (first.can_play, second.can_play, third.can_play) == (True, False, False)    # 2: not answered yet
     assert first.ask == ("HighPriority/星降る街の小さな工房 - 01.srt", "anime")
-    assert "found" in third.play_tip and third.play_tip == second.play_tip
+    assert "found" in third.play_tip and second.looking and not third.looking    # R55-A: not answered is no "not found"
+    assert second.play_tip == vr.STRINGS["play_looking"].format(word="video") != third.play_tip
     assert view.rows[0].can_play is True                                # the row's ▶: its next episode's
 
 
@@ -282,11 +283,13 @@ def test_new_answers_rebuild_only_the_rows_whose_shown_answer_moved():
     cache = vr.RowCache()
     a = vr.build(items, WORKS, {"mine_line": 20}, cache=cache, numbers=(1, {}), playable={})
     b = vr.build(items, WORKS, {"mine_line": 20}, cache=cache, numbers=(1, {}), playable={1: False, 3: True})
-    assert b.rows[0] is a.rows[0], "not found reads as not answered: the same row"
+    assert b.rows[0] is not a.rows[0], "R55-A: not answered (Looking…) and not found are two shown answers"
     assert b.rows[1] is not a.rows[1] and b.rows[1].can_play
     assert b.finished == a.finished
-    c = vr.build(items, WORKS, {"mine_line": 20}, cache=cache, numbers=(1, {}), playable={1: False, 3: True})
-    assert all(x is y for x, y in zip(c.rows, b.rows))
+    c = vr.build(items, WORKS, {"mine_line": 20}, cache=cache, numbers=(1, {}), playable={1: False, 3: True, 4: True})
+    assert c.rows[0] is b.rows[0] and c.rows[1] is not b.rows[1], "only the row whose answer moved"
+    d = vr.build(items, WORKS, {"mine_line": 20}, cache=cache, numbers=(1, {}), playable={1: False, 3: True, 4: True})
+    assert all(x is y for x, y in zip(d.rows, c.rows))
 
 
 # --- the reader: asks once, hands back, a quiet refresh looks at nothing ------------------------------------------- #
@@ -348,3 +351,398 @@ def test_the_first_screens_cache_seeds_the_answers(tmp_path, monkeypatch):
     again._first_screen()
     shown = {e.id for r in again.view().rows for e in r.episodes if e.can_play}
     assert shown and again._playable == {e.id: e.can_play for r in again.view().rows for e in r.episodes}
+
+
+# --- fix round 1 (the row 55 reviews: reviews/row55-adversary.md, row55-intent-keeper.md) -------------------------- #
+def test_a_video_come_while_a_round_runs_is_found_once_its_folder_is_synced(monkeypatch):
+    """A-1: the round lists 02's folder, then 01's video lands there and the watch syncs the folder while the round
+    is still running. The sync's re-look must list the folder afresh: answered from the round's old listing, 01 kept
+    no ▶ though its click opens the file."""
+    monkeypatch.setattr(play, "BATCH", 1)
+    rel1, copies = _copy(_name(1, ".ja.srt"))
+    rel2, _ = _copy(_name(2, ".ja.srt"))
+    video = os.path.join(copies, _name(1, ".mkv"))
+    hand = _Hand()
+    looks = play.Looks("ja", worker=hand)
+    real = play.look
+
+    def look(language, asks, listings=None, find=None):
+        out = real(language, asks, listings, find)
+        if 2 in asks and not os.path.exists(video):
+            _video(video)                                           # downloaded just after the folder was listed
+            looks.again({f"Library/{SHOW}"})                        # the watch's sync of it, the round still running
+        return out
+    monkeypatch.setattr(play, "look", look)
+    looks.want({2: (rel2, "anime"), 1: (rel1, "anime")})
+    hand.run()
+    assert play.to_open("ja", 1, rel1, "anime")[0] == video
+    assert looks.answers() == {2: False, 1: True}
+
+
+def test_a_new_episode_asked_while_a_round_runs_is_looked_at_with_a_fresh_listing(monkeypatch):
+    """A-1: a new item's ask (its subtitle and video just copied into a show folder the round already listed) lands
+    while the round runs: its folder is listed again for it, never answered from before its video came."""
+    monkeypatch.setattr(play, "BATCH", 1)
+    rel1, copies = _copy(_name(1, ".ja.srt"))
+    rel3, _ = _copy(_name(3, ".ja.srt"))
+    video = os.path.join(copies, _name(3, ".mkv"))
+    hand = _Hand()
+    looks = play.Looks("ja", worker=hand)
+    real = play.look
+
+    def look(language, asks, listings=None, find=None):
+        out = real(language, asks, listings, find)
+        if 1 in asks and not os.path.exists(video):
+            _video(video)
+            looks.want({3: (rel3, "anime")})                        # the build that showed the new episode asks
+        return out
+    monkeypatch.setattr(play, "look", look)
+    looks.want({1: (rel1, "anime")})
+    hand.run()
+    assert looks.answers() == {1: False, 3: True}
+
+
+def test_an_episode_whose_record_couldnt_be_read_is_never_kept_as_looked_at(monkeypatch):
+    """A-2 / IK-7: the store busy at the look (its record unread) is "can't tell", never a lasting *not found*: it is
+    tried once more that round, and its next ask looks again — once the store reads, ▶ shows (the click opens it)."""
+    folder = _elsewhere("Downloads", SHOW)
+    origin = _subtitle(os.path.join(folder, _name(5, ".ja.srt")), 5)
+    video = _video(os.path.join(folder, _name(5, ".mkv")))           # beside the original only
+    rel, _copies = _copy(_name(5, ".ja.srt"))
+    readable = [False]
+    monkeypatch.setattr(play, "_pairings", lambda language, ids: {
+        i: ({"producer": "source", "origin": origin} if readable[0] else None) for i in ids})
+    hand = _Hand()
+    looks = play.Looks("ja", worker=hand)
+    looks.want({5: (rel, "anime")})
+    hand.run()
+    assert looks.answers() == {5: False} and looks.looked == 2, "tried once more that round, then left"
+    readable[0] = True
+    looks.want({5: (rel, "anime")})                                  # the same ask: its row built again
+    hand.run()
+    assert looks.answers() == {5: True}
+    assert play.to_open("ja", 5, rel, "anime")[0] == video
+
+
+def test_connects_index_saved_between_two_rounds_is_still_noticed(monkeypatch):
+    """A-3: Connect saves its index, then a round for another reason (a new episode's ask) runs before Connect's
+    feed moves: that round must not take the new index as already seen — the ones not found are looked at again."""
+    rel1, _ = _copy(_name(1, ".ja.srt"))
+    rel2, _ = _copy(_name(2, ".ja.srt"))
+    hand = _Hand()
+    looks = play.Looks("ja", worker=hand)
+    looks.want({1: (rel1, "anime")})
+    hand.run()
+    assert looks.answers() == {1: False}
+    far = _video(_elsewhere("Videos", SHOW, _name(1, ".mp4")))
+    videos.Index("ja").refresh([], [_elsewhere("Videos")])          # Connect saved its index
+    looks.want({2: (rel2, "anime")})                                 # a round for another reason
+    hand.run()
+    looks.index_moved()                                              # Connect's feed moved after
+    hand.run()
+    assert looks.answers()[1] is True and play.to_open("ja", 1, rel1, "anime")[0] == far
+
+
+def test_a_synced_folder_looks_at_the_episodes_in_its_subfolders_too(monkeypatch):
+    """A-4 / IK-2: the watch reports the outermost folder and the sync takes everything under it: a season's folder
+    inside it is looked at again too, a sibling folder that only starts with its name never."""
+    calls = _fake_look(monkeypatch, {})
+    hand = _Hand()
+    looks = play.Looks("ja", worker=hand)
+    looks.want({1: ("Library/星降る街/01.srt", "anime"), 2: ("Library/星降る街/Season 2/01.srt", "anime"),
+                3: ("Library/星降る街 劇場版/01.srt", "anime")})
+    hand.run()
+    calls.clear()
+    looks.again({"Library/星降る街"})
+    hand.run()
+    assert [sorted(c) for c in calls] == [[1, 2]]
+
+
+def _offline(monkeypatch, share):
+    """Every look at `share` fails as a share gone offline does (each would wait one network timeout), counted."""
+    touched = []
+
+    def wrap(fn, answer):
+        def call(path, *a, **k):
+            if os.path.normcase(os.path.abspath(os.fspath(path))).startswith(os.path.normcase(share)):
+                touched.append((fn.__name__, path))
+                if answer is OSError:
+                    raise OSError(64, "The specified network name is no longer available")
+                return answer
+            return fn(path, *a, **k)
+        return call
+    monkeypatch.setattr(os, "stat", wrap(os.stat, OSError))
+    monkeypatch.setattr(os, "listdir", wrap(os.listdir, OSError))
+    monkeypatch.setattr(os.path, "isdir", wrap(os.path.isdir, False))
+    monkeypatch.setattr(os.path, "exists", wrap(os.path.exists, False))
+    return touched
+
+
+def test_hatos_videos_on_a_share_gone_offline_are_waited_on_once_a_round(monkeypatch):
+    """A-5 / IK-8: three episodes paired by hato with videos on a share that went offline, Connect's index holding
+    them there too: the share is touched at most twice for the round (a stat, then its folder), never three times an
+    episode — the looks' later answers never wait behind one timeout per episode."""
+    share = os.path.join(os.environ["SURASURA_TEST_ROOT"], "N", "Media", "Shows", SHOW)
+    for n in (1, 2, 3):
+        _video(os.path.join(share, _name(n, ".mkv")))
+    videos.Index("ja").refresh([], [os.path.dirname(share)])         # listed while the share was there
+    copies = {n: _copy(_name(n, ".ja.srt"))[0] for n in (1, 2, 3)}
+    monkeypatch.setattr(play, "_pairings", lambda language, ids: {
+        i: {"producer": "hato", "video_path": os.path.join(share, _name(i, ".mkv"))} for i in ids})
+    touched = _offline(monkeypatch, share)
+    assert play.look("ja", {n: (rel, "anime") for n, rel in copies.items()}) == dict.fromkeys((1, 2, 3))
+    assert len(touched) <= 2, touched
+
+
+def test_a_books_parts_on_a_share_gone_offline_are_waited_on_once_a_round(monkeypatch):
+    """A-5: three parts of an EPUB whose book sits on a share gone offline: one stat of the book and one of its
+    folder for the round, never two an episode."""
+    share = os.path.join(os.environ["SURASURA_TEST_ROOT"], "N", "Books")
+    book = os.path.join(share, "星の歌.epub")
+    monkeypatch.setattr(play, "_pairings", lambda language, ids: {
+        i: {"producer": "source", "origin": f"{book}#{i}"} for i in ids})
+    touched = _offline(monkeypatch, share)
+    asks = {n: (f"Library/星の歌/星の歌 {n:02d}.txt", "book") for n in (1, 2, 3)}
+    assert play.look("ja", asks) == dict.fromkeys((1, 2, 3))           # can't tell (A-2)
+    assert len(touched) <= 2, touched
+
+
+def test_closing_stops_a_round_between_batches_and_hands_nothing_on(monkeypatch):
+    """A-6 / IK-9: a language switch or the quit closes the looker while a round runs: the round leaves at its next
+    batch (no store opened, no share listed for a language gone), and nothing is handed to a reader that stopped."""
+    monkeypatch.setattr(play, "BATCH", 1)
+    handed = []
+    hand = _Hand()
+    looks = play.Looks("ja", on_change=handed.append, worker=hand)
+    calls = []
+
+    def look(language, asks, listings=None, find=None):
+        calls.append(dict(asks))
+        looks.close()                                                # closed while this batch was looked at
+        return dict.fromkeys(asks, True)
+    monkeypatch.setattr(play, "look", look)
+    looks.want({i: (f"Library/星降る街/{i:02d}.srt", "anime") for i in (1, 2, 3)})
+    hand.run()
+    assert len(calls) == 1 and handed == []
+
+
+def test_a_round_that_fails_lets_the_next_asks_be_looked_at(monkeypatch):
+    """IK-9: a round that raised (a fault outside one episode's look) never leaves the looker thinking a round still
+    runs: the next ask is looked at."""
+    hand = _Hand()
+    looks = play.Looks("ja", worker=hand)
+    broken = [True]
+
+    def look(language, asks, listings=None, find=None):
+        if broken[0]:
+            raise RuntimeError("the disk went away")
+        return dict.fromkeys(asks, True)
+    monkeypatch.setattr(play, "look", look)
+    looks.want({1: ("Library/星降る街/01.srt", "anime")})
+    try:
+        hand.run()
+    except RuntimeError:
+        hand.calls.clear()                                           # (`automation.Worker` prints it and goes on)
+    broken[0] = False
+    looks.want({2: ("Library/星降る街/02.srt", "anime")})
+    hand.run()
+    assert looks.answers().get(2) is True
+
+
+def test_a_press_that_found_nothing_looks_at_that_episode_again(monkeypatch):
+    """A-7: the click's own lookup found nothing (the video just vanished): that episode is looked at again on the
+    looks' worker, so ▶ goes — never offered again for a file the app knows is gone."""
+    found = {1: True, 2: True}
+    calls = _fake_look(monkeypatch, found)
+    hand = _Hand()
+    looks = play.Looks("ja", worker=hand)
+    looks.want({1: ("Library/星降る街/01.srt", "anime"), 2: ("Library/星降る街/02.srt", "anime")})
+    hand.run()
+    calls.clear()
+    found[1] = False
+    looks.recheck([1])
+    hand.run()
+    assert calls == [{1: ("Library/星降る街/01.srt", "anime")}] and looks.answers() == {1: False, 2: True}
+
+
+def test_an_answer_landing_after_its_ask_went_is_never_kept_as_looked_at(monkeypatch):
+    """A-12: an episode went missing (its ask None) while its look ran, then came back with the same ask: it is
+    looked at afresh, as `want` says, never taken as answered by the look that ran before."""
+    hand = _Hand()
+    looks = play.Looks("ja", worker=hand)
+    calls = []
+    ask = ("Library/星降る街/01.srt", "anime")
+
+    def look(language, asks, listings=None, find=None):
+        calls.append(dict(asks))
+        if len(calls) == 1:
+            looks.want({1: None})                                    # gone missing while it was looked at
+        return dict.fromkeys(asks, False)
+    monkeypatch.setattr(play, "look", look)
+    looks.want({1: ask})
+    hand.run()
+    looks.want({1: ask})                                             # back
+    hand.run()
+    assert len(calls) == 2
+
+
+def test_episodes_that_left_current_are_forgotten(monkeypatch):
+    """A-8: an item finished or removed leaves Current: its answer is forgotten, and a full sync's re-look of the
+    ones not found never looks at it again (S19)."""
+    calls = _fake_look(monkeypatch, {})
+    hand = _Hand()
+    looks = play.Looks("ja", worker=hand)
+    looks.want({1: ("Library/星降る街/01.srt", "anime"), 2: ("Library/星降る街/02.srt", "anime")})
+    hand.run()
+    looks.forget([2])
+    calls.clear()
+    looks.again()
+    hand.run()
+    assert [sorted(c) for c in calls] == [[1]] and 2 not in looks.answers()
+
+
+class _Recorder:
+    """A looker that records what the reader tells it."""
+
+    def __init__(self):
+        self.on_change = None
+        self.wanted, self.agains, self.forgot, self.rechecked, self.moved = [], [], [], [], 0
+
+    def want(self, asks):
+        self.wanted.append(dict(asks))
+
+    def again(self, folders=None):
+        self.agains.append(None if folders is None else sorted(folders))
+
+    def forget(self, ids):
+        self.forgot.append(sorted(ids))
+
+    def recheck(self, ids):
+        self.rechecked.append(list(ids))
+
+    def index_moved(self):
+        self.moved += 1
+
+    def seed(self, found):
+        pass
+
+    def answers(self):
+        return {}
+
+    def close(self):
+        pass
+
+
+def test_the_reader_tells_the_looker_which_episodes_left_current():
+    """A-8: through the reader — a build without a row hands its episodes to `forget`."""
+    items = items_of([("now", 1, 1, eps("星降る街の小さな工房", 1, 2), {}),
+                      ("now", 2, 2, eps("雲の上の郵便屋さん", 1, 2), {})])
+    rec = _Recorder()
+    reader = library_reader.LibraryReader(None, play=rec)
+    reader._ask_play(vr.build(items, WORKS, {"mine_line": 20}))
+    left = {k: v for k, v in items.items() if v["work_id"] == 1}
+    reader._ask_play(vr.build(left, WORKS, {"mine_line": 20}))
+    assert rec.forgot == [[3, 4]]
+
+
+def test_the_readers_sync_looks_again_at_the_folders_it_synced(monkeypatch):
+    """A-10: the wiring — a watch's sync re-looks its folders' episodes, a full sync the ones not found."""
+    from app import library_store
+
+    class _Opener:
+        def handle(self):
+            return object()
+    monkeypatch.setattr(library_store, "sync_for_window", lambda store, folders=None: None)
+    rec = _Recorder()
+    reader = library_reader.LibraryReader(_Opener(), play=rec)
+    reader._owed = ({"Library/星降る街"}, False, False)
+    reader._sync()
+    reader._owed = (set(), True, False)
+    reader._sync()
+    assert rec.agains == [["Library/星降る街"], None]
+
+
+def test_a_new_connect_feed_asks_whether_its_index_moved():
+    """A-10: the wiring — a build with another Connect feed than the last asks the looker to check Connect's index;
+    the same feed never does."""
+    from tests.test_view_rows import _feed
+    seed = window_seed.build()
+    feeds = [_feed([])]
+    rec = _Recorder()
+    reader = library_reader.LibraryReader(seed.opener, language=seed.language, numbers=seed.numbers,
+                                          mining=seed.mining, poll=0.02, play=rec, connect=lambda: feeds[0])
+    views = []
+    reader.subscribe(views.append)
+    reader.start()
+    try:
+        end = time.monotonic() + 10
+        while not (views and views[-1].state == "full") and time.monotonic() < end:
+            time.sleep(0.02)
+        first = rec.moved
+        reader.refresh()
+        time.sleep(0.2)
+        assert rec.moved == first, "the same feed: nothing asked"
+        feeds[0] = _feed([])
+        end = time.monotonic() + 10
+        while rec.moved == first and time.monotonic() < end:
+            time.sleep(0.02)
+        assert rec.moved == first + 1
+    finally:
+        reader.stop()
+
+
+def test_connects_no_video_hides_play_only_where_play_would_open_a_video():
+    """IK-3: Connect's lookup is a video's: its *No video* on a podcast's episode says nothing of the audio ▶ opens —
+    the episode is still asked, and ▶ shows when its audio is found."""
+    from app.connect import runner
+    from tests.test_view_rows import _feed, _job
+    work(5, "ゆるっと日本語ラジオ", media="podcast")
+    items = items_of([("now", 5, 1, ["ゆるっと日本語ラジオ 第12回.srt"], {}),
+                      ("now", 1, 2, eps("星降る街の小さな工房", 1, 1), {})])
+    connect = _feed([_job(1, reason=runner.NO_VIDEO), _job(2, reason=runner.NO_VIDEO)])
+    view = vr.build(items, WORKS, {"mine_line": 20}, connect=connect, playable={1: True, 2: True})
+    by_id = {e.id: e for r in view.rows for e in r.episodes}
+    assert by_id[1].ask is not None and by_id[1].can_play, "a podcast's audio: Connect's video lookup says nothing"
+    assert by_id[2].ask is None and not by_id[2].can_play, "an anime's video: Connect and ▶ agree"
+
+
+# --- R55-A: Up Next says *Looking…* until the check has answered ---------------------------------------------------- #
+def test_an_episode_not_answered_yet_is_looking_never_not_found():
+    """R55-A (Sonic): before the video check answers, Up Next reads a muted *Looking…*, never *No video*: the view
+    tells an episode not answered yet (`looking`, a neutral tip — A-11) from one not found; without a looker, or once
+    answered, nothing is looking."""
+    items = items_of([("now", 1, 1, eps("星降る街の小さな工房", 1, 3), {}),
+                      ("now", 4, 2, ["朝ごはんの作り方.srt"], {0: {"source_type": "youtube"}})])
+    view = vr.build(items, WORKS, {"mine_line": 20}, playable={1: False, 2: True})
+    by_id = {e.id: e for r in view.rows for e in r.episodes}
+    assert (by_id[1].looking, by_id[1].can_play) == (False, False)              # looked: not found
+    assert (by_id[2].looking, by_id[2].can_play) == (False, True)
+    assert (by_id[3].looking, by_id[3].can_play) == (True, False)               # not answered yet
+    assert by_id[3].play_tip == vr.STRINGS["play_looking"].format(word="video")
+    assert by_id[3].play_tip != by_id[1].play_tip
+    assert not by_id[4].looking, "online: nothing to look for"
+    assert not any(e.looking for r in vr.build(items, WORKS, {"mine_line": 20}).rows for e in r.episodes)
+
+
+def test_an_answer_landing_rebuilds_the_row_that_was_looking():
+    """R55-A: *Looking…* → *No video* is a change the learner sees: the row whose episode was answered not found is
+    rebuilt (the others stay the same objects)."""
+    items = items_of([("now", 1, 1, eps("星降る街の小さな工房", 1, 2), {}),
+                      ("now", 2, 2, eps("雲の上の郵便屋さん", 1, 2), {})])
+    cache = vr.RowCache()
+    a = vr.build(items, WORKS, {"mine_line": 20}, cache=cache, numbers=(1, {}), playable={3: True, 4: True})
+    b = vr.build(items, WORKS, {"mine_line": 20}, cache=cache, numbers=(1, {}),
+                 playable={1: False, 2: False, 3: True, 4: True})
+    assert a.rows[0].episodes[0].looking and not b.rows[0].episodes[0].looking
+    assert b.rows[0] is not a.rows[0] and b.rows[1] is a.rows[1]
+
+
+def test_the_first_screens_cache_never_seeds_an_episode_that_was_still_looking():
+    """R55-A: a cache written while an episode was still being looked for seeds no answer for it — the next session
+    says *Looking…* until it is looked at, never a *No video* nothing found."""
+    items = items_of([("now", 1, 1, eps("星降る街の小さな工房", 1, 2), {})])
+    view = vr.build(items, WORKS, {"mine_line": 20}, playable={1: True})
+    looks = play.Looks("ja", worker=_Hand())
+    reader = library_reader.LibraryReader(None, play=looks)
+    reader._seed_play(view)
+    assert looks.answers() == {1: True}

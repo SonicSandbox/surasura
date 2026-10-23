@@ -88,6 +88,7 @@ def same_objects(a, b):
 
 class Page(QWidget):
     message = pyqtSignal(str)                       # a line for the bottom bar (a file that couldn't open)
+    not_found = pyqtSignal(int)                     # an episode whose ▶ press found nothing: looked at again (row 55 A-7)
 
     def __init__(self, name, heading, tooltips=None, language="ja", parent=None):
         super().__init__(parent)
@@ -145,14 +146,17 @@ class Page(QWidget):
 
     def _play(self, episode):
         media = self._media_of(episode)
-        bridge.run_in_worker(media_to_open, self.language, episode, media, then=self._open_found,
+        bridge.run_in_worker(media_to_open, self.language, episode, media,
+                             then=lambda found: self._open_found(found, episode),
                              failed=lambda info: self.message.emit(strings.PLAY_FAILED.format(
                                  name=episode.label, why=str(info[0]))))
 
-    def _open_found(self, found):
+    def _open_found(self, found, episode=None):
         path, why = found
         if path is None:
             self.message.emit(why)
+            if episode is not None:                       # row 55 A-7: the app now knows; its ▶ is looked at again
+                self.not_found.emit(episode.id)
             return
         if sys.platform != "win32":                       # Qt's own opener belongs on the GUI thread
             QDesktopServices.openUrl(QUrl.fromLocalFile(path))

@@ -1019,6 +1019,8 @@ class ShellWindow(QMainWindow):
             for page in self.page_widgets.values():
                 if hasattr(page, "message"):
                     page.message.connect(self.say)                     # a file ▶ couldn't open: said in the bar
+                if hasattr(page, "not_found"):
+                    page.not_found.connect(self._play_not_found)       # ... and its ▶ looked at again (row 55 A-7)
             current = self.page_widgets.get("current")
             if hasattr(current, "on_journey"):                         # W3.1a S5: Up Next's *N new words ↗*
                 current.on_journey = lambda _row, _episode: self._open_journey(asked=True)
@@ -2507,12 +2509,18 @@ class ShellWindow(QMainWindow):
         self.sources = tuple(summary.get("sources") or ())
         self._show_offline()
         looks = getattr(self.services.library, "play", None)
-        if looks is not None:                             # row 55: a video come beside an original: ▶ looked again
-            looks.again()
+        if looks is not None and summary.get("moved"):   # row 55: a video come beside an original: ▶ looked again
+            looks.again()                                 # (IK-1: a look that changed nothing looks at nothing)
         if summary.get("unfinished_reset"):              # LF-11: a fresh library a kill stopped, once a run
             from app.qt import settings_strings, windows
             windows.say_in_bar(self, settings_strings.FRESH_UNFINISHED.format(folder=summary["unfinished_reset"]))
         self.sources_seen.emit(summary)
+
+    def _play_not_found(self, item_id):
+        """A ▶ press found nothing to open (row 55 A-7): that episode's ▶ looked at again, on the looks' worker."""
+        looks = getattr(self.services.library, "play", None)
+        if looks is not None:
+            looks.recheck([item_id])
 
     def offline_text(self):
         """The offline line's words for `sources` (empty: every folder reachable, or not looked at yet)."""

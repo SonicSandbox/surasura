@@ -15,7 +15,9 @@ on which thread, and what the window is told. Qt-free; the shell (`app/qt/shell.
   own (`automation.Worker`) with its own store handle (the window's opener, `StoreOpener.handle`: one per thread);
   a look asked while one runs is folded into one more after it (a Refresh's full look kept), the rest dropped.
 - **What the window is told** (`on_result(summary)`, on the worker): `{"sources": [{id, path, on, items, reachable}],
-  "added", "waiting", "full"}` after each look, add and stop — `reachable` None until a look reached it this run.
+  "added", "waiting", "full", "moved"}` after each look, add and stop — `reachable` None until a look reached it this
+  run; `moved`: the known files whose video or original the looks since the last summary recorded (`paired`,
+  `attached`) — ▶'s looks are asked again only then (row 55 IK-1).
   `offline(sources)` is the offline line's list (SRC-3: nothing moved or marked, one quiet line).
 - **+ Add → A folder…** (`add`): `Store.add_source` then its first look — a later look's landing (D6: a show never
   shown waits in New arrivals; `first=True` is setup's own first scan only). A refused folder answers its reason
@@ -85,6 +87,7 @@ class SourceLooks:
         self._wake = threading.Event()                # every watch's reports wake the one watch thread
         self._watcher = None
         self._reachable = {}                          # root id -> the last look's answer (this run)
+        self._moved = 0                               # row 55 IK-1: files a look moved, since the last summary
         self._reset_told = False                      # a fresh library a kill left unfinished: said once a run (LF-11)
         self.looks = 0                                # looks run (tests)
 
@@ -253,6 +256,7 @@ class SourceLooks:
             return None
         if not result.get("busy"):
             self._reachable[row["id"]] = bool(result.get("reachable"))
+            self._moved += sum(result.get(k) or 0 for k in ("paired", "attached"))     # row 55 IK-1
         return result
 
     def _rules_now(self):
@@ -413,6 +417,7 @@ class SourceLooks:
             print(f"Sources: the folders couldn't be read: {e!r}")
             return
         summary = dict(totals, language=self.language)
+        summary["moved"], self._moved = self._moved, 0
         summary["sources"] = [dict(r, reachable=self._reachable.get(r["id"])) for r in rows]
         try:
             summary["skipped"] = store.skipped_folders()          # K6: Settings' *Skipped folders*

@@ -221,7 +221,8 @@ class LibraryReader:
 
     def _ask_play(self, view):
         """The episodes' asks of the rows this build made anew, to the looker (an unchanged row is the same object:
-        nothing asked, nothing looked at)."""
+        nothing asked, nothing looked at); the episodes of the rows gone and in no row now, forgotten (fix round A-8:
+        a finished or removed item is never looked at again)."""
         before, now, asks = self._play_rows, {}, {}
         for r in view.rows:
             now[r.key] = r
@@ -229,8 +230,19 @@ class LibraryReader:
                 for e in r.episodes:
                     asks[e.id] = e.ask
         self._play_rows = now
+        gone = {e.id for k, r in before.items() if k not in now for e in r.episodes}
+        if gone:
+            gone -= {e.id for r in view.rows for e in r.episodes}
+        if gone:
+            self.play.forget(gone)
         if asks:
             self.play.want(asks)
+
+    def _seed_play(self, view):
+        """The first screen's cache: last session's answers seed the looker's, until the looks answer — never for an
+        episode still being looked for when it was written (R55-A: it says *Looking…* until it is looked at)."""
+        self.play.seed({e.id: e.can_play for r in view.rows for e in r.episodes if not e.looking})
+        self._playable = self.play.answers()
     # --- end row 55
 
     # --- LM11b G5
@@ -862,8 +874,7 @@ class LibraryReader:
         if view is not None:
             view = view._replace(epoch=data["key"][1])  # the key matched: the store's epoch now
         if view is not None and self.play is not None:  # row 55: last session's answers, until the looks answer
-            self.play.seed({e.id: e.can_play for r in view.rows for e in r.episodes})
-            self._playable = self.play.answers()
+            self._seed_play(view)
         if view is not None and self._view is None:
             self._publish(view)
 

@@ -2047,13 +2047,15 @@ def _on_disk(path):
     return not (getattr(st, "st_file_attributes", 0) & _PLACEHOLDER)
 
 
-def paired_video(pairing, find):
+def paired_video(pairing, find, on_disk=None):
     """The video a pairing names (`video_path`), on this computer -> its path; else, moved, the one `find(names, size)`
     (a video index's lookup) gives by its name and size, when its bytes say it is the paired video; else None. One
-    rule for Connect (`Runner.video`) and the window's ▶ (`app/services/play.py`): the two never disagree."""
+    rule for Connect (`Runner.video`) and the window's ▶ (`app/services/play.py`): the two never disagree. `on_disk`:
+    "on this computer" as the caller asks it (▶'s looks: a share offline waited on once a round), `_on_disk` unless
+    given."""
     from app.connect import videos
     named = pairing.get("video_path")
-    if _on_disk(named):
+    if (on_disk or _on_disk)(named):
         return named                        # the named path is trusted as it is: never read (a stat only)
     size = pairing.get("video_size")
     found = find([os.path.basename(named)], size if isinstance(size, int) and size > 0 else None)

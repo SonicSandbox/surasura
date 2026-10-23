@@ -1878,8 +1878,8 @@ def test_row55_play_is_drawn_and_pressable_only_where_its_file_is_found(qapp, mo
     """Sonic (laptop try, row 55): "if it doesn't find the media, there shouldn't be a play button as it would be
     missing". The window's reader carries ▶'s looker (`play.Looks`, its lookup a stand-in here: every other episode
     found, never Up Next's): an opened row's found episode has ▶ drawn and pressable; one not found has neither — its
-    column stays, blank — and a press there asks for nothing; Up Next keeps its dashed *No video*, which says why on
-    hover and is no button."""
+    column stays, blank — and a press there asks for nothing; Up Next's *No video* is plain muted words (R55-B, Sonic:
+    no dashed frame, no triangle, nothing button-shaped), which say why on hover and are no button."""
     from app.services import play, view_rows
     seed = window_seed.build()
     first = view_rows.build({r["id"]: r for r in seed.items}, {w["id"]: w for w in seed.works}, {"mine_line": 20})
@@ -1904,19 +1904,29 @@ def test_row55_play_is_drawn_and_pressable_only_where_its_file_is_found(qapp, mo
             QApplication.processEvents()
         fired = []
         lst.play_requested.connect(fired.append)
-        # Up Next: the dashed label stays and says why; it is no ▶ part and a press opens nothing
+        # Up Next (R55-B): plain muted words *No video* that say why on hover; no ▶ part, and a press opens nothing
         hero = lst.model().entries[0][1]
-        assert not hero.episodes[hero.next_index].can_play
+        nxt = hero.episodes[hero.next_index]
+        assert not nxt.can_play and not nxt.looking
+        assert lst.delegate._watch_label(hero) == strings.ROWS_NO_MEDIA_BUTTON.format(word="video")
         assert part(lst, 0, "play") == [] and part(lst, 0, "no-play")[0][2] == hero.play_tip
-        QTest.mouseClick(lst.viewport(), Qt.MouseButton.LeftButton, pos=part(lst, 0, "no-play")[0][1].center())
-        # ... nor a drag handle: it stands where ▶ stands, and the card's rule is that no button's place starts a drag
-        # (NO_DRAG) — its title, a step left, still does; Ctrl+click on it picks nothing either
-        label = part(lst, 0, "no-play")[0][1].center()
+        words = part(lst, 0, "no-play")[0][1]
+        rect, arr = grab(lst, 0)
+        box = arr[words.top() - rect.top():words.bottom() - rect.top() + 1,
+                  words.left() - rect.left():words.right() - rect.left() + 1]
+        ground = box[0, 0]
+        for edge in (box[0], box[-1], box[:, 0], box[:, -1]):            # no frame, dashed or whole, on any side
+            assert not (edge != ground).any(axis=-1).any()
+        assert not (box[:, :13] != ground).any(), "no triangle where the trillion stood"
+        assert (box != ground).any(axis=-1).sum() > 20, "the words are drawn"
+        QTest.mouseClick(lst.viewport(), Qt.MouseButton.LeftButton, pos=words.center())
+        # ... and no button's place: the words are the card's — a press there drags Up Next as its title does, and
+        # `_act` does nothing with them
         title = part(lst, 0, "title")[0][1].center()
         lst.drag = lst.drag or object()                       # (no writer here: a stand-in, `drag_from` asks only that)
         assert lst.drag_from((0, "title", None, title, hero.key))
-        assert not lst.drag_from((0, "no-play", hero.episodes[hero.next_index], label, hero.key))
-        assert not lst._pick_at(lst.model().index(0, 0), part(lst, 0, "no-play")[0], "ctrl")
+        assert lst.drag_from((0, "no-play", nxt, words.center(), hero.key))
+        assert "no-play" not in rows.NO_DRAG
         # an opened row with both
         i, (_kind, row, _l) = next((i, e) for i, e in enumerate(lst.model().entries) if e[0] == rows.ROW and
                                    len({ep.can_play for ep in e[1].episodes}) == 2)
@@ -1944,6 +1954,92 @@ def test_row55_play_is_drawn_and_pressable_only_where_its_file_is_found(qapp, mo
             seen[ep.can_play] += 1
         assert seen[True] and seen[False]
         assert fired == []                                    # nothing not found was asked to open
+    finally:
+        win.close()
+        services.shutdown(0.5)
+
+
+def test_row55_up_next_says_looking_until_the_check_answers_never_no_video_first(qapp, monkeypatch):
+    """R55-A (Sonic): before the video check has answered for Up Next's episode, its place reads a muted *Looking…*
+    (its tip: looking, never "not found"), never *No video*; once the answer lands, ▶ Watch — or, not found, the plain
+    *No video*. The check here runs only when the test says (a worker run by hand)."""
+    from app.services import play, view_rows
+    from tests.test_play_shown import _Hand
+    seed = window_seed.build()
+    first = view_rows.build({r["id"]: r for r in seed.items}, {w["id"]: w for w in seed.works}, {"mine_line": 20})
+    hero_next = first.rows[0].episodes[first.rows[0].next_index].id
+    monkeypatch.setattr(play, "look", lambda language, asks, listings=None, find=None:
+                        {i: i == hero_next for i in asks})
+    hand = _Hand()
+    reader = library_reader.LibraryReader(seed.opener, language=seed.language, numbers=seed.numbers,
+                                          mining=seed.mining, poll=0.02, play=play.Looks(seed.language, worker=hand))
+    services = shell.Services(library=reader)
+    win = shell.open_window(qapp, services)
+    try:
+        win.resize(1280, 1100)
+        win.show()
+        lst = current(win)
+        page = win.page_widgets["current"]
+        assert wait_until(lambda: page.view_model is not None and page.view_model.state == "full", 10)
+        for _ in range(20):
+            QApplication.processEvents()
+        hero = lst.model().entries[0][1]
+        nxt = hero.episodes[hero.next_index]
+        assert nxt.looking and not nxt.can_play
+        assert lst.delegate._watch_label(hero) == strings.ROWS_LOOKING_BUTTON
+        assert part(lst, 0, "play") == []
+        assert part(lst, 0, "no-play")[0][2] == view_rows.STRINGS["play_looking"].format(word="video")
+        hand.run()                                            # the check answers: found
+        assert wait_until(lambda: (lambda h: not h.episodes[h.next_index].looking and h.can_play)(
+            lst.model().entries[0][1]), 10)
+        hero = lst.model().entries[0][1]
+        assert lst.delegate._watch_label(hero) == hero.verb and part(lst, 0, "play") and not part(lst, 0, "no-play")
+    finally:
+        win.close()
+        services.shutdown(0.5)
+
+
+def test_row55_a_press_that_found_nothing_has_that_episode_looked_at_again(qapp):
+    """A-7: ▶ pressed in the race where its video just vanished — the bar says *Couldn't open X: why*, and the episode
+    is handed to the looker to look at again (so its ▶ goes), never left offering a file the app knows is gone."""
+    from tests.test_play_shown import _Recorder
+    seed = window_seed.build()
+    rec = _Recorder()
+    reader = library_reader.LibraryReader(seed.opener, language=seed.language, numbers=seed.numbers,
+                                          mining=seed.mining, poll=0.02, play=rec)
+    services = shell.Services(library=reader)
+    win = shell.open_window(qapp, services)
+    try:
+        page = win.page_widgets["current"]
+        assert wait_until(lambda: page.view_model is not None and page.view_model.state == "full", 10)
+        ep = page.view_model.rows[0].episodes[0]
+        said = []
+        page.message.connect(said.append)
+        page._open_found((None, strings.PLAY_FAILED.format(name=ep.label, why="it isn't on disk")), ep)
+        assert said and rec.rechecked == [[ep.id]]
+        page._open_found((None, "Couldn't open it"))             # no episode named: nothing looked at again
+        assert rec.rechecked == [[ep.id]]
+    finally:
+        win.close()
+        services.shutdown(0.5)
+
+
+def test_row55_a_source_look_asks_plays_looks_again_only_when_it_recorded_a_video(qapp):
+    """IK-1 (S19): a source folder's look that recorded no video on a known file (most looks) asks ▶'s looks for
+    nothing; one that did asks for the ones not found."""
+    from tests.test_play_shown import _Recorder
+    seed = window_seed.build()
+    rec = _Recorder()
+    reader = library_reader.LibraryReader(seed.opener, language=seed.language, numbers=seed.numbers,
+                                          mining=seed.mining, poll=0.02, play=rec)
+    services = shell.Services(library=reader)
+    win = shell.open_window(qapp, services)
+    try:
+        win._sources_looked({"language": seed.language, "sources": [], "moved": 0})
+        win._sources_looked({"language": seed.language, "sources": []})
+        assert rec.agains == []
+        win._sources_looked({"language": seed.language, "sources": [], "moved": 2})
+        assert rec.agains == [None]
     finally:
         win.close()
         services.shutdown(0.5)

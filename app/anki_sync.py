@@ -766,25 +766,12 @@ def sync_backlog(language, url, decks, fields):
 # Replace / restore (D12) — the only paths that remove entries, always backed up first
 # --------------------------------------------------------------------------- #
 def _backup_current(language):
-    """Copy KnownWord.json to .trash/KnownWord.<YYYYMMDD-HHMMSS>.json and verify the bytes.
-    Returns the backup filename, or None when there is no file. Raises OSError on any mismatch."""
-    src = _known_path(language)
-    if not os.path.exists(src):
-        return None
-    trash = os.path.join(get_user_files_path(language), ".trash")
-    os.makedirs(trash, exist_ok=True)
-    stamp = time.strftime("%Y%m%d-%H%M%S")
-    name = f"KnownWord.{stamp}.json"
-    n = 1
-    while os.path.exists(os.path.join(trash, name)):
-        name = f"KnownWord.{stamp}-{n}.json"
-        n += 1
-    dst = os.path.join(trash, name)
-    shutil.copyfile(src, dst)
-    with open(src, "rb") as a, open(dst, "rb") as b:
-        if a.read() != b.read():
-            raise OSError("the backup copy did not match your current file")
-    return name
+    """Copy KnownWord.json to .trash/KnownWord.<YYYYMMDD-HHMMSS>.json, whole and verified or not at all
+    (`path_utils.backup_to_trash`). Returns the backup filename, or None when there is no file. Raises
+    OSError when the backup can't be made."""
+    from app.path_utils import backup_to_trash
+    dst = backup_to_trash(_known_path(language))
+    return os.path.basename(dst) if dst else None
 
 
 def confirmed(result):

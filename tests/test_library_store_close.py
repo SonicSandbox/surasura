@@ -365,6 +365,37 @@ def test_a_burst_of_connect_receipts_spawns_one_helper(language, store_helper_sp
         ls._outside_idle_now()
 
 
+@pytest.mark.parametrize("program", ["Surasura", "surasura-cli", "tsubasa"])
+@pytest.mark.parametrize("command", ["maintain", "sync"])
+def test_the_frozen_helper_is_surasura_beside_whichever_bundled_program_starts_it(program, command, monkeypatch):
+    """The helper is app_entry's `library_maintain` verb, which only Surasura.exe has: surasura-cli refuses it
+    (`usage`, exit 2). Connect's idle trigger and the command line's writes start the helper from surasura-cli.exe,
+    and the command named `sys.executable`, so on the laptop's frozen build the store's maintenance never ran (29
+    refusals in one day's cli-events.jsonl). Whichever bundled program starts it, the helper is the Surasura
+    beside it; from source it stays this file."""
+    folder = os.path.join(os.path.abspath(os.sep), "Program Files", "Surasura")
+    ext = ".exe" if os.name == "nt" else ""
+    monkeypatch.setattr(ls.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(ls.sys, "executable", os.path.join(folder, program + ext))
+    args = ls._helper_args("ja", command, "--retry")
+    assert args == [os.path.join(folder, "Surasura" + ext), "library_maintain", command, "--language", "ja", "--retry"]
+
+
+def test_spawn_maintain_from_the_command_line_program_starts_surasura(real_store_helper, monkeypatch):
+    """The laptop's case end to end: `spawn_maintain` run inside a frozen surasura-cli.exe (Connect's receipts)
+    starts Surasura.exe's `library_maintain`, never surasura-cli.exe's."""
+    import subprocess
+    folder = os.path.join(os.path.abspath(os.sep), "Program Files", "Surasura")
+    ext = ".exe" if os.name == "nt" else ""
+    monkeypatch.setattr(ls.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(ls.sys, "executable", os.path.join(folder, "surasura-cli" + ext))
+    monkeypatch.setattr(ls, "update_staged", lambda: False)
+    started = []
+    monkeypatch.setattr(subprocess, "Popen", lambda args, **kwargs: started.append(args) or "proc")
+    assert ls.spawn_maintain("zh") == "proc"
+    assert started == [[os.path.join(folder, "Surasura" + ext), "library_maintain", "maintain", "--language", "zh"]]
+
+
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_a_window_move_with_the_copy_up_to_date_arms_nothing(language, store_helper_spawns, monkeypatch):
     """A window's own write is not Connect's: with the copy up to date, a move arms no idle trigger and spawns

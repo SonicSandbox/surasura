@@ -30,7 +30,7 @@ from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QHBoxLayout, QLabe
                              QToolButton, QVBoxLayout, QWidget)
 
 from app import theme
-from app.qt import motion, rows, shadow, strings, style
+from app.qt import bridge, motion, rows, shadow, strings, style
 
 DEBOUNCE_MS = 120                       # A2 #85: the query asked this long after the last keystroke
 GROUP_ORDER = ("current", "goal", "arrivals", "finished")
@@ -415,6 +415,7 @@ class SearchCut(QWidget):
         self.timer.timeout.connect(self._ask)
         self.edit.textChanged.connect(self._typed)
         self._answer = _Answer(self)
+        self._gate = bridge.Gate(self._answer)          # the searcher's worker reaches it only so (`bridge.Gate`)
         self._answer.said.connect(self._answered, Qt.ConnectionType.QueuedConnection)
         self.slash = QShortcut(QKeySequence("/"), shell)
         self.slash.setContext(Qt.ShortcutContext.WindowShortcut)
@@ -536,14 +537,7 @@ class SearchCut(QWidget):
         if not query.strip() or searcher is None:
             return
         self.asked += 1
-        said = self._answer.said
-
-        def answer(q, groups, ms):
-            try:
-                said.emit(q, groups, ms)
-            except RuntimeError:                         # the window is gone
-                pass
-        searcher.ask(query, answer)
+        searcher.ask(query, self._gate.caller("said"))      # (the window gone: dropped)
 
     def _answered(self, query, groups, _ms):
         if query != self.edit.text() or not self.wanted:

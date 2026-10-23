@@ -2726,9 +2726,9 @@ def test_round8_a_write_landing_after_the_window_closed_and_was_deleted_tells_no
 def test_round8_a_write_landing_after_the_window_was_deleted_without_its_close_reaches_a_live_relay(qapp):
     """The same crash by the other road (12 runs of test_finished under load, 2 crashed after the close fix): a close
     the quit's wait ignored (E20: a move still pending) never reached `unwire`, then the window was deleted and the
-    writer's thread — still retrying that move — emitted on the relay deleted with it. The relay is the application's
-    from the start: a landing after the window is gone emits on a live relay whose queued connections went with the
-    controller, and tells no one. Red first: the deleted relay (RuntimeError here; an access violation under load)."""
+    writer's thread — still retrying that move — emitted on the relay deleted with it. The writer reaches the relay
+    only through its gate (`bridge.Gate`), closed as the relay goes: a landing after the window is gone tells no one.
+    Red first: the deleted relay (RuntimeError here; an access violation under load — raced in test_bridge)."""
     from PyQt6.QtCore import QCoreApplication
     seed = window_seed.build()
     writer = FakeWriter(seed.library)

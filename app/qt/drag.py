@@ -42,7 +42,7 @@ from PyQt6.QtGui import QAction, QKeySequence, QPainter, QPainterPath, QPen, QPi
 from PyQt6.QtWidgets import QApplication, QMenu, QStyleOptionViewItem, QWidget
 
 from app import theme
-from app.qt import motion, rows, shadow, strings, style
+from app.qt import bridge, motion, rows, shadow, strings, style
 from app.services import view_rows
 
 D = theme.DRAG
@@ -781,9 +781,10 @@ class DragController(QObject):
         self._swallow_until = 0.0
         self._filtering = False
         self.drops = 0                               # drops handed to the writer (tests)
-        self.relay = _Relay(QApplication.instance())  # the application's, never the window's: a write landing after the
-        #   window is gone (a close the quit's wait put off, then the window deleted) emits on a live relay, and its
-        #   queued connections went with this controller — it tells no one (round 8's crash)
+        self.relay = _Relay(self)
+        self._gate = bridge.Gate(self.relay)         # the writer's and the reader's threads reach the relay through it
+        #   only: a write landing as the window is deleted (a close the quit's wait put off) is dropped, never an emit
+        #   on a deleted relay (round 8's crash)
         q = Qt.ConnectionType.QueuedConnection
         self.relay.saved.connect(self._saved, q)
         self.relay.undone.connect(self._undone, q)
@@ -791,15 +792,12 @@ class DragController(QObject):
         self.relay.reread.connect(self._reread, q)
         self.relay.note.connect(self._note, q)
         self.relay.gone.connect(self._gone, q)
-        writer.on_saved = self.relay.saved.emit
-        writer.on_undone = self.relay.undone.emit
-        writer.on_saving = self.relay.saving.emit
-        writer.on_reread = self.relay.reread.emit
-        writer.on_note = self.relay.note.emit
+        for name in WRITER_CALLBACKS:                # on_saved -> the relay's `saved`, …
+            setattr(writer, name, self._gate.caller(name[len("on_"):]))
         self._gone_told = None                       # the very callback the reader holds (`unwire` lets it go)
         subscribe = getattr(reader, "subscribe_gone", None)
         if subscribe is not None:
-            self._gone_told = self.relay.gone.emit
+            self._gone_told = self._gate.caller("gone")
             subscribe(self._gone_told)
         self.page.on_done = self.done
         self.page.on_nudge = self.nudge
@@ -1881,10 +1879,11 @@ class DragController(QObject):
     def unwire(self):
         """The writer's callbacks and the reader's `subscribe_gone` let go — a language switch and the window's close,
         before any widget of this controller's can be deleted: a write landing later (the quit's last moves, on the
-        writer's thread) tells no one; one telling right now reaches the relay, the application's (never a deleted
-        one: round 8's crash)."""
+        writer's thread) tells no one, and one telling right now has ended when this returns (the gate's close waits
+        for it). A window deleted without this (a close the quit's wait put off) closes the gate as its relay goes."""
         for name in WRITER_CALLBACKS:
             setattr(self.writer, name, _no_callback)
+        self._gate.close()
         unsubscribe = getattr(self.reader, "unsubscribe_gone", None)
         if unsubscribe is not None and self._gone_told is not None:
             unsubscribe(self._gone_told)

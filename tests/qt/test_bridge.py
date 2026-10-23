@@ -85,6 +85,85 @@ def test_a_callback_after_the_bridge_is_gone_is_dropped(qapp):
     svc.tell("late")                                  # no raise into the service
 
 
+# Round 8's crash, at its root: a thread emitting on a QObject at the moment the GUI thread deletes it is an access
+# violation — no Python error, the whole process ends (the writer's late landing on the drag's relay, deleted with its
+# window; 1 run in 20 of test_finished). Raced in a child process, so a regression fails this test instead of killing
+# the run: a service thread calls back without pause while the GUI thread makes and deletes the object, 1,500 times,
+# through each road a window hands a service (a `Gate` on a relay of its own, a `Relay`, the `Bridge`).
+_RACE = r"""
+import sys, threading, time
+from PyQt6.QtCore import QCoreApplication, QEvent, QObject, pyqtSignal
+from PyQt6.QtWidgets import QApplication
+from app.qt import bridge
+
+app = QApplication([])
+
+
+class Own(QObject):
+    saving = pyqtSignal(bool)
+
+
+class Svc:
+    def __init__(self):
+        self.cb = None
+
+    def subscribe(self, cb):
+        self.cb = lambda value: cb(value)
+
+
+stop, current, raised = threading.Event(), [None], []
+
+
+def service():
+    while not stop.is_set():
+        cb = current[0]
+        if cb is not None:
+            try:
+                cb(True)
+            except Exception as e:                      # a raise into the service is a fault too (it logs one)
+                raised.append(repr(e))
+        time.sleep(0)                                   # (the GIL let go between calls, as a real service's work does)
+
+
+threading.Thread(target=service, daemon=True).start()
+for i in range(1500):
+    holder = QObject()
+    kind = i % 3
+    if kind == 0:
+        own = Own(holder)
+        own.saving.connect(lambda v: None)
+        current[0] = bridge.Gate(own).caller("saving")
+    elif kind == 1:
+        relay = bridge.Relay(holder)
+        relay.said.connect(lambda v: None)
+        current[0] = relay.call
+    else:
+        svc = Svc()
+        b = bridge.Bridge(status=svc, parent=holder)
+        b.status_changed.connect(lambda v: None)
+        current[0] = svc.cb
+    time.sleep(0.001)
+    holder.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    app.processEvents()
+stop.set()
+print("survived", len(raised), raised[:1])
+"""
+
+
+def test_round8_a_service_calling_back_while_the_gui_thread_deletes_the_object_never_crashes(tmp_path):
+    """Red first: a bare emit — the drag's relay, Finished's and the search's as they were — died of an access
+    violation 5 runs in 5; the bridge's own roads (an alive flag read before the emit) survived, the instant between
+    the two left open. Through the gate every road survives and nothing is raised into the service."""
+    import subprocess
+    import sys
+    env = dict(os.environ, QT_QPA_PLATFORM="offscreen", PYTHONPATH=ROOT)
+    proc = subprocess.run([sys.executable, "-X", "faulthandler", "-c", _RACE], cwd=str(tmp_path), env=env,
+                          capture_output=True, text=True, timeout=300)
+    assert proc.returncode == 0, (proc.returncode, proc.stderr[-2000:])
+    assert proc.stdout.split()[:2] == ["survived", "0"], proc.stdout               # and nothing raised into the service
+
+
 def test_the_real_registry_and_status_service_reach_the_gui_thread(qapp):
     registry = jobs_module.JobRegistry()
     status = status_service.StatusService(registry)

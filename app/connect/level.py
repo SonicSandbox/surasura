@@ -97,13 +97,32 @@ def _queue(store, language, ledger, new, file_words):
         if library.mined_at(store, item_id) is None and not ledger.mined(language, item_id):
             continue                        # its first mining (when it runs) reads the list as it is now
         item = store.item(item_id)
-        if item is None or item.get("in_learning_order") == 0:
-            continue                        # taken out of the learning order (D14): never mined again
+        if not wants(item):
+            continue                        # taken out of the learning order (D14), or watched (#49): no level job
         lemmas = set(file_words.get(os.path.basename(item.get("rel_path") or "")) or ())
         words = {key for lemma in lemmas if lemma not in made for key in by_lemma.get(lemma, ())}
         if words and ledger.queue_level(language, item_id, words, store_id=library.store_id(store)) is not None:
             queued.append(item_id)
     return queued
+
+
+# 3.0's rule (laptop round 8 #49, LF4-1 = A; Sonic 2026-10-22: "new words never come from a watched episode YET. This
+# is critical, as in 3.1, it will pick the best sentence which often may come from watched episodes / series"): Connect
+# makes no new cards on its own from an episode you've watched — neither its first mining nor a level raise; your ask
+# (*Mine this*, *Mine now*) always does. 3.1's best-sentence pick (P6.1, Swap and the sentence library) lifts it: False.
+WATCHED_GIVES_NO_NEW_CARDS = True
+
+
+def watched_out(item):
+    """Is this item one Connect makes no new cards from on its own (`WATCHED_GIVES_NO_NEW_CARDS`: you've watched it)?"""
+    return WATCHED_GIVES_NO_NEW_CARDS and bool((item or {}).get("watched"))
+
+
+def wants(item):
+    """Does a level raise mine this (already mined) item? Never one taken out of the learning order (D14), never one
+    you've watched (`watched_out`: its new words go to the episodes ahead of you, so the card comes before the word; the
+    runner drops a job whose episode was marked watched since, `runner.WATCHED`)."""
+    return item is not None and item.get("in_learning_order") != 0 and not watched_out(item)
 
 
 def _walk(store):

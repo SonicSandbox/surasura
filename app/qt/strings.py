@@ -111,6 +111,12 @@ ITEM_MENU = {
     "same-show": ("Same show as…", "Make this part of another show: it and its new episodes go into that show "
                                    "(asks first)"),
 }
+# a submenu longer than a page (`item_menu.MENU_PAGE`) goes on in a submenu of its own, page by page
+MENU_MORE = ("More…", "The rest of this list")
+# row 28: an opened row's episode's own ⋯ ({ep}: the episode as ⋯ names it; {action}: its stone's click,
+# `ROWS_STONE_ACTION`) — its *Play* is ▶'s own verb and tip
+ITEM_EP_MARK = ("Mark {action}", "Mark {ep} {action}\n• Undo takes it back")
+ITEM_EP_MENU_NAME = "What you can do with {ep}"
 ITEM_UNGROUPED = "Ungrouped {title}"
 ITEM_RENAME_ASK = "Rename this group"
 ITEM_RENAME_BODY = "Leave it empty to name it after its shows again."
@@ -346,6 +352,17 @@ QUIT_FINISHING = "Finishing with Anki first… the window closes by itself"
 QUIT_FINISHING_LIST = "Finishing your list first… the window closes by itself"
 QUIT_HELD = "Surasura is closing"
 QUIT_CLOSING_TIP = "Surasura is closing: it finishes what can't stop part-way, then closes by itself"
+# --- row 35: closing while helpers go on without the window (`jobs.detached_at_quit`; the shell's sheet)
+QUIT_DETACHED_TITLE = "Still finishing: {labels}"
+QUIT_DETACHED_JOIN = " · "
+QUIT_DETACHED_BODY = "They finish by themselves."
+QUIT_DETACHED_CONNECT = "Connect finishes the cards it's making by itself."
+QUIT_DETACHED_QUIT = "Quit"
+QUIT_DETACHED_QUIT_TIP = "Close Surasura now: what is still finishing goes on and ends by itself (Esc does the same)"
+QUIT_DETACHED_STOP = "Stop and quit"
+QUIT_DETACHED_STOP_TIP = ("End the library's upkeep now, then close. Surasura picks it up again as it closes, or at "
+                          "its next start. Connect isn't stopped")
+# --- end row 35
 
 # --- W3.1a frame (app/qt/frame.py): the level ▾ and its pop, the footer's emerald and known corner, the Goal dock and
 # its wells. The level's words are the old chip's (BAR_LEVEL_*); Generate's are the button's (GENERATE_*).
@@ -386,7 +403,16 @@ FOOT_ANKI_NAME = "Anki: {words}"
 FOOT_ANKI_TIP = "{words}\n{tip}"
 FOOT_ANKI_ANKIWEB = "{tip}\n\n{ankiweb}"
 FOOT_KNOWN = "known"
-FOOT_KNOWN_TIP = "{tip}\n{left:,} to {next:,}"
+FOOT_KNOWN_TIP = "{tip}\n{left:,} to {next:,}\n{click}"
+FOOT_KNOWN_NAME = "Known words"                              # the count's button before a count is read
+FOOT_KNOWN_NONE_TIP = "{name}: not counted yet\n{click}"
+FOOT_KNOWN_CLICK = "Click to sync now"                       # Q30: the count's click, through the one sync path
+FOOT_KNOWN_CLICK_ANKI = "Click to open the Anki window: choose your decks there"     # no decks yet (IK-7)
+FOOT_KNOWN_SYNCING = "Syncing with Anki now…"
+# A click's sync refused (AD-6): AutoSync's own answer, said in the bar ("no-decks" / "never-synced" open the Anki window)
+FOOT_KNOWN_REFUSED = {"update-staged": "Not synced: an update is waiting to install, and Anki waits for it",
+                      "running": "A sync with Anki is running already",
+                      "off": "Not synced: Anki is switched off for this run"}
 WELLS = {"soon": "Soon", "goal": "Goal", "finished": "Finished"}
 WELL_SUBS = {"soon": "next in line", "goal": "someday · in no order", "finished": "newest first"}
 WELL_TIPS = {"soon": "Soon: drop it here and it comes up next in line",
@@ -399,12 +425,16 @@ WELLS_NAME = "Where it can go: {wells}"
 # --- W3.1a rows (app/qt/rows.py): Current's one-line row, the string on it, Up Next flat, the grooves. A row's other
 # words are W2.2's (ROWS_*) and view_rows'.
 ROWS_MORE_TIP = "More\n• Click for what you can do with it"
+ROWS_EP_MORE_TIP = "More: this episode\n• Click for what you can do with it"
 ROWS_MOVE_TIP = {"up": "Move up one\n• Click to move it up one place",
                  "down": "Move down one\n• Click to move it down one place"}
-ROWS_MINE_NOW_TIP = "{tip}\n• Click to mine it now"
+# a click that asks for more than one file says how many (AD-2: Up Next's status acts on its whole row, as every row's
+# does), one string with the count as the toasts' (`MAKE_CARDS_QUEUED`): {one file?: words}
+ROWS_WAITING_TIP = "{label}\n{tip}"                  # row 38: *Waiting* is its icon alone; its hover names it first
+ROWS_MINE_NOW_TIP = {True: "{tip}\n• Click to mine it now", False: "{tip}\n• Click to mine its {n} waiting files now"}
 # --- P4.1 L2: the stones' actions (4.1.11): Mine this, No video's Link… · Mine text, and why nothing happens while
 # Connect is off (IK S7); the window's routing (`app/qt/mine_actions.py`)
-ROWS_MINE_THIS_TIP = "{tip}\n• Click to mine it now"
+ROWS_MINE_THIS_TIP = {True: "{tip}\n• Click to mine it now", False: "{tip}\n• Click to mine its {n} files now"}
 ROWS_NO_MEDIA_TIP = "{tip}\n• Click to link its video, or to mine its text in Anki Miner"
 ROWS_ACTION_OFF = "{tip}\n{why}"
 ROWS_ACTION_KEY = "→ then Enter: {action}"
@@ -787,9 +817,12 @@ MIGAKU_ASK_BODY = ("{file} · saved {time}\n"
                    "Known words: {now:,} → {after:,}.{kept}\n"
                    "Words from Anki, Jiten or earlier imports that Migaku doesn't have are removed. Your current "
                    "list is backed up first.")
-# A replace's kept lines (one, many), each said only when it keeps any (W3.4-1: every replace keeps the dismissed words)
+# A replace's lines (one, many), each said only when there are any: past Graduates' words kept; the words ignored in
+# Migaku it drops (every replace is a clean slate from its source; only Migaku writes ignored words, the Ignore list
+# file is never touched). IGNORED_BACK is the one wording of all three replaces: Anki's lines below are made from it.
 KEPT_GRADUATED = ("{n:,} word from past Graduates kept", "{n:,} words from past Graduates kept")
-KEPT_IGNORED = ("{n:,} ignored word kept", "{n:,} ignored words kept")
+IGNORED_BACK = ("{n:,} word you ignored in Migaku is no longer ignored (the backup keeps it)",
+                "{n:,} words you ignored in Migaku are no longer ignored (the backup keeps them)")
 MIGAKU_ASK_YES = "Replace known words"
 MIGAKU_ASK_YES_TIP = "Replace your known words with Migaku's: the current list is kept as a dated backup"
 MIGAKU_DONE = "Known words replaced with Migaku's · the old list is backed up in the trash folder"
@@ -946,7 +979,7 @@ ANKI_UPDATE_WAITS = "An update is waiting to install, so Anki isn't read now: tr
 ANKI_SYNCED = "Synced just now · +{added:,} words · {scanned:,} cards checked"
 ANKI_REPLACED = "Replaced: {total:,} known words now — {added:,} from Anki"
 ANKI_REPLACED_GRADUATED = " · {graduated:,} from past Graduates"
-ANKI_REPLACED_IGNORED = {1: " · 1 ignored word kept", 0: " · {ignored:,} ignored words kept"}
+ANKI_REPLACED_IGNORED = {1: " · " + IGNORED_BACK[0], 0: " · " + IGNORED_BACK[1]}
 ANKI_RESTORED = "Restored your previous known words: {total:,} known"
 ANKI_NOTHING_TO_RESTORE = "There is no previous list to restore."
 ANKI_JOB_SYNC = "Syncing known words from Anki"
@@ -955,11 +988,11 @@ ANKI_JOB_REPLACE = "Replacing your known words with Anki's"
 ANKI_JOB_RESTORE = "Restoring your previous known words"
 ANKI_REPLACE_TITLE = "Replace your known words with Anki's?"
 ANKI_REPLACE_AGAIN_TITLE = "Anki changed since you looked: replace with these numbers?"
-# The Replace confirmation's body, a line each; a "kept" line only when something is kept (IK-44, Sonic's W3.4-1).
+# The Replace confirmation's body, a line each; the Graduates' and the ignored line only when there are any (IK-44).
 ANKI_REPLACE_HEAD = "Known words: {now:,} → {after:,}"
 ANKI_REPLACE_ANKI = "• {n:,} from Anki"
 ANKI_REPLACE_GRADUATED = {1: "• 1 word from past Graduates kept", 0: "• {n:,} words from past Graduates kept"}
-ANKI_REPLACE_IGNORED = {1: "• 1 ignored word kept", 0: "• {n:,} ignored words kept"}
+ANKI_REPLACE_IGNORED = {1: "• " + IGNORED_BACK[0], 0: "• " + IGNORED_BACK[1]}
 ANKI_REPLACE_TAIL = ("Known words from Migaku, Jiten or other imports that Anki doesn't have are removed. Your current "
                      "list is backed up first; Restore previous puts it back.")
 ANKI_REPLACE_YES = "Replace"
@@ -1100,6 +1133,10 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
                                      "• What comes into your top 20 later gets its cards already: Settings › Anki"),
     "not_now_on": ("Not now", "Make no cards for these episodes. Nothing else changes:\n"
                               "• What comes into your top 20 later still gets its cards"),
+    "mark_known": ("Mark them known", "Their words count as known from now on: your list and journey follow at the "
+                                      "next Generate"),
+    "leave_known": ("Leave them", "Their words stay as they are, and these cards stop asking. Cards you suspend or "
+                                  "mark from now on still count"),
     "mine_text_only": ("Mine the text only", "Make its cards from the subtitles alone, with no picture or audio"),
     "open_logs": ("Open the logs folder", "Open the folder where Surasura keeps its logs, to look at them or send them"),
     "save_logs": ("Save logs to a file…", "Save the last week's logs into one zip file you can send"),
@@ -1126,6 +1163,9 @@ NEEDS_FIRST_CARDS_LATER = "Turn it on any time in Settings › Anki"
 NEEDS_FIRST_CARDS_MADE_ON = "Cards are being made for them"
 NEEDS_FIRST_CARDS_LATER_ON = "No cards for them · what comes into your top 20 later still gets its cards"
 NEEDS_FIRST_CARDS_NOT_ON = "No cards were made: {why}"
+NEEDS_KNOWN_MARKED = "{n} words are known now · your list follows at the next Generate"
+NEEDS_KNOWN_MARKED_NONE = "Their words were known already"
+NEEDS_KNOWN_LEFT = "Left as they are · cards you suspend or mark from now on still count"
 NEEDS_FIRST_CARDS_AUTOMATION_OFF = "automatic actions are off in Settings; turn them on, then ask again"
 NEEDS_ITS_NEW = "{name} joins your library as a new file"
 NEEDS_ASKED_HATO = "Asked hato for its videos"

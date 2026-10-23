@@ -20,6 +20,10 @@ the window's spec A2 #69–70, G4–G7, 06 E8, E10, E11, P1.2-1).
   worker (`settings_connect`: the watermarks, the save, hato's back-fill, the service's reload), the write told on the
   bridge — then logs the first 20 of Current as entering the mine line by your choice (`setup_wizard.first_cards`);
   *Not now* writes nothing but its answer. Either answer's line says where the switch lives.
+- **Known from Anki's question** (laptop round 7 #43): *Mark them known* → `known_signal.accept_offer` on a worker (only
+  the cards still suspended / marked), then the automation's `known_changed` (the bar's count, the journey asked
+  again), as a known-words import ends; *Leave them* → `decline_offer`. Either is the answer: the card goes. A sync's
+  end refreshes the page (`synced`), so the question shows as soon as the first read made it.
 - **Opening the page** marks its entries seen (`needs.mark_all_seen`, on a worker): they stay listed and stop
   counting (P1.2-1).
 """
@@ -384,6 +388,7 @@ class NeedsYou(QObject):
         self.first_cards = _first_cards
         self._first_running = False
         self.find_miner = _find_miner                   # row 13: Anki Miner looked for in the gather (a worker)
+        self.accept_known, self.decline_known = _accept_known, _decline_known     # #43 (each on a worker)
         self.connect_calls = {"mine_anyway": _connect_callable("actions", "mine_anyway"),
                               "ask_hato": _connect_callable("hato", "backfill"),
                               "dismiss": _connect_callable("status", "dismiss"),
@@ -828,6 +833,31 @@ class NeedsYou(QObject):
     def _do_not_now_on(self, entry, line):
         self._do_not_now(entry, line)
 
+    # Known from Anki's question (#43)
+    def _do_mark_known(self, _entry, _line):
+        lang, settings = self.language, self.win.services.settings.get() or {}
+        accept = self.accept_known
+
+        def done(added):
+            n = len(added or ())
+            self._say(strings.NEEDS_KNOWN_MARKED.format(n=n) if n else strings.NEEDS_KNOWN_MARKED_NONE)
+            automation = getattr(self.win.services, "automation", None)
+            if n and automation is not None:
+                automation.known_changed()      # as a known-words import ends: the count, the journey asked again
+            self.refresh()
+        bridge.run_in_worker(accept, lang, settings, then=done, failed=self._failed)
+
+    def _do_leave_known(self, _entry, _line):
+        def done(_n):
+            self._say(strings.NEEDS_KNOWN_LEFT)
+            self.refresh()
+        bridge.run_in_worker(self.decline_known, self.language, then=done, failed=self._failed)
+
+    def synced(self):
+        """A known-words sync ended (the automation's): Known from Anki's question may have come or gone."""
+        if self._alive():
+            self.refresh()
+
     # the failures (W3.5's)
     def _do_open_logs(self, _entry, _line):
         self.win.open_logs()
@@ -839,6 +869,18 @@ class NeedsYou(QObject):
         save = self.connect_calls["save_logs"]
         bridge.run_in_worker(save, dest, then=lambda _n: self._say(strings.NEEDS_SAVED_LOGS.format(path=dest)),
                              failed=self._failed)
+
+
+def _accept_known(language, settings):
+    """(A worker.) Known from Anki's question, accepted -> the words newly known."""
+    from app import anki_connect
+    from app.connect import known_signal
+    return known_signal.accept_offer(language, anki_connect.address(settings))
+
+
+def _decline_known(language):
+    from app.connect import known_signal
+    return known_signal.decline_offer(language)
 
 
 def _settings_switch_on(settings, log):

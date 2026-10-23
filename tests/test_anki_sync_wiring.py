@@ -192,7 +192,7 @@ class TestAutoSyncGate(_DashboardHarness):
         """Replace rebuilds the known words from Anki alone. It is a button with a confirmation,
         never something a background task may do."""
         source = inspect.getsource(self.MasterDashboardApp._maybe_anki_sync)
-        self.assertIn("anki_sync.sync(", source)
+        self.assertIn("anki_sync.sync_all(", source)      # the one sync order (laptop round 7 #43)
         self.assertNotIn(".replace(", source)
         self.assertNotIn("restore_previous", source)
 

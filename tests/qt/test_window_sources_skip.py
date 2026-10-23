@@ -20,8 +20,8 @@ from app import library_store as ls
 from app.qt import settings_strings as S
 from app.services import source_looks
 from tests.qt.conftest import wait_until
-from tests.qt.test_window_sources import (SHOW, _added, _fresh_run, _library, _read_store, _source, _sources_row,  # noqa
-                                          _subtitle, window)
+from tests.qt.test_window_sources import (SHOW, _added, _folders_window, _fresh_run, _library, _read_store,  # noqa
+                                          _source, _subtitle, window)
 
 CARD = os.path.join("Old Backups", "Console Card")
 
@@ -41,9 +41,10 @@ def test_settings_lists_a_skipped_folder_with_read_again_and_its_files_come_back
     card = _with_card(folder)
     answer = _added(looks, folder)
     assert answer["result"]["added"] == 4
-    page, row = _sources_row(win)
+    page, summary, row = _folders_window(win)                           # `row`: the *Library folders* window
     assert wait_until(lambda: answer["root"] in row.lines, 10)
     assert row.skip_box.isHidden() and row.skipped == {}                # none: no heading at all
+    assert summary.summary.text() == S.SOURCES_FOLDERS_ONE
     store = _read_store(data_dir, user_files_dir)
     try:
         store.skip_folder(card)                                          # (⋯'s pick, as its writer lands it)
@@ -52,6 +53,7 @@ def test_settings_lists_a_skipped_folder_with_read_again_and_its_files_come_back
         store.close()
     looks.listing()
     assert wait_until(lambda: len(row.skipped) == 1 and not row.skip_box.isHidden(), 10)
+    assert summary.summary.text() == " · ".join([S.SOURCES_FOLDERS_ONE, S.SOURCES_SKIPPED_N.format(n=1)])
     line = next(iter(row.skipped.values()))
     assert line.words.text() == ls.folder_path(card) or line.words.toolTip() == ls.folder_path(card)
     assert line.read.toolTip() and row.skip_title.text() == S.SOURCES_SKIPPED
@@ -60,6 +62,7 @@ def test_settings_lists_a_skipped_folder_with_read_again_and_its_files_come_back
     looks._look = lambda full, roots: (scans.append((threading.current_thread(), roots)), real(full, roots))[1]
     line.read.click()
     assert wait_until(lambda: not row.skipped and row.skip_box.isHidden(), 10)
+    assert wait_until(lambda: summary.summary.text() == S.SOURCES_FOLDERS_ONE, 10)     # the page followed it
     assert wait_until(lambda: win.bar_line.full() == S.SOURCES_READ_AGAIN_DONE.format(path=ls.folder_path(card)), 10)
     assert looks.idle(30)
     assert scans and scans[0][0] is not threading.main_thread() and scans[0][1] == {answer["root"]}

@@ -11,7 +11,8 @@ from datetime import datetime
 from app import anki_db_import, extract
 
 # What a replacing import's confirmation states: the file it reads (or the fetched cards), its words, the known words
-# now and after, and how many past Graduates' and ignored words it keeps; `saved` is the export's time (Migaku's).
+# now and after, how many past Graduates' words it keeps and how many ignored words it drops (they come back on the
+# list); `saved` is the export's time (Migaku's).
 Plan = namedtuple("Plan", "path words now after graduated ignored saved")
 
 
@@ -76,8 +77,8 @@ def error_of(line):
 
 # --- the replacing imports' numbers (read first, then one confirmation: IK-18) --------------------------------------- #
 def migaku_plan(db_path, language):
-    """Migaku's export at `db_path` read for `language` -> Plan (its replace keeps the dismissed words Migaku doesn't
-    name, as every replace: W3.4-1). Raises `migaku_converter.NotMigaku` when it holds no
+    """Migaku's export at `db_path` read for `language` -> Plan (its replace drops the dismissed words Migaku doesn't
+    name, as every replace). Raises `migaku_converter.NotMigaku` when it holds no
     word list, sqlite3.Error when it can't be read, KnownUnreadable when the known words can't be. A worker's call."""
     from app import anki_sync, migaku_converter
     _refuse_unreadable(language)

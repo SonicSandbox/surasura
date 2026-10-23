@@ -253,6 +253,27 @@ def test_tablets_pick_any_number_by_click_and_keyboard(qapp):
     assert got[-1] == ["marked", "flag1"]
 
 
+def test_a_multi_pick_tablet_is_ticked_never_veined_and_a_one_pick_keeps_its_vein(qapp, monkeypatch):
+    """Q31 / IK-1: the vein under a lit tablet is a choice's one pick, so a multi-pick shows a tick on each lit tablet
+    instead (in a slot every option keeps: a pick never moves the tablets); a one-pick keeps its vein, no tick."""
+    veins, ticks = [], []
+    monkeypatch.setattr(sc, "paint_vein", lambda *a, **k: veins.append(a))
+    monkeypatch.setattr(sc, "paint_tick", lambda *a, **k: ticks.append(a))
+
+    def painted(w):
+        del veins[:], ticks[:]
+        w.grab()                                            # one paint
+        return len(veins), len(ticks)
+    multi = shown(sc.Tablets(KNOWN_FROM, value=["suspended", "flag1"]), width=900)
+    widths = [p[3].width() for p in multi._parts()]
+    assert painted(multi) == (0, 2)
+    multi.set_value([])
+    assert [p[3].width() for p in multi._parts()] == widths            # the tick's slot is kept: nothing moves
+    assert painted(multi) == (0, 0)
+    one = shown(sc.Tablets([("first", "first"), ("mixed", "mixed in"), ("back", "at the back")], multi=False))
+    assert painted(one) == (1, 0)
+
+
 def test_one_pick_tablets_keep_exactly_one(qapp):
     t = shown(sc.Tablets([("first", "first"), ("mixed", "mixed in"), ("back", "at the back")], multi=False))
     got = spy(t)

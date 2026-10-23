@@ -14,6 +14,8 @@ The services are stand-ins that record what the window asks; their own rules are
 """
 import os
 import pathlib
+import subprocess
+import sys
 import threading
 import time
 
@@ -28,6 +30,7 @@ from app.qt import shell, strings
 from app.services import automation as A
 from app.services import chores as C
 from app.services import generate as G
+from app.services import jobs as J
 from app.services import updates as U
 from app.services.jobs import JobRegistry
 from app.services.status import StatusService
@@ -105,6 +108,7 @@ class FakeAutomation(_Duty):
     def activated(self): self._record("automation.activated")
     def language_changed(self, language): self._record("automation.language_changed", language)
     def recheck(self): self._record("automation.recheck")
+    def sync_now(self, then=None): self._record("automation.sync_now", then)
     def before_generate(self): self._record("automation.before_generate")
     def update_cancelled(self): self._record("automation.update_cancelled")
     def close(self): self._record("automation.close")
@@ -125,6 +129,7 @@ class FakeChores(_Duty):
             self.close_store()
 
     def close_store(self): self._record("chores.close_store")
+    def halt(self): self._record("chores.halt")
     def halt(self): self._record("chores.halt")
 
 
@@ -515,6 +520,61 @@ def test_bar_marks_show_the_automation_state_and_repaint_only_on_change(world):
     assert wait_until(lambda: d.anki.key == "anki-closed" and not d.anki.lit)    # the dark emerald, its hover says so
     assert "Anki closed — work waits" in d.anki.toolTip()
     assert d.paints[d.known] == painted[0]                                        # the count didn't move: not repainted
+
+
+@pytest.mark.parametrize("why, opens, says", [
+    (None, False, None), ("running", False, strings.FOOT_KNOWN_REFUSED["running"]), ("no-decks", True, None),
+    ("never-synced", True, None), ("update-staged", False, strings.FOOT_KNOWN_REFUSED["update-staged"]),
+])
+def test_a_click_on_the_known_count_syncs_now_or_opens_the_anki_window(world, monkeypatch, why, opens, says):
+    """Q30: one click is one `sync_now` (the automation's one sync path); the answer comes back on the window's thread —
+    no decks chosen yet, or the first sync not made, opens the Anki window instead; a sync started opens nothing; a
+    refused one (AD-6: an update staged, one running already) says why in the bar, never nothing."""
+    from app.qt import windows
+    opened = []
+    monkeypatch.setattr(windows, "launch", lambda shell, op: opened.append(op.name))
+    world.start()
+    world.automation.push(sync=A.SYNCED, added=0, known=12345)
+    d = world.d
+    assert wait_until(lambda: not d.known.isHidden())
+    QTest.mouseClick(d.known, Qt.MouseButton.LeftButton)
+    asks = world.automation.called("automation.sync_now")
+    assert len(asks) == 1
+    then = asks[0][1]
+    t = threading.Thread(target=then, args=(why,))           # the automation's worker answers
+    t.start()
+    t.join()
+    if opens:
+        assert wait_until(lambda: opened == ["anki"])
+    else:
+        QTest.qWait(50)
+        assert opened == []
+    if says is not None:
+        assert wait_until(lambda: world.win.bar_line.full() == says)
+    else:
+        assert world.win.bar_line.full() not in strings.FOOT_KNOWN_REFUSED.values()
+
+
+def test_the_known_counts_hover_names_what_a_click_does_on_each_road(world):
+    """IK-7: the page's known-words road, one rule — no decks for this language yet, a click opens the Anki window and
+    the hover says so; decks chosen, a click syncs; a sync running (any live `anki-sync` job: the automatic one, a
+    click's, the Anki window's *Sync now*) says that. The words are the screen reader's description too."""
+    world.automation.push(sync=A.SYNCED, added=0, known=40)
+    d = world.d
+    assert wait_until(lambda: not d.known.isHidden())
+    assert d.known.toolTip().endswith(strings.FOOT_KNOWN_CLICK_ANKI)
+    assert d.known.accessibleDescription() == strings.FOOT_KNOWN_CLICK_ANKI
+    world.services.settings.set({"anki_sync_decks": {"ja": ["日本語::アニメ"]}})
+    assert wait_until(lambda: d.known.toolTip().endswith(strings.FOOT_KNOWN_CLICK))
+    assert d.known.accessibleDescription() == strings.FOOT_KNOWN_CLICK
+    world.services.settings.set({"anki_sync_decks": {"ja": ["日本語::アニメ"], "zh": []}, "target_language": "zh"})
+    assert wait_until(lambda: d.known.toolTip().endswith(strings.FOOT_KNOWN_CLICK_ANKI))     # the language's own
+    world.services.settings.set({"target_language": "ja"})
+    assert wait_until(lambda: d.known.toolTip().endswith(strings.FOOT_KNOWN_CLICK))
+    job = world.registry.record("anki-sync", "Updating known words from Anki")
+    assert wait_until(lambda: d.known.toolTip().endswith(strings.FOOT_KNOWN_SYNCING))
+    job.finish(ok=True)
+    assert wait_until(lambda: d.known.toolTip().endswith(strings.FOOT_KNOWN_CLICK))
 
 
 @pytest.mark.parametrize("lang", ["ja", "zh"])
@@ -1038,6 +1098,15 @@ def _anki_write(registry):
     return registry.submit("junban", A.JUNBAN_LABEL, lambda j: None, automatic=True, on_quit="wait")
 
 
+def _quit_past_the_sheet(world):
+    """Row 35: with a `detach` job under way the close names it first (the sheet); *Quit* closes as it always did."""
+    card = world.win._detached_card
+    assert card is not None and card.isVisible()
+    card.no.click()
+    assert wait_until(lambda: world.win._detached_card is None and (world.win._quit is not None
+                                                                      or not world.win.isVisible()))
+
+
 def _bar_shows(world, text):
     return wait_until(lambda: text in world.win.bar_line.full())
 
@@ -1099,7 +1168,8 @@ def test_closing_with_an_anki_write_that_never_started_closes_at_once(world):
     queued = _anki_write(world.registry)
     assert _bar_shows(world, "Mining") and queued.state == "waiting"
     world.win.close()
-    assert not world.win.isVisible()
+    _quit_past_the_sheet(world)                                                 # row 35: Connect's miner named first
+    assert wait_until(lambda: not world.win.isVisible())
 
 
 def test_the_window_closes_by_itself_at_the_cap_and_the_quit_waits_no_longer(world, monkeypatch):
@@ -1119,6 +1189,225 @@ def test_the_window_closes_by_itself_at_the_cap_and_the_quit_waits_no_longer(wor
     assert time.monotonic() - t1 < 0.6 and write.state == "running"         # its time was spent with the window up
     assert world.log.count("updates.quit") == 1                               # the quit began once, at the close
     write.finish()
+
+
+# --- row 35: closing while helpers go on without the window (Sonic: "surasura-cli … still have something running") -- #
+# What a wrong answer would cost: a sheet at every close; a helper ended that the window never started (another
+# program's process) or Connect cut mid-batch; *Quit* quietly ending what the user asked to finish; two cards taking
+# focus from each other until the process dies (R35-1); a logoff the sheet holds up.
+def _sleeper():
+    return subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], stdin=subprocess.DEVNULL,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+@pytest.fixture
+def children():
+    """Every child a test starts, ended afterwards whatever the test did."""
+    started = []
+    yield started
+    for proc in started:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait(10)
+
+
+MAKING_CARDS = "Making cards"         # Connect's mining as the window lists it (another branch records it; no pid)
+
+
+def _helper_running(world, children, connect=True):
+    """The library's upkeep as `chores._watch` records it (detach, its pid, a cancel that ends its own Popen) around a
+    real child, Connect making cards (kind `mine`, no cancel) and a sync on the window's own thread (never named);
+    the window has heard them."""
+    proc = _sleeper()
+    children.append(proc)
+    upkeep = world.registry.record("library-maintain", C.MAINTAIN_LABEL,
+                                   cancel=lambda j: proc.poll() is None and proc.kill(), on_quit="detach")
+    upkeep.started_process(proc.pid)
+    sync = world.registry.submit("anki-sync", A.SYNC_LABEL, lambda j: None, on_quit="detach")
+    jobs = [upkeep, sync]
+    if connect:
+        jobs.append(world.registry.record(J.CONNECT_KIND, MAKING_CARDS, on_quit="detach"))
+    assert wait_until(lambda: len(J.detached_at_quit(world.win._jobs)) == len(jobs) - 1)
+    return proc, jobs
+
+
+def _end(jobs):
+    for job in jobs:
+        job.finish()
+
+
+def _sheet(world):
+    card = world.win._detached_card
+    assert card is not None and card.isVisible()
+    return card
+
+
+def test_closing_with_helpers_under_way_names_them_and_quit_leaves_them_running(world, children):
+    """The sheet names what outlives the window in the user's words (never the sync: it ends with the window), says
+    Connect finishes by itself; *Quit* (the default) closes as before and the helper's process goes on; both buttons
+    say what they do."""
+    world.start()
+    proc, jobs = _helper_running(world, children)
+    world.win.close()
+    card = _sheet(world)
+    assert world.win.isVisible()
+    assert card.title.text() == f"Still finishing: {C.MAINTAIN_LABEL} · {MAKING_CARDS}"
+    assert card.body.text() == "They finish by themselves. Connect finishes the cards it's making by itself."
+    assert (card.no.text(), card.yes.text()) == ("Quit", "Stop and quit")
+    assert card.no.toolTip() == strings.QUIT_DETACHED_QUIT_TIP and card.yes.toolTip() == strings.QUIT_DETACHED_STOP_TIP
+    assert card.default is card.no
+    card.no.click()
+    assert wait_until(lambda: not world.win.isVisible())
+    QTest.qWait(200)
+    assert proc.poll() is None, "Quit leaves the helper running"
+    _end(jobs)
+
+
+def test_stop_and_quit_ends_the_helper_through_its_owner_and_never_another_nor_connect(world, children):
+    world.start()
+    bystander = _sleeper()                                    # a live child the registry doesn't hold
+    children.append(bystander)
+    proc, jobs = _helper_running(world, children)
+    world.win.close()
+    _sheet(world).yes.click()
+    assert wait_until(lambda: not world.win.isVisible())
+    assert proc.wait(10) is not None, "Stop and quit ends the helper"
+    assert jobs[0].state == "cancelling" and jobs[0].cancelled
+    assert bystander.poll() is None, "never a process the registry doesn't hold"
+    assert jobs[-1].state == "running", "Connect is left making its cards"
+    _end(jobs)
+
+
+def test_esc_on_the_sheet_is_quit(world, children):
+    world.start()
+    proc, jobs = _helper_running(world, children)
+    world.win.close()
+    _sheet(world)
+    assert wait_until(lambda: QApplication.focusWidget() is world.win._detached_card.no)
+    QTest.keyClick(QApplication.focusWidget(), Qt.Key.Key_Escape)
+    assert wait_until(lambda: not world.win.isVisible())
+    QTest.qWait(200)
+    assert proc.poll() is None
+    _end(jobs)
+
+
+def test_a_second_close_while_the_sheet_asks_is_quit(world, children):
+    world.start()
+    proc, jobs = _helper_running(world, children, connect=False)
+    world.win.close()
+    card = _sheet(world)
+    assert card.body.text() == strings.QUIT_DETACHED_BODY                  # no Connect: its sentence isn't said
+    world.win.close()                                         # the close button again
+    assert wait_until(lambda: not world.win.isVisible())
+    assert proc.poll() is None
+    _end(jobs)
+
+
+def test_connect_alone_going_on_is_named_with_quit_the_one_button(world):
+    """Nothing the window may stop: no *Stop and quit*; Quit (here Enter) closes as before, Connect goes on."""
+    world.start()
+    mine = world.registry.record(J.CONNECT_KIND, MAKING_CARDS, on_quit="detach")
+    assert wait_until(lambda: J.detached_at_quit(world.win._jobs))
+    world.win.close()
+    card = _sheet(world)
+    assert card.title.text() == f"Still finishing: {MAKING_CARDS}"
+    assert card.body.text() == strings.QUIT_DETACHED_CONNECT                # Connect alone: its sentence alone
+    assert card.yes is None and card.default is card.no and card.no.text() == "Quit"
+    assert wait_until(lambda: QApplication.focusWidget() is card.no)
+    QTest.keyClick(card.no, Qt.Key.Key_Return)
+    assert wait_until(lambda: not world.win.isVisible())
+    assert mine.state == "running"
+    mine.finish()
+
+
+def test_closing_with_nothing_that_outlives_the_window_asks_nothing(world):
+    """Generate (cancelled by the quit), a sync on the window's own thread, a Content Manager child with a pid, a
+    helper that already ended, the update (the quit cancels it): the window closes at once, as before."""
+    world.start()
+    world.registry.submit("generate", "Generating", lambda j: None, cancel=lambda j: j.finish(cancelled=True),
+                          on_quit="cancel")
+    sync = world.registry.submit("anki-sync", A.SYNC_LABEL, lambda j: None, on_quit="detach")
+    manager = world.registry.record("child", "Content Manager", on_quit="detach")
+    manager.started_process(4321)
+    ended = world.registry.record("library-maintain", C.MAINTAIN_LABEL, on_quit="detach")
+    ended.finish()
+    world.registry.submit("update", "Downloading the update", lambda j: None, on_quit="detach")
+    assert wait_until(lambda: any(v.kind == "update" for v in world.win._jobs))
+    world.win.close()
+    assert world.win._detached_card is None
+    assert not world.win.isVisible()
+    sync.finish()
+    manager.finish()
+
+
+def test_the_sheet_never_stacks_on_a_card_already_open(world, children):
+    """R35-1: a card open in the window (a *Remove…*) when the title bar's ✕ comes: it is dropped (No, no callback) and
+    the sheet is the one card — before, two cards took focus from each other until the stack ran out."""
+    from app.qt import confirm
+    world.start()
+    proc, jobs = _helper_running(world, children)
+    answers = []
+    first = confirm.ask(world.win, "Remove 2 lists?", "They move to the trash folder.", "Remove", "Remove them",
+                        default_no=True, on_answer=answers.append)
+    QApplication.processEvents()
+    world.win.close()
+    card = _sheet(world)
+    QTest.qWait(100)
+    assert first.answer is False and answers == []
+    assert [c for c in world.win.findChildren(confirm.Confirm) if c.answer is None] == [card]
+    assert wait_until(lambda: QApplication.focusWidget() is card.no)
+    card.no.click()
+    assert wait_until(lambda: not world.win.isVisible())
+    assert proc.poll() is None
+    _end(jobs)
+
+
+def test_nothing_new_starts_while_the_sheet_asks(world, children):
+    """R35-10: every answer quits, so while it asks a job asked for is held (the quit's reason) and the chores' timers
+    are taken back — no new upkeep helper *Stop and quit* wouldn't know of; the quit itself hasn't begun (E20's wait
+    counts from the answer)."""
+    world.start()
+    proc, jobs = _helper_running(world, children)
+    world.win.close()
+    _sheet(world)
+    held = world.registry.submit("indexer", C.INDEX_LABEL, lambda j: None, automatic=True)
+    assert held.state == "waiting" and held.reason == strings.QUIT_HELD
+    assert "chores.halt" in world.log and "updates.quit" not in world.log
+    assert world.services._quit_began is None
+    _sheet(world).no.click()
+    assert wait_until(lambda: not world.win.isVisible())
+    _end(jobs)
+
+
+def test_the_update_handing_over_while_the_sheet_asks_closes_without_an_answer(world, children, monkeypatch):
+    """R35-13: the update's hand-over drops the question (no answer, nothing stopped) and the window closes."""
+    quits = []
+    monkeypatch.setattr(QApplication, "quit", staticmethod(lambda: quits.append(True)))
+    world.start()
+    proc, jobs = _helper_running(world, children)
+    world.win.close()
+    card = _sheet(world)
+    threading.Thread(target=world.services._ask_quit).start()
+    assert wait_until(lambda: quits and not world.win.isVisible())
+    assert card.answer is False and not world.win._detached_answered
+    assert proc.poll() is None and jobs[0].state == "running"
+    _end(jobs)
+
+
+def test_restart_and_a_logoff_never_wait_on_the_sheet(world, children, monkeypatch):
+    """R35-13 / R35-9: *Restart now* closes the quit's way with no sheet; so does a close while Windows logs off (a
+    sheet would hold the logoff up)."""
+    world.start()
+    proc, jobs = _helper_running(world, children)
+    monkeypatch.setattr(shell, "_session_ending", lambda: True)
+    world.win.close()
+    assert world.win._detached_card is None and not world.win.isVisible()
+    world.win.show()
+    monkeypatch.setattr(shell, "_session_ending", lambda: False)
+    world.win.restart()
+    assert world.win._detached_card is None and not world.win.isVisible()
+    assert proc.poll() is None
+    _end(jobs)
 
 
 def _services_only(log):

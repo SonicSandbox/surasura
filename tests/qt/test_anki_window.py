@@ -4,7 +4,7 @@ fixes of its latent defects (§9).
 
 What a wrong answer would cost: known words appended twice at once (the window's sync beside the automatic one), read
 by merely opening the window (S16), or read while an update waits; a Replace that writes numbers the user never saw,
-or that a stray Esc / Enter confirms; the words dismissed in Migaku brought back by a Replace (W3.4-1); a Restore that
+or that a stray Esc / Enter confirms; the words dismissed in Migaku dropped with no backup holding them; a Restore that
 puts back something else than it says; a window still writing the old language's file after a switch, or a job's
 result lost when the window switched or closed; a dead or untipped control.
 
@@ -340,7 +340,34 @@ def test_the_automatic_syncs_result_reads_the_numbers_again(main, anki):
     assert wait_until(lambda: w.total.text() == "3")
 
 
-# --- Replace: dry run → the numbers → backup → write (inv §2, §4; W3.4-1) ----------------------------------------- #
+def test_a_sync_by_hand_reads_the_known_words_once(main, anki, monkeypatch):
+    """AD-6 (S19, update only what changed): *Sync now* ends as the automatic sync does — the service publishes SYNCED
+    for the window's language (`Automation.anki_synced`, on the job's thread, before the window hears its result) — and
+    the window's own end reads the numbers. One read, not two: the SYNCED of the window's own ended job is left to its
+    `_ended`. An automatic sync's SYNCED with no job of the window's still reads them (the test above)."""
+    from app.services.automation import State
+    _choose(main)
+    w = _open(main)
+    reads = []
+    real = QAW.AW.known_view
+    monkeypatch.setattr(QAW.AW, "known_view", lambda language: (reads.append(language), real(language))[1])
+    seq = [100]
+
+    class Service:                                     # publishes as `AutoSync.ended` does, from the job's thread
+        def anki_synced(self, result, language):
+            seq[0] += 1
+            main.bridge.automation_changed.emit(State("synced", language, result.added, result.added, None, None,
+                                                      seq[0]))
+    main.services.automation = Service()
+    w.btn_sync.click()
+    _idle(main, w)
+    assert wait_until(lambda: w.total.text() == "3" and reads)
+    for _ in range(20):
+        QApplication.processEvents()
+    assert seq[0] == 101 and reads == ["ja"]
+
+
+# --- Replace: dry run → the numbers → backup → write (inv §2, §4; a clean slate) ---------------------------------- #
 def test_replace_asks_with_the_true_numbers_and_esc_and_enter_are_no(main, anki, ja_resources_dir):
     _migaku(ja_resources_dir)
     before = _bytes(_file())
@@ -366,7 +393,9 @@ def test_replace_asks_with_the_true_numbers_and_esc_and_enter_are_no(main, anki,
     assert _bytes(_file()) == before and _trash() == []
 
 
-def test_replace_after_yes_backs_up_first_keeps_the_ignored_words_and_says_so(main, anki, ja_resources_dir):
+def test_replace_after_yes_backs_up_first_drops_the_ignored_words_and_says_so(main, anki, ja_resources_dir):
+    """A clean slate from Anki: the words dismissed in Migaku are gone from the list file (they come back on the
+    list), the backup taken first holds them, and the result line says how many came back."""
     data = _migaku(ja_resources_dir)
     before = _bytes(_file())
     ignored = [x for x in data["words"] if x["knownStatus"] == "IGNORED"]
@@ -377,10 +406,11 @@ def test_replace_after_yes_backs_up_first_keeps_the_ignored_words_and_says_so(ma
     w.question.yes.click()
     _idle(main, w)
     assert [x["dictForm"] for x in _words() if x.get("source") == "AnkiConnect"] == WORDS[:3]
-    assert [x for x in _words() if x["knownStatus"] == "IGNORED"] == ignored
+    assert len(ignored) == 3 and [x for x in _words() if x["knownStatus"] == "IGNORED"] == []
     assert len(_trash()) == 1 and _bytes(os.path.join(get_user_files_path("ja"), ".trash", _trash()[0])) == before
     assert w.status.text() == (strings.ANKI_REPLACED.format(total=3, added=3)
-                               + strings.ANKI_REPLACED_IGNORED[0].format(ignored=3))
+                               + strings.ANKI_REPLACED_IGNORED[0].format(n=3))
+    assert "3 words you ignored in Migaku are no longer ignored (the backup keeps them)" in w.status.text()   # IK-2
     assert "Graduates" not in w.status.text()
     assert wait_until(lambda: not w.btn_restore.isHidden()), "a backup to put back: Restore previous shows"
 

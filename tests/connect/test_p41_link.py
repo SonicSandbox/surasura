@@ -106,6 +106,11 @@ def test_a_linked_episode_not_timed_is_needs_you(tmp_path):
     assert [n["kind"] for n in needs] == ["not-timed"], "*Needs you*'s *Mine anyway* is next (row 4.1.9)"
 
 
+def _renamed(path, old, new):
+    """`path` with its file name's `old` made `new` — never the folders' (a pytest temp folder can hold "05")."""
+    return os.path.join(os.path.dirname(path), os.path.basename(path).replace(old, new))
+
+
 @pytest.mark.parametrize("how", ["renamed", "moved"])
 def test_a_renamed_or_moved_video_is_no_video_again(tmp_path, how):
     s, item = _episode()
@@ -113,7 +118,7 @@ def test_a_renamed_or_moved_video_is_no_video_again(tmp_path, how):
     with s:
         link.link(s, item, video)
     if how == "renamed":
-        os.rename(video, video.replace("05", "05 (old)"))
+        os.rename(video, _renamed(video, "05", "05 (old)"))
     else:
         away = os.path.join(os.path.dirname(os.path.dirname(video)), "elsewhere")
         os.makedirs(away)
@@ -141,7 +146,7 @@ def test_a_placeholder_a_subtitle_or_a_missing_file_is_refused_and_nothing_is_wr
         with pytest.raises(link.Refused, match="isn't a video"):
             link.link(s, item, srt)
         with pytest.raises(link.Refused, match="isn't there"):
-            link.link(s, item, video.replace("05", "06"))
+            link.link(s, item, _renamed(video, "05", "06"))
         monkeypatch.setattr(runner, "_on_disk", lambda path: False)        # a cloud placeholder: never read
         read = []
         monkeypatch.setattr(link, "_sha256", lambda p: read.append(p) or "0" * 64)

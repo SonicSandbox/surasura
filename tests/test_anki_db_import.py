@@ -112,7 +112,14 @@ def test_a_failed_backup_writes_nothing(migaku_file):
 
 def test_a_failed_write_leaves_the_original_and_no_temp_file(migaku_file):
     before = _bytes(_known())
-    with mock.patch("app.anki_sync.os.replace", side_effect=OSError("held by a reader")), \
+    real_replace = os.replace
+
+    def refuse(src, dst):
+        # Only the known words' own swap is held: the backup before it (a `.part` renamed into `.trash`) goes through
+        if os.path.basename(os.path.dirname(dst)) == ".trash":
+            return real_replace(src, dst)
+        raise OSError("held by a reader")
+    with mock.patch("app.anki_sync.os.replace", side_effect=refuse), \
             mock.patch("app.anki_sync.time.sleep"):
         merge = anki_db_import.merge_known("ja", {("冒険", "ボウケン")})
     assert merge.error and "saved" in merge.error
@@ -121,9 +128,13 @@ def test_a_failed_write_leaves_the_original_and_no_temp_file(migaku_file):
 
 
 def test_the_write_is_flushed_to_disk_before_it_replaces_the_file(migaku_file):
-    with mock.patch("app.anki_sync.os.fsync", wraps=os.fsync) as fsync:
+    real_fsync, flushed = os.fsync, []
+    with mock.patch("app.anki_sync.os.fsync", side_effect=lambda fd: flushed.append(os.fstat(fd).st_ino) or
+                    real_fsync(fd)):
         anki_db_import.merge_known("ja", {("冒険", "ボウケン")})
-    assert fsync.called                                     # the Tk window's write had no fsync (inv §2.9 defect 2)
+    # The file flushed is the new KnownWord.json itself (its temp keeps its file id through the swap), not only the
+    # backup, which is flushed too: the Tk window's write had no fsync (inv §2.9 defect 2)
+    assert os.stat(_known()).st_ino in flushed
 
 
 def test_nothing_new_writes_nothing_and_keeps_no_backup(migaku_file):

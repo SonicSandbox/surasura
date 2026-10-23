@@ -206,7 +206,8 @@ def test_a_migaku_file_is_read_first_then_one_confirmation_with_both_numbers_can
     plan = importers_view.migaku_plan(MIGAKU, "ja")           # the numbers stated are the plan's (read first)
     assert f"{plan.now:,} → {plan.after:,}" in card.body.text() and plan.now == 2 and plan.after > 2
     assert plan.graduated == 0 and "Graduates" not in card.body.text()   # 旅 is in the export: no "0 … kept" line
-    assert plan.ignored == 1 and strings.KEPT_IGNORED[0].format(n=1) in card.body.text()   # えっと (IK-50)
+    assert plan.ignored == 1 and strings.IGNORED_BACK[0].format(n=1) in card.body.text()   # えっと (IK-50)
+    assert "1 word you ignored in Migaku is no longer ignored (the backup keeps it)." in card.body.text()   # IK-2
     assert card.yes.text() == strings.MIGAKU_ASK_YES and card.yes.property("kind") == "danger"
     assert card.default is card.no
     QTest.keyClick(card, Qt.Key.Key_Return)                    # Enter = Cancel on a replace
@@ -223,7 +224,7 @@ def test_a_migaku_file_is_read_first_then_one_confirmation_with_both_numbers_can
 
 
 def test_a_replace_with_no_dismissed_words_says_no_ignored_line(main, runs):
-    """IK-44 / W3.4-1: the "N ignored words kept" line only when there are some — never "0 ignored words kept"."""
+    """IK-44: the "N words you ignored come back" line only when there are some — never "0 … come back"."""
     _known([w for w in CURRENT if w["knownStatus"] != "IGNORED"])
     w = importers.open_migaku(main)
     w.read(MIGAKU)
@@ -439,7 +440,8 @@ def test_jiten_fetches_first_with_the_key_in_the_environment_only_then_asks_with
     assert wait_until(lambda: _card(w) is not None)
     card = _card(w)
     assert "2 → 2" in card.body.text()
-    assert "1 word from past Graduates kept" in card.body.text() and "1 ignored word kept" in card.body.text()
+    assert "1 word from past Graduates kept" in card.body.text()
+    assert "1 word you ignored in Migaku is no longer ignored (the backup keeps it)" in card.body.text()   # IK-2
     assert card.default is card.no and len(runs.calls) == 1   # nothing replaced before the yes
     card.yes.click()
     replace = runs.calls[-1]

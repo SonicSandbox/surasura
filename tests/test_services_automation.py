@@ -111,6 +111,9 @@ class _Anki:
         monkeypatch.setattr(anki_connect, "probe", lambda url, *a, **k: {"ok": self.open})
         monkeypatch.setattr(anki_sync, "sync", self._sync)
         monkeypatch.setattr(anki_sync, "sync_backlog", self._backlog)
+        # Known from Anki, the one sync order's last part (`sync_all`, laptop round 7 #43): never a real Anki here
+        self.signals = []
+        monkeypatch.setattr(anki_sync, "read_known_signal", lambda *a, **k: self.signals.append(a[0]))
 
     def _sync(self, language, url, decks, fields, include_suspended=False, full=False):
         with self.lock:
@@ -1158,3 +1161,219 @@ def test_the_automatic_generate_waits_while_the_setup_wizard_is_up(live):
     assert h.until(lambda: launches.count() == 1, seconds=5)
     launches.runs[0].ended(0)
     auto.close()
+
+
+# --- a sync by hand ends as the automatic one does (row 30) ------------------------------------------------------- #
+def _by_hand(auto, registry, result, language="ja"):
+    """The Anki window's *Sync now* (and the setup wizard's first sync): `anki_window.submit` with the real service."""
+    from app import anki_window as AW
+    done = threading.Event()
+    AW.submit(registry, "Syncing", lambda: result, lambda r: done.set(), auto, language)
+    assert done.wait(10), "the job ended"
+    assert auto.worker.idle(5)
+
+
+@pytest.mark.parametrize("auto_generate", [True, False])
+def test_a_sync_by_hand_ends_on_the_automatic_syncs_own_path(live, monkeypatch, auto_generate):
+    """Row 30: *Sync now* told `Automation.anki_synced`, which didn't exist; the error was swallowed, so a sync by hand
+    ran no quiet Generate, started no indexer, never said the bar's new count and never restarted the 5-minute wait.
+    Every sync, by hand or automatic, now ends through `AutoSync.ended`."""
+    h.seed_library("ja")
+    _synced_once("ja")
+    anki = _Anki(monkeypatch)
+    clock, indexes = _Clock(1000.0), []
+    auto, registry, _c, launches = _make(_settings(anki_auto_generate=auto_generate), clock=clock, indexes=indexes)
+    known = anki_sync.count_known("ja")
+    _by_hand(auto, registry, anki_sync.SyncResult(added=4, total_known=known + 4, mode="delta"))
+    state = auto.state()
+    assert (state.sync, state.added, state.known) == (A.SYNCED, 4, known + 4), "the bar says the new count"
+    if auto_generate:
+        assert h.until(lambda: launches.count() == 1, seconds=10) and indexes == [], "the quiet Generate"
+        launches.runs[0].ended(0)
+    else:
+        assert indexes == [1] and launches.count() == 0, "no Generate: the indexer"
+    clock.now = 1000.0 + A.SYNC_EVERY - 1
+    auto.activated()
+    _settle(auto, registry)
+    assert anki.syncs == [], "the 5-minute wait counts from the sync by hand"
+    clock.now = 1000.0 + A.SYNC_EVERY
+    auto.activated()
+    _settle(auto, registry)
+    assert len(anki.syncs) == 1
+    auto.close()
+
+
+def test_a_sync_by_hand_that_failed_says_so_and_asks_for_nothing(live, monkeypatch):
+    h.seed_library("ja")
+    indexes = []
+    auto, registry, _c, launches = _make(_settings(), indexes=indexes)
+    _by_hand(auto, registry, anki_sync.SyncResult(error="Anki refused the request"))
+    assert (auto.state().sync, auto.state().message) == (A.FAILED, "Anki refused the request")
+    assert indexes == [] and launches.count() == 0
+    auto.close()
+
+
+# --- a click on the bar's known-words count: sync now (Q30) --------------------------------------------------------- #
+def _asked(auto):
+    """`sync_now` and its answer (`then`, on the worker)."""
+    answers = []
+    auto.sync_now(then=answers.append)
+    assert auto.worker.idle(5)
+    return answers
+
+
+def test_sync_now_syncs_once_with_the_automatic_sync_off_and_ends_on_the_one_path(live, monkeypatch):
+    """Q30: the user asked, so the automatic switch being off doesn't stop it; it is the same `anki-sync` job (a user's
+    one), it ends through `AutoSync.ended` (the bar's count, the indexer) and the 5-minute wait counts from it."""
+    h.seed_library("ja")
+    _synced_once("ja")
+    anki = _Anki(monkeypatch)
+    clock, indexes = _Clock(1000.0), []
+    settings = _settings(anki_sync_auto=False, anki_auto_generate=False)
+    auto, registry, _c, _l = _make(settings, clock=clock, indexes=indexes)
+    ended = []
+    real_ended = auto.sync.ended
+    monkeypatch.setattr(auto.sync, "ended", lambda *a, **k: ended.append(a[1]) or real_ended(*a, **k))
+    assert _asked(auto) == [None]
+    _settle(auto, registry)
+    assert anki.syncs == [("ja", ("Mining",))] and ended == ["ja"]
+    jobs = [v for v in registry.snapshot() if v.kind == "anki-sync"]
+    assert len(jobs) == 1 and not jobs[0].automatic, "the user's own sync, one job"
+    state = auto.state()
+    assert (state.sync, state.added, state.known) == (A.SYNCED, 3, anki_sync.count_known("ja"))
+    assert indexes == [1], "words came in, no automatic Generate: the indexer"
+    auto.activated()                                         # still off: focus syncs nothing by itself
+    _settle(auto, registry)
+    assert len(anki.syncs) == 1
+    settings.values["anki_sync_auto"] = True                 # on now: the 5-minute wait counts from the click's sync
+    clock.now = 1000.0 + A.SYNC_EVERY - 1
+    auto.activated()
+    _settle(auto, registry)
+    assert len(anki.syncs) == 1
+    clock.now = 1000.0 + A.SYNC_EVERY
+    auto.activated()
+    _settle(auto, registry)
+    assert len(anki.syncs) == 2
+    auto.close()
+
+
+def test_sync_now_inside_the_five_minutes_still_syncs_and_restarts_the_wait(live, monkeypatch):
+    """A click is forced: it passes the 5-minute limit the automatic sync keeps, and the wait starts again from it."""
+    h.seed_library("ja")
+    _synced_once("ja")
+    anki = _Anki(monkeypatch, added=0)
+    clock = _Clock(0.0)
+    auto, registry, _c, _l = _make(_settings(), clock=clock)
+    auto.activated()
+    _settle(auto, registry)
+    clock.now = 100.0
+    assert _asked(auto) == [None]
+    _settle(auto, registry)
+    assert len(anki.syncs) == 2
+    clock.now = 100.0 + A.SYNC_EVERY - 1                     # 399 s: past the first sync's wait, not the click's
+    auto.activated()
+    _settle(auto, registry)
+    assert len(anki.syncs) == 2
+    auto.close()
+
+
+@pytest.mark.parametrize("gate, why", [("no-decks", "no-decks"), ("first-sync", "never-synced"),
+                                       ("switch", "off"), ("update-staged", "update-staged")])
+def test_sync_now_that_cant_sync_reaches_nothing_and_says_why(live, monkeypatch, gate, why):
+    """No decks chosen, or the first sync not made yet (always the user's, in the Anki window): Anki untouched, no job,
+    and the answer says so — the bar opens the Anki window for those two."""
+    h.seed_library("ja")
+    anki = _Anki(monkeypatch)
+    settings = _settings(anki_sync_auto=False)
+    if gate != "first-sync":
+        _synced_once("ja")
+    if gate == "no-decks":
+        settings.values["anki_sync_decks"] = {"zh": ["中文"]}
+    if gate == "switch":
+        monkeypatch.setenv("SURASURA_NO_ANKI_SYNC", "1")
+    auto, registry, _c, _l = _make(settings, staged=lambda: gate == "update-staged")
+    assert _asked(auto) == [why]
+    _settle(auto, registry)
+    assert anki.syncs == [] and not [v for v in registry.snapshot() if v.kind == "anki-sync"]
+    assert auto.state().sync == A.IDLE
+    auto.close()
+
+
+def test_a_second_click_while_a_sync_runs_adds_nothing(live, monkeypatch):
+    h.seed_library("ja")
+    _synced_once("ja")
+    anki = _Anki(monkeypatch)
+    anki.gate = threading.Event()
+    auto, registry, _c, _l = _make(_settings(anki_auto_generate=False))
+    assert _asked(auto) == [None]
+    assert h.until(lambda: len(anki.syncs) == 1, seconds=5)
+    assert _asked(auto) == ["running"] and len(registry.live("anki-sync")) == 1
+    anki.gate.set()
+    _settle(auto, registry)
+    assert len(anki.syncs) == 1
+    auto.close()
+
+
+def test_sync_now_after_close_asks_nothing(live, monkeypatch):
+    h.seed_library("ja")
+    _synced_once("ja")
+    anki = _Anki(monkeypatch)
+    auto, registry, _c, _l = _make(_settings())
+    auto.close()
+    answers = []
+    auto.sync_now(then=answers.append)
+    assert answers == [] and anki.syncs == []
+
+
+def _stand_in_methods():
+    """Every test stand-in of the automation service: a class named for it, or a `type(...)` set as `.automation`
+    (or handed in as `automation=`) — and the methods each defines itself."""
+    import ast
+    import glob
+    root = os.path.dirname(os.path.abspath(__file__))
+    found = []
+    for path in glob.glob(os.path.join(root, "**", "*.py"), recursive=True):
+        with open(path, encoding="utf-8") as f:
+            tree = ast.parse(f.read(), path)
+        name = os.path.relpath(path, root)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef) and "Automation" in node.name:
+                found.append((f"{name}::{node.name}", [n.name for n in node.body
+                                                       if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]))
+            elif isinstance(node, ast.Assign) and any(getattr(t, "attr", getattr(t, "id", "")) == "automation"
+                                                      for t in node.targets):
+                made = node.value
+                if isinstance(made, ast.Call) and isinstance(made.func, ast.Call):
+                    made = made.func                                # type(...)(): the class, then its one object
+                if isinstance(made, ast.Call) and getattr(made.func, "id", None) == "type" and len(made.args) == 3 \
+                        and isinstance(made.args[2], ast.Dict):
+                    found.append((f"{name}:{node.lineno}", [k.value for k in made.args[2].keys
+                                                            if isinstance(k, ast.Constant)]))
+    return found
+
+
+def test_every_stand_in_of_the_automation_service_has_only_its_real_methods():
+    """Row 30's guard: a stand-in that answers a method the real `Automation` lacks hides a call that fails for the
+    user (swallowed, as `anki_synced` was). Every stand-in's own public method must be the real service's."""
+    found = _stand_in_methods()
+    assert len(found) >= 4, f"the scan finds the stand-ins: {found}"
+    wrong = [(where, m) for where, methods in found for m in methods
+             if not m.startswith("_") and not callable(getattr(A.Automation, m, None))]
+    assert wrong == [], f"stand-ins answering what Automation lacks: {wrong}"
+
+
+def test_a_sync_by_hand_with_no_language_named_is_the_windows_language_and_nothing_once_closed(live, monkeypatch):
+    """Row 30 (planted-bug pass): the setup wizard's first sync names no language — its end is the window's language's;
+    and a sync by hand that ends after the window closed tells the closed service nothing (no bar, no queued work)."""
+    h.seed_library("ja")
+    auto, _registry, _c, _launches = _make(_settings())
+    ended = []
+    monkeypatch.setattr(auto.sync, "ended", lambda *a, **k: ended.append(a))
+    result = anki_sync.SyncResult(added=1, total_known=1, mode="delta")
+    auto.anki_synced(result, None)
+    assert ended == [(result, auto.language)], "no language named: the window's"
+    auto.anki_synced(result, "zh")
+    assert ended[-1] == (result, "zh"), "a language named: that one (D31)"
+    auto.close()
+    auto.anki_synced(result, "ja")
+    assert len(ended) == 2, "closed: nothing"

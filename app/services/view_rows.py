@@ -15,12 +15,12 @@ frozen `View`:
 - ***% known*** is one number everywhere (QT-E8, G1.2-4): known tokens ÷ counted tokens, summed over the piece (never a
   mean of per-file percents); none before a Generate (an em dash, never 0 %). ***N new*** is the list words the piece is
   first to bring (summed).
-- **One status vocabulary** for a row, the hero's next episode and an open row's episodes (the mock's `stHTML`, in its
-  order): ✓ *N in Anki* · *Mining* · *Waiting* · ✓ *k/n · Mine rest* · *Mine* · *No video* / *Video removed* — and the
-  on-disk mark (⌀ N) beside it when something isn't there. *In Anki* only while its cards are there (Sonic, 2026-10-07):
-  a file mined whose cards are all gone reads a faint *No cards in Anki* (Sonic's shelf ruling: never *Waiting*, never
-  mined again unless asked; an asked-for mining outranks it). Status is a glyph and a label (and a tone the painter maps
-  to a colour), never colour alone.
+- **One status vocabulary** for a row (the hero's head too: its row's, Q33) and an open row's episodes (the mock's
+  `stHTML`, in its order): ✓ *N in Anki* · *Mining* · *Waiting* · ✓ *k/n · Mine rest* · *Mine* · *No video* / *Video
+  removed* — and the on-disk mark (⌀ N) beside it when something isn't there. *In Anki* only while its cards are there
+  (Sonic, 2026-10-07): a file mined whose cards are all gone reads a faint *No cards in Anki* (Sonic's shelf ruling:
+  never *Waiting*, never mined again unless asked; an asked-for mining outranks it). Status is a glyph and a label (and
+  a tone the painter maps to a colour), never colour alone.
 - Goal's strip, Finished by month (newest first; no date → *Earlier*), Needs you's entries (each show with files the top
   20 waits on that aren't on disk), the badges, the header's subline, each row's accessible text, and the section's
   state (full · empty · loading · getting ready · read-only; busy beside any of them).
@@ -65,6 +65,10 @@ Episode = namedtuple("Episode", Episode._fields + ("work_id", "show"),
                      defaults=tuple(Episode._field_defaults.values()) + (None, None))
 #   work_id, show (LM11b G5): the work it is of, and in a group its show's name as the group labels it (None in a
 #   run); both None in a cache from before. What *Move {show} to Finished* takes and names (`drag.show_finished`)
+Episode = namedtuple("Episode", Episode._fields + ("show_key",),
+                     defaults=tuple(Episode._field_defaults.values()) + (None,))
+#   show_key: in a group, which show it is of (`_show_key`: its work, else its folder) — where an opened group's show
+#   lines stand (`rows.show_starts`); None in a run and in a cache from before
 Row = namedtuple("Row", "key index tier work_id piece_id media media_word verb title title_ep line source n_files n_watched "
                         "pct pct_tone n_new status mark episodes next_index studying date cover_title accessible "
                         "description chips more_chips play_tip can_play cards_out string", defaults=(False, None))
@@ -154,6 +158,9 @@ STRINGS = {
     "dash": "—",
     # a status's words (its glyph is painted beside them: check · spinner · hourglass · card-plus · no-video)
     "in_anki": "{n}", "in_anki_words": "{n} in Anki", "mining_kn": "Mining · {k}/{n}", "mining": "Mining…",
+    "mining_pct": "Mining · {pct}%", "tip_mining_doing": "Making its cards now: {doing}",
+    "tip_ask_battery": "{tip}\n• Click to mine this one now, on battery",
+    "tip_ask_anki": "{tip}\n• Click: it goes first once Anki answers",
     "waiting": "Waiting", "waiting_kn": "{k}/{n} · Waiting", "mine_rest": "{k}/{n} · Mine rest", "mine": "Mine",
     "no_media": "No {word}", "no_media_n": "No {word} · {n}", "removed": "{Word} removed",
     "deleted": "No cards in Anki", "deleted_n": "No cards in Anki · {n}",
@@ -211,7 +218,7 @@ STRINGS = {
     "pct": "{pct}% known", "new": "{n} new", "hero_stats": "{pct}% known · {n} new words",
     "hero_stats_none": "not analysed yet",
     "acc_row": "{title} · {pct} · {new} · {status}", "acc_pct_none": "not analysed",
-    "acc_hero": "Up next: {title} {ep} · {pct} · {new} · {status}",
+    "acc_hero": "Up next: {title} {ep} · {pct} · {new} · all of it: {status}",     # AD-9: the status is its row's
     # New arrivals (W3.2 S1): the tray's groups, its source chips and each row's one line and number
     "arr_new": "New", "arr_watched": "Already watched",
     "chip": {"hato": "hato", "youtube": "YouTube", "anilist": "AniList", "disk": "disk"},
@@ -429,6 +436,11 @@ def _eps_list(eps):
     return ", ".join(labels) + (STRINGS["eps_more"].format(n=more) if more > 0 else "")
 
 
+def _said(line):
+    """A row's spoken line with an empty part left out (row 36: no *N new* yet says nothing, never a dash)."""
+    return line.replace(" ·  · ", " · ")
+
+
 def spoken(status):
     """A status as a screen reader says it: the pill shows ✓ and the number only (G2.3 R2), the words go with it."""
     if status is not None and status.kind == "in_anki":
@@ -499,7 +511,7 @@ def status_of(eps, word, line_n):
 
 
 # --- building ------------------------------------------------------------------------------------------------------ #
-def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=None, show=None):
+def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=None, show=None, show_key=None):
     name = item.get("title") or (item.get("rel_path") or "").rsplit("/", 1)[-1]
     number = None if media == "youtube" else episode_number(name)
     if media == "youtube":
@@ -525,7 +537,7 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=
                  cards=c, mining=item["id"] in mining and not mined, missing=missing, removed=missing and mined,
                  in_top=in_top, pct=pct_of(known, counted), n_new=n_new, status=None, mark=None,
                  rel_path=item.get("rel_path"), play_tip="", can_play=not missing and not waiting, waiting=waiting,
-                 media_word=MEDIA_WORD.get(media, "video"), work_id=item.get("work_id"), show=show)
+                 media_word=MEDIA_WORD.get(media, "video"), work_id=item.get("work_id"), show=show, show_key=show_key)
     asked = item.get("mine_asked")                    # asked again after it was mined: it mines again (Sonic's "unless asked")
     deleted = bool(item.get("mined_at")) and not mined and not (asked and str(asked) > str(item["mined_at"]))
     ep = ep._replace(deleted=deleted)
@@ -557,6 +569,9 @@ def _connected(st, item, word):
     if item is None or st.kind in ("in_anki", "no_media") or (st.kind == "mining" and item.kind != connect_feed.MINING):
         return st
     if item.kind == connect_feed.MINING:
+        if item.progress is not None:       # Anki Miner's run, as it goes (laptop round 5 #23, PROVISIONAL text: lean A)
+            return Status("mining", STRINGS["mining_pct"].format(pct=item.progress),
+                          STRINGS["tip_mining_doing"].format(doing=item.doing), "accent")
         label = STRINGS["mining_kn"].format(k=item.made, n=item.total) if item.total else STRINGS["mining"]
         return Status("mining", label, STRINGS["tip_mining"], "accent")
     if item.kind == connect_feed.NO_VIDEO:
@@ -564,10 +579,14 @@ def _connected(st, item, word):
                       STRINGS["tip_connect_no_media"].format(tip=item.tip), "warn")
     if item.kind == connect_feed.NOT_TIMED:
         return Status("waiting", STRINGS["not_timed"], STRINGS["tip_not_timed"].format(words=item.words), "warn")
-    # a wait on Anki or on the battery is a warn *Waiting*, as *Not timed* is: an ask can't hurry it (P4.1 WF, C3:
-    # an ask never overrides a wait — the rows offer no *Mine now* on it)
+    # a wait on Anki or on the battery is a warn *Waiting*, and takes *Mine now* as every *Waiting* does (P4.1's C3,
+    # "an ask never overrides a wait", as amended by Sonic 2026-10-22, M-3 A): on battery the press is the yes for
+    # that one episode; waiting for Anki it goes first once Anki answers — its hover says which
     tone = "warn" if item.kind in (connect_feed.ANKI, connect_feed.BATTERY) else "dim"
-    return Status("waiting", st.label if st.kind == "waiting" else STRINGS["waiting"], item.tip, tone)
+    tip = item.tip
+    if item.kind in (connect_feed.ANKI, connect_feed.BATTERY):
+        tip = STRINGS["tip_ask_battery" if item.kind == connect_feed.BATTERY else "tip_ask_anki"].format(tip=item.tip)
+    return Status("waiting", st.label if st.kind == "waiting" else STRINGS["waiting"], tip, tone)
 
 
 def _row_connected(st, eps, connect, word):
@@ -658,7 +677,7 @@ def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, 
         shows, kinds, names, group_title, group_line = _group(meta, piece, works, guessed)
         media = kinds[_show_key(first)]
         eps = [_episode(it, works.get(it.get("work_id")) or {}, kinds[_show_key(it)], numbers, cards, mining,
-                        it["id"] in in_top_ids, line_n, connect, names[_show_key(it)]) for it in piece]
+                        it["id"] in in_top_ids, line_n, connect, names[_show_key(it)], _show_key(it)) for it in piece]
     else:
         media = _media(work, piece, guessed)
         eps = [_episode(it, work, media, numbers, cards, mining, it["id"] in in_top_ids, line_n, connect)
@@ -710,8 +729,9 @@ def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, 
     studying = bool(first.get("pinned")) and any(it.get("pinned") for it in piece)
     stamp = max((it.get("graduated_at") or "" for it in piece), default="") or None
     acc_pct = STRINGS["acc_pct_none"] if pct is None else STRINGS["pct"].format(pct=round(pct))
-    acc_new = STRINGS["new"].format(n=n_new if n_new is not None else 0) if n_new is not None else STRINGS["dash"]
-    accessible = STRINGS["acc_row"].format(title=title, pct=acc_pct, new=acc_new, status=spoken(st)) if not finished \
+    acc_new = STRINGS["new"].format(n=n_new) if n_new is not None else ""          # row 36: the number or nothing
+    accessible = _said(STRINGS["acc_row"].format(title=title, pct=acc_pct, new=acc_new, status=spoken(st))) \
+        if not finished \
         else f"{title} · {spoken(st) if st.kind in ('in_anki', 'mining') else line}"
     key = f"p{first['piece_id']}" if first.get("piece_id") is not None else f"i{first['id']}"
     string = None
@@ -858,12 +878,13 @@ def _cached_row(cache, index, tier, piece, works, numbers, cards, mining, in_top
 
 
 def _as_hero(h):
-    """The hero reads as it's painted: its next episode's numbers and status."""
+    """The hero reads as it's painted: its next episode's numbers with the episode, and its row's own status (Q33: as
+    every row) said as the whole's — "all of it", never in one breath with the episode's (AD-9)."""
     nxt = h.episodes[h.next_index]
-    return h._replace(accessible=STRINGS["acc_hero"].format(
-        title=h.title, ep=h.title_ep, status=spoken(nxt.status),
+    return h._replace(accessible=_said(STRINGS["acc_hero"].format(
+        title=h.title, ep=h.title_ep, status=spoken(h.status),
         pct=STRINGS["acc_pct_none"] if nxt.pct is None else STRINGS["pct"].format(pct=round(nxt.pct)),
-        new=STRINGS["dash"] if nxt.n_new is None else STRINGS["new"].format(n=nxt.n_new)).replace("  ", " "))
+        new="" if nxt.n_new is None else STRINGS["new"].format(n=nxt.n_new))).replace("  ", " "))
 
 
 def _by_tier(items):
@@ -1456,8 +1477,9 @@ def _row_from(data):
     r = Row(*data)
     st = Status(*r.status) if r.status else None
     mk = Mark(*r.mark) if r.mark else None
-    eps = tuple(Episode(*e)._replace(status=Status(*e[12]) if e[12] else None, mark=Mark(*e[13]) if e[13] else None)
-                for e in r.episodes)
+    eps = tuple(ep._replace(status=Status(*ep.status) if ep.status else None, mark=Mark(*ep.mark) if ep.mark else None,
+                            show_key=tuple(ep.show_key) if ep.show_key else None)     # (JSON wrote it as a list)
+                for ep in (Episode(*e) for e in r.episodes))
     chips = tuple(Chip(*c) for c in r.chips)
     r = r._replace(status=st, mark=mk, episodes=eps, chips=chips,
                    cover=CoverRef(*r.cover) if r.cover else None,                  # W3.2 Q6

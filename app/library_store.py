@@ -6784,9 +6784,12 @@ def spawn_maintain(language, *extra):
 
 def _helper_args(language, command, *extra):
     """The helper's command line, frozen (`Surasura.exe library_maintain <command> …`, app_entry's branch)
-    or from source (`python app/library_store.py <command> …`)."""
+    or from source (`python app/library_store.py <command> …`). Frozen, it names the Surasura beside the running
+    program, never `sys.executable`: Connect's receipts and the command line's writes start the helper from
+    surasura-cli.exe, which has no `library_maintain` verb (it refused every one on the laptop's build)."""
     if getattr(sys, "frozen", False):
-        return [sys.executable, "library_maintain", command, "--language", language, *extra]
+        from app.path_utils import program_beside
+        return [program_beside("Surasura"), "library_maintain", command, "--language", language, *extra]
     return [sys.executable, os.path.abspath(__file__), command, "--language", language, *extra]
 
 
@@ -10792,10 +10795,10 @@ def _reset_tables(store):
 
 def _forget_known(store, folder, record):
     """*Also forget my known words*: KnownWord.json kept dated in the trash (`backup_to_trash`, byte-checked) and
-    copied into the backup, then one in its own format (`anki_sync`'s) holding only the words he dismissed — every
-    replacing import's rule, `anki_sync.kept_ignored` (I-R4). -> "forgotten", or "kept: <why>"
-    (the library is fresh either way). Words from his Anki cards come back at the next Anki sync (a file rewritten
-    outside the sync makes its next run a full one, D4)."""
+    copied into the backup, then an empty one in its own format (`anki_sync`'s): a clean slate — no dismissed words,
+    no past Graduates' words; both backups keep them all (I-R4, Q-1). -> "forgotten", or "kept: <why>" (the library
+    is fresh either way). Words from his Anki cards come back at the next Anki sync (a file rewritten outside the sync
+    makes its next run a full one, D4)."""
     from app import anki_sync
     path = os.path.join(store.user_files_dir, anki_sync.KNOWN_FILE)
     if not os.path.isfile(path):
@@ -10807,11 +10810,10 @@ def _forget_known(store, folder, record):
         shutil.copyfile(path, copy)
         if not _same_bytes(path, copy):
             raise OSError("the backup copy did not match it")
-        ignored = anki_sync.kept_ignored(path, store.language, [])   # his dismissed words stay dismissed (I-R4)
-        anki_sync._atomic_write_json(path, anki_sync._fresh_file(ignored))
+        anki_sync._atomic_write_json(path, anki_sync._fresh_file([]))    # a clean slate (I-R4)
     except OSError as e:
         return f"kept: {e}"
-    record["known"] = {"from": path, "dated": dated, "copy": copy, "ignored_kept": len(ignored)}   # once it happened
+    record["known"] = {"from": path, "dated": dated, "copy": copy}   # once it happened
     return "forgotten"
 
 

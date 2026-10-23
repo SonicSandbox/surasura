@@ -118,6 +118,7 @@ class Services:
         self.started = False
         self._quit_lock = threading.Lock()
         self._quit_began = None           # when the quit began (`_stop_starting`): E20's wait counts from it
+        self._held = False                # row 35: gated jobs held while the close's sheet asks (`hold_starting`)
         # W3.5 part 3 (AD-8 / IK2-7): set while the setup wizard is up — no quiet Generate (the automatic one, the
         # journey keeper's) before its last page sets the level; an upgrader's library has no journey yet
         self.setup_open = threading.Event()
@@ -191,7 +192,8 @@ class Services:
             return
         replan, get = self.replan, self.settings.get
         providers.update(replan=replan.line,
-                         connect=status_service.connect_line(language, get, feed=connect_feed(language, self.settings)),
+                         connect=status_service.connect_line(language, get, feed=connect_feed(language, self.settings),
+                                                             registry=self.registry),       # row 40: in the line
                          # P4.1 L2 (row 4.1.13): the feed the library's stones are built from — one stamp a tick
                          ankiweb=status_service.ankiweb_line(get), journey=status_service.journey_pending(language),
                          backlog=status_service.anki_backlog(language))
@@ -407,7 +409,8 @@ class Services:
                 return False
             self._quit_began = time.monotonic()
             self.closing.set()
-            self.registry.gate(self._closing_gate)
+            if not self._held:                    # (row 35's sheet held them already)
+                self.registry.gate(self._closing_gate)
             if self.updates is not None:
                 try:
                     self.updates.quit()
@@ -424,6 +427,18 @@ class Services:
                 except Exception as e:
                     applog.log("shell", f"the re-order host at quit: {e}")
         return True
+
+    def hold_starting(self):
+        """(Row 35: the close's sheet asks; every answer quits.) Once: every gated job held from now on (the registry's
+        gate, the quit's own reason) and the chores' timers taken back — nothing is spawned that *Stop and quit* would
+        miss. Not the quit's start (`_stop_starting`: E20's wait still counts from the answer). Returns at once."""
+        with self._quit_lock:
+            if self._held or self._quit_began is not None:
+                return
+            self._held = True
+        self.registry.gate(self._closing_gate)
+        if self.chores is not None:
+            self.chores.halt()
 
     @staticmethod
     def _closing_gate(_kind):
@@ -985,6 +1000,8 @@ class ShellWindow(QMainWindow):
         self.restart_asked = False                        # *Restart now* (text size): main starts the program again
         self._quit_line = strings.QUIT_FINISHING          # the bar's one line while it waits
         self._quit_timer = None
+        self._detached_card = None                        # row 35: the close's *Still finishing* sheet, while open
+        self._detached_answered = False                   # ... answered (Quit or Stop and quit): asked once a close
         self.bridge.jobs_changed.connect(self._jobs_changed)
         self._library_needs = 0
         self._status_snap = None
@@ -1623,6 +1640,8 @@ class ShellWindow(QMainWindow):
         self.anki_mark = frame.AnkiMark(footer)
         row.addWidget(self.anki_mark)
         self.known = frame.KnownCorner(footer)
+        self.known.clicked.connect(self._known_clicked)    # Q30: a click syncs now
+        self._known_relay = None
         row.addWidget(self.known)
         self._logs_folder = None
         self.status_paints = {}             # row 7's statuses (the bar's lines, the journey dot) -> repaints (S19)
@@ -2033,6 +2052,8 @@ class ShellWindow(QMainWindow):
             self._previews_moved()                          # W3.1b: a key the bands' numbers read (Settings' set)
         if "anki_sync_auto" in keys:
             self._show_automation(s.automation.state())
+        elif "anki_sync_decks" in keys or "target_language" in keys:
+            self._known_road()                              # the count's click line follows the road (IK-7)
         try:
             stale = s.settings.stales(keys, language)
         except Exception:
@@ -2123,6 +2144,9 @@ class ShellWindow(QMainWindow):
     # the bar's marks
     def _show_automation(self, state):
         d = self.duties
+        if (getattr(state, "sync", None) == "synced" and getattr(d.auto_state, "sync", None) != "synced"
+                and getattr(self, "needs_you", None) is not None):
+            self.needs_you.synced()             # laptop round 7 #43: Known from Anki's question may have come or gone
         known = getattr(state, "known", None)
         if known is not None and known != getattr(d.auto_state, "known", None):
             self._previews_moved()                         # W3.1b: new known words move the bands' numbers
@@ -2132,6 +2156,7 @@ class ShellWindow(QMainWindow):
             d.junban_said = junban
             self.toasts.show(junban)
         known = getattr(state, "known", None)
+        self._known_road()
         if d.known.set_known(known, strings.BAR_KNOWN_TIP):     # W3.1a: the known corner (repainted on a change only)
             d.paints[d.known] = d.paints.get(d.known, 0) + 1
         if not self.services.settings.get().get("anki_sync_auto"):
@@ -2149,6 +2174,40 @@ class ShellWindow(QMainWindow):
         # hover. *N waiting* (W31A-2) comes from the status service's `backlog`, in `show_status`.
         if d.anki.show_state(key, words, tip):
             d.paints[d.anki] = d.paints.get(d.anki, 0) + 1
+
+    def _known_clicked(self):
+        """Q30: a click on the known-words count syncs now, through the automation's one sync path (`sync_now`: the
+        automatic sync's own job, forced, and with the automatic sync off too — the user asked; it ends as every sync
+        does). A click while one runs adds nothing. With no decks chosen yet, or the first sync not made (always the
+        user's own, in the Anki window), the Anki window opens instead."""
+        automation = self.services.automation
+        if automation is None:
+            return
+        if self._known_relay is None:
+            self._known_relay = bridge.Relay(self)
+            self._known_relay.said.connect(self._known_answer)
+        automation.sync_now(then=self._known_relay.call)
+
+    def _known_answer(self, why):
+        """The click's answer (AutoSync's own): no decks or no first sync opens the Anki window; a refusal is said in
+        the bar (AD-6: an update staged, a sync already running), never nothing."""
+        if why in ("no-decks", "never-synced"):
+            from app.qt import windows
+            op = next((op for op in windows.OPENERS if op.name == "anki"), None)
+            if op is not None:
+                windows.launch(self, op)
+        elif why in strings.FOOT_KNOWN_REFUSED:
+            self.say(strings.FOOT_KNOWN_REFUSED[why])
+
+    def _known_road(self):
+        """IK-7: the count's hover names what a click does — the page's known-words road, one rule
+        (`settings_catalog.known_road`): this language's Anki decks chosen, a sync; none, the Anki window."""
+        d = self.duties
+        if d is None:
+            return
+        from app.qt import settings_catalog as catalog
+        settings = self.services.settings.get()
+        d.known.set_road(catalog.known_road(settings, settings.get("target_language") or "ja"))
 
     def _read_level(self):
         d = self.duties
@@ -2419,7 +2478,10 @@ class ShellWindow(QMainWindow):
         self._named.clear()
         self._named_groups = None
         self._show_offline()
-        self.sources_seen.emit({"language": self.language, "sources": []})     # Settings' lines: the language open's
+        # Settings' lines: the language open's, its listing asked for (never "No folders yet" while it is on its way)
+        self.sources_seen.emit({"language": self.language, "sources": [], "listing": self.looks is not None})
+        if self.looks is not None:
+            self.looks.listing()
         if self._first_painted:
             self.look_at_sources(focused=True)
 
@@ -2668,6 +2730,10 @@ class ShellWindow(QMainWindow):
 
     def _jobs_changed(self, views):
         self._jobs = views
+        # Q30: the count's hover says a sync is running — the automatic one, a click's or the Anki window's
+        known = getattr(self, "known", None)
+        if known is not None:
+            known.set_syncing(any(v.kind == "anki-sync" and v.state in jobs_module.LIVE for v in views))
         if self._quit == "waiting" and self._replan_waited and getattr(self, "_moves_waited", True) and \
                 not jobs_module.waits_at_quit(views):
             self._close_now()
@@ -2679,6 +2745,75 @@ class ShellWindow(QMainWindow):
         self._quit_timer.stop()
         self.close()
 
+    # --- row 35: closing while helpers go on without the window ------------------------------------------------- #
+    def _ask_detached(self):
+        """The close with jobs that outlive the window (`jobs.detached_at_quit`: the library's upkeep, Connect making
+        cards — each keeps the program's folder in use until it ends): the window's sheet names them — *Quit* (the
+        default, and Esc, Back, a click outside: today's close, they go on) or *Stop and quit* (offered only when one
+        is of a kind it may stop, `jobs.STOPPABLE_AT_QUIT`: Connect alone → Quit is the one button). Asked once a close,
+        first in it (before E20's wait); never for the update's hand-over, *Restart now* or the session ending (a
+        logoff never waits on a sheet). Any other card open in the window is dropped first: the sheet never stacks on
+        one. While it asks nothing new starts (every answer quits). A close while it is open is Quit. None under way →
+        nothing asked, the close as before. -> True when the close waits for the answer."""
+        card = self._detached_card
+        if self._quit is not None or self.restart_asked or _session_ending():
+            if card is not None:                          # the question no longer stands
+                self._detached_card = None
+                card.drop()
+            return False
+        if card is not None:                              # a second close (✕ again) while it asks: Quit
+            card.close()
+            return True
+        if self._detached_answered:
+            return False
+        detached = jobs_module.detached_at_quit(self._jobs)
+        if not detached:
+            return False
+        from app.qt import confirm
+        for other in self.findChildren(confirm.Confirm):  # R35-1: a card already open is dropped, as a close drops it
+            if other.answer is None:
+                other.drop()
+        self._hold_for_sheet()
+        labels = strings.QUIT_DETACHED_JOIN.join(dict.fromkeys(j.label for j in detached))
+        stoppable = any(j.kind in jobs_module.STOPPABLE_AT_QUIT for j in detached)   # Connect alone: Quit alone
+        body = strings.QUIT_DETACHED_BODY if stoppable else ""
+        if any(j.kind == jobs_module.CONNECT_KIND for j in detached):       # Connect is never stopped from here
+            body = f"{body} {strings.QUIT_DETACHED_CONNECT}".strip()
+        self._detached_card = confirm.ask(
+            self, strings.QUIT_DETACHED_TITLE.format(labels=labels), body,
+            strings.QUIT_DETACHED_STOP if stoppable else None, strings.QUIT_DETACHED_STOP_TIP,
+            no=strings.QUIT_DETACHED_QUIT, no_tip=strings.QUIT_DETACHED_QUIT_TIP, default_no=True, danger=True,
+            on_answer=self._detached_answer)
+        return True
+
+    def _hold_for_sheet(self):
+        """While the sheet asks: nothing new starts — gated jobs held, the chores' timers taken back (no new upkeep
+        helper the stop wouldn't know), the duties' controls held. Not the quit's start: E20's wait counts from the
+        answer."""
+        try:
+            self.services.hold_starting()
+        except Exception as e:
+            applog.log("shell", f"holding at the close: {e}")
+        if self.duties is not None:
+            self.duties.generate.hold(strings.QUIT_CLOSING_TIP)
+            self.duties.sheet.hold(strings.QUIT_CLOSING_TIP)
+            self.duties.cards.hold(strings.QUIT_CLOSING_TIP)
+
+    def _detached_answer(self, stop):
+        self._detached_card = None
+        self._detached_answered = True
+        if stop:
+            # Stop and quit: the registry's live upkeep cancelled — its owner ends its own child through the Popen it
+            # holds (at once: no worker, so no close can pass it). Connect is never stopped (`jobs.CONNECT_KIND`).
+            try:
+                asked = jobs_module.stop_at_quit(self.services.registry)
+                if asked:
+                    applog.log("shell", f"stopped at the close: {len(asked)} helper(s)")
+            except Exception as e:
+                applog.log("shell", f"stopping at the close: {e}")
+        QTimer.singleShot(0, self.close)                  # the close as before (never inside the card's close)
+    # --- end row 35
+
     def _moves_pending(self):
         """W3.1a: moves the window gave that the store hasn't taken yet (04 §4.5: closing waits for them)."""
         writer = getattr(self.services, "writer", None)
@@ -2688,6 +2823,9 @@ class ShellWindow(QMainWindow):
             return False
 
     def closeEvent(self, event):
+        if self._ask_detached():                          # row 35: what outlives the window, named — first
+            event.ignore()
+            return
         moves = getattr(self, "moves", None)
         if moves is not None:
             moves.close()                                 # a drag running at the close is let go
@@ -2719,6 +2857,15 @@ class ShellWindow(QMainWindow):
         app.removeEventFilter(self.router)
         self.tooltips.uninstall(app)
         super().closeEvent(event)
+
+
+def _session_ending():
+    """Row 35: Windows is logging off or shutting down (the session manager's close): no sheet waits on it."""
+    app = QApplication.instance()
+    try:
+        return bool(app is not None and app.isSavingSession())
+    except Exception:
+        return False
 
 
 # --- W3.2 B: how the window wakes (IK0-5, L3.1-4) ----------------------------------------------------------------- #
@@ -2791,6 +2938,7 @@ def library_for(language, settings, freeze_gc=False):
     feed = connect_feed(language, settings)                 # --- P4.1 L2: Connect's feed (row 4.1.10)
     _opener, numbers, reader = moves.open_library(
         language, check=moves.plan_check(language, lambda: settings_service.thaw(settings.get())),
+        log=lambda line: applog.log("numbers", line),       # row 36: why *N new* waits, in the app's log
         cache_file=library_reader.cache_path(language), freeze_gc=freeze_gc,
         watch=library_lookout,                              # W3.2 B: woken by the bell + the tree watch (IK0-5)
         connect=feed.latest)                                # P4.1 L2: the stones from the status line's last look
@@ -2947,6 +3095,11 @@ def main(argv=None):
             instance.release()                            # (once: done already unless the quit failed before it)
             if window.restart_asked:                      # *Restart now* (`ShellWindow.restart`): the new start only
                 relaunch(argv)                            # once the store's close has ended (or its wait ran out, B2-4)
+            if meter is not None:                         # the HUD's native filter taken off here, on the GUI thread:
+                try:                                      # left to the collector, it can go on a worker, where Qt's
+                    meter.stop()                          # removal misses and the next message crashes (0xC0000005)
+                except Exception as e:
+                    applog.log("shell", f"the HUD at quit: {e!r}")
             quiet_exit(gone=(window,))                    # W3.4: nothing of Qt's or a worker's left for the teardown
     return code
 

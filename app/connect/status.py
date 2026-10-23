@@ -180,7 +180,7 @@ def _language(conn, lang, is_running, words):
                  "kind": job.get("kind") or "mine", "state": job["state"], "reason": job.get("reason"),
                  "step": STEP_WORDS.get(job["state"]) or STEP_WORDS.get(job.get("resume") or ""),
                  "words": len(_picked_words(job.get("picked"))), "made": counts.pop("made", 0),
-                 "not_made": counts}
+                 "not_made": counts, "progress": _progress(job) if job["state"] in book.IN_FLIGHT else None}
         if words:
             entry["not_made_words"] = _rows(conn, "SELECT word, reading, outcome FROM outcomes WHERE job_id = ? AND "
                                                   "outcome != 'made' ORDER BY rowid", (job["id"],))
@@ -204,6 +204,42 @@ def _language(conn, lang, is_running, words):
                                                          (f"generating:{lang}",)).fetchone() or [None])[0])
     rec["line"], rec["state"] = _line(conn, lang, rec, open_jobs, items, is_running, {n["say"] for n in needs})
     return rec
+
+
+# An episode's way through Connect as one percent (laptop round 5 #23, Sonic 2026-10-22 M-2 A: "one number that moves
+# through the whole episode", the step on hover), from each step's measured share of its time (work/LF-mining
+# timing.md, after the run's look-ups are kept: Anki Miner's run about half, naming its clips about a third)
+STEP_AT = {"picking": (0, "Choosing words"), "fit-check": (4, "Checking the timing"),
+           "filling": (94, "Filling fields"), "ordering": (97, "Ordering your cards")}
+MINE_FROM, MINE_TO = 8, 60                  # Anki Miner's own run (its percent, `anki_miner.percent`), mapped here
+NAMING = (62, "Naming the clips")
+STAGE_WORDS = {1: "Reading the subtitles", 2: "Finding the words", 3: "Cutting clips", 4: "Looking up definitions",
+               5: "Adding cards"}           # Anki Miner's stages (its progress file)
+
+
+def _progress(job):
+    """Where an episode Connect is working on stands (laptop round 5 #23) -> {"percent", "doing"} (+ Anki Miner's
+    "stage", "stages", "done", "total" while it runs): the job's step, and inside mining the run's own progress
+    (saved by `runner._Progress`) or the clips' naming after it."""
+    from app.connect import anki_miner
+    if job["state"] != "mining":
+        percent, doing = STEP_AT.get(job["state"], (0, "Choosing words"))
+        return {"percent": percent, "doing": doing}
+    try:
+        got = json.loads(job.get("progress") or "null")
+    except (TypeError, ValueError):
+        got = None
+    if isinstance(got, dict) and got.get("step") == "naming":
+        return {"percent": NAMING[0], "doing": NAMING[1]}
+    keys = ("stage", "stages", "done", "total")
+    if not (isinstance(got, dict) and all(isinstance(got.get(k), int) and not isinstance(got.get(k), bool)
+                                          and got[k] >= 0 for k in keys)) or not got["stage"]:
+        return {"percent": MINE_FROM, "doing": "Starting Anki Miner"}
+    out = {k: got[k] for k in keys}
+    out["percent"] = MINE_FROM + (MINE_TO - MINE_FROM) * anki_miner.percent(out) // 100
+    doing = STAGE_WORDS.get(out["stage"], "Starting Anki Miner")
+    out["doing"] = f"{doing} ({out['done']} of {out['total']})" if out["total"] else doing
+    return out
 
 
 def _not_made(conn, job_id):

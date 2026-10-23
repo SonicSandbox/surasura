@@ -802,15 +802,10 @@ class AnkiSyncGui(tk.Toplevel):
     def _sync_worker(self, full, snap):
         from app import anki_sync
         with self._lock():
-            result = anki_sync.sync(self.language, snap["url"], snap["decks"], snap["fields"],
-                                    include_suspended=snap["suspended"], full=full)
-            # The same decks' new cards, as the automatic sync reads them (read-only on Anki). Only a
-            # count here, so it can never cost the sync its result.
-            if not result.error:
-                try:
-                    anki_sync.sync_backlog(self.language, snap["url"], snap["decks"], snap["fields"])
-                except Exception:
-                    pass
+            # The one sync order (`anki_sync.sync_all`): the studied words, the same decks' new cards (read-only,
+            # never costing the sync its result), then Known from Anki (laptop round 7 #43).
+            result, _signal = anki_sync.sync_all(self.language, snap["url"], snap["decks"], snap["fields"],
+                                                 self._saved_settings(), include_suspended=snap["suspended"], full=full)
         self.q.put(("__RESULT__", result, anki_sync.load_state(self.language),
                     anki_sync.count_backlog(self.language)))
 
@@ -832,6 +827,8 @@ class AnkiSyncGui(tk.Toplevel):
             self._set_result(dry.error, ERROR)
             return
         self._set_result("")
+        # Left as 2.5 had it (its numbers, no line for the Migaku-ignored words a replace drops): the Tk dashboard
+        # retires in 3.0, and the Qt window (app/qt/anki_window.py) states the true numbers (AD-2 / IK-4).
         message = (f"Your known words will go from {dry.total_known:,} to {dry.added:,} "
                    f"(from Anki only).")
         details = ("Words from Migaku, Jiten or earlier imports will be removed. Your current list "

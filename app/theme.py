@@ -539,6 +539,7 @@ ROW_LINE = MappingProxyType({
     "shadow": 4,                    # the lifted row's baked shadow, inside its own gap
     "shadow-alpha": 0.62, "lift-line-alpha": 0.09,     # the shadow, and the lit top line, at the lift's share
     "open-pad": 10,                 # under an opened row's episodes
+    "show-line": 26,                # * an opened group's show line, above each show's episodes (LM11b)
     "hero-pad-x": 20, "hero-pad-y": 16, "hero-pad-right": 18, "hero-gap": 18, "hero-below": 8,
     "hero-trillion": 20,            # ▶ Play's trillion, in its kind's gem
     "hero-string": 30,              # * the Up Next string's band, under its numbers

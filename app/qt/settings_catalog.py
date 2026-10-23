@@ -9,11 +9,13 @@ says and hands every change on through `change()`; it decides nothing.
   there, shown here, never written here: 🧭 call 3); `adv` under *More options*; `group` a group name above it; `sub`
   indented under the row above; `when(settings, language, ctx)` whether it shows; `door` the opener names
   (`app/qt/windows.OPENERS`) its buttons open; `target` the section a summary's *Change ›* goes to.
-- **Kinds:** `toggle` · `choice` (one of a few) · `cards` (choice cards, a line under each) · `tablets` (a list value's
-  picks, or several bool keys as one row) · `list` (a list value: its items + the empty bed) · `slider` (the level) ·
-  `number` · `range` (two numbers) · `text` · `select` (a long one-of) · `door` · `status` · `summary` (Your setup) ·
-  `link` · `action` (an export, P11) · `custom` (a row its own package draws: Connect's switch, the store lines, the
-  placing rules, Anki Miner's card, the credits…).
+- **Kinds:** `toggle` (a bool key; with `options` one value of a list key, Q31) · `choice` (one of a few) · `cards`
+  (choice cards, a line under each) · `tablets` (a list value's picks, each lit one ticked — never the vein a choice
+  draws under its one, so no multi-pick reads as a pick-one: Q31; picks a word each says better are switches, a row
+  each) · `list` (a list value: its items + the empty bed) · `slider` (the level) · `number` · `range` (two numbers) ·
+  `text` · `select` (a long one-of) · `door` · `status` · `summary` (Your setup) · `link` · `action` (an export, P11) ·
+  `custom` (a row its own package draws: Connect's switch, the store lines, the placing rules, Anki Miner's card, the
+  credits…).
 - `ctx`: a frozenset of the optional modules found (`installed_modules()`: "modules.junban", …), "koe_revealed" (the
   Speech reveal gate: `enable_koe` is in settings.json, `koe.is_revealed()`) and the known-words road chosen on the page
   ("road:anki" / "road:import"; page state, never a key — RUNBOOK 🧭 4). Row 13 (laptop fixes): "hato_found" (hato's
@@ -139,6 +141,20 @@ def _coverage(settings, language, ctx):
 
 _JUNBAN = _module("modules.junban")
 _JUNBAN_ON = _all(_JUNBAN, _on("enable_junban"))
+
+
+def _first_applies(settings, language, ctx):
+    """Q31: whether *Idioms and set phrases* and *i+1 first* take part in Junban's reorder — Junban's own rule
+    (`reposition.first_applies`, the one its run asks: Japanese, "After it" or "Mixed in", no *Only words marked*
+    pick); Junban absent or failing: never (the rows hide)."""
+    try:
+        from modules.junban.reposition import first_applies
+        return bool(first_applies(settings, language))
+    except Exception:
+        return False
+
+
+_JUNBAN_FIRST = _all(_JUNBAN_ON, _first_applies)
 _CONNECT = _on("connect_enabled")
 _KOE = _all(_module("modules.koe"), lambda settings, language, ctx: "koe_revealed" in ctx)
 _YOUTUBE = _module("modules.youtube_downloader")
@@ -197,8 +213,11 @@ ROWS = (
          options=tuple(term for term, _label in settings_values.KNOWN), when=_CONNECT),
     _row("connect_video_folders", "anki", "list", ("connect_video_folders",), when=_CONNECT),
     _row("connect_trust_timing", "anki", "toggle", ("connect_trust_timing",), when=_CONNECT),
-    _row("junban_own_tag", "anki", "text", ("junban_own_tag",), group="in_anki", when=_all(_CONNECT, _JUNBAN)),
-    _row("junban_order_all", "anki", "toggle", ("junban_order_all",), when=_all(_CONNECT, _JUNBAN)),
+    # Q29: *Your own cards* — first, or in the list's order — and, under it, the tag that marks them (it keeps them
+    # from being suspended under either choice, so it is never greyed)
+    _row("junban_order_all", "anki", "choice", ("junban_order_all",), options=(False, True), group="in_anki",
+         when=_all(_CONNECT, _JUNBAN)),
+    _row("junban_own_tag", "anki", "text", ("junban_own_tag",), sub=True, when=_all(_CONNECT, _JUNBAN)),
     _row("anki_sync_delay_min", "anki", "choice", ("anki_sync_delay_min",), adv=True, group="anki"),
     _row("automation", "anki", "toggle", ("logic.automation",), adv=True),
     _row("journey_settle_s", "anki", "number", ("journey_settle_s",), adv=True, bounds=(0, None)),
@@ -213,10 +232,12 @@ ROWS = (
     _row("junban_order", "junban", "choice", ("junban_order",), options=("content", "priority"), when=_JUNBAN_ON),
     _row("junban_unlisted", "junban", "choice", ("junban_unlisted",), options=("list_first", "journey", "back"),
          when=_JUNBAN_ON),
-    _row("junban_first", "junban", "tablets", ("junban_phrases", "junban_ready_first"),
-         options=("junban_phrases", "junban_ready_first"), when=_JUNBAN_ON),
-    _row("junban_later", "junban", "tablets", ("junban_later_tag", "junban_later_flag", "junban_later_suspend"),
-         options=("junban_later_tag", "junban_later_flag", "junban_later_suspend"), when=_JUNBAN_ON),
+    # Q31: two switches that work together, never a pick-one row (Japanese only; nothing to do at the back)
+    _row("junban_phrases", "junban", "toggle", ("junban_phrases",), when=_JUNBAN_FIRST),
+    _row("junban_ready_first", "junban", "toggle", ("junban_ready_first",), when=_JUNBAN_FIRST),
+    _row("junban_later_tag", "junban", "toggle", ("junban_later_tag",), group="not_on_list", when=_JUNBAN_ON),
+    _row("junban_later_flag", "junban", "toggle", ("junban_later_flag",), when=_JUNBAN_ON),
+    _row("junban_later_suspend", "junban", "toggle", ("junban_later_suspend",), when=_JUNBAN_ON),
     _row("junban_auto_reorder", "junban", "toggle", ("junban_auto_reorder",), when=_JUNBAN_ON),
     _row("junban_auto_actions", "junban", "toggle", ("junban_auto_actions",), when=_JUNBAN_ON),
     _row("junban_door", "junban", "door", when=_JUNBAN_ON, door=("junban",), reaches=("junban_word_fields",)),
@@ -227,12 +248,15 @@ ROWS = (
     _row("junban_write_freqsort", "junban", "toggle", ("junban_write_freqsort",), adv=True, when=_JUNBAN_ON),
     _row("junban_tag", "junban", "text", ("junban_tag",), adv=True, when=_JUNBAN_ON),
     _row("junban_tag_markers", "junban", "toggle", ("junban_tag_markers",), adv=True, when=_JUNBAN_ON),
+    # IK-4: ✦ ⚖ 📖 as glyph tablets, each picked one ticked (Q31's rule: never a choice's vein)
     _row("junban_only_markers", "junban", "tablets", ("junban_only_markers",), options=("star", "lopsided", "reading"),
          adv=True, when=_JUNBAN_ON),
     _row("junban_chunk_size", "junban", "number", ("junban_chunk_size",), adv=True, when=_JUNBAN_ON, bounds=(1, None)),
 
     # Backfill (with modules/junban; hides with Junban's switch, as in 2.4: N3)
-    _row("junban_backfill_fills", "backfill", "tablets", ("junban_backfill_fills",), options=("patterns", "sentence"),
+    _row("backfill_patterns", "backfill", "toggle", ("junban_backfill_fills",), options=("patterns",),
+         when=_JUNBAN_ON),
+    _row("backfill_sentence", "backfill", "toggle", ("junban_backfill_fills",), options=("sentence",),
          when=_JUNBAN_ON),
     _row("junban_backfill_cards", "backfill", "choice", ("junban_backfill_cards",), options=("all", "new"),
          when=_JUNBAN_ON, door=("backfill",), reaches=("junban_backfill_deck",)),
@@ -269,7 +293,8 @@ ROWS = (
     # Content
     _row("target_language", "content", "choice", ("target_language",), options=LANGUAGES),
     _row("soon_line", "content", "custom"),                                                 # P6: the store's line
-    _row("library_folders", "content", "custom"),                     # SRC W1b: the store's sources, read where they are
+    # SRC W1b: the store's sources, read where they are; row 32: a summary here, the folders in their own window
+    _row("library_folders", "content", "custom", door=("library-folders",)),
     _row("fresh_library", "content", "custom"),                       # K7: the library set aside, the folders read again
     _row("split_length", "content", "number", ("split_length",), bounds=(1, None)),
     _row("enable_youtube_transcripts", "content", "toggle", ("enable_youtube_transcripts",), when=_YOUTUBE),
@@ -347,6 +372,7 @@ NOT_SHOWN = {
     "add_graduated_words": "retired with Graduate (D23)",
     "index_pool_workers": "speed only: every file's tokens are the same either way",
     "koe_port": "settings.json only: the speech helper's port",
+    "junban_show_tags": "settings.json only: Junban's show labels, off for a positions-only run",
     "junban_replan_preview": "2.x's preview: 3.0 writes the plan always",
     "junban_replan_language": "2.x's preview: 3.0 writes the plan always",
     "junban_replan_deck": "2.x's preview: 3.0 writes the plan always",
@@ -424,6 +450,9 @@ def _one(settings, key, language):
     found = plain(value_of(settings, key))
     if key == "known_from_anki" and isinstance(found, str):
         found = [found]
+    if key == "junban_only_markers":            # IK-5: read as Junban reads it, one reader (a hand-edited "Star" is ✦)
+        from app.anki_match import normalize_markers
+        found = list(normalize_markers(found))
     if key == "placing_rules":                  # merged per key: a source not named keeps its default (SRC W1 fix)
         from app import settings_manager
         found = settings_manager.placing_rules(found)
@@ -439,6 +468,8 @@ def value(row, settings, language):
         return _decks(settings, language)
     if not row.keys:
         return None
+    if _member(row):
+        return row.options[0] in _held(settings, row.keys[0], language)
     switch = row.kind == "toggle" or row.kind in ("tablets", "slider") and len(row.keys) > 1
     shown = {key: _one(settings, key, language) for key in row.keys}
     if switch:                  # a switch not in the defaults (the dashboard's `logic.hide_audio_button`) reads as off
@@ -584,11 +615,34 @@ def change(row, settings, language, new):
         return {}, None
     if row.keys[0] in PER_LANGUAGE:
         return _per_language(row, settings, language, new)
+    if _member(row):
+        key, held = row.keys[0], _held(settings, row.keys[0], language)
+        want = _with_member(key, held, row.options[0], bool(new))
+        return ({key: want} if want != held else {}), None
     wanted = _wanted(row, settings, language, new)
     current = value(row, settings, language)
     if len(row.keys) == 1:
         current = {row.keys[0]: current}
     return {key: v for key, v in wanted.items() if key in row.keys and current.get(key) != v}, None
+
+
+def _member(row):
+    """Whether `row` is one value of a list setting as its own switch (Q31: a few independent picks are switches, never
+    tablets that read as a pick-one): a toggle naming its value in `options`."""
+    return row.kind == "toggle" and bool(row.options)
+
+
+def _held(settings, key, language):
+    found = _one(settings, key, language)
+    return list(found) if isinstance(found, (list, tuple)) else []
+
+
+def _with_member(key, held, member, on):
+    """`held` with `member` on or off: the switches' values in their rows' order, then any other value the file holds
+    (hand-edited) as it was — never dropped."""
+    order = [row.options[0] for row in ROWS if _member(row) and row.keys[0] == key]
+    picked = (set(held) - {member}) | ({member} if on else set())
+    return [v for v in order if v in picked] + [v for v in held if v not in order]
 
 
 def _wanted(row, settings, language, new):

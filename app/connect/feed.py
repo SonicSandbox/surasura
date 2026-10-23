@@ -7,7 +7,9 @@
   `unseen` (*Needs you*'s badge) and `updating` (*Connect is updating your list*, F9: row 4.1.7's record flag).
 - `Item(kind, words, tip, job, made, total)`: `kind` one of KINDS; `words` the status read out (hover, keyboard
   focus, a screen reader: `WORDS`); `tip` the job's own reason in plain words (a waiting stone's hover, C7); `job`
-  its id (*Mine anyway*'s); `made` / `total` its cards so far of the words picked (*Mining 3 of 12*).
+  its id (*Mine anyway*'s); `made` / `total` its cards so far of the words picked (*Mining 3 of 12*); `progress` /
+  `doing` a mining item's percent through the whole episode and its step in words (`status._progress`; laptop round
+  5 #23), else None.
 - Kinds are told by the runner's and the Anki session's named reasons (`runner.NO_VIDEO`, `anki_session.CLOSED`, …)
   and the job's own `kind` (`asked`, row 4.1.3), never by a wording a test can't see.
 - `Provider(language, settings_get)`: one per window and language, a worker's call. Off → the off Feed, nothing read.
@@ -22,7 +24,10 @@ from collections import namedtuple
 EVERY_S = 3                     # the window's tick while Connect is on (the Tk row's; `services.status.TICKS`)
 
 Feed = namedtuple("Feed", "on mining items line state unseen updating")
-Item = namedtuple("Item", "kind words tip job made total")
+# `progress` / `doing` (laptop round 5 #23): a mining item's percent (0–99) and its step in words, else None
+# `stoppable` (laptop round 8 #47): True while the item's job can still be stopped (`actions.stop`: before its cards
+# are made, and not stopped already), else None
+Item = namedtuple("Item", "kind words tip job made total progress doing stoppable", defaults=(None, None, None))
 
 MINING, WAITING, ANKI, NO_VIDEO, NOT_TIMED, BATTERY, ASKED = (
     "mining", "waiting", "anki", "no_video", "not_timed", "battery", "asked")
@@ -58,21 +63,12 @@ def _off(settings):
     return Feed(on=False, mining=frozenset(), items={}, line=why, state="off", unseen=0, updating=False)
 
 
-def _anki_waits():
-    """The reasons that are a job waiting on Anki (closed, busy, not answering as it should, reviewing, another
-    program writing to it) and the start of the other-profile one."""
-    from app.connect import anki_session, runner
-    return ({runner.ANKI_CLOSED, runner.REVIEWING, runner.WRITER_BUSY, anki_session.CLOSED, anki_session.BUSY,
-             anki_session.UNUSABLE, anki_session.REVIEWING}, anki_session.OTHER_PROFILE.split("{")[0])
-
-
 def build(record, language):
     """The Feed of one language's status record (`status.read`'s) -> Feed (on)."""
+    from app.connect import actions, runner
     from app.connect import ledger as book
-    from app.connect import runner
     rec = ((record or {}).get("languages") or {}).get(language) or {}
     running = bool((record or {}).get("running"))
-    waits, other_profile = _anki_waits()
     not_timed = {n.get("item") for n in rec.get("needs") or () if n.get("kind") == "not-timed"}
     items, mining = {}, set()
     for job in rec.get("jobs") or ():
@@ -88,7 +84,7 @@ def build(record, language):
             kind = NOT_TIMED
         elif reason == runner.ON_BATTERY:
             kind = BATTERY
-        elif reason in waits or reason.startswith(other_profile):
+        elif runner.anki_wait(reason):                  # the runner's one rule (laptop round 5 #24)
             kind = ANKI
         elif job.get("kind") == "asked":
             kind = ASKED
@@ -96,10 +92,37 @@ def build(record, language):
             kind = WAITING
         if kind == MINING:
             mining.add(item_id)
+        step = (job.get("progress") or None) if kind == MINING else None      # `status._progress`'s
+        progress, doing = (step.get("percent"), step.get("doing")) if step else (None, None)
+        stoppable = (True if job.get("job") is not None and actions.stoppable(job.get("state"), job.get("resume"))
+                     and reason != runner.STOPPED_BY_YOU else None)
         items[item_id] = Item(kind=kind, words=WORDS[kind], tip=reason or WORDS[kind], job=job.get("job"),
-                              made=job.get("made") or 0, total=job.get("words") or 0)
+                              made=job.get("made") or 0, total=job.get("words") or 0, progress=progress, doing=doing,
+                              stoppable=stoppable)
     return Feed(on=True, mining=frozenset(mining), items=items, line=rec.get("line"), state=rec.get("state"),
                 unseen=rec.get("unseen") or 0, updating=bool(rec.get("updating")))
+
+
+def with_asks(feed, asked):
+    """Laptop round 8 #45 (a press shows at once): the Feed with an ASKED stone on every item you asked for (`asked`:
+    item ids — the store's unanswered asks, `library.asked`, or the ones the window just wrote) that Connect's record
+    doesn't show yet. Connect reads an ask at its next look (seconds, or after the step it is in); until then the stone
+    says *Asked: its cards come next* from your own press. An item Connect already shows keeps Connect's stone, but
+    one you stopped shows your *Mine now* at once. Pass the asks you just made (or ones newer than Connect's asks
+    watermark, `ledger.asks_from_in`): an ask made while Connect was off is never mined (C1). Off
+    (`feed.on` False: Connect won't run) -> the Feed as it is (no promise it can't keep). Nothing new -> the same Feed
+    object (S19)."""
+    if not feed.on:
+        return feed
+    from app.connect import runner
+    new = [i for i in dict.fromkeys(asked or ()) if i is not None
+           and (i not in feed.items or feed.items[i].tip == runner.STOPPED_BY_YOU)]   # *Mine now* on a stopped one
+    if not new:
+        return feed
+    items = dict(feed.items)
+    for item_id in new:
+        items[item_id] = Item(kind=ASKED, words=WORDS[ASKED], tip=WORDS[ASKED], job=None, made=0, total=0)
+    return feed._replace(items=items)
 
 
 class Provider:

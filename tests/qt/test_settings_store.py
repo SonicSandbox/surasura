@@ -253,10 +253,33 @@ def test_trust_turned_on_in_the_page_starts_connect_on_a_worker(qapp, kicked):
 
 def test_trust_turned_off_or_another_key_starts_nothing(qapp, kicked):
     calls, _done = kicked
-    assert store_rows.kick_on_trust({"connect_trust_timing": True}, {"connect_trust_timing": False}) is False
-    assert store_rows.kick_on_trust({"connect_trust_timing": True}, {"connect_trust_timing": True}) is False
-    assert store_rows.kick_on_trust({}, {"split_length": 900}) is False
-    assert store_rows.kick_on_trust(None, {"connect_trust_timing": True}) is True
+    assert store_rows.kick_on_release({"connect_trust_timing": True}, {"connect_trust_timing": False}) is False
+    assert store_rows.kick_on_release({"connect_trust_timing": True}, {"connect_trust_timing": True}) is False
+    assert store_rows.kick_on_release({}, {"split_length": 900}) is False
+    assert store_rows.kick_on_release(None, {"connect_trust_timing": True}) is True
+
+
+def test_the_cap_changed_in_the_page_kicks_connect_on_a_worker(qapp, kicked):
+    # Laptop round 7 #42: the cap raised to 500 never reached the Connect waiting at 300. The change kicks it (a
+    # running one is woken and reads the cap at its next look), on a worker, after the per-language write.
+    calls, done = kicked
+    data = dict(ALL_ON, connect_backlog_cap={"ja": 300, "zh": 300})
+    page, _rows, _shell, _store = make({"soon_line": 25, "mine_line": 20, "arrivals_on": 1}, data=data)
+    try:
+        change(page.rows["connect_backlog_cap"].controls[0], 500)
+        assert wait_until(done.is_set)
+        settings, on_main = calls[0]
+        assert settings["connect_backlog_cap"]["ja"] == 500 and on_main is False
+    finally:
+        _close(page)
+
+
+def test_a_cap_change_releases_and_the_same_cap_does_not():
+    # the one rule `kick_on_release` reads: a changed cap (up, down or to 0, any language) lets Connect look again
+    assert store_rows.releases({"connect_backlog_cap": 300}, {"connect_backlog_cap": {"ja": 500, "zh": 300}})
+    assert store_rows.releases({"connect_backlog_cap": {"ja": 500}}, {"connect_backlog_cap": {"ja": 0}})
+    assert not store_rows.releases({"connect_backlog_cap": {"ja": 500}}, {"connect_backlog_cap": {"ja": 500}})
+    assert not store_rows.releases({"connect_backlog_cap": 300}, {"connect_video_folders": {"ja": ["D:/Anime"]}})
 
 
 def test_trust_waits_for_its_settings_write_before_starting_connect(qapp, kicked):
@@ -275,7 +298,7 @@ def test_trust_waits_for_its_settings_write_before_starting_connect(qapp, kicked
 
     from app.connect import kick
     kick.kick = lambda settings: (order.append("kick"), done.set())
-    assert store_rows.kick_on_trust({}, {"connect_trust_timing": True}, store=Store()) is True
+    assert store_rows.kick_on_release({}, {"connect_trust_timing": True}, store=Store()) is True
     assert wait_until(done.is_set)
     assert order == ["flush", "kick"]
     # it gives the write time to land behind another program's lock (mutant LF9-B28: a zero wait starts Connect at once)

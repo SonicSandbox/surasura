@@ -61,6 +61,8 @@ def signal(settings):
     value = (settings or {}).get("known_from_anki", ["suspended"])
     if isinstance(value, str):
         value = [value]
+    if isinstance(value, tuple):        # the 3.0 window's settings are frozen: its lists are tuples (review r2 #1)
+        value = list(value)
     if not isinstance(value, list):
         print("Known from Anki is off: known_from_anki isn't a list of terms.")
         return []
@@ -138,11 +140,23 @@ def _save(language, data):
 
 
 @contextlib.contextmanager
-def _held(language, verb, wait=None):
+def _held(language, verb, wait=None, on_wait=None):
     """The known-words lock around a read-modify-write of the record (and KnownWord.json); raises when another
-    program keeps it. Already held by this thread: nothing more to take."""
+    program keeps it. Already held by this thread: nothing more to take. `on_wait(who)` (laptop round 8 #45: the
+    press shows at once): called once, before the wait, when another program holds it now — `who` its own words for
+    what it does ("Anki known-words sync") — so the window can say what the press waits for."""
     from app import anki_sync
-    held, refused = anki_sync.hold_known_words(language, verb, wait=wait)
+    held, refused = None, None
+    if on_wait is not None:
+        held, refused = anki_sync.hold_known_words(language, verb, wait=0)
+        if refused is not None:
+            try:
+                on_wait(((refused[1] or {}).get("verb")) or "another Surasura program")
+            except Exception as e:                  # the window's call never stops the work
+                print(f"Known from Anki: the wait's notice failed ({e}).")
+            held, refused = None, None
+    if held is None and refused is None:
+        held, refused = anki_sync.hold_known_words(language, verb, wait=wait)
     if refused is not None:
         raise RuntimeError(refused[0])
     try:
@@ -284,11 +298,12 @@ def _mark(language, found, state, now, why, terms=None):
         return added
 
 
-def accept_offer(language, url=None):
+def accept_offer(language, url=None, on_wait=None):
     """The one-time offer, accepted: the words of the cards signalled at the first read become known — only the cards
-    that still carry the signal when you answer (asked of Anki with `url`; review B #14)."""
+    that still carry the signal when you answer (asked of Anki with `url`; review B #14). `on_wait(who)`: called
+    once when the known words are being written by another program now and the answer waits for it (#45)."""
     from app import anki_connect
-    with _held(language, "Known from Anki"):
+    with _held(language, "Known from Anki", on_wait=on_wait):
         state = load(language)
         offer = state.get("offer") or {}
         if offer.get("state") != "pending":

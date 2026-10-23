@@ -833,3 +833,71 @@ def test_the_backlog_reaches_the_snapshot_through_its_tick():
     status.poll()
     _settle(status)
     assert status.snapshot().backlog == 3
+
+
+def test_connects_mining_is_a_job_in_the_one_registry_so_the_bottom_line_names_it():
+    """Laptop row 40: "I can't tell what my actions trigger". Connect mines in its own process, so its work was only a
+    quiet mark. While the feed says an item is being mined, the window's registry lists it (recorded, detached at quit:
+    Connect goes on), so the bottom-left line reads it with its step; a look that changes nothing tells no one (S19);
+    a look between two batches keeps it (no blink), two end it; a new provider (a language switch) ends it at once."""
+    from app.connect import feed
+    registry = JobRegistry()
+    status = StatusService(registry)
+    heard = []
+    registry.subscribe(heard.append)
+    looks = []
+
+    class Feed:
+        def feed(self):
+            return looks[-1]
+
+        def every(self):
+            return True
+
+    def mining(doing, pct=None, made=0, total=0):
+        item = feed.Item(feed.MINING, feed.WORDS[feed.MINING], "", 7, made, total, pct, doing)
+        return feed.Feed(on=True, mining=frozenset({1}), items={1: item}, line="Mining", state="ok", unseen=0,
+                         updating=False)
+
+    waiting = feed.Feed(on=True, mining=frozenset(), items={2: feed.Item(feed.WAITING, feed.WORDS[feed.WAITING], "", 8,
+                                                                         0, 0)},
+                        line="Waiting", state="ok", unseen=0, updating=False)
+    provider = S.connect_line("ja", lambda: {}, feed=Feed(), registry=registry)
+    looks.append(mining("Cutting clips (3 of 40)", 40))
+    provider()
+    live = registry.live(S.CONNECT_JOB_KIND)
+    assert len(live) == 1 and live[0].on_quit == "detach" and not live[0].gated
+    assert job_line(live[0]) == "Making cards · Cutting clips (3 of 40) 40%"
+    assert status.snapshot().lines == ("Making cards · Cutting clips (3 of 40) 40%",)
+    told = len(heard)
+    provider()                                                            # the same step again: nothing told
+    assert len(heard) == told
+    looks.append(mining(None, made=3, total=12))
+    provider()
+    assert [job_line(v) for v in registry.live(S.CONNECT_JOB_KIND)] == ["Making cards · 3 / 12"]
+    looks.append(waiting)
+    provider()                                                            # one look between batches: kept
+    assert len(registry.live(S.CONNECT_JOB_KIND)) == 1
+    provider()                                                            # two: over
+    assert registry.live(S.CONNECT_JOB_KIND) == () and status.snapshot().lines == ()
+    looks.append(mining("Cutting clips (9 of 40)", 10))
+    provider()
+    assert len(registry.live(S.CONNECT_JOB_KIND)) == 1
+    S.connect_line("zh", lambda: {}, feed=Feed(), registry=registry)      # a language switch: the last one's ends
+    assert registry.live(S.CONNECT_JOB_KIND) == ()
+    S.mirror_connect(None, looks[-1])                                     # no registry: nothing to list
+
+
+def test_connects_mirrored_job_is_what_the_close_names_and_never_what_it_stops():
+    """Rows 40 and 35 share one kind: the job the status line shows for Connect's card-making is the one the close's
+    sheet names (`detached_at_quit`) and *Stop and quit* leaves alone (`stop_at_quit`)."""
+    from app.connect import feed
+    registry = JobRegistry()
+    item = feed.Item(feed.MINING, feed.WORDS[feed.MINING], "", 7, 0, 0, 40, "Cutting clips (3 of 40)")
+    S.mirror_connect(registry, feed.Feed(on=True, mining=frozenset({1}), items={1: item}, line="Mining", state="ok",
+                                         unseen=0, updating=False))
+    named = J.detached_at_quit(registry.live())
+    assert [v.label for v in named] == [S.CONNECT_JOB_LABEL]
+    J.stop_at_quit(registry)
+    assert [v.label for v in registry.live(S.CONNECT_JOB_KIND)] == [S.CONNECT_JOB_LABEL]
+    S.mirror_connect(registry, None)

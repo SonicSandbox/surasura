@@ -326,18 +326,28 @@ def check(plan, language, engine, run_stamp, signature_parts, epoch=None, added=
     return ("stand-aside", aside) if aside else verdict
 
 
+NUMBERS_EXACT = ("i+1",)          # stand-aside reasons whose *N new* the engine still follows exactly (`Engine`)
+
+
 def stands_aside(plan):
     """Why the engine can't replay `plan` exactly, or None (check's "stand-aside" reasons)."""
+    reasons = aside_reasons(plan)
+    return reasons[0] if reasons else None
+
+
+def aside_reasons(plan):
+    """Every reason the engine can't replay `plan` exactly, in `stands_aside`'s order -> a list."""
     h = plan.header
+    out = []
     if h.get("target_coverage"):
-        return "coverage"
+        out.append("coverage")
     if h.get("only_i_plus_one"):
-        return "i+1"
+        out.append("i+1")
     if h.get("shared_phrases"):
-        return "shared-phrase"
+        out.append("shared-phrase")
     if not all(type(w) is int for w in h["weights"].values()):
-        return "weights"
-    return None
+        out.append("weights")
+    return out
 
 
 def _what_moved(plan, parts, added=()):
@@ -436,15 +446,21 @@ class Result:
 
 class Engine:
     """The re-plan over one plan file. `ids`: each plan file's item id (parallel to `plan.files`; None for a file
-    the store no longer holds); by default its rel_path."""
+    the store no longer holds); by default its rel_path. `numbers_only`: a plan the engine stands aside for i+1 alone
+    (`NUMBERS_EXACT`) is read all the same, for its numbers — the order, the first places and *N new* (the window's,
+    laptop row 36), which follow any order and move exactly there (an i+1 list's words don't hang on the order; proven
+    against each order's Generate) — never for its list: `result()` and an added file are a PlanError. Coverage, a
+    shared phrase row or a weight that isn't whole stand aside still, alone or with i+1 (coverage's numbers aren't its
+    Generate's)."""
 
-    def __init__(self, plan, ids=None):
+    def __init__(self, plan, ids=None, numbers_only=False):
         # `self.plan` keeps the tables only (header, files, keys, rows, ties), never the per-file lines.
         if plan.per_file is None:
             raise PlanError("an engine's own copy holds no per-file lines: load the plan file again")
-        aside = stands_aside(plan)
-        if aside:
-            raise PlanError(f"the engine stands aside: {aside}")
+        reasons = aside_reasons(plan)
+        if reasons and not (numbers_only and all(r in NUMBERS_EXACT for r in reasons)):
+            raise PlanError(f"the engine stands aside: {reasons[0]}")
+        self.numbers_only = ", ".join(reasons) or None      # why the list is refused (None: the engine's whole)
         # The engine keeps what it reads, not the plan's per-file lines (most of a loaded plan's memory): once the
         # caller lets its plan go, only the tables below stay.
         self.plan = Plan(plan.header, plan.files, plan.keys, plan.rows, plan.ties, None, plan.spell)
@@ -805,6 +821,8 @@ class Engine:
         Generate may give the arrival's words a new source kind or a better sentence. Returns (the words whose
         Score, tier counts or first item changed, as (Word, Reading); [item_id]). A record read against another plan,
         or one that doesn't fit this plan's words, is a PlanError."""
+        if self.numbers_only:
+            raise PlanError(f"the engine stands aside: {self.numbers_only}; its numbers only")
         if item_id is None or item_id in self._f_of:
             raise PlanError(f"item {item_id!r} is in the plan already")
         slot = _SLOT.get(tier)
@@ -948,7 +966,9 @@ class Engine:
 
     def result(self):
         """The order's columns (02 §1): the live numbers as kept, the priority rows in rank order, and the progressive
-        list and spelling ties worked out again for this order."""
+        list and spelling ties worked out again for this order. Never for a numbers-only engine (its list can't be)."""
+        if self.numbers_only:
+            raise PlanError(f"the engine stands aside: {self.numbers_only}; its numbers only")
         plan, keys, rows = self.plan, self.plan.keys, self.plan.rows
         order = self._order
         seq_of = {f: i for i, f in enumerate(order, 1)}

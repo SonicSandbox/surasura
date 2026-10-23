@@ -130,6 +130,65 @@ def test_the_engine_in_the_plans_own_order_is_the_generate(runs, case):
         [(r["Word"], r["Reading"], r["Score"]) for r in result.priority]
 
 
+def _i_plus_one(root, case, order=None):
+    """A case's library in `order` (RP-2's, None: its own), Generated with *Only i+1 sentences* -> its plan."""
+    cases.build(root, case, order)
+    cases.generate(root, case, extra_args=["--only-i-plus-one"])
+    return _plan(root)
+
+
+def _numbers_by_name(eng):
+    """{file name: N new} and {word: the name of its first file} — the numbers the window shows, by file name."""
+    names = [str(item).rsplit("/", 1)[-1] for item in eng._ids]
+    n_new = {names[f]: eng._n_new[f] for f in eng._order}
+    first = {tuple(eng.plan.keys[k][:2]): names[f] for k, f in enumerate(eng._first) if f is not None}
+    return n_new, first
+
+
+def _generates_numbers(plan):
+    """The Generate's own numbers: its plan read with the i+1 flag cleared is an ordinary engine in its own order,
+    whose list is that Generate's (`test_the_engine_in_the_plans_own_order_is_the_generate`'s parity)."""
+    plan.header["only_i_plus_one"] = False
+    return _numbers_by_name(plan_engine.Engine(plan))
+
+
+@pytest.mark.parametrize("case,names", [("rp2-ja", "BCDE"), ("rp2-zh", "CD")])
+def test_an_i_plus_one_plan_gives_its_numbers_in_any_order_and_never_its_list(tmp_path, case, names):
+    """Laptop row 36: a plan Generated with *Only i+1 sentences* stands aside (its list can't be replayed), so the
+    window's *N new* never came. Read `numbers_only`, the engine gives the numbers of any order exactly — every file's
+    *N new* and every word's first file, the same as that order's own i+1 Generate — re-planned from scratch or by the
+    drags that make it (RP-2's orders: a move within NOW, Soon to NOW's front, NOW to 6+ Months, 6+ Months to NOW's
+    front). Its list (`result()`) and an added file are refused; coverage, a shared phrase row or a weight that isn't
+    whole still stand aside, alone or beside i+1."""
+    language = cases.ALL_CASES[case][0]
+    plan = _i_plus_one(str(tmp_path / "A"), case)
+    assert plan_engine.aside_reasons(plan) == ["i+1"]
+    with pytest.raises(plan_engine.PlanError, match="stands aside: i[+]1"):
+        plan_engine.Engine(plan)
+    eng = plan_engine.Engine(_plan(str(tmp_path / "A")), numbers_only=True)
+    assert eng.numbers_only == "i+1"
+    assert _numbers_by_name(eng) == _generates_numbers(_plan(str(tmp_path / "A")))      # its own order
+    with pytest.raises(plan_engine.PlanError, match="numbers only"):
+        eng.result()
+    with pytest.raises(plan_engine.PlanError, match="numbers only"):
+        eng.add("new.srt", {}, "now")
+    for name in names:
+        order = _orders(language)[name]
+        target = _generates_numbers(_i_plus_one(str(tmp_path / name), case, order))
+        scratch = plan_engine.Engine(_plan(str(tmp_path / "A")), numbers_only=True)
+        scratch._numbers(_order_of(plan, order))
+        assert _numbers_by_name(scratch) == target, name
+        dragged = plan_engine.Engine(_plan(str(tmp_path / "A")), numbers_only=True)
+        _moves_to(dragged, plan, _order_of(plan, order))
+        assert _numbers_by_name(dragged) == target, name
+    for extra, reason in (({"target_coverage": 90}, "coverage"), ({"shared_phrases": [0]}, "i[+]1"),
+                          ({"weights": {"now": 10, "soon": 5.5, "goal": 2}}, "i[+]1")):
+        mixed = _plan(str(tmp_path / "A"))
+        mixed.header.update(extra)
+        with pytest.raises(plan_engine.PlanError, match=f"stands aside: {reason}"):
+            plan_engine.Engine(mixed, numbers_only=True)
+
+
 @pytest.mark.parametrize("case,name", ORDERED)
 def test_a_replan_in_another_order_is_that_orders_generate(runs, other_orders, case, name):
     """Order A's plan re-planned from scratch into RP-2's order B, C or D = a full Generate of that order, on every

@@ -169,7 +169,13 @@ def test_main_starts_the_program_again_after_the_claim_goes_only_when_a_restart_
     monkeypatch.setattr(QApplication, "exec", fake_exec)
     monkeypatch.setattr(shell, "prepare_process", lambda: None)
     monkeypatch.setattr(shell, "relaunch", lambda argv: log.append(("relaunch", list(argv))))   # never a real start
+    from app.qt import hud
+    meters, real_start = [], hud.Hud.start
+    monkeypatch.setattr(hud.Hud, "start", lambda self: meters.append(self) or real_start(self))
     assert shell.main(["app_entry.py", "--hud"]) == 0
+    # The HUD is stopped once main returns, its Windows-message filter off: left installed, the collector freed it on a
+    # worker thread, where Qt's removal misses, and the next message crashed a later test (0xC0000005, row 35's runs)
+    assert len(meters) == 1 and not meters[0].started and meters[0].messages.app is None
     assert log[0] == "released" and log[1] == "store closed"     # the claim goes before the store's close trigger
     if restart:
         # B2-4: the new start only once the store's close has ended — never beside the old process's 7–15 s close

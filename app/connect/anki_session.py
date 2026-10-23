@@ -42,6 +42,8 @@ CLOSED = "Waiting for Anki: it isn't open."
 BUSY = "Waiting for Anki: it's busy."
 UNUSABLE = "Waiting for Anki: it doesn't answer as AnkiConnect should (a permission prompt in Anki?)."
 OTHER_PROFILE = 'Waiting for Anki\'s profile "{}": "{}" is open.'
+NO_PROFILE_YET = "Waiting for Anki to say which profile is open."
+NO_PROFILE_DECKS = "Waiting for the Anki profile that holds your decks."
 REVIEWING = "Waiting while you review in Anki."
 
 
@@ -137,8 +139,10 @@ def begin(url, settings, wait=BEGIN_WAIT_S, cancel=None):
 
 def waiting(url, settings):
     """None when Connect may read and write Anki now; else the one reason, in plain words — the status line's, never
-    *Needs you* (06-edges E1–E3): Anki closed, busy, open on another profile than Connect's, or you reviewing. None
-    too with Connect's preview off (nothing of Connect's waits) or Anki switched off for the run."""
+    *Needs you* (06-edges E1–E3): Anki closed, busy, open on another profile than Connect's (none recorded yet: the
+    first one Anki names is recorded as Connect's, `setup.keep_profile`; it names none, recorded or not:
+    NO_PROFILE_YET), or you reviewing. None too with Connect's preview off (nothing of Connect's waits) or Anki
+    switched off for the run."""
     if not on(settings):
         return None
     from app import anki_connect
@@ -150,17 +154,40 @@ def waiting(url, settings):
     if state == "unusable":
         return UNUSABLE
     from app.connect import setup
+    try:
+        open_now = anki_connect.invoke("getActiveProfile", url, timeout=5)
+    except anki_connect.AnkiError:
+        open_now = None
+    open_now = open_now if isinstance(open_now, str) and open_now else None
+    # Connect's profile is the first open one that holds the decks you chose (laptop round 5 #22: setup's page
+    # records none; review A3: never a test profile open by chance); Anki naming none, recorded or not: nothing may
+    # be written, E3's guard can't hold (adversary P2.4-A #9; a recorded one waits too)
     mine = setup.anki_profile()
-    if mine:
-        try:
-            open_now = anki_connect.invoke("getActiveProfile", url, timeout=5)
-        except anki_connect.AnkiError:
-            open_now = None
-        if isinstance(open_now, str) and open_now and open_now != mine:
-            return OTHER_PROFILE.format(mine, open_now)
+    if not mine and open_now:
+        if not _holds_your_decks(url, settings):
+            return NO_PROFILE_DECKS
+        mine = setup.keep_profile(open_now)
+    if not mine or not open_now:
+        return NO_PROFILE_YET
+    if open_now != mine:
+        return OTHER_PROFILE.format(mine, open_now)
     if anki_connect.reviewing(url):
         return REVIEWING
     return None
+
+
+def _holds_your_decks(url, settings):
+    """Does the profile open now hold every deck you chose for one of your languages (`anki_sync_decks`: the decks
+    setup read from the profile open then)? None chosen: any profile does. Anki not answering: no."""
+    from app import anki_connect
+    chosen = [list(d) for d in ((settings or {}).get("anki_sync_decks") or {}).values() if isinstance(d, list) and d]
+    if not chosen:
+        return True
+    try:
+        have = set(anki_connect.deck_names(url))
+    except anki_connect.AnkiError:
+        return False
+    return any(set(decks) <= have for decks in chosen)
 
 
 def after_write(settings, front_changed):

@@ -239,7 +239,7 @@ def setup_lines(settings, language, facts):
     if not value("enable_junban"):
         lines["setup_cards"] = S.SETUP_NOT_ORDERED
     else:
-        fills = [S.OPTIONS["junban_backfill_fills"].get(f, f) for f in (value("junban_backfill_fills") or [])]
+        fills = [S.FILLS.get(f, f) for f in (value("junban_backfill_fills") or [])]
         filled = (S.SETUP_FILLED.format(fills=" + ".join(fills), how=S.SETUP_FILLED_AUTO if value(
             "junban_auto_backfill") else S.SETUP_FILLED_HAND) if fills else S.SETUP_NOTHING_FILLED)
         lines["setup_cards"] = S.SEP.join((S.SETUP_ORDER.get(value("junban_order"), ""), filled)).strip(" ·")

@@ -2079,20 +2079,21 @@ def origin_of(pairing):
     return origin if isinstance(origin, str) and origin else None
 
 
-def beside_origin(pairing, exts=None, unlisted=None):
+def beside_origin(pairing, exts=None, unlisted=None, listings=None):
     """K21 (laptop fixes): the video beside the original an item's text was copied from (`origin_of`), with its name,
     on disk -> its path; else None (no record, another producer's, none there, a placeholder). A listing and a stat,
-    never a read. Qt-free: Connect's `video()` asks it after `beside(subtitle)`; ▶ asks it too, with `exts` and
-    `unlisted` as `beside` takes them (an audio item's ▶; a share offline)."""
+    never a read. Qt-free: Connect's `video()` asks it after `beside(subtitle)`; ▶ asks it too, with `exts`,
+    `unlisted` and `listings` as `beside` takes them (an audio item's ▶; a share offline; a round of ▶'s looks)."""
     origin = origin_of(pairing)
-    return beside(origin, exts, unlisted) if origin else None
+    return beside(origin, exts, unlisted, listings) if origin else None
 
 
 def beside(subtitle, exts=None, unlisted=None, listings=None):
     """A video next to the subtitle with its name (`Show - 05.mkv` for `Show - 05.ja.srt`), on disk -> its path; None
     when there's none, `unlisted` when its folder can't be listed (a share offline: the window's ▶ says so). `exts`:
     what is looked for, the video extensions unless given (an audio item's ▶ looks for audio). `listings` ({folder: its
-    names}, a caller's own — + Add's many files): each folder listed once across calls (H6)."""
+    names}, a caller's own — + Add's many files, ▶'s round of looks): each folder listed once across calls (H6), one
+    that couldn't be listed too (False: a share offline is tried once, never once a file)."""
     from app.episode_names import video_stems
     folder, name = os.path.split(subtitle)
     stems = video_stems(name)               # LM1a: its stem, without the marks the one rule reads, NFC and NFD
@@ -2101,9 +2102,11 @@ def beside(subtitle, exts=None, unlisted=None, listings=None):
         try:
             names = {n.lower(): n for n in os.listdir(folder or ".")}
         except OSError:
-            return unlisted
+            names = False
         if listings is not None:
             listings[folder] = names
+    if names is False:
+        return unlisted
     for s in stems:
         for ext in exts or VIDEO_EXTENSIONS:
             found = names.get((s + ext).lower())

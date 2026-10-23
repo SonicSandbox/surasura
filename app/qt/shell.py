@@ -2506,6 +2506,9 @@ class ShellWindow(QMainWindow):
             return                                        # B2: a language left never paints over the one open
         self.sources = tuple(summary.get("sources") or ())
         self._show_offline()
+        looks = getattr(self.services.library, "play", None)
+        if looks is not None:                             # row 55: a video come beside an original: ▶ looked again
+            looks.again()
         if summary.get("unfinished_reset"):              # LF-11: a fresh library a kill stopped, once a run
             from app.qt import settings_strings, windows
             windows.say_in_bar(self, settings_strings.FRESH_UNFINISHED.format(folder=summary["unfinished_reset"]))
@@ -2934,14 +2937,15 @@ def library_for(language, settings, freeze_gc=False):
     The opener's role is "window": it opens a store that is there and never builds, migrates or repairs one — no store
     yet (a fresh install, a 2.x library not migrated), one being migrated, read-only or damaged opens in the reader's
     mode for it, and the chores' helper (W3.5) builds or migrates it as 2.5 did. -> (reader, writer)."""
-    from app.services import library_reader, moves
+    from app.services import library_reader, moves, play
     feed = connect_feed(language, settings)                 # --- P4.1 L2: Connect's feed (row 4.1.10)
     _opener, numbers, reader = moves.open_library(
         language, check=moves.plan_check(language, lambda: settings_service.thaw(settings.get())),
         log=lambda line: applog.log("numbers", line),       # row 36: why *N new* waits, in the app's log
         cache_file=library_reader.cache_path(language), freeze_gc=freeze_gc,
         watch=library_lookout,                              # W3.2 B: woken by the bell + the tree watch (IK0-5)
-        connect=feed.latest)                                # P4.1 L2: the stones from the status line's last look
+        connect=feed.latest,                                # P4.1 L2: the stones from the status line's last look
+        play=play.Looks(language))                          # row 55: ▶ only where its file is found
     _wake_on_feed(feed, reader)                             # P4.1 L2
     writer = moves.Writer(_opener, language, journal_file=moves.journal_path(language), numbers=numbers,
                           words=strings.MOVE_WORDS,

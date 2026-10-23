@@ -176,12 +176,10 @@ def test_mined_then_removed_is_in_anki_with_the_dim_mark_and_its_play_names_the_
     lst.scrollTo(lst.model().index(i, 0), lst.ScrollHint.PositionAtTop)
     QApplication.processEvents()
     gone = next(ep for ep in row.episodes if ep.removed)
-    plays = [p for p in part(lst, i, "play") if p[3] is not None and p[3].id == gone.id]
-    assert plays and "removed" in plays[0][2] and "link" in plays[0][2].lower()
-    fired = []
-    lst.play_requested.connect(fired.append)
-    QTest.mouseClick(lst.viewport(), Qt.MouseButton.LeftButton, pos=plays[0][1].center())
-    assert fired == []                                                       # a ▶ that can't play asks for nothing
+    # row 55 (Sonic: "if it doesn't find the media, there shouldn't be a play button"): no ▶ on it at all — the row's
+    # mark says it was deleted after mining; its tip (the ▶'s once) still names the removal for the hero's label
+    assert not [p for p in part(lst, i, "play") if p[3] is not None and p[3].id == gone.id]
+    assert "removed" in gone.play_tip and "link" in gone.play_tip.lower() and "deleted" in row.mark.tip
 
 
 def test_every_status_is_a_glyph_and_words_never_colour_alone(seeded):
@@ -631,18 +629,15 @@ def part_any(lst, i):
     return lst.delegate.parts(entry, lst.visualRect(lst.model().index(i, 0)))
 
 
-def test_a_youtube_videos_play_is_muted_and_says_why(seeded):
-    """A-19: its video is online; until the window holds its address ▶ is muted with the reason, never a dead click."""
+def test_a_youtube_videos_row_has_no_play_and_never_a_dead_click(seeded):
+    """A-19: its video is online; until the window holds its address there is no ▶ on its row at all (row 55: a
+    ▶ is never there with nothing to open), never a dead click; its tip still names why (Up Next's *Online* says it)."""
     seed, win = seeded()
     lst = current(win)
     i, (kind, row, _l) = next((i, e) for i, e in enumerate(lst.model().entries)
                               if e[0] == rows.ROW and e[1].media == "youtube")
     assert not row.can_play and "online" in row.play_tip.lower()
-    fired = []
-    lst.play_requested.connect(fired.append)
-    play = [p for p in part(lst, i, "play")][0]
-    QTest.mouseClick(lst.viewport(), Qt.MouseButton.LeftButton, pos=play[1].center())
-    assert fired == []
+    assert part(lst, i, "play") == []
 
 
 def test_a_repaint_reuses_the_painted_rows_and_a_refresh_repaints_only_what_changed(seeded):
@@ -1852,3 +1847,71 @@ def test_a_status_button_says_how_many_files_its_click_asks_for_up_next_too(seed
                                 if p[0] == "mine-now"]
     assert ask.ids == tuple(e.id for e in asked)
     assert tip == strings.ROWS_MINE_NOW_TIP[len(asked) == 1].format(tip=rows.status_tip(waiting), n=len(asked))
+
+
+# --- row 55: ▶ only where its file is found ------------------------------------------------------------------------ #
+def test_row55_play_is_drawn_and_pressable_only_where_its_file_is_found(qapp, monkeypatch):
+    """Sonic (laptop try, row 55): "if it doesn't find the media, there shouldn't be a play button as it would be
+    missing". The window's reader carries ▶'s looker (`play.Looks`, its lookup a stand-in here: every other episode
+    found, never Up Next's): an opened row's found episode has ▶ drawn and pressable; one not found has neither — its
+    column stays, blank — and a press there asks for nothing; Up Next keeps its dashed *No video*, which says why on
+    hover and is no button."""
+    from app.services import play, view_rows
+    seed = window_seed.build()
+    first = view_rows.build({r["id"]: r for r in seed.items}, {w["id"]: w for w in seed.works}, {"mine_line": 20})
+    hero_next = first.rows[0].episodes[first.rows[0].next_index].id
+    found = {e.id for r in first.rows for e in r.episodes if e.ask is not None and e.id % 2 == 0} - {hero_next}
+
+    def look(language, asks, listings=None, find=None):
+        return {i: i in found for i in asks}
+    monkeypatch.setattr(play, "look", look)
+    reader = library_reader.LibraryReader(seed.opener, language=seed.language, numbers=seed.numbers,
+                                          mining=seed.mining, poll=0.02, play=play.Looks(seed.language))
+    services = shell.Services(library=reader)
+    win = shell.open_window(qapp, services)
+    try:
+        win.resize(1280, 1100)
+        win.show()
+        lst = current(win)
+        page = win.page_widgets["current"]
+        assert wait_until(lambda: page.view_model is not None and any(
+            e.can_play for r in page.view_model.rows for e in r.episodes), 10)
+        for _ in range(50):
+            QApplication.processEvents()
+        fired = []
+        lst.play_requested.connect(fired.append)
+        # Up Next: the dashed label stays and says why; it is no ▶ part and a press opens nothing
+        hero = lst.model().entries[0][1]
+        assert not hero.episodes[hero.next_index].can_play
+        assert part(lst, 0, "play") == [] and part(lst, 0, "no-play")[0][2] == hero.play_tip
+        QTest.mouseClick(lst.viewport(), Qt.MouseButton.LeftButton, pos=part(lst, 0, "no-play")[0][1].center())
+        # an opened row with both
+        i, (_kind, row, _l) = next((i, e) for i, e in enumerate(lst.model().entries) if e[0] == rows.ROW and
+                                   len({ep.can_play for ep in e[1].episodes}) == 2)
+        lst.toggle(lst.model().index(i, 0))
+        assert wait_until(lambda: lst.model().open_key == row.key and
+                          len(lst.delegate.episode_lines(lst.model().entries[i], lst.visualRect(
+                              lst.model().index(i, 0)))) == len(row.episodes))
+        lst.scrollTo(lst.model().index(i, 0), lst.ScrollHint.PositionAtTop)
+        for _ in range(20):
+            QApplication.processEvents()
+        rect, arr = grab(lst, i)
+        plays = {p[3].id for p in part(lst, i, "play") if p[3] is not None}
+        seen = {True: 0, False: 0}
+        for r, ep in lst.delegate.episode_lines(lst.model().entries[i], rect):
+            col = lst.delegate._episode_cols(r)["play"]
+            if not rect.contains(col):
+                continue                                      # below the window's fold
+            sub = arr[col.top() - rect.top():col.bottom() - rect.top() + 1,
+                      col.left() - rect.left():col.right() - rect.left() + 1]
+            inked = int((sub != sub[0, 0]).any(axis=2).sum())
+            assert (ep.id in plays) == ep.can_play == (inked > 5), (ep.label, ep.can_play, inked)
+            if not ep.can_play:
+                assert inked == 0, "its column stays, blank (IK-6)"
+                QTest.mouseClick(lst.viewport(), Qt.MouseButton.LeftButton, pos=col.center())
+            seen[ep.can_play] += 1
+        assert seen[True] and seen[False]
+        assert fired == []                                    # nothing not found was asked to open
+    finally:
+        win.close()
+        services.shutdown(0.5)

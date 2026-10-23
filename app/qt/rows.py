@@ -779,7 +779,7 @@ def _size(pix):
 # compared by identity alone.
 _UNSHOWN = {ROW: frozenset(("index", "accessible", "description")),
             FINISHED: frozenset(("index", "episodes", "accessible", "description")),
-            "ep": frozenset(("rel_path",))}
+            "ep": frozenset(("rel_path", "ask"))}         # row 55: ▶'s ask is never painted (`can_play` is)
 _UNSHOWN[FINISHED] = _UNSHOWN[FINISHED] | {"cards_out"}      # --- W3.2 Q4: ⋯'s state, never painted
 
 
@@ -1199,7 +1199,7 @@ class RowDelegate(QStyledItemDelegate):
         if kind == HERO:
             g = self._hero_geometry(payload, rect, lines)
             nxt = payload.episodes[payload.next_index]
-            out.append(("play", g["play"], payload.play_tip, nxt))
+            out.append(("play" if nxt.can_play else "no-play", g["play"], payload.play_tip, nxt))   # row 55
             all_tip = strings.ROWS_DONE_ALL_MIX_TIP if payload.source == "hato" else strings.ROWS_DONE_ALL_TIP
             out.append(("done", g["done"], all_tip if nxt.watched else
                         strings.ROWS_DONE_TIP.format(ep=nxt.label), nxt))
@@ -1223,6 +1223,8 @@ class RowDelegate(QStyledItemDelegate):
             is_open = self.view.model().open_key == payload.key
             g = self.line_geometry(payload, slab, opened=is_open)
             for name, r, _glyph, _ink, tip, pl in g["hover"]:
+                if name == "play" and pl is not None and not pl.can_play:
+                    continue                             # row 55: nothing to open, no ▶ (its column stays: IK-6)
                 out.append((name, r, tip, pl))
             out.append(("up", g["up"], strings.ROWS_MOVE_TIP["up"], None))
             out.append(("down", g["down"], strings.ROWS_MOVE_TIP["down"], None))
@@ -1375,7 +1377,8 @@ class RowDelegate(QStyledItemDelegate):
             cols = self._episode_cols(r)
             if ep.id in hot:                         # --- row 28: the episode's own ⋯ (`episode_menu_requested`)
                 out.append(("more-ep", cols["more"], strings.ROWS_EP_MORE_TIP, ep))
-            out.append(("play", cols["play"], ep.play_tip, ep))
+            if ep.can_play:                          # row 55: nothing to open, no ▶ (its column stays: IK-6)
+                out.append(("play", cols["play"], ep.play_tip, ep))
             if ep.status is not None:
                 size = pill_size(ep.status)
                 name, tip, ask = action_of(ep.status, (ep,), self.view.connect_off,     # --- P4.1 L2; LM11b G1:
@@ -1801,9 +1804,9 @@ class RowDelegate(QStyledItemDelegate):
             p.fillRect(QRectF(hx + 2, s.top(), max(0, end - hx - 2), s.height()), c(ground))
         side = rl("anki-icon")
         for name, r, glyph, ink, _tip, payload in g["hover"]:
-            p.save()
             if name == "play" and payload is not None and not payload.can_play:
-                p.setOpacity(0.4)
+                continue                             # row 55: not drawn — Sonic: "there shouldn't be a play button"
+            p.save()
             if name == "mine-now":                   # a button: Waiting's icon is Mine now (A2 #44)
                 p.setPen(Qt.PenStyle.NoPen)
                 p.setBrush(c("raised"))
@@ -2163,12 +2166,8 @@ class RowDelegate(QStyledItemDelegate):
                          dpr=dpr)
         return side + 4 + w
 
-    def _paint_play_button(self, p, r, enabled):
-        p.save()
-        if not enabled:
-            p.setOpacity(0.4)
+    def _paint_play_button(self, p, r):
         icon(p, "play", QRectF(r.center().x() - 7, r.center().y() - 7, 14, 14), c("ink-dim"))
-        p.restore()
 
     def _episode_pictures(self, row, area, hero, dpr):
         """Each episode line of an open row with how its picture is drawn: (rect, episode, draw, ident, extra). Its
@@ -2289,7 +2288,8 @@ class RowDelegate(QStyledItemDelegate):
             right = sr.left() - 4
         if ep.mark is not None:
             paint_mark(p, ep.mark, right, r.center().y(), dpr, audio=audio)
-        self._paint_play_button(p, cols["play"], ep.can_play)
+        if ep.can_play:                              # row 55: nothing to open, no ▶
+            self._paint_play_button(p, cols["play"])
 
     def _paint_open_hero(self, p, row, rect, lines, hovered, focused, dpr):
         """An open Up Next: its head painted once into a pixmap, the rest of its slab drawn around the episodes (each

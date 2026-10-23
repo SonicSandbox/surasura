@@ -575,3 +575,35 @@ def test_a_job_waiting_to_fill_or_order_is_never_offered_a_stop(ledger_path, mon
     assert (jobs[401]["resume"], jobs[402]["resume"]) == ("filling", None)
     items = feed.build(record, "ja").items
     assert (items[401].stoppable, items[402].stoppable) == (None, True)
+
+
+# --- after review round 2 ------------------------------------------------------------------------------------------ #
+def test_a_job_whose_naming_waits_is_past_the_stop_point_too(tmp_path, ledger, monkeypatch):
+    # round 2: the rename waited (Anki busy: you reviewing), the job went `waiting` at `mining` with its naming step
+    # kept — Stop was offered, and a press held the job with its made cards unrecorded and its clips unnamed
+    monkeypatch.setattr(status, "running", lambda: True)
+    job_id = _queue(ledger, 1)
+    ledger_file = str(tmp_path / "ledger.sqlite")
+    steps = FakeSteps(str(tmp_path), {"line": {"ja": [1]}})
+    real_name = steps.name_media
+    calls = []
+
+    def name_media(lang, job, picked, lines):
+        calls.append(job["id"])
+        if len(calls) == 1:
+            raise runner.Wait(runner.ANKI_CLOSED, True)
+        return real_name(lang, job, picked, lines)
+    steps.name_media = name_media
+    _run(steps, ledger)
+    job = ledger.job_by_id(job_id)
+    assert (job["state"], job["resume"]) == ("waiting", "mining")
+    entry, item = _entry(ledger_file, 1)
+    assert entry["progress"] == {"step": "naming"} and item.stoppable is None, "no Stop offered at naming"
+    assert not ledger.ask_stop(job_id) and not ledger.stop_asked(job_id), "a press is refused, nothing written"
+    from app.connect import actions
+    assert actions.stop("ja", job_id, path=ledger_file) is False
+    _run(steps, ledger)                             # Anki free again: named, recorded, done
+    assert ledger.job_by_id(job_id)["state"] == "done" and len(calls) == 2
+    assert sorted(steps.anki.words()) == sorted(w for w, _r in WORDS[1])
+    assert actions.stoppable("waiting", "mining", {"step": "naming"}) is False
+    assert actions.stoppable("waiting", "mining", None) is True, "waiting to mine, not named yet: still stoppable"

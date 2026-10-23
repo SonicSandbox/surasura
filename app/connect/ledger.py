@@ -73,12 +73,12 @@ def stoppable(state, resume=None, progress=None):
     """Can a job in `state` (waiting at `resume`; mining at `progress`, its saved step) still be stopped? Until its
     cards are made: queued, waiting before filling, picking, the fit check, mining up to Anki Miner's run's end.
     Naming the clips, filling and ordering finish (review A3; row 56: naming is past the stop point — its cards are
-    made, and their clips are named before Anki's next sync), and a job waiting to fill or order (Anki closed)
-    finishes too once it can."""
+    made, and their clips are named before Anki's next sync — so too a job whose naming waits, you reviewing: round 2),
+    and a job waiting to fill or order (Anki closed) finishes too once it can."""
+    if naming(progress) and (state == "mining" or (state == "waiting" and resume == "mining")):
+        return False
     if state == "waiting":
         return resume not in ("filling", "ordering")
-    if state == "mining" and naming(progress):
-        return False
     return state in ("queued", "picking", "fit-check", "mining")
 
 

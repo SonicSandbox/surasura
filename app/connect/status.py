@@ -181,7 +181,7 @@ def _language(conn, lang, is_running, words):
                  "resume": job.get("resume"),  # row 56: the step a waiting job goes on at (the feed's Stop rule)
                  "step": STEP_WORDS.get(job["state"]) or STEP_WORDS.get(job.get("resume") or ""),
                  "words": len(_picked_words(job.get("picked"))), "made": counts.pop("made", 0),
-                 "not_made": counts, "progress": _progress(job) if job["state"] in book.IN_FLIGHT else None,
+                 "not_made": counts, "progress": _progress(job) if job["state"] in book.IN_FLIGHT else _naming(job),
                  # laptop round 9 #56: *Stop* pressed, the job not stopped yet (the window shows *Stopping…*): from
                  # the press until the runner has stopped it (it keeps the press through the tidy-up), only while
                  # Connect runs, and never past the stop point (naming the clips)
@@ -236,6 +236,12 @@ MINE_FROM, MINE_TO = 8, 60                  # Anki Miner's own run (its percent,
 NAMING = (62, "Naming the clips")
 STAGE_WORDS = {1: "Reading the subtitles", 2: "Finding the words", 3: "Cutting clips", 4: "Looking up definitions",
                5: "Adding cards"}           # Anki Miner's stages (its progress file)
+
+
+def _naming(job):
+    """A waiting job's progress for the feed's Stop rule (row 56, round 2): `{"step": "naming"}` while its clips'
+    naming waits (Anki busy: past the stop point), else None."""
+    return {"step": "naming"} if job["state"] == "waiting" and book.naming(job.get("progress")) else None
 
 
 def _progress(job):

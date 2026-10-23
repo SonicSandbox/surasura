@@ -400,7 +400,7 @@ def _only_left(plan, parts):
     if not isinstance(held, list):
         return False                                              # a plan from before the set-aside digests
     try:
-        return set(parts["reference"]) < set(held)
+        return set(parts.get("reference") or ()) < set(held)      # none left: the part is gone
     except Exception:
         return False
 

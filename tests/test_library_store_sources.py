@@ -172,6 +172,43 @@ def test_a_source_may_never_be_or_hold_surasuras_own_folders(language):
         assert store.add_source(_source_root()) is not None                 # a folder beside them is fine
 
 
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_old_surasura_folder_is_no_source_but_the_shows_inside_its_data_are(language):
+    """The 2.x import brings no shows (Sonic 2026-10-23): the learner adds them again, and a 2.x keeps its only copy
+    in its own data folder. Added whole, that folder's scan would read the program's files, the word lists and the
+    trash as books; a show's folder inside its data is read as any folder is. A folder that merely holds a `data`
+    folder is no Surasura."""
+    store, _data_dir = _empty(language)
+    old = _source_root("旧すらすら 2.5")
+    for rel in ("Surasura.exe", os.path.join("_internal", "base_library.zip"),
+                os.path.join("User Files", language, "IgnoreList.txt")):
+        os.makedirs(os.path.dirname(os.path.join(old, rel)), exist_ok=True)
+        with open(os.path.join(old, rel), "w", encoding="utf-8") as f:
+            f.write("#")
+    show = os.path.join(old, "data", language, "HighPriority", "冒険")
+    trash = os.path.join(old, "data", language, ".trash", "removed")
+    for folder in (show, trash):
+        os.makedirs(folder)
+        with open(os.path.join(folder, "01.srt"), "w", encoding="utf-8") as f:
+            f.write(_episode_text(language, 1))
+    program = _source_root("Surasura 3")                     # a program folder with no library beside it
+    os.makedirs(os.path.join(program, "_internal"))
+    refused = [old, os.path.join(old, "User Files"), os.path.join(old, "User Files", language),
+               os.path.join(old, "_internal"), os.path.join(old, "data"), os.path.join(old, "data", language),
+               trash, os.path.dirname(trash), program]
+    plain = _source_root("アニメ")                            # holds a folder called data: no Surasura
+    os.makedirs(os.path.join(plain, "data", language))
+    with store:
+        before = store.conn.execute("SELECT * FROM roots").fetchall()
+        for path in refused:
+            with pytest.raises(ls.NotASource) as caught:
+                store.add_source(path)
+            assert "data folder" in caught.value.reason, path
+        assert store.conn.execute("SELECT * FROM roots").fetchall() == before    # nothing written
+        assert store.add_source(show) is not None
+        assert store.add_source(plain) is not None
+
+
 @pytest.mark.parametrize("name", [".AppleDouble", ".Trashes", ".Spotlight-V100", ".fseventsd", ".TemporaryItems",
                                   ".stversions", ".trash", "$RECYCLE.BIN", "$Recycle.Bin", "#recycle", "@eaDir",
                                   "System Volume Information"])

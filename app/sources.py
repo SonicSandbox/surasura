@@ -43,7 +43,7 @@ folder, `Library/<show>/<file>` (SRC-4). One look (`scan`):
   a `v2`'s text only once `take_in` recorded it on its episode.
 - **A skipped folder** (K6, *Never read this folder*: `Store.skip_folder`): never listed, nor anything under it, and
   its files never counted as found; the cache keeps the skips it was written with (and the store's `folder_skips`
-  stamp, so a quick look reads no exclusion), and a change to them lists everything once. **A text or book not in the
+  stamp, so a quick look reads no exclusion), and a move of that stamp lists everything once. **A text or book not in the
   library's language** (`_refusal`, ONE rule: Japanese needs MIN_SCRIPT kana letters — Han alone is Chinese; Chinese
   MIN_SCRIPT Han and fewer than MIN_SCRIPT kana letters) is no content — a backup's skin config, an untagged English
   `.srt`, a Chinese fansub beside the Japanese subtitle, an English EPUB — nor is a loose `.txt` / `.md` with fewer
@@ -617,14 +617,15 @@ class _Look:
         dirs = held.get("dirs") if mine and isinstance(held.get("dirs"), dict) else {}
         # K6: the folders no look reads (*Never read this folder*) inside this one — read from the store only when its
         # skips moved since this cache was written (meta `folder_skips`, read above: a quick look reads no exclusion);
-        # a change to them lists everything once (a folder read again is listed whatever its time)
+        # a move of them lists everything once (a folder read again is listed whatever its time) — the stamp, never the
+        # list: a skip and its *Read again* (or Undo) between two looks leave the list as it was, its items gone
         self.skip_stamp = meta.get("folder_skips")
         if mine and held.get("skip_stamp") == self.skip_stamp:
             self.skip = set(held.get("skipped") or ())
         else:
             top = ls.path_key(path).rstrip("/")
             self.skip = {f["key"] for f in self.store.skipped_folders() if ls._under(f["key"], top)}
-        self.full = self.full or looked not in _LOOKED or not dirs or (held.get("skipped") or []) != sorted(self.skip)
+        self.full = self.full or looked not in _LOOKED or not dirs or held.get("skip_stamp") != self.skip_stamp
         # EPUBs that gave no text, by their stats (K5): never parsed again until they change; a full look keeps only
         # the ones it saw
         self.no_text = (held.get("books") if mine and isinstance(held.get("books"), dict) else None) or {}

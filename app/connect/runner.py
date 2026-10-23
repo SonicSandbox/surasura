@@ -791,6 +791,31 @@ class _Finished(Exception):
         self.state = state
 
 
+# LF56-1 (Sonic 2026-10-23: "One thing about the 4%, unsure"): a timing check with no answer (tsubasa timed out or
+# couldn't start) is tried at this many looks running, then named in *Needs you* as not timed (*Mine anyway*)
+FIT_TRIES = 3
+FIT_TRY = "fit_try:"            # ledger meta: `fit_try:<job id>` -> the looks running tsubasa gave no answer
+MINE_ANYWAY_HINT = "Mine anyway to cut its lines where the subtitle puts them."
+
+
+def _fit_tries(ledger, jid, failed):
+    """The job's timing checks with no answer running: one more when `failed` (-> the count), else forgotten (0)."""
+    key = f"{FIT_TRY}{int(jid)}"
+    row = ledger.conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+    if not failed:
+        if row is not None:                     # only a count to forget is written (S19)
+            with ledger.transaction():
+                ledger.conn.execute("DELETE FROM meta WHERE key = ?", (key,))
+        return 0
+    with ledger.transaction():
+        try:
+            tries = int(row[0]) + 1 if row else 1
+        except (TypeError, ValueError):
+            tries = 1
+        ledger.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, str(tries)))
+        return tries
+
+
 def _fit(steps, ledger, lang, job):
     jid = job["id"]
     picked = ledger.picked(jid) or {}
@@ -808,8 +833,15 @@ def _fit(steps, ledger, lang, job):
     verdict, who, why, offset = steps.fit(lang, job, pairing, picked.get("video"), picked.get("file"))
     if verdict == fit_check.TIMED and who == "you":
         log.info("Connect: job %s mined at its subtitle's own times: you trust your subtitles' timing", jid)
+    tries = _fit_tries(ledger, jid, verdict == fit_check.RETRY)
     if verdict == fit_check.RETRY:
-        raise Wait(why)                     # tsubasa couldn't answer this time: asked again at the next look
+        # tsubasa couldn't answer this time: asked again at the next look — FIT_TRIES looks running at most (LF56-1:
+        # a check that times out on this PC every time held the episode at the hourglass for ever)
+        if tries < FIT_TRIES:
+            raise Wait(f"{why} (try {tries} of {FIT_TRIES})")
+        title = steps.title(lang, job)
+        gave_up = f"{why.split(';')[0]}, {FIT_TRIES} looks running, so Connect stopped trying. {MINE_ANYWAY_HINT}"
+        raise Needs("not-timed", f"{title}: {gave_up}" if title else gave_up)
     if verdict != fit_check.TIMED:
         title = steps.title(lang, job)
         raise Needs("not-timed", f"{title}: {why}" if title else why)

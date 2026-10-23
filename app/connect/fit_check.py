@@ -136,9 +136,15 @@ def fit(pairing, video, subtitle, tsubasa=None, run=None, timeout=TIMEOUT_S, tru
     try:
         stdout = _run(command, timeout) if run is None else run(
             command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout).stdout
+    except subprocess.TimeoutExpired:
+        # no answer in time (a file read whole over a slow share or a slow disk): asked again — the hourglass says so
+        # (LF56-1: Sonic's laptop sat at *Checking the timing* with no word why)
+        return RETRY, "tsubasa", (f"Checking its timing took longer than {_span(timeout)}; Connect tries again at its "
+                                  "next look."), 0.0
     except (OSError, subprocess.SubprocessError) as e:
-        # no answer this time (a file read whole over a slow share, a program that wouldn't start): asked again
-        return RETRY, "tsubasa", f"tsubasa couldn't check it this time ({type(e).__name__}); Connect asks again.", 0.0
+        # no answer this time (a program that wouldn't start): asked again
+        return RETRY, "tsubasa", (f"tsubasa couldn't check its timing this time ({type(e).__name__}); Connect tries "
+                                  "again at its next look."), 0.0
     answer = _answer(stdout)
     outcome = (answer or {}).get("outcome")
     segments = (answer or {}).get("segments")
@@ -160,6 +166,14 @@ def fit(pairing, video, subtitle, tsubasa=None, run=None, timeout=TIMEOUT_S, tru
             f" tsubasa: {reason}" if isinstance(reason, str) and reason else "") + (
             f" If your subtitles are synced, turn on {TRUST_LABEL} in Settings → Anki & mining." if raw else ""), 0.0
     return NOT_TIMED, "tsubasa", "tsubasa gave no answer, so no cards.", 0.0
+
+
+def _span(seconds):
+    """`timeout` in plain words: "2 minutes", "90 seconds"."""
+    seconds = int(seconds)
+    if seconds >= 60 and seconds % 60 == 0:
+        return f"{seconds // 60} minute{'' if seconds == 60 else 's'}"
+    return f"{seconds} second{'' if seconds == 1 else 's'}"
 
 
 def _run(command, timeout):

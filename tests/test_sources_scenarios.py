@@ -645,6 +645,39 @@ def _rows():
                  "the group fixed at the first take-in two groups met in (13: B) stays; episode 1 arriving later "
                  "from A alone changes nothing"))
 
+    # (g) LM3's layouts: a better version later is switched to in place, as the look would have picked it had it been
+    # there from the start (PROVISIONAL, Sonic 2026-10-21: answer 3; never another group's — LM2's rows above)
+    two = [ep(1), ep(2)]
+    full = lambda files: [(p, "FULL" if c == "J" else c) for p, c in files]     # noqa: E731 (subtitles: their cues)
+    rows.append(("synced/ arrives after the episodes", "convention (LM3)",
+                 "a show 01–02 paired; later `synced/` with the same names (re-timed)", "",
+                 full(_pairs("{S}", two, ".{T}.srt")), [(f"{{S}}/synced/{s}.{{T}}.srt", "FULL") for s in two],
+                 {f"{{S}}/{s}.{{T}}.srt": _ep(f"{{S}}/synced/{s}.{{T}}.srt", f"{{S}}/{s}.mkv") for s in two},
+                 "the re-timed text is the one read, in the same items — as when it was there from the start"))
+    rows.append(("a `.synced` copy arrives after its episode", "convention (LM3, LF-17)",
+                 "a show 01 paired; later `<video>.ja.synced.srt` beside it", "",
+                 full(_pairs("{S}", [ep(1)], ".{T}.srt")), [(f"{{S}}/{ep(1)}.{{T}}.synced.srt", "FULL")],
+                 {f"{{S}}/{ep(1)}.{{T}}.srt": _ep(f"{{S}}/{ep(1)}.{{T}}.synced.srt", f"{{S}}/{ep(1)}.mkv")},
+                 "the re-timed text is the one read"))
+    rows.append(("the release's `.ass` arrives after its `.srt`", "convention (LM3)",
+                 "a show 01 paired (`<video>.ja.srt`); later `<video>.ja.ass`", "",
+                 full(_pairs("{S}", [ep(1)], ".{T}.srt")), [(f"{{S}}/{ep(1)}.{{T}}.ass", "FULL")],
+                 {f"{{S}}/{ep(1)}.{{T}}.ass": _ep(f"{{S}}/{ep(1)}.{{T}}.ass", f"{{S}}/{ep(1)}.mkv")},
+                 "`.ass` before `.srt`, as the look picks: the item's copy takes the `.ass` and its name"))
+    rows.append(("a signs track of the release arrives later", "convention (LM3, A6)",
+                 "a show 01 paired (`<video>.ja.srt`, the dialogue); later `<video>.ja.ass` holding only signs", "",
+                 [(f"{{S}}/{ep(1)}.mkv", "V"), (f"{{S}}/{ep(1)}.{{T}}.srt", "FULL")],
+                 [(f"{{S}}/{ep(1)}.{{T}}.ass", "THIN")],
+                 {f"{{S}}/{ep(1)}.{{T}}.srt": _ep(f"{{S}}/{ep(1)}.{{T}}.srt", f"{{S}}/{ep(1)}.mkv")},
+                 "a signs track is never the text, arriving later too"))
+    rows.append(("an earlier release arrives after its v2", "convention (LM3, D6)",
+                 "`[Grp] <Show> - 01v2 (1080p)` paired; later `[Grp] <Show> - 01 (1080p).ja.srt`", "",
+                 [("{S}/[Grp] {S} - 01v2 (1080p).mkv", "V"), ("{S}/[Grp] {S} - 01v2 (1080p).{T}.srt", "J")],
+                 [("{S}/[Grp] {S} - 01 (1080p).{T}.srt", "J")],
+                 {"{S}/[Grp] {S} - 01v2 (1080p).{T}.srt": _ep("{S}/[Grp] {S} - 01v2 (1080p).{T}.srt",
+                                                              "{S}/[Grp] {S} - 01v2 (1080p).mkv")},
+                 "the latest release stays the text"))
+
     # the two regressions over two looks
     three = [ep(n) for n in (1, 2, 3)]
     first = _pairs("{S}", three, ".{T}.srt") + [(f"{{S}}/synced/{s}.{{T}}.srt", "J") for s in three]

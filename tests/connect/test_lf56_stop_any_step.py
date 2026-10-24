@@ -113,7 +113,7 @@ def test_tsubasa_past_its_timeout_is_ended_and_asked_again(tmp_path):
     # no press: a check past its timeout is RETRY as before, and the program is ended, not left behind
     exe, beat = _tsubasa(tmp_path, 30, tsubasa_answer())
     verdict, who, why, _offset = fit_check.fit(None, VIDEO, SUBTITLE, tsubasa=exe, timeout=1.2)
-    assert (verdict, who) == (fit_check.RETRY, "tsubasa") and "TimeoutExpired" in why
+    assert (verdict, who) == (fit_check.RETRY, "tsubasa") and "took longer than" in why     # LF56-1: plain words
     assert _beats_stopped(beat)
 
 

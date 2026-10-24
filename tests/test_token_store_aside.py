@@ -136,7 +136,7 @@ def test_a_file_moves_counted_aside_kept_and_back_with_no_tokenizing(language, t
     store.reconcile([a, b, c], tok, kept=[d], aside=[])                  # ...and un-marked
     assert tok.calls == [] and _everything_counted(store, language) == all_three
     assert store.needs_reconcile([a, b, c], kept=[d], aside=[]) is False
-    # A set-aside file's text is kept like a counted one's: only once its file is gone (c's from Finished stays, K1).
+    # A set-aside file's text is kept as a kept one's, from its first read (W-1b): c's, set aside above, and d's.
     assert set(_kept_text(store).held()) == {ti._norm(c), ti._norm(d)}
     store.close()
     finished.close()
@@ -174,8 +174,9 @@ def test_a_kept_aside_flip_reads_the_names_again_and_leaves_the_phrase_table_alo
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_a_new_or_changed_aside_file_is_read_once_and_never_summed(language, tmp_path):
-    """An episode that arrives already watched is tokenized once (as a counted file is: no kept text while its file is
-    there) and summed nowhere; edited while watched, it is read again and still summed nowhere."""
+    """An episode that arrives already watched is tokenized once (in the pool, as a counted file is), its text kept as
+    a kept file's (W-1b: reference text outlives its file), and summed nowhere; edited while watched, it is read again,
+    its kept text follows the edit, and it is still summed nowhere."""
     a, b, c, *_rest = _files(language)
     tok = _counting(language)
     store = ti.open_store(language)
@@ -184,12 +185,13 @@ def test_a_new_or_changed_aside_file_is_read_once_and_never_summed(language, tmp
     alone = ti.open_store(language, path=str(tmp_path / "alone.db"))
     alone.reconcile([a, b], ti.make_tokenizer(language))
     assert _counts_only(store, language) == _counts_only(alone, language)
-    assert _kept_text(store).held() == {}, "its file is there: nothing to keep"
+    assert _kept_text(store).held() == {ti._norm(c): False}, "its text kept, read from its file"
     with open(c, "a", encoding="utf-8") as f:
         f.write({"ja": "\n今日は雨が降っている。\n", "zh": "\n今天下雨了。\n"}[language])
     assert store.needs_reconcile([a, b], aside=[c]) is True
     store.reconcile([a, b], tok, aside=[c])
     assert tok.calls.count(("file", ti._norm(c))) == 2 and _counts_only(store, language) == _counts_only(alone, language)
+    assert "今" in _kept_text(store).get(ti._norm(c))[0], "the kept text is the edited file's"
     store.close()
     alone.close()
 
@@ -333,8 +335,9 @@ def test_a_build_before_the_aside_column_reads_an_aside_row_as_kept(tmp_path):
 def test_the_name_tables_are_byte_identical_with_every_episode_watched_and_with_none(tmp_path):
     """A recurring name, once an episode: three uses — the floor — only with every episode. Watched one by one (and
     all of them, and from scratch), the name tables, the names Ignore names reads and the arrivals gate's records are
-    byte for byte those of no episode watched, and the episode still ahead reads the name whole. Finished episodes,
-    which aren't evidence, would split it: the proof the evidence is what holds it."""
+    byte for byte those of no episode watched, and the episode still ahead reads the name whole. Finished episodes are
+    evidence too (W-1b); kept text alone (a New arrival, a removed item) isn't, and would split it: the proof the
+    evidence is what holds it."""
     eps = _show()
     sig = ti.build_signature("ja")
     tok = _counting("ja")
@@ -363,11 +366,19 @@ def test_the_name_tables_are_byte_identical_with_every_episode_watched_and_with_
     assert _names_bytes(every) == reference, "a library indexed with every episode already watched"
     every.close()
 
+    # Finished is reference too (W-1b): the library hands its episodes over as set aside, so they hold the name whole.
     finished = ti.open_store("ja", path=str(tmp_path / "finished.db"))
-    finished.reconcile(eps[2:], ti.make_tokenizer("ja"), sig, kept=eps[:2])
-    assert NAME not in finished.names_tables()["k"], "Finished episodes are no evidence: one use is under the floor"
-    assert NAME not in _surfaces(finished, eps[2])
+    finished.reconcile(eps[2:], ti.make_tokenizer("ja"), sig, aside=eps[:2])
+    # The tables and the names as stored; the records as a set (this store met the episode ahead first).
+    assert _names_bytes(finished)[:2] == reference[:2], "Finished episodes are evidence, as watched ones are"
+    assert sorted(map(repr, finished.names_records())) == sorted(map(repr, reference[2]))
+    assert NAME in _surfaces(finished, eps[2])
     finished.close()
+    # Kept text alone (New arrivals, removed items) is no evidence: one use is under the floor (the test can fail).
+    kept = ti.open_store("ja", path=str(tmp_path / "kept.db"))
+    kept.reconcile(eps[2:], ti.make_tokenizer("ja"), sig, kept=eps[:2])
+    assert NAME not in kept.names_tables()["k"] and NAME not in _surfaces(kept, eps[2])
+    kept.close()
     none.close()
 
 
@@ -457,3 +468,77 @@ def test_generate_before_the_indexer_keeps_a_watched_files_row(language):
     quiet = (f"c, m = indexer.token_store_lists('{language}', d, indexer._content_files(d, '{language}')); "
              f"s = ti.open_store('{language}'); print(s.needs_reconcile(c, **m))")
     assert _in_generates_process(root, language, quiet) == "False", "the indexer has nothing left to do"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_set_aside_files_text_is_written_a_few_at_a_time_never_all_held_at_once(language, monkeypatch, tmp_path):
+    """A first index of many set-aside files (a big Finished library, or every watched episode after an upgrade) keeps
+    each one's text as it is read, written to the kept-text file a few at a time (`KEPT_TEXT_BATCH`), so the index never
+    holds every file's text at once: here at most two held, every text kept, the same as one write would keep. Both
+    ways in: tokenized in the pool (new to the store), and read for a row the store already holds (counted, then set
+    aside)."""
+    files = _files(language)
+    monkeypatch.setattr(ti, "KEPT_TEXT_BATCH", 2)
+    sizes, real_put = [], ti._KeptText.put
+
+    def put(self, rows):
+        sizes.append(len(rows))
+        return real_put(self, rows)
+    monkeypatch.setattr(ti._KeptText, "put", put)
+    tok = ti.make_tokenizer(language)
+    store = ti.open_store(language, path=str(tmp_path / "pool.db"))
+    store.reconcile(files[:1], tok, aside=files[1:])
+    assert set(_kept_text(store).held()) == {ti._norm(p) for p in files[1:]}, "every set-aside file's text is kept"
+    assert sizes and max(sizes) <= 2, sizes
+    _kept_text(store).drop([ti._norm(p) for p in files[1:]])         # the kept-text file is the library's: empty it
+    store.close()
+
+    sizes.clear()
+    held = ti.open_store(language, path=str(tmp_path / "held.db"))
+    held.reconcile(files, tok)                                         # every row counted, no text kept
+    held.reconcile(files[:1], tok, aside=files[1:])                    # then set aside: each text read now
+    assert set(_kept_text(held).held()) == {ti._norm(p) for p in files[1:]}
+    assert sizes and max(sizes) <= 2, sizes
+    held.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_set_aside_file_back_on_the_disk_through_a_wipe_keeps_its_own_text_never_the_rebuilt_one(language):
+    """A counted episode's file goes missing (an unplugged drive): its text is kept, rebuilt from its cached sentences.
+    It comes back unchanged as it is set aside (watched, or Finished) in the same pass that wipes the token store (a new
+    tokenizer identity): tokenized again in the pool, its text is kept as read from its file this time — never left as
+    the rebuilt copy, which has lost the file's line breaks, for a later wipe to read back in."""
+    a, b, *_rest = _files(language)
+    tok = ti.make_tokenizer(language)
+    store = ti.open_store(language)
+    store.reconcile([a, b], tok, build_signature="one")
+    away = b + ".away"
+    os.replace(b, away)
+    store.reconcile([a, b], tok, kept=[], build_signature="one")
+    assert _kept_text(store).held() == {ti._norm(b): True}, "its file gone: rebuilt from the cached sentences"
+    os.replace(away, b)                                     # back as it was: the same modified time and size
+    store.reconcile([a], tok, kept=[], aside=[b], build_signature="two")
+    assert ti._norm(b) in store.aside_files()
+    assert _kept_text(store).held() == {ti._norm(b): False}, "read from its file"
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_everyday_reconcile_of_set_aside_files_with_nothing_kept_writes_no_text_again(language, monkeypatch):
+    """A library with Finished content (set aside) and no New arrival or removed item (no kept list): once their text is
+    kept, a reconcile with nothing changed writes none of it again — the indexer never re-reads every Finished file at
+    each pass."""
+    a, b, c, *_rest = _files(language)
+    tok = ti.make_tokenizer(language)
+    store = ti.open_store(language)
+    store.reconcile([a], tok, kept=[], aside=[b, c])
+    assert set(_kept_text(store).held()) == {ti._norm(b), ti._norm(c)}
+    written, real_put = [], ti._KeptText.put
+
+    def put(self, rows):
+        written.extend(rows)
+        return real_put(self, rows)
+    monkeypatch.setattr(ti._KeptText, "put", put)
+    store.reconcile([a], tok, kept=[], aside=[b, c])
+    assert written == [], "nothing changed: no text written again"
+    store.close()

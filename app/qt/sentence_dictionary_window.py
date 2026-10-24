@@ -26,9 +26,8 @@ WAITS_FOR = "waits for "                                 # the registry's reason
 
 
 def library_has_content(language):
-    """(A worker.) Whether the library has files to build from (the Tk dialog's check)."""
-    from app.analyzer import resolve_found_files
-    return bool(resolve_found_files(language, verbose=False))
+    """(A worker.) Whether the library has files to build from (`sentence_corpus.has_sources`, the Tk dialog's check)."""
+    return sentence_corpus.has_sources(language)
 
 
 class SentenceDictionaryWindow(SecondaryWindow):

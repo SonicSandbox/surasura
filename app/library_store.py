@@ -84,13 +84,14 @@ ANALYSED = tuple(t for t, v in TIERS.items() if v[2])                    # now, 
 # --- W-1 (K-W1; Sonic 2026-10-22): ONE rule for what counts ------------------------------------------------------- #
 # An item COUNTS (a list use: Generate's files, the Rarity preview's sums, the mine line) when its tier is analysed and
 # it isn't watched, or the library's own option `keep_watched` is on (meta; absent = off). A watched item of an analysed
-# tier while it's off is SET ASIDE (`text_lists`): its text kept, never summed. Finished takes a show off the list by
-# its tier, a stone one episode by this rule. Written once in Python (`counts`) and once in SQL (`counts_sql`), from
-# the same constants; a test holds the two equal. Who reads it today: here, `Store.schedule` (Generate's list, and its
-# set-aside items for the run signature's "reference" part), `_mine_ids`, `text_lists`, `_moves_counted`,
-# `_watched_aside`, `_store_has_content` and `read_only_schedule` (the copy); outside, `moves._set_aside` (the window's
-# numbers) and Connect's `library.counting` / `library.counts` (`level._walk` beyond the line, a gap's `inbox._gone`;
-# M-W1 — `level.watched_out` stays stricter, LF4-1). Not yet: the window's drawn lines (`view_rows._mine_ids`,
+# tier while it's off is SET ASIDE (`text_lists`, `sets_aside`): its text kept, never summed, still the name tables'
+# evidence and a sentence source — as Finished is (W-1b). Finished takes a show off the list by its tier, a stone one
+# episode by this rule. Written once in Python (`counts`) and once in SQL (`counts_sql`), from the same constants; a
+# test holds the two equal. Who reads it today: here, `Store.schedule` (Generate's list, and its set-aside items for
+# the run signature's "reference" part), `_mine_ids`, `text_lists`, `_moves_counted`, `_watched_aside`,
+# `_store_has_content` and `read_only_schedule` (the copy); outside, `moves._set_aside` (the window's numbers) and
+# Connect's `library.counting` / `library.counts` (`level._walk` beyond the line, a gap's `inbox._gone`; M-W1 —
+# `level.watched_out` stays stricter, LF4-1). Not yet: the window's drawn lines (`view_rows._mine_ids`,
 # `drag.lines_for`).
 def _tiers_sql(tiers):
     return ", ".join(f"'{t}'" for t in tiers)
@@ -113,6 +114,26 @@ def counts_sql(keep_watched=False, alias=""):
     col = f"{alias}." if alias else ""
     tiers = f"{col}tier IN ({_tiers_sql(ANALYSED)})"
     return f"({tiers})" if keep_watched else f"({tiers} AND {col}watched = 0)"
+
+
+# W-1b (Sonic 2026-10-23): Finished content is reference, as a watched episode is — never a list use, but the name
+# tables' evidence and a sentence source. Its tier is REFERENCE: every item in it is set aside, watched or not, the
+# option on or off. New arrivals (waiting to be placed) and removed items stay kept: text only.
+REFERENCE = ("graduated",)
+
+
+def sets_aside(tier, watched, keep_watched=False):
+    """Is an item of `tier` (`watched` 0 / 1, the library's `keep_watched`) set aside — its text the name tables'
+    evidence and a sentence source, never counted? A REFERENCE tier's item, and an analysed tier's item that doesn't
+    count (`counts`: watched, the option off)."""
+    return tier in REFERENCE or (tier in ANALYSED and not counts(tier, watched, keep_watched))
+
+
+def sets_aside_sql(keep_watched=False, alias=""):
+    """`sets_aside` as an SQL condition on `items` (`alias`: the table's name in the query)."""
+    col = f"{alias}." if alias else ""
+    return (f"({col}tier IN ({_tiers_sql(REFERENCE)}) OR "
+            f"({col}tier IN ({_tiers_sql(ANALYSED)}) AND NOT {counts_sql(keep_watched, alias)}))")
 # --- end W-1
 
 
@@ -1399,11 +1420,13 @@ class _Command:
         self.dropped = []     # LM11: the pieces' rows deleted when emptied, for undo
         self.line_set = False  # set_soon_line: the line moved
 
-    def touch(self, tiers=(), order=False, availability=False, pins=False):
-        """Record a change: any tier in `tiers` that is analysed bumps `order_version`."""
+    def touch(self, tiers=(), order=False, availability=False, pins=False, within=False):
+        """Record a change: any tier in `tiers` that is analysed bumps `order_version`; so does a REFERENCE tier (W-1b:
+        its files are the run signature's "reference" part, so one coming, going or re-pointed moves what a run reads),
+        unless `within`: the rows only changed places inside their tier, which no run reads there."""
         self.changed = True
         self.tiers.update(t for t in tiers if t in TIERS)
-        if order or any(TIERS[t][2] for t in tiers if t in TIERS):
+        if order or any(TIERS[t][2] or (t in REFERENCE and not within) for t in tiers if t in TIERS):
             self.bump_order = True
         if availability:
             self.bump_avail = True
@@ -1797,11 +1820,13 @@ class Store:
         loads — each entry {physical_path, source_type, title, parent_folder} straight from the columns; a video
         waiting for its subtitle (K5) is never in it, nor an item that doesn't count (W-1: watched, `keep_watched` off).
         With `with_versions`, also the versions, read in the same transaction; with `with_aside`, also `ASIDE`: the
-        set-aside items (`text_lists`' aside: an analysed tier's items that don't count; a video still waiting for
-        its subtitle has no text yet, so never), each {physical_path, source_type}, in the same transaction."""
+        set-aside items (`sets_aside`, `text_lists`' aside: Finished's items and an analysed tier's items that don't
+        count; a video still waiting for its subtitle has no text yet, so never), each {physical_path, source_type},
+        in the same transaction."""
         out = {}
         with self._reading():
-            rule = counts_sql(self._keep_watched())
+            keep = self._keep_watched()
+            rule = counts_sql(keep)
             for tier in ANALYSED:
                 out[TIERS[tier][0]] = [
                     {"physical_path": p, "source_type": s, "title": t, "parent_folder": f}
@@ -1810,7 +1835,7 @@ class Store:
                         "AND availability != 'waiting' ORDER BY ord, id", (tier,))]
             if with_aside:
                 out[ASIDE] = [{"physical_path": p, "source_type": s} for p, s in self.conn.execute(
-                    f"SELECT rel_path, source_type FROM items WHERE tier IN ({_tiers_sql(ANALYSED)}) AND NOT {rule} "
+                    f"SELECT rel_path, source_type FROM items WHERE {sets_aside_sql(keep)} "
                     "AND availability != 'waiting' ORDER BY tier, ord, id")]
             versions = self._versions() if with_versions else None
         return (out, versions) if with_versions else out
@@ -2176,7 +2201,7 @@ class Store:
             # --- P4.1 L2 (TF fix 8, G1.6-10): out of Finished by any path, its cards come back into the order ---
             self._back_in_order(cmd, change, [r[0] for r in ordered if r[1] == "graduated" and tier != "graduated"])
             # --- end P4.1 L2 ---
-            cmd.touch({r[1] for r in ordered} | {tier})
+            cmd.touch({r[1] for r in ordered} | {tier}, within=all(r[1] == tier for r in ordered))
             for item_id in block:
                 cmd.event(item_id, "placed", int(by == "user" if explicit is None else explicit),
                           by if by != cmd.by else None)
@@ -3802,7 +3827,7 @@ class Store:
             rows = self._rows([r[0] for r in moving])
             self._before(change, list(rows.values()))
             self._put(tier, [r[0] for r in moving], ("before" if ahead else "after", last[0]), cmd.version)
-            cmd.touch({r[1] for r in moving} | {tier})
+            cmd.touch({r[1] for r in moving} | {tier}, within=all(r[1] == tier for r in moving))
         # --- W3.2 (IK-L2-1): a part from Finished comes back with its cards; one from New arrivals is placed
         # (W-1: through the one "leaving Finished" place, `_back_in_order`: its cards owed to Anki, its stones cleared)
         self._back_in_order(cmd, change, [r[0] for r in moving if r[1] == "graduated" and tier != "graduated"])
@@ -4629,22 +4654,19 @@ class Store:
     def text_lists(self):
         """9b (05 §5.10): (counted, kept, aside) — the paths, relative to data/<lang>, whose text the token store
         keeps. Counted: the items that count (`counts`), a missing one too (it keeps counting until the user decides).
-        Kept, never counted: Finished, New arrivals, and removed items whose sentences weren't forgotten
-        (`trash.text_forgotten` 0). Aside (W-1): an analysed tier's watched items while `keep_watched` is off, a missing
-        one too (watched wins) — their text kept and still the name tables' and the sentences' evidence, never summed
-        (the token store's K-W2).
-        The token store (E2.2) takes these lists in place of a run's one list: it keeps a kept file's text (in
-        `kept_text_<lang>.db`, through any wipe) and sums only counted files. One read transaction."""
+        Aside (`sets_aside`): reference — Finished (W-1b) and an analysed tier's watched items while `keep_watched` is
+        off (W-1), a missing one too — never summed, still the name tables' evidence and a sentence source (the token
+        store's set-aside class). Kept, text only: New arrivals, and removed items whose sentences weren't forgotten
+        (`trash.text_forgotten` 0).
+        The token store (E2.2) takes these lists in place of a run's one list: it keeps a kept or set-aside file's text
+        (in `kept_text_<lang>.db`, through any wipe) and sums only counted files. One read transaction."""
         with self._reading():
             keep = self._keep_watched()
-            counted, aside = [], []
+            counted, aside, kept = [], [], []
             for rel, tier, watched in self.conn.execute(
-                    f"SELECT rel_path, tier, watched FROM items WHERE tier IN ({_tiers_sql(ANALYSED)}) "
-                    "ORDER BY tier, ord, id"):
-                (counted if counts(tier, watched, keep) else aside).append(rel)
-            kept = [r[0] for r in self.conn.execute(
-                f"SELECT rel_path FROM items WHERE tier IN ({_tiers_sql(t for t in TIERS if t not in ANALYSED)}) "
-                "ORDER BY tier, ord, id")]
+                    "SELECT rel_path, tier, watched FROM items ORDER BY tier, ord, id"):
+                (counted if counts(tier, watched, keep) else aside if sets_aside(tier, watched, keep)
+                 else kept).append(rel)
             kept += [r[0] for r in self.conn.execute(
                 "SELECT rel_path FROM trash WHERE restored_at IS NULL AND text_forgotten = 0 ORDER BY id")]
         have = {path_key(r) for r in counted + aside}
@@ -5169,7 +5191,7 @@ class Store:
                 cmd.hints[it["id"]] = it["piece"]               # back in the piece it came from (05 §5.2)
         self.conn.executemany("UPDATE items SET graduated_at = ? WHERE id = ?",
                               [(it.get("graduated_at"), it["id"]) for it in ok if it["tier"] != cur[it["id"]][1]])
-        cmd.touch(tiers)
+        cmd.touch(tiers, within=all(it["tier"] == cur[it["id"]][1] for it in ok))
         for it in ok:
             cmd.event(it["id"], "placed", it.get("explicit", 1))
         out.items = [{"id": it["id"], "tier": cur[it["id"]][1], "prev": None, "next": None,
@@ -7564,8 +7586,9 @@ def read_only_schedule(language, data_dir, user_files_dir, with_aside=False):
     §6.10 rule 3 (never saved), so a file dropped into a tier folder is still analysed. Every file the
     copy knows, in any tier, counts as known (D6). W-1: an item that doesn't count by the copy's own records and
     meta (`counts`: watched, `keep_watched` off) leaves the list, as `Store.schedule` leaves it out — still known,
-    never added back as untracked. `with_aside`: also `ASIDE`, those items' entries (`Store.schedule`'s). None when the
-    copy can't be read."""
+    never added back as untracked. `with_aside`: also `ASIDE`, the items the copy sets aside (`sets_aside`: its
+    Finished entries, a video still waiting for its subtitle left out, and those watched items), as `Store.schedule`
+    lists them. None when the copy can't be read."""
     try:
         doc, _st, _p = read_manifest(manifest_path(user_files_dir))
     except ManifestUnreadable:
@@ -7631,8 +7654,16 @@ def read_only_schedule(language, data_dir, user_files_dir, with_aside=False):
         keep = bool((lib.get("meta") or {}).get("keep_watched"))
     except AttributeError:
         keep = False
-    watched = {key for key, rec in _records(lib).items() if rec.get("watched") == 1}
-    aside = []
+    records = _records(lib)
+    watched = {key for key, rec in records.items() if rec.get("watched") == 1}
+    aside = []                                             # W-1b: Finished's entries first, as `sets_aside` reads them
+    for tier in REFERENCE:
+        for e in lib.get(tier) or ():
+            if not isinstance(e, dict):
+                continue
+            key = path_key(_strip(str(e.get("physical_path") or "")))
+            if (records.get(key) or {}).get("availability") != "waiting":    # no text yet, as the store leaves it
+                aside.append({"physical_path": e.get("physical_path"), "source_type": e.get("source_type")})
     if watched:
         for tier in ANALYSED:
             kept = []

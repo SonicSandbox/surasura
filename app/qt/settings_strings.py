@@ -90,7 +90,7 @@ DOORS = {
     "apkg_known": (".apkg", "Import an Anki deck file"),
     "word-lists": ("Ignore list · Blacklist", "Opens your Ignore list and Blacklist"),
     "junban": ("Preview order",
-               "Shows the new order and why, before anything moves; Restore previous order is there too"),
+               "Shows the new order and why, before anything moves; Undo the last reorder is there too"),
     "put-back": ("Put Anki back…", "Puts Anki's new cards back the way they were before Surasura first changed them"),
     "backfill": ("Preview", "Shows exactly what goes into each card; Fill and Restore are there too"),
     "extract": ("Extract…", "EPUBs and Anki decks, split into parts"),
@@ -254,7 +254,7 @@ ROWS = {
     "junban_auto_actions": ("…and tag, flag or suspend then", "The automatic reorder applies Junban's marks too",
                             "Off, the automatic reorder moves cards only; on, it applies everything Junban has saved",
                             "auto actions tag flag suspend"),
-    "junban_door": ("", "", "Preview order · Restore previous order", "preview restore order"),
+    "junban_door": ("", "", "Preview order · Undo the last reorder", "preview restore undo order"),
     "put_back": ("Put Anki back", "The way it was before Surasura first changed it",
                  "Puts Anki's new cards back in the order they had before Surasura first changed them, and takes "
                  "Surasura's tags, flags and suspensions off", "put back undo restore first touch"),

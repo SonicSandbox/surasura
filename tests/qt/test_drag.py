@@ -2677,3 +2677,85 @@ def test_LM11b_every_write_landed_asks_the_reader_for_the_stores_own_view_again(
     win.moves.nudge(rs[3], 1)
     assert calls(writer)
     assert wait_until(lambda: asked and win.moves.expect is None, 5)
+
+
+LANDING_ARGS = {"on_saved": (None, None), "on_undone": (None, None), "on_saving": (False,), "on_reread": (),
+                "on_note": ("Saved",)}                  # each writer callback as `moves.Writer` calls it
+
+
+def test_round8_a_write_landing_after_the_window_closed_and_was_deleted_tells_no_one_and_never_a_deleted_relay(qapp):
+    """Round 8's native crash (`--all` at 46e9dc1, in test_finished): the window's close never let the writer's callbacks
+    go, so a write landing after the window was deleted (the quit's last moves, on the writer's thread) emitted on a
+    relay deleted with it — an access violation when the deletion met the emit. The close now lets go of every writer
+    callback and the reader's `subscribe_gone` (`MovesController.unwire`, as a language switch does). Red first: the
+    landing called the deleted relay (RuntimeError here, deterministically; a crash under load)."""
+    from PyQt6.QtCore import QCoreApplication
+    seed = window_seed.build()
+    writer = FakeWriter(seed.library)
+    win, services = open_window(qapp, seed, writer)
+    reader = services.library
+    assert writer.on_saving is not None and reader._gone_subscribers           # wired while the window is open
+    win.close()
+    win.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
+    QApplication.processEvents()
+    told = []
+    errors = []
+
+    def land():                                                     # the writer's own thread, as `_landed` calls them
+        for name in drag.WRITER_CALLBACKS:
+            try:
+                getattr(writer, name)(*LANDING_ARGS[name])
+                told.append(name)
+            except Exception as e:
+                errors.append((name, e))
+        try:
+            reader._tell_gone(["gone-item"])
+        except Exception as e:
+            errors.append(("gone", e))
+    t = threading.Thread(target=land)
+    t.start()
+    t.join(5)
+    QApplication.processEvents()
+    assert errors == [] and len(told) == len(drag.WRITER_CALLBACKS)
+    assert all(getattr(writer, name) is drag._no_callback for name in drag.WRITER_CALLBACKS)
+    assert reader._gone_subscribers == []                            # the reader tells it no more
+    services.shutdown(0.5)
+
+
+def test_round8_a_write_landing_after_the_window_was_deleted_without_its_close_is_dropped_at_the_gate(qapp):
+    """The same crash by the other road (12 runs of test_finished under load, 2 crashed after the close fix): a close
+    the quit's wait ignored (E20: a move still pending) never reached `unwire`, then the window was deleted and the
+    writer's thread — still retrying that move — emitted on the relay deleted with it. The writer reaches the relay
+    only through its gate (`bridge.Gate`), closed as the relay goes: a landing after the window is gone tells no one.
+    Red first: the deleted relay (RuntimeError here; an access violation under load — raced in test_bridge)."""
+    from PyQt6.QtCore import QCoreApplication
+    seed = window_seed.build()
+    writer = FakeWriter(seed.library)
+    win, services = open_window(qapp, seed, writer)
+    win.hide()                                                      # no close: the controller never let go
+    gate = win.moves._gate
+    assert gate.open
+    win.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
+    QApplication.processEvents()
+    errors = []
+
+    def land():
+        for name in drag.WRITER_CALLBACKS:
+            try:
+                getattr(writer, name)(*LANDING_ARGS[name])
+            except Exception as e:
+                errors.append((name, e))
+        try:
+            for cb in list(services.library._gone_subscribers):
+                cb(["gone-item"])
+        except Exception as e:
+            errors.append(("gone", e))
+    t = threading.Thread(target=land)
+    t.start()
+    t.join(5)
+    QApplication.processEvents()
+    assert errors == []
+    assert not gate.open                                            # closed as the relay went: nothing was told
+    services.shutdown(0.5)

@@ -69,7 +69,7 @@ def _world(language):
     store.insert([hato], "now")
     now = store.ids("now")
     store.move([now[-1]], "now", before_id=now[0])                     # an order of his own
-    store.set_library_options(mine_line=7)                              # his own mine line (an option, it stays)
+    store.set_library_options(mine_line=7, keep_watched=True)           # his own options (they stay; W-1's too)
     assert store.conn.execute("SELECT COUNT(*) FROM exclusions").fetchone()[0] == 1
     assert os.path.exists(sources.cache_path(language))                # the look kept its folder times
     assert ls.export_copy(store)                                       # the JSON copy is up to date, as after a close
@@ -160,6 +160,7 @@ def test_a_fresh_library_keeps_the_folders_reads_them_again_and_backs_up_everyth
         assert meta["order_version"] > old_meta["order_version"]
         assert meta["mine_line"] == old_meta["mine_line"] and meta["arrivals_on"] == old_meta["arrivals_on"]
         assert meta["mine_line"] == 7 and meta["reader:connect"] == old_meta["reader:connect"]   # Connect reads on
+        assert meta["keep_watched"] == old_meta["keep_watched"] == 1    # W-1: his option, kept
         assert meta["log_seq"] == old_meta["log_seq"]
         assert not os.path.exists(sources.cache_path(language))         # the folder times set aside
         # nothing of the old library is left where Surasura would walk it back in

@@ -127,7 +127,7 @@ def test_N15_a_show_finished_before_lands_in_finished_dated_earlier_kept_for_its
     assert len({r["work_id"] for r in rows.values()}) == 1, "one title, by its folder"
     assert all(not p.endswith("poster.jpg") for p in lib.graduated_files()), "content files only"
     assert _snapshot(folder) == before, "the user's own files untouched, still where they were"
-    counted, kept = lib.store.text_lists()
+    counted, kept, _aside = lib.store.text_lists()
     assert set(rows) <= set(kept) and not set(rows) & set(counted)
     counted_paths, more = indexer.token_store_lists(lib.language, lib.data_dir, [])
     full = {os.path.normcase(os.path.join(lib.data_dir, *r.split("/"))) for r in rows}

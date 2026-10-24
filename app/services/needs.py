@@ -499,25 +499,33 @@ def offer(language, key=FIRST_CARDS):
     return _add(language, "offered", [key])
 
 
-def prune(language, view, offline_roots=None, connect=None, asks=None):
+def prune(language, view, offline_roots=None, connect=None, asks=None, lines=None):
     """(S3, N10; a worker's call, after the reads `entries` is given.) The keys whose trouble is gone leave the seen
     file — never by age or by count. Judged only by what the caller read (a key of a kind it didn't read stays): a
     file's answer (`item:`) while Current holds it missing, a show's card while it is listed; with `offline_roots`, an
     offline root's while it is still offline — back, its *Keep their words* goes, so offline again later it is asked
     again; with `connect`, the video cards' and the gaps'; with `asks`, the rename asks'. A view that isn't the
-    store's prunes nothing. Nothing gone → nothing written. -> how many keys went."""
-    if view is None or view.mode != "store":
+    store's prunes none of those. With `lines` (round 8 row 54: the standing lines still standing,
+    `standing.not_back`), a hidden offline line's (`line:`) while its folder is still away. Nothing gone → nothing
+    written. -> how many keys went."""
+    store = view is not None and view.mode == "store"
+    if not store and lines is None:
         return 0
-    judged = {"item", "gone"} | ({"offline"} if offline_roots is not None else set()) | \
-        ({"video", "gap", KNOWN_OFFER} if connect is not None else set()) | ({"ask"} if asks is not None else set())
+    judged = ({"item", "gone"} | ({"offline"} if offline_roots is not None else set()) |
+              ({"video", "gap", KNOWN_OFFER} if connect is not None else set()) |
+              ({"ask"} if asks is not None else set())) if store else set()
+    if lines is not None:
+        judged.add("line")
     roots = [r if isinstance(r, Root) else Root(*r) for r in offline_roots or ()]
     with _lock:
         data = _read(language, strict=True)
-        present = {item_key(e.id) for r in view.rows for e in r.episodes if e.missing}
-        present |= {e.key for e in entries(view, connect=connect, offline_roots=roots, asks=asks or (),
-                                          answered=frozenset(data["answered"]))}
-        present |= {_offline_entry(r, {}, frozenset()).key for r in roots}          # answered ones too
-        present |= {f"gap:{g.get('id')}" for g in (connect or {}).get("gaps") or ()}
+        present = set(lines or ())
+        if store:
+            present |= {item_key(e.id) for r in view.rows for e in r.episodes if e.missing}
+            present |= {e.key for e in entries(view, connect=connect, offline_roots=roots, asks=asks or (),
+                                              answered=frozenset(data["answered"]))}
+            present |= {_offline_entry(r, {}, frozenset()).key for r in roots}          # answered ones too
+            present |= {f"gap:{g.get('id')}" for g in (connect or {}).get("gaps") or ()}
         kept = {f: [k for k in data[f] if k.split(":", 1)[0] not in judged or k in present]
                 for f in ("seen", "answered")}
         gone = sum(len(data[f]) - len(kept[f]) for f in kept)

@@ -22,8 +22,9 @@ the window's spec A2 #69–70, G4–G7, 06 E8, E10, E11, P1.2-1).
   *Not now* writes nothing but its answer. Either answer's line says where the switch lives.
 - **Known from Anki's question** (laptop round 7 #43): *Mark them known* → `known_signal.accept_offer` on a worker (only
   the cards still suspended / marked), then the automation's `known_changed` (the bar's count, the journey asked
-  again), as a known-words import ends; *Leave them* → `decline_offer`. Either is the answer: the card goes. A sync's
-  end refreshes the page (`synced`), so the question shows as soon as the first read made it.
+  again), as a known-words import ends; *Leave them* → `decline_offer`. Either is the answer: the card goes. Pressed, the
+  button's arc turns at once, before the worker starts (round 8 row 45: `app/qt/press.py`). A sync's end refreshes the
+  page (`synced`), so the question shows as soon as the first read made it.
 - **Opening the page** marks its entries seen (`needs.mark_all_seen`, on a worker): they stay listed and stop
   counting (P1.2-1).
 """
@@ -36,6 +37,7 @@ from PyQt6.QtWidgets import (QFileDialog, QHBoxLayout, QLabel, QPushButton, QScr
 
 from app import path_utils, settings_manager, theme
 from app.qt import bridge, strings, style, toast
+from app.qt import press as qpress
 from app.services import needs as service
 from app.services import view_rows
 
@@ -136,6 +138,9 @@ def _label(text, name, parent, wrap=True):
     return lab
 
 
+PRESSED = ("mark_known", "leave_known")    # round 8 row 45: the answers whose press turns an arc (`app/qt/press.py`)
+
+
 class NeedsCards(QWidget):
     """The page's cards, in the entries' order; a card is rebuilt only when its own entry (or its find results, or its
     look running) changed (S19), and only while the page shows (C1: entries given while it is hidden are built when it
@@ -153,6 +158,7 @@ class NeedsCards(QWidget):
         self.builds = 0                         # cards built (tests: S19)
         self.epoch = 0                          # bumped when the callables change (`NeedsYou.rewire`): every card again
         self.shown = lambda name, entry, line=None: True
+        self.adopt = lambda button, name, entry: None   # a button made again while its press is live: it shows it
         self._owed = None                       # C1: the entries given while the page is hidden, built when it shows
         self.box.addStretch(1)
 
@@ -227,6 +233,9 @@ class NeedsCards(QWidget):
         b.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         b.setCursor(Qt.CursorShape.PointingHandCursor)
         b.clicked.connect(lambda _c=False, n=name, e=entry, ln=line: self.action.emit(n, e, ln))
+        if name in PRESSED:
+            qpress.room(b)                      # round 8 row 45: its arc's room kept at rest, so nothing moves
+        self.adopt(b, name, entry)
         return b
 
     def _card(self, e, results, looking):
@@ -396,6 +405,7 @@ class NeedsYou(QObject):
                               "kick": _connect_callable("kick", "kick")}
         self.cards = page.cards
         self.cards.shown = self.available
+        self.cards.adopt = lambda b, name, entry: qpress.adopt(b, self._press_key(name, entry), win=self.win)
         self.cards.action.connect(self.act)
         heard = getattr(win, "bridge", None)
         if heard is not None and hasattr(heard, "settings_written"):
@@ -560,6 +570,18 @@ class NeedsYou(QObject):
         name = type(error).__name__ if isinstance(error, BaseException) else ""
         applog.log("needs", f"{name}: {error}")
         self._say(strings.NEEDS_FAILED.format(why=error))
+
+    def _press_key(self, name, entry):
+        """A card's answers are one press (A-5: one card, one answer at a time — the other answer pressed meanwhile
+        asks nothing), of this language's card (A-11); the arc on the button pressed (`qpress.adopt`)."""
+        return f"needs:{self.language}:{'answer' if name in PRESSED else name}:{entry.key}"
+
+    def _press(self, name, entry, fn, *args, then):
+        """Round 8 row 45: an answer whose work waits — the arc turns on its button, painted before `fn` goes to the
+        worker; the card goes when it's done, and a failure says why in the bar."""
+        control = next((b for b in self.cards.buttons(entry.key) if b.property("action") == name), None)
+        qpress.run(control, self._press_key(name, entry), fn, *args, then=then, failed=self._failed, win=self.win,
+                   goes=True)
 
     def _data(self):
         return self.data_dir or path_utils.get_data_path(self.language)
@@ -834,7 +856,7 @@ class NeedsYou(QObject):
         self._do_not_now(entry, line)
 
     # Known from Anki's question (#43)
-    def _do_mark_known(self, _entry, _line):
+    def _do_mark_known(self, entry, _line):
         lang, settings = self.language, self.win.services.settings.get() or {}
         accept = self.accept_known
 
@@ -845,13 +867,13 @@ class NeedsYou(QObject):
             if n and automation is not None:
                 automation.known_changed()      # as a known-words import ends: the count, the journey asked again
             self.refresh()
-        bridge.run_in_worker(accept, lang, settings, then=done, failed=self._failed)
+        self._press("mark_known", entry, accept, lang, settings, then=done)
 
-    def _do_leave_known(self, _entry, _line):
+    def _do_leave_known(self, entry, _line):
         def done(_n):
             self._say(strings.NEEDS_KNOWN_LEFT)
             self.refresh()
-        bridge.run_in_worker(self.decline_known, self.language, then=done, failed=self._failed)
+        self._press("leave_known", entry, self.decline_known, self.language, then=done)
 
     def synced(self):
         """A known-words sync ended (the automation's): Known from Anki's question may have come or gone."""

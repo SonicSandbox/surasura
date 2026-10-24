@@ -423,7 +423,8 @@ class Gates:
             sums = store.phrase_sums()
             if sums is not None:
                 gates.phrase_uses, gates.phrase_spellings = sums
-        # The name tables' sums over the counted files' records, and the tables as they stand.
+        # The name tables' sums over their evidence's records (counted and set-aside files, W-1), and the tables as they
+        # stand.
         gates.tables = gates.table_sums = gates.term_sums = gates.records = None
         gates.names_words = set()
         if language == "ja":

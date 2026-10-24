@@ -384,7 +384,9 @@ def test_a_rename_ask_asks_which_missing_file_it_is_with_this_one_and_its_new():
     assert entry.title == f"Is {FRIEREN} - 09.srt one of these 2 missing files?"
     assert entry.actions == ("its_new",) and entry.data["rel"] == ask["rel"]
     assert [(ln.item_id, ln.actions) for ln in entry.lines] == [(1, ("this_one",)), (2, ("this_one",))]
-    assert entry.lines[0].text == f"{FRIEREN} · Ep 9 · was {FRIEREN_DIR}/{frieren_eps(9, 9)[0]}"
+    # the line names NOW, never the folder (CLAUDE.md §6); the line's path itself is the store's, unchanged
+    assert entry.lines[0].text == f"{FRIEREN} · Ep 9 · was NOW/{FRIEREN}/{frieren_eps(9, 9)[0]}"
+    assert entry.lines[0].rel_path == f"{FRIEREN_DIR}/{frieren_eps(9, 9)[0]}"
     assert entry.unseen
     assert not [e for e in needs.entries(view, asks=[ask], seen={entry.key}) if e.kind == needs.ASK][0].unseen
 
@@ -401,7 +403,24 @@ def test_asks_of_reads_each_candidates_path_and_leaves_out_one_gone_from_the_lib
     assert asks == [{"rel": f"Moved/{KUSURI} - 05.srt", "candidates": [
         {"id": 7, "rel_path": f"HighPriority/{KUSURI}/{KUSURI} - 05.srt", "title": f"{KUSURI} - 05.srt"}]}]
     entry = needs.entries(None, asks=asks)[0]
-    assert entry.title == f"Is {KUSURI} - 05.srt the one from HighPriority/{KUSURI}/{KUSURI} - 05.srt?"
+    assert entry.title == f"Is {KUSURI} - 05.srt the one from NOW/{KUSURI}/{KUSURI} - 05.srt?"
+
+
+def test_a_gone_files_line_names_its_tier_as_learners_read_it_never_the_folder():
+    """CLAUDE.md §6 (IK-3 shots, 2026-10-23): a gone file's line read "not at HighPriority/…". Every tier folder reads
+    as its name (NOW / Soon / 6+ Months); a path outside a tier folder is shown as it is. Only the words change: the
+    line keeps the store's path, which *Choose its file* and the answers act on."""
+    view = view_of([(1, FRIEREN_DIR, frieren_eps(9, 9), {0: MISSING}),
+                    (2, f"LowPriority/{YUUSHA}", [f"{YUUSHA} 第3話.srt"], {0: MISSING}),
+                    (3, f"GoalContent/{KUSURI}", [f"{KUSURI} - 05.srt"], {0: MISSING}),
+                    (4, "Library/雪中悍刀行", ["雪中悍刀行 第01集.srt"], {0: MISSING})])
+    texts = [ln.text for e in needs.entries(view) if e.kind == needs.GONE for ln in e.lines]
+    assert texts == [f"Ep 9 · not at NOW/{FRIEREN}/{frieren_eps(9, 9)[0]}",
+                     f"Ep 3 · not at Soon/{YUUSHA}/{YUUSHA} 第3話.srt",
+                     f"Ep 5 · not at 6+ Months/{KUSURI}/{KUSURI} - 05.srt",
+                     "Ep 1 · not at Library/雪中悍刀行/雪中悍刀行 第01集.srt"]
+    assert not any(f in t for t in texts for f in ("HighPriority", "LowPriority", "GoalContent"))
+    assert needs.shown("") == "" and needs.shown("HighPriority") == "NOW" and needs.shown("Graduated/x.srt") ==         "Graduated/x.srt"
 
 
 # --- failures and Connect's entries -------------------------------------------------------------------------------- #

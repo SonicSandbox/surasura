@@ -473,10 +473,10 @@ def test_a_menu_press_on_a_file_turns_the_arc_on_its_line_at_its_part_painted_be
     real = rows.paint_marked
     monkeypatch.setattr(rows, "paint_marked", lambda p, rect, turning, **kw: (drawn.append(QRectF(rect)),
                                                                              real(p, rect, turning, **kw)))
-    handed.look = lambda: (dict(lst.marked), len(drawn), win.bar_arc.isVisible())
+    handed.look = lambda: ({k: list(v) for k, v in lst.marked.items()}, len(drawn), win.bar_arc.isVisible())
     p = qpress.run(None, ("open-folder", ep.id), lambda: None, win=win, at=qpress.row_mark(lst, [ep.id]))
     marked, painted, bar = handed[0].look
-    assert marked == {ep.id: "more"} and painted >= 1 and bar is False
+    assert marked == {ep.id: ["more"]} and painted >= 1 and bar is False
     more = next(r for name, r, *_rest in lst.itemDelegate().line_geometry(
         lst.model().entries[i][1], lst.itemDelegate().slab_of(lst.visualRect(lst.model().index(i, 0))))["hover"]
         if name == "more")

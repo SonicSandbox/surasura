@@ -1137,6 +1137,8 @@ class ShellWindow(QMainWindow):
         self._arrivals_view = None
         self._sources_relay = bridge.Relay(self)
         self._sources_relay.said.connect(self._sources_looked)
+        self._ended_relay = bridge.Relay(self)            # round 8 row 45: a look ended (told or not): Refresh's press
+        self._ended_relay.said.connect(self._look_ended)
         self._progress_relay = bridge.Relay(self)
         self._progress_relay.said.connect(self._sources_progress)
         self._folders_relay = bridge.Relay(self)
@@ -1985,15 +1987,16 @@ class ShellWindow(QMainWindow):
                           strings.JOURNEY_DOT_TIP if self._d29 else strings.JOURNEY_DOT_TIP_PRESS)
         self._paint_level()                                    # W3.1a: the dot is a mark on the ▾ too
 
-    def open_logs(self, folder=None, control=None):
+    def open_logs(self, folder=None, control=None, key="open:logs"):
         """*Open the logs folder*: `folder`, else — while the bar's failure is an update's with a report — the report's
         folder (written beside the install, not in the logs folder), else the logs folder. Round 8 row 45: a press
         (`press.open`) — `control` turns its arc (none: the bar's), the folder opens on a worker (it can take a
-        moment), a second press meanwhile does nothing. -> the press, or None."""
+        moment), a second press meanwhile does nothing (`key`: a card's own, so a card rebuilt meanwhile turns it
+        again). -> the press, or None."""
         folder = folder or self._report_folder(getattr(self._status_snap, "failure", None)) or self._logs_folder
         if not folder:
             return None
-        return qpress.open(self, folder, control=control, key="open:logs")
+        return qpress.open(self, folder, control=control, key=key)
 
     def _report_folder(self, text):
         """The folder of the update report behind the update failure reading `text`, or None."""
@@ -2639,6 +2642,7 @@ class ShellWindow(QMainWindow):
             old.close()
         if looks is not None:
             looks.on_result = self._looks_said
+            looks.on_ended = lambda told, why: self._ended_relay.call((told, why))
             looks.on_progress = lambda path, found, shows: self._progress_relay.call((path, found, shows))
         return looks
 
@@ -2677,26 +2681,34 @@ class ShellWindow(QMainWindow):
 
     def refresh_sources(self, control=None):
         """Refresh (the Refresh key; Settings' *Look again*): every folder looked at in full, now. Round 8 row 45: a
-        press — `control`'s arc turns (none, the Refresh key's: the bar's) until a look's summary comes back (`_sources_looked`;
-        `REFRESH_CAP_S` at most: a look that failed tells nothing), at once when nothing can look."""
+        press — `control`'s arc turns (none, the Refresh key's: the bar's) until the look ends (`_look_ended`: its
+        summary, or a look that couldn't run, said in the bar; `REFRESH_CAP_S` at most, a backstop). Nothing to look
+        with: nothing marked (it answers at once). A second press while one is live does nothing (A3)."""
+        if self.looks is None or self._quit is not None:
+            return False
         p = qpress.begin(control, "sources:refresh", win=self)
-        asked = self.look_at_sources(refreshed=True)
-        if p is not None:
-            if self.looks is None or self._quit is not None:
-                qpress.end(p, self)
-            else:
-                self._refresh_press = p
-                QTimer.singleShot(int(REFRESH_CAP_S * 1000), lambda: self._refresh_ended(p))
-        return asked
+        if p is None:
+            return False
+        self._refresh_press = p
+        QTimer.singleShot(int(REFRESH_CAP_S * 1000), lambda: self._refresh_ended(p))
+        return self.look_at_sources(refreshed=True)
 
-    def _refresh_ended(self, p=None):
-        """Refresh's press ends: a look's summary came (or its cap passed: `p`, that press only)."""
+    def _refresh_ended(self, p=None, why=None):
+        """Refresh's press ends: a look ended (`why`: it couldn't run — the press failed, said in the bar), or its
+        cap passed (`p`, that press only)."""
         live = self._refresh_press
         if live is None or (p is not None and live is not p):
             return
         self._refresh_press = None
         if live.live():
-            qpress.end(live, self)
+            qpress.end(live, self, failed=why is not None, why=why)
+            if why is not None:
+                self.say(strings.REFRESH_FAILED.format(why=why))
+
+    def _look_ended(self, answer):
+        """A look ended (its summary, if any, came first: the same worker, the same order)."""
+        told, why = answer
+        self._refresh_ended(why=None if told else (why or strings.REFRESH_NOT_LOOKED))
 
     def _sources_looked(self, summary):
         """A look's (an add's, a stop's) summary: the offline line, and Settings' row (`sources_seen`)."""

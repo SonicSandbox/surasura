@@ -348,3 +348,97 @@ def test_a_hovers_words_move_in_place_while_its_bubble_shows(strip):
     assert "Counting words" in tips.showing()
     tips.hide()
     tips.bubble.deleteLater()
+
+
+# --- the review's fix round (PS-A1 … A8) --------------------------------------------------------------------------- #
+def test_a_press_that_ends_with_no_job_of_its_own_ticks_nothing_for_an_older_run(strip):
+    # PS-A1: a press with no job (Refresh's look not built yet, a sync refused) ended -> the circle's older run ticked
+    # green again as a fresh *Done*. A tick is for a run that ended since the circle went lit.
+    registry = JobRegistry()
+    presses = Presses()
+    strip.follow_presses(presses)
+    gen = registry.submit("generate", "Generating", lambda j: None)
+    strip.set_jobs(registry.snapshot())
+    gen.finish()
+    strip.set_jobs(registry.snapshot())
+    assert strip._ticks[P.SURASURA][0] == gen.id                        # its own run: the tick
+    strip._untick(P.SURASURA)                                           # (faded)
+    strip.now.now = gen.view().ended_at + 5
+    p = presses.get("generate")
+    p.press()
+    assert strip.states[P.SURASURA].waiting
+    p.done()                                                            # ended with no job of its own
+    assert P.SURASURA not in strip._ticks
+
+
+def test_a_press_that_failed_is_its_circles_failure_until_hovered_or_the_next_run(strip):
+    # PS-A1: a press that failed (the sync couldn't be asked) isn't live, so nothing showed it. Now it is the circle's
+    # failure, red with its words, until the hover leaves it or the circle's next run.
+    presses = Presses()
+    strip.follow_presses(presses)
+    p = presses.get("known:sync")
+    p.press()
+    p.failed("Anki is closed")
+    assert strip.states[P.ANKI].failed == "Anki is closed"
+    assert "Anki is closed" in strip.hover_text(P.ANKI)
+    strip._looking = (P.ANKI, tuple(strip._marks(P.ANKI, strip.states[P.ANKI])))     # hovered ...
+    strip._leave_hover(None)                                                         # ... and left
+    assert strip.states[P.ANKI].failed is None
+    p.press()                                                           # pressed again, failed again: red again
+    p.failed("Anki is closed")
+    assert strip.states[P.ANKI].failed == "Anki is closed"
+    registry = JobRegistry()
+    registry.submit("anki-sync", "Updating known words from Anki", lambda j: None, automatic=False)
+    strip.set_jobs(registry.snapshot())                                 # the circle's next run: the failure is over
+    assert strip.states[P.ANKI].running and strip.states[P.ANKI].failed is None
+
+
+def test_two_circles_turning_apart_never_repaint_the_one_between(strip, clock):
+    # PS-A6: two dirty rects merge into one region whose bounding box held Anki Miner: it was painted every frame.
+    registry = JobRegistry()
+    registry.submit("generate", "Generating", lambda j: None)
+    registry.submit("junban", "Re-ordering Anki", lambda j: None)
+    strip.set_jobs(registry.snapshot())
+    QApplication.processEvents()
+    before = dict(strip.paints)
+    for _ in range(5):
+        clock.advance(40)                                               # a frame: both arcs turn
+        QApplication.processEvents()
+    assert strip.paints[P.SURASURA] > before[P.SURASURA] and strip.paints[P.JUNBAN] > before[P.JUNBAN]
+    assert strip.paints[P.MINER] == before[P.MINER]
+
+
+def test_a_new_screen_ratio_decodes_the_logos_again(strip, monkeypatch):
+    # PS-A8: moved to a screen of another scale, the logos kept their old ratio (drawn soft).
+    asked = []
+    monkeypatch.setattr(phase_strip.logos, "logo", lambda name, px, got, dpr=1.0: asked.append((name, dpr)))
+    monkeypatch.setattr(strip, "devicePixelRatioF", lambda: 2.5)
+    QApplication.sendEvent(strip, QEvent(QEvent.Type.DevicePixelRatioChange))
+    assert sorted(asked) == [("anki_miner", 2.5), ("anki_outline", 2.5)]
+
+
+def test_an_automatic_job_held_before_it_starts_stays_on_the_status_line(world):
+    # PS-A2: an automatic job held by a gate never starts, so its circle never lit — and it had left the status line:
+    # shown nowhere. A job stays on the line until a circle will show it.
+    win = world.win
+    world.registry.gate(lambda kind: "Waits for the update" if kind == "anki-sync" else None)
+    job = world.registry.submit("anki-sync", "Updating known words from Anki", lambda j: None, automatic=True)
+    assert job.view().state == J.WAITING
+    assert wait_until(lambda: "Updating known words from Anki" in win.bar_line.full())
+    assert not win.phase.states[P.ANKI].waiting
+    job.cancel()
+
+
+def test_connects_waiting_episodes_leave_the_headers_hairline_off(world):
+    # PS-A3 (intent keeper drift 1): an episode not timed to its video can wait for days; the hairline said the window
+    # was busy all that time. Its circle shows it (amber); the hairline counts only jobs under way.
+    win = world.win
+    wait = world.registry.record("mine-wait", "Connect", automatic=True, reason="Not timed to its video",
+                                 needs="Not timed to its video")
+    assert wait_until(lambda: win.phase.states[P.MINER].needs == "Not timed to its video")
+    QApplication.processEvents()
+    assert not win._busy and not win.progress.busy
+    run = world.registry.record("mine", "Making cards", automatic=True)
+    assert wait_until(lambda: win._busy)                                # a job under way: it runs
+    run.finish()
+    wait.finish()

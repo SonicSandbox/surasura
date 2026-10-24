@@ -63,6 +63,8 @@ class PhaseStrip(QWidget):
         self._seen = set()                     # the failures and ended waits on you looked at (or run past)
         self._looking = (None, ())             # (the circle hovered, what leaving it marks seen)
         self._lit = dict.fromkeys(phase.CIRCLES, False)
+        self._lit_since = dict.fromkeys(phase.CIRCLES, 0.0)     # when each last went lit: a tick is for a run ended since
+        self._shown = ()                       # the presses read last (live, or failed: a circle's failure)
         self._ticks = {}                       # circle -> [done id, strength 0..1, when its hold ends or None]
         self._fades = {}                       # circle -> its fade (an Animation on the clock)
         self._looks = {}                       # circle -> what it was last painted as
@@ -113,7 +115,10 @@ class PhaseStrip(QWidget):
             return
         now = self.now()
         self._last = phase.fold(self._last, self._views)
-        presses = self._presses.live_ones() if self._presses is not None else ()
+        presses = self._shown = self._presses.showing() if self._presses is not None else ()
+        for p in presses:
+            if p.live():
+                self._seen.discard(("press", p.key))           # pressed again: its next failure is news
         extra = {c: list(parts.values()) for c, parts in self._extra.items() if parts}
         got = phase.read(self._views, presses, self._entries, extra, self._last, self._seen, now)
         for c in phase.CIRCLES:
@@ -122,7 +127,10 @@ class PhaseStrip(QWidget):
             if lit and not self._lit[c]:
                 self._seen.update(self._marks(c, st))          # the next run: what failed before is over (Q3)
                 self._untick(c)
-            elif not lit and self._lit[c] and st.done is not None and st.done != self._ticks.get(c, (None,))[0]:
+                self._lit_since[c] = now
+            elif (not lit and self._lit[c] and st.done is not None and st.done != self._ticks.get(c, (None,))[0]
+                  and self._last[c].ended_at >= self._lit_since[c]):
+                # (PS-A1: a press that ended with no job of its own ticks nothing — its circle's older run isn't news)
                 self._ticks[c] = [st.done, 1.0, now + self.linger_s]
             self._lit[c] = lit
         self.states = got
@@ -133,13 +141,14 @@ class PhaseStrip(QWidget):
         self._retext()
 
     def _marks(self, circle, st):
-        """What looking at `circle` (or running it again) marks seen: its ended failure or wait on you, and its
-        *Needs you* entries."""
+        """What looking at `circle` (or running it again) marks seen: its ended failure or wait on you, its *Needs
+        you* entries and its presses that failed."""
         out = []
         end = self._last.get(circle)
         if end is not None:
             out.append(end.id)
         out += [("entry", e.text, e.at) for e in self._entries if phase.SOURCES.get(getattr(e, "source", None)) == circle]
+        out += [("press", p.key) for p in self._shown if not p.live() and phase.press_circle(p.key) == circle]
         return out
 
     def _wake(self, now):
@@ -234,10 +243,10 @@ class PhaseStrip(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
         c = style.colours()
-        area = QRectF(event.rect())
+        area = event.region()                  # (its bounding rect would hold every circle between two dirty ones: PS-A6)
         for circle in phase.CIRCLES:
             r = self.rect_of(circle)
-            if r.intersects(area):
+            if area.intersects(r.toAlignedRect()):
                 self.paints[circle] += 1
                 self._paint_circle(p, circle, r, c)
         p.end()
@@ -335,6 +344,8 @@ class PhaseStrip(QWidget):
             return True
         if et == QEvent.Type.Leave:
             self._leave_hover(None)
+        elif et == QEvent.Type.DevicePixelRatioChange:
+            self._load_logos()                 # another screen's scale: decoded again at its ratio (PS-A8)
         elif et == QEvent.Type.MouseMove and self.tooltips is not None:
             self.tooltips.hide_part_unless(self, e.position().toPoint())
         return super().event(e)

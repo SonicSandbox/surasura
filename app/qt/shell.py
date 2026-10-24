@@ -1045,7 +1045,7 @@ class ShellWindow(QMainWindow):
         self.duties = None                                # W3.5: the duties' controls, once the duties are attached
         leave_out = getattr(services.status, "leave_out", None)     # (a test's stand-in service may have none)
         if leave_out is not None:
-            leave_out(lambda view: phase_service.circle_of(view) is not None)
+            leave_out(phase_service.placed)
         self.show_status(services.status.snapshot())
         self._epoch_shown = None                          # LM11b AD-5: the store's epoch of the view shown last
         # --- W2.2: the library (the reader's views, queued to this thread) ---------------------------------------- #
@@ -1503,6 +1503,7 @@ class ShellWindow(QMainWindow):
         if lst is not None and (lst.saving or lst.landing is not None):
             lst.saving, lst.landing = frozenset(), None     # AD0-6: never a mark of the language left on a row
             lst.viewport().update()
+        self.moves_saving(False)                    # PS-A4: nor 届's wait (the writer let go never says it ended)
         if getattr(self, "mine", None) is not None:  # round 8 row 45: nor a pressed Mine now (its presses end)
             self.mine.settle_all()
         self._forget_picks()

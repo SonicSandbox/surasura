@@ -194,7 +194,7 @@ def test_presses_entries_and_the_windows_own_light_their_circles():
                S.Entry("Command line (status): it failed", "t2", False, "cli:status"),       # no circle: Needs you only
                S.Entry("Generate failed", "t3", True, "generate"))                           # seen already
     extra = {P.ARRIVALS: [("needs", "D:\\Anime can't be reached"), ("waiting", "Saving your moves…")]}
-    got = P.read((), presses.live_ones(), entries, extra)
+    got = P.read((), presses.showing(), entries, extra)
     assert got[P.ANKI].waiting and not got[P.ANKI].running
     assert got[P.SURASURA].failed == "Command line (generate): it failed"
     assert P.read((), (), entries, seen={("entry", entries[0].text, "t1")})[P.SURASURA].failed is None
@@ -285,3 +285,42 @@ class _Quiet:
 
     def newest_to_show(self):
         return None
+
+
+# --- the review's fix round (PS-A1 … A3) --------------------------------------------------------------------------- #
+def test_a_failed_press_is_its_circles_failure_with_its_words_until_seen():
+    # PS-A1: a press that failed isn't live: nothing showed it
+    presses = Presses()
+    p = presses.get("known:sync")
+    p.press()
+    p.failed("Anki is closed")
+    assert P.read((), presses.showing())[P.ANKI].failed == "Anki is closed"
+    assert P.read((), presses.showing(), seen={("press", "known:sync")})[P.ANKI].failed is None
+    assert P.read((), presses.showing())[P.SURASURA] == P.IDLE
+
+
+def test_a_job_leaves_the_status_line_only_once_a_circle_will_show_it():
+    # PS-A2: an automatic job held before it starts (a gate, a queue) never lights its circle (Q6 counts from its
+    # start): it stays on the status line. One that started will show by the clock alone: off the line at once (Q5).
+    registry = JobRegistry()
+    status = S.StatusService(registry, reader=_Quiet())
+    status.leave_out(P.placed)
+    registry.gate(lambda kind: "Waits for the update" if kind == "anki-sync" else None)
+    held = registry.submit("anki-sync", "Updating known words from Anki", lambda j: None, automatic=True)
+    registry.submit("indexer", "Indexing your library", lambda j: None, automatic=True)
+    registry.submit("junban", "Re-ordering Anki", lambda j: None)
+    assert held.view().state == J.WAITING
+    assert status.snapshot().bar_lines == (S.job_line(held.view()),)
+    assert not P.placed(held.view()) and P.placed(registry.live("indexer")[0])
+
+
+def test_a_recorded_wait_is_no_job_under_way_and_says_no_line():
+    # PS-A3 (intent keeper drift 1): Connect's waiting episodes are the strip's (amber / still arc); in `lines` they kept
+    # the header's hairline on for as long as an episode waited — days, for one not timed to its video
+    registry = JobRegistry()
+    status = S.StatusService(registry, reader=_Quiet())
+    registry.record("mine-wait", "Connect", automatic=True, reason="Not timed to its video",
+                    needs="Not timed to its video")
+    assert status.snapshot().lines == ()
+    registry.submit("generate", "Generating", lambda j: None)
+    assert status.snapshot().lines == ("Generating",)

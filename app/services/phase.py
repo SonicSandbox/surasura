@@ -7,7 +7,8 @@ of the five circles at the bar's bottom left each piece of work lights, and in w
   the re-order host, Backfill — scope Q2) · Anki (the sync, the backlog read, a known-words import).
 - **What lights one:** the registry's jobs by their kind (`KINDS`: every kind the window can register names its
   circle, or None — `update`, Koe: no circle, Q7; a test fails on a kind it doesn't name, like `PLACED`), the
-  window's live presses by their key's first word (`PRESSES`: lit before the job exists), *Needs you*'s entries by
+  window's presses by their key's first word (`PRESSES`: lit before the job exists; one that failed is the circle's
+  failure — its words, red until hovered or the next run: PS-A1), *Needs you*'s entries by
   their source (`SOURCES`; none → no circle, still in Needs you: Q1), and what the window adds itself (`extra`: the
   offline folders → 届 amber, moves waiting on a busy store → 届 queued).
 - **Its state** (`Circle`): `running` (the accent arc turns) · `waiting` (queued or held: a still arc) · `needs` (it
@@ -16,7 +17,8 @@ of the five circles at the bar's bottom left each piece of work lights, and in w
   `status.job_line`) and `last` (the newest ended run: done, stopped or failed, with its time).
 - **Automatic work shows only after `REVEAL_S`** (Q6: no flicker for a short read): a job the user didn't ask for
   lights its circle once it has run (or waited, a recorded wait) that long; a wait on you shows at once. One never
-  shown ends without a tick.
+  shown ends without a tick. A job leaves the status line only once a circle will show it (`placed`, Q5): an
+  automatic one held before it starts (a gate, a queue) has no start to count from, so the line keeps it (PS-A2).
 - **A run is a job that ran** (`ran`): one that ended before it started (cancelled while queued, a queued automatic
   job absorbed by yours) or while it waited (a recorded wait that went: an episode now mined) is no *Done*, no tick
   and no failure.
@@ -82,6 +84,12 @@ def shown(view, now):
     return view.started_at is not None and now - view.started_at >= REVEAL_S
 
 
+def placed(view):
+    """Whether a circle shows `view`, now or by the clock alone (the status line leaves it out: Q5) — not an automatic
+    job that hasn't started (held by a gate or queued: `shown` counts from its start, PS-A2)."""
+    return circle_of(view) is not None and (not view.automatic or bool(view.needs) or view.started_at is not None)
+
+
 def reveal_at(views, now):
     """When the next automatic job not shown yet will be (the painter looks again then), or None."""
     due = [v.started_at + REVEAL_S for v in views
@@ -118,9 +126,10 @@ def ended(view):
 
 def read(views, presses=(), entries=(), extra=None, last=None, seen=frozenset(), now=None):
     """{circle: Circle} now. `views`: the registry's snapshot; `presses`: the window's live presses (each with `key`,
-    `state`, `words`); `entries`: *Needs you*'s (`status.Entry`); `extra`: {circle: [(state, words)]} the window adds
-    (`state` "waiting" · "running" · "needs"); `last`: `fold`'s; `seen`: the failures and ended waits on you looked at
-    (their job ids, or `("entry", text, at)`); `now`: the wall clock (time.time())."""
+    `state`, `words`: the live ones and those that failed); `entries`: *Needs you*'s (`status.Entry`); `extra`:
+    {circle: [(state, words)]} the window adds (`state` "waiting" · "running" · "needs"); `last`: `fold`'s; `seen`: the
+    failures and ended waits on you looked at (their job ids, `("entry", text, at)` or `("press", key)`); `now`: the
+    wall clock (time.time())."""
     now = time.time() if now is None else now
     last = last or {}
     got = {c: {"running": False, "waiting": False, "needs": [], "failed": None, "lines": []} for c in CIRCLES}
@@ -142,7 +151,13 @@ def read(views, presses=(), entries=(), extra=None, last=None, seen=frozenset(),
             g["waiting"] = True
     for p in presses:
         circle = press_circle(p.key)
-        if circle is None or not p.live():
+        if circle is None:
+            continue
+        if p.state == jobs_module.FAILED:
+            if ("press", p.key) not in seen and got[circle]["failed"] is None:
+                got[circle]["failed"] = p.words or "failed"
+            continue
+        if not p.live():
             continue
         live[circle] = True
         if p.state in (jobs_module.RUNNING, jobs_module.CANCELLING):

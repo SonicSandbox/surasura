@@ -163,11 +163,10 @@ class StatusService:
 
     def leave_out(self, placed):
         """The window shows some jobs elsewhere (the phase strip: `placed(view)` True): the snapshot's `bar_lines`
-        leave them out (Sonic's Q5: the status line keeps what no circle shows); `lines` still name every one (the
-        header's hairline runs while any does)."""
+        leave them out (Sonic's Q5: the status line keeps what no circle shows); `lines` still name every job under way
+        (the header's hairline runs while any does)."""
         with self._lock:
             self._placed = placed
-            self._lines = None                  # worked out again now
         self._jobs_changed(self.registry.snapshot())
 
     def mark_seen(self):
@@ -270,8 +269,10 @@ class StatusService:
             self._publish()
 
     def _jobs_changed(self, views):
-        live = [v for v in views if v.state in (jobs_module.QUEUED, jobs_module.RUNNING, jobs_module.CANCELLING,
-                                                 jobs_module.WAITING)]
+        # a recorded wait (Connect's episodes waiting: `mirror_connect`) is no job under way: no line, and the header's
+        # hairline stays off (PS-A3) — an episode not timed to its video can wait for days; its circle shows it
+        live = [v for v in views if v.state in (jobs_module.QUEUED, jobs_module.RUNNING, jobs_module.CANCELLING)
+                or (v.state == jobs_module.WAITING and v.gated)]
         lines = tuple(job_line(v) for v in live)
         with self._lock:
             placed = self._placed

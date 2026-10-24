@@ -315,12 +315,12 @@ def test_renames(language):
     os.remove(os.path.join(data_dir, b))
     summary = store.sync_disk()
     assert len(summary["added"]) == 1 and sorted(summary["missing"]) == sorted([ids[5], ids[6]])
-    # the same size with a different modified time: new (5 s: beyond a file system's rounding, D2's `_same_time`)
+    # the same size with a different modified time: new (rule 2, a new name in its folder, asks the exact time: FIX1)
     c = store.item(ids[7])["rel_path"]
     full = os.path.join(data_dir, c)
     st = os.stat(full)
     _rename(data_dir, c, c.replace(".srt", "_y.srt"))
-    os.utime(os.path.join(data_dir, c.replace(".srt", "_y.srt")), ns=(st.st_atime_ns, st.st_mtime_ns + 5 * 10**9))
+    os.utime(os.path.join(data_dir, c.replace(".srt", "_y.srt")), ns=(st.st_atime_ns, st.st_mtime_ns + 10**9))
     summary = store.sync_disk()
     assert len(summary["added"]) == 1 and summary["missing"] == [ids[7]]
     # edited, synced, then renamed: the refreshed fingerprint keeps its place
@@ -1265,11 +1265,11 @@ def test_a_scoped_sync_finds_missing_items_through_their_index_and_an_older_stor
 
 @pytest.mark.parametrize("language", LANGUAGES)
 @pytest.mark.parametrize("rounding", ["plus_1_5_s", "floored_to_an_even_second", "exfat_10_ms"])
-@pytest.mark.parametrize("where", ["same_folder", "another_folder"])
-def test_a_file_whose_time_a_fat_drive_rounded_is_the_same_file(language, rounding, where):
+def test_a_file_whose_time_a_fat_drive_rounded_is_the_same_file(language, rounding):
     """D2: a round trip through a FAT32 drive keeps even seconds, exFAT 10 ms, and an SMB share rounds — the file's time
-    comes back off by up to 2 s. Rule 2 (a rename in its folder) and rule 2b (a move to another folder) take it as the
-    same file; before, an exact time was asked and the moved file became a new item, its old one missing."""
+    comes back off by up to 2 s. Rule 2b (a move to another folder, its name kept) takes it as the same file; before,
+    an exact time was asked and the moved file became a new item, its old one missing. (A new name in its own folder
+    is rule 2, the exact time: FIX1, `test_rule_2_a_new_name_in_its_folder_…`.)"""
     store = migrated(language, shows=2, episodes=3)
     try:
         data_dir, _u = roots(language)
@@ -1278,9 +1278,7 @@ def test_a_file_whose_time_a_fat_drive_rounded_is_the_same_file(language, roundi
         _set_time(os.path.join(data_dir, *old.split("/")), _ODD)
         store.sync_disk()                                       # the stored time is the odd one
         assert store.item(item)["mtime_ns"] == _ODD
-        name = old.rsplit("/", 1)[-1]
-        new = (old.rsplit("/", 1)[0] + "/" + name.replace(".srt", "_fat.srt") if where == "same_folder"
-               else f"GoalContent/{names(language)[112]}/{name}")
+        new = f"GoalContent/{names(language)[112]}/{old.rsplit('/', 1)[-1]}"
         _move_file(data_dir, old, new)
         t = {"plus_1_5_s": _ODD + 1_500_000_000, "floored_to_an_even_second": (_ODD // 2_000_000_000) * 2_000_000_000,
              "exfat_10_ms": (_ODD // 10_000_000) * 10_000_000}[rounding]
@@ -1288,6 +1286,44 @@ def test_a_file_whose_time_a_fat_drive_rounded_is_the_same_file(language, roundi
         summary = store.sync_disk()
         assert summary["renamed"] == [item] and summary["added"] == [] and summary["missing"] == []
         assert store.item(item)["rel_path"] == new and store.item(item)["mtime_ns"] == t, "the new time is stored"
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("case", ["exact_time_this_sync", "rounded_time_this_sync", "exact_time_an_earlier_sync"])
+def test_rule_2_a_new_name_in_its_folder_is_the_file_only_gone_this_sync_at_its_exact_time(language, case):
+    """FIX1 (MV-A3, Sonic's Decision 1 lean): rule 2 — a file of ANOTHER name in the item's own folder — is that
+    item only when the item's file went in this very sync and the time is exact to the nanosecond (a rename in Explorer
+    keeps it). On a rounded time, or for an item missing since an earlier sync, it is a new file and the item stays
+    missing: a different episode of the same size written within 2 s (one script writing a season) never takes a
+    deleted one's place, its ✓ and set-aside words — a moved file keeps its name, and rule 2b finds it."""
+    store = migrated(language, shows=2, episodes=3)
+    try:
+        data_dir, _u = roots(language)
+        item = store.ids("soon")[2]
+        store.set_watched([item])
+        old = store.item(item)["rel_path"]
+        _set_time(os.path.join(data_dir, *old.split("/")), _ODD)
+        store.sync_disk()
+        new = old.rsplit("/", 1)[0] + "/" + old.rsplit("/", 1)[1].replace(".srt", "_renamed.srt")
+        if case == "exact_time_an_earlier_sync":
+            held = _cut(data_dir, old)
+            assert store.sync_disk()["missing"] == [item]
+            _paste(data_dir, held, new)
+        else:
+            _move_file(data_dir, old, new)
+        _set_time(os.path.join(data_dir, *new.split("/")), _ODD + (1_500_000_000 if case == "rounded_time_this_sync"
+                                                                     else 0))
+        summary = store.sync_disk()
+        if case == "exact_time_this_sync":
+            assert summary["renamed"] == [item] and summary["added"] == [] and summary["missing"] == []
+            assert store.item(item)["rel_path"] == new and store.item(item)["watched"] == 1
+        else:
+            assert summary["renamed"] == [] and len(summary["added"]) == 1
+            assert summary["missing"] == ([item] if case == "rounded_time_this_sync" else [])
+            assert store.item(item)["rel_path"] == old and store.item(item)["availability"] == "missing"
+            assert store.item(summary["added"][0])["watched"] == 0, "the new file inherits no ✓"
     finally:
         store.close()
 
@@ -1423,5 +1459,61 @@ def test_a_file_still_present_is_never_a_candidate(language, earlier_gone):
             assert summary["renamed"] == [b] and store.item(b)["rel_path"] == copy
         else:
             assert summary["renamed"] == [] and len(summary["added"]) == 1
+    finally:
+        store.close()
+
+
+# --- FIX1 (the moves review set): rule 2b's size check and the scoped sync's exists-check --------------------------- #
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_moved_file_of_another_size_is_a_new_file_never_the_missing_item(language):
+    """Rule 2b's proof is the name, the size AND the time (M1 mutant 6): a file of the missing item's name and time but
+    another size, found in another folder, is another file (an edited copy, another release) — added, the item stays
+    missing and keeps its ✓."""
+    store = migrated(language, shows=2, episodes=3)
+    try:
+        data_dir, _u = roots(language)
+        item = store.ids("soon")[1]
+        store.set_watched([item])
+        old = store.item(item)["rel_path"]
+        _set_time(os.path.join(data_dir, *old.split("/")), _ODD)
+        store.sync_disk()
+        held = _cut(data_dir, old)
+        assert store.sync_disk()["missing"] == [item]
+        with open(held, "a", encoding="utf-8") as f:
+            f.write("書き足した一行。\n" if language == "ja" else "又加了一行。\n")
+        _set_time(held, _ODD)
+        new = f"GoalContent/{names(language)[116]}/{old.rsplit('/', 1)[-1]}"
+        _paste(data_dir, held, new)
+        summary = store.sync_disk()
+        assert summary["renamed"] == [] and len(summary["added"]) == 1
+        assert store.item(item)["rel_path"] == old and store.item(item)["availability"] == "missing"
+        assert store.item(summary["added"][0])["watched"] == 0
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_scoped_sync_never_takes_a_missing_item_whose_file_is_back(language):
+    """`_lost_by_size` checks each missing item's file is still gone (M1 mutant 10): an item synced missing whose file
+    came back in its place (not synced yet: outside the poll's folder), and a copy of it pasted into the folder the poll
+    syncs — the copy is a new file; the item keeps its own path and comes back available at the next full sync."""
+    store = migrated(language, shows=2, episodes=3)
+    try:
+        data_dir, _u = roots(language)
+        item = store.ids("soon")[1]
+        old = store.item(item)["rel_path"]
+        held = _cut(data_dir, old)
+        assert store.sync_disk()["missing"] == [item]
+        _paste(data_dir, held, old)                                  # back where it was, not synced yet
+        folder = f"GoalContent/{names(language)[117]}"
+        os.makedirs(os.path.join(data_dir, *folder.split("/")))
+        shutil.copy2(os.path.join(data_dir, *old.split("/")),
+                     os.path.join(data_dir, *folder.split("/"), old.rsplit("/", 1)[-1]))
+        summary = store.sync_disk(folders=[folder])
+        assert summary["renamed"] == [] and len(summary["added"]) == 1
+        assert store.item(item)["rel_path"] == old
+        store.sync_disk()
+        assert store.item(item)["availability"] == "available"
     finally:
         store.close()

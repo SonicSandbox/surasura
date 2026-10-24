@@ -151,8 +151,8 @@ CONTENT_FOLDER = "Library"
 WALK_FOLDERS = tuple(TIERS[t][1] for t in ANALYSED) + (CONTENT_FOLDER,)   # what the disk sync walks and watches
 SOURCE_PRODUCER = "source"       # an origin record's producer, and the placement log's name for a scan's take-in
 SOURCE_KEY = "src:"              # an origin row's `pairings.content_key`: "src:" + path_key(<absolute origin>) (B1)
-# what a re-copy rewrites in its row, and D5's mark (`moved_to`): never what Connect reads (`pairing_of` strips them,
-# so neither moves its pairing version)
+# An origin record's fields Connect never reads (`pairing_of` strips them, so none moves its pairing version): the
+# original's stats a re-copy rewrites (`update_origin`), and D5's mark (`moved_to`, written by `take_in`'s `moved_from`)
 SOURCE_STATS = ("size", "mtime_ns", "sha256", "moved_to")
 # B1: a `pairings` row that is an origin's, and a source row read only when its item has no other (`p` = the row)
 _ORIGIN_ROW = "(p.content_key >= 'src:' AND p.content_key < 'src;')"
@@ -7156,13 +7156,17 @@ def _sync_delta(store, walk, known, scope=None, as_new=()):
         elif availability == "missing":
             lost.append((item_id, rel, size, mtime_ns))            # D2: gone in an earlier sync, still gone
     # rule 2: a rename = an untracked file + exactly one known item in the same folder, same size and
-    # modified time (`_same_time`), that went missing in this sync or an earlier one and is still gone
+    # modified time, that went missing since the last sync. FIX1 (MV-A3, Sonic's Decision 1 lean, PROVISIONAL): its
+    # time exact and gone in THIS sync — a file of another name is never another's on a rounded time or long after
+    # (a moved file keeps its name: rule 2b below reaches further)
+    went_set = set(went)
     by_dir = {}
     for item_id, rel, size, mtime_ns in lost:
-        by_dir.setdefault(path_key(_rel_dir(_strip(rel))), []).append((item_id, size, mtime_ns))
+        if item_id in went_set:
+            by_dir.setdefault(path_key(_rel_dir(_strip(rel))), []).append((item_id, size, mtime_ns))
     renames, new, used = [], [], set()
     for rel, key, size, mtime_ns in fresh:
-        cands = [c for c in by_dir.get(path_key(_rel_dir(rel)), []) if c[1] == size and _same_time(c[2], mtime_ns)
+        cands = [c for c in by_dir.get(path_key(_rel_dir(rel)), []) if c[1] == size and c[2] == mtime_ns
                  and key not in as_new]
         if len(cands) == 1 and cands[0][0] not in used:
             used.add(cands[0][0])
@@ -7202,7 +7206,7 @@ FAT_HOUR_NS = 3_600_000_000_000         # D2: FAT keeps local time — a summer-
 
 
 def _same_time(a, b):
-    """Rules 2 and 2b (D2): one file's modified time as two file systems kept it — equal, within 2 s, or an hour off
+    """Rule 2b (D2; rule 2 asks an exact time, FIX1): one file's modified time as two file systems kept it — equal, within 2 s, or an hour off
     within 2 s. A time 3 s off is another file (two episodes can be one size)."""
     if a == b:
         return True

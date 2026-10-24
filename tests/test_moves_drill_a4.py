@@ -23,6 +23,7 @@ few bytes as a fake video; both "drives" are temp folders beside the test's data
 `subst` twin is not needed — `local_or_network` is what makes B "network", monkeypatched).
 """
 import glob
+import json
 import os
 import shutil
 import sqlite3
@@ -442,6 +443,154 @@ def test_4b3_the_nas_unplugged_and_the_app_started_again_keeps_everything(langua
         _same_as_s0(s0, _state(language), counts=[("driveA", 0), ("driveB", 5)])
     finally:
         os.rename(b + " (unplugged)", b)
+
+
+# --- 4a-tier (D2), 4a-rename (D7a) and MV-3: a move inside the data folder (FIX1, the intent review) ---------------- #
+# The scope's in-library rows: a 2.x tier-folder show (the library folder's own `HighPriority/<show>/`) cut, synced,
+# pasted into another tier folder with its times floored to 2 s (a FAT stick's round trip) and synced again; and one
+# episode renamed in its folder. Nothing the learner made moves, nothing is read again — and MV-3's one background
+# Generate after it (the report's sources name the new place) reads nothing again either: run here as the dashboard
+# runs it, in its own process, its tokenizing counted inside that process (`_generate_spied`).
+
+_SPIED_GENERATE = r'''
+import json, os, runpy, sys
+from app import token_index as ti
+seen, real_pool, real_make = [], ti._tokenized, ti.make_tokenizer
+def pool(paths, tokenize_file, workers):
+    seen.extend(str(p) for p in paths)
+    return real_pool(paths, tokenize_file, workers)
+def make(*args, **kwargs):
+    made = real_make(*args, **kwargs)
+    by_text = made.tokenize_text
+    def tokenize_text(text, facts=None):
+        seen.append(text[:40])
+        return by_text(text, facts)
+    made.tokenize_text = tokenize_text
+    return made
+ti._tokenized, ti.make_tokenizer = pool, make
+out = sys.argv.pop(1)
+sys.argv[0] = os.path.join("app", "analyzer.py")
+try:
+    runpy.run_path(sys.argv[0], run_name="__main__")
+finally:
+    with open(out, "w", encoding="utf-8") as f:
+        json.dump(seen, f, ensure_ascii=False)
+'''
+
+
+def _generate_spied(language):
+    """MV-3's background Generate: the dashboard's run in its own process, every file its token store tokenizes
+    counted there -> (the list's bytes, what it printed, the files it read)."""
+    root = os.environ["SURASURA_TEST_ROOT"]
+    out = os.path.join(root, "generate_tokenized.json")
+    cmd = [sys.executable, "-c", _SPIED_GENERATE, out, f"--language={language}", "--static", "--no-open",
+           "--min-freq", "1"]
+    p = subprocess.run(cmd, cwd=REPO, env=child_env(root), capture_output=True, text=True, encoding="utf-8",
+                       errors="replace")
+    assert p.returncode == 0 and os.path.isfile(os.path.join(root, "results", LIST)), (p.stdout + p.stderr)[-3000:]
+    subprocess.run([sys.executable, os.path.join(REPO, "app", "library_store.py"), "maintain", "--language", language],
+                   cwd=REPO, env=child_env(root), capture_output=True)
+    with open(out, encoding="utf-8") as f:
+        seen = json.load(f)
+    with open(os.path.join(root, "results", LIST), "rb") as f:
+        return f.read(), p.stdout, seen
+
+
+def _seed_tier(language):
+    """A 2.x tier-folder show inside the data folder — `HighPriority/[Grp] Show/` with the four real episodes, taken
+    in by the disk sync; episode 2 in Soon, episode 1 watched (set aside), a Generate and an index -> (data_dir, the
+    show's folder rel, {episode: id}, S0)."""
+    store, data_dir = _empty(language)
+    show = _shows(language)[0]
+    folder = f"HighPriority/{show}"
+    for n in (1, 2, 3, 4):
+        _write(os.path.join(data_dir, *folder.split("/"), _name(show[6:], n, language)), _episode(language, n))
+    with store:
+        added = store.sync_disk()["added"]
+        assert len(added) == 4
+        ids = {store.item(i)["rel_path"].rsplit(" - ", 1)[1][:2]: i for i in added}
+        assert store.move([ids["02"]], "soon") is not None
+        assert store.set_watched([ids["01"]]) is not None
+    _generate(os.environ["SURASURA_TEST_ROOT"], language)
+    _run_indexer(language)
+    return data_dir, folder, ids, _state(language)
+
+
+def _rows(language):
+    store = _reopen(language)
+    try:
+        return store.conn.execute("SELECT id, tier, ord, watched, work_id, rel_path, availability FROM items "
+                                  "ORDER BY id").fetchall(), store.text_lists()
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_4a_tier_a_tier_folder_show_cut_and_pasted_into_another_tier_folder_keeps_everything(language):
+    """4a-tier (D2): the show cut (a sync sees it gone), then pasted into `LowPriority/` with its times floored to 2 s
+    and synced: its four items are the same — ids, tier, place, ✓, episode 1 still aside, works — no new item, no
+    rename ask. MV-3: the one background Generate after it reads nothing again (0 files tokenized in its process) and
+    its lists differ from S0's only in the sentence sources' paths (the new place); the index after reads nothing."""
+    data_dir, folder, ids, s0 = _seed_tier(language)
+    show = folder.rsplit("/", 1)[1]
+    held = os.path.join(os.environ["SURASURA_TEST_ROOT"], "clipboard", show)
+    shutil.move(os.path.join(data_dir, *folder.split("/")), held)
+    store = _reopen(language)
+    try:
+        assert sorted(store.sync_disk()["missing"]) == sorted(ids.values())
+    finally:
+        store.close()
+    moved = f"LowPriority/{show}"
+    shutil.move(held, os.path.join(data_dir, *moved.split("/")))
+    for path in glob.glob(os.path.join(data_dir, *moved.split("/"), "*")):
+        t = (os.stat(path).st_mtime_ns // 2_000_000_000) * 2_000_000_000
+        os.utime(path, ns=(t, t))
+    store = _reopen(language)
+    try:
+        summary = store.sync_disk()
+        assert sorted(summary["renamed"]) == sorted(ids.values()) and summary["added"] == []
+        assert store.rename_asks() == []
+    finally:
+        store.close()
+    rows, (counted, kept, aside) = _rows(language)
+    want = [r[:5] + (r[5].replace(folder, moved, 1), r[6]) for r in s0["rows"]]
+    assert rows == want, "ids, tier, place, ✓, work kept; only the path moved"
+    assert [p.replace(moved, folder, 1) for p in aside] == list(s0["lists"][2]), "W-1's aside kept"
+    raw, said, seen = _generate_spied(language)
+    assert REUSED not in said, "the sources moved: the one background Generate runs"
+    assert seen == [], "the background Generate read nothing again"
+    root = os.environ["SURASURA_TEST_ROOT"]
+    for name, before in s0["csvs"].items():
+        with open(os.path.join(root, "results", name), "rb") as f:
+            now = f.read()
+        assert now.replace(moved.encode("utf-8"), folder.encode("utf-8")) == before, f"{name}: only Src paths moved"
+    _index_reads_nothing(language)
+    _generate_skips(language)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_4a_rename_an_episode_renamed_in_its_folder_is_never_read_again(language):
+    """4a-rename (D7a): one tier-folder episode renamed in its folder (Explorer keeps its time): the sync keeps its
+    item (rule 2), the index reads nothing (the store's move note re-keys its row), and MV-3's background Generate
+    reads nothing either, its sources naming the new name."""
+    data_dir, folder, ids, s0 = _seed_tier(language)
+    store = _reopen(language)
+    try:
+        old = store.item(ids["03"])["rel_path"]
+    finally:
+        store.close()
+    new = old.replace(" - 03", " - 03 (renamed)")
+    os.replace(os.path.join(data_dir, *old.split("/")), os.path.join(data_dir, *new.split("/")))
+    store = _reopen(language)
+    try:
+        assert store.sync_disk()["renamed"] == [ids["03"]]
+    finally:
+        store.close()
+    _index_reads_nothing(language)
+    raw, said, seen = _generate_spied(language)
+    assert REUSED not in said and seen == [], "the background Generate read nothing again"
+    rows, _lists = _rows(language)
+    assert rows == [r[:5] + (new if r[0] == ids["03"] else r[5], r[6]) for r in s0["rows"]]
 
 
 def test_d1_a_2x_tier_show_moved_out_to_a_nas_source():

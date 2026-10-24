@@ -18,9 +18,11 @@ import shutil
 import pytest
 
 from app import library_store as ls
+from app import sources
 from tests.test_library_store_support import LANGUAGES
 from tests.test_sources_scan import (_OURS, _SHOWS, _current, _drive, _empty, _fresh_module_state, _items,  # noqa: F401
-                                     _library_files, _look, _settle, _sha, _text, _video, _write)
+                                     _library_files, _look, _settle, _sha, _text, _versions, _video,
+                                     _write)
 
 LEVEL = "2024 Fall"
 
@@ -304,3 +306,326 @@ def test_a_moved_folder_holding_only_another_release_of_an_episode_joins_its_sho
         assert store.item(result["ids"][0])["rel_path"] == f"Library/{show}/{_name(show, 2, language, group='ZZ')}"
         release = _origin(store, os.path.join(moved, os.path.basename(alt)))
         assert release.version and release.item_id == first["ids"][0]
+
+
+# --- FIX1 (the moves review set): one stray file never decides a folder's show (MV-A1, MV-A2) ----------------------- #
+# Why: a single byte copy of another show's episode (a backup, a misfiled file) in a new show's folder, or in a mixed
+# folder below a source (`NAS/Anime/`), filed the whole folder under that other show — its episodes copied into the
+# other show's `Library` folder and studied as its words, for good (the recorded origins kept pulling the next ones
+# in), and with generic names (`Episode 01`) swallowed as that show's versions: never counted, never shown. The rule
+# now: most of the folder's texts are the show's items, or the folder's name ends in the show's name.
+
+def _stray_copy_beside_a_new_show(language, store, name):
+    """X's 01–02 taken in from A; `B/<name>/` gets a byte copy of X's 01 and Y's own 01–02 -> (X's work, B's root
+    id, the folder)."""
+    x, y = _SHOWS[language]
+    a, b = _drive("driveA"), _drive("driveB")
+    _seed(language, a, x, (1, 2))
+    first = _look(store, language, store.add_source(a), first=True)
+    folder = os.path.join(b, name)
+    os.makedirs(folder)
+    shutil.copy2(os.path.join(a, x, _name(x, 1, language)), os.path.join(folder, "stray copy.srt"))
+    _write(os.path.join(folder, _name(y, 1, language)), _text(language, 7))
+    _write(os.path.join(folder, _name(y, 2, language)), _text(language, 8))
+    _settle(b)
+    return _work(store, first["ids"][0]), store.add_source(b), folder
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("where", ["a new show's folder", "a mixed folder below the source"])
+def test_one_stray_copy_of_another_shows_episode_never_files_a_folder_under_that_show(language, where):
+    """MV-A1: `B/<Y>/` (or `B/Anime/`) holding one byte copy of X's episode 1 and Y's two episodes: Y's episodes are
+    a show of their own — their copies never in `Library/<X>/`, never X's title — and stay so on the next look, when
+    the copy is recorded on X's item (its next episode too). The copy itself is X's episode 1 found again."""
+    store, data_dir = _empty(language)
+    x, y = _SHOWS[language]
+    with store:
+        name = "Anime" if where.startswith("a mixed") else y
+        xwork, root_b, folder = _stray_copy_beside_a_new_show(language, store, name)
+        result = _look(store, language, root_b)
+        assert (result["added"], result["attached"]) == (2, 1)
+        new = [i for i in result["ids"] if _work(store, i) != xwork]
+        assert len(new) == 2 and all(store.item(i)["rel_path"].startswith(f"Library/{name}/") for i in new)
+        assert _works(store) == 2
+        _write(os.path.join(folder, _name(y, 3, language)), _text(language, 9))
+        _settle(os.path.dirname(folder))
+        later = _look(store, language, root_b)
+        assert later["added"] == 1 and store.item(later["ids"][0])["rel_path"].startswith(f"Library/{name}/")
+        assert _work(store, later["ids"][0]) == _work(store, new[0]) != xwork
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_new_show_with_generic_episode_names_beside_one_stray_copy_is_items_never_versions(language):
+    """MV-A2: names that carry no show (`Episode 01`, common for rips). X's `Episode 01–02` taken in; a new show Y's
+    folder with its own `Episode 01–02` and one byte copy of X's episode 1 — Y's episodes are two new items, never
+    recorded as other versions of X's episodes (no reader's: never counted, nothing to Remove)."""
+    store, data_dir = _empty(language)
+    x, y = _SHOWS[language]
+    a, b = _drive("driveA"), _drive("driveB")
+    ours = _OURS[language]
+    for n in (1, 2):
+        _write(os.path.join(a, x, f"Episode {n:02d}.{ours}.srt"), _text(language, n))
+    with store:
+        assert _look(store, language, store.add_source(a), first=True)["added"] == 2
+        os.makedirs(os.path.join(b, y))
+        shutil.copy2(os.path.join(a, x, f"Episode 01.{ours}.srt"), os.path.join(b, y, f"backup.{ours}.srt"))
+        for n in (1, 2):
+            _write(os.path.join(b, y, f"Episode {n:02d}.{ours}.srt"), _text(language, 6 + n))
+        _settle(b)
+        result = _look(store, language, store.add_source(b))
+        assert result["added"] == 2 and _items(store) == 4, (result, _versions(store))
+        top = ls.path_key(os.path.abspath(os.path.join(b, y))) + "/"
+        assert not [k for k in _versions(store) if k.startswith(top)], "never X's versions"
+        assert all(store.item(i)["rel_path"].startswith(f"Library/{y}/") for i in result["ids"])
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_renamed_moved_folder_joins_its_show_by_most_of_its_texts(language):
+    """FIX1's other half: a moved show whose folder the learner renamed (no longer the show's name) still joins it
+    when most of its texts are the show's items — 4 of 5 here, its new episode with them."""
+    store, data_dir = _empty(language)
+    show = _SHOWS[language][1]
+    a, b = _drive("driveA"), _drive("driveB")
+    _seed(language, a, show)
+    with store:
+        ids = _look(store, language, store.add_source(a), first=True)["ids"]
+        moved = os.path.join(b, "Renamed by hand")
+        _move(os.path.join(a, show), moved)
+        _write(os.path.join(moved, _name(show, 5, language)), _text(language, 5))
+        _settle(b)
+        result = _look(store, language, store.add_source(b))
+        assert (result["added"], result["attached"]) == (1, 4) and _works(store) == 1
+        new = [i for i in result["ids"] if i not in ids]
+        assert store.item(new[0])["rel_path"] == f"Library/{show}/{_name(show, 5, language)}"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_folder_named_like_a_season_of_another_show_never_joins_it_by_its_last_name(language):
+    """FIX1's name rule reads the show's WHOLE name at the end of the folder's: `B/<Y>/Season 1` holding one byte
+    copy of `<X>/Season 1`'s episode is never `<X>/Season 1` (both end in `Season 1`)."""
+    store, data_dir = _empty(language)
+    x, y = _SHOWS[language]
+    a, b = _drive("driveA"), _drive("driveB")
+    _seed(language, os.path.join(a, x), "Season 1", (1, 2))
+    with store:
+        first = _look(store, language, store.add_source(a), first=True)
+        assert store.item(first["ids"][0])["rel_path"].startswith(f"Library/{x}/Season 1/")
+        folder = os.path.join(b, y, "Season 1")
+        os.makedirs(folder)
+        shutil.copy2(os.path.join(a, x, "Season 1", _name("Season 1", 1, language)), os.path.join(folder, "copy.srt"))
+        _write(os.path.join(folder, _name(y, 1, language)), _text(language, 7))
+        _write(os.path.join(folder, _name(y, 2, language)), _text(language, 8))
+        _settle(b)
+        result = _look(store, language, store.add_source(b))
+        assert result["added"] == 2
+        new = [i for i in result["ids"] if i not in first["ids"]]
+        assert len(new) == 2 and all(store.item(i)["rel_path"].startswith(f"Library/{y}/Season 1/") for i in new)
+
+
+# --- FIX1: a moved waiting video that is a cloud placeholder (MV-A4); D3 (a) by its key (M3 mutants 7, 8) ----------- #
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_moved_waiting_video_that_is_a_cloud_placeholder_keeps_its_one_waiting_item(language, monkeypatch):
+    """MV-A4: a waiting video moved under a new folder level and now a cloud placeholder (its download not here: its
+    key is never read, B3) is its waiting item by its name and size — never a second waiting row in New arrivals."""
+    store, data_dir = _empty(language)
+    show = _SHOWS[language][0]
+    a, b = _drive("driveA"), _drive("driveB")
+    _video(os.path.join(a, show, f"[Grp] {show} - 01.mkv"), body=b"\x1a\x45\xdf\xa3 placeholder video body")
+    with store:
+        gap = _look(store, language, store.add_source(a), first=True)["ids"][0]
+        moved = os.path.join(b, LEVEL, show)
+        _move(os.path.join(a, show), moved)
+        size = os.path.getsize(os.path.join(moved, f"[Grp] {show} - 01.mkv"))
+        monkeypatch.setattr(ls, "is_placeholder", lambda st: st.st_size == size)
+        result = _look(store, language, store.add_source(b))
+        assert (result["added"], result["attached"]) == (0, 1) and _waiting(store) == [gap]
+        assert _origin(store, os.path.join(moved, f"[Grp] {show} - 01.mkv")).item_id == gap
+        assert [i for i, _e, _a in store.ordered("arrivals")] == [gap]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_moved_waiting_video_is_its_own_item_never_another_waiting_one_of_its_size(language):
+    """D3 (a) by content key (M3 mutant 7): two shows' waiting videos of one size, other bytes — Y's moved under a new
+    level is Y's waiting item; X's stays where it was, its own."""
+    store, data_dir = _empty(language)
+    x, y = _SHOWS[language]
+    a, b = _drive("driveA"), _drive("driveB")
+    _video(os.path.join(a, x, f"[Grp] {x} - 01.mkv"), body=b"\x1a\x45\xdf\xa3 video of the first show")
+    _video(os.path.join(a, y, f"[Grp] {y} - 01.mkv"), body=b"\x1a\x45\xdf\xa3 video of the other show")
+    with store:
+        first = _look(store, language, store.add_source(a), first=True)
+        by_show = {store.item(i)["rel_path"].split("/")[1]: i for i in first["ids"]}
+        moved = os.path.join(b, LEVEL, y)
+        _move(os.path.join(a, y), moved)
+        result = _look(store, language, store.add_source(b))
+        assert (result["added"], result["attached"]) == (0, 1)
+        assert _origin(store, os.path.join(moved, f"[Grp] {y} - 01.mkv")).item_id == by_show[y]
+        assert _origin(store, os.path.join(a, x, f"[Grp] {x} - 01.mkv")).item_id == by_show[x]
+        assert sorted(_waiting(store)) == sorted(by_show.values())
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_copy_of_a_moved_waiting_video_with_its_subtitle_never_takes_the_waiting_item_unfilled(language):
+    """M3 mutant 8 (`_videos_taken`): the moved waiting video recorded on its waiting item maps no video to it — so a
+    copy of that video elsewhere with its subtitle, later in the same look, never attaches its text to the waiting
+    item while it stays waiting (a text no reader would see): it fills the gap, or is an item of its own."""
+    store, data_dir = _empty(language)
+    show = _SHOWS[language][1]                               # sorted before `zz copy`: its batch is first
+    a, b = _drive("driveA"), _drive("driveB")
+    _video(os.path.join(a, show, f"[Grp] {show} - 01.mkv"))
+    with store:
+        gap = _look(store, language, store.add_source(a), first=True)["ids"][0]
+        moved = os.path.join(b, LEVEL, show)
+        _move(os.path.join(a, show), moved)
+        other = os.path.join(b, "zz copy")
+        os.makedirs(other)
+        shutil.copy2(os.path.join(moved, f"[Grp] {show} - 01.mkv"), os.path.join(other, "zz copy - 01.mkv"))
+        _write(os.path.join(other, f"zz copy - 01.{_OURS[language]}.srt"), _text(language, 1))
+        _settle(b)
+        _look(store, language, store.add_source(b))
+        assert _origin(store, os.path.join(moved, f"[Grp] {show} - 01.mkv")).item_id == gap
+        texts = [o for o in store.origins().values() if o.item_id == gap and ls.is_content_name(o.origin.lower())]
+        assert store.item(gap)["availability"] == "available" or not texts, texts
+
+
+# --- FIX1: D5's mark only for a move (MV-A5, G5; M4 mutants 8, 9) --------------------------------------------------- #
+
+def _counts(store):
+    return [s["items"] for s in store.sources(all=True)]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_v2_found_elsewhere_while_the_original_is_briefly_gone_marks_nothing(language):
+    """MV-A5: an original briefly absent (mid-move in Explorer, a sync client rewriting it) while another file of its
+    item turns up — a `v2` in B's folder of the show — is no move: the v2's bytes are not the original's, so its
+    record stays live and A still counts it."""
+    store, data_dir = _empty(language)
+    show = _SHOWS[language][1]
+    a, b = _drive("driveA"), _drive("driveB")
+    _seed(language, a, show, (1,))
+    original = os.path.join(a, show, _name(show, 1, language))
+    with store:
+        _look(store, language, store.add_source(a), first=True)
+        aside = os.path.join(os.environ["SURASURA_TEST_ROOT"], "away.srt")
+        os.replace(original, aside)
+        try:
+            _write(os.path.join(b, show, f"[Grp] {show} - 01v2.{_OURS[language]}.srt"), _text(language, 1, "、訂正"))
+            _settle(b)
+            result = _look(store, language, store.add_source(b))
+            assert result["attached"] == 1
+            assert _origin(store, original).moved_to is None
+        finally:
+            os.replace(aside, original)
+        assert _counts(store) == [1, 1]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_original_that_cant_be_read_is_never_marked_moved(language, monkeypatch):
+    """D5 (M4 mutant 9): only a file GONE from a reachable folder moved; one that can't be read (access denied, a
+    share's hiccup) may be there — its record stays live."""
+    store, data_dir = _empty(language)
+    show = _SHOWS[language][1]
+    a, b = _drive("driveA"), _drive("driveB")
+    _seed(language, a, show, (1, 2))
+    with store:
+        _look(store, language, store.add_source(a), first=True)
+        olds = [os.path.join(a, show, _name(show, n, language)) for n in (1, 2)]
+        shutil.copytree(os.path.join(a, show), os.path.join(b, show), copy_function=shutil.copy2)
+        _settle(b)
+        real = os.stat
+        denied = {ls.path_key(os.path.abspath(p)) for p in olds}
+
+        def stat(path, *args, **kw):
+            if isinstance(path, str) and ls.path_key(os.path.abspath(path)) in denied:
+                raise PermissionError(13, "Access is denied", path)
+            return real(path, *args, **kw)
+        monkeypatch.setattr(os, "stat", stat)
+        try:
+            result = sources.scan(store, language, store.add_source(b))
+        finally:
+            monkeypatch.setattr(os, "stat", real)
+        assert result["attached"] == 2
+        assert all(_origin(store, p).moved_to is None for p in olds)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_another_version_left_behind_is_never_marked_moved(language):
+    """D5 (M4 mutant 8): the item's other version (`[ZZ] - 01`, no reader's) gone from A while its pick moved to B —
+    only the pick's record says it moved; a version's record is never marked (Connect never reads it)."""
+    store, data_dir = _empty(language)
+    show = _SHOWS[language][1]
+    a, b = _drive("driveA"), _drive("driveB")
+    pick = _write(os.path.join(a, show, _name(show, 1, language)), _text(language, 1))
+    alt = _write(os.path.join(a, show, _name(show, 1, language, group="ZZ")), _text(language, 1, " ZZ"))
+    with store:
+        _look(store, language, store.add_source(a), first=True)
+        assert _origin(store, alt).version
+        os.makedirs(os.path.join(b, show))
+        shutil.move(pick, os.path.join(b, show))
+        os.remove(alt)
+        _settle(b)
+        assert _look(store, language, store.add_source(b))["attached"] == 1
+        assert _origin(store, pick).moved_to is not None, "the pick moved"
+        assert _origin(store, alt).moved_to is None, "a version is never marked"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_unplugged_old_folder_is_asked_once_before_any_of_its_files(language, monkeypatch):
+    """G5: a show copied to B while A's share is unplugged — every new link would stat its old original on the
+    dead share first (a network timeout each). The source folder's reach is asked first, once a look, and none of its
+    files is touched."""
+    store, data_dir = _empty(language)
+    show = _SHOWS[language][1]
+    a, b = _drive("driveA"), _drive("driveB")
+    _seed(language, a, show)
+    with store:
+        _look(store, language, store.add_source(a), first=True)
+        shutil.copytree(os.path.join(a, show), os.path.join(b, show), copy_function=shutil.copy2)
+        _settle(b)
+        root_b = store.add_source(b)
+        os.rename(a, a + " (unplugged)")
+        try:
+            top = ls.path_key(os.path.abspath(a)).rstrip("/") + "/"
+            asked, touched = [], []
+            real_lost, real_stat = sources._lost, os.stat
+
+            def lost(root):
+                asked.append(ls.path_key(os.path.abspath(root)))
+                return real_lost(root)
+
+            def stat(path, *args, **kw):
+                if isinstance(path, str) and ls.path_key(os.path.abspath(path)).startswith(top):
+                    touched.append(path)
+                return real_stat(path, *args, **kw)
+            monkeypatch.setattr(sources, "_lost", lost)
+            monkeypatch.setattr(os, "stat", stat)
+            try:
+                result = sources.scan(store, language, root_b)
+            finally:
+                monkeypatch.setattr(os, "stat", real_stat)
+            assert result["attached"] == 4
+            assert asked.count(ls.path_key(os.path.abspath(a))) == 1, asked
+            assert touched == [], "no file on the unplugged share was asked about"
+        finally:
+            os.rename(a + " (unplugged)", a)
+
+
+# --- FIX1 (S19): a look where nothing changed writes nothing -------------------------------------------------------- #
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_look_after_the_move_where_nothing_changed_writes_nothing_to_the_store(language):
+    """S19: after the move is taken in, the next looks of both sources (a quick one and a Refresh) find nothing new —
+    and write nothing: no row, no record, no meta (the store's change counter unmoved)."""
+    store, data_dir, a, b, show, moved, ids, root_a, root_b, _r = _moved_show(language)
+    try:
+        _look(store, language, root_b)
+        _look(store, language, root_a)
+        before = store.conn.total_changes, store.meta()
+        for root in (root_a, root_b):
+            for full in (False, True):
+                again = _look(store, language, root, full=full)
+                assert (again["added"], again["attached"], again["recopied"]) == (0, 0, 0)
+        assert (store.conn.total_changes, store.meta()) == before, "a look that found nothing wrote nothing"
+    finally:
+        store.__exit__(None, None, None)

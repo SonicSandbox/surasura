@@ -1071,3 +1071,65 @@ def test_the_indexer_hands_the_move_notes_through(language):
             assert ti._norm(new) in tokens.counted_files() and tokens.file_tokens(old) == []
     finally:
         store.close()
+
+
+# --- FIX1 (the moves review set): the note's old row must be the note's old file; the new path must hold none ------- #
+
+def _edited_in_place(path, edit):
+    """`other_size_same_time`: a line added, the modified time put back as it was; `same_size_other_time`: one mark
+    swapped for another of the same bytes (。 for 、, ！ for ？), five seconds later."""
+    st = os.stat(path)
+    with open(path, "rb") as f:
+        data = f.read()
+    if edit == "other_size_same_time":
+        data += "書き足した一行。\n".encode("utf-8")
+        t = st.st_mtime_ns
+    else:
+        mark, other = next((m, o) for m, o in (("。", "、"), ("！", "？"), ("、", "。"), ("？", "！"))
+                           if m.encode("utf-8") in data)
+        data = data.replace(mark.encode("utf-8"), other.encode("utf-8"), 1)
+        t = st.st_mtime_ns + 5 * 10**9
+    with open(path, "wb") as f:
+        f.write(data)
+    os.utime(path, ns=(st.st_atime_ns, t))
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("edit", ["other_size_same_time", "same_size_other_time"])
+def test_a_file_edited_then_renamed_before_an_index_is_read_again(language, edit):
+    """D7a's guard on the old row (M2 mutants 1, 2): the file edited and synced (the library store's view moves on),
+    then renamed in its folder before the index ran — the note names the edited file, the token row the text before.
+    The row is not the note's old file (its size, or its time), so the renamed file is read as it is, never handed
+    the older text's tokens."""
+    store, data_dir, ids = _library(language)
+    files = list(ids)
+    tok = _counting(language)
+    _indexed(language, store, data_dir, files, tok)[0].close()
+    old = files[1]
+    _edited_in_place(old, edit)
+    store.sync_disk()                                                  # the edit seen: the store's row refreshed
+    new = _renamed_in_its_folder(old)
+    assert store.sync_disk()["renamed"] == [ids[old]]
+    tok.calls.clear()
+    tokens, _c, _m = _indexed(language, store, data_dir, [new if p == old else p for p in files], tok)
+    try:
+        assert tok.calls == [("file", ti._norm(new))], "the row was the older text's: read as it is"
+        assert tokens.file_tokens(old) == []
+    finally:
+        tokens.close()
+        store.close()
+
+
+def test_a_move_note_whose_new_path_holds_a_row_already_is_never_used(tmp_path):
+    """D7a's guard on the new path (M2 mutant 5): a note re-keys only onto a path with no row — one already there (a
+    text the store holds for it) is never overwritten by the old path's row."""
+    new = tmp_path / "新しい名前.srt"
+    new.write_text("一行目です。\n", encoding="utf-8")
+    st = os.stat(new)
+    old_key, new_key = ti._norm(str(tmp_path / "古い名前.srt")), ti._norm(str(new))
+    row = {"size": st.st_size, "mtime": st.st_mtime_ns / 1e9}
+    note = [(str(tmp_path / "古い名前.srt"), st.st_size, st.st_mtime_ns, str(new), st.st_size, st.st_mtime_ns)]
+    listed, signatures = {new_key: str(new)}, {new_key: (st.st_size, st.st_mtime_ns)}
+    assert ti._noted_moves(note, {old_key}, {old_key: row}, signatures, listed) == [(old_key, new_key)], \
+        "precondition: the note is good with no row at the new path"
+    assert ti._noted_moves(note, {old_key}, {old_key: row, new_key: dict(row)}, signatures, listed) == []

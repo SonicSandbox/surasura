@@ -447,6 +447,18 @@ ROWS_ACTION_NAMES = {"mine-now": "Mine now", "mine-this": "Mine this", "no-media
 # round 8 row 45 (trial): *Mine now* pressed — its pill turns from the frame of the press until Connect says more; its
 # hover is the one place words show (Sonic: "there are sometimes when text may be useful but be intentional")
 ROWS_ASKED_TIP = "Asked · starting…"
+# --- R47 (laptop rows 47 + 56, PROVISIONAL words): a Mining pill's *Stop* — on hover *■ Stop*, pressed *Stopping…*
+# (the pill keeps its box: the words elide in it); the episode's ⋯ entry; a stop Connect refused, or couldn't be asked
+ROWS_ACTION_NAMES["stop"] = "Stop"
+ROWS_STOP = "Stop"
+ROWS_STOPPING = "Stopping…"
+ROWS_STOP_TIP = "{tip}\n• Click to stop mining this episode: the cards made so far are kept"
+MINE_STOP_ENTRY = "Stop mining"
+MINE_STOP_REFUSED = "It can't be stopped now: it is finishing its cards, or Connect is done with it"
+MINE_STOP_FAILED = "Stop didn't reach Connect: {why}"
+# R47-A1 (PROVISIONAL): Connect took the stop, then began naming the clips before it could act on it
+MINE_STOP_TOO_LATE = "Too late to stop: its cards are already being finished"
+# --- end R47
 ROWS_LINK = "Link…"
 ROWS_LINK_TIP = "Choose its video: its cards get their pictures and audio from it"
 ROWS_MINE_TEXT = "Mine text"

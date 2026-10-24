@@ -1203,11 +1203,12 @@ def test_each_of_connects_kinds_is_a_stone_with_its_own_words():
     assert st[5].tip.endswith("Click to mine this one now, on battery")
     assert (st[6].kind, st[6].tip) == ("waiting", feed.WORDS[feed.WAITING])
     assert (st[7].kind, st[7].label) == ("mine", "Mine"), "no job: as without Connect"
-    assert (st[8].kind, st[8].tip) == ("waiting", feed.WORDS[feed.ASKED]), "an ask below the line waits, first"
+    # R47: an ask Connect has read is its own status (*Asked*, the press's mark still), its tip the reason or its words
+    assert (st[8].kind, st[8].tip) == ("asked", vr.STRINGS["tip_asked"]), "an ask below the line waits, first"
     first, second = view.rows
     assert (first.status.kind, first.status.label) == ("mining", "Mining · 3/12"), "the row: its first job's"
     assert first.accessible.endswith("Mining · 3/12")
-    assert (second.status.kind, second.status.tip) == ("waiting", feed.WORDS[feed.ASKED])
+    assert (second.status.kind, second.status.tip) == ("asked", vr.STRINGS["tip_asked"])
     assert view.connect is connect
 
 
@@ -1238,7 +1239,7 @@ def test_a_level_job_on_an_episode_in_anki_or_one_whose_cards_were_deleted_never
     assert view.rows[0].status == plain.rows[0].status, "the row keeps its own: Mine rest"
     asked = _feed([_job(1, reason=runner.ANKI_CLOSED, kind="level"), _job(5, kind="asked", state="queued")])
     view = vr.build(items, WORKS, {"mine_line": 1}, cards=cards, connect=asked)
-    assert (view.rows[0].status.kind, view.rows[0].status.tip) == ("waiting", feed.WORDS[feed.ASKED])
+    assert (view.rows[0].status.kind, view.rows[0].status.tip) == ("asked", vr.STRINGS["tip_asked"])
 
 
 def test_a_chinese_row_reads_its_wait_from_connects_feed():

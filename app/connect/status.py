@@ -178,13 +178,22 @@ def _language(conn, lang, is_running, words):
             counts[outcome] = n
         entry = {"job": job["id"], "item": job["item_id"], "title": items.get(job["item_id"], {}).get("title"),
                  "kind": job.get("kind") or "mine", "state": job["state"], "reason": job.get("reason"),
+                 "resume": job.get("resume"),  # row 56: the step a waiting job goes on at (the feed's Stop rule)
                  "step": STEP_WORDS.get(job["state"]) or STEP_WORDS.get(job.get("resume") or ""),
                  "words": len(_picked_words(job.get("picked"))), "made": counts.pop("made", 0),
-                 "not_made": counts, "progress": _progress(job) if job["state"] in book.IN_FLIGHT else None}
+                 "not_made": counts, "progress": _progress(job) if job["state"] in book.IN_FLIGHT else _naming(job),
+                 # laptop round 9 #56: *Stop* pressed, the job not stopped yet (the window shows *Stopping…*): from
+                 # the press until the runner has stopped it (it keeps the press through the tidy-up), only while
+                 # Connect runs, and never past the stop point (naming the clips)
+                 "stopping": bool(is_running and job["state"] in book.IN_FLIGHT
+                                  and book.stoppable(job["state"], job.get("resume"), job.get("progress"))
+                                  and conn.execute("SELECT 1 FROM meta WHERE key = ?",
+                                                   (f"{book.STOP}{int(job['id'])}",)).fetchone() is not None)}
         if words:
             entry["not_made_words"] = _rows(conn, "SELECT word, reading, outcome FROM outcomes WHERE job_id = ? AND "
                                                   "outcome != 'made' ORDER BY rowid", (job["id"],))
         rec["jobs"].append(entry)
+    _turns(rec["jobs"], is_running)
 
     rec["needs"] = [{"id": n["id"], "kind": n["kind"], "say": n["say"], "item": n["item_id"],
                      "title": items.get(n["item_id"], {}).get("title") if n["item_id"] is not None else None,
@@ -206,6 +215,18 @@ def _language(conn, lang, is_running, words):
     return rec
 
 
+def _turns(entries, is_running):
+    """Laptop round 9 #56: while Connect works on one job, every other open job with no reason of its own waits its
+    turn — `reason` runner.TURN and `behind` the item in flight, in the record only (never the ledger's)."""
+    working = next((e for e in entries if e["state"] in book.IN_FLIGHT), None)
+    if not is_running or working is None:
+        return
+    from app.connect import runner
+    for entry in entries:
+        if entry is not working and entry["state"] not in book.IN_FLIGHT and not entry["reason"]:
+            entry.update(reason=runner.TURN, behind=working["item"])
+
+
 # An episode's way through Connect as one percent (laptop round 5 #23, Sonic 2026-10-22 M-2 A: "one number that moves
 # through the whole episode", the step on hover), from each step's measured share of its time (work/LF-mining
 # timing.md, after the run's look-ups are kept: Anki Miner's run about half, naming its clips about a third)
@@ -215,6 +236,12 @@ MINE_FROM, MINE_TO = 8, 60                  # Anki Miner's own run (its percent,
 NAMING = (62, "Naming the clips")
 STAGE_WORDS = {1: "Reading the subtitles", 2: "Finding the words", 3: "Cutting clips", 4: "Looking up definitions",
                5: "Adding cards"}           # Anki Miner's stages (its progress file)
+
+
+def _naming(job):
+    """A waiting job's progress for the feed's Stop rule (row 56, round 2): `{"step": "naming"}` while its clips'
+    naming waits (Anki busy: past the stop point), else None."""
+    return {"step": "naming"} if job["state"] == "waiting" and book.naming(job.get("progress")) else None
 
 
 def _progress(job):
@@ -229,8 +256,8 @@ def _progress(job):
         got = json.loads(job.get("progress") or "null")
     except (TypeError, ValueError):
         got = None
-    if isinstance(got, dict) and got.get("step") == "naming":
-        return {"percent": NAMING[0], "doing": NAMING[1]}
+    if book.naming(got):
+        return {"percent": NAMING[0], "doing": NAMING[1], "step": "naming"}    # row 56: past the stop point
     keys = ("stage", "stages", "done", "total")
     if not (isinstance(got, dict) and all(isinstance(got.get(k), int) and not isinstance(got.get(k), bool)
                                           and got[k] >= 0 for k in keys)) or not got["stage"]:

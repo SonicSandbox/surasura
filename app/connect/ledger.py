@@ -69,13 +69,28 @@ STOPPED_REASON = "Stopped: its cards so far are kept. Press Mine now to go on." 
 UNCARDABLE_AFTER = 2
 
 
-def stoppable(state, resume=None):
-    """Can a job in `state` (waiting at `resume`) still be stopped? Until its cards are made: queued, waiting before
-    filling, picking, the fit check, mining. Filling and ordering finish (seconds), and a job waiting to fill or order
-    (Anki closed) finishes too once it can (review A3)."""
+def stoppable(state, resume=None, progress=None):
+    """Can a job in `state` (waiting at `resume`; mining at `progress`, its saved step) still be stopped? Until its
+    cards are made: queued, waiting before filling, picking, the fit check, mining up to Anki Miner's run's end.
+    Naming the clips, filling and ordering finish (review A3; row 56: naming is past the stop point — its cards are
+    made, and their clips are named before Anki's next sync — so too a job whose naming waits, you reviewing: round 2),
+    and a job waiting to fill or order (Anki closed) finishes too once it can."""
+    if naming(progress) and (state == "mining" or (state == "waiting" and resume == "mining")):
+        return False
     if state == "waiting":
         return resume not in ("filling", "ordering")
     return state in ("queued", "picking", "fit-check", "mining")
+
+
+def naming(progress):
+    """Row 56: is a mining job naming its clips (Anki Miner's run over)? `progress`: the job's saved progress, as the
+    ledger keeps it (JSON text) or read (a dict; the status record's carries the same `step`)."""
+    if isinstance(progress, str):
+        try:
+            progress = json.loads(progress)
+        except ValueError:
+            return False
+    return isinstance(progress, dict) and progress.get("step") == "naming"
 
 _SCHEMA_SQL = (
     "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
@@ -488,9 +503,10 @@ class Ledger:
     # --- laptop round 8 #47: *Stop* — the current episode's job, at its next safe point ------------------------- #
 
     def ask_stop(self, job_id):
-        """You pressed *Stop* on a job (the window, any process) -> True when the job is open: the runner stops it at its
-        next safe point — before its next step, or Anki Miner's batch cancelled within a second (`anki_miner.cancel`),
-        what it made kept — and it waits until you ask again. A job not under way (queued, or waiting) is stopped here
+        """You pressed *Stop* on a job (the window, any process) -> True when the job is open: the runner stops it within
+        a second or so — before its next step; a program it waits on ended within a second (tsubasa's check, Anki
+        Miner's look-ups: laptop round 9 #56, `stopping`) and the job stopped before that step; or Anki Miner's batch
+        cancelled (`anki_miner.cancel`), what it made kept — and it waits until you ask again. A job not under way (queued, or waiting) is stopped here
         and now, in the same transaction, so its stone says so at once even with Connect not running; the press is
         kept too, so a runner that took the job up meanwhile stops it at its next step. A job already ended -> False,
         nothing written. A press twice is one stop."""
@@ -500,8 +516,9 @@ class Ledger:
             return self._ask_stop(job_id)
 
     def _ask_stop(self, job_id):
-        row = self.conn.execute("SELECT state, asked_at, resume FROM jobs WHERE id = ?", (job_id,)).fetchone()
-        if row is None or not stoppable(row[0], row[2]):
+        row = self.conn.execute("SELECT state, asked_at, resume, progress FROM jobs WHERE id = ?",
+                                (job_id,)).fetchone()
+        if row is None or not stoppable(row[0], row[2], row[3]):
             return False
         self.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (f"{STOP}{int(job_id)}", _now()))
         if row[0] in NOT_STARTED:

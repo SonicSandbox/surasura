@@ -1,8 +1,8 @@
 {
-  "_about": "The build's one configuration (S3.1 D15): packaging/Surasura.spec and package_app.py read it, never a settings.json. modules: which optional modules ship (2.5.0 shipped junban, koe, youtube_downloader); koe also needs its folder. parts: update.json's parts (D4; tsubasa: its program and its name tables, so a tsubasa bump is one small part, T1 B), first match wins: a path ending in / is a folder, \"\" every file left.",
+  "_about": "The build's one configuration (S3.1 D15): packaging/Surasura.spec and package_app.py read it, never a settings.json. modules: which optional modules ship (2.5.0 shipped junban, koe, youtube_downloader; koe is left out from the 2.9 alpha and 3.0 on, its code kept in the private repo: Sonic 2026-10-23); koe also needs its folder; a module left out is checked absent from the built programs. parts: update.json's parts (D4; tsubasa: its program and its name tables, so a tsubasa bump is one small part, T1 B), first match wins: a path ending in / is a folder, \"\" every file left.",
   "modules": {
     "junban": true,
-    "koe": true,
+    "koe": false,
     "youtube_downloader": true,
     "reels": false,
     "immersion_architect": false

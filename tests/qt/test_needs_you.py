@@ -790,6 +790,71 @@ def test_known_from_ankis_question_marks_them_known_or_leaves_them_on_a_worker(w
     button(ny, entry.key, "mark_known").click()
     assert wait_until(lambda: got and changed, 5)
     assert got[0] == ("accept", "ja", True) and changed == [True]
+    from app.services import press as press_service           # (round 8, A-5: a card's answers are one press — the
+    monkeypatch.setattr(press_service, "LINGER_S", 0.0)      # question asked again later answers again)
     button(ny, entry.key, "leave_known").click()
     assert wait_until(lambda: len(got) == 2, 5)
     assert got[1] == ("decline", "ja", True)
+
+
+def test_row45_mark_them_known_turns_its_arc_before_the_worker_and_the_card_goes_with_its_bar_line(world, monkeypatch):
+    # Round 8 row 45 (Sonic: "on press there is ALWAYS an immediate reaction"): *Mark them known* waits on Anki and the
+    # known-words lock, so its button showed nothing until the answer came. Now its arc turns in the frame of the press
+    # — painted before the work is handed to the worker, the button never greyed — a second press while it works asks
+    # nothing, and the answer's line is in the bar as the card goes.
+    from PyQt6.QtCore import QEvent, QObject
+    from app.qt import bridge
+    from app.qt import press as qpress
+    connect = {"jobs": [], "gaps": [], "needs": [], "known_offer": {"cards": 40, "terms": ["suspended", "marked"]}}
+    seed, win, writer, ny = world(connect=connect)
+    release, asked = threading.Event(), []
+
+    def accept(lang, settings):
+        asked.append(lang)
+        assert release.wait(10)
+        connect.pop("known_offer", None)                # answered: Connect's record no longer carries the question
+        return ["一緒に", "やがる"]
+    ny.accept_known = accept
+    automation = getattr(win.services, "automation", None)
+    if automation is not None:
+        monkeypatch.setattr(automation, "known_changed", lambda: None)
+    else:
+        monkeypatch.setattr(win.services, "automation", SimpleNamespace(known_changed=lambda: None), raising=False)
+    win.show_tab("needs")
+    entry = entry_of(ny, service.KNOWN_OFFER)
+    b = button(ny, entry.key, "mark_known")
+    assert wait_until(lambda: b.isVisible() and b.width() > 10, 5)
+
+    class Paints(QObject):
+        n = 0
+
+        def eventFilter(self, obj, event):
+            if event.type() == QEvent.Type.Paint:
+                self.n += 1
+            return False
+    paints = Paints(b)
+    b.installEventFilter(paints)
+    for _ in range(5):
+        QApplication.processEvents()
+    before, seen, real = paints.n, [], bridge.run_in_worker
+
+    def handing(fn, *args, **kw):
+        if fn is accept:
+            spinner = qpress.arc(b)
+            seen.append((b.text(), b.isEnabled(), paints.n - before, spinner is not None and spinner.isVisible()))
+        return real(fn, *args, **kw)
+    monkeypatch.setattr(bridge, "run_in_worker", handing)
+    b.click()
+    assert len(seen) == 1
+    text, enabled, painted, arc = seen[0]
+    assert text == strings.NEEDS_ACTIONS["mark_known"][0] and enabled and arc and painted >= 1
+    assert wait_until(lambda: asked, 5)
+    for _ in range(5):
+        QApplication.processEvents()
+    assert qpress.arc(b) is not None                    # still turning while Anki is asked
+    b.click()                                           # a second press meanwhile asks nothing
+    release.set()
+    assert wait_until(lambda: win.bar_line.full() == strings.NEEDS_KNOWN_MARKED.format(n=2), 5)
+    assert wait_until(lambda: all(e.kind != service.KNOWN_OFFER for e in ny.entries) and ny.cards.card(entry.key)
+                      is None, 5)
+    assert asked == ["ja"]

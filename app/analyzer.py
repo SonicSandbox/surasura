@@ -141,7 +141,11 @@ ENSURE_AUDIO_EXAMPLE = False
 #     read in another script did (a Japanese list names 方 as かた and as ほう: as common as its commoner row, never its
 #     last — load_yomitan_frequency_list), so its frequency tier (the report's G-n badge) can move; a library holding a missing item lists it from its cached
 #     words (E2.2 K2). No tokenizing changed: SCHEMA_VERSION stays 20. 3.0: one re-analysis with 31.
-ENGINE_REVISION = 32
+# 33: Finished content is reference (W-1b): its names are the name tables' evidence, as a watched episode's are, so a
+#     name met in a finished show stays whole in the episodes ahead — a library holding Finished content can list its
+#     words differently with nothing changed in it. Never counted, as before. The token store moves its rows from kept
+#     to set aside in place, nothing tokenized: SCHEMA_VERSION stays 20. 3.0: one re-analysis with 31–32.
+ENGINE_REVISION = 33
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -3559,6 +3563,9 @@ def plan_lines(run):
         # Each part of the order-free signature on its own, so a re-plan can name what moved since (E1.3: the known
         # words, the word lists, files only removed — or anything else, a Generate first).
         "order_free_parts": plan_rules.part_digests(run["signature_parts"]),
+        # The set-aside files' own digests (W-1): a re-plan can tell one that only left (removed, or a watched episode
+        # moved to Finished) from one set aside, brought back or edited.
+        "reference": list(run["signature_parts"].get("reference") or ()),
     }
     yield _plan_json(header)
     prefix = os.path.join(data_dir, "")
@@ -3803,10 +3810,10 @@ def read_library_schedule(language, data_dir=None, user_files_dir=None):
             # Read-only mode: every reader takes the list Generate takes (§6.9), so the journey check, the indexer
             # and the report never disagree with it about a file dropped in since.
             if ls.check_mode(language, data_dir, busy_wait=0.0)[0] == "read-only":
-                return ls.read_only_schedule(language, data_dir, user_files_dir), None
+                return ls.read_only_schedule(language, data_dir, user_files_dir, with_aside=True), None
             return None, None
         with store:
-            return store.schedule(with_versions=True)
+            return store.schedule(with_versions=True, with_aside=True)
     except Exception:
         return None, None
 
@@ -3830,7 +3837,7 @@ def prepare_library(language, data_dir=None, user_files_dir=None):
             mode, reason = ls.check_mode(language, data_dir)
             if mode == "read-only":
                 print(f"Library store is read-only ({reason}): new files are analysed but not added to the order.")
-                out["schedule"] = ls.read_only_schedule(language, data_dir, user_files_dir)
+                out["schedule"] = ls.read_only_schedule(language, data_dir, user_files_dir, with_aside=True)
             return out
     except Exception as e:
         print(f"Library store unavailable ({e}); reading the library file.")
@@ -3838,7 +3845,7 @@ def prepare_library(language, data_dir=None, user_files_dir=None):
     try:
         with store:
             store.sync_disk()
-            schedule, versions = store.schedule(with_versions=True)
+            schedule, versions = store.schedule(with_versions=True, with_aside=True)
             if store.export_due():
                 ls.spawn_maintain(language)
     except Exception as e:
@@ -3995,6 +4002,22 @@ def resolve_found_files(language, verbose=True, schedule=None, read_store=True, 
     return found_files
 
 
+def resolve_sentence_files(language, with_lists=False):
+    """The files that give sentences — 例文 (`sentence_corpus.best_for`) and the sentence dictionary (`build`): (counted,
+    aside), absolute paths; the sentences come from counted + aside, in that order. Counted: Generate's list
+    (`resolve_found_files`, a missing item too). Aside: the library store's set-aside files (`text_lists`: reference —
+    Finished, W-1b, and watched episodes while *Keep studying watched episodes* is off, W-1) — off the list, still
+    sentences. None when there is no library store (JSON mode) or its lists can't be read now — the token store's
+    `reconcile(..., aside=None)`, its set-aside rows left as they are. `with_lists`: also the token store's other lists
+    as the indexer hands them (`indexer.token_store_lists`' dict: kept, aside, elsewhere, forgotten; None when they
+    can't be read now) — a reconcile with them leaves every row where the indexer would put it."""
+    counted = [p for p, _label, _weight, _type in resolve_found_files(language, verbose=False, missing=True)]
+    from app.indexer import token_store_lists
+    _counted, more = token_store_lists(language, get_data_path(language), counted)
+    aside = (more or {}).get("aside")
+    return (counted, aside, more) if with_lists else (counted, aside)
+
+
 def journey_is_current(args, language):
     """Would Generate compute anything new? True when the last run still describes this library, these
     known words and these analysis settings; False when it would not (or never ran); None when it cannot
@@ -4027,15 +4050,20 @@ def journey_is_current(args, language):
                 try:
                     with store:
                         _journey_sync(ls, store, language)
-                        schedule, versions = store.schedule(with_versions=True)
+                        schedule, versions = store.schedule(with_versions=True, with_aside=True)
                     library.update(schedule=schedule, order_version=versions["order_version"],
                                    epoch=versions["epoch"])
                 except Exception:
                     pass
+        if library["schedule"] is None:
+            # Read-only mode (or a store busy): the list Generate reads, with its set-aside files, read once here so
+            # the files and the "reference" part are signed from the same read, as Generate signs them
+            library["schedule"] = read_library_schedule(language)[0]
         found = resolve_found_files(language, verbose=False, schedule=library["schedule"], missing=True)
         if not found:
             return None
-        sig = compute_run_signature(language, found, parse_analysis_args(args[1:]))
+        sig = compute_run_signature(language, found, parse_analysis_args(args[1:]),
+                                    aside=aside_files(language, library["schedule"]))
         if not sig:
             return None
         results_dir = get_user_file("results")
@@ -4076,7 +4104,7 @@ def journey_check(args, language):
         found = resolve_found_files(language, verbose=False, schedule=schedule, read_store=False, missing=True)
         if not found:
             return None
-        sig = compute_run_signature(language, found, parse_analysis_args(args[1:]))
+        sig = compute_run_signature(language, found, parse_analysis_args(args[1:]), aside=aside_files(language, schedule))
         if not sig:
             return None
         results_dir = get_user_file("results")
@@ -4116,7 +4144,7 @@ def _token_store_meta(language, key):
         return None
 
 
-def compute_run_signature(language, found_files, args, order_free=False):
+def compute_run_signature(language, found_files, args, order_free=False, aside=()):
     """The run-signature: a filesystem fingerprint of everything that affects the analysis OUTPUT
     (content files + their order/weights, known words, ignore/blacklist/graduated lists, frequency
     lists, the analysis-affecting settings, the analysis-affecting args, and the engine version).
@@ -4124,8 +4152,29 @@ def compute_run_signature(language, found_files, args, order_free=False):
     sha256 hex or None. SHARED by main() (decide the skip) and the dashboard (decide, in-process,
     whether Generate can just reopen the existing report without spawning the analyzer).
 
-    `order_free`: the plan file's form (`signature_digest`) — the same library in any order has one."""
-    return signature_digest(run_signature_parts(language, found_files, args), order_free)
+    `order_free`: the plan file's form (`signature_digest`) — the same library in any order has one. `aside`: the
+    library's set-aside files (`aside_files`), the "reference" part."""
+    return signature_digest(run_signature_parts(language, found_files, args, aside), order_free)
+
+
+def aside_files(language, schedule):
+    """W-1: the library's set-aside files (`library_store.sets_aside`) — Finished (W-1b), and watched episodes while
+    *Keep studying watched episodes* is off — from a
+    schedule read with them (`Store.schedule(with_aside=True)`, `read_only_schedule(with_aside=True)`, in the same
+    transaction as the list): [(abs_path, source_type)], for the run signature's "reference" part. Never counted, their
+    text is the name tables' evidence and 例文's sentences, so they are part of what a run reads. [] with none (JSON
+    mode, no store)."""
+    ls = _library_store()
+    if ls is None or not schedule:
+        return []
+    data_dir = get_data_path(language)
+    out = []
+    for entry in schedule.get(ls.ASIDE) or ():
+        rel = str(entry.get("physical_path") or "")
+        if rel.startswith("./"):
+            rel = rel[2:]
+        out.append((os.path.join(data_dir, rel), entry.get("source_type")))
+    return out
 
 
 # The run signature's digest: one encoder and one rule, the analyzer's and the fast re-plan's (app/plan_rules.py).
@@ -4161,6 +4210,7 @@ def settings_signature(settings, language):
         "covers_download",              # Show covers (the setup wizard, G1.2-19): a cover's fetch, never a run
         "setup_seen",                   # the setup pages seen (the setup wizard, WZ-8): never a run
         "setup_passed",                 # the setup pages saved before setup finished (IK2-2): never a run
+        "hints_seen",                   # W-1: the window's one-time hints shown, each per library: never a run
         "connect_backlog_cap",          # how many cards Connect keeps waiting (P2.4): never what a run counts
         "known_from_anki",              # P2.4: what it adds lands in KnownWord.json (known_sig), not as a key
         "connect_video_folders",        # P2.5: where Connect looks for a moved video, never what a run counts
@@ -4220,8 +4270,11 @@ def settings_signature(settings, language):
     return json.dumps(_without_comments(_sj), sort_keys=True, ensure_ascii=False)
 
 
-def run_signature_parts(language, found_files, args):
-    """What the run signature hashes (`compute_run_signature`), as a dict; None when it can't be read."""
+def run_signature_parts(language, found_files, args, aside=()):
+    """What the run signature hashes (`compute_run_signature`), as a dict; None when it can't be read. `aside`: the
+    set-aside files (`aside_files`) — "reference", each file's own digest (`plan_rules.file_digest`, as "files" are
+    told apart), sorted: a watched mark, its Undo, *Keep studying watched episodes* flipped or a set-aside file edited
+    moves it, so Generate runs (never skips) and the fast re-plan asks for a Generate first, both ways (W-1)."""
     try:
         from app import token_index as _token_index
         user_files_dir = get_user_files_path(language)
@@ -4267,6 +4320,11 @@ def run_signature_parts(language, found_files, args):
             "engine": f"{_app_version}|schema{_token_index.SCHEMA_VERSION}|rev{ENGINE_REVISION}",
             "debug_word_stats": bool(os.environ.get("SURASURA_DEBUG_WORD_STATS")),
         }
+        if aside:
+            # W-1: the set-aside files, a part of its own present only then, so a library with none signs as before.
+            # Path and stat only: the store and the copy may name a file's type differently, never its text.
+            _sig_parts["reference"] = sorted(plan_rules.file_digest([fp, _fsig(fp), None, None, None])
+                                             for fp, _st in aside)
         # Q4-3: with Automatic rarity on, the band the library's store remembers helps pick the list (the second
         # threshold): a part of its own, present only then, so no other library's signature moves.
         try:
@@ -4767,7 +4825,7 @@ def main():
     # Computed by the shared compute_run_signature() (the dashboard calls the same function in-process
     # to decide whether Generate can just reopen the existing report without spawning this analyzer).
     # Its parts are kept: the plan file (below) carries the same signature without the order, from this very read.
-    _sig_parts = run_signature_parts(language, found_files, args)
+    _sig_parts = run_signature_parts(language, found_files, args, aside_files(language, _library["schedule"]))
     _run_sig = signature_digest(_sig_parts, chunked=False)
     _auto_pick = {}                      # Q4-3: the band Automatic picks below, remembered before the stamp
 
@@ -4843,10 +4901,16 @@ def main():
     # here on — the known words included — is read with.
     if _store is not None:
         try:
-            _store.reconcile([_fp for (_fp, _l, _w, _st) in found_files],
+            # The token store's lists, as the indexer hands them (W-1): a Generate before the indexer keeps every kept
+            # and set-aside (watched) file's row, never dropping one the indexer would only tokenize again. A library
+            # store that can't be read now: the run's list, every other row kept as it is or set aside (`run_lists`).
+            from app.indexer import run_lists
+            _counted, _more = run_lists(language, data_dir, [_fp for (_fp, _l, _w, _st) in found_files], _store)
+            _store.reconcile(_counted,
                              _cancellable(_token_index.make_tokenizer(language, reinforce=args.reinforce,
                                                                       script=script)),
-                             build_signature=_token_index.build_signature(language, args.reinforce, script))
+                             build_signature=_token_index.build_signature(language, args.reinforce, script),
+                             data_dir=data_dir, **_more)
         except Exception as e:
             print(f"Warning: token store reconcile failed; using direct tokenization: {e}")
             try:

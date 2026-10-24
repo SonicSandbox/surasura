@@ -18,8 +18,9 @@ Tk-free, pandas-free (the import guard); nothing here runs on the window's threa
   days, `library_store.trash_file`) — nothing half-imported, no `.part`. A store that can't be written refuses before
   anything is copied (E4); one that turns read-only after the copy sends the copies to the trash and says why. A copy
   that fails (a full disk, a file that can't be read) does the same, its job `failed` with the reason.
-- **N15:** an imported file is kept, never counted — `Store.text_lists()`' kept list (Finished), which the indexer's
-  `token_store_lists` hands the token store: its sentences stay for 例文 and the sentence dictionary.
+- **N15:** an imported file is never counted — `Store.text_lists()`' set-aside list (Finished is reference, W-1b),
+  which the indexer's `token_store_lists` hands the token store: its sentences go to 例文 and the sentence dictionary,
+  and its names to the name tables' evidence.
 
 `outcome` after the job ends — the job waits for the writer's answer (S2): `imported` (saved) · `nothing` (nothing
 new to add) · `cancelled` · `refused` (the store can't be written, before the copy or as the command landed: its

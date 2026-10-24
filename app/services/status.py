@@ -14,7 +14,9 @@ What it holds, refreshed off the window's thread:
   failure line, as a command-line one is, and (but the update's: Needs you lists those itself, with their actions)
   a *Needs you* entry. Their service says when to look again (`refresh_soon`). A duty's line is the bar's while its
   provider gives it (Generate failed until it runs cleanly again, the update's failure until looked at), then it goes
-  — still listed (HR-23); a command line's stays the bar's until a newer one.
+  — still listed (HR-23); a command line's stays the bar's until a newer one. ✕ on the bar's line
+  (`dismiss_failure(snap.failure_key)`, round 8 row 54) takes that failure off the bar for this session, still listed;
+  a newer one (the same words again too) is the bar's again.
 
 - the re-order host's passing line (`replan`: *Anki: placing tomorrow's 20 cards…* → *Anki's order is up to date*,
   *Generate first*) and the journey dot (`journey`, G10: True while the store's `journey_pending()` says the sentences
@@ -42,10 +44,12 @@ import weakref
 from collections import namedtuple
 
 from app.services import jobs as jobs_module
+from app.services import standing
 
 Entry = namedtuple("Entry", "text at seen")
-Snapshot = namedtuple("Snapshot", "lines failure needs_you ankiweb connect logs taken_at replan journey backlog",
-                      defaults=(None, None, None))
+Snapshot = namedtuple("Snapshot", "lines failure needs_you ankiweb connect logs taken_at replan journey backlog "
+                                 "failure_key", defaults=(None, None, None, None))
+#   failure_key: the bar's failure's standing key (round 8 row 54: ✕ hides it until a newer one; `dismiss_failure`)
 NEEDS_YOU_KEPT = 50
 LINE_PROVIDERS = ("ankiweb", "connect", "replan", "journey", "backlog")   # `journey`: True / False; `backlog`: a count
 TICKS = {"connect": 3.0, "ankiweb": 1.0, "backlog": 3.0}  # seconds between a ticking provider's looks (`poll`); a
@@ -87,6 +91,9 @@ class StatusService:
         self._lines = ()
         self._failure = None
         self._failure_from = None        # the failure provider whose line the bar's failure is (None: a command line's)
+        self._failure_at = None          # ... when it came, and its count this session (its standing key: a newer one,
+        self._failures = 0               # the same words in the same second too, shows again)
+        self._hidden = standing.Hidden()  # round 8 row 54: the failures ✕ took off the bar (this session; still listed)
         self._needs = []                 # Entry, newest first
         self._extra = dict.fromkeys(LINE_PROVIDERS)
         self._provided = {}              # each failure provider's last line (a new one counts once)
@@ -154,6 +161,16 @@ class StatusService:
             self._needs = [e._replace(seen=True) for e in self._needs]
         self._publish()
 
+    def dismiss_failure(self, key):
+        """✕ on the bar's failure line (round 8 row 54): that failure off the bar for this session — still listed in
+        *Needs you* — until a newer one comes. A key that isn't the bar's now (a newer one came meanwhile) hides
+        nothing new on the bar. -> True when it was new."""
+        with self._lock:
+            if not self._hidden.hide(key):
+                return False
+        self._publish()
+        return True
+
     def _refresh_while_asked(self):
         while True:
             with self._lock:
@@ -212,6 +229,8 @@ class StatusService:
             with self._lock:
                 if newest is not None:
                     self._failure, self._failure_from = events.plain(newest), None
+                    self._failures += 1
+                    self._failure_at = f"{newest.get('time')}#{self._failures}"
                     self._needs.insert(0, Entry(self._failure, newest.get("time"), False))
                 for name in FAILURE_PROVIDERS:
                     if name not in extra:
@@ -219,6 +238,8 @@ class StatusService:
                     line = extra.pop(name)
                     if line and line != self._provided.get(name):
                         self._failure, self._failure_from = line, name      # the newest failure is the bar's
+                        self._failures += 1
+                        self._failure_at = f"{time.strftime('%Y-%m-%dT%H:%M:%S')}#{self._failures}"
                         if name not in LISTED_BY_THE_WINDOW:
                             self._needs.insert(0, Entry(line, time.strftime("%Y-%m-%dT%H:%M:%S"), False))
                     elif not line and self._failure_from == name:
@@ -248,9 +269,11 @@ class StatusService:
             return None
 
     def _make(self):
-        return Snapshot(self._lines, self._failure, tuple(self._needs), self._extra.get("ankiweb"),
+        key = standing.failure_key(self._failure_at, self._failure) if self._failure else None
+        failure = self._failure if self._hidden.shows(key, standing.FAILURE) else None
+        return Snapshot(self._lines, failure, tuple(self._needs), self._extra.get("ankiweb"),
                         self._extra.get("connect"), self._logs_path, time.time(), self._extra.get("replan"),
-                        self._extra.get("journey"), self._extra.get("backlog"))
+                        self._extra.get("journey"), self._extra.get("backlog"), key if failure else None)
 
     def _publish(self):
         """A new snapshot, delivered one at a time and only while it is the newest (never an older one last), and only

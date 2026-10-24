@@ -90,7 +90,7 @@ DOORS = {
     "apkg_known": (".apkg", "Import an Anki deck file"),
     "word-lists": ("Ignore list · Blacklist", "Opens your Ignore list and Blacklist"),
     "junban": ("Preview order",
-               "Shows the new order and why, before anything moves; Restore previous order is there too"),
+               "Shows the new order and why, before anything moves; Undo the last reorder is there too"),
     "put-back": ("Put Anki back…", "Puts Anki's new cards back the way they were before Surasura first changed them"),
     "backfill": ("Preview", "Shows exactly what goes into each card; Fill and Restore are there too"),
     "extract": ("Extract…", "EPUBs and Anki decks, split into parts"),
@@ -254,7 +254,7 @@ ROWS = {
     "junban_auto_actions": ("…and tag, flag or suspend then", "The automatic reorder applies Junban's marks too",
                             "Off, the automatic reorder moves cards only; on, it applies everything Junban has saved",
                             "auto actions tag flag suspend"),
-    "junban_door": ("", "", "Preview order · Restore previous order", "preview restore order"),
+    "junban_door": ("", "", "Preview order · Undo the last reorder", "preview restore undo order"),
     "put_back": ("Put Anki back", "The way it was before Surasura first changed it",
                  "Puts Anki's new cards back in the order they had before Surasura first changed them, and takes "
                  "Surasura's tags, flags and suspensions off", "put back undo restore first touch"),
@@ -366,6 +366,12 @@ ROWS = {
     "soon_line": ("Soon starts after",
                   "For now a count · later worked out from how much you watch a day, about 3 weeks in",
                   "How many files of Current come before Soon", "soon weeks after soon line"),
+    # W-1 (Sonic 2026-10-22, Q4): a library's own option, beside its Soon line (settings_store.py)
+    "keep_watched": ("Keep studying watched episodes",
+                     "Off: when you mark an episode watched, its words leave your list and their cards move back.",
+                     "On: an episode you mark watched keeps its words on your list and its cards where they are\n"
+                     "Not the same as Study its cards first, which keeps one show's cards at the front.",
+                     "watched episode stone keep study list"),
     "library_folders": ("Library folders", "Read where they are: Surasura keeps its own copy of their text and "
                                            "looks in them again for new episodes",
                         "The folders Surasura reads where they are", "library folders source read where they are "

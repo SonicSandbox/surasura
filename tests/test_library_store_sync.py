@@ -862,23 +862,23 @@ def test_the_read_only_view_follows_a_moved_file(language):
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_a_missing_items_text_is_kept_and_counted(language):
     """9b (✅ G2.2-3: a file gone from the disk is never forgotten by itself): a missing item stays in the list the
-    token store counts until the user decides; *Remove* moves its text to the kept list; Finished and New arrivals are
-    kept, never counted."""
+    token store counts until the user decides; *Remove* moves its text to the kept list; Finished is set aside
+    (reference, W-1b), never counted."""
     store = migrated(language)
     data_dir, _u = roots(language)
     gone = store.ids("now")[0]
     rel = store.item(gone)["rel_path"]
     os.remove(os.path.join(data_dir, rel))
     store.sync_disk()
-    counted, kept = store.text_lists()
+    counted, kept, _aside = store.text_lists()
     assert rel in counted and rel not in kept, "missing: still counted"
     store.remove([gone])
-    counted, kept = store.text_lists()
+    counted, kept, _aside = store.text_lists()
     assert rel not in counted and rel in kept, "removed: kept, not counted"
     done = store.ids("soon")[0]
     store.finish([done])
-    counted, kept = store.text_lists()
-    assert store.item(done)["rel_path"] in kept and store.item(done)["rel_path"] not in counted
+    counted, kept, aside = store.text_lists()
+    assert store.item(done)["rel_path"] in aside and store.item(done)["rel_path"] not in counted + kept
     assert set(counted) == {e["physical_path"] for rows in store.schedule().values() for e in rows}
     store.close()
 
@@ -886,7 +886,7 @@ def test_a_missing_items_text_is_kept_and_counted(language):
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_a_missing_item_can_be_finished_and_keeps_its_text(language):
     """✅ G2.2-3 ("they could still move it to finalized"): a missing item finishes like any — still missing, now in
-    Finished — and its sentences stay in the kept list."""
+    Finished — and its sentences stay, set aside as Finished is (reference, W-1b)."""
     store = migrated(language)
     data_dir, _u = roots(language)
     item = store.ids("soon")[2]
@@ -895,7 +895,7 @@ def test_a_missing_item_can_be_finished_and_keeps_its_text(language):
     store.sync_disk()
     assert store.finish([item]) is not None
     assert store.item(item)["tier"] == "graduated" and store.item(item)["availability"] == "missing"
-    assert rel in store.text_lists()[1]
+    assert rel in store.text_lists()[2]
     store.close()
 
 
@@ -982,7 +982,7 @@ def test_a_removed_file_added_again_is_counted_not_kept(language):
     store.remove([x])
     assert rel in store.text_lists()[1], "precondition: a removed file's text is kept"
     store.insert([os.path.join(data_dir, rel)], "now")
-    counted, kept = store.text_lists()
+    counted, kept, _aside = store.text_lists()
     assert rel in counted and rel not in kept, "added again: counted, and not also kept from its trash row"
     store.close()
 

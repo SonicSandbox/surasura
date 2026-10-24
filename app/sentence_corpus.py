@@ -703,6 +703,15 @@ def library_counts(language):
     return (counts, floor) if counts is not None else None
 
 
+def has_sources(language):
+    """Whether the library gives sentences to build from — Generate's files or the set-aside ones
+    (`analyzer.resolve_sentence_files`): a library whose every show is Finished still has its sentences. The sentence
+    dictionary's "Add content first" check, Qt's and Tk's. Stats every file: a worker's call."""
+    from app import analyzer
+    counted, aside = analyzer.resolve_sentence_files(language)
+    return bool(counted or aside)
+
+
 def best_for(language, wanted, progress=None, young=None, phrases=None, prefer=None):
     """The best sentences of the words in `wanted` — {(lemma, reading)} — ranked as the dictionary ranks
     them (`collect`), so a card's added sentence is the one the Surasura Corpus shows first; `young`
@@ -722,8 +731,10 @@ def best_for(language, wanted, progress=None, young=None, phrases=None, prefer=N
     settings = settings_manager.load_settings()
     # As every run sets it, before the known words are read (a new cache is tokenized with it).
     analyzer.SANITIZE_JA = (language == "ja")
-    # The library as Generate reads it: a missing item still counts (its cached sentences), as `build` lists it.
-    files = [p for p, _label, _weight, _type in analyzer.resolve_found_files(language, verbose=False, missing=True)]
+    # The library as `build` lists it: Generate's (a missing item still counts, its cached sentences), then what is
+    # set aside as reference (Finished, watched episodes).
+    counted, aside = analyzer.resolve_sentence_files(language)
+    files = counted + (aside or [])
     if not files:
         return {}
     store = token_index.open_store(language)
@@ -757,8 +768,10 @@ def build(language, save_path, progress=print, show_source=False):
     # The same normalization a run uses, before anything is tokenized or any list is read.
     analyzer.SANITIZE_JA = (language == "ja")
 
-    # missing=True: a missing item keeps counting (9b), as Generate lists it — its row and sentences stay.
-    files = [p for p, _label, _weight, _type in analyzer.resolve_found_files(language, verbose=False, missing=True)]
+    # A missing item keeps counting (9b), as Generate lists it — its row and sentences stay; what is set aside as
+    # reference (Finished, a watched episode) still gives sentences, its row kept aside.
+    counted, aside, lists = analyzer.resolve_sentence_files(language, with_lists=True)
+    files = counted + (aside or [])
     if not files:
         progress("Your library is empty — add content first.")
         return 0
@@ -769,8 +782,10 @@ def build(language, save_path, progress=print, show_source=False):
     try:
         progress("Checking your library for new or changed files…")
         try:
-            store.reconcile(files, token_index.make_tokenizer(language, reinforce=reinforce, script=script),
-                            build_signature=token_index.build_signature(language, reinforce, script))
+            # The indexer's lists (a Finished item removed since its last pass stays kept, never dropped and read again)
+            store.reconcile(counted, token_index.make_tokenizer(language, reinforce=reinforce, script=script),
+                            build_signature=token_index.build_signature(language, reinforce, script),
+                            data_dir=get_data_path(language), **(lists or {"aside": aside}))
             if language == "ja":
                 from app import names
                 names.use_library_tables(store.names_tables())   # the known words read with them

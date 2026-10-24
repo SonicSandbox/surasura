@@ -201,7 +201,8 @@ def test_the_pops_generate_and_journey_act_as_the_header_ones_did(world, monkeyp
     import os
     from app import path_utils, static_html_generator
     opened = []
-    monkeypatch.setattr(static_html_generator, "open_report", lambda app_mode=False: opened.append(app_mode) or True)
+    monkeypatch.setattr(static_html_generator, "open_report",
+                        lambda app_mode=False, file=None: opened.append(app_mode) or True)
     world.d.level.click()
     assert wait_until(world.d.pop.isVisible)
     world.d.generate.button.click()
@@ -297,9 +298,10 @@ def test_no_journey_opens_by_itself_at_start_after_a_generate_or_a_level_change(
     from app.services import setup_wizard
     from app.services.generate import GenerateController
     opened = []
-    monkeypatch.setattr(static_html_generator, "open_report", lambda app_mode=False: opened.append("report") or True)
+    monkeypatch.setattr(static_html_generator, "open_report",
+                        lambda app_mode=False, file=None: opened.append("report") or True)
     monkeypatch.setattr(webbrowser, "open", lambda url, *a, **k: opened.append(url))
-    monkeypatch.setattr(world.services, "open_journey", lambda: opened.append("window") or True)
+    monkeypatch.setattr(world.services, "open_journey", lambda *file: opened.append("window") or True)
     _journey_on_disk()
     world.start()                                                   # the start
     assert wait_until(lambda: not world.d.journey_button.isHidden())

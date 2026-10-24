@@ -141,3 +141,134 @@ def test_the_stone_sits_on_the_names_first_line_with_the_windows_light_edge():
     assert "display: inline" in after, "the name flows on the stone's line"
     svg = re.search(r"const JOURNEY_STONE_SVG = '([^']*)'", source).group(1)
     assert theme.GEM["sapphire"][2] in svg and 'fill="none"' in svg, "the window's light edge (theme.GEM sapphire)"
+
+
+# --- opened on one episode (Sonic 2026-10-24, the stones' choice 1: "if you use the option on an episode to 'see in
+# journey' it should open up that one") ------------------------------------------------------------------------------ #
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_window_opens_the_report_on_an_episode_through_a_small_page_that_keeps_its_name(language, tmp_path,
+                                                                                         monkeypatch):
+    # why: Windows drops a file URL's #fragment on its way to the default browser, so the name rides in a small page
+    # beside the report that replaces itself with the report at #file=<name>; every other way in opens the report as
+    # before, with no page written
+    from urllib.parse import unquote
+    from app import static_html_generator as gen
+    _settings(language)
+    store = migrated(language)
+    names = _now_names(store)
+    store.set_watched([store.ids("now")[1]])                 # a set-aside episode: the window can still open on it
+    _render(tmp_path, language, [n for n in names if n != names[1]])
+    store.close()
+    results = tmp_path / "results"
+    opened, as_app = [], []
+    monkeypatch.setattr(gen, "get_user_file", lambda name: str(results))
+    monkeypatch.setattr(gen.webbrowser, "open", opened.append)
+    monkeypatch.setattr(gen, "open_as_app", as_app.append)
+    assert gen.open_report() is True
+    assert opened == [f"file://{results / gen.REPORT_NAME}"] and not (results / gen.OPEN_ON_NAME).exists()
+    assert gen.open_report(file=names[1]) is True
+    page = results / gen.OPEN_ON_NAME
+    assert opened[-1] == f"file://{page}"
+    target = json.loads(re.search(r"location\.replace\((\"[^\"]*\")\)", page.read_text(encoding="utf-8")).group(1))
+    assert target.startswith(gen.REPORT_NAME + "#file=") and unquote(target.split("#file=", 1)[1]) == names[1]
+    assert names[1].encode("ascii", "ignore") != names[1].encode("utf-8"), "a real Japanese / Chinese name, quoted"
+    assert gen.open_report(app_mode=True, file=names[0]) is True and as_app == [str(page)]
+    assert unquote(page.read_text(encoding="utf-8").split("#file=", 1)[1].split('"', 1)[0]) == names[0]
+    real_open = open
+
+    def held(path, *a, **kw):                               # the page can't be written (a lock, results read-only)
+        if str(path).endswith(gen.OPEN_ON_NAME):
+            raise PermissionError(13, "held", str(path))
+        return real_open(path, *a, **kw)
+    monkeypatch.setattr("builtins.open", held)
+    assert gen.open_report(file=names[1]) is True and opened[-1] == f"file://{results / gen.REPORT_NAME}", \
+        "the report itself opens (JO-A5): never a failed open"
+    monkeypatch.setattr("builtins.open", real_open)
+    (results / gen.REPORT_NAME).unlink()
+    assert gen.open_report(file=names[0]) is False, "no report: nothing opened"
+
+
+def test_the_report_opens_on_the_asked_file_whatever_it_is_and_else_on_the_first_still_to_study():
+    # why: the asked tab is clicked as it is — a set-aside one shows its Watched panel (its own onclick), a Target-met
+    # one its page (JO-A1: every kind carries its name), one past the paged sidebar's first 50 rendered first (JO-A2),
+    # brought into view and out of a collapsed Completed section (JO-A3); a name the report doesn't hold falls back to
+    # the one rule. Run in a real browser (ja + zh, each case, and failing on the template before): the recorded Edge
+    # check `tracks/window/work/journey-open/open_on_check.py` (no browser in pytest).
+    source = _template()
+    asked = _function(source, "fileFromHash")
+    assert "'#file='" in asked and "decodeURIComponent" in asked and "return '';" in asked
+    tab = _function(source, "createSidebarTab")
+    assert tab.index("tab.dataset.file = item.data.filename") < tab.index("if (item.type === 'prog')"), \
+        "every kind of tab is named, before the kinds part"
+    assert "dataset.file " not in _function(source, "stillToStudy"), "the opening rule still reads counted tabs only"
+    assert "return (i) =>" in _function(source, "setupInfiniteScroll"), "the paged sidebar renders up to an item"
+    first = source[source.index("// Initial Load"):]
+    first = first[:first.index("}, 50);")]
+    assert first.index("loadThrough(at)") < first.index("querySelectorAll('.file-tab')"), "rendered before it looks"
+    assert "t.dataset.file === asked" in first and "scrollIntoView" in first and "applyCompletedSectionState()" in first
+    assert "localStorage" not in first, "a collapsed section opened for it is not saved"
+    assert first.index("fileFromHash()") < first.index("tabs.find(stillToStudy)") < first.index("tabs[0]")
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_with_keep_studying_on_the_watched_sentence_shows_nowhere(language, tmp_path):
+    # why (Sonic 2026-10-24, choice 2: "if we have a setting that makes them continue to study then it wouldn't show
+    # this correct?"): with the option on, a watched episode's words stay on the list, so "Watched: its words leave
+    # your list." must say so nowhere — the window's stone tip (leaves False) and the report (the normal tab with its
+    # count, never the set-aside panel) — while with it off both say it
+    from types import SimpleNamespace
+    from app.qt import rows
+    from app.services import view_rows
+    sentence = strings.ROWS_STONE_LEAVES.strip()
+    ep = SimpleNamespace(label="Ep 2", watched=True, waiting=False)
+    on = rows.stone_tip(ep, "", view_rows.mark_moves_list("now", ep, True))
+    off = rows.stone_tip(ep, "", view_rows.mark_moves_list("now", ep, False))
+    assert sentence not in on and sentence in off
+    _settings(language)
+    store = migrated(language)
+    store.set_library_options(keep_watched=True)
+    names = _now_names(store)
+    store.set_watched([store.ids("now")[1]])
+    data = _payload(_render(tmp_path, language, names))
+    store.close()
+    entry = [e for e in data["progressive"] if e["filename"] == names[1]]
+    assert len(entry) == 1 and entry[0]["watched"] is True and entry[0]["words"], "its normal tab, with its count"
+    assert not any(e.get("aside") for e in data["progressive"] + data["completed_files"]), \
+        "no set-aside entry: renderWatchedFile (the sentence's one place in the report) is never reached"
+    panel_calls = [m.start() for m in re.finditer(r"renderWatchedFile\(", _template())]
+    branch = _function(_template(), "createSidebarTab")
+    assert len(panel_calls) == 2 and "renderWatchedFile(fileData)" in branch[branch.index("if (fileData.aside)"):], \
+        "the panel is drawn only from the aside branch (and defined once)"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_episode_the_journey_doesnt_list_yet_opens_it_where_it_opens_by_itself_and_says_so(language, tmp_path,
+                                                                                            monkeypatch):
+    # why (Sonic 2026-10-24, JO-1): an episode added since the last Generate isn't in the journey: the window says so
+    # ("Ep 13 isn't in your journey yet…") and the journey opens where it opens by itself — no page, no #file=; one the
+    # journey lists, of any kind (counted, set aside, Target met), opens on itself
+    from types import SimpleNamespace
+    from app import static_html_generator as gen
+    from app.qt import shell
+    _settings(language)
+    store = migrated(language)
+    names = _now_names(store)
+    store.set_watched([store.ids("now")[1]])
+    html = _render(tmp_path, language, [n for n in names if n != names[1]])
+    store.close()
+    results = tmp_path / "results"
+    opened = []
+    monkeypatch.setattr(gen, "get_user_file", lambda name: str(results))
+    monkeypatch.setattr(gen.webbrowser, "open", opened.append)
+    met = _payload(html)["completed_files"][0]["filename"]
+    assert all(gen.report_holds(n) for n in (names[0], names[1], met)), "counted, set aside, Target met"
+    assert not gen.report_holds("新しい_第13話.srt") and not gen.report_holds(names[0] + "x")
+    services = SimpleNamespace(settings=SimpleNamespace(get=lambda: {}))
+    assert shell.Services.open_journey(services, names[1]) is True and opened[-1].endswith(gen.OPEN_ON_NAME)
+    assert shell.Services.open_journey(services, "新しい_第13話.srt") == shell.JOURNEY_LACKS
+    assert opened[-1] == f"file://{results / gen.REPORT_NAME}", "where it opens by itself"
+    assert shell.Services.open_journey(services) is True and opened[-1].endswith(gen.REPORT_NAME)
+    (results / gen.REPORT_NAME).unlink()
+    assert shell.Services.open_journey(services, names[0]) is False and not gen.report_holds(names[0])
+    assert strings.JOURNEY_NOT_YET.format(ep="Ep 13") == \
+        "Ep 13 isn't in your journey yet: it comes in at the next Generate"

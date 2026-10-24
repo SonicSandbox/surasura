@@ -26,7 +26,7 @@ import abc
 
 from app.path_utils import (get_user_file, get_resource, get_data_path, get_user_files_path,
                             is_content_file, infer_source_type, library_available, read_source_marker, read_text,
-                            SUBTITLE_EXTENSIONS)
+                            report_name, SUBTITLE_EXTENSIONS)
 from app import settings_manager
 from app import word_selection
 from app import modality
@@ -6459,7 +6459,7 @@ def main():
     for seq_idx, ((file_path, _label, _weight, _source_type), (file_rows, baseline_pct, total)) in enumerate(zip(
             found_files, plan_rules.progressive_pass(_progressive_files(), session_known, session_lemmas,
                                                      itemgetter(0), _listed, _rank, args.target_coverage)), 1):
-        filename = os.path.basename(file_path)
+        filename = report_name(file_path)
         for (lemma, reading), count, known_count, start_pct, end_pct in file_rows:
             tier_labels = get_tier_label(lemma, freq_data)
             tier_str = ";".join([f"{source}:{tier}" for source, tier in tier_labels]) if tier_labels else "Outside"

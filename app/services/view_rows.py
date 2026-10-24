@@ -269,6 +269,15 @@ _YT_ID = re.compile(r"\s*\[[0-9A-Za-z_-]{6,11}\]$")
 
 
 # --- small pieces ---------------------------------------------------------------------------------------------------- #
+def journey_episode(row):
+    """The episode a row's way into the journey opens on (its ⋯ *See it in your journey*, Up Next's ↗): its next one;
+    a row whose every episode is watched, its first (Sonic 2026-10-24, JO-3). None for a row with none."""
+    eps = getattr(row, "episodes", None) or ()
+    if not eps:
+        return None
+    return eps[0] if all(e.watched for e in eps) else eps[row.next_index]
+
+
 def stem(name):
     """A file's name without its extension or a YouTube id in brackets."""
     return _YT_ID.sub("", _EXT.sub("", name or "")).strip()

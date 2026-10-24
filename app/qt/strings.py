@@ -267,6 +267,7 @@ GENERATE_PROGRESS_NAME = "Generate's progress"
 JOURNEY_TIP = "Your list with its sentences, in its own window\n• Click to open your journey"
 JOURNEY_NONE_TIP = "Your journey appears after your first Generate"
 JOURNEY_FAILED = "Couldn't open your journey: {why}"
+JOURNEY_NOT_YET = "{ep} isn't in your journey yet: it comes in at the next Generate"    # JO-1 (Sonic 2026-10-24)
 # The header's button beside the level ▾ (laptop fixes: the journey never opens by itself, only from here or a link)
 HEADER_JOURNEY = "Journey ↗"
 HEADER_JOURNEY_NAME = "Open your journey"
@@ -501,7 +502,7 @@ ROWS_DONE_ALL_TIP = "Every file of it is watched\n• Click to move it to Finish
 ROWS_DONE_ALL_MIX_TIP = "Every file of it is watched"         # hato's mix never finishes (G3.2)
 ROWS_HERO_KNOWN = "{pct}% known · "
 ROWS_HERO_NEW_LINK = "{n} new words ↗"
-ROWS_JOURNEY_TIP = "Your journey: your list with its sentences\n• Click to open it in its own window"
+ROWS_JOURNEY_TIP = "• Open your journey"           # JO-2 (Sonic 2026-10-24): short; it opens on the episode unsaid
 ROWS_TOP_LINE_WHERE = "{tip}\n• Click to change it: Settings → Anki & mining"     # P4.1 L2 (row 4.1.14)
 ROWS_SOON_LINE_WHERE = "{tip}\nWhere Soon starts is a setting: Settings → Content"
 ROWS_ACCESSIBLE_STRING = "{line} · {string}"
@@ -620,7 +621,7 @@ MENU_ITEMS = {
     "soon": ("Soon", "Move it to Soon: next in line, after what's in NOW"),
     "goal": ("Goal", "Move it to Goal: someday, in no order"),
     "finished": ("Finished", "Move it to Finished: you're done with it"),
-    "journey": ("See it in your journey", "Open your journey (your list with its sentences) in its own window"),
+    "journey": ("See it in your journey", "Open your journey"),                     # JO-2: short
 }
 MENU_REFUSED_TIP = "Your library can't be saved right now: {reason}"
 ROWS_SAVING = "saving…"

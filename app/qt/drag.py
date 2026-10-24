@@ -2224,8 +2224,8 @@ class DragController(QObject):
     def menu_pick(self, row, name):
         if name == "journey":
             from app.qt import press as qpress       # round 8 row 45: the row's ⋯ turns while it opens (IK-2)
-            self.win._open_journey(asked=True, at=qpress.row_mark(
-                self.lst, [row.episodes[row.next_index].id]) if row.episodes else None)
+            ep = view_rows.journey_episode(row)                            # opened ON it (Sonic 2026-10-24)
+            self.win._open_journey(asked=True, at=qpress.row_mark(self.lst, [ep.id]) if ep else None, episode=ep)
             return
         if self.refused() is not None:
             return

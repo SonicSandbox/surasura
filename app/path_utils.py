@@ -455,6 +455,12 @@ CONTENT_EXTENSIONS = (".txt", ".md", ".srt", ".ass", ".ssa")
 SUBTITLE_EXTENSIONS = (".srt", ".ass", ".ssa")
 
 
+def report_name(path):
+    """The report's name for a content file: its basename (a file path or a library path). The one rule — the
+    analyzer's per-file lists, the journey's stones, and the window opening the journey on an episode."""
+    return os.path.basename(path or "")
+
+
 def is_content_file(path):
     """True if `path` is a content file the analyzer will read (extension check only)."""
     return str(path).lower().endswith(CONTENT_EXTENSIONS)

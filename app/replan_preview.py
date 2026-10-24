@@ -54,6 +54,8 @@ SETTLE_S = 0.8                  # 04 §2.2: the moves' settle
 RETRY_S = 20.0                  # Anki in a review, 順's window open, cards left by the re-check: look again
 DONE_S = 5.0                    # "tomorrow's cards placed" gives way to "up to date" after this
 CHECK_ANKI_S = 60.0             # the catch-up's look for new cards in Anki, at most this often
+EDITED_DAYS_MAX = 60            # drill A3 gap 3: how far back the look for edited notes reaches at most (days)
+EDITED_CHUNK = 500              # notes a `notesModTime` asks at once
 CLOSE_WAIT_S = 15.0             # "finishing…" waits at most this long (inside an update's 20 s grace: updater.STOP_GRACE)
 SHADOW_LOG = "replan_shadow.log"
 VERB = "re-ordering as you move"    # the Anki-write lock's holder line ("… is writing to Anki")
@@ -78,7 +80,7 @@ CARDS_PUT_BACK = "{n:,} card{s} put back in your order"
 # --- end P4.1 L2 ---
 # A reorder you started (or one of Connect's) didn't finish: only its Restore goes on from there (I3) — in 順 until
 # the new window has its own.
-RESTORE_FIRST = "Anki not re-ordered: the last reorder didn't finish. Open 順 and press Restore previous order"
+RESTORE_FIRST = "Anki not re-ordered: the last reorder didn't finish. Open 順 and press Undo the last reorder"
 NEW_CONTENT = "New content: Generate puts its words in Anki's order (press it when you've placed it)"
 GENERATE_FIRST = "New content or settings: Generate runs first, then Anki is re-ordered"
 GENERATE_FIRST_CM = "New content or settings: Generate runs first (when you close the Content Manager), then Anki is re-ordered"
@@ -828,8 +830,9 @@ class Host:
 
     def _unplaced(self, settings):
         """New cards in the deck the last spaced run didn't place (03 §6: newly mined) — one `findCards`, at most
-        every CHECK_ANKI_S, asking for exactly the cards a run places (not suspended, buried or in a filtered deck).
-        Never raises."""
+        every CHECK_ANKI_S, asking for exactly the cards a run places (not suspended, buried or in a filtered deck) —
+        or a new card's note edited since the last run read it (drill A3 gap 3: its word changed, so may its place;
+        `_edited`). Never raises."""
         now = time.monotonic()
         if now - self._anki_looked < CHECK_ANKI_S:
             return False
@@ -847,9 +850,45 @@ class Host:
             ids = anki_connect.find_cards(url, f'deck:"{anki_connect.escape_query(deck)}" is:new -is:suspended '
                                                "-is:buried -deck:filtered")
             seen = undo.ladder(self.language, [deck]).get("seen")
-            return bool(ids) and (seen is None or max(ids) > seen)
+            return (bool(ids) and (seen is None or max(ids) > seen)) or self._edited(url, deck)
         except Exception:
             return False
+
+    def _edited(self, url, deck):
+        """Drill A3 gap 3 (the lead, 2026-10-23): has a new card's note been edited since the last run read it? Anki's
+        `edited:n` narrows it to the notes edited lately — n whole days back to the card map's last read plus two, as
+        the Anki sync's delta reads edits (`anki_sync._ids_and_edits`) — one `findNotes`, and `notesModTime` only for
+        those; each is held against the mod time the map read (`CardMap.note_mods`): one it never read, or read at
+        another time (an edit here, or one a sync brought from your phone), is owed. No map yet (the app just
+        started): any edit since Junban's last spaced run (its ladder file's time) is owed — one job, which fills the
+        map. A job's own note writes (tags, Backfill) make the next look owe one more job, once."""
+        from app import anki_connect
+        known = getattr(self._cards, "note_mods", None) or {}
+        since = getattr(self._cards, "read_at", 0) if known else self._last_run()
+        if not since:
+            return False
+        days = min(EDITED_DAYS_MAX, int(max(0.0, time.time() - since) // 86400) + 2)
+        notes = anki_connect.find_notes(url, f'deck:"{anki_connect.escape_query(deck)}" is:new -is:suspended '
+                                             f"-is:buried -deck:filtered edited:{days}")
+        if not notes:
+            return False
+        if not known:
+            return True
+        notes = list(notes)
+        for at in range(0, len(notes), EDITED_CHUNK):
+            mods = anki_connect.invoke("notesModTime", url, notes=notes[at:at + EDITED_CHUNK])
+            if any(isinstance(m, dict) and known.get(m.get("noteId")) != m.get("mod") for m in mods or ()):
+                return True
+        return False
+
+    def _last_run(self):
+        """When Junban's last spaced run for this language recorded its ladder (its file's time), or 0."""
+        try:
+            from app.path_utils import get_user_files_path
+            from modules.junban import undo
+            return os.path.getmtime(os.path.join(get_user_files_path(self.language), undo.LADDER_FILENAME))
+        except Exception:
+            return 0
 
     def _journey(self, plan, parts, verdict, store):
         """The dashboard's automatic Generate beyond a re-order the plan can't serve (04 §3, ✅ G1.5-2 / G1.5-5): no

@@ -355,6 +355,26 @@ def test_one_stray_copy_of_another_shows_episode_never_files_a_folder_under_that
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
+def test_half_of_a_folders_texts_is_not_most_of_them(language):
+    """FIX1's majority is MORE than half: `B/<Y>/` holding a byte copy of X's episode 1 and Y's one episode (one of
+    two) is still Y's own show."""
+    store, data_dir = _empty(language)
+    x, y = _SHOWS[language]
+    a, b = _drive("driveA"), _drive("driveB")
+    _seed(language, a, x, (1,))
+    with store:
+        xwork = _work(store, _look(store, language, store.add_source(a), first=True)["ids"][0])
+        os.makedirs(os.path.join(b, y))
+        shutil.copy2(os.path.join(a, x, _name(x, 1, language)), os.path.join(b, y, "stray copy.srt"))
+        _write(os.path.join(b, y, _name(y, 1, language)), _text(language, 7))
+        _settle(b)
+        result = _look(store, language, store.add_source(b))
+        new = [i for i in result["ids"] if _work(store, i) != xwork]
+        assert result["added"] == 1 and len(new) == 1
+        assert store.item(new[0])["rel_path"] == f"Library/{y}/{_name(y, 1, language)}"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 def test_a_new_show_with_generic_episode_names_beside_one_stray_copy_is_items_never_versions(language):
     """MV-A2: names that carry no show (`Episode 01`, common for rips). X's `Episode 01–02` taken in; a new show Y's
     folder with its own `Episode 01–02` and one byte copy of X's episode 1 — Y's episodes are two new items, never

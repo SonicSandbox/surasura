@@ -89,6 +89,14 @@ def current(win):
     return win.page_widgets["current"].list
 
 
+def keep_watched_on(seed, win):
+    """W-1: the library's *Keep studying watched episodes* on (another window's write): a watched mark then moves
+    nothing that counts, so the top line stays where it is — a test of one row's own repaint marks files with it on (a
+    mark that moves the line repaints the line's row too: `test_rows_string`'s W-1 test)."""
+    seed.library.commit(meta={"keep_watched": 1})
+    assert wait_until(lambda: win.page_widgets["current"].view_model.keep_watched, 5)
+
+
 def entry_of(lst, key):
     for i, e in enumerate(lst.model().entries):
         if getattr(e[1], "key", None) == key:
@@ -176,12 +184,10 @@ def test_mined_then_removed_is_in_anki_with_the_dim_mark_and_its_play_names_the_
     lst.scrollTo(lst.model().index(i, 0), lst.ScrollHint.PositionAtTop)
     QApplication.processEvents()
     gone = next(ep for ep in row.episodes if ep.removed)
-    plays = [p for p in part(lst, i, "play") if p[3] is not None and p[3].id == gone.id]
-    assert plays and "removed" in plays[0][2] and "link" in plays[0][2].lower()
-    fired = []
-    lst.play_requested.connect(fired.append)
-    QTest.mouseClick(lst.viewport(), Qt.MouseButton.LeftButton, pos=plays[0][1].center())
-    assert fired == []                                                       # a ▶ that can't play asks for nothing
+    # row 55 (Sonic: "if it doesn't find the media, there shouldn't be a play button"): no ▶ on it at all — the row's
+    # mark says it was deleted after mining; its tip (the ▶'s once) still names the removal for the hero's label
+    assert not [p for p in part(lst, i, "play") if p[3] is not None and p[3].id == gone.id]
+    assert "removed" in gone.play_tip and "link" in gone.play_tip.lower() and "deleted" in row.mark.tip
 
 
 def test_every_status_is_a_glyph_and_words_never_colour_alone(seeded):
@@ -247,7 +253,9 @@ def test_the_top_20_line_is_drawn_after_the_row_holding_the_20th_available_file(
     seed, win = seeded()
     lst = current(win)
     at = [i for i, e in enumerate(lst.model().entries) if any(ln.kind == "top" for ln in e[2])]
-    assert at == [4]                                       # the seed: the 20th available file is row 5's
+    # the seed: the 20th file that counts is row 6's — the hero's two watched episodes don't count (W-1: the store's
+    # one rule, `library_store.counts`, while the library's *Keep studying watched episodes* is off)
+    assert at == [5]
     strip = part(lst, at[0], "top-line")[0]
     assert strip[2].startswith("Everything above this line mines itself")
     assert strip[1].height() >= 12                          # S10: a 2 px groove, an easy target
@@ -364,6 +372,30 @@ def test_nothing_the_screens_do_writes_to_the_library(seeded):
     lst.play_requested.emit(lst.model().entries[0][1].episodes[0])
     QApplication.processEvents()
     assert writes == []
+
+
+def test_a_workers_answer_landing_after_the_window_closed_and_went_touches_nothing(qapp, qt_errors):
+    """A worker's answer that lands after the window closed and was deleted (the tests' teardown; any close whose
+    answers are still on their way) is dropped where answers come back, never handed to a callback writing into a
+    deleted widget: *N new words ↗*'s journey said into the bar already gone ("wrapped C/C++ object of type
+    ElidingLabel has been deleted", round 8 — the kind of thing that crashes natively)."""
+    import threading
+    from PyQt6 import sip
+    from PyQt6.QtCore import QThreadPool
+    seed = window_seed.build()
+    win, services = open_on(qapp, seed)
+    gate = threading.Event()
+    services.open_journey = lambda: gate.wait(5) and False       # none on disk: its answer says so in the bar
+    win._open_journey(asked=True)
+    win.close()
+    assert not win.isVisible()
+    sip.delete(win)
+    gate.set()
+    assert QThreadPool.globalInstance().waitForDone(5000)
+    for _ in range(20):
+        QApplication.processEvents()
+    services.shutdown(0.5)
+    assert qt_errors == []
 
 
 def test_play_looks_for_the_video_beside_the_file_on_a_worker_and_says_why_it_cant(seeded, tmp_path):
@@ -631,24 +663,22 @@ def part_any(lst, i):
     return lst.delegate.parts(entry, lst.visualRect(lst.model().index(i, 0)))
 
 
-def test_a_youtube_videos_play_is_muted_and_says_why(seeded):
-    """A-19: its video is online; until the window holds its address ▶ is muted with the reason, never a dead click."""
+def test_a_youtube_videos_row_has_no_play_and_never_a_dead_click(seeded):
+    """A-19: its video is online; until the window holds its address there is no ▶ on its row at all (row 55: a
+    ▶ is never there with nothing to open), never a dead click; its tip still names why (Up Next's *Online* says it)."""
     seed, win = seeded()
     lst = current(win)
     i, (kind, row, _l) = next((i, e) for i, e in enumerate(lst.model().entries)
                               if e[0] == rows.ROW and e[1].media == "youtube")
     assert not row.can_play and "online" in row.play_tip.lower()
-    fired = []
-    lst.play_requested.connect(fired.append)
-    play = [p for p in part(lst, i, "play")][0]
-    QTest.mouseClick(lst.viewport(), Qt.MouseButton.LeftButton, pos=play[1].center())
-    assert fired == []
+    assert part(lst, i, "play") == []
 
 
 def test_a_repaint_reuses_the_painted_rows_and_a_refresh_repaints_only_what_changed(seeded):
     """Each closed row is painted once into a pixmap; a repaint draws the pixmaps (no row drawn again), and a status
     write on one show repaints that show's row alone."""
     seed, win = seeded()
+    keep_watched_on(seed, win)
     lst = current(win)
     lst.viewport().repaint()
     renders = lst.delegate.renders
@@ -1852,3 +1882,175 @@ def test_a_status_button_says_how_many_files_its_click_asks_for_up_next_too(seed
                                 if p[0] == "mine-now"]
     assert ask.ids == tuple(e.id for e in asked)
     assert tip == strings.ROWS_MINE_NOW_TIP[len(asked) == 1].format(tip=rows.status_tip(waiting), n=len(asked))
+
+
+# --- row 55: ▶ only where its file is found ------------------------------------------------------------------------ #
+def test_row55_play_is_drawn_and_pressable_only_where_its_file_is_found(qapp, monkeypatch):
+    """Sonic (laptop try, row 55): "if it doesn't find the media, there shouldn't be a play button as it would be
+    missing". The window's reader carries ▶'s looker (`play.Looks`, its lookup a stand-in here: every other episode
+    found, never Up Next's): an opened row's found episode has ▶ drawn and pressable; one not found has neither — its
+    column stays, blank — and a press there asks for nothing; Up Next's *No video* is plain muted words (R55-B, Sonic:
+    no dashed frame, no triangle, nothing button-shaped), which say why on hover and are no button."""
+    from app.services import play, view_rows
+    seed = window_seed.build()
+    first = view_rows.build({r["id"]: r for r in seed.items}, {w["id"]: w for w in seed.works}, {"mine_line": 20})
+    hero_next = first.rows[0].episodes[first.rows[0].next_index].id
+    found = {e.id for r in first.rows for e in r.episodes if e.ask is not None and e.id % 2 == 0} - {hero_next}
+
+    def look(language, asks, listings=None, find=None):
+        return {i: i in found for i in asks}
+    monkeypatch.setattr(play, "look", look)
+    reader = library_reader.LibraryReader(seed.opener, language=seed.language, numbers=seed.numbers,
+                                          mining=seed.mining, poll=0.02, play=play.Looks(seed.language))
+    services = shell.Services(library=reader)
+    win = shell.open_window(qapp, services)
+    try:
+        win.resize(1280, 1100)
+        win.show()
+        lst = current(win)
+        page = win.page_widgets["current"]
+        assert wait_until(lambda: page.view_model is not None and any(
+            e.can_play for r in page.view_model.rows for e in r.episodes), 10)
+        for _ in range(50):
+            QApplication.processEvents()
+        fired = []
+        lst.play_requested.connect(fired.append)
+        # Up Next (R55-B): plain muted words *No video* that say why on hover; no ▶ part, and a press opens nothing
+        hero = lst.model().entries[0][1]
+        nxt = hero.episodes[hero.next_index]
+        assert not nxt.can_play and not nxt.looking
+        assert lst.delegate._watch_label(hero) == strings.ROWS_NO_MEDIA_BUTTON.format(word="video")
+        assert part(lst, 0, "play") == [] and part(lst, 0, "no-play")[0][2] == hero.play_tip
+        words = part(lst, 0, "no-play")[0][1]
+        rect, arr = grab(lst, 0)
+        box = arr[words.top() - rect.top():words.bottom() - rect.top() + 1,
+                  words.left() - rect.left():words.right() - rect.left() + 1]
+        ground = box[0, 0]
+        for edge in (box[0], box[-1], box[:, 0], box[:, -1]):            # no frame, dashed or whole, on any side
+            assert not (edge != ground).any(axis=-1).any()
+        assert not (box[:, :13] != ground).any(), "no triangle where the trillion stood"
+        assert (box != ground).any(axis=-1).sum() > 20, "the words are drawn"
+        QTest.mouseClick(lst.viewport(), Qt.MouseButton.LeftButton, pos=words.center())
+        # ... and no button's place: the words are the card's — a press there drags Up Next as its title does, and
+        # `_act` does nothing with them
+        title = part(lst, 0, "title")[0][1].center()
+        lst.drag = lst.drag or object()                       # (no writer here: a stand-in, `drag_from` asks only that)
+        assert lst.drag_from((0, "title", None, title, hero.key))
+        assert lst.drag_from((0, "no-play", nxt, words.center(), hero.key))
+        assert "no-play" not in rows.NO_DRAG
+        # an opened row with both
+        i, (_kind, row, _l) = next((i, e) for i, e in enumerate(lst.model().entries) if e[0] == rows.ROW and
+                                   len({ep.can_play for ep in e[1].episodes}) == 2)
+        lst.toggle(lst.model().index(i, 0))
+        assert wait_until(lambda: lst.model().open_key == row.key and
+                          len(lst.delegate.episode_lines(lst.model().entries[i], lst.visualRect(
+                              lst.model().index(i, 0)))) == len(row.episodes))
+        lst.scrollTo(lst.model().index(i, 0), lst.ScrollHint.PositionAtTop)
+        for _ in range(20):
+            QApplication.processEvents()
+        rect, arr = grab(lst, i)
+        plays = {p[3].id for p in part(lst, i, "play") if p[3] is not None}
+        seen = {True: 0, False: 0}
+        for r, ep in lst.delegate.episode_lines(lst.model().entries[i], rect):
+            col = lst.delegate._episode_cols(r)["play"]
+            if not rect.contains(col):
+                continue                                      # below the window's fold
+            sub = arr[col.top() - rect.top():col.bottom() - rect.top() + 1,
+                      col.left() - rect.left():col.right() - rect.left() + 1]
+            inked = int((sub != sub[0, 0]).any(axis=2).sum())
+            assert (ep.id in plays) == ep.can_play == (inked > 5), (ep.label, ep.can_play, inked)
+            if not ep.can_play:
+                assert inked == 0, "its column stays, blank (IK-6)"
+                QTest.mouseClick(lst.viewport(), Qt.MouseButton.LeftButton, pos=col.center())
+            seen[ep.can_play] += 1
+        assert seen[True] and seen[False]
+        assert fired == []                                    # nothing not found was asked to open
+    finally:
+        win.close()
+        services.shutdown(0.5)
+
+
+def test_row55_up_next_says_looking_until_the_check_answers_never_no_video_first(qapp, monkeypatch):
+    """R55-A (Sonic): before the video check has answered for Up Next's episode, its place reads a muted *Looking…*
+    (its tip: looking, never "not found"), never *No video*; once the answer lands, ▶ Watch — or, not found, the plain
+    *No video*. The check here runs only when the test says (a worker run by hand)."""
+    from app.services import play, view_rows
+    from tests.test_play_shown import _Hand
+    seed = window_seed.build()
+    first = view_rows.build({r["id"]: r for r in seed.items}, {w["id"]: w for w in seed.works}, {"mine_line": 20})
+    hero_next = first.rows[0].episodes[first.rows[0].next_index].id
+    monkeypatch.setattr(play, "look", lambda language, asks, listings=None, find=None:
+                        {i: i == hero_next for i in asks})
+    hand = _Hand()
+    reader = library_reader.LibraryReader(seed.opener, language=seed.language, numbers=seed.numbers,
+                                          mining=seed.mining, poll=0.02, play=play.Looks(seed.language, worker=hand))
+    services = shell.Services(library=reader)
+    win = shell.open_window(qapp, services)
+    try:
+        win.resize(1280, 1100)
+        win.show()
+        lst = current(win)
+        page = win.page_widgets["current"]
+        assert wait_until(lambda: page.view_model is not None and page.view_model.state == "full", 10)
+        for _ in range(20):
+            QApplication.processEvents()
+        hero = lst.model().entries[0][1]
+        nxt = hero.episodes[hero.next_index]
+        assert nxt.looking and not nxt.can_play
+        assert lst.delegate._watch_label(hero) == strings.ROWS_LOOKING_BUTTON
+        assert part(lst, 0, "play") == []
+        assert part(lst, 0, "no-play")[0][2] == view_rows.STRINGS["play_looking"].format(word="video")
+        hand.run()                                            # the check answers: found
+        assert wait_until(lambda: (lambda h: not h.episodes[h.next_index].looking and h.can_play)(
+            lst.model().entries[0][1]), 10)
+        hero = lst.model().entries[0][1]
+        assert lst.delegate._watch_label(hero) == hero.verb and part(lst, 0, "play") and not part(lst, 0, "no-play")
+    finally:
+        win.close()
+        services.shutdown(0.5)
+
+
+def test_row55_a_press_that_found_nothing_has_that_episode_looked_at_again(qapp):
+    """A-7: ▶ pressed in the race where its video just vanished — the bar says *Couldn't open X: why*, and the episode
+    is handed to the looker to look at again (so its ▶ goes), never left offering a file the app knows is gone."""
+    from tests.test_play_shown import _Recorder
+    seed = window_seed.build()
+    rec = _Recorder()
+    reader = library_reader.LibraryReader(seed.opener, language=seed.language, numbers=seed.numbers,
+                                          mining=seed.mining, poll=0.02, play=rec)
+    services = shell.Services(library=reader)
+    win = shell.open_window(qapp, services)
+    try:
+        page = win.page_widgets["current"]
+        assert wait_until(lambda: page.view_model is not None and page.view_model.state == "full", 10)
+        ep = page.view_model.rows[0].episodes[0]
+        said = []
+        page.message.connect(said.append)
+        page._open_found((None, strings.PLAY_FAILED.format(name=ep.label, why="it isn't on disk")), ep)
+        assert said and rec.rechecked == [[ep.id]]
+        page._open_found((None, "Couldn't open it"))             # no episode named: nothing looked at again
+        assert rec.rechecked == [[ep.id]]
+    finally:
+        win.close()
+        services.shutdown(0.5)
+
+
+def test_row55_a_source_look_asks_plays_looks_again_only_when_it_recorded_a_video(qapp):
+    """IK-1 (S19): a source folder's look that recorded no video on a known file (most looks) asks ▶'s looks for
+    nothing; one that did asks for the ones not found."""
+    from tests.test_play_shown import _Recorder
+    seed = window_seed.build()
+    rec = _Recorder()
+    reader = library_reader.LibraryReader(seed.opener, language=seed.language, numbers=seed.numbers,
+                                          mining=seed.mining, poll=0.02, play=rec)
+    services = shell.Services(library=reader)
+    win = shell.open_window(qapp, services)
+    try:
+        win._sources_looked({"language": seed.language, "sources": [], "moved": 0})
+        win._sources_looked({"language": seed.language, "sources": []})
+        assert rec.agains == []
+        win._sources_looked({"language": seed.language, "sources": [], "moved": 2})
+        assert rec.agains == [None]
+    finally:
+        win.close()
+        services.shutdown(0.5)

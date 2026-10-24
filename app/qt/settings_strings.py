@@ -366,6 +366,12 @@ ROWS = {
     "soon_line": ("Soon starts after",
                   "For now a count · later worked out from how much you watch a day, about 3 weeks in",
                   "How many files of Current come before Soon", "soon weeks after soon line"),
+    # W-1 (Sonic 2026-10-22, Q4): a library's own option, beside its Soon line (settings_store.py)
+    "keep_watched": ("Keep studying watched episodes",
+                     "Off: when you mark an episode watched, its words leave your list and their cards move back.",
+                     "On: an episode you mark watched keeps its words on your list and its cards where they are\n"
+                     "Not the same as Study its cards first, which keeps one show's cards at the front.",
+                     "watched episode stone keep study list"),
     "library_folders": ("Library folders", "Read where they are: Surasura keeps its own copy of their text and "
                                            "looks in them again for new episodes",
                         "The folders Surasura reads where they are", "library folders source read where they are "

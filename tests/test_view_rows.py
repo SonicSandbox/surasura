@@ -250,6 +250,48 @@ def test_the_top_20_line_counts_available_files_so_missing_ones_push_it_down():
     assert "20" in top[0].tip
 
 
+def test_W1_the_top_line_skips_a_watched_file_while_the_library_keeps_none_by_the_stores_one_rule():
+    """W-1 (`library_store.counts`): a watched episode of Current has nothing left to mine while *Keep studying watched
+    episodes* is off — it uses up no place under the line, as the store's `_mine_ids` reads it; with the option on it
+    counts as before. The view carries the option (the stones' tip, the first mark's toast)."""
+    items = items_of([("now", 1, 1, eps("星降る街の小さな工房", 1, 12), {k: {"watched": 1} for k in (0, 1)}),
+                      ("now", 2, 2, eps("雲の上の郵便屋さん", 1, 8), {}),
+                      ("now", 3, 3, [f"白銀の書庫番 0{k} 章.txt" for k in range(1, 5)], {})])
+    current = sorted(items.values(), key=lambda r: r["ord"])
+    off = vr._mine_ids(current, 20, False)
+    assert off[:2] == [3, 4] and len(off) == 20 and 1 not in off and 2 not in off
+    assert vr._mine_ids(current, 20, True)[:2] == [1, 2]
+    view = vr.build(items, WORKS, {"mine_line": 20})                   # absent: off
+    top = [ln for ln in view.lines if ln.kind == "top"]
+    assert top and top[0].after == 2 and not view.keep_watched        # 10 + 8 count, the 20th is in row 3
+    view = vr.build(items, WORKS, {"mine_line": 20, "keep_watched": 1})
+    top = [ln for ln in view.lines if ln.kind == "top"]
+    assert top and top[0].after == 1 and view.keep_watched            # 12 + 8: the line after row 2
+
+
+def test_W1_the_first_screens_cache_keeps_the_librarys_option_and_an_older_cache_reads_off():
+    """Review W-3: the cached first screen is shown before the store is read — it carries *Keep studying watched
+    episodes*, or a library with it on would show the stones' and the mark's words for it off (and spend its hint)."""
+    items = items_of([("now", 1, 1, eps("星降る街の小さな工房", 1, 3), {})])
+    for keep in (0, 1):
+        view = vr.build(items, WORKS, {"mine_line": 20, "keep_watched": keep})
+        assert vr.from_cache(vr.to_cache(view)).keep_watched is bool(keep)
+    older = vr.to_cache(vr.build(items, WORKS, {"keep_watched": 1}))
+    older.pop("keep_watched")
+    assert vr.from_cache(older).keep_watched is False
+
+
+def test_W1_a_mark_moves_the_list_only_where_the_stores_rule_says():
+    """Review W-6: one rule (`library_store.counts`) for the stone's line, the mark's words and its hint — a studied
+    tier's episode while the option is off; never with it on, never in Finished or New arrivals, never a video waiting
+    for its subtitle."""
+    ep = vr.build(items_of([("now", 1, 1, eps("雲の上の郵便屋さん", 1, 2), {})]), WORKS, {}).rows[0].episodes[0]
+    assert [t for t in ("now", "soon", "goal", "graduated", "arrivals") if vr.mark_moves_list(t, ep, False)] == [
+        "now", "soon", "goal"]
+    assert not any(vr.mark_moves_list(t, ep, True) for t in ("now", "soon", "goal"))
+    assert not vr.mark_moves_list("now", ep._replace(waiting=True), False)
+
+
 def test_no_top_line_when_current_has_fewer_files_than_the_line():
     items = items_of([("now", 1, 1, eps("星降る街の小さな工房", 1, 5), {})])
     assert not [ln for ln in vr.build(items, WORKS, {"mine_line": 20}).lines if ln.kind == "top"]
@@ -1468,7 +1510,7 @@ def test_LM11b_G1_a_video_and_epub_group_says_of_each_file_what_it_is():
     book = row.episodes[2]
     assert [e.media_word for e in row.episodes] == ["video", "video", "EPUB"]
     assert (book.label, book.status.label) == ("Part 1", "No EPUB") and "video" not in book.status.tip
-    assert row.mark is not None and row.mark.tip.startswith("No EPUB on disk for Part 1")
+    assert row.mark is not None and row.mark.tip.startswith("Part 1: ")
     assert "video" not in row.mark.tip
 
 
@@ -1479,7 +1521,16 @@ def test_LM11b_G1_a_video_and_epub_group_with_both_gone_uses_the_neutral_word_on
     assert row.status.label == "No media · 3" and "No media on disk" in row.status.tip
     assert [e.status.label for e in row.episodes] == ["No video", "No video", "No EPUB"]
     videos = vr.build(_mixed(missing=(0, 1)), WORKS, {"mine_line": 20}, pieces=_group()).rows[0]
-    assert videos.mark.tip.startswith("No video on disk for Ep 1, Ep 2")    # only its videos gone: their word
+    assert videos.mark.tip.startswith("Ep 1, Ep 2: ")                       # only its videos gone: them named
+
+
+def test_R55_C_a_missing_files_mark_says_what_happened_and_what_to_do_in_up_nexts_words():
+    """R55-C (Sonic, 2026-10-23: "Your lean is fine"): with ▶ gone for a missing file, its mark carries the words ▶'s
+    tip had — what happened and what to do, one string with Up Next's — never "No video on disk" for a file that was
+    there and went (a book's or a podcast's too)."""
+    row = vr.build(_mixed(missing=(0, 2)), WORKS, {"mine_line": 20}, pieces=_group()).rows[0]
+    assert row.mark.tip == "Ep 1, Part 1: " + vr.STRINGS["play_missing"]
+    assert "on disk" not in row.mark.tip and "Needs you" in row.mark.tip
 
 
 def test_LM11b_G1_a_cached_rows_fast_path_reads_the_type_guess_and_never_keeps_a_stale_one():

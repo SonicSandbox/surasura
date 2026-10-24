@@ -20,17 +20,29 @@ IK S3, S7). What the rows, Finished, the arrivals and *Needs you* ask for, route
   (`rows.asked_files`): never a file in Anki, being mined, or whose cards were deleted (P4.1 WF, adversary S5).
 - **An episode's own ⋯** (row 28, Michi's row 24b ask): *Mine now* exactly where the episode's pill would be *Mine
   now* (`rows.action_of`, its tip the pill's), picked as the pill is clicked (`mine_row`, its ids the pill's).
+- **Pressed, its pills turn at once** (round 8 row 45, the trial): each file asked for is a press of the window's
+  (`mine:<language>:<id>` in `win.presses`, IK-3: the header's hairline runs with it) and is marked in each list
+  (`RowsView.press_ids`, painted before the ask is handed to the writer). Its press ends when its status moves
+  (Connect read the ask: `RowsView.press_moved`), the ask is refused (failed) or undone (the ticket's `told`), the
+  language switches (`settle_all`), or — A-4 — `SETTLE_S` after the ask was saved: Connect not running, Anki closed, on
+  battery, the pill gives way to Connect's own state and its reason (a wait is a state, never an endless *starting*).
+  Saved, the feed is looked at now. Asked again while they turn, nothing is asked.
 Nothing here reads the store or the settings on the window's thread: the writes are the writer's, the looks a worker's.
 """
 import os
 
-from PyQt6.QtCore import QObject
+import itertools
+
+from PyQt6 import sip
+from PyQt6.QtCore import QObject, QTimer
 from PyQt6.QtWidgets import QApplication, QFileDialog
 
 from app import path_utils
 from app.qt import bridge, drag, item_menu, rows, strings, windows
+from app.qt import press as qpress
 
 OFF_KEYS = frozenset(("connect_enabled", "logic.automation", "automation"))
+SETTLE_S = 6.0          # an ask saved, then its pill's press ends (A-4: two of Connect's 3 s looks; PROVISIONAL)
 
 
 def connect_off(settings):
@@ -73,7 +85,10 @@ class MineActions(QObject):
         self.lists = [page.list for page in win.page_widgets.values() if hasattr(getattr(page, "list", None),
                                                                                   "mine_requested")]
         self.make_cards = _make_cards                # (tests replace it)
+        self._asked = {}                             # round 8 row 45: file id -> (its ask's number, its press's key)
+        self._asks = itertools.count(1)
         for lst in self.lists:
+            lst.press_moved = self.settle
             lst.mine_requested.connect(self.mine_row)
             lst.link_requested.connect(self.link)
             lst.mine_text_requested.connect(lambda row, ep: self.mine_text(ep.label, ep.rel_path))
@@ -169,8 +184,54 @@ class MineActions(QObject):
         moves = self.win.moves
         if moves is None or moves.refused() is not None:
             return None
+        presses = qpress.presses_of(self.win)
+        lang = getattr(self.win, "language", "")
+        keys_of = {i: f"mine:{lang}:{i}" for i in ids}
+        if all(presses.get(k).live() for k in keys_of.values()):
+            return None                              # round 8 row 45: asked already, still turning — asked once
+        n = next(self._asks)
+        for i, key in keys_of.items():               # ... each file a press (the hairline runs, painted now) …
+            qpress.begin(None, key, win=self.win)
+            self._asked[i] = (n, key)
+        for lst in self.lists:                       # ... and its pills turn now, painted before the ask is handed over
+            lst.press_ids(ids)
+        ticket = drag.Ticket(text, keys, ids)
+        ticket.told = lambda event: self._told(event, ids, n)
         writer = moves.writer
-        return moves._give(drag.Ticket(text, keys, ids), lambda t: writer.ask_mining(ids, label=t))
+        try:                                         # (refused: the ticket is told so: failed; the controller says why)
+            return moves._give(ticket, lambda t: writer.ask_mining(ids, label=t))
+        except Exception as e:                       # never a press left turning
+            self.settle(ids, why=e)
+            raise
+
+    def _told(self, event, ids, n):
+        """Round 8 row 45: the ask saved — Connect's feed looked at now, not at its next tick, and its presses end
+        `SETTLE_S` later if Connect hasn't moved them by then (A-4); refused — failed; undone — done."""
+        if event == "saved":
+            refresh = getattr(getattr(self.win.services, "status", None), "refresh_soon", None)
+            if refresh is not None:
+                refresh("connect")
+            QTimer.singleShot(int(SETTLE_S * 1000), lambda: None if sip.isdeleted(self) else
+                              self.settle([i for i in ids if self._asked.get(i, (None,))[0] == n]))
+            return
+        self.settle(ids, why=event if event == "refused" else None)
+
+    def settle(self, ids, why=None):
+        """The presses of the files `ids` end (done, or failed `why`), and their pills are their own again in every
+        list."""
+        presses = qpress.presses_of(self.win)
+        for i in ids:
+            got = self._asked.pop(i, None)
+            if got is not None:
+                p = presses.get(got[1])
+                if p.live():
+                    qpress.end(p, self.win, failed=why is not None, why=why)
+        for lst in self.lists:
+            lst.unpress(ids)
+
+    def settle_all(self):
+        """A language switch: no pressed Mine now of the language left."""
+        self.settle(list(self._asked) + [i for lst in self.lists for i in lst.pressed_ids])
 
     # --- row 28 (Michi's row 24b ask): an episode's own ⋯ ----------------------------------------------------- #
     def episode_entries(self, row, ep):

@@ -847,7 +847,12 @@ class KnownCorner(QToolButton):
     sync now (`clicked`: the shell hands it to `Automation.sync_now`, or opens the Anki window while there is nothing
     to sync from yet). Its hover's last line, and its accessible description, say what a click does on the road shown
     (`set_road`, the page's known-words road: Anki's decks chosen, a sync; none, the Anki window), or, while a sync
-    runs (`set_syncing`), that one is running (IK-7)."""
+    runs (`set_syncing`), that one is running (IK-7).
+    Round 8 row 45 (round 2, Sonic: "the underline glow the surasura colors as it goes, so a bar that fills up until
+    it's done … fitting the actual shape of it"): a click's sync shows at once on the hairline itself (`press_look`, the
+    press's own look) — the iris filling it to the sync's share (`set_work_share`, the registry job's progress) or, with
+    no share known, an iris glint running along it on the spinner's clock (`motion.Turn`; under Reduced motion the
+    hairline whole, still). No words, nothing moves; the milestone's share comes back when the sync ends."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -855,6 +860,10 @@ class KnownCorner(QToolButton):
         self.n = None
         self.said = ""                   # the shell's words, the hover's first line
         self.syncing = False
+        self.working = False             # round 8 row 45: a click's sync under way (the hairline shows it)
+        self.work_share = None           # ... its share 0–100, when the registry knows it
+        self._turn = None                # ... the glint's phase while no share is known
+        self._line = QRectF()            # ... where the hairline was painted (a glint frame repaints that alone)
         self.road = "anki"               # "anki" (a click syncs) or "import" (no decks yet: it opens the Anki window)
         self.paints = 0
         self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
@@ -917,6 +926,65 @@ class KnownCorner(QToolButton):
         self._said_again()
         return True
 
+    # --- round 8 row 45 (round 2): the press shown on the hairline ------------------------------------------------- #
+    def press_look(self, on):
+        """`app/qt/press.py`'s hook: a click's sync under way (on) or ended. Painted now (the press repaints)."""
+        on = bool(on)
+        if on == self.working:
+            return
+        self.working, self.work_share = on, None
+        if on:
+            self._turn = motion.Turn(self, self._glinted, period="press-glint")
+            self._turn.show()
+            self._turn.set_running(True)
+        elif self._turn is not None:
+            self._turn.set_running(False)
+            self._turn.deleteLater()
+            self._turn = None
+        self.update()
+
+    def set_work_share(self, share):
+        """The sync's share (0–100), or None: not known (the glint runs). -> True when it changed."""
+        share = None if share is None else max(0.0, min(100.0, float(share)))
+        if not self.working or share == self.work_share:
+            return False
+        self.work_share = share
+        self.update(self._line.toAlignedRect())
+        return True
+
+    def _glinted(self):
+        if self.work_share is None:
+            self.update(self._line.toAlignedRect())
+
+    def _paint_work(self, p, x, y, span):
+        """The hairline while a click's sync runs: its track, then the iris — filled to the share, or a glint running
+        along it (still: whole, quieter) — with a soft glow a pixel either side."""
+        p.setOpacity(1.0)
+        p.fillRect(QRectF(x, y, span, 1), style.qcolor(theme.FRAME_COLOURS["milestone-left"]))
+        phase = self._turn.turning if self._turn is not None else None
+        if self.work_share is not None:
+            lit, a = QRectF(x, y, span * self.work_share / 100.0, 1), 1.0
+        elif phase is None:
+            lit, a = QRectF(x, y, span, 1), F["progress-busy-alpha"] + 0.4
+        else:
+            w = span * 0.35                              # the glint: a third of the line, from past its left to past its right
+            left = x - w + phase * (span + w)
+            lit, a = QRectF(left, y, w, 1).intersected(QRectF(x, y, span, 1)), 1.0
+        if lit.width() <= 0:
+            return
+        grad = _iris(x, x + span)
+        if self.work_share is None and phase is not None:   # the glint's own ends fade into the track
+            grad = QLinearGradient(QPointF(left, 0), QPointF(left + w, 0))
+            for pos, colour in theme.IRIS.get(style.current()[0], theme.IRIS[theme.DEFAULT_THEME]):
+                c = QColor(colour)
+                c.setAlphaF(math.sin(math.pi * pos) if 0 < pos < 1 else 0.0)
+                grad.setColorAt(pos, c)
+        p.setOpacity(a * 0.3)
+        p.fillRect(lit.adjusted(0, -1, 0, 1), grad)       # the glow
+        p.setOpacity(a)
+        p.fillRect(lit, grad)
+    # --- end round 8 row 45
+
     def set_road(self, road):
         """The known-words road shown ("anki" / "import"): the hover's click line follows it. -> True when it changed
         (only the tip and the description: nothing to repaint)."""
@@ -971,9 +1039,13 @@ class KnownCorner(QToolButton):
         _nxt, share = milestone(self.n)
         y = min(self.height() - 1, base + max(3, small.descent()) + 1)
         span = self.width() - 4
-        p.setOpacity(F["known-hairline-alpha"])
-        p.fillRect(QRectF(2, y, span, 1), style.qcolor(theme.FRAME_COLOURS["milestone-left"]))
-        p.fillRect(QRectF(2, y, span * share, 1), style.qcolor(theme.IRIS["night"][1][1]))
+        self._line = QRectF(0, y - 1, self.width(), 3)
+        if self.working:                                 # round 8 row 45: the click's sync, on the hairline
+            self._paint_work(p, 2, y, span)
+        else:
+            p.setOpacity(F["known-hairline-alpha"])
+            p.fillRect(QRectF(2, y, span, 1), style.qcolor(theme.FRAME_COLOURS["milestone-left"]))
+            p.fillRect(QRectF(2, y, span * share, 1), style.qcolor(theme.IRIS["night"][1][1]))
         if self.hasFocus():                              # the keyboard's ring, as the level ▾'s
             p.setOpacity(1.0)
             p.setRenderHint(QPainter.RenderHint.Antialiasing, True)

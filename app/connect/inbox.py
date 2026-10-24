@@ -52,12 +52,14 @@ def keeps(job, event=None):
 
 def _gone(store, ledger, language):
     """A gap's reconcile (no events to trust): {item id: "removed" / "finished"} for the jobs `keeps` would keep, as
-    the store holds their items now."""
+    the store holds their items now. An item that no longer counts (W-1's rule, `library.counts`: Finished, or a
+    stone's episode while *Keep studying watched episodes* is off) reads as finished: its level job is dropped as a
+    finished one's, an ask kept."""
     out = {}
     for job in ledger.jobs(language, states=NOT_STARTED):
         if keeps(job):
             item = store.item(job["item_id"])
-            if item is None or item.get("tier") == "graduated":
+            if item is None or not library.counts(store, item):
                 out[job["item_id"]] = "removed" if item is None else "finished"
     return out
 

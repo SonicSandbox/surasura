@@ -119,6 +119,9 @@ DEFAULT_SETTINGS = {
     "setup_seen": "",
     # The pages a profile that never finished setup saved with Next (the wizard shows them as saved when it comes back).
     "setup_passed": [],
+    # The window's one-time hints already shown (W-1: the first watched mark's toast), each id with its library's id
+    # ("keep_watched:<store id>"): shown once per library. Never in a signature.
+    "hints_seen": [],
     # Connect's backlog (P2.4, Sonic 2026-10-07: "keep up to N Surasura cards waiting"; one per language, 2026-10-08:
     # a number is each language's, {"ja": n, "zh": m} each its own): Connect makes cards while fewer
     # than this many new, unsuspended cards of that language wait in Anki (its decks + its own), and tops up as you study; at the cap the least

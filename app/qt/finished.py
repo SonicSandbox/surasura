@@ -321,6 +321,7 @@ class FinishedActions(QObject):
         self.page.on_menu = self.menu
         self.page.on_import = self.pick
         self.page.importer.setVisible(True)
+        qpress.room(self.page.importer)              # round 8 row 45: *Stop adding*'s arc has its room at rest
         self.lst.drag = self                        # Explorer's files on the list come here (`files_dropped`)
         self.lst.setAcceptDrops(True)
         self.tab = win.tab_buttons.get("finished")
@@ -526,8 +527,10 @@ class FinishedActions(QObject):
     # --- Add what you finished before… --------------------------------------------------------------------------- #
     def pick(self):
         """The heading's button: its menu (*Files…* · *A folder…*) — or, while an import runs, *Stop adding*."""
-        if self.import_job is not None:
-            self.import_job.cancel()
+        if self.import_job is not None:              # round 8 row 45: the arc and *Stopping…* from the press, until the
+            if qpress.begin(self.page.importer, self._stop_key(self.import_job),                # job ends
+                            busy=strings.FIN_IMPORT_STOPPING, win=self.win) is not None:
+                self.import_job.cancel()
             return None
         m = QMenu(self.page.importer)
         m.aboutToHide.connect(m.deleteLater)            # (L1 N7)
@@ -587,7 +590,15 @@ class FinishedActions(QObject):
         b.setToolTip(strings.FIN_IMPORT_STOP_TIP if on else strings.FIN_IMPORT_TIP)
         b.setAccessibleName(b.text())
 
+    @staticmethod
+    def _stop_key(job):
+        """*Stop adding*'s press: the import's own (never the window's language, which a switch changes meanwhile)."""
+        return ("finished-stop", id(job))
+
     def _imported(self, job):
+        stopping = qpress.presses_of(self.win).find(self._stop_key(job))
+        if stopping is not None and stopping.live():
+            qpress.end(stopping, self.win)
         if job is self.import_job:
             self.import_job = None
             self._show_importing(False)

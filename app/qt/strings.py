@@ -1237,3 +1237,9 @@ OPEN_NOT_OPENED = "the system didn't open it"
 REFRESH_FAILED = "Your folders couldn't be looked at just now: {why}"
 REFRESH_NOT_LOOKED = "the look stopped"
 # --- end round 8 row 45, P3
+# --- round 8 row 45, P4: writes and menus (a toast's write waiting, an Undo on its way, + Add, Stop adding)
+TOAST_SAVING = " · saving…"                                    # after a toast's words while its write waits (drag.py)
+UNDOING = "Undoing…"                                           # Ctrl+Z or a toast's Undo, until the undo lands
+ADDING = "Adding {name}…"                                      # the Paste card's Add, until its toast shows
+FIN_IMPORT_STOPPING = "Stopping…"                              # *Stop adding* pressed, until the import ends
+# --- end round 8 row 45, P4

@@ -830,10 +830,11 @@ def test_a_running_edition_keeps_its_note_fresh_so_no_other_process_takes_it_ove
         assert len(ages) == len(before) and max(ages) <= ls.SWITCH_STALE_S, ages
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows refuses to move a file held open")
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_a_held_better_version_is_not_read_again_while_its_copy_stays_held(language, monkeypatch):
-    """A better version judged and held (the item's copy open in a player): while the copy stays held, a look reads
-    the version not at all (a probe of the copy, no read, no `.part` written); let go, it switches."""
+    """A better version judged and held (the item's copy really open, as in a player): while the copy stays held, a
+    look reads the version not at all (a check of the copy, no read, no `.part` written); let go, it switches."""
     store, data_dir = _empty(language)
     src = _drive("Anime")
     show, v, s = _synced_show(language, src)
@@ -846,22 +847,12 @@ def test_a_held_better_version_is_not_read_again_while_its_copy_stays_held(langu
         synced = os.path.abspath(_write(os.path.join(src, show, "synced", f"{show} - 01.{t}.srt"),
                                         _text(language, 1, " synced")))
         opened, real_open = [], open
-        moves = {name: getattr(os, name) for name in ("rename", "replace", "link")}
-
-        def held(name):
-            def move(a, b, *x, **k):
-                if os.path.abspath(a) == copy:
-                    raise PermissionError(a)        # Windows: a file open elsewhere can't be moved
-                return moves[name](a, b, *x, **k)
-            return move
 
         def watch(path, *a, **k):
             if isinstance(path, str) and os.path.abspath(path) == synced and "b" in (a[0] if a else k.get("mode", "")):
                 opened.append(path)
             return real_open(path, *a, **k)
-        with monkeypatch.context() as patched:
-            for name in moves:
-                patched.setattr(os, name, held(name))
+        with real_open(copy, "rb"), monkeypatch.context() as patched:     # held open: Windows refuses its move
             patched.setattr("builtins.open", watch)
             assert sources.scan(store, language, root)["switched"] == 0
             opened.clear()
@@ -1097,7 +1088,7 @@ def test_a_running_undos_time_renewal_never_rewrites_what_another_runner_wrote(l
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_an_extra_part_whose_move_in_fails_look_after_look_is_in_the_trash_to_put_back(language, monkeypatch):
     """A longer edition's extra part whose move in fails look after look (EDITION_TRIES): the edition finishes
-    without it, and the part sits in the trash with its row — Put back brings it into the library with its text, as
+    without it, and each part sits in the trash with its row — Put back brings it into the library with its text, as
     after any removal (never a file in the trash nothing can bring back)."""
     store, data_dir = _empty(language)
     src = _drive("Shelf")
@@ -1110,7 +1101,7 @@ def test_an_extra_part_whose_move_in_fails_look_after_look_is_in_the_trash_to_pu
         longer = _epub(os.path.join(src, "Books", f"{_EDITION[language]}.epub"), _chapters(language, "改", 2),
                        language)
         parts = _parts(longer, language)
-        assert len(parts) == len(before) + 1
+        assert len(parts) > len(before)
         rows = len(store.trash_rows())
         real = ls.rename_no_overwrite
 
@@ -1126,10 +1117,13 @@ def test_an_extra_part_whose_move_in_fails_look_after_look_is_in_the_trash_to_pu
                     _look(store, language, root, full=True)
         assert not _notes(store) and (store.last_switch(work) or {}).get("kind") == "edition"
         assert _items(store) == before and _whole(data_dir, before, parts[:len(before)])
-        (row,) = store.trash_rows()[rows:]
-        assert row["trashed_path"] and os.path.isfile(os.path.join(data_dir, *row["trashed_path"].split("/")))
-        rel, _why = ls.put_back(data_dir, row["trashed_path"], row["rel_path"])
-        store.restore([row["id"]], {row["id"]: rel})
+        extra = store.trash_rows()[rows:]
+        assert len(extra) == len(parts) - len(before)
+        rels = {}
+        for row in extra:
+            assert row["trashed_path"] and os.path.isfile(os.path.join(data_dir, *row["trashed_path"].split("/")))
+            rels[row["id"]], _why = ls.put_back(data_dir, row["trashed_path"], row["rel_path"])
+        store.restore(sorted(rels), rels)
         now = _items(store)
         assert len(now) == len(parts) and [_copy(data_dir, r) for _i, r in now] == parts
 

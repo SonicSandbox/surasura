@@ -471,8 +471,8 @@ def test_a_menu_press_on_a_file_turns_the_arc_on_its_line_at_its_part_painted_be
     ep = lst.model().entries[i][1].episodes[0]
     drawn = []
     real = rows.paint_marked
-    monkeypatch.setattr(rows, "paint_marked", lambda p, rect, turning: (drawn.append(QRectF(rect)),
-                                                                       real(p, rect, turning)))
+    monkeypatch.setattr(rows, "paint_marked", lambda p, rect, turning, **kw: (drawn.append(QRectF(rect)),
+                                                                             real(p, rect, turning, **kw)))
     handed.look = lambda: (dict(lst.marked), len(drawn), win.bar_arc.isVisible())
     p = qpress.run(None, ("open-folder", ep.id), lambda: None, win=win, at=qpress.row_mark(lst, [ep.id]))
     marked, painted, bar = handed[0].look

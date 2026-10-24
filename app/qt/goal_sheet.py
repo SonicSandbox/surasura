@@ -28,7 +28,7 @@ from PyQt6.QtGui import QAction, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import QAbstractItemView, QApplication, QMenu, QScrollArea, QToolButton, QWidget
 
 from app import path_utils, theme
-from app.qt import confirm, frame, motion, rows, shadow, strings, style, windows
+from app.qt import confirm, frame, motion, rows, shadow, strings, style
 from app.qt import covers as qcovers                 # --- W3.2 L3: the titles' own pictures (Q6's door)
 from app.qt.drag import Ticket, is_mix, soon_slot
 
@@ -518,15 +518,15 @@ class GoalSheet(motion.Overlay):
             act = QAction(label, m)
             act.setToolTip(tip or "")
             act.setEnabled(ok)
-            act.triggered.connect(lambda _c=False, n=name, w=work: self.pick(w, n))
+            act.triggered.connect(lambda _c=False, n=name, w=work, t=tile: self.pick(w, n, t))
             m.addAction(act)
         self.last_menu = m
         m.popup(tile.more.mapToGlobal(tile.more.rect().bottomLeft()))
         return m
 
-    def pick(self, work, name):
+    def pick(self, work, name, tile=None):
         if name == "folder":
-            self.open_folder(work)
+            self.open_folder(work, tile)
         elif name in ("top", "soon"):
             self.bring_up(work, name)
         elif name == "finished":
@@ -597,13 +597,19 @@ class GoalSheet(motion.Overlay):
             strings.GOAL_REMOVED.format(title=work.title, n=len(ids))
         return moves._give(Ticket(text, ids=ids), lambda t: writer.remove(ids, label=t))
 
-    def open_folder(self, work):
+    def open_folder(self, work, tile=None):
+        """⋯ *Open folder*: a press (`press.open`, round 8 row 45) — the tile's ⋯ turns (IK-2), and the folder opens
+        on a worker, never on the window's thread (it stalled it)."""
+        from app.qt import press as qpress
         base = path_utils.get_data_path(getattr(self.win, "language", None) or "ja")
         path = os.path.join(base, *work.folder.split("/")) if work.folder else base
-        if not windows.open_url(path):
+
+        def failed(_info):
             say = getattr(self.win, "say", None)
             if say is not None:
                 say(strings.GOAL_FOLDER_FAILED.format(title=work.title))
+        return qpress.open(self.win, path, key=("open-folder", work.key), failed=failed,
+                           at=qpress.widget_mark(tile.more) if tile is not None else None)
 
     # --- a drag ----------------------------------------------------------------------------------------------- #
     def drag(self, tile, global_pos):

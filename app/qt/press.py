@@ -56,18 +56,28 @@ _at = {}                        # Press -> what it marks on screen (`at`: a row,
 _busy = {}                      # Press -> the words it holds in the bar (`busy`), given back after a wait's reason
 
 
-def room(control):
+def room(control, end=False):
     """`control` (a button) will be pressed through `run` / `begin`: it keeps its arc's room at rest (style's
-    `[presses="true"]`). Call it as the button is made, before it is laid out."""
-    control.setProperty("presses", True)
+    `[presses="true"]`; `end`: a link whose words sit at its left keeps it at its right end only, `[presses="end"]`).
+    Call it as the button is made, before it is laid out."""
+    control.setProperty("presses", "end" if end else True)
     control.style().unpolish(control)
     control.style().polish(control)
     return control
 
 
 def presses_of(win):
-    got = getattr(win, "presses", None) if win is not None else None
-    return got if got is not None else _loose
+    """`win`'s presses — made on it the first time when it has none (a stand-in window: its presses its own, never a
+    module's shared with every other window) — or, with no window, the module's."""
+    if win is None:
+        return _loose
+    got = getattr(win, "presses", None)
+    if got is None:
+        try:
+            got = win.presses = service.Presses()
+        except (AttributeError, TypeError):
+            return _loose
+    return got
 
 
 def run(control, key, fn, *args, busy=None, then=None, failed=None, win=None, goes=False, at=None):
@@ -185,7 +195,11 @@ def arc_box(control, to_device=None):
     top_left, bottom_right = to_device.map(QPointF(0, 0)), to_device.map(QPointF(w, h))
     snap = lambda v: math.floor(v + 0.5)                     # noqa: E731 — an edge as it is drawn (half up)
     cy = (snap(top_left.y()) + snap(bottom_right.y())) / 2
-    words = to_device.map(QPointF((w + control.fontMetrics().horizontalAdvance(control.text())) / 2, 0)).x()
+    advance = control.fontMetrics().horizontalAdvance(control.text())
+    if control.property("presses") == "end":                  # a link's words at its left, its room at its right end
+        words = to_device.map(QPointF(advance, 0)).x()
+    else:
+        words = to_device.map(QPointF((w + advance) / 2, 0)).x()
     line = 2 if control.hasFocus() else 1                   # the border: 1 px, 2 focused (a click focuses it)
     border = to_device.map(QPointF(w - line, 0)).x()       # its inner edge (drawn antialiased: not snapped)
     cx = math.floor((words + border) + 0.5) / 2              # midway, on a half pixel
@@ -239,7 +253,8 @@ class _Own:
 
 
 def _which(control):
-    return None if control is None else control.property("action")
+    """Which of a card's controls it is: its "action" (and its "line", a line's own answer)."""
+    return None if control is None else (control.property("action"), control.property("line"))
 
 
 def _paint(p, control):
@@ -275,7 +290,7 @@ def _unmark(got):
 def _restore(p, win):
     got = _painted.pop(p, None)
     _busy.pop(p, None)
-    if win is not None and not sip.isdeleted(win) and hasattr(win, "unsay"):
+    if not _gone(win) and hasattr(win, "unsay"):
         win.unsay(p.key)
     if got is not None:
         _unmark(got[1])
@@ -287,6 +302,11 @@ def _restore(p, win):
             print(f"A press's mark wasn't taken off: {e!r}", file=sys.stderr)
 
 
+def _gone(obj):
+    """None, or a Qt object already deleted (a plain stand-in, tests' windows, is never gone)."""
+    return obj is None or (isinstance(obj, sip.simplewrapper) and sip.isdeleted(obj))
+
+
 def _line(win):
     """The line a window's held words show in: the main window's bar, a secondary window's status line."""
     return getattr(win, "bar_line", None) or getattr(win, "status", None)
@@ -294,7 +314,7 @@ def _line(win):
 
 def _hold(win, key, words):
     """`words` held in `win`'s line for the press `key`, painted before this returns."""
-    if win is None or sip.isdeleted(win) or not hasattr(win, "say"):
+    if _gone(win) or not hasattr(win, "say"):
         return
     win.say(words, hold=key)
     line = _line(win)
@@ -376,20 +396,28 @@ def bar_mark(win):
 class _RowMark:
     def __init__(self, view, ids, part):
         self.view, self.ids, self.part = view, tuple(ids), part
+        self.bar = None
 
     def on(self):
-        self.view.mark_ids(self.ids, self.part)
+        if not self.view.mark_ids(self.ids, self.part):      # none of them on this list: the bar's arc instead
+            self.bar = bar_mark(self.view.window())
+            if self.bar is not None:
+                self.bar.on()
 
     def off(self):
         if not sip.isdeleted(self.view):
             self.view.unmark(self.ids)
+        if self.bar is not None:
+            self.bar.off()
 
 
 def row_mark(view, ids, part="more"):
     """The files `ids` in the list `view` (a `RowsView`) marked while the press is live: the accent arc turns on each
-    one's line at `part` — where it was pressed from: "more" (its ⋯), "play" (▶) — on a closed row's line, the hero,
-    or the episode's own line when its row is open; painted before `on` returns (`RowsView.mark_ids`). The one rule
-    for a file's line, as *Mine now*'s turning pill is the one for an ask (`RowsView.press_ids`)."""
+    one's line at `part` — where it was pressed from: "more" (its ⋯), "play" (▶; the hero's: its cover), a status
+    action's name (its pill: "no-media"), "journey" (the hero's ↗), "cover" — on a closed row's line, the hero, or the
+    episode's own line when its row is open; painted before `on` returns (`RowsView.mark_ids`). None of them on that
+    list: the bar's arc. The one rule for a file's line, as *Mine now*'s turning pill is the one for an ask
+    (`RowsView.press_ids`)."""
     return _RowMark(view, ids, part)
 
 
@@ -446,7 +474,7 @@ def report(p, win, kind, value=None):
         return
     if words:
         _hold(win, p.key, words)
-    elif win is not None and not sip.isdeleted(win) and hasattr(win, "unsay"):
+    elif not _gone(win) and hasattr(win, "unsay"):
         win.unsay(p.key)
 
 
@@ -524,11 +552,11 @@ def follow(p, registry, job_id, win=None):
 
 # --- another program, a folder, a link (the O and X classes) ------------------------------------------------------ #
 def open_now(target):
-    """(A worker.) `target` opened in the user's own program: a link or a folder through `windows.open_url` (IK-17:
-    `QDesktopServices`, COM set up around it), a file through `screens.open_with_system` (its own player). Raises
-    when it couldn't."""
+    """(A worker.) `target` opened in the user's own program: a link through `windows.open_url` (IK-17:
+    `QDesktopServices`, COM set up around it), a path — a file, a folder, a program — through
+    `screens.open_with_system` (as ▶'s file and the logs folder open, AD-9: COM set up). Raises when it couldn't."""
     from app.qt import screens, windows
-    if "://" in target or os.path.isdir(target):
+    if "://" in target:
         if not windows.open_url(target):
             raise OSError(strings.OPEN_NOT_OPENED)
     else:
@@ -545,18 +573,21 @@ def open(win, target, control=None, key=None, at=None, then=None, failed=None): 
     if key is None:
         key = f"open:{target}"
 
+    resolved = []
+
     def work():
         t = target() if callable(target) else target
         if not t:
             return None
+        resolved.append(t)
         open_now(t)
         return t
 
     def broke(info):
         if failed is not None:
             failed(info)
-        elif win is not None and not sip.isdeleted(win) and hasattr(win, "say"):
-            name = target if isinstance(target, str) else ""
+        elif not _gone(win) and hasattr(win, "say"):
+            name = resolved[0] if resolved else target if isinstance(target, str) else ""
             if "://" not in name:
                 name = os.path.basename(name.rstrip("\\/")) or name
             win.say(strings.OPEN_FAILED.format(name=name or strings.OPEN_IT, why=info[0] if info else ""))

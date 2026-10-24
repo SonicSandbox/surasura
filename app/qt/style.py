@@ -207,6 +207,9 @@ QPushButton[size="sm"]:focus {{ padding: 0 {round(10 * f) - 1}px; }}
     rules += f"""
 QPushButton[presses="true"] {{ padding: 0 {room}px; }}
 QPushButton[presses="true"]:focus {{ padding: 0 {room - 1}px; }}
+QToolButton[presses="true"] {{ padding: {px(4)} {room}px; }}
+QWidget#levelpop QPushButton#popjourney[presses="end"] {{ padding: 0 {2 * room}px 0 0; }}
+QWidget#levelpop QPushButton#popjourney[presses="end"]:focus {{ padding: 0 {2 * room - 1}px 0 {px(4)}; }}
 """
     # --- W3.5: Generate's states, the update sheet's text, Needs you's update cards (looks to re-skin: duties.py)
     rules += f"""

@@ -16,7 +16,8 @@ from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget   # W3.2 Q4
 
 from app import theme
-from app.qt import bridge, rows, strings
+from app.qt import rows, strings
+from app.qt import press as qpress                        # round 8 row 45: ▶ is a press (marked, then its workers)
 from app.qt import standing as standing_qt                # round 8 row 54: the read-only line's ✕
 from app.services import play
 from app.services import standing
@@ -159,26 +160,29 @@ class Page(QWidget):
                 return payload.media
         return None
 
-    def _play(self, episode):
+    def _play(self, episode, at=None):
+        """▶ (a row's, an episode's, its ⋯ *Play*, a search hit's): one press (`press.open`) — the file's ▶ turns
+        (`at`, else this list's `row_mark` at "play"; IK-2) from the frame of the press, then row 55's one lookup
+        (`media_to_open`) and the open, both on a worker; a second ▶ meanwhile does nothing. -> the press, or None."""
         media = self._media_of(episode)
-        bridge.run_in_worker(media_to_open, self.language, episode, media,
-                             then=lambda found: self._open_found(found, episode),
-                             failed=lambda info: self.message.emit(strings.PLAY_FAILED.format(
-                                 name=episode.label, why=str(info[0]))))
+        found = []
 
-    def _open_found(self, found, episode=None):
-        path, why = found
-        if path is None:
-            self.message.emit(why)
-            if episode is not None:                       # row 55 A-7: the app now knows; its ▶ is looked at again
-                self.not_found.emit(episode.id)
-            return
-        if sys.platform != "win32":                       # Qt's own opener belongs on the GUI thread
-            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
-            return
-        bridge.run_in_worker(open_with_system, path,
-                             failed=lambda info: self.message.emit(strings.PLAY_FAILED.format(
-                                 name=os.path.basename(path), why=str(info[0]))))
+        def look():
+            path, why = media_to_open(self.language, episode, media)
+            found.append((path, why))
+            return path
+
+        def opened(path):
+            if path is None:
+                self.message.emit(found[0][1] if found else "")
+                self.not_found.emit(episode.id)           # row 55 A-7: the app now knows; its ▶ is looked at again
+
+        def failed(info):
+            path = found[0][0] if found else None
+            self.message.emit(strings.PLAY_FAILED.format(name=os.path.basename(path) if path else episode.label,
+                                                         why=str(info[0])))
+        return qpress.open(self.window(), look, key=("play", episode.id), then=opened, failed=failed,
+                           at=at or qpress.row_mark(self.list, [episode.id], "play"))
 
 
 class CurrentPage(Page):

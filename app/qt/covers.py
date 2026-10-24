@@ -396,7 +396,7 @@ def choose_image(row, path=None):
         path, _filter = QFileDialog.getOpenFileName(window, strings.COVER_PICK_TITLE, "", strings.COVER_PICK_FILTER)
         if not path:
             return False
-    from app.qt import bridge
+    from app.qt import press as qpress
     from app.services import covers as disk
     deferred = _Deferred(writer)
     current = tuple(row.cover)[3] if getattr(row, "cover", None) else None
@@ -409,9 +409,24 @@ def choose_image(row, path=None):
         args, kw = deferred.call
         _give(strings.COVER_CHOSEN.format(title=title), row,
               lambda label: writer.set_cover(*args, label=label, **kw))
-    bridge.run_in_worker(disk.keep_user_image, _where["language"], row.work_id, path, deferred, current, then=done,
-                         failed=lambda _info: _say(strings.COVER_NOT_IMAGE))
+    qpress.run(None, ("cover-choose", row.work_id), disk.keep_user_image, _where["language"], row.work_id, path,
+               deferred, current, then=done, failed=lambda _info: _say(strings.COVER_NOT_IMAGE), win=window,
+               at=_mark(row))                         # round 8 row 45: its cover turns while the image is copied
     return True
+
+
+def _mark(row):
+    """What a cover's press marks (round 8 row 45, IK-2): the row's cover in the list on screen (`press.row_mark`),
+    else — not on that list, no list — the bar's arc."""
+    from app.qt import press as qpress
+    window = _library["window"]
+    episodes = getattr(row, "episodes", None) or ()
+    pages = getattr(window, "page_widgets", None) or {}
+    current = getattr(window, "current_tab", None)
+    lst = getattr(pages.get(current()) if callable(current) else None, "list", None)
+    if not episodes or not hasattr(lst, "mark_ids"):
+        return None
+    return qpress.row_mark(lst, [episodes[0].id], "cover")
 
 
 def use_generated(row):
@@ -593,10 +608,11 @@ def add_cover_menu(menu, row, writable=True, reason=None):
 
 
 def find_online(row, at=None):
-    """*Find it online…*: a menu's press (`press.run`: the hairline turns and *Looking … up on AniList…* holds the bar
-    from the click), the top five candidates read on a worker, then a menu of them at the hand (`at`) — or *No cover
-    found*, or *couldn't be reached* (a lookup that didn't answer is never "nothing found"). A pick is fetched and kept
-    as the user's (locked, its toast's Undo). A second press while it looks does nothing."""
+    """*Find it online…*: a menu's press (`press.run`: the row's cover turns — IK-2, round 8 row 45 —, the hairline,
+    and *Looking … up on AniList…* holds the bar from the click: a network wait worth naming), the top five candidates
+    read on a worker, then a menu of them at the hand (`at`) — or *No cover found*, or *couldn't be reached* (a lookup
+    that didn't answer is never "nothing found"). A pick is fetched and kept as the user's (locked, its toast's Undo).
+    A second press while it looks does nothing."""
     from app.qt import press as qpress
     from app.qt import strings
     from app.services import covers_online
@@ -630,7 +646,7 @@ def find_online(row, at=None):
         _say(strings.COVER_LOOKUP_BROKE.format(title=want.title, why=info[0] if info else ""))
     return qpress.run(None, ("cover-online", want.id), f.candidates, want,
                       busy=strings.COVER_LOOKING.format(title=want.title), win=_library["window"],
-                      then=found, failed=failed) is not None
+                      then=found, failed=failed, at=_mark(row)) is not None
 
 
 def _offer(row, want, found, at):
@@ -706,5 +722,5 @@ def _kept(row, want, fetch):
               lambda label: writer.set_cover(*args, label=label, **kw))
     return qpress.run(None, ("cover-fetch", want.id), fetch, deferred, win=_library["window"],
                       busy=strings.COVER_FETCHING.format(title=want.title), then=done,
-                      failed=lambda _info: done(None)) is not None
+                      failed=lambda _info: done(None), at=_mark(row)) is not None
 # --- end W3.2 L3

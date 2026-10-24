@@ -155,7 +155,8 @@ def test_a_books_mine_this_makes_no_ask_and_opens_anki_miner_with_its_path_copie
     lst = lst_of(win)
     opened = []
     monkeypatch.setattr(anki_miner, "find", lambda _s: r"C:\Programs\AnkiMiner\Anki Miner.exe")
-    monkeypatch.setattr(windows, "open_url", lambda url: opened.append(url) or True)
+    from app.qt import screens                                 # (a program: opened on a worker, round 8 row 45)
+    monkeypatch.setattr(screens, "open_with_system", lambda path: opened.append(path))
     entries = lst.model().entries
     i = next(n for n, e in enumerate(entries) if e[0] == rows.ROW and e[1].media_word != "video" and
              any(p[0] == "mine-this" for p in parts_of(lst, n)))
@@ -165,6 +166,7 @@ def test_a_books_mine_this_makes_no_ask_and_opens_anki_miner_with_its_path_copie
     click(lst, action(lst, i))
     assert wait_until(lambda: opened, 5)
     assert asks(writer) == [] and opened == [r"C:\Programs\AnkiMiner\Anki Miner.exe"]
+    assert wait_until(lambda: win.toasts.card is not None and bool(win.toasts.card.message), 5)  # (once it opened)
     ep = row.episodes[0]
     from app import path_utils
     assert QApplication.clipboard().text() == os.path.join(path_utils.get_data_path("ja"), *ep.rel_path.split("/"))
@@ -349,13 +351,15 @@ def test_needs_you_mine_the_text_only_is_set_and_opens_anki_miner_with_the_lines
     assert "mine_text_only" in ny.hooks and ny.available("mine_text_only")
     opened = []
     monkeypatch.setattr(anki_miner, "find", lambda _s: r"C:\AnkiMiner.exe")
-    monkeypatch.setattr(windows, "open_url", lambda url: opened.append(url) or True)
+    from app.qt import screens
+    monkeypatch.setattr(screens, "open_with_system", lambda path: opened.append(path))
     line = service.NeedLine(key="item:1", text="第3話 · no video", item_id=1, label="第3話", number=3,
                             rel_path="HighPriority/葬送のフリーレン/葬送のフリーレン 第3話.srt", actions=())
     entry = service.Entry(key="video:x", kind=service.NO_VIDEO, title="葬送のフリーレン", lines=(line,), actions=(),
                           unseen=False)
     ny.act("mine_text_only", entry, None)                      # the card's own button: its first file
     assert wait_until(lambda: opened, 5)
+    assert wait_until(lambda: "第3話" in QApplication.clipboard().text(), 5)       # (copied once it opened)
     assert QApplication.clipboard().text().endswith(os.path.join("葬送のフリーレン", "葬送のフリーレン 第3話.srt"))
 
 
@@ -368,6 +372,8 @@ def test_needs_you_make_their_cards_is_connects_ordinary_work_in_the_gaps_langua
     gap answered with no cards coming, or Japanese titles mined for a Chinese gap. While Connect is off, or when the
     gap is gone, nothing is answered."""
     from app.services import needs as service
+    from app.services import press as press_service
+    monkeypatch.setattr(press_service, "LINGER_S", 0.0)         # (the card stays here: pressed again at once)
     _seed, win, writer = act()
     ny = win.needs_you
     assert ny.available("make_cards")

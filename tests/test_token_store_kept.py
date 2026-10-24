@@ -1017,6 +1017,35 @@ def test_a_move_note_whose_old_path_is_listed_again_is_never_used(language):
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
+def test_a_move_note_whose_old_path_is_listed_again_is_never_used_while_another_file_leaves(language):
+    """D7a's guard, with a second file leaving in the same index pass: the note is used only while its old path is
+    leaving. A file back at the old path (listed again) keeps the old row, and the renamed one is read as a file of
+    its own. The other leaving file makes the reconcile consult the notes at all, so this is the pass in which the
+    guard must hold: the old path is never read again and never re-keyed away."""
+    store, data_dir, ids = _library(language)
+    files = list(ids)
+    tok = _counting(language)
+    _indexed(language, store, data_dir, files, tok)[0].close()
+    old = files[0]
+    before = None
+    with ti.open_store(language) as tokens:
+        before = tokens.file_tokens(old)
+    new = _renamed_in_its_folder(old)
+    assert store.sync_disk()["renamed"] == [ids[old]]
+    shutil.copy2(new, old)                                             # the same text back at the old path
+    tok.calls.clear()
+    _counted, more = indexer.token_store_lists(language, data_dir, files)   # the store's lists and move notes
+    tokens = ti.open_store(language)
+    tokens.reconcile(files[:1] + [new] + files[2:], tok, data_dir=data_dir, **more)   # files[1] leaves: not listed
+    try:
+        assert tok.calls == [("file", ti._norm(new))]
+        assert tokens.file_tokens(old) == before and tokens.file_tokens(new) == before
+    finally:
+        tokens.close()
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 @pytest.mark.parametrize("same_file", [True, False])
 def test_a_relinked_file_keeps_its_row(language, same_file):
     """D7a for *Link a file* (`relink`): a missing item linked to its file under another name keeps its row, never

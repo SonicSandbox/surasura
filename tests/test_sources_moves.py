@@ -266,6 +266,29 @@ def test_a_folder_of_a_show_already_in_is_never_re_aliased_by_a_stray_copy(langu
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
+def test_a_folder_of_a_show_already_in_keeps_it_though_most_of_its_texts_are_another_shows_copies(language):
+    """A folder whose own show has items already keeps it, though two of its three texts are byte copies of another
+    show's episodes: the majority of texts would name that other show, but a show already in never moves (the guard
+    at the top of `_joined`), so Y's next episode stays in Y."""
+    store, data_dir = _empty(language)
+    x, y = _SHOWS[language]
+    a, b = _drive("driveA"), _drive("driveB")
+    _seed(language, a, x, (2, 3))                         # texts of their own: Y's episode 1 shares no bytes with X's
+    _seed(language, a, y, (1,))
+    with store:
+        _look(store, language, store.add_source(a), first=True)
+        os.makedirs(os.path.join(b, y))
+        shutil.copy2(os.path.join(a, x, _name(x, 2, language)), os.path.join(b, y, "stray copy 1.srt"))
+        shutil.copy2(os.path.join(a, x, _name(x, 3, language)), os.path.join(b, y, "stray copy 2.srt"))
+        _write(os.path.join(b, y, _name(y, 2, language)), _text(language, 7))
+        _settle(b)
+        result = _look(store, language, store.add_source(b))
+        rows = [store.item(i)["rel_path"] for i in result["ids"]]
+        ep2 = [r for r in rows if r.endswith(_name(y, 2, language))]
+        assert ep2 == [f"Library/{y}/{_name(y, 2, language)}"]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 def test_loose_files_at_a_sources_top_keep_the_show_their_names_give(language):
     """A loose file's show is its name's (S12), never its neighbours' items: a byte copy of an episode beside it at
     the source's top never pulls a file of another name into that show."""

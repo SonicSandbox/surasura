@@ -361,3 +361,25 @@ def test_W1_after_a_drop_the_tiers_order_is_read_only_when_the_anchor_is_needed(
     touched = numbers.after_move([goal[-1]["id"]], "now", after_id=hero[1], order=counting, aside=aside)
     assert touched and counting.reads == 1 and resyncs == [1, 1]
     numbers.close()
+
+
+def test_W1_the_numbers_verdict_signs_the_watched_episodes_as_the_host_does(lib, tmp_path, monkeypatch):
+    """`plan_check` (the window's *N new* staleness) builds the run signature's parts as the replan host does: a watched
+    episode is in the "reference" part while it is set aside, and the part is gone with none — so the window's numbers
+    and the cards agree on when a Generate must come first."""
+    from app import analyzer, plan_engine, settings_manager
+    path = str(tmp_path / "plan.json.gz")
+    rels = [e["physical_path"] for t in ("now", "soon", "goal") for _i, e, _a in lib.store.ordered(t)]
+    write_plan(path, rels, ["now"] * len(rels), language=lib.language, n_words=50)
+    plan = plan_engine.load(path)
+    seen = []
+    monkeypatch.setattr(plan_engine, "check", lambda plan_, language, engine, stamp, parts, epoch: seen.append(parts))
+    check = M.plan_check(lib.language, settings_manager.load_settings())
+    check(plan, lib.store)
+    episode = lib.ids("now")[0]
+    lib.store.set_watched([episode])
+    check(plan, lib.store)
+    want = analyzer.aside_files(lib.language, lib.store.schedule(with_aside=True))
+    assert "reference" not in seen[0] and len(want) == 1
+    assert seen[1]["reference"] == analyzer.run_signature_parts(lib.language, [], analyzer.parse_analysis_args(
+        ["--language", lib.language]), want)["reference"]

@@ -2043,3 +2043,41 @@ def test_an_undo_waiting_while_its_tail_is_purged_is_refused_whole(language, mon
         assert any("no longer in the trash" in n for c in changes for n in c.notes)
         assert _items(store) == now and [_copy(data_dir, rel) for _i, rel in now] == news
         assert all((store.item(i) or {}).get("availability") == "available" for i, _r in now)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_undo_with_no_parts_killed_between_its_tail_moves_and_restore_finishes_whole(language, monkeypatch):
+    """A shorter edition; the learner then removes every part it kept and presses Undo: only the parts past the end to
+    put back. Killed after their files left the trash for their library names, before the one restore commits. The
+    next look reads those files as moved back, not purged, and finishes the restore: every part an item again, none at
+    its library name with no item and its trash row unrestored."""
+    store, data_dir = _empty(language)
+    src = _drive("Shelf")
+    _epub(os.path.join(src, "Books", f"{_BOOKS[language]}.epub"), _chapters(language, "", 2), language)
+    with store:
+        root = store.add_source(src)
+        before, _olds, _news, work = _switched(store, data_dir, language, src, root)
+        now = _items(store)
+        assert len(now) < len(before)
+        gone = {i for i, _r in before} - {i for i, _r in now}
+        store.remove([i for i, _r in now])                 # the learner removes every part the edition kept
+        real_restore = store.restore
+
+        def restore(ids, rel_paths=None, **k):
+            if k.get("kind") == "undo":
+                raise _Killed()
+            return real_restore(ids, rel_paths, **k)
+        with monkeypatch.context() as patched:
+            patched.setattr(store, "restore", restore)
+            with pytest.raises(_Killed):
+                store.undo_switch(work)
+        assert _notes(store), "the Undo's note stands after the kill"
+        monkeypatch.setattr(ls, "SWITCH_STALE_S", 0)        # the next start
+        changes = store.settle_editions()
+        notes = [n for c in changes for n in c.notes]
+        assert not _notes(store) and not any("no longer in the trash" in n for n in notes), notes
+        rows = [r for r in store.trash_rows() if r["item_id"] in gone]
+        assert rows and all(r["restored_at"] for r in rows), "a part past the end left with its trash row unrestored"
+        for r in rows:
+            assert store.item_id(r["rel_path"]) is not None
+            assert os.path.isfile(os.path.join(data_dir, *r["rel_path"].split("/")))

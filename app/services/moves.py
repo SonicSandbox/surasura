@@ -898,6 +898,7 @@ class Writer:
         elif change is not None and not cmd.get("auto"):  # B1: a background cover is nobody's to undo
             with self._cond:
                 self._undo.append(change)
+            change.landed = _stamp(store)           # finish-pending: what its re-order must reach (the window waits)
             self._call(self.on_saved, change, cmd.get("label"))
         if note is not None:
             self._call(self.on_note, self.words[note])
@@ -1356,6 +1357,7 @@ class Writer:
         if refused:
             self._call(self.on_note, self.words["cant_undo"])
         else:
+            change.landed = _stamp(store)           # finish-pending: now the undo's own (its re-order is owed in turn)
             self._call(self.on_undone, change, cmd.get("label"))
             self._call(self.after_commit, change, "undo")
             if cmd.get("renamed"):
@@ -1610,6 +1612,17 @@ UNORDERED = ("set_watched", "pin", "keep_cards", "ask_mining", "set_cover", "set
 #   that moved `order_version` (it changed what counts) is (`_counted`)
 COUNTING = ("set_watched",)
 #   W-1 (K-W4): the changes whose undo asks the numbers again only when it moved `order_version` (else a status write)
+
+
+def _stamp(store):
+    """finish-pending: the store's versions just after a change (or its undo) committed — {epoch, order_version,
+    pins_version}, one meta read. Its Anki half has landed once the host's re-order records `planned_order_version` /
+    `planned_pins_version` this far (`Store.record_planned`); the window's press waits for that. None: unreadable."""
+    try:
+        v = store.versions()
+        return {k: v.get(k, 0) for k in ("epoch", "order_version", "pins_version")}
+    except Exception:
+        return None
 
 
 def _order_version(store):

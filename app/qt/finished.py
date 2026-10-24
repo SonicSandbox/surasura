@@ -360,14 +360,16 @@ class FinishedActions(QObject):
 
     # --- the writes ----------------------------------------------------------------------------------------------- #
     def put_back(self, row):
-        """*Put back*: to the top of Current and its cards back in the order (IK-1), its toast with Undo."""
+        """*Put back*: to the top of Current and its cards back in the order (IK-1), its toast with Undo — a press until
+        the host's re-order for it lands (finish-pending: after the Generate it starts), the bar's arc (the row leaves
+        this list)."""
         if self._refused():
             return None
         if self.card.isVisible() and self.card.row is not None and self.card.row.key == row.key:
             self.card.close()
         ids = drag.ids_of(row)
         return self.moves._give(drag.Ticket(strings.FIN_PUT_BACK_DONE.format(title=row.title), (row.key,), ids),
-                                lambda t: self.writer.put_back(ids, label=t))
+                                lambda t: self.writer.put_back(ids, label=t), anki=drag.on_bar)
 
     def pin(self, row, on):
         """*Study its cards first* (on) ↔ *Done with its cards* (off)."""
@@ -378,12 +380,15 @@ class FinishedActions(QObject):
         return self.moves._give(drag.Ticket(text, (row.key,), ids), lambda t: self.writer.pin(ids, on, label=t))
 
     def keep_cards(self, row, on):
-        """*Put them back in the order* (on) ↔ *Leave its new cards out of your order* (off): the store's flag."""
+        """*Put them back in the order* (on) ↔ *Leave its new cards out of your order* (off): the store's flag — a press
+        until the host's re-order for it lands (finish-pending), the row's ⋯ turning (it stays in this list)."""
         if self._refused():
             return None
         ids = drag.ids_of(row)
         text = (strings.FIN_CARDS_IN if on else strings.FIN_CARDS_OUT).format(title=row.title)
-        return self.moves._give(drag.Ticket(text, (row.key,), ids), lambda t: self.writer.keep_cards(ids, on, label=t))
+        lst, marked = self.lst, [row.episodes[0].id] if row.episodes else []
+        return self.moves._give(drag.Ticket(text, (row.key,), ids), lambda t: self.writer.keep_cards(ids, on, label=t),
+                                anki=lambda: qpress.row_mark(lst, marked) if marked else None)
 
     def open_folder(self, row):
         """*Open its folder* (`open_folder_of`: its ⋯ turns, looked for and opened on a worker)."""

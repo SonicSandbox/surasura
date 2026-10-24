@@ -549,6 +549,7 @@ DRAG_TAKE_OUT = "Leave its new cards out of your order"      # IK-1: Finished's 
 DRAG_TAKE_OUT_TIP = ("Its new cards leave your order: suspended in Anki and tagged, never deleted. Undo or Put back "
                      "brings them back")         # P4.1 L2 (TF fix 10, IK #6)
 DRAG_TAKEN_OUT = "{title}: its new cards are out of your order"
+ANKI_WAIT_GENERATE_FAILED = "Generate didn't finish, so Anki wasn't changed: {message}"   # finish-pending: its press
 DRAG_ADDED = "Added {name} at #{n} · analysed on the next Generate"
 DRAG_ADDED_N = "Added {count} files at #{n} · analysed on the next Generate"
 DRAG_GONE = "That item was removed"

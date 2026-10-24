@@ -96,6 +96,18 @@ STAND_ASIDE = {
     "shared-phrase": "This list holds a row two set phrases share — Generate re-orders Anki this time",
     "weights": "Your tier weights aren't whole numbers — Generate re-orders Anki",
 }
+STAND_ASIDE_ELSE = "Generate re-orders Anki this time"
+
+
+def leaves_it(line):
+    """finish-pending: does the host's `line` say it stopped short of the re-order it owes — left to the user, or to
+    Anki being opened (the window's press waiting for that re-order ends with these words)? Its retries (a review, 順
+    busy, Anki not answering, an update waiting), a Generate it waits for and its progress don't."""
+    if not line:
+        return False
+    return (line in (CLOSED, RESTORE_FIRST, NEW_CONTENT, PRESS_GENERATE, GENERATE_FIRST_CM, AUTOMATION_OFF, JUNBAN_OFF,
+                     JUNBAN_ABSENT, STAND_ASIDE_ELSE) or line in STAND_ASIDE.values()
+            or line.startswith(("Re-ordering as you move stopped: ", "Anki not re-ordered: ", "順's deck ")))
 
 
 def junban_present():
@@ -631,7 +643,7 @@ class Host:
                 return True
             return False
         if verdict is not None and verdict[0] == "stand-aside":
-            self._tell(STAND_ASIDE.get(verdict[1], "Generate re-orders Anki this time"))
+            self._tell(STAND_ASIDE.get(verdict[1], STAND_ASIDE_ELSE))
             return False
         if verdict is not None and verdict[0] == "generate-first":
             if self._plan is not None and not self._moved(store, order):

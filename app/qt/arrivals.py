@@ -13,12 +13,14 @@
   Q6), the title, the one line (the source chip in its colour, then the line's parts in their tones), the big *N new /
   ep* in a fixed 56 · fz column (its tooltip: the episode count, "an estimate until analysed"), ONE icon square always
   shown (↑ *Top*, or ✓ *Finished* for a watched one) and ⋯ (*Top of Current* · *After its show* · *Soon* · *Goal* ·
-  *Finished* · *Open its folder* · *Remove…*). Every placement goes through the window's writer (`moves.Writer.place`,
-  S2) by the drag controller's tickets (its toast and Undo); *Finished* offers D14's choice as W3.1a's finish toast does
-  (IK-11); *Remove…* asks first (`confirm.ask`, naming the count), then `Writer.remove` with Undo. A press and
-  `drag-start-px` on a row drags it (`DragController.begin_by_id`: the list's gaps, the wells) while the tray fades
-  (`tray-fade`), back once the drag ends. It stays open after a placement; ✕, Esc, Back and a click outside close it;
-  Tab goes through the rows, Enter is the row's icon, the menu key its ⋯.
+  *Finished* · *Never read this folder* › its folder and each above it, once the looks' worker answers — a list row's
+  own entry, `item_menu.offer_skip` / `skip_menu` / `give_skip` (Q7) · *Open its folder* · *Remove…*). Every placement
+  goes through the window's writer (`moves.Writer.place`, S2) by the drag controller's tickets (its toast and Undo);
+  *Finished* offers D14's choice as W3.1a's finish toast does (IK-11); *Remove…* asks first (`confirm.ask`, naming the
+  count), then `Writer.remove` with Undo. A press and `drag-start-px` on a row drags it (`DragController.begin_by_id`:
+  the list's gaps, the wells) while the tray fades (`tray-fade`), back once the drag ends. It stays open after a
+  placement; ✕, Esc, Back and a click outside close it; Tab goes through the rows, Enter is the row's icon, the menu key
+  its ⋯.
 - **The numbers** (`ArrivalNumbers`): each arrival's files asked of the warm worker
   (`app/services/arrivals.ArrivalsWorker.estimate`) once each, when the arrival first shows, each with the piece's
   earlier files placed before it (IK-5) — the asks on a worker, never the window's thread; the answers kept by (item,
@@ -1096,8 +1098,21 @@ class ArrivalsTray(motion.Overlay):
             act.triggered.connect(lambda _c=False, n=name, arr=a: self.act(arr, n))
             m.addAction(act)
         self.last_menu = m
+        from app.qt import item_menu                                # --- Q7: *Never read this folder*, a list row's
+        item_menu.offer_skip(self, list(a.item_ids), m, lambda folders: item_menu.skip_menu(
+            m, folders, reason, lambda path: self.skip_folder(a, path)))     # own entry, once the looks' worker answers
         m.popup(row.more.mapToGlobal(QPoint(0, row.more.height())))
         return m
+
+    def skip_folder(self, arrival, path):
+        """Q7 *Never read this folder*: `Writer.skip_folder` through the window's writer (`item_menu.give_skip`, a list
+        row's one rule): one change — every file under the folder leaves, the tray's rows and the list's with it, as
+        *Remove…* takes them — its toast with one Undo, which brings them back; a refusal is the writer's note."""
+        from app.qt import item_menu
+        moves = self._moves()
+        if moves is None or moves.refused() is not None:
+            return None
+        return item_menu.give_skip(moves, path, list(arrival.item_ids))
 
     # --- a drag from it ---------------------------------------------------------------------------------------------- #
     def start_drag(self, row, global_pos):

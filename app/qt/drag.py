@@ -726,8 +726,9 @@ class _Relay(QObject):
 
 class Ticket:
     """A command the window gave (its toast's words and its Undo): `change` once the writer saved it. `told(event)`,
-    if set: "saved", "refused" (nothing written) or "undone" (its Undo asked, or the change undone) — round 8 row 45: a
-    pressed *Mine now* stops turning when its ask is refused or undone, and asks Connect's feed again once saved.
+    if set: "saved", "refused" (nothing written), "undone" (its Undo asked, or the change undone) or "ended" (settled
+    unsaved: it landed as nothing, or was let go) — round 8 row 45: a pressed *Mine now* stops turning when its ask is
+    refused, undone or ends unsaved, and asks Connect's feed again once saved; Q7's *Skip a folder…* turns until saved.
     `anki` (finish-pending): its command's Anki half waits for the host's re-order — what its press marks (`_give`)."""
     __slots__ = ("text", "keys", "ids", "change", "undo_asked", "toast", "follows", "then", "told", "anki")
 
@@ -745,6 +746,20 @@ class Ticket:
 def _tell(ticket, event):
     if ticket.told is not None:
         ticket.told(event)
+
+
+def _skips_moved(win, change, undone=False):
+    """K6 / Q7: a skip's change (the store's `folder` on it: ⋯'s, New arrivals', Settings' *Skip a folder…*) saved or
+    undone — *Library folders*' skipped lines and the Settings row's count read again where they show, and an undone
+    one's line in that window goes (`settings_sources.skips_moved`); the rows it took are the reader's, as any
+    Remove's."""
+    if getattr(change, "folder", None) is None:
+        return
+    try:
+        from app.qt import settings_sources
+        settings_sources.skips_moved(win, undone=change if undone else None)
+    except Exception as e:                           # (the lines stay as they were until the next listing)
+        print(f"Window drag: the skipped folders weren't read again: {e!r}")
 
 
 _anki_keys = itertools.count(1)                     # finish-pending: one press per command (two Finishes: two)
@@ -1749,8 +1764,10 @@ class DragController(QObject):
         self._settle_ticket(label)
         if self.reader is not None:
             self.reader.refresh()
+        _skips_moved(self.win, change)
 
     def _undone(self, change, label):
+        _skips_moved(self.win, change, undone=True)
         mark = self._anki_of.pop(change, None) if change is not None else None    # (an undo that undid nothing)
         if isinstance(label, Ticket):
             _tell(label, "undone")
@@ -1770,6 +1787,8 @@ class DragController(QObject):
         self._undo_answered()
 
     def _settle_ticket(self, ticket):
+        if isinstance(ticket, Ticket) and ticket.change is None:
+            _tell(ticket, "ended")                   # (Q7: a press waiting for "saved" never turns for ever)
         self._anki_landed(ticket)
         try:
             self.tickets.remove(ticket)
@@ -1997,6 +2016,8 @@ class DragController(QObject):
             settled, self.tickets = self.tickets, []
             self._paint_saving()
             for t in settled:
+                if isinstance(t, Ticket) and t.change is None:
+                    _tell(t, "ended")
                 self._ended(t)
             self._undo_answered(idle=True)
         else:
@@ -2337,6 +2358,8 @@ class DragController(QObject):
         self._anki_let_go()
         self._filter(False)
         for t in self.tickets:                       # round 8 row 45: nothing of this controller's left turning
+            if isinstance(t, Ticket) and t.change is None:
+                _tell(t, "ended")                    # (Q7A-2: a press waiting for "saved" lets go at a switch)
             self._ended(t)
         p, self._undoing, self._undos = self._undoing, None, 0
         if p is not None:

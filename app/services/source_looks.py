@@ -28,8 +28,9 @@ on which thread, and what the window is told. Qt-free; the shell (`app/qt/shell.
 - **Arrival rows name their folder** (`folders(item_ids)`): each item's origin record (`connect.library.pairing_of`)
   read back to its source folder's path.
 - **Skipped folders** (K6): every summary carries `skipped` (`Store.skipped_folders`: Settings' list);
-  `skippable(item_ids)` answers ⋯'s *Never read this folder* submenu (`Store.skip_choices`); *Read again*
-  (`read_again`) drops the skip (`Store.read_folder_again`) and looks at its source folder at once.
+  `skippable(item_ids)` answers ⋯'s *Never read this folder* submenu (`Store.skip_choices`), `skip_refused(path)`
+  Settings' *Skip a folder…* (`Store.skip_refused`, Q7); *Read again* (`read_again`) drops the skip
+  (`Store.read_folder_again`) and looks at its source folder at once.
 """
 import threading
 import time
@@ -167,6 +168,14 @@ class SourceLooks:
         [] for items that came from no folder being read)."""
         ids = list(item_ids)
         return self._worker.put(self._skippable, ids, then) if ids and not self._closing.is_set() else False
+
+    def skip_refused(self, path, then, language=None):
+        """Settings' *Skip a folder…* (Q7): `then(why or None)` on the worker — the store's own rule
+        (`Store.skip_refused`: a folder being read itself, one inside none, one holding one, one skipped already), asked
+        before the writer is (which asks it again). `language`: as `read_again`'s. -> False once closed."""
+        if self._closing.is_set() or (language is not None and language != self.language):
+            return False
+        return self._worker.put(self._skip_refused, path, then)
 
     def read_again(self, folder_id, then=None, language=None):
         """Settings' *Read again* (K6): `then({"folder", "read", "language"})` on the worker, then a look of the source
@@ -398,6 +407,16 @@ class SourceLooks:
         except Exception as e:
             print(f"Sources: the folders to skip couldn't be read: {e!r}")
         then(out)
+
+    def _skip_refused(self, path, then):
+        why = None
+        try:
+            store = self._store()
+            if store is not None:
+                why = store.skip_refused(path)
+        except Exception as e:                        # the writer asks it again: a refusal is its note then
+            print(f"Sources: a folder to skip couldn't be checked: {e!r}")
+        then(why)
 
     def _read_again(self, folder_id, then):
         answer = {"folder": folder_id, "read": False, "language": self.language}

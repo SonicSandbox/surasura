@@ -370,7 +370,7 @@ class FoldersWindow(windows.SecondaryWindow):
         self.skip_undo.clicked.connect(lambda _c=False: self.undo_skip())
         self.skip_undo.setVisible(False)
         skip_line.addWidget(self.skip_undo)
-        self.skip_ticket = None                           # the skip whose line shows (its Undo's)
+        self.skip_ticket = self.skip_language = None      # the skip whose line shows (its Undo's), its library
         skip_line.addStretch(1)
         column.addLayout(skip_line)
         # the folder picker (the system's own dialog, as the wizard's; tests replace it)
@@ -440,6 +440,8 @@ class FoldersWindow(windows.SecondaryWindow):
         reset = _heard(self, summary)
         if reset is None:
             return
+        if reset and self.skip_ticket is not None:
+            self._skip_said(None)                         # (Q7A-3: another library's lines: its skip's line goes)
         self.show_sources(summary.get("sources") or (), reset=reset)
         if "skipped" in summary or reset:
             self.show_skipped(summary.get("skipped") or (), reset=reset)
@@ -554,6 +556,9 @@ class FoldersWindow(windows.SecondaryWindow):
             relay.deleteLater()
             if answer.get("read") and self.shell is not None:
                 windows.say_in_bar(self.shell, S.SOURCES_READ_AGAIN_DONE.format(path=path))
+                said = self.skip_ticket
+                if not self.gone and said is not None and getattr(said.change, "folder", None) == folder_id:
+                    self._skip_said(None)                 # (Q7A-4: read again: its "won't be read again" goes)
             self._answered(key)
         relay.said.connect(done)
         if not self._press(key, line.read):               # one press per click: its arc, painted before the ask
@@ -608,14 +613,15 @@ class FoldersWindow(windows.SecondaryWindow):
                 self.say("")
 
         def told(ticket, event):
+            win = self if not self.gone else windows.opened(self.shell, WINDOW)   # (Q7A-5: opened again meanwhile)
             if event == "saved":
                 ended()
-                if not ticket.undo_asked:
-                    self.show_skip(ticket)
+                if not ticket.undo_asked and win is not None and win.lines_of == language:
+                    win.show_skip(ticket)
             elif event == "undone":                       # its toast's Undo (before it was saved: nothing shown)
                 ended()
-                if not self.gone and self.skip_ticket is ticket:
-                    self._skip_said(None)
+                if win is not None and win.skip_ticket is ticket:
+                    win._skip_said(None)
             else:                                         # refused, or ended unsaved: the bar / toast said why
                 ended(failed=True)
 
@@ -659,11 +665,15 @@ class FoldersWindow(windows.SecondaryWindow):
 
     def undo_skip(self):
         """The line's *Undo*: the same Undo as the skip's toast (`moves.undo(ticket)`: *Undoing…* in the bar until it
-        lands); the line goes at once. -> True when asked."""
-        ticket, moves = self.skip_ticket, getattr(self.shell, "moves", None)
-        if ticket is None or moves is None:
-            return False
+        lands; the toast closes with it, Q7A-6); the line goes at once. Only the library it was saved in (Q7A-3: never
+        another language's writer). -> True when asked."""
+        ticket, of, moves = self.skip_ticket, self.skip_language, getattr(self.shell, "moves", None)
         self._skip_said(None)
+        if ticket is None or moves is None or of != getattr(self.shell, "language", None):
+            return False
+        toasts = getattr(self.shell, "toasts", None)
+        if toasts is not None and getattr(moves, "toasted", None) is ticket:
+            toasts.close()
         moves.undo(ticket)
         return True
 
@@ -674,8 +684,9 @@ class FoldersWindow(windows.SecondaryWindow):
             self._skip_said(None)
 
     def _skip_said(self, ticket):
-        """The line beside *Skip a folder…*: `ticket`'s words and *Undo*, or none (hidden)."""
+        """The line beside *Skip a folder…*: `ticket`'s words and *Undo*, or none (hidden). Of the library shown."""
         self.skip_ticket = ticket
+        self.skip_language = self.lines_of if ticket is not None else None
         if ticket is not None:
             self.skip_said.setText(ticket.text)
         self.skip_said.setVisible(ticket is not None)

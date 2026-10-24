@@ -626,3 +626,100 @@ def test_a_library_that_turned_read_only_while_the_skip_was_checked_says_so_in_t
     assert wait_until(lambda: not win.presses.any_live(), 5)
     assert folders.status.text().startswith(strings.DRAG_REFUSED.split("{")[0]) and folders.status.isVisible()
     assert calls(writer, "skip_folder") == [] and folders.skip_said.isHidden()
+
+
+# --- the adversary's round (Q7A-1…6) ------------------------------------------------------------------------------ #
+@pytest.mark.parametrize("label", ["新着: YouTube", None])
+def test_a_change_saved_with_a_label_that_is_no_ticket_settles_without_breaking(window, label):
+    # Q7A-1: a YouTube arrival's label is words, a cover pick's is None: "ended" is a ticket's alone.
+    from tests.qt.test_drag import Change
+    looks = ActingLooks([_src(1, ANIME, 412)])
+    seed, win = window(looks)
+    win.moves._saved(Change("set_cover", [3]), label)                   # (raised AttributeError before)
+
+
+def test_a_skip_waiting_on_a_busy_store_lets_go_when_the_library_switches(window):
+    # Q7A-2: the switch lets the window's controller go (`close`): the waiting skip is told it ended, so the press never
+    # turns for the rest of the session and *Skip a folder…* works again.
+    looks = ActingLooks([_src(1, ANIME, 412)])
+    win, page, row, folders = _open(window, looks)
+    assert wait_until(lambda: 1 in folders.lines, 10)
+    writer = _skipping(win, looks)
+    writer.stuck = True
+    _picks(folders, OLD)
+    folders.skip.click()
+    assert wait_until(lambda: calls(writer, "skip_folder") and win.presses.any_live(), 5)
+    win.moves.close()                                                   # as `_show_switched` does
+    assert not win.presses.any_live() and qpress.arc(folders.skip) is None and folders.skip_said.isHidden()
+
+
+def test_the_windows_skip_line_is_its_librarys_and_goes_when_another_language_shows(window):
+    # Q7A-3: the line's Undo never reaches another library's writer: the line goes with the switch, and an Undo asked
+    # for a library no longer shown writes nothing.
+    looks = ActingLooks([_src(1, ANIME, 412)])
+    win, page, row, folders = _open(window, looks)
+    assert wait_until(lambda: 1 in folders.lines, 10)
+    writer = _skipping(win, looks)
+    _picks(folders, OLD)
+    folders.skip.click()
+    assert wait_until(lambda: folders.skip_said.isVisible() and not win.moves.tickets, 5)
+    ticket = folders.skip_ticket
+    win.language = looks.language = "zh"
+    try:
+        looks.sources, looks.skipped_folders = [_src(1, r"D:\动画\2026秋", 24)], []
+        looks.publish()
+        assert wait_until(lambda: folders.skip_said.isHidden() and folders.skip_ticket is None, 5)
+        folders._skip_said(ticket)                                      # (a line left from ja, however it got there)
+        folders.skip_language = "ja"
+        assert folders.undo_skip() is False
+        assert [c for c in writer.calls if c[0] == "undo"] == [] and folders.skip_said.isHidden()
+    finally:
+        win.language = looks.language = "ja"
+
+
+def test_read_again_on_the_folder_just_skipped_takes_its_line_away(window):
+    # Q7A-4: *Read again* goes through the looks, not the writer: its "won't be read again" goes all the same.
+    looks = ActingLooks([_src(1, ANIME, 412)])
+    win, page, row, folders = _open(window, looks)
+    assert wait_until(lambda: 1 in folders.lines, 10)
+    _skipping(win, looks)
+    _picks(folders, OLD)
+    folders.skip.click()
+    assert wait_until(lambda: folders.skip_said.isVisible() and len(folders.skipped) == 1, 5)
+    next(iter(folders.skipped.values())).read.click()
+    assert wait_until(lambda: not folders.skipped and folders.skip_said.isHidden(), 5)
+
+
+def test_a_skip_saved_after_the_window_was_opened_again_shows_its_line_in_the_new_one(window):
+    # Q7A-5: closed and opened again while it turned (the new window took the arc): the line shows where he looks.
+    looks = ActingLooks([_src(1, ANIME, 412)])
+    win, page, row, folders = _open(window, looks)
+    assert wait_until(lambda: 1 in folders.lines, 10)
+    writer = _skipping(win, looks)
+    writer.stuck = True
+    _picks(folders, OLD)
+    folders.skip.click()
+    assert wait_until(lambda: calls(writer, "skip_folder"), 5)
+    folders.close()
+    assert wait_until(lambda: windows.opened(win, settings_sources.WINDOW) is None, 5)
+    page.row(settings_sources.ROW_ID).doors[settings_sources.WINDOW].click()
+    again = windows.opened(win, settings_sources.WINDOW)
+    assert again is not None and again is not folders
+    writer.free()
+    assert wait_until(lambda: not win.presses.any_live() and again.skip_said.isVisible(), 5)
+    assert again.skip_said.text() == strings.ITEM_SKIPPED.format(name=os.path.basename(OLD))
+
+
+def test_the_lines_undo_closes_the_toast_so_it_is_never_pressed_twice(window):
+    # Q7A-6: one Undo — pressed in the window, the toast's goes with it.
+    looks = ActingLooks([_src(1, ANIME, 412)])
+    win, page, row, folders = _open(window, looks)
+    assert wait_until(lambda: 1 in folders.lines, 10)
+    writer = _skipping(win, looks)
+    _picks(folders, OLD)
+    folders.skip.click()
+    assert wait_until(lambda: folders.skip_said.isVisible() and not win.moves.tickets, 5)
+    assert win.toasts.card is not None and win.toasts.alive
+    folders.skip_undo.click()
+    assert wait_until(lambda: not win.toasts.alive, 5)
+    assert len([c for c in writer.calls if c[0] == "undo"]) == 1

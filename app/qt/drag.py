@@ -1787,7 +1787,7 @@ class DragController(QObject):
         self._undo_answered()
 
     def _settle_ticket(self, ticket):
-        if ticket.change is None:
+        if isinstance(ticket, Ticket) and ticket.change is None:
             _tell(ticket, "ended")                   # (Q7: a press waiting for "saved" never turns for ever)
         self._anki_landed(ticket)
         try:
@@ -2016,7 +2016,7 @@ class DragController(QObject):
             settled, self.tickets = self.tickets, []
             self._paint_saving()
             for t in settled:
-                if t.change is None:
+                if isinstance(t, Ticket) and t.change is None:
                     _tell(t, "ended")
                 self._ended(t)
             self._undo_answered(idle=True)
@@ -2358,6 +2358,8 @@ class DragController(QObject):
         self._anki_let_go()
         self._filter(False)
         for t in self.tickets:                       # round 8 row 45: nothing of this controller's left turning
+            if isinstance(t, Ticket) and t.change is None:
+                _tell(t, "ended")                    # (Q7A-2: a press waiting for "saved" lets go at a switch)
             self._ended(t)
         p, self._undoing, self._undos = self._undoing, None, 0
         if p is not None:

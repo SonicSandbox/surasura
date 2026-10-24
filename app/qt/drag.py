@@ -721,10 +721,8 @@ class _Relay(QObject):
 class Ticket:
     """A command the window gave (its toast's words and its Undo): `change` once the writer saved it. `told(event)`,
     if set: "saved", "refused" (nothing written) or "undone" (its Undo asked, or the change undone) — round 8 row 45: a
-    pressed *Mine now* stops turning when its ask is refused or undone, and asks Connect's feed again once saved.
-    `press`, if set: a live press (`app/qt/press.py`, its mark on the rows it changes) ended as the ticket settles —
-    saved, refused, or landed as nothing."""
-    __slots__ = ("text", "keys", "ids", "change", "undo_asked", "toast", "follows", "then", "told", "press")
+    pressed *Mine now* stops turning when its ask is refused or undone, and asks Connect's feed again once saved."""
+    __slots__ = ("text", "keys", "ids", "change", "undo_asked", "toast", "follows", "then", "told")
 
     def __init__(self, text, keys=(), ids=()):
         self.text, self.keys, self.ids = text, tuple(keys), tuple(ids)
@@ -734,7 +732,6 @@ class Ticket:
         self.follows = None                          # the ticket this one's command follows (a Finished choice)
         self.then = None                             # a command waiting for this one's change (a Finished choice)
         self.told = None
-        self.press = None
 
 
 def _tell(ticket, event):
@@ -1541,7 +1538,7 @@ class DragController(QObject):
         seq = command(ticket)
         if seq is None:                              # refused (E4 meanwhile): nothing written, the store's view stands
             _tell(ticket, "refused")
-            self._ended(ticket, failed=True)
+            self._ended(ticket)
             if self.refused() is None:               # W3.2 P0 (AD0-5): never silent — a writer let go at a switch
                 self.say(strings.MOVE_NOT_SAVED)
             held = self.held
@@ -1590,13 +1587,9 @@ class DragController(QObject):
         except RuntimeError:                         # (the window going: its toast with it)
             pass
 
-    def _ended(self, ticket, failed=False):
-        """`ticket` settled (saved, refused, landed as nothing): its press, if any, ends — and the toast's words: done
-        once saved; if none of the writes it stands for was saved, the store's reason in its place, or no toast."""
-        p = getattr(ticket, "press", None)            # (a label the writer hands back may be no ticket)
-        if p is not None:
-            ticket.press = None
-            qpress.end(p, self.win, failed=failed)
+    def _ended(self, ticket):
+        """`ticket` settled (saved, refused, landed as nothing): the toast's words — done once saved; if none of the
+        writes it stands for was saved, the store's reason in its place, or no toast."""
         mine = self.toast_for
         toasts = getattr(self.win, "toasts", None)
         if not self._closed and toasts is not None and toasts.alive and any(ticket is t for t in mine) and all(

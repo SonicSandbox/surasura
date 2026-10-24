@@ -29,7 +29,7 @@ A3 `split`, 06 E4, E22).
 shown in a field: `Writer.rename_piece`, empty = named after its shows again, the name it has writes nothing), *Ungroup*
 (`Writer.ungroup`: each show back in a row of its own, in place), a separator, *Remove…* — never *What is it?*, *Join
 with…*, *Same show as…*, *Change cover…*, *Never read this folder* or *Open its folder* (each is one show's). Its writes
-toast once the store saved them, with Undo.
+toast at the press, with Undo (*· saving…* until the store saved them; IK-2: no mark on the rows).
 **An episode's own ⋯ (row 28):** an opened row's episode line under the hand or the keyboard shows its own ⋯
 (`rows.RowsView.episode_menu_requested`): *Mark watched* / *Mark not watched* (the page's one Done path), *Play* (▶'s
 path, when it can play), *Split here…* after it (when that split is allowed), then each `episode_hooks` entry —
@@ -39,7 +39,7 @@ from the last one Ctrl picked instead (Ctrl+Shift+click adds them), Ctrl+Space t
 (`rows.RowsView.pick_row`); with things picked from 2+ shows (IK-4: one show's alone would be no group), ⋯ on a picked
 row (a right-click opens it at the hand) starts with *Group…*: one
 `Writer.group` — the picked rows' pieces in the list's order (both of a show the Soon line runs through), then the
-picked episodes — its toast *Grouped N into one row* with Undo once saved. Esc / Back (the shell's router), a plain
+picked episodes — its toast *Grouped N into one row* with Undo at the press. Esc / Back (the shell's router), a plain
 click, a drag and a view without a picked key let the picks go.
 **Drop-to-join (G3):** a part dragged over the middle of another part of the same title (its top and bottom 30 % stay
 a move beside it, so a part can still be placed next to its other part): the rows hold still (no gap opens), that part
@@ -75,7 +75,6 @@ from PyQt6.QtWidgets import QMenu
 
 from app import library_store
 from app.qt import bridge, confirm, drag, finished, rows, strings
-from app.qt import press as qpress
 from app.services import view_rows
 
 JOIN_EDGE = 0.3                                     # a part's top and bottom 30 %: a move beside it, not a join
@@ -114,11 +113,6 @@ def comes_first(part, target):
     a = next((n for n in part.numbers if n is not None), None)
     b = next((n for n in target.numbers if n is not None), None)
     return a is not None and b is not None and a < b
-
-
-def _firsts(rows_):
-    """Each row's first file: where a press on the row is marked (`press.row_mark`)."""
-    return [r.episodes[0].id for r in rows_ if getattr(r, "episodes", None)]
 
 
 def pieces_of(row):
@@ -374,9 +368,8 @@ class ItemActions(QObject):
         keys = list(dict.fromkeys([r.key for r in whole] + [r.key for r, _e in eps]))
         ids = [i for r in whole for i in drag.ids_of(r)] + items
         text = strings.ITEM_GROUPED.format(n=len(whole) + len(eps))
-        seq = self._give_saved(drag.Ticket(text, keys, ids),
-                               lambda t: self.writer.group(piece_ids=pieces, item_ids=items, label=t),
-                               _firsts(whole) + items)
+        seq = self.moves._give(drag.Ticket(text, keys, ids),
+                               lambda t: self.writer.group(piece_ids=pieces, item_ids=items, label=t))
         if seq is not None:
             self.lst.clear_picks()
         return seq
@@ -708,32 +701,13 @@ class ItemActions(QObject):
             add("arrivals", a.work_id, a.key, a.title, strings.ITEM_JOIN_WHERE["arrivals"])
         return out
 
-    def _give_saved(self, ticket, command, marks=()):
-        """`_give` for what the store rearranges itself (a group made, undone or renamed, a show joined): round 8 row
-        45 — its toast at the press, pending (*· saving…*) until the store answers, as every write's is
-        (`DragController`'s one rule: done words once saved, the reason if refused, gone if nothing changed), and the
-        files `marks` (a row's first: `_firsts`) marked on their lines (`press.row_mark`, painted before the writer
-        has it) until it settles — no order is painted ahead of the store's own."""
-        marks = list(dict.fromkeys(i for i in marks if i is not None))
-        if marks:
-            key = ("regroup",) + tuple(marks)
-            p = qpress.begin(None, key, win=self.win, at=qpress.row_mark(self.lst, marks))
-            if p is None:                            # the same rows' write still waits: this later one holds its mark
-                p = qpress.presses_of(self.win).find(key)
-                for t in self.moves.tickets:
-                    if t.press is p:
-                        t.press = None
-            ticket.press = p
-        return self.moves._give(ticket, command)
-
     def ungroup(self, row):
         """*Ungroup*: `Writer.ungroup` — each show back in a row of its own, in place; its toast with Undo."""
         if not getattr(row, "group", False) or self.moves.refused() is not None:
             return None
         piece = row.piece_id
-        return self._give_saved(drag.Ticket(strings.ITEM_UNGROUPED.format(title=row.title), (row.key,),
-                                            drag.ids_of(row)), lambda t: self.writer.ungroup(piece, label=t),
-                                _firsts([row]))
+        return self.moves._give(drag.Ticket(strings.ITEM_UNGROUPED.format(title=row.title), (row.key,),
+                                            drag.ids_of(row)), lambda t: self.writer.ungroup(piece, label=t))
 
     def ask_rename(self, row):
         """*Rename…*: the card with the name shown in a field (Esc / Back / Cancel: nothing written)."""
@@ -760,8 +734,8 @@ class ItemActions(QObject):
         piece = row.piece_id
         words = strings.ITEM_RENAMED.format(title=row.title, name=name) if name is not None else \
             strings.ITEM_RENAME_CLEARED.format(title=row.title)
-        return self._give_saved(drag.Ticket(words, (row.key,), drag.ids_of(row)),
-                                lambda t: self.writer.rename_piece(piece, name, label=t), _firsts([row]))
+        return self.moves._give(drag.Ticket(words, (row.key,), drag.ids_of(row)),
+                                lambda t: self.writer.rename_piece(piece, name, label=t))
 
     def ask_same_show(self, row, show):
         """*Same show as…* › `show`: asked first (Cancel the default; Esc / Back / a click outside: nothing written)."""
@@ -782,54 +756,54 @@ class ItemActions(QObject):
         """`row`'s show made part of `show`: one `Writer.merge_works(show, [row's])` — the titles alone, `show`'s name
         kept; no file moves, from whichever section either stands in — refused by the store when
         the ids say two shows (`TITLES_APART`, said in the bar through the writer's `failed` note); its toast with Undo
-        once saved."""
+        at the press."""
         if not joinable(row) or getattr(row, "group", False) or self.moves.refused() is not None:
             return None
         keep, other = show.work_id, row.work_id
         text = strings.ITEM_SAME_SHOW_DONE.format(b=row.title, a=show.title)
-        return self._give_saved(drag.Ticket(text, (row.key, show.key), drag.ids_of(row)),
-                                lambda t: self.writer.merge_works(keep, [other], label=t), _firsts([row]))
+        return self.moves._give(drag.Ticket(text, (row.key, show.key), drag.ids_of(row)),
+                                lambda t: self.writer.merge_works(keep, [other], label=t))
     # --- end LM11b G3
 
     # --- LM11b G2: drop to group ------------------------------------------------------------------------------------ #
     def group_join(self, target, other):
         """`other` (a row) dropped on `target` (another show's part, or a group): one `Writer.join(how="group")`, the
-        target's pieces first (it keeps its place, a group its name), never `ahead`; its toast with Undo once saved, the
+        target's pieces first (it keeps its place, a group its name), never `ahead`; its toast with Undo at the press, the
         result opened. -> the target's key."""
         if not groups_there(target) or self.moves.refused() is not None:
             return None
         pieces = list(dict.fromkeys(pieces_of(target) + pieces_of(other)))
         text = strings.ITEM_GROUPED_WITH.format(other=other.title, title=target.title)
-        if self._give_saved(drag.Ticket(text, (target.key, other.key), drag.ids_of(target) + drag.ids_of(other)),
-                            lambda t: self.writer.join(pieces, label=t, how="group"), _firsts([target, other])) is None:
+        if self.moves._give(drag.Ticket(text, (target.key, other.key), drag.ids_of(target) + drag.ids_of(other)),
+                            lambda t: self.writer.join(pieces, label=t, how="group")) is None:
             return None
         self._open(target.key)
         return target.key
 
     def into_group_at(self, group, ep, ids, title, keys=()):
         """Files `ids` dropped on the opened `group`'s episode `ep` (not its last): moved after it, in its tier — the
-        store takes them into the group there (GI1, LM11-Q1); its toast once saved. -> the group's key."""
+        store takes them into the group there (GI1, LM11-Q1); its toast at the press. -> the group's key."""
         if not groups_there(group) or self.moves.refused() is not None:
             return None
         ids = list(ids)
         tier = ep_tier(group, ep)
         text = strings.ITEM_GROUPED_WITH.format(other=title, title=group.title)
-        if self._give_saved(drag.Ticket(text, (group.key,) + tuple(keys), ids),
-                            lambda t: self.writer.move(ids, tier, after_id=ep.id, label=t), [ep.id]) is None:
+        if self.moves._give(drag.Ticket(text, (group.key,) + tuple(keys), ids),
+                            lambda t: self.writer.move(ids, tier, after_id=ep.id, label=t)) is None:
             return None
         self._open(group.key)
         return group.key
 
     def add_to_group(self, group, ids, title):
         """New arrivals' files `ids` dropped on `group`: one `Writer.add_to_group`, after its last row; its toast
-        once saved. -> its key."""
+        at the press. -> its key."""
         if not groups_there(group) or self.moves.refused() is not None:
             return None
         ids = list(ids)
         piece = group.piece_id
         text = strings.ITEM_GROUPED_WITH.format(other=title, title=group.title)
-        if self._give_saved(drag.Ticket(text, (group.key,), ids),
-                            lambda t: self.writer.add_to_group(piece, item_ids=ids, label=t), _firsts([group])) is None:
+        if self.moves._give(drag.Ticket(text, (group.key,), ids),
+                            lambda t: self.writer.add_to_group(piece, item_ids=ids, label=t)) is None:
             return None
         self._open(group.key)
         return group.key

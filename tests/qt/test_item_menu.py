@@ -26,6 +26,7 @@ from PyQt6.QtWidgets import QApplication
 from app import library_store as ls
 from app import path_utils
 from app.qt import drag, item_menu, rows, strings, style
+from app.qt import press as qpress
 from app.services import view_rows
 from tests.qt.conftest import wait_until
 from tests.qt.test_drag import (FakeWriter, lift, mouse, move, move_global, open_window, part_rect, press,  # noqa: F401
@@ -2149,58 +2150,35 @@ def test_every_group_write_toasts_at_the_press_saving_while_it_waits_and_goes_fo
     assert not win.toasts.alive, "no toast left for what never happened"
 
 
-GROUP_MARKS = {                                      # the files each write marks (a row's first: `item_menu._firsts`)
-    "group": lambda g, o: {g.episodes[0].id, o.episodes[0].id},
-    "group_join": lambda g, o: {g.episodes[0].id, o.episodes[0].id},
-    "into_group_at": lambda g, o: {g.episodes[0].id},
-    "add_to_group": lambda g, o: {g.episodes[0].id},
-    "same_show": lambda g, o: {o.episodes[0].id},
-}
+REGROUP_WRITES = dict(GROUP_WRITES,                 # and the two that act on a group alone
+                      ungroup=lambda win, g, o: win.items.ungroup(g),
+                      rename=lambda win, g, o: win.items.rename(g, "夏の旅"))
 
 
-@pytest.mark.parametrize("name", list(GROUP_WRITES))
-def test_every_group_write_marks_its_rows_painted_before_the_writer_has_it_until_it_lands(world, name, monkeypatch):
-    # round 8 row 45: nothing is painted ahead of the store's own rearranging, so the rows it changes turn the accent
-    # arc on their lines from the press — painted before the writer is handed the command — until it is saved
+@pytest.mark.parametrize("name", list(REGROUP_WRITES))
+def test_every_group_write_turns_no_row_mark_its_toast_alone_is_up_at_the_press(world, name, monkeypatch):
+    # IK-2 (Sonic: joining groups "doesn't need an animation"): Group…, Ungroup, Rename…, Same show as… and a drop
+    # into a group turn no arc on any row, nor the bar's — their toast, up (*· saving…*) in the press's own turn, is
+    # the one sign of the press, as every move's is
     _seed, win, writer = world()
     b, a = two_shows(win)
     rs = rows_of(win)
-    g, o = (as_group(win, a), rs[b]) if name in ("into_group_at", "add_to_group") else (rs[a], rs[b])
+    on_group = name in ("into_group_at", "add_to_group", "ungroup", "rename")
+    g, o = (as_group(win, a), rs[b]) if on_group else (rs[a], rs[b])
     lst = lst_of(win)
-    drawn = []
-    real = rows.paint_marked
-    monkeypatch.setattr(rows, "paint_marked", lambda p, rect, turning, **kw: (drawn.append(rect),
-                                                                         real(p, rect, turning, **kw)))
     seen = []
     put = writer._put
-    monkeypatch.setattr(writer, "_put", lambda op, ids, label, **kw: (seen.append((set(lst.marked), len(drawn))),
-                                                                       put(op, ids, label, **kw))[1])
+    monkeypatch.setattr(writer, "_put", lambda op, ids, label, **kw: (seen.append((
+        dict(lst.marked), qpress.presses_of(win).any_live(), win.bar_arc.isVisible())), put(op, ids, label, **kw))[1])
     writer.stuck = True
-    assert GROUP_WRITES[name](win, g, o) is not None
-    marked, painted = seen[0]
-    assert marked == GROUP_MARKS[name](g, o) and painted >= 1, (marked, painted)
+    assert REGROUP_WRITES[name](win, g, o) is not None
+    marked, live, arc = seen[0]
+    assert marked == {} and not live and not arc, (marked, live, arc)
+    assert win.toasts.alive and win.toasts.card.message.endswith(strings.TOAST_SAVING), "the toast up at the press"
     settle(100)
-    assert set(lst.marked) == GROUP_MARKS[name](g, o)                # still waiting: still turning
+    assert lst.marked == {} and not qpress.presses_of(win).any_live(), "still waiting: still no mark"
     writer.free()
-    assert wait_until(lambda: not win.moves.tickets and not lst.marked, 5)
-
-
-def test_P4_A8_the_same_rows_written_twice_keep_their_mark_until_the_later_write_lands(world):
-    # Rename… twice on one group while the store is busy: one mark, held by the later write — the first landing
-    # never takes it off while the second still waits
-    _seed, win, writer = world()
-    _b, a = two_shows(win)
-    g = as_group(win, a)
-    lst = lst_of(win)
-    writer.stuck = True
-    assert win.items.rename(g, "夏の旅") is not None
-    assert win.items.rename(g, "冬の旅") is not None
-    first, second = win.moves.tickets
-    assert first.press is None and second.press is not None and set(lst.marked) == {g.episodes[0].id}
-    win.moves._settle_ticket(first)
-    assert set(lst.marked) == {g.episodes[0].id}
-    writer.free()
-    assert wait_until(lambda: not win.moves.tickets and not lst.marked, 5)
+    assert wait_until(lambda: not win.moves.tickets, 5)
 
 
 def test_a_target_in_finished_or_new_arrivals_is_never_a_groups(world):

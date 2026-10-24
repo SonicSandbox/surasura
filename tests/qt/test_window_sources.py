@@ -940,7 +940,8 @@ def test_the_shells_open_folder_and_open_file_go_through_the_same_opener_on_a_wo
     logs = os.path.join(os.environ["SURASURA_TEST_ROOT"], "local", "logs")
     log = os.path.join(logs, "generate.log")
     win.open_logs(logs)
-    win._open_path(log)
+    from app.qt import press as qpress
+    qpress.open(win, log)                                   # (a log file: Generate's *Open the log*)
     assert wait_until(lambda: len(asked) == 2, 10)
     assert sorted(p for p, _t in asked) == sorted([logs, log])
     assert all(t is not threading.main_thread() for _p, t in asked)

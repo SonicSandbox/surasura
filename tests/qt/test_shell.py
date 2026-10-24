@@ -156,7 +156,12 @@ def test_open_the_logs_folder_goes_to_a_worker(window, monkeypatch):
     monkeypatch.setattr(shell.sys, "platform", "win32")
     window.show_status(_snap(failure="Command line (x): it failed", logs="C:/logs"))
     window.logs_button.click()
-    assert calls and calls[0][1] == ("C:/logs",)
+    assert len(calls) == 1                                     # one hand-over (round 8 row 45: `press.open`) …
+    from app.qt import screens
+    opened = []
+    monkeypatch.setattr(screens, "open_with_system", opened.append)
+    calls[0][0]()                                              # … which opens the logs folder, on that worker
+    assert opened == ["C:/logs"]
 
 
 # --- the look before the first paint ---------------------------------------------------------------------------------- #
@@ -607,7 +612,7 @@ def test_up_nexts_new_words_link_opens_the_journey_on_a_worker_and_says_why_when
         page.list.journey_requested.emit(row, row.episodes[0] if row.episodes else None)
         assert wait_until(lambda: opened == [False])                    # opened, off the window's thread
         assert win.bar_line.full() != strings.JOURNEY_NONE_TIP
-        assert wait_until(lambda: not win._journey_opening)             # (a click while one still opens is dropped)
+        assert wait_until(lambda: not win.presses.find("journey:open").live())   # (a click meanwhile does nothing)
         answer[0] = False
         page.list.journey_requested.emit(row, None)
         assert wait_until(lambda: win.bar_line.full() == strings.JOURNEY_NONE_TIP)

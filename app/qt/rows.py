@@ -455,6 +455,33 @@ def paint_pressed(p, rect, turning, radius=None):
     p.restore()
 
 
+def paint_marked(p, rect, turning, place="button"):
+    """A press's mark on a file's line (`RowsView.mark_ids`; round 8 row 45, IK-2: a menu's press marks what it acts
+    on): the accent arc (the spin's; `turning` its phase, None: still) at the part it was pressed from, `rect`.
+    `place`: "button" (⋯, an icon's ▶, a status: its ground, the arc in its middle), "middle" (a cover: a small round
+    ground in its middle, the picture left around it), "after" (just right of a link's words: the hero's ↗)."""
+    r = QRectF(rect)
+    side = min(r.height(), 14.0)
+    p.save()
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    if place == "after":
+        box = QRectF(r.right() + 4, r.center().y() - side / 2, side, side)
+    elif place == "button":
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(c("raised"))
+        radius = theme.RADII["icon-button"]
+        p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
+        box = QRectF(r.center().x() - side / 2, r.center().y() - side / 2, side, side)
+    else:
+        ground = QRectF(r.center().x() - side, r.center().y() - side, 2 * side, 2 * side)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(c("raised"))
+        p.drawEllipse(ground)
+        box = QRectF(r.center().x() - side / 2, r.center().y() - side / 2, side, side)
+    motion.spin_arc(p, box, turning, c("accent"))
+    p.restore()
+
+
 def paint_sheen(p, r, alpha):
     """The sheen (list-r14m :705): a band of light across `r` at 112°, at `alpha` at its brightest (an opened row's
     head bakes it)."""
@@ -1656,6 +1683,15 @@ class RowDelegate(QStyledItemDelegate):
                 p.drawPixmap(box.topLeft(), pix)
             if payload.status is not None and self.view.pressed(payload.episodes):     # round 8 row 45 (A-3): over
                 self._paint_pressed(p, self._hero_geometry(payload, rect, lines)["status"])   # its cached picture
+            part = self.view.marked_part(payload.episodes)                  # ... and a menu's press (IK-2)
+            if part is not None:
+                g = self._hero_geometry(payload, rect, lines)
+                if part in ("play", "cover"):                               # (▶ Play is wide: its cover turns)
+                    self._paint_marked(p, g["cover"], place="middle")
+                elif part == "journey" and g["journey"] is not None:
+                    self._paint_marked(p, g["journey"], place="after")
+                else:
+                    self._paint_marked(p, g["status"] if part in ACTION_NAMES else g.get(part) or g["more"])
             if focused:
                 self._focus_ring(p, box, theme.RADII["r-sm"])
         elif kind == HERO:
@@ -1668,6 +1704,9 @@ class RowDelegate(QStyledItemDelegate):
             pix, _box = self._closed(kind, payload, lines, rect, dpr, hovered or focused, p)   # W3.2 Q4: focus too
             if pix is not None:
                 p.drawPixmap(body.topLeft(), pix)
+            if self.view.marked_part(payload.episodes) is not None:    # round 8 row 45 (IK-2): its ⋯'s press
+                row_line = QRect(rect.left(), rect.top(), rect.width(), round(theme.SIZES["row"] * fz()))
+                self._paint_marked(p, self.finished_acts(self.columns(row_line, kind)["acts"])[1])
             if focused:
                 self._focus_ring(p, body, theme.RADII["r-sm"])
         elif kind == MONTH:
@@ -1723,9 +1762,33 @@ class RowDelegate(QStyledItemDelegate):
             at = next((r for name, r, *_rest in self.line_geometry(row, slab)["hover"] if name in ASKS), None)
             if at is not None:                       # (the Mine now button's place, at rest too: it turns there)
                 self._paint_pressed(p, at, radius=theme.RADII["icon-button"])
+        part = self.view.marked_part(row.episodes)   # round 8 row 45 (IK-2): a menu's press on this row, at its part
+        if part == "cover":
+            self._paint_marked(p, self.line_geometry(row, slab)["art"], place="middle")
+        elif part is not None:
+            at = next((r for name, r, *_rest in self.line_geometry(row, slab)["hover"] if name == part), None)
+            if at is not None:
+                self._paint_marked(p, at)
         if focused:
             self._focus_ring(p, slab, theme.RADII["r-sm"])
         p.restore()
+
+    def _paint_marked(self, p, rect, place="button"):
+        """Round 8 row 45 (IK-2): a press's arc on a file's line at `rect`; repainted alone as it turns."""
+        paint_marked(p, rect, self.view.turning(), place=place)
+        if p.device() is self.view.viewport():
+            box = QRectF(rect)
+            if place == "after":
+                box = QRectF(box.right(), box.top(), box.height() + 8, box.height())
+            self.view.turned_at(p.transform().mapRect(box).toAlignedRect())
+
+    def _ep_marked(self, p, r, ep, dpr):
+        """A menu's press on an episode's own line (its row open): at its part — a status action at its pill."""
+        part, cols = self.view.marked[ep.id][-1], self._episode_cols(r)
+        if part in ACTION_NAMES and ep.status is not None:
+            self._paint_marked(p, self._ep_pill(r, ep, dpr))
+        else:
+            self._paint_marked(p, cols.get(part) or cols["more"])
 
     def _paint_pressed(self, p, rect, radius=None):
         """Round 8 row 45: a pressed *Mine now*'s turning mark over `rect`; painted on the list, the view repaints that
@@ -2287,6 +2350,8 @@ class RowDelegate(QStyledItemDelegate):
                     p.drawPixmap(r.topLeft(), pix)
                 if ep.id in self.view.pressed_ids and ep.status is not None:      # round 8 row 45: over its picture
                     self._paint_pressed(p, self._ep_pill(r, ep, dpr))
+                if ep.id in self.view.marked:                                      # ... a menu's press (IK-2)
+                    self._ep_marked(p, r, ep, dpr)
                 if on:
                     m, side = self._episode_cols(r)["more"], rl("anki-icon")
                     icon(p, "more", QRectF(m.center().x() - side / 2 + 0.5, m.center().y() - side / 2 + 0.5, side,
@@ -2298,6 +2363,8 @@ class RowDelegate(QStyledItemDelegate):
                 p.restore()
                 if ep.id in self.view.pressed_ids and ep.status is not None:
                     self._paint_pressed(p, self._ep_pill(r, ep, dpr))
+                if ep.id in self.view.marked:
+                    self._ep_marked(p, r, ep, dpr)
         for r, show in shows:                         # --- LM11b: each a picture of its own, as an episode's line
             if clip is not None and not clip.intersects(QRectF(r)):
                 continue
@@ -2744,6 +2811,8 @@ class RowsView(QListView):
         self._turn_idle = False                      # ... a frame found none painted (two: the clock stops, A-6)
         self.press_moved = None                      # ... `press_moved(ids)`: their status moved — the presses' owner
                                                      # ends them (`mine_actions`); None: this list lets them go
+        self.marked = {}                             # ... file id -> the parts its live presses mark, oldest first
+        #                                              (`mark_ids`, IK-2: one per press, the newest painted)
         self.seam = None                             # --- W3.2 Q8: (row key, episode id) of the ✂ seam under the hand
         self.ep_hover = None                         # --- W3.2 Q8: (row key, episode id) the hand was last on
         self.ep_hot = None                           # --- row 28: (row key, episode id) under the hand now
@@ -3008,6 +3077,44 @@ class RowsView(QListView):
         for row_i in sorted({n for n, _ep in shown.values()}):  # the rows that stop turning: their pills as they are
             self.update(self.model().index(row_i, 0))
 
+    def mark_ids(self, ids, part="more"):
+        """Round 8 row 45 (IK-2; `press.row_mark`): the files `ids` marked by a live press — the accent arc turns on
+        each one's line at `part` ("more": its ⋯, "play": ▶), painted before this returns, until `unmark` takes that
+        press's mark off. Two presses on one file keep a mark each (P3-A4): the newest is painted, and the first to end
+        leaves the other's. Kept for a file this list doesn't show yet (it shows once it does). -> the ids it shows."""
+        for i in ids:
+            self.marked.setdefault(i, []).append(part)
+        self._sync_turn()
+        shown = self._where(ids)
+        for row_i in sorted({n for n, _ep in shown.values()}):
+            self.viewport().repaint(self.visualRect(self.model().index(row_i, 0)))
+        return tuple(shown)
+
+    def unmark(self, ids, part=None):
+        """One press's marks off `ids` (`part`: the one it made; None: every mark of theirs)."""
+        gone = set(self.marked) & set(ids)
+        if not gone:
+            return
+        for i in gone:
+            parts = self.marked[i]
+            if part is not None and part in parts:
+                parts.reverse()
+                parts.remove(part)                   # (its newest such mark: a press's own)
+                parts.reverse()
+            else:
+                parts.clear()
+            if not parts:
+                del self.marked[i]
+        self._sync_turn()
+        for row_i in sorted({n for n, _ep in self._where(gone).values()}):
+            self.update(self.model().index(row_i, 0))
+
+    def marked_part(self, episodes):
+        """The part a press marks on any of `episodes`' lines, or None."""
+        if not self.marked:
+            return None
+        return next((self.marked[e.id][-1] for e in episodes if e.id in self.marked), None)
+
     def _prune_pressed(self):
         """A new view: a pressed file whose status moved from what it was at the press (Connect read the ask: asked, a
         wait, mining), or that this list no longer shows, stops turning — its press ended by its owner."""
@@ -3020,11 +3127,15 @@ class RowsView(QListView):
 
     def _set_pressed(self, ids):
         self.pressed_ids = frozenset(ids)
-        if self.pressed_ids and self._turn is None:
+        self._sync_turn()
+
+    def _sync_turn(self):
+        """The marks' clock: on while any file is pressed or marked, gone when none is."""
+        if (self.pressed_ids or self.marked) and self._turn is None:
             self._turn = motion.Turn(self.viewport(), self._turned)
             self._turn.show()
             self._turn.set_running(True)
-        elif not self.pressed_ids and self._turn is not None:
+        elif not (self.pressed_ids or self.marked) and self._turn is not None:
             self._turn.set_running(False)
             self._turn.deleteLater()
             self._turn, self._turn_rects = None, []

@@ -640,7 +640,9 @@ class SearchCut(QWidget):
         row = self._row("current", hit.key)
         if row is None or not row.can_play or not row.episodes:
             return
-        self.shell.page_widgets["current"]._play(row.episodes[row.next_index])
+        from app.qt import press as qpress
+        self.shell.page_widgets["current"]._play(row.episodes[row.next_index],     # (round 8 row 45: its row may be
+                                                 at=qpress.bar_mark(self.shell))     # ... under the search: the bar's arc)
 
     def top(self, hit):
         """⤒: up next / the top of Current, through the writer, with its toast and Undo (see the module's doc)."""

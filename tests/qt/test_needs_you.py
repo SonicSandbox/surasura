@@ -497,7 +497,7 @@ def test_connects_kinds_call_their_callables_on_a_worker_and_a_missing_one_is_hi
     assert wait_until(lambda: got[-1][0] == "dismiss", 5)
     assert got[-1][1] == (12,) and got[-1][2]
     opened = []
-    win.open_logs = lambda folder=None: opened.append(folder)
+    win.open_logs = lambda folder=None, **_how: opened.append(folder)
     button(ny, by_id[13].key, "open_logs").click()
     assert opened == [None]
     gap = next(e for e in ny.entries if e.kind == service.GAP)

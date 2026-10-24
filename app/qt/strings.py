@@ -493,7 +493,8 @@ ROWS_STONE_TIP = "{label}{state}\n• Click to mark it {action}"
 ROWS_STONE_STATE = {"cut": " · watched", "raw": " · {n} cards in Anki", "rock": ""}
 ROWS_STONE_MISSING = " · no {word} on disk"
 ROWS_STONE_ACTION = {True: "not watched", False: "watched"}
-ROWS_STONE_LEAVES = "\nWatched: its words leave your list."    # W-1: while *Keep studying watched episodes* is off
+from app.services.view_rows import STRINGS as _ROWS_STRINGS   # noqa: E402  one sentence, the report's panel's too
+ROWS_STONE_LEAVES = "\n" + _ROWS_STRINGS["watched_leaves"]    # W-1: while *Keep studying watched episodes* is off
 ROWS_DONE = "Done"
 ROWS_DONE_TIP = "Mark {ep} watched\n• Click: the one after it comes up next"
 ROWS_DONE_ALL_TIP = "Every file of it is watched\n• Click to move it to Finished"

@@ -229,8 +229,9 @@ class Services:
 
     def _stone_marked(self, language):
         """(The writer's thread.) A watched mark, or its undo, that moved nothing that counts: the journey keeper's
-        `changed("stone")` (it reads nothing; its timer asks whether the report is current) — never once the quit
-        began. A mark that moved what counts moves `order_version`: `_store_moved` hears that one."""
+        `marked("stone")` (it reads only the Generate's state; its timer asks whether the report is current, after any
+        run in flight) — never once the quit began (the next start's look asks the report half). A mark that moved what
+        counts moves `order_version`: `_store_moved` hears that one."""
         if self.closing.is_set() or self.replan is None:
             return
         stone_marked = getattr(self.replan, "stone_marked", None)

@@ -91,7 +91,7 @@ def test_look_answers_as_the_click_opens_for_every_way_a_file_is_found(monkeypat
     rel_paired, _ = _copy(_name(13, ".ja.srt"))
     paired = _video(_elsewhere("hato", "第13話.mkv"))
     real = play._pairings
-    monkeypatch.setattr(play, "_pairings", lambda language, ids: {
+    monkeypatch.setattr(play, "_pairings", lambda language, ids, moved=None: {
         **real(language, ids), **({9013: {"producer": "hato", "video_path": paired}} if 9013 in ids else {})})
     asks = {beside_origin[0]: (beside_origin[1], "anime"), nothing[0]: (nothing[1], "anime"),
             9011: (rel_copy, "anime"), 9012: (rel_indexed, "anime"), 9013: (rel_paired, "anime")}
@@ -114,7 +114,7 @@ def test_a_share_offline_is_listed_once_a_round_never_once_an_episode(monkeypatc
     remembers the folder it couldn't list), all three not found — never three waits on the network's timeout."""
     share = os.path.join(os.environ["SURASURA_TEST_ROOT"], "N", "Media", "Shows", SHOW)
     copies = {n: _copy(_name(n, ".ja.srt"))[0] for n in (1, 2, 3)}
-    monkeypatch.setattr(play, "_pairings", lambda language, ids: {
+    monkeypatch.setattr(play, "_pairings", lambda language, ids, moved=None: {
         i: {"producer": "source", "origin": os.path.join(share, _name(i, ".ja.srt"))} for i in ids})
     listed, real = [], os.listdir
 
@@ -410,7 +410,7 @@ def test_an_episode_whose_record_couldnt_be_read_is_never_kept_as_looked_at(monk
     video = _video(os.path.join(folder, _name(5, ".mkv")))           # beside the original only
     rel, _copies = _copy(_name(5, ".ja.srt"))
     readable = [False]
-    monkeypatch.setattr(play, "_pairings", lambda language, ids: {
+    monkeypatch.setattr(play, "_pairings", lambda language, ids, moved=None: {
         i: ({"producer": "source", "origin": origin} if readable[0] else None) for i in ids})
     hand = _Hand()
     looks = play.Looks("ja", worker=hand)
@@ -487,7 +487,7 @@ def test_hatos_videos_on_a_share_gone_offline_are_waited_on_once_a_round(monkeyp
         _video(os.path.join(share, _name(n, ".mkv")))
     videos.Index("ja").refresh([], [os.path.dirname(share)])         # listed while the share was there
     copies = {n: _copy(_name(n, ".ja.srt"))[0] for n in (1, 2, 3)}
-    monkeypatch.setattr(play, "_pairings", lambda language, ids: {
+    monkeypatch.setattr(play, "_pairings", lambda language, ids, moved=None: {
         i: {"producer": "hato", "video_path": os.path.join(share, _name(i, ".mkv"))} for i in ids})
     touched = _offline(monkeypatch, share)
     assert play.look("ja", {n: (rel, "anime") for n, rel in copies.items()}) == dict.fromkeys((1, 2, 3))
@@ -499,7 +499,7 @@ def test_a_books_parts_on_a_share_gone_offline_are_waited_on_once_a_round(monkey
     folder for the round, never two an episode."""
     share = os.path.join(os.environ["SURASURA_TEST_ROOT"], "N", "Books")
     book = os.path.join(share, "星の歌.epub")
-    monkeypatch.setattr(play, "_pairings", lambda language, ids: {
+    monkeypatch.setattr(play, "_pairings", lambda language, ids, moved=None: {
         i: {"producer": "source", "origin": f"{book}#{i}"} for i in ids})
     touched = _offline(monkeypatch, share)
     asks = {n: (f"Library/星の歌/星の歌 {n:02d}.txt", "book") for n in (1, 2, 3)}

@@ -58,12 +58,23 @@ class SyncCollection(ModCollection):
 # The library
 # --------------------------------------------------------------------------------------------------------------- #
 
-def _settings_file(root, **over):
+def _language(root=None):
+    """The library's language, as its settings file says (`lib`'s: Japanese unless a test asked for Chinese)."""
+    root = root or os.environ.get("SURASURA_TEST_ROOT") or ""
+    try:
+        with open(os.path.join(root, "settings.json"), encoding="utf-8") as f:
+            return json.load(f).get("target_language") or "ja"
+    except (OSError, ValueError):
+        return "ja"
+
+
+def _settings_file(root, language=None, **over):
     # 3.0: the host runs when 順 recorded the (language, deck) pair (its deck save does: W3.5 row 7) — the box is
-    # 2.x's and kept on here only so the 2.x tests read the same.
+    # 2.x's and kept on here only so the 2.x tests read the same. The language stays the library's (`_language`)
+    language = language or _language(root)
     settings = {"junban_replan_preview": True, "junban_deck": DECK, "junban_scope": "deck",
-                "junban_replan_language": "ja", "junban_replan_deck": DECK,
-                "junban_order": "content", "anki_connect_url": URL, "target_language": "ja"}
+                "junban_replan_language": language, "junban_replan_deck": DECK,
+                "junban_order": "content", "anki_connect_url": URL, "target_language": language}
     settings.update(over)
     with open(os.path.join(root, "settings.json"), "w", encoding="utf-8") as f:
         json.dump(settings, f, ensure_ascii=False)
@@ -75,25 +86,28 @@ def _generate(root):
     from app import run_args
     with open(os.path.join(root, "settings.json"), encoding="utf-8") as f:
         settings = json.load(f)
-    cases.generate(root, CASE, argv=run_args.analyzer_args(settings, "ja", headless=True)[1:])
+    language = settings.get("target_language") or "ja"
+    cases.generate(root, f"rp2-{language}", argv=run_args.analyzer_args(settings, language, headless=True)[1:])
 
 
 @pytest.fixture
-def lib(tmp_path, monkeypatch):
-    """A generated library with the preview on, this test's data root: (root, store)."""
+def lib(tmp_path, monkeypatch, request):
+    """A generated library with the preview on, this test's data root: (root, store). RP-2's Japanese library, or
+    its Chinese twin with `@pytest.mark.parametrize("lib", ["zh"], indirect=True)` (CLAUDE.md: both languages)."""
+    language = getattr(request, "param", "ja")
     root = str(tmp_path / "lib")
     env = cases.child_env(root)
     for name in ("SURASURA_TEST_ROOT", "APPDATA", "LOCALAPPDATA"):
         monkeypatch.setenv(name, env[name])
     monkeypatch.delenv("SURASURA_NO_ANKI_SYNC", raising=False)
     cases.needs_junban()                         # the preview needs Junban (3.0: the plan doesn't)
-    cases.build(root, CASE)
-    _settings_file(root)
+    cases.build(root, f"rp2-{language}")
+    _settings_file(root, language)
     from app.path_utils import ensure_data_setup
-    ensure_data_setup("ja")                      # what every window's open makes sure of (the word lists' files)
+    ensure_data_setup(language)                  # what every window's open makes sure of (the word lists' files)
     _generate(root)
     from app.path_utils import get_data_path, get_user_files_path
-    store = library_store.open_store("ja", get_data_path("ja"), get_user_files_path("ja"))
+    store = library_store.open_store(language, get_data_path(language), get_user_files_path(language))
     assert store is not None, "the Generate left no library store"
     yield root, store
     store.close()
@@ -128,7 +142,7 @@ def _ids(store, tier):
 
 def _host(**kwargs):
     lines = []
-    host = replan_preview.Host("ja", say=lines.append, **kwargs)
+    host = replan_preview.Host(_language(), say=lines.append, **kwargs)
     return host, lines
 
 
@@ -291,6 +305,8 @@ def test_the_reasons_come_in_order_d29_junban_d7_then_the_deck(monkeypatch):
 # A move → the job
 # --------------------------------------------------------------------------------------------------------------- #
 
+# Chinese too (the lead's end-to-end check, 9b): a Chinese learner's move re-orders his cards as a Japanese one's does
+@pytest.mark.parametrize("lib", ["ja", "zh"], indirect=True)
 def test_a_move_reorders_anki_from_the_engine_tomorrows_cards_first_and_records_the_plan(lib):
     root, store = lib
     fake = _deck(root)
@@ -327,7 +343,7 @@ def test_a_move_reorders_anki_from_the_engine_tomorrows_cards_first_and_records_
 def _junban_settings():
     from app import settings_manager
     settings = dict(settings_manager.load_settings())
-    settings["target_language"] = "ja"
+    settings["target_language"] = _language()
     return settings
 
 
@@ -351,6 +367,7 @@ def test_a_missing_item_keeps_the_run_current_for_the_preview(lib):
     assert plan_rules.signature_digest(parts) == analyzer.read_run_stamp(get_user_file("results"))
 
 
+@pytest.mark.parametrize("lib", ["ja", "zh"], indirect=True)       # Chinese too (9b)
 def test_after_the_job_the_next_generate_reorders_nothing(lib):
     """The parity a learner feels (05 §1 through Junban): the fast path left Anki where the next full Generate's own
     list puts it — the after-Generate re-order, from the new plan, writes no card."""

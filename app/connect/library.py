@@ -8,6 +8,7 @@ last id and the pairings, read with the store's own queries (`_mine_ids`, `_log_
 Light (02 §5): the standard library and the store only.
 """
 import json
+from collections import namedtuple
 
 READER = "connect"          # the placement log's reader for Connect (✅ G1.1-2: its watermark is set at switch-on)
 
@@ -114,14 +115,16 @@ def pairing_of(store, item_id):
     only when the item has no other — it never shadows hato's video path, ids and episode numbers — and read without
     the origin's size, time and sha256, which a re-copy rewrites: the pairing's version (`fit_check.version`) stays.
     Among origin rows, one naming a video first, then the oldest: an origin attached later (a moved original, the same
-    bytes found again) never drops the video nor moves the version. Never another version of the item's episode
-    (LM1b: an origin flagged `version`, `library_store._VERSION_ROW`)."""
+    bytes found again) never drops the video nor moves the version — but an origin whose original moved (D5: its
+    record marked `moved_to`, `library_store._MOVED_ROW`) after every live one: the episode is read where it is now
+    (its pairing's version moves once, so its fit is checked once at the new place). Never another version of the
+    item's episode (LM1b: an origin flagged `version`, `library_store._VERSION_ROW`)."""
     from app import library_store
     origin = library_store._ORIGIN_ROW
     video_last = (f"CASE WHEN {origin} AND json_valid(p.pairing) THEN json_extract(p.pairing, '$.video_path') IS NULL "
                   "ELSE 1 END")
     row = store.conn.execute(f"SELECT content_key, pairing FROM pairings p WHERE item_id = ? AND NOT "
-                             f"{library_store._VERSION_ROW} ORDER BY {origin}, "
+                             f"{library_store._VERSION_ROW} ORDER BY {origin}, {library_store._MOVED_ROW}, "
                              f"{video_last}, CASE WHEN {origin} THEN 0 ELSE paired_at END DESC, "
                              f"CASE WHEN {origin} THEN 0 ELSE rowid END DESC, paired_at, rowid LIMIT 1",
                              (item_id,)).fetchone()
@@ -132,6 +135,49 @@ def pairing_of(store, item_id):
     if isinstance(record, dict) and row[0].startswith(library_store.SOURCE_KEY):
         record = {k: v for k, v in record.items() if k not in library_store.SOURCE_STATS}
     return record
+
+
+# D5 / MV-2 (PROVISIONAL): what the store knows of an episode's move, read beside its pairing — the store's alone, no
+# disk (`runner.moved_video` / `runner.video_left` look at the disk after, outside the store's reads). `root`: the path
+# of the source folder its origin was read from (its record's `root`), None for any other record; `was`: (path, size)
+# of each video its origins marked `moved_to` named (size None when unrecorded), the newest origin first — a mark is never trusted alone (Kura's MV-A5: the same
+# bytes found elsewhere while the original was only briefly away), so while the live record's video is gone, one
+# still on disk there is the episode's
+Moved = namedtuple("Moved", "root was")
+NOT_MOVED = Moved(None, ())
+
+
+def moved_of(store, item_id, record, roots=None):
+    """The item's `Moved` (above) for its pairing `record` (`pairing_of`'s). `roots` ({source id: its path}, a caller's
+    own across many items: ▶'s looks): the sources read once, the first time a record names one."""
+    from app import library_store
+    root = None
+    if isinstance(record, dict) and record.get("producer") == library_store.SOURCE_PRODUCER and \
+            record.get("root") is not None:
+        roots = {} if roots is None else roots
+        if not roots:
+            roots.update((s["id"], s["path"]) for s in store.sources(all=True, counts=False))
+            roots.setdefault(None, None)            # (read: never again for a library with no sources)
+        root = roots.get(record["root"])
+    was = moved_videos(store, item_id)
+    return Moved(root, was) if root or was else NOT_MOVED
+
+
+def moved_videos(store, item_id):
+    """`Moved.was` alone (no sources read): what Connect's video lookup needs (`runner.Steps.video`)."""
+    from app import library_store
+    was = []
+    marked = (f"SELECT pairing FROM pairings p WHERE item_id = ? AND {library_store._ORIGIN_ROW} AND "
+              f"{library_store._MOVED_ROW} AND NOT {library_store._VERSION_ROW} ORDER BY rowid DESC")
+    for (text,) in store.conn.execute(marked, (item_id,)):
+        try:
+            record = json.loads(text)
+            path, size = record.get("video_path"), record.get("video_size")
+        except (ValueError, AttributeError):        # a malformed record, or one that isn't an object: no video
+            continue
+        if isinstance(path, str) and path and path not in [p for p, _s in was]:
+            was.append((path, size if isinstance(size, int) and size > 0 else None))
+    return tuple(was)
 
 
 # --------------------------------------------------------------------------- #

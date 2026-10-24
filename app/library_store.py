@@ -156,7 +156,9 @@ CONTENT_FOLDER = "Library"
 WALK_FOLDERS = tuple(TIERS[t][1] for t in ANALYSED) + (CONTENT_FOLDER,)   # what the disk sync walks and watches
 SOURCE_PRODUCER = "source"       # an origin record's producer, and the placement log's name for a scan's take-in
 SOURCE_KEY = "src:"              # an origin row's `pairings.content_key`: "src:" + path_key(<absolute origin>) (B1)
-SOURCE_STATS = ("size", "mtime_ns", "sha256")      # what a re-copy rewrites in its row (never what Connect reads)
+# An origin record's fields Connect never reads (`pairing_of` strips them, so none moves its pairing version): the
+# original's stats a re-copy rewrites (`update_origin`), and D5's mark (`moved_to`, written by `take_in`'s `moved_from`)
+SOURCE_STATS = ("size", "mtime_ns", "sha256", "moved_to")
 # B1: a `pairings` row that is an origin's, and a source row read only when its item has no other (`p` = the row)
 _ORIGIN_ROW = "(p.content_key >= 'src:' AND p.content_key < 'src;')"
 # LM1b: an origin that is ANOTHER VERSION of its item's episode (a second group's subtitle, a lower release, one a
@@ -164,6 +166,11 @@ _ORIGIN_ROW = "(p.content_key >= 'src:' AND p.content_key < 'src;')"
 # and is no reader's: never the item's text, video, number or pairing (A8, A26)
 _VERSION_ROW = (f"({_ORIGIN_ROW} AND (CASE WHEN json_valid(p.pairing) THEN json_type(p.pairing, '$.version') END) "
                 "IS 'true')")                    # (SQLite never short-circuits for a malformed record: the CASE does)
+# D5 (PROVISIONAL): an origin whose original moved — its file gone from a folder still there, the same item's origin
+# recorded in its new place (`take_in`'s `moved_from`) — says `"moved_to": <the new origin's path key>`. It stays an
+# origin (found, kept out, its show's), never counted under its old folder (`sources`); Connect reads a live one first
+# (Michi's `pairing_of`). A look listing the original in its old place again takes the mark off (`origins_back`).
+_MOVED_ROW = ("((CASE WHEN json_valid(p.pairing) THEN json_type(p.pairing, '$.moved_to') END) IS NOT NULL)")
 _PREFERRED_ROW = (f"NOT ({_ORIGIN_ROW} AND EXISTS (SELECT 1 FROM pairings q WHERE q.item_id = p.item_id AND NOT "
                   f"(q.content_key >= 'src:' AND q.content_key < 'src;'))) AND NOT {_VERSION_ROW}")
 MINE_LINE_DEFAULT = 20           # a lean owned by Connect's spec and the window (settled at G2.2)
@@ -591,6 +598,7 @@ SCHEMA_SQL = (
     "CREATE INDEX items_order ON items (tier, ord, id)",
     "CREATE INDEX items_folder ON items (tier, parent_folder, ord, id)",   # placement by folder (§12)
     "CREATE INDEX items_key ON items (rel_key)",                            # "is this file an item?" (§12)
+    "CREATE INDEX items_missing ON items (size) WHERE availability = 'missing'",   # D2: a scoped sync's missing items
     "CREATE INDEX items_watched ON items (tier) WHERE watched != 0",        # the journey's stones (`STONES_EXIST_SQL`)
     """CREATE TABLE trash (
       id INTEGER PRIMARY KEY, item_id INTEGER NOT NULL, root_id INTEGER NOT NULL, rel_path TEXT NOT NULL,
@@ -651,9 +659,10 @@ ADDED_TABLES_SQL = (
 # was; a new store makes them in SCHEMA_SQL, an existing one at its first open by a writer (`_added_indexes`)
 ADDED_INDEXES_SQL = (
     "CREATE INDEX IF NOT EXISTS pairings_item ON pairings (item_id)",
+    "CREATE INDEX IF NOT EXISTS items_missing ON items (size) WHERE availability = 'missing'",   # D2 (`_lost_by_size`)
     "CREATE INDEX IF NOT EXISTS items_watched ON items (tier) WHERE watched != 0",
 )
-ADDED_INDEXES = ("pairings_item", "items_watched")
+ADDED_INDEXES = ("pairings_item", "items_missing", "items_watched")
 
 # Schema 2 (L3.1, the L2.2 pack 02 §2.3–2.4): works (a title: a season, a film, a book, a channel), the feed's
 # tombstones, and the items' work, search key, feed version and *Mine it too*. A fresh store runs SCHEMA_SQL and then
@@ -4622,6 +4631,8 @@ class Store:
             change = self._change(cmd, "relink")
             change.relink = {"id": item_id, "old": list(row[:5]), "new": rel}
             self._repoint(item_id, rel, st.st_size, st.st_mtime_ns)
+            if row[2] == st.st_size and _same_time(row[3], st.st_mtime_ns):   # D7a: its file, by rule 2b's proof
+                _note_moves(self, [(row[0], row[2], row[3], rel, st.st_size, st.st_mtime_ns)])
             self._drop_ask(rel)
             cmd.touch({row[5]}, availability=row[4] != "available")
             return change
@@ -4672,7 +4683,7 @@ class Store:
             raise NotInLibrary(f"not in the library: {path}")
         with self._writing():
             self._drop_ask(rel)
-        return self.sync_disk(folders=[_rel_dir(rel)] if _rel_dir(rel) else None)
+        return self.sync_disk(folders=[_rel_dir(rel)] if _rel_dir(rel) else None, as_new=[rel])
 
     def text_lists(self):
         """9b (05 §5.10): (counted, kept, aside) — the paths, relative to data/<lang>, whose text the token store
@@ -4709,6 +4720,14 @@ class Store:
             return {r[0]: r[1] for r in self.conn.execute(
                 "SELECT rel_path, trashed_path FROM trash WHERE restored_at IS NULL AND text_forgotten = 0 "
                 "AND trashed_path IS NOT NULL ORDER BY id")}
+
+    def text_moved(self):
+        """D7a: the moves this store proved — [(old rel, old size, old mtime_ns, new rel, size, mtime_ns)], oldest
+        first (`moved_paths`, the last MOVED_PATHS_KEEP): the token store's hint, so a file the sync followed under
+        another name (rule 2, 2b) or *Link a file* found keeps its tokenized row (`token_index.Store.reconcile`'s
+        `moved`). One read transaction."""
+        with self._reading():
+            return [tuple(m) for m in _moved_paths(self)]
 
     def text_forgotten(self):
         """The paths (relative to data/<lang>) of removed items whose sentences the user forgot (`forget_text`): the
@@ -7121,9 +7140,10 @@ def walk_folders(data_dir, folders):
     return {"files": files, "bad": bad}
 
 
-def _sync_delta(store, walk, known, scope=None):
+def _sync_delta(store, walk, known, scope=None, as_new=()):
     """What a sync would change, computed outside any transaction (§6.10); with `scope`, only within those folders
-    (`known` read with the same scope): an item outside them is never looked at. An untracked file in the content
+    (`known` read with the same scope): an item outside them is never looked at (but D2's missing items of a new
+    file's size, `_lost_by_size`). `as_new`: keys the user called new (`its_new`) — never a rename. An untracked file in the content
     folder is never the sync's (SRC B2: every copy there comes in through `take_in` or K3; went / came / refresh for
     the known ones as anywhere), nor one a `duplicate` exclusion keeps out (another item's episode, K3)."""
     data_dir = store.data_dir
@@ -7144,7 +7164,7 @@ def _sync_delta(store, walk, known, scope=None):
             respell.append((item_id, rel))                         # rule 1: a case-only rename
         if (s, m) != (size, mtime_ns):
             refresh.append((size, mtime_ns, item_id))
-    went, came = [], []
+    went, came, lost = [], [], []
     for key, (item_id, rel, tier, availability, size, mtime_ns) in known.items():
         under = any(key.startswith(top) for top in walked_tops)
         if under:
@@ -7153,37 +7173,45 @@ def _sync_delta(store, walk, known, scope=None):
             present = os.path.exists(os.path.join(data_dir, _strip(rel)))
         if availability == "available" and not present:
             went.append(item_id)
+            lost.append((item_id, rel, size, mtime_ns))
         elif availability == "missing" and present:
             came.append(item_id)
+        elif availability == "missing":
+            lost.append((item_id, rel, size, mtime_ns))            # D2: gone in an earlier sync, still gone
     # rule 2: a rename = an untracked file + exactly one known item in the same folder, same size and
-    # modified time, that went missing since the last sync
+    # modified time, that went missing since the last sync. FIX1 (MV-A3, Sonic's Decision 1 lean, PROVISIONAL): its
+    # time exact and gone in THIS sync — a file of another name is never another's on a rounded time or long after
+    # (a moved file keeps its name: rule 2b below reaches further)
     went_set = set(went)
     by_dir = {}
-    for key, (item_id, rel, tier, availability, size, mtime_ns) in known.items():
+    for item_id, rel, size, mtime_ns in lost:
         if item_id in went_set:
             by_dir.setdefault(path_key(_rel_dir(_strip(rel))), []).append((item_id, size, mtime_ns))
     renames, new, used = [], [], set()
     for rel, key, size, mtime_ns in fresh:
-        cands = [c for c in by_dir.get(path_key(_rel_dir(rel)), []) if c[1] == size and c[2] == mtime_ns]
+        cands = [c for c in by_dir.get(path_key(_rel_dir(rel)), []) if c[1] == size and c[2] == mtime_ns
+                 and key not in as_new]
         if len(cands) == 1 and cands[0][0] not in used:
             used.add(cands[0][0])
             renames.append((cands[0][0], rel, size, mtime_ns))
         else:
             new.append((rel, key, size, mtime_ns))
-    # rule 2b (9a, L2.2 05 §5.9): an untracked file + exactly ONE item anywhere in the library with the same file
-    # name, size and modified time that went missing in this sync is that item, moved; two or more are asked, never
-    # guessed (the file is held out until the user answers: `relink` or `its_new`)
+    # rule 2b (9a, L2.2 05 §5.9; D2): an untracked file + exactly ONE item anywhere in the library with the same file
+    # name, size and modified time that went missing (in this sync or an earlier one) and is still gone is that item,
+    # moved; two or more are asked, never guessed (the file is held out until the user answers: `relink` or `its_new`)
     asked = {path_key(a.get("rel", "")) for a in _rename_asks(store)}
+    if scope is not None and new:
+        lost += _lost_by_size(store, [n[2] for n in new], {k[0] for k in known.values()})
     by_name = {}
-    for key, (item_id, rel, tier, availability, size, mtime_ns) in known.items():
-        if item_id in went_set and item_id not in used:
+    for item_id, rel, size, mtime_ns in lost:
+        if item_id not in used:
             by_name.setdefault(path_key(_strip(rel).rsplit("/", 1)[-1]), []).append((item_id, size, mtime_ns))
     still, asks = [], []
     for rel, key, size, mtime_ns in new:
         if key in asked:
             continue                                               # held out: its question waits for the user
         cands = [c for c in by_name.get(path_key(rel.rsplit("/", 1)[-1]), [])
-                 if c[1] == size and c[2] == mtime_ns and c[0] not in used]
+                 if c[1] == size and _same_time(c[2], mtime_ns) and c[0] not in used and key not in as_new]
         if len(cands) == 1:
             used.add(cands[0][0])
             renames.append((cands[0][0], rel, size, mtime_ns))
@@ -7194,6 +7222,59 @@ def _sync_delta(store, walk, known, scope=None):
     went = [i for i in went if i not in used]
     return {"new": still, "renames": renames, "respell": respell, "went": went, "came": came, "refresh": refresh,
             "asks": asks}
+
+
+SAME_TIME_NS = 2_000_000_000            # D2: FAT keeps even seconds, exFAT 10 ms; an SMB share rounds within them
+FAT_HOUR_NS = 3_600_000_000_000         # D2: FAT keeps local time — a summer-time change moves a file an hour
+
+
+def _same_time(a, b):
+    """Rule 2b (D2; rule 2 asks an exact time, FIX1): one file's modified time as two file systems kept it — equal, within 2 s, or an hour off
+    within 2 s. A time 3 s off is another file (two episodes can be one size)."""
+    if a == b:
+        return True
+    if a is None or b is None:
+        return False
+    d = abs(a - b)
+    return d <= SAME_TIME_NS or abs(d - FAT_HOUR_NS) <= SAME_TIME_NS
+
+
+def _lost_by_size(store, sizes, seen_ids):
+    """D2, a scoped sync: the missing items outside its folders (not in `seen_ids`) of these sizes whose file is still
+    gone, as `_sync_delta`'s `lost` [(id, rel_path, size, mtime_ns)] — read through `items_missing`, never a walk or a
+    scan of the library (a store whose writer hasn't made the index yet reads them all the same, slower)."""
+    sizes = [s for s in dict.fromkeys(sizes) if isinstance(s, int)]
+    out = []
+    for chunk in _chunks(sizes, 500):
+        for item_id, rel, size, mtime_ns in store.conn.execute(
+                f"SELECT id, rel_path, size, mtime_ns FROM items WHERE availability = 'missing' AND size IN "
+                f"({','.join('?' * len(chunk))}) ORDER BY id", chunk):
+            if item_id not in seen_ids and not os.path.exists(os.path.join(store.data_dir, _strip(rel))):
+                out.append((item_id, rel, size, mtime_ns))
+    return out
+
+
+MOVED_PATHS_KEEP = 500                 # D7a: the move notes kept (a note older than the index's next pass is spent)
+
+
+def _moved_paths(store):
+    """D7a's notes (`meta.moved_paths`): [[old rel, old size, old mtime_ns, new rel, size, mtime_ns]], oldest first.
+    Never in the copy: a note lost costs one file read, never a count."""
+    row = store.conn.execute("SELECT value FROM meta WHERE key = 'moved_paths'").fetchone()
+    try:
+        notes = json.loads(row[0]) if row else []
+    except ValueError:
+        return []
+    return [n for n in notes if isinstance(n, list) and len(n) == 6] if isinstance(notes, list) else []
+
+
+def _note_moves(store, moves):
+    """D7a, inside the write that follows the moves (the sync's rule 1 / 2 / 2b, `relink` — never `_repoint`, which an
+    edition switch also calls for new bytes): each [old rel, old size, old mtime_ns, new rel, size, mtime_ns] the token
+    store may re-key by (its row is the old file's, the new file is still that size and time)."""
+    if moves:
+        notes = _moved_paths(store) + [list(m) for m in moves]
+        store._set_meta({"moved_paths": _dumps(notes[-MOVED_PATHS_KEEP:])})
 
 
 def _rename_asks(store):
@@ -7210,22 +7291,24 @@ def _store_walk(self):
     return walk_library(self.data_dir)
 
 
-def _store_sync_disk(self, walk=None, folders=None):
+def _store_sync_disk(self, walk=None, folders=None, as_new=()):
     """The disk sync (§6.10): files nothing tracks join the library by rule 3; renames keep their place;
     missing files are marked, never removed. No delta → no write lock, no commit. Returns a summary
     {"added", "renamed", "missing", "back", "bad"} or None when nothing changed. `folders`: only those folders
     (relative to data/<lang>) and what is under them — the ones the window's poll saw change (`DiskPoll.changed`,
-    L3.1: a hato drop costs its folder's walk, not the library's)."""
+    L3.1: a hato drop costs its folder's walk, not the library's). `as_new`: files the user called new (`its_new`,
+    relative to data/<lang>), never matched to a missing item."""
+    as_new = {path_key(r) for r in as_new}
     scope = list(folders) if folders else None
     walk = walk or (walk_folders(self.data_dir, scope) if scope else walk_library(self.data_dir))
     known, version = _known(self, scope)
-    delta = _sync_delta(self, walk, known, scope)
+    delta = _sync_delta(self, walk, known, scope, as_new)
     if scope and delta["went"]:
         # 9a: a file gone from a polled folder may have moved to a folder the poll can't see (one holding no item):
         # the whole library is looked at in this same check, so the move is followed (the intent review #5)
         scope, walk = None, walk_library(self.data_dir)
         known, version = _known(self, None)
-        delta = _sync_delta(self, walk, known, None)
+        delta = _sync_delta(self, walk, known, None, as_new)
     asks = _rename_asks(self)
     live = [a for a in asks if os.path.exists(os.path.join(self.data_dir, _strip(str(a.get("rel", "")))))]
     if live != asks:                                       # a held-out file gone: its question goes with it
@@ -7245,7 +7328,7 @@ def _store_sync_disk(self, walk=None, folders=None):
     with self._command("sync", "sync") as cmd:
         if cmd.meta["state_version"] != version:
             known, _v = _known(self, scope)
-            delta = _sync_delta(self, walk, known, scope)
+            delta = _sync_delta(self, walk, known, scope, as_new)
             for rel, _k, _s, _m in delta["new"]:
                 if rel not in entries:
                     entries[rel] = make_entry(rel, "Disk Sync", _detect_source_type(os.path.join(self.data_dir, rel),
@@ -7259,19 +7342,26 @@ def _store_sync_disk(self, walk=None, folders=None):
                             "copy_dirty": self._meta().get("copy_dirty", 0) + 1})
         exists = lambda rel: os.path.exists(os.path.join(self.data_dir, _strip(rel)))
         rows = self._rows([r[0] for r in delta["renames"]] + [r[0] for r in delta["respell"]] + delta["went"] + delta["came"])
-        tiers = set()
+        tiers, found, moves = set(), [], []
+        stamp = lambda item_id: self.conn.execute("SELECT size, mtime_ns FROM items WHERE id = ?", (item_id,)).fetchone()
         for item_id, rel, size, mtime_ns in delta["renames"]:
-            if not exists(rel) or exists(rows[item_id][5]) or self.conn.execute(
+            if item_id not in rows or not exists(rel) or exists(rows[item_id][5]) or self.conn.execute(
                     "SELECT 1 FROM items WHERE rel_key = ?", (path_key(rel),)).fetchone():
                 continue                                           # a stale walk: leave it to the next sync
+            moves.append((rows[item_id][5], *stamp(item_id), rel, size, mtime_ns))
             self._repoint(item_id, rel, size, mtime_ns)
             tiers.add(rows[item_id][1])
             summary["renamed"].append(item_id)
+            if rows[item_id][6] == "missing":
+                found.append(item_id)                              # D2: missing since an earlier sync, available again
         for item_id, rel in delta["respell"]:
             if exists(rel):
+                old_size, old_mtime = stamp(item_id)
+                moves.append((rows[item_id][5], old_size, old_mtime, rel, old_size, old_mtime))
                 self._repoint(item_id, rel)
                 tiers.add(rows[item_id][1])
                 summary["renamed"].append(item_id)
+        _note_moves(self, moves)                                   # D7a: the token store's hint
         gone = [i for i in delta["went"] if i in rows and not exists(rows[i][5])]
         back = [i for i in delta["came"] if i in rows and exists(rows[i][5])]
         if gone:
@@ -7279,8 +7369,8 @@ def _store_sync_disk(self, walk=None, folders=None):
         if back:
             self.conn.executemany("UPDATE items SET availability = 'available' WHERE id = ?", [(i,) for i in back])
         cmd.feed(gone + back)
-        if gone or back:
-            cmd.touch({rows[i][1] for i in gone + back}, availability=True)
+        if gone or back or found:
+            cmd.touch({rows[i][1] for i in gone + back + found}, availability=True)
         summary["missing"], summary["back"] = gone, back
         if delta["refresh"]:
             self.conn.executemany("UPDATE items SET size = ?, mtime_ns = ? WHERE id = ?", delta["refresh"])
@@ -7941,7 +8031,7 @@ _LINK_TAGS = (0xA000000C, 0xA0000003)              # IO_REPARSE_TAG_SYMLINK, IO_
 _DIGITS = re.compile(r"(\d+)")
 _EPUB_PART = re.compile(r"\.epub#\d+$", re.I)    # an EPUB's part's origin (`<book>.epub#3`)
 Origin = namedtuple("Origin", "item_id root origin size mtime_ns sha256 rel_path availability paired_at version "
-                              "video_path video_size video_key declined thin", defaults=(None,) * 6)
+                              "video_path video_size video_key declined thin moved_to", defaults=(None,) * 7)
 
 
 def origin_key(path):
@@ -8333,7 +8423,8 @@ def _store_sources(self, all=False, counts=True):
     """[{id, path, on, items}] of the sources being read (`all`: the stopped ones too), in the order added; `items` =
     the live items with an origin under its folder, whichever source recorded it (the offline line's count: *its 412
     episodes are kept*; item 8b: a show's folder added inside a folder read before counts the episodes that one took
-    in) — by the origin keys' path, `/`-ended (`…\\Show` never counts `…\\Show S2`). `counts=False` (a look,
+    in) — by the origin keys' path, `/`-ended (`…\\Show` never counts `…\\Show S2`); an origin whose original
+    moved to another folder (D5's `moved_to`) counts in its new place only. `counts=False` (a look,
     Connect's video index): the roots' rows alone, no origin read; the counts are gathered here from one read of the
     keys in order (each folder's by its prefix), never in a GROUP BY (its temporary B-tree went to disk: 14 MB written
     per call at 20k origins)."""
@@ -8345,7 +8436,7 @@ def _store_sources(self, all=False, counts=True):
         if counts and rows:
             for key, item_id in self.conn.execute(f"SELECT substr(p.content_key, {len(SOURCE_KEY) + 1}), p.item_id "
                                                   f"FROM pairings p WHERE {_ORIGIN_ROW} AND NOT {_VERSION_ROW} "
-                                                  f"ORDER BY p.content_key"):
+                                                  f"AND NOT {_MOVED_ROW} ORDER BY p.content_key"):
                 keys.append(key)
                 ids.append(item_id)
     out = []
@@ -8374,9 +8465,10 @@ def _store_stop_source(self, root_id):
 
 def _store_origins(self, items=None):
     """{path_key(origin): Origin(item_id, root, origin, size, mtime_ns, sha256, rel_path, availability, paired_at,
-    version, video_path, video_size, video_key, declined, thin)} for every origin recorded (`version`: another version
-    of its item's episode, LM1b — a look knows its file, no reader takes it; `declined` / `thin`: a version the switch
-    passes over while its file is as judged, LM3 `sources.passed_over`), in any tier (a finished item is never taken in again): one read per look — the item's
+    version, video_path, video_size, video_key, declined, thin, moved_to)} for every origin recorded (`version`:
+    another version of its item's episode, LM1b — a look knows its file, no reader takes it; `declined` / `thin`: a
+    version the switch passes over while its file is as judged, LM3 `sources.passed_over`; `moved_to`: D5's mark, the
+    path key its original moved to), in any tier (a finished item is never taken in again): one read per look — the item's
     availability with it, so a look finds the copies gone (item 8a) with no stat of its own. The records' fields are read by SQLite
     (F13: decoding every record in Python held the interpreter 0.25 s at 20k, stretching a window's save meanwhile); a
     record that isn't a JSON object reads as one with no fields. `items` (LM3, A10): those items' origins only — a
@@ -8388,7 +8480,7 @@ def _store_origins(self, items=None):
             f"SELECT substr(p.content_key, {len(SOURCE_KEY) + 1}), p.item_id, {field('root')}, {field('origin')}, "
             f"{field('size')}, {field('mtime_ns')}, {field('sha256')}, i.rel_path, i.availability, p.paired_at, "
             f"{_VERSION_ROW}, {field('video_path')}, {field('video_size')}, {field('video_key')}, "
-            f"{field('declined')}, {field('thin')} FROM pairings p "
+            f"{field('declined')}, {field('thin')}, {field('moved_to')} FROM pairings p "
             f"JOIN items i ON i.id = p.item_id WHERE {_ORIGIN_ROW}"
             + ("" if items is None else " AND p.item_id IN (SELECT value FROM json_each(?))")
             + " ORDER BY p.content_key", () if items is None else (_dumps(sorted(set(items))),)).fetchall()
@@ -8744,7 +8836,9 @@ def _store_take_in(self, root_id, found, first=False, rules=None):
 
     `found`: [{origin (absolute), size, mtime_ns (the origin's), sha256 (the text's bytes), show (its title), rel (the
     copy, relative to the data folder, under `Library/`), video_path?, video_size?, video_key?, episode? (K4's number),
-    item_id? (K1b's checks (a) / (b): the item the origin belongs to; no copy, no `rel`)}].
+    item_id? (K1b's checks (a) / (b): the item the origin belongs to; no copy, no `rel`), moved_from? (D5: with
+    `item_id`, the path keys of that item's origins whose originals the look found gone: marked `moved_to` this one,
+    when they are still its live records)}].
 
     Per file: an origin already recorded (by any source), or one Remove keeps out — its path, its bytes or its video
     (S6) — is skipped; an `item_id` gets the origin recorded and nothing else; a copy that is already an item is that
@@ -8873,6 +8967,8 @@ def _store_take_in(self, root_id, found, first=False, rules=None):
                 continue
             by_bytes.setdefault(same, item_id)
             self._write_origin(key, item_id, record)
+            if f.get("moved_from"):                          # D5: the originals this one replaced, marked
+                self._mark_moved(item_id, key, f["moved_from"])
             change.recorded[origin] = item_id
             episodes.pop(item_id, None)                      # its preferred record may be this one now
             change.attached.append(item_id)
@@ -8888,6 +8984,42 @@ def _store_take_in(self, root_id, found, first=False, rules=None):
     # changes after the commit, and SQLite's data_version as read inside it: another connection's commit since moves it)
     self._gaps = ((self.conn.total_changes, stamp), gaps) if exact and not nested else None
     return change
+
+
+def _store_mark_moved(self, item_id, key, olds):
+    """D5, inside `take_in`: the records of `olds` (path keys) still this item's, live (no version) and unmarked, say
+    their original moved to `key`'s (`"moved_to"`: its path key) — bookkeeping in a record, nothing deleted."""
+    for old in dict.fromkeys(olds):
+        old_key = SOURCE_KEY + str(old)
+        if old_key == key:
+            continue
+        row = self.conn.execute("SELECT item_id, pairing FROM pairings WHERE content_key = ?", (old_key,)).fetchone()
+        record = _json_dict(row[1]) if row is not None and row[0] == item_id else None
+        if record is None or record.get("version") is True or record.get("moved_to"):
+            continue
+        record["moved_to"] = key[len(SOURCE_KEY):]
+        self.conn.execute("UPDATE pairings SET pairing = ? WHERE content_key = ?",
+                          (json.dumps(record, sort_keys=True, ensure_ascii=False), old_key))
+
+
+def _store_origins_back(self, origins):
+    """D5: originals a look listed in their old place again (`origins`: absolute paths) — their `moved_to` mark taken
+    off, in ONE write, bookkeeping the copy carries. -> the origins whose row changed."""
+    done = []
+    with self._writing():
+        for origin in origins:
+            key = origin_key(origin)
+            row = self.conn.execute("SELECT pairing FROM pairings WHERE content_key = ?", (key,)).fetchone()
+            record = _json_dict(row[0]) if row is not None else None
+            if record is None or "moved_to" not in record:
+                continue
+            del record["moved_to"]
+            self.conn.execute("UPDATE pairings SET pairing = ? WHERE content_key = ?",
+                              (json.dumps(record, sort_keys=True, ensure_ascii=False), key))
+            done.append(origin)
+        if done:
+            self._copy_dirty()
+    return done
 
 
 def _store_take_version(self, cmd, change, root_id, origin, key, f, out):
@@ -10805,6 +10937,8 @@ Store.read_folder_again = _store_read_folder_again
 Store.take_in = _store_take_in
 Store._write_origin = _store_write_origin
 Store._take_version = _store_take_version
+Store._mark_moved = _store_mark_moved
+Store.origins_back = _store_origins_back
 Store._take_new = _store_take_new
 Store._waiting_videos = _store_waiting_videos
 Store._fill_gap = _store_fill_gap

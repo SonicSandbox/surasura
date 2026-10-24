@@ -2780,10 +2780,31 @@ class ShellWindow(QMainWindow):
         looks = getattr(self.services.library, "play", None)
         if looks is not None and summary.get("moved"):   # row 55: a video come beside an original: ▶ looked again
             looks.again()                                 # (IK-1: a look that changed nothing looks at nothing)
+        if summary.get("moved"):                          # MV-2: Connect's episodes waiting on a video go on —
+            self._kick_connect()                          # a *Find its folder…* answered (kicked on a worker)
         if summary.get("unfinished_reset"):              # LF-11: a fresh library a kill stopped, once a run
             from app.qt import settings_strings, windows
             windows.say_in_bar(self, settings_strings.FRESH_UNFINISHED.format(folder=summary["unfinished_reset"]))
         self.sources_seen.emit(summary)
+
+    def _kick_connect(self):
+        """MV-2: Connect kicked on a worker (`kick.kick`: started, or the one running woken; nothing while it's off):
+        a look recorded videos for known episodes, and a job of theirs waiting on *No video* waits only for its next
+        start (`runner._wait`'s parking) — the next start is now, as a *Link…* is (`window_link`). Only while Connect's
+        last look (the feed, in memory) has an episode on *No video*: a look that found a new episode's video starts
+        nothing (S19)."""
+        from app.connect import feed as connect_feed_module
+        from app.connect import kick
+        try:
+            latest = connect_feed(self.language, self.services.settings).latest()
+            if not any(item.kind == connect_feed_module.NO_VIDEO for item in latest.items.values()):
+                return
+            settings = settings_service.thaw(self.services.settings.get())
+        except Exception as e:
+            applog.log("connect", f"Connect wasn't started after a look: {e!r}")
+            return
+        bridge.run_in_worker(lambda: kick.kick(settings, videos=True),
+                             failed=lambda info: applog.log("connect", f"Connect's start: {info[0]}"))
 
     def _play_not_found(self, item_id):
         """A ▶ press found nothing to open (row 55 A-7): that episode's ▶ looked at again, on the looks' worker."""

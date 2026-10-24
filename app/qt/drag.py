@@ -1702,6 +1702,9 @@ class DragController(QObject):
         """*saving…* on the rows whose moves wait (after 300 ms; 04 §4.5), until the store takes them."""
         self.saving_keys = frozenset(k for t in self.tickets for k in t.keys) if on else frozenset()
         self._paint_saving()
+        told = getattr(self.win, "moves_saving", None)       # the phase strip: 届 waits while the store holds them
+        if told is not None:
+            told(bool(on))
 
     def _paint_saving(self):
         keys = self.saving_keys if self.tickets else frozenset()

@@ -43,6 +43,8 @@ from app.services import status as status_service
 from app.qt import screens                                # W2.2: the pages a library fills
 from app.qt import press as qpress                        # round 8 row 45: a press reacts at once
 from app.qt import standing as standing_qt                # round 8 row 54: every standing line's ✕
+from app.qt import phase_strip                            # the phase strip: five circles at the bar's bottom left
+from app.services import phase as phase_service
 from app.services import standing as standing_service
 from app.qt import covers as qcovers                      # --- W3.2 Q6: the titles' own pictures
 
@@ -1032,6 +1034,8 @@ class ShellWindow(QMainWindow):
         self._detached_card = None                        # row 35: the close's *Still finishing* sheet, while open
         self._detached_answered = False                   # ... answered (Quit or Stop and quit): asked once a close
         self.bridge.jobs_changed.connect(self._jobs_changed)
+        self.bridge.jobs_changed.connect(self.phase.set_jobs)
+        self.phase.set_jobs(services.registry.snapshot())
         self._library_needs = 0
         self._status_snap = None
         self._replan_waited = True                        # E20: the re-order host idle (or not waited for) at the close
@@ -1039,6 +1043,9 @@ class ShellWindow(QMainWindow):
         self._d29_asked = 0                               # ... and the newest read asked (an older answer is dropped)
         self._refresh_press = None                        # round 8 row 45: Refresh's press, until a look's summary
         self.duties = None                                # W3.5: the duties' controls, once the duties are attached
+        leave_out = getattr(services.status, "leave_out", None)     # (a test's stand-in service may have none)
+        if leave_out is not None:
+            leave_out(phase_service.placed)
         self.show_status(services.status.snapshot())
         self._epoch_shown = None                          # LM11b AD-5: the store's epoch of the view shown last
         # --- W2.2: the library (the reader's views, queued to this thread) ---------------------------------------- #
@@ -1081,6 +1088,7 @@ class ShellWindow(QMainWindow):
         self.router = EscapeRouter(self, parent=self)
         app.installEventFilter(self.router)
         self.tooltips = tooltip.Tooltips(parent=self).install(app)
+        self.phase.tooltips = self.tooltips
         for page in self.page_widgets.values():           # W2.2: painted parts' tooltips go through the bubble
             if hasattr(page, "list"):
                 page.list.tooltips = self.tooltips
@@ -1495,6 +1503,7 @@ class ShellWindow(QMainWindow):
         if lst is not None and (lst.saving or lst.landing is not None):
             lst.saving, lst.landing = frozenset(), None     # AD0-6: never a mark of the language left on a row
             lst.viewport().update()
+        self.moves_saving(False)                    # PS-A4: nor 届's wait (the writer let go never says it ended)
         if getattr(self, "mine", None) is not None:  # round 8 row 45: nor a pressed Mine now (its presses end)
             self.mine.settle_all()
         self._forget_picks()
@@ -1650,6 +1659,11 @@ class ShellWindow(QMainWindow):
         row = QHBoxLayout(footer)
         row.setContentsMargins(16, 0, 16, 0)
         row.setSpacing(10)
+        # The phase strip (Sonic, 2026-10-23): five circles first at the bottom left, lit by the work each stands for;
+        # the status line beside it keeps only what no circle shows (Q5: `StatusService.leave_out`)
+        self.phase = phase_strip.PhaseStrip(footer)
+        self.phase.follow_presses(self.presses)
+        row.addWidget(self.phase)
         # W3.1a: one slot at the left (W31A-1, `_paint_slot`) — the failure line with *Open the logs folder* while it
         # applies, else the update chip while it applies (`_attach_duties` puts it here), else the status line (the
         # pulsing dot gave way to the header's hairline: light never pulses)
@@ -1745,7 +1759,8 @@ class ShellWindow(QMainWindow):
         lines = (self._quit_line,) if self._quit == "waiting" else snap.lines     # E20: one line says so
         self._busy = bool(lines)
         self._paint_progress()
-        self._status_line = " · ".join(lines)
+        bar = getattr(snap, "bar_lines", None)
+        self._status_line = " · ".join(lines if self._quit == "waiting" or bar is None else bar)
         if not (self._saying() or self._holds) or self._quit == "waiting":     # (a line said keeps the slot: `say`)
             self.bar_line.set_full(self._status_line)
         failure = snap.failure or ""
@@ -1755,6 +1770,7 @@ class ShellWindow(QMainWindow):
         self.bar_failure.setToolTip(strings.BAR_FAILURE_TIP + ("\n\n" + failure if failure else ""))
         logs_before, self._logs_folder = self._logs_folder, snap.logs
         self._status_snap = snap
+        self.phase.set_status(snap)
         self._paint_slot()
         self._status_mark(self.bar_replan, snap.replan, strings.BAR_REPLAN_TIP.format(line=snap.replan or ""))
         if self.anki_mark.set_ankiweb(snap.ankiweb):           # W3.1a: the AnkiWeb mark's words, in the emerald's hover
@@ -2744,8 +2760,15 @@ class ShellWindow(QMainWindow):
         return " · ".join(lines)
 
     def _show_offline(self):
-        """Repainted only when its words moved (S19); shown while there are any."""
-        self.offline_line.show_line(self.offline_text() if self.sources else "")
+        """Repainted only when its words moved (S19); shown while there are any — and 届 amber while it is (the
+        phase strip, Q1: a folder offline waits on you)."""
+        text = self.offline_text() if self.sources else ""
+        self.offline_line.show_line(text)
+        self.phase.set_extra(phase_service.ARRIVALS, "offline", "needs" if text else None, text)
+
+    def moves_saving(self, on):
+        """The drag's writer holds moves for a busy store (`moves.Writer.on_saving`): 届 waits while it does."""
+        self.phase.set_extra(phase_service.ARRIVALS, "saving", "waiting" if on else None, strings.MOVE_WORDS["saving"])
 
     def _sources_progress(self, said):
         """A folder being read for the first time (+ Add): its count so far, in the bar."""

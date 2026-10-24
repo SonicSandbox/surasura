@@ -311,12 +311,14 @@ def test_a_needs_you_card_says_what_waits_under_its_title(seeded):
 # --- G11 --------------------------------------------------------------------------------------------------------------
 def test_the_bars_line_starts_at_the_bars_own_edge(window):
     # why (W3.1a): with the pulsing dot gone, the status line opens the bar itself, at the bar's left padding, not
-    # after a hole where the dot was
+    # after a hole where the dot was — since the phase strip (2026-10-23), the strip opens it there and the line
+    # follows it at the bar's own spacing
     window.bar_line.set_full("Couldn't open Ep 1: no video beside it on disk")
     QApplication.processEvents()
-    line = window.bar_line.geometry()
+    line, row = window.bar_line.geometry(), window.footer.layout()
     assert line.width() > 0, "the bar is not laid out, so its edge would be meaningless"
-    assert line.left() <= window.footer.layout().contentsMargins().left() + 1
+    assert window.phase.geometry().left() <= row.contentsMargins().left() + 1
+    assert line.left() <= window.phase.geometry().right() + 1 + row.spacing() + 1
 
 
 # --- G12 --------------------------------------------------------------------------------------------------------------

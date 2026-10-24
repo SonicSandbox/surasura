@@ -1450,12 +1450,12 @@ class Spinner(QWidget):
         p.end()
 
 
-def spin_arc(p, r, phase, colour):
+def spin_arc(p, r, phase, colour, width=None):
     """The spin's arc in `r` (a 270° accent arc, round-capped): turned to `phase` (0–1), or None — still, its gap at the
     top right (Reduced motion, the freeze switch). One look for a `Spinner` and a mark a painted view turns itself (a
-    pressed row's, round 8 row 45: `Turn`)."""
+    pressed row's, round 8 row 45: `Turn`; the phase strip's ring). `width`: the pen's (the side's eighth by default)."""
     from PyQt6.QtGui import QPen
-    pen = QPen(colour, max(1.5, r.width() / 8))
+    pen = QPen(colour, width or max(1.5, r.width() / 8))
     pen.setCapStyle(Qt.PenCapStyle.RoundCap)
     p.setPen(pen)
     p.setBrush(Qt.BrushStyle.NoBrush)

@@ -13,7 +13,8 @@ go on without the window (Connect) or are cut by the exit (the sync and the back
 
 States: `queued` (asked for, not started) · `waiting` (held back, with its reason in plain words) · `running` ·
 `cancelling` (asked to stop; still ending) · `done` · `failed` (with its message). A job cancelled before it started is
-`done` with `cancelled` set.
+`done` with `cancelled` set. A waiting or ended job may carry `needs`: why it waits on *you* (plain words: *Anki is
+closed*, *Not timed to its video*) — the phase strip's amber (its `app/services/phase.py`); None for every other wait.
 
 The exclusion rules, in one table (`RESOURCES`): two jobs that use the same resource never run together — Generate and
 the indexer both write the token store, and one Anki writer at a time (`anki-writer`, E1.4) — and never two of a kind.
@@ -73,7 +74,7 @@ RESOURCES = {
 
 Progress = namedtuple("Progress", "step done total")
 JobView = namedtuple("JobView", "id kind label state reason message progress started_at ended_at automatic on_quit "
-                                "cancelled gated pid can_cancel", defaults=(None, True))
+                                "cancelled gated pid can_cancel needs", defaults=(None, True, None))
 
 
 def conflicts(kind_a, kind_b):
@@ -152,22 +153,33 @@ class Job:
         self.ended_at = None
         self.cancelled = False
         self.pid = None                 # the child process it runs, once started (`started_process`)
+        self.needs = None               # why it waits on the user (a waiting or ended job), else None
         self.ended = threading.Event()
 
     def view(self):
         return JobView(self.id, self.kind, self.label, self.state, self.reason, self.message, self.progress_now,
                        self.started_at, self.ended_at, self.automatic, self.on_quit, self.cancelled, self.gated,
-                       self.pid, self._cancel is not None)
+                       self.pid, self._cancel is not None, self.needs)
 
     def progress(self, step, done=None, total=None):
         """Where the running job is: a step in the user's words, and how far through it."""
         self._registry._change(self, progress=Progress(step, done, total))
 
-    def finish(self, ok=True, message=None, cancelled=False, completed=False):
+    def finish(self, ok=True, message=None, cancelled=False, completed=False, needs=None):
         """The job ended: `done`, or `failed` with its message (plain words; a log's path where there is one);
         `cancelled` when it stopped because it was asked to; `completed` when it was asked too late (past the point it
-        can stop at) and ran to its end: not cancelled — the flag the ask set is taken back (E3.2's A13)."""
-        self._registry._end(self, DONE if ok else FAILED, message, cancelled, completed)
+        can stop at) and ran to its end: not cancelled — the flag the ask set is taken back (E3.2's A13). `needs`: it
+        ended waiting on the user (*Anki is closed*), in plain words."""
+        self._registry._end(self, DONE if ok else FAILED, message, cancelled, completed, needs)
+
+    def hold(self, reason, needs=None):
+        """A recorded job (its owner's) waits: `waiting` with `reason`, and `needs` when it waits on the user. A gated
+        job's waits are the registry's own: nothing changes."""
+        self._registry._hold(self, reason, needs)
+
+    def resume(self):
+        """A recorded job that waited (`hold`) runs again."""
+        self._registry._hold(self, None, None, run=True)
 
     def cancel(self):
         """Stop it: a job not started yet ends now (`done`, cancelled — its owner's cancel callback is told); a running
@@ -223,12 +235,15 @@ class JobRegistry:
         self._schedule()
         return job
 
-    def record(self, kind, label, cancel=None, automatic=False, on_quit="cancel"):
+    def record(self, kind, label, cancel=None, automatic=False, on_quit="cancel", reason=None, needs=None):
         """A job its owner started already (a child process): listed as running, never held back nor holding a gated
-        job back."""
+        job back. With a `reason` (or `needs`): listed as waiting — its owner's own wait (Connect's queued episode, one
+        not timed to its video) — until `resume()`."""
         with self._lock:
             job = Job(self, next(self._ids), kind, label, automatic, on_quit, None, cancel, gated=False)
             job.state, job.started_at = RUNNING, time.time()
+            if reason or needs:
+                job.state, job.reason, job.needs = WAITING, reason or needs, needs
             self._jobs.append(job)
         self._notify()
         return job
@@ -346,6 +361,18 @@ class JobRegistry:
             job.on_quit = "wait"
         self._notify()
 
+    def _hold(self, job, reason, needs, run=False):
+        with self._lock:
+            if job.gated or job.state not in (RUNNING, WAITING):
+                return
+            state = RUNNING if run else WAITING
+            reason = None if run else (reason or needs)
+            needs = None if run else needs
+            if (job.state, job.reason, job.needs) == (state, reason, needs):
+                return                                # the same again: no news (S19)
+            job.state, job.reason, job.needs = state, reason, needs
+        self._notify()
+
     def _change(self, job, progress=None):
         with self._lock:
             if job.state not in (RUNNING, CANCELLING):
@@ -353,11 +380,12 @@ class JobRegistry:
             job.progress_now = progress
         self._notify()
 
-    def _end(self, job, state, message, cancelled=False, completed=False):
+    def _end(self, job, state, message, cancelled=False, completed=False, needs=None):
         with self._lock:
             if job.state in (DONE, FAILED):
                 return
             job.state, job.message, job.ended_at = state, message, time.time()
+            job.needs = needs
             job.cancelled = (job.cancelled or cancelled) and not completed
             self._trim()
         job.ended.set()

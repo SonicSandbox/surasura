@@ -442,11 +442,13 @@ def test_a_switch_never_probes_the_store_on_the_window_thread_and_clears_the_row
     lst = _page(win).list
     key = _page(win).view_model.rows[0].key
     lst.saving, lst.landing = frozenset({key}), key              # a ja move waiting on a busy store as the switch came
+    win.moves_saving(True)                                       # (PS-A4: and 届's wait for it, on the phase strip)
     _ask(services, win, "zh")
     assert _switched_to(win, services, "zh")
     assert wait_until(lambda: services.writer._thread is not None, 10)
     assert gui_probes == []                                      # the switch: none either
     assert lst.saving == frozenset() and lst.landing is None
+    assert not win.phase.states["arrivals"].waiting              # the writer let go never says False: no wait kept
     assert style.current()[2] == "zh"
     ja.close()
     zh.close()

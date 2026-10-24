@@ -26,6 +26,9 @@ from app.qt import bridge, style
 # icon stands for AnkiWeb too: LOGOS.md's safe choice (the Anki logo licence names AnkiWeb).
 CLEARED = {
     "anki": ("anki-icon-vector.svg",),
+    # Sonic's pick (2026-10-23) for the phase strip's Anki circle: Anki's outline star as Anki publishes it (its repo's
+    # docs-site/media/anki-logo.svg — a 288 px PNG in an SVG wrapper; no sharper official source exists), unmodified
+    "anki_outline": ("anki-outline-star-288.svg",),
     "ankiweb": ("anki-icon-vector.svg",),
     "anki_miner": ("anki_miner.svg",),
     "hato": ("hato-32.png", "hato-64.png", "hato-128.png"),

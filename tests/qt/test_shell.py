@@ -601,21 +601,32 @@ def test_up_nexts_new_words_link_opens_the_journey_on_a_worker_and_says_why_when
     win, services = _seeded_window(qapp)
     opened = []
     answer = [True]
-    monkeypatch.setattr(services, "open_journey",
-                        lambda: opened.append(threading.current_thread() is threading.main_thread()) or answer[0])
+    asked = []
+    monkeypatch.setattr(services, "open_journey", lambda *file: asked.append(file) or opened.append(
+        threading.current_thread() is threading.main_thread()) or answer[0])
     try:
         win.show()
         page = win.page_widgets["current"]
         assert wait_until(lambda: page.view_model is not None and not page.view_model.loading, 10)
         assert page.on_journey is not None
         row = page.view_model.rows[0]
-        page.list.journey_requested.emit(row, row.episodes[0] if row.episodes else None)
+        page.list.journey_requested.emit(row, row.episodes[0])
         assert wait_until(lambda: opened == [False])                    # opened, off the window's thread
+        # Sonic 2026-10-24: ON that episode — the report's name for its file (its basename), never where it opens itself
+        ep = shell.view_rows.journey_episode(row)                        # its next (all watched: its first, JO-3)
+        assert asked == [(os.path.basename(ep.rel_path.replace("\\", "/")),)] and asked[0][0]
         assert win.bar_line.full() != strings.JOURNEY_NONE_TIP
         assert wait_until(lambda: not win.presses.find("journey:open").live())   # (a click meanwhile does nothing)
+        # JO-1 (Sonic 2026-10-24): an episode the journey doesn't list yet: opened where it opens by itself, and the
+        # bar says why
+        answer[0] = shell.JOURNEY_LACKS
+        page.list.journey_requested.emit(row, row.episodes[0])
+        assert wait_until(lambda: win.bar_line.full() == strings.JOURNEY_NOT_YET.format(ep=ep.label))
+        assert wait_until(lambda: not win.presses.find("journey:open").live())
         answer[0] = False
         page.list.journey_requested.emit(row, None)
         assert wait_until(lambda: win.bar_line.full() == strings.JOURNEY_NONE_TIP)
+        assert asked[-1] == (), "no episode: the report opens where it opens by itself"
     finally:
         win.close()
         services.shutdown(0.5)

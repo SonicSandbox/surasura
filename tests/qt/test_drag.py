@@ -1832,6 +1832,38 @@ def test_the_menu_leaves_out_up_next_for_up_next_and_finished_for_splits_and_hat
     m.close()
 
 
+def test_see_it_in_your_journey_opens_the_report_on_the_rows_next_episode(world, monkeypatch):
+    # why (Sonic 2026-10-24, the stones' choice 1): "if you use the option on an episode to 'see in journey' it should
+    # open up that one" — the ⋯ hands the opener the row's next episode, whose file the report opens on
+    from app.qt import shell
+    seed, win, writer = world()
+    asked = []
+    monkeypatch.setattr(win, "_open_journey", lambda *a, **kw: asked.append(kw))
+    row = rows_of(win)[4]
+    win.moves.menu_pick(row, "journey")
+    ep = row.episodes[row.next_index]
+    assert asked[-1]["episode"] == ep and asked[-1]["asked"] is True
+    name = shell.journey_file(ep)
+    assert name and name == ep.rel_path.replace("\\", "/").rsplit("/", 1)[-1]
+    assert shell.journey_file(None) is None and shell.journey_file(ep._replace(rel_path=None)) is None
+
+
+def test_a_show_with_every_episode_watched_opens_the_journey_on_its_first(world, monkeypatch):
+    # why (Sonic 2026-10-24, JO-3): "a show with every episode watched opens on its FIRST episode" — never its last,
+    # the row's own next (`next_index` falls back to the last); one rule for the ⋯ and Up Next's ↗
+    from app.services import view_rows
+    seed, win, writer = world()
+    asked = []
+    monkeypatch.setattr(win, "_open_journey", lambda *a, **kw: asked.append(kw))
+    row = next(r for r in rows_of(win) if len(r.episodes) > 1)
+    done = row._replace(episodes=tuple(e._replace(watched=True) for e in row.episodes),
+                        next_index=len(row.episodes) - 1)
+    win.moves.menu_pick(done, "journey")
+    assert asked[-1]["episode"] == done.episodes[0] != done.episodes[done.next_index]
+    assert view_rows.journey_episode(row) == row.episodes[row.next_index], "not all watched: its next one"
+    assert view_rows.journey_episode(row._replace(episodes=())) is None
+
+
 def test_the_menus_moves_reach_the_writer(world):
     seed, win, writer = world(apply=False)
     rs = rows_of(win)

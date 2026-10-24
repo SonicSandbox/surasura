@@ -667,7 +667,10 @@ def test_a_host_standing_aside_says_why_in_the_bar_and_the_users_own_choices_say
     assert look() == deck
     settings.values.update(junban_replan_language="ja", junban_replan_deck="Mining")     # picked in 順: it holds
     assert look() is None and len(opener.hosts) == 1 and opener.hosts[0].calls == ["catch_up"]
-    assert heard == [deck, one_deck, None, deck, None]
+    # finish-pending: the user's own choices say no words but are told once, as `OFF` (a press waiting ends quietly);
+    # the lines the user can fix are told as lines that give up
+    assert heard == [deck, one_deck, replan_preview.OFF, deck, None]
+    assert all(isinstance(line, replan_preview.GivesUp) for line in heard[:4])
     replan.finish(time.monotonic() + 1)
 
 
@@ -928,4 +931,39 @@ def test_a_level_key_written_starts_the_keepers_quiet_time_again(gate):
     replan, _registry, _c, _launches, _opener = _replan()
     replan.level_changed()
     assert replan.keeper.reasons[-1] == "level"
+    replan.finish(time.monotonic() + 1)
+
+
+# --- finish-pending's fix round (FP-A4): switched off while the window waits for a re-order ------------------------- #
+def test_switched_off_with_a_host_open_tells_off_once_with_no_words_and_the_update_hold_tells_no_off(gate):
+    """The window's press waiting for a re-order heard nothing when the learner turned automation or 順 off: the host
+    was let go with no line. Now `OFF` is told once (no words in the bar: `line()` stays None), not again at the next
+    look while it stays off, and again after it was on. An update's hold lets the host go too, but it resumes after:
+    no `OFF`."""
+    heard = []
+    registry = JobRegistry()
+    opener = _Opener()
+    settings = _Settings()
+    replan = R.Replan(registry, GenerateController(registry, settle=0), settings, "ja", opener=opener,
+                      on_line=heard.append, pending=lambda language: False,
+                      keeper_options={"launcher": _Launches(), "pending": lambda: False})
+
+    def look():
+        replan.activated()
+        _quiet(replan)
+    look()
+    assert len(opener.hosts) == 1 and heard == []
+    replan.update_state("downloading")
+    replan.update_state("idle")
+    look()
+    assert replan_preview.OFF not in heard
+    settings.values["enable_junban"] = False
+    look()
+    look()
+    assert heard.count(replan_preview.OFF) == 1 and replan.line() is None
+    settings.values["enable_junban"] = True
+    look()
+    settings.values["logic"] = {"automation": False}
+    look()
+    assert heard.count(replan_preview.OFF) == 2
     replan.finish(time.monotonic() + 1)

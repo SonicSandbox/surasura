@@ -700,6 +700,16 @@ SOURCES_READ_AGAIN_NAME = "Read {path} again"
 SOURCES_READ_AGAIN_TIP = ("Read {path} again\nIts files come back into your library at once; a show you haven't had "
                           "yet waits in New arrivals")
 SOURCES_READ_AGAIN_DONE = "{path} is read again: its files come back into your library"
+# Q7: *Skip a folder…* under them (the wizard's picker and its refusal's words: `wizard_strings.SKIP_TITLE`,
+# `FOLDER_REFUSED`; the toast: `strings.ITEM_SKIPPED`, ⋯'s)
+SOURCES_SKIP = "Skip a folder…"
+SOURCES_SKIP_TIP = ("Choose a folder inside one Surasura reads that it should never read (a backup, a show's extras)\n"
+                    "Everything of it leaves your library (to the trash for 30 days; Undo brings it back); nothing in "
+                    "the folder is changed")
+# (Sonic's lean B, 2026-10-24, PROVISIONAL: it turns until saved; its line and Undo in this window, the toast's one Undo)
+SOURCES_SKIP_QUEUED = "Skipping {name} after the look under way…"
+SOURCES_SKIP_UNDO_TIP = "Undo this skip: its files come back into your library where they were"
+SOURCES_SKIP_SWITCHED = "Nothing skipped: the library changed to another language meanwhile"
 # Row 32 (laptop round 4): the page's summary, and the folders in their own window (*Manage folders…*)
 SOURCES_FOLDERS = "{n:,} folders"
 SOURCES_FOLDERS_ONE = "1 folder"

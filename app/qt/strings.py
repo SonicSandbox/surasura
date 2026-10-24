@@ -267,6 +267,7 @@ GENERATE_PROGRESS_NAME = "Generate's progress"
 JOURNEY_TIP = "Your list with its sentences, in its own window\n• Click to open your journey"
 JOURNEY_NONE_TIP = "Your journey appears after your first Generate"
 JOURNEY_FAILED = "Couldn't open your journey: {why}"
+JOURNEY_NOT_YET = "{ep} isn't in your journey yet: it comes in at the next Generate"    # JO-1 (Sonic 2026-10-24)
 # The header's button beside the level ▾ (laptop fixes: the journey never opens by itself, only from here or a link)
 HEADER_JOURNEY = "Journey ↗"
 HEADER_JOURNEY_NAME = "Open your journey"
@@ -493,14 +494,15 @@ ROWS_STONE_TIP = "{label}{state}\n• Click to mark it {action}"
 ROWS_STONE_STATE = {"cut": " · watched", "raw": " · {n} cards in Anki", "rock": ""}
 ROWS_STONE_MISSING = " · no {word} on disk"
 ROWS_STONE_ACTION = {True: "not watched", False: "watched"}
-ROWS_STONE_LEAVES = "\nWatched: its words leave your list."    # W-1: while *Keep studying watched episodes* is off
+from app.services.view_rows import STRINGS as _ROWS_STRINGS   # noqa: E402  one sentence, the report's panel's too
+ROWS_STONE_LEAVES = "\n" + _ROWS_STRINGS["watched_leaves"]    # W-1: while *Keep studying watched episodes* is off
 ROWS_DONE = "Done"
 ROWS_DONE_TIP = "Mark {ep} watched\n• Click: the one after it comes up next"
 ROWS_DONE_ALL_TIP = "Every file of it is watched\n• Click to move it to Finished"
 ROWS_DONE_ALL_MIX_TIP = "Every file of it is watched"         # hato's mix never finishes (G3.2)
 ROWS_HERO_KNOWN = "{pct}% known · "
 ROWS_HERO_NEW_LINK = "{n} new words ↗"
-ROWS_JOURNEY_TIP = "Your journey: your list with its sentences\n• Click to open it in its own window"
+ROWS_JOURNEY_TIP = "• Open your journey"           # JO-2 (Sonic 2026-10-24): short; it opens on the episode unsaid
 ROWS_TOP_LINE_WHERE = "{tip}\n• Click to change it: Settings → Anki & mining"     # P4.1 L2 (row 4.1.14)
 ROWS_SOON_LINE_WHERE = "{tip}\nWhere Soon starts is a setting: Settings → Content"
 ROWS_ACCESSIBLE_STRING = "{line} · {string}"
@@ -582,6 +584,9 @@ DRAG_TAKE_OUT = "Leave its new cards out of your order"      # IK-1: Finished's 
 DRAG_TAKE_OUT_TIP = ("Its new cards leave your order: suspended in Anki and tagged, never deleted. Undo or Put back "
                      "brings them back")         # P4.1 L2 (TF fix 10, IK #6)
 DRAG_TAKEN_OUT = "{title}: its new cards are out of your order"
+ANKI_WAIT_GENERATE_FAILED = "Generate didn't finish, so Anki wasn't changed: {message}"   # finish-pending: its press
+ANKI_WAIT_GENERATE_STOPPED = "Generate was stopped, so Anki wasn't changed"     # ... a Generate stopped from the bar
+ANKI_WAIT_TIP = "Anki moves after this Generate"     # finish-pending FP-1 (PROVISIONAL, lean b): the bar's arc, hovered
 DRAG_ADDED = "Added {name} at #{n} · analysed on the next Generate"
 DRAG_ADDED_N = "Added {count} files at #{n} · analysed on the next Generate"
 DRAG_GONE = "That item was removed"
@@ -616,7 +621,7 @@ MENU_ITEMS = {
     "soon": ("Soon", "Move it to Soon: next in line, after what's in NOW"),
     "goal": ("Goal", "Move it to Goal: someday, in no order"),
     "finished": ("Finished", "Move it to Finished: you're done with it"),
-    "journey": ("See it in your journey", "Open your journey (your list with its sentences) in its own window"),
+    "journey": ("See it in your journey", "Open your journey"),                     # JO-2: short
 }
 MENU_REFUSED_TIP = "Your library can't be saved right now: {reason}"
 ROWS_SAVING = "saving…"

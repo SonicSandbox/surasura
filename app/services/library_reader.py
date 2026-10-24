@@ -128,6 +128,7 @@ class LibraryReader:
         self._subscribers = []
         self._move_subscribers = []
         self._gone_subscribers = []
+        self._version_subscribers = []     # finish-pending: told every move of the versions (the planned ones too)
         self._hold = threading.Event()     # a drag holds the view (E6)
         self._held_dirty = False           # something came in while held: built and published at the release
         self._republish = False            # the drag's settle asked for the store's view (`republish`)
@@ -156,6 +157,7 @@ class LibraryReader:
         self._recheck = False
         self._store_id = None
         self._order_key = None             # (epoch, order_version, pins_version) the last read found
+        self._versions_seen = None         # finish-pending: every version the last read found
         self.reads = 0                     # feed reads (tests)
         self.builds = 0                    # views built (tests)
         self.skipped = 0                   # reads that changed nothing the window shows (tests)
@@ -191,6 +193,17 @@ class LibraryReader:
         """`callback(language, versions)` once per move of the order or the pins (any writer), on the reader's thread."""
         with self._lock:
             self._move_subscribers.append(callback)
+
+    def subscribe_versions(self, callback):
+        """finish-pending: `callback(versions)` once per move of any of the store's versions — a re-order recorded
+        (`planned_order_version`, any process) too —, on the reader's thread."""
+        with self._lock:
+            self._version_subscribers.append(callback)
+
+    def unsubscribe_versions(self, callback):
+        """`callback` (the very one subscribed) told no more."""
+        with self._lock:
+            self._version_subscribers = [cb for cb in self._version_subscribers if cb is not callback]
 
     def subscribe_gone(self, callback):
         """`callback(item_ids)` for the items the feed lets go of while a drag holds the view, on the reader's thread."""
@@ -590,16 +603,26 @@ class LibraryReader:
     # --- end W3.2 B
 
     def _moved(self, h):
-        """The order or the pins moved since the last read: told once (`subscribe_moves`). Read only after
-        `data_version` moved; a version read that fails tells nothing (the next change is told)."""
+        """The order or the pins moved since the last read: told once (`subscribe_moves`); any version moved (a re-order
+        recorded too): told once (`subscribe_versions`). Read only after `data_version` moved; a version read that fails
+        tells nothing (the next change is told)."""
         with self._lock:
             subscribers = list(self._move_subscribers)
-        if not subscribers or not hasattr(h, "versions"):
+            watchers = list(self._version_subscribers)
+        if not (subscribers or watchers) or not hasattr(h, "versions"):
             return
         try:
             versions = h.versions()
         except Exception:
             return
+        seen = tuple(sorted(versions.items()))
+        if watchers and seen != self._versions_seen:
+            for cb in watchers:
+                try:
+                    cb(versions)
+                except Exception:
+                    pass                            # a listener's fault never stops the reader
+        self._versions_seen = seen
         key = (versions.get("epoch"), versions.get("order_version"), versions.get("pins_version"))
         before, self._order_key = self._order_key, key
         if before is None or key == before:

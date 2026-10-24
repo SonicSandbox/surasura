@@ -180,7 +180,7 @@ def _ls():
 class Writer:
     def __init__(self, opener, language="ja", journal_file=None, numbers=None, on_saved=None, on_saving=None,
                  on_reread=None, on_note=None, on_undone=None, depth=UNDO_DEPTH, retry=RETRY_S,
-                 saving_after=SAVING_AFTER_S, words=None, after_commit=None, on_counted=None):
+                 saving_after=SAVING_AFTER_S, words=None, after_commit=None, on_counted=None, on_stone=None):
         missing = [k for k in WORDS if k not in (words or {})]
         if missing:                                 # the window's words (`strings.MOVE_WORDS`): never a key shown
             raise ValueError(f"the writer's words lack {missing}")
@@ -198,6 +198,9 @@ class Writer:
         #                                                 too, on this thread (P4.1 hangs `window_link.Link.after_change`)
         self.on_counted = on_counted or _nothing    # W-1 (K-W4): () after a write that moved what counts (a watched mark,
         #                                             its undo, the option), on this thread: the window asks the indexer
+        self.on_stone = on_stone or _nothing        # journey stones (JS-1): () after a watched mark, or its undo, that
+        #                                             moved nothing that counts (Keep studying on), on this thread: the
+        #                                             window's journey re-renders the report (no `order_version` moved)
         self.retry = retry
         self.saving_after = saving_after
         self._cond = threading.Condition()
@@ -742,6 +745,7 @@ class Writer:
                     if cmd is not None:
                         cmd.setdefault("failed", f"{e}")
                         self._landed(cmd)
+                        self._empty(cmd)
                         self._call(self.on_note, self.words["failed"].format(error=e))
                         self._call(self.on_reread)
         finally:
@@ -796,6 +800,7 @@ class Writer:
             reason = getattr(self.opener, "reason", None) or self.opener.mode
             cmd["refused"] = f"{reason}"
             self._landed(cmd)
+            self._empty(cmd)
             self._call(self.on_note, self.words["read_only"].format(reason=reason))
             self._call(self.on_reread)
             self._numbers_resync()
@@ -826,6 +831,7 @@ class Writer:
         except lib.StoreReadOnly as e:
             cmd["refused"] = f"{e}"
             self._landed(cmd)
+            self._empty(cmd)
             self._call(self.on_note, self.words["read_only"].format(reason=e))
             self._call(self.on_reread)
             self._numbers_resync()
@@ -898,6 +904,7 @@ class Writer:
         elif change is not None and not cmd.get("auto"):  # B1: a background cover is nobody's to undo
             with self._cond:
                 self._undo.append(change)
+            change.landed = _stamp(store)           # finish-pending: what its re-order must reach (the window waits)
             self._call(self.on_saved, change, cmd.get("label"))
         if note is not None:
             self._call(self.on_note, self.words[note])
@@ -914,16 +921,16 @@ class Writer:
         if cmd.get("renamed"):                      # a Put back that couldn't take its own name
             self._call(self.on_note, self.words["put_back_as"].format(names=", ".join(cmd["renamed"])))
         if change is None or note is not None or cmd.get("auto"):
-            if change is None and cmd.get("label") is not None:     # W3.2 (S5): its ticket settles, others pending
-                with self._cond:
-                    self._let_go.append(cmd["label"])
-                    del self._let_go[:-64]
+            if change is None:                  # W3.2 (S5): its ticket settles, others pending
+                self._empty(cmd)
             self._call(self.on_reread)
         if op not in UNORDERED and (op != "move" or change is None or note is not None or
                                     cmd.get("numbered") not in (None, (cmd["before_id"], cmd["after_id"]))):
             self._numbers_resync()                  # (a tier's end that moved between the numbers and the write too)
         elif cmd.get("counted"):                    # W-1 (K-W4): a watched mark that moved what counts, only then
             self._counted()
+        elif op == "set_watched" and change is not None:
+            self._call(self.on_stone)               # JS-1: the report shows the stone though nothing counts anew
 
     def _w32(self, store, cmd):
         """W3.2's store commands, each one store call. -> the change, or None."""
@@ -1354,8 +1361,10 @@ class Writer:
             first.follow_up = None                  # undone on its own (Ctrl+Z): the drop's Undo is the drop's alone
         self._landed(cmd)
         if refused:
+            self._empty(cmd)
             self._call(self.on_note, self.words["cant_undo"])
         else:
+            change.landed = _stamp(store)           # finish-pending: now the undo's own (its re-order is owed in turn)
             self._call(self.on_undone, change, cmd.get("label"))
             self._call(self.after_commit, change, "undo")
             if cmd.get("renamed"):
@@ -1364,6 +1373,8 @@ class Writer:
                 self._numbers_resync()
             elif _order_version(store) != order:    # W-1 (K-W4): a watched mark's undo, only when it moved what counts
                 self._counted()
+            else:                                   # JS-1: ... else the report still drops its stone
+                self._call(self.on_stone)
         self._call(self.on_reread)
 
     def _undo_one(self, store, change):
@@ -1396,6 +1407,15 @@ class Writer:
             if not self._saving and any(c is cmd for c in self._pending):
                 self._saving = True
                 self._call(self.on_saving, True)
+
+    def _empty(self, cmd):
+        """`cmd` landed as nothing — nothing to change, refused, failed, an Undo refused: its label, if any, told
+        through `landed_empty` (W3.2 S5: its ticket settles while others wait; finish-pending FP-A1: only such a
+        command's press ends at a reread). Before the `on_reread` that follows it."""
+        if cmd.get("label") is not None:
+            with self._cond:
+                self._let_go.append(cmd["label"])
+                del self._let_go[:-64]
 
     def _landed(self, cmd):
         """The head is done with (saved, let go or refused): out of the queue and out of the journal."""
@@ -1610,6 +1630,17 @@ UNORDERED = ("set_watched", "pin", "keep_cards", "ask_mining", "set_cover", "set
 #   that moved `order_version` (it changed what counts) is (`_counted`)
 COUNTING = ("set_watched",)
 #   W-1 (K-W4): the changes whose undo asks the numbers again only when it moved `order_version` (else a status write)
+
+
+def _stamp(store):
+    """finish-pending: the store's versions just after a change (or its undo) committed — {epoch, order_version,
+    pins_version}, one meta read. Its Anki half has landed once the host's re-order records `planned_order_version` /
+    `planned_pins_version` this far (`Store.record_planned`); the window's press waits for that. None: unreadable."""
+    try:
+        v = store.versions()
+        return {k: v.get(k, 0) for k in ("epoch", "order_version", "pins_version")}
+    except Exception:
+        return None
 
 
 def _order_version(store):

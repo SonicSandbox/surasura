@@ -106,3 +106,25 @@ def test_the_looks_answer_the_folders_to_skip_for_an_item_on_their_worker():
     finally:
         looks.close()
         looks.idle(5)
+
+
+def test_the_looks_answer_whether_a_folder_can_be_skipped_on_their_worker():
+    # Q7: Settings' *Skip a folder…* asks the store's own rule first — a backup inside the folder may be skipped, the
+    # folder itself may not (that's *Stop reading*) — on the looks' worker, never the window's thread.
+    opener, _data, _uf = _library()
+    looks = source_looks.SourceLooks(opener, "ja", kind=lambda _p: "network")
+    try:
+        folder = _source()
+        card = _with_card(folder)
+        _added(looks, folder)
+        got = []
+        for path in (card, folder):
+            assert looks.skip_refused(path, lambda why: got.append((threading.current_thread(), why)), language="ja")
+        assert looks.idle(10) and len(got) == 2
+        assert all(t is not threading.main_thread() for t, _why in got)
+        assert [why for _t, why in got] == [None, ls.SKIP_IS_SOURCE]
+        assert looks.skip_refused(card, got.append, language="zh") is False      # another language's: not asked
+    finally:
+        looks.close()
+        looks.idle(5)
+    assert looks.skip_refused(card, got.append) is False                         # closed

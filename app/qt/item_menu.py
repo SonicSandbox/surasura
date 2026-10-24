@@ -74,7 +74,7 @@ from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import QMenu
 
 from app import library_store
-from app.qt import bridge, confirm, drag, finished, rows, strings, windows
+from app.qt import bridge, confirm, drag, finished, rows, strings
 from app.qt import press as qpress
 from app.services import view_rows
 
@@ -594,18 +594,9 @@ class ItemActions(QObject):
             self.lst.opened.emit(key)
 
     def open_folder(self, row):
-        """*Open its folder* (N3: `windows.open_url`), looked for on a worker first (a drive may be slow or gone)."""
-        path = finished.folder_of(self.language, row)
-
-        def found(there):
-            if there:
-                windows.open_url(path)
-            else:
-                self.moves.say(strings.FIN_NO_FOLDER.format(title=row.title))
-        if path is None:
-            found(False)
-            return
-        bridge.run_in_worker(os.path.isdir, path, then=found, failed=lambda _info: found(False))
+        """*Open its folder*: a press (`press.open`, round 8 row 45) — the row's ⋯ turns (IK-2), the folder is looked
+        for (a drive may be slow or gone) and opened on a worker."""
+        return finished.open_folder_of(self.win, self.language, row, self.lst, self.moves.say)
 
     # --- K6: *Never read this folder* (the item's folder or one above it, inside its source folder) --------------- #
     def _offer_skip(self, row, m):

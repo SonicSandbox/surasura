@@ -138,7 +138,12 @@ def _label(text, name, parent, wrap=True):
     return lab
 
 
-PRESSED = ("mark_known", "leave_known")    # round 8 row 45: the answers whose press turns an arc (`app/qt/press.py`)
+# round 8 row 45: the buttons whose press turns an arc (`app/qt/press.py`, `NeedsYou._press`) — a card's answers that
+# take it away, one press per card (A-5: the other answer pressed meanwhile asks nothing), then its presses that leave
+# it (a line's own answer, asking hato again, a folder, a program, the logs)
+ANSWERS = ("mark_known", "leave_known", "keep_all", "leave_them", "mine_anyway", "dismiss", "make_cards",
+           "first_cards", "first_cards_on", "not_now", "not_now_on")
+PRESSED = ANSWERS + ("keep_words", "ask_hato", "choose_folder", "mine_text_only", "open_logs", "save_logs")
 
 
 class NeedsCards(QWidget):
@@ -228,6 +233,8 @@ class NeedsCards(QWidget):
         b = QPushButton(label or text, parent)
         b.setProperty("size", "sm")
         b.setProperty("action", name)
+        if line is not None:
+            b.setProperty("line", line.key)     # round 8 row 45: a line's own answer (its arc on that line's button)
         b.setToolTip(tip)
         b.setAccessibleName(label or text)
         b.setFocusPolicy(Qt.FocusPolicy.TabFocus)
@@ -395,7 +402,6 @@ class NeedsYou(QObject):
         # D1's *Make cards* (each on a worker; tests replace them): Settings › Anki's switch, then the store's log
         self.switch_on = _settings_switch_on
         self.first_cards = _first_cards
-        self._first_running = False
         self.find_miner = _find_miner                   # row 13: Anki Miner looked for in the gather (a worker)
         self.accept_known, self.decline_known = _accept_known, _decline_known     # #43 (each on a worker)
         self.connect_calls = {"mine_anyway": _connect_callable("actions", "mine_anyway"),
@@ -574,14 +580,20 @@ class NeedsYou(QObject):
     def _press_key(self, name, entry):
         """A card's answers are one press (A-5: one card, one answer at a time — the other answer pressed meanwhile
         asks nothing), of this language's card (A-11); the arc on the button pressed (`qpress.adopt`)."""
-        return f"needs:{self.language}:{'answer' if name in PRESSED else name}:{entry.key}"
+        return f"needs:{self.language}:{'answer' if name in ANSWERS else name}:{entry.key}"
 
-    def _press(self, name, entry, fn, *args, then):
+    def _control(self, name, entry, line=None):
+        """The card's button for `name` (a line's: that line's), or None."""
+        key = line.key if line is not None else None
+        return next((b for b in self.cards.buttons(entry.key) if b.property("action") == name and
+                     b.property("line") == key), None)
+
+    def _press(self, name, entry, fn, *args, then, line=None, goes=True, failed=None):
         """Round 8 row 45: an answer whose work waits — the arc turns on its button, painted before `fn` goes to the
-        worker; the card goes when it's done, and a failure says why in the bar."""
-        control = next((b for b in self.cards.buttons(entry.key) if b.property("action") == name), None)
-        qpress.run(control, self._press_key(name, entry), fn, *args, then=then, failed=self._failed, win=self.win,
-                   goes=True)
+        worker; the card goes when it's done (`goes`; a line's answer may leave its card), and a failure says why in
+        the bar (`failed`: the caller's own). -> the press, or None: one is live (nothing asked)."""
+        return qpress.run(self._control(name, entry, line), self._press_key(name, entry), fn, *args, then=then,
+                          failed=failed or self._failed, win=self.win, goes=goes)
 
     def _data(self):
         return self.data_dir or path_utils.get_data_path(self.language)
@@ -662,18 +674,37 @@ class NeedsYou(QObject):
                    lambda t: writer.relink(line.item_id, path, label=t))
 
     def _do_choose_folder(self, entry, _line):
+        """*Choose a folder…*: one press from the click to the toast (round 8 row 45) — its arc turns while the folder
+        is looked for (a drive may be offline: its stat can take a while), and again once one is chosen, while its
+        files are matched; a second click meanwhile does nothing."""
         data = self._data()
         start = os.path.join(data, *[p for p in (entry.data or {}).get("folder", "").split("/") if p])
         lines = tuple(entry.lines)
+        p = qpress.begin(self._control("choose_folder", entry), self._press_key("choose_folder", entry), win=self.win)
+        if p is None:
+            return
+
+        def ended(why=None):
+            if p.live():
+                qpress.end(p, self.win, failed=why is not None, why=why)
 
         def pick(there):                            # looked for on a worker: a drive may be offline (IK-L1-5)
             if not self._alive():
+                ended()
                 return
             folder = self.pick_folder(strings.NEEDS_CHOOSE_FOLDER_TITLE, start if there else data)
             if not folder:
+                ended()
                 return
-            bridge.run_in_worker(match_folder, folder, lines, then=lambda pairs: self._relink_all(pairs, len(lines)),
-                                 failed=self._failed)
+
+            def matched(pairs):
+                ended()
+                self._relink_all(pairs, len(lines))
+
+            def broke(info):
+                ended(info[0] if info else None)
+                self._failed(info)
+            bridge.run_in_worker(match_folder, folder, lines, then=matched, failed=broke)
         bridge.run_in_worker(os.path.isdir, start, then=pick, failed=lambda _info: pick(False))
 
     def _relink_all(self, pairs, n):
@@ -687,22 +718,24 @@ class NeedsYou(QObject):
         self.win.toasts.show(strings.NEEDS_RELINKED_N.format(k=len(pairs), n=n))
 
     def _do_keep_words(self, entry, line):
-        self._answer(service.answer_keys(line if line is not None else entry))
+        self._answer("keep_words", entry, service.answer_keys(line if line is not None else entry), line=line)
 
     def _do_keep_all(self, entry, _line):
-        self._answer(service.answer_keys(entry))
+        self._answer("keep_all", entry, service.answer_keys(entry))
 
     def _do_leave_them(self, entry, _line):
-        self._answer(service.answer_keys(entry))
+        self._answer("leave_them", entry, service.answer_keys(entry))
 
-    def _answer(self, keys):
+    def _answer(self, name, entry, keys, line=None):
+        """The card's answer kept (a worker), its button's arc turning until then (a line's answer: its card may
+        stay, so a press on another line after it asks again)."""
         lang = self.language
 
         def done(_n):
             if self._alive():
                 self.win.toasts.show(strings.NEEDS_KEPT)
                 self.refresh()
-        bridge.run_in_worker(service.answer, lang, list(keys), then=done, failed=self._failed)
+        self._press(name, entry, service.answer, lang, list(keys), then=done, line=line, goes=line is None)
 
     def _do_remove(self, entry, line):
         if line is not None:
@@ -762,18 +795,18 @@ class NeedsYou(QObject):
             if ok and kick is not None:
                 kick(read_settings() or {})
             return ok
-        bridge.run_in_worker(run, then=lambda ok: self._connect_done(
-            strings.NEEDS_MINE_ANYWAY if ok else strings.NEEDS_MINE_ANYWAY_NOT), failed=self._failed)
+        self._press("mine_anyway", entry, run, then=lambda ok: self._connect_done(
+            strings.NEEDS_MINE_ANYWAY if ok else strings.NEEDS_MINE_ANYWAY_NOT))
 
-    def _do_ask_hato(self, _entry, _line):
+    def _do_ask_hato(self, entry, _line):
         backfill, lang, read_settings = self.connect_calls["ask_hato"], self.language, self.read_settings
-        bridge.run_in_worker(lambda: backfill(lang, read_settings() or {}),
-                             then=lambda _s: self._connect_done(strings.NEEDS_ASKED_HATO), failed=self._failed)
+        self._press("ask_hato", entry, lambda: backfill(lang, read_settings() or {}),
+                    then=lambda _s: self._connect_done(strings.NEEDS_ASKED_HATO), goes=False)
 
     def _do_dismiss(self, entry, _line):
         dismiss = self.connect_calls["dismiss"]
-        bridge.run_in_worker(dismiss, entry.data["need_id"],
-                             then=lambda _ok: self._connect_done(strings.NEEDS_DISMISSED), failed=self._failed)
+        self._press("dismiss", entry, dismiss, entry.data["need_id"],
+                    then=lambda _ok: self._connect_done(strings.NEEDS_DISMISSED))
 
     def _connect_done(self, text):
         self._say(text)
@@ -791,15 +824,17 @@ class NeedsYou(QObject):
         """*Make cards*: Connect on if it's off (as Settings › Anki's switch turns it on), then the first 20 of Current
         logged as entering the mine line by your choice, then the answer kept — all on a worker. D29's automatic
         actions off: nothing written and said why (Connect couldn't read them, and turning automation on later moves
-        its watermark past them). That, or Connect not turned on: the reason said, and the line stays."""
-        if self._first_running:
-            return                                   # one answer at a time: a second click while it goes does nothing
+        its watermark past them). That, or Connect not turned on: the reason said, and the line stays. Round 8 row
+        45: a press (its arc turns until it is done); a second click — or *Not now* — while it goes does nothing (the
+        card's one answer at a time)."""
+        name = "first_cards_on" if self._control("first_cards_on", entry) is not None else "first_cards"
+        if qpress.presses_of(self.win).get(self._press_key(name, entry)).live():
+            return
         services_settings = self.win.services.settings
         now = services_settings.get() or {}
         if not settings_manager.automation(now):
             self._say(strings.NEEDS_FIRST_CARDS_NOT_ON.format(why=strings.NEEDS_FIRST_CARDS_AUTOMATION_OFF))
             return
-        self._first_running = True
         lang, data = self.language, self.data_dir
         switch_on, first_cards = self.switch_on, self.first_cards
         was_on = bool(now.get("connect_enabled"))
@@ -822,18 +857,16 @@ class NeedsYou(QObject):
                 heard.settings_written.emit(("connect_enabled",))           # the shell's Connect line, Settings' row
 
         def failed(info):
-            self._first_running = False
             told()
             self._failed(info)
 
         def done(answer):
-            self._first_running = False
             ok, why = answer
             told()
             made = strings.NEEDS_FIRST_CARDS_MADE_ON if was_on else strings.NEEDS_FIRST_CARDS_MADE
             self._say(made if ok else strings.NEEDS_FIRST_CARDS_NOT_ON.format(why=why))
             self.refresh()
-        bridge.run_in_worker(run, then=done, failed=failed)
+        self._press(name, entry, run, then=done, failed=failed)
 
     def _do_first_cards_on(self, entry, line):
         """*Make cards* with Connect already on (setup's page 5): the same, only the first 20 logged."""
@@ -842,15 +875,14 @@ class NeedsYou(QObject):
     def _do_not_now(self, entry, _line):
         """*Not now*: nothing but the answer (Connect left as it is); never while *Make cards* runs. Its line as
         Connect is: off, where to turn it on; on, that later episodes still get their cards."""
-        if self._first_running:
-            return
+        name = "not_now_on" if self._control("not_now_on", entry) is not None else "not_now"
         lang = self.language
         on = settings_manager.connect_on(self.win.services.settings.get() or {})     # B2-8: the one rule
 
         def done(_n):
             self._say(strings.NEEDS_FIRST_CARDS_LATER_ON if on else strings.NEEDS_FIRST_CARDS_LATER)
             self.refresh()
-        bridge.run_in_worker(service.answer, lang, [entry.key], then=done, failed=self._failed)
+        self._press(name, entry, service.answer, lang, [entry.key], then=done)    # (one press per card)
 
     def _do_not_now_on(self, entry, line):
         self._do_not_now(entry, line)
@@ -881,16 +913,16 @@ class NeedsYou(QObject):
             self.refresh()
 
     # the failures (W3.5's)
-    def _do_open_logs(self, _entry, _line):
-        self.win.open_logs()
+    def _do_open_logs(self, entry, _line):
+        self.win.open_logs(control=self._control("open_logs", entry))
 
-    def _do_save_logs(self, _entry, _line):
+    def _do_save_logs(self, entry, _line):
         dest = self.pick_save(strings.NEEDS_SAVE_LOGS_TITLE, "surasura-logs.zip")
         if not dest:
             return
         save = self.connect_calls["save_logs"]
-        bridge.run_in_worker(save, dest, then=lambda _n: self._say(strings.NEEDS_SAVED_LOGS.format(path=dest)),
-                             failed=self._failed)
+        self._press("save_logs", entry, save, dest, then=lambda _n: self._say(strings.NEEDS_SAVED_LOGS.format(path=dest)),
+                    goes=False)
 
 
 def _accept_known(language, settings):

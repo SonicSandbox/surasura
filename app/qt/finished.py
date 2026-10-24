@@ -49,6 +49,23 @@ def folder_of(language, row):
     return os.path.dirname(os.path.join(path_utils.get_data_path(language), *rel.split("/")))
 
 
+
+def open_folder_of(win, language, row, lst, say):
+    """*Open its folder* (Current's ⋯ and Finished's), one press (`press.open`, round 8 row 45): the row's ⋯ turns in
+    `lst` (IK-2) from the frame of the press; the folder is looked for (a drive may be slow or gone, N4) and opened on
+    a worker; none there — or it couldn't open — `say` says so. A second press meanwhile does nothing."""
+    path = folder_of(language, row)
+    ids = [row.episodes[0].id] if row.episodes else []
+
+    def there():
+        return path if path is not None and os.path.isdir(path) else None
+
+    def opened(found):
+        if not found:
+            say(strings.FIN_NO_FOLDER.format(title=row.title))
+    return qpress.open(win, there, key=("open-folder", row.key), at=qpress.row_mark(lst, ids) if ids else None,
+                       then=opened, failed=lambda _info: say(strings.FIN_NO_FOLDER.format(title=row.title)))
+
 def file_paths(language, row):
     """(absolute path, data-folder-relative id) of each of a row's files, in its order."""
     data = path_utils.get_data_path(language)
@@ -370,18 +387,8 @@ class FinishedActions(QObject):
         return self.moves._give(drag.Ticket(text, (row.key,), ids), lambda t: self.writer.keep_cards(ids, on, label=t))
 
     def open_folder(self, row):
-        """*Open its folder* (N3: `windows.open_url`), looked for on a worker first (a drive may be slow or gone)."""
-        path = folder_of(self.language, row)
-
-        def found(there):
-            if there:
-                windows.open_url(path)
-            else:
-                self._say(strings.FIN_NO_FOLDER.format(title=row.title))
-        if path is None:
-            found(False)
-            return
-        bridge.run_in_worker(os.path.isdir, path, then=found, failed=lambda _info: found(False))
+        """*Open its folder* (`open_folder_of`: its ⋯ turns, looked for and opened on a worker)."""
+        return open_folder_of(self.win, self.language, row, self.lst, self._say)
 
     # --- ⋯ ------------------------------------------------------------------------------------------------------------ #
     def menu_entries(self, row):
@@ -515,7 +522,7 @@ class FinishedActions(QObject):
 
     def _card_journey(self):
         self.card.close()
-        self.win._open_journey(asked=True)
+        self.win._open_journey(asked=True)          # (the card has closed: the bar's arc while it opens)
 
     # --- Add what you finished before… --------------------------------------------------------------------------- #
     def pick(self):

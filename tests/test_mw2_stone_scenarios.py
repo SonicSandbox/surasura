@@ -192,3 +192,20 @@ def test_an_empty_list_puts_no_card_away_and_says_so(lib, monkeypatch, how):
     assert _state(fake) == before
     # The empty list's line is the last word: after a Finish the re-order's "then Generate" line must not cover it.
     assert lines and lines[-1] == reposition.EMPTY_LIST, lines[-3:]
+
+
+def test_the_junban_verbs_answer_names_an_empty_list(monkeypatch):
+    # M-W2-1 review #5: a dry run on an empty list answered `moves 0` with every card "unchanged" — Connect couldn't tell
+    # it from an order already in place; the answer now carries `empty_list` (an added key)
+    from types import SimpleNamespace
+
+    from app import anki_connect
+    from app.cli import verbs
+    monkeypatch.setattr(anki_connect, "probe", lambda url: {"ok": True})
+    fake = SimpleNamespace(_url=lambda s: "http://127.0.0.1:8765", AnkiError=RuntimeError,
+                           dry_run=lambda s, job=None, unattended=False: (
+                               [], {"empty_list": True, "total": 5, "unmatched": 0, "decks": ["日本語"]}))
+    answer, _stats = verbs._junban_dry_run("ja", {}, fake)
+    assert answer["empty_list"] is True and answer["moves"] == 0
+    fake.dry_run = lambda s, job=None, unattended=False: ([], {"total": 5, "unmatched": 0, "decks": ["日本語"]})
+    assert "empty_list" not in verbs._junban_dry_run("ja", {}, fake)[0], "an order in place says nothing more"

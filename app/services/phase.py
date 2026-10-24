@@ -44,7 +44,7 @@ KINDS = {
     "update": None,
 }
 # A press's key's first word (`"known:sync"`, `"mine:ja:12"`) -> its circle: lit from the press, before any job
-PRESSES = {"known": ANKI, "mine": MINER}
+PRESSES = {"known": ANKI, "mine": MINER, "generate": SURASURA, "sources": ARRIVALS}
 # A *Needs you* entry's source (`status.Entry.source`) -> its circle: a failure there (red until seen)
 SOURCES = {
     "generate": SURASURA, "cli:generate": SURASURA,

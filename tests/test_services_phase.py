@@ -202,6 +202,8 @@ def test_presses_entries_and_the_windows_own_light_their_circles():
     assert got[P.ARRIVALS].lines == ("D:\\Anime can't be reached", "Saving your moves…")
     assert got[P.JUNBAN] == got[P.MINER] == P.IDLE
     assert P.press_circle("mine:ja:12") == P.MINER and P.press_circle(("known", 1)) == P.ANKI
+    assert P.press_circle("generate") == P.SURASURA and P.press_circle("sources:refresh") == P.ARRIVALS
+    assert P.press_circle("update:start") is None and P.press_circle("open:guide") is None
 
 
 # --- the registry's waits on you (jobs.py) and Connect's episodes (status.py) ------------------------------------- #

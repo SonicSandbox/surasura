@@ -59,7 +59,8 @@ def test_a_2x_install_named_by_its_note_is_brought_over_and_the_next_start_runs_
     result = first_run.run(st, progress=lambda stage, done, total: stages.append(stage))
 
     assert result["status"] == "done", result
-    assert result["import"]["status"] == "done" and {"files", "settings", "store", "roaming", "graduated"} <= set(stages)
+    assert result["import"]["status"] == "done" and {"files", "settings", "roaming", "graduated"} <= set(stages)
+    assert "store" not in stages and not os.path.exists(os.path.join(library, "data")), "no content (2026-10-23)"
     assert import_2x.read_import_note()["complete"] is True
     assert _tree(old) == before, "the old folder is only read"
     for lang in ("ja", "zh"):

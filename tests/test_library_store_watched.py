@@ -133,6 +133,7 @@ def test_a_mark_on_a_video_waiting_for_its_subtitle_moves_nothing_that_counts(la
     before, order = _scheduled(store), store.versions()["order_version"]
     change = store.set_watched([now[0]])
     assert change is not None and store.item(now[0])["watched"] == 1
+    assert store.schedule(with_aside=True)[ls.ASIDE] == []      # no text yet: nothing a run reads, no "reference"
     store.undo(change)
     store.set_watched([now[0]])
     on = store.set_library_options(keep_watched=True)
@@ -435,6 +436,33 @@ def test_read_only_mode_reads_the_same_list_as_the_store_from_the_copy(language)
                {k: [e["physical_path"] for e in rows] for k, rows in store.schedule().items()}, keep
     assert read_doc(user_files_dir)["surasura_library"]["meta"]["keep_watched"] == 1
     store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_read_only_mode_the_journey_check_signs_the_watched_episodes_as_generate_does(language, monkeypatch):
+    """Read-only mode (the store can't be opened): the journey check reads the copy's list with its set-aside files and
+    signs them as Generate's run does (`prepare_library` reads `read_only_schedule(with_aside=True)`). Signed with none,
+    the check would never match a Generate while an episode is watched: no ✓, the report never reused, every settle a
+    Generate, Junban's automatic re-order never let through."""
+    from app import analyzer
+    store = migrated(language)
+    data_dir, user_files_dir = roots(language)
+    store.set_watched([store.ids("now")[1]])
+    assert ls.export_copy(store)
+    store.close()
+    generate = ls.read_only_schedule(language, data_dir, user_files_dir, with_aside=True)
+    assert len(generate[ls.ASIDE]) == 1
+    monkeypatch.setattr(ls, "open_store", lambda *a, **k: None)
+    monkeypatch.setattr(ls, "check_mode", lambda *a, **k: ("read-only", "busy"))
+    monkeypatch.setattr(ls, "spawn_build_if_waiting", lambda *a, **k: None)
+    signed = []
+    monkeypatch.setattr(analyzer, "compute_run_signature",
+                        lambda language, found, args, order_free=False, aside=(): signed.append(aside))
+    analyzer.journey_is_current(["analyzer"], language)
+    assert signed == [analyzer.aside_files(language, generate)] and signed[0], signed
+    monkeypatch.setattr(ls, "maintain", lambda *a, **k: None)
+    generated = analyzer.prepare_library(language)["schedule"]       # Generate's own read, read-only mode
+    assert generated is not None and generated[ls.ASIDE] == generate[ls.ASIDE]
 
 
 @pytest.mark.parametrize("language", LANGUAGES)

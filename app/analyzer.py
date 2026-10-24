@@ -3563,6 +3563,9 @@ def plan_lines(run):
         # Each part of the order-free signature on its own, so a re-plan can name what moved since (E1.3: the known
         # words, the word lists, files only removed — or anything else, a Generate first).
         "order_free_parts": plan_rules.part_digests(run["signature_parts"]),
+        # The set-aside files' own digests (W-1): a re-plan can tell one that only left (removed, or a watched episode
+        # moved to Finished) from one set aside, brought back or edited.
+        "reference": list(run["signature_parts"].get("reference") or ()),
     }
     yield _plan_json(header)
     prefix = os.path.join(data_dir, "")
@@ -3807,10 +3810,10 @@ def read_library_schedule(language, data_dir=None, user_files_dir=None):
             # Read-only mode: every reader takes the list Generate takes (§6.9), so the journey check, the indexer
             # and the report never disagree with it about a file dropped in since.
             if ls.check_mode(language, data_dir, busy_wait=0.0)[0] == "read-only":
-                return ls.read_only_schedule(language, data_dir, user_files_dir), None
+                return ls.read_only_schedule(language, data_dir, user_files_dir, with_aside=True), None
             return None, None
         with store:
-            return store.schedule(with_versions=True)
+            return store.schedule(with_versions=True, with_aside=True)
     except Exception:
         return None, None
 
@@ -3834,7 +3837,7 @@ def prepare_library(language, data_dir=None, user_files_dir=None):
             mode, reason = ls.check_mode(language, data_dir)
             if mode == "read-only":
                 print(f"Library store is read-only ({reason}): new files are analysed but not added to the order.")
-                out["schedule"] = ls.read_only_schedule(language, data_dir, user_files_dir)
+                out["schedule"] = ls.read_only_schedule(language, data_dir, user_files_dir, with_aside=True)
             return out
     except Exception as e:
         print(f"Library store unavailable ({e}); reading the library file.")
@@ -3842,7 +3845,7 @@ def prepare_library(language, data_dir=None, user_files_dir=None):
     try:
         with store:
             store.sync_disk()
-            schedule, versions = store.schedule(with_versions=True)
+            schedule, versions = store.schedule(with_versions=True, with_aside=True)
             if store.export_due():
                 ls.spawn_maintain(language)
     except Exception as e:
@@ -4044,15 +4047,20 @@ def journey_is_current(args, language):
                 try:
                     with store:
                         _journey_sync(ls, store, language)
-                        schedule, versions = store.schedule(with_versions=True)
+                        schedule, versions = store.schedule(with_versions=True, with_aside=True)
                     library.update(schedule=schedule, order_version=versions["order_version"],
                                    epoch=versions["epoch"])
                 except Exception:
                     pass
+        if library["schedule"] is None:
+            # Read-only mode (or a store busy): the list Generate reads, with its set-aside files, read once here so
+            # the files and the "reference" part are signed from the same read, as Generate signs them
+            library["schedule"] = read_library_schedule(language)[0]
         found = resolve_found_files(language, verbose=False, schedule=library["schedule"], missing=True)
         if not found:
             return None
-        sig = compute_run_signature(language, found, parse_analysis_args(args[1:]))
+        sig = compute_run_signature(language, found, parse_analysis_args(args[1:]),
+                                    aside=aside_files(language, library["schedule"]))
         if not sig:
             return None
         results_dir = get_user_file("results")
@@ -4093,7 +4101,7 @@ def journey_check(args, language):
         found = resolve_found_files(language, verbose=False, schedule=schedule, read_store=False, missing=True)
         if not found:
             return None
-        sig = compute_run_signature(language, found, parse_analysis_args(args[1:]))
+        sig = compute_run_signature(language, found, parse_analysis_args(args[1:]), aside=aside_files(language, schedule))
         if not sig:
             return None
         results_dir = get_user_file("results")
@@ -4133,7 +4141,7 @@ def _token_store_meta(language, key):
         return None
 
 
-def compute_run_signature(language, found_files, args, order_free=False):
+def compute_run_signature(language, found_files, args, order_free=False, aside=()):
     """The run-signature: a filesystem fingerprint of everything that affects the analysis OUTPUT
     (content files + their order/weights, known words, ignore/blacklist/graduated lists, frequency
     lists, the analysis-affecting settings, the analysis-affecting args, and the engine version).
@@ -4141,8 +4149,28 @@ def compute_run_signature(language, found_files, args, order_free=False):
     sha256 hex or None. SHARED by main() (decide the skip) and the dashboard (decide, in-process,
     whether Generate can just reopen the existing report without spawning the analyzer).
 
-    `order_free`: the plan file's form (`signature_digest`) — the same library in any order has one."""
-    return signature_digest(run_signature_parts(language, found_files, args), order_free)
+    `order_free`: the plan file's form (`signature_digest`) — the same library in any order has one. `aside`: the
+    library's set-aside files (`aside_files`), the "reference" part."""
+    return signature_digest(run_signature_parts(language, found_files, args, aside), order_free)
+
+
+def aside_files(language, schedule):
+    """W-1: the library's set-aside files — watched episodes while *Keep studying watched episodes* is off — from a
+    schedule read with them (`Store.schedule(with_aside=True)`, `read_only_schedule(with_aside=True)`, in the same
+    transaction as the list): [(abs_path, source_type)], for the run signature's "reference" part. Never counted, their
+    text is the name tables' evidence and 例文's sentences, so they are part of what a run reads. [] with none (JSON
+    mode, no store)."""
+    ls = _library_store()
+    if ls is None or not schedule:
+        return []
+    data_dir = get_data_path(language)
+    out = []
+    for entry in schedule.get(ls.ASIDE) or ():
+        rel = str(entry.get("physical_path") or "")
+        if rel.startswith("./"):
+            rel = rel[2:]
+        out.append((os.path.join(data_dir, rel), entry.get("source_type")))
+    return out
 
 
 # The run signature's digest: one encoder and one rule, the analyzer's and the fast re-plan's (app/plan_rules.py).
@@ -4237,8 +4265,11 @@ def settings_signature(settings, language):
     return json.dumps(_without_comments(_sj), sort_keys=True, ensure_ascii=False)
 
 
-def run_signature_parts(language, found_files, args):
-    """What the run signature hashes (`compute_run_signature`), as a dict; None when it can't be read."""
+def run_signature_parts(language, found_files, args, aside=()):
+    """What the run signature hashes (`compute_run_signature`), as a dict; None when it can't be read. `aside`: the
+    set-aside files (`aside_files`) — "reference", each file's own digest (`plan_rules.file_digest`, as "files" are
+    told apart), sorted: a watched mark, its Undo, *Keep studying watched episodes* flipped or a set-aside file edited
+    moves it, so Generate runs (never skips) and the fast re-plan asks for a Generate first, both ways (W-1)."""
     try:
         from app import token_index as _token_index
         user_files_dir = get_user_files_path(language)
@@ -4284,6 +4315,11 @@ def run_signature_parts(language, found_files, args):
             "engine": f"{_app_version}|schema{_token_index.SCHEMA_VERSION}|rev{ENGINE_REVISION}",
             "debug_word_stats": bool(os.environ.get("SURASURA_DEBUG_WORD_STATS")),
         }
+        if aside:
+            # W-1: the set-aside files, a part of its own present only then, so a library with none signs as before.
+            # Path and stat only: the store and the copy may name a file's type differently, never its text.
+            _sig_parts["reference"] = sorted(plan_rules.file_digest([fp, _fsig(fp), None, None, None])
+                                             for fp, _st in aside)
         # Q4-3: with Automatic rarity on, the band the library's store remembers helps pick the list (the second
         # threshold): a part of its own, present only then, so no other library's signature moves.
         try:
@@ -4784,7 +4820,7 @@ def main():
     # Computed by the shared compute_run_signature() (the dashboard calls the same function in-process
     # to decide whether Generate can just reopen the existing report without spawning this analyzer).
     # Its parts are kept: the plan file (below) carries the same signature without the order, from this very read.
-    _sig_parts = run_signature_parts(language, found_files, args)
+    _sig_parts = run_signature_parts(language, found_files, args, aside_files(language, _library["schedule"]))
     _run_sig = signature_digest(_sig_parts, chunked=False)
     _auto_pick = {}                      # Q4-3: the band Automatic picks below, remembered before the stamp
 

@@ -135,9 +135,10 @@ def plan_check(language, settings):
         from app import analyzer, plan_engine, run_args
         from app.path_utils import get_user_file
         values = settings() if callable(settings) else settings
-        found = analyzer.resolve_found_files(language, verbose=False, schedule=store.schedule(), missing=True)
+        schedule = store.schedule(with_aside=True)
+        found = analyzer.resolve_found_files(language, verbose=False, schedule=schedule, missing=True)
         args = analyzer.parse_analysis_args(run_args.analyzer_args(values, language)[1:])
-        parts = analyzer.run_signature_parts(language, found, args)
+        parts = analyzer.run_signature_parts(language, found, args, analyzer.aside_files(language, schedule))
         stamp = analyzer.read_run_stamp(get_user_file("results"))
         verdict = plan_engine.check(plan, language, analyzer.engine_id(), stamp, parts, store.versions().get("epoch"))
         return verdict[1] if verdict is not None and verdict[0] == "generate-first" else None

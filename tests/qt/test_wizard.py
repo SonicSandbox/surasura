@@ -620,7 +620,7 @@ def test_anki_miner_missing_offers_install_and_the_star_and_no_switch(make):
     assert [d.state for d in page.dots] == ["ok", "ok", "off", "off"]
     assert page.dots[2].accessibleName() == "Anki Miner: not yet"  # status never colour alone
     QTest.mouseClick(page.btn_star, Qt.MouseButton.LeftButton)
-    assert wiz.launched == [FakeMiner.STAR_URL]
+    assert wait_until(lambda: wiz.launched == [FakeMiner.STAR_URL])            # on a worker (round 8 row 45)
     settings.calls.clear()
     wiz.next()
     assert settings.calls == [] and W.PAGES[wiz.index] == "level"  # nothing to switch on: Next writes nothing

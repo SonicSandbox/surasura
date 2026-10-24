@@ -1877,8 +1877,8 @@ class CardsPage(_Page):
         self.btn_check = qpress.room(_button(S.CHECK_AGAIN, S.MINER_CHECK_TIP,
                                              lambda: self.wiz.look_miner(self.btn_check), self.acts))
         acts.addWidget(self.btn_check)
-        self.btn_star = _button(f"{S.STAR}  {S.STAR_ASK} {S.STAR_LINK}", S.STAR_TIP, self.wiz.open_star, self.acts,
-                                name="wizstar")
+        self.btn_star = qpress.room(_button(f"{S.STAR}  {S.STAR_ASK} {S.STAR_LINK}", S.STAR_TIP,
+                                            lambda: self.wiz.open_star(self.btn_star), self.acts, name="wizstar"))
         acts.addWidget(self.btn_star)
         words.addWidget(self.acts)
         self.steps = _label("wizsub", "", self, wrap=True)
@@ -1935,8 +1935,8 @@ class CardsPage(_Page):
         self.busy_line.setVisible(False)
         self.box.addWidget(self.busy_line)
         star = QHBoxLayout()
-        self.star_quiet = _button(f"{S.STAR}  {S.STAR_ASK} {S.STAR_LINK}", S.STAR_TIP, self.wiz.open_star, self,
-                                  name="wizlink")
+        self.star_quiet = qpress.room(_button(f"{S.STAR}  {S.STAR_ASK} {S.STAR_LINK}", S.STAR_TIP,
+                                              lambda: self.wiz.open_star(self.star_quiet), self, name="wizlink"))
         star.addWidget(self.star_quiet)
         star.addStretch(1)
         self.box.addLayout(star)
@@ -2935,8 +2935,10 @@ class SetupWizard(QWidget):
             self._pressed(self.pages[4].btn_cancel, "_cancel_press")
             self.installing.set()
 
-    def open_star(self):
-        windows.open_url(self.miner.STAR_URL)
+    def open_star(self, control=None):
+        """The ⭐ page in the browser, opened on a worker (`press.open`: never the window's thread), `control`'s arc
+        turning meanwhile."""
+        qpress.open(self, self.miner.STAR_URL, control=control)
 
     # --- the level and Generate (page 6) ----------------------------------------------------------------------------- #
     def read_numbers(self, fresh=False):

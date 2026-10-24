@@ -10,6 +10,7 @@ What a wrong answer would cost a learner: a stone (or its Undo) the journey show
 or, if the report half were asked wrongly, a quiet Generate after every move that changes nothing.
 Real Generates (the command line's), Japanese and Chinese, under the per-test SURASURA_TEST_ROOT.
 """
+import json
 import os
 import time
 
@@ -96,6 +97,27 @@ def test_a_stone_during_the_keepers_run_leaves_the_run_alone_and_looks_once_afte
     run = launches.runs[0]
     replan.stone_marked("ja")
     assert not run.cancel_event.is_set(), "the run in flight is never withdrawn for a stone"
+    assert keeper.asked == 1 and launches.count() == 1
+    run.ended(0)
+    assert sh.until(lambda: launches.count() == 2, seconds=5), "one look after the run ended"
+    assert fired.done(keeper) and keeper.asked == 2
+    launches.runs[1].ended(0)
+    assert fired.done(keeper) and keeper.asked == 2 and launches.count() == 2, "once: nothing more after the next run"
+    replan.finish(time.monotonic() + 1)
+
+
+def test_a_stone_during_a_run_that_reports_progress_still_leaves_the_run_alone(gate, fired):
+    # why: a run that reports its steps is RUNNING while the stone waits; its progress line is a RUNNING delivery and
+    # must not look (the look would withdraw the run). Only the run's end looks, once.
+    replan, _registry, _controller, launches, _opener = _replan(journey=lambda: True)
+    keeper = replan.keeper
+    keeper.changed("move")
+    assert sh.until(lambda: launches.count() == 1, seconds=5)
+    run = launches.runs[0]
+    replan.stone_marked("ja")
+    run.feed(json.dumps({"type": "progress", "step": "Counting words", "done": None, "total": None}) + "\n")
+    assert not sh.until(lambda: run.cancel_event.is_set(), seconds=1), "a RUNNING delivery never withdraws the run"
+    assert not run.cancel_event.is_set()
     assert keeper.asked == 1 and launches.count() == 1
     run.ended(0)
     assert sh.until(lambda: launches.count() == 2, seconds=5), "one look after the run ended"

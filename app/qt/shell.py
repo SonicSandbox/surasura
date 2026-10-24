@@ -120,6 +120,9 @@ class Services:
         # duties (given: a test's); never one of `has_duties`' four
         self.replan = replan
         self._replan_wired = False
+        self.replan_heard = []                  # finish-pending: told each line the host says (its worker) — the
+        #                                         window's drag controller's: a press waiting for its re-order ends
+        #                                         with some
         self.language = self.settings.get().get("target_language") or "ja"
         self.closing = threading.Event()  # set at quit: a Generate still waiting for `results` starts nothing
         self.quit_hook = None             # the window's: the update hands over (called on a worker)
@@ -206,11 +209,17 @@ class Services:
                          ankiweb=status_service.ankiweb_line(get), journey=status_service.journey_pending(language),
                          backlog=status_service.anki_backlog(language))
 
-    def _replan_line(self, _line):
-        """The host said a new line (its worker): the bar asks for it alone."""
+    def _replan_line(self, line):
+        """The host said a new line (its worker): the bar asks for it alone; the presses waiting for its re-order hear
+        it (`replan_heard`)."""
         refresh = getattr(self.status, "refresh_soon", None)
         if refresh is not None:
             refresh("replan")
+        for heard in list(self.replan_heard):
+            try:
+                heard(line)
+            except Exception as e:
+                print(f"Re-order: a listener failed: {e!r}")
 
     def _wire_writer(self, writer):
         """W-1 (K-W4): a mark that moved what counts (`Writer.on_counted`) asks the indexer, so the Rarity preview

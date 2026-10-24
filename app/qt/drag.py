@@ -41,10 +41,13 @@ for Current's list — W3.2's tray and Goal sheet feed the same one through `beg
   dropped on the list: the writer's `insert_at` beside the row under the hand.
 - **E4**: a store that can't be written refuses at the press — the bar says why, and nothing moves.
 """
+import itertools
 import math
 import os
 import time
+import weakref
 
+from PyQt6 import sip
 from PyQt6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QRegion, QShortcut
 from PyQt6.QtWidgets import QApplication, QMenu, QStyleOptionViewItem, QWidget
@@ -52,6 +55,7 @@ from PyQt6.QtWidgets import QApplication, QMenu, QStyleOptionViewItem, QWidget
 from app import theme
 from app.qt import bridge, motion, rows, shadow, strings, style
 from app.qt import press as qpress
+from app.services import jobs as jobs_module
 from app.services import view_rows
 
 D = theme.DRAG
@@ -716,13 +720,16 @@ class _Relay(QObject):
     reread = pyqtSignal()
     note = pyqtSignal(str)
     gone = pyqtSignal(object)
+    versions = pyqtSignal(object)                    # finish-pending: the store's versions (the reader's thread)
+    line = pyqtSignal(object)                        # ... and the re-order host's lines (its worker)
 
 
 class Ticket:
     """A command the window gave (its toast's words and its Undo): `change` once the writer saved it. `told(event)`,
     if set: "saved", "refused" (nothing written) or "undone" (its Undo asked, or the change undone) — round 8 row 45: a
-    pressed *Mine now* stops turning when its ask is refused or undone, and asks Connect's feed again once saved."""
-    __slots__ = ("text", "keys", "ids", "change", "undo_asked", "toast", "follows", "then", "told")
+    pressed *Mine now* stops turning when its ask is refused or undone, and asks Connect's feed again once saved.
+    `anki` (finish-pending): its command's Anki half waits for the host's re-order — what its press marks (`_give`)."""
+    __slots__ = ("text", "keys", "ids", "change", "undo_asked", "toast", "follows", "then", "told", "anki")
 
     def __init__(self, text, keys=(), ids=()):
         self.text, self.keys, self.ids = text, tuple(keys), tuple(ids)
@@ -732,11 +739,27 @@ class Ticket:
         self.follows = None                          # the ticket this one's command follows (a Finished choice)
         self.then = None                             # a command waiting for this one's change (a Finished choice)
         self.told = None
+        self.anki = None
 
 
 def _tell(ticket, event):
     if ticket.told is not None:
         ticket.told(event)
+
+
+_anki_keys = itertools.count(1)                     # finish-pending: one press per command (two Finishes: two)
+
+
+def on_bar():
+    """finish-pending: a press whose thing has left the screen marks the bar's arc (`press.bar_mark`, the default)."""
+    return None
+
+
+def _aside(settings, language):
+    """(A worker.) Why the re-order host does nothing for `language` now (`replan_preview.stands_aside`), or None."""
+    from app import replan_preview
+    from app.services.settings import thaw
+    return replan_preview.stands_aside(thaw(settings), language)
 
 
 class _Drag:
@@ -819,6 +842,31 @@ class DragController(QObject):
         if subscribe is not None:
             self._gone_told = self._gate.caller("gone")
             subscribe(self._gone_told)
+        # finish-pending: a command whose Anki half waits for its Generate keeps its press live until the host's
+        # re-order for it lands (`_give(…, anki=)`): the store's versions from the reader, the host's lines, the
+        # Generate's end
+        self._landing = {}                           # ticket -> its press, until the writer saved it (or let it go)
+        self._asking = {}                            # ... then while the host's gate is asked (a worker)
+        self._owed = []                              # (press, the change's `landed` versions, ticket) until it lands
+        self._versions = None                        # the store's versions as the reader last told them
+        self._generates = set()                      # Generate jobs seen live while a press waits
+        self._heard_line = None                      # a line that gave up while a press's gate was asked (FP-A6)
+        self._on_bar = set()                         # the presses marking the bar's arc (its hover says the wait)
+        self._anki_of = weakref.WeakKeyDictionary()  # a saved change -> its mark: Ctrl+Z's undo waits the same way
+        self.relay.versions.connect(self._versions_in, q)
+        self.relay.line.connect(self._line_in, q)
+        self._versions_told = None
+        subscribe = getattr(reader, "subscribe_versions", None)
+        if subscribe is not None:
+            self._versions_told = self._gate.caller("versions")
+            subscribe(self._versions_told)
+        self._heard = self._gate.caller("line")
+        heard = getattr(getattr(win, "services", None), "replan_heard", None)
+        if heard is not None:
+            heard.append(self._heard)
+        jobs = getattr(getattr(win, "bridge", None), "jobs_changed", None)
+        if jobs is not None:
+            jobs.connect(self._jobs_in)
         self.page.on_done = self.done
         self.page.on_nudge = self.nudge
         self.page.on_menu = self.menu
@@ -1461,15 +1509,19 @@ class DragController(QObject):
 
     def _finish(self, title, ids, keys=()):
         """To Finished: `set_tier(…, "graduated")`, and its toast's choice (D14) — *Keep* or *Leave its new cards out of
-        your order*, each written as `set_finished` (live, never greyed)."""
+        your order*, each written as `set_finished` (live, never greyed). finish-pending: the drop and *Leave its new
+        cards out* each a press until the host's re-order for it lands (Anki moves after the Generate it starts: the
+        bar's arc — the row has left this list)."""
         ticket = Ticket(strings.DRAG_FINISHED.format(title=title), keys, ids)
-        if self._give(ticket, lambda t: self.writer.set_tier(list(ids), FINISHED, label=t), toast=False) is None:
+        if self._give(ticket, lambda t: self.writer.set_tier(list(ids), FINISHED, label=t), toast=False,
+                      anki=on_bar) is None:
             return None
 
         def choose(keep):
             choice = Ticket(strings.DRAG_TAKEN_OUT.format(title=title), keys, ids)
             choice.follows = ticket
-            self._give(choice, lambda t: self._set_finished(list(ids), keep, t, ticket), toast=not keep)
+            self._give(choice, lambda t: self._set_finished(list(ids), keep, t, ticket), toast=not keep,
+                       anki=None if keep else on_bar)
         self._toast(ticket, buttons=[(strings.DRAG_KEEP, strings.DRAG_KEEP_TIP, lambda: choose(True)),
                                      (strings.DRAG_TAKE_OUT, strings.DRAG_TAKE_OUT_TIP, lambda: choose(False))])
         return ticket
@@ -1533,12 +1585,18 @@ class DragController(QObject):
             on_done=ghost.hide, kind="fade", owner=ghost, on_end=ghost.hide)
 
     # --- commands, toasts, Undo ------------------------------------------------------------------------------------ #
-    def _give(self, ticket, command, toast=True):
-        """Hand a command to the writer (`command(label)` -> its number, or None when refused); its toast with Undo."""
+    def _give(self, ticket, command, toast=True, anki=None):
+        """Hand a command to the writer (`command(label)` -> its number, or None when refused); its toast with Undo.
+        `anki` (finish-pending): the command's Anki half waits for the Generate it starts — `anki()` makes what its
+        press marks (None: the bar's arc), painted before the hand-over (`_anki_begin`)."""
+        if anki is not None:
+            ticket.anki = anki
+            self._anki_begin(ticket)
         seq = command(ticket)
         if seq is None:                              # refused (E4 meanwhile): nothing written, the store's view stands
             _tell(ticket, "refused")
             self._ended(ticket)
+            self._anki_landed(ticket)                # (its press ends: the bar says why, below)
             if self.refused() is None:               # W3.2 P0 (AD0-5): never silent — a writer let go at a switch
                 self.say(strings.MOVE_NOT_SAVED)
             held = self.held
@@ -1612,12 +1670,15 @@ class DragController(QObject):
         if self._undoing is None:
             self._undoing = qpress.begin(None, "undo", busy=strings.UNDOING, win=self.win)
 
-    def _undo_to_writer(self, change=None):
+    def _undo_to_writer(self, change=None, label=None):
         """An undo handed to the writer — watched until the writer is idle, as every command `_give` hands it is
-        (`_settled`): one that finds nothing to undo answers nothing at all, and *Undoing…* ends there."""
+        (`_settled`): one that finds nothing to undo answers nothing at all, and *Undoing…* ends there. `label`
+        (finish-pending): the undo's own ticket, so a change whose Anki half waited waits the same way back. -> the
+        writer's answer (None: refused)."""
         self._undos += 1
-        self.writer.undo(change)
+        seq = self.writer.undo(change) if label is None else self.writer.undo(change, label=label)
         self._settle.start()
+        return seq
 
     def _undo_answered(self, answered=True, idle=False):
         """An undo landed (`answered`), or the writer is idle (`idle`: one that undid nothing, or failed): *Undoing…*
@@ -1633,11 +1694,16 @@ class DragController(QObject):
         qpress.end(p, self.win)
 
     def undo(self, ticket):
-        """A toast's Undo: that change (once the writer saved it; asked before, it is undone as it lands)."""
+        """A toast's Undo: that change (once the writer saved it; asked before, it is undone as it lands).
+        finish-pending: a change whose Anki half waits — its press lets go, and the Undo's own waits the same way back;
+        asked before the change was saved, its press stays and waits for the Undo's re-order (`_saved`)."""
         _tell(ticket, "undone")
         if ticket.change is not None:
+            self._anki_drop(lambda t: t is ticket or t.follows is ticket)     # (a drop's choice with it)
+            back = self._anki_back(ticket) if ticket.anki is not None else None
             self._undo_pressed()
-            self._undo_to_writer(ticket.change)
+            if self._undo_to_writer(ticket.change, label=back) is None and back is not None:
+                self._anki_landed(back)
             self._let_go()
         else:
             ticket.undo_asked = True
@@ -1658,7 +1724,7 @@ class DragController(QObject):
             return
         if self.writer.can_undo() or self.writer.pending():
             self._undo_pressed()
-            self._undo_to_writer()
+            self._undo_to_writer(label=Ticket(None))  # finish-pending: its undo waits for Anki if its change did (`_undone`)
             self._let_go()
 
     def _saved(self, change, label):
@@ -1666,12 +1732,17 @@ class DragController(QObject):
             label.change = change
             _tell(label, "saved")
             then, label.then = label.then, None
+            if label.anki is not None:
+                self._anki_of[change] = label.anki   # finish-pending: Ctrl+Z's undo of it waits for Anki too
             if label.undo_asked:
                 label.undo_asked = False
                 if then is not None:                 # the drop taken back: its waiting choice with it
                     then = None
                     self._drop_waiting(label)
-                self._undo_to_writer(change)
+                p = self._landing.pop(label, None)   # finish-pending: its press waits for the Undo's re-order now
+                back = self._anki_back(label, p) if p is not None else None
+                if self._undo_to_writer(change, label=back) is None and back is not None:
+                    self._anki_landed(back)
                 self._let_go()
             if then is not None:
                 then()
@@ -1680,8 +1751,18 @@ class DragController(QObject):
             self.reader.refresh()
 
     def _undone(self, change, label):
+        mark = self._anki_of.pop(change, None) if change is not None else None    # (an undo that undid nothing)
         if isinstance(label, Ticket):
             _tell(label, "undone")
+            if label not in self._landing and mark is not None and label.anki is None:
+                # finish-pending (intent finding 2): Ctrl+Z of a change whose Anki half waited — the change's press
+                # lets go, and the undo's own waits the same way back (the toast's Undo started its own at the click)
+                self._anki_drop(lambda t: t.change is change or (t.follows is not None and t.follows.change is change))
+                label.anki = mark
+                self._anki_begin(label)
+            if label in self._landing:               # finish-pending: an Undo's own press, its change landed
+                label.change = change
+                self._anki_landed(label)
         if self.toasted is not None and self.toasted.change is change:
             self.win.toasts.close()                  # its toast goes with it
             self.toasted = None
@@ -1689,6 +1770,7 @@ class DragController(QObject):
         self._undo_answered()
 
     def _settle_ticket(self, ticket):
+        self._anki_landed(ticket)
         try:
             self.tickets.remove(ticket)
         except ValueError:
@@ -1723,6 +1805,184 @@ class DragController(QObject):
             if t.follows is ticket and t.change is None:
                 self._settle_ticket(t)
 
+    # --- finish-pending: a command whose Anki half waits for its Generate ---------------------------------------- #
+    # Kura's W-1b (PROVISIONAL, the lead + Sonic: "Finish acts after its Generate; pending shown at once"): Finish (a
+    # drop on Finished, the toast's *Leave its new cards out of your order*), Finished's *Put back* and *Leave its new
+    # cards out* / *Put them back in the order*, and their Undo (the toast's, Ctrl+Z's, one asked before the change was
+    # saved) write the store at once while Anki moves only once the host re-orders for that write — after the Generate
+    # it starts. Sonic's doctrine, every press reacts at once: one press per command, painted before the writer has it
+    # (`_anki_begin`), live until the store records that re-order (`planned_order_version` / `planned_pins_version`
+    # reach the change's `landed` versions, told by the reader — never a store read here). One rule ends it otherwise
+    # (`_anki_end`): the line the host leaves it with — a line that gives up (`replan_preview.GivesUp`: Anki closed, a
+    # Generate to press, 順's deck to pick; said as that kind by the host, never matched by its words) ends it failed,
+    # with those words; `OFF` (automation or 順 off, 順 absent: the user's own choice — at the write, from the gate
+    # asked once, or later, from the host letting go) ends it quietly. A Generate that fails, or that the learner stops
+    # (never one the journey keeper withdrew, nor one their own Generate joined), ends it failed with Generate's words.
+    # No host, or nothing written: done as it lands. A language switch and the window's close let it go (`close`).
+    # Words: none in the bar while it waits (FP-1 lean b, PROVISIONAL): a hover on the bar's arc says what it waits
+    # for (`strings.ANKI_WAIT_TIP`); the host's line is in ⇅'s hover and Generate's steps in its own, and the toast
+    # keeps its own words.
+    def _anki_begin(self, ticket):
+        try:
+            at = ticket.anki()
+        except Exception as e:
+            print(f"A press's mark couldn't be made: {e!r}")
+            at = None
+        p = qpress.begin(None, ("anki", next(_anki_keys)), win=self.win, at=at)
+        if p is None:
+            return
+        self._landing[ticket] = p
+        arc = getattr(self.win, "bar_arc", None)
+        if at is None and arc is not None and not sip.isdeleted(arc):
+            self._on_bar.add(p)
+            arc.setToolTip(strings.ANKI_WAIT_TIP)
+
+    def _anki_end(self, p, why=None):
+        """The one end of a press waiting for Anki: `why` words (a line that gives up, Generate's) -> failed, with
+        them; None or `OFF` -> done, quietly. Its key leaves the window's press table (FP-A7)."""
+        if p.live():
+            qpress.end(p, self.win, failed=bool(why), why=why or None)
+        self._on_bar.discard(p)
+        arc = getattr(self.win, "bar_arc", None)
+        if not self._on_bar and arc is not None and not sip.isdeleted(arc):
+            arc.setToolTip("")
+        qpress.presses_of(self.win).forget(p.key)
+
+    def _anki_end_owed(self, why):
+        """Every press owed a re-order ends with `why` (`_anki_end`), said once in the bar when it has words."""
+        owed, self._owed = self._owed, []
+        for p, _stamp, _ticket in owed:
+            self._anki_end(p, why)
+        if owed and why:
+            self.say(why)
+
+    def _anki_drop(self, mine):
+        """The presses of the tickets `mine(ticket)` picks let go (their change undone): done, quietly."""
+        for waiting in (self._landing, self._asking):
+            for t in [t for t in waiting if mine(t)]:
+                self._anki_end(waiting.pop(t))
+        for got in [w for w in self._owed if mine(w[2])]:
+            self._owed.remove(got)
+            self._anki_end(got[0])
+
+    def _anki_back(self, ticket, p=None):
+        """The ticket an Undo of `ticket`'s change is given with: its press waits the same way back — `p` taken over
+        (an Undo asked before the change was saved: the mark never stops), else a new one."""
+        back = Ticket(ticket.text, ticket.keys, ticket.ids)
+        back.anki = ticket.anki
+        if p is None:
+            self._anki_begin(back)
+        else:
+            self._landing[back] = p
+        return back
+
+    def _anki_landed(self, ticket):
+        """`ticket`'s write landed (its change, the store's versions with it), or never will: what its press waits
+        for."""
+        p = self._landing.pop(ticket, None)
+        if p is None or not p.live():
+            return
+        stamp = getattr(ticket.change, "landed", None) if ticket.change is not None else None
+        services = getattr(self.win, "services", None)
+        if stamp is None or self._closed or getattr(services, "replan", None) is None:
+            self._anki_end(p)                        # nothing written, or no host: nothing is owed to Anki
+            return
+        self._asking[ticket] = p
+        bridge.run_in_worker(_aside, services.settings.get(), getattr(self.win, "language", None) or "ja",
+                             then=lambda why: self._owing(p, stamp, ticket, why),
+                             failed=lambda _info: self._owing(p, stamp, ticket, None))
+
+    def _owing(self, p, stamp, ticket, why):
+        if sip.isdeleted(self) or self._asking.get(ticket) is not p:
+            return                                   # (its Undo asked meanwhile: let go)
+        del self._asking[ticket]
+        heard = self._heard_line
+        if not self._asking:
+            self._heard_line = None
+        if not p.live():
+            return
+        if self._closed:
+            self._anki_end(p)
+            return
+        if why is not None:
+            from app import replan_preview
+            why = replan_preview.ends_with(why)      # the user's own choice: OFF, quietly; the deck to pick: its words
+            self._anki_end(p, why)
+            if why:
+                self.say(why)
+            return
+        self._owed.append((p, stamp, ticket))
+        if heard is not None:
+            self._anki_end_owed(heard)               # FP-A6: a line that gave up while the gate was asked
+            return
+        self._caught_up()
+
+    def _caught_up(self):
+        """The presses whose re-order the store has recorded end (done); a library made again (another epoch) too."""
+        v = self._versions
+        for got in list(self._owed):
+            p, stamp, _ticket = got
+            if not p.live():
+                self._owed.remove(got)
+                self._anki_end(p)
+            elif v is not None and (v.get("epoch") != stamp["epoch"] or (
+                    v.get("planned_order_version", 0) >= stamp["order_version"]
+                    and v.get("planned_pins_version", 0) >= stamp["pins_version"])):
+                self._owed.remove(got)
+                self._anki_end(p)
+
+    def _versions_in(self, versions):
+        self._versions = versions
+        if self._owed:
+            self._caught_up()
+
+    def _line_in(self, line):
+        """The host's line: one that gives up (or `OFF`) ends the presses owed a re-order (`_anki_end`); heard while a
+        press's gate is still asked, it waits for that press (FP-A6) — until a line of another kind follows it."""
+        if not (self._owed or self._asking):
+            return
+        from app import replan_preview
+        if not isinstance(line, replan_preview.GivesUp):
+            if line:
+                self._heard_line = None              # the host went on: its give-up is not the last word
+            return
+        if self._asking:
+            self._heard_line = line
+        if self._owed:
+            self._anki_end_owed(line)
+
+    def _jobs_in(self, views):
+        """A Generate that ends without its list while a press waits for it — failed, or stopped by the learner
+        (FP-3; never one the journey keeper withdrew to ask again, nor one the learner's own Generate joined): the
+        press fails, with Generate's words."""
+        if not self._owed:
+            self._generates.clear()
+            return
+        running = any(v.kind == "generate" and v.state in jobs_module.LIVE for v in views)
+        for v in views:
+            if v.kind != "generate":
+                continue
+            if v.state in jobs_module.LIVE:
+                self._generates.add(v.id)
+            elif v.id in self._generates:
+                self._generates.discard(v.id)
+                if v.cancelled:
+                    withdrawn = getattr(getattr(self.win.services, "controller", None), "withdrawn", None)
+                    if not running and not (withdrawn is not None and withdrawn(v.id)):
+                        self._anki_end_owed(strings.ANKI_WAIT_GENERATE_STOPPED)
+                        return
+                elif v.state == jobs_module.FAILED:
+                    self._anki_end_owed(strings.ANKI_WAIT_GENERATE_FAILED.format(message=v.message or "—"))
+                    return
+
+    def _anki_let_go(self):
+        """A language switch, the window's close: no press of this controller's left turning."""
+        landing = list(self._landing.values()) + list(self._asking.values())
+        self._landing, self._asking = {}, {}
+        owed, self._owed = [w[0] for w in self._owed], []
+        for p in landing + owed:
+            self._anki_end(p)
+
     def _reread(self):
         """The store placed something elsewhere, or had nothing to change: its view stands now (a choice waiting for a
         drop that landed as nothing is given unlinked). W3.2 (S5): while others still wait, the tickets whose own
@@ -1746,7 +2006,9 @@ class DragController(QObject):
                     if then is not None and not t.undo_asked:
                         then()
                     self._settle_ticket(t)
-        self._let_go()
+        for t in [t for t in self._landing if any(t is e for e in empty)]:
+            self._anki_landed(t)                     # finish-pending FP-A1: only a press whose own command landed as
+        self._let_go()                               # nothing (an Undo refused) — never "the queue is empty"
 
     def _note(self, text):
         if self.toast_for:
@@ -2057,6 +2319,13 @@ class DragController(QObject):
         if unsubscribe is not None and self._gone_told is not None:
             unsubscribe(self._gone_told)
         self._gone_told = None
+        unsubscribe = getattr(self.reader, "unsubscribe_versions", None)
+        if unsubscribe is not None and self._versions_told is not None:
+            unsubscribe(self._versions_told)
+        self._versions_told = None
+        heard = getattr(getattr(self.win, "services", None), "replan_heard", None)
+        if heard is not None and self._heard in heard:
+            heard.remove(self._heard)
 
     def close(self):
         """The window closes (or a language switch lets this controller go): a drag running is let go, and the settle
@@ -2065,6 +2334,7 @@ class DragController(QObject):
             self.cancel()
         self._closed = True
         self._settle.stop()
+        self._anki_let_go()
         self._filter(False)
         for t in self.tickets:                       # round 8 row 45: nothing of this controller's left turning
             self._ended(t)

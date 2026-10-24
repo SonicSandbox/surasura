@@ -264,14 +264,15 @@ class MineActions(QObject):
             return None
         lang = getattr(self.win, "language", "")
         key = f"stop:{lang}:{ask.job}"
-        p = qpress.begin(None, key, win=self.win)
-        if p is None:
+        if qpress.presses_of(self.win).get(key).live():
             return None                              # pressed already: still stopping
         ids = list(ask.ids)
-        for i in ids:
-            self._stops[i] = key
         marked = [lst.press_stop(ids) for lst in self.lists]     # *Stopping…* painted now, before the worker
         shown = any(marked)                          # R47-A2: no list shows it — the press ends with the worker
+        # IK-2 (intent keeper round 8, finding 2): its pill is its one mark; only a pill no list shows takes the bar's arc
+        p = qpress.begin(None, key, win=self.win, at=qpress.NOWHERE if shown else None)
+        for i in ids:
+            self._stops[i] = key
         status = getattr(self.win.services, "status", None)
 
         def done(ok):

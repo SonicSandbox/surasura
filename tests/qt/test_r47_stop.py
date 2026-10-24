@@ -403,3 +403,31 @@ def test_a4_the_rows_accessible_text_offers_stop_only_while_it_can_be_pressed(ac
     assert text().endswith(said)
     lst.press_stop([row.episodes[0].id])
     assert said not in text()
+
+
+def test_ik2_a_stop_marks_only_its_pill_and_a_stop_no_list_shows_turns_the_bars_arc(act, monkeypatch):
+    """Intent keeper round 8, finding 2 (IK-2: one mark, on the thing acted on): Stop's pill reads *Stopping…* and the
+    bottom bar's arc stays off — before the change both turned. A stop on a file no list shows has no pill, so the
+    bar's arc is its mark until the worker answers. Red first: the bar's arc was on beside the pill."""
+    _seed, win, writer = act()
+    lst = lst_of(win)
+    i, row = _mining(lst)
+    part = _stop_part(lst, i)
+    seen, _calls, _before = _watch_stop(win, monkeypatch)
+    arcs = []
+    real = mine_actions.bridge.run_in_worker
+    monkeypatch.setattr(mine_actions.bridge, "run_in_worker",
+                        lambda fn, *a, **kw: (fn is win.mine.stop_job and arcs.append(win.bar_arc.isVisible()),
+                                              real(fn, *a, **kw))[1])
+    click(lst, part)
+    assert len(seen) == 1 and seen[0][0] == {row.episodes[0].id}       # the pill: Stopping…
+    assert arcs == [False] and not win.bar_arc.isVisible()               # ... and nothing else turns
+    press = win.presses.find(f"stop:{win.language}:{JOB}")
+    _moved(lst, row.key, view_rows._connected(PLAIN, _item(feed.WAITING, tip=runner.STOPPED_BY_YOU,
+                                                          stoppable=None), "video"))
+    assert press.state == press_service.DONE
+    other = "r47-ik2-elsewhere"
+    win.mine.stop(rows.Ask(10 ** 9, (10 ** 9,), None, other))        # no pill on screen: the bar's arc, at once
+    assert arcs[-1] is True
+    late = win.presses.find(f"stop:{win.language}:{other}")
+    assert wait_until(lambda: late.state == press_service.DONE) and not win.bar_arc.isVisible()

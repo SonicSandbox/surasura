@@ -75,6 +75,7 @@ from PyQt6.QtWidgets import QMenu
 
 from app import library_store
 from app.qt import bridge, confirm, drag, finished, rows, strings, windows
+from app.qt import press as qpress
 from app.services import view_rows
 
 JOIN_EDGE = 0.3                                     # a part's top and bottom 30 %: a move beside it, not a join
@@ -113,6 +114,11 @@ def comes_first(part, target):
     a = next((n for n in part.numbers if n is not None), None)
     b = next((n for n in target.numbers if n is not None), None)
     return a is not None and b is not None and a < b
+
+
+def _firsts(rows_):
+    """Each row's first file: where a press on the row is marked (`press.row_mark`)."""
+    return [r.episodes[0].id for r in rows_ if getattr(r, "episodes", None)]
 
 
 def pieces_of(row):
@@ -369,7 +375,8 @@ class ItemActions(QObject):
         ids = [i for r in whole for i in drag.ids_of(r)] + items
         text = strings.ITEM_GROUPED.format(n=len(whole) + len(eps))
         seq = self._give_saved(drag.Ticket(text, keys, ids),
-                               lambda t: self.writer.group(piece_ids=pieces, item_ids=items, label=t))
+                               lambda t: self.writer.group(piece_ids=pieces, item_ids=items, label=t),
+                               _firsts(whole) + items)
         if seq is not None:
             self.lst.clear_picks()
         return seq
@@ -710,11 +717,17 @@ class ItemActions(QObject):
             add("arrivals", a.work_id, a.key, a.title, strings.ITEM_JOIN_WHERE["arrivals"])
         return out
 
-    def _give_saved(self, ticket, command):
+    def _give_saved(self, ticket, command, marks=()):
         """`_give` for what the store rearranges itself (a group made, undone or renamed, a show joined): round 8 row
-        45 — its toast (and Undo) at the press, reading *· saving…* while the write waits, as every move's does. A
-        refusal toasts nothing; a command that lands as nothing to change (the name it had) or fails takes its toast
-        away (`DragController._reread` runs a waiting `then` for a command that landed as nothing)."""
+        45 — its toast (and Undo) at the press, reading *· saving…* while the write waits, as every move's does, and
+        the files `marks` (a row's first: `_firsts`) marked on their lines (`press.row_mark`, painted before the writer
+        has it) until it settles — no order is painted ahead of the store's own. A refusal toasts nothing; a command
+        that lands as nothing to change (the name it had) or fails takes its toast away (`DragController._reread`
+        runs a waiting `then` for a command that landed as nothing)."""
+        marks = list(dict.fromkeys(i for i in marks if i is not None))
+        if marks:
+            ticket.press = qpress.begin(None, ("regroup",) + tuple(marks), win=self.win,
+                                        at=qpress.row_mark(self.lst, marks))
         ticket.then = lambda: self.moves.toast_gone(ticket) if ticket.change is None else None
         return self.moves._give(ticket, command)
 
@@ -724,7 +737,8 @@ class ItemActions(QObject):
             return None
         piece = row.piece_id
         return self._give_saved(drag.Ticket(strings.ITEM_UNGROUPED.format(title=row.title), (row.key,),
-                                            drag.ids_of(row)), lambda t: self.writer.ungroup(piece, label=t))
+                                            drag.ids_of(row)), lambda t: self.writer.ungroup(piece, label=t),
+                                _firsts([row]))
 
     def ask_rename(self, row):
         """*Rename…*: the card with the name shown in a field (Esc / Back / Cancel: nothing written)."""
@@ -752,7 +766,7 @@ class ItemActions(QObject):
         words = strings.ITEM_RENAMED.format(title=row.title, name=name) if name is not None else \
             strings.ITEM_RENAME_CLEARED.format(title=row.title)
         return self._give_saved(drag.Ticket(words, (row.key,), drag.ids_of(row)),
-                                lambda t: self.writer.rename_piece(piece, name, label=t))
+                                lambda t: self.writer.rename_piece(piece, name, label=t), _firsts([row]))
 
     def ask_same_show(self, row, show):
         """*Same show as…* › `show`: asked first (Cancel the default; Esc / Back / a click outside: nothing written)."""
@@ -779,7 +793,7 @@ class ItemActions(QObject):
         keep, other = show.work_id, row.work_id
         text = strings.ITEM_SAME_SHOW_DONE.format(b=row.title, a=show.title)
         return self._give_saved(drag.Ticket(text, (row.key, show.key), drag.ids_of(row)),
-                                lambda t: self.writer.merge_works(keep, [other], label=t))
+                                lambda t: self.writer.merge_works(keep, [other], label=t), _firsts([row]))
     # --- end LM11b G3
 
     # --- LM11b G2: drop to group ------------------------------------------------------------------------------------ #
@@ -792,7 +806,7 @@ class ItemActions(QObject):
         pieces = list(dict.fromkeys(pieces_of(target) + pieces_of(other)))
         text = strings.ITEM_GROUPED_WITH.format(other=other.title, title=target.title)
         if self._give_saved(drag.Ticket(text, (target.key, other.key), drag.ids_of(target) + drag.ids_of(other)),
-                            lambda t: self.writer.join(pieces, label=t, how="group")) is None:
+                            lambda t: self.writer.join(pieces, label=t, how="group"), _firsts([target, other])) is None:
             return None
         self._open(target.key)
         return target.key
@@ -806,7 +820,7 @@ class ItemActions(QObject):
         tier = ep_tier(group, ep)
         text = strings.ITEM_GROUPED_WITH.format(other=title, title=group.title)
         if self._give_saved(drag.Ticket(text, (group.key,) + tuple(keys), ids),
-                            lambda t: self.writer.move(ids, tier, after_id=ep.id, label=t)) is None:
+                            lambda t: self.writer.move(ids, tier, after_id=ep.id, label=t), [ep.id]) is None:
             return None
         self._open(group.key)
         return group.key
@@ -820,7 +834,7 @@ class ItemActions(QObject):
         piece = group.piece_id
         text = strings.ITEM_GROUPED_WITH.format(other=title, title=group.title)
         if self._give_saved(drag.Ticket(text, (group.key,), ids),
-                            lambda t: self.writer.add_to_group(piece, item_ids=ids, label=t)) is None:
+                            lambda t: self.writer.add_to_group(piece, item_ids=ids, label=t), _firsts([group])) is None:
             return None
         self._open(group.key)
         return group.key

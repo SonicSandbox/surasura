@@ -2147,6 +2147,41 @@ def test_every_group_write_toasts_at_the_press_saving_while_it_waits_and_goes_fo
     assert not win.toasts.alive, "no toast left for what never happened"
 
 
+GROUP_MARKS = {                                      # the files each write marks (a row's first: `item_menu._firsts`)
+    "group": lambda g, o: {g.episodes[0].id, o.episodes[0].id},
+    "group_join": lambda g, o: {g.episodes[0].id, o.episodes[0].id},
+    "into_group_at": lambda g, o: {g.episodes[0].id},
+    "add_to_group": lambda g, o: {g.episodes[0].id},
+    "same_show": lambda g, o: {o.episodes[0].id},
+}
+
+
+@pytest.mark.parametrize("name", list(GROUP_WRITES))
+def test_every_group_write_marks_its_rows_painted_before_the_writer_has_it_until_it_lands(world, name, monkeypatch):
+    # round 8 row 45: nothing is painted ahead of the store's own rearranging, so the rows it changes turn the accent
+    # arc on their lines from the press — painted before the writer is handed the command — until it is saved
+    _seed, win, writer = world()
+    b, a = two_shows(win)
+    rs = rows_of(win)
+    g, o = (as_group(win, a), rs[b]) if name in ("into_group_at", "add_to_group") else (rs[a], rs[b])
+    lst = lst_of(win)
+    drawn = []
+    real = rows.paint_marked
+    monkeypatch.setattr(rows, "paint_marked", lambda p, rect, turning: (drawn.append(rect), real(p, rect, turning)))
+    seen = []
+    put = writer._put
+    monkeypatch.setattr(writer, "_put", lambda op, ids, label, **kw: (seen.append((set(lst.marked), len(drawn))),
+                                                                       put(op, ids, label, **kw))[1])
+    writer.stuck = True
+    assert GROUP_WRITES[name](win, g, o) is not None
+    marked, painted = seen[0]
+    assert marked == GROUP_MARKS[name](g, o) and painted >= 1, (marked, painted)
+    settle(100)
+    assert set(lst.marked) == GROUP_MARKS[name](g, o)                # still waiting: still turning
+    writer.free()
+    assert wait_until(lambda: not win.moves.tickets and not lst.marked, 5)
+
+
 def test_a_target_in_finished_or_new_arrivals_is_never_a_groups(world):
     # the store refuses a group there (`NO_GROUP_TIERS`): the window never offers or writes it
     _seed, win, writer = world()

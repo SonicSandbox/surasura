@@ -149,6 +149,30 @@ def file_signature(path):
     return st.st_mtime, st.st_size
 
 
+def _noted_moves(moved, leaving, existing, signatures, listed):
+    """D7a: [(old key, new key)] of the library store's move notes the reconcile may re-key by — the old path leaving,
+    the new one listed and present with no row, the old row the note's old file (its size; its time to the µs: the
+    row keeps a float) and the new file the note's to the nanosecond; each key once, the latest note first."""
+    out, taken = [], set()
+    for old, old_size, old_ns, new, size, mtime_ns in reversed(list(moved or ())):
+        old_key, new_key = _norm(old), _norm(new)
+        if old_key not in leaving or new_key in existing or signatures.get(new_key) is None or \
+                old_key in taken or new_key in taken:
+            continue
+        row = existing[old_key]
+        if row["size"] != old_size or not isinstance(old_ns, int) or abs(row["mtime"] - old_ns / 1e9) > 1e-6:
+            continue
+        try:
+            st = os.stat(listed[new_key])
+        except OSError:
+            continue
+        if (st.st_size, st.st_mtime_ns) != (size, mtime_ns):
+            continue
+        out.append((old_key, new_key))
+        taken |= {old_key, new_key}
+    return out
+
+
 def store_path_for(language):
     """Where the token store DB for a language lives.
 
@@ -963,9 +987,11 @@ class Store:
                 put[key] = key
         return counted, put, held, gone
 
-    def needs_reconcile(self, files, kept=None, elsewhere=None, forgotten=None, data_dir=None, aside=None):
+    def needs_reconcile(self, files, kept=None, elsewhere=None, forgotten=None, data_dir=None, aside=None,
+                        moved=None):
         """Cheap disk-vs-store delta check (stat only, NO tokenizer) — for a GUI pre-gate. `kept`, `elsewhere`,
-        `forgotten`, `data_dir` and `aside` as `reconcile` takes them. A listed file gone from the disk keeps its row as
+        `forgotten`, `data_dir` and `aside` as `reconcile` takes them; `moved` changes nothing here (a moved file's
+        old row is one no list names: work, re-keyed by the reconcile). A listed file gone from the disk keeps its row as
         it is, so it is a change only when its flag moved, when the store lacks it and its file is elsewhere (a removed
         item's, in the trash), or when its text isn't kept yet (the reconcile keeps it at once: a missing item's only
         sentences never wait for an unrelated change)."""
@@ -1014,7 +1040,7 @@ class Store:
         return _KeptText(kept_text_path(self.language, data_dir), data_dir)
 
     def reconcile(self, files, tokenize_file, build_signature=None, workers=None, kept=None, elsewhere=None,
-                  data_dir=None, forgotten=None, aside=None):
+                  data_dir=None, forgotten=None, aside=None, moved=None):
         """Bring the store in sync with the on-disk `files`, re-tokenizing ONLY changed/new files.
 
         tokenize_file(path) -> {"sentences": [...], "counts": Counter} (Japanese: and "names", the file's
@@ -1054,6 +1080,10 @@ class Store:
         (`tokenize_file.tokenize_text`). A listed file the store lacks takes the row of a leaving one — or of a kept
         row no list names whose file is gone — when they are the only two with that name, size and modified time (the
         file moved, 9a): re-keyed with its kept text, never re-tokenized. Two or more alike: each read as it is.
+        `moved` (D7a): the library store's move notes, (old, old size, old mtime_ns, new, size, mtime_ns) — a renamed
+        file the name can't match takes the row of its old path when that path is leaving, the new one has no row, the
+        row is the old file's (its size and time) and the new file is still the note's; else it is read as it is (a
+        stale note is harmless).
         """
         read = getattr(tokenize_file, "read_text", None)
         from_text = getattr(tokenize_file, "tokenize_text", None)
@@ -1092,17 +1122,19 @@ class Store:
             named = {_norm(p) for p in kept or ()}
             orphans = [key for key in held if key not in named and signatures[key] is None]
             if leaving or orphans:
+                pairs = _noted_moves(moved, leaving, existing, signatures, listed)    # D7a: the library store's proof
+                taken = {k for pair in pairs for k in pair}
                 olds, news = {}, {}
                 for key in list(leaving) + orphans:
                     row = existing[key]
-                    olds.setdefault((os.path.basename(key), row["mtime"], row["size"]), []).append(key)
+                    if key not in taken:
+                        olds.setdefault((os.path.basename(key), row["mtime"], row["size"]), []).append(key)
                 for key, signature in signatures.items():
-                    if signature is not None and key not in existing:
+                    if signature is not None and key not in existing and key not in taken:
                         news.setdefault((os.path.basename(key), *signature), []).append(key)
-                for same, (key,) in ((same, keys) for same, keys in news.items() if len(keys) == 1):
-                    if len(olds.get(same, ())) != 1:
-                        continue
-                    old = olds[same][0]
+                pairs += [(olds[same][0], key) for same, (key,) in ((same, keys) for same, keys in news.items()
+                                                                     if len(keys) == 1) if len(olds.get(same, ())) == 1]
+                for old, key in pairs:
                     cur.execute("UPDATE files SET path=? WHERE path=?", (key, old))
                     existing[key] = existing.pop(old)
                     if existing[key]["counted"]:

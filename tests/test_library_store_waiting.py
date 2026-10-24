@@ -177,6 +177,7 @@ def test_a_subtitle_of_a_waiting_video_fills_its_item_in_place_silently(language
         item = store.item(waiting[0])
         assert item["title"] == "ep1.ja.srt" and item["source_type"] == "subtitle"      # the copy's own entry
         assert _events(store) == events                                    # silent: no event at all
+        assert store.text_moved() == [], "D7a: new bytes in place are never a move note for the token store"
         keys = {r[0] for r in store.conn.execute("SELECT content_key FROM pairings WHERE item_id = ?", (waiting[0],))}
         assert keys == {ls.origin_key(v1["video_path"]), ls.origin_key(sub["origin"])}
         assert store.item(waiting[1])["availability"] == "waiting"

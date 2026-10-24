@@ -65,6 +65,7 @@ class PhaseStrip(QWidget):
         self._fades = {}                       # circle -> its fade (an Animation on the clock)
         self._looks = {}                       # circle -> what it was last painted as
         self._pix = {}                         # circle -> its logo (QPixmap), once decoded
+        self.logos = dict(LOGOS)               # ... and which (this strip's: made from `LOGOS` as it is now)
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self.refresh)
@@ -214,7 +215,7 @@ class PhaseStrip(QWidget):
     def _load_logos(self):
         dpr = self.devicePixelRatioF()
         px = theme.size("phase-mark")
-        for circle, name in LOGOS.items():
+        for circle, name in self.logos.items():
             have = self._pix.get(circle)
             if have is not None and have.devicePixelRatio() == dpr:
                 continue
@@ -263,7 +264,7 @@ class PhaseStrip(QWidget):
             motion.spin_arc(p, r, None, accent, width=ARC_W)
         mark = theme.size("phase-mark")
         box = QRectF(r.center().x() - mark / 2.0, r.center().y() - mark / 2.0, mark, mark)
-        if circle in LOGOS:
+        if circle in self.logos:
             pix = self._pix.get(circle)
             if pix is not None:
                 w, h = pix.width() / pix.devicePixelRatio(), pix.height() / pix.devicePixelRatio()

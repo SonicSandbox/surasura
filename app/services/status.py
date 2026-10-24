@@ -63,9 +63,12 @@ LISTED_BY_THE_WINDOW = ("update",)       # failures Needs you shows from their o
 
 
 def job_line(view):
-    """A running job's line: its label, and its step when it reports one ("Generating · Reading your files 3 / 12")."""
+    """A live job's line: its label, and its step when it reports one ("Generating · Reading your files 3 / 12"); a
+    queued one *starting…*, a waiting one its reason, a stopping one *stopping*."""
     if view.state == jobs_module.CANCELLING:
         return f"{view.label} · stopping"
+    if view.state == jobs_module.QUEUED:                # round 8 row 45: queued is a state to show, at once
+        return f"{view.label} · starting…"
     if view.state == jobs_module.WAITING and view.reason:
         return f"{view.label} · {view.reason}"
     progress = view.progress
@@ -267,7 +270,8 @@ class StatusService:
             self._publish()
 
     def _jobs_changed(self, views):
-        live = [v for v in views if v.state in (jobs_module.RUNNING, jobs_module.CANCELLING, jobs_module.WAITING)]
+        live = [v for v in views if v.state in (jobs_module.QUEUED, jobs_module.RUNNING, jobs_module.CANCELLING,
+                                                 jobs_module.WAITING)]
         lines = tuple(job_line(v) for v in live)
         with self._lock:
             placed = self._placed

@@ -45,6 +45,22 @@ def test_job_line_for_a_step_without_counts():
     assert job_line(view) == "Mining 12 words · Asking Anki Miner"
 
 
+def test_a_queued_job_shows_at_once_as_starting_until_it_runs():
+    """Round 8 row 45 (scope §3.3): queued is a state to show — a job asked for but not yet started said nothing in
+    the bar, so a press looked ignored until its job ran. Now its line says *starting…* from the moment it is queued,
+    then its running line; a job that ends leaves no line."""
+    view = J.JobView(4, "anki-sync", "Updating known words from Anki", J.QUEUED, None, None, None, 0, None, False,
+                     "cancel", False, True)
+    assert job_line(view) == "Updating known words from Anki · starting…"
+    status = StatusService(JobRegistry())
+    status._jobs_changed((view,))
+    assert status.snapshot().lines == ("Updating known words from Anki · starting…",)
+    status._jobs_changed((view._replace(state=J.RUNNING),))
+    assert status.snapshot().lines == ("Updating known words from Anki",)
+    status._jobs_changed((view._replace(state=J.DONE),))
+    assert status.snapshot().lines == ()
+
+
 def test_a_command_line_failure_reaches_the_bar_once_in_plain_words_and_stays_in_needs_you():
     status = StatusService(JobRegistry())
     status.refresh()                                       # the reader starts at the file's end: history isn't news

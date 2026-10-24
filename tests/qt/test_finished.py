@@ -243,7 +243,8 @@ def test_open_its_folder_opens_the_folder_its_files_are_in(fin, monkeypatch):
     _seed, win, _w, _e = fin()
     row = finished_rows(win)[0][1]
     opened = []
-    monkeypatch.setattr(finished.windows, "open_url", opened.append)
+    from app.qt import screens
+    monkeypatch.setattr(screens, "open_with_system", opened.append)     # (a folder: the system's opener, a worker)
     folder = finished.folder_of("ja", row)
     os.makedirs(folder, exist_ok=True)
     win.finished.menu_pick(row, "folder")
@@ -255,7 +256,8 @@ def test_open_its_folder_says_so_when_the_folder_is_gone(fin, monkeypatch):
     _seed, win, _w, _e = fin()
     row = finished_rows(win)[1][1]
     opened = []
-    monkeypatch.setattr(finished.windows, "open_url", opened.append)
+    from app.qt import screens
+    monkeypatch.setattr(screens, "open_with_system", opened.append)     # (a folder: the system's opener, a worker)
     win.finished.menu_pick(row, "folder")
     assert wait_until(lambda: win.bar_line.full() == strings.FIN_NO_FOLDER.format(title=row.title), 3)
     assert opened == []

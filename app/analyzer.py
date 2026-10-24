@@ -4083,6 +4083,17 @@ def journey_is_current(args, language):
         return None
 
 
+def report_is_current(args, language):
+    """The report half of "nothing to do": the report is there and was drawn from what it would be drawn from now (the
+    token store's `last_render_sig` against `compute_render_signature`, the stones read now) — the half
+    `journey_is_current` leaves out. surasura-cli's `_nothing_changed` and the journey keeper ask it (JS-1: a stone with
+    *Keep studying* on moves only this half). Runs on a worker (it reads the library store's marks)."""
+    if not os.path.exists(os.path.join(get_user_file("results"), "reading_list_static.html")):
+        return False
+    rendered = _token_store_meta(language, "last_render_sig")
+    return rendered == compute_render_signature(parse_analysis_args(args[1:]))
+
+
 def journey_check(args, language):
     """`journey_is_current`, for a caller that must write nothing (surasura-cli `status`, P1.2): the same question
     asked of the same signature — True, False, or None when it can't tell — with every store opened `mode=ro`, the

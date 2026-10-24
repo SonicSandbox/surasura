@@ -382,6 +382,16 @@ class Replan:
         host.poke()
         keeper.changed("store")
 
+    def stone_marked(self, language):
+        """A watched mark, or its undo, that moved nothing that counts (Keep studying on, JS-1): the report still shows
+        the stone, so the keeper looks again (`changed("stone")`; its check asks the report half too). No poke: the
+        order and the pins stand, so the re-order host has nothing new."""
+        with self._lock:
+            if self._closing or language != self.language:
+                return
+            keeper = self.keeper
+        keeper.changed("stone")
+
     def language_changed(self, language):
         language = language or "ja"
         with self._lock:

@@ -1160,6 +1160,45 @@
             white-space: nowrap;
         }
 
+        /* --- The journey's stone (3.0): an episode marked watched in your library ---
+           The window's watched stone drawn flat: a small cut stone, sapphire, muted, before the file's name. Never a
+           check and never green, so it never reads as the browser's own "Complete ✓" (green text, after the name). */
+        .file-tab .journey-stone {
+            display: inline-block;
+            width: 10px;
+            height: 13px;
+            margin-right: 7px;
+            vertical-align: -2px;
+            opacity: 0.8;
+        }
+
+        .file-tab .aside-watched {
+            font-size: 0.9em;
+            opacity: 0.5;
+            margin-left: 8px;
+            font-style: italic;
+            white-space: nowrap;
+        }
+
+        .watched-panel {
+            margin: 20px;
+            padding: 14px 18px;
+            color: var(--text-secondary);
+            background: var(--surface);
+            border: 1px solid var(--card-border);
+            border-left: 3px solid #4b8ff0;
+            border-radius: 6px;
+        }
+
+        .watched-panel .journey-stone {
+            display: inline-block;
+            width: 10px;
+            height: 13px;
+            margin-right: 8px;
+            vertical-align: -2px;
+            opacity: 0.8;
+        }
+
         /* Manually-completed files collapse into their own section at the bottom of the sidebar, so
            a long-running journey doesn't mean scrolling past every episode you've already finished.
            They stay one click away rather than being hidden outright. */
@@ -2066,9 +2105,21 @@
 
                 const safeFilename = escapeHtml(fileData.filename);
                 tab.dataset.filename = fileData.filename;
+                if (fileData.aside) {
+                    // Watched and set aside (Keep studying watched episodes off): in its place, *watched* where its
+                    // count would be; its words aren't counted, so a click says so instead of listing none.
+                    tab.innerHTML = `${journeyStone(fileData)}${goalIndicator}<span class="hidden-content" data-content="${safeFilename}" migaku_ignore data-yomichan-ignore></span> <span class="hidden-content aside-watched" data-content="watched" migaku_ignore data-yomichan-ignore></span>`;
+                    applyCompletedStyle(tab, completedFiles.has(fileData.filename));
+                    tab.onclick = () => {
+                        document.querySelectorAll('.file-tab').forEach(t => t.classList.remove('active'));
+                        tab.classList.add('active');
+                        renderWatchedFile(fileData);
+                    }
+                    return tab;
+                }
                 const inAnkiCount = ankiBacklogCount(fileData.words);
                 const countText = inAnkiCount ? `${fileData.words.length} · ${inAnkiCount}<span class="priority-marker marker-anki" style="font-size: 0.8em; margin-left: 2px;" title="${inAnkiCount} already in your Anki backlog"></span>` : `${fileData.words.length}`;
-                tab.innerHTML = `${goalIndicator}<span class="hidden-content" data-content="${safeFilename}" migaku_ignore data-yomichan-ignore></span> <span style="font-size: 0.9em; opacity: 0.5; margin-left: 8px; font-family: monospace; white-space: nowrap;">(${countText})</span>`;
+                tab.innerHTML = `${journeyStone(fileData)}${goalIndicator}<span class="hidden-content" data-content="${safeFilename}" migaku_ignore data-yomichan-ignore></span> <span style="font-size: 0.9em; opacity: 0.5; margin-left: 8px; font-family: monospace; white-space: nowrap;">(${countText})</span>`;
                 applyCompletedStyle(tab, completedFiles.has(fileData.filename));
                 tab.onclick = async () => {
                     document.querySelectorAll('.file-tab').forEach(t => t.classList.remove('active'));
@@ -2080,7 +2131,7 @@
                 const fileData = item.data;
                 const safeFilename = escapeHtml(fileData.filename);
                 tab.style.opacity = "0.7";
-                tab.innerHTML = `<span class="hidden-content" data-content="${safeFilename}" migaku_ignore data-yomichan-ignore></span> <span class="target-met-inline">Target met ✓</span>`;
+                tab.innerHTML = `${journeyStone(fileData)}<span class="hidden-content" data-content="${safeFilename}" migaku_ignore data-yomichan-ignore></span> <span class="target-met-inline">Target met ✓</span>`;
                 tab.onclick = () => {
                     document.querySelectorAll('.file-tab').forEach(t => t.classList.remove('active'));
                     tab.classList.add('active');
@@ -2088,6 +2139,29 @@
                 }
             }
             return tab;
+        }
+
+        // The journey's stone (3.0): the file is marked watched in your library (`watched` in the report's data; an
+        // old report has no such key and draws none). A cut stone, never a check: the ✓ is the browser's own mark.
+        const JOURNEY_STONE_SVG = '<svg viewBox="0 0 10 13" aria-hidden="true"><polygon points="5,0 9.6,3.6 8.2,10.4 5,13 1.8,10.4 0.4,3.6" fill="#1d4fae"/><polygon points="5,0 9.6,3.6 5,5.6 0.4,3.6" fill="#4b8ff0"/><polygon points="5,5.6 9.6,3.6 8.2,10.4 5,13" fill="#2a63c4"/></svg>';
+
+        function journeyStone(fileData) {
+            if (!fileData || fileData.watched !== true) return "";
+            return `<span class="journey-stone" title="Watched (marked in your library)">${JOURNEY_STONE_SVG}</span>`;
+        }
+
+        // A watched file set aside: its words aren't counted, so its panel says so (the ✓ still marks it in the browser).
+        function renderWatchedFile(fileData) {
+            const listContainer = document.getElementById('progressive-list');
+            listContainer.innerHTML = "";
+            currentFileName = fileData.filename;
+            currentFileWordCount = 0;
+            currentCumulativeWords = 0;
+            updateMarkCompleteButton();
+            const panel = document.createElement('div');
+            panel.className = 'watched-panel';
+            panel.innerHTML = `<span class="journey-stone">${JOURNEY_STONE_SVG}</span><span class="hidden-content" data-content="Watched: its words aren't counted" migaku_ignore data-yomichan-ignore></span>`;
+            listContainer.appendChild(panel);
         }
 
         async function renderCompletedFile(fileData) {
@@ -2388,7 +2462,7 @@
         // Swap the Target Days box for the green "X words Completed" line (or back) in place.
         function updateTargetDaysForCurrent() {
             const listContainer = document.getElementById('progressive-list');
-            if (!listContainer) return;
+            if (!listContainer || listContainer.querySelector('.watched-panel')) return;    // a set-aside file: no count
             const existing = listContainer.querySelector('.target-days-box');
             const fresh = createTargetDaysBox(currentCumulativeWords || currentFileWordCount, currentFileWordCount, currentFileName);
             if (existing) {

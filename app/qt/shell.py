@@ -223,9 +223,11 @@ class Services:
 
     def _wire_writer(self, writer):
         """W-1 (K-W4): a mark that moved what counts (`Writer.on_counted`) asks the indexer, so the Rarity preview
-        follows."""
+        follows; and a mark that moved nothing that counts (`Writer.on_stone`, Keep studying on) asks the journey keeper,
+        so the report shows its stone (JS-1)."""
         if writer is not None:
             writer.on_counted = self._counted
+            writer.on_stone = lambda: self._stone_marked(writer.language)
 
     def _counted(self):
         """(The writer's thread.) The indexer asked, forced (`Chores.index`: one check and one indexer at a time, so a
@@ -233,6 +235,17 @@ class Services:
         chores = self.chores
         if chores is not None and not self.closing.is_set():
             chores.index(force=True)
+
+    def _stone_marked(self, language):
+        """(The writer's thread.) A watched mark, or its undo, that moved nothing that counts: the journey keeper's
+        `marked("stone")` (it reads only the Generate's state; its timer asks whether the report is current, after any
+        run in flight) — never once the quit began (the next start's look asks the report half). A mark that moved what
+        counts moves `order_version`: `_store_moved` hears that one."""
+        if self.closing.is_set() or self.replan is None:
+            return
+        stone_marked = getattr(self.replan, "stone_marked", None)
+        if stone_marked is not None:
+            stone_marked(language)
 
     def _store_moved(self, language, versions):
         """(The library reader's thread.) The order or the pins moved, whoever moved them: one poke, one `changed`;

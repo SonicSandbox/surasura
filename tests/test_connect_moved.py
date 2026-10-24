@@ -152,6 +152,8 @@ def test_a_wrong_mark_never_hides_the_video_still_in_its_old_place(language, mon
         _look(store, language, store.add_source(b), full=True)
         os.rename(hidden, folder)
         assert any(r.get("moved_to") for _k, r in _records(store, item)), "the look marked it (the recorded case)"
+        was = [(os.path.normcase(p), size) for p, size in library.moved_videos(store, item)]
+        assert was == [(os.path.normcase(video), os.path.getsize(video))], "S3: the mark's video at its recorded size"
         shutil.rmtree(copy)                             # the other copy goes; the old folder not listed again yet
     finally:
         store.close()
@@ -366,3 +368,39 @@ def test_the_rows_say_the_moved_line_from_the_play_look_when_connect_says_nothin
     assert runner.MOVED.format(folder=folder) in ep.play_tip and "Find its folder" in ep.play_tip
     plain = view_rows._episode(item, None, "anime", {}, {}, set(), True, 20, playable={5: False})
     assert plain.moved is None and "Find its folder" not in plain.play_tip
+
+
+def test_a_record_naming_no_video_never_borrows_a_marked_origins_video(tmp_path):
+    # why (M1, the lookups with no paired path: beside the subtitle, the index): hato's or a link's record that names
+    # no video looks beside its subtitle and in the index, never at a source origin's marked video — that is another
+    # record's file; a source record's own marked video does stand in, in Connect and in ▶ alike
+    old = _video(str(tmp_path / "Old" / "Show - 01.mkv"))
+    was = ((old, os.path.getsize(old)),)
+    nothing = type("Index", (), {"find": lambda self, names, size=None: None})()
+    for producer, expected in (("hato", None), ("surasura", None), ("source", old)):
+        steps, record = _steps(), {"producer": producer}
+        steps.pairing = lambda lang, job, record=record: record
+        steps.subtitle = lambda lang, job: str(tmp_path / "Library" / "Show - 01.srt")
+        steps.moved_videos = lambda lang, job: was
+        steps._videos = lambda lang: nothing
+        got = steps.video("ja", {"id": 1, "item_id": 1})
+        assert (got is None) if expected is None else _same(got, expected), producer
+        path, _why = play._find("ja", "", "anime", record, {}, lambda *a, **k: None, library.Moved(None, was))
+        assert (path is None) if expected is None else _same(path, expected), "▶ agrees: " + producer
+
+
+def test_opening_reads_the_marks_only_for_a_source_record(monkeypatch):
+    # why (S19: update only what changed): ▶'s click reads a move's marks only where they can stand in — a source
+    # record's; hato's and a link's never take them, so no second store read for them
+    reads = []
+    for producer, marks in (("hato", 0), ("surasura", 0), ("source", 1)):
+        reads.clear()
+        record = {"producer": producer}
+
+        def pairings(language, ids, moved=None, record=record):
+            reads.append(moved is not None)
+            return {i: record for i in ids}
+        monkeypatch.setattr(play, "_pairings", pairings)
+        monkeypatch.setattr(play, "_find", lambda *a, **k: ("x", None))
+        assert play.to_open("ja", 7, "Library/a.srt", "anime") == ("x", None)
+        assert reads.count(True) == marks, producer

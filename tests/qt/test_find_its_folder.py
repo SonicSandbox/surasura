@@ -125,3 +125,21 @@ def test_a_look_that_recorded_videos_kicks_connect_only_while_an_episode_waits_o
         win._sources_looked({"sources": [], "language": win.language})
         wait_until(lambda: called, 0.5)
         assert called == []
+
+
+def test_an_episode_the_play_look_found_moved_offers_find_its_folder_without_connects_line(act, monkeypatch):
+    # why (S2): Connect off, a Chinese or a mined episode — ▶'s own look found its video left (`Episode.moved`) while
+    # its status names no folder: its ⋯ still offers *Find its folder…*, and the picker opens where the video was
+    _seed, win, _writer = act()
+    lst = lst_of(win)
+    row = lst.model().entries[row_with(lst, "no_media", None)][1]
+    ep = row.episodes[0]._replace(moved=OLD)
+    assert getattr(ep.status, "moved", None) is None
+    entries = win.mine.episode_entries(row, ep)
+    assert [e.name for e in entries] == ["ep-find-folder"] and OLD in entries[0].tip
+    from app.qt import settings_sources
+    monkeypatch.setattr(settings_sources, "why_not", lambda _shell: None)     # a library that takes a folder
+    asked = []
+    win.mine.pick_folder = lambda title, where: asked.append(where) or ""
+    assert win.mine.find_folder(ep) is False
+    assert asked == [os.path.dirname(OLD)], "the picker opens above where the video was"

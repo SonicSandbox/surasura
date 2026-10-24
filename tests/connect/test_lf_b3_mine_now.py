@@ -333,3 +333,18 @@ def test_an_ask_from_an_earlier_run_no_longer_keeps_its_cards_off_the_shelf(tmp_
     monkeypatch.setattr(steps, "_anki", lambda: object())
     steps._shelve("ja", ledger, [], 306, 300)
     assert seen["pinned"] == set()
+
+
+def test_a_videos_kick_stamps_the_videos_mark_and_a_plain_kick_stamps_none(monkeypatch, local_data):
+    # why: a wake that may have found episodes' videos says so in its stamp, and kick passes the flag on to it; a
+    # plain kick after it reads as a plain wake, never as videos (only a videos wake un-parks a job on No video)
+    from app import library_store
+    monkeypatch.setenv("SURASURA_CONNECT_KICK", "1")
+    monkeypatch.setattr(library_store, "update_staged", lambda looks=None: False)
+    monkeypatch.setattr(kick, "running", lambda: True)
+    steps = runner.Steps({})
+    assert steps.kicked() is False, "no kick since the run started"
+    assert kick.kick({"connect_enabled": True}, videos=True) is None, "nothing started: one runs already"
+    assert steps.kicked() == kick.VIDEOS, "a videos kick to a running Connect stamps the videos mark"
+    assert kick.kick({"connect_enabled": True}) is None, "nothing started: one runs already"
+    assert steps.kicked() is True, "a plain kick stamps a plain wake, not the videos mark"

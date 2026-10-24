@@ -134,10 +134,15 @@ def run_in_worker(fn, *args, then=None, failed=None, pool=None):
         _pending.discard(relay)
         relay.deleteLater()
 
+    relay.dropped = False                          # `drop_answers`: an answer already queued is dropped as it lands
+
+    def unless_dropped(callback):
+        return lambda value: None if relay.dropped else callback(value)
+
     if then is not None:
-        relay.done.connect(then)
+        relay.done.connect(unless_dropped(then))
     if failed is not None:
-        relay.failed.connect(failed)
+        relay.failed.connect(unless_dropped(failed))
     else:
         relay.failed.connect(lambda info: print(f"A background task failed: {info[1]}", file=sys.stderr))
     relay.done.connect(finish)
@@ -152,9 +157,9 @@ def drop_answers():
     back — never handed to a callback writing into a widget deleted by the time it lands (round 8: the journey's
     answer said into a bar already gone; a callback into a deleted widget raises at best, and can crash natively).
     One guard for every `run_in_worker` caller, never a check in each callback."""
-    for relay in list(_pending):
-        _pending.discard(relay)                     # its `finish` never runs now: never kept (row 55 A-13)
-        try:
+    for relay in list(_pending):                    # (kept in `_pending`: a parentless relay let go here would be
+        relay.dropped = True                        # deleted by whichever thread drops it last — the pool's; and an
+        try:                                        # answer already on the window's queue is past blockSignals)
             relay.blockSignals(True)
         except RuntimeError:
             pass

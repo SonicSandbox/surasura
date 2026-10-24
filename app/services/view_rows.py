@@ -189,7 +189,7 @@ STRINGS = {
                                                 "Mine anyway: in Needs you",
     # --- end P4.1 L2
     # a tooltip's action on a line of its own, as a bullet (G2.3 T1); never a "( … )" a line break can cut
-    "mark_missing": "No {word} on disk for {eps}\n• Link one, or mine the text on its own",
+    "mark_missing": "{eps}: {gone}",                  # R55-C (Sonic): Up Next's own words, which episodes first
     "mark_removed": "{Word} deleted after mining: {eps}\nThe cards keep their pictures and audio; only ▶ can't play it",
     "play": "{verb} {name} in your {player}\nThe {word} beside its subtitle file",
     "play_online": "Its video is online: opening it from here comes in a later build",
@@ -515,7 +515,7 @@ def status_of(eps, word, line_n):
     mark = None
     if missing:
         mark = Mark(len(missing), "warn" if top_missing else "faint",
-                    STRINGS["mark_missing"].format(word=word, eps=_eps_list(missing)))
+                    STRINGS["mark_missing"].format(eps=_eps_list(missing), gone=STRINGS["play_missing"]))
     elif removed:
         mark = Mark(len(removed), "faint", STRINGS["mark_removed"].format(Word=Word, eps=_eps_list(removed)))
     return st, mark

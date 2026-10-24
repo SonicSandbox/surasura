@@ -1468,7 +1468,7 @@ def test_LM11b_G1_a_video_and_epub_group_says_of_each_file_what_it_is():
     book = row.episodes[2]
     assert [e.media_word for e in row.episodes] == ["video", "video", "EPUB"]
     assert (book.label, book.status.label) == ("Part 1", "No EPUB") and "video" not in book.status.tip
-    assert row.mark is not None and row.mark.tip.startswith("No EPUB on disk for Part 1")
+    assert row.mark is not None and row.mark.tip.startswith("Part 1: ")
     assert "video" not in row.mark.tip
 
 
@@ -1479,7 +1479,16 @@ def test_LM11b_G1_a_video_and_epub_group_with_both_gone_uses_the_neutral_word_on
     assert row.status.label == "No media · 3" and "No media on disk" in row.status.tip
     assert [e.status.label for e in row.episodes] == ["No video", "No video", "No EPUB"]
     videos = vr.build(_mixed(missing=(0, 1)), WORKS, {"mine_line": 20}, pieces=_group()).rows[0]
-    assert videos.mark.tip.startswith("No video on disk for Ep 1, Ep 2")    # only its videos gone: their word
+    assert videos.mark.tip.startswith("Ep 1, Ep 2: ")                       # only its videos gone: them named
+
+
+def test_R55_C_a_missing_files_mark_says_what_happened_and_what_to_do_in_up_nexts_words():
+    """R55-C (Sonic, 2026-10-23: "Your lean is fine"): with ▶ gone for a missing file, its mark carries the words ▶'s
+    tip had — what happened and what to do, one string with Up Next's — never "No video on disk" for a file that was
+    there and went (a book's or a podcast's too)."""
+    row = vr.build(_mixed(missing=(0, 2)), WORKS, {"mine_line": 20}, pieces=_group()).rows[0]
+    assert row.mark.tip == "Ep 1, Part 1: " + vr.STRINGS["play_missing"]
+    assert "on disk" not in row.mark.tip and "Needs you" in row.mark.tip
 
 
 def test_LM11b_G1_a_cached_rows_fast_path_reads_the_type_guess_and_never_keeps_a_stale_one():

@@ -39,6 +39,8 @@ import shutil
 import subprocess
 import sys
 
+from app.connect import stopping
+
 TIMED, NOT_TIMED, RETRY = "timed", "not timed", "retry"
 TIMEOUT_S = 120             # a file without a usable index is read whole: 10–30 s over a network share (P0.2)
 CREATE_NO_WINDOW = 0x08000000
@@ -73,7 +75,7 @@ def check(pairing, video, subtitle, tsubasa=None, run=None, timeout=TIMEOUT_S, t
     """-> (TIMED, NOT_TIMED or RETRY, who decided: `hato` · `tsubasa` · `you` (`trust`) · None, the reason in plain
     words when not timed). RETRY: tsubasa didn't answer (timed out, couldn't start) — the runner asks again at its next
     look. `tsubasa`: its program (default: found on PATH); `run`: `subprocess.run`'s stand-in (tests); `trust`:
-    `connect_trust_timing`."""
+    `connect_trust_timing`. The job's *Stop* ends tsubasa within a second: `stopping.Stopped` (row 56)."""
     return fit(pairing, video, subtitle, tsubasa, run, timeout, trust)[:3]
 
 
@@ -131,14 +133,13 @@ def fit(pairing, video, subtitle, tsubasa=None, run=None, timeout=TIMEOUT_S, tru
             return TIMED, "you", None, 0.0
         return NOT_TIMED, None, NO_CHECKER, 0.0
     command = [exe, "--pair", video, subtitle, "--dry-run", "--json", "--no-results"]
-    options = {"creationflags": CREATE_NO_WINDOW} if sys.platform == "win32" and run is None else {}
     try:
-        done = (run or subprocess.run)(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                       stderr=subprocess.PIPE, timeout=timeout, **options)
+        stdout = _run(command, timeout) if run is None else run(
+            command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout).stdout
     except (OSError, subprocess.SubprocessError) as e:
         # no answer this time (a file read whole over a slow share, a program that wouldn't start): asked again
         return RETRY, "tsubasa", f"tsubasa couldn't check it this time ({type(e).__name__}); Connect asks again.", 0.0
-    answer = _answer(done.stdout)
+    answer = _answer(stdout)
     outcome = (answer or {}).get("outcome")
     segments = (answer or {}).get("segments")
     if outcome == "CONFIDENT" and isinstance(segments, list) and len(segments) == 1:
@@ -159,6 +160,20 @@ def fit(pairing, video, subtitle, tsubasa=None, run=None, timeout=TIMEOUT_S, tru
             f" tsubasa: {reason}" if isinstance(reason, str) and reason else "") + (
             f" If your subtitles are synced, turn on {TRUST_LABEL} in Settings → Anki & mining." if raw else ""), 0.0
     return NOT_TIMED, "tsubasa", "tsubasa gave no answer, so no cards.", 0.0
+
+
+def _run(command, timeout):
+    """tsubasa's stdout, waited for in slices (row 56, `stopping.wait`): the job's *Stop* ends it within a second and
+    raises `stopping.Stopped` (the job stops before its fit check); past `timeout` it is ended and TimeoutExpired
+    raised (asked again)."""
+    options = {"creationflags": CREATE_NO_WINDOW} if sys.platform == "win32" else {}
+    proc = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            **options)
+    try:
+        return stopping.wait(proc, timeout, look_up=True)[0]
+    except subprocess.TimeoutExpired:
+        stopping.end(proc)
+        raise
 
 
 def _number(value):

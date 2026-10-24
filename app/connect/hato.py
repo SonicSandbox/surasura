@@ -88,19 +88,10 @@ def find():
 
 
 def _stop(proc):
-    """A call past its time or its size stopped, with every process it started (a .cmd's child too)."""
-    if sys.platform == "win32":
-        try:
-            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], stdin=subprocess.DEVNULL,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30,
-                           creationflags=CREATE_NO_WINDOW)
-        except (OSError, subprocess.SubprocessError):
-            pass
-    try:
-        proc.kill()
-        proc.wait(timeout=5)
-    except (OSError, subprocess.SubprocessError):
-        pass
+    """A call past its time or its size stopped, with every process it started (a .cmd's child too): Connect's one
+    process-ender (`stopping.end`, row 56), its output left to `_run`'s own reader."""
+    from app.connect import stopping
+    stopping.end(proc, collect=False)
 
 
 def _run(argv, timeout):

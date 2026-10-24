@@ -10,12 +10,17 @@ generated per test:
   - its un-marking → the same (never "new files" mined around the Generate);
   - *Keep studying watched episodes* flipped either way → the same;
   - a stone and a Finished drag together → Generate "first" (the stricter wins);
-  - a Finished drag alone → today's re-plan now, Generate "after" (unchanged); so is a show finished with a watched
-    episode in it, or the watched episode alone: an episode that only leaves the set-aside files moves nothing ahead.
+  - a Finished drag alone → Generate "first" too (W-1b: Finished is set aside, as a watched episode is, so a drag in
+    moves the set-aside files); so is a show finished with a watched episode in it; the watched episode alone, finished
+    after its Generate, moves nothing a run reads (it stays set aside): the plan is current;
+  - Put back out of Finished, and its Undo → Generate "first" both ways;
+  - a set-aside file removed from the library → re-plan now, Generate "after" (it only leaves the set-aside files).
 
 What a wrong answer would cost: Connect ordering Anki (and suspending) from a list the mark already changed while the
 window waits for the Generate — the two disagreeing about the same cards.
 """
+import os
+
 import pytest
 
 from tests.connect.test_replan_current import _current, _generate, _library
@@ -69,25 +74,59 @@ def test_a_stone_with_a_finished_drag_generates_first(lib):
     _waits(store, language)
 
 
-def test_a_finished_drag_alone_still_re_plans_now(lib):
-    # why: a tier move keeps today's fast re-plan exactly — only a mark waits for the Generate
-    _root, store, _case, language = lib
-    store.finish([store.ids("now")[0]])
+def test_a_finished_drag_alone_generates_first_and_so_does_its_undo(lib):
+    # why: Finished is reference, like a watched episode (W-1b): a show dragged in joins the set-aside files, whose text
+    # is the name tables' evidence — mined or ordered from the old plan, a name it keeps whole could still be in pieces
+    root, store, case, language = lib
+    change = store.finish([store.ids("now")[0]])
+    _waits(store, language)
+    _generate(root, case, language)
+    assert _current(store, language).verdict is None
+    store.undo(change)
     got = _current(store, language)
-    assert got.verdict == ("replan-now", ("files-removed",)) and got.generate == "after", got.verdict
-    assert got.result is not None
+    assert got.verdict[0] == "generate-first" and got.generate == "first", got.verdict
+    assert got.result is None
+
+
+def test_put_back_out_of_finished_and_its_undo_each_generate_first(lib):
+    root, store, case, language = lib
+    episode = store.ids("now")[0]
+    store.finish([episode])
+    _generate(root, case, language)
+    change = store.put_back_finished([episode])
+    got = _current(store, language)
+    assert got.verdict[0] == "generate-first" and got.generate == "first" and got.result is None, got.verdict
+    _generate(root, case, language)
+    store.undo(change)
+    _waits(store, language)
 
 
 @pytest.mark.parametrize("finished", ["the show", "its watched episode"])
-def test_finishing_a_watched_episode_after_its_generate_still_re_plans_now(lib, finished):
-    # why: stone, Generate, then Finish is the usual order; the watched episode only leaves the set-aside files (it
-    # counted for nothing ahead already), so the Finished drag keeps today's fast re-plan
+def test_finishing_a_watched_episode_after_its_generate(lib, finished):
+    # why: stone, Generate, then Finish is the usual order; the watched episode stays set aside in Finished (nothing a
+    # run reads moves: the plan is current), while a show's counted episode joins the set-aside files (a Generate first)
     root, store, case, language = lib
     now = store.ids("now")
     store.set_watched([now[0]])
     _generate(root, case, language)
     store.finish([now[0], now[1]] if finished == "the show" else [now[0]])
+    if finished == "the show":
+        _waits(store, language)
+    else:
+        got = _current(store, language)
+        assert got.verdict is None and got.generate == "no", got.verdict
+
+
+def test_a_set_aside_file_removed_from_the_library_still_re_plans_now(lib):
+    # why: a file that only leaves the set-aside files moves nothing ahead of the learner: today's fast re-plan
+    root, store, case, language = lib
+    episode = store.ids("now")[0]
+    store.finish([episode])
+    _generate(root, case, language)
+    from app.path_utils import get_data_path
+    from tests.test_token_store_kept import _remove
+    data_dir = get_data_path(language)
+    _remove(store, data_dir, episode, os.path.join(data_dir, *store.item(episode)["rel_path"].split("/")))
     got = _current(store, language)
-    want = ("files-removed", "reference-removed") if finished == "the show" else ("reference-removed",)
-    assert got.verdict == ("replan-now", want) and got.generate == "after", got.verdict
+    assert got.verdict == ("replan-now", ("reference-removed",)) and got.generate == "after", got.verdict
     assert got.result is not None

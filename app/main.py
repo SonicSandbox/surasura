@@ -4743,11 +4743,10 @@ class MasterDashboardApp:
         A small dialog asks first whether to write where each sentence came from under it — off by
         default, since file names crowd the popup (each sentence's hover shows its file either way).
         The answer is remembered (`sentence_dictionary_source`)."""
-        from app.analyzer import resolve_found_files
-        from app.sentence_corpus import dictionary_title
+        from app.sentence_corpus import dictionary_title, has_sources
 
         lang = self.var_language.get()
-        if not resolve_found_files(lang, verbose=False):
+        if not has_sources(lang):
             messagebox.showwarning("No Content", "Add content to your library first — the dictionary is "
                                                  "built from your own files.")
             return

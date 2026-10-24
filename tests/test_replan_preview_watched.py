@@ -10,7 +10,8 @@ What these prove:
     no suspend — and asks for the Generate; the Generate's own re-order then steps those cards back;
   - its un-marking: the same — nothing written until the Generate, which brings the cards back;
   - a stone and a Finished drag in one settle: the stricter wins (nothing until the Generate);
-  - a Finished drag alone: today's fast re-order, at once (its cards step back before any Generate).
+  - a Finished drag alone, and its Undo: the same as a stone (W-1b: Finished is set aside, as a watched episode is) —
+    nothing written until the Generate, which steps the show's words back, and brings them back after the Undo.
 
 What a wrong answer would cost a learner: a mis-clicked stone suspends cards within seconds while its Undo waits for a
 whole Generate to bring them back.
@@ -129,16 +130,29 @@ def test_a_stone_and_a_finished_drag_in_one_settle_wait_for_the_generate(lib, mo
     assert not _suspended(fake, own)
 
 
-def test_a_finished_drag_alone_still_re_orders_at_once(lib, monkeypatch):
-    # why: tier moves keep today's fast re-order exactly — only a mark waits
+def test_a_finished_drag_alone_and_its_undo_each_wait_for_the_generate(lib, monkeypatch):
+    # why: Finished is reference like a watched episode (W-1b) — a drag in joins the set-aside files, the name tables'
+    # evidence, so it moves cards the way a stone does: after the Generate, both ways
     root, store = lib
     episode, own, fake = _acting(root, store, monkeypatch)
-    host, _lines = _host(generate=lambda reason: None)
+    asked = []
+    host, _lines = _host(generate=asked.append)
     with _patched(fake):
         host._job("catch-up")
-        store.finish([episode])
+        asked.clear()
+        change = store.finish([episode])
         plan = plan_engine.load(replan_preview.plan_path())
         verdict = host._verdict(plan, host._parts(host._settings(), store), store)
-        assert verdict == ("replan-now", ("files-removed",)), verdict
-        assert "suspend" in _job(fake, host)
-    assert _suspended(fake, own) == set(own), "Finished steps the show's words back at once, as before"
+        assert verdict == ("generate-first", "reference"), verdict
+        assert _job(fake, host) == [], "a Finished drag wrote to Anki before the Generate"
+        assert not _suspended(fake, own) and asked == ["generate-first: reference"], asked
+        _generate(root)
+        _job(fake, host, "generate")
+        assert _suspended(fake, own) == set(own), "after the Generate the show's words step back"
+
+        store.undo(change)
+        assert _job(fake, host) == [], "the Undo wrote to Anki before the Generate"
+        assert _suspended(fake, own) == set(own), "nothing moves back before the Generate either"
+        _generate(root)
+        _job(fake, host, "generate")
+    assert not _suspended(fake, own), "after the Generate the words and their cards are back"

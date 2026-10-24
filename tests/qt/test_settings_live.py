@@ -719,3 +719,21 @@ def test_no_token_store_yet_reads_no_numbers_and_makes_no_store():
     assert not live.os.path.exists(path)
     assert live.read_previews({"logic": {}}, "zh") is None
     assert not live.os.path.exists(path)                   # a look never makes one
+
+
+# --- round 8 row 45: every press reacts at once ------------------------------------------------------------------- #
+def test_export_paints_its_arc_before_its_readiness_is_read_and_greys_no_row(qapp, fakes, save_as, monkeypatch):
+    # Export greyed every Export row with no words while its readiness was read (a worker): now only the pressed
+    # row's arc turns, painted before the read is handed over.
+    from tests.qt.press_handover import HandOver, arc_turning
+    page, store, shell = make(fakes)
+    door = page.live.parts["export_frequency_list"]["export"]
+    page.scroll.ensureWidgetVisible(door)                  # (a press is on a button in view)
+    assert wait_until(lambda: not door.visibleRegion().isEmpty())
+    handed = HandOver(monkeypatch, door, lambda: arc_turning(door))
+    door.click()
+    read = handed.at("ready_to_export")
+    assert read.shown and read.painted >= 1
+    assert all(page.row(r).isEnabled() for r in live.EXPORTS)
+    assert wait_until(lambda: page.live.pop is not None) and not arc_turning(door)    # the pop is the next reaction
+    page.live.pop.close()

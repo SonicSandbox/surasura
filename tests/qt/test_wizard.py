@@ -1368,3 +1368,21 @@ def test_an_upgrader_with_anki_closed_is_offered_to_keep_what_came_over(make):
     wiz.page.entered()
     assert wait_until(lambda: not wiz._anki_looking, 2.0)
     assert wiz.page.answers() == {"how": "fresh", "decks": []}
+
+
+# --- round 8 row 45: every press reacts at once ------------------------------------------------------------------- #
+def test_check_again_paints_its_arc_before_anki_is_looked_at_until_the_answer(make, monkeypatch):
+    # *Check again* kept the last look (`self.anki`), so *Checking…* never painted: nothing showed until Anki
+    # answered. Its arc now turns from the press, painted before the look is handed over, until the look lands.
+    from tests.qt.press_handover import HandOver, arc_turning
+    api = FakeApi(anki={"open": False, "say": None, "decks": [], "preselected": []})
+    wiz, *_ = make(api=api)
+    wiz.next()
+    page = wiz.page
+    assert wait_until(lambda: wiz.anki is not None and not page.closed_part.isHidden() and wiz.settled())
+    assert wait_until(lambda: not page.btn_check.visibleRegion().isEmpty())
+    handed = HandOver(monkeypatch, page.btn_check, lambda: arc_turning(page.btn_check))
+    QTest.mouseClick(page.btn_check, Qt.MouseButton.LeftButton)
+    look = handed.at("anki_look")
+    assert look.shown and look.painted >= 1 and page.btn_check.isEnabled()
+    assert wait_until(lambda: not wiz._anki_looking and not arc_turning(page.btn_check))

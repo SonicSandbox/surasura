@@ -961,3 +961,24 @@ def test_W1_a_mark_that_counts_asks_the_indexer_forced_from_the_first_writer_and
     services.closing.set()
     second.on_counted()
     assert services.chores.calls == [True, True]
+
+
+# --- round 8 row 45 (P5): the language switch says so at once ----------------------------------------------------- #
+def test_a_language_switch_holds_switching_in_the_bar_from_before_its_worker_until_the_library_is_open(opened,
+                                                                                                        monkeypatch):
+    # Settings' language moved with no line while the library switched for seconds: "Switching to 中文…" is now held
+    # in the bar, painted before the switch is handed to its worker, and let go once the new library is open.
+    from tests.qt.press_handover import HandOver
+    ja, zh = migrated("ja"), migrated("zh")
+    services, win = opened()
+    assert wait_until(lambda: _state(win) == "full", 15)
+    words = shell.strings.LANGUAGE_SWITCHING.format(name="中文")
+    handed = HandOver(monkeypatch, win.bar_line, lambda: win.bar_line.full() == words)
+    _switch(services, "zh")
+    assert wait_until(lambda: any(h.name == "language_changed" for h in handed), 10)
+    switch = handed.at("language_changed")
+    assert switch.shown and switch.painted >= 1
+    assert _switched_to(win, services, "zh", 30)
+    assert wait_until(lambda: not win.presses.find("language").live() and win.bar_line.full() != words, 10)
+    ja.close()
+    zh.close()

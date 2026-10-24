@@ -315,3 +315,23 @@ def test_a_library_that_cant_be_written_greys_stop_read_again_and_add_with_the_r
     looks.publish()
     assert folders.lines[1].stop.isEnabled() and folders.lines[1].stop.toolTip() == folders.lines[1].tip
     assert row.add.toolTip() == S.SOURCES_ADD_TIP
+
+
+# --- round 8 row 45: every press reacts at once ------------------------------------------------------------------- #
+def test_stop_reading_paints_its_arc_before_the_looks_are_asked(window):
+    # *Stop reading* greyed with no words: its arc now turns, painted before the looks' worker is asked to stop.
+    from tests.qt.press_handover import Paints, arc_turning
+    looks = ActingLooks([_src(1, ANIME, 412), _src(2, DRAMA, 30)], hold=True)
+    win, page, row, folders = _open(window, looks)
+    assert wait_until(lambda: len(folders.lines) == 2 and folders.lines[2].stop.isVisible(), 10)
+    button = folders.lines[2].stop
+    paints, seen, stop = Paints(button), [], looks.stop
+
+    def asked(root_id, then=None, language=None):
+        seen.append((arc_turning(button), paints.n))
+        return stop(root_id, then, language)
+    looks.stop = asked
+    button.click()
+    assert seen and seen[0][0] and seen[0][1] >= 1
+    looks.held.pop()()
+    assert wait_until(lambda: 2 not in folders.lines and not win.presses.any_live(), 5)

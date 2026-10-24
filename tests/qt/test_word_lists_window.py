@@ -454,3 +454,18 @@ def test_an_unreadable_list_shows_its_words_and_says_it_cant_be_changed(main):
     with open(path, "rb") as f:
         assert f.read() == damaged
     QApplication.processEvents()
+
+
+# --- round 8 row 45: every press reacts at once ------------------------------------------------------------------- #
+def test_add_paints_its_arc_before_the_write_and_is_never_greyed(main, monkeypatch):
+    # *Add* greyed the list, the field and itself with no words while the write ran: now its arc turns, painted
+    # before the write is handed over, and nothing is greyed.
+    from tests.qt.press_handover import HandOver, arc_turning
+    w = _open(main)
+    handed = HandOver(monkeypatch, w.add_button, lambda: arc_turning(w.add_button))
+    w.add_field.setText("準備")
+    w.add_button.click()
+    write = handed.at("add")
+    assert write.shown and write.painted >= 1
+    assert w.add_button.isEnabled() and w.list.isEnabled() and w.add_field.isEnabled()
+    assert wait_until(lambda: "準備" in _rows(w) and not arc_turning(w.add_button))

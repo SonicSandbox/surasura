@@ -851,3 +851,22 @@ def test_migakus_replace_runs_in_the_language_it_was_asked_in(main, runs):
     assert wait_until(lambda: m.language == "zh")
     m.start(MIGAKU, "ja", "2,3,0,0")
     assert runs.calls[-1].argv[2:4] == ["--language", "ja"]
+
+
+# --- round 8 row 45: every press reacts at once ------------------------------------------------------------------- #
+def test_choose_paints_its_arc_before_the_export_is_read_and_a_press_meanwhile_reads_nothing(main, runs,
+                                                                                            monkeypatch):
+    # The file picked, *Choose…* said nothing until the export's words were read (a worker): its arc now turns from
+    # the pick, painted before the read is handed over, and goes when the question opens.
+    from tests.qt.press_handover import HandOver, arc_turning
+    _known(CURRENT)
+    monkeypatch.setattr(importers, "_pick_file", lambda *a: MIGAKU)
+    w = importers.open_migaku(main)
+    assert QTest.qWaitForWindowExposed(w)
+    handed = HandOver(monkeypatch, w.choose, lambda: arc_turning(w.choose))
+    w.choose.click()
+    read = handed.at("migaku_plan")
+    assert read.shown and read.painted >= 1 and w.choose.isEnabled()      # never greyed
+    w.choose.click()
+    assert [h.name for h in handed].count("migaku_plan") == 1
+    assert wait_until(lambda: _card(w) is not None) and not arc_turning(w.choose)

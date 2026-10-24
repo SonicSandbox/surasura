@@ -379,9 +379,9 @@ def test_A2_101_mine_them_too_stays_hidden_until_P41_sets_its_callable(world):
 
 def test_open_its_folder_opens_the_arrivals_own_folder(world, monkeypatch):
     from app import path_utils
-    from app.qt import windows
+    from app.qt import screens
     opened = []
-    monkeypatch.setattr(windows, "open_url", lambda url: opened.append(url) or True)
+    monkeypatch.setattr(screens, "open_with_system", opened.append)    # (a folder: the system's opener, on a worker)
     seed, win, writer = world()
     open_tray(win)
     row = tray_rows(win)[1]

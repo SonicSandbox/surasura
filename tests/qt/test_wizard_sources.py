@@ -485,7 +485,8 @@ def test_a_failure_after_connect_was_switched_on_still_tells_the_window(line, em
     _answer(ny, "first_cards")
     assert wait_until(lambda: win.said, 30)
     assert written == [("connect_enabled",)] and "held by another program" in win.said[-1]
-    assert service.read_answered("ja") == frozenset() and not ny._first_running
+    from app.qt import press as qpress
+    assert service.read_answered("ja") == frozenset() and not qpress.presses_of(win).any_live()   # its press ended
 
 
 def test_connect_not_turned_on_makes_no_cards_and_the_line_stays(line, empty_library):

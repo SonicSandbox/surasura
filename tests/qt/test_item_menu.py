@@ -1319,7 +1319,8 @@ def test_row28_enter_on_the_keyboards_episode_opens_the_same_menu_the_click_does
 def test_open_its_folder_opens_it_or_says_its_gone(world, monkeypatch):
     seed, win, _w = world()
     opened, said = [], []
-    monkeypatch.setattr(item_menu.windows, "open_url", lambda url: opened.append(url))
+    from app.qt import screens                                  # (a folder: the system's opener, on a worker)
+    monkeypatch.setattr(screens, "open_with_system", opened.append)
     monkeypatch.setattr(win.moves, "say", lambda text: said.append(text))
     row = rows_of(win)[4]
     win.items.menu_pick(row, "folder")

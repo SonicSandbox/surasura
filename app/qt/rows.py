@@ -455,24 +455,29 @@ def paint_pressed(p, rect, turning, radius=None):
     p.restore()
 
 
-def paint_marked(p, rect, turning):
+def paint_marked(p, rect, turning, place="button"):
     """A press's mark on a file's line (`RowsView.mark_ids`; round 8 row 45, IK-2: a menu's press marks what it acts
-    on): the accent arc (the spin's; `turning` its phase, None: still) in `rect`, the part it was pressed from. A
-    square part (⋯, an icon's ▶) gets its ground and the arc in its middle; a wide one (the hero's ▶ Play) the arc at
-    its right end, over its own ground."""
+    on): the accent arc (the spin's; `turning` its phase, None: still) at the part it was pressed from, `rect`.
+    `place`: "button" (⋯, an icon's ▶, a status: its ground, the arc in its middle), "middle" (a cover: a small round
+    ground in its middle, the picture left around it), "after" (just right of a link's words: the hero's ↗)."""
     r = QRectF(rect)
     side = min(r.height(), 14.0)
     p.save()
     p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-    if r.width() <= r.height() * 1.5:
+    if place == "after":
+        box = QRectF(r.right() + 4, r.center().y() - side / 2, side, side)
+    elif place == "button":
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(c("raised"))
         radius = theme.RADII["icon-button"]
         p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
         box = QRectF(r.center().x() - side / 2, r.center().y() - side / 2, side, side)
     else:
-        inset = (r.height() - side) / 2
-        box = QRectF(r.right() - inset - side, r.center().y() - side / 2, side, side)
+        ground = QRectF(r.center().x() - side, r.center().y() - side, 2 * side, 2 * side)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(c("raised"))
+        p.drawEllipse(ground)
+        box = QRectF(r.center().x() - side / 2, r.center().y() - side / 2, side, side)
     motion.spin_arc(p, box, turning, c("accent"))
     p.restore()
 
@@ -1681,7 +1686,12 @@ class RowDelegate(QStyledItemDelegate):
             part = self.view.marked_part(payload.episodes)                  # ... and a menu's press (IK-2)
             if part is not None:
                 g = self._hero_geometry(payload, rect, lines)
-                self._paint_marked(p, g.get(part) or g["more"])
+                if part in ("play", "cover"):                               # (▶ Play is wide: its cover turns)
+                    self._paint_marked(p, g["cover"], place="middle")
+                elif part == "journey" and g["journey"] is not None:
+                    self._paint_marked(p, g["journey"], place="after")
+                else:
+                    self._paint_marked(p, g["status"] if part in ACTION_NAMES else g.get(part) or g["more"])
             if focused:
                 self._focus_ring(p, box, theme.RADII["r-sm"])
         elif kind == HERO:
@@ -1694,6 +1704,9 @@ class RowDelegate(QStyledItemDelegate):
             pix, _box = self._closed(kind, payload, lines, rect, dpr, hovered or focused, p)   # W3.2 Q4: focus too
             if pix is not None:
                 p.drawPixmap(body.topLeft(), pix)
+            if self.view.marked_part(payload.episodes) is not None:    # round 8 row 45 (IK-2): its ⋯'s press
+                row_line = QRect(rect.left(), rect.top(), rect.width(), round(theme.SIZES["row"] * fz()))
+                self._paint_marked(p, self.finished_acts(self.columns(row_line, kind)["acts"])[1])
             if focused:
                 self._focus_ring(p, body, theme.RADII["r-sm"])
         elif kind == MONTH:
@@ -1750,7 +1763,9 @@ class RowDelegate(QStyledItemDelegate):
             if at is not None:                       # (the Mine now button's place, at rest too: it turns there)
                 self._paint_pressed(p, at, radius=theme.RADII["icon-button"])
         part = self.view.marked_part(row.episodes)   # round 8 row 45 (IK-2): a menu's press on this row, at its part
-        if part is not None:
+        if part == "cover":
+            self._paint_marked(p, self.line_geometry(row, slab)["art"], place="middle")
+        elif part is not None:
             at = next((r for name, r, *_rest in self.line_geometry(row, slab)["hover"] if name == part), None)
             if at is not None:
                 self._paint_marked(p, at)
@@ -1758,11 +1773,22 @@ class RowDelegate(QStyledItemDelegate):
             self._focus_ring(p, slab, theme.RADII["r-sm"])
         p.restore()
 
-    def _paint_marked(self, p, rect):
+    def _paint_marked(self, p, rect, place="button"):
         """Round 8 row 45 (IK-2): a press's arc on a file's line at `rect`; repainted alone as it turns."""
-        paint_marked(p, rect, self.view.turning())
+        paint_marked(p, rect, self.view.turning(), place=place)
         if p.device() is self.view.viewport():
-            self.view.turned_at(p.transform().mapRect(QRectF(rect)).toAlignedRect())
+            box = QRectF(rect)
+            if place == "after":
+                box = QRectF(box.right(), box.top(), box.height() + 8, box.height())
+            self.view.turned_at(p.transform().mapRect(box).toAlignedRect())
+
+    def _ep_marked(self, p, r, ep, dpr):
+        """A menu's press on an episode's own line (its row open): at its part — a status action at its pill."""
+        part, cols = self.view.marked[ep.id], self._episode_cols(r)
+        if part in ACTION_NAMES and ep.status is not None:
+            self._paint_marked(p, self._ep_pill(r, ep, dpr))
+        else:
+            self._paint_marked(p, cols.get(part) or cols["more"])
 
     def _paint_pressed(self, p, rect, radius=None):
         """Round 8 row 45: a pressed *Mine now*'s turning mark over `rect`; painted on the list, the view repaints that
@@ -2325,8 +2351,7 @@ class RowDelegate(QStyledItemDelegate):
                 if ep.id in self.view.pressed_ids and ep.status is not None:      # round 8 row 45: over its picture
                     self._paint_pressed(p, self._ep_pill(r, ep, dpr))
                 if ep.id in self.view.marked:                                      # ... a menu's press (IK-2)
-                    cols = self._episode_cols(r)
-                    self._paint_marked(p, cols.get(self.view.marked[ep.id]) or cols["more"])
+                    self._ep_marked(p, r, ep, dpr)
                 if on:
                     m, side = self._episode_cols(r)["more"], rl("anki-icon")
                     icon(p, "more", QRectF(m.center().x() - side / 2 + 0.5, m.center().y() - side / 2 + 0.5, side,
@@ -2339,8 +2364,7 @@ class RowDelegate(QStyledItemDelegate):
                 if ep.id in self.view.pressed_ids and ep.status is not None:
                     self._paint_pressed(p, self._ep_pill(r, ep, dpr))
                 if ep.id in self.view.marked:
-                    cols = self._episode_cols(r)
-                    self._paint_marked(p, cols.get(self.view.marked[ep.id]) or cols["more"])
+                    self._ep_marked(p, r, ep, dpr)
         for r, show in shows:                         # --- LM11b: each a picture of its own, as an episode's line
             if clip is not None and not clip.intersects(QRectF(r)):
                 continue

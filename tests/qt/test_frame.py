@@ -283,7 +283,7 @@ def test_the_journey_button_sits_beside_the_level_and_opens_the_journey_once_per
     _settle()
     assert calls == [False]
     gate.set()
-    assert wait_until(lambda: not world.win._journey_opening)
+    assert wait_until(lambda: not world.win.presses.find("journey:open").live())   # its press ended
     b.click()
     assert wait_until(lambda: len(calls) == 2)                      # the next click opens it again
 

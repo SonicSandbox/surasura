@@ -577,7 +577,7 @@ def test_read_only_mode_gives_every_reader_generates_list(language):
     ls.mark_damaged(ls.library_db_path(language, data_dir), "test")
     rel = f"HighPriority/{names(language)[49]}.srt"
     touch(data_dir, rel, names(language)[50])
-    generate = ls.read_only_schedule(language, data_dir, user_files_dir)
+    generate = ls.read_only_schedule(language, data_dir, user_files_dir, with_aside=True)   # as Generate reads it (W-1)
     schedule, _v = analyzer.read_library_schedule(language)
     assert schedule == generate
     listed = [os.path.relpath(p, data_dir).replace("\\", "/") for p, *_ in

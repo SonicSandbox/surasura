@@ -935,3 +935,29 @@ def test_a_window_with_no_connect_actions_gets_them_with_a_switchs_writer(opened
     assert win.mine is made
     ja.close()
     zh.close()
+
+
+def test_W1_a_mark_that_counts_asks_the_indexer_forced_from_the_first_writer_and_a_switchs(tmp_path):
+    """W-1 (K-W4): the writer's `on_counted` (a watched mark, its undo or the option moved what counts) is the chores'
+    forced index — for the writer the window starts with and for the one a language switch brings; nothing before
+    the duties are made, nothing once the quit began."""
+    class _Writer:
+        on_counted = None
+
+    class _Chores:
+        def __init__(self):
+            self.calls = []
+
+        def index(self, force=False):
+            self.calls.append(force)
+
+    first, second = _Writer(), _Writer()
+    services = shell.Services(writer=first)
+    first.on_counted()                                  # no duties yet: nothing to ask
+    services.chores = _Chores()
+    first.on_counted()
+    services._wire_writer(second)                       # (what `_switch_library` does with the new writer)
+    second.on_counted()
+    services.closing.set()
+    second.on_counted()
+    assert services.chores.calls == [True, True]

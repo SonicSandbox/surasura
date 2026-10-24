@@ -119,6 +119,7 @@ class Chores:
         self._maintain_timer = None
         self._last_index = float("-inf")
         self._indexing = False          # from the check until the indexer's end: never two
+        self._again = False             # a forced ask came while it ran: one more run at its end, never lost
         self._proc = None
         self._handed = {}               # the store copy's stat last handed to a helper, per language
         self._from_folders = {}         # when a fresh language's build from its folders was last asked, per language
@@ -173,11 +174,14 @@ class Chores:
 
     def index(self, force=False):
         """Keep the token store fresh (`_maybe_launch_indexer`): a stat-only check on the worker, then the indexer as
-        an `indexer` job when there is work. None when asked, else why not."""
+        an `indexer` job when there is work. None when asked, else why not. A forced ask while one runs (from its
+        check to its end) is *busy* but remembered: the check runs once more when that one ends, however many came."""
         if os.environ.get("SURASURA_NO_AUTOINDEX"):
             return "off"
         with self._lock:
             if self._closed or self._indexing:
+                if force and not self._closed:
+                    self._again = True
                 return "busy"
             now = self._clock()
             if not force and now - self._last_index < INDEX_EVERY:
@@ -274,9 +278,8 @@ class Chores:
                                      cancel=self._cancel_indexer)
                 submitted = True
         finally:
-            if not submitted:
-                with self._lock:
-                    self._indexing = False
+            if not submitted and self._not_busy():
+                self.index(force=True)
 
     def _run_indexer(self, job, language):
         """(The job's thread.) The indexer as a child process, to its end."""
@@ -306,7 +309,7 @@ class Chores:
                 log.close()
             with self._lock:
                 self._proc = None
-                self._indexing = False
+            again = self._not_busy()
             if returncode not in (0, None) and message is None:
                 message = f"Indexing ended (exit code {returncode})"
             job.finish(ok=returncode == 0, message=message, cancelled=job.cancelled)
@@ -318,11 +321,23 @@ class Chores:
                     callback(language)
                 except Exception as e:
                     print(f"Chores: an indexer listener failed: {e}")
+        if again:
+            self.index(force=True)
+
+    def _not_busy(self):
+        """The check found nothing, or the indexer ended: nothing busy. -> whether a forced ask came meanwhile (taken:
+        the caller asks once more)."""
+        with self._lock:
+            self._indexing = False
+            again, self._again = self._again and not self._closed, False
+        return again
 
     def _cancel_indexer(self, job):
-        """The registry's cancel (a quit, or a cancel before it started): the child stopped; nothing left busy."""
+        """The registry's cancel (a quit, or a cancel before it started): the child stopped; nothing left busy, and no
+        follow-up run (a forced ask remembered before the cancel goes with it)."""
         with self._lock:
             proc = self._proc
+            self._again = False
             if job.state == jobs_module.DONE:
                 self._indexing = False      # ended before it started: its thread never runs
         if proc is not None and proc.poll() is None:

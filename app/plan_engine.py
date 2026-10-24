@@ -296,9 +296,11 @@ def check(plan, language, engine, run_stamp, signature_parts, epoch=None, added=
       None                        the plan is the library's: re-plan any order of it;
       ("replan-now", parts)       only the known words ("known"), the word lists ("lists"), files that left the
                                   counted tiers ("files-removed") or files the engine added, none changed or removed
-                                  ("files-added") moved: re-plan now from the plan, then Generate;
+                                  ("files-added"), or set-aside files that only left ("reference-removed") moved:
+                                  re-plan now from the plan, then Generate;
       ("generate-first", reason)  anything else — another language, another app version, a run that didn't finish,
-                                  files added or changed, a setting: a Generate first;
+                                  files added or changed, a setting, the set-aside files ("reference", W-1: a
+                                  watched mark either way): a Generate first;
       ("stand-aside", reason)     the plan is current but the engine can't replay it exactly: coverage mode
                                   ("coverage"), i+1 mode ("i+1"), a row two set phrases share ("shared-phrase") or a
                                   weight that isn't a whole number ("weights") — the preview stands aside (D7)."""
@@ -367,10 +369,14 @@ def _what_moved(plan, parts, added=()):
             replan.append("files-removed")
         elif name == "files" and _only_added(plan, parts, added):
             replan.append("files-added")
+        elif name == "reference" and _only_left(plan, parts):
+            replan.append("reference-removed")
         else:
             return ("generate-first", name)
     if not replan:
         return ("generate-first", "signature")                     # the whole moved but no part: not ours to guess
+    if "reference-removed" in replan and "files-added" in replan:
+        return ("generate-first", "reference")                     # a set-aside file may be back among the counted
     return ("replan-now", tuple(replan))
 
 
@@ -384,6 +390,19 @@ def _only_removed(plan, parts):
     except Exception:
         return False
     return now < held
+
+
+def _only_left(plan, parts):
+    """True when the set-aside files now are some of the plan's, unchanged (W-1): one only left them — removed, or a
+    watched episode moved to Finished — so nothing ahead of the learner moved; one set aside, brought back or edited
+    is a Generate first."""
+    held = plan.header.get("reference")
+    if not isinstance(held, list):
+        return False                                              # a plan from before the set-aside digests
+    try:
+        return set(parts.get("reference") or ()) < set(held)      # none left: the part is gone
+    except Exception:
+        return False
 
 
 def _only_added(plan, parts, added):

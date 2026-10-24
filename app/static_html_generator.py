@@ -844,6 +844,61 @@ def _confirmed_keys(backlog, answers, listed=None, names=None):
             if word in words and pair.get("answer") == "yes" and pair.get("target")}
 
 
+def _journey_stones(data, file_order, stats_map, language):
+    """The journey's stones (Sonic 2026-10-23): the library store's watched marks (`library_store.read_watched_marks`,
+    one read) on the per-file report, matched by basename as the rest of it is. A counted file that is watched
+    (*Keep studying watched episodes* on) keeps its entry, plus `"watched": True` — every counted file of that name
+    watched. A watched file set aside (the option off) gets an entry of its own IN ITS PLACE in the library's order,
+    no counts: `{"filename", "watched": True, "aside": True, "words": [], "total_words": 0, "is_goal_content",
+    "unlisted": []}`, and its name in `file_order` at the same place (the inline Target Met order) — never one whose
+    name the report already shows (a counted file's, an earlier one's). No store, or no stone: nothing changes."""
+    try:
+        from app import analyzer
+        ls = analyzer._library_store()
+        marks = ls.read_watched_marks(language, analyzer.get_data_path(language)) if ls else None
+    except Exception as e:
+        print(f"Warning: could not read the watched marks for the report: {e}")
+        return
+    if not marks:
+        return
+    place, watched_name = {}, {}
+    for n, (rel, _tier, watched, counted) in enumerate(marks):
+        if counted:
+            name = os.path.basename(rel)
+            place.setdefault(name, n)
+            watched_name[name] = watched_name.get(name, True) and bool(watched)
+    for entry in data["progressive"] + data["completed_files"]:
+        if watched_name.get(entry["filename"]):
+            entry["watched"] = True
+    shown = set(stats_map) | {entry["filename"] for entry in data["progressive"]}
+    aside = []
+    for n, (rel, tier, watched, counted) in enumerate(marks):
+        name = os.path.basename(rel)
+        if watched and not counted and name not in shown:
+            shown.add(name)
+            aside.append((n, name, tier == "goal"))
+    if not aside:
+        return
+
+    def in_place(items, name_of, make):
+        # each set-aside file before the first item the library orders after it, the rest at the end
+        out, k = [], 0
+        for item in items:
+            n = place.get(name_of(item))
+            while n is not None and k < len(aside) and aside[k][0] < n:
+                out.append(make(*aside[k][1:]))
+                k += 1
+            out.append(item)
+        out.extend(make(*a[1:]) for a in aside[k:])
+        return out
+
+    data["progressive"] = in_place(data["progressive"], lambda entry: entry["filename"], lambda name, goal: {
+        "filename": name, "watched": True, "aside": True, "words": [], "total_words": 0, "is_goal_content": goal,
+        "unlisted": []})
+    if file_order:
+        file_order[:] = in_place(file_order, lambda name: name, lambda name, _goal: name)
+
+
 def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_browser=True):
     print(f"Generating static HTML (Theme: {theme})...")
     
@@ -962,6 +1017,10 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_brow
                 "filename": fname,
                 "stats": fstat
             })
+
+    # The journey's stones (Zen shows no journey: its report is what it was)
+    if theme not in ("Zen Mode", "zen-focus"):
+        _journey_stones(data, all_files_order, stats_map, target_lang)
 
     # Load Priority
     if os.path.exists(PRIORITY_CSV):

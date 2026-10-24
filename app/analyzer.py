@@ -4367,7 +4367,7 @@ def compute_render_signature(args):
         _s = {}
     _logic = _s.get("logic") if isinstance(_s.get("logic"), dict) else {}
     _markers = _logic.get("priority_markers")
-    return json.dumps([
+    _parts = [
         args.theme,
         int(args.zen_limit or 0),
         _s.get("source_display", "off"),
@@ -4409,7 +4409,29 @@ def compute_render_signature(args):
         # fix) was invisible to both fast paths: they reopened the old HTML until something else
         # forced a re-render. Hashing makes it a cheap re-render, never a re-analysis.
         _template_fingerprint(),
-    ])
+    ]
+    # The journey's stones (static_html_generator._journey_stones): a stone with *Keep studying watched episodes* on,
+    # or a set-aside episode moved between counted ones, changes no run input but the report shows it. A part only
+    # while a stone is on the list, so a library with none keeps the signature it had.
+    _stones = _stones_fingerprint(getattr(args, "language", "ja"))
+    if _stones:
+        _parts.append(_stones)
+    return json.dumps(_parts)
+
+
+def _stones_fingerprint(language):
+    """Short hash of the analysed tiers' watched items — each one's place in the library's order, path, tier and
+    whether it counts — read from the library store in one read (`library_store.read_watched_marks`); None with no
+    stone or no store (never raises)."""
+    ls = _library_store()
+    try:
+        marks = ls.read_watched_marks(language, get_data_path(language)) if ls else None
+    except Exception:
+        return None
+    if not marks:
+        return None
+    return hashlib.sha1(json.dumps([[n, rel, tier, counted] for n, (rel, tier, watched, counted) in enumerate(marks)
+                                    if watched], ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
 def _backlog_fingerprint(language, name="anki_backlog.json"):

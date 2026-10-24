@@ -3976,6 +3976,22 @@ class Store:
         return self.conn.execute(f"SELECT EXISTS (SELECT 1 FROM items WHERE {counts_sql(True)} AND NOT "
                                  f"{counts_sql(False)} AND availability != 'waiting')").fetchone()[0] == 1
 
+    def watched_marks(self):
+        """The journey's stones (Sonic 2026-10-23): [(rel_path, tier, watched, counts)] for every item of the analysed
+        tiers that Generate's list reads or sets aside (`schedule`'s rows: no video waiting for its subtitle), in its
+        order — once one of them is watched; [] while none is (the report then is what it was). `counts` is the one
+        rule's (`counts`): a watched item counts only with `keep_watched` on. Finished stays out (its own view). One
+        read transaction."""
+        with self._reading():
+            if not self.conn.execute(f"SELECT EXISTS (SELECT 1 FROM items WHERE tier IN ({_tiers_sql(ANALYSED)}) "
+                                     "AND watched != 0 AND availability != 'waiting')").fetchone()[0]:
+                return []
+            keep = self._keep_watched()
+            return [(rel, tier, 1 if watched else 0, counts(tier, watched, keep)) for tier in ANALYSED
+                    for rel, watched in self.conn.execute(
+                        "SELECT rel_path, watched FROM items WHERE tier = ? AND availability != 'waiting' "
+                        "ORDER BY ord, id", (tier,))]
+
     # --- the library's options (L2.2 04 §4.2): the Soon line, the mine line, New arrivals ------------ #
 
     def set_soon_line(self, n):
@@ -7793,6 +7809,38 @@ def read_auto_band(language, data_dir):
     except (sqlite3.Error, ValueError, TypeError):
         return None
     return value.get("band") if isinstance(value, dict) and isinstance(value.get("band"), str) else None
+
+
+def read_watched_marks(language, data_dir):
+    """The journey's stones for the report and its render signature: `Store.watched_marks` through a `mode=ro` look
+    (never built, synced or waited on, as `read_auto_band`), in one read transaction. None with no ready store (JSON
+    mode, the switch off, a damaged store, one made by a newer Surasura or read-only on a newer one's copy) or when it
+    can't be read now: the report is then what it was."""
+    if not STORE_LIVE:
+        return None
+    db_path = library_db_path(language, data_dir)
+    if not os.path.exists(db_path) or os.path.exists(damaged_marker(db_path)):
+        return None
+    import pathlib
+    try:
+        conn = sqlite3.connect(pathlib.Path(db_path).as_uri() + "?mode=ro", uri=True, timeout=1.0,
+                               isolation_level=None)
+    except sqlite3.Error:
+        return None
+    try:
+        conn.execute("PRAGMA query_only=1")
+        if (conn.execute("PRAGMA user_version").fetchone()[0] != STORE_SCHEMA
+                or conn.execute("SELECT 1 FROM meta WHERE key = 'newer_copy'").fetchone()
+                or conn.execute("SELECT value FROM meta WHERE key = 'migrated_at'").fetchone() is None):
+            return None
+        store = Store.__new__(Store)            # a reader on this connection, as `read_only_view`'s
+        store.db_path, store.language, store.data_dir, store.user_files_dir = db_path, language, data_dir, None
+        store.role, store.conn, store._depth, store._cmd, store._repairing = "reader", conn, 0, None, False
+        return store.watched_marks()
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
 
 
 def record_auto_band(language, data_dir, user_files_dir, band, words):

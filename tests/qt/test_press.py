@@ -356,10 +356,11 @@ def test_a_menu_press_holds_its_words_in_the_bar_and_runs_the_hairline_until_it_
     paints = Paints(win.bar_line)
     QApplication.processEvents()
     before = paints.n
-    handed.look = lambda: (win.bar_line.full(), win.bar_line.isVisible(), paints.n - before, win.progress.busy)
+    handed.look = lambda: (win.bar_arc.isVisible(), paints.n - before, win.progress.busy)
     p = qpress.run(None, "menu:find-videos", lambda: None, busy=strings.NEEDS_LOOKING, win=win)
-    text, shown, painted, hairline = handed[0].look
-    assert text == strings.NEEDS_LOOKING and shown and painted >= 1 and hairline is True
+    arc, painted, hairline = handed[0].look
+    assert arc and painted >= 1 and hairline is True          # the arc at the press; its words after 300 ms (IK-1)
+    assert wait_until(lambda: win.bar_line.full() == strings.NEEDS_LOOKING and win.bar_line.isVisible(), 3)
     win.say(strings.NEEDS_KNOWN_LEFT)                    # a line said meanwhile has its moment, then the held one is back
     assert win.bar_line.full() == strings.NEEDS_KNOWN_LEFT
     win._message_until = 0.0
@@ -368,6 +369,40 @@ def test_a_menu_press_holds_its_words_in_the_bar_and_runs_the_hairline_until_it_
     handed[0].then(None)
     assert p.state == service.DONE and not win.presses.any_live()
     assert win.bar_line.full() == getattr(win, "_status_line", "") and win.progress.busy is False
+
+
+def test_ik1_a_press_that_ends_within_300_ms_never_writes_its_words_to_the_bar(window, handed):
+    # IK-1 (Sonic: "words are exhausting"): Ctrl+Z's *Undoing…*, the Paste card's *Adding {name}…* flashed for one frame
+    # on every press. Words wait the toast's *· saving…* 300 ms; a press over by then shows only its arc.
+    import time
+    win = window
+    said = []
+    real = win.say
+    win.say = lambda text, hold=None: (said.append(text), real(text, hold=hold))[1]
+    handed.look = lambda: (win.bar_line.full(), win.bar_arc.isVisible())
+    qpress.run(None, "undo", lambda: None, busy=strings.NEEDS_LOOKING, win=win)
+    text, arc = handed[0].look
+    assert arc and text != strings.NEEDS_LOOKING                   # the arc at the press, no words
+    handed[0].then(None)                                            # it ended at once
+    t0 = time.monotonic()
+    wait_until(lambda: time.monotonic() - t0 > 0.45, 1)
+    assert strings.NEEDS_LOOKING not in said and win.bar_line.full() != strings.NEEDS_LOOKING
+
+
+def test_ik1_a_press_still_live_after_300_ms_shows_its_words_then_they_go_when_it_ends(window, handed):
+    import time
+    from app.services import moves
+    win = window
+    handed.look = lambda: (win.bar_line.full(), win.bar_arc.isVisible())
+    t0 = time.monotonic()
+    p = qpress.run(None, "paste:add", lambda: None, busy=strings.NEEDS_LOOKING, win=win)
+    text, arc = handed[0].look
+    assert arc and text != strings.NEEDS_LOOKING
+    assert wait_until(lambda: win.bar_line.full() == strings.NEEDS_LOOKING, 3)
+    assert time.monotonic() - t0 >= moves.SAVING_AFTER_S - 0.02   # not before the toast's own 300 ms
+    assert win.bar_arc.isVisible()
+    handed[0].then(None)
+    assert p.state == service.DONE and win.bar_line.full() != strings.NEEDS_LOOKING and not win.bar_arc.isVisible()
 
 
 def test_a_menu_press_without_words_says_nothing_in_the_bar_but_runs_the_hairline(window, handed):
@@ -510,7 +545,7 @@ def test_a_workers_report_moves_the_press_and_holds_a_named_wait_in_the_bar(wind
     r = qpress.relay(p, win)
     r.call(("wait", "Waiting for Anki…"))
     assert wait_until(lambda: p.state == service.WAITING, 5)
-    assert win.bar_line.full() == "Waiting for Anki…"
+    assert wait_until(lambda: win.bar_line.full() == "Waiting for Anki…", 3)     # once live 300 ms (IK-1)
     r.call(("run", "3 / 12"))
     assert wait_until(lambda: p.state == service.RUNNING, 5)
     assert win.bar_line.full() == "Marking… · 3 / 12"
@@ -554,7 +589,8 @@ def test_follow_maps_a_jobs_queued_waiting_running_cancelling_done_and_failed_on
     reg.views = (_job(jobs.RUNNING, job_id=8),)
     qpress.follow(q, reg, 8, win=win)
     win.bridge.jobs_changed.emit((_job(jobs.WAITING, reason="waits for Generate", job_id=8),))
-    assert q.state == service.WAITING and win.bar_line.full() == "waits for Generate"
+    assert q.state == service.WAITING
+    assert wait_until(lambda: win.bar_line.full() == "waits for Generate", 3)    # once live 300 ms (IK-1)
     win.bridge.jobs_changed.emit((_job(jobs.FAILED, message="Anki isn't open", job_id=8),))
     assert (q.state, q.words) == (service.FAILED, "Anki isn't open")
     r = qpress.begin(None, "known:sync:test3", win=win)
@@ -647,7 +683,8 @@ def test_a_secondary_windows_status_line_is_its_bar_held_words_and_its_corner_ar
     QApplication.processEvents()
     w.say("3 lists")
     p = qpress.run(None, "lists:add", lambda: None, busy="Adding…", win=w)
-    assert w.status.text() == "Adding…" and w.bar_arc.isVisible() and w.bar_arc.running
+    assert w.status.text() == "3 lists" and w.bar_arc.isVisible() and w.bar_arc.running     # the arc at once …
+    assert wait_until(lambda: w.status.text() == "Adding…", 3)                             # … its words at 300 ms
     assert p in [w.presses.find("lists:add")] and w.presses.any_live()
     arc = w.bar_arc.geometry()
     assert w.rect().contains(arc) and arc.right() > w.width() - 16 and arc.bottom() > w.height() - 16   # its corner

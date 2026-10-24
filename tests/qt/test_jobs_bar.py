@@ -1812,8 +1812,9 @@ def test_an_update_failures_logs_button_opens_the_folder_its_report_is_in(world,
     assert wait_until(lambda: len(cards.cards) == 1 and "didn't finish" in world.win.bar_failure.full())
     buttons = {b.text(): b for b in cards.cards[0].findChildren(QPushButton)}
     buttons[strings.BAR_LOGS].click()
-    if os.name == "nt":                                         # (one press at a time: the first open ends first)
-        assert wait_until(lambda: len(opened) == 1)
+    if os.name == "nt":                                         # (one press at a time: the first open ends first —
+        assert wait_until(lambda: len(opened) == 1)             # opened on its worker, ended back on the window's thread)
+    assert wait_until(lambda: not world.win.presses.any_live())
     assert wait_until(lambda: world.win.logs_button.isVisibleTo(world.win))
     world.win.logs_button.click()
     if os.name == "nt":

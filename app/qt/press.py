@@ -23,7 +23,10 @@ before it returns — and only then hands `fn` to the worker. Its answer ends th
 takes the arc off. Work that ends by itself elsewhere (a registry job the control follows) uses `begin` and `end`.
 Words only where they are meant: `busy` (None by default) is held in the bar's slot while the press is live
 (`ShellWindow.say(…, hold=)`) — a menu's press, whose menu has closed, or a wait worth naming; a failure's reason goes
-to the bar through the caller's `failed`. A control rebuilt while its press is live takes the arc again (`adopt`).
+to the bar through the caller's `failed`. **Words only once the press has been live `moves.SAVING_AFTER_S`** (IK-1,
+Sonic: "words are exhausting"; the toast's *· saving…* 300 ms): a press over sooner shows only its arc, never a
+one-frame flash of *Undoing…* — its held words, and a worker's wait or step, wait for that moment (`_say`). A control
+rebuilt while its press is live takes the arc again (`adopt`).
 
 **What a press marks** (Sonic's IK-2): a button press marks its button; a menu's press (`control` None: its menu has
 closed) marks the thing it acts on where it is on screen — `at`, an object with `on()` / `off()`: `row_mark` (a file's
@@ -39,12 +42,13 @@ import os
 import sys
 
 from PyQt6 import sip
-from PyQt6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, Qt
+from PyQt6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, Qt, QTimer
 from PyQt6.QtGui import QPainter, QTransform
 
 from app import theme
 from app.qt import bridge, motion, strings, style
 from app.services import jobs as jobs_module
+from app.services import moves
 from app.services import press as service
 
 ARC = 14                        # px: the arc's side (the spinner's own)
@@ -54,6 +58,7 @@ _painted = {}                   # Press -> (control or None, its mark or None: a
 #                                 "action" property)
 _at = {}                        # Press -> what it marks on screen (`at`: a row, a widget, the bar's arc)
 _busy = {}                      # Press -> the words it holds in the bar (`busy`), given back after a wait's reason
+_due = {}                       # Press -> [its words, or None] until it has been live `moves.SAVING_AFTER_S` (IK-1)
 
 
 def room(control, end=False):
@@ -118,12 +123,11 @@ def begin(control, key, busy=None, win=None, goes=False, at=None):
     _painted[p] = (control, None, _which(control))
     if control is None and at is None:
         at = bar_mark(win)
-    if busy and win is not None:
-        _busy[p] = busy
-        try:
-            _hold(win, key, busy)
-        except Exception as e:              # (A-10's rule: a window whose `say` holds nothing never holds the press)
-            print(f"A press's words weren't held: {e!r}", file=sys.stderr)
+    if win is not None:
+        due = _due[p] = [None]              # IK-1: its words wait until it has been live the toast's 300 ms
+        QTimer.singleShot(round(moves.SAVING_AFTER_S * 1000), lambda: _words_due(p, win, due))
+        if busy:
+            _busy[p] = due[0] = busy
     if at is not None:
         _at[p] = at
         try:
@@ -137,6 +141,31 @@ def begin(control, key, busy=None, win=None, goes=False, at=None):
         except Exception as e:              # A-10: an arc that couldn't be painted never holds the press — the work
             print(f"A press's arc wasn't painted: {e!r}", file=sys.stderr)    # still starts, and its end ends it
     return p
+
+
+def _words_due(p, win, due):
+    """The press has been live `moves.SAVING_AFTER_S` (IK-1): its words, if any, held from now. One that ended, or was
+    pressed again since (`due` no longer its), shows nothing."""
+    if _due.get(p) is not due:
+        return
+    del _due[p]
+    if p.live() and due[0]:
+        _say(p, win, due[0])
+
+
+def _say(p, win, words):
+    """`words` (None: none) held in the bar for the live press `p` — or kept for `_words_due` while it is new (IK-1)."""
+    due = _due.get(p)
+    if due is not None:
+        due[0] = words
+        return
+    try:
+        if words:
+            _hold(win, p.key, words)
+        elif not _gone(win) and hasattr(win, "unsay"):
+            win.unsay(p.key)
+    except Exception as e:                  # (A-10's rule: a window whose `say` holds nothing never holds the press)
+        print(f"A press's words weren't held: {e!r}", file=sys.stderr)
 
 
 def end(p, win=None, failed=False, why=None):
@@ -293,6 +322,7 @@ def _unmark(got):
 def _restore(p, win):
     got = _painted.pop(p, None)
     _busy.pop(p, None)
+    _due.pop(p, None)
     if not _gone(win) and hasattr(win, "unsay"):
         win.unsay(p.key)
     if got is not None:
@@ -498,13 +528,7 @@ def report(p, win, kind, value=None):
         words = _busy.get(p)
     else:
         return
-    try:
-        if words:
-            _hold(win, p.key, words)
-        elif not _gone(win) and hasattr(win, "unsay"):
-            win.unsay(p.key)
-    except Exception as e:
-        print(f"A press's words weren't held: {e!r}", file=sys.stderr)
+    _say(p, win, words)
 
 
 def relay(p, win=None):

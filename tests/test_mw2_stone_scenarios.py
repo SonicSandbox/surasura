@@ -12,7 +12,7 @@ exactly as a Finished show's does. What these prove, Connect on and off:
   - *Undo the last reorder* right after the stone's re-order puts every card's due, suspended state and tag back;
   - a word the episode shares with a file still counted keeps its card on the list, unsuspended;
   - a pinned episode's cards (*Study its cards first*) stay, stone or not: the pin is the later click;
-  - everything watched parks the same cards as everything Finished (one rule; today all of them).
+  - an empty list (every file watched, or every file Finished) puts no card away and says so (Sonic, M-W2-1).
 
 What a wrong answer would cost a learner: cards suspended for good after a stone and its Undo, or a pinned show's cards
 hidden by a watched mark.
@@ -168,26 +168,26 @@ def test_a_pinned_episode_keeps_its_cards_when_it_is_marked_watched(lib, monkeyp
     assert not [card_id for card_id in own if LATER in _tags(fake, card_id)]
 
 
-def test_everything_watched_steps_the_cards_back_exactly_as_everything_finished_does(lib, monkeypatch):
-    # An empty list (nothing counts): a stone is "done" the way Finished is, so every file watched parks the same cards
-    # as every file Finished (today: all of them, tagged and suspended; asked of Sonic 2026-10-23, M-W2-1). Whatever
-    # the rule becomes, the two must stay one rule.
+@pytest.mark.parametrize("how", ["watched", "finished"])
+def test_an_empty_list_puts_no_card_away_and_says_so(lib, monkeypatch, how):
+    # Sonic (2026-10-23, M-W2-1): an empty list puts nothing away. Every file watched, or every file Finished, leaves
+    # nothing that counts: Junban leaves Anki's cards as they are and says so — one rule for both. (One show watched
+    # or Finished still puts its words' cards away: the tests above.)
     root, store = lib
     _episode, _own, fake = _acting(root, store, monkeypatch)
-    host, _lines = _host(generate=lambda reason: None)
+    host, lines = _host(generate=lambda reason: None)
     everything = [i for tier in ("now", "soon", "goal") for i in store.ids(tier)]
     with _patched(fake):
         host._job("catch-up")
-        store.set_watched(everything)
-        assert _job(fake, host) == [], "the marks write nothing before their Generate"
-        _generate(root)
-        _job(fake, host, "generate")
-        watched = {card_id for card_id, card in fake.cards.items() if card["queue"] == -1}
-        store.set_watched(everything, False)
-        _generate(root)
-        _job(fake, host, "generate")
-        assert not [card_id for card_id, card in fake.cards.items() if card["queue"] == -1], "un-marked: all back"
-        store.finish(everything)
-        _job(fake, host)
-        finished = {card_id for card_id, card in fake.cards.items() if card["queue"] == -1}
-    assert watched == finished and finished, "every file watched parks what every file Finished parks"
+        before = _state(fake)
+        if how == "watched":
+            store.set_watched(everything)
+            assert _job(fake, host) == [], "the marks write nothing before their Generate"
+            _generate(root)
+            written = _job(fake, host, "generate")
+        else:
+            store.finish(everything)
+            written = _job(fake, host)
+    assert written == [], "an empty list writes nothing to Anki: no position, tag or suspend"
+    assert _state(fake) == before
+    assert reposition.EMPTY_LIST in lines, lines[-3:]

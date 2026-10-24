@@ -10131,14 +10131,23 @@ def _give_up(self, key, took, aside, by):
 
 def _edition_tail(self, back):
     """An edition's Undo: the files of the parts past the edition's end (`back`: their trash rows) — [their paths]
-    when each is still in the trash (a row put back already, or one with no file, needs none); None when one is gone
-    (its row deleted, its file purged)."""
+    when each is still in the trash (a row put back already, or one with no file, needs none) or already back at its
+    library name with no item holding it (moved back by an Undo killed before its restore: the restore finishes it);
+    None when one is gone (its row deleted, its file purged)."""
     rows = {r["id"]: r for r in self.trash_rows(back)} if back else {}
     if any(t not in rows for t in back):
         return None
-    files = [os.path.join(self.data_dir, _strip(r["trashed_path"])) for r in rows.values()
-             if not r["restored_at"] and r["trashed_path"]]
-    return files if all(os.path.isfile(f) for f in files) else None
+    files = []
+    for r in rows.values():
+        if r["restored_at"] or not r["trashed_path"]:
+            continue
+        f = os.path.join(self.data_dir, _strip(r["trashed_path"]))
+        if os.path.isfile(f):
+            files.append(f)
+        elif not (os.path.isfile(os.path.join(self.data_dir, _strip(r["rel_path"])))
+                  and self.item_id(r["rel_path"]) is None):
+            return None
+    return files
 
 
 def _store_edition_go(self, key):

@@ -379,10 +379,11 @@ class Services:
         every start; the start-light fix)."""
         return os.path.exists(os.path.join(path_utils.get_user_file("results"), JOURNEY_FILE))
 
-    def open_journey(self):
-        """(A worker.) *Your journey ↗*: the report as it is, never re-rendered (`open_report`). -> False with none."""
+    def open_journey(self, file=None):
+        """(A worker.) *Your journey ↗*: the report as it is, never re-rendered (`open_report`); `file` (the report's
+        name for an episode's file): opened on it. -> False with none."""
         from app import static_html_generator
-        return static_html_generator.open_report(app_mode=bool(self.settings.get().get("open_app_mode")))
+        return static_html_generator.open_report(app_mode=bool(self.settings.get().get("open_app_mode")), file=file)
 
     def level(self):
         """(A worker.) The level chip's (band, automatic) (`automation.level`)."""
@@ -638,6 +639,13 @@ class Services:
             if store.is_alive():
                 applog.log("shell", f"the store's close still runs after {QUIT_STORE_WAIT} s: quitting without it "
                                     f"(the store stays the truth; its copy is written at the next trigger)")
+
+
+def journey_file(episode):
+    """The journey's name for an episode's file — its basename, as the report names a file (`_journey_stones`) — or
+    None (no episode, or one with no file)."""
+    rel = getattr(episode, "rel_path", None) or ""
+    return os.path.basename(rel.replace("\\", "/")) or None
 
 
 # --- window_state.json (02 §2.1) ---------------------------------------------------------------------------------- #
@@ -1073,7 +1081,8 @@ class ShellWindow(QMainWindow):
             current = self.page_widgets.get("current")
             if hasattr(current, "on_journey"):                         # W3.1a S5: Up Next's *N new words ↗*
                 current.on_journey = lambda _row, episode: self._open_journey(      # (its row's ↗ turns, IK-2)
-                    asked=True, at=qpress.row_mark(current.list, [episode.id], "journey") if episode else None)
+                    asked=True, at=qpress.row_mark(current.list, [episode.id], "journey") if episode else None,
+                    episode=episode)
             # --- P4.1 L2 (row 4.1.14): a click on the top-20 line opens its setting
             if hasattr(current, "on_line"):
                 current.on_line = lambda kind: self.open_setting("mine_line") if kind == "top" else None
@@ -2291,12 +2300,14 @@ class ShellWindow(QMainWindow):
         if self.duties.pop.isVisible():
             self.duties.pop.place()
 
-    def _open_journey(self, *_checked, asked=False, control=None, at=None):
+    def _open_journey(self, *_checked, asked=False, control=None, at=None, episode=None):
         """*Journey ↗* in the header, *Open your journey ↗* in the pop — and (`asked`, W3.1a S5) Up Next's *N new
         words ↗*: with none on disk the entries go, and a click from Up Next says why in the bar. The only ways the
         journey opens: a Generate writes it and never opens it (laptop fixes). Round 8 row 45: one press for all four
         (`press.run`): `control`'s arc turns (or `at`: the row's ↗, ⋯; neither: the bar's) until the browser was
-        asked, and a click meanwhile, from any of them, does nothing. -> the press, or None."""
+        asked, and a click meanwhile, from any of them, does nothing. `episode` (Up Next's ↗, a row's ⋯ *See it in your
+        journey*; Sonic 2026-10-24): the report opens ON it, its panel shown (`journey_file`); every other way in opens
+        where the report opens by itself. -> the press, or None."""
         def done(opened):
             if opened:
                 return
@@ -2307,8 +2318,9 @@ class ShellWindow(QMainWindow):
 
         def failed(info):
             self.say(strings.JOURNEY_FAILED.format(why=info[0]))
-        return qpress.run(control, "journey:open", self.services.open_journey, then=done, failed=failed, win=self,
-                          at=at)
+        file = journey_file(episode)
+        return qpress.run(control, "journey:open", self.services.open_journey, *((file,) if file else ()), then=done,
+                          failed=failed, win=self, at=at)
 
     # the bar's marks
     def _show_automation(self, state):

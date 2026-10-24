@@ -141,3 +141,81 @@ def test_the_stone_sits_on_the_names_first_line_with_the_windows_light_edge():
     assert "display: inline" in after, "the name flows on the stone's line"
     svg = re.search(r"const JOURNEY_STONE_SVG = '([^']*)'", source).group(1)
     assert theme.GEM["sapphire"][2] in svg and 'fill="none"' in svg, "the window's light edge (theme.GEM sapphire)"
+
+
+# --- opened on one episode (Sonic 2026-10-24, the stones' choice 1: "if you use the option on an episode to 'see in
+# journey' it should open up that one") ------------------------------------------------------------------------------ #
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_window_opens_the_report_on_an_episode_through_a_small_page_that_keeps_its_name(language, tmp_path,
+                                                                                         monkeypatch):
+    # why: Windows drops a file URL's #fragment on its way to the default browser, so the name rides in a small page
+    # beside the report that replaces itself with the report at #file=<name>; every other way in opens the report as
+    # before, with no page written
+    from urllib.parse import unquote
+    from app import static_html_generator as gen
+    _settings(language)
+    store = migrated(language)
+    names = _now_names(store)
+    store.set_watched([store.ids("now")[1]])                 # a set-aside episode: the window can still open on it
+    _render(tmp_path, language, [n for n in names if n != names[1]])
+    store.close()
+    results = tmp_path / "results"
+    opened, as_app = [], []
+    monkeypatch.setattr(gen, "get_user_file", lambda name: str(results))
+    monkeypatch.setattr(gen.webbrowser, "open", opened.append)
+    monkeypatch.setattr(gen, "open_as_app", as_app.append)
+    assert gen.open_report() is True
+    assert opened == [f"file://{results / gen.REPORT_NAME}"] and not (results / gen.OPEN_ON_NAME).exists()
+    assert gen.open_report(file=names[1]) is True
+    page = results / gen.OPEN_ON_NAME
+    assert opened[-1] == f"file://{page}"
+    target = json.loads(re.search(r"location\.replace\((\"[^\"]*\")\)", page.read_text(encoding="utf-8")).group(1))
+    assert target.startswith(gen.REPORT_NAME + "#file=") and unquote(target.split("#file=", 1)[1]) == names[1]
+    assert names[1].encode("ascii", "ignore") != names[1].encode("utf-8"), "a real Japanese / Chinese name, quoted"
+    assert gen.open_report(app_mode=True, file=names[0]) is True and as_app == [str(page)]
+    assert unquote(page.read_text(encoding="utf-8").split("#file=", 1)[1].split('"', 1)[0]) == names[0]
+    (results / gen.REPORT_NAME).unlink()
+    assert gen.open_report(file=names[0]) is False, "no report: nothing opened"
+
+
+def test_the_report_opens_on_the_asked_file_whatever_it_is_and_else_on_the_first_still_to_study():
+    # why: the asked tab is clicked as it is — a set-aside one shows its Watched panel (its own onclick), a ✓ one its
+    # words; a name the report doesn't hold (an old report, a file not listed) falls back to the one rule
+    source = _template()
+    asked = _function(source, "fileFromHash")
+    assert "'#file='" in asked and "decodeURIComponent" in asked and "return '';" in asked
+    first = source[source.index("// Initial Load"):]
+    first = first[:first.index("}, 50);")]
+    assert "t.dataset.filename === asked" in first and "firstTab.click()" in first
+    assert first.index("fileFromHash()") < first.index("tabs.find(stillToStudy)") < first.index("tabs[0]")
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_with_keep_studying_on_the_watched_sentence_shows_nowhere(language, tmp_path):
+    # why (Sonic 2026-10-24, choice 2: "if we have a setting that makes them continue to study then it wouldn't show
+    # this correct?"): with the option on, a watched episode's words stay on the list, so "Watched: its words leave
+    # your list." must say so nowhere — the window's stone tip (leaves False) and the report (the normal tab with its
+    # count, never the set-aside panel) — while with it off both say it
+    from types import SimpleNamespace
+    from app.qt import rows
+    from app.services import view_rows
+    sentence = strings.ROWS_STONE_LEAVES.strip()
+    ep = SimpleNamespace(label="Ep 2", watched=True, waiting=False)
+    on = rows.stone_tip(ep, "", view_rows.mark_moves_list("now", ep, True))
+    off = rows.stone_tip(ep, "", view_rows.mark_moves_list("now", ep, False))
+    assert sentence not in on and sentence in off
+    _settings(language)
+    store = migrated(language)
+    store.set_library_options(keep_watched=True)
+    names = _now_names(store)
+    store.set_watched([store.ids("now")[1]])
+    data = _payload(_render(tmp_path, language, names))
+    store.close()
+    entry = [e for e in data["progressive"] if e["filename"] == names[1]]
+    assert len(entry) == 1 and entry[0]["watched"] is True and entry[0]["words"], "its normal tab, with its count"
+    assert not any(e.get("aside") for e in data["progressive"] + data["completed_files"]), \
+        "no set-aside entry: renderWatchedFile (the sentence's one place in the report) is never reached"
+    panel_calls = [m.start() for m in re.finditer(r"renderWatchedFile\(", _template())]
+    branch = _function(_template(), "createSidebarTab")
+    assert len(panel_calls) == 2 and "renderWatchedFile(fileData)" in branch[branch.index("if (fileData.aside)"):], \
+        "the panel is drawn only from the aside branch (and defined once)"

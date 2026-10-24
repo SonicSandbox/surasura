@@ -1832,6 +1832,22 @@ def test_the_menu_leaves_out_up_next_for_up_next_and_finished_for_splits_and_hat
     m.close()
 
 
+def test_see_it_in_your_journey_opens_the_report_on_the_rows_next_episode(world, monkeypatch):
+    # why (Sonic 2026-10-24, the stones' choice 1): "if you use the option on an episode to 'see in journey' it should
+    # open up that one" — the ⋯ hands the opener the row's next episode, whose file the report opens on
+    from app.qt import shell
+    seed, win, writer = world()
+    asked = []
+    monkeypatch.setattr(win, "_open_journey", lambda *a, **kw: asked.append(kw))
+    row = rows_of(win)[4]
+    win.moves.menu_pick(row, "journey")
+    ep = row.episodes[row.next_index]
+    assert asked[-1]["episode"] == ep and asked[-1]["asked"] is True
+    name = shell.journey_file(ep)
+    assert name and name == ep.rel_path.replace("\\", "/").rsplit("/", 1)[-1]
+    assert shell.journey_file(None) is None and shell.journey_file(ep._replace(rel_path=None)) is None
+
+
 def test_the_menus_moves_reach_the_writer(world):
     seed, win, writer = world(apply=False)
     rs = rows_of(win)

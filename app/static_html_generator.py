@@ -46,15 +46,30 @@ def open_as_app(file_path):
     webbrowser.open(url)
 
 
-def open_report(app_mode=False):
+OPEN_ON_NAME = "journey_open.html"     # the small page that opens the report on one file (`open_report(file=)`)
+
+
+def open_report(app_mode=False, file=None):
     """Open the ALREADY-generated report without re-rendering it — the fast path when neither the
     analysis nor the presentation (theme / Zen limit / window) changed. Returns False if there is
     no report on disk yet (caller should render instead). The file is looked for in `results` as it is now, where the
     window's journey check looks — never by the path fixed when this module was first imported (AD-4: a test's
-    earlier root, whose report then opened a browser in the next test)."""
+    earlier root, whose report then opened a browser in the next test).
+
+    `file` (a file's name as the report names it, its basename; Sonic 2026-10-24): open the report ON that file, its
+    tab clicked (`#file=<name>`, read as the report loads). Windows drops a file URL's fragment on its way to the
+    default browser, so a small page beside the report carries it (`OPEN_ON_NAME`, written again each time): it
+    replaces itself with the report at that fragment. A name the report doesn't hold opens where it opens by itself."""
     path = os.path.join(get_user_file("results"), REPORT_NAME)
     if not os.path.exists(path):
         return False
+    if file:
+        from urllib.parse import quote
+        target = json.dumps(f"{REPORT_NAME}#file={quote(file, safe='')}")     # (quoted: no < or / left in it)
+        path = os.path.join(os.path.dirname(path), OPEN_ON_NAME)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(f'<!DOCTYPE html><meta charset="utf-8"><title>Surasura</title>'
+                    f'<body style="background:#1e1e1e"><script>location.replace({target});</script>\n')
     if app_mode:
         open_as_app(path)
     else:

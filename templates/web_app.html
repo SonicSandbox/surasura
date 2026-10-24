@@ -2014,9 +2014,13 @@
                 // Open on the first file still to do. With the Completed section sitting at the top,
                 // a plain "first .file-tab" would open a finished file (and one inside a collapsed
                 // section at that). Falls back to the very first tab when everything is completed.
+                // `#file=<name>`: the window asked for one episode (its row's ⋯ *See it in your journey*, Up Next's ↗):
+                // its tab, whatever it is (a set-aside one opens its Watched panel); a name not here, the rule below.
                 setTimeout(() => {
                     const tabs = Array.from(tabsContainer.querySelectorAll('.file-tab'));
-                    const firstTab = tabs.find(stillToStudy) || tabs.find(t => !t.closest('#completed-section')) || tabs[0];
+                    const asked = fileFromHash();
+                    const firstTab = (asked && tabs.find(t => t.dataset.filename === asked))
+                        || tabs.find(stillToStudy) || tabs.find(t => !t.closest('#completed-section')) || tabs[0];
                     if (firstTab) {
                         firstTab.classList.add('active');
                         firstTab.click(); // Trigger load
@@ -2482,6 +2486,12 @@
                 if (bar) bar.after(fresh);
                 else listContainer.prepend(fresh);
             }
+        }
+
+        // The file the window asked the report to open on (`#file=<name>`, `open_report(file=)`), or ''.
+        function fileFromHash() {
+            if (!location.hash.startsWith('#file=')) return '';
+            try { return decodeURIComponent(location.hash.slice(6)); } catch (e) { return ''; }
         }
 
         // A file still to study: its words still count (never one set aside as watched) and it isn't ✓ in the browser.

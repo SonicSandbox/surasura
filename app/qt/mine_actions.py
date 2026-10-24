@@ -191,7 +191,7 @@ class MineActions(QObject):
             return None                              # round 8 row 45: asked already, still turning — asked once
         n = next(self._asks)
         for i, key in keys_of.items():               # ... each file a press (the hairline runs, painted now) …
-            qpress.begin(None, key, win=self.win)
+            qpress.begin(None, key, win=self.win, at=qpress.NOWHERE)     # (its pills are its mark: below)
             self._asked[i] = (n, key)
         for lst in self.lists:                       # ... and its pills turn now, painted before the ask is handed over
             lst.press_ids(ids)

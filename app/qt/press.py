@@ -25,10 +25,17 @@ Words only where they are meant: `busy` (None by default) is held in the bar's s
 (`ShellWindow.say(…, hold=)`) — a menu's press, whose menu has closed, or a wait worth naming; a failure's reason goes
 to the bar through the caller's `failed`. A control rebuilt while its press is live takes the arc again (`adopt`).
 
-Left for P3: a worker's report of a wait or a step (`relay`), a registry job followed (`follow`), another program
-opened off the window's thread (`open`).
+**What a press marks** (Sonic's IK-2): a button press marks its button; a menu's press (`control` None: its menu has
+closed) marks the thing it acts on where it is on screen — `at`, an object with `on()` / `off()`: `row_mark` (a file's
+line in a list, at the part it was pressed from: ⋯ or ▶), `widget_mark` (the arc over a cover, a tile) — and where
+nothing is on screen, the same accent arc in the bottom bar's slot, no words (`bar_mark`, the default; a secondary
+window's own, in its status line's corner). `NOWHERE`: the caller marks it itself (*Mine now*'s pills).
+
+A worker's report of a wait or a step reaches the press through `relay`; a registry job's states through `follow`;
+another program, a folder or a link opens through `open`, on a worker — never on the window's thread.
 """
 import math
+import os
 import sys
 
 from PyQt6 import sip
@@ -36,7 +43,8 @@ from PyQt6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF
 from PyQt6.QtGui import QPainter, QTransform
 
 from app import theme
-from app.qt import bridge, motion, style
+from app.qt import bridge, motion, strings, style
+from app.services import jobs as jobs_module
 from app.services import press as service
 
 ARC = 14                        # px: the arc's side (the spinner's own)
@@ -44,6 +52,8 @@ ARC = 14                        # px: the arc's side (the spinner's own)
 _loose = service.Presses()      # the presses of a control with no window
 _painted = {}                   # Press -> (control or None, its mark or None: an _Arc or an _Own, which control: its
 #                                 "action" property)
+_at = {}                        # Press -> what it marks on screen (`at`: a row, a widget, the bar's arc)
+_busy = {}                      # Press -> the words it holds in the bar (`busy`), given back after a wait's reason
 
 
 def room(control):
@@ -60,13 +70,14 @@ def presses_of(win):
     return got if got is not None else _loose
 
 
-def run(control, key, fn, *args, busy=None, then=None, failed=None, win=None, goes=False):
+def run(control, key, fn, *args, busy=None, then=None, failed=None, win=None, goes=False, at=None):
     """`control` pressed for the action `key` (an action's name with what it acts on): `fn(*args)` on a worker once
     the arc is painted; `then(value)` / `failed((exception, its traceback's text))` as `bridge.run_in_worker`'s, once
-    the arc is off. `control` None: a menu's press (the hairline runs; `busy`, if given, in the bar). `goes`: the
-    control goes when done (a Needs-you card's answer) — a press in the moment before it goes does nothing.
+    the arc is off. `control` None: a menu's press (the hairline runs; `busy`, if given, in the bar), marking `at` —
+    what it acts on, where it is on screen (`row_mark`, `widget_mark`; None: the bar's arc). `goes`: the control goes
+    when done (a Needs-you card's answer) — a press in the moment before it goes does nothing.
     -> the press, or None when it was live (or just done, `goes`): nothing started."""
-    p = begin(control, key, busy=busy, win=win, goes=goes)
+    p = begin(control, key, busy=busy, win=win, goes=goes, at=at)
     if p is None:
         return None
 
@@ -85,18 +96,27 @@ def run(control, key, fn, *args, busy=None, then=None, failed=None, win=None, go
     return p
 
 
-def begin(control, key, busy=None, win=None, goes=False):
-    """The press, painted now (the arc on `control`, `busy` held in the bar) and repainted before this returns — the
-    caller starts its work after. -> the press, or None when it was live (or just done, `goes`): start nothing."""
+def begin(control, key, busy=None, win=None, goes=False, at=None):
+    """The press, painted now (the arc on `control` — or, `control` None, `at`: the bar's arc when None —, `busy` held
+    in the bar) and repainted before this returns — the caller starts its work after. -> the press, or None when it
+    was live (or just done, `goes`): start nothing."""
     p = presses_of(win).get(key)
     if goes and p.state == service.DONE:
         return None
     if not p.press():
         return None
     _painted[p] = (control, None, _which(control))
+    if control is None and at is None:
+        at = bar_mark(win)
     if busy and win is not None:
-        win.say(busy, hold=key)
-        win.bar_line.repaint()
+        _busy[p] = busy
+        _hold(win, key, busy)
+    if at is not None:
+        _at[p] = at
+        try:
+            at.on()
+        except Exception as e:              # (A-10, as the arc's: a mark that couldn't be painted holds nothing)
+            print(f"A press's mark wasn't painted: {e!r}", file=sys.stderr)
     if control is not None:
         try:
             _paint(p, control)
@@ -254,7 +274,290 @@ def _unmark(got):
 
 def _restore(p, win):
     got = _painted.pop(p, None)
+    _busy.pop(p, None)
     if win is not None and not sip.isdeleted(win) and hasattr(win, "unsay"):
         win.unsay(p.key)
     if got is not None:
         _unmark(got[1])
+    at = _at.pop(p, None)
+    if at is not None:
+        try:
+            at.off()
+        except Exception as e:
+            print(f"A press's mark wasn't taken off: {e!r}", file=sys.stderr)
+
+
+def _line(win):
+    """The line a window's held words show in: the main window's bar, a secondary window's status line."""
+    return getattr(win, "bar_line", None) or getattr(win, "status", None)
+
+
+def _hold(win, key, words):
+    """`words` held in `win`'s line for the press `key`, painted before this returns."""
+    if win is None or sip.isdeleted(win) or not hasattr(win, "say"):
+        return
+    win.say(words, hold=key)
+    line = _line(win)
+    if line is not None and line.isVisible():
+        line.repaint()
+
+
+# --- what a menu's press marks (IK-2) ------------------------------------------------------------------------------ #
+class _Nowhere:
+    """A press whose caller marks the thing itself (`mine_actions`: the pills of every list)."""
+
+    def on(self):
+        pass
+
+    def off(self):
+        pass
+
+
+NOWHERE = _Nowhere()
+
+
+class BarArc(motion.Spinner):
+    """The accent arc in a window's bar slot while a menu's press with nothing of its own on screen is live, no words
+    (IK-2). The main window's is laid out at the right end of its bar's slot, hidden at rest (shown, the stretching
+    slot gives it its room: nothing moves); a secondary window's (`corner`) is laid over the bottom right corner of
+    its padding, beside its status line, taking no room. Shown while any of its marks is on."""
+
+    def __init__(self, parent, corner=False):
+        super().__init__("spin", parent, size=ARC)
+        self.marks = 0
+        self.corner = corner
+        self.setVisible(False)
+        if corner:
+            _Follow(parent, self, self._place)
+
+    def _place(self):
+        host = self.parentWidget()
+        m = host.layout().contentsMargins() if host.layout() is not None else None
+        right, bottom = (m.right(), m.bottom()) if m is not None else (ARC, ARC)
+        self.move(host.width() - round((right + ARC) / 2), host.height() - round((bottom + ARC) / 2))
+
+    def hold(self):
+        self.marks += 1
+        if self.marks == 1:
+            if self.corner:
+                self._place()
+            self.show()
+            self.raise_()
+            self.set_running(True)
+        self.repaint()
+
+    def let_go(self):
+        self.marks = max(0, self.marks - 1)
+        if not self.marks:
+            self.set_running(False)
+            self.hide()
+
+
+class _BarMark:
+    def __init__(self, arc):
+        self.arc = arc
+
+    def on(self):
+        if not sip.isdeleted(self.arc):
+            self.arc.hold()
+
+    def off(self):
+        if not sip.isdeleted(self.arc):
+            self.arc.let_go()
+
+
+def bar_mark(win):
+    """The accent arc in `win`'s bar slot (its `bar_arc`), no words: what a menu's press marks when nothing it acts on
+    is on screen — the default of `run` / `begin` / `open` with no control and no `at`. None: `win` has no bar."""
+    arc = getattr(win, "bar_arc", None) if win is not None else None
+    return _BarMark(arc) if arc is not None and not sip.isdeleted(arc) else None
+
+
+class _RowMark:
+    def __init__(self, view, ids, part):
+        self.view, self.ids, self.part = view, tuple(ids), part
+
+    def on(self):
+        self.view.mark_ids(self.ids, self.part)
+
+    def off(self):
+        if not sip.isdeleted(self.view):
+            self.view.unmark(self.ids)
+
+
+def row_mark(view, ids, part="more"):
+    """The files `ids` in the list `view` (a `RowsView`) marked while the press is live: the accent arc turns on each
+    one's line at `part` — where it was pressed from: "more" (its ⋯), "play" (▶) — on a closed row's line, the hero,
+    or the episode's own line when its row is open; painted before `on` returns (`RowsView.mark_ids`). The one rule
+    for a file's line, as *Mine now*'s turning pill is the one for an ask (`RowsView.press_ids`)."""
+    return _RowMark(view, ids, part)
+
+
+class _WidgetMark:
+    def __init__(self, widget):
+        self.widget, self.spinner = widget, None
+
+    def on(self):
+        w = self.widget
+        if sip.isdeleted(w):
+            return
+        s = self.spinner = motion.Spinner("spin", w, size=ARC)
+
+        def place():
+            s.move((w.width() - ARC) // 2, (w.height() - ARC) // 2)
+        place()
+        _Follow(w, s, place)
+        s.raise_()
+        s.show()
+        s.set_running(True)
+        w.repaint()
+
+    def off(self):
+        s, self.spinner = self.spinner, None
+        if s is not None and not sip.isdeleted(s):
+            s.set_running(False)
+            s.hide()
+            s.deleteLater()
+
+
+def widget_mark(widget):
+    """The accent arc over the middle of `widget` (a cover, a tile) while the press is live, taking no room of its
+    layout's; painted before `on` returns."""
+    return _WidgetMark(widget)
+
+
+# --- after the press: a worker's report, a registry job ---------------------------------------------------------- #
+def report(p, win, kind, value=None):
+    """A live press's next state, on the window's thread: `("wait", why)` — waiting, `why` held in the bar (a wait
+    worth naming); `("run", step)` — running, the press's own words (`busy`) with `step` held, or none; `("stopping",)`
+    — stopping. An answer after the press ended moves nothing."""
+    if not p.live():
+        return
+    if kind == "wait":
+        p.wait(value)
+        words = value or _busy.get(p)
+    elif kind == "run":
+        p.run(value)
+        words = " · ".join(w for w in (_busy.get(p), value) if w) or None
+    elif kind == "stopping":
+        p.stopping()
+        words = _busy.get(p)
+    else:
+        return
+    if words:
+        _hold(win, p.key, words)
+    elif win is not None and not sip.isdeleted(win) and hasattr(win, "unsay"):
+        win.unsay(p.key)
+
+
+def relay(p, win=None):
+    """A worker's word to the press `p`: `relay.call(("wait", why))`, `relay.call(("run", step))`,
+    `relay.call(("stopping",))`, from any thread, painted on the window's (`report`). Make it on the window's thread;
+    with `win` gone, a call is dropped."""
+    r = bridge.Relay(win if isinstance(win, QObject) else None)
+    r.said.connect(lambda what: report(p, win, *(what if isinstance(what, tuple) else (what,))))
+    return r
+
+
+def _jobs_signal(win):
+    for host in (win, getattr(win, "shell", None)):
+        heard = getattr(host, "bridge", None) if host is not None else None
+        if heard is not None and hasattr(heard, "jobs_changed"):
+            return heard.jobs_changed
+    return None
+
+
+def follow(p, registry, job_id, win=None):
+    """A registry job's states become the press `p`'s (the `importers._follow` pattern, shared): queued stays queued,
+    waiting — its reason held in the bar —, running — its step —, cancelling, then done, or failed with its message;
+    a job no longer listed has ended (done). Read now from `registry.snapshot()`, then from the window's
+    `bridge.jobs_changed` (a secondary window's: its main window's), on the window's thread. -> `p`."""
+    seen = {"job": False, "last": None}
+    signal = _jobs_signal(win)
+    hooked = []
+
+    def stop():
+        if hooked and signal is not None:
+            try:
+                signal.disconnect(hooked[0])
+            except (TypeError, RuntimeError):
+                pass
+        hooked.clear()
+
+    def look(views):
+        if not p.live():
+            stop()
+            return
+        view = next((v for v in views if v.id == job_id), None)
+        if view is None:
+            if seen["job"]:                         # it ended and was let go between two snapshots
+                stop()
+                end(p, win)
+            return
+        seen["job"] = True
+        state = (view.state, view.reason, view.progress)
+        if state == seen["last"]:
+            return
+        seen["last"] = state
+        if view.state == jobs_module.WAITING:
+            report(p, win, "wait", view.reason)
+        elif view.state == jobs_module.RUNNING:
+            pr = view.progress
+            step = None
+            if pr is not None and (pr.step or pr.total):
+                step = " ".join(x for x in (pr.step, f"{pr.done} / {pr.total}" if pr.total else None) if x)
+            report(p, win, "run", step)
+        elif view.state == jobs_module.CANCELLING:
+            report(p, win, "stopping")
+        elif view.state == jobs_module.DONE:
+            stop()
+            end(p, win)
+        elif view.state == jobs_module.FAILED:
+            stop()
+            end(p, win, failed=True, why=view.message)
+    if signal is not None:
+        hooked.append(look)
+        signal.connect(look)
+    look(registry.snapshot())
+    return p
+
+
+# --- another program, a folder, a link (the O and X classes) ------------------------------------------------------ #
+def open_now(target):
+    """(A worker.) `target` opened in the user's own program: a link or a folder through `windows.open_url` (IK-17:
+    `QDesktopServices`, COM set up around it), a file through `screens.open_with_system` (its own player). Raises
+    when it couldn't."""
+    from app.qt import screens, windows
+    if "://" in target or os.path.isdir(target):
+        if not windows.open_url(target):
+            raise OSError(strings.OPEN_NOT_OPENED)
+    else:
+        screens.open_with_system(target)
+
+
+def open(win, target, control=None, key=None, at=None, then=None, failed=None):  # noqa: A001 — the press's verb
+    """Another program, a folder or a link opened for a press: `control` marked (or `at`; neither: the bar's arc) and
+    painted, then the open on a worker — never on the window's thread — and done when the call returned. `target`: a
+    path or a link, or a callable worked out on that worker first (a lookup: `isdir`, the episode to play) returning
+    one, or None — nothing to open (`then(None)`). `then(target)` once opened; `failed(info)`, else the reason in the
+    bar (`OPEN_FAILED`). `key`: the press's (default `open:<target>`; a callable target needs its own).
+    -> the press, or None while it is live (a second press does nothing)."""
+    if key is None:
+        key = f"open:{target}"
+
+    def work():
+        t = target() if callable(target) else target
+        if not t:
+            return None
+        open_now(t)
+        return t
+
+    def broke(info):
+        if failed is not None:
+            failed(info)
+        elif win is not None and not sip.isdeleted(win) and hasattr(win, "say"):
+            name = target if isinstance(target, str) else ""
+            if "://" not in name:
+                name = os.path.basename(name.rstrip("\\/")) or name
+            win.say(strings.OPEN_FAILED.format(name=name or strings.OPEN_IT, why=info[0] if info else ""))
+    return run(control, key, work, then=then, failed=broke, win=win, at=at)

@@ -66,13 +66,9 @@ def open_with_system(path):
     ShellExecuteEx asks — an association that goes through COM (a Store app as the default player) can't start without
     it; balanced only when this call set it up (not reproduced with a Store-app player: none runs in tests)."""
     if sys.platform == "win32":
-        ole32 = _ole32()
-        mine = ole32.CoInitializeEx(None, 0x2 | 0x4) >= 0    # COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE
-        try:
+        from app.qt import windows
+        with windows.com_apartment(_ole32()):       # (the one COM rule: `windows.com_apartment`)
             os.startfile(path)                      # the user's own player
-        finally:
-            if mine:
-                ole32.CoUninitialize()
     else:
         QDesktopServices.openUrl(QUrl.fromLocalFile(path))
 

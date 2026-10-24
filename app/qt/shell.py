@@ -1670,7 +1670,9 @@ class ShellWindow(QMainWindow):
         self.bar_failure_cross.clicked.connect(self._failure_dismissed)
         self.bar_failure_cross.setVisible(False)
         row.addWidget(self.bar_failure_cross)
-        row.addStretch(0)                                 # the room left of the marks while the chip holds the slot
+        self.bar_arc = qpress.BarArc(footer)              # round 8 row 45 (IK-2): a menu's press with nothing of its own
+        row.addWidget(self.bar_arc)                       # ... on screen turns here, no words (hidden at rest)
+        row.addStretch(0)                                # the room left of the marks while the chip holds the slot
         # W31A-1: the re-order host's line and Connect's as quiet marks, their words in the hover, while they have any
         self.bar_replan = frame.QuietMark(strings.FOOT_REPLAN_MARK, strings.FOOT_REPLAN_NAME, footer)
         row.addWidget(self.bar_replan)

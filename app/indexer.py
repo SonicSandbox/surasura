@@ -44,12 +44,13 @@ def _content_files(data_dir, language=None):
 
 def token_store_lists(language, data_dir, files):
     """The token store's lists (L2.2 05 §5.10, 9b) for `files`, the run's list (`_content_files`, Generate's
-    found files): (counted, {"kept", "aside", "elsewhere", "forgotten"}) — `Store.reconcile(counted, ..., **more)`, and
-    `needs_reconcile`. With a ready library store: counted = `files` as given, then the store's counted items they lack
-    (a missing item keeps counting until the user decides); kept = `text_lists()`' kept list (Finished, New arrivals,
+    found files): (counted, {"kept", "aside", "elsewhere", "forgotten", "moved"}) — `Store.reconcile(counted, ...,
+    **more)`, and `needs_reconcile`. With a ready library store: counted = `files` as given, then the store's counted
+    items they lack (a missing item keeps counting until the user decides); kept = `text_lists()`' kept list (Finished, New arrivals,
     removed items whose text wasn't forgotten); aside = its set-aside list (W-1: watched episodes while *Keep studying
     watched episodes* is off — never summed, still the name tables' evidence), less what `files` names; elsewhere = {a
-    removed item's path: where its file is in the trash}; forgotten = the removed items whose sentences the user forgot.
+    removed item's path: where its file is in the trash}; forgotten = the removed items whose sentences the user forgot;
+    moved = the library store's move notes (`text_moved`, D7a), (old, old size, old mtime_ns, new, size, mtime_ns).
     Absolute paths under `data_dir`. Without one (JSON mode, no library store): (`files`, {}) — the kept and set-aside
     rows and their text left as they are. (None, None) when a library store is there but its lists can't be read now
     (busy, read-only, an error): don't reconcile — `files` lacks its missing items, which would leave the token store
@@ -68,7 +69,7 @@ def token_store_lists(language, data_dir, files):
             return None, None
         with store:
             counted_rel, kept_rel, aside_rel = store.text_lists()
-            trashed, forgotten = store.text_elsewhere(), store.text_forgotten()
+            trashed, forgotten, moved = store.text_elsewhere(), store.text_forgotten(), store.text_moved()
     except Exception:
         return None, None
 
@@ -86,7 +87,9 @@ def token_store_lists(language, data_dir, files):
     aside = [full(rel) for rel in aside_rel if _norm(full(rel)) not in seen]
     return counted, {"kept": [full(rel) for rel in kept_rel], "aside": aside,
                      "elsewhere": {full(rel): full(where) for rel, where in trashed.items()},
-                     "forgotten": [full(rel) for rel in forgotten]}
+                     "forgotten": [full(rel) for rel in forgotten],
+                     "moved": [(full(old), old_size, old_ns, full(new), size, ns)
+                               for old, old_size, old_ns, new, size, ns in moved]}
 
 
 def run_lists(language, data_dir, files, store):

@@ -916,3 +916,156 @@ def test_a_file_that_came_back_changed_then_left_with_its_file_gone_keeps_its_ne
     text, _facts, mtime, size = _kept_text(store).get(ti._norm(x))
     assert (mtime, size) == signature and text != first[0]
     store.close()
+
+
+# --------------------------------------------------------------------------- #
+# D7a (moves M2): a file the library store saw renamed or relinked keeps its row
+# --------------------------------------------------------------------------- #
+def _rel(data_dir, path):
+    return os.path.relpath(path, data_dir).replace("\\", "/")
+
+
+def _indexed(language, store, data_dir, files, tok):
+    """A reconcile as the indexer runs it: the library store's lists (and its move notes) for `files`."""
+    counted, more = indexer.token_store_lists(language, data_dir, files)
+    tokens = ti.open_store(language)
+    tokens.reconcile(counted, tok, data_dir=data_dir, **more)
+    return tokens, counted, more
+
+
+def _renamed_in_its_folder(path, suffix="_改名"):
+    stem, ext = os.path.splitext(path)
+    new = stem + suffix + ext
+    os.replace(path, new)                                              # a rename keeps the modified time
+    return new
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_file_renamed_in_its_folder_takes_its_row_never_read_again(language):
+    """D7a: the token store followed a move only by (name, size, time), so a file renamed in its folder (the library
+    store's rule 2, which kept its item) was tokenized again and its old row dropped. The library store's proof is
+    handed on (`text_moved`): the renamed file takes its row, nothing is read, the counts are the same."""
+    store, data_dir, ids = _library(language)
+    files = list(ids)
+    tok = _counting(language)
+    tokens, _c, _m = _indexed(language, store, data_dir, files, tok)
+    old = files[2]
+    before = (tokens.word_counts(), tokens.total_tokens(), tokens.file_tokens(old), tokens.names_tables())
+    tokens.close()
+    new = _renamed_in_its_folder(old)
+    assert store.sync_disk()["renamed"] == [ids[old]]
+    tok.calls.clear()
+    tokens, counted, more = _indexed(language, store, data_dir, [new if p == old else p for p in files], tok)
+    try:
+        assert tok.calls == [], "the renamed file takes its row: never tokenized again"
+        assert (tokens.word_counts(), tokens.total_tokens(), tokens.file_tokens(new), tokens.names_tables()) == before
+        assert tokens.file_tokens(old) == [] and ti._norm(new) in tokens.counted_files()
+        assert tokens.needs_reconcile(counted, **more) is False
+    finally:
+        tokens.close()
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_move_note_for_a_file_that_changed_since_is_read_again(language):
+    """D7a's guard: the note names the file as the library store saw it (size and time). A file edited after the
+    rename is another file's text — it is read again, never handed the old row's tokens."""
+    store, data_dir, ids = _library(language)
+    files = list(ids)
+    tok = _counting(language)
+    _indexed(language, store, data_dir, files, tok)[0].close()
+    old = files[3]
+    new = _renamed_in_its_folder(old)
+    assert store.sync_disk()["renamed"] == [ids[old]]
+    with open(new, "a", encoding="utf-8") as f:
+        f.write("後から書き足した一行です。\n" if language == "ja" else "后来又加了一行。\n")
+    tok.calls.clear()
+    tokens, _c, _m = _indexed(language, store, data_dir, [new if p == old else p for p in files], tok)
+    try:
+        assert tok.calls == [("file", ti._norm(new))], "changed since the note: read as it is"
+        assert tokens.file_tokens(old) == []
+    finally:
+        tokens.close()
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_move_note_whose_old_path_is_listed_again_is_never_used(language):
+    """D7a's guard: a note is used only while its old path is leaving. A file back at the old path (listed again)
+    keeps the old row; the renamed one is read as a file of its own — one row never serves two paths."""
+    store, data_dir, ids = _library(language)
+    files = list(ids)
+    tok = _counting(language)
+    _indexed(language, store, data_dir, files, tok)[0].close()
+    old = files[0]
+    before = None
+    with ti.open_store(language) as tokens:
+        before = tokens.file_tokens(old)
+    new = _renamed_in_its_folder(old)
+    assert store.sync_disk()["renamed"] == [ids[old]]
+    shutil.copy2(new, old)                                             # the same text back at the old path
+    tok.calls.clear()
+    tokens, _c, _m = _indexed(language, store, data_dir, files[:1] + [new] + files[1:], tok)
+    try:
+        assert tok.calls == [("file", ti._norm(new))]
+        assert tokens.file_tokens(old) == before and tokens.file_tokens(new) == before
+    finally:
+        tokens.close()
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("same_file", [True, False])
+def test_a_relinked_file_keeps_its_row(language, same_file):
+    """D7a for *Link a file* (`relink`): a missing item linked to its file under another name keeps its row, never
+    read again. Linked to another file (another size), the note is never written: that file is read as it is."""
+    store, data_dir, ids = _library(language)
+    files = list(ids)
+    tok = _counting(language)
+    _indexed(language, store, data_dir, files, tok)[0].close()
+    old = files[4]
+    held = os.path.join(os.environ["SURASURA_TEST_ROOT"], "clipboard", os.path.basename(old))
+    os.makedirs(os.path.dirname(held), exist_ok=True)
+    os.replace(old, held)
+    store.sync_disk()
+    assert store.item(ids[old])["availability"] == "missing"
+    new = os.path.join(data_dir, "GoalContent", "別の物語", "見つけた" + os.path.splitext(old)[1])
+    os.makedirs(os.path.dirname(new), exist_ok=True)
+    os.replace(held, new)
+    if not same_file:
+        with open(new, "a", encoding="utf-8") as f:
+            f.write("別の版です。\n" if language == "ja" else "另一个版本。\n")
+    assert store.relink(ids[old], new) is not None
+    tok.calls.clear()
+    tokens, _c, _m = _indexed(language, store, data_dir, [new if p == old else p for p in files], tok)
+    try:
+        assert tok.calls == ([] if same_file else [("file", ti._norm(new))])
+        assert tokens.file_tokens(old) == [] and ti._norm(new) in tokens.counted_files()
+    finally:
+        tokens.close()
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_indexer_hands_the_move_notes_through(language):
+    """D7a end to end: the background indexer reads the library store's move notes (`token_store_lists`' "moved",
+    absolute paths) and hands them to the reconcile — a rename in its folder costs the indexer no tokenizer call."""
+    store, data_dir, ids = _library(language)
+    files = list(ids)
+    tok = _counting(language)
+    with patch.object(ti, "make_tokenizer", lambda *a, **kw: tok):
+        _run_indexer(language)
+        old = files[5]
+        new = _renamed_in_its_folder(old)
+        assert store.sync_disk()["renamed"] == [ids[old]]
+        counted, more = indexer.token_store_lists(language, data_dir, [new if p == old else p for p in files])
+        assert more["moved"] and more["moved"][-1][0] == os.path.join(data_dir, *_rel(data_dir, old).split("/"))
+        assert more["moved"][-1][3] == os.path.join(data_dir, *_rel(data_dir, new).split("/"))
+        tok.calls.clear()
+        _run_indexer(language)
+    try:
+        assert tok.calls == [], "the indexer's pass reads nothing"
+        with ti.open_store(language) as tokens:
+            assert ti._norm(new) in tokens.counted_files() and tokens.file_tokens(old) == []
+    finally:
+        store.close()

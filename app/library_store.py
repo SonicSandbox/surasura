@@ -4576,6 +4576,8 @@ class Store:
             change = self._change(cmd, "relink")
             change.relink = {"id": item_id, "old": list(row[:5]), "new": rel}
             self._repoint(item_id, rel, st.st_size, st.st_mtime_ns)
+            if row[2] == st.st_size and _same_time(row[3], st.st_mtime_ns):   # D7a: its file, by rule 2b's proof
+                _note_moves(self, [(row[0], row[2], row[3], rel, st.st_size, st.st_mtime_ns)])
             self._drop_ask(rel)
             cmd.touch({row[5]}, availability=row[4] != "available")
             return change
@@ -4666,6 +4668,14 @@ class Store:
             return {r[0]: r[1] for r in self.conn.execute(
                 "SELECT rel_path, trashed_path FROM trash WHERE restored_at IS NULL AND text_forgotten = 0 "
                 "AND trashed_path IS NOT NULL ORDER BY id")}
+
+    def text_moved(self):
+        """D7a: the moves this store proved — [(old rel, old size, old mtime_ns, new rel, size, mtime_ns)], oldest
+        first (`moved_paths`, the last MOVED_PATHS_KEEP): the token store's hint, so a file the sync followed under
+        another name (rule 2, 2b) or *Link a file* found keeps its tokenized row (`token_index.Store.reconcile`'s
+        `moved`). One read transaction."""
+        with self._reading():
+            return [tuple(m) for m in _moved_paths(self)]
 
     def text_forgotten(self):
         """The paths (relative to data/<lang>) of removed items whose sentences the user forgot (`forget_text`): the
@@ -7188,6 +7198,29 @@ def _lost_by_size(store, sizes, seen_ids):
     return out
 
 
+MOVED_PATHS_KEEP = 500                 # D7a: the move notes kept (a note older than the index's next pass is spent)
+
+
+def _moved_paths(store):
+    """D7a's notes (`meta.moved_paths`): [[old rel, old size, old mtime_ns, new rel, size, mtime_ns]], oldest first.
+    Never in the copy: a note lost costs one file read, never a count."""
+    row = store.conn.execute("SELECT value FROM meta WHERE key = 'moved_paths'").fetchone()
+    try:
+        notes = json.loads(row[0]) if row else []
+    except ValueError:
+        return []
+    return [n for n in notes if isinstance(n, list) and len(n) == 6] if isinstance(notes, list) else []
+
+
+def _note_moves(store, moves):
+    """D7a, inside the write that follows the moves (the sync's rule 1 / 2 / 2b, `relink` — never `_repoint`, which an
+    edition switch also calls for new bytes): each [old rel, old size, old mtime_ns, new rel, size, mtime_ns] the token
+    store may re-key by (its row is the old file's, the new file is still that size and time)."""
+    if moves:
+        notes = _moved_paths(store) + [list(m) for m in moves]
+        store._set_meta({"moved_paths": _dumps(notes[-MOVED_PATHS_KEEP:])})
+
+
 def _rename_asks(store):
     """9a's open questions (`meta.rename_asks`): [{rel, size, mtime_ns, candidates}], bookkeeping the copy carries."""
     row = store.conn.execute("SELECT value FROM meta WHERE key = 'rename_asks'").fetchone()
@@ -7253,11 +7286,13 @@ def _store_sync_disk(self, walk=None, folders=None, as_new=()):
                             "copy_dirty": self._meta().get("copy_dirty", 0) + 1})
         exists = lambda rel: os.path.exists(os.path.join(self.data_dir, _strip(rel)))
         rows = self._rows([r[0] for r in delta["renames"]] + [r[0] for r in delta["respell"]] + delta["went"] + delta["came"])
-        tiers, found = set(), []
+        tiers, found, moves = set(), [], []
+        stamp = lambda item_id: self.conn.execute("SELECT size, mtime_ns FROM items WHERE id = ?", (item_id,)).fetchone()
         for item_id, rel, size, mtime_ns in delta["renames"]:
             if item_id not in rows or not exists(rel) or exists(rows[item_id][5]) or self.conn.execute(
                     "SELECT 1 FROM items WHERE rel_key = ?", (path_key(rel),)).fetchone():
                 continue                                           # a stale walk: leave it to the next sync
+            moves.append((rows[item_id][5], *stamp(item_id), rel, size, mtime_ns))
             self._repoint(item_id, rel, size, mtime_ns)
             tiers.add(rows[item_id][1])
             summary["renamed"].append(item_id)
@@ -7265,9 +7300,12 @@ def _store_sync_disk(self, walk=None, folders=None, as_new=()):
                 found.append(item_id)                              # D2: missing since an earlier sync, available again
         for item_id, rel in delta["respell"]:
             if exists(rel):
+                old_size, old_mtime = stamp(item_id)
+                moves.append((rows[item_id][5], old_size, old_mtime, rel, old_size, old_mtime))
                 self._repoint(item_id, rel)
                 tiers.add(rows[item_id][1])
                 summary["renamed"].append(item_id)
+        _note_moves(self, moves)                                   # D7a: the token store's hint
         gone = [i for i in delta["went"] if i in rows and not exists(rows[i][5])]
         back = [i for i in delta["came"] if i in rows and exists(rows[i][5])]
         if gone:

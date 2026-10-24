@@ -3141,7 +3141,7 @@ class RowsView(QListView):
         pressed never walks every episode)."""
         entries, found = self.model().entries, {}
         if keys:
-            at = {row.key: n for n, (kind, row, _lines) in enumerate(entries) if kind in (HERO, ROW)}
+            at = {row.key: n for n, (kind, row, _lines) in enumerate(entries) if kind in (HERO, ROW, FINISHED)}
             for i in ids:
                 n = at.get(keys.get(i))
                 ep = None if n is None else next((e for e in entries[n][1].episodes if e.id == i), None)
@@ -3150,7 +3150,7 @@ class RowsView(QListView):
         left = set(ids) - set(found)
         if left:
             for n, (kind, row, _lines) in enumerate(entries):
-                for ep in (row.episodes if kind in (HERO, ROW) else ()):
+                for ep in (row.episodes if kind in (HERO, ROW, FINISHED) else ()):    # (a Finished row: its ⋯)
                     if ep.id in left:
                         found[ep.id] = (n, ep)
         return found

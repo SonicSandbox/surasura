@@ -374,6 +374,41 @@ def test_half_of_a_folders_texts_is_not_most_of_them(language):
         assert store.item(new[0])["rel_path"] == f"Library/{y}/{_name(y, 1, language)}"
 
 
+ENGLISH = ("1\n00:00:01,000 --> 00:00:03,000\nWhere are you going so late at night?\n\n"
+           "2\n00:00:04,000 --> 00:00:06,500\nJust to the station. I'll be back soon.\n\n"
+           "3\n00:00:07,000 --> 00:00:09,000\nTake an umbrella, it looks like rain.\n")
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_moved_renamed_show_with_an_english_subtitle_per_episode_stays_one_show(language):
+    """The moves check (FC-1): `A/<X>/` holds each episode's subtitle of ours beside an English one (refused on the
+    first look, so the store keeps no bytes of it). Moved to `B/Renamed by hand/`, only the moved texts of ours vote:
+    the English ones never outvote them, so episodes 5 and 6 arriving there are X's, never a second show."""
+    store, data_dir = _empty(language)
+    x = _SHOWS[language][1]
+    a, b = _drive("driveA"), _drive("driveB")
+    _seed(language, a, x)
+    english = lambda n: f"[Grp] {x} - {n:02d}.en.srt"
+    for n in (1, 2, 3, 4):
+        _write(os.path.join(a, x, english(n)), ENGLISH + f"\n4\n00:00:10,000 --> 00:00:11,000\nEpisode {n}.\n")
+    with store:
+        ids = _look(store, language, store.add_source(a), first=True)["ids"]
+        moved = os.path.join(b, "Renamed by hand")
+        _move(os.path.join(a, x), moved)
+        _write(os.path.join(moved, _name(x, 5, language)), _text(language, 5))
+        _write(os.path.join(moved, english(5)), ENGLISH)
+        _settle(b)
+        root_b = store.add_source(b)
+        result = _look(store, language, root_b)
+        new = [store.item(i)["rel_path"] for i in result["ids"] if i not in ids]
+        assert _works(store) == 1 and new and all(r.startswith(f"Library/{x}/") for r in new), new
+        _write(os.path.join(moved, _name(x, 6, language)), _text(language, 6))
+        _settle(b)
+        later = _look(store, language, root_b)
+        assert _works(store) == 1, "the next episode too"
+        assert all(store.item(i)["rel_path"].startswith(f"Library/{x}/") for i in later["ids"])
+
+
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_a_new_show_with_generic_episode_names_beside_one_stray_copy_is_items_never_versions(language):
     """MV-A2: names that carry no show (`Episode 01`, common for rips). X's `Episode 01–02` taken in; a new show Y's

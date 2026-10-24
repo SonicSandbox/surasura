@@ -204,7 +204,7 @@ def test_the_switch_turned_off_after_a_title_was_asked_for_stops_the_next_reques
     f.switch["covers_download"] = False
     assert f.run_once() == 0 and anilist.posts == [] and pen.covers == []
     candidate = O.Candidate(900101, f"{anilist.base}/img/900101.jpg", "星送りのリーフェン", 2023, "TV")
-    assert f.candidates(want(1, "星送りのリーフェン")) == [] and f.pick(want(1, "星送りのリーフェン"), candidate) is None
+    assert f.candidates(want(1, "星送りのリーフェン")) is None and f.pick(want(1, "星送りのリーフェン"), candidate) is None
     assert f.paste(want(1, "星送りのリーフェン"), "https://anilist.co/anime/900101") == (None, "off")
     assert anilist.posts == [] and anilist.gets == []
 
@@ -816,3 +816,13 @@ def test_row18_a_coverless_finished_show_is_asked_once_a_session_never_a_storm(l
         f.want([_wants(lib)[work]])
         f.run_once()
     assert len(anilist.posts) == 1 and anilist.gets == [] and lib.row(work)[0] is None
+
+
+def test_a_candidates_search_that_didnt_answer_raises_and_one_that_found_nothing_is_empty(anilist):
+    """The press rule (Sonic, 2026-10-23: the AniList lookup reacts at once — found, *No cover found on AniList*, or
+    failed): a search AniList didn't answer (503 here, offline alike) is never told as "nothing found"."""
+    f = fetcher(Pen(), anilist)
+    assert f.candidates(want(1, "星送りのリーフェン")) == []           # AniList answered: no such title
+    anilist.down = True
+    with pytest.raises(O.LookupFailed):
+        f.candidates(want(1, "星送りのリーフェン"))

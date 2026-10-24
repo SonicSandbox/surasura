@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import QHBoxLayout, QLabel, QProgressBar, QPushButton, QSiz
 from app import theme
 from app.qt import motion, shadow, strings, style, toast
 from app.services import generate as gen
+from app.services import standing
 from app.services import updates as upd
 
 
@@ -138,6 +139,12 @@ def update_mark_look(state):
     if state.state == upd.READY:
         return strings.UPDATE_HANDING, strings.UPDATE_MARK_HANDING_TIP
     return None
+
+
+def update_mark_key(state):
+    """The update chip's standing key (round 8 row 54: its ✕ hides it for this session until its version or state
+    changes — *Later* for this run; *Skip this version* is the lasting answer), or None while it has nothing to say."""
+    return standing.update_key(state.version, state.state) if update_mark_look(state) is not None else None
 
 
 # --- the update sheet ---------------------------------------------------------------------------------------------- #

@@ -37,9 +37,13 @@ from PyQt6.QtWidgets import (QApplication, QButtonGroup, QDialog, QHBoxLayout, Q
 from app import path_utils, theme
 from app.qt import applog, bridge, frame, hud, motion, strings, style, titlebar, toast, tooltip
 from app.services import jobs as jobs_module
+from app.services import press as press_service
 from app.services import settings as settings_service
 from app.services import status as status_service
 from app.qt import screens                                # W2.2: the pages a library fills
+from app.qt import press as qpress                        # round 8 row 45: a press reacts at once
+from app.qt import standing as standing_qt                # round 8 row 54: every standing line's ✕
+from app.services import standing as standing_service
 from app.qt import covers as qcovers                      # --- W3.2 Q6: the titles' own pictures
 
 TABS = ("current", "finished", "needs", "settings")
@@ -99,6 +103,7 @@ class Services:
         # or None — then nothing in the window writes. The window starts it (and its replay) and wires its callbacks;
         # the quit waits for its queue (`finish_moves`). The real `main()`'s: `open_services` (W3.2 P0).
         self.writer = writer
+        self._wire_writer(writer)
         # --- W3.2 P0: `library_for(language)` -> (reader, writer): another language's library at a switch
         # (`_switch_library`); None (a test's library, or none) — the window keeps the library it was given
         self.library_for = library_for
@@ -203,6 +208,19 @@ class Services:
         refresh = getattr(self.status, "refresh_soon", None)
         if refresh is not None:
             refresh("replan")
+
+    def _wire_writer(self, writer):
+        """W-1 (K-W4): a mark that moved what counts (`Writer.on_counted`) asks the indexer, so the Rarity preview
+        follows."""
+        if writer is not None:
+            writer.on_counted = self._counted
+
+    def _counted(self):
+        """(The writer's thread.) The indexer asked, forced (`Chores.index`: one check and one indexer at a time, so a
+        burst of marks is one run while it is under way); nothing before the duties are made or once the quit began."""
+        chores = self.chores
+        if chores is not None and not self.closing.is_set():
+            chores.index(force=True)
 
     def _store_moved(self, language, versions):
         """(The library reader's thread.) The order or the pins moved, whoever moved them: one poke, one `changed`;
@@ -520,6 +538,7 @@ class Services:
                 return None, None
             if self._replan_wired:
                 reader.subscribe_moves(self._store_moved)
+            self._wire_writer(writer)
             self.library, self.writer = reader, writer
             self.load_numbers()
             return reader, writer
@@ -921,6 +940,7 @@ class _Duties:
     def __init__(self):
         self.module = None
         self.generate = self.journey = self.help = self.known = self.anki = self.level = self.update_mark = None
+        self.update_cross = None                                   # round 8 row 54: the chip's ✕
         self.journey_button = None                                 # the header's *Journey ↗*, beside the level ▾
         self.sheet = self.cards = self.journey_dot = self.pop = None
         self.level_text = self.level_tip = strings.LEVEL_WAITING   # W3.1a: the ▾'s words and the level's tip
@@ -973,19 +993,26 @@ class ShellWindow(QMainWindow):
         self.pages = QStackedWidget(central)
         self.pages.setObjectName("pages")
         self.page_widgets = {}
-        for name in TABS:
+        self.standing = standing_service.Hidden()             # round 8 row 54: the run lines ✕ hid (this session)
+        self.offline_hidden = set()                           # ... the offline line's (the seen file's, and ✕ since)
+        self._failure_hidden = None                           # ... the bar's failure ✕ took off (until the service's
+        for name in TABS:                                     # snapshot says so too)
             page = self._page(name)
+            if isinstance(page, screens.Page):                # the read-only line's ✕ hides it on every page
+                page.hidden = self.standing
+                page.state_dismissed.connect(self._state_dismissed)
             self.page_widgets[name] = page
             self.pages.addWidget(page)
         root.addWidget(self.pages, 1)
         self.dock = self._build_bottom_band()                 # W3.1a: each page's bottom edge; Current's Goal dock
         # --- SRC W1b: the offline line, quiet, under the library: a source folder a look couldn't reach (SRC-3)
-        self.offline_line = QLabel(central)
-        self.offline_line.setObjectName("sourcesline")
-        self.offline_line.setTextFormat(Qt.TextFormat.PlainText)
-        self.offline_line.setToolTip(strings.SOURCES_OFFLINE_TIP)
-        self.offline_line.setContentsMargins(16, 2, 16, 2)
-        self.offline_line.setVisible(False)
+        # round 8 row 54: its ✕ and *Keep waiting* hide it until the folder is back and goes again (`_keep_waiting`)
+        self.offline_line = standing_qt.StandingLine("sourcesline", central, margins=(16, 2, 16, 2))
+        self.offline_line.label.setToolTip(strings.SOURCES_OFFLINE_TIP)
+        # P8's *They're gone — remove them* is the line's other answer (`add_answer("gone", …)`, `_offline_answered`)
+        self.offline_line.add_answer("keep", strings.SOURCES_KEEP_WAITING, strings.SOURCES_KEEP_WAITING_TIP)
+        self.offline_line.dismissed.connect(self._keep_waiting)
+        self.offline_line.answered.connect(self._offline_answered)
         root.addWidget(self.offline_line)
         # --- end SRC W1b
         root.addWidget(self._build_footer())
@@ -1203,6 +1230,9 @@ class ShellWindow(QMainWindow):
         # --- end W3.2 Q3
         self.progress = frame.Progress(header)             # W3.1a: the jobs' hairline along its foot (no pulsing dot)
         self._busy, self._share = False, None              # ... the bar's lines running, Generate's share
+        self.presses = press_service.Presses()             # round 8 row 45: a live press runs the hairline too,
+        self._holds = {}                                   # ... and a menu's press holds the bar's slot (`say`)
+        self.presses.subscribe(self._presses_changed)
         return header                                      # W3.5's with the duties (`_attach_duties`)
 
     def _build_tabs(self):
@@ -1297,6 +1327,8 @@ class ShellWindow(QMainWindow):
             if self._epoch_shown is not None and epoch != self._epoch_shown:
                 self._forget_picks()
             self._epoch_shown = epoch
+        if screens.state_key(view) is None:         # round 8 (A-9): the read-only line's trouble ended — its ✕
+            self.standing.only(standing_service.READ_ONLY, ())     # answers go, once, here (the pages only read them)
         moved = False
         for name in screens.PAGES:
             page = self.page_widgets.get(name)
@@ -1450,14 +1482,14 @@ class ShellWindow(QMainWindow):
             self.toasts.close()                     # a move's toast and its Undo: the language left's
             moves.undo_key.setEnabled(False)        # (the window's own Ctrl+Z goes to the new controller's)
             moves.undo_key.deleteLater()
-            for name in ("on_saved", "on_undone", "on_saving", "on_reread", "on_note"):
-                setattr(moves.writer, name, _no_callback)   # a write still in hand past the switch's wait tells no one
-            moves.relay.setParent(self)             # ... and one telling now reaches a live relay (never a deleted one)
+            moves.unwire()                          # a write still in hand past the switch's wait tells no one
             moves.deleteLater()
         lst = getattr(self.page_widgets.get("current"), "list", None)
         if lst is not None and (lst.saving or lst.landing is not None):
             lst.saving, lst.landing = frozenset(), None     # AD0-6: never a mark of the language left on a row
             lst.viewport().update()
+        if getattr(self, "mine", None) is not None:  # round 8 row 45: nor a pressed Mine now (its presses end)
+            self.mine.settle_all()
         self._forget_picks()
         self._follow_language_look()
         for page in self.page_widgets.values():     # ▶ opens a file of this language's library
@@ -1630,6 +1662,10 @@ class ShellWindow(QMainWindow):
         self.logs_button.clicked.connect(self.open_logs)
         self.logs_button.setVisible(False)
         row.addWidget(self.logs_button)
+        self.bar_failure_cross = standing_qt.Cross(footer)       # round 8 row 54: the failure off the bar (still listed)
+        self.bar_failure_cross.clicked.connect(self._failure_dismissed)
+        self.bar_failure_cross.setVisible(False)
+        row.addWidget(self.bar_failure_cross)
         row.addStretch(0)                                 # the room left of the marks while the chip holds the slot
         # W31A-1: the re-order host's line and Connect's as quiet marks, their words in the hover, while they have any
         self.bar_replan = frame.QuietMark(strings.FOOT_REPLAN_MARK, strings.FOOT_REPLAN_NAME, footer)
@@ -1642,6 +1678,7 @@ class ShellWindow(QMainWindow):
         self.known = frame.KnownCorner(footer)
         self.known.clicked.connect(self._known_clicked)    # Q30: a click syncs now
         self._known_relay = None
+        self._known_press, self._known_answered = None, False     # round 8 row 45: the click's press, until its sync ends
         row.addWidget(self.known)
         self._logs_folder = None
         self.status_paints = {}             # row 7's statuses (the bar's lines, the journey dot) -> repaints (S19)
@@ -1698,9 +1735,11 @@ class ShellWindow(QMainWindow):
         self._busy = bool(lines)
         self._paint_progress()
         self._status_line = " · ".join(lines)
-        if not self._saying() or self._quit == "waiting":       # (a line just said keeps the slot: `say`)
+        if not (self._saying() or self._holds) or self._quit == "waiting":     # (a line said keeps the slot: `say`)
             self.bar_line.set_full(self._status_line)
         failure = snap.failure or ""
+        if failure and self._failure_key(snap) == self._failure_hidden:
+            failure = ""                                  # round 8 row 54: ✕ took it off (the service's next snapshot too)
         self.bar_failure.set_full(strings.BAR_FAILURE_PREFIX + failure if failure else "")
         self.bar_failure.setToolTip(strings.BAR_FAILURE_TIP + ("\n\n" + failure if failure else ""))
         logs_before, self._logs_folder = self._logs_folder, snap.logs
@@ -1723,15 +1762,29 @@ class ShellWindow(QMainWindow):
             self._show_update(self.duties.update_state, force_cards=True)     # the cards' *Open the logs folder*
         self._paint_needs()
 
-    def _paint_progress(self):
-        """W3.1a: the header's hairline — Generate's share while it has one, else whole and quiet while any job runs."""
-        self.progress.set(self._busy, self._share)
+    def _presses_changed(self, press):
+        from PyQt6 import sip
+        if sip.isdeleted(self.progress):                # (an answer coming in after the window closed paints nothing)
+            return
+        if self._paint_progress() and press.state == press_service.QUEUED:
+            self.progress.repaint()                     # R-2: a press's hairline in the frame of the press, before its
+                                                        # work is handed over (not at the next frame)
 
-    def say(self, text):
+    def _paint_progress(self):
+        """W3.1a: the header's hairline — Generate's share while it has one, else whole and quiet while any job runs.
+        -> True when it changed."""
+        return self.progress.set(self._busy or self.presses.any_live(), self._share)
+
+    def say(self, text, hold=None):
         """A line for the bar that answers what the user just did (a file ▶ couldn't open, the journey's absence, a
         move the store placed elsewhere): it takes the footer's slot for `DRAG["message-ms"]`, over the update chip and
-        the failure line, then the slot is as it was (AD-7: said into a hidden line, it was never seen)."""
+        the failure line, then the slot is as it was (AD-7: said into a hidden line, it was never seen). `hold`: a live
+        press's key (round 8 row 45) — the line keeps the slot until `unsay(hold)`."""
         self.bar_line.set_full(text)
+        if hold is not None:
+            self._holds[hold] = text
+            self._paint_slot()
+            return
         self._message_until = time.monotonic() + theme.DRAG["message-ms"] / 1000.0
         if getattr(self, "_message_timer", None) is None:
             self._message_timer = QTimer(self)
@@ -1739,6 +1792,18 @@ class ShellWindow(QMainWindow):
             self._message_timer.timeout.connect(self._paint_slot)
         self._message_timer.start(theme.DRAG["message-ms"] + 1)
         self._paint_slot()
+
+    def unsay(self, key):
+        """A press's held line let go: the newest line still held, else a line said meanwhile, else the slot as it was."""
+        if self._holds.pop(key, None) is None:
+            return
+        if not self._saying():
+            self.bar_line.set_full(self._held_or_status())
+        self._paint_slot()
+
+    def _held_or_status(self):
+        held = list(self._holds.values())
+        return held[-1] if held else getattr(self, "_status_line", "")
 
     def _saying(self):
         until = getattr(self, "_message_until", None)
@@ -1751,19 +1816,74 @@ class ShellWindow(QMainWindow):
         the slot for a few seconds over both."""
         saying = self._saying()
         if not saying and getattr(self, "_message_until", None) is not None:
-            self._message_until = None               # the line said has had its time: the status line is back
-            self.bar_line.set_full(getattr(self, "_status_line", ""))
+            self._message_until = None               # the line said has had its time: the status line is back (or a
+            self.bar_line.set_full(self._held_or_status())       # live press's held line)
+        saying = saying or bool(self._holds)
         failure = bool(self.bar_failure.full()) and self._quit != "waiting" and not saying
         d = self.duties
         update = d is not None and d.update_applies and not failure and self._quit != "waiting" and not saying
         parts = [(self.bar_failure, failure, self.status_paints), (self.logs_button, failure and bool(self._logs_folder),
-                 self.status_paints), (self.bar_line, not failure and not update, self.status_paints)]
+                 self.status_paints), (self.bar_failure_cross, failure, self.status_paints),
+                 (self.bar_line, not failure and not update, self.status_paints)]
         if d is not None:
-            parts.append((d.update_mark, update, d.paints))
+            parts += [(d.update_mark, update, d.paints), (d.update_cross, update, d.paints)]
         for part, shown, paints in parts:
             if part.isHidden() == shown:
                 part.setVisible(shown)
                 paints[part] = paints.get(part, 0) + 1
+
+    # --- round 8 row 54: the standing lines' ✕ (app/services/standing.py) -------------------------------------- #
+    @staticmethod
+    def _failure_key(snap):
+        failure = snap.failure if snap is not None else None
+        if not failure:
+            return None
+        return getattr(snap, "failure_key", None) or standing_service.failure_key(None, failure)
+
+    def _failure_dismissed(self):
+        """✕ on the bar's failure line: off the bar now, for this session, still listed in Needs you; a newer failure
+        shows again (the status service's `dismiss_failure`, on a worker)."""
+        key = self._failure_key(self._status_snap)
+        if key is None:
+            return
+        self._failure_hidden = key
+        self.bar_failure.set_full("")
+        self._paint_slot()
+        bridge.run_in_worker(self.services.status.dismiss_failure, key,
+                             failed=lambda info: applog.log("shell", f"the failure's ✕: {info[0]!r}"))
+
+    def _update_dismissed(self):
+        """✕ on the update chip: hidden for this session (*Later* for this run) until its version or state changes."""
+        d = self.duties
+        if d is None or d.update_state is None:
+            return
+        self.standing.hide(d.module.update_mark_key(d.update_state))
+        d.update_applies = False
+        self._paint_slot()
+
+    def _state_dismissed(self, key):
+        """✕ on a page's read-only line: hidden on every page for this session, until its reason changes."""
+        if key and self.standing.hide(key):
+            for page in self.page_widgets.values():
+                if isinstance(page, screens.Page):
+                    page.paint_state()
+
+    def _keep_waiting(self):
+        """✕ or *Keep waiting* on the offline line: the folders it names hidden now, and kept in the seen file (a
+        worker) — hidden across restarts until each is back, then asked again the next time it goes."""
+        keys = tuple(k for k, _path, _n in self._offline_shown())
+        if not keys:
+            return
+        self.offline_hidden.update(keys)
+        self._show_offline()
+        bridge.run_in_worker(standing_service.keep, self.language, keys,
+                             failed=lambda info: applog.log("shell", f"the offline line's ✕: {info[0]!r}"))
+
+    def _offline_answered(self, name):
+        """The offline line's answers: *Keep waiting* (the ✕ in words). P8 adds *They're gone — remove them* here
+        (`Writer.forget_source` through `drag._give`, once Kura's `Store.forget_source` lands)."""
+        if name == "keep":
+            self._keep_waiting()
 
     def _status_mark(self, label, text, tip):
         """One of row 7's statuses (the re-order's line, Connect's — quiet marks, their words in the hover — the
@@ -1976,7 +2096,11 @@ class ShellWindow(QMainWindow):
         d.update_mark.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         d.update_mark.clicked.connect(self.open_update_sheet)
         d.update_mark.setVisible(False)
-        row.insertWidget(row.indexOf(self.logs_button) + 1, d.update_mark)
+        row.insertWidget(row.indexOf(self.bar_failure_cross) + 1, d.update_mark)
+        d.update_cross = standing_qt.Cross(self.footer)      # round 8 row 54: the chip hidden for this session
+        d.update_cross.clicked.connect(self._update_dismissed)
+        d.update_cross.setVisible(False)
+        row.insertWidget(row.indexOf(d.update_mark) + 1, d.update_cross)
         # the update sheet (an overlay: Esc and Back close it — and cancel an update under way, IK-2)
         d.sheet = duties_module.UpdateSheet(self.centralWidget())
         d.sheet.action.connect(self._update_action)
@@ -2179,18 +2303,32 @@ class ShellWindow(QMainWindow):
         """Q30: a click on the known-words count syncs now, through the automation's one sync path (`sync_now`: the
         automatic sync's own job, forced, and with the automatic sync off too — the user asked; it ends as every sync
         does). A click while one runs adds nothing. With no decks chosen yet, or the first sync not made (always the
-        user's own, in the Anki window), the Anki window opens instead."""
+        user's own, in the Anki window), the Anki window opens instead. Round 8 row 45: the press shows on the count's
+        hairline from the frame of the click (`KnownCorner.press_look`), before the sync is asked for, until that sync
+        (or the one already running) ends or the answer says why not; a click meanwhile asks nothing. Every ask is
+        answered (A-2: a sync that couldn't be asked for says "failed", a closed automation "closed"), so the press
+        always ends. Its job is followed by hand (`_known_followed`) until P3's `press.follow`."""
         automation = self.services.automation
         if automation is None:
             return
         if self._known_relay is None:
             self._known_relay = bridge.Relay(self)
             self._known_relay.said.connect(self._known_answer)
+        p = qpress.begin(self.known, "known:sync", win=self)
+        if p is None:
+            return
+        self._known_press, self._known_answered = p, False
         automation.sync_now(then=self._known_relay.call)
 
     def _known_answer(self, why):
         """The click's answer (AutoSync's own): no decks or no first sync opens the Anki window; a refusal is said in
-        the bar (AD-6: an update staged, a sync already running), never nothing."""
+        the bar (AD-6: an update staged, a sync already running), never nothing. A sync started, or one already
+        running: its hairline shows it until its job ends (`_known_followed`)."""
+        self._known_answered = True
+        if why not in (None, "running"):
+            self._known_followed(ended=True, failed=why == "failed")
+        else:
+            self._known_followed()
         if why in ("no-decks", "never-synced"):
             from app.qt import windows
             op = next((op for op in windows.OPENERS if op.name == "anki"), None)
@@ -2198,6 +2336,16 @@ class ShellWindow(QMainWindow):
                 windows.launch(self, op)
         elif why in strings.FOOT_KNOWN_REFUSED:
             self.say(strings.FOOT_KNOWN_REFUSED[why])
+
+    def _known_followed(self, ended=False, failed=False):
+        """Round 8 row 45: the click's press ends once it was answered and no sync runs (the registry's views), or at
+        once (`ended`: nothing was started; `failed`: it couldn't be asked for)."""
+        p = self._known_press
+        if p is None or not p.live() or not self._known_answered:
+            return
+        if ended or not self.known.syncing:
+            self._known_press = None
+            qpress.end(p, self, failed=failed, why=strings.FOOT_KNOWN_REFUSED.get("failed") if failed else None)
 
     def _known_road(self):
         """IK-7: the count's hover names what a click does — the page's known-words road, one rule
@@ -2341,7 +2489,8 @@ class ShellWindow(QMainWindow):
         d.update_state = state
         look = d.module.update_mark_look(state)
         m = d.update_mark
-        d.update_applies = look is not None                # nothing to say: hidden, its last words kept
+        d.update_applies = look is not None and self.standing.shows(d.module.update_mark_key(state),  # nothing to
+                                                                   standing_service.UPDATE)   # say, or ✕: hidden
         if look is not None and (m.text() != look[0] or m.toolTip() != look[1]):
             m.setText(look[0])
             m.setToolTip(look[1])
@@ -2465,14 +2614,20 @@ class ShellWindow(QMainWindow):
         if old is not None and old is not looks:
             old.close()
         if looks is not None:
-            looks.on_result = self._sources_relay.call
+            looks.on_result = self._looks_said
             looks.on_progress = lambda path, found, shows: self._progress_relay.call((path, found, shows))
         return looks
+
+    def _looks_said(self, summary):
+        """(The looks' worker.) A look's summary, with the offline lines hidden (round 8 row 54: the seen file, pruned
+        by it first — `standing.looked`), to the window's thread."""
+        self._sources_relay.call(standing_service.looked(self.language, summary))
 
     def _follow_looks(self, writer):
         """A language switch: that library's folders, looked at once (its own cadence); the last one's line goes."""
         self._open_looks(writer)
         self.sources = ()
+        self.offline_hidden = set()
         self._folders_of.clear()
         self._folders_asked.clear()
         self._named.clear()
@@ -2505,17 +2660,24 @@ class ShellWindow(QMainWindow):
         if not isinstance(summary, dict) or summary.get("language", self.language) != self.language:
             return                                        # B2: a language left never paints over the one open
         self.sources = tuple(summary.get("sources") or ())
+        self.offline_hidden = (self.offline_hidden | set(summary.get("kept_lines") or ())) & \
+            standing_service.not_back(self.sources)       # round 8 row 54: a folder back lets its ✕ go
         self._show_offline()
         if summary.get("unfinished_reset"):              # LF-11: a fresh library a kill stopped, once a run
             from app.qt import settings_strings, windows
             windows.say_in_bar(self, settings_strings.FRESH_UNFINISHED.format(folder=summary["unfinished_reset"]))
         self.sources_seen.emit(summary)
 
-    def offline_text(self):
-        """The offline line's words for `sources` (empty: every folder reachable, or not looked at yet)."""
+    def _offline_shown(self):
+        """[(key, path, items)] of the folders the offline line names: away, and not hidden by its ✕."""
         from app.services.source_looks import offline
+        shown = ((standing_service.offline_key(path), path, n) for path, n in offline(self.sources))
+        return [s for s in shown if s[0] not in self.offline_hidden]
+
+    def offline_text(self):
+        """The offline line's words for `sources` (empty: every folder reachable, not looked at yet, or hidden)."""
         lines = []
-        for path, n in offline(self.sources):
+        for _key, path, n in self._offline_shown():
             if n == 1:
                 lines.append(strings.SOURCES_OFFLINE_ONE.format(path=path))
             elif n:
@@ -2526,12 +2688,7 @@ class ShellWindow(QMainWindow):
 
     def _show_offline(self):
         """Repainted only when its words moved (S19); shown while there are any."""
-        text = self.offline_text() if self.sources else ""
-        if self.offline_line.text() != text:
-            self.offline_line.setText(text)
-            self.offline_line.setAccessibleName(text)
-        if self.offline_line.isHidden() == bool(text):
-            self.offline_line.setVisible(bool(text))
+        self.offline_line.show_line(self.offline_text() if self.sources else "")
 
     def _sources_progress(self, said):
         """A folder being read for the first time (+ Add): its count so far, in the bar."""
@@ -2733,7 +2890,12 @@ class ShellWindow(QMainWindow):
         # Q30: the count's hover says a sync is running — the automatic one, a click's or the Anki window's
         known = getattr(self, "known", None)
         if known is not None:
-            known.set_syncing(any(v.kind == "anki-sync" and v.state in jobs_module.LIVE for v in views))
+            sync = next((v for v in views if v.kind == "anki-sync" and v.state in jobs_module.LIVE), None)
+            known.set_syncing(sync is not None)
+            got = getattr(sync, "progress", None)           # round 8 row 45: the click's hairline fills as it goes
+            if got is not None and got.total:
+                known.set_work_share(100.0 * (got.done or 0) / got.total)
+            self._known_followed()                          # ... until its sync ends
         if self._quit == "waiting" and self._replan_waited and getattr(self, "_moves_waited", True) and \
                 not jobs_module.waits_at_quit(views):
             self._close_now()
@@ -2839,6 +3001,8 @@ class ShellWindow(QMainWindow):
             event.ignore()                                # E20: what can't stop part-way ends first
             self._finish_first()
             return
+        if moves is not None:                             # round 8: a write landing after the window is gone (the quit's
+            moves.unwire()                                # last moves) tells no one — never a deleted relay
         self.closing.emit()                               # single instance stops listening before the window hides
         from app.qt import windows
         windows.close_all(self)                           # W3.4 AD4-4: the ported windows' own closes run (their clean-up)
@@ -2908,10 +3072,6 @@ def open_window(app, services, state_file=None):
 
 
 # --- W3.2 P0: the library main() opens (W3.1a's R3-L7) -------------------------------------------------------------- #
-def _no_callback(*_args):
-    pass
-
-
 def _set_estimates(reader, estimates):
     """New arrivals' numbers to the reader open now (any thread); none with no reader or one without them."""
     set_estimates = getattr(reader, "set_estimates", None)

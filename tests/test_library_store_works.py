@@ -1369,7 +1369,7 @@ def test_an_item_waiting_in_new_arrivals_keeps_its_text_and_is_never_counted(lan
                                rules={"another": "wait"})
         assert store.ids("arrivals") == waits.added
         rel = store.item(waits.added[0])["rel_path"]
-        counted, kept = store.text_lists()
+        counted, kept, _aside = store.text_lists()
         assert rel in kept and rel not in counted
     finally:
         store.close()

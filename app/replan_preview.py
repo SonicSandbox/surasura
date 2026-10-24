@@ -449,11 +449,13 @@ class Host:
 
     def _parts(self, settings, store):
         """The run signature's parts for the library as it stands (stats every file: on this worker only). A missing
-        item keeps its place, as Generate and the journey checks sign it (3.0, E2.2's K2: `missing=True`)."""
+        item keeps its place, as Generate and the journey checks sign it (3.0, E2.2's K2: `missing=True`); the set-aside
+        files are its "reference" part (W-1: a watched mark is a Generate first, both ways)."""
         from app import analyzer, run_args
-        found = analyzer.resolve_found_files(self.language, verbose=False, schedule=store.schedule(), missing=True)
+        schedule = store.schedule(with_aside=True)
+        found = analyzer.resolve_found_files(self.language, verbose=False, schedule=schedule, missing=True)
         args = analyzer.parse_analysis_args(run_args.analyzer_args(settings, self.language)[1:])
-        return analyzer.run_signature_parts(self.language, found, args)
+        return analyzer.run_signature_parts(self.language, found, args, analyzer.aside_files(self.language, schedule))
 
     def _verdict(self, plan, parts, store):
         from app import analyzer, plan_engine

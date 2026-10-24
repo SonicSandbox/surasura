@@ -676,12 +676,18 @@ def test_changed_since_counts_other_writers_only(language):
                        cwd=REPO, env=subprocess_env(), check=True, timeout=60)
 
     ids = store.ids("now")
+    store.set_library_options(keep_watched=True)              # W-1: with it on, a watched mark moves nothing that counts
     token = store.token()
     store.move([ids[0]], "now", after_id=ids[4])
     assert not store.changed_since(token), "your own bumps don't count"
     for what in ("receipt", "pin", "watched"):
         other(what, ids[2])
         assert not store.changed_since(token), f"a {what} never reloads a view"
+    store.set_library_options(keep_watched=False)             # off (this process's own bump): a mark in Current counts
+    token = store.token()
+    other("watched", ids[3])
+    assert store.changed_since(token), "another writer's watched mark in Current moves what counts"
+    token = store.token()
     other("move", ids[1])
     assert store.changed_since(token)
     token = store.token()
@@ -864,6 +870,7 @@ def test_log_undo_carries_the_undone_changes_values(language):
 def test_log_status_writes_pieces_and_rollbacks_write_nothing(language):
     store = migrated(language)
     store.register_reader("connect")
+    store.set_library_options(keep_watched=True)    # W-1: off, a mark in Current moves the mine line (logged)
     ids = store.ids("now")
     mark = _last_log(store)
     store.set_watched(ids[:2])
@@ -1121,7 +1128,8 @@ def test_status_writes_never_touch_changed_in_or_order(language):
     store.unpin(ids[:1])
     assert [store.item(i)["changed_in"] for i in ids] == before
     after = store.versions()
-    assert after["order_version"] == v["order_version"] and after["pins_version"] == v["pins_version"] + 2
+    # W-1: the watched mark (Soon, `keep_watched` off) moves what counts — one bump; the pins never move the order
+    assert after["order_version"] == v["order_version"] + 1 and after["pins_version"] == v["pins_version"] + 2
     store.close()
 
 

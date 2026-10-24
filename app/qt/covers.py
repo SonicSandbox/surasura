@@ -25,6 +25,7 @@ and records them) — painted wherever the window shows a cover, the generated c
   replaces kept dated — then recorded, locked, with its toast's Undo) and *Use a generated cover* (locked, Undo).
 """
 import os
+import sys
 import threading
 from collections import OrderedDict
 
@@ -592,21 +593,44 @@ def add_cover_menu(menu, row, writable=True, reason=None):
 
 
 def find_online(row, at=None):
-    """*Find it online…*: the top five candidates read on a worker, then a menu of them at the hand (`at`) — a pick
-    fetched and kept as the user's (locked, its toast's Undo)."""
-    from app.qt import bridge, strings
+    """*Find it online…*: a menu's press (`press.run`: the hairline turns and *Looking … up on AniList…* holds the bar
+    from the click), the top five candidates read on a worker, then a menu of them at the hand (`at`) — or *No cover
+    found*, or *couldn't be reached* (a lookup that didn't answer is never "nothing found"). A pick is fetched and kept
+    as the user's (locked, its toast's Undo). A second press while it looks does nothing."""
+    from app.qt import press as qpress
+    from app.qt import strings
+    from app.services import covers_online
     f, writer = _online["fetcher"], _library["writer"]
     if f is None or writer is None or not writer.can_write():
         _say(strings.COVER_CANT)
         return False
+    if not f.on():                                  # an instant answer needs no pending
+        _say(strings.COVER_PASTE_WHY["off"])
+        return False
     want = _want_of(row)
-    _say(strings.COVER_LOOKING.format(title=want.title))
     if at is None:
         from PyQt6.QtGui import QCursor
         at = QCursor.pos()
-    bridge.run_in_worker(f.candidates, want, then=lambda found: _offer(row, want, found, at),
-                         failed=lambda _info: _offer(row, want, [], at))
-    return True
+
+    def found(answer):
+        if _online["fetcher"] is not f:             # a library / language switch meanwhile: another library's covers
+            return
+        if answer is None:                          # switched off (or stopped) before AniList was asked
+            _say(strings.COVER_PASTE_WHY["off"])
+            return
+        _offer(row, want, answer, at)
+
+    def failed(info):
+        if _online["fetcher"] is not f:
+            return
+        if isinstance(info[0] if info else None, covers_online.LookupFailed):
+            _say(strings.COVER_LOOKUP_FAILED.format(title=want.title))
+            return
+        print(f"Find it online failed: {info[1] if info else ''}", file=sys.stderr)     # a fault: logged, said
+        _say(strings.COVER_LOOKUP_BROKE.format(title=want.title, why=info[0] if info else ""))
+    return qpress.run(None, ("cover-online", want.id), f.candidates, want,
+                      busy=strings.COVER_LOOKING.format(title=want.title), win=_library["window"],
+                      then=found, failed=failed) is not None
 
 
 def _offer(row, want, found, at):
@@ -645,10 +669,14 @@ def paste_link(row, link=None):
         from PyQt6.QtWidgets import QApplication
         link = QApplication.clipboard().text()
     link = (link or "").strip()
-    if covers_online.parse_link(link) is None:
+    f, want = _online["fetcher"], _want_of(row)
+    why = "not_a_link" if covers_online.parse_link(link) is None else (f.refused(link) if f is not None else None)
+    if why == "not_a_link":
         _say(strings.COVER_PASTE_NOT_A_LINK)
         return False
-    f, want = _online["fetcher"], _want_of(row)
+    if why is not None:                             # off / TMDB: answered at once, no pending (Sonic's rule)
+        _say(strings.COVER_PASTE_WHY[why])
+        return False
 
     def fetch(deferred):
         path, why = f.paste(want, link, writer=deferred)
@@ -657,20 +685,26 @@ def paste_link(row, link=None):
 
 
 def _kept(row, want, fetch):
-    from app.qt import bridge, strings
+    from app.qt import press as qpress
+    from app.qt import strings
     writer = _library["writer"]
     if _online["fetcher"] is None or writer is None or not writer.can_write():
         _say(strings.COVER_CANT)
         return False
     deferred = _Deferred(writer)
 
+    f = _online["fetcher"]
+
     def done(answer):
+        if _online["fetcher"] is not f or _library["writer"] is not writer:
+            return                                  # a library / language switch meanwhile: kept nowhere, said nowhere
         if deferred.call is None:
             _say(strings.COVER_PASTE_WHY[answer if answer in strings.COVER_PASTE_WHY else "failed"])
             return
         args, kw = deferred.call
         _give(strings.COVER_CHOSEN.format(title=want.title), row,
               lambda label: writer.set_cover(*args, label=label, **kw))
-    bridge.run_in_worker(fetch, deferred, then=done, failed=lambda _info: done(None))
-    return True
+    return qpress.run(None, ("cover-fetch", want.id), fetch, deferred, win=_library["window"],
+                      busy=strings.COVER_FETCHING.format(title=want.title), then=done,
+                      failed=lambda _info: done(None)) is not None
 # --- end W3.2 L3

@@ -378,7 +378,8 @@ def test_the_frozen_helper_is_surasura_beside_whichever_bundled_program_starts_i
     monkeypatch.setattr(ls.sys, "frozen", True, raising=False)
     monkeypatch.setattr(ls.sys, "executable", os.path.join(folder, program + ext))
     args = ls._helper_args("ja", command, "--retry")
-    assert args == [os.path.join(folder, "Surasura" + ext), "library_maintain", command, "--language", "ja", "--retry"]
+    assert args == [os.path.join(folder, "Surasura" + ext), "library_maintain", "--headless", command, "--language", "ja",
+                    "--retry"]
 
 
 def test_spawn_maintain_from_the_command_line_program_starts_surasura(real_store_helper, monkeypatch):
@@ -393,7 +394,8 @@ def test_spawn_maintain_from_the_command_line_program_starts_surasura(real_store
     started = []
     monkeypatch.setattr(subprocess, "Popen", lambda args, **kwargs: started.append(args) or "proc")
     assert ls.spawn_maintain("zh") == "proc"
-    assert started == [[os.path.join(folder, "Surasura" + ext), "library_maintain", "maintain", "--language", "zh"]]
+    assert started == [[os.path.join(folder, "Surasura" + ext), "library_maintain", "--headless", "maintain",
+                         "--language", "zh"]]
 
 
 @pytest.mark.parametrize("language", LANGUAGES)

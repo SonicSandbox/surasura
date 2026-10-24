@@ -2517,21 +2517,43 @@ def test_H7_a_remove_replayed_after_a_crash_between_its_trash_move_and_its_commi
     assert h.until(lambda: len(journalled(lib.language)) == 1)
     w._abandon()                                        # the crash: after the file's move, before the commit
     holder.release()
-    ls.trash_file(lib.data_dir, rel)
+    own = ls.trash_file(lib.data_dir, rel)
+    old = time.time() - 40 * 86400                      # killed before its clock was restarted: purged at once
+    os.utime(os.path.join(lib.data_dir, *own.split("/")), (old, old))
     base, ext = os.path.splitext(os.path.basename(rel))
-    decoy = os.path.join(lib.data_dir, ".trash", f"{base}_29991231235959{ext}")   # newest of its name, another size
-    with open(decoy, "wb") as f:
-        f.write(body + body)
+    older = os.path.join(lib.data_dir, ".trash", f"{base}_20000101000000{ext}")
+    with open(older, "wb") as f:                        # trashed before this Remove (an Undo-Add's): its name and
+        f.write(bytes(b ^ 1 for b in body))             # size, other bytes, no row; no record to tell them apart
     w2, heard2 = make_writer()
     assert w2.replay()
     assert h.until(lambda: journal(lib.language) is None and not w2.pending())
     assert lib.store.item(x) is None
     row = [r for r in lib.store.trash_rows() if r["item_id"] == x][-1]
-    assert row["trashed_path"] and row["trashed_path"].startswith(".trash/"), "its trash row names the copy"
+    assert row["trashed_path"] == own, "its trash row names its own copy, never an older file of its name"
+    assert os.path.getmtime(os.path.join(lib.data_dir, *own.split("/"))) > time.time() - 600, "its clock restarted"
     w2.restore([row["id"]])
     assert h.until(lambda: os.path.exists(path)), "Put back brings the file back"
     with open(path, "rb") as f:
         assert f.read() == body
+
+
+def test_H7_the_copy_a_replay_takes_has_the_items_size_and_no_row_of_its_own(lib):
+    # why: the trash may hold files of the item's name that are not its copy — another size, or another row's copy
+    # (held): the replay's pick passes both over and takes the item's own
+    x, y = lib.ids("soon")[2], lib.ids("soon")[3]
+    row = lib.store.item(x)
+    with open(_file(lib, x), "rb") as f:
+        body = f.read()
+    own = ls.trash_file(lib.data_dir, row["rel_path"])
+    base, ext = os.path.splitext(os.path.basename(row["rel_path"]))
+    trash = os.path.join(lib.data_dir, ".trash")
+    with open(os.path.join(trash, f"{base}_20000101000000{ext}"), "wb") as f:
+        f.write(body + body)                            # first in line: another size
+    held = f".trash/{base}_20000101000001{ext}"         # second: its size and bytes, another row's copy
+    with open(os.path.join(trash, held.split("/")[1]), "wb") as f:
+        f.write(body)
+    lib.store.remove([y], {y: held})
+    assert M._trashed_before(lib.store, row, set()) == own
 
 
 def test_H7_a_live_remove_of_a_file_deleted_by_hand_never_takes_a_trashed_file_of_its_name(lib, make_writer):

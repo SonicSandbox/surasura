@@ -113,7 +113,7 @@ def test_a_replayed_skip_never_takes_a_newer_trashed_file_of_the_same_name_and_s
         with open(first, "rb") as f:
             body = f.read()
         base, ext = os.path.splitext(os.path.basename(store.item(ids[0])["rel_path"]))
-        decoy = os.path.join(trash, f"{base}_29991231235959{ext}")   # newest by its stamp: same name, same size
+        decoy = os.path.join(trash, f"{base}_20000101000000{ext}")   # older, first in line: same name, same size
         with open(decoy, "wb") as f:
             f.write(bytes(b ^ 1 for b in body))
         change = M.Writer._skip_folder(None, store, {"op": "skip_folder", "path": folder, "replay": True})

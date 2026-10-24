@@ -295,6 +295,7 @@ class FinishedActions(QObject):
         self.on_mine_too = None                     # P4.1: (row) — *Mine it too* (hidden until set)
         self.running = None                         # (the list's drag API: no drag of Finished's rows)
         self.relay = _Relay(self)
+        self._gate = bridge.Gate(self.relay)         # the estimator's and the import's threads reach it only so
         q = Qt.ConnectionType.QueuedConnection
         self.relay.answer.connect(self._answered, q)
         self.relay.imported.connect(self._imported, q)
@@ -485,9 +486,9 @@ class FinishedActions(QObject):
         for k, (path, _rel) in enumerate(files):
             try:
                 ask(path, placed_before(files, k),
-                    lambda answer, k=k, token=token: self.relay.answer.emit(token, (k, answer)))
+                    lambda answer, k=k, token=token: self._gate.emit("answer", token, (k, answer)))
             except Exception as e:                   # no worker: that file counts as no answer
-                self.relay.answer.emit(token, (k, {"error": str(e)}))
+                self._gate.emit("answer", token, (k, {"error": str(e)}))
 
     def _worker_estimate(self, path, placed, callback):
         """The window's arrivals worker (one per language, shared with New arrivals: `services.arrivals_worker`)."""
@@ -562,7 +563,7 @@ class FinishedActions(QObject):
         from app.services import finished_import
         ticket = _ImportTicket("")
         job = finished_import.ImportJob(self.language, paths, _TicketWriter(self.writer, ticket),
-                                        self.win.services.registry, on_done=self.relay.imported.emit)
+                                        self.win.services.registry, on_done=self._gate.caller("imported"))
         job.ticket = ticket
         if job.start() is None:
             self.moves.refused()

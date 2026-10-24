@@ -197,6 +197,11 @@ class LibraryReader:
         with self._lock:
             self._gone_subscribers.append(callback)
 
+    def unsubscribe_gone(self, callback):
+        """`callback` (the very one subscribed) told no more: a window's drag controller let go."""
+        with self._lock:
+            self._gone_subscribers = [cb for cb in self._gone_subscribers if cb is not callback]
+
     # --- W3.2 Q1
     def set_estimates(self, estimates):
         """New arrivals' numbers ({item_id: N new}), from any thread: built into the next view, looked at now."""

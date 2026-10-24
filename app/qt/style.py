@@ -89,6 +89,9 @@ QLabel#barline {{ color: {c['ink-dim']}; {font('footer')} font-weight: 400; }}
 QLabel#barfailure {{ color: {c['warn']}; {font('footer')} font-weight: 400; }}
 QLabel#barmark {{ color: {c['ink-dim']}; {font('footer')} font-weight: 400; }}
 QLabel#sourcesline {{ color: {c['ink-dim']}; {font('footer')} font-weight: 400; }}
+QToolButton#standingclose {{ color: {c['ink-dim']}; padding: 0; border-radius: {px(5)}; min-width: {px(16)};
+  max-width: {px(16)}; min-height: {px(16)}; max-height: {px(16)}; {font('key-hint')} font-weight: 400; }}
+QToolButton#standingclose:hover {{ color: {c['ink']}; }}
 QLabel#journeydot {{ color: {c['accent']}; {font('badge')} }}
 QLabel#pagewaiting {{ color: {c['ink-dim']}; {font('body')} font-weight: 400; }}
 QLabel#pagetitle {{ color: {c['ink']}; {font('page-heading')} }}
@@ -163,8 +166,8 @@ QLabel#pageheading {{ color: {c['ink']}; {font('page-heading')} font-weight: 700
 QLabel#helpmark {{ color: {c['ink-faint']}; border: 1px solid {c['line-hi']}; border-radius: {px(8)};
   min-width: {px(16)}; max-width: {px(16)}; min-height: {px(16)}; max-height: {px(16)}; {font('key-hint')} }}
 QLabel#helpmark:hover {{ color: {c['ink']}; border-color: {c['accent']}; }}
-QLabel#statebar {{ color: {c['ink-dim']}; background: {c['raised']}; border-radius: 7px; padding: {px(5)} {px(10)};
-  {font('row-sub')} }}
+QWidget#statebar {{ background: {c['raised']}; border-radius: 7px; }}
+QLabel#statebartext {{ color: {c['ink-dim']}; padding: {px(5)} {px(10)}; {font('row-sub')} }}
 QListView#rows {{ background: {c['bg']}; border: 0; }}
 QListView#rows:focus {{ border: 0; }}
 /* --- end W2.2 --- */
@@ -196,6 +199,14 @@ QToolTip {{ background: {tip}; color: {c['ink']}; border: 0; border-top: 1px sol
 QLabel#toasttext {{ color: {c['ink']}; {font('body')} }}
 QPushButton[size="sm"] {{ min-height: {px(24)}; padding: 0 {px(10)}; border-radius: 7px; {font('button-sm')} }}
 QPushButton[size="sm"]:focus {{ padding: 0 {round(10 * f) - 1}px; }}
+"""
+    # --- round 8 row 45 (the trial): a button whose press turns an arc (`app/qt/press.py` `room`) keeps the arc's room
+    # at rest, both sides (its words centred): pressed, the arc turns in its right padding and nothing moves. The room is
+    # the arc's (fixed, never scaled with the text: the arc isn't), never less than the button's own padding
+    room = max(round(theme.size("press-room", text_size)), round(10 * f))
+    rules += f"""
+QPushButton[presses="true"] {{ padding: 0 {room}px; }}
+QPushButton[presses="true"]:focus {{ padding: 0 {room - 1}px; }}
 """
     # --- W3.5: Generate's states, the update sheet's text, Needs you's update cards (looks to re-skin: duties.py)
     rules += f"""

@@ -593,15 +593,19 @@ class Automation:
         forced, run with `anki_sync_auto` off too (the user asked), ending as every sync does (`AutoSync.ended`: the
         5-minute wait counted from it). One at a time: a click while a sync runs adds nothing ("running"). `then(why)`
         on the worker: None when it started, else why not — "no-decks" and "never-synced" are the Anki window's to
-        set right (the first sync is always made there). Any thread; returns at once. Nothing once closed."""
-        if self.closed:
-            return
-
+        set right (the first sync is always made there). Any thread; returns at once. Every ask is answered (round 8,
+        A-2: a press waits on it): "failed" when the sync couldn't be asked for, "closed" once closed."""
         def ask():
-            why = self.sync.maybe(force=True, asked=True)
+            try:
+                why = self.sync.maybe(force=True, asked=True)
+            except Exception as e:
+                print(f"{self.worker.name}: the sync asked for failed: {e}")
+                why = "failed"
             if then is not None:
                 then(why)
-        self.worker.put(ask)
+        if self.closed or not self.worker.put(ask):
+            if then is not None:
+                then("closed")
 
     def recheck(self):
         """Is the journey still current? (`_schedule_journey_state`) — the Generate button's mark: one

@@ -177,8 +177,9 @@ QPushButton#wiznext {{ min-width: {round(92 * f)}px; min-height: {round(36 * f)}
   padding: 0 {round(13 * f + hint + 8)}px 0 {round(13 * f + hint * 0.4)}px; {font('button', 700)} }}
 QPushButton#wizstar {{ background: transparent; border: 0; color: {c['ink']}; padding: 0; {font('body', 600)} }}
 QPushButton#wizstar:focus {{ border: 2px solid {c['accent']}; border-radius: 6px; }}
-QPushButton#wizlink[presses="true"], QPushButton#wizstar[presses="true"] {{ padding: 0 {room}px; }}
-QPushButton#wizlink[presses="true"]:focus, QPushButton#wizstar[presses="true"]:focus {{ padding: 0 {room - 2}px; }}
+QPushButton#wizlink[presses="end"], QPushButton#wizstar[presses="end"] {{ padding: 0 {2 * room}px 0 0; }}
+QPushButton#wizlink[presses="end"]:focus, QPushButton#wizstar[presses="end"]:focus {{
+  padding: 0 {2 * room - 2}px 0 0; }}
 """
 
 
@@ -1436,7 +1437,7 @@ class ShowsPage(_Page):
         pick.addWidget(self.btn_pick)
         self.skips = []                     # K6: folders inside the picked ones never read (skipped on *Next*)
         self.btn_skip = qpress.room(_button(S.SKIP_FOLDER, S.SKIP_FOLDER_TIP, self.wiz.skip_folder,
-                                            self.folders_part, name="wizlink"))
+                                            self.folders_part, name="wizlink"), end=True)
         self.btn_skip.setVisible(False)
         pick.addWidget(self.btn_skip)
         self.reading_line = _label("wizsub", "", self.folders_part)
@@ -1482,7 +1483,7 @@ class ShowsPage(_Page):
         self.box.addWidget(self.covers)
         samples = QHBoxLayout()
         self.btn_samples = qpress.room(_button(S.SAMPLES, S.SAMPLES_TIP, self.wiz.add_samples, self,   # W3.2 Q3
-                                               name="wizlink"))
+                                               name="wizlink"), end=True)
         samples.addWidget(self.btn_samples)
         samples.addStretch(1)
         self.box.addLayout(samples)
@@ -1878,7 +1879,8 @@ class CardsPage(_Page):
                                              lambda: self.wiz.look_miner(self.btn_check), self.acts))
         acts.addWidget(self.btn_check)
         self.btn_star = qpress.room(_button(f"{S.STAR}  {S.STAR_ASK} {S.STAR_LINK}", S.STAR_TIP,
-                                            lambda: self.wiz.open_star(self.btn_star), self.acts, name="wizstar"))
+                                            lambda: self.wiz.open_star(self.btn_star), self.acts, name="wizstar"),
+                                    end=True)
         acts.addWidget(self.btn_star)
         words.addWidget(self.acts)
         self.steps = _label("wizsub", "", self, wrap=True)
@@ -1936,7 +1938,8 @@ class CardsPage(_Page):
         self.box.addWidget(self.busy_line)
         star = QHBoxLayout()
         self.star_quiet = qpress.room(_button(f"{S.STAR}  {S.STAR_ASK} {S.STAR_LINK}", S.STAR_TIP,
-                                              lambda: self.wiz.open_star(self.star_quiet), self, name="wizlink"))
+                                              lambda: self.wiz.open_star(self.star_quiet), self, name="wizlink"),
+                                      end=True)
         star.addWidget(self.star_quiet)
         star.addStretch(1)
         self.box.addLayout(star)

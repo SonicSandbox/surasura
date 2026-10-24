@@ -558,6 +558,12 @@ def test_the_anki_miner_is_out_notice_shows_while_the_status_names_one(world):
     page, store, rows, _fake = make(world)
     note = rows.miner.update_note
     assert note.isVisibleTo(page) and note.text() == "Anki Miner 3.8.0 is out"
+    # round 8 row 45: a link's arc turns at its right end, after its words and inside it (`room(end=True)`)
+    p = qpress.begin(note, "test:note")
+    arc = qpress.arc(note).geometry()
+    words = note.fontMetrics().horizontalAdvance(note.text())
+    assert words < arc.left() and arc.right() <= note.width() + 1
+    qpress.end(p)
     QTest.mouseClick(note, Qt.MouseButton.LeftButton)
     assert wait_until(lambda: world.opened == [world.update["url"]], 5)
     world.update = None

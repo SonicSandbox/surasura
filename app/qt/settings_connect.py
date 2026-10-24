@@ -424,7 +424,8 @@ class MinerCard(QWidget):
         box.setSpacing(round(6 * _f()))
         self.words = _label(S.MINER_CHECKING, "settingsvalue", self)
         box.addWidget(self.words)
-        self.update_note = _button("", S.MINER_UPDATE_TIP, self._open_update, self, kind="settingsmore")
+        self.update_note = qpress.room(_button("", S.MINER_UPDATE_TIP, self._open_update, self, kind="settingsmore"),
+                                       end=True)
         self.update_note.hide()
         box.addWidget(self.update_note, 0, Qt.AlignmentFlag.AlignLeft)
         # U6: the bigger suggestion, once installed, until one click or Not now
@@ -449,16 +450,16 @@ class MinerCard(QWidget):
         box.addWidget(self.steps)
         buttons = FlowLayout(None, round(8 * _f()))      # four buttons are wider than the card: they wrap, never cut
         self.install = _button(S.INSTALL_MINER, S.INSTALL_MINER_TIP, self._install, self)
-        self.star_line = _button(S.STAR_LINE, S.STAR_LINE_TIP, lambda: self._starred(self.star_line), self,   # AM★
-                                 kind="settingsmore")
+        self.star_line = qpress.room(_button(S.STAR_LINE, S.STAR_LINE_TIP, lambda: self._starred(self.star_line),
+                                             self, kind="settingsmore"), end=True)                 # AM★
         self.browse = _button(S.BROWSE_MINER, S.BROWSE_MINER_TIP, self._browse, self)
         self.open_miner = qpress.room(_button(S.OPEN_MINER, S.OPEN_MINER_TIP, self._open, self))
         self.check_again = _button(S.CHECK_AGAIN, S.CHECK_AGAIN_TIP, self.check, self)
         for b in (self.install, self.star_line, self.browse, self.open_miner, self.check_again):
             buttons.addWidget(b)
         box.addLayout(buttons)
-        self.star_link = _button(S.STAR_LINK, S.STAR_LINK_TIP, lambda: self._open_star(self.star_link), self,
-                                 kind="settingsmore")
+        self.star_link = qpress.room(_button(S.STAR_LINK, S.STAR_LINK_TIP, lambda: self._open_star(self.star_link),
+                                             self, kind="settingsmore"), end=True)
         box.addWidget(self.star_link, 0, Qt.AlignmentFlag.AlignLeft)
         self._buttons(None, answered=True)
         slot.layout().addWidget(self)

@@ -1875,7 +1875,7 @@ class RowDelegate(QStyledItemDelegate):
 
     def _ep_marked(self, p, r, ep, dpr):
         """A menu's press on an episode's own line (its row open): at its part — a status action at its pill."""
-        part, cols = self.view.marked[ep.id], self._episode_cols(r)
+        part, cols = self.view.marked[ep.id][-1], self._episode_cols(r)
         if part in ACTION_NAMES and ep.status is not None:
             self._paint_marked(p, self._ep_pill(r, ep, dpr))
         else:
@@ -2918,7 +2918,8 @@ class RowsView(QListView):
         self._stopping_at = {}                       # ... each one's row key at the press
         self.stop_moved = None                       # ... `stop_moved(ids)`: they left Mining — the presses' owner
         self.stop_hot = None                         # ... the Stop pill under the hand (its QRect): it reads ■ Stop
-        self.marked = {}                             # ... file id -> the part a menu's press marks (`mark_ids`, IK-2)
+        self.marked = {}                             # ... file id -> the parts its live presses mark, oldest first
+        #                                              (`mark_ids`, IK-2: one per press, the newest painted)
         self.seam = None                             # --- W3.2 Q8: (row key, episode id) of the ✂ seam under the hand
         self.ep_hover = None                         # --- W3.2 Q8: (row key, episode id) the hand was last on
         self.ep_hot = None                           # --- row 28: (row key, episode id) under the hand now
@@ -3185,21 +3186,32 @@ class RowsView(QListView):
 
     def mark_ids(self, ids, part="more"):
         """Round 8 row 45 (IK-2; `press.row_mark`): the files `ids` marked by a live press — the accent arc turns on
-        each one's line at `part` ("more": its ⋯, "play": ▶), painted before this returns, until `unmark`. Kept for a
-        file this list doesn't show yet (it shows once it does). -> the ids it shows now."""
-        self.marked.update({i: part for i in ids})
+        each one's line at `part` ("more": its ⋯, "play": ▶), painted before this returns, until `unmark` takes that
+        press's mark off. Two presses on one file keep a mark each (P3-A4): the newest is painted, and the first to end
+        leaves the other's. Kept for a file this list doesn't show yet (it shows once it does). -> the ids it shows."""
+        for i in ids:
+            self.marked.setdefault(i, []).append(part)
         self._sync_turn()
         shown = self._where(ids)
         for row_i in sorted({n for n, _ep in shown.values()}):
             self.viewport().repaint(self.visualRect(self.model().index(row_i, 0)))
         return tuple(shown)
 
-    def unmark(self, ids):
+    def unmark(self, ids, part=None):
+        """One press's marks off `ids` (`part`: the one it made; None: every mark of theirs)."""
         gone = set(self.marked) & set(ids)
         if not gone:
             return
         for i in gone:
-            self.marked.pop(i, None)
+            parts = self.marked[i]
+            if part is not None and part in parts:
+                parts.reverse()
+                parts.remove(part)                   # (its newest such mark: a press's own)
+                parts.reverse()
+            else:
+                parts.clear()
+            if not parts:
+                del self.marked[i]
         self._sync_turn()
         for row_i in sorted({n for n, _ep in self._where(gone).values()}):
             self.update(self.model().index(row_i, 0))
@@ -3208,7 +3220,7 @@ class RowsView(QListView):
         """The part a press marks on any of `episodes`' lines, or None."""
         if not self.marked:
             return None
-        return next((self.marked[e.id] for e in episodes if e.id in self.marked), None)
+        return next((self.marked[e.id][-1] for e in episodes if e.id in self.marked), None)
 
     def _prune_pressed(self):
         """A new view: a pressed file whose status moved from what it was at the press (Connect read the ask: asked, a

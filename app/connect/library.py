@@ -140,20 +140,32 @@ def pairing_of(store, item_id):
 # D5 / MV-2 (PROVISIONAL): what the store knows of an episode's move, read beside its pairing — the store's alone, no
 # disk (`runner.moved_video` / `runner.video_left` look at the disk after, outside the store's reads). `root`: the path
 # of the source folder its origin was read from (its record's `root`), None for any other record; `was`: the videos its
-# origins marked `moved_to` named, newest mark first — a mark is never trusted alone (Kura's MV-A5: the same bytes
-# found elsewhere while the original was only briefly away), so while the live record's video is gone, one still on
-# disk there is the episode's
+# origins marked `moved_to` named, the newest origin first — a mark is never trusted alone (Kura's MV-A5: the same
+# bytes found elsewhere while the original was only briefly away), so while the live record's video is gone, one
+# still on disk there is the episode's
 Moved = namedtuple("Moved", "root was")
 NOT_MOVED = Moved(None, ())
 
 
-def moved_of(store, item_id, record):
-    """The item's `Moved` (above) for its pairing `record` (`pairing_of`'s)."""
+def moved_of(store, item_id, record, roots=None):
+    """The item's `Moved` (above) for its pairing `record` (`pairing_of`'s). `roots` ({source id: its path}, a caller's
+    own across many items: ▶'s looks): the sources read once, the first time a record names one."""
     from app import library_store
     root = None
     if isinstance(record, dict) and record.get("producer") == library_store.SOURCE_PRODUCER and \
             record.get("root") is not None:
-        root = next((s["path"] for s in store.sources(all=True, counts=False) if s["id"] == record["root"]), None)
+        roots = {} if roots is None else roots
+        if not roots:
+            roots.update((s["id"], s["path"]) for s in store.sources(all=True, counts=False))
+            roots.setdefault(None, None)            # (read: never again for a library with no sources)
+        root = roots.get(record["root"])
+    was = moved_videos(store, item_id)
+    return Moved(root, was) if root or was else NOT_MOVED
+
+
+def moved_videos(store, item_id):
+    """`Moved.was` alone (no sources read): what Connect's video lookup needs (`runner.Steps.video`)."""
+    from app import library_store
     was = []
     marked = (f"SELECT pairing FROM pairings p WHERE item_id = ? AND {library_store._ORIGIN_ROW} AND "
               f"{library_store._MOVED_ROW} AND NOT {library_store._VERSION_ROW} ORDER BY rowid DESC")
@@ -164,7 +176,7 @@ def moved_of(store, item_id, record):
             continue
         if isinstance(path, str) and path and path not in was:
             was.append(path)
-    return Moved(root, tuple(was)) if root or was else NOT_MOVED
+    return tuple(was)
 
 
 # --------------------------------------------------------------------------- #

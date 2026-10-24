@@ -26,6 +26,7 @@ from app import sources
 from app.connect import feed, fit_check, library, runner
 from app.services import play
 from tests.test_library_store_support import LANGUAGES, RESOURCES
+from tests.connect.fake_steps import FakeSteps
 from tests.test_sources_scan import _SHOWS, _drive, _empty, _fresh_module_state, _look, _settle, _video, _write  # noqa: F401
 
 _SUBS = {"ja": "placed_episode.srt", "zh": "night_market.srt"}
@@ -232,6 +233,10 @@ def test_a_video_still_there_or_only_its_subtitle_gone_is_no_move(language, monk
     os.remove(video)
     assert os.path.normcase(runner.video_left(record, moved.root)) == os.path.normcase(folder)
     assert runner.video_left(record, moved.root, reachable=lambda root: False) is None
+    # a video outside the source folder (on a drive of its own, maybe the one unplugged) is never called moved
+    elsewhere = dict(record, video_path=os.path.join(os.path.dirname(a), "otherdrive", "x.mkv"))
+    assert runner.video_left(elsewhere, moved.root) is None
+    assert runner.video_left(dict(record, video_path=a + "-sibling" + os.sep + "x.mkv"), moved.root) is None,         "a folder whose name only starts like the source's is outside it"
 
 
 def test_the_moved_line_is_a_no_video_wait_the_feed_names_and_the_rows_offer_find_its_folder():
@@ -274,3 +279,35 @@ def test_a_job_waiting_on_its_moved_video_keeps_that_wait_while_another_wait_hol
         assert ledger.job_by_id(job)["reason"] == line
     finally:
         ledger.close()
+
+
+class _KickedOnce(FakeSteps):
+    """Item 1 waits on its moved video, item 2 on Anki Miner (so the run goes on looking); Connect is kicked before
+    its second look (*Find its folder…*'s look), once."""
+
+    def __init__(self, folder, plan, kick_at):
+        super().__init__(folder, plan)
+        self.video_asked, self.looks, self.kick_at = [], 0, kick_at
+
+    def kicked(self):
+        self.looks += 1
+        return self.looks == self.kick_at
+
+    def video(self, lang, job):
+        self.video_asked.append(job["item_id"])
+        return super().video(lang, job)
+
+
+@pytest.mark.parametrize("kick_at, asked", [(2, 2), (None, 1)], ids=["kicked", "not-kicked"])
+def test_a_kick_lets_a_job_parked_on_its_moved_video_go_again_in_the_same_run(tmp_path, kick_at, asked):
+    # why: a Connect busy with other episodes runs for hours; after *Find its folder…* (its look kicks Connect) the
+    # moved episode is looked at again at the next look, never only at Connect's next start. Unkicked, it stays
+    # parked (one look a run: no battery drain)
+    from app.connect.ledger import Ledger
+    plan = {"queue": {"ja": [1, 2]}, "line": {"ja": [1, 2]}, "videos": {"1": None}, "miner_busy": True,
+            "moved": {"1": os.path.join(str(tmp_path), "Old")}}
+    steps = _KickedOnce(str(tmp_path), plan, kick_at)
+    with Ledger(str(tmp_path / "ledger.sqlite")) as ledger:
+        summary = runner.run({}, ["ja"], steps=steps, ledger=ledger, sleep=lambda s: None, looks=3)
+    assert steps.video_asked.count(1) == asked
+    assert summary["languages"]["ja"]["waiting"][1] == runner.MOVED.format(folder=os.path.join(str(tmp_path), "Old"))

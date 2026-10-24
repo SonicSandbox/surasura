@@ -72,7 +72,7 @@ def test_find_its_folder_adds_the_folder_picked_through_settings_add_a_folder(wi
     row = next(e[1] for e in win.page_widgets["current"].list.model().entries if e[0] == rows.ROW)
     ep = _moved(row.episodes[0], old)
     assert win.mine.find_folder(ep) is True
-    assert asked == [(strings.FIND_FOLDER_TITLE.format(label=ep.label), os.path.dirname(folder))]
+    assert asked == [(strings.FIND_FOLDER_TITLE.format(label=ep.label), os.path.dirname(old))]
 
     def read():
         store = _read_store(data_dir, user_files_dir)
@@ -87,17 +87,26 @@ def test_find_its_folder_adds_the_folder_picked_through_settings_add_a_folder(wi
     assert win.mine.find_folder(ep) is False, "a cancelled picker adds nothing"
 
 
-@pytest.mark.parametrize("moved, kicks", [(2, 1), (0, 0)])
-def test_a_look_that_recorded_videos_kicks_connect_and_one_that_found_none_doesnt(window, monkeypatch, moved, kicks):
-    # why: a job waiting on No video is parked for Connect's next start; after *Find its folder* (or any look that
-    # recorded a video for a known episode) the next start is now. A look that changed nothing starts nothing (S19)
+@pytest.mark.parametrize("moved, waiting, kicks", [(2, True, 1), (0, True, 0), (2, False, 0)],
+                         ids=["videos-found-and-one-waits", "nothing-found", "nobody-waits"])
+def test_a_look_that_recorded_videos_kicks_connect_only_while_an_episode_waits_on_its_video(window, monkeypatch,
+                                                                                         moved, waiting, kicks):
+    # why: a job waiting on No video is parked for Connect's next start; after *Find its folder* (a look that
+    # recorded videos for known episodes) the next start is now. A look that changed nothing, or found a new
+    # episode's video while no episode waits on one, starts nothing (S19: a Connect run is a sync and more)
+    from app.connect import feed
+    from app.qt import shell
     looks = source_looks.SourceLooks(_library()[0], "ja", kind=lambda _p: "network")
     _seed, win = window(looks)
     called = []
     monkeypatch.setattr(kick, "kick", lambda settings: called.append(dict(settings)))
+    item = feed.Item(kind=feed.NO_VIDEO if waiting else feed.WAITING, words="", tip="", job=1, made=0, total=0)
+    latest = feed.NOT_LOOKED._replace(on=True, items={7: item})
+    monkeypatch.setattr(shell, "connect_feed", lambda _l, _s: type("P", (), {"latest": lambda self: latest})())
     win._sources_looked({"sources": [], "moved": moved, "language": win.language})
     if kicks:
         assert wait_until(lambda: len(called) == kicks, 5)
     else:
         win._sources_looked({"sources": [], "language": win.language})
+        wait_until(lambda: called, 0.5)
         assert called == []

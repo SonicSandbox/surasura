@@ -60,7 +60,8 @@ def _pairings(language, ids, moved=None):
         with store:
             records = {i: library.pairing_of(store, i) for i in ids}
             if moved is not None:
-                moved.update((i, library.moved_of(store, i, r)) for i, r in records.items())
+                roots = {}                          # the sources read once for all of them
+                moved.update((i, library.moved_of(store, i, r, roots)) for i, r in records.items())
     except Exception as e:
         print(f"Play: the episode's pairing couldn't be read ({e!r})")
         return dict.fromkeys(ids)

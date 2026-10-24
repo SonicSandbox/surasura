@@ -368,13 +368,12 @@ class MineActions(QObject):
 
     # --- MV-2: Find its folder… ------------------------------------------------------------------------------ #
     def find_folder(self, ep):
-        """*Find its folder…*: the folder picker, opened at the nearest folder still there above where its video was,
-        then Settings' *Add a folder…* with the folder picked (`settings_sources.add_folder`: the store's `add_source`
-        and its look — refused there, greyed or said, as on Settings' page). -> True when a folder was asked for."""
+        """*Find its folder…*: the folder picker, opened at the folder above where its video was (never stat'ed here:
+        the window's thread waits on no disk; the picker falls back on its own when it's gone), then Settings' *Add a
+        folder…* with the folder picked (`settings_sources.add_folder`: the store's `add_source` and its look —
+        refused there, greyed or said, as on Settings' page). -> True when a folder was asked for."""
         from app.qt import settings_sources
-        where = getattr(ep.status, "moved", None) or ""
-        while where and not os.path.isdir(where) and os.path.dirname(where) != where:
-            where = os.path.dirname(where)          # (a stat or two: the picker opens on the window's thread anyway)
+        where = os.path.dirname(getattr(ep.status, "moved", None) or "")
         folder = self.pick_folder(strings.FIND_FOLDER_TITLE.format(label=ep.label), where)
         if not folder:
             return False

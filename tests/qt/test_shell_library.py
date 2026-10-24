@@ -975,11 +975,11 @@ def test_a_language_switch_holds_switching_in_the_bar_from_before_its_worker_unt
     services, win = opened()
     assert wait_until(lambda: _state(win) == "full", 15)
     words = shell.strings.LANGUAGE_SWITCHING.format(name="中文")
-    handed = HandOver(monkeypatch, win.bar_line, lambda: win.bar_line.full() == words)
+    handed = HandOver(monkeypatch, win.bar_arc, lambda: win.bar_arc.isVisible())     # IK-1: the arc at the hand-over
     _switch(services, "zh")
     assert wait_until(lambda: any(h.name == "language_changed" for h in handed), 10)
     switch = handed.at("language_changed")
-    assert switch.shown and switch.painted >= 1
+    assert switch.shown and switch.painted >= 1                     # (its words follow once live 300 ms, IK-1)
     assert _switched_to(win, services, "zh", 30)
     assert wait_until(lambda: not win.presses.find("language").live() and win.bar_line.full() != words, 10)
     ja.close()

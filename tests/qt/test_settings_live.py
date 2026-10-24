@@ -603,7 +603,7 @@ def test_a_format_export_asks_the_format_then_the_file_then_runs_and_says_so(qap
     assert wait_until(lambda: shell.bar_line.lines[-1:] == [live.flat(fakes.outcome.message)])
     export_call = next(args for name_, _gui, args in fakes.calls if name_ == "run_export")
     assert export_call == (live.EXPORTS[row_id], "ja", fmt, "D:\\書き出し\\list" + ext)
-    assert shell.bar_line.lines[-2] == S.EXPORT_RUNNING.format(name=page.row(row_id).row.label)
+    # (IK-1, Sonic decided: *Exporting …* is said only once the export has run 300 ms — this one is quicker)
     assert page.row(row_id).isEnabled()
 
 
@@ -634,12 +634,12 @@ def test_a_failing_export_says_why(qapp, fakes, save_as):
     page.live.export("export_frequency_list")
     assert wait_until(lambda: page.live.pop is not None)
     page.live.pop.pick()
-    assert wait_until(lambda: shell.bar_line.lines[-1] == "Failed to export: [Errno 13] Permission denied: 'D:\\x.zip'")
+    assert wait_until(lambda: shell.bar_line.lines[-1:] == ["Failed to export: [Errno 13] Permission denied: 'D:\\x.zip'"])
     fakes.outcome = OSError("the disk is full")             # a fault in the worker: said too
     page.live.export("export_frequency_list")
     assert wait_until(lambda: page.live.pop is not None)
     page.live.pop.pick()
-    assert wait_until(lambda: shell.bar_line.lines[-1] == "Failed to export: the disk is full")
+    assert wait_until(lambda: shell.bar_line.lines[-1:] == ["Failed to export: the disk is full"])
     assert page.row("export_frequency_list").isEnabled()
 
 

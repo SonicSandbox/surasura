@@ -280,7 +280,8 @@ def test_the_toggle_says_turning_on_while_its_run_goes_and_a_second_change_start
     page, store, rows, fake = make(world, monkeypatch=monkeypatch)
     fake.gate = threading.Event()
     rows.switch.toggle.changed.emit(True)
-    assert world.bar.held == {"settings:connect_switch": S.SWITCH_TURNING_ON}     # in the frame of the change
+    assert world.bar.held == {}                           # IK-1 (Sonic, decided): the arc now, the words once live 300 ms
+    assert wait_until(lambda: world.bar.held == {"settings:connect_switch": S.SWITCH_TURNING_ON}, 3)
     assert wait_until(lambda: names(world.events) == ["turn_on"], 5)
     assert rows.switch.toggle.isEnabled() and rows.switch.running and rows.switch.press.live()
     rows.switch.toggle.changed.emit(False)                # a change meanwhile: put back, nothing runs
@@ -319,7 +320,7 @@ def test_a_no_to_putting_the_shelf_back_still_turns_connect_off_and_puts_nothing
     assert names(world.events) == ["shelved"] and rows.switch.running and rows.switch.press is None
     assert world.bar.held == {}                                 # the question is what the change shows now
     asked.answer(False)
-    assert world.bar.held == {"settings:connect_switch": S.SWITCH_TURNING_OFF}
+    assert world.bar.held == {}                           # IK-1: *Turning off…* only if it is still running at 300 ms
     assert settled(rows)
     assert names(world.events) == ["shelved", "turn_off", "reload"]
     assert rows.switch.toggle.value() is False

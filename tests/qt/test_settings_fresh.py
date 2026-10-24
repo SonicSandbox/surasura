@@ -153,7 +153,8 @@ def test_one_reset_at_a_time_its_arc_turning_while_it_runs(window):
     row.ask().yes.click()
     # round 8 row 45: never greyed while it runs — its arc turns, *Starting a fresh library…* held in the bar
     assert row.running and row.button.isEnabled() and row.button.toolTip() == S.FRESH_RUNNING_TIP
-    assert qpress.arc(row.button) is not None and win.bar_line.full() == S.FRESH_RUNNING_TIP
+    assert qpress.arc(row.button) is not None                          # the arc now; the words once live 300 ms (IK-1)
+    assert wait_until(lambda: win.bar_line.full() == S.FRESH_RUNNING_TIP, 3)
     assert row.ask() is None and row.start() is False
     looks.then({"done": True, "known": "kept"})
     assert wait_until(lambda: not row.running and qpress.arc(row.button) is None, 10)

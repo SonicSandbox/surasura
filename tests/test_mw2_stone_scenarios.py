@@ -187,7 +187,9 @@ def test_an_empty_list_puts_no_card_away_and_says_so(lib, monkeypatch, how):
             written = _job(fake, host, "generate")
         else:
             store.finish(everything)
-            written = _job(fake, host)
+            assert _job(fake, host) == [], "Finished writes nothing before its Generate (W-1b: set aside too)"
+            _generate(root)
+            written = _job(fake, host, "generate")
     assert written == [], "an empty list writes nothing to Anki: no position, tag or suspend"
     assert _state(fake) == before
     # The empty list's line is the last word: after a Finish the re-order's "then Generate" line must not cover it.

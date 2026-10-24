@@ -141,7 +141,11 @@ ENSURE_AUDIO_EXAMPLE = False
 #     read in another script did (a Japanese list names 方 as かた and as ほう: as common as its commoner row, never its
 #     last — load_yomitan_frequency_list), so its frequency tier (the report's G-n badge) can move; a library holding a missing item lists it from its cached
 #     words (E2.2 K2). No tokenizing changed: SCHEMA_VERSION stays 20. 3.0: one re-analysis with 31.
-ENGINE_REVISION = 32
+# 33: Finished content is reference (W-1b): its names are the name tables' evidence, as a watched episode's are, so a
+#     name met in a finished show stays whole in the episodes ahead — a library holding Finished content can list its
+#     words differently with nothing changed in it. Never counted, as before. The token store moves its rows from kept
+#     to set aside in place, nothing tokenized: SCHEMA_VERSION stays 20. 3.0: one re-analysis with 31–32.
+ENGINE_REVISION = 33
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -3998,17 +4002,20 @@ def resolve_found_files(language, verbose=True, schedule=None, read_store=True, 
     return found_files
 
 
-def resolve_sentence_files(language):
+def resolve_sentence_files(language, with_lists=False):
     """The files that give sentences — 例文 (`sentence_corpus.best_for`) and the sentence dictionary (`build`): (counted,
     aside), absolute paths; the sentences come from counted + aside, in that order. Counted: Generate's list
-    (`resolve_found_files`, a missing item too). Aside (W-1): the library store's set-aside files (`text_lists`: watched
-    episodes while *Keep studying watched episodes* is off) — off the list, still sentences, as before a stone; Finished
-    stays out of both. None when there is no library store (JSON mode) or its lists can't be read now — the token
-    store's `reconcile(..., aside=None)`, its set-aside rows left as they are."""
+    (`resolve_found_files`, a missing item too). Aside: the library store's set-aside files (`text_lists`: reference —
+    Finished, W-1b, and watched episodes while *Keep studying watched episodes* is off, W-1) — off the list, still
+    sentences. None when there is no library store (JSON mode) or its lists can't be read now — the token store's
+    `reconcile(..., aside=None)`, its set-aside rows left as they are. `with_lists`: also the token store's other lists
+    as the indexer hands them (`indexer.token_store_lists`' dict: kept, aside, elsewhere, forgotten; None when they
+    can't be read now) — a reconcile with them leaves every row where the indexer would put it."""
     counted = [p for p, _label, _weight, _type in resolve_found_files(language, verbose=False, missing=True)]
     from app.indexer import token_store_lists
     _counted, more = token_store_lists(language, get_data_path(language), counted)
-    return counted, (more or {}).get("aside")
+    aside = (more or {}).get("aside")
+    return (counted, aside, more) if with_lists else (counted, aside)
 
 
 def journey_is_current(args, language):
@@ -4151,7 +4158,8 @@ def compute_run_signature(language, found_files, args, order_free=False, aside=(
 
 
 def aside_files(language, schedule):
-    """W-1: the library's set-aside files — watched episodes while *Keep studying watched episodes* is off — from a
+    """W-1: the library's set-aside files (`library_store.sets_aside`) — Finished (W-1b), and watched episodes while
+    *Keep studying watched episodes* is off — from a
     schedule read with them (`Store.schedule(with_aside=True)`, `read_only_schedule(with_aside=True)`, in the same
     transaction as the list): [(abs_path, source_type)], for the run signature's "reference" part. Never counted, their
     text is the name tables' evidence and 例文's sentences, so they are part of what a run reads. [] with none (JSON

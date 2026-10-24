@@ -104,6 +104,11 @@ class Presses:
     def any_live(self):
         return any(p.live() for p in self._by_key.values())
 
+    def showing(self):
+        """The presses live now and those that failed (the phase strip lights their circles before any job exists, and
+        shows a failed one as its circle's failure: PS-A1)."""
+        return tuple(p for p in self._by_key.values() if p.state in LIVE or p.state == FAILED)
+
     def subscribe(self, callback):
         """`callback(press)` after any press changed."""
         self._subscribers.append(callback)

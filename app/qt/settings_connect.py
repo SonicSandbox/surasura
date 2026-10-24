@@ -42,6 +42,7 @@ from PyQt6.QtWidgets import QApplication, QFileDialog, QHBoxLayout, QLabel, QLin
 from app import theme
 from app.connect import settings_values
 from app.qt import applog, bridge, confirm, style, windows
+from app.qt import press as qpress
 from app.qt import settings_catalog as catalog
 from app.qt import settings_controls as sc
 from app.qt import settings_strings as S
@@ -252,7 +253,9 @@ class ConnectRows(QObject):
 
 # --- Connect's switch --------------------------------------------------------------------------------------------- #
 class SwitchRow(QWidget):
-    """The toggle; `running` while its worker goes (the toggle greyed, one run at a time)."""
+    """The toggle; `running` while its worker goes (one run at a time). Round 8 row 45: never greyed — *Turning on…* /
+    *Turning off…* held in the bar with its arc from the change until the run ends (`press`); a question asked on the
+    way (the shelf) lets the press go, and its Yes takes it again."""
 
     def __init__(self, rows, slot):
         super().__init__(slot)
@@ -267,6 +270,7 @@ class SwitchRow(QWidget):
         slot.layout().addWidget(self)
         self.running = False
         self.asking = None                        # the question open now (a `confirm.Confirm`), if any
+        self.press = None                         # the switch's press while its run goes (round 8 row 45)
 
     def _saved(self):
         return bool(self.rows.store.get().get("connect_enabled"))
@@ -277,12 +281,12 @@ class SwitchRow(QWidget):
             self.toggle.set_value(self._saved())
 
     def _toggled(self, on):
-        if self.running:                          # one run at a time (greyed: only a programmatic change gets here)
+        if self.running:                          # one run at a time: a click while it goes (never greyed) is put back
             self.toggle.set_value(not on)
             return
         was_on = self._saved()
         self.running = True
-        self.toggle.setEnabled(False)
+        self._begin(S.SWITCH_TURNING_ON if on else S.SWITCH_TURNING_OFF)
         store, log = self.rows.store, self.rows.lines.call
         if on:
             bridge.run_in_worker(_switch_on, store, log, then=self._later(self._on_done, lambda a: a[0]),
@@ -300,9 +304,11 @@ class SwitchRow(QWidget):
         def then(answer):
             if rows.alive():
                 step(answer)
+                return
+            self._end()                           # (the page gone: the press is the shell's, let go all the same)
             # the page gone: an off that would ask first is a question nobody saw — as one dropped with its window it
             # answers nothing (confirm's rule): Connect stays on, as saved
-            elif saved(answer) and _alive(heard):
+            if saved(answer) and _alive(heard):
                 heard.settings_written.emit(("connect_enabled",))
         return then
 
@@ -344,6 +350,8 @@ class SwitchRow(QWidget):
                   S.OFF_ANYWAY_YES_TIP, S.OFF_ANYWAY_NO, S.OFF_ANYWAY_NO_TIP, answered)
 
     def _ask(self, title, body, yes, yes_tip, no, no_tip, then):
+        self._end()                               # the question is what the change shows now
+
         def answered(value):
             self.asking = None
             then(value)
@@ -360,6 +368,7 @@ class SwitchRow(QWidget):
                 self._finish(self._saved())
 
     def _off(self, put_back):
+        self._begin(S.SWITCH_TURNING_OFF)
         store, log = self.rows.store, self.rows.lines.call
         waiting = lambda: log(self._waiting_line())          # noqa: E731
         bridge.run_in_worker(_switch_off, put_back, store, log, waiting, then=self._later(self._off_step, _saved_off),
@@ -378,13 +387,24 @@ class SwitchRow(QWidget):
     def _finish(self, on, told=False):
         """The run ended: the toggle shows `on` and is given back; `told`: the switch saved the file (the service
         reloaded it) — the page and the shell hear the write."""
+        self._end()
         if not self.rows.alive():
             return
         self.running = False
         self.toggle.set_value(on)
-        self.toggle.setEnabled(True)
         if told:
             self.page.bridge.settings_written.emit(("connect_enabled",))
+
+
+    def _begin(self, words):
+        """The run's press: `words` held in the bar with its arc (a wait worth naming), painted before the worker."""
+        self._end()
+        self.press = qpress.begin(None, "settings:connect_switch", busy=words, win=self.page.shell)
+
+    def _end(self):
+        p, self.press = self.press, None
+        if p is not None:
+            qpress.end(p, self.page.shell)
 
 
 # --- the Anki Miner card ------------------------------------------------------------------------------------------ #
@@ -404,7 +424,8 @@ class MinerCard(QWidget):
         box.setSpacing(round(6 * _f()))
         self.words = _label(S.MINER_CHECKING, "settingsvalue", self)
         box.addWidget(self.words)
-        self.update_note = _button("", S.MINER_UPDATE_TIP, self._open_update, self, kind="settingsmore")
+        self.update_note = qpress.room(_button("", S.MINER_UPDATE_TIP, self._open_update, self, kind="settingsmore"),
+                                       end=True)
         self.update_note.hide()
         box.addWidget(self.update_note, 0, Qt.AlignmentFlag.AlignLeft)
         # U6: the bigger suggestion, once installed, until one click or Not now
@@ -413,7 +434,8 @@ class MinerCard(QWidget):
         star.setContentsMargins(0, 0, 0, 0)
         star.addWidget(_label(S.STAR_ASK, "settingshelp", self.star_box))
         star_row = FlowLayout(None, round(8 * _f()))      # buttons wrap to a second line, never cut (wizard text fix)
-        self.star_button = _button(S.STAR_BUTTON, S.STAR_BUTTON_TIP, self._starred, self.star_box)
+        self.star_button = qpress.room(_button(S.STAR_BUTTON, S.STAR_BUTTON_TIP,
+                                               lambda: self._starred(self.star_button), self.star_box))
         self.not_now = _button(S.NOT_NOW, S.NOT_NOW_TIP, self._not_now, self.star_box)
         star_row.addWidget(self.star_button)
         star_row.addWidget(self.not_now)
@@ -428,14 +450,16 @@ class MinerCard(QWidget):
         box.addWidget(self.steps)
         buttons = FlowLayout(None, round(8 * _f()))      # four buttons are wider than the card: they wrap, never cut
         self.install = _button(S.INSTALL_MINER, S.INSTALL_MINER_TIP, self._install, self)
-        self.star_line = _button(S.STAR_LINE, S.STAR_LINE_TIP, self._starred, self, kind="settingsmore")   # AM★
+        self.star_line = qpress.room(_button(S.STAR_LINE, S.STAR_LINE_TIP, lambda: self._starred(self.star_line),
+                                             self, kind="settingsmore"), end=True)                 # AM★
         self.browse = _button(S.BROWSE_MINER, S.BROWSE_MINER_TIP, self._browse, self)
-        self.open_miner = _button(S.OPEN_MINER, S.OPEN_MINER_TIP, self._open, self)
+        self.open_miner = qpress.room(_button(S.OPEN_MINER, S.OPEN_MINER_TIP, self._open, self))
         self.check_again = _button(S.CHECK_AGAIN, S.CHECK_AGAIN_TIP, self.check, self)
         for b in (self.install, self.star_line, self.browse, self.open_miner, self.check_again):
             buttons.addWidget(b)
         box.addLayout(buttons)
-        self.star_link = _button(S.STAR_LINK, S.STAR_LINK_TIP, self._open_star, self, kind="settingsmore")
+        self.star_link = qpress.room(_button(S.STAR_LINK, S.STAR_LINK_TIP, lambda: self._open_star(self.star_link),
+                                             self, kind="settingsmore"), end=True)
         box.addWidget(self.star_link, 0, Qt.AlignmentFlag.AlignLeft)
         self._buttons(None, answered=True)
         slot.layout().addWidget(self)
@@ -555,15 +579,16 @@ class MinerCard(QWidget):
 
     def _open_update(self):
         if self.update_url:
-            windows.open_url(self.update_url)
+            qpress.open(self.page.shell, self.update_url, control=self.update_note)    # off the window's thread
         else:
             install_anki_miner(self.page.shell)
 
-    def _open_star(self):
-        windows.open_url(settings_values.STAR_URL)
+    def _open_star(self, control=None):
+        """The ⭐ page in the browser, opened on a worker (`press.open`), `control`'s arc turning meanwhile."""
+        qpress.open(self.page.shell, settings_values.STAR_URL, control=control)
 
-    def _starred(self):
-        self._open_star()
+    def _starred(self, control=None):
+        self._open_star(control)
         self._answer("starred")
 
     def _not_now(self):
@@ -593,9 +618,11 @@ class MinerCard(QWidget):
         self.check()
 
     def _open(self):
+        """*Open Anki Miner*: the program started on a worker (`press.open`), the button's arc turning meanwhile."""
         path = (self.state or {}).get("path")
-        if path and not windows.open_url(path):
-            self.rows.say(S.MINER_NOT_OPENED.format(path))
+        if path:
+            qpress.open(self.page.shell, path, control=self.open_miner,
+                        failed=lambda _info: self.rows.say(S.MINER_NOT_OPENED.format(path)))
 
 
 # --- New cards a day ------------------------------------------------------------------------------------------------ #
@@ -620,7 +647,7 @@ class NewCardsRow(QWidget):
         self.field.hide()
         self.words = _label(S.NEW_CARDS_READING, "settingsaffix", self)
         self.words.setWordWrap(False)
-        self.change = _button(S.CHANGE_IN_ANKI, S.CHANGE_IN_ANKI_TIP, self._change, self)
+        self.change = qpress.room(_button(S.CHANGE_IN_ANKI, S.CHANGE_IN_ANKI_TIP, self._change, self))
         self.change.hide()
         line.addWidget(self.field)
         line.addWidget(self.words)
@@ -628,6 +655,7 @@ class NewCardsRow(QWidget):
         slot.layout().addWidget(self)
         self.waits = bridge.Relay(self)           # the write's waiting line (from its worker)
         self.waits.said.connect(self._waiting)
+        self.press = None                         # *Change in Anki…*'s press while its write goes (round 8 row 45)
 
     def read(self):
         """Anki's value for the deck, on a worker (no lock: one read). Asked while a write goes (a deck or address
@@ -720,21 +748,25 @@ class NewCardsRow(QWidget):
                 self.rows.say(_reread_line(reading, now))
             return
         self.busy = True
-        self.field.setEnabled(False)
-        self.change.setEnabled(False)
-        rows, store = self.rows, self.rows.store
+        self.field.setEnabled(False)              # the number held while it is written (the button keeps its look:
+        rows, store = self.rows, self.rows.store  # its arc turns from the Yes, round 8 row 45)
+        self.press = qpress.begin(self.change, "settings:new_cards", win=self.page.shell)
 
         def written(outcome):                     # a plain function: the pace saved though the page went (S1)
             _save_pace(store, outcome)            # first: no painting can stop it
             if rows.alive():
                 self._written(outcome)
+            else:
+                self._end_press()
         bridge.run_in_worker(_write_new_cards, self.rows.settings(), reading.deck, value, reading.value,
                              self.rows.cancel, self.waits.call, then=written, failed=self._broke)
 
     def _waiting(self, line):
-        if self.rows.alive() and self.busy:
-            self.change.setText(S.NEW_CARDS_WAITING)
-            self.rows.say(line)
+        """Anki's lock held by another writer: the press waits, the line saying for what held in the bar (its words
+        never relabel the button: round 8 row 45)."""
+        if self.rows.alive() and self.busy and self.press is not None:
+            applog.log("settings", line)
+            qpress.report(self.press, self.page.shell, "wait", line)
 
     def _written(self, outcome):
         """The write's end painted (the pace is saved beside it, page or not: `_save_pace`)."""
@@ -746,17 +778,22 @@ class NewCardsRow(QWidget):
 
     def _broke(self, info):
         if not self.rows.alive():
+            self._end_press(failed=True)
             return
         self._done()
         self.rows.say(S.NEW_CARDS_BROKE.format(info[0]))
         if self.reading is not None:
             self.field.set_value(self.reading.value)
 
+    def _end_press(self, failed=False):
+        p, self.press = self.press, None
+        if p is not None:
+            qpress.end(p, self.page.shell, failed=failed)
+
     def _done(self):
         self.busy = False
+        self._end_press()
         self.field.setEnabled(True)
-        self.change.setEnabled(True)
-        self.change.setText(S.CHANGE_IN_ANKI)
         if self.stale:                            # a deck or address changed while the write went: read it now
             self.stale = False
             self.read()

@@ -34,6 +34,7 @@ from PyQt6 import sip
 from PyQt6.QtCore import QObject
 
 from app.qt import applog, bridge, strings, windows
+from app.qt import press as qpress
 from app.qt import settings_catalog as catalog
 from app.qt import settings_controls as sc
 from app.qt import settings_strings as S
@@ -76,20 +77,23 @@ def releases(before, changes):
     return any(key in changes and changes[key] != before.get(key) for key in RELEASE_KEYS)
 
 
-def kick_on_release(before, changes, store=None):
+def kick_on_release(before, changes, store=None, win=None):
     """After a settings write of `changes` onto `before` that `releases` episodes: Connect kicked on a worker, once
     `store`'s queued write has landed (Connect reads settings.json from disk). `kick.kick` starts it, or wakes the one
     running (it reads the trust switch at its next episode and the cap at its next look); nothing while Connect is
     off. The ones a running Connect set aside this run as *Not timed* still mine at its next start (the same gap as
-    *Mine anyway*'s, P4.1 follow-up F-3). -> True when it was asked."""
+    *Mine anyway*'s, P4.1 follow-up F-3). `win` (the main window): its bar's arc turns, no words, until the kick has
+    been handed over (round 8 row 45: the release is light — a mark at most). -> True when it was asked."""
     if not releases(before, changes):
         return False
     from app.services import settings as settings_service
     after = settings_service.thaw(before) if before is not None else {}
     for key, value in changes.items():
         settings_service.put(after, key, value)
-    bridge.run_in_worker(_kick, after, store,
-                         failed=lambda info: applog.log("settings", f"Connect's start: {info[0]}"))
+    def failed(info):
+        applog.log("settings", f"Connect's start: {info[0]}")
+    if win is None or qpress.run(None, "settings:connect_release", _kick, after, store, failed=failed, win=win) is None:
+        bridge.run_in_worker(_kick, after, store, failed=failed)     # (one already turning: this one kicks too)
     return True
 
 

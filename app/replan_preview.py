@@ -695,7 +695,8 @@ class Host:
                         self._due = time.monotonic()
                 self._wake.set()
         if verdict is not None and verdict[0] == "replan-now" and report is not None and report.get("ok"):
-            self._tell(REPLAN_THEN_GENERATE if self._generate is not None else REPLAN_THEN_GENERATE_CM)
+            if not report.get("empty_list"):        # M-W2-1: the empty list's own line stands
+                self._tell(REPLAN_THEN_GENERATE if self._generate is not None else REPLAN_THEN_GENERATE_CM)
             self._done_at = None
             self._ask_generate("replan-now: " + ",".join(verdict[1]))
         return done
@@ -795,6 +796,9 @@ class Host:
 
     def _said_done(self, report, job):
         from modules.junban import spaced
+        if report.get("empty_list"):
+            self._tell(report["message"])            # M-W2-1: nothing that counts, so nothing put away — said so
+            return
         written = set(report.get("written") or [])
         n = job.front_size or 0
         front = len(written & set(job.front_ids))

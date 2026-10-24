@@ -22,6 +22,7 @@ from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QFileDialog
 
 from app import library_store as ls
+from app.qt import press as qpress
 from app.qt import settings_sources, windows
 from app.qt import settings_strings as S
 from app.services import source_looks
@@ -198,11 +199,14 @@ def test_a_stop_answered_after_the_window_closed_is_told_in_the_bar_and_never_pr
     win, page, row, folders = _open(window, looks)
     assert wait_until(lambda: len(folders.lines) == 2, 10)
     folders.lines[2].stop.click()
-    assert not folders.lines[2].stop.isEnabled()
+    # round 8 row 45: never greyed — its arc turns until the stop answers, and a press meanwhile stops nothing more
+    assert folders.lines[2].stop.isEnabled() and qpress.arc(folders.lines[2].stop) is not None
+    folders.lines[2].stop.click()
     folders.close()
     QApplication.processEvents()
     again = settings_sources.open_window(win)                          # opened again before the stop answered
-    assert again is not folders and not again.lines[2].stop.isEnabled() and again.lines[1].stop.isEnabled()
+    assert again is not folders and qpress.arc(again.lines[2].stop) is not None     # its arc taken by the new line
+    assert qpress.arc(again.lines[1].stop) is None and again.lines[1].stop.isEnabled()
     again.lines[2].stop.click()
     assert looks.stops == [(2, "ja")]                                  # one stop, never two
     again.close()
@@ -212,7 +216,8 @@ def test_a_stop_answered_after_the_window_closed_is_told_in_the_bar_and_never_pr
     assert row.summary.text() == "1 folder"
     third = settings_sources.open_window(win)
     try:
-        assert set(third.lines) == {1} and third.lines[1].stop.isEnabled()
+        assert set(third.lines) == {1} and third.lines[1].stop.isEnabled() and qpress.arc(third.lines[1].stop) is None
+        assert not win.presses.any_live()
     finally:
         third.close()
 
@@ -238,6 +243,14 @@ def test_look_again_in_the_window_is_a_full_look(window):
     looks.asks.clear()
     folders.look.click()
     assert looks.asks and looks.asks[-1][1] is True        # refreshed: every folder, in full
+    # round 8 row 45 (P5-A2): the Refresh key's press, on this button — its arc from the press, the bar's arc never
+    # turning beside it (one mark, one end rule: P3's), until the look's summary; a press meanwhile asks nothing
+    assert qpress.arc(folders.look) is not None and folders.look.isEnabled() and not win.bar_arc.isVisible()
+    assert win.presses.find("sources:refresh").live()
+    folders.look.click()
+    assert len(looks.asks) == 1
+    looks.publish()                                        # the look's summary
+    assert qpress.arc(folders.look) is None and not win.presses.find("sources:refresh").live()
 
 
 def test_the_window_grows_to_show_folders_that_arrive_then_scrolls(window):
@@ -302,3 +315,23 @@ def test_a_library_that_cant_be_written_greys_stop_read_again_and_add_with_the_r
     looks.publish()
     assert folders.lines[1].stop.isEnabled() and folders.lines[1].stop.toolTip() == folders.lines[1].tip
     assert row.add.toolTip() == S.SOURCES_ADD_TIP
+
+
+# --- round 8 row 45: every press reacts at once ------------------------------------------------------------------- #
+def test_stop_reading_paints_its_arc_before_the_looks_are_asked(window):
+    # *Stop reading* greyed with no words: its arc now turns, painted before the looks' worker is asked to stop.
+    from tests.qt.press_handover import Paints, arc_turning
+    looks = ActingLooks([_src(1, ANIME, 412), _src(2, DRAMA, 30)], hold=True)
+    win, page, row, folders = _open(window, looks)
+    assert wait_until(lambda: len(folders.lines) == 2 and folders.lines[2].stop.isVisible(), 10)
+    button = folders.lines[2].stop
+    paints, seen, stop = Paints(button), [], looks.stop
+
+    def asked(root_id, then=None, language=None):
+        seen.append((arc_turning(button), paints.n))
+        return stop(root_id, then, language)
+    looks.stop = asked
+    button.click()
+    assert seen and seen[0][0] and seen[0][1] >= 1
+    looks.held.pop()()
+    assert wait_until(lambda: 2 not in folders.lines and not win.presses.any_live(), 5)

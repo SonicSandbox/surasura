@@ -9,6 +9,11 @@ the buckets): no input, its time still running; after the drop it is back, unani
 
 The message is plain text (a title is never read as markup). The window never waits on a toast; what Undo does is the
 caller's (W3.1's undo stack).
+
+**Its write waiting** (round 8 row 45): a toast that stands for a write still on its way reads *"… · saving…"*
+(`set_saving`, the drag controller's one rule for every write's toast, wherever it shows — `drag.DragController`).
+**Nothing moves** as those words come and go: a toast that may say them keeps their room from the moment it shows
+(`keep_room`), and a long message is elided before them, never they.
 """
 from PyQt6.QtCore import QEvent, QObject, Qt, QTimer
 from PyQt6.QtGui import QFontMetrics, QPainter
@@ -44,6 +49,8 @@ class ToastCard(motion.Overlay):
         self.buttons = []                   # made as a toast first needs them, each wired once (the wiring check)
         self._callbacks = []
         self.message = ""
+        self.base = self.tail = ""          # the message's own words, and what follows them (*· saving…*), never elided
+        self.room = ""                      # words whose room the card keeps while it shows (it never moves for them)
 
     def _button(self, i):
         while len(self.buttons) <= i:
@@ -59,10 +66,15 @@ class ToastCard(motion.Overlay):
         if n < len(self._callbacks) and self._callbacks[n] is not None:
             self._callbacks[n]()
 
+    def set_message(self, message, tail=""):
+        self.base, self.tail = message, tail
+        self.message = message + tail
+        self.setAccessibleName(self.message)
+
     def set_content(self, message, actions):
         """`actions`: [(label, tooltip, callback)], at most MAX_BUTTONS."""
-        self.message = message
-        self.setAccessibleName(message)
+        self.room = ""
+        self.set_message(message)
         actions = actions[:MAX_BUTTONS]
         self._callbacks = [callback for _label, _tip, callback in actions]
         for i, (label, tip, _callback) in enumerate(actions):
@@ -78,7 +90,9 @@ class ToastCard(motion.Overlay):
         """The width that shows the whole message and the buttons."""
         lay = self.layout()
         m = lay.contentsMargins()
-        width = QFontMetrics(self.text.font()).horizontalAdvance(self.message) + 2
+        fm = QFontMetrics(self.text.font())
+        width = fm.horizontalAdvance(self.base) + max(fm.horizontalAdvance(self.tail),
+                                                      fm.horizontalAdvance(self.room)) + 2
         for b in self.buttons:
             if not b.isHidden():
                 width += lay.spacing() + b.sizeHint().width()
@@ -86,7 +100,9 @@ class ToastCard(motion.Overlay):
 
     def fit_text(self):
         fm = QFontMetrics(self.text.font())
-        self.text.setText(fm.elidedText(self.message, Qt.TextElideMode.ElideRight, max(0, self.text.width())))
+        tail = self.tail
+        self.text.setText(fm.elidedText(self.base, Qt.TextElideMode.ElideRight,
+                                        max(0, self.text.width() - fm.horizontalAdvance(tail))) + tail)
         self.text.setToolTip(self.message if self.text.text() != self.message else "")
 
     def resizeEvent(self, event):
@@ -113,7 +129,10 @@ class ToastHost(QObject):
         self.life.timeout.connect(self.close)
         self.dragging = False
         self.alive = False
-        parent.installEventFilter(self)
+        self.text = ""                                # the message as shown, without *· saving…*
+        self.saving = False
+        self.on_show = None                           # called as each toast shows (the drag controller's: which writes
+        parent.installEventFilter(self)               # it stands for)
 
     # --- showing ---------------------------------------------------------------------------------------------- #
     def show(self, message, undo=None, buttons=(), long=False):
@@ -126,8 +145,11 @@ class ToastHost(QObject):
         if undo is not None:
             actions.append((strings.TOAST_UNDO, strings.TOAST_UNDO_TIP, self._closing(undo)))
         actions.extend((label, tip, self._closing(cb)) for label, tip, cb in buttons)
+        self.text, self.saving = message, False
         self.card.set_content(message, actions)
         self.alive = True
+        if self.on_show is not None:
+            self.on_show()
         self.life.start(theme.MOTION["toast-shown-anki" if long else "toast-shown"])
         self.place()
         self._announce(message)
@@ -138,7 +160,26 @@ class ToastHost(QObject):
             return
         motion.open_overlay(self.card, self.card.how, self.card.shadow_name)
 
+    def set_saving(self, on):
+        """The shown toast's write is still on its way (`on`): *"… · saving…"* after its words; off, its words alone."""
+        on = bool(on) and self.alive
+        if on == self.saving:
+            return
+        self.saving = on
+        if on:
+            self.card.room = strings.TOAST_SAVING      # (kept from now on, if `keep_room` didn't already)
+        self.card.set_message(self.text, strings.TOAST_SAVING if on else "")
+        self.place()
+        self.card.update()
+
+    def keep_room(self):
+        """The shown toast may say *· saving…*: its room kept from now on, so nothing moves when it does."""
+        if self.alive and self.card.room != strings.TOAST_SAVING:
+            self.card.room = strings.TOAST_SAVING
+            self.place()
+
     def close(self):
+        self.saving = False
         self.alive = False
         self.life.stop()
         self.card.hide()

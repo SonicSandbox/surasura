@@ -362,6 +362,8 @@ SIZES = {
     "col-diff": 118, "col-stat": 150, "col-acts": 118, "button": 32, "button-sm": 26, "icon-button": 28,
     "press-room": 18,                       # round 8 row 45: a pressed button's padding, both sides: its arc's room
     #                                         (`press.ARC`, 14, and ~2 px of air each side; fixed, as the arc is)
+    "phase-circle": 22, "phase-mark": 12, "phase-gap": 3,   # the phase strip: a circle's side, its logo or character
+    #                                         inside the ring, the air between two (fixed: the footer's 39 px is)
     "status-pill": 24, "search-w": 230, "search-w-narrow": 172, "search-h": 32, "generate": 34, "footer": 39,
     "goal-strip": 46, "bucket": 58, "tray": 452, "search-results": 470, "side-panel": 360, "side-panel-narrow": 316,
     "side-rail": 330, "settings-nav": 228, "settings-card-max": 820, "settings-search-max": 520,
@@ -370,7 +372,8 @@ SIZES = {
     "wizard-steps": 244,
 }
 # the footer: 39 px + the 1 px line above it = the Windows taskbar's 40 px at 100 % (Windows' scale only; G2.3 C3)
-FIXED_SIZES = frozenset({"hero-cover-w", "hero-cover-h", "switch-w", "switch-h", "footer", "press-room"})
+FIXED_SIZES = frozenset({"hero-cover-w", "hero-cover-h", "switch-w", "switch-h", "footer", "press-room",
+                         "phase-circle", "phase-mark", "phase-gap"})
 ICON_PX = (13, 20)                       # icons are fixed sizes in this range
 WINDOW_MIN = (1000, 620)
 NARROW_BELOW = 1150
@@ -408,6 +411,7 @@ MOTION = MappingProxyType({
     "toast-shown-anki": 12000, "row-flash": 1600, "switch-knob": 260, "chevron": 260, "hover": FAST,
     "mining-spin": 1200, "footer-pulse": 1400, "generate-bar": 300,
     "press-glint": 2400,                 # round 8 row 45: the known count's glint running along its underline once
+    "phase-fade": 260,                   # the phase strip: a circle's done tick fading back to dim (after its 2 s)
     "tooltip-delay": 380, "tooltip-again": 60,
     "tooltip-again-within": 500, "fit-debounce": 80, "drag-start-px": 6, "click-swallow-after-drag": 50,
     "auto-scroll-px-per-frame": 12, "auto-scroll-edge": 50, "auto-scroll-dock": 48,

@@ -279,10 +279,10 @@ def test_G2_move_up_closes_the_sheet_moves_the_first_piece_keeps_the_rest_in_goa
     assert op[1] == list(show.pieces[0].item_ids)                     # Ep 1–12 only
     if where == "top":
         assert op[2]["tier"] == hero.tier and op[2]["before_id"] == hero.episodes[0].id
-        assert win.toasts.card.message == strings.GOAL_UP.format(title=show.title, first="Ep 1–12", n=1)
+        assert win.toasts.card.base == strings.GOAL_UP.format(title=show.title, first="Ep 1–12", n=1)
     else:
         assert op[2]["tier"] == "soon" and op[2]["before_id"] is None and op[2]["after_id"] is None
-        assert "→ Soon" in win.toasts.card.message and "the rest stays in Goal" in win.toasts.card.message
+        assert "→ Soon" in win.toasts.card.base and "the rest stays in Goal" in win.toasts.card.base
     first = show.pieces[0].item_ids[0]
     assert wait_until(lambda: sheet.washed is not None, 5)
     row = next(r for r in rows_of(win) if any(e.id == first for e in r.episodes))
@@ -327,7 +327,7 @@ def test_a_one_part_title_moves_whole_and_its_toast_says_so(world):
     novel = goal_view(win).works[1]
     sheet.pick(novel, "top")
     assert calls(writer, "move")[0][1] == list(novel.item_ids)
-    assert win.toasts.card.message == strings.GOAL_UP_ALL.format(title=novel.title, n=1)
+    assert win.toasts.card.base == strings.GOAL_UP_ALL.format(title=novel.title, n=1)
 
 
 def test_IK11_move_to_finished_takes_the_whole_title_and_offers_the_cards_choice(world):
@@ -374,7 +374,7 @@ def test_remove_asks_naming_the_count_then_trashes_every_file_and_its_toast_undo
     card.yes.click()
     op = calls(writer, "remove")[0]
     assert op[1] == list(book.item_ids)
-    assert win.toasts.card.message == strings.GOAL_REMOVED.format(title=book.title, n=6)
+    assert win.toasts.card.base == strings.GOAL_REMOVED.format(title=book.title, n=6)
     assert wait_until(lambda: writer.saved, 5)
     settle()
     win.toasts.card.buttons[0].click()                                 # Undo

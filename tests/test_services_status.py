@@ -895,7 +895,8 @@ def test_connects_mining_is_a_job_in_the_one_registry_so_the_bottom_line_names_i
     provider()                                                            # one look between batches: kept
     assert len(registry.live(S.CONNECT_JOB_KIND)) == 1
     provider()                                                            # two: over
-    assert registry.live(S.CONNECT_JOB_KIND) == () and status.snapshot().lines == ()
+    assert registry.live(S.CONNECT_JOB_KIND) == ()                     # (the waiting episode: its own job, the strip's —
+    assert status.snapshot().lines == ()                               #  a recorded wait, no job under way: PS-A3)
     looks.append(mining("Cutting clips (9 of 40)", 10))
     provider()
     assert len(registry.live(S.CONNECT_JOB_KIND)) == 1

@@ -280,7 +280,7 @@ def test_A2_27_the_top_icon_places_the_arrival_through_the_writer_and_the_tray_s
     ids = list(row.arrival.item_ids)
     row.icon.click()
     assert calls(writer, "place") == [("place", ids, {"where": "top"})]
-    assert win.toasts.card.message == strings.TRAY_PLACED["top"].format(title=row.arrival.title)
+    assert win.toasts.card.base == strings.TRAY_PLACED["top"].format(title=row.arrival.title)
     assert wait_until(lambda: len(tray_rows(win)) == 2, 5)
     settle()
     assert tray_of(win).isVisible()                                   # open for the next one
@@ -329,7 +329,7 @@ def test_IK_11_finished_on_a_watched_arrival_offers_D14s_choice_and_take_out_fol
     row.icon.click()
     assert calls(writer, "place") == [("place", ids, {"where": "finished"})]
     card = win.toasts.card
-    assert card.message == strings.DRAG_FINISHED.format(title=row.arrival.title)
+    assert card.base == strings.DRAG_FINISHED.format(title=row.arrival.title)
     labels = [b.text() for b in card.buttons if b.isVisible()]
     assert strings.DRAG_KEEP in labels and strings.DRAG_TAKE_OUT in labels
     settle()
@@ -426,7 +426,7 @@ def test_remove_asks_first_naming_the_count_esc_is_no_and_yes_removes_with_undo(
     tray.question.yes.click()
     assert calls(writer, "remove") == [("remove", ids, {})]
     card = win.toasts.card
-    assert card.message == strings.TRAY_REMOVED.format(title=row.arrival.title)
+    assert card.base == strings.TRAY_REMOVED.format(title=row.arrival.title)
     undo = next(b for b in card.buttons if b.text() == strings.TOAST_UNDO)
     assert wait_until(lambda: writer.saved, 3)
     settle()
@@ -551,7 +551,7 @@ def test_G2_IK3_a_tray_file_rested_on_a_group_joins_it_with_one_add_to_group_toa
     release_global(win, to)
     assert calls(writer) == [("add_to_group", [], {"piece_id": group.piece_id, "piece_ids": [], "item_ids": ids})]
     text = strings.ITEM_GROUPED_WITH.format(other=row.arrival.title, title=group.title)
-    assert wait_until(lambda: win.toasts.card.message == text, 5)
+    assert wait_until(lambda: win.toasts.card.base == text, 5)
     assert win.toasts.card.buttons, "its Undo"
 
 

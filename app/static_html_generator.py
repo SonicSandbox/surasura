@@ -6,7 +6,7 @@ import bisect
 import pandas as pd
 import webbrowser
 
-from app.path_utils import get_user_file, get_resource, SIDECAR_SUFFIX, read_text
+from app.path_utils import get_user_file, get_resource, SIDECAR_SUFFIX, read_text, report_name
 from app import settings_manager
 
 # Configuration
@@ -58,18 +58,24 @@ def open_report(app_mode=False, file=None):
 
     `file` (a file's name as the report names it, its basename; Sonic 2026-10-24): open the report ON that file, its
     tab clicked (`#file=<name>`, read as the report loads). Windows drops a file URL's fragment on its way to the
-    default browser, so a small page beside the report carries it (`OPEN_ON_NAME`, written again each time): it
-    replaces itself with the report at that fragment. A name the report doesn't hold opens where it opens by itself."""
+    default browser, so a small page beside the report carries it (`OPEN_ON_NAME`): it replaces itself with the report
+    at that fragment. Written at each such open (~200 bytes; cheaper than checking whether it already holds the name),
+    and left beside the report. A name the report doesn't hold opens where it opens by itself; a page that can't be
+    written (results read-only, a lock) opens the report itself."""
     path = os.path.join(get_user_file("results"), REPORT_NAME)
     if not os.path.exists(path):
         return False
     if file:
         from urllib.parse import quote
         target = json.dumps(f"{REPORT_NAME}#file={quote(file, safe='')}")     # (quoted: no < or / left in it)
-        path = os.path.join(os.path.dirname(path), OPEN_ON_NAME)
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(f'<!DOCTYPE html><meta charset="utf-8"><title>Surasura</title>'
-                    f'<body style="background:#1e1e1e"><script>location.replace({target});</script>\n')
+        page = os.path.join(os.path.dirname(path), OPEN_ON_NAME)
+        try:
+            with open(page, "w", encoding="utf-8") as f:
+                f.write(f'<!DOCTYPE html><meta charset="utf-8"><title>Surasura</title>'
+                        f'<body style="background:#1e1e1e"><script>location.replace({target});</script>\n')
+            path = page
+        except OSError as e:
+            print(f"Warning: the journey's page couldn't be written ({e!r}); opening the report itself")
     if app_mode:
         open_as_app(path)
     else:
@@ -880,7 +886,7 @@ def _journey_stones(data, file_order, stats_map, language, marks=None):
     place, watched_name = {}, {}
     for n, (rel, _tier, watched, counted) in enumerate(marks):
         if counted:
-            name = os.path.basename(rel)
+            name = report_name(rel)
             place.setdefault(name, n)
             watched_name[name] = watched_name.get(name, True) and bool(watched)
     for entry in data["progressive"] + data["completed_files"]:
@@ -889,7 +895,7 @@ def _journey_stones(data, file_order, stats_map, language, marks=None):
     shown = set(stats_map) | {entry["filename"] for entry in data["progressive"]}
     aside = []
     for n, (rel, tier, watched, counted) in enumerate(marks):
-        name = os.path.basename(rel)
+        name = report_name(rel)
         if watched and not counted and name not in shown:
             shown.add(name)
             aside.append((n, name, tier == "goal"))

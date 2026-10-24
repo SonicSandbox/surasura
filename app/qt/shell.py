@@ -642,10 +642,9 @@ class Services:
 
 
 def journey_file(episode):
-    """The journey's name for an episode's file — its basename, as the report names a file (`_journey_stones`) — or
-    None (no episode, or one with no file)."""
-    rel = getattr(episode, "rel_path", None) or ""
-    return os.path.basename(rel.replace("\\", "/")) or None
+    """The journey's name for an episode's file (`path_utils.report_name`, as the report names it), or None (no
+    episode, or one with no file)."""
+    return path_utils.report_name(getattr(episode, "rel_path", None)) or None
 
 
 # --- window_state.json (02 §2.1) ---------------------------------------------------------------------------------- #

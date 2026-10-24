@@ -301,7 +301,7 @@ def test_no_journey_opens_by_itself_at_start_after_a_generate_or_a_level_change(
     monkeypatch.setattr(static_html_generator, "open_report",
                         lambda app_mode=False, file=None: opened.append("report") or True)
     monkeypatch.setattr(webbrowser, "open", lambda url, *a, **k: opened.append(url))
-    monkeypatch.setattr(world.services, "open_journey", lambda: opened.append("window") or True)
+    monkeypatch.setattr(world.services, "open_journey", lambda *file: opened.append("window") or True)
     _journey_on_disk()
     world.start()                                                   # the start
     assert wait_until(lambda: not world.d.journey_button.isHidden())

@@ -1990,8 +1990,9 @@
             // after it, so paged chunks still insert below the section, in order.
             buildCompletedSection(tabsContainer, doneList);
 
+            let loadThrough = null;     // paged: renders the sidebar's chunks up to an index (the asked file's)
             if (activeList.length > 500) {
-                setupInfiniteScroll(tabsContainer, activeList, createSidebarTab, 50);
+                loadThrough = setupInfiniteScroll(tabsContainer, activeList, createSidebarTab, 50);
             } else {
                 activeList.forEach((item, index) => {
                     tabsContainer.appendChild(createSidebarTab(item));
@@ -2016,11 +2017,23 @@
                 // section at that). Falls back to the very first tab when everything is completed.
                 // `#file=<name>`: the window asked for one episode (its row's ⋯ *See it in your journey*, Up Next's ↗):
                 // its tab, whatever it is (a set-aside one opens its Watched panel); a name not here, the rule below.
+                // Any tab kind (`data-file`: a counted, set-aside or Target-met one), rendered first if paged; brought
+                // into view, a collapsed Completed section opened for it (not saved).
                 setTimeout(() => {
-                    const tabs = Array.from(tabsContainer.querySelectorAll('.file-tab'));
                     const asked = fileFromHash();
-                    const firstTab = (asked && tabs.find(t => t.dataset.filename === asked))
+                    const at = asked ? activeList.findIndex(item => item.data && item.data.filename === asked) : -1;
+                    if (loadThrough && at >= 0) loadThrough(at);
+                    const tabs = Array.from(tabsContainer.querySelectorAll('.file-tab'));
+                    const askedTab = asked ? tabs.find(t => t.dataset.file === asked) : null;
+                    const firstTab = askedTab
                         || tabs.find(stillToStudy) || tabs.find(t => !t.closest('#completed-section')) || tabs[0];
+                    if (askedTab) {
+                        if (askedTab.closest('#completed-section') && completedCollapsed) {
+                            completedCollapsed = false;
+                            applyCompletedSectionState();
+                        }
+                        askedTab.scrollIntoView({ block: 'center' });
+                    }
                     if (firstTab) {
                         firstTab.classList.add('active');
                         firstTab.click(); // Trigger load
@@ -2100,6 +2113,8 @@
         function createSidebarTab(item) {
             const tab = document.createElement('div');
             tab.className = `file-tab`;
+            // Every kind's file name, for `#file=` (`dataset.filename` stays the counted ones': `stillToStudy`).
+            if (item.data && item.data.filename) tab.dataset.file = item.data.filename;
             // Natural sidebar position, so un-marking a completed file restores it here.
             if (item._order !== undefined) tab.dataset.order = item._order;
 
@@ -2286,6 +2301,8 @@
 
             // Initial load
             loadNextChunk();
+            // -> render every chunk up to item `i` (the window's `#file=`: an item past the first page)
+            return (i) => { while (index <= i && index < items.length) loadNextChunk(); };
         }
 
         async function renderFileWords(words, isGoalContent = false, cumulativeWords = 0, filename = null, unlisted = null) {

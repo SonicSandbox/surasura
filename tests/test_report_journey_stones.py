@@ -174,19 +174,39 @@ def test_the_window_opens_the_report_on_an_episode_through_a_small_page_that_kee
     assert names[1].encode("ascii", "ignore") != names[1].encode("utf-8"), "a real Japanese / Chinese name, quoted"
     assert gen.open_report(app_mode=True, file=names[0]) is True and as_app == [str(page)]
     assert unquote(page.read_text(encoding="utf-8").split("#file=", 1)[1].split('"', 1)[0]) == names[0]
+    real_open = open
+
+    def held(path, *a, **kw):                               # the page can't be written (a lock, results read-only)
+        if str(path).endswith(gen.OPEN_ON_NAME):
+            raise PermissionError(13, "held", str(path))
+        return real_open(path, *a, **kw)
+    monkeypatch.setattr("builtins.open", held)
+    assert gen.open_report(file=names[1]) is True and opened[-1] == f"file://{results / gen.REPORT_NAME}", \
+        "the report itself opens (JO-A5): never a failed open"
+    monkeypatch.setattr("builtins.open", real_open)
     (results / gen.REPORT_NAME).unlink()
     assert gen.open_report(file=names[0]) is False, "no report: nothing opened"
 
 
 def test_the_report_opens_on_the_asked_file_whatever_it_is_and_else_on_the_first_still_to_study():
-    # why: the asked tab is clicked as it is — a set-aside one shows its Watched panel (its own onclick), a ✓ one its
-    # words; a name the report doesn't hold (an old report, a file not listed) falls back to the one rule
+    # why: the asked tab is clicked as it is — a set-aside one shows its Watched panel (its own onclick), a Target-met
+    # one its page (JO-A1: every kind carries its name), one past the paged sidebar's first 50 rendered first (JO-A2),
+    # brought into view and out of a collapsed Completed section (JO-A3); a name the report doesn't hold falls back to
+    # the one rule. Run in a real browser (ja + zh, each case, and failing on the template before): the recorded Edge
+    # check `tracks/window/work/journey-open/open_on_check.py` (no browser in pytest).
     source = _template()
     asked = _function(source, "fileFromHash")
     assert "'#file='" in asked and "decodeURIComponent" in asked and "return '';" in asked
+    tab = _function(source, "createSidebarTab")
+    assert tab.index("tab.dataset.file = item.data.filename") < tab.index("if (item.type === 'prog')"), \
+        "every kind of tab is named, before the kinds part"
+    assert "dataset.file " not in _function(source, "stillToStudy"), "the opening rule still reads counted tabs only"
+    assert "return (i) =>" in _function(source, "setupInfiniteScroll"), "the paged sidebar renders up to an item"
     first = source[source.index("// Initial Load"):]
     first = first[:first.index("}, 50);")]
-    assert "t.dataset.filename === asked" in first and "firstTab.click()" in first
+    assert first.index("loadThrough(at)") < first.index("querySelectorAll('.file-tab')"), "rendered before it looks"
+    assert "t.dataset.file === asked" in first and "scrollIntoView" in first and "applyCompletedSectionState()" in first
+    assert "localStorage" not in first, "a collapsed section opened for it is not saved"
     assert first.index("fileFromHash()") < first.index("tabs.find(stillToStudy)") < first.index("tabs[0]")
 
 

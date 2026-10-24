@@ -62,7 +62,9 @@ def _mark_and_generate(root, store, fake, host, episode, on=True):
     return _job(fake, host, "generate")
 
 
-@pytest.mark.parametrize("connect_on", [True, False], ids=["connect-on", "connect-off"])
+# Chinese too (the lead's end-to-end check, 9b), Connect on: a stone on a Chinese episode parks its words' cards
+@pytest.mark.parametrize("lib, connect_on", [("ja", True), ("ja", False), ("zh", True)], indirect=["lib"],
+                         ids=["connect-on", "connect-off", "zh-connect-on"])
 def test_a_stone_parks_its_own_words_cards_and_un_marking_brings_them_back_in_list_order(lib, monkeypatch,
                                                                                          connect_on):
     root, store = lib

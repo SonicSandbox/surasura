@@ -56,6 +56,12 @@ def point_size(role, text_size):
 
 
 @lru_cache(maxsize=None)
+def press_room(text_size):
+    """A button whose press turns an arc keeps this room at rest, px (`app/qt/press.py` `room`): the arc's (fixed, never
+    scaled with the text: the arc isn't), never less than a button's own padding. Every sheet that pads one asks here."""
+    return max(round(theme.size("press-room", text_size)), round(10 * theme.text_factor(text_size)))
+
+
 def stylesheet(theme_name=theme.DEFAULT_THEME, text_size=theme.DEFAULT_TEXT_SIZE):
     """The one stylesheet for a theme at a text size (cached; ~0.1 ms the first time)."""
     t0 = time.perf_counter()
@@ -203,7 +209,7 @@ QPushButton[size="sm"]:focus {{ padding: 0 {round(10 * f) - 1}px; }}
     # --- round 8 row 45 (the trial): a button whose press turns an arc (`app/qt/press.py` `room`) keeps the arc's room
     # at rest, both sides (its words centred): pressed, the arc turns in its right padding and nothing moves. The room is
     # the arc's (fixed, never scaled with the text: the arc isn't), never less than the button's own padding
-    room = max(round(theme.size("press-room", text_size)), round(10 * f))
+    room = press_room(text_size)
     rules += f"""
 QPushButton[presses="true"] {{ padding: 0 {room}px; }}
 QPushButton[presses="true"]:focus {{ padding: 0 {room - 1}px; }}

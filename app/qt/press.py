@@ -80,6 +80,13 @@ def presses_of(win):
     return got
 
 
+def live(win, key):
+    """`win`'s press `key` is live — a second press does nothing, so a dialog it would open first stays shut (P5-A1).
+    Makes no press."""
+    p = presses_of(win).find(key)
+    return p is not None and p.live()
+
+
 def run(control, key, fn, *args, busy=None, then=None, failed=None, win=None, goes=False, at=None):
     """`control` pressed for the action `key` (an action's name with what it acts on): `fn(*args)` on a worker once
     the arc is painted; `then(value)` / `failed((exception, its traceback's text))` as `bridge.run_in_worker`'s, once
@@ -321,7 +328,7 @@ def _hold(win, key, words):
         return
     win.say(words, hold=key)
     line = _line(win)
-    if line is not None and hasattr(line, "isVisible") and line.isVisible():
+    if line is not None and line.isVisible():
         line.repaint()
 
 

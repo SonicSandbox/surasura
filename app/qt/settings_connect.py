@@ -281,7 +281,7 @@ class SwitchRow(QWidget):
             self.toggle.set_value(self._saved())
 
     def _toggled(self, on):
-        if self.running:                          # one run at a time (greyed: only a programmatic change gets here)
+        if self.running:                          # one run at a time: a click while it goes (never greyed) is put back
             self.toggle.set_value(not on)
             return
         was_on = self._saved()

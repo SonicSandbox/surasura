@@ -65,6 +65,9 @@ class Bar:
     def set_full(self, text):
         self.lines.append(text)
 
+    def isVisible(self):                                # a stand-in line is never on screen: nothing to repaint
+        return False
+
     def say(self, text, hold=None):
         """The shell's `say`: the line as said; held for a live press until `unsay`."""
         if hold is not None:

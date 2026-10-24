@@ -114,6 +114,9 @@ class Bar:
     def set_full(self, text):
         self.lines.append(text)
 
+    def isVisible(self):                                # a stand-in line is never on screen: nothing to repaint
+        return False
+
 
 class Status:
     def __init__(self, connect=None):

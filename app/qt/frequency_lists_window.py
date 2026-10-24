@@ -100,6 +100,8 @@ class FrequencyListsWindow(SecondaryWindow):
 
     # --- adding ----------------------------------------------------------------------------------------------- #
     def pick(self):
+        if self.busy():
+            return                                        # a write under way: a second press opens nothing (P5-A1)
         paths, _f = QFileDialog.getOpenFileNames(self, strings.FREQ_PICK_TITLE, "", strings.FREQ_PICK_FILTER)
         if paths:
             self.add(paths)

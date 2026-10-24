@@ -143,7 +143,7 @@ def sheet(text_size):
         size, drawn = theme.font(role, text_size)
         return f"font-size: {round(size * scale * style.PT_PER_PX, 3)}pt; font-weight: {weight or drawn};"
     hint = QFontMetricsF(_font("key-hint")).horizontalAdvance(S.KEY_ENTER)
-    room = max(round(theme.size("press-room", text_size)), round(10 * f))   # round 8 row 45: a pressed link's arc
+    room = style.press_room(text_size)                    # round 8 row 45: a pressed link's arc
     return f"""
 QWidget#wizard {{ background: {c['bg']}; }}
 QWidget#wizhead, QWidget#wizfoot {{ background: {c['frame']}; }}
@@ -2748,8 +2748,8 @@ class SetupWizard(QWidget):
     def pick_folder(self):
         """*Choose a folder…*: the system's folder dialog; the folder picked is checked by the store's own rule on a
         worker (`folder_refused`) — refused, its reason in plain words; else listed."""
-        if self.reading is not None or self._gone:
-            return
+        if self.reading is not None or self._gone or qpress.live(self, "wizard:pick"):
+            return                                        # (one under way: a second press opens nothing, P5-A1)
         page = self.pages[2]
         start = page.folders[-1] if page.folders else os.path.expanduser("~")
         path = self.pick_dialog(S.PICK_TITLE, start)
@@ -2780,7 +2780,7 @@ class SetupWizard(QWidget):
         the store's own rule on a worker (`skip_refused`: inside a folder picked or read, never one itself) — refused,
         its reason in the page's refusal line; else listed, skipped on *Next* before the first look."""
         page = self.pages[2]
-        if self.reading is not None or self._gone or not page.folders:
+        if self.reading is not None or self._gone or not page.folders or qpress.live(self, "wizard:skip"):
             return
         path = self.pick_dialog(S.SKIP_TITLE, page.folders[-1])
         if not path:

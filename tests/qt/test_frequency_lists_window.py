@@ -328,3 +328,30 @@ def test_add_paints_its_arc_before_the_copy_and_is_never_greyed(main, ja_list, m
     copy = handed.at("_add_all")
     assert copy.shown and copy.painted >= 1 and w.add_button.isEnabled()
     assert wait_until(lambda: w.names and not arc_turning(w.add_button))
+
+
+def test_a_second_add_while_the_first_copies_opens_no_dialog(main, ja_list, monkeypatch):
+    # P5-A1: *Add…* is never greyed now, so a second press while the first copy ran opened the file dialog again —
+    # and the files picked there were dropped with no word (the write refused them as busy). A press while one is
+    # live does nothing: no dialog.
+    import threading
+    from app.qt import frequency_lists_window as flw
+    gate, real = threading.Event(), flw._add_all
+
+    def held(paths, language):
+        gate.wait(5)
+        return real(paths, language)
+    monkeypatch.setattr(flw, "_add_all", held)
+    dialogs = []
+
+    def pick(*a, **k):
+        dialogs.append(1)
+        return ([ja_list], "")
+    monkeypatch.setattr(QFileDialog, "getOpenFileNames", staticmethod(pick))
+    w = _open(main)
+    w.add_button.click()
+    assert w.busy() and len(dialogs) == 1
+    w.add_button.click()                                  # the first copy still under way
+    assert len(dialogs) == 1
+    gate.set()
+    assert wait_until(lambda: not w.busy() and w.names)

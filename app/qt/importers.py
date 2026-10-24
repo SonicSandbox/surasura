@@ -343,6 +343,8 @@ class MigakuWindow(ToolWindow):
         self.read(path)
 
     def _choose(self):
+        if qpress.live(self, "migaku:read"):
+            return                                        # the file picked still being read: no second pick (P5-A1)
         path = _pick_file(self, strings.MIGAKU_PICK_TITLE, strings.MIGAKU_PICK_FILTER)
         if path:
             self.read(path, control=self.choose)

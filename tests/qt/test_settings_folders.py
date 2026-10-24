@@ -241,16 +241,16 @@ def test_look_again_in_the_window_is_a_full_look(window):
     looks = ActingLooks([_src(1, ANIME, 412)])
     win, page, row, folders = _open(window, looks)
     looks.asks.clear()
-    running = [True]
-    looks.busy = lambda: running[0]
     folders.look.click()
     assert looks.asks and looks.asks[-1][1] is True        # refreshed: every folder, in full
-    # round 8 row 45: its arc from the press until the looks' worker is idle again; a press meanwhile asks nothing
-    assert qpress.arc(folders.look) is not None and folders.look.isEnabled()
+    # round 8 row 45 (P5-A2): the Refresh key's press, on this button — its arc from the press, the bar's arc never
+    # turning beside it (one mark, one end rule: P3's), until the look's summary; a press meanwhile asks nothing
+    assert qpress.arc(folders.look) is not None and folders.look.isEnabled() and not win.bar_arc.isVisible()
+    assert win.presses.find("sources:refresh").live()
     folders.look.click()
     assert len(looks.asks) == 1
-    running[0] = False
-    assert wait_until(lambda: qpress.arc(folders.look) is None, 5)
+    looks.publish()                                        # the look's summary
+    assert qpress.arc(folders.look) is None and not win.presses.find("sources:refresh").live()
 
 
 def test_the_window_grows_to_show_folders_that_arrive_then_scrolls(window):

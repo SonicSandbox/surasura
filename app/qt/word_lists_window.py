@@ -18,7 +18,7 @@ from PyQt6.QtGui import QPalette, QStandardItem, QStandardItemModel
 from PyQt6.QtWidgets import (QAbstractItemView, QButtonGroup, QHBoxLayout, QLabel, QLineEdit, QListView, QListWidget,
                              QListWidgetItem, QPlainTextEdit, QPushButton, QStyledItemDelegate, QWidget)
 
-from app.qt import bridge, confirm
+from app.qt import bridge, confirm, style
 from app.qt import press as qpress
 from app.qt import word_lists_strings as s
 from app.qt.windows import SecondaryWindow, say_in_bar, show
@@ -31,11 +31,19 @@ _REBUILD_OVER = 100                                       # rows changed by one 
 
 
 class _RemoveDelegate(QStyledItemDelegate):
-    """Paints ✕ at the end of each row that can be taken off (not a name); a click on it calls `on_remove(index)`."""
+    """Paints ✕ at the end of each row that can be taken off (not a name); a click on it calls `on_remove(index)`.
+    `not_now()` true (a write under way): every ✕ painted greyed — "not now" (round 8 row 45, IK-4)."""
 
-    def __init__(self, view, on_remove):
+    def __init__(self, view, on_remove, not_now=lambda: False):
         super().__init__(view)
         self.on_remove = on_remove
+        self.not_now = not_now
+
+    def mark_colour(self, option):
+        """The ✕'s ink: the row's text, or greyed as a greyed button's words are (`ink-faint`) while not now."""
+        if self.not_now():
+            return style.qcolor(style.colours()["ink-faint"])
+        return option.palette.color(QPalette.ColorRole.Text)
 
     def mark_rect(self, option):
         side = option.rect.height()
@@ -46,7 +54,7 @@ class _RemoveDelegate(QStyledItemDelegate):
         if index.data(SOURCE) == "names":
             return
         painter.save()
-        painter.setPen(option.palette.color(QPalette.ColorRole.Text))
+        painter.setPen(self.mark_colour(option))
         painter.drawText(self.mark_rect(option), Qt.AlignmentFlag.AlignCenter, s.WORD_LISTS_REMOVE_MARK)
         painter.restore()
 
@@ -130,7 +138,7 @@ class WordListsWindow(SecondaryWindow):
         self.list.setUniformItemSizes(True)
         self.list.setToolTip(s.WORD_LISTS_LIST_TIP)
         self.list.setAccessibleName(s.WORD_LISTS_LIST_NAME)
-        self.list.setItemDelegate(_RemoveDelegate(self.list, self._remove_index))
+        self.list.setItemDelegate(_RemoveDelegate(self.list, self._remove_index, self.busy))
         self.body.addWidget(self.list, 1)
 
         row = QHBoxLayout()
@@ -319,17 +327,23 @@ class WordListsWindow(SecondaryWindow):
         kind, language = self.kind, self.language
         fn = word_lists.add if adding else word_lists.remove
         args = (kind, language, list(words)) + (() if adding else (source,))
-        self._writing(True)
+        self.begin_write()
         if qpress.run(control, "words:write", fn, *args, win=self,
                       then=lambda change: self._written(kind, language, _line(change, adding)),
                       failed=lambda info: self._written(kind, language,
                                                         s.WORD_LISTS_WRITE_FAILED.format(why=info[0]))) is None:
             self.end_write()                              # (one under way: the window was busy, nothing started)
-            self._writing(False)
+        self._writing()
 
-    def _writing(self, on):
-        if on:
-            self.begin_write()
+    def _writing(self):
+        """While a write is under way the list's other controls are greyed — "not now" (IK-4, as the frequency lists'
+        Add / Remove and Koe's Save / Remove): every row's ✕ (and Delete), *Add* and its field, *Add N kept*; the
+        pressed one keeps its look and its arc (*Add*)."""
+        add = not self.busy() or qpress.mark(self.add_button) is not None
+        for w in (self.add_button, self.add_field):
+            if w.isEnabled() != add:
+                w.setEnabled(add)
+        self.list.viewport().update()                     # the ✕ marks greyed, or back
         self._kept_changed()
 
     def _written(self, kind, language, line):
@@ -338,7 +352,7 @@ class WordListsWindow(SecondaryWindow):
                 say_in_bar(self.shell, line)
             return
         self.end_write(line)
-        self._writing(False)                              # (after: no write under way)
+        self._writing()                                   # (after: no write under way, every control back)
         if (kind, language) == (self.kind, self.language):
             self.read(then_say=line)
 

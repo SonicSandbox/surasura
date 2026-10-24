@@ -119,3 +119,33 @@ def test_read_folders_reports_a_skip_no_folder_holds_and_reads_the_rest(empty_li
     got = setup_wizard.read_folders("ja", [first], skips=[stray])
     assert got["added"] == sum(SHOWS.values())
     assert got["refused"] == [(stray, ls.SKIP_OUTSIDE)]
+
+
+def test_a_second_choose_or_skip_while_the_first_is_checked_opens_no_dialog(make, empty_library):
+    """P5-A1: *Choose a folder…* / *Skip a folder…* stay enabled while the folder picked is checked, so a second press
+    opened the folder dialog again — and the folder picked there was dropped with no word. A press while one is live
+    does nothing: no dialog."""
+    first = _folder("anime", SHOWS)
+    card = _with_card(first)
+    gate = threading.Event()
+
+    class Held(SkipApi):
+        def folder_refused(self, language, path):
+            gate.wait(5)
+            return super().folder_refused(language, path)
+
+        def skip_refused(self, language, path, chosen=()):
+            gate.wait(5)
+            return super().skip_refused(language, path, chosen)
+    wiz, *_ = make(api=Held())
+    go_to(wiz, "shows")
+    page = wiz.pages[2]
+    dialogs = []
+    for button, path in ((page.btn_pick, first), (page.btn_skip, card)):
+        gate.clear()
+        wiz.pick_dialog = lambda _title, _start, p=path: dialogs.append(p) or p
+        QTest.mouseClick(button, Qt.MouseButton.LeftButton)
+        QTest.mouseClick(button, Qt.MouseButton.LeftButton)       # the first folder still being checked
+        assert dialogs.count(path) == 1
+        gate.set()
+        assert wait_until(lambda: os.path.normpath(path) in (page.folders + list(page.skips)))

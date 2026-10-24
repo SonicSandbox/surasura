@@ -32,7 +32,7 @@ GUI_Design_Guidelines_Qt: the page's controls and label styles, the window's bas
 button.
 """
 from PyQt6 import sip
-from PyQt6.QtCore import QObject, Qt, QTimer
+from PyQt6.QtCore import QObject, Qt
 from PyQt6.QtWidgets import QFileDialog, QFrame, QHBoxLayout, QLabel, QScrollArea, QVBoxLayout, QWidget
 
 from app import theme
@@ -46,7 +46,6 @@ from app.services.source_looks import offline
 ROW_ID = "library_folders"
 FRESH_ID = "fresh_library"
 WINDOW = "library-folders"                                # its opener's name (`windows.OPENERS`, the row's door)
-LOOK_POLL_MS = 200                                        # *Look again*'s arc: how often the looks' end is looked for
 
 
 def _f():
@@ -164,10 +163,11 @@ def add_folder(shell, parent, folder=None):
     return adder.read_folder(folder) if folder else False
 
 
-def look_again(shell):
-    """*Look again*: every folder, in full (the Refresh key's)."""
+def look_again(shell, control=None):
+    """*Look again*: every folder, in full — the Refresh key's press (`refresh_sources`: `control`'s arc until the look
+    ends; none, the bar's)."""
     refresh = getattr(shell, "refresh_sources", None)
-    return refresh() if refresh is not None else False
+    return refresh(control=control) if refresh is not None else False
 
 
 class SourceLine(QWidget):
@@ -339,7 +339,7 @@ class FoldersWindow(windows.SecondaryWindow):
         foot.addStretch(1)
         self.look = qpress.room(sc.Door(S.SOURCES_LOOK, tooltip=S.SOURCES_LOOK_TIP, parent=self))
         self.look.clicked.connect(lambda _c=False: self.look_again())
-        self._look_end = None                             # while *Look again*'s look runs: its end, looked for
+        qpress.adopt(self.look, "sources:refresh", win=shell)   # opened again while its look runs: the arc on it
         foot.addWidget(self.look)
         self.add = sc.Door(S.SOURCES_ADD, tooltip=S.SOURCES_ADD_TIP, parent=self)
         self.add.clicked.connect(lambda _c=False: add_folder(self.shell, self))
@@ -371,26 +371,10 @@ class FoldersWindow(windows.SecondaryWindow):
                     qpress.adopt(control, _press_key((kind, self.lines_of, key)), win=self.shell)
 
     def look_again(self):
-        """*Look again*: every folder looked at in full (`look_again`); round 8 row 45 — its arc from the press, painted
-        before the look is asked, until the looks' worker is idle again (`busy()`, looked at every `LOOK_POLL_MS`
-        while it turns: a look that failed ends it too). A press meanwhile does nothing. -> True when one was asked."""
-        looks = _looks(self.shell)
-        p = qpress.begin(self.look, "folders:look", win=self)
-        if p is None:
-            return False
-        if not look_again(self.shell) or looks is None or not hasattr(looks, "busy"):
-            qpress.end(p, self)
-            return False
-
-        def looked():
-            if self.gone or not looks.busy():
-                self._look_end.stop()
-                self._look_end = None
-                qpress.end(p, self)
-        self._look_end = QTimer(self)
-        self._look_end.timeout.connect(looked)
-        self._look_end.start(LOOK_POLL_MS)
-        return True
+        """*Look again*: every folder looked at in full — the Refresh key's press, on this button (round 8 row 45, P3's
+        rule: its arc from the press until the look's summary, or a look that couldn't run, said in the bar). A press
+        meanwhile does nothing. -> True when one was asked."""
+        return look_again(self.shell, control=self.look)
 
     def _tab_order(self):
         """Tab as the window reads: the folders' *Stop reading*, the skipped folders' *Read again*, *Look again*,

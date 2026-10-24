@@ -188,6 +188,8 @@ def test_everything_watched_steps_the_cards_back_exactly_as_everything_finished_
         _job(fake, host, "generate")
         assert not [card_id for card_id, card in fake.cards.items() if card["queue"] == -1], "un-marked: all back"
         store.finish(everything)
-        _job(fake, host)
+        assert _job(fake, host) == [], "Finished writes nothing before its Generate (W-1b: Finished is set aside too)"
+        _generate(root)
+        _job(fake, host, "generate")
         finished = {card_id for card_id, card in fake.cards.items() if card["queue"] == -1}
     assert watched == finished and finished, "every file watched parks what every file Finished parks"

@@ -988,7 +988,26 @@ class _Look:
             if not votes[path] and keys and not ls.is_placeholder(st) and not self._recent(st):
                 votes[path] = keys.get(self._content_key(path), set())
         picked = self._decides(show, texts, vids, votes)
+        if picked is False and any(votes.values()):
+            # the moves check (FC-1): a moved folder's texts the store never kept — another language's subtitles (K6),
+            # a removed item's bytes — were recorded under the old path, so they'd outvote the moved episodes: only
+            # the folder's texts of ours count (read once, only on this path: a vote found, no majority yet)
+            texts = [t for t in texts if votes[t[1]] or self._ours(t[0], t[1], t[2])]
+            picked = self._decides(show, texts, vids, votes)
         return show if picked is False else picked
+
+    def _ours(self, name, path, st):
+        """FC-1: could this text be an item of ours — not refused by the one rule (K6), not a removed item's bytes?
+        True when it can't be read whole yet (never a guess against a vote)."""
+        try:
+            got = self.read[path] = self.read.get(path) or _read_text(path, st)
+        except OSError:
+            return True
+        data, sha, head = got
+        if sha is None:
+            return True
+        return sha not in self.ex_shas and not _refusal(head, self.language, name.lower().endswith(_LOOSE),
+                                                         data is None)
 
     def _show_recorded(self, path):
         """D3: {the show} of the item this file's origin is recorded on (a `Library/<show>` copy), else empty."""
@@ -999,8 +1018,9 @@ class _Look:
     def _decides(self, show, texts, vids, votes):
         """D3, FIX1 (MV-A1): the show `votes` ({a file: the shows whose items it is}) join the folder to, `show` (two
         shows' items: neither), or False (none yet, or too few: one stray copy) — ONE show, named by most of the
-        folder's texts (by its videos when it holds no text), or by any of them when the folder's name ends in that
-        show's whole name (`2024 Fall/Show` in `Show`; `Bocchi/Season 1` never in `Frieren/Season 1`)."""
+        folder's texts (by its videos when it holds no text; a text that is no content of ours — another language's
+        subtitle, a removed item's bytes — counts only when it votes), or by any of them when the folder's name ends in
+        that show's whole name (`2024 Fall/Show` in `Show`; `Bocchi/Season 1` never in `Frieren/Season 1`)."""
         found = set().union(*votes.values()) if votes else set()
         if len(found) > 1:
             return show
@@ -1957,7 +1977,9 @@ class _Look:
         if not placeholder:
             hits = [h for h in hits if not h[1]]             # a settled video's key, recorded, didn't match: another
         gone = []
-        for item_id, _vkey, old in hits:
+        for item_id, _vkey, old, root in hits:
+            if self._root_gone(root):
+                continue                                     # its source unreachable: whether it left is unknown (G5)
             try:
                 os.stat(old)
             except FileNotFoundError:
@@ -1967,15 +1989,15 @@ class _Look:
         return gone[0] if len(set(gone)) == 1 else None
 
     def _waiting_named(self):
-        """FIX1 (MV-A4): {(a video's name key, its size): [(item, its video key, its file)]} of the waiting items'
-        videos — from the origins read this look, gathered once."""
+        """FIX1 (MV-A4): {(a video's name key, its size): [(item, its video key, its file, its source's root)]} of the
+        waiting items' videos — from the origins read this look, gathered once."""
         if self.waiting_named is None:
             self.waiting_named = {}
             for o in self.origins.values():
                 name = os.path.basename(o.origin or "")
                 if o.availability == "waiting" and not o.version and o.origin and                         not ls.is_content_name(name.lower()) and isinstance(o.size, int):
                     self.waiting_named.setdefault((ls.path_key(name), o.size), []).append(
-                        (o.item_id, o.video_key, o.origin))
+                        (o.item_id, o.video_key, o.origin, o.root))
         return self.waiting_named
 
     def _moved_from(self, item_id, path, sha256=None, video_key=None):

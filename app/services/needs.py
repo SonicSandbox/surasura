@@ -56,7 +56,7 @@ import re
 import threading
 from collections import namedtuple
 
-from app import path_utils
+from app import library_store, path_utils
 from app.services import view_rows
 
 Entry = namedtuple("Entry", "key kind title lines actions unseen say data", defaults=("", None))
@@ -123,6 +123,16 @@ def _digest(values):
 
 def _norm(rel):
     return (rel or "").replace("\\", "/").strip("/")
+
+
+def shown(rel):
+    """A library path as a learner reads it: the tier folder left out (HighPriority/Hato/1.srt → Hato/1.srt). A 2.x
+    tier folder is never a place in 3.0 (an item dragged to Goal still lives in HighPriority/…), so naming it, or its
+    tier, could name the wrong place (Sonic's lean, 2026-10-24, PROVISIONAL; CLAUDE.md §6: never the folder names). A
+    bare tier folder reads as its tier's name. Words only; the path itself is never changed."""
+    head, sep, rest = _norm(rel).partition("/")
+    tier = library_store.TIER_OF_FOLDER.get(head)
+    return (rest or library_store.TIER_LABELS[tier]) if tier else _norm(rel)
 
 
 def _under(rel, prefix):
@@ -250,7 +260,7 @@ def _gone_entry(group, hits, seen):
         title = STRINGS["gone_title_one"].format(title=row.title, ep=hits[0][1].label)
     else:
         title = STRINGS["gone_title_n"].format(title=row.title, n=len(hits), unit=_unit(row.media))
-    lines = tuple(NeedLine(key=item_key(e.id), text=STRINGS["gone_line"].format(label=e.label, rel=e.rel_path),
+    lines = tuple(NeedLine(key=item_key(e.id), text=STRINGS["gone_line"].format(label=e.label, rel=shown(e.rel_path)),
                            item_id=e.id, label=e.label, number=e.number, rel_path=e.rel_path,
                            actions=("choose_file", "keep_words", "remove")) for _r, e in hits)
     key = f"gone:{group}:{_digest(ids)}"
@@ -334,18 +344,18 @@ def _ask_entry(ask, by_id, seen):
             crel = crel or hit[1].rel_path
         crel = _norm(crel)
         ctitle = ctitle or view_rows.stem(crel.rsplit("/", 1)[-1]) or f"#{cid}"
-        lines.append(NeedLine(key=item_key(cid), text=STRINGS["ask_line"].format(title=ctitle, rel=crel or "?"),
+        lines.append(NeedLine(key=item_key(cid), text=STRINGS["ask_line"].format(title=ctitle, rel=shown(crel) or "?"),
                               item_id=cid, label=ctitle, number=None, rel_path=crel, actions=("this_one",)))
     if not lines:
         return None
     name = rel.rsplit("/", 1)[-1]
     if len(lines) == 1:
-        title = STRINGS["ask_title_one"].format(name=name, old=lines[0].rel_path or lines[0].label)
+        title = STRINGS["ask_title_one"].format(name=name, old=shown(lines[0].rel_path) or lines[0].label)
     else:
         title = STRINGS["ask_title_n"].format(name=name, n=len(lines))
     key = f"ask:{_digest([rel.casefold()] + [ln.item_id for ln in lines])}"
     return Entry(key=key, kind=ASK, title=title, lines=tuple(lines), actions=("its_new",), unseen=key not in seen,
-                 say=STRINGS["ask_say"].format(rel=rel), data={"rel": rel})
+                 say=STRINGS["ask_say"].format(rel=shown(rel)), data={"rel": rel})
 
 
 def _offline_entry(root, by_id, seen):

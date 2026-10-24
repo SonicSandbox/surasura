@@ -266,6 +266,29 @@ def test_a_folder_of_a_show_already_in_is_never_re_aliased_by_a_stray_copy(langu
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
+def test_a_folder_of_a_show_already_in_keeps_it_though_most_of_its_texts_are_another_shows_copies(language):
+    """A folder whose own show has items already keeps it, though two of its three texts are byte copies of another
+    show's episodes: the majority of texts would name that other show, but a show already in never moves (the guard
+    at the top of `_joined`), so Y's next episode stays in Y."""
+    store, data_dir = _empty(language)
+    x, y = _SHOWS[language]
+    a, b = _drive("driveA"), _drive("driveB")
+    _seed(language, a, x, (2, 3))                         # texts of their own: Y's episode 1 shares no bytes with X's
+    _seed(language, a, y, (1,))
+    with store:
+        _look(store, language, store.add_source(a), first=True)
+        os.makedirs(os.path.join(b, y))
+        shutil.copy2(os.path.join(a, x, _name(x, 2, language)), os.path.join(b, y, "stray copy 1.srt"))
+        shutil.copy2(os.path.join(a, x, _name(x, 3, language)), os.path.join(b, y, "stray copy 2.srt"))
+        _write(os.path.join(b, y, _name(y, 2, language)), _text(language, 7))
+        _settle(b)
+        result = _look(store, language, store.add_source(b))
+        rows = [store.item(i)["rel_path"] for i in result["ids"]]
+        ep2 = [r for r in rows if r.endswith(_name(y, 2, language))]
+        assert ep2 == [f"Library/{y}/{_name(y, 2, language)}"]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 def test_loose_files_at_a_sources_top_keep_the_show_their_names_give(language):
     """A loose file's show is its name's (S12), never its neighbours' items: a byte copy of an episode beside it at
     the source's top never pulls a file of another name into that show."""
@@ -372,6 +395,41 @@ def test_half_of_a_folders_texts_is_not_most_of_them(language):
         new = [i for i in result["ids"] if _work(store, i) != xwork]
         assert result["added"] == 1 and len(new) == 1
         assert store.item(new[0])["rel_path"] == f"Library/{y}/{_name(y, 1, language)}"
+
+
+ENGLISH = ("1\n00:00:01,000 --> 00:00:03,000\nWhere are you going so late at night?\n\n"
+           "2\n00:00:04,000 --> 00:00:06,500\nJust to the station. I'll be back soon.\n\n"
+           "3\n00:00:07,000 --> 00:00:09,000\nTake an umbrella, it looks like rain.\n")
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_moved_renamed_show_with_an_english_subtitle_per_episode_stays_one_show(language):
+    """The moves check (FC-1): `A/<X>/` holds each episode's subtitle of ours beside an English one (refused on the
+    first look, so the store keeps no bytes of it). Moved to `B/Renamed by hand/`, only the moved texts of ours vote:
+    the English ones never outvote them, so episodes 5 and 6 arriving there are X's, never a second show."""
+    store, data_dir = _empty(language)
+    x = _SHOWS[language][1]
+    a, b = _drive("driveA"), _drive("driveB")
+    _seed(language, a, x)
+    english = lambda n: f"[Grp] {x} - {n:02d}.en.srt"
+    for n in (1, 2, 3, 4):
+        _write(os.path.join(a, x, english(n)), ENGLISH + f"\n4\n00:00:10,000 --> 00:00:11,000\nEpisode {n}.\n")
+    with store:
+        ids = _look(store, language, store.add_source(a), first=True)["ids"]
+        moved = os.path.join(b, "Renamed by hand")
+        _move(os.path.join(a, x), moved)
+        _write(os.path.join(moved, _name(x, 5, language)), _text(language, 5))
+        _write(os.path.join(moved, english(5)), ENGLISH)
+        _settle(b)
+        root_b = store.add_source(b)
+        result = _look(store, language, root_b)
+        new = [store.item(i)["rel_path"] for i in result["ids"] if i not in ids]
+        assert _works(store) == 1 and new and all(r.startswith(f"Library/{x}/") for r in new), new
+        _write(os.path.join(moved, _name(x, 6, language)), _text(language, 6))
+        _settle(b)
+        later = _look(store, language, root_b)
+        assert _works(store) == 1, "the next episode too"
+        assert all(store.item(i)["rel_path"].startswith(f"Library/{x}/") for i in later["ids"])
 
 
 @pytest.mark.parametrize("language", LANGUAGES)

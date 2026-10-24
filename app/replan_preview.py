@@ -96,6 +96,27 @@ STAND_ASIDE = {
     "shared-phrase": "This list holds a row two set phrases share — Generate re-orders Anki this time",
     "weights": "Your tier weights aren't whole numbers — Generate re-orders Anki",
 }
+STAND_ASIDE_ELSE = "Generate re-orders Anki this time"
+
+
+class GivesUp(str):
+    """finish-pending (its fix round, FP-A2 / A5): a line the host says as it stops short of the re-order it owes and
+    leaves it to the user — Anki closed, a Generate to press, 順's deck to pick, an unfinished run to undo, a refusal it
+    never retries. Said as that kind where it is said (`Host._tell(line, gives_up=True)`), carried over the helper's
+    pipe, never read back from its words: the window's press waiting for that re-order ends failed, with these words.
+    Its retries ("Anki not re-ordered: …" when it tries again in RETRY_S), a stand-aside or Generate-first line (the
+    Generate re-orders by itself), an update's hold and its progress are plain lines: the press keeps turning."""
+    __slots__ = ()
+
+
+OFF = GivesUp("")      # no words: nothing re-orders now by the user's own choice (automation or 順 off, 順 absent) —
+#                        `ReplanHost` tells it as it lets the host go so; a press waiting ends quietly
+
+
+def ends_with(why):
+    """`stands_aside`'s reason `why` as a waiting press ends with it: OFF for the user's own choices (D29 off, 順 off or
+    absent), else the reason as a line that gives up (the deck to pick, D7's one deck)."""
+    return OFF if why in (AUTOMATION_OFF, JUNBAN_OFF, JUNBAN_ABSENT) else GivesUp(why)
 
 
 def junban_present():
@@ -391,7 +412,7 @@ class Host:
                     try:
                         self._warm() if kind == "warm" else self._job(kind)
                     except Exception as e:          # a background job must never take the window down
-                        self._tell(f"Re-ordering as you move stopped: {e}")
+                        self._tell(f"Re-ordering as you move stopped: {e}", gives_up=True)
             self._sync_step(force="sync-now" in run)
             if self._done_at is not None and time.monotonic() >= self._done_at:
                 self._done_at = None
@@ -403,7 +424,9 @@ class Host:
 
     # --- pieces ---------------------------------------------------------------------------------------------- #
 
-    def _tell(self, line):
+    def _tell(self, line, gives_up=False):
+        """The bar's line; `gives_up`: one that leaves the re-order it owes to the user (`GivesUp`)."""
+        line = GivesUp(line) if gives_up else line
         self.last = line
         try:
             self._say(line)
@@ -497,7 +520,7 @@ class Host:
         if why is not None:
             if deck and why != self._aside:
                 self._aside = why
-                self._tell(why)                      # the deck's reason, once per reason: the user can fix it in 順
+                self._tell(why, gives_up=True)       # the deck's reason, once per reason: the user can fix it in 順
             return
         self._aside = None
         self._sync_at = self._due_sync(settings)      # a write elsewhere (順's own run, a closed window) armed one
@@ -599,7 +622,7 @@ class Host:
             return False
         if not probe.get("ok") and not probe.get("missing"):     # an old AnkiConnect: the run says what it lacks
             anki_sync_rule.closed_seen()
-            self._tell(CLOSED)
+            self._tell(CLOSED, gives_up=True)
             return False
         if anki_connect.reviewing(url):
             self._tell(REVIEWING)
@@ -622,7 +645,7 @@ class Host:
             except Exception:
                 current = False
             if not current:
-                self._tell(PRESS_GENERATE)          # the Generate just ran (and failed): none is asked for again (R10)
+                self._tell(PRESS_GENERATE, gives_up=True)   # the Generate just ran (and failed): none is asked for again (R10)
                 return False
             report = self._write(settings, spaced.Job(automatic=True, cards=self._card_map()), kind)
             _record_cards_out(store, report)             # P4.1 L2
@@ -631,7 +654,7 @@ class Host:
                 return True
             return False
         if verdict is not None and verdict[0] == "stand-aside":
-            self._tell(STAND_ASIDE.get(verdict[1], "Generate re-orders Anki this time"))
+            self._tell(STAND_ASIDE.get(verdict[1], STAND_ASIDE_ELSE))
             return False
         if verdict is not None and verdict[0] == "generate-first":
             if self._plan is not None and not self._moved(store, order):
@@ -643,11 +666,11 @@ class Host:
                         or versions["pins_version"] > versions["planned_pins_version"]):
                     self._tell(GENERATE_FIRST if self._generate is not None else GENERATE_FIRST_CM)
                 else:
-                    self._tell(NEW_CONTENT if verdict[1] == "files" else PRESS_GENERATE)
+                    self._tell(NEW_CONTENT if verdict[1] == "files" else PRESS_GENERATE, gives_up=True)
                 return False
             asked = self._ask_generate(f"generate-first: {verdict[1]}")
             self._tell((GENERATE_FIRST if self._generate is not None else GENERATE_FIRST_CM) if asked is not False
-                       else PRESS_GENERATE)
+                       else PRESS_GENERATE, gives_up=asked is False)
             return False
         engine, ids = self._engine_for(store)
         ranked = sorted((order[key] + (item_id,) for key, item_id in self._plan_keys(ids) if key in order))
@@ -728,7 +751,7 @@ class Host:
         if report.get("stands_aside"):
             # FT C1: a put-back cleared this deck while the job waited for the lock — nothing written; the next job's
             # gate reads the file and stands aside too. Said, never retried: picking the deck in 順 is the user's.
-            self._tell((report.get("problems") or [""])[0])
+            self._tell((report.get("problems") or [""])[0], gives_up=True)
             return None
         if report.get("busy"):
             if not self._cancel.is_set():
@@ -741,14 +764,15 @@ class Host:
             self._retry(kind)
             return report
         if report.get("restore_first"):
-            self._tell(RESTORE_FIRST)                # only you can clear it: said, not retried
+            self._tell(RESTORE_FIRST, gives_up=True)   # only you can clear it: said, not retried
             return report
         if not report.get("ok"):
             written = len(report.get("written") or [])
             problems = report.get("problems") or ["it could not finish"]
+            again = bool(written or report.get("failures") or report.get("anki_error") == "offline")
             self._tell(f"Anki re-ordered {written:,} cards, then stopped: {problems[0]} — the rest at the next re-order"
-                       if written else f"Anki not re-ordered: {problems[0]}")
-            if written or report.get("failures") or report.get("anki_error") == "offline":
+                       if written else f"Anki not re-ordered: {problems[0]}", gives_up=not again)
+            if again:
                 self._retry(kind)                    # Anki went away mid-write: again soon. A refusal only the user
             return report                            # can clear (an unfinished run, a missing deck) waits for them
         self._said_done(report, job)
@@ -1171,7 +1195,7 @@ class Remote:
 
     def _receive(self, message):
         if "say" in message:
-            self._last = str(message["say"])
+            self._last = (GivesUp if message.get("gives_up") else str)(message["say"])
             try:
                 self._say(self._last)
             except Exception:
@@ -1324,7 +1348,7 @@ def helper_main(argv=None):
         with lock:
             send(dict(message, seen=state["seen"]))
 
-    host = Host(args.language, say=lambda line: tell(say=line), working=lambda on: tell(working=bool(on)),
+    host = Host(args.language, say=lambda line: tell(say=line, gives_up=isinstance(line, GivesUp)), working=lambda on: tell(working=bool(on)),
                 generate=(lambda reason: tell(generate=reason)) if args.generate else None)
 
     def report(force=False):                      # with `lock` held

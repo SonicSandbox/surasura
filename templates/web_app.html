@@ -1160,6 +1160,50 @@
             white-space: nowrap;
         }
 
+        /* --- The journey's stone (3.0): an episode marked watched in your library ---
+           The window's watched stone drawn flat: a small cut stone, sapphire, muted, before the file's name. Never a
+           check and never green, so it never reads as the browser's own "Complete ✓" (green text, after the name). */
+        .file-tab .journey-stone {
+            display: inline-block;
+            width: 10px;
+            height: 13px;
+            margin-right: 7px;
+            vertical-align: -2px;
+            opacity: 0.8;
+        }
+
+        /* The name flows on the stone's line (a long name wraps under it, not as a block below a lone stone). */
+        .file-tab .journey-stone ~ .hidden-content {
+            display: inline;
+        }
+
+        .file-tab .aside-watched {
+            font-size: 0.9em;
+            opacity: 0.5;
+            margin-left: 8px;
+            font-style: italic;
+            white-space: nowrap;
+        }
+
+        .watched-panel {
+            margin: 20px;
+            padding: 14px 18px;
+            color: var(--text-secondary);
+            background: var(--surface);
+            border: 1px solid var(--card-border);
+            border-left: 3px solid #4b8ff0;
+            border-radius: 6px;
+        }
+
+        .watched-panel .journey-stone {
+            display: inline-block;
+            width: 10px;
+            height: 13px;
+            margin-right: 8px;
+            vertical-align: -2px;
+            opacity: 0.8;
+        }
+
         /* Manually-completed files collapse into their own section at the bottom of the sidebar, so
            a long-running journey doesn't mean scrolling past every episode you've already finished.
            They stay one click away rather than being hidden outright. */
@@ -1946,8 +1990,9 @@
             // after it, so paged chunks still insert below the section, in order.
             buildCompletedSection(tabsContainer, doneList);
 
+            let loadThrough = null;     // paged: renders the sidebar's chunks up to an index (the asked file's)
             if (activeList.length > 500) {
-                setupInfiniteScroll(tabsContainer, activeList, createSidebarTab, 50);
+                loadThrough = setupInfiniteScroll(tabsContainer, activeList, createSidebarTab, 50);
             } else {
                 activeList.forEach((item, index) => {
                     tabsContainer.appendChild(createSidebarTab(item));
@@ -1970,9 +2015,25 @@
                 // Open on the first file still to do. With the Completed section sitting at the top,
                 // a plain "first .file-tab" would open a finished file (and one inside a collapsed
                 // section at that). Falls back to the very first tab when everything is completed.
+                // `#file=<name>`: the window asked for one episode (its row's ⋯ *See it in your journey*, Up Next's ↗):
+                // its tab, whatever it is (a set-aside one opens its Watched panel); a name not here, the rule below.
+                // Any tab kind (`data-file`: a counted, set-aside or Target-met one), rendered first if paged; brought
+                // into view, a collapsed Completed section opened for it (not saved).
                 setTimeout(() => {
+                    const asked = fileFromHash();
+                    const at = asked ? activeList.findIndex(item => item.data && item.data.filename === asked) : -1;
+                    if (loadThrough && at >= 0) loadThrough(at);
                     const tabs = Array.from(tabsContainer.querySelectorAll('.file-tab'));
-                    const firstTab = tabs.find(t => !t.closest('#completed-section')) || tabs[0];
+                    const askedTab = asked ? tabs.find(t => t.dataset.file === asked) : null;
+                    const firstTab = askedTab
+                        || tabs.find(stillToStudy) || tabs.find(t => !t.closest('#completed-section')) || tabs[0];
+                    if (askedTab) {
+                        if (askedTab.closest('#completed-section') && completedCollapsed) {
+                            completedCollapsed = false;
+                            applyCompletedSectionState();
+                        }
+                        askedTab.scrollIntoView({ block: 'center' });
+                    }
                     if (firstTab) {
                         firstTab.classList.add('active');
                         firstTab.click(); // Trigger load
@@ -2052,6 +2113,8 @@
         function createSidebarTab(item) {
             const tab = document.createElement('div');
             tab.className = `file-tab`;
+            // Every kind's file name, for `#file=` (`dataset.filename` stays the counted ones': `stillToStudy`).
+            if (item.data && item.data.filename) tab.dataset.file = item.data.filename;
             // Natural sidebar position, so un-marking a completed file restores it here.
             if (item._order !== undefined) tab.dataset.order = item._order;
 
@@ -2066,9 +2129,22 @@
 
                 const safeFilename = escapeHtml(fileData.filename);
                 tab.dataset.filename = fileData.filename;
+                if (fileData.aside) {
+                    // Watched and set aside (Keep studying watched episodes off): in its place, *watched* where its
+                    // count would be; its words aren't counted, so a click says so instead of listing none.
+                    tab.innerHTML = `${journeyStone(fileData)}${goalIndicator}<span class="hidden-content" data-content="${safeFilename}" migaku_ignore data-yomichan-ignore></span> <span class="hidden-content aside-watched" data-content="watched" migaku_ignore data-yomichan-ignore></span>`;
+                    tab.dataset.aside = "1";    // never opened by itself (stillToStudy); a click still opens its panel
+                    applyCompletedStyle(tab, completedFiles.has(fileData.filename));
+                    tab.onclick = () => {
+                        document.querySelectorAll('.file-tab').forEach(t => t.classList.remove('active'));
+                        tab.classList.add('active');
+                        renderWatchedFile(fileData);
+                    }
+                    return tab;
+                }
                 const inAnkiCount = ankiBacklogCount(fileData.words);
                 const countText = inAnkiCount ? `${fileData.words.length} · ${inAnkiCount}<span class="priority-marker marker-anki" style="font-size: 0.8em; margin-left: 2px;" title="${inAnkiCount} already in your Anki backlog"></span>` : `${fileData.words.length}`;
-                tab.innerHTML = `${goalIndicator}<span class="hidden-content" data-content="${safeFilename}" migaku_ignore data-yomichan-ignore></span> <span style="font-size: 0.9em; opacity: 0.5; margin-left: 8px; font-family: monospace; white-space: nowrap;">(${countText})</span>`;
+                tab.innerHTML = `${journeyStone(fileData)}${goalIndicator}<span class="hidden-content" data-content="${safeFilename}" migaku_ignore data-yomichan-ignore></span> <span style="font-size: 0.9em; opacity: 0.5; margin-left: 8px; font-family: monospace; white-space: nowrap;">(${countText})</span>`;
                 applyCompletedStyle(tab, completedFiles.has(fileData.filename));
                 tab.onclick = async () => {
                     document.querySelectorAll('.file-tab').forEach(t => t.classList.remove('active'));
@@ -2080,7 +2156,7 @@
                 const fileData = item.data;
                 const safeFilename = escapeHtml(fileData.filename);
                 tab.style.opacity = "0.7";
-                tab.innerHTML = `<span class="hidden-content" data-content="${safeFilename}" migaku_ignore data-yomichan-ignore></span> <span class="target-met-inline">Target met ✓</span>`;
+                tab.innerHTML = `${journeyStone(fileData)}<span class="hidden-content" data-content="${safeFilename}" migaku_ignore data-yomichan-ignore></span> <span class="target-met-inline">Target met ✓</span>`;
                 tab.onclick = () => {
                     document.querySelectorAll('.file-tab').forEach(t => t.classList.remove('active'));
                     tab.classList.add('active');
@@ -2088,6 +2164,32 @@
                 }
             }
             return tab;
+        }
+
+        // The journey's stone (3.0): the file is marked watched in your library (`watched` in the report's data; an
+        // old report has no such key and draws none). A cut stone, never a check: the ✓ is the browser's own mark. Its
+        // edge is the window's light edge (theme.GEM sapphire), so it reads on the dark sidebar.
+        const JOURNEY_STONE_SVG = '<svg viewBox="0 0 10 13" overflow="visible" aria-hidden="true"><polygon points="5,0 9.6,3.6 8.2,10.4 5,13 1.8,10.4 0.4,3.6" fill="#1d4fae"/><polygon points="5,0 9.6,3.6 5,5.6 0.4,3.6" fill="#4b8ff0"/><polygon points="5,5.6 9.6,3.6 8.2,10.4 5,13" fill="#2a63c4"/><polygon points="5,0 9.6,3.6 8.2,10.4 5,13 1.8,10.4 0.4,3.6" fill="none" stroke="#d6e7ff" stroke-width="0.7" stroke-linejoin="round"/></svg>';
+
+        function journeyStone(fileData) {
+            if (!fileData || fileData.watched !== true) return "";
+            return `<span class="journey-stone" title="Watched (marked in your library)">${JOURNEY_STONE_SVG}</span>`;
+        }
+
+        // A watched file set aside: its words aren't counted, so its panel says so (the ✓ still marks it in the browser).
+        function renderWatchedFile(fileData) {
+            const listContainer = document.getElementById('progressive-list');
+            listContainer.innerHTML = "";
+            currentFileName = fileData.filename;
+            currentFileWordCount = 0;
+            currentCumulativeWords = 0;
+            updateMarkCompleteButton();
+            const panel = document.createElement('div');
+            panel.className = 'watched-panel';
+            // the window's own sentence for the rule (the generator injects it: one place, `view_rows.STRINGS`)
+            const said = (typeof globalWatchedLeaves !== 'undefined' && globalWatchedLeaves) || "Watched";
+            panel.innerHTML = `<span class="journey-stone">${JOURNEY_STONE_SVG}</span><span class="hidden-content" data-content="${escapeHtml(said)}" migaku_ignore data-yomichan-ignore></span>`;
+            listContainer.appendChild(panel);
         }
 
         async function renderCompletedFile(fileData) {
@@ -2199,6 +2301,8 @@
 
             // Initial load
             loadNextChunk();
+            // -> render every chunk up to item `i` (the window's `#file=`: an item past the first page)
+            return (i) => { while (index <= i && index < items.length) loadNextChunk(); };
         }
 
         async function renderFileWords(words, isGoalContent = false, cumulativeWords = 0, filename = null, unlisted = null) {
@@ -2388,7 +2492,7 @@
         // Swap the Target Days box for the green "X words Completed" line (or back) in place.
         function updateTargetDaysForCurrent() {
             const listContainer = document.getElementById('progressive-list');
-            if (!listContainer) return;
+            if (!listContainer || listContainer.querySelector('.watched-panel')) return;    // a set-aside file: no count
             const existing = listContainer.querySelector('.target-days-box');
             const fresh = createTargetDaysBox(currentCumulativeWords || currentFileWordCount, currentFileWordCount, currentFileName);
             if (existing) {
@@ -2401,13 +2505,26 @@
             }
         }
 
-        // Advance to the next sidebar file that isn't completed yet (rendered tabs only).
+        // The file the window asked the report to open on (`#file=<name>`, `open_report(file=)`), or ''.
+        function fileFromHash() {
+            if (!location.hash.startsWith('#file=')) return '';
+            try { return decodeURIComponent(location.hash.slice(6)); } catch (e) { return ''; }
+        }
+
+        // A file still to study: its words still count (never one set aside as watched) and it isn't ✓ in the browser.
+        // The one rule for where the report opens and where a ✓ advances to (3.0).
+        function stillToStudy(tab) {
+            return !!tab.dataset.filename && !tab.dataset.aside && !completedFiles.has(tab.dataset.filename)
+                && !tab.closest('#completed-section');
+        }
+
+        // Advance to the next sidebar file still to study (rendered tabs only).
         function goToNextIncompleteFile() {
             const tabs = Array.from(document.querySelectorAll('#file-tabs .file-tab[data-filename]'));
             if (!tabs.length) return;
             const activeIdx = tabs.findIndex(t => t.classList.contains('active'));
             for (let i = activeIdx + 1; i < tabs.length; i++) {
-                if (!completedFiles.has(tabs[i].dataset.filename)) {
+                if (stillToStudy(tabs[i])) {
                     tabs[i].click();
                     return;
                 }

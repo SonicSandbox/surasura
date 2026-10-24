@@ -40,6 +40,7 @@ from app.services import jobs as jobs_module
 from app.services import press as press_service
 from app.services import settings as settings_service
 from app.services import status as status_service
+from app.services import view_rows                         # the journey's episode for a row (JO-3)
 from app.qt import screens                                # W2.2: the pages a library fills
 from app.qt import press as qpress                        # round 8 row 45: a press reacts at once
 from app.qt import standing as standing_qt                # round 8 row 54: every standing line's ✕
@@ -56,6 +57,7 @@ POLL_MS = 500
 LOOK_TICK_MS = 5 * 60 * 1000    # SRC W1b: the source folders' tick (`sources.due` says when it's an hour: FOCUS_S apart)
 CHIP_MAX = 24                   # SRC W1b: an arrival's folder name on its chip, at most this long
 JOURNEY_FILE = "reading_list_static.html"   # the report's file in `results` (`static_html_generator.OUTPUT_FILE`)
+JOURNEY_LACKS = "lacks"     # `Services.open_journey`: opened, but the asked episode isn't in the journey yet (JO-1)
 # E20 (IK-22): at quit, what can't stop part-way — an Anki write the window started (finishing its batch: Anki
 # finishes a request it received), Generate writing your list — is waited for up to this long ("≤ a few seconds"), with
 # the window up and its bar saying so (`ShellWindow._finish_first`), then whatever is left of it at `shutdown`. Under
@@ -120,6 +122,9 @@ class Services:
         # duties (given: a test's); never one of `has_duties`' four
         self.replan = replan
         self._replan_wired = False
+        self.replan_heard = []                  # finish-pending: told each line the host says (its worker) — the
+        #                                         window's drag controller's: a press waiting for its re-order ends
+        #                                         with some
         self.language = self.settings.get().get("target_language") or "ja"
         self.closing = threading.Event()  # set at quit: a Generate still waiting for `results` starts nothing
         self.quit_hook = None             # the window's: the update hands over (called on a worker)
@@ -206,17 +211,25 @@ class Services:
                          ankiweb=status_service.ankiweb_line(get), journey=status_service.journey_pending(language),
                          backlog=status_service.anki_backlog(language))
 
-    def _replan_line(self, _line):
-        """The host said a new line (its worker): the bar asks for it alone."""
+    def _replan_line(self, line):
+        """The host said a new line (its worker): the bar asks for it alone; the presses waiting for its re-order hear
+        it (`replan_heard`)."""
         refresh = getattr(self.status, "refresh_soon", None)
         if refresh is not None:
             refresh("replan")
+        for heard in list(self.replan_heard):
+            try:
+                heard(line)
+            except Exception as e:
+                print(f"Re-order: a listener failed: {e!r}")
 
     def _wire_writer(self, writer):
         """W-1 (K-W4): a mark that moved what counts (`Writer.on_counted`) asks the indexer, so the Rarity preview
-        follows."""
+        follows; and a mark that moved nothing that counts (`Writer.on_stone`, Keep studying on) asks the journey keeper,
+        so the report shows its stone (JS-1)."""
         if writer is not None:
             writer.on_counted = self._counted
+            writer.on_stone = lambda: self._stone_marked(writer.language)
 
     def _counted(self):
         """(The writer's thread.) The indexer asked, forced (`Chores.index`: one check and one indexer at a time, so a
@@ -224,6 +237,17 @@ class Services:
         chores = self.chores
         if chores is not None and not self.closing.is_set():
             chores.index(force=True)
+
+    def _stone_marked(self, language):
+        """(The writer's thread.) A watched mark, or its undo, that moved nothing that counts: the journey keeper's
+        `marked("stone")` (it reads only the Generate's state; its timer asks whether the report is current, after any
+        run in flight) — never once the quit began (the next start's look asks the report half). A mark that moved what
+        counts moves `order_version`: `_store_moved` hears that one."""
+        if self.closing.is_set() or self.replan is None:
+            return
+        stone_marked = getattr(self.replan, "stone_marked", None)
+        if stone_marked is not None:
+            stone_marked(language)
 
     def _store_moved(self, language, versions):
         """(The library reader's thread.) The order or the pins moved, whoever moved them: one poke, one `changed`;
@@ -366,10 +390,15 @@ class Services:
         every start; the start-light fix)."""
         return os.path.exists(os.path.join(path_utils.get_user_file("results"), JOURNEY_FILE))
 
-    def open_journey(self):
-        """(A worker.) *Your journey ↗*: the report as it is, never re-rendered (`open_report`). -> False with none."""
-        from app import static_html_generator
-        return static_html_generator.open_report(app_mode=bool(self.settings.get().get("open_app_mode")))
+    def open_journey(self, file=None):
+        """(A worker.) *Your journey ↗*: the report as it is, never re-rendered (`open_report`); `file` (the report's
+        name for an episode's file): opened on it — or, when the journey doesn't list it yet (added since the last
+        Generate), where it opens by itself, -> `JOURNEY_LACKS` (JO-1: the window says so). -> False with none."""
+        from app import static_html_generator as generator
+        held = file is None or generator.report_holds(file)
+        opened = generator.open_report(app_mode=bool(self.settings.get().get("open_app_mode")),
+                                       file=file if held else None)
+        return JOURNEY_LACKS if opened and not held else opened
 
     def level(self):
         """(A worker.) The level chip's (band, automatic) (`automation.level`)."""
@@ -625,6 +654,12 @@ class Services:
             if store.is_alive():
                 applog.log("shell", f"the store's close still runs after {QUIT_STORE_WAIT} s: quitting without it "
                                     f"(the store stays the truth; its copy is written at the next trigger)")
+
+
+def journey_file(episode):
+    """The journey's name for an episode's file (`path_utils.report_name`, as the report names it), or None (no
+    episode, or one with no file)."""
+    return path_utils.report_name(getattr(episode, "rel_path", None)) or None
 
 
 # --- window_state.json (02 §2.1) ---------------------------------------------------------------------------------- #
@@ -1059,8 +1094,9 @@ class ShellWindow(QMainWindow):
                     page.not_found.connect(self._play_not_found)       # ... and its ▶ looked at again (row 55 A-7)
             current = self.page_widgets.get("current")
             if hasattr(current, "on_journey"):                         # W3.1a S5: Up Next's *N new words ↗*
-                current.on_journey = lambda _row, episode: self._open_journey(      # (its row's ↗ turns, IK-2)
-                    asked=True, at=qpress.row_mark(current.list, [episode.id], "journey") if episode else None)
+                current.on_journey = lambda row, episode: self._open_journey(       # (its row's ↗ turns, IK-2)
+                    asked=True, at=qpress.row_mark(current.list, [episode.id], "journey") if episode else None,
+                    episode=view_rows.journey_episode(row) if episode else None)
             # --- P4.1 L2 (row 4.1.14): a click on the top-20 line opens its setting
             if hasattr(current, "on_line"):
                 current.on_line = lambda kind: self.open_setting("mine_line") if kind == "top" else None
@@ -2278,13 +2314,18 @@ class ShellWindow(QMainWindow):
         if self.duties.pop.isVisible():
             self.duties.pop.place()
 
-    def _open_journey(self, *_checked, asked=False, control=None, at=None):
+    def _open_journey(self, *_checked, asked=False, control=None, at=None, episode=None):
         """*Journey ↗* in the header, *Open your journey ↗* in the pop — and (`asked`, W3.1a S5) Up Next's *N new
         words ↗*: with none on disk the entries go, and a click from Up Next says why in the bar. The only ways the
         journey opens: a Generate writes it and never opens it (laptop fixes). Round 8 row 45: one press for all four
         (`press.run`): `control`'s arc turns (or `at`: the row's ↗, ⋯; neither: the bar's) until the browser was
-        asked, and a click meanwhile, from any of them, does nothing. -> the press, or None."""
+        asked, and a click meanwhile, from any of them, does nothing. `episode` (Up Next's ↗, a row's ⋯ *See it in your
+        journey*; Sonic 2026-10-24): the report opens ON it, its panel shown (`journey_file`); every other way in opens
+        where the report opens by itself. -> the press, or None."""
         def done(opened):
+            if opened == JOURNEY_LACKS:             # JO-1: opened where it opens by itself; the bar says why
+                self.say(strings.JOURNEY_NOT_YET.format(ep=episode.label))
+                return
             if opened:
                 return
             if self.duties is not None:
@@ -2294,8 +2335,9 @@ class ShellWindow(QMainWindow):
 
         def failed(info):
             self.say(strings.JOURNEY_FAILED.format(why=info[0]))
-        return qpress.run(control, "journey:open", self.services.open_journey, then=done, failed=failed, win=self,
-                          at=at)
+        file = journey_file(episode)
+        return qpress.run(control, "journey:open", self.services.open_journey, *((file,) if file else ()), then=done,
+                          failed=failed, win=self, at=at)
 
     # the bar's marks
     def _show_automation(self, state):

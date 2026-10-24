@@ -6,7 +6,7 @@ import bisect
 import pandas as pd
 import webbrowser
 
-from app.path_utils import get_user_file, get_resource, SIDECAR_SUFFIX, read_text
+from app.path_utils import get_user_file, get_resource, SIDECAR_SUFFIX, read_text, report_name
 from app import settings_manager
 
 # Configuration
@@ -46,15 +46,47 @@ def open_as_app(file_path):
     webbrowser.open(url)
 
 
-def open_report(app_mode=False):
+OPEN_ON_NAME = "journey_open.html"     # the small page that opens the report on one file (`open_report(file=)`)
+
+
+def report_holds(file):
+    """Whether the report on disk lists `file` (a name as the report names it, `path_utils.report_name`) — a counted,
+    set-aside or Target-met file alike: each is an entry with that `"filename"` in its data, written as
+    `generate_static_html` writes it (`json.dumps`). False with no report."""
+    try:
+        text = read_text(os.path.join(get_user_file("results"), REPORT_NAME))
+    except OSError:
+        return False
+    return f'"filename": {json.dumps(file)}' in text      # (a name holds no "/", so no "</" for the dump to escape)
+
+
+def open_report(app_mode=False, file=None):
     """Open the ALREADY-generated report without re-rendering it — the fast path when neither the
     analysis nor the presentation (theme / Zen limit / window) changed. Returns False if there is
     no report on disk yet (caller should render instead). The file is looked for in `results` as it is now, where the
     window's journey check looks — never by the path fixed when this module was first imported (AD-4: a test's
-    earlier root, whose report then opened a browser in the next test)."""
+    earlier root, whose report then opened a browser in the next test).
+
+    `file` (a file's name as the report names it, its basename; Sonic 2026-10-24): open the report ON that file, its
+    tab clicked (`#file=<name>`, read as the report loads). Windows drops a file URL's fragment on its way to the
+    default browser, so a small page beside the report carries it (`OPEN_ON_NAME`): it replaces itself with the report
+    at that fragment. Written at each such open (~200 bytes; cheaper than checking whether it already holds the name),
+    and left beside the report. A name the report doesn't hold opens where it opens by itself; a page that can't be
+    written (results read-only, a lock) opens the report itself."""
     path = os.path.join(get_user_file("results"), REPORT_NAME)
     if not os.path.exists(path):
         return False
+    if file:
+        from urllib.parse import quote
+        target = json.dumps(f"{REPORT_NAME}#file={quote(file, safe='')}")     # (quoted: no < or / left in it)
+        page = os.path.join(os.path.dirname(path), OPEN_ON_NAME)
+        try:
+            with open(page, "w", encoding="utf-8") as f:
+                f.write(f'<!DOCTYPE html><meta charset="utf-8"><title>Surasura</title>'
+                        f'<body style="background:#1e1e1e"><script>location.replace({target});</script>\n')
+            path = page
+        except OSError as e:
+            print(f"Warning: the journey's page couldn't be written ({e!r}); opening the report itself")
     if app_mode:
         open_as_app(path)
     else:
@@ -844,7 +876,68 @@ def _confirmed_keys(backlog, answers, listed=None, names=None):
             if word in words and pair.get("answer") == "yes" and pair.get("target")}
 
 
-def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_browser=True):
+def _journey_stones(data, file_order, stats_map, language, marks=None):
+    """The journey's stones (Sonic 2026-10-23): the library store's watched marks (`marks`, the run's; None: read now,
+    `analyzer.journey_marks`, one read) on the per-file report, matched by basename as the rest of it is. A counted
+    file that is watched (*Keep studying watched episodes* on) keeps its entry, plus `"watched": True` — every counted
+    file of that name watched. A watched file set aside (the option off) gets an entry of its own IN ITS PLACE in the
+    library's order, no counts: `{"filename", "watched": True, "aside": True, "words": [], "total_words": 0, "is_goal_content",
+    "unlisted": []}`, and its name in `file_order` at the same place (the inline Target Met order) — never one whose
+    name the report already shows (a counted file's, an earlier one's). No store, or no stone: nothing changes.
+    Returns the marks it drew from (`library_store.UNREAD` when they couldn't be read now): the run signs the report
+    with them (`analyzer.signed_render`)."""
+    if marks is None:
+        from app import analyzer
+        marks = analyzer.journey_marks(language)
+    if isinstance(marks, str):                  # library_store.UNREAD
+        print("Warning: the watched marks couldn't be read now; the journey is drawn without its stones")
+        return marks
+    if not marks:
+        return marks
+    place, watched_name = {}, {}
+    for n, (rel, _tier, watched, counted) in enumerate(marks):
+        if counted:
+            name = report_name(rel)
+            place.setdefault(name, n)
+            watched_name[name] = watched_name.get(name, True) and bool(watched)
+    for entry in data["progressive"] + data["completed_files"]:
+        if watched_name.get(entry["filename"]):
+            entry["watched"] = True
+    shown = set(stats_map) | {entry["filename"] for entry in data["progressive"]}
+    aside = []
+    for n, (rel, tier, watched, counted) in enumerate(marks):
+        name = report_name(rel)
+        if watched and not counted and name not in shown:
+            shown.add(name)
+            aside.append((n, name, tier == "goal"))
+    if not aside:
+        return marks
+
+    def in_place(items, name_of, make):
+        # each set-aside file before the first item the library orders after it, the rest at the end
+        out, k = [], 0
+        for item in items:
+            n = place.get(name_of(item))
+            while n is not None and k < len(aside) and aside[k][0] < n:
+                out.append(make(*aside[k][1:]))
+                k += 1
+            out.append(item)
+        out.extend(make(*a[1:]) for a in aside[k:])
+        return out
+
+    data["progressive"] = in_place(data["progressive"], lambda entry: entry["filename"], lambda name, goal: {
+        "filename": name, "watched": True, "aside": True, "words": [], "total_words": 0, "is_goal_content": goal,
+        "unlisted": []})
+    if file_order:
+        file_order[:] = in_place(file_order, lambda name: name, lambda name, _goal: name)
+    return marks
+
+
+def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_browser=True, language=None, marks=None):
+    """Write the report. `language`: the run's (the analyzer's `--language`), whose journey's stones it draws (None:
+    settings.json's); `marks`: those stones as the run read them (None: read here). Returns the marks the journey was
+    drawn from — None for Zen or without a library store, `library_store.UNREAD` when they couldn't be read — for the
+    run's render signature (`analyzer.signed_render`)."""
     print(f"Generating static HTML (Theme: {theme})...")
     
     # Pre-load settings
@@ -962,6 +1055,11 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_brow
                 "filename": fname,
                 "stats": fstat
             })
+
+    # The journey's stones (Zen shows no journey: its report is what it was), the run's language's
+    drawn = None
+    if theme not in ("Zen Mode", "zen-focus"):
+        drawn = _journey_stones(data, all_files_order, stats_map, language or target_lang, marks)
 
     # Load Priority
     if os.path.exists(PRIORITY_CSV):
@@ -1093,13 +1191,16 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_brow
     except Exception:
         koe_config = None
     koe_json_str = json.dumps(koe_config, ensure_ascii=False).replace("</", "<\\/")
+    # A set-aside watched file's panel: the window's own sentence for the rule (one place: `view_rows.STRINGS`)
+    from app.services.view_rows import STRINGS as rows_strings
+    watched_leaves_str = json.dumps(rows_strings["watched_leaves"], ensure_ascii=False).replace("</", "<\\/")
     anki_json_str = json.dumps(anki_backlog_keys(target_lang, settings if 'settings' in locals() else {},
                                                  PRIORITY_CSV),
                                ensure_ascii=False).replace("</", "<\\/")
 
     injected = [
         "let globalData = ", json_str,
-        f";\n        let globalTheme = '{applied_theme}';\n        let globalLogic = {logic_json_str};\n        let globalLanguage = '{target_lang}';\n        let globalWordsPerDay = {words_per_day};\n        let globalShowWordsPerDay = {'true' if show_words_per_day else 'false'};\n        let globalSources = {sources_json_str};\n        let globalSourceDisplay = '{source_display}';\n        let globalWordSearch = {word_search_json_str};\n        let globalKoe = {koe_json_str};\n        let globalAnkiBacklog = {anki_json_str};"]
+        f";\n        let globalTheme = '{applied_theme}';\n        let globalLogic = {logic_json_str};\n        let globalLanguage = '{target_lang}';\n        let globalWordsPerDay = {words_per_day};\n        let globalShowWordsPerDay = {'true' if show_words_per_day else 'false'};\n        let globalSources = {sources_json_str};\n        let globalSourceDisplay = '{source_display}';\n        let globalWordSearch = {word_search_json_str};\n        let globalKoe = {koe_json_str};\n        let globalAnkiBacklog = {anki_json_str};\n        let globalWatchedLeaves = {watched_leaves_str};"]
     replacements = []
 
     # Embed Icon as Favicon and Header Logo
@@ -1127,12 +1228,13 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_brow
 
     print(f"Static HTML generated at: {OUTPUT_FILE}")
     if not open_browser:
-        return                      # the dashboard's automatic Generate: written, not opened
+        return drawn                # the dashboard's automatic Generate: written, not opened
     if app_mode:
         open_as_app(OUTPUT_FILE)
     else:
         url = f"file://{os.path.abspath(OUTPUT_FILE)}"
         webbrowser.open(url)
+    return drawn
 
 def main():
     import argparse

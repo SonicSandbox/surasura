@@ -456,6 +456,8 @@ ROWS_STOP_TIP = "{tip}\n• Click to stop mining this episode: the cards made so
 MINE_STOP_ENTRY = "Stop mining"
 MINE_STOP_REFUSED = "It can't be stopped now: it is finishing its cards, or Connect is done with it"
 MINE_STOP_FAILED = "Stop didn't reach Connect: {why}"
+# R47-A1 (PROVISIONAL): Connect took the stop, then began naming the clips before it could act on it
+MINE_STOP_TOO_LATE = "Too late to stop: its cards are already being finished"
 # --- end R47
 ROWS_LINK = "Link…"
 ROWS_LINK_TIP = "Choose its video: its cards get their pictures and audio from it"

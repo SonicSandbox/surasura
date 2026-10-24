@@ -779,7 +779,11 @@ class RowsModel(QAbstractListModel):
                 st = payload.status
                 if st is not None:
                     name = action_of(st, payload.episodes, None, payload.media_word)[0]
-                    off = getattr(self.parent(), "connect_off", None) and asks_connect(name, payload.media_word)
+                    view = self.parent()
+                    off = getattr(view, "connect_off", None) and asks_connect(name, payload.media_word)
+                    if name == STOP and (getattr(view, "connect_off", None) or     # R47-A4: no Stop while off, or
+                                         getattr(view, "stopping", lambda _e: False)(payload.episodes)):   # pressed
+                        off = True
                     if name in ACTION_NAMES and not off:
                         text += " · " + strings.ROWS_ACTION_KEY.format(action=strings.ROWS_ACTION_NAMES[name])
                 return text                                 # --- end P4.1 L2
@@ -1258,7 +1262,8 @@ class RowDelegate(QStyledItemDelegate):
                 out.append((name, "warning", "warn" if st.tone == "warn" else "ink-faint", tip, ask, iw, ih))
             else:
                 out.append((name, STATUS_ICON.get(st.kind, "mine"),
-                            {"ok": "ok", "faint": "ink-faint", "ink": "ink"}.get(st.tone, "ink-dim"), tip, ask, iw,
+                            {"ok": "ok", "faint": "ink-faint", "ink": "ink",       # R47-A5: an Asked one, accent
+                             "accent": "accent"}.get(st.tone, "ink-dim"), tip, ask, iw,
                             ih))
         if row.mark is not None:
             out.append(("mark", "no_audio" if row.media_word == "audio" else "no_media",
@@ -3266,18 +3271,27 @@ class RowsView(QListView):
         self._sync_turn()
         for row_i in sorted({n for n, _ep in shown.values()}):
             self.update(self.model().index(row_i, 0))
+        pos = self.viewport().mapFromGlobal(QCursor.pos())       # R47-A3: the hand still on a Stop reads ■ Stop again
+        part = self.part_at(pos)[1] if self.viewport().rect().contains(pos) else None
+        self._set_stop_hot(QRect(part[1]) if part is not None and part[0] == STOP else None)
 
     def _prune_stopping(self):
         """A new view: a stopped file no longer Mining (stopped: waiting for your *Mine now*; or Connect not mining it
         now), or no longer shown, lets its *Stopping…* go — its press ended by its owner. Connect's own *Stopping…*
-        (the feed's `stopping`) is still Mining: held."""
+        (the feed's `stopping`) is still Mining: held. R47-A1: still Mining, neither stoppable nor stopping, Connect
+        dropped the stop (it accepted it, then naming began: `ledger.forget_stop`) — its press ends refused, too late."""
         if not self.stopping_ids:
             return
         shown = self._where(self.stopping_ids, dict(self._stopping_at))
         moved = {i for i in self.stopping_ids if i not in shown or shown[i][1].status is None
                  or shown[i][1].status.kind != "mining"}
-        if moved:
-            (self.stop_moved or self.unstop)(moved)
+        late = {i for i in self.stopping_ids - moved if shown[i][1].status.stop is None
+                and shown[i][1].status.label != view_rows.STRINGS["stopping"]}
+        for ids, too_late in ((moved, False), (late, True)):
+            if ids and self.stop_moved is not None:
+                self.stop_moved(ids, late=too_late)
+            elif ids:
+                self.unstop(ids)
 
     def _set_stop_hot(self, rect):
         """The Stop pill under the hand (`rect`, or None): it reads ■ Stop; the rows it leaves and enters repainted."""

@@ -270,15 +270,15 @@ class MineActions(QObject):
         ids = list(ask.ids)
         for i in ids:
             self._stops[i] = key
-        for lst in self.lists:                       # *Stopping…* painted now, before the worker
-            lst.press_stop(ids)
+        marked = [lst.press_stop(ids) for lst in self.lists]     # *Stopping…* painted now, before the worker
+        shown = any(marked)                          # R47-A2: no list shows it — the press ends with the worker
         status = getattr(self.win.services, "status", None)
 
         def done(ok):
             if sip.isdeleted(self):
                 return
-            if not ok:
-                self._end_stop(ids, why=strings.MINE_STOP_REFUSED)
+            if not ok or not shown:
+                self._end_stop(ids, why=None if ok else strings.MINE_STOP_REFUSED)
                 return
             refresh = getattr(status, "refresh_soon", None)
             if refresh is not None:
@@ -290,21 +290,26 @@ class MineActions(QObject):
         bridge.run_in_worker(self.stop_job, lang, ask.job, then=done, failed=broke)
         return p
 
-    def stopped(self, ids):
-        """The files `ids` left Mining (stopped, or no longer mined): their Stop presses end, done."""
-        self._end_stop(ids)
+    def stopped(self, ids, late=False):
+        """The files `ids` left Mining (stopped, or no longer mined): their Stop presses end, done. `late` (R47-A1):
+        still Mining, but Connect dropped the stop as it began naming the clips — ended refused, the bar says so."""
+        self._end_stop(ids, why=strings.MINE_STOP_TOO_LATE if late else None)
 
     def _end_stop(self, ids, why=None):
+        """The Stop presses of `ids` end (done, or failed `why`); every list lets them go. `why` goes to the bar only
+        when a press of this window's ended here (R47-A3: never one a language switch or the feed already ended)."""
         presses = qpress.presses_of(self.win)
+        ended = False
         for i in ids:
             key = self._stops.pop(i, None)
             if key is not None and key not in self._stops.values():
                 p = presses.get(key)
                 if p.live():
                     qpress.end(p, self.win, failed=why is not None, why=why)
+                    ended = True
         for lst in self.lists:
             lst.unstop(ids)
-        if why is not None:
+        if why is not None and ended:
             self.win.say(why)
 
     # --- row 28 (Michi's row 24b ask): an episode's own ⋯ ----------------------------------------------------- #

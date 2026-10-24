@@ -272,3 +272,134 @@ def test_a_language_switch_lets_every_stopping_pill_go(act, monkeypatch):
     assert lst.stopping_ids
     win.mine.settle_all()
     assert not lst.stopping_ids and not win.presses.find(f"stop:{win.language}:{JOB}").live()
+
+
+# --- the review's fix round (round8-r47-adversary.md) --------------------------------------------------------------- #
+def test_a1_a_stop_connect_accepted_then_dropped_as_naming_began_ends_refused_with_words(act, monkeypatch):
+    """R47-A1: a press that lands after Anki Miner's last batch and before naming is accepted (`actions.stop` True), then
+    dropped as naming starts (`ledger.forget_stop`): the feed says Mining, not stopping, past the stop point. The pill
+    held *Stopping…* through naming, filling and ordering, then ended done without a word. Now that state ends the press
+    refused at once, the pill its own again and the bar saying it was too late. Red first: still *Stopping…*."""
+    _seed, win, writer = act()
+    lst = lst_of(win)
+    monkeypatch.setattr(win.services.status, "refresh_soon", lambda *names: None)
+    i, row = _mining(lst)
+    ep = row.episodes[0]
+    _seen, calls, _n = _watch_stop(win, monkeypatch)
+    click(lst, _stop_part(lst, i))
+    assert wait_until(lambda: calls)
+    press = win.presses.find(f"stop:{win.language}:{JOB}")
+    _moved(lst, row.key, view_rows._connected(PLAIN, _item(stoppable=None, stopping=None, progress=70,
+                                                           doing="Naming the clips"), "video"))
+    assert not lst.stopping_ids and press.state == press_service.FAILED
+    assert win.bar_line.full() == strings.MINE_STOP_TOO_LATE
+    assert ep.id not in lst.stopping_ids
+
+
+def _mining_hero(lst):
+    """Up Next (closed), its first episode made Connect's stoppable *Mining*: (its index, the card)."""
+    st = view_rows._connected(PLAIN, _item(), "video")
+    entries = list(lst.model().entries)
+    h = next(n for n, e in enumerate(entries) if e[0] == rows.HERO)
+    hero = entries[h][1]
+    hero = hero._replace(status=st, episodes=type(hero.episodes)(
+        (e._replace(status=st, cards=0, mining=True, deleted=False, missing=False) if k == 0 else e)
+        for k, e in enumerate(hero.episodes)))
+    entries[h] = (rows.HERO, hero, entries[h][2])
+    lst.set_entries(entries)
+    lst.scrollTo(lst.model().index(h, 0), lst.ScrollHint.PositionAtTop)
+    QApplication.processEvents()
+    return h, hero
+
+
+@pytest.mark.parametrize("where", ["open-row-episode", "up-next"])
+def test_a7_stopping_is_painted_on_an_open_rows_episode_pill_and_on_up_next_before_the_worker(act, monkeypatch, where):
+    """R47-A7: the press's paint on the pills the closed-row test never reached — an opened row's episode pill (where
+    the ⋯'s press shows) and Up Next's status — painted *Stopping…* before the stop is handed to the worker."""
+    _seed, win, writer = act()
+    lst = lst_of(win)
+    monkeypatch.setattr(win.services.status, "refresh_soon", lambda *names: None)
+    if where == "up-next":
+        i, row = _mining_hero(lst)
+        part = _stop_part(lst, i)
+    else:
+        i, row = _mining(lst)
+        lst.toggle(lst.model().index(i, 0))
+        assert wait_until(lambda: lst.model().open_key == row.key)
+        QApplication.processEvents()
+        part = [p for p in parts_of(lst, i) if p[0] == rows.STOP and p[3].id == row.episodes[0].id][-1]
+    drawn, at_handover = [], []
+    real = rows.paint_stop
+    monkeypatch.setattr(rows, "paint_stop", lambda p, rect, stopping, *a, **k: (drawn.append((QRectF(rect), stopping)),
+                                                                                 real(p, rect, stopping, *a, **k)))
+    _watch_stop(win, monkeypatch)
+    win.mine.stop_job = lambda language, job: (at_handover.append(list(drawn)), True)[1]
+    click(lst, part)
+    assert wait_until(lambda: at_handover)
+    assert any(stopping and r.intersects(QRectF(part[1])) for r, stopping in at_handover[0])
+
+
+def test_a7_a_stop_whose_worker_fails_puts_the_pill_back_and_says_why(act, monkeypatch):
+    """R47-A7: `actions.stop` raising (a ledger that can't be opened): the press failed, the pill its own, the bar
+    says Stop didn't reach Connect."""
+    _seed, win, writer = act()
+    lst = lst_of(win)
+    i, row = _mining(lst)
+    _watch_stop(win, monkeypatch)
+
+    def broken(language, job):
+        raise OSError("the ledger is locked")
+    win.mine.stop_job = broken
+    click(lst, _stop_part(lst, i))
+    press = win.presses.find(f"stop:{win.language}:{JOB}")
+    assert wait_until(lambda: press.state == press_service.FAILED)
+    assert not lst.stopping_ids and win.bar_line.full().startswith(strings.MINE_STOP_FAILED.format(why="")[:10])
+
+
+def test_a2_a_stop_on_a_file_no_list_shows_ends_with_its_worker(act, monkeypatch):
+    """R47-A2: the ⋯ picked after the file left Current (nothing marked): the press ends with the worker's answer,
+    never live for good (the header's hairline)."""
+    _seed, win, writer = act()
+    _watch_stop(win, monkeypatch)
+    win.mine.stop(rows.Ask(10 ** 9, (10 ** 9,), None, JOB))
+    press = win.presses.find(f"stop:{win.language}:{JOB}")
+    assert wait_until(lambda: press.state == press_service.DONE)
+
+
+def test_a3_a_refusal_after_a_language_switch_says_nothing_in_the_new_bar(act, monkeypatch):
+    """R47-A3: the press already ended (a language switch) when the refusal arrives: no words in the bar."""
+    _seed, win, writer = act()
+    lst = lst_of(win)
+    i, row = _mining(lst)
+    _watch_stop(win, monkeypatch, answer=False)
+    held = []
+    real = mine_actions.bridge.run_in_worker
+    monkeypatch.setattr(mine_actions.bridge, "run_in_worker", lambda fn, *a, **k: held.append((fn, a, k)))
+    click(lst, _stop_part(lst, i))
+    line = win.bar_line.full()
+    win.mine.settle_all()
+    fn, a, k = held[0]
+    real(fn, *a, **k)
+    _settle_then(lambda: True)                                          # the refusal delivered
+    assert win.bar_line.full() == line
+
+
+def _settle_then(check, n=40):
+    import time
+    for _ in range(n):
+        QApplication.processEvents()
+        time.sleep(0.01)
+    return check()
+
+
+def test_a4_the_rows_accessible_text_offers_stop_only_while_it_can_be_pressed(act, monkeypatch):
+    """R47-A4: a screen reader hears "→ then Enter: Stop" on a stoppable row, never while its Stop is pressed."""
+    from PyQt6.QtCore import Qt
+    _seed, win, writer = act()
+    lst = lst_of(win)
+    i, row = _mining(lst)
+    said = strings.ROWS_ACTION_KEY.format(action=strings.ROWS_ACTION_NAMES["stop"])
+    text = lambda: lst.model().data(lst.model().index(i, 0), Qt.ItemDataRole.AccessibleDescriptionRole)  # noqa: E731
+    assert text().endswith(said)
+    lst.press_stop([row.episodes[0].id])
+    assert said not in text()

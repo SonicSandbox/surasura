@@ -9,7 +9,8 @@
   focus, a screen reader: `WORDS`); `tip` the job's own reason in plain words (a waiting stone's hover, C7); `job`
   its id (*Mine anyway*'s); `made` / `total` its cards so far of the words picked (*Mining 3 of 12*); `progress` /
   `doing` a mining item's percent through the whole episode and its step in words (`status._progress`; laptop round
-  5 #23), else None.
+  5 #23), else None; `stoppable` True while *Stop* can be pressed (#47); `stopping` True from that press until the
+  job has stopped (#56).
 - Kinds are told by the runner's and the Anki session's named reasons (`runner.NO_VIDEO`, `anki_session.CLOSED`, …)
   and the job's own `kind` (`asked`, row 4.1.3), never by a wording a test can't see.
 - `Provider(language, settings_get)`: one per window and language, a worker's call. Off → the off Feed, nothing read.
@@ -27,7 +28,9 @@ Feed = namedtuple("Feed", "on mining items line state unseen updating")
 # `progress` / `doing` (laptop round 5 #23): a mining item's percent (0–99) and its step in words, else None
 # `stoppable` (laptop round 8 #47): True while the item's job can still be stopped (`actions.stop`: before its cards
 # are made, and not stopped already), else None
-Item = namedtuple("Item", "kind words tip job made total progress doing stoppable", defaults=(None, None, None))
+# `stopping` (laptop round 9 #56): True from your *Stop* until the job has stopped (*Stopping…*: no second Stop), else None
+Item = namedtuple("Item", "kind words tip job made total progress doing stoppable stopping",
+                  defaults=(None, None, None, None))
 
 MINING, WAITING, ANKI, NO_VIDEO, NOT_TIMED, BATTERY, ASKED = (
     "mining", "waiting", "anki", "no_video", "not_timed", "battery", "asked")
@@ -94,11 +97,13 @@ def build(record, language):
             mining.add(item_id)
         step = (job.get("progress") or None) if kind == MINING else None      # `status._progress`'s
         progress, doing = (step.get("percent"), step.get("doing")) if step else (None, None)
-        stoppable = (True if job.get("job") is not None and actions.stoppable(job.get("state"), job.get("resume"))
-                     and reason != runner.STOPPED_BY_YOU else None)
+        stopping = True if job.get("stopping") else None
+        stoppable = (True if job.get("job") is not None
+                     and actions.stoppable(job.get("state"), job.get("resume"), job.get("progress"))
+                     and reason != runner.STOPPED_BY_YOU and not stopping else None)
         items[item_id] = Item(kind=kind, words=WORDS[kind], tip=reason or WORDS[kind], job=job.get("job"),
                               made=job.get("made") or 0, total=job.get("words") or 0, progress=progress, doing=doing,
-                              stoppable=stoppable)
+                              stoppable=stoppable, stopping=stopping)
     return Feed(on=True, mining=frozenset(mining), items=items, line=rec.get("line"), state=rec.get("state"),
                 unseen=rec.get("unseen") or 0, updating=bool(rec.get("updating")))
 

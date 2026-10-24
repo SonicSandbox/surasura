@@ -69,6 +69,13 @@ Episode = namedtuple("Episode", Episode._fields + ("show_key",),
                      defaults=tuple(Episode._field_defaults.values()) + (None,))
 #   show_key: in a group, which show it is of (`_show_key`: its work, else its folder) — where an opened group's show
 #   lines stand (`rows.show_starts`); None in a run and in a cache from before
+Episode = namedtuple("Episode", Episode._fields + ("ask",), defaults=tuple(Episode._field_defaults.values()) + (None,))
+#   ask (row 55): what ▶'s lookup is asked for it — (rel_path, media) — or None where ▶ can't be anyway (missing,
+#   waiting for its subtitle, online, Connect's *No video*); `play.Looks` answers it, `build(playable=)` reads the answer
+Episode = namedtuple("Episode", Episode._fields + ("looking",),
+                     defaults=tuple(Episode._field_defaults.values()) + (False,))
+#   looking (row 55, R55-A): asked and not answered yet — Up Next says *Looking…*, never *No video* before the check
+#   answered; False with no looker and in a cache from before
 Row = namedtuple("Row", "key index tier work_id piece_id media media_word verb title title_ep line source n_files n_watched "
                         "pct pct_tone n_new status mark episodes next_index studying date cover_title accessible "
                         "description chips more_chips play_tip can_play cards_out string", defaults=(False, None))
@@ -185,10 +192,14 @@ STRINGS = {
                                                 "Mine anyway: in Needs you",
     # --- end P4.1 L2
     # a tooltip's action on a line of its own, as a bullet (G2.3 T1); never a "( … )" a line break can cut
-    "mark_missing": "No {word} on disk for {eps}\n• Link one, or mine the text on its own",
+    "mark_missing": "{eps}: {gone}",                  # R55-C (Sonic): Up Next's own words, which episodes first
     "mark_removed": "{Word} deleted after mining: {eps}\nThe cards keep their pictures and audio; only ▶ can't play it",
     "play": "{verb} {name} in your {player}\nThe {word} beside its subtitle file",
     "play_online": "Its video is online: opening it from here comes in a later build",
+    # row 55: ▶'s own lookup found nothing to open (PROVISIONAL words)
+    "play_not_found": "No {word} found for it on this computer, so there is nothing to {verb_l} from here",
+    # R55-A (Sonic): before the check has answered, Up Next says *Looking…*; its tip says only that (A-11)
+    "play_looking": "Looking for its {word} on this computer…",
     # --- W3.2 Q5: an item whose content file is gone says so (its *video* is Connect's, S3), never "no video"
     "play_missing": "Its file is gone from your library folder\n• Point it at its file in Needs you",
     "play_missing_plain": "Its file is gone from your library folder, so it can't {verb_l} from here",
@@ -507,14 +518,15 @@ def status_of(eps, word, line_n):
     mark = None
     if missing:
         mark = Mark(len(missing), "warn" if top_missing else "faint",
-                    STRINGS["mark_missing"].format(word=word, eps=_eps_list(missing)))
+                    STRINGS["mark_missing"].format(eps=_eps_list(missing), gone=STRINGS["play_missing"]))
     elif removed:
         mark = Mark(len(removed), "faint", STRINGS["mark_removed"].format(Word=Word, eps=_eps_list(removed)))
     return st, mark
 
 
 # --- building ------------------------------------------------------------------------------------------------------ #
-def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=None, show=None, show_key=None):
+def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=None, show=None, show_key=None,
+             playable=None):
     name = item.get("title") or (item.get("rel_path") or "").rsplit("/", 1)[-1]
     number = None if media == "youtube" else episode_number(name)
     if media == "youtube":
@@ -536,20 +548,28 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=
     mined = c > 0
     word = MEDIA_WORD.get(media, "video")
     verb = VERB[word]
+    online = item.get("source_type") in ("youtube", "bilibili")      # its video is online: no address for it yet
+    said = connect.get(item["id"]) if connect is not None else None
+    # row 55 (Sonic: "if it doesn't find the media, there shouldn't be a play button"): ▶ only where ▶'s own lookup
+    # (`play.Looks`, its answers `playable`) found the file — never asked where it can't be, nor where Connect says
+    # *No video* of what ▶ would open as a video (the two never disagree; Connect's lookup is a video's: IK-3); with
+    # no looker (`playable` None) as before. Asked and not answered yet: `looking` (R55-A)
+    no_video = said is not None and said.kind == connect_feed.NO_VIDEO and word == "video"
+    ask = None if missing or waiting or online or no_video else (item.get("rel_path"), media)
+    looking = ask is not None and playable is not None and item["id"] not in playable
+    can_play = ask is not None and (playable is None or bool(playable.get(item["id"])))
     ep = Episode(id=item["id"], label=label, number=number, title=stem(name), watched=bool(item.get("watched")),
                  cards=c, mining=item["id"] in mining and not mined, missing=missing, removed=missing and mined,
                  in_top=in_top, pct=pct_of(known, counted), n_new=n_new, status=None, mark=None,
-                 rel_path=item.get("rel_path"), play_tip="", can_play=not missing and not waiting, waiting=waiting,
-                 media_word=MEDIA_WORD.get(media, "video"), work_id=item.get("work_id"), show=show, show_key=show_key)
+                 rel_path=item.get("rel_path"), play_tip="", can_play=can_play, waiting=waiting,
+                 media_word=MEDIA_WORD.get(media, "video"), work_id=item.get("work_id"), show=show, show_key=show_key,
+                 ask=ask, looking=looking)
     asked = item.get("mine_asked")                    # asked again after it was mined: it mines again (Sonic's "unless asked")
     deleted = bool(item.get("mined_at")) and not mined and not (asked and str(asked) > str(item["mined_at"]))
     ep = ep._replace(deleted=deleted)
     st, mark = status_of([_Shim(ep, mined)], word, line_n)
     if connect is not None:                          # --- P4.1 L2: what Connect says of it (row 4.1.10)
-        st = _connected(st, connect.get(item["id"]), word)
-    online = item.get("source_type") in ("youtube", "bilibili")
-    if online:                                       # its video is online; the window holds no address for it yet
-        ep = ep._replace(can_play=False)
+        st = _connected(st, said, word)
     if online:
         tip = STRINGS["play_online"]
     elif waiting:
@@ -557,6 +577,10 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=
     elif missing:
         tip = (STRINGS["play_removed"] if mined else STRINGS["play_missing_plain"] if deleted else
                STRINGS["play_missing"]).format(word=word, verb_l=verb.lower())
+    elif looking:
+        tip = STRINGS["play_looking"].format(word=word)                          # R55-A (A-11): nothing said yet
+    elif not can_play:
+        tip = STRINGS["play_not_found"].format(word=word, verb_l=verb.lower())    # row 55 (or Connect's *No video*)
     else:
         tip = STRINGS["play"].format(verb=verb, name=label, player=STRINGS["player"][word], word=word)
     return ep._replace(status=st, mark=mark, play_tip=tip)
@@ -672,7 +696,7 @@ def _status_word(eps):
 
 
 def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, finished=False, guessed=None,
-         connect=None, meta=None):
+         connect=None, meta=None, playable=None):
     first = piece[0]
     work = works.get(first.get("work_id")) or {}
     group = _is_group(meta, piece)                       # LM11b G1: `meta`, the feed's piece (a group's)
@@ -680,11 +704,12 @@ def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, 
         shows, kinds, names, group_title, group_line = _group(meta, piece, works, guessed)
         media = kinds[_show_key(first)]
         eps = [_episode(it, works.get(it.get("work_id")) or {}, kinds[_show_key(it)], numbers, cards, mining,
-                        it["id"] in in_top_ids, line_n, connect, names[_show_key(it)], _show_key(it)) for it in piece]
+                        it["id"] in in_top_ids, line_n, connect, names[_show_key(it)], _show_key(it), playable)
+               for it in piece]
     else:
         media = _media(work, piece, guessed)
-        eps = [_episode(it, work, media, numbers, cards, mining, it["id"] in in_top_ids, line_n, connect)
-               for it in piece]
+        eps = [_episode(it, work, media, numbers, cards, mining, it["id"] in in_top_ids, line_n, connect,
+                        playable=playable) for it in piece]
     word = MEDIA_WORD.get(media, "video")
     shims = [_Shim(e, bool(e.cards)) for e in eps]
     said = _status_word(eps) if group else word      # LM11b G1: never "No video" for a group's EPUB
@@ -822,9 +847,10 @@ def _group_of(metas, piece):
     return meta if _is_group(meta, piece) else None
 
 
-_Sig = namedtuple("_Sig", "n line_n hero cards mining in_top guess connect")
+_Sig = namedtuple("_Sig", "n line_n hero cards mining in_top guess connect play")
 #   a cached row's signature (`_cached_row`), read by name: read by place, the fast path once took Connect's part
-#   (the last, added in P4.1 L2) for the type guess and kept a row whose guess had moved
+#   (the last, added in P4.1 L2) for the type guess and kept a row whose guess had moved. `play` (row 55): its items'
+#   ▶ answers — checked on the fast path too, so new answers rebuild only the rows whose answer moved
 
 
 def _same(a, b):
@@ -837,10 +863,11 @@ def _guess(guessed, work):
 
 
 def _cached_row(cache, index, tier, piece, works, numbers, cards, mining, in_top, line_n, finished, guessed, hero,
-                connect=None, soon_from=None, soon_piece=None, meta=None):
-    """`meta`: a group's piece from the feed (LM11b G1), else None."""
+                connect=None, soon_from=None, soon_piece=None, meta=None, playable=None):
+    """`meta`: a group's piece from the feed (LM11b G1), else None. `playable`: ▶'s answers (row 55), else None."""
     if cache is None:
-        row = _row(index, tier, piece, works, numbers, cards, mining, in_top, line_n, finished, guessed, connect, meta)
+        row = _row(index, tier, piece, works, numbers, cards, mining, in_top, line_n, finished, guessed, connect, meta,
+                   playable)
         row = _as_hero(row) if hero else row
         return row._replace(soon_from=soon_from, soon_piece=soon_piece) if soon_from is not None else row  # P-LF-16
     first = piece[0]
@@ -858,19 +885,23 @@ def _cached_row(cache, index, tier, piece, works, numbers, cards, mining, in_top
     hit = cache.rows.get(key)
     same_items = hit is not None and _same(hit[1], made) and len(hit[2]) == len(piece) and \
         all(a is b for a, b in zip(hit[2], piece))
-    if same_items and cache.same_global and hit[0].hero == hero and hit[0].guess == guess:
+    # row 55: as shown — found, not found, and not answered yet (R55-A: Up Next's *Looking…*, its tip) each its own
+    play = None if playable is None else tuple(playable.get(it["id"]) for it in piece)
+    if same_items and cache.same_global and hit[0].hero == hero and hit[0].guess == guess and hit[0].play == play:
         sig = hit[0]                                 # nothing global moved: the same objects are the same row
     else:
         sig = _Sig(len(piece), line_n, hero, tuple(cards.get(it["id"], 0) for it in piece),
                    tuple(it["id"] in mining for it in piece), tuple(it["id"] in in_top for it in piece), guess,
-                   None if connect is None else tuple(connect.get(it["id"]) for it in piece))     # --- P4.1 L2
+                   None if connect is None else tuple(connect.get(it["id"]) for it in piece),     # --- P4.1 L2
+                   play)
     if same_items and hit[0] == sig and (hit[3].soon_from, hit[3].soon_piece) == (soon_from, soon_piece):  # same cut
         row = hit[3]
         if row.index != index:
             row = row._replace(index=index)
         cache.hits += 1
     else:
-        row = _row(index, tier, piece, works, numbers, cards, mining, in_top, line_n, finished, guessed, connect, meta)
+        row = _row(index, tier, piece, works, numbers, cards, mining, in_top, line_n, finished, guessed, connect, meta,
+                   playable)
         if hero:
             row = _as_hero(row)
         if soon_from is not None:                    # P-LF-16
@@ -1249,7 +1280,7 @@ def goal_tiles(goal_items, works, guessed=None, before=None, metas=None):
 
 def build(items, works, options, numbers=None, cards=None, mining=(), language="ja", mode="store", reason=None,
           loading=False, busy=False, cache=None, tiers=None, changed=None, changed_works=None, numbers_changed=None,
-          estimates=None, connect=None, pieces=None):
+          estimates=None, connect=None, pieces=None, playable=None):
     """The window's view of the library (see the module's doc). `items` / `works`: {id: feed row}; `options`: the
     feed's {soon_line, mine_line, arrivals_on}; `numbers`: (version, {item_id: (known, counted, n_new)}) or the dict;
     `cards`: {item_id: count}; `mining`: item ids being mined now; `changed`: with `cache`, the item ids changed or gone
@@ -1260,7 +1291,8 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
     feed (`app/connect/feed.Feed`, P4.1 L2 row 4.1.10) — its items' statuses on the rows and episodes (`_connected`)
     and its mining set beside `mining`; None: as without Connect; a Feed that is off (or not looked yet: `feed.NOT_LOOKED`)
     — no Connect statuses, and no top line or *Waiting* (row 13: nothing mines by itself); `pieces`: the feed's
-    {piece_id: {id, title, kind}} (LM11b G1) — a Current piece of kind 'group' is a group's row (`_row`)."""
+    {piece_id: {id, title, kind}} (LM11b G1) — a Current piece of kind 'group' is a group's row (`_row`); `playable`:
+    ▶'s answers ({item_id: found}, `play.Looks`, row 55) — Current's ▶ only where found; None: no looker, as before."""
     numbers_version = None
     if isinstance(numbers, tuple):
         numbers_version, numbers = numbers
@@ -1320,7 +1352,7 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
             rows.append(_cached_row(cache, len(rows) + 1, tier, piece, works, numbers, cards, mining, in_top,
                                     None if off else line_n, False, guessed, hero=not rows, connect=feed_items,
                                     soon_from=cut, soon_piece=soon_piece if cut is not None else None,
-                                    meta=_group_of(pieces, piece)))
+                                    meta=_group_of(pieces, piece), playable=playable))
     worst = worst_needs(rows[1:])
     if cache is not None:
         if worst == cache.worst:
@@ -1501,7 +1533,8 @@ def _row_from(data):
     st = Status(*r.status) if r.status else None
     mk = Mark(*r.mark) if r.mark else None
     eps = tuple(ep._replace(status=Status(*ep.status) if ep.status else None, mark=Mark(*ep.mark) if ep.mark else None,
-                            show_key=tuple(ep.show_key) if ep.show_key else None)     # (JSON wrote it as a list)
+                            show_key=tuple(ep.show_key) if ep.show_key else None,     # (JSON wrote it as a list)
+                            ask=tuple(ep.ask) if ep.ask else None)                    # row 55 (the same)
                 for ep in (Episode(*e) for e in r.episodes))
     chips = tuple(Chip(*c) for c in r.chips)
     r = r._replace(status=st, mark=mk, episodes=eps, chips=chips,

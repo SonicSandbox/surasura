@@ -826,7 +826,7 @@ def _size(pix):
 # compared by identity alone.
 _UNSHOWN = {ROW: frozenset(("index", "accessible", "description")),
             FINISHED: frozenset(("index", "episodes", "accessible", "description")),
-            "ep": frozenset(("rel_path",))}
+            "ep": frozenset(("rel_path", "ask"))}         # row 55: ▶'s ask is never painted (`can_play` is)
 _UNSHOWN[FINISHED] = _UNSHOWN[FINISHED] | {"cards_out"}      # --- W3.2 Q4: ⋯'s state, never painted
 
 
@@ -1252,7 +1252,7 @@ class RowDelegate(QStyledItemDelegate):
         if kind == HERO:
             g = self._hero_geometry(payload, rect, lines)
             nxt = payload.episodes[payload.next_index]
-            out.append(("play", g["play"], payload.play_tip, nxt))
+            out.append(("play" if nxt.can_play else "no-play", g["play"], payload.play_tip, nxt))   # row 55
             all_tip = strings.ROWS_DONE_ALL_MIX_TIP if payload.source == "hato" else strings.ROWS_DONE_ALL_TIP
             out.append(("done", g["done"], all_tip if nxt.watched else
                         strings.ROWS_DONE_TIP.format(ep=nxt.label), nxt))
@@ -1278,6 +1278,8 @@ class RowDelegate(QStyledItemDelegate):
             is_open = self.view.model().open_key == payload.key
             g = self.line_geometry(payload, slab, opened=is_open)
             for name, r, _glyph, _ink, tip, pl in g["hover"]:
+                if name == "play" and pl is not None and not pl.can_play:
+                    continue                             # row 55: nothing to open, no ▶ (its column stays: IK-6)
                 out.append((name, r, tip, pl))
             out.append(("up", g["up"], strings.ROWS_MOVE_TIP["up"], None))
             out.append(("down", g["down"], strings.ROWS_MOVE_TIP["down"], None))
@@ -1430,7 +1432,8 @@ class RowDelegate(QStyledItemDelegate):
             cols = self._episode_cols(r)
             if ep.id in hot:                         # --- row 28: the episode's own ⋯ (`episode_menu_requested`)
                 out.append(("more-ep", cols["more"], strings.ROWS_EP_MORE_TIP, ep))
-            out.append(("play", cols["play"], ep.play_tip, ep))
+            if ep.can_play:                          # row 55: nothing to open, no ▶ (its column stays: IK-6)
+                out.append(("play", cols["play"], ep.play_tip, ep))
             if ep.status is not None:
                 size = pill_size(ep.status)
                 name, tip, ask = action_of(ep.status, (ep,), self.view.connect_off,     # --- P4.1 L2; LM11b G1:
@@ -1570,7 +1573,10 @@ class RowDelegate(QStyledItemDelegate):
                     theme.SIZES["hero-cover-w"], theme.SIZES["hero-cover-h"])
         btn_h = round(theme.SIZES["button"] * f)
         fm = TEXT.metrics("button")
-        play_w = round(13 + rl("hero-trillion") + 7 + fm.horizontalAdvance(self._watch_label(row)) + 13)
+        if row.episodes[row.next_index].can_play:
+            play_w = round(13 + rl("hero-trillion") + 7 + fm.horizontalAdvance(self._watch_label(row)) + 13)
+        else:                                       # R55-B: plain words, no trillion — their own width
+            play_w = round(13 + fm.horizontalAdvance(self._watch_label(row)) + 13)
         done_w = round(13 + 14 + 7 + fm.horizontalAdvance(strings.ROWS_DONE) + 13)
         side_w = play_w + 8 + done_w
         side = QRect(head.right() - pad_r - side_w + 1, head.top() + pad_y, side_w, head_h - 2 * pad_y)
@@ -1866,9 +1872,9 @@ class RowDelegate(QStyledItemDelegate):
             p.fillRect(QRectF(hx + 2, s.top(), max(0, end - hx - 2), s.height()), c(ground))
         side = rl("anki-icon")
         for name, r, glyph, ink, _tip, payload in g["hover"]:
-            p.save()
             if name == "play" and payload is not None and not payload.can_play:
-                p.setOpacity(0.4)
+                continue                             # row 55: not drawn — Sonic: "there shouldn't be a play button"
+            p.save()
             if name == "mine-now":                   # a button: Waiting's icon is Mine now (A2 #44)
                 p.setPen(Qt.PenStyle.NoPen)
                 p.setBrush(c("raised"))
@@ -2228,12 +2234,8 @@ class RowDelegate(QStyledItemDelegate):
                          dpr=dpr)
         return side + 4 + w
 
-    def _paint_play_button(self, p, r, enabled):
-        p.save()
-        if not enabled:
-            p.setOpacity(0.4)
+    def _paint_play_button(self, p, r):
         icon(p, "play", QRectF(r.center().x() - 7, r.center().y() - 7, 14, 14), c("ink-dim"))
-        p.restore()
 
     def _episode_pictures(self, row, area, hero, dpr):
         """Each episode line of an open row with how its picture is drawn: (rect, episode, draw, ident, extra). Its
@@ -2363,7 +2365,8 @@ class RowDelegate(QStyledItemDelegate):
             right = sr.left() - 4
         if ep.mark is not None:
             paint_mark(p, ep.mark, right, r.center().y(), dpr, audio=audio)
-        self._paint_play_button(p, cols["play"], ep.can_play)
+        if ep.can_play:                              # row 55: nothing to open, no ▶
+            self._paint_play_button(p, cols["play"])
 
     def _paint_open_hero(self, p, row, rect, lines, hovered, focused, dpr):
         """An open Up Next: its head painted once into a pixmap, the rest of its slab drawn around the episodes (each
@@ -2442,34 +2445,35 @@ class RowDelegate(QStyledItemDelegate):
 
     @staticmethod
     def _watch_label(row):
-        """Up Next's ▶ button's words: its verb (Watch / Listen / Read), *Online*, or *No <its media word>* (No video)."""
-        if row.episodes[row.next_index].can_play:
+        """Up Next's ▶ button's words: its verb (Watch / Listen / Read); with nothing to play, the plain words in its
+        place — *Looking…* until the video check answered (R55-A), *Online*, or *No <its media word>* (No video)."""
+        nxt = row.episodes[row.next_index]
+        if nxt.can_play:
             return row.verb
+        if nxt.looking:
+            return strings.ROWS_LOOKING_BUTTON
         if row.media == "youtube":
             return strings.ROWS_ONLINE_BUTTON
         return strings.ROWS_NO_MEDIA_BUTTON.format(word=row.media_word)
 
     def _paint_play(self, p, r, row, nxt, dpr, sheet):
         """▶ Play (W3.1a §1 *Up Next*): the trillion in its kind's gem and the verb, on the kind's base colour; with
-        nothing to play, the muted *No video* (S6)."""
+        nothing to play, plain muted words in its place — *Looking…*, *No video*, *Online* (R55-B, Sonic: no frame, no
+        triangle, nothing button-shaped; its tip says why)."""
+        if not nxt.can_play:
+            x = r.left() + 13                         # the room the verb has beside the trillion: never elided
+            TEXT.draw(p, x, r.center().y(), self._watch_label(row), "button", r.right() - x, c("ink-dim"), dpr=dpr)
+            return
         rr = QRectF(r).adjusted(0.5, 0.5, -0.5, -0.5)
         gem = stone_plan.gem_of(row.media, row.source == "hato")
         side = rl("hero-trillion")
-        if nxt.can_play:
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(style.qcolor(theme.GEM[gem][0]))
-            p.drawRoundedRect(rr, theme.RADII["button"], theme.RADII["button"])
-            ink, label = c("ink"), row.verb
-        else:
-            pen = QPen(c("line-hi"), 1)
-            pen.setStyle(Qt.PenStyle.DashLine)
-            p.setPen(pen)
-            p.setBrush(Qt.BrushStyle.NoBrush)
-            p.drawRoundedRect(rr, theme.RADII["button"], theme.RADII["button"])
-            ink, label = c("ink-dim"), self._watch_label(row)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(style.qcolor(theme.GEM[gem][0]))
+        p.drawRoundedRect(rr, theme.RADII["button"], theme.RADII["button"])
+        ink, label = c("ink"), row.verb
         x = r.left() + 13
         box = QRectF(x, r.center().y() - side / 2, side, side)
-        what = ("trillion", gem if nxt.can_play else stones.UNLINKED)
+        what = ("trillion", gem)
         if sheet is not None:                         # the trillion: a blit, shrunk into its box
             size = sheet.size_of(what)
             k = side / max(size.width(), size.height())
@@ -2566,6 +2570,9 @@ def whole_step(dpr):
 
 NO_DRAG = frozenset(("play", "more", "more-ep", "up", "down", "done", "journey", "put-back")) | ACTION_NAMES   # buttons (W3.2 Q4:
 #                                                                                       put-back; P4.1 L2: the statuses')
+# row 55, R55-B: Up Next's *No video* / *Online* / *Looking…* in ▶'s place is plain words on the card, a tip-only part
+# ("no-play"): never a button's place — a press there is the card's (it drags it, Ctrl+click picks it), and `_act`
+# does nothing with it
 
 
 def _rest_of(row, k):                                # --- W3.2 Q8: the files from episode `k` on, in words

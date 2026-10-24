@@ -190,20 +190,21 @@ class Index:
         except OSError:
             log.warning("Connect's video index couldn't be saved (%s); it's listed again next run", self.path)
 
-    def find(self, names, size=None):
+    def find(self, names, size=None, on_disk=None):
         """The one indexed video (on disk now) with one of `names` (and `size`, when given) -> its path; None when
         there's none, or more than one — Connect never guesses (E5's rule; intent keeper P2.5 #6). None the first
         time this run: the folders are listed again (`refresh`'s re-list, RELIST_MAX entries) and looked in once
-        more."""
-        found = self._find(names, size)
+        more. `on_disk(path)`: "on disk now" as the caller asks it (the window's ▶: never a stat in a folder its
+        round couldn't reach — a share offline, row 55's fix round A-5); `runner._on_disk` unless given."""
+        found = self._find(names, size, on_disk)
         if found is None and not self.relisted and self.roots is not None:
             self.relisted = True
             shallow, deep, sources = self.roots
             self.refresh(shallow, deep, budget=RELIST_MAX, sources=sources)
-            found = self._find(names, size)
+            found = self._find(names, size, on_disk)
         return found
 
-    def _find(self, names, size):
+    def _find(self, names, size, on_disk=None):
         wanted = [n.lower() for n in names if n]
         found = set()
         for folder in sorted(self.data["dirs"]):
@@ -214,7 +215,7 @@ class Index:
                 if hit:
                     path = os.path.join(entry.get("path") or folder, hit[0])
                     # the size as it is now (a copy still growing or a file replaced in place moves no folder's time)
-                    if runner._on_disk(path) and (size is None or _size(path) == size):
+                    if (on_disk or runner._on_disk)(path) and (size is None or _size(path) == size):
                         found.add(path)
         return found.pop() if len(found) == 1 else None
 

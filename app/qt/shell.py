@@ -1047,6 +1047,8 @@ class ShellWindow(QMainWindow):
             for page in self.page_widgets.values():
                 if hasattr(page, "message"):
                     page.message.connect(self.say)                     # a file ▶ couldn't open: said in the bar
+                if hasattr(page, "not_found"):
+                    page.not_found.connect(self._play_not_found)       # ... and its ▶ looked at again (row 55 A-7)
             current = self.page_widgets.get("current")
             if hasattr(current, "on_journey"):                         # W3.1a S5: Up Next's *N new words ↗*
                 current.on_journey = lambda _row, _episode: self._open_journey(asked=True)
@@ -2665,10 +2667,19 @@ class ShellWindow(QMainWindow):
         self.offline_hidden = (self.offline_hidden | set(summary.get("kept_lines") or ())) & \
             standing_service.not_back(self.sources)       # round 8 row 54: a folder back lets its ✕ go
         self._show_offline()
+        looks = getattr(self.services.library, "play", None)
+        if looks is not None and summary.get("moved"):   # row 55: a video come beside an original: ▶ looked again
+            looks.again()                                 # (IK-1: a look that changed nothing looks at nothing)
         if summary.get("unfinished_reset"):              # LF-11: a fresh library a kill stopped, once a run
             from app.qt import settings_strings, windows
             windows.say_in_bar(self, settings_strings.FRESH_UNFINISHED.format(folder=summary["unfinished_reset"]))
         self.sources_seen.emit(summary)
+
+    def _play_not_found(self, item_id):
+        """A ▶ press found nothing to open (row 55 A-7): that episode's ▶ looked at again, on the looks' worker."""
+        looks = getattr(self.services.library, "play", None)
+        if looks is not None:
+            looks.recheck([item_id])
 
     def _offline_shown(self):
         """[(key, path, items)] of the folders the offline line names: away, and not hidden by its ✕."""
@@ -3013,6 +3024,7 @@ class ShellWindow(QMainWindow):
         if self.looks is not None:
             self.looks.close()
         self.bridge.stop()                                # the quit's service callbacks reach no slot from here
+        bridge.drop_answers()                             # ... nor a worker's answer still on its way (row 55)
         state = self.state_now()
         self.hide()
         try:
@@ -3096,14 +3108,15 @@ def library_for(language, settings, freeze_gc=False):
     The opener's role is "window": it opens a store that is there and never builds, migrates or repairs one — no store
     yet (a fresh install, a 2.x library not migrated), one being migrated, read-only or damaged opens in the reader's
     mode for it, and the chores' helper (W3.5) builds or migrates it as 2.5 did. -> (reader, writer)."""
-    from app.services import library_reader, moves
+    from app.services import library_reader, moves, play
     feed = connect_feed(language, settings)                 # --- P4.1 L2: Connect's feed (row 4.1.10)
     _opener, numbers, reader = moves.open_library(
         language, check=moves.plan_check(language, lambda: settings_service.thaw(settings.get())),
         log=lambda line: applog.log("numbers", line),       # row 36: why *N new* waits, in the app's log
         cache_file=library_reader.cache_path(language), freeze_gc=freeze_gc,
         watch=library_lookout,                              # W3.2 B: woken by the bell + the tree watch (IK0-5)
-        connect=feed.latest)                                # P4.1 L2: the stones from the status line's last look
+        connect=feed.latest,                                # P4.1 L2: the stones from the status line's last look
+        play=play.Looks(language))                          # row 55: ▶ only where its file is found
     _wake_on_feed(feed, reader)                             # P4.1 L2
     writer = moves.Writer(_opener, language, journal_file=moves.journal_path(language), numbers=numbers,
                           words=strings.MOVE_WORDS,

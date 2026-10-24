@@ -547,6 +547,8 @@ def action_of(status, episodes, off=None, word="video"):
         tip = strings.ROWS_MINE_TEXT_THIS_TIP.format(tip=said)
     else:
         words = getattr(strings, _ACTION_TIPS[name])
+        if name == "no-media" and getattr(status, "moved", None):
+            words = strings.ROWS_NO_MEDIA_MOVED_TIP     # MV-2: the click offers *Find its folder…* first
         if isinstance(words, dict):                 # a mining ask: how many files the click asks for (AD-2)
             words = words[len(files) == 1]
         tip = words.format(tip=said, n=len(files))
@@ -2837,6 +2839,7 @@ class RowsView(QListView):
     # Episode) No video's *Link…* and *Mine text*
     mine_requested = pyqtSignal(object, object)
     link_requested = pyqtSignal(object, object)
+    find_folder_requested = pyqtSignal(object, object)      # MV-2: (the Row, the Episode) — *Find its folder…*
     mine_text_requested = pyqtSignal(object, object)
     # --- end P4.1 L2
     stop_requested = pyqtSignal(object, object)    # --- R47: (the Row, the Ask: its file, its job) a Mining pill's Stop
@@ -4057,8 +4060,13 @@ class RowsView(QListView):
         m.aboutToHide.connect(m.deleteLater)            # one menu per press, gone once it closes
         m.setObjectName("rowmenu")
         m.setToolTipsVisible(True)
-        for words, tip, signal in ((strings.ROWS_LINK, strings.ROWS_LINK_TIP, self.link_requested),
-                                   (strings.ROWS_MINE_TEXT, strings.ROWS_MINE_TEXT_TIP, self.mine_text_requested)):
+        offers = ((strings.ROWS_LINK, strings.ROWS_LINK_TIP, self.link_requested),
+                  (strings.ROWS_MINE_TEXT, strings.ROWS_MINE_TEXT_TIP, self.mine_text_requested))
+        moved = getattr(getattr(ask.episode, "status", None), "moved", None)
+        if moved:                                       # MV-2: its video left its folder — find that folder first
+            offers = ((strings.ROWS_FIND_FOLDER, strings.ROWS_FIND_FOLDER_TIP.format(folder=moved),
+                       self.find_folder_requested),) + offers
+        for words, tip, signal in offers:
             act = QAction(words, m)
             act.setToolTip(tip)
             act.triggered.connect(lambda _c=False, s=signal: s.emit(row, ask.episode))

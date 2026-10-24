@@ -58,6 +58,9 @@ Status = namedtuple("Status", "kind label tip tone")          # tone: ok · acce
 # --- R47 (laptop rows 47 + 56): `stop`, the Connect job a *Mining* status's *Stop* stops (`feed.Item.job`, while
 # `feed.Item.stoppable`), else None. Never in the first screen's cache (Connect's state isn't known from a cache)
 Status = namedtuple("Status", Status._fields + ("stop",), defaults=(None,))
+# --- MV-2: `moved`, the folder a *No video* status's video left (`feed.Item.moved`: the status offers *Find its
+# folder*), else None
+Status = namedtuple("Status", Status._fields + ("moved",), defaults=(None, None))
 Mark = namedtuple("Mark", "count tone tip")                    # the on-disk mark (⌀ N)
 Episode = namedtuple("Episode", "id label number title watched cards mining missing removed in_top pct n_new "
                                 "status mark rel_path play_tip can_play deleted waiting", defaults=(False, False))
@@ -78,6 +81,10 @@ Episode = namedtuple("Episode", Episode._fields + ("ask",), defaults=tuple(Episo
 Episode = namedtuple("Episode", Episode._fields + ("looking",),
                      defaults=tuple(Episode._field_defaults.values()) + (False,))
 #   looking (row 55, R55-A): asked and not answered yet — Up Next says *Looking…*, never *No video* before the check
+Episode = namedtuple("Episode", Episode._fields + ("moved",),
+                     defaults=tuple(Episode._field_defaults.values()) + (None,))
+#   moved (MV-2): the folder its video left — Connect's line (`feed.Item.moved`), else ▶'s own look's
+#   (`play.MovedAway`): its ⋯ offers *Find its folder…*, Connect on or off, any language, mined or not
 #   answered; False with no looker and in a cache from before
 Row = namedtuple("Row", "key index tier work_id piece_id media media_word verb title title_ep line source n_files n_watched "
                         "pct pct_tone n_new status mark episodes next_index studying date cover_title accessible "
@@ -195,6 +202,10 @@ STRINGS = {
     "tip_removed": "Its {word} was removed after it was mined. The cards keep their pictures and audio",
     # --- P4.1 L2: what Connect's feed says of an item (row 4.1.10; the reason lines are the runner's)
     "tip_connect_no_media": "{tip}\n• Link one for pictures and audio, or mine the text on its own",
+    # MV-2 (Sonic: yes): its video left the folder it was in — Connect's line names it; *Find its folder* adds the
+    # folder you pick as one Surasura reads, and the show finds its episodes there
+    "tip_connect_moved": "{tip}\n• Find its folder, link its video, or mine the text on its own",
+    "play_moved": "{tip}\n• Find its folder: in its ⋯ menu, or on its No {word}",
     "not_timed": "Not timed", "tip_not_timed": "{words}: its cards wait for you\n• Check it plays in time, then "
                                                 "Mine anyway: in Needs you",
     # --- end P4.1 L2
@@ -588,6 +599,13 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=
     st, mark = status_of([_Shim(ep, mined)], word, line_n)
     if connect is not None:                          # --- P4.1 L2: what Connect says of it (row 4.1.10)
         st = _connected(st, said, word)
+    # MV-2: the folder its video left — Connect's line, else ▶'s own look's answer (`play.MovedAway`: a str, falsy)
+    left = getattr(said, "moved", None) if no_video else None
+    answer = playable.get(item["id"]) if playable is not None and not left else None
+    left = left or (str(answer) if isinstance(answer, str) else None)     # a plain str: `MovedAway` is falsy
+    if left and st.kind == "no_media" and not getattr(st, "moved", None):
+        from app.connect.runner import MOVED
+        st = st._replace(moved=left, tip=STRINGS["tip_connect_moved"].format(tip=MOVED.format(folder=left)))
     if online:
         tip = STRINGS["play_online"]
     elif waiting:
@@ -597,11 +615,16 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=
                STRINGS["play_missing"]).format(word=word, verb_l=verb.lower())
     elif looking:
         tip = STRINGS["play_looking"].format(word=word)                          # R55-A (A-11): nothing said yet
+    elif no_video and getattr(said, "moved", None):
+        tip = STRINGS["play_moved"].format(tip=said.tip, word=word)              # MV-2: Connect's line, its way on
+    elif left:
+        from app.connect.runner import MOVED
+        tip = STRINGS["play_moved"].format(tip=MOVED.format(folder=left), word=word)    # MV-2: ▶'s own look's
     elif not can_play:
         tip = STRINGS["play_not_found"].format(word=word, verb_l=verb.lower())    # row 55 (or Connect's *No video*)
     else:
         tip = STRINGS["play"].format(verb=verb, name=label, player=STRINGS["player"][word], word=word)
-    return ep._replace(status=st, mark=mark, play_tip=tip)
+    return ep._replace(status=st, mark=mark, play_tip=tip, moved=left)
 
 
 # --- P4.1 L2: Connect's feed in the statuses (row 4.1.10, W-A1) -------------------------------------------------- #
@@ -633,8 +656,10 @@ def _connected(st, item, word):
     if item.kind == connect_feed.ASKED:     # R47: asked, and Connect has read the ask — its own status, its reason
         return Status("asked", STRINGS["asked"], STRINGS["tip_asked"] if item.tip == item.words else item.tip, "accent")
     if item.kind == connect_feed.NO_VIDEO:
+        moved = getattr(item, "moved", None)                # MV-2: its video left its folder
         return Status("no_media", STRINGS["no_media"].format(word=word),
-                      STRINGS["tip_connect_no_media"].format(tip=item.tip), "warn")
+                      STRINGS["tip_connect_moved" if moved else "tip_connect_no_media"].format(tip=item.tip), "warn",
+                      moved=moved)
     if item.kind == connect_feed.NOT_TIMED:
         return Status("waiting", STRINGS["not_timed"], STRINGS["tip_not_timed"].format(words=item.words), "warn")
     # a wait on Anki or on the battery is a warn *Waiting*, and takes *Mine now* as every *Waiting* does (P4.1's C3,

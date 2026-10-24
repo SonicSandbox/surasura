@@ -72,6 +72,10 @@ ANKI_CLOSED = "Waiting for Anki: it isn't open."
 # episode's own wait, amber as a wait on Anki, but never one that holds every episode
 ANKI_SLOW = "Waiting for Anki: it didn't answer in time."
 NO_VIDEO = "No video: its video isn't on this computer (or isn't downloaded yet)."
+# MV-2 (Sonic: yes, 2026-10-23): a source folder's episode whose video left the folder it was in, the source folder
+# still there (`video_left`) — the same *No video* wait (`no_video`), its line naming the folder; the window's *Find
+# its folder* adds the folder picked as a source, and the store's join (MV-1) does the rest
+MOVED = "This episode's video isn't where it was ({folder})."
 CHINESE = "Chinese cards come later."
 # Laptop round 8 #47 (LF4-5 ⭐ A): a job you stopped waits for your next ask; the cards it made are kept
 STOPPED_BY_YOU = STOPPED_REASON
@@ -182,7 +186,7 @@ def run(loaded, languages, steps=None, ledger=None, sleep=None, cancel=None, loo
     try:
         while True:
             summary["looks"] += 1
-            _kicked(steps)                  # a kick before this look is answered by it: no extra look after (S19)
+            _woken(steps, ledger, parked)   # a kick before this look is answered by it: no extra look after (S19)
             outside = work = battery = False
             for lang in languages:
                 stop = _stop(steps)
@@ -214,8 +218,8 @@ def run(loaded, languages, steps=None, ledger=None, sleep=None, cancel=None, loo
                 break
             if looks is not None and summary["looks"] >= looks:
                 break
-            if not _pause(LOOK_EVERY_S, sleep, cancel,
-                          lambda: steps.update_staged() or _plugged_in(steps, battery) or _kicked(steps)):
+            if not _pause(LOOK_EVERY_S, sleep, cancel, lambda: steps.update_staged() or _plugged_in(steps, battery)
+                          or _woken(steps, ledger, parked)):
                 summary["stopped"] = "cancelled"
                 break
         return summary
@@ -336,6 +340,22 @@ def _kicked(steps):
         return False
 
 
+def _woken(steps, ledger, parked):
+    """`_kicked`, and a kick that may have found videos (`kick.VIDEOS`: a look that recorded videos while an episode
+    waits on one — *Find its folder…*'s) lets the jobs parked on their video go again this run: a Connect running for
+    other jobs tries them at its next look, never only at its next start. Any other kick (a *Mine now*, a placement,
+    a setting) leaves them parked (S19: no stat of a dead share per episode per drag). -> whether it was kicked."""
+    from app.connect import kick
+    woke = _kicked(steps)
+    if not woke:
+        return False
+    if woke != kick.VIDEOS:
+        return True
+    for job_id in [j for j in parked if no_video((ledger.job_by_id(j) or {}).get("reason"))]:
+        del parked[job_id]
+    return True
+
+
 def _ordered(jobs, line):
     """The open jobs: those carrying an ask first, the newest ask first (*Mine now*, *Mine this*, *Mine it too*: P4.1
     C3); then the top 20's order (the next day's words first); then the rest oldest first (a level raise's beyond the
@@ -353,8 +373,8 @@ def _waiting_all(ledger, lang, parked, out, reason, look, tried=()):
     """Every open job waits with `reason` — but one waiting for its video keeps that, its own wait (review IK #5), and
     one `tried` this pass keeps the wait it was given (an asked job's ANKI_SLOW on battery: R2-4, IK-r2-7)."""
     for job in _open_jobs(ledger, lang, parked, tried):
-        if job["state"] == "waiting" and job.get("reason") == NO_VIDEO:
-            out["waiting"][job["item_id"]] = NO_VIDEO
+        if job["state"] == "waiting" and no_video(job.get("reason")):
+            out["waiting"][job["item_id"]] = job["reason"]
             continue
         _wait(ledger, job, Wait(reason, look, _resume_of(job)), out, parked)
     return look
@@ -750,7 +770,8 @@ def _pick(steps, ledger, lang, job, record=True):
         # video again (review A8: its new words aren't lost); your ask on it asks for the video as any (A1)
         raise Wait(LEVEL_NO_VIDEO, look=False)
     if video is None:
-        raise Wait(NO_VIDEO, look=False)
+        folder = steps.video_moved(lang, job)
+        raise Wait(MOVED.format(folder=folder) if folder else NO_VIDEO, look=False)
     pairing = steps.pairing(lang, job)
     got = steps.pick(lang, job, video)
     declined = ledger.declined(lang, job["item_id"])     # Anki Miner turned them down once: never sent again (#19)
@@ -763,8 +784,9 @@ def _pick(steps, ledger, lang, job, record=True):
               "video": video, "pairing": fit_check.version(pairing), "profile": got.get("profile"),
               "anki_miner": got.get("anki_miner")}
     before = ledger.picked(jid) or {}
-    if before.get("forced") and before.get("pairing") == picked["pairing"]:
-        picked["forced"] = True     # *Mine anyway* (row 4.1.9) holds for the pairing you said it for; a new one clears it
+    if before.get("forced") and before.get("pairing") == picked["pairing"] and before.get("video") == video:
+        picked["forced"] = True     # *Mine anyway* (row 4.1.9) holds for the pairing and video you said it for (D5: a
+        #                             marked origin's video standing in is another file); a new one clears it
     if got.get("absent"):
         _record_made(steps, ledger, lang, job, record)
         ledger.set_state(jid, "skipped", reason=MINER_ABSENT, picked=picked, skipped={"mining": MINER_ABSENT})
@@ -1251,13 +1273,13 @@ class Steps:
 
     def kicked(self):
         """Has a kick stamped the wake mark since the last look at it (`kick.wake_stamp`)? Then the mark is taken as
-        seen: one wake a kick."""
+        seen: one wake a kick. -> False, True, or `kick.VIDEOS` for a kick that may have found videos (MV-2)."""
         from app.connect import kick
         now = kick.wake_stamp()
         if now == self._woken:
             return False
         self._woken = now
-        return True
+        return kick.VIDEOS if isinstance(now, str) and now.endswith("-" + kick.VIDEOS) else True
 
     def enabled(self):
         """Connect's switch as settings.json holds it now (read again at every look and before each job): off, or
@@ -1396,15 +1418,41 @@ class Steps:
             paired = isinstance(named, str) and bool(named)
             subtitle = None if paired else self.subtitle(lang, job)
         from app.connect import videos
+        was = lambda: self.moved_videos(lang, job)      # noqa: E731  (D5: read only once its own video is gone)
         if paired:                          # the index is made (and listed) only once the named path isn't on disk
-            return paired_video(pairing, lambda names, size: self._videos(lang).find(names, size))
+            return paired_video(pairing, lambda names, size: self._videos(lang).find(names, size), was=was)
         if not subtitle:
             return None
         names = videos.names_for(subtitle)
         origin = origin_of(pairing)
         if origin:
             names += videos.names_for(origin)   # a copy renamed `name (2)` in Library/: the original's name finds it
-        return beside(subtitle) or beside_origin(pairing) or self._videos(lang).find(names)
+        moved = moved_video(was()) if pairing.get("producer") == "source" else None    # a source record's own
+        return beside(subtitle) or beside_origin(pairing) or moved or self._videos(lang).find(names)
+
+    def moved_videos(self, lang, job):
+        """D5 (MV-A5): (path, size) of the videos the item's origins marked moved named (`library.moved_videos`);
+        () with no store to read (nothing marked there). A busy store is a Wait."""
+        from app.connect import library
+        try:
+            store = self._open(lang)
+        except Needs:
+            return ()
+        with store:
+            return library.moved_videos(store, job["item_id"])
+
+    def video_moved(self, lang, job):
+        """MV-2: the folder this episode's video left (`video_left`), asked once `video` found none -> it, or None."""
+        from app.connect import library
+        with _held():
+            pairing = self.pairing(lang, job) or {}
+            try:
+                store = self._open(lang)
+            except Needs:
+                return None
+            with store:
+                root = library.moved_of(store, job["item_id"], pairing).root
+        return video_left(pairing, root)
 
     def _videos(self, lang):
         """The language's video index, refreshed once a run, the first time a video is missing (S19: only folders
@@ -2110,16 +2158,20 @@ def _on_disk(path):
     return not (getattr(st, "st_file_attributes", 0) & _PLACEHOLDER)
 
 
-def paired_video(pairing, find, on_disk=None):
-    """The video a pairing names (`video_path`), on this computer -> its path; else, moved, the one `find(names, size)`
-    (a video index's lookup) gives by its name and size, when its bytes say it is the paired video; else None. One
-    rule for Connect (`Runner.video`) and the window's ▶ (`app/services/play.py`): the two never disagree. `on_disk`:
-    "on this computer" as the caller asks it (▶'s looks: a share offline waited on once a round), `_on_disk` unless
-    given."""
+def paired_video(pairing, find, on_disk=None, was=()):
+    """The video a pairing names (`video_path`), on this computer -> its path; else one its item's origins marked
+    moved named (`was`: `library.Moved.was`, or a call that reads it: only once the named path is gone); else, moved, the one `find(names, size)` (a video index's
+    lookup) gives by its name and size, when its bytes say it is the paired video; else None. One rule for Connect
+    (`Runner.video`) and the window's ▶ (`app/services/play.py`): the two never disagree. `on_disk`: "on this
+    computer" as the caller asks it (▶'s looks: a share offline waited on once a round), `_on_disk` unless given."""
     from app.connect import videos
     named = pairing.get("video_path")
     if (on_disk or _on_disk)(named):
         return named                        # the named path is trusted as it is: never read (a stat only)
+    if pairing.get("producer") == "source":     # a marked row stands in for its own item's source record only: hato's
+        left = moved_video(was() if callable(was) else was, on_disk)    # and a link's are judged by their bytes below
+        if left:
+            return left
     size = pairing.get("video_size")
     found = find([os.path.basename(named)], size if isinstance(size, int) and size > 0 else None)
     # away from its named path, a file of that name and size is the paired video only when its bytes say so
@@ -2135,6 +2187,61 @@ def paired_video(pairing, find, on_disk=None):
         log.info("Connect: %s has the paired video's name and size but not its content; not used", found)
         return None
     return found
+
+
+def moved_video(was, on_disk=None):
+    """D5 (Kura's MV-A5: a `moved_to` mark is never trusted alone): the first video an origin marked moved named that
+    is still on this computer at the size the store recorded -> its path (a stat, as a pairing's own path is: a file
+    of another size there now is another file); else None. `was`: `library.Moved.was` ((path, size), the newest origin
+    first)."""
+    for path, size in was or ():
+        if (on_disk or _on_disk)(path):
+            try:
+                if size is None or os.stat(path).st_size == size:
+                    return path
+            except OSError:
+                continue
+    return None
+
+
+def video_left(pairing, root, reachable=None):
+    """MV-2: the folder a source folder's episode's video was in (its record's `video_path`), when the video isn't
+    there any more while the source folder it was read from is (`root`: that folder's path, `library.Moved.root`; one
+    that can't be reached — a drive unplugged, a share offline — is no move: the store's own rule, `sources._lost`)
+    -> that folder; else None (another program's record, no video named, one outside that source folder — its own
+    drive may be the one unplugged —, the video there: a cloud placeholder of it too, it isn't downloaded, it didn't
+    move). A stat or two, never a listing. One rule for Connect's *No video* line
+    and ▶'s. `reachable(root)`: whether the source folder is there, as the caller asks it (▶'s looks: a share
+    offline waited on once a round), `os.path.isdir` unless given."""
+    if (pairing or {}).get("producer") != "source" or not isinstance(root, str) or not root:
+        return None
+    named = pairing.get("video_path")
+    if not isinstance(named, str) or not os.path.isabs(named):
+        return None
+    from app.library_store import path_key
+    if not path_key(os.path.abspath(named)).startswith(path_key(os.path.abspath(root)).rstrip("/") + "/"):
+        return None
+    if not (reachable or os.path.isdir)(root):
+        return None
+    if os.path.lexists(named):
+        return None
+    return os.path.dirname(named)
+
+
+_MOVED_HEAD, _MOVED_TAIL = MOVED.split("{")[0], MOVED.split("}")[1]
+
+
+def moved_folder(reason):
+    """The folder MV-2's line names (`MOVED`), or None for any other reason."""
+    if isinstance(reason, str) and reason.startswith(_MOVED_HEAD) and reason.endswith(_MOVED_TAIL) and \
+            len(reason) > len(_MOVED_HEAD) + len(_MOVED_TAIL):
+        return reason[len(_MOVED_HEAD):-len(_MOVED_TAIL)]
+    return None
+
+
+def no_video(reason):
+    """Is `reason` a wait for the episode's video — *No video* (`NO_VIDEO`), or MV-2's moved line (`MOVED`)?"""
+    return reason == NO_VIDEO or moved_folder(reason) is not None
 
 
 def origin_of(pairing):

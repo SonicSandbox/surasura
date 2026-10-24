@@ -50,7 +50,10 @@ def wake_stamp():
         return None
 
 
-def wake():
+VIDEOS = "videos"    # a wake that may have found episodes' videos (MV-2): `wake(videos=True)`, `runner._woken`
+
+
+def wake(videos=False):
     """Stamp the wake mark (the time, this process and its kick's number: unique a kick): a running Connect's pause ends at its next look at it. A mark
     that can't be written is no error — the 2-minute look still comes."""
     import time
@@ -58,7 +61,7 @@ def wake():
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:     # a look that reads it half-written wakes once more: harmless
-            f.write(f"{time.time_ns()}-{os.getpid()}-{next(_STAMPS)}")
+            f.write(f"{time.time_ns()}-{os.getpid()}-{next(_STAMPS)}" + (f"-{VIDEOS}" if videos else ""))
     except OSError:
         pass
 
@@ -73,7 +76,7 @@ def command():
     return [sys.executable, "-m", "app.cli"] + args
 
 
-def kick(settings):
+def kick(settings, videos=False):
     """Start Connect if it should run -> the started process (a `subprocess.Popen`), or None. 3.0 (P3.3 C1): D29's
     switch (`logic.automation`) off starts nothing, as Connect's own switch off doesn't — the one gate,
     `settings_manager.connect_on` (P4.1 row 4.1.1)."""
@@ -86,7 +89,7 @@ def kick(settings):
     if library_store.update_staged(looks=library_store.PROBE_LOOKS):
         return None
     if running():
-        wake()                  # it reads the ask, the placement or the setting at its next look, within seconds
+        wake(videos)            # it reads the ask, the placement or the setting at its next look, within seconds
         return None
     from app.path_utils import build_subprocess_env, get_local_data_path, is_frozen
     where = get_local_data_path()             # never a folder the updater swaps

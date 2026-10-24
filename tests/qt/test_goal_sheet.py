@@ -207,13 +207,14 @@ def test_G1_a_click_outside_closes_it_but_the_sheet_its_menu_and_the_remove_ques
     QTest.mouseClick(sheet, LEFT, pos=QPoint(sheet.width() - 80, sheet.height() - 10))      # the sheet itself
     assert sheet.isVisible()
     opened = []
-    monkeypatch.setattr(windows, "open_url", lambda path: opened.append(path) or True)
+    from app.qt import screens
+    monkeypatch.setattr(screens, "open_with_system", opened.append)    # (a folder: the system's opener, a worker)
     tile = sheet.order[0]
     menu = sheet.menu(tile)
     assert wait_until(menu.isVisible, 2)
     act = next(a for a in menu.actions() if a.text() == strings.GOAL_MENU_ITEMS["folder"][0])
     QTest.mouseClick(menu, LEFT, pos=menu.actionGeometry(act).center())                      # its ⋯ menu
-    assert opened and sheet.isVisible()
+    assert wait_until(lambda: opened, 5) and sheet.isVisible()                    # (opened on a worker, round 8)
     card = sheet.ask_remove(tile.work)
     QTest.mouseClick(card.scrim, LEFT, pos=QPoint(5, 5))                                       # the question's room: No
     assert card.answer is False and sheet.isVisible() and calls(writer, "remove") == []
@@ -348,13 +349,18 @@ def test_open_its_folder_opens_the_titles_folder_in_the_data_folder(world, monke
     seed, win, writer = world()
     sheet = open_sheet(win)
     opened = []
-    monkeypatch.setattr(windows, "open_url", lambda path: opened.append(path) or True)
+    from app.qt import screens
+    monkeypatch.setattr(screens, "open_with_system", opened.append)
     show = two_part(win)
     sheet.pick(show, "folder")
-    assert opened and opened[0].endswith(os.path.join("GoalContent", show.title))
-    monkeypatch.setattr(windows, "open_url", lambda path: False)
+    assert wait_until(lambda: opened, 5)                                           # (on a worker, round 8 row 45)
+    assert opened[0].endswith(os.path.join("GoalContent", show.title))
+    def refused(path):
+        raise OSError("The system cannot find the file specified")
+    monkeypatch.setattr(screens, "open_with_system", refused)
+    assert wait_until(lambda: not win.presses.any_live(), 5)                      # (the first press ended)
     sheet.pick(show, "folder")
-    assert win.bar_line.full() == strings.GOAL_FOLDER_FAILED.format(title=show.title)
+    assert wait_until(lambda: win.bar_line.full() == strings.GOAL_FOLDER_FAILED.format(title=show.title), 5)
     assert calls(writer) == []
 
 

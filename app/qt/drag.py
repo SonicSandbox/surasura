@@ -1853,7 +1853,9 @@ class DragController(QObject):
 
     def menu_pick(self, row, name):
         if name == "journey":
-            self.win._open_journey(asked=True)
+            from app.qt import press as qpress       # round 8 row 45: the row's ⋯ turns while it opens (IK-2)
+            self.win._open_journey(asked=True, at=qpress.row_mark(
+                self.lst, [row.episodes[row.next_index].id]) if row.episodes else None)
             return
         if self.refused() is not None:
             return

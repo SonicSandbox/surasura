@@ -2026,10 +2026,15 @@ def test_row55_a_press_that_found_nothing_has_that_episode_looked_at_again(qapp)
         ep = page.view_model.rows[0].episodes[0]
         said = []
         page.message.connect(said.append)
-        page._open_found((None, strings.PLAY_FAILED.format(name=ep.label, why="it isn't on disk")), ep)
-        assert said and rec.rechecked == [[ep.id]]
-        page._open_found((None, "Couldn't open it"))             # no episode named: nothing looked at again
-        assert rec.rechecked == [[ep.id]]
+        why = strings.PLAY_FAILED.format(name=ep.label, why="it isn't on disk")
+        from app.qt import screens
+        screens_lookup = screens.media_to_open
+        screens.media_to_open = lambda *_a: (None, why)           # (row 55's one lookup, found nothing)
+        try:
+            page._play(ep)                                       # round 8 row 45: a press — marked, then its worker
+            assert wait_until(lambda: said == [why] and rec.rechecked == [[ep.id]], 5)
+        finally:
+            screens.media_to_open = screens_lookup
     finally:
         win.close()
         services.shutdown(0.5)

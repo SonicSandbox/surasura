@@ -107,8 +107,9 @@ class MineActions(QObject):
             lst.stop_moved = self.stopped                # --- R47
             lst.stop_requested.connect(lambda row, ask: self.stop(ask))
             lst.mine_requested.connect(self.mine_row)
-            lst.link_requested.connect(self.link)
-            lst.mine_text_requested.connect(lambda row, ep: self.mine_text(ep.label, ep.rel_path))
+            lst.link_requested.connect(lambda row, ep, lst=lst: self.link(row, ep, lst))
+            lst.mine_text_requested.connect(lambda row, ep, lst=lst: self.mine_text(          # (round 8 row 45: its
+                ep.label, ep.rel_path, at=qpress.row_mark(lst, [ep.id], "no-media")))      # ... status turns, IK-2)
         fin = getattr(win, "finished", None)
         if fin is not None:
             fin.on_mine = lambda row: self.mine_row(row, self._askable(row.episodes))      # P4.1 WF (S5)
@@ -208,7 +209,7 @@ class MineActions(QObject):
             return None                              # round 8 row 45: asked already, still turning — asked once
         n = next(self._asks)
         for i, key in keys_of.items():               # ... each file a press (the hairline runs, painted now) …
-            qpress.begin(None, key, win=self.win)
+            qpress.begin(None, key, win=self.win, at=qpress.NOWHERE)     # (its pills are its mark: below)
             self._asked[i] = (n, key)
         for lst in self.lists:                       # ... and its pills turn now, painted before the ask is handed over
             lst.press_ids(ids)
@@ -326,13 +327,15 @@ class MineActions(QObject):
     # --- end row 28
 
     # --- Link… ------------------------------------------------------------------------------------------------ #
-    def link(self, row, ep):
+    def link(self, row, ep, lst=None):
         """No video's *Link…*: a video chosen in the system's picker → the writer's `link_video` (refused there with
-        its words, as Needs you's)."""
+        its words, as Needs you's). Round 8 row 45: the picker opens only after a worker (the video types), so the
+        row's status turns from the press (`lst`'s, IK-2; none: the bar's arc) until the picker shows."""
         if self.win.moves is None:
             return
         folder = os.path.dirname(os.path.join(path_utils.get_data_path(self.win.language),
                                               *(ep.rel_path or "").split("/")))
+        at = qpress.row_mark(lst, [ep.id], "no-media") if lst is not None else None
 
         def pick(patterns):
             moves = self.win.moves
@@ -342,31 +345,42 @@ class MineActions(QObject):
             writer = moves.writer
             moves._give(drag.Ticket(strings.LINKING_ONE.format(label=ep.label), (row.key,), (ep.id,)),
                         lambda t: writer.link_video(ep.id, path, label=t))
-        bridge.run_in_worker(_video_patterns, then=pick, failed=lambda info: self.win.say(str(info[1])))
+        qpress.run(None, ("link", ep.id), _video_patterns, then=pick, failed=lambda info: self.win.say(str(info[1])),
+                   win=self.win, at=at)
 
     # --- Mine text (C6) --------------------------------------------------------------------------------------- #
-    def mine_text(self, label, rel_path):
-        """Anki Miner's own window, the file's path on the clipboard, a toast saying so (never hidden: K67)."""
+    def mine_text(self, label, rel_path, control=None, at=None):
+        """Anki Miner's own window, the file's path on the clipboard, a toast saying so (never hidden: K67). Round 8
+        row 45: a press (`press.open`) — `control`'s arc turns (or `at`: the row's status; neither: the bar's) while
+        Anki Miner is looked for and opened, both on a worker (never on the window's thread)."""
         path = os.path.join(path_utils.get_data_path(self.win.language), *(rel_path or "").split("/"))
         get = self.win.services.settings.get
-        bridge.run_in_worker(lambda: _miner_and_file(get(), path), then=lambda found: self._open_miner(label, found),
-                             failed=lambda info: self.win.say(strings.MINE_TEXT_NO_MINER))
+        found = []
 
-    def _open_miner(self, label, found):
-        miner, path = found
-        if not miner:
-            self.win.say(strings.MINE_TEXT_NO_MINER)
-            return
-        QApplication.clipboard().setText(path)
-        if not windows.open_url(miner):
-            self.win.say(strings.MINE_TEXT_NOT_OPENED.format(path=miner))
-            return
-        self.win.toasts.show(strings.MINE_TEXT_COPIED.format(name=label))
+        def miner():
+            got = _miner_and_file(get(), path)[0]
+            found.append(got)
+            return got
+
+        def opened(miner_path):
+            if not miner_path:
+                self.win.say(strings.MINE_TEXT_NO_MINER)
+                return
+            QApplication.clipboard().setText(path)
+            self.win.toasts.show(strings.MINE_TEXT_COPIED.format(name=label))
+
+        def failed(_info):
+            self.win.say(strings.MINE_TEXT_NOT_OPENED.format(path=found[0]) if found and found[0] else
+                         strings.MINE_TEXT_NO_MINER)
+        return qpress.open(self.win, miner, control=control, key=("mine-text", path), at=at, then=opened,
+                           failed=failed)
 
     def _needs_mine_text(self, entry, line):
+        needs = self.win.needs_you
+        control = needs._control("mine_text_only", entry, line) if needs is not None else None    # (its arc)
         line = line if line is not None else (entry.lines[0] if entry.lines else None)
         if line is not None:
-            self.mine_text(line.label, line.rel_path)
+            self.mine_text(line.label, line.rel_path, control=control)
 
     def _needs_make_cards(self, entry, _line=None):
         """A gap's *Make their cards* (P4.1 WF, IK D-1 lean (a)): Connect's ordinary work, not an ask — so no store
@@ -397,7 +411,7 @@ class MineActions(QObject):
                     print(f"Connect wasn't kicked: {e}")
             service.answer(language, keys)
             return made
-        bridge.run_in_worker(run, then=lambda made: needs._connect_done(_made_words(made)), failed=needs._failed)
+        needs._press("make_cards", entry, run, then=lambda made: needs._connect_done(_made_words(made)))   # (its arc)
 
 
 def videos_of(row, ids):

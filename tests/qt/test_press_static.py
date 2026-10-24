@@ -39,31 +39,33 @@ ALLOWED = {
                                      "written behind it",
     "shell.py:ShellWindow._failure_dismissed": "instant: ✕ takes the failure off the bar at once; its *dismissed* "
                                                "record is written behind it",
-    "settings_connect.py:MinerCard._answer": "instant: the ⭐ suggestion gives way to its link at once; the answer is "
-                                            "written to star.json behind it",
+    "settings_connect.py:MinerCard._answer": "instant: the ⭐ suggestion gives way to its link at once; its answer "
+                                             "is written to star.json behind it",
     # marked another way: the window's own status line names the wait (and its button waits) before the worker — the
     # scope's audit (§2) found these already reacting ("none")
-    "anki_window.py:AnkiWindow.refresh_connection": "marked another way: *Checking…* painted on the state line first",
-    "anki_window.py:AnkiWindow._read_restore_point": "marked another way: `on_restore`'s `_begin` (*Reading the "
-                                                     "backup…*) first",
-    "importers.py:DeckWindow.choose": "marked another way: *Reading…* in the window's line first",
-    "importers.py:ExtractWindow.choose": "marked another way: *Reading…* in the window's line first",
-    "importers.py:ExtractWindow.check": "marked another way: the window writing (`begin_write`) and *Checking…* first",
-    "importers.py:MigakuWindow.find_it": "marked another way: *Looking…* in the window's line first",
+    "anki_window.py:AnkiWindow.refresh_connection": "marked another way: ANKI_STATE_CHECKING painted on the state "
+                                                    "line first",
+    "anki_window.py:AnkiWindow._read_restore_point": "marked another way: `on_restore`'s `_begin` "
+                                                     "(ANKI_READING_BACKUP) first",
+    "importers.py:DeckWindow.choose": "marked another way: APKG_READING in the window's line first",
+    "importers.py:ExtractWindow.choose": "marked another way: APKG_READING in the window's line first",
+    "importers.py:ExtractWindow.check": "marked another way: the window writing (`begin_write`) and "
+                                        "EXTRACT_CHECKING first",
+    "importers.py:MigakuWindow.find_it": "marked another way: MIGAKU_LOOKING in the window's line first",
     "importers.py:MigakuWindow.read": "pressed (*Choose…*, `control`), it is `qpress.run` and returns; the worker "
-                                      "after it is *Find it*'s answer read on, after *Looking…*",
+                                      "after it is *Find it*'s answer read on, after MIGAKU_LOOKING",
     "sentence_dictionary_window.py:SentenceDictionaryWindow.export": "marked another way: the window exporting and "
-                                                                     "*Checking…* first",
-    "settings_connect.py:MinerCard.check": "marked another way: *Checking…* on the card first",
-    "start_gate.py:Gate.pick": "marked another way: `_looking` (*Looking…*) first",
-    "start_gate.py:Gate.try_again": "marked another way: `_looking` (*Looking…*) first",
+                                                                     "DICT_CHECKING first",
+    "settings_connect.py:MinerCard.check": "marked another way: MINER_CHECKING on the card first",
+    "start_gate.py:Gate.pick": "marked another way: `_looking` (LOOKING on its stage line) first",
+    "start_gate.py:Gate.try_again": "marked another way: `_looking` (LOOKING on its stage line) first",
     "start_gate.py:Gate._run": "marked another way: the working / preparing screen first",
-    "word_lists_window.py:WordListsWindow.find": "marked another way: *Finding words…* in the window's line first",
+    "word_lists_window.py:WordListsWindow.find": "marked another way: WORD_LISTS_FINDING in the window's line first",
     "modules/junban/qt_backfill.py:BackfillWindow._start": "marked another way: `_set_working` (its spinner and "
                                                            "line) first, every Backfill worker's one door",
-    "modules/koe/qt_window.py:KoeWindow._test": "marked another way: *Testing…* in the window's line first",
-    "modules/youtube_downloader/qt_window.py:DownloaderWindow._ask_backfill": "marked another way: *Scanning…* in "
-                                                                              "the window's line first",
+    "modules/koe/qt_window.py:KoeWindow._test": "marked another way: TESTING in the window's line first",
+    "modules/youtube_downloader/qt_window.py:DownloaderWindow._ask_backfill": "marked another way: SCANNING in the "
+                                                                              "window's line first",
     # P3–P5 left
     "settings_connect.py:install_anki_miner": "P3–P5 left: *Install Anki Miner…* opens the wizard (its reaction); "
                                               "only when no wizard can open does the releases page open, on the "
@@ -112,7 +114,8 @@ class _Source:
     """One file's functions: each with its qualified name, its class and the scopes it is written in."""
 
     def __init__(self, tree):
-        self.where = {}             # function node -> (qualname, class node or None, [enclosing scopes, outermost first])
+        self.where = {}             # function node -> (qualname, class node or None, [its enclosing scopes, outermost
+        #                             first])
         self._defs = {}
         self._walk(tree, [], None, [tree])
 

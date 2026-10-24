@@ -2534,6 +2534,20 @@ def test_H7_a_remove_replayed_after_a_crash_between_its_trash_move_and_its_commi
         assert f.read() == body
 
 
+def test_H7_a_live_remove_of_a_file_deleted_by_hand_never_takes_a_trashed_file_of_its_name(lib, make_writer):
+    # why: only a replay can have moved its files already; a file the learner deleted outside Surasura is no file of
+    # the trash's, so a trashed one of the same name and size (left by an earlier Remove's Undo-Add) stays unclaimed
+    w, heard = make_writer()
+    x = lib.ids("soon")[2]
+    rel, path = lib.store.item(x)["rel_path"], _file(lib, x)
+    orphan = ls.trash_file(lib.data_dir, rel)            # the same bytes in the trash, no row naming them
+    assert orphan and not os.path.exists(path)          # and the file gone from its place, as if deleted by hand
+    w.remove([x], label="removed")
+    assert h.until(lambda: heard.saved)
+    row = lib.store.trash_rows(heard.saved[0][0].trash_ids)[0]
+    assert row["trashed_path"] is None, "a live Remove claims no trashed file"
+
+
 def test_S2_undoing_a_remove_whose_name_was_taken_meanwhile_puts_it_back_under_a_new_name_and_says_so(
         lib, make_writer):
     w, heard = make_writer()

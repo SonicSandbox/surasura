@@ -998,7 +998,8 @@ class Writer:
                     row = store.item(item_id)
                     if row is None:
                         continue
-                    to = _trash(lib, store, row["rel_path"], row, taken=trashed.values())
+                    to = _trash(lib, store, row["rel_path"], row if cmd.get("replay") else None,
+                                taken=trashed.values())
                     if to:
                         trashed[item_id] = to
                         moved.append((_full(store, to), _full(store, row["rel_path"])))
@@ -1021,8 +1022,8 @@ class Writer:
                 trashed = {}
                 for item_id in store.items_under(cmd["path"]):
                     row = store.item(item_id)
-                    to = (_trash(lib, store, row["rel_path"], row, taken=trashed.values()) if row is not None
-                          else None)
+                    to = (_trash(lib, store, row["rel_path"], row if cmd.get("replay") else None,
+                                 taken=trashed.values()) if row is not None else None)
                     if to:
                         trashed[item_id] = to
                         moved.append((_full(store, to), _full(store, row["rel_path"])))
@@ -1966,9 +1967,9 @@ def _full(store, rel):
 def _trash(lib, store, rel, row=None, taken=()):
     """A row's file to the trash before its row goes (`trash_file`), or StoreConflict when the file is there but isn't
     Surasura's to move (SRC K1a.6: a copy a folder link leads out of the data folder) — never a row dropped with its
-    file left for the next sync to add again. `row` (a Remove's, a Skip's): no file where the store has it available
-    is a replay after a crash between the renames and the commit — its copy is in the trash already (H7; `taken`:
-    the copies this command holds already)."""
+    file left for the next sync to add again. `row` (a REPLAYED Remove's or Skip's, never a live one: a file deleted
+    by hand is no file of the trash's): no file where the store has it available is a crash between the renames and
+    the commit — its copy is in the trash already (H7; `taken`: the copies this command holds already)."""
     to = lib.trash_file(store.data_dir, rel)
     if to is None and lib.trash_refused(store.data_dir, rel):
         raise lib.StoreConflict(f"that file isn't Surasura's to move: {rel}")
@@ -1983,7 +1984,10 @@ def _trashed_before(store, row, taken):
     reach it. -> that copy (".trash/<name>"): the newest named as `trash_file` names this file
     (`<base>_<stamp>[_n]<ext>`) with the row's size — and the bytes its record holds, when it has one — that no trash
     row and no other file of this command holds; None when there is none (⭐ PROVISIONAL: its name, its size, its bytes
-    and no row of its own make it this file — the trash keeps no time of the file's own)."""
+    and no row of its own make it this file — the trash keeps no time of the file's own). Candidates are taken
+    oldest first, in the order `trash_file` made them (`_1` before `_10`): a command's items replay in the order they
+    were renamed, so two of one name and size each get their own. Its purge clock restarted (a kill may have come
+    between the rename and the stamp)."""
     trash = os.path.join(store.data_dir, ".trash")
     base, ext = os.path.splitext(os.path.basename(row["rel_path"]))
     named = re.compile(re.escape(base) + r"_\d{14}(?:_\d+)?" + re.escape(ext) + r"\Z", re.IGNORECASE)
@@ -1995,7 +1999,10 @@ def _trashed_before(store, row, taken):
         return None
     held = {r["trashed_path"] for r in store.trash_rows() if r.get("trashed_path")} | taken
     shas = {o.sha256 for o in store.origins(items=[row["id"]]).values() if o.sha256 and not o.version}
-    for name in sorted(names, key=lambda n: (n[len(base) + 1:len(base) + 15], n), reverse=True):
+    def made(n):                                         # (stamp, its _n): the order trash_file made them
+        tail = n[len(base) + 1:len(n) - len(ext)]
+        return tail[:14], int(tail[15:] or 0)
+    for name in sorted(names, key=made):
         rel, full = f".trash/{name}", os.path.join(trash, name)
         if rel in held:
             continue
@@ -2006,6 +2013,7 @@ def _trashed_before(store, row, taken):
                 continue
         except OSError:
             continue
+        _ls().restart_trash_clock(full)
         return rel
     return None
 

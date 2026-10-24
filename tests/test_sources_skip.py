@@ -82,7 +82,7 @@ def test_a_skip_replayed_after_a_crash_between_its_trash_moves_and_its_commit_ke
             with open(os.path.join(data_dir, *rel.split("/")), "rb") as f:
                 bodies[rel] = f.read()
             ls.trash_file(data_dir, rel)                # the crash: the files moved, the store never committed
-        change = M.Writer._skip_folder(None, store, {"op": "skip_folder", "path": folder})   # the replay
+        change = M.Writer._skip_folder(None, store, {"op": "skip_folder", "path": folder, "replay": True})
         rows = store.trash_rows(change.trash_ids)
         assert len(rows) == len(ids) == 2
         assert len({r["trashed_path"] for r in rows}) == 2 and all(r["trashed_path"] for r in rows), \
@@ -116,7 +116,7 @@ def test_a_replayed_skip_never_takes_a_newer_trashed_file_of_the_same_name_and_s
         decoy = os.path.join(trash, f"{base}_29991231235959{ext}")   # newest by its stamp: same name, same size
         with open(decoy, "wb") as f:
             f.write(bytes(b ^ 1 for b in body))
-        change = M.Writer._skip_folder(None, store, {"op": "skip_folder", "path": folder})   # the replay
+        change = M.Writer._skip_folder(None, store, {"op": "skip_folder", "path": folder, "replay": True})
         rows = {r["item_id"]: r["trashed_path"] for r in store.trash_rows(change.trash_ids)}
         assert rows == own, "each row names its own copy, never the decoy"
         assert os.path.exists(decoy)

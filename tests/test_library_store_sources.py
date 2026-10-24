@@ -22,6 +22,7 @@ from app import library_store as ls
 from app.connect import fit_check
 from app.connect import library as connect_library
 from tests.test_library_store_support import LANGUAGES, RESOURCES, library, migrated, names, roots, write_manifest
+from tests.test_sources_scan import _fresh_module_state  # noqa: F401  (D5's looks: each a new run of the app)
 
 # Real text per language: subtitles and a text, each episode told apart by a line of real words appended
 _TEXTS = {"ja": ("placed_episode.srt", "library_episode.ass", "phrases_sample.srt", "context_test.txt"),
@@ -1464,3 +1465,137 @@ def test_a_folder_added_inside_another_source_counts_the_episodes_under_it(langu
         assert [(s["id"], s["items"]) for s in store.sources(all=True)] == [(outer, 3), (inner, 3), (beside, 0)]
         store.remove([ids[0]])
         assert [(s["id"], s["items"]) for s in store.sources(all=True)] == [(outer, 2), (inner, 2), (beside, 0)]
+
+
+# --- D5 (the moves scope §4, Kura's half; PROVISIONAL): an original that moved marks its old record --------------- #
+# Why: after a show's folder moves from one folder Surasura reads to another, its items hold two origin records — the
+# old one dead. The old folder's line must not keep counting episodes that left it, and Connect must be able to tell
+# the live record from the dead one (Michi's half orders the marked one last). The mark is a field in the old record,
+# never a deleted record: it goes again when the file is back.
+
+def _scanned_show(language, a, show, count=4):
+    from tests.test_sources_scan import _settle, _text, _write
+    for n in range(1, count + 1):
+        _write(os.path.join(a, show, f"[Grp] {show} - {n:02d}.{language}.srt"), _text(language, n))
+    _settle(a)
+    return [os.path.join(a, show, f"[Grp] {show} - {n:02d}.{language}.srt") for n in range(1, count + 1)]
+
+
+def _moved_to(store, path):
+    return store.origins()[ls.path_key(os.path.abspath(path))].moved_to
+
+
+def _counts(store):
+    return [s["items"] for s in store.sources(all=True)]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_moved_original_marks_its_old_record_and_the_old_folder_no_longer_counts_it(language):
+    """The show's folder cut from A and pasted into B: A's records say where each original went, A counts 0 and B 4;
+    the records stay (nothing deleted) and Connect's record never carries the mark — its pairing version unmoved."""
+    from tests.test_sources_scan import _look, _settle
+    store, data_dir = _empty(language)
+    show = names(language)[71]
+    a, b = _source_root("driveA"), _source_root("driveB")
+    old = _scanned_show(language, a, show)
+    with store:
+        root_a = store.add_source(a)
+        ids = _look(store, language, root_a, first=True)["ids"]
+        versions = {i: fit_check.version(connect_library.pairing_of(store, i)) for i in ids}
+        shutil.move(os.path.join(a, show), os.path.join(b, show))
+        _settle(b)
+        root_b = store.add_source(b)
+        assert _look(store, language, root_b)["attached"] == 4
+        assert _counts(store) == [0, 4]
+        for path in old:
+            assert _moved_to(store, path) == ls.path_key(os.path.abspath(os.path.join(b, show,
+                                                                                      os.path.basename(path))))
+            assert _moved_to(store, os.path.join(b, show, os.path.basename(path))) is None
+        assert len(store.origins()) == 8
+        for i in ids:
+            record = connect_library.pairing_of(store, i)
+            assert "moved_to" not in record and fit_check.version(record) == versions[i]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_old_folder_offline_marks_nothing(language):
+    """A's drive unplugged while B holds the same files: nothing says A's originals moved (they may be on the drive) —
+    A keeps counting its episodes (*its 4 episodes are kept*)."""
+    from tests.test_sources_scan import _look, _settle
+    store, data_dir = _empty(language)
+    show = names(language)[71]
+    a, b = _source_root("driveA"), _source_root("driveB")
+    old = _scanned_show(language, a, show)
+    with store:
+        _look(store, language, store.add_source(a), first=True)
+        shutil.copytree(os.path.join(a, show), os.path.join(b, show), copy_function=shutil.copy2)
+        _settle(b)
+        os.rename(a, a + " (unplugged)")
+        try:
+            assert _look(store, language, store.add_source(b))["attached"] == 4
+            assert _counts(store) == [4, 4] and all(_moved_to(store, p) is None for p in old)
+        finally:
+            os.rename(a + " (unplugged)", a)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_original_back_in_its_old_place_clears_the_mark(language):
+    """Moved to B, then copied back into A: A's look lists the originals again — the mark goes, A counts them again."""
+    from tests.test_sources_scan import _look, _settle
+    store, data_dir = _empty(language)
+    show = names(language)[71]
+    a, b = _source_root("driveA"), _source_root("driveB")
+    old = _scanned_show(language, a, show)
+    with store:
+        root_a = store.add_source(a)
+        _look(store, language, root_a, first=True)
+        shutil.move(os.path.join(a, show), os.path.join(b, show))
+        _settle(b)
+        _look(store, language, store.add_source(b))
+        assert _counts(store) == [0, 4]
+        shutil.copytree(os.path.join(b, show), os.path.join(a, show), copy_function=shutil.copy2)
+        _settle(a)
+        _look(store, language, root_a, full=True)
+        assert _counts(store) == [4, 4] and all(_moved_to(store, p) is None for p in old)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_copy_not_a_move_marks_nothing(language):
+    """The show copied to B (A's files still there): both folders hold it, both count it, no record is marked."""
+    from tests.test_sources_scan import _look, _settle
+    store, data_dir = _empty(language)
+    show = names(language)[71]
+    a, b = _source_root("driveA"), _source_root("driveB")
+    old = _scanned_show(language, a, show)
+    with store:
+        _look(store, language, store.add_source(a), first=True)
+        shutil.copytree(os.path.join(a, show), os.path.join(b, show), copy_function=shutil.copy2)
+        _settle(b)
+        assert _look(store, language, store.add_source(b))["attached"] == 4
+        assert _counts(store) == [4, 4]
+        assert all(o.moved_to is None for o in store.origins().values()) and len(old) == 4
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_take_in_marks_only_its_own_items_live_records(language):
+    """`take_in` checks again, inside its write: a `moved_from` naming another item's record, or one marked already,
+    is left as it is."""
+    store, data_dir = _empty(language)
+    src = _source_root()
+    w = names(language)
+    with store:
+        root = store.add_source(src)
+        f = _found(language, data_dir, src, w[69], "ep1.srt", 1)
+        g = _found(language, data_dir, src, w[70], "ep2.srt", 2)
+        first = store.take_in(root, [f, g], first=True).recorded[os.path.abspath(f["origin"])]
+        h =_found(language, data_dir, src, w[69], "moved/ep1.srt", 1, copy=False, item_id=first,
+                   moved_from=[ls.path_key(os.path.abspath(g["origin"])), ls.path_key(os.path.abspath(f["origin"]))])
+        store.take_in(root, [h])
+        assert _moved_to(store, f["origin"]) == ls.path_key(os.path.abspath(h["origin"]))
+        assert _moved_to(store, g["origin"]) is None
+        k = _found(language, data_dir, src, w[69], "again/ep1.srt", 1, copy=False, item_id=first,
+                   moved_from=[ls.path_key(os.path.abspath(f["origin"]))])
+        store.take_in(root, [k])
+        assert _moved_to(store, f["origin"]) == ls.path_key(os.path.abspath(h["origin"]))
+        assert "moved_from" not in json.loads(store.conn.execute(
+            "SELECT pairing FROM pairings WHERE content_key = ?", (ls.origin_key(h["origin"]),)).fetchone()[0])

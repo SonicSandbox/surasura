@@ -707,11 +707,15 @@ class _Look:
         self.pending_books = set()   # LM3: the EPUBs whose new edition waits in the store (never hashed nor split)
         self.evidence = None         # D3: ({size: {sha256: shows}}, {video size: {video key: shows}}) of the origins
         self.content_keys = {}       # D3: {a video's path: its content key}, read once a look (`_content_key`)
+        self.roots = {}              # D5: {a source's id: its folder} (`run`), and {its id: gone?} asked once a look
+        self.gone_roots = {}
+        self.back = []               # D5: known originals whose record says they moved, listed in their place again
 
     # --- the look ------------------------------------------------------------------------------------------------- #
 
     def run(self):
         held_sources = self.store.sources(all=True, counts=False)   # one read of the roots, no origin read
+        self.roots = {s["id"]: s["path"] for s in held_sources}
         path = next((s["path"] for s in held_sources if s["id"] == self.root_id and s["on"]), None)
         if path is None:
             raise ls.NotASource("That folder isn't being read any more.")
@@ -776,6 +780,7 @@ class _Look:
                 except OSError:                              # gone or locked meanwhile: the next look
                     self._wait(item[0])
             self._late()                                     # LM1b (A19, A20): a known text's video, come or renamed
+            self._back()                                     # D5: an original back in its old place: unmarked
             self._restore(known)                             # before check (b): an item back holds its bytes again
             texts = [c[2].st_size for c in new if len(c) == 6]
             self.sizes = self.store.items_of_size(texts) if texts else {}
@@ -900,6 +905,8 @@ class _Look:
                 if kind == "known":
                     known.append((where, path, st))
                     o = self.origins.get(_key(path))
+                    if o is not None and o.moved_to:         # D5: back where it was
+                        self.back.append(path)
                     if o is not None and o.version:          # LM3 (a): a better version the switch held before
                         self.listed.add(o.item_id)
                     self.late.append((where, path, name, vids))     # A19 / A20: its video asked after the changes
@@ -1562,6 +1569,9 @@ class _Look:
             self.follow[f["origin"]] = (earlier, path, st, folder)   # its text followed once take_in records it (H12)
         if item is not None:
             f["item_id"] = item
+            moved = self._moved_from(item, path)
+            if moved:
+                f["moved_from"] = moved
         else:
             copy = name                                      # A11: a `Subs/<video>/` file is named as its video
             if path in self.video_of and video:
@@ -1848,6 +1858,9 @@ class _Look:
                  "video_key": self._content_key(path)}
             if _episode_of(name)[0] is not None:
                 f["episode"] = _episode_of(name)[0]
+            gone = self._moved_from(moved, path)
+            if gone:
+                f["moved_from"] = gone
             return f
         k = self._episode_key(name, show)
         if k is not None and k in self._waits(show):         # A5: its episode waits already, on another video
@@ -1884,6 +1897,44 @@ class _Look:
             return None
         vkey = self._content_key(path)
         return self._waiting_items().get(vkey) if vkey else None
+
+    def _moved_from(self, item_id, path):
+        """D5 (PROVISIONAL): the path keys of the item's other live origins whose originals are gone from a source
+        folder still there — the file moved (to `path`, attached to the item now) — for `take_in` to mark. A stat each,
+        on this look's thread (outside any lock); an original whose folder is offline, unreadable or present is left
+        unmarked (a copy, not a move; a drive unplugged)."""
+        out = []
+        for o in self._by_item().get(item_id, ()):
+            if o.version or o.moved_to or not o.origin or ls.path_key(os.path.abspath(o.origin)) == _key(path):
+                continue
+            try:
+                os.stat(o.origin)
+                continue
+            except FileNotFoundError:
+                pass
+            except OSError:
+                continue
+            if self._root_gone(o.root):
+                continue
+            out.append(ls.path_key(os.path.abspath(o.origin)))
+        return out
+
+    def _root_gone(self, root_id):
+        """D5: is this source's folder unreachable (or no source any more)? Asked once a look per source."""
+        if root_id not in self.gone_roots:
+            path = self.roots.get(root_id)
+            self.gone_roots[root_id] = path is None or _lost(path)
+        return self.gone_roots[root_id]
+
+    def _back(self):
+        """D5: the known originals listed in their old place again — their `moved_to` mark taken off (one write)."""
+        if not self.back:
+            return
+        try:
+            self.store.origins_back(self.back)
+        except ls.StoreError:                                # busy: the next look lists them again
+            pass
+        self.back = []
 
     def _is_shown(self, show):
         """Has this show an item that isn't waiting (any place)? Its folder key, as the store groups a show's title

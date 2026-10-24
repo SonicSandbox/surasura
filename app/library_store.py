@@ -151,7 +151,9 @@ CONTENT_FOLDER = "Library"
 WALK_FOLDERS = tuple(TIERS[t][1] for t in ANALYSED) + (CONTENT_FOLDER,)   # what the disk sync walks and watches
 SOURCE_PRODUCER = "source"       # an origin record's producer, and the placement log's name for a scan's take-in
 SOURCE_KEY = "src:"              # an origin row's `pairings.content_key`: "src:" + path_key(<absolute origin>) (B1)
-SOURCE_STATS = ("size", "mtime_ns", "sha256")      # what a re-copy rewrites in its row (never what Connect reads)
+# what a re-copy rewrites in its row, and D5's mark (`moved_to`): never what Connect reads (`pairing_of` strips them,
+# so neither moves its pairing version)
+SOURCE_STATS = ("size", "mtime_ns", "sha256", "moved_to")
 # B1: a `pairings` row that is an origin's, and a source row read only when its item has no other (`p` = the row)
 _ORIGIN_ROW = "(p.content_key >= 'src:' AND p.content_key < 'src;')"
 # LM1b: an origin that is ANOTHER VERSION of its item's episode (a second group's subtitle, a lower release, one a
@@ -159,6 +161,11 @@ _ORIGIN_ROW = "(p.content_key >= 'src:' AND p.content_key < 'src;')"
 # and is no reader's: never the item's text, video, number or pairing (A8, A26)
 _VERSION_ROW = (f"({_ORIGIN_ROW} AND (CASE WHEN json_valid(p.pairing) THEN json_type(p.pairing, '$.version') END) "
                 "IS 'true')")                    # (SQLite never short-circuits for a malformed record: the CASE does)
+# D5 (PROVISIONAL): an origin whose original moved — its file gone from a folder still there, the same item's origin
+# recorded in its new place (`take_in`'s `moved_from`) — says `"moved_to": <the new origin's path key>`. It stays an
+# origin (found, kept out, its show's), never counted under its old folder (`sources`); Connect reads a live one first
+# (Michi's `pairing_of`). A look listing the original in its old place again takes the mark off (`origins_back`).
+_MOVED_ROW = ("((CASE WHEN json_valid(p.pairing) THEN json_type(p.pairing, '$.moved_to') END) IS NOT NULL)")
 _PREFERRED_ROW = (f"NOT ({_ORIGIN_ROW} AND EXISTS (SELECT 1 FROM pairings q WHERE q.item_id = p.item_id AND NOT "
                   f"(q.content_key >= 'src:' AND q.content_key < 'src;'))) AND NOT {_VERSION_ROW}")
 MINE_LINE_DEFAULT = 20           # a lean owned by Connect's spec and the window (settled at G2.2)
@@ -7959,7 +7966,7 @@ _LINK_TAGS = (0xA000000C, 0xA0000003)              # IO_REPARSE_TAG_SYMLINK, IO_
 _DIGITS = re.compile(r"(\d+)")
 _EPUB_PART = re.compile(r"\.epub#\d+$", re.I)    # an EPUB's part's origin (`<book>.epub#3`)
 Origin = namedtuple("Origin", "item_id root origin size mtime_ns sha256 rel_path availability paired_at version "
-                              "video_path video_size video_key declined thin", defaults=(None,) * 6)
+                              "video_path video_size video_key declined thin moved_to", defaults=(None,) * 7)
 
 
 def origin_key(path):
@@ -8351,7 +8358,8 @@ def _store_sources(self, all=False, counts=True):
     """[{id, path, on, items}] of the sources being read (`all`: the stopped ones too), in the order added; `items` =
     the live items with an origin under its folder, whichever source recorded it (the offline line's count: *its 412
     episodes are kept*; item 8b: a show's folder added inside a folder read before counts the episodes that one took
-    in) — by the origin keys' path, `/`-ended (`…\\Show` never counts `…\\Show S2`). `counts=False` (a look,
+    in) — by the origin keys' path, `/`-ended (`…\\Show` never counts `…\\Show S2`); an origin whose original
+    moved to another folder (D5's `moved_to`) counts in its new place only. `counts=False` (a look,
     Connect's video index): the roots' rows alone, no origin read; the counts are gathered here from one read of the
     keys in order (each folder's by its prefix), never in a GROUP BY (its temporary B-tree went to disk: 14 MB written
     per call at 20k origins)."""
@@ -8363,7 +8371,7 @@ def _store_sources(self, all=False, counts=True):
         if counts and rows:
             for key, item_id in self.conn.execute(f"SELECT substr(p.content_key, {len(SOURCE_KEY) + 1}), p.item_id "
                                                   f"FROM pairings p WHERE {_ORIGIN_ROW} AND NOT {_VERSION_ROW} "
-                                                  f"ORDER BY p.content_key"):
+                                                  f"AND NOT {_MOVED_ROW} ORDER BY p.content_key"):
                 keys.append(key)
                 ids.append(item_id)
     out = []
@@ -8392,9 +8400,10 @@ def _store_stop_source(self, root_id):
 
 def _store_origins(self, items=None):
     """{path_key(origin): Origin(item_id, root, origin, size, mtime_ns, sha256, rel_path, availability, paired_at,
-    version, video_path, video_size, video_key, declined, thin)} for every origin recorded (`version`: another version
-    of its item's episode, LM1b — a look knows its file, no reader takes it; `declined` / `thin`: a version the switch
-    passes over while its file is as judged, LM3 `sources.passed_over`), in any tier (a finished item is never taken in again): one read per look — the item's
+    version, video_path, video_size, video_key, declined, thin, moved_to)} for every origin recorded (`version`:
+    another version of its item's episode, LM1b — a look knows its file, no reader takes it; `declined` / `thin`: a
+    version the switch passes over while its file is as judged, LM3 `sources.passed_over`; `moved_to`: D5's mark, the
+    path key its original moved to), in any tier (a finished item is never taken in again): one read per look — the item's
     availability with it, so a look finds the copies gone (item 8a) with no stat of its own. The records' fields are read by SQLite
     (F13: decoding every record in Python held the interpreter 0.25 s at 20k, stretching a window's save meanwhile); a
     record that isn't a JSON object reads as one with no fields. `items` (LM3, A10): those items' origins only — a
@@ -8406,7 +8415,7 @@ def _store_origins(self, items=None):
             f"SELECT substr(p.content_key, {len(SOURCE_KEY) + 1}), p.item_id, {field('root')}, {field('origin')}, "
             f"{field('size')}, {field('mtime_ns')}, {field('sha256')}, i.rel_path, i.availability, p.paired_at, "
             f"{_VERSION_ROW}, {field('video_path')}, {field('video_size')}, {field('video_key')}, "
-            f"{field('declined')}, {field('thin')} FROM pairings p "
+            f"{field('declined')}, {field('thin')}, {field('moved_to')} FROM pairings p "
             f"JOIN items i ON i.id = p.item_id WHERE {_ORIGIN_ROW}"
             + ("" if items is None else " AND p.item_id IN (SELECT value FROM json_each(?))")
             + " ORDER BY p.content_key", () if items is None else (_dumps(sorted(set(items))),)).fetchall()
@@ -8762,7 +8771,9 @@ def _store_take_in(self, root_id, found, first=False, rules=None):
 
     `found`: [{origin (absolute), size, mtime_ns (the origin's), sha256 (the text's bytes), show (its title), rel (the
     copy, relative to the data folder, under `Library/`), video_path?, video_size?, video_key?, episode? (K4's number),
-    item_id? (K1b's checks (a) / (b): the item the origin belongs to; no copy, no `rel`)}].
+    item_id? (K1b's checks (a) / (b): the item the origin belongs to; no copy, no `rel`), moved_from? (D5: with
+    `item_id`, the path keys of that item's origins whose originals the look found gone: marked `moved_to` this one,
+    when they are still its live records)}].
 
     Per file: an origin already recorded (by any source), or one Remove keeps out — its path, its bytes or its video
     (S6) — is skipped; an `item_id` gets the origin recorded and nothing else; a copy that is already an item is that
@@ -8891,6 +8902,8 @@ def _store_take_in(self, root_id, found, first=False, rules=None):
                 continue
             by_bytes.setdefault(same, item_id)
             self._write_origin(key, item_id, record)
+            if f.get("moved_from"):                          # D5: the originals this one replaced, marked
+                self._mark_moved(item_id, key, f["moved_from"])
             change.recorded[origin] = item_id
             episodes.pop(item_id, None)                      # its preferred record may be this one now
             change.attached.append(item_id)
@@ -8906,6 +8919,42 @@ def _store_take_in(self, root_id, found, first=False, rules=None):
     # changes after the commit, and SQLite's data_version as read inside it: another connection's commit since moves it)
     self._gaps = ((self.conn.total_changes, stamp), gaps) if exact and not nested else None
     return change
+
+
+def _store_mark_moved(self, item_id, key, olds):
+    """D5, inside `take_in`: the records of `olds` (path keys) still this item's, live (no version) and unmarked, say
+    their original moved to `key`'s (`"moved_to"`: its path key) — bookkeeping in a record, nothing deleted."""
+    for old in dict.fromkeys(olds):
+        old_key = SOURCE_KEY + str(old)
+        if old_key == key:
+            continue
+        row = self.conn.execute("SELECT item_id, pairing FROM pairings WHERE content_key = ?", (old_key,)).fetchone()
+        record = _json_dict(row[1]) if row is not None and row[0] == item_id else None
+        if record is None or record.get("version") is True or record.get("moved_to"):
+            continue
+        record["moved_to"] = key[len(SOURCE_KEY):]
+        self.conn.execute("UPDATE pairings SET pairing = ? WHERE content_key = ?",
+                          (json.dumps(record, sort_keys=True, ensure_ascii=False), old_key))
+
+
+def _store_origins_back(self, origins):
+    """D5: originals a look listed in their old place again (`origins`: absolute paths) — their `moved_to` mark taken
+    off, in ONE write, bookkeeping the copy carries. -> the origins whose row changed."""
+    done = []
+    with self._writing():
+        for origin in origins:
+            key = origin_key(origin)
+            row = self.conn.execute("SELECT pairing FROM pairings WHERE content_key = ?", (key,)).fetchone()
+            record = _json_dict(row[0]) if row is not None else None
+            if record is None or "moved_to" not in record:
+                continue
+            del record["moved_to"]
+            self.conn.execute("UPDATE pairings SET pairing = ? WHERE content_key = ?",
+                              (json.dumps(record, sort_keys=True, ensure_ascii=False), key))
+            done.append(origin)
+        if done:
+            self._copy_dirty()
+    return done
 
 
 def _store_take_version(self, cmd, change, root_id, origin, key, f, out):
@@ -10823,6 +10872,8 @@ Store.read_folder_again = _store_read_folder_again
 Store.take_in = _store_take_in
 Store._write_origin = _store_write_origin
 Store._take_version = _store_take_version
+Store._mark_moved = _store_mark_moved
+Store.origins_back = _store_origins_back
 Store._take_new = _store_take_new
 Store._waiting_videos = _store_waiting_videos
 Store._fill_gap = _store_fill_gap

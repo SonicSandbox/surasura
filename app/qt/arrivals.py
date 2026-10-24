@@ -1048,16 +1048,19 @@ class ArrivalsTray(motion.Overlay):
         return os.path.dirname(os.path.join(path_utils.get_data_path(language), *rel.split("/")))
 
     def open_folder(self, arrival):
-        """*Open its folder*: looked for on a worker first (a drive may be slow or gone, N4), then opened — or said."""
-        from app.qt import bridge, windows
+        """*Open its folder*: a press (`press.open`, round 8 row 45) — the row's ⋯ turns (IK-2) from the frame of the
+        press; looked for (a drive may be slow or gone, N4) and opened on a worker — or said."""
+        from app.qt import press as qpress
         path = self.folder_of(arrival)
 
-        def found(there):
-            if not there or not windows.open_url(path):
-                say = getattr(self.win, "say", None)
-                if say is not None:
-                    say(strings.TRAY_NO_FOLDER.format(path=path))
-        bridge.run_in_worker(os.path.isdir, path, then=found, failed=lambda _info: found(False))
+        def nothing(_info=None):
+            say = getattr(self.win, "say", None)
+            if say is not None:
+                say(strings.TRAY_NO_FOLDER.format(path=path))
+        row = self.rows.get(arrival.key)
+        return qpress.open(self.win, lambda: path if os.path.isdir(path) else None, key=("open-folder", arrival.key),
+                           at=qpress.widget_mark(row.more) if row is not None else None,
+                           then=lambda found: found or nothing(), failed=nothing)
 
     def _has_show(self, arrival):
         """Whether a part of the arrival's title is in Current (the view's rows), N1 — inside a group too (a row names

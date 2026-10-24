@@ -14,10 +14,12 @@ while `available` says so and its module (when it names one) imports — the Tk 
 W3.2 attach the same openers to their rows and **retire the list** (IK-16: it never ships by default).
 `show(shell, name, make)`: one window of a kind per main window, kept and raised if open.
 """
+import contextlib
 import importlib.util
 import json
 import os
 import re
+import sys
 import weakref
 from collections import namedtuple
 
@@ -27,6 +29,8 @@ from PyQt6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidg
 
 from app import path_utils, theme
 from app.qt import applog, bridge, strings, style
+from app.qt import press as qpress
+from app.services import press as press_service
 
 Opener = namedtuple("Opener", "name label tip available open module", defaults=(None,))
 
@@ -39,9 +43,36 @@ def language_of(shell):
         return getattr(shell, "language", None) or "ja"
 
 
+def _ole32():
+    """Windows' COM library (a seam: the tests count its calls)."""
+    import ctypes
+    return ctypes.windll.ole32
+
+
+@contextlib.contextmanager
+def com_apartment(ole32=None):
+    """(Windows; any thread.) COM set up on this thread around a shell call, as ShellExecuteEx asks — an association
+    that goes through COM (a Store app as the default program) can't start without it; undone only when this call set
+    it up (S_OK or S_FALSE; a thread already in another mode, RPC_E_CHANGED_MODE, is left so). Elsewhere: nothing."""
+    if sys.platform != "win32":
+        yield
+        return
+    ole32 = ole32 or _ole32()
+    mine = ole32.CoInitializeEx(None, 0x2 | 0x4) >= 0    # COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE
+    try:
+        yield
+    finally:
+        if mine:
+            ole32.CoUninitialize()
+
+
 def open_url(url):
-    """A link or a folder in the user's own program (IK-17: `QDesktopServices`, never `os.startfile`)."""
-    return QDesktopServices.openUrl(QUrl(url) if "://" in url else QUrl.fromLocalFile(url))
+    """A link or a folder in the user's own program (IK-17: `QDesktopServices`, never `os.startfile`). Called on a
+    worker (`press.open`, round 8 row 45: never on the window's thread, which it stalled): on Windows Qt hands it to
+    ShellExecute, which touches no widget, so it is safe off the window's thread once COM is set up there
+    (`com_apartment`). -> whether the system opened it."""
+    with com_apartment():
+        return QDesktopServices.openUrl(QUrl(url) if "://" in url else QUrl.fromLocalFile(url))
 
 
 class SecondaryWindow(QWidget):
@@ -77,6 +108,9 @@ class SecondaryWindow(QWidget):
         self.status.setVisible(False)
         root.addWidget(self.status)
         self.status_paints = 0
+        self.presses = press_service.Presses()           # round 8 row 45: its presses; the status line is its bar —
+        self._holds, self._unheld = {}, ""               # ... a press's words held there (`say(…, hold=)`), and the
+        self.bar_arc = qpress.BarArc(self, corner=True)  # ... bar's arc in its corner (a menu's press, IK-2)
         self.setMinimumWidth(round(theme.size("pop", style.current()[1])))
         heard = getattr(shell, "bridge", None)
         if heard is not None:
@@ -88,9 +122,25 @@ class SecondaryWindow(QWidget):
         return self._closed or not self._alive[0]
 
     # --- what it says ------------------------------------------------------------------------------------------- #
-    def say(self, text):
-        """The status line: repainted only when its words changed (S19); hidden when empty."""
+    def say(self, text, hold=None):
+        """The status line: repainted only when its words changed (S19); hidden when empty. `hold`: a live press's key
+        (round 8 row 45, as the main window's bar) — its words stay until `unsay(hold)`; a line said meanwhile shows
+        at once and is the one left when the last held line is let go."""
         text = text or ""
+        if hold is not None:
+            self._holds[hold] = text
+        else:
+            self._unheld = text
+        self._show_status(text)
+
+    def unsay(self, key):
+        """A press's held words let go: the newest still held, else the line said last (before or meanwhile)."""
+        if self._holds.pop(key, None) is None:
+            return
+        held = list(self._holds.values())
+        self._show_status(held[-1] if held else self._unheld)
+
+    def _show_status(self, text):
         if self.status.text() == text:
             return
         self.status.setText(text)

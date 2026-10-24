@@ -447,6 +447,18 @@ ROWS_ACTION_NAMES = {"mine-now": "Mine now", "mine-this": "Mine this", "no-media
 # round 8 row 45 (trial): *Mine now* pressed — its pill turns from the frame of the press until Connect says more; its
 # hover is the one place words show (Sonic: "there are sometimes when text may be useful but be intentional")
 ROWS_ASKED_TIP = "Asked · starting…"
+# --- R47 (laptop rows 47 + 56, PROVISIONAL words): a Mining pill's *Stop* — on hover *■ Stop*, pressed *Stopping…*
+# (the pill keeps its box: the words elide in it); the episode's ⋯ entry; a stop Connect refused, or couldn't be asked
+ROWS_ACTION_NAMES["stop"] = "Stop"
+ROWS_STOP = "Stop"
+ROWS_STOPPING = "Stopping…"
+ROWS_STOP_TIP = "{tip}\n• Click to stop mining this episode: the cards made so far are kept"
+MINE_STOP_ENTRY = "Stop mining"
+MINE_STOP_REFUSED = "It can't be stopped now: it is finishing its cards, or Connect is done with it"
+MINE_STOP_FAILED = "Stop didn't reach Connect: {why}"
+# R47-A1 (PROVISIONAL): Connect took the stop, then began naming the clips before it could act on it
+MINE_STOP_TOO_LATE = "Too late to stop: its cards are already being finished"
+# --- end R47
 ROWS_LINK = "Link…"
 ROWS_LINK_TIP = "Choose its video: its cards get their pictures and audio from it"
 ROWS_MINE_TEXT = "Mine text"
@@ -502,6 +514,27 @@ FOOT_CONNECT_NAME = "Surasura Connect"
 FOOT_CONNECT_TIP = "{line}\n\n" + BAR_CONNECT_TIP
 FOOT_ANKI_WAITING = "Anki · {n:,} waiting"
 FOOT_ANKI_WAITING_TIP = "{n:,} new notes wait in Anki, in the decks the sync reads"   # backlog notes, not cards (AD-8)
+
+# --- the phase strip (Sonic 2026-10-23, build 6; `app/qt/phase_strip.py`): five circles at the bar's bottom left, each
+# one's hover its name, a line per job under way, then the last one that ended. No buttons in it.
+PHASE_STRIP_NAME = "What's running"
+PHASE_NAMES = {"arrivals": "Arrivals", "surasura": "Surasura", "miner": "Anki Miner", "junban": "Junban 順",
+               "anki": "Anki"}
+PHASE_MARKS = {"arrivals": "届", "surasura": "ス", "junban": "順"}       # Anki Miner and Anki show their logos
+PHASE_ABOUT = {
+    "arrivals": "Looking at your folders, imports and copies",
+    "surasura": "Generate, the indexer and the sentence dictionary",
+    "miner": "Surasura Connect making cards with Anki Miner",
+    "junban": "Anki's order for your new cards, and Backfill",
+    "anki": "Your known words from Anki",
+}
+PHASE_IDLE = "Nothing under way"
+PHASE_DONE = "Done {time}"
+PHASE_STOPPED = "Stopped {time}"
+PHASE_FAILED = "Failed {time}: {why}"
+PHASE_FAILED_NOW = "Failed: {why}"
+PHASE_NEEDS = "Needs you: {why}"
+PHASE_TIME = "%H:%M"
 
 # --- W3.1a drag: the window's writer (app/services/moves.py `Writer(words=MOVE_WORDS)`, its notes: moves.WORDS's keys)
 MOVE_WORDS = {
@@ -1231,3 +1264,18 @@ COVER_PASTE_WHY = {
 COVERS_REMOVED = "Downloaded covers removed. Pictures beside your files come back by themselves"
 COVERS_REMOVE_NONE = "There's no library open, so there are no downloaded covers to remove"
 # --- end W3.2 L3
+# --- round 8 row 45, P3: the shared press helpers and the main window's sweep (press.py)
+OPEN_IT = "It"
+OPEN_NOT_OPENED = "the system didn't open it"
+REFRESH_FAILED = "Your folders couldn't be looked at just now: {why}"
+REFRESH_NOT_LOOKED = "the look stopped"
+# --- end round 8 row 45, P3
+# --- round 8 row 45, P4: writes and menus (a toast's write waiting, an Undo on its way, + Add, Stop adding)
+TOAST_SAVING = " · saving…"                                    # after a toast's words while its write waits (drag.py)
+UNDOING = "Undoing…"                                           # Ctrl+Z or a toast's Undo, until the undo lands
+ADDING = "Adding {name}…"                                      # the Paste card's Add, until its toast shows
+FIN_IMPORT_STOPPING = "Stopping…"                              # *Stop adding* pressed, until the import ends
+# --- end round 8 row 45, P4
+# --- round 8 row 45, P5: Settings and the secondary windows
+LANGUAGE_SWITCHING = "Switching to {name}…"       # held in the bar while Settings' language switch runs
+# --- end round 8 row 45, P5

@@ -19,6 +19,7 @@ from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication
 
 from app import library_store as ls
+from app.qt import press as qpress
 from app.qt import settings_sources
 from app.qt import settings_strings as S
 from app.services import source_looks
@@ -140,7 +141,7 @@ def test_without_a_library_the_button_is_greyed_and_says_why(window):
     assert row.ask() is None
 
 
-def test_one_reset_at_a_time_the_button_greyed_while_it_runs(window):
+def test_one_reset_at_a_time_its_arc_turning_while_it_runs(window):
     class Held(FreshLooks):
         def fresh(self, forget_known=False, then=None):
             self.fresh_calls.append((forget_known, threading.current_thread()))
@@ -150,10 +151,14 @@ def test_one_reset_at_a_time_the_button_greyed_while_it_runs(window):
     seed, win = window(looks)
     page, row = _fresh_row(win)
     row.ask().yes.click()
-    assert row.running and not row.button.isEnabled() and row.button.toolTip() == S.FRESH_RUNNING_TIP
+    # round 8 row 45: never greyed while it runs — its arc turns, *Starting a fresh library…* held in the bar
+    assert row.running and row.button.isEnabled() and row.button.toolTip() == S.FRESH_RUNNING_TIP
+    assert qpress.arc(row.button) is not None                          # the arc now; the words once live 300 ms (IK-1)
+    assert wait_until(lambda: win.bar_line.full() == S.FRESH_RUNNING_TIP, 3)
     assert row.ask() is None and row.start() is False
     looks.then({"done": True, "known": "kept"})
-    assert wait_until(lambda: row.button.isEnabled(), 10)
+    assert wait_until(lambda: not row.running and qpress.arc(row.button) is None, 10)
+    assert row.button.isEnabled() and row.button.toolTip() == S.FRESH_TIP
     assert len(looks.fresh_calls) == 1
 
 

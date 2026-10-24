@@ -207,13 +207,14 @@ def test_G1_a_click_outside_closes_it_but_the_sheet_its_menu_and_the_remove_ques
     QTest.mouseClick(sheet, LEFT, pos=QPoint(sheet.width() - 80, sheet.height() - 10))      # the sheet itself
     assert sheet.isVisible()
     opened = []
-    monkeypatch.setattr(windows, "open_url", lambda path: opened.append(path) or True)
+    from app.qt import screens
+    monkeypatch.setattr(screens, "open_with_system", opened.append)    # (a folder: the system's opener, a worker)
     tile = sheet.order[0]
     menu = sheet.menu(tile)
     assert wait_until(menu.isVisible, 2)
     act = next(a for a in menu.actions() if a.text() == strings.GOAL_MENU_ITEMS["folder"][0])
     QTest.mouseClick(menu, LEFT, pos=menu.actionGeometry(act).center())                      # its ⋯ menu
-    assert opened and sheet.isVisible()
+    assert wait_until(lambda: opened, 5) and sheet.isVisible()                    # (opened on a worker, round 8)
     card = sheet.ask_remove(tile.work)
     QTest.mouseClick(card.scrim, LEFT, pos=QPoint(5, 5))                                       # the question's room: No
     assert card.answer is False and sheet.isVisible() and calls(writer, "remove") == []
@@ -278,10 +279,10 @@ def test_G2_move_up_closes_the_sheet_moves_the_first_piece_keeps_the_rest_in_goa
     assert op[1] == list(show.pieces[0].item_ids)                     # Ep 1–12 only
     if where == "top":
         assert op[2]["tier"] == hero.tier and op[2]["before_id"] == hero.episodes[0].id
-        assert win.toasts.card.message == strings.GOAL_UP.format(title=show.title, first="Ep 1–12", n=1)
+        assert win.toasts.card.base == strings.GOAL_UP.format(title=show.title, first="Ep 1–12", n=1)
     else:
         assert op[2]["tier"] == "soon" and op[2]["before_id"] is None and op[2]["after_id"] is None
-        assert "→ Soon" in win.toasts.card.message and "the rest stays in Goal" in win.toasts.card.message
+        assert "→ Soon" in win.toasts.card.base and "the rest stays in Goal" in win.toasts.card.base
     first = show.pieces[0].item_ids[0]
     assert wait_until(lambda: sheet.washed is not None, 5)
     row = next(r for r in rows_of(win) if any(e.id == first for e in r.episodes))
@@ -326,7 +327,7 @@ def test_a_one_part_title_moves_whole_and_its_toast_says_so(world):
     novel = goal_view(win).works[1]
     sheet.pick(novel, "top")
     assert calls(writer, "move")[0][1] == list(novel.item_ids)
-    assert win.toasts.card.message == strings.GOAL_UP_ALL.format(title=novel.title, n=1)
+    assert win.toasts.card.base == strings.GOAL_UP_ALL.format(title=novel.title, n=1)
 
 
 def test_IK11_move_to_finished_takes_the_whole_title_and_offers_the_cards_choice(world):
@@ -348,13 +349,18 @@ def test_open_its_folder_opens_the_titles_folder_in_the_data_folder(world, monke
     seed, win, writer = world()
     sheet = open_sheet(win)
     opened = []
-    monkeypatch.setattr(windows, "open_url", lambda path: opened.append(path) or True)
+    from app.qt import screens
+    monkeypatch.setattr(screens, "open_with_system", opened.append)
     show = two_part(win)
     sheet.pick(show, "folder")
-    assert opened and opened[0].endswith(os.path.join("GoalContent", show.title))
-    monkeypatch.setattr(windows, "open_url", lambda path: False)
+    assert wait_until(lambda: opened, 5)                                           # (on a worker, round 8 row 45)
+    assert opened[0].endswith(os.path.join("GoalContent", show.title))
+    def refused(path):
+        raise OSError("The system cannot find the file specified")
+    monkeypatch.setattr(screens, "open_with_system", refused)
+    assert wait_until(lambda: not win.presses.any_live(), 5)                      # (the first press ended)
     sheet.pick(show, "folder")
-    assert win.bar_line.full() == strings.GOAL_FOLDER_FAILED.format(title=show.title)
+    assert wait_until(lambda: win.bar_line.full() == strings.GOAL_FOLDER_FAILED.format(title=show.title), 5)
     assert calls(writer) == []
 
 
@@ -368,7 +374,7 @@ def test_remove_asks_naming_the_count_then_trashes_every_file_and_its_toast_undo
     card.yes.click()
     op = calls(writer, "remove")[0]
     assert op[1] == list(book.item_ids)
-    assert win.toasts.card.message == strings.GOAL_REMOVED.format(title=book.title, n=6)
+    assert win.toasts.card.base == strings.GOAL_REMOVED.format(title=book.title, n=6)
     assert wait_until(lambda: writer.saved, 5)
     settle()
     win.toasts.card.buttons[0].click()                                 # Undo

@@ -25,7 +25,8 @@ functions at the top, Qt-free); the GUI thread only paints the answer, and repai
   (S11), and the licence line; the licence line also stands under the row (none → nothing).
 - **Export:** each row asks what `exports.NEEDS` names — the format in a small layer-2 pop under its button, 2.4's
   warning through `confirm.ask`, the file with `QFileDialog` — then runs on a worker; the bar says the outcome in
-  `exports`' words. One at a time; the row greyed while it runs.
+  `exports`' words. One at a time; the pressed Export's arc turns while it is read and while it writes (round 8 row
+  45: never greyed), *Exporting …* held in the bar while it writes.
 
 What the bar says goes to the shell's bottom bar (`windows.say_in_bar`); a page with no shell shows it in the row's own
 help line.
@@ -38,6 +39,7 @@ from PyQt6.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QPlainTextEdit, QV
 
 from app import settings_manager, theme
 from app.qt import applog, bridge, confirm, motion, shadow, strings, style, windows
+from app.qt import press as qpress
 from app.qt import settings_catalog as catalog
 from app.qt import settings_controls as sc
 from app.qt import settings_strings as S
@@ -494,6 +496,22 @@ class Live(QObject):
                 failed(info)
         return bridge.run_in_worker(fn, *args, then=done, failed=fault)
 
+    def _press(self, row_id, part, fn, *args, then=None, failed=None, busy=None):
+        """Round 8 row 45: `row_id`'s button pressed — its arc turns, painted before `fn` goes to the worker (as `_run`
+        then: `then` / `failed` while the page lives); a second press while it works does nothing. -> the press, or
+        None (live already: nothing started)."""
+        def done(answer):
+            if then is not None and self._alive():
+                then(answer)
+
+        def fault(info):
+            applog.log("settings", f"{getattr(fn, '__name__', 'a press')}: {info[1]}")
+            if failed is not None and self._alive():
+                failed(info)
+        control = self.parts.get(row_id, {}).get(part)
+        return qpress.run(control, f"settings:{row_id}", fn, *args, busy=busy, then=done, failed=fault,
+                          win=self.shell)
+
     def _slot(self, row_id):
         """Where a row's live parts go: its own slot (a placeholder row) or its control's."""
         if row_id in self.page.slots:
@@ -569,17 +587,17 @@ class Live(QObject):
             self.parts[row_id] = {"offer": offer}
             self._paint_offer(self.facts.get("skipped", ""))
         elif row_id == "logs":
-            door = sc.Door(S.LOGS_OPEN, tooltip=row.tip, name=row.label)
+            door = qpress.room(sc.Door(S.LOGS_OPEN, tooltip=row.tip, name=row.label))
             door.clicked.connect(lambda _c=False: self.open_logs())
             self._slot(row_id).layout().addWidget(door)
             self.parts[row_id] = {"open": door}
         elif row_id == "version":
-            door = sc.Door(S.DATA_FOLDER, tooltip=S.DATA_FOLDER_TIP)
+            door = qpress.room(sc.Door(S.DATA_FOLDER, tooltip=S.DATA_FOLDER_TIP))
             door.clicked.connect(lambda _c=False: self.open_data_folder())
             self._slot(row_id).layout().addWidget(door)
             self.parts[row_id] = {"open": door}
         elif row_id == "data_credits":
-            door = sc.Door(S.CREDITS_VIEW, tooltip=row.tip, name=row.label)
+            door = qpress.room(sc.Door(S.CREDITS_VIEW, tooltip=row.tip, name=row.label))
             door.clicked.connect(lambda _c=False: self.open_credits())
             self._slot(row_id).layout().addWidget(door)
             view = self.page.row(row_id)
@@ -593,12 +611,12 @@ class Live(QObject):
             if self.facts.get("licence"):
                 self._show_licence(self.facts["licence"])
         elif row_id in EXPORTS:
-            door = sc.Door(S.EXPORT, tooltip=row.tip, name=row.label)
+            door = qpress.room(sc.Door(S.EXPORT, tooltip=row.tip, name=row.label))
             door.clicked.connect(lambda _c=False, r=row_id: self.export(r))
             self._slot(row_id).layout().addWidget(door)
             self.parts[row_id] = {"export": door}
         elif row_id == "remove_downloaded_covers":                 # --- W3.2 L3
-            door = sc.Door(S.COVERS_REMOVE, tooltip=row.tip, name=row.label)
+            door = qpress.room(sc.Door(S.COVERS_REMOVE, tooltip=row.tip, name=row.label))
             door.clicked.connect(lambda _c=False: self.remove_covers())
             self._slot(row_id).layout().addWidget(door)
             self.parts[row_id] = {"remove": door}                  # --- end W3.2 L3
@@ -854,10 +872,13 @@ class Live(QObject):
         self._run(updates.offer_again)
 
     def open_logs(self):
-        self._run(logs_folder, then=lambda folder: folder and windows.open_url(folder))
+        """*Processing log*: its folder found and opened on a worker (`press.open`), the door's arc turning by."""
+        qpress.open(self.shell, logs_folder, control=self.parts.get("logs", {}).get("open"), key="settings:logs")
 
     def open_data_folder(self):
-        self._run(data_folder, self.page.language, then=lambda folder: folder and windows.open_url(folder))
+        language = self.page.language
+        qpress.open(self.shell, lambda: data_folder(language), control=self.parts.get("version", {}).get("open"),
+                    key="settings:data_folder")
 
     def _show_licence(self, line):
         self.facts["licence"] = line or ""
@@ -872,7 +893,7 @@ class Live(QObject):
         """Data credits: read on a worker (JMdict's date, README's names), then the card."""
         if self.card is not None:
             return
-        self._run(read_credits, then=self._credits_read)
+        self._press("data_credits", "open", read_credits, then=self._credits_read)
 
     def _credits_read(self, answer):
         if self.card is not None:
@@ -902,7 +923,8 @@ class Live(QObject):
                 return
             qcovers.ask_again()
             self.say(strings.COVERS_REMOVED, "remove_downloaded_covers")
-        return self._run(fetcher.remove_downloaded, then=done)
+        return self._press("remove_downloaded_covers", "remove", fetcher.remove_downloaded, then=done,
+                           failed=lambda _info: done(None))
     # --- end W3.2 L3
 
     # --- Export ---------------------------------------------------------------------------------------------------- #
@@ -911,9 +933,10 @@ class Live(QObject):
         if self._exporting is not None:
             self.say(S.EXPORT_BUSY, row_id)
             return
-        self._grey(row_id)
-        self._run(ready_to_export, EXPORTS[row_id], then=lambda not_ready: self._export_ready(row_id, not_ready),
-                  failed=lambda info: self._exported(row_id, None, info))
+        self._exporting = row_id
+        self._press(row_id, "export", ready_to_export, EXPORTS[row_id],
+                    then=lambda not_ready: self._export_ready(row_id, not_ready),
+                    failed=lambda info: self._exported(row_id, None, info))
 
     def _export_ready(self, row_id, not_ready):
         from app import exports
@@ -952,10 +975,10 @@ class Live(QObject):
             return
         if not path.lower().endswith(ext):
             path += ext
-        self.say(S.EXPORT_RUNNING.format(name=catalog.ROW[row_id].label), row_id)
-        self._run(run_export, export, self.page.language, fmt, os.path.normpath(path),
-                  then=lambda outcome: self._exported(row_id, outcome),
-                  failed=lambda info: self._exported(row_id, None, info))
+        self._press(row_id, "export", run_export, export, self.page.language, fmt, os.path.normpath(path),
+                    busy=S.EXPORT_RUNNING.format(name=catalog.ROW[row_id].label),
+                    then=lambda outcome: self._exported(row_id, outcome),
+                    failed=lambda info: self._exported(row_id, None, info))
 
     def _exported(self, row_id, outcome, info=None):
         from app import exports
@@ -966,9 +989,6 @@ class Live(QObject):
         self._grey(None)
 
     def _grey(self, row_id):
-        """`row_id` greyed while its export runs, every Export button with it (one at a time); None: all back."""
+        """`row_id`'s export under way (one at a time: another row's Export says so); None: none. Round 8 row 45: never
+        greyed — the pressed row's arc turns while its readiness is read and while it writes (`_press`)."""
         self._exporting = row_id
-        for other in EXPORTS:
-            view = self.page.row(other)
-            if view is not None:
-                view.setEnabled(row_id is None)

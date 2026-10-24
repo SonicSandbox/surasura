@@ -190,6 +190,15 @@ class Tooltips(QObject):
         if self._target is widget and rect is not None and not rect.contains(pos):
             self.hide()
 
+    def retext(self, widget, rect, text):
+        """A painted part's words moved while its bubble shows (the phase strip's hover: a job's step): the bubble
+        says them in place — no hide, no new wait. Nothing when the bubble isn't that part's."""
+        if self._target is not widget or self._part[0] != rect or self._part[1] == text:
+            return
+        self._part = (rect, text)
+        if self.bubble.isVisible():
+            self._show_now()
+
     def showing(self):
         """The text shown now, or None."""
         return self.bubble.text if self.bubble.isVisible() else None

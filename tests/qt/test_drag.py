@@ -432,7 +432,7 @@ def test_A2_9_a_row_dropped_onto_row_2_is_second_at_once_and_the_writer_places_i
     assert op[1] == drag.ids_of(moved) and op[2]["tier"] == hero.tier
     assert op[2]["after_id"] == hero.episodes[-1].id and op[2]["before_id"] is None
     assert op[2]["near"] and op[2]["near"][0][1] == "before"
-    assert win.toasts.card.message == strings.DRAG_PLACED_MINES.format(title=moved.title, n=2)
+    assert win.toasts.card.base == strings.DRAG_PLACED_MINES.format(title=moved.title, n=2)
     assert writer.held == 0
     assert wait_until(lambda: win.moves.expect is None, 3)            # the store caught up: its view stands
     assert [r.key for r in rows_of(win)][1] == moved.key
@@ -449,7 +449,7 @@ def test_a_drop_above_up_next_makes_it_up_next(world):
     op = calls(writer, "move")[0]
     assert op[2]["before_id"] == hero.episodes[0].id and op[2]["after_id"] is None
     assert rows_of(win)[0].key == moved.key
-    assert win.toasts.card.message == strings.DRAG_UP_NEXT.format(title=moved.title)
+    assert win.toasts.card.base == strings.DRAG_UP_NEXT.format(title=moved.title)
 
 
 def test_a_drop_back_on_its_own_place_writes_nothing(world):
@@ -495,7 +495,7 @@ def test_A2_20_a_drop_on_soon_moves_it_to_the_top_of_soon(world):
     place = next(i for i, r in enumerate(rs) if r.key == moved.key)
     assert rs[place].tier == "soon" and all(r.tier == "now" for r in rs[:place])
     files = sum(r.n_files for r in rs[:place])
-    assert win.toasts.card.message == strings.DRAG_SOON.format(title=moved.title, n=place + 1, files=files)
+    assert win.toasts.card.base == strings.DRAG_SOON.format(title=moved.title, n=place + 1, files=files)
     assert win.dock.wells == () or wait_until(lambda: win.dock.wells == (), 2)        # A2 #18: they fold back
 
 
@@ -512,7 +512,7 @@ def test_A2_19_a_drop_on_goal_sends_it_to_goals_end_and_leaves_current_at_once(w
     view = win.page_widgets["current"].view_model
     assert moved.key not in [r.key for r in view.rows]
     assert view.goal.files == goal_files + moved.n_files
-    assert win.toasts.card.message == strings.DRAG_GOAL.format(title=moved.title)
+    assert win.toasts.card.base == strings.DRAG_GOAL.format(title=moved.title)
 
 
 def test_A2_17_a_drop_on_finished_finishes_it_with_keep_and_take_out_live(world):
@@ -528,7 +528,7 @@ def test_A2_17_a_drop_on_finished_finishes_it_with_keep_and_take_out_live(world)
     view = win.page_widgets["current"].view_model
     assert moved.key not in [r.key for r in view.rows] and view.counts.finished == fin + 1
     card = win.toasts.card
-    assert card.message == strings.DRAG_FINISHED.format(title=moved.title)
+    assert card.base == strings.DRAG_FINISHED.format(title=moved.title)
     labels = [b.text() for b in card.buttons if not b.isHidden()]
     assert labels == [strings.TOAST_UNDO, strings.DRAG_KEEP, strings.DRAG_TAKE_OUT]
     assert all(b.isEnabled() for b in card.buttons if not b.isHidden())          # live, never greyed
@@ -1773,7 +1773,7 @@ def _sent_to_soon_lands_after_the_show(win, writer, show, moved):
     place = next(i for i, r in enumerate(rs) if r.key == moved.key)
     assert rs[place - 1].key == show.key                              # just below the show the line runs through
     now_files = sum(r.n_files for r in rs[:place]) - (show.n_files - show.soon_from)      # its Soon file isn't NOW's
-    assert win.toasts.card.message == strings.DRAG_SOON.format(title=moved.title, n=place + 1, files=now_files)
+    assert win.toasts.card.base == strings.DRAG_SOON.format(title=moved.title, n=place + 1, files=now_files)
     assert wait_until(lambda: win.moves.expect is None, 3)
     rs = rows_of(win)                                                 # the store's view, once the move landed
     show_now = next(r for r in rs if r.key == show.key)
@@ -1863,7 +1863,7 @@ def test_a_done_marks_it_watched_and_names_the_next(world):
     ep = row.episodes[0]
     win.moves.done(row, ep)
     assert calls(writer, "set_watched")[0] == ("set_watched", [ep.id], {"on": True})
-    assert win.toasts.card.message == strings.DONE_NEXT.format(title=row.title, ep=ep.label,
+    assert win.toasts.card.base == strings.DONE_NEXT.format(title=row.title, ep=ep.label,
                                                                 next=row.episodes[1].label)
 
 
@@ -1887,13 +1887,13 @@ def test_the_last_files_done_offers_the_finish_and_its_move_to_finished_acts(wor
     row = _all_but_one(seed, win, 4)
     win.moves.done(row, row.episodes[-1])
     card = win.toasts.card
-    assert card.message == strings.DONE_ALL.format(n=len(row.episodes))
+    assert card.base == strings.DONE_ALL.format(n=len(row.episodes))
     assert [b.text() for b in card.buttons if not b.isHidden()] == [strings.TOAST_UNDO, strings.DONE_MOVE_FINISHED]
     settle()
     card.buttons[1].click()
     assert calls(writer, "set_tier")[0][1] == drag.ids_of(row)
     assert row.key not in [r.key for r in rows_of(win)]
-    assert win.toasts.card.message == strings.DRAG_FINISHED.format(title=row.title)
+    assert win.toasts.card.base == strings.DRAG_FINISHED.format(title=row.title)
 
 
 def test_the_finish_toast_is_skipped_for_a_splits_first_part_and_hatos_mix(world):
@@ -1902,10 +1902,10 @@ def test_the_finish_toast_is_skipped_for_a_splits_first_part_and_hatos_mix(world
     i = next(n for n, r in enumerate(rs) if drag.split_first(rs, r))
     row = _all_but_one(seed, win, i)
     win.moves.done(row, row.episodes[-1])
-    assert win.toasts.card.message == strings.DONE_ONE.format(title=row.title, ep=row.episodes[-1].label)
+    assert win.toasts.card.base == strings.DONE_ONE.format(title=row.title, ep=row.episodes[-1].label)
     row = _all_but_one(seed, win, 0)
     win.moves.done(row, row.episodes[-1])
-    assert win.toasts.card.message == strings.DONE_ONE.format(title=row.title, ep=row.episodes[-1].label)
+    assert win.toasts.card.base == strings.DONE_ONE.format(title=row.title, ep=row.episodes[-1].label)
 
 
 def click_hero_done(win):
@@ -1935,14 +1935,14 @@ def test_G3_2_up_next_done_with_every_file_watched_offers_move_to_finished_and_u
     assert done[2] == strings.ROWS_DONE_ALL_TIP
     assert calls(writer) == []                                        # nothing marked: an offer
     card = win.toasts.card
-    assert card.message == strings.DONE_ALL.format(n=len(moved.episodes))
+    assert card.base == strings.DONE_ALL.format(n=len(moved.episodes))
     assert [b.text() for b in card.buttons if not b.isHidden()] == [strings.DONE_MOVE_FINISHED]
     settle()
     next(b for b in card.buttons if b.text() == strings.DONE_MOVE_FINISHED).click()
     op = calls(writer, "set_tier")[0]
     assert op[1] == drag.ids_of(moved) and op[2]["tier"] == "graduated"
     assert moved.key not in [r.key for r in rows_of(win)]
-    assert win.toasts.card.message == strings.DRAG_FINISHED.format(title=moved.title)
+    assert win.toasts.card.base == strings.DRAG_FINISHED.format(title=moved.title)
     assert wait_until(lambda: any(c.op == "set_tier" for c in writer.saved) and win.moves.tickets == [], 3)
     change = next(c for c in writer.saved if c.op == "set_tier")
     win.toasts.card.buttons[0].click()                                # the Finished toast's Undo
@@ -1987,7 +1987,7 @@ def test_G3_2_up_next_done_on_a_splits_first_part_all_watched_says_why_and_offer
     click_hero_done(win)
     assert calls(writer) == []
     assert win.bar_line.full() == strings.WELL_UNLIT_SPLIT
-    shown = win.toasts.card.message if win.toasts.card is not None else None
+    shown = win.toasts.card.base if win.toasts.card is not None else None
     assert shown != strings.DONE_ALL.format(n=len(moved.episodes))   # no finish offered
 
 
@@ -2017,13 +2017,13 @@ def test_W1_the_first_mark_says_its_words_left_the_list_once_per_library_with_ke
     win.moves.done(row, ep)                                            # the first mark, the option off
     assert calls(writer, "set_watched") == [("set_watched", [ep.id], {"on": True})]
     card = win.toasts.card
-    assert card.message == strings.DONE_LEFT.format(ep=ep.label)
+    assert card.base == strings.DONE_LEFT.format(ep=ep.label)
     shown = [b for b in card.buttons if not b.isHidden()]
     assert [b.text() for b in shown] == [strings.TOAST_UNDO, strings.DONE_KEEP, strings.DONE_OK]
     assert [b.toolTip() for b in shown[1:]] == [strings.DONE_KEEP_TIP, strings.DONE_OK_TIP]
     assert list(win.services.settings.get()["hints_seen"]) == [hint_of(seed)]   # written once, with the library's id
     win.moves.done(row, row.episodes[1])                               # the next mark: today's toast, nothing written
-    assert win.toasts.card.message == strings.DONE_NEXT.format(title=row.title, ep=row.episodes[1].label,
+    assert win.toasts.card.base == strings.DONE_NEXT.format(title=row.title, ep=row.episodes[1].label,
                                                                 next=row.episodes[2].label)
     assert list(win.services.settings.get()["hints_seen"]) == [hint_of(seed)]
 
@@ -2033,7 +2033,7 @@ def test_W1_the_hint_seen_in_one_library_is_never_shown_there_again_but_another_
     win.services.settings.set({"hints_seen": ["keep_watched:another-library", hint_of(seed)]})
     row = rows_of(win)[4]
     win.moves.done(row, row.episodes[0])
-    assert win.toasts.card.message == strings.DONE_NEXT.format(title=row.title, ep=row.episodes[0].label,
+    assert win.toasts.card.base == strings.DONE_NEXT.format(title=row.title, ep=row.episodes[0].label,
                                                                 next=row.episodes[1].label)
     # *Start a fresh library* (review W-5): a new store id at a new epoch — the reader follows it, its own once
     seed.library.commit(meta={"store_id": "a-fresh-library"}, new_epoch=True)
@@ -2041,7 +2041,7 @@ def test_W1_the_hint_seen_in_one_library_is_never_shown_there_again_but_another_
     row = rows_of(win)[4]
     ep = next(e for e in row.episodes if not e.watched)
     win.moves.done(row, ep)
-    assert win.toasts.card.message == strings.DONE_LEFT.format(ep=ep.label)
+    assert win.toasts.card.base == strings.DONE_LEFT.format(ep=ep.label)
     assert list(win.services.settings.get()["hints_seen"])[-1] == "keep_watched:a-fresh-library"
 
 
@@ -2055,7 +2055,7 @@ def test_W1_a_hand_edited_hints_seen_never_blocks_a_mark_and_is_written_back_cle
     ep = row.episodes[0]
     win.moves.done(row, ep)
     assert calls(writer, "set_watched") == [("set_watched", [ep.id], {"on": True})]
-    assert win.toasts.card.message == strings.DONE_LEFT.format(ep=ep.label)
+    assert win.toasts.card.base == strings.DONE_LEFT.format(ep=ep.label)
     assert list(win.services.settings.get()["hints_seen"]) == [hint_of(seed)]
 
 
@@ -2067,7 +2067,7 @@ def test_W1_before_the_library_is_known_no_hint_is_shown_or_spent(world, monkeyp
     row = rows_of(win)[4]
     win.moves.done(row, row.episodes[0])
     assert calls(writer, "set_watched")
-    assert win.toasts.card.message == strings.DONE_NEXT.format(title=row.title, ep=row.episodes[0].label,
+    assert win.toasts.card.base == strings.DONE_NEXT.format(title=row.title, ep=row.episodes[0].label,
                                                                 next=row.episodes[1].label)
     assert not win.services.settings.get().get("hints_seen")
 
@@ -2080,11 +2080,11 @@ def test_W1_a_video_waiting_for_its_subtitle_says_nothing_left_or_came_back_and_
     ep = row.episodes[0]._replace(waiting=True)
     win.moves.done(row, ep)
     assert calls(writer, "set_watched")[-1] == ("set_watched", [ep.id], {"on": True})
-    assert win.toasts.card.message == strings.DONE_NEXT.format(title=row.title, ep=ep.label,
+    assert win.toasts.card.base == strings.DONE_NEXT.format(title=row.title, ep=ep.label,
                                                                 next=row.episodes[1].label)
     assert not win.services.settings.get().get("hints_seen")
     win.moves.done(row, ep._replace(watched=True))
-    assert win.toasts.card.message == strings.DONE_UNDONE.format(title=row.title, ep=ep.label)
+    assert win.toasts.card.base == strings.DONE_UNDONE.format(title=row.title, ep=ep.label)
 
 
 def test_W1_keep_studying_them_reaches_the_rows_place_in_settings(world):
@@ -2119,13 +2119,13 @@ def test_W1_with_the_option_on_no_hint_and_the_un_mark_keeps_todays_words(world)
     _keep_on(seed, win)
     row = rows_of(win)[4]
     win.moves.done(row, row.episodes[0])
-    assert win.toasts.card.message == strings.DONE_NEXT.format(title=row.title, ep=row.episodes[0].label,
+    assert win.toasts.card.base == strings.DONE_NEXT.format(title=row.title, ep=row.episodes[0].label,
                                                                 next=row.episodes[1].label)
     assert not win.services.settings.get().get("hints_seen")          # never shown: nothing written
     hero = rows_of(win)[0]
     ep = next(e for e in hero.episodes if e.watched)
     win.moves.done(hero, ep)
-    assert win.toasts.card.message == strings.DONE_UNDONE.format(title=hero.title, ep=ep.label)
+    assert win.toasts.card.base == strings.DONE_UNDONE.format(title=hero.title, ep=ep.label)
 
 
 def test_W1_an_un_mark_while_off_says_its_words_are_back(world):
@@ -2134,7 +2134,7 @@ def test_W1_an_un_mark_while_off_says_its_words_are_back(world):
     ep = next(e for e in hero.episodes if e.watched)
     win.moves.done(hero, ep)
     assert calls(writer, "set_watched")[0][2] == {"on": False}
-    assert win.toasts.card.message == strings.DONE_UNDONE_BACK.format(ep=ep.label)
+    assert win.toasts.card.base == strings.DONE_UNDONE_BACK.format(ep=ep.label)
 
 
 def test_W1_the_stones_tip_says_a_mark_takes_the_words_off_only_while_the_option_is_off(world):
@@ -2194,7 +2194,7 @@ def test_files_dropped_from_explorer_go_beside_the_row_under_the_hand(world, tmp
     op = calls(writer, "insert_at")[0]
     assert op[2]["files"] == [str(path)] and op[2]["tier"] == rs[2].tier
     assert op[2]["after_id"] == rs[2].episodes[-1].id and op[2]["near"]
-    assert win.toasts.card.message == strings.DRAG_ADDED.format(name=path.name, n=4)
+    assert win.toasts.card.base == strings.DRAG_ADDED.format(name=path.name, n=4)
     writer.writable = False
     _drop_files(lst, [str(path)], QPoint(rect.center().x(), rect.top() + 3))
     assert len(calls(writer, "insert_at")) == 1                        # E4: refused
@@ -2361,7 +2361,7 @@ def test_real_store_E21_undo_after_an_outside_change_says_cant_undo(real):
     assert wait_until(lambda: writer.can_undo() and not win.moves.tickets, 5)
     store.move(drag.ids_of(moved), "goal")                            # another program moves the same item since
     win.toasts.card.buttons[0].click()                                # the drop's Undo
-    assert wait_until(lambda: win.toasts.card.message == strings.MOVE_WORDS["cant_undo"], 5)
+    assert wait_until(lambda: win.toasts.card.base == strings.MOVE_WORDS["cant_undo"], 5)
     assert store.item(moved.episodes[0].id)["tier"] == "goal"         # nothing written over the change
 
 
@@ -2600,7 +2600,7 @@ def test_LM11b_G5_the_whole_group_watched_offers_the_rows_own_finish(world):
     row = _show_group(win, a_watched=3, b_watched=1)
     win.moves.done(row, row.episodes[-1])
     card = win.toasts.card
-    assert card.message == strings.DONE_ALL.format(n=5)
+    assert card.base == strings.DONE_ALL.format(n=5)
     assert _shown_buttons(card) == [strings.TOAST_UNDO, strings.DONE_MOVE_FINISHED]
     settle()
     card.buttons[1].click()
@@ -2656,7 +2656,7 @@ def test_real_store_LM11b_G5_a_show_finished_inside_a_group_lands_in_finished_un
     a, b = drag.ids_of(first), drag.ids_of(second)
     show = row.episodes[3].show
     card = win.toasts.card
-    assert card.message == strings.DONE_SHOW_IN_GROUP.format(show=show, n=4)
+    assert card.base == strings.DONE_SHOW_IN_GROUP.format(show=show, n=4)
     assert _shown_buttons(card) == [strings.TOAST_UNDO, strings.DONE_MOVE_SHOW_FINISHED.format(show=show)]
     assert card.buttons[1].toolTip() == strings.DONE_MOVE_SHOW_FINISHED_TIP.format(show=show, n=4)
     assert wait_until(lambda: store.item(a[-1])["watched"] == 1, 5)
@@ -2674,7 +2674,7 @@ def test_real_store_LM11b_G5_a_show_finished_inside_a_group_lands_in_finished_un
     kept = _holding(win, b)
     assert (kept.work_id, kept.cover.work_id, kept.group) == (second.work_id, second.work_id, False)
     assert not any(set(a) & {e.id for e in r.episodes} for r in rows_of(win))
-    assert win.toasts.card.message == strings.DRAG_FINISHED.format(title=show)
+    assert win.toasts.card.base == strings.DRAG_FINISHED.format(title=show)
     win.toasts.card.buttons[2].click()                                # Leave its new cards out
     assert wait_until(lambda: all(store.item(i)["in_learning_order"] == 0 for i in a), 5)
     assert all(store.item(i)["in_learning_order"] == 1 for i in b)

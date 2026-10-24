@@ -36,6 +36,7 @@ from PyQt6.QtCore import QObject, Qt
 from PyQt6.QtWidgets import QFileDialog, QFrame, QHBoxLayout, QLabel, QScrollArea, QVBoxLayout, QWidget
 
 from app import theme
+from app.qt import press as qpress
 from app.qt import style, windows
 from app.qt import settings_controls as sc
 from app.qt import settings_strings as S
@@ -146,6 +147,11 @@ def _acting(shell):
     return shell.__dict__.setdefault("_folders_acting", set()) if shell is not None else set()
 
 
+def _press_key(key):
+    """A stop's or a read-again's press key: ("stop" | "read", language, id) -> "folders:stop:ja:3"."""
+    return "folders:" + ":".join(str(part) for part in key)
+
+
 def add_folder(shell, parent, folder=None):
     """*Add a folder…* (the page's and the window's): the picker over `parent` (or `folder`, tests), then + Add's *read
     it where it is*."""
@@ -157,10 +163,11 @@ def add_folder(shell, parent, folder=None):
     return adder.read_folder(folder) if folder else False
 
 
-def look_again(shell):
-    """*Look again*: every folder, in full (the Refresh key's)."""
+def look_again(shell, control=None):
+    """*Look again*: every folder, in full — the Refresh key's press (`refresh_sources`: `control`'s arc until the look
+    ends; none, the bar's)."""
     refresh = getattr(shell, "refresh_sources", None)
-    return refresh() if refresh is not None else False
+    return refresh(control=control) if refresh is not None else False
 
 
 class SourceLine(QWidget):
@@ -181,7 +188,8 @@ class SourceLine(QWidget):
         self.count = QLabel(self)
         self.count.setObjectName("settingsvalue")
         line.addWidget(self.count)
-        self.stop = sc.Door(S.SOURCES_STOP, name=S.SOURCES_STOP_NAME.format(path=source["path"]), parent=self)
+        self.stop = qpress.room(sc.Door(S.SOURCES_STOP, name=S.SOURCES_STOP_NAME.format(path=source["path"]),
+                                        parent=self))
         self.stop.clicked.connect(lambda _c=False: on_stop(self.root))
         line.addWidget(self.stop)
         self.show_source(source)
@@ -212,8 +220,8 @@ class SkippedLine(QWidget):
         self.words.setObjectName("settingsaffix")
         line.addWidget(self.words, 1)
         self.tip = S.SOURCES_READ_AGAIN_TIP.format(path=folder["path"])
-        self.read = sc.Door(S.SOURCES_READ_AGAIN, name=S.SOURCES_READ_AGAIN_NAME.format(path=folder["path"]),
-                            parent=self)
+        name = S.SOURCES_READ_AGAIN_NAME.format(path=folder["path"])
+        self.read = qpress.room(sc.Door(S.SOURCES_READ_AGAIN, name=name, parent=self))
         self.read.clicked.connect(lambda _c=False: on_read(self.folder["id"]))
         line.addWidget(self.read)
 
@@ -329,8 +337,9 @@ class FoldersWindow(windows.SecondaryWindow):
         foot = QHBoxLayout()
         foot.setContentsMargins(0, 0, 0, 0)
         foot.addStretch(1)
-        self.look = sc.Door(S.SOURCES_LOOK, tooltip=S.SOURCES_LOOK_TIP, parent=self)
-        self.look.clicked.connect(lambda _c=False: look_again(self.shell))
+        self.look = qpress.room(sc.Door(S.SOURCES_LOOK, tooltip=S.SOURCES_LOOK_TIP, parent=self))
+        self.look.clicked.connect(lambda _c=False: self.look_again())
+        qpress.adopt(self.look, "sources:refresh", win=shell)   # opened again while its look runs: the arc on it
         foot.addWidget(self.look)
         self.add = sc.Door(S.SOURCES_ADD, tooltip=S.SOURCES_ADD_TIP, parent=self)
         self.add.clicked.connect(lambda _c=False: add_folder(self.shell, self))
@@ -345,17 +354,27 @@ class FoldersWindow(windows.SecondaryWindow):
             looks.listing()                               # the counts and the skipped folders, on the looks' worker
 
     def _enable(self):
-        """Every button greyed with why while nothing can be written (*Look again* only without a library); a stop
-        or a read-again under way keeps its button greyed. Only what moved is touched (S19)."""
+        """Every button greyed with why while nothing can be written (*Look again* only without a library). A stop or
+        a read-again under way keeps its arc turning (round 8 row 45: never greyed; a window opened again before it
+        answered takes the arc on its button, `qpress.adopt`) — a press meanwhile does nothing. Only what moved is
+        touched (S19)."""
         why = why_not(self.shell)
         no_library = _looks(self.shell) is None
         _turn(self.look, not no_library, S.STORE_NO_LIBRARY_TIP if no_library else S.SOURCES_LOOK_TIP)
         _turn(self.add, why is None, why or S.SOURCES_ADD_TIP)
         acting = _acting(self.shell)
-        for root, line in self.lines.items():
-            _turn(line.stop, why is None and ("stop", self.lines_of, root) not in acting, why or line.tip)
-        for folder_id, line in self.skipped.items():
-            _turn(line.read, why is None and ("read", self.lines_of, folder_id) not in acting, why or line.tip)
+        for kind, lines, button in (("stop", self.lines, "stop"), ("read", self.skipped, "read")):
+            for key, line in lines.items():
+                control = getattr(line, button)
+                _turn(control, why is None, why or line.tip)
+                if (kind, self.lines_of, key) in acting and qpress.mark(control) is None:
+                    qpress.adopt(control, _press_key((kind, self.lines_of, key)), win=self.shell)
+
+    def look_again(self):
+        """*Look again*: every folder looked at in full — the Refresh key's press, on this button (round 8 row 45, P3's
+        rule: its arc from the press until the look's summary, or a look that couldn't run, said in the bar). A press
+        meanwhile does nothing. -> True when one was asked."""
+        return look_again(self.shell, control=self.look)
 
     def _tab_order(self):
         """Tab as the window reads: the folders' *Stop reading*, the skipped folders' *Read again*, *Look again*,
@@ -459,10 +478,18 @@ class FoldersWindow(windows.SecondaryWindow):
             self._grow()
 
     # --- acting ----------------------------------------------------------------------------------------------- #
-    def _answered(self, key):
-        """A stop's or a read-again's answer landed: no longer under way; its button as the rule says (the window
-        may have closed meanwhile: the bar was told all the same)."""
+    def _press(self, key, control):
+        """Round 8 row 45: a stop or a read-again pressed — the arc on its button, painted before the looks' worker is
+        asked; kept on the shell's presses, so a window opened again shows it. -> False when one is under way."""
+        return qpress.begin(control, _press_key(key), win=self.shell) is not None
+
+    def _answered(self, key, failed=False):
+        """A stop's or a read-again's answer landed: no longer under way; its arc off and its button as the rule says
+        (the window may have closed meanwhile: the bar was told all the same)."""
         _acting(self.shell).discard(key)
+        p = qpress.presses_of(self.shell).find(_press_key(key))
+        if p is not None and p.live():
+            qpress.end(p, self.shell, failed=failed)
         if not self.gone:
             self._enable()
 
@@ -483,11 +510,13 @@ class FoldersWindow(windows.SecondaryWindow):
                 windows.say_in_bar(self.shell, S.SOURCES_READ_AGAIN_DONE.format(path=path))
             self._answered(key)
         relay.said.connect(done)
+        if not self._press(key, line.read):               # one press per click: its arc, painted before the ask
+            relay.deleteLater()
+            return False
         _acting(self.shell).add(key)                      # before the ask: an answer may land at once
-        line.read.setEnabled(False)                       # one press per click
         if not looks.read_again(folder_id, relay.call, language=self.lines_of):
             relay.deleteLater()
-            self._answered(key)
+            self._answered(key, failed=True)
             return False
         return True
 
@@ -512,11 +541,13 @@ class FoldersWindow(windows.SecondaryWindow):
             self._answered(key)
         relay.said.connect(stopped)
         busy = looks.busy() if hasattr(looks, "busy") else False
+        if not self._press(key, line.stop):               # one stop per click: its arc, painted before the ask
+            relay.deleteLater()
+            return False
         _acting(self.shell).add(key)
-        line.stop.setEnabled(False)                       # one stop per click
         if not looks.stop(root_id, relay.call, language=self.lines_of):
             relay.deleteLater()                           # refused (closed, another language): nothing stopped
-            self._answered(key)
+            self._answered(key, failed=True)
             return False
         if busy and self.shell is not None:               # S6: a look under way lets it go after the file it's on
             windows.say_in_bar(self.shell, S.SOURCES_STOPPING.format(path=source["path"]))
@@ -535,7 +566,7 @@ class FreshRow(QObject):
         self.running = False
         self.counting = False                             # the sheet's counts being read (the looks' worker)
         slot = page.custom_row(FRESH_ID)
-        self.button = sc.Door(S.FRESH_OPEN, tooltip=S.FRESH_TIP, parent=slot)
+        self.button = qpress.room(sc.Door(S.FRESH_OPEN, tooltip=S.FRESH_TIP, parent=slot))
         self.button.clicked.connect(lambda _c=False: self.ask())
         slot.layout().addWidget(self.button)
         seen = getattr(self.shell, "sources_seen", None)
@@ -558,13 +589,15 @@ class FreshRow(QObject):
         return cant_write(getattr(self.page, "services", None))
 
     def enable(self):
-        """Greyed with why while it can't run; repainted only when it turned (S19)."""
+        """Greyed with why while it can't run; repainted only when it turned (S19). Round 8 row 45: never greyed while
+        it runs — its arc turns (`ask`, `start`) and its tooltip says it is starting."""
         if not self.alive():
             return
         why = self.why_not()
         tip = why or S.FRESH_TIP
-        if self.button.isEnabled() != (why is None):
-            self.button.setEnabled(why is None)
+        on = why is None or (self.running and why == S.FRESH_RUNNING_TIP)
+        if self.button.isEnabled() != on:
+            self.button.setEnabled(on)
         if self.button.toolTip() != tip:
             self.button.setToolTip(tip)
 
@@ -585,10 +618,14 @@ class FreshRow(QObject):
             return self._sheet(None)
         from app.qt import bridge
         relay = bridge.Relay(self)
+        p = qpress.begin(self.button, "settings:fresh", win=self.shell)   # round 8 row 45: the arc from the press,
+        #                                                                    painted before the counts are asked
 
         def counted(found):
             relay.deleteLater()
             self.counting = False
+            if p is not None:
+                qpress.end(p, self.shell)
             if self.alive() and self.why_not() is None and self.card is None:
                 self._sheet(found)
         relay.said.connect(counted)
@@ -596,6 +633,8 @@ class FreshRow(QObject):
         if not counts(relay.call):
             relay.deleteLater()
             self.counting = False
+            if p is not None:
+                qpress.end(p, self.shell)
             return self._sheet(None)
         return None
 
@@ -618,9 +657,14 @@ class FreshRow(QObject):
             return False
         from app.qt import bridge
         relay = bridge.Relay(self)
+        # round 8 row 45: the arc from Yes, and *Starting a fresh library…* held in the bar until the reset answers
+        p = qpress.begin(self.button if self.alive() else None, "settings:fresh", busy=S.FRESH_RUNNING_TIP,
+                         win=self.shell)
 
         def landed(answer):
             relay.deleteLater()
+            if p is not None:
+                qpress.end(p, self.shell, failed=not answer.get("done"))
             self.running = False
             self.enable()
             if answer.get("done"):
@@ -641,6 +685,8 @@ class FreshRow(QObject):
         self.enable()
         if not looks.fresh(forget_known, relay.call):
             relay.deleteLater()
+            if p is not None:
+                qpress.end(p, self.shell, failed=True)
             self.running = False
             self.enable()
             return False

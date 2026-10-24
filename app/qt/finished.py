@@ -34,6 +34,7 @@ from PyQt6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QLabel, QMe
 
 from app import path_utils, theme
 from app.qt import bridge, drag, motion, shadow, strings, style, windows
+from app.qt import press as qpress
 
 WORDS_SHOWN = 20                                     # Sonic's W3.2-1: the first 20 new words
 LAND_MS = 50                                         # how often the import toast looks for the writer's answer
@@ -46,6 +47,23 @@ def folder_of(language, row):
     if not rel:
         return None
     return os.path.dirname(os.path.join(path_utils.get_data_path(language), *rel.split("/")))
+
+
+def open_folder_of(win, language, row, lst, say):
+    """*Open its folder* (Current's ⋯ and Finished's), one press (`press.open`, round 8 row 45): the row's ⋯ turns in
+    `lst` (IK-2) from the frame of the press; the folder is looked for (a drive may be slow or gone, N4) and opened on
+    a worker; none there — or it couldn't open — `say` says so. A second press meanwhile does nothing."""
+    path = folder_of(language, row)
+    ids = [row.episodes[0].id] if row.episodes else []
+
+    def there():
+        return path if path is not None and os.path.isdir(path) else None
+
+    def opened(found):
+        if not found:
+            say(strings.FIN_NO_FOLDER.format(title=row.title))
+    return qpress.open(win, there, key=("open-folder", row.key), at=qpress.row_mark(lst, ids) if ids else None,
+                       then=opened, failed=lambda _info: say(strings.FIN_NO_FOLDER.format(title=row.title)))
 
 
 def file_paths(language, row):
@@ -303,6 +321,7 @@ class FinishedActions(QObject):
         self.page.on_menu = self.menu
         self.page.on_import = self.pick
         self.page.importer.setVisible(True)
+        qpress.room(self.page.importer)              # round 8 row 45: *Stop adding*'s arc has its room at rest
         self.lst.drag = self                        # Explorer's files on the list come here (`files_dropped`)
         self.lst.setAcceptDrops(True)
         self.tab = win.tab_buttons.get("finished")
@@ -368,18 +387,8 @@ class FinishedActions(QObject):
         return self.moves._give(drag.Ticket(text, (row.key,), ids), lambda t: self.writer.keep_cards(ids, on, label=t))
 
     def open_folder(self, row):
-        """*Open its folder* (N3: `windows.open_url`), looked for on a worker first (a drive may be slow or gone)."""
-        path = folder_of(self.language, row)
-
-        def found(there):
-            if there:
-                windows.open_url(path)
-            else:
-                self._say(strings.FIN_NO_FOLDER.format(title=row.title))
-        if path is None:
-            found(False)
-            return
-        bridge.run_in_worker(os.path.isdir, path, then=found, failed=lambda _info: found(False))
+        """*Open its folder* (`open_folder_of`: its ⋯ turns, looked for and opened on a worker)."""
+        return open_folder_of(self.win, self.language, row, self.lst, self._say)
 
     # --- ⋯ ------------------------------------------------------------------------------------------------------------ #
     def menu_entries(self, row):
@@ -513,13 +522,15 @@ class FinishedActions(QObject):
 
     def _card_journey(self):
         self.card.close()
-        self.win._open_journey(asked=True)
+        self.win._open_journey(asked=True)          # (the card has closed: the bar's arc while it opens)
 
     # --- Add what you finished before… --------------------------------------------------------------------------- #
     def pick(self):
         """The heading's button: its menu (*Files…* · *A folder…*) — or, while an import runs, *Stop adding*."""
-        if self.import_job is not None:
-            self.import_job.cancel()
+        if self.import_job is not None:              # round 8 row 45: the arc and *Stopping…* from the press, until the
+            if qpress.begin(self.page.importer, self._stop_key(self.import_job),                # job ends
+                            busy=strings.FIN_IMPORT_STOPPING, win=self.win) is not None:
+                self.import_job.cancel()
             return None
         m = QMenu(self.page.importer)
         m.aboutToHide.connect(m.deleteLater)            # (L1 N7)
@@ -579,7 +590,15 @@ class FinishedActions(QObject):
         b.setToolTip(strings.FIN_IMPORT_STOP_TIP if on else strings.FIN_IMPORT_TIP)
         b.setAccessibleName(b.text())
 
+    @staticmethod
+    def _stop_key(job):
+        """*Stop adding*'s press: the import's own (never the window's language, which a switch changes meanwhile)."""
+        return ("finished-stop", id(job))
+
     def _imported(self, job):
+        stopping = qpress.presses_of(self.win).find(self._stop_key(job))
+        if stopping is not None and stopping.live():
+            qpress.end(stopping, self.win)
         if job is self.import_job:
             self.import_job = None
             self._show_importing(False)

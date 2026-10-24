@@ -442,11 +442,13 @@ def test_a_switch_never_probes_the_store_on_the_window_thread_and_clears_the_row
     lst = _page(win).list
     key = _page(win).view_model.rows[0].key
     lst.saving, lst.landing = frozenset({key}), key              # a ja move waiting on a busy store as the switch came
+    win.moves_saving(True)                                       # (PS-A4: and 届's wait for it, on the phase strip)
     _ask(services, win, "zh")
     assert _switched_to(win, services, "zh")
     assert wait_until(lambda: services.writer._thread is not None, 10)
     assert gui_probes == []                                      # the switch: none either
     assert lst.saving == frozenset() and lst.landing is None
+    assert not win.phase.states["arrivals"].waiting              # the writer let go never says False: no wait kept
     assert style.current()[2] == "zh"
     ja.close()
     zh.close()
@@ -961,3 +963,24 @@ def test_W1_a_mark_that_counts_asks_the_indexer_forced_from_the_first_writer_and
     services.closing.set()
     second.on_counted()
     assert services.chores.calls == [True, True]
+
+
+# --- round 8 row 45 (P5): the language switch says so at once ----------------------------------------------------- #
+def test_a_language_switch_holds_switching_in_the_bar_from_before_its_worker_until_the_library_is_open(opened,
+                                                                                                        monkeypatch):
+    # Settings' language moved with no line while the library switched for seconds: "Switching to 中文…" is now held
+    # in the bar, painted before the switch is handed to its worker, and let go once the new library is open.
+    from tests.qt.press_handover import HandOver
+    ja, zh = migrated("ja"), migrated("zh")
+    services, win = opened()
+    assert wait_until(lambda: _state(win) == "full", 15)
+    words = shell.strings.LANGUAGE_SWITCHING.format(name="中文")
+    handed = HandOver(monkeypatch, win.bar_arc, lambda: win.bar_arc.isVisible())     # IK-1: the arc at the hand-over
+    _switch(services, "zh")
+    assert wait_until(lambda: any(h.name == "language_changed" for h in handed), 10)
+    switch = handed.at("language_changed")
+    assert switch.shown and switch.painted >= 1                     # (its words follow once live 300 ms, IK-1)
+    assert _switched_to(win, services, "zh", 30)
+    assert wait_until(lambda: not win.presses.find("language").live() and win.bar_line.full() != words, 10)
+    ja.close()
+    zh.close()

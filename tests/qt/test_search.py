@@ -237,7 +237,7 @@ def test_play_on_a_current_hit_opens_its_next_episode_as_the_rows_play_does(worl
     seed, win, _writer = world()
     hero = rows_of(win)[0]
     played = []
-    monkeypatch.setattr(win.page_widgets["current"], "_play", played.append)
+    monkeypatch.setattr(win.page_widgets["current"], "_play", lambda ep, **_how: played.append(ep))
     results = ask(win, hero.title)
     row = next(r for r in results.hits if r.hit.key == hero.key)
     assert row.top_button is None                                    # Current's first row: no ⤒

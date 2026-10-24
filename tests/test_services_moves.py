@@ -2502,6 +2502,38 @@ def test_S2_remove_sends_the_file_to_the_trash_with_its_clock_restarted_and_undo
     assert not os.path.exists(trashed) and heard.notes == []
 
 
+def test_H7_a_remove_replayed_after_a_crash_between_its_trash_move_and_its_commit_keeps_its_file_reachable(
+        lib, make_writer, short_lock_wait):
+    # why: Remove moves each file to the trash, then the store commits. Killed between the two, the journal replays
+    # the command and finds no file: its trash row must still name the copy, or no Put back reaches it and it waits
+    # there unreferenced for the 30-day purge (Skip: `test_sources_skip.py`'s H7 test)
+    w, heard = make_writer()
+    x = lib.ids("soon")[2]
+    rel, path = lib.store.item(x)["rel_path"], _file(lib, x)
+    with open(path, "rb") as f:
+        body = f.read()
+    holder = LockHolder(lib.db)
+    w.remove([x], label="removed")
+    assert h.until(lambda: len(journalled(lib.language)) == 1)
+    w._abandon()                                        # the crash: after the file's move, before the commit
+    holder.release()
+    ls.trash_file(lib.data_dir, rel)
+    base, ext = os.path.splitext(os.path.basename(rel))
+    decoy = os.path.join(lib.data_dir, ".trash", f"{base}_29991231235959{ext}")   # newest of its name, another size
+    with open(decoy, "wb") as f:
+        f.write(body + body)
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: journal(lib.language) is None and not w2.pending())
+    assert lib.store.item(x) is None
+    row = [r for r in lib.store.trash_rows() if r["item_id"] == x][-1]
+    assert row["trashed_path"] and row["trashed_path"].startswith(".trash/"), "its trash row names the copy"
+    w2.restore([row["id"]])
+    assert h.until(lambda: os.path.exists(path)), "Put back brings the file back"
+    with open(path, "rb") as f:
+        assert f.read() == body
+
+
 def test_S2_undoing_a_remove_whose_name_was_taken_meanwhile_puts_it_back_under_a_new_name_and_says_so(
         lib, make_writer):
     w, heard = make_writer()

@@ -51,6 +51,7 @@ Qt-free (the import guard): no Qt, Tk or pandas; the store, the plan engine and 
 import itertools
 import json
 import os
+import re
 import threading
 import time
 from collections import deque
@@ -997,7 +998,7 @@ class Writer:
                     row = store.item(item_id)
                     if row is None:
                         continue
-                    to = _trash(lib, store, row["rel_path"])
+                    to = _trash(lib, store, row["rel_path"], row, taken=trashed.values())
                     if to:
                         trashed[item_id] = to
                         moved.append((_full(store, to), _full(store, row["rel_path"])))
@@ -1020,7 +1021,8 @@ class Writer:
                 trashed = {}
                 for item_id in store.items_under(cmd["path"]):
                     row = store.item(item_id)
-                    to = _trash(lib, store, row["rel_path"]) if row is not None else None
+                    to = (_trash(lib, store, row["rel_path"], row, taken=trashed.values()) if row is not None
+                          else None)
                     if to:
                         trashed[item_id] = to
                         moved.append((_full(store, to), _full(store, row["rel_path"])))
@@ -1961,14 +1963,51 @@ def _full(store, rel):
     return os.path.join(store.data_dir, *rel.split("/"))
 
 
-def _trash(lib, store, rel):
+def _trash(lib, store, rel, row=None, taken=()):
     """A row's file to the trash before its row goes (`trash_file`), or StoreConflict when the file is there but isn't
     Surasura's to move (SRC K1a.6: a copy a folder link leads out of the data folder) — never a row dropped with its
-    file left for the next sync to add again."""
+    file left for the next sync to add again. `row` (a Remove's, a Skip's): no file where the store has it available
+    is a replay after a crash between the renames and the commit — its copy is in the trash already (H7; `taken`:
+    the copies this command holds already)."""
     to = lib.trash_file(store.data_dir, rel)
     if to is None and lib.trash_refused(store.data_dir, rel):
         raise lib.StoreConflict(f"that file isn't Surasura's to move: {rel}")
+    if to is None and row is not None and row.get("availability") != "missing":
+        to = _trashed_before(store, row, set(taken))
     return to
+
+
+def _trashed_before(store, row, taken):
+    """H7: a Remove or a Skip moves each file to the trash, then the store commits. Killed between the two, the
+    journal replays the command and finds no file: its copy is in `.trash/` with no row naming it, so no Undo could
+    reach it. -> that copy (".trash/<name>"): the newest named as `trash_file` names this file
+    (`<base>_<stamp>[_n]<ext>`) with the row's size — and the bytes its record holds, when it has one — that no trash
+    row and no other file of this command holds; None when there is none (⭐ PROVISIONAL: its name, its size, its bytes
+    and no row of its own make it this file — the trash keeps no time of the file's own)."""
+    trash = os.path.join(store.data_dir, ".trash")
+    base, ext = os.path.splitext(os.path.basename(row["rel_path"]))
+    named = re.compile(re.escape(base) + r"_\d{14}(?:_\d+)?" + re.escape(ext) + r"\Z", re.IGNORECASE)
+    try:
+        names = [n for n in os.listdir(trash) if named.match(n)]
+    except OSError:
+        return None
+    if not names:
+        return None
+    held = {r["trashed_path"] for r in store.trash_rows() if r.get("trashed_path")} | taken
+    shas = {o.sha256 for o in store.origins(items=[row["id"]]).values() if o.sha256 and not o.version}
+    for name in sorted(names, key=lambda n: (n[len(base) + 1:len(base) + 15], n), reverse=True):
+        rel, full = f".trash/{name}", os.path.join(trash, name)
+        if rel in held:
+            continue
+        try:
+            if row.get("size") is not None and os.path.getsize(full) != row["size"]:
+                continue
+            if shas and _ls().sha256_of(full) not in shas:
+                continue
+        except OSError:
+            continue
+        return rel
+    return None
 
 
 def _move_back(moved):

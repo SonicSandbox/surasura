@@ -591,7 +591,7 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=
     # MV-2: the folder its video left — Connect's line, else ▶'s own look's answer (`play.MovedAway`: a str, falsy)
     left = getattr(said, "moved", None) if no_video else None
     answer = playable.get(item["id"]) if playable is not None and not left else None
-    left = left or (answer if isinstance(answer, str) else None)
+    left = left or (str(answer) if isinstance(answer, str) else None)     # a plain str: `MovedAway` is falsy
     if left and st.kind == "no_media" and not getattr(st, "moved", None):
         from app.connect.runner import MOVED
         st = st._replace(moved=left, tip=STRINGS["tip_connect_moved"].format(tip=MOVED.format(folder=left)))

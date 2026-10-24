@@ -181,8 +181,8 @@ def test_moved_where_no_source_reads_says_where_it_was_then_find_its_folder_find
     path, why = play._find(language, rel, "anime", play.pairing(language, item), {}, lambda *a, **k: None,
                            _moved(language, item))
     assert path is None and why == play.WHY["moved"].format(word="video", folder=folder)
-    assert play.look(language, {item: (rel, "anime")}, find=lambda *a, **k: None) == {item: False}, \
-        "▶ has nothing to open: it never shows"
+    got = play.look(language, {item: (rel, "anime")}, find=lambda *a, **k: None)[item]
+    assert not got and got == folder, "▶ has nothing to open (it never shows), and its answer names the folder"
 
     # *Find its folder*: the folder above the show picked, added as a source, then its look (SourceLooks._add's two)
     store = ls.open_store(language, *_dirs(language))
@@ -285,29 +285,84 @@ class _KickedOnce(FakeSteps):
     """Item 1 waits on its moved video, item 2 on Anki Miner (so the run goes on looking); Connect is kicked before
     its second look (*Find its folder…*'s look), once."""
 
-    def __init__(self, folder, plan, kick_at):
+    def __init__(self, folder, plan, kick_at, videos=True):
         super().__init__(folder, plan)
-        self.video_asked, self.looks, self.kick_at = [], 0, kick_at
+        self.video_asked, self.looks, self.kick_at, self.videos = [], 0, kick_at, videos
 
     def kicked(self):
+        from app.connect import kick
         self.looks += 1
-        return self.looks == self.kick_at
+        return (kick.VIDEOS if self.videos else True) if self.looks == self.kick_at else False
 
     def video(self, lang, job):
         self.video_asked.append(job["item_id"])
         return super().video(lang, job)
 
 
-@pytest.mark.parametrize("kick_at, asked", [(2, 2), (None, 1)], ids=["kicked", "not-kicked"])
-def test_a_kick_lets_a_job_parked_on_its_moved_video_go_again_in_the_same_run(tmp_path, kick_at, asked):
+@pytest.mark.parametrize("kick_at, videos, asked", [(2, True, 2), (2, False, 1), (None, True, 1)],
+                         ids=["kicked-for-videos", "a-plain-kick", "not-kicked"])
+def test_a_kick_lets_a_job_parked_on_its_moved_video_go_again_in_the_same_run(tmp_path, kick_at, videos, asked):
     # why: a Connect busy with other episodes runs for hours; after *Find its folder…* (its look kicks Connect) the
     # moved episode is looked at again at the next look, never only at Connect's next start. Unkicked, it stays
     # parked (one look a run: no battery drain)
     from app.connect.ledger import Ledger
     plan = {"queue": {"ja": [1, 2]}, "line": {"ja": [1, 2]}, "videos": {"1": None}, "miner_busy": True,
             "moved": {"1": os.path.join(str(tmp_path), "Old")}}
-    steps = _KickedOnce(str(tmp_path), plan, kick_at)
+    steps = _KickedOnce(str(tmp_path), plan, kick_at, videos)
+    # (a plain kick — a *Mine now*, a drag, a setting — leaves it parked: no stat of a dead share per episode per drag)
     with Ledger(str(tmp_path / "ledger.sqlite")) as ledger:
         summary = runner.run({}, ["ja"], steps=steps, ledger=ledger, sleep=lambda s: None, looks=3)
     assert steps.video_asked.count(1) == asked
     assert summary["languages"]["ja"]["waiting"][1] == runner.MOVED.format(folder=os.path.join(str(tmp_path), "Old"))
+
+
+def test_a_marked_origins_video_stands_in_only_for_its_own_source_record_and_only_at_its_recorded_size(tmp_path):
+    # why: a marked row is the same item's source origin; standing in for hato's or a link's video it would be mined
+    # with hato's "timed" verdict for a file hato never timed (another release's cut). And a file at the old name
+    # but of another size is another file (the folder reused)
+    old = _video(str(tmp_path / "Old" / "Show - 01.mkv"))
+    size = os.path.getsize(old)
+    gone = str(tmp_path / "New" / "Show - 01.mkv")
+    nothing = lambda names, size=None: None          # noqa: E731  (the index finds nothing)
+    source = {"producer": "source", "video_path": gone, "video_size": size}
+    assert _same(runner.paired_video(source, nothing, was=((old, size),)), old)
+    assert _same(runner.paired_video(source, nothing, was=lambda: ((old, None),)), old), "no size recorded: a stat"
+    assert runner.paired_video(source, nothing, was=((old, size + 1),)) is None, "another size: another file"
+    for other in ({"producer": "hato", "video_path": gone, "content_key": "v1-x"},
+                  {"producer": "surasura", "video_path": gone}):
+        assert runner.paired_video(other, nothing, was=((old, size),)) is None, other["producer"]
+        path, _why = play._find("ja", "", "anime", other, {}, nothing, library.Moved(None, ((old, size),)))
+        assert path is None, "▶ agrees: " + other["producer"]
+
+
+def test_mine_anyway_holds_only_for_the_video_it_was_said_for(tmp_path):
+    # why: the pairing's version stays when a marked origin's video stands in for the live one; *Mine anyway* was
+    # said for the other file, so it is asked again, never carried over
+    from app.connect.ledger import Ledger
+    plan = {"queue": {"ja": [1]}, "line": {"ja": [1]}}
+    steps = FakeSteps(str(tmp_path), plan)
+    with Ledger(str(tmp_path / "ledger.sqlite")) as ledger:
+        with ledger.transaction():
+            jid = ledger.queue("ja", 1, "user", None, store_id="store-1")
+        job = ledger.job_by_id(jid)
+        first = steps.video("ja", job)
+        ledger.set_state(jid, "waiting", reason="x", picked={"forced": True, "pairing": None, "video": first})
+        assert runner._pick(steps, ledger, "ja", job)["forced"] is True, "the same video: it holds"
+        ledger.set_state(jid, "waiting", reason="x", picked={"forced": True, "pairing": None, "video": first + ".old"})
+        assert "forced" not in runner._pick(steps, ledger, "ja", job), "another video: asked again"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_rows_say_the_moved_line_from_the_play_look_when_connect_says_nothing(language):
+    # why (Sonic's MV-2 words are ▶'s line): with Connect off, a Chinese episode, a mined one or one outside the top
+    # 20 Connect holds no job for — ▶'s own look found the video left its folder, so the row says so and its ⋯
+    # offers *Find its folder…*; a plain miss stays plain
+    from app.services import view_rows
+    folder = os.path.join("E:\\", "番組", "[Grp] Show")
+    item = {"id": 5, "title": "[Grp] Show - 01", "rel_path": "Library/[Grp] Show/[Grp] Show - 01.srt",
+            "availability": "available", "work_id": 1, "tier": "now"}
+    ep = view_rows._episode(item, None, "anime", {}, {}, set(), True, 20, playable={5: play.MovedAway(folder)})
+    assert ep.moved == folder and not ep.can_play
+    assert runner.MOVED.format(folder=folder) in ep.play_tip and "Find its folder" in ep.play_tip
+    plain = view_rows._episode(item, None, "anime", {}, {}, set(), True, 20, playable={5: False})
+    assert plain.moved is None and "Find its folder" not in plain.play_tip

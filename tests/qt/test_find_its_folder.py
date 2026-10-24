@@ -87,6 +87,20 @@ def test_find_its_folder_adds_the_folder_picked_through_settings_add_a_folder(wi
     assert win.mine.find_folder(ep) is False, "a cancelled picker adds nothing"
 
 
+def test_find_its_folder_while_the_library_cant_take_a_folder_says_why_and_opens_no_picker(act, monkeypatch):
+    # why (every press reacts at once): a read-only library refuses the add; the press says so in the bar instead of
+    # a picker whose answer would be dropped without a word
+    from app.qt import settings_sources
+    _seed, win, _writer = act()
+    monkeypatch.setattr(settings_sources, "why_not", lambda _shell: "The library is read-only just now.")
+    said, picked = [], []
+    monkeypatch.setattr(win, "say", said.append)
+    win.mine.pick_folder = lambda title, where: picked.append(where) or "D:\\x"
+    row = next(e[1] for e in lst_of(win).model().entries if e[0] == rows.ROW)
+    assert win.mine.find_folder(_moved(row.episodes[0])) is False
+    assert said == ["The library is read-only just now."] and picked == []
+
+
 @pytest.mark.parametrize("moved, waiting, kicks", [(2, True, 1), (0, True, 0), (2, False, 0)],
                          ids=["videos-found-and-one-waits", "nothing-found", "nobody-waits"])
 def test_a_look_that_recorded_videos_kicks_connect_only_while_an_episode_waits_on_its_video(window, monkeypatch,
@@ -99,13 +113,14 @@ def test_a_look_that_recorded_videos_kicks_connect_only_while_an_episode_waits_o
     looks = source_looks.SourceLooks(_library()[0], "ja", kind=lambda _p: "network")
     _seed, win = window(looks)
     called = []
-    monkeypatch.setattr(kick, "kick", lambda settings: called.append(dict(settings)))
+    monkeypatch.setattr(kick, "kick", lambda settings, videos=False: called.append(videos))
     item = feed.Item(kind=feed.NO_VIDEO if waiting else feed.WAITING, words="", tip="", job=1, made=0, total=0)
     latest = feed.NOT_LOOKED._replace(on=True, items={7: item})
     monkeypatch.setattr(shell, "connect_feed", lambda _l, _s: type("P", (), {"latest": lambda self: latest})())
     win._sources_looked({"sources": [], "moved": moved, "language": win.language})
     if kicks:
         assert wait_until(lambda: len(called) == kicks, 5)
+        assert called == [True], "a videos kick (S1): only it un-parks a job on No video"
     else:
         win._sources_looked({"sources": [], "language": win.language})
         wait_until(lambda: called, 0.5)

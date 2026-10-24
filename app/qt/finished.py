@@ -49,7 +49,6 @@ def folder_of(language, row):
     return os.path.dirname(os.path.join(path_utils.get_data_path(language), *rel.split("/")))
 
 
-
 def open_folder_of(win, language, row, lst, say):
     """*Open its folder* (Current's ⋯ and Finished's), one press (`press.open`, round 8 row 45): the row's ⋯ turns in
     `lst` (IK-2) from the frame of the press; the folder is looked for (a drive may be slow or gone, N4) and opened on
@@ -65,6 +64,7 @@ def open_folder_of(win, language, row, lst, say):
             say(strings.FIN_NO_FOLDER.format(title=row.title))
     return qpress.open(win, there, key=("open-folder", row.key), at=qpress.row_mark(lst, ids) if ids else None,
                        then=opened, failed=lambda _info: say(strings.FIN_NO_FOLDER.format(title=row.title)))
+
 
 def file_paths(language, row):
     """(absolute path, data-folder-relative id) of each of a row's files, in its order."""

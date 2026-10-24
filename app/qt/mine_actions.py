@@ -38,7 +38,7 @@ from PyQt6.QtCore import QObject, QTimer
 from PyQt6.QtWidgets import QApplication, QFileDialog
 
 from app import path_utils
-from app.qt import bridge, drag, item_menu, rows, strings, windows
+from app.qt import bridge, drag, item_menu, rows, strings
 from app.qt import press as qpress
 
 OFF_KEYS = frozenset(("connect_enabled", "logic.automation", "automation"))
@@ -272,10 +272,11 @@ class MineActions(QObject):
                    win=self.win, at=at)
 
     # --- Mine text (C6) --------------------------------------------------------------------------------------- #
-    def mine_text(self, label, rel_path, control=None, at=None):
+    def mine_text(self, label, rel_path, control=None, at=None, key=None):
         """Anki Miner's own window, the file's path on the clipboard, a toast saying so (never hidden: K67). Round 8
-        row 45: a press (`press.open`) — `control`'s arc turns (or `at`: the row's status; neither: the bar's) while
-        Anki Miner is looked for and opened, both on a worker (never on the window's thread)."""
+        row 45: a press (`press.open`, under `key` — default the file's) — `control`'s arc turns (or `at`: the row's
+        status; neither: the bar's) while Anki Miner is looked for and opened, both on a worker (never on the window's
+        thread). The path is on the clipboard before Anki Miner starts (P3-A8: as it was)."""
         path = os.path.join(path_utils.get_data_path(self.win.language), *(rel_path or "").split("/"))
         get = self.win.services.settings.get
         found = []
@@ -289,21 +290,22 @@ class MineActions(QObject):
             if not miner_path:
                 self.win.say(strings.MINE_TEXT_NO_MINER)
                 return
-            QApplication.clipboard().setText(path)
             self.win.toasts.show(strings.MINE_TEXT_COPIED.format(name=label))
 
         def failed(_info):
             self.win.say(strings.MINE_TEXT_NOT_OPENED.format(path=found[0]) if found and found[0] else
                          strings.MINE_TEXT_NO_MINER)
-        return qpress.open(self.win, miner, control=control, key=("mine-text", path), at=at, then=opened,
+        QApplication.clipboard().setText(path)      # (before the worker can start Anki Miner)
+        return qpress.open(self.win, miner, control=control, key=key or ("mine-text", path), at=at, then=opened,
                            failed=failed)
 
     def _needs_mine_text(self, entry, line):
         needs = self.win.needs_you
-        control = needs._control("mine_text_only", entry, line) if needs is not None else None    # (its arc)
+        control = needs._control("mine_text_only", entry, line) if needs is not None else None    # (its arc, under
+        key = needs._press_key("mine_text_only", entry, line and line.key) if needs is not None else None  # its card's)
         line = line if line is not None else (entry.lines[0] if entry.lines else None)
         if line is not None:
-            self.mine_text(line.label, line.rel_path, control=control)
+            self.mine_text(line.label, line.rel_path, control=control, key=key)
 
     def _needs_make_cards(self, entry, _line=None):
         """A gap's *Make their cards* (P4.1 WF, IK D-1 lean (a)): Connect's ordinary work, not an ask — so no store

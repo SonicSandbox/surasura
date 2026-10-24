@@ -284,6 +284,10 @@ class _Failed(Exception):
     """A request that didn't answer (offline, refused, a server's error, an answer that isn't one): retried later."""
 
 
+class LookupFailed(Exception):
+    """`candidates`' search didn't answer (offline, refused, a server's error): never told as "nothing found"."""
+
+
 class _Redirects(urllib.request.HTTPRedirectHandler):
     """A redirect followed only where the request itself may go (the request's `allowed`): never another host, never
     plain http."""
@@ -590,15 +594,21 @@ class Fetcher:
 
     # --- *Change cover…* (a worker's calls: each waits for its answer) ------------------------------------------------ #
     def candidates(self, want, n=CANDIDATES):
-        """The top `n` AniList answers for the title's cleaned name ([Candidate], AniList's order); [] with the switch
-        off, offline, or nothing found."""
+        """The top `n` AniList answers for the title's cleaned name ([Candidate], AniList's order); [] when AniList
+        found nothing (or the name cleans to nothing to search by); None when nothing was asked — `covers_download` off
+        or the fetcher stopped, before or during the search. Raises `LookupFailed` when the search didn't answer
+        (offline, a server's error): a press that asked says so, never "nothing found"."""
         name, _year = clean_title(want.title)
-        if not name or not self._go():
+        if not self._go():
+            return None
+        if not name:
             return []
         try:
             media = self._find(name, first=True)
-        except _Failed:
-            return []
+        except _Failed as e:
+            if not self._go():                      # switched off or stopped while it waited: nothing was asked
+                return None
+            raise LookupFailed() from e
         out = []
         for m in media:
             url = _cover_url(m)
@@ -621,18 +631,26 @@ class Fetcher:
         return covers.keep_user_bytes(self.language, want.id, data, writer, current=want.cover_path,
                                       source="anilist", ref=str(candidate.id))
 
+    def refused(self, link):
+        """What `paste` would answer at once, asking nothing: 'not_a_link', 'off', 'no_key' — or None (it would fetch).
+        The window answers these at the press, with no pending (an instant answer needs none)."""
+        found = parse_link(link)
+        if found is None:
+            return "not_a_link"
+        if not self._go():
+            return "off"
+        if found[0] == "tmdb":
+            return "no_key"                         # the seam: TMDB comes with its key (01 §1.3 *Duties*)
+        return None
+
     def paste(self, want, link, writer=None):
         """*Paste a link*: an AniList, TMDB or YouTube link's cover kept as the user's. -> (path, None), or (None, why):
         'not_a_link' (any other text), 'off' (`covers_download` off), 'no_key' (TMDB: no key in 3.0's first cut),
         'failed' (offline, nothing there, a store that can't take it)."""
-        found = parse_link(link)
-        if found is None:
-            return None, "not_a_link"
-        if not self._go():
-            return None, "off"
-        kind, ref = found
-        if kind == "tmdb":
-            return None, "no_key"                   # the seam: TMDB comes with its key (01 §1.3 *Duties*)
+        why = self.refused(link)
+        if why is not None:
+            return None, why
+        kind, ref = parse_link(link)
         writer = writer or self.writer
         if not writer.can_write():
             return None, "failed"

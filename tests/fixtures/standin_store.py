@@ -235,7 +235,7 @@ class StandinStore:
             lib.reads += 1
             return {"full": full, "epoch": now_epoch, "version": version, "items": items, "works": works, "gone": gone,
                     "options": {"soon_line": m.get("soon_line"), "mine_line": m.get("mine_line", MINE_LINE_DEFAULT),
-                                "arrivals_on": m.get("arrivals_on", 0)}}
+                                "arrivals_on": m.get("arrivals_on", 0), "keep_watched": m.get("keep_watched", 0)}}
 
     # --- 3.0-dev's reads --------------------------------------------------------------------------------------- #
     def _tier_rows(self, tier):

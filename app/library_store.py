@@ -89,9 +89,10 @@ ANALYSED = tuple(t for t, v in TIERS.items() if v[2])                    # now, 
 # episode by this rule. Written once in Python (`counts`) and once in SQL (`counts_sql`), from the same constants; a
 # test holds the two equal. Who reads it today: here, `Store.schedule` (Generate's list, and its set-aside items for
 # the run signature's "reference" part), `_mine_ids`, `text_lists`, `_moves_counted`, `_watched_aside`,
-# `_store_has_content` and `read_only_schedule` (the copy); outside, `moves._set_aside` (the window's numbers). Not
-# yet: the window's drawn lines (`view_rows._mine_ids`, `drag.lines_for`) and Connect's `level._walk`, which keeps its
-# own watched test (`level.watched_out`).
+# `_store_has_content` and `read_only_schedule` (the copy); outside, `moves._set_aside` (the window's numbers) and
+# Connect's `library.counting` / `library.counts` (`level._walk` beyond the line, a gap's `inbox._gone`; M-W1 —
+# `level.watched_out` stays stricter, LF4-1). Not yet: the window's drawn lines (`view_rows._mine_ids`,
+# `drag.lines_for`).
 def _tiers_sql(tiers):
     return ", ".join(f"'{t}'" for t in tiers)
 

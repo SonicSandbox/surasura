@@ -682,6 +682,24 @@ def test_B2_after_a_language_switch_settings_shows_that_librarys_folders_and_a_s
         looks.close()
 
 
+def test_row55_a_look_says_how_many_known_files_it_found_a_video_for_and_a_quiet_one_none(looks_world):
+    """Row 55 IK-1 (S19): the summary's `moved` counts the known files a look recorded a video on (a video come after
+    its subtitle) — the window asks ▶'s looks again only then; a look that found nothing new says 0."""
+    looks, clock, seen, _dirs = looks_world()
+    folder = _source()
+    _added(looks, folder)
+    clock.t += sources.FOCUS_S + 1
+    assert looks.asked(focused=True) and looks.idle(10)
+    assert seen[-1]["moved"] == 0
+    _stand_in_video(os.path.join(folder, SHOW, f"{SHOW} - 01.mkv"))      # downloaded after its subtitle
+    clock.t += sources.FOCUS_S + 1
+    assert looks.asked(focused=True) and looks.idle(10)
+    assert seen[-1]["moved"] == 1
+    clock.t += sources.FOCUS_S + 1
+    assert looks.asked(focused=True) and looks.idle(10)
+    assert seen[-1]["moved"] == 0
+
+
 def test_B2_a_closed_looks_tells_no_one_what_it_still_finds():
     opener, _d, _u = _library()
     looks = source_looks.SourceLooks(opener, "ja", kind=lambda _p: "network")

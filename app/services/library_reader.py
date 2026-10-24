@@ -38,6 +38,11 @@ library store, on a plain thread of its own — never the window's thread.
   before. The folders the watch reports (all of them at the open and when Windows lost track; the slow look's
   without a watch) are synced on a worker of its own (`library_store.sync_for_window`, its own handle), never this
   thread or the window's; the sync's commit rings the bell back here. Without `watch`: every `poll`, as before.
+- **▶'s answers** (row 55, `play`: an `app/services/play.Looks`, the window's; None in the tests and tools): after
+  each build the rows it built anew hand their episodes' asks to the looker, which looks on its own worker and hands
+  its answers back (`set_playable`) — a build then rebuilds only the rows whose answer moved. A folder the watch synced
+  is looked at again (its episodes), a full sync and a new Connect feed (its index file changed) the ones not found;
+  the first screen's cache seeds the answers.
 - **A drag holds it** (06 E6, `hold()` / `release()`): while held it still reads and merges the feed (its copy stays
   current) but builds and publishes nothing, so nothing moves under the hand; `release()` builds and publishes once. An
   item gone meanwhile is told at once (`subscribe_gone(cb)`: `cb(item_ids)`) — the drag of a removed item is let go.
@@ -57,8 +62,9 @@ POLL_S = 0.1                     # the store's FEED_POLL
 MODE_RECHECK_S = 2.0             # while the store can't be used, its mode is asked again this often
 CACHE_LATEST_S = 5.0             # the first screen's cache waits for a quiet look at most this long
 CARDS_ALL_S = 2.0                # every item's cards asked again at most this often (between, only what changed)
-CACHE_VERSION = 4                # 2: keyed (store id, epoch, state version, plan version); 3: an episode's `deleted`;
-#                                  4: a status's words and tips (G2.3: ✓ N, a tip's action on a line of its own)
+CACHE_VERSION = 5                # 2: keyed (store id, epoch, state version, plan version); 3: an episode's `deleted`;
+#                                  4: a status's words and tips (G2.3: ✓ N, a tip's action on a line of its own);
+#                                  5: `can_play` is ▶'s found file (row 55), and the seed of its answers
 
 
 def cache_path(language):
@@ -85,15 +91,33 @@ def _no_connect():
     return None
 
 
+def _hand_playable(ref, answers):
+    """▶'s answers to the reader, while it is alive (row 55)."""
+    reader = ref()
+    if reader is not None:
+        reader.set_playable(answers)
+
+
 class LibraryReader:
     def __init__(self, opener, language="ja", numbers=None, mining=None, poll=POLL_S, cache_file=None,
-                 cache_rows=view_rows.CACHE_ROWS, freeze_gc=False, watch=None, connect=None):
+                 cache_rows=view_rows.CACHE_ROWS, freeze_gc=False, watch=None, connect=None, play=None):
         self.opener = opener
         self.language = language
         self.numbers = numbers or _no_numbers
         self.mining = mining or _no_mining
         self.connect = connect or _no_connect       # P4.1 L2: Connect's feed (row 4.1.10)
         self._connect_built = None                  # ... the Feed the last view was built with
+        # --- row 55: ▶'s answers (`play.Looks`), handed back through a weak reference (never a cycle reader -> looker
+        # -> reader: a reader a language switch let go is freed by its count alone, AD0-2)
+        self.play = play
+        self._playable = None if play is None else {}
+        self._playable_new = False
+        self._play_rows = {}                        # key -> the row the last build asked for (a new object: asked)
+        if play is not None:
+            import weakref
+            me = weakref.ref(self)
+            play.on_change = lambda answers: _hand_playable(me, answers)
+        # --- end row 55
         self.poll = poll
         self.cache_file = cache_file
         self.cache_rows = cache_rows
@@ -173,6 +197,11 @@ class LibraryReader:
         with self._lock:
             self._gone_subscribers.append(callback)
 
+    def unsubscribe_gone(self, callback):
+        """`callback` (the very one subscribed) told no more: a window's drag controller let go."""
+        with self._lock:
+            self._gone_subscribers = [cb for cb in self._gone_subscribers if cb is not callback]
+
     # --- W3.2 Q1
     def set_estimates(self, estimates):
         """New arrivals' numbers ({item_id: N new}), from any thread: built into the next view, looked at now."""
@@ -184,6 +213,42 @@ class LibraryReader:
             self._estimates_new = True
         self._wake.set()
     # --- end W3.2 Q1
+
+    # --- row 55
+    def set_playable(self, answers):
+        """▶'s answers ({item_id: found}, the looker's), from any thread: built into the next view, looked at now."""
+        with self._lock:
+            if answers == self._playable:
+                return                                  # S19: the same answers build nothing
+            self._playable = answers
+            self._playable_new = True
+        self._wake.set()
+
+    def _ask_play(self, view):
+        """The episodes' asks of the rows this build made anew, to the looker (an unchanged row is the same object:
+        nothing asked, nothing looked at); the episodes of the rows gone and in no row now, forgotten (fix round A-8:
+        a finished or removed item is never looked at again)."""
+        before, now, asks = self._play_rows, {}, {}
+        for r in view.rows:
+            now[r.key] = r
+            if before.get(r.key) is not r:
+                for e in r.episodes:
+                    asks[e.id] = e.ask
+        self._play_rows = now
+        gone = {e.id for k, r in before.items() if k not in now for e in r.episodes}
+        if gone:
+            gone -= {e.id for r in view.rows for e in r.episodes}
+        if gone:
+            self.play.forget(gone)
+        if asks:
+            self.play.want(asks)
+
+    def _seed_play(self, view):
+        """The first screen's cache: last session's answers seed the looker's, until the looks answer — never for an
+        episode still being looked for when it was written (R55-A: it says *Looking…* until it is looked at)."""
+        self.play.seed({e.id: e.can_play for r in view.rows for e in r.episodes if not e.looking})
+        self._playable = self.play.answers()
+    # --- end row 55
 
     # --- LM11b G5
     def expect(self, tiers):
@@ -224,6 +289,11 @@ class LibraryReader:
     def view(self):
         with self._lock:
             return self._view
+
+    def store_id(self):
+        """The library's own id (its meta's `store_id`) once a read found it, else None (W-1: a hint shown once per
+        library). Any thread."""
+        return self._store_id
 
     def republish(self):
         """The window let go of its own order once every write landed: the next look builds and publishes the store's
@@ -269,6 +339,8 @@ class LibraryReader:
                 self._busy(e)
             self._wait()                            # W3.2 B: the bell, the watch or a retry (no watch: `poll`)
         self._unwatch()                             # W3.2 B
+        if self.play is not None:
+            self.play.close()                       # row 55: its worker ends (a look running finishes first)
         try:
             self._owed_cache()                          # LM11b H-T2: a command still waiting: the store's own view
             self._flush_cache()                         # the last view's cache, as the window closes
@@ -335,6 +407,7 @@ class LibraryReader:
             return
         with self._lock:                                # W3.2 Q1: new estimates from the window
             estimates_new, self._estimates_new = self._estimates_new, False
+            estimates_new, self._playable_new = estimates_new or self._playable_new, False     # row 55: ▶'s answers
         estimates_new = estimates_new or self._connect_moved()      # P4.1 L2: a new Connect feed rebuilds the same way
         estimates_new = self._take_expected() or estimates_new      # LM11b G5: and the window's expectation
         dv = h.data_version()
@@ -365,8 +438,8 @@ class LibraryReader:
         self._data_version = dv
         self._numbers_version = version
         self._moved(h)
-        if self._store_id is None and hasattr(h, "meta"):
-            self._store_id = h.meta().get("store_id")
+        if (self._store_id is None or feed["full"]) and hasattr(h, "meta"):
+            self._store_id = h.meta().get("store_id")      # W-1 (W-5): a fresh library has an id of its own
         if held:                                        # E6: merged, never built or shown under the hand; a quiet
             if changed:                                 # look later in the drag never forgets what came in (AD-1)
                 self._held_dirty = True
@@ -485,6 +558,8 @@ class LibraryReader:
                 elif folders:
                     library_store.sync_for_window(store, folders=sorted(folders))
                 self.syncs += 1
+                if self.play is not None and (full or folders):     # row 55: what a video beside them may change
+                    self.play.again(None if full else folders)
             except library_store.StoreBusy:
                 with self._lock:
                     owed = self._owed
@@ -678,6 +753,8 @@ class LibraryReader:
             connect = self.connect()
         except Exception:
             connect = None
+        if self.play is not None and connect is not self._connect_built:
+            self.play.index_moved()                     # row 55: its video index may have been saved anew
         self._connect_built = connect
         # a new numbers version rebuilds only the rows holding an item it changed, when the provider says which (a
         # drop moves *N new* on a few rows); the seed's provider can't say: every row, as before
@@ -702,8 +779,11 @@ class LibraryReader:
                                changed_works=self._build_works, numbers_changed=numbers_changed,
                                estimates=self._estimates,     # W3.2 Q1
                                connect=connect,               # P4.1 L2
-                               pieces=self._pieces)           # LM11b G1
+                               pieces=self._pieces,           # LM11b G1
+                               playable=self._playable)       # row 55
         view = view._replace(epoch=self._epoch)         # LM11b: a library rebuilt or reset lets the window's picks go
+        if self.play is not None:
+            self._ask_play(view)                        # row 55
         self._built_numbers = self._numbers_version
         self._build_changed = set()                     # built: from here on, only what the feed changes
         self._build_works = set()
@@ -803,6 +883,8 @@ class LibraryReader:
         view = view_rows.from_cache(data.get("view"), language=self.language)
         if view is not None:
             view = view._replace(epoch=data["key"][1])  # the key matched: the store's epoch now
+        if view is not None and self.play is not None:  # row 55: last session's answers, until the looks answer
+            self._seed_play(view)
         if view is not None and self._view is None:
             self._publish(view)
 

@@ -51,7 +51,7 @@ import os
 import time
 from types import SimpleNamespace
 
-from app.connect import fit_check, inbox
+from app.connect import fit_check, inbox, stopping
 from app.connect.ledger import ASKED, BEFORE_MINING, IN_FLIGHT, LEVEL, PREPARE_KINDS, STOPPED_REASON, Ledger
 
 log = logging.getLogger("surasura-cli")
@@ -75,6 +75,9 @@ NO_VIDEO = "No video: its video isn't on this computer (or isn't downloaded yet)
 CHINESE = "Chinese cards come later."
 # Laptop round 8 #47 (LF4-5 ⭐ A): a job you stopped waits for your next ask; the cards it made are kept
 STOPPED_BY_YOU = STOPPED_REASON
+# Laptop round 9 #56: an open job with no reason of its own while Connect works on another (`status` computes it for
+# the record; never written to the ledger)
+TURN = "Waiting its turn: Connect is making another episode's cards now."
 # Laptop round 8 #49 (LF4-1 ⭐ A, PROVISIONAL): a level raise's job for an episode you've watched, or whose video is gone
 WATCHED = "you've watched it: its new words go to the episodes ahead of you"
 LEVEL_NO_VIDEO = "Its video isn't on this computer: its new words' cards wait for it."
@@ -646,38 +649,49 @@ def _job(steps, ledger, lang, job, store_now, line, out):
         out["skipped"].append(item_id)
         return
     record = not foreign
-    _stop_here(ledger, job, step)
+    _stop_here(steps, ledger, lang, job, step, record)
     if droppable:
         # at the cap, the shelf tried: one count, no pick and no write (S19, review B adv #2); never an ask (#42)
         full = _full(steps, lang, asked=bool(job.get("asked_at")))
         if full is not None:
             raise full
     try:
-        for _ in range(3):          # a profile or pairing that changed since the pick: picked again (at most twice)
-            try:
-                if step in (None, "picking"):
-                    _stop_here(ledger, job, step)
-                    got = _pick(steps, ledger, lang, job, record)
-                    if got is None:
-                        out["done"].append(item_id)
-                        return
-                    step = "filling" if got == "filling" else "fit-check"
-                if step == "fit-check":
-                    _stop_here(ledger, job, step)
-                    _fit(steps, ledger, lang, job)
-                    step = "mining"
-                if step == "mining":
-                    _stop_here(ledger, job, step)
-                    _mine(steps, ledger, lang, job, record=record)
-                    step = "filling"
-                break
-            except Repick:
-                step = "picking"
-        else:
-            raise Needs("repick", "Anki Miner's profile or the episode's pairing keeps changing; nothing was mined.")
+        # laptop round 9 #56: the job's Stop asked by every program waited on in these steps (`stopping.wait`): a
+        # look-up still under way at a press is ended, and the job stops before the step it was in
+        with stopping.watching(lambda: _stop_pressed(ledger, jid)):
+            for _ in range(3):      # a profile or pairing that changed since the pick: picked again (at most twice)
+                try:
+                    if step in (None, "picking"):
+                        _stop_here(steps, ledger, lang, job, step, record)
+                        got = _pick(steps, ledger, lang, job, record)
+                        if got is None:
+                            out["done"].append(item_id)
+                            return
+                        step = "filling" if got == "filling" else "fit-check"
+                    if step == "fit-check":
+                        _stop_here(steps, ledger, lang, job, step, record)
+                        _fit(steps, ledger, lang, job)
+                        step = "mining"
+                    if step == "mining":
+                        _stop_here(steps, ledger, lang, job, step, record)
+                        _mine(steps, ledger, lang, job, record=record)
+                        step = "filling"
+                    break
+                except Repick:
+                    step = "picking"
+            else:
+                raise Needs("repick", "Anki Miner's profile or the episode's pairing keeps changing; nothing was "
+                            "mined.")
     except _Finished as f:
         out["skipped" if f.state == "skipped" else "failed"].append(item_id)
         return
+    except stopping.Stopped:
+        ended = True                        # #56: a program it waited on ended at your press
+    else:
+        ended = False
+    if ended:
+        # outside the handler: the Wait keeps no frame of the ended program (#17)
+        _stopped(steps, ledger, lang, job, step, record)
     if step == "filling":
         _fill(steps, ledger, lang, job)
         step = "ordering"
@@ -688,15 +702,40 @@ def _job(steps, ledger, lang, job, store_now, line, out):
     out["done"].append(item_id)
 
 
-def _stop_here(ledger, job, step):
+def _stop_here(steps, ledger, lang, job, step, record):
     """Laptop round 8 #47: *Stop* pressed on this job -> it stops here, before `step` (nothing of the step done): the
     press used up, the job waits for your next ask (`Ledger.held_by_stop`), resuming at `step`."""
     if step in ("filling", "ordering") or not ledger.stop_asked(job["id"]):
         return                              # its cards are made: it finishes (seconds), the press forgotten at its end
+    _stopped(steps, ledger, lang, job, step, record)
+
+
+def _stopped(steps, ledger, lang, job, step, record):
+    """The job stops before `step` at your press. Every stop comes here: `_stop_here`'s, a program ended mid-step
+    (laptop round 9 #56) and the batch Anki Miner ended (`_stopped_mid_batch`). The cards its batches made so far
+    are kept first (`_keep_made`); only then is the press used up, so the job reads *Stopping…* until it has
+    stopped (row 56), the ask it carried kept (`Ledger.mark_stopped`) -> Wait for your next ask."""
+    made = _keep_made(steps, ledger, lang, job, record)
     now = ledger.job_by_id(job["id"]) or {}
     ledger.mark_stopped(job["id"], now.get("asked_at"))
-    log.info("Connect: job %s stopped by you before %s", job["id"], step or "its pick")
+    log.info("Connect: job %s stopped by you before %s (%d words made so far)", job["id"], step or "its pick",
+             len(made))
     raise Wait(STOPPED_BY_YOU, look=False, resume=step)
+
+
+def _keep_made(steps, ledger, lang, job, record):
+    """A job you stopped keeps the cards its batches made (#47's batch you stopped; row 56: any stop once a batch has
+    made some): recorded in the store (made words, no receipt: the episode isn't mined yet) and their clips named,
+    before Anki's next sync. A store busy now is no matter: the resumed job records them all. -> {word: [note id]}"""
+    made = _made(ledger, job["id"])
+    if made and record:
+        try:
+            steps.record(lang, job, made, None, _tag(job))
+        except (Wait, Needs):               # review A7: the resumed job records them all
+            log.info("Connect: the store couldn't take job %s's cards now; they're recorded when it goes on",
+                     job["id"])
+        _name_media_at_end(steps, ledger, lang, job)
+    return made
 
 
 def _pick(steps, ledger, lang, job, record=True):
@@ -752,6 +791,31 @@ class _Finished(Exception):
         self.state = state
 
 
+# LF56-1 (Sonic 2026-10-23: "One thing about the 4%, unsure"): a timing check with no answer (tsubasa timed out or
+# couldn't start) is tried at this many looks running, then named in *Needs you* as not timed (*Mine anyway*)
+FIT_TRIES = 3
+FIT_TRY = "fit_try:"            # ledger meta: `fit_try:<job id>` -> the looks running tsubasa gave no answer
+MINE_ANYWAY_HINT = "Mine anyway to cut its lines where the subtitle puts them."
+
+
+def _fit_tries(ledger, jid, failed):
+    """The job's timing checks with no answer running: one more when `failed` (-> the count), else forgotten (0)."""
+    key = f"{FIT_TRY}{int(jid)}"
+    row = ledger.conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+    if not failed:
+        if row is not None:                     # only a count to forget is written (S19)
+            with ledger.transaction():
+                ledger.conn.execute("DELETE FROM meta WHERE key = ?", (key,))
+        return 0
+    with ledger.transaction():
+        try:
+            tries = int(row[0]) + 1 if row else 1
+        except (TypeError, ValueError):
+            tries = 1
+        ledger.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, str(tries)))
+        return tries
+
+
 def _fit(steps, ledger, lang, job):
     jid = job["id"]
     picked = ledger.picked(jid) or {}
@@ -769,8 +833,15 @@ def _fit(steps, ledger, lang, job):
     verdict, who, why, offset = steps.fit(lang, job, pairing, picked.get("video"), picked.get("file"))
     if verdict == fit_check.TIMED and who == "you":
         log.info("Connect: job %s mined at its subtitle's own times: you trust your subtitles' timing", jid)
+    tries = _fit_tries(ledger, jid, verdict == fit_check.RETRY)
     if verdict == fit_check.RETRY:
-        raise Wait(why)                     # tsubasa couldn't answer this time: asked again at the next look
+        # tsubasa couldn't answer this time: asked again at the next look — FIT_TRIES looks running at most (LF56-1:
+        # a check that times out on this PC every time held the episode at the hourglass for ever)
+        if tries < FIT_TRIES:
+            raise Wait(f"{why} (try {tries} of {FIT_TRIES})")
+        title = steps.title(lang, job)
+        gave_up = f"{why.split(';')[0]}, {FIT_TRIES} looks running, so Connect stopped trying. {MINE_ANYWAY_HINT}"
+        raise Needs("not-timed", f"{title}: {gave_up}" if title else gave_up)
     if verdict != fit_check.TIMED:
         title = steps.title(lang, job)
         raise Needs("not-timed", f"{title}: {why}" if title else why)
@@ -812,7 +883,7 @@ def _mine(steps, ledger, lang, job, record=True):
             wait = _at_cap(steps, ledger, lang, todo, asked=bool(job.get("asked_at")))
             if wait is not None:
                 raise wait
-        _stop_here(ledger, job, "mining")   # #47: between two batches too
+        _stop_here(steps, ledger, lang, job, "mining", record)     # #47: between two batches too
         if ran and steps.update_staged():
             # between two Anki Miner batches (K99): stopped here, every outcome saved; the next run resumes at mining
             # and sends only the words still unsettled
@@ -825,13 +896,14 @@ def _mine(steps, ledger, lang, job, record=True):
         ledger.start_batch(jid, attempt, steps.run_dir(job))
         ran = True
         steps.on_progress = _Progress(ledger, jid)
-        steps.should_stop = lambda: _stop_pressed(ledger, jid)      # #47: Anki Miner's batch cancelled at a press
+        steps.should_stop = stopping.pressed    # #47: Anki Miner's batch cancelled at a press (the job's one check)
         try:
             got = steps.mine(lang, job, picked, todo, attempt)
         except Wait as w:
             ledger.end_batch(jid, attempt, "refused")
             raise Wait(w.reason, w.look, "mining") from None
-        except (Repick, Needs):
+        except (Repick, Needs, stopping.Stopped):
+            # #56: a look-up ended at your press is refused too: the batch never ran, never a failure
             ledger.end_batch(jid, attempt, "refused")
             raise
         except Skip as s:
@@ -879,7 +951,9 @@ def _mine(steps, ledger, lang, job, record=True):
         never = f"{len(left)} words Anki Miner never made or turned down"
         ledger.set_state(jid, "mining", skipped=_skipped(ledger, jid, "mining", never))
     try:
-        ledger.set_state(jid, "mining", progress={"step": "naming"})     # the row's step (laptop round 5 #23)
+        with ledger.transaction():
+            ledger.set_state(jid, "mining", progress={"step": "naming"})     # the row's step (laptop round 5 #23)
+            ledger.forget_stop(jid)     # row 56: naming is past the stop point (`ledger.stoppable`): a press is over
         _name_media(steps, ledger, lang, job, picked)   # P2.4-4: one file a line, before Anki's next sync
     except Wait as w:
         raise Wait(w.reason, w.look, "mining") from None
@@ -890,8 +964,9 @@ def _mine(steps, ledger, lang, job, record=True):
 
 
 def _stop_pressed(ledger, jid):
-    """(Anki Miner's poll, on the runner's thread, every POLL_S.) Has *Stop* been pressed on the job? A read that
-    fails is no press (logged): the batch goes on."""
+    """(The job's check, `stopping.watching`: asked by every program the runner waits on, every second — Anki Miner's
+    poll and look-ups, tsubasa.) Has *Stop* been pressed on the job? A read that fails is no press (logged): the job
+    goes on."""
     try:
         return ledger.stop_asked(jid)
     except Exception:
@@ -900,26 +975,14 @@ def _stop_pressed(ledger, jid):
 
 
 def _stopped_mid_batch(steps, ledger, lang, job, record):
-    """#47: the batch Anki Miner ended at your *Stop*: its cards recorded in the store (made words, no receipt: the
-    episode isn't mined yet) and renamed, then the job waits for your next ask at mining (the words still unmade).
-    A store busy now is no matter: the resumed job records them all."""
+    """#47: the batch Anki Miner ended at your *Stop*: the job stops at mining as every stop does (`_stopped`: its
+    cards recorded and renamed, then it waits for your next ask, the words still unmade)."""
     words = (ledger.picked(job["id"]) or {}).get("words") or []
     if not any(_outcome(ledger, job["id"], w) in UNSETTLED for w in words):
         # every word settled before the cancel took (review A3): nothing left to stop — the job finishes its cards
         ledger.forget_stop(job["id"])
         return
-    now = ledger.job_by_id(job["id"]) or {}
-    ledger.mark_stopped(job["id"], now.get("asked_at"))
-    made = _made(ledger, job["id"])
-    if made and record:
-        try:
-            steps.record(lang, job, made, None, _tag(job))
-        except (Wait, Needs):               # review A7: the resumed job records them all
-            log.info("Connect: the store couldn't take job %s's cards now; they're recorded when it goes on",
-                     job["id"])
-        _name_media_at_end(steps, ledger, lang, job)
-    log.info("Connect: job %s stopped by you mid-batch (%d words made)", job["id"], len(made))
-    raise Wait(STOPPED_BY_YOU, look=False, resume="mining")
+    _stopped(steps, ledger, lang, job, "mining", record)
 
 
 PROGRESS_STEP = 5               # percent: the job's progress is saved when it moves this far, or its stage changes
@@ -2047,13 +2110,15 @@ def _on_disk(path):
     return not (getattr(st, "st_file_attributes", 0) & _PLACEHOLDER)
 
 
-def paired_video(pairing, find):
+def paired_video(pairing, find, on_disk=None):
     """The video a pairing names (`video_path`), on this computer -> its path; else, moved, the one `find(names, size)`
     (a video index's lookup) gives by its name and size, when its bytes say it is the paired video; else None. One
-    rule for Connect (`Runner.video`) and the window's ▶ (`app/services/play.py`): the two never disagree."""
+    rule for Connect (`Runner.video`) and the window's ▶ (`app/services/play.py`): the two never disagree. `on_disk`:
+    "on this computer" as the caller asks it (▶'s looks: a share offline waited on once a round), `_on_disk` unless
+    given."""
     from app.connect import videos
     named = pairing.get("video_path")
-    if _on_disk(named):
+    if (on_disk or _on_disk)(named):
         return named                        # the named path is trusted as it is: never read (a stat only)
     size = pairing.get("video_size")
     found = find([os.path.basename(named)], size if isinstance(size, int) and size > 0 else None)
@@ -2079,20 +2144,21 @@ def origin_of(pairing):
     return origin if isinstance(origin, str) and origin else None
 
 
-def beside_origin(pairing, exts=None, unlisted=None):
+def beside_origin(pairing, exts=None, unlisted=None, listings=None):
     """K21 (laptop fixes): the video beside the original an item's text was copied from (`origin_of`), with its name,
     on disk -> its path; else None (no record, another producer's, none there, a placeholder). A listing and a stat,
-    never a read. Qt-free: Connect's `video()` asks it after `beside(subtitle)`; ▶ asks it too, with `exts` and
-    `unlisted` as `beside` takes them (an audio item's ▶; a share offline)."""
+    never a read. Qt-free: Connect's `video()` asks it after `beside(subtitle)`; ▶ asks it too, with `exts`,
+    `unlisted` and `listings` as `beside` takes them (an audio item's ▶; a share offline; a round of ▶'s looks)."""
     origin = origin_of(pairing)
-    return beside(origin, exts, unlisted) if origin else None
+    return beside(origin, exts, unlisted, listings) if origin else None
 
 
 def beside(subtitle, exts=None, unlisted=None, listings=None):
     """A video next to the subtitle with its name (`Show - 05.mkv` for `Show - 05.ja.srt`), on disk -> its path; None
     when there's none, `unlisted` when its folder can't be listed (a share offline: the window's ▶ says so). `exts`:
     what is looked for, the video extensions unless given (an audio item's ▶ looks for audio). `listings` ({folder: its
-    names}, a caller's own — + Add's many files): each folder listed once across calls (H6)."""
+    names}, a caller's own — + Add's many files, ▶'s round of looks): each folder listed once across calls (H6), one
+    that couldn't be listed too (False: a share offline is tried once, never once a file)."""
     from app.episode_names import video_stems
     folder, name = os.path.split(subtitle)
     stems = video_stems(name)               # LM1a: its stem, without the marks the one rule reads, NFC and NFD
@@ -2101,9 +2167,11 @@ def beside(subtitle, exts=None, unlisted=None, listings=None):
         try:
             names = {n.lower(): n for n in os.listdir(folder or ".")}
         except OSError:
-            return unlisted
+            names = False
         if listings is not None:
             listings[folder] = names
+    if names is False:
+        return unlisted
     for s in stems:
         for ext in exts or VIDEO_EXTENSIONS:
             found = names.get((s + ext).lower())

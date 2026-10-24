@@ -2977,15 +2977,15 @@ class _AskFromWorker(QObject):
         self._answer = False
         self.card = None
         self.asked.connect(self._ask, Qt.ConnectionType.QueuedConnection)
+        self._gate = bridge.Gate(self)                    # the worker reaches it only so (`bridge.Gate`)
         # the wizard gone with its window (a question's card answers nothing then): the worker waits no longer
         wiz.destroyed.connect(lambda *_a, event=self._event: event.set())
 
     def __call__(self):
         self._event.clear()
         self._answer = False
-        try:
-            self.asked.emit()
-        except RuntimeError:                              # the wizard is gone
+        self._gate.emit("asked")
+        if not self._gate.open:                           # the wizard is gone
             return False
         self._event.wait(ASK_WAIT_S)
         return self._answer

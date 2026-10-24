@@ -13,7 +13,8 @@ from PyQt6.QtWidgets import QAbstractItemView, QFileDialog, QHBoxLayout, QListWi
 
 from app import frequency_lists
 from app.qt import bridge, confirm, strings
-from app.qt.windows import SecondaryWindow, open_url, say_in_bar
+from app.qt import press as qpress
+from app.qt.windows import SecondaryWindow, say_in_bar
 
 
 class FrequencyListsWindow(SecondaryWindow):
@@ -30,14 +31,17 @@ class FrequencyListsWindow(SecondaryWindow):
         self.list.itemSelectionChanged.connect(self._selection_changed)
         self.body.addWidget(self.list, 1)
         row = QHBoxLayout()
-        self.add_button = self._button(strings.FREQ_ADD, strings.FREQ_ADD_TIP, self.pick, row, "primary")
-        self.remove_button = self._button(strings.FREQ_REMOVE, strings.FREQ_REMOVE_NONE_TIP, self.ask_remove, row)
+        self.add_button = qpress.room(self._button(strings.FREQ_ADD, strings.FREQ_ADD_TIP, self.pick, row, "primary"))
+        self.remove_button = qpress.room(self._button(strings.FREQ_REMOVE, strings.FREQ_REMOVE_NONE_TIP,
+                                                      self.ask_remove, row))
         self.remove_button.setEnabled(False)
         row.addStretch(1)
-        self.get_button = self._button(strings.FREQ_GET, strings.FREQ_GET_TIP,
-                                       lambda: open_url(strings.FREQ_GET_URL), row)
-        self.credit_button = self._button(strings.FREQ_CREDIT, strings.FREQ_CREDIT_TIP,
-                                          lambda: open_url(strings.FREQ_CREDIT_URL), row, "chip")
+        self.get_button = qpress.room(self._button(strings.FREQ_GET, strings.FREQ_GET_TIP,
+                                                   lambda: qpress.open(self, strings.FREQ_GET_URL,
+                                                                       control=self.get_button), row))
+        self.credit_button = qpress.room(self._button(strings.FREQ_CREDIT, strings.FREQ_CREDIT_TIP,
+                                                      lambda: qpress.open(self, strings.FREQ_CREDIT_URL,
+                                                                          control=self.credit_button), row, "chip"))
         self.body.addLayout(row)
         self.read()
 
@@ -84,7 +88,7 @@ class FrequencyListsWindow(SecondaryWindow):
         self.read()
 
     def _selection_changed(self):
-        on = bool(self.list.selectedItems()) and not self.busy()
+        on = bool(self.list.selectedItems()) and (not self.busy() or qpress.mark(self.remove_button) is not None)
         if self.remove_button.isEnabled() != on:
             self.remove_button.setEnabled(on)
             self.remove_button.setToolTip(strings.FREQ_REMOVE_TIP if on else strings.FREQ_REMOVE_NONE_TIP)
@@ -103,9 +107,7 @@ class FrequencyListsWindow(SecondaryWindow):
     def add(self, paths):
         """Copy `paths` in for the window's language, on a worker."""
         language = self.language
-        self._writing(True)
-        bridge.run_in_worker(_add_all, list(paths), language, then=lambda lines: self._written(language, lines),
-                             failed=lambda info: self._written(language, [str(info[0])]))
+        self._write(self.add_button, _add_all, list(paths), language)
 
     # --- removing --------------------------------------------------------------------------------------------- #
     def ask_remove(self):
@@ -129,15 +131,26 @@ class FrequencyListsWindow(SecondaryWindow):
     def remove(self, names, language):
         if language != self.language or self.busy():
             return                                        # asked for another language's lists: nothing moves
-        self._writing(True)
-        bridge.run_in_worker(_remove_all, list(names), language, then=lambda lines: self._written(language, lines),
-                             failed=lambda info: self._written(language, [str(info[0])]))
+        self._write(self.remove_button, _remove_all, list(names), language)
 
     # --- a write and its line --------------------------------------------------------------------------------- #
-    def _writing(self, on):
-        if on:
-            self.begin_write()
-        self.add_button.setEnabled(not on)
+    def _write(self, control, fn, names, language):
+        """`fn(names, language)` on a worker — `control`'s arc painted first (round 8 row 45: never greyed); a press
+        meanwhile starts nothing — then the list read again with its line."""
+        if self.busy():
+            return
+        self.begin_write()
+        if qpress.run(control, "freq:write", fn, names, language, win=self,
+                      then=lambda lines: self._written(language, lines),
+                      failed=lambda info: self._written(language, [str(info[0])])) is None:
+            self.end_write()                              # (one under way: the window was busy, nothing started)
+        self._writing()
+
+    def _writing(self):
+        """While a write is under way the other button is greyed (one at a time); the pressed one keeps its look."""
+        add = not self.busy() or qpress.mark(self.add_button) is not None
+        if self.add_button.isEnabled() != add:
+            self.add_button.setEnabled(add)
         self._selection_changed()
 
     def _written(self, language, lines):
@@ -146,8 +159,8 @@ class FrequencyListsWindow(SecondaryWindow):
             if line:
                 say_in_bar(self.shell, line)              # (nothing once the main window is gone too)
             return
-        self._writing(False)
         self.end_write(line)
+        self._writing()                                   # (after: no write under way, so both buttons are back)
         if language == self.language:
             self.read(then_say=line)
 

@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (QAbstractItemView, QButtonGroup, QHBoxLayout, QLabe
                              QListWidgetItem, QPlainTextEdit, QPushButton, QStyledItemDelegate, QWidget)
 
 from app.qt import bridge, confirm
+from app.qt import press as qpress
 from app.qt import word_lists_strings as s
 from app.qt.windows import SecondaryWindow, say_in_bar, show
 from app.services import word_lists
@@ -139,7 +140,7 @@ class WordListsWindow(SecondaryWindow):
         self.add_field.setToolTip(s.WORD_LISTS_ADD_FIELD_TIP)
         self.add_field.returnPressed.connect(self.add_typed)
         row.addWidget(self.add_field, 1)
-        self.add_button = self._button(s.WORD_LISTS_ADD, s.WORD_LISTS_ADD_TIP, self.add_typed, row)
+        self.add_button = qpress.room(self._button(s.WORD_LISTS_ADD, s.WORD_LISTS_ADD_TIP, self.add_typed, row))
         self.paste_button = self._button(s.WORD_LISTS_PASTE, s.WORD_LISTS_PASTE_TIP, self._toggle_paste, row)
         self.paste_button.setCheckable(True)
         self.body.addLayout(row)
@@ -301,7 +302,7 @@ class WordListsWindow(SecondaryWindow):
         words = [w for w in _SPLIT.split(self.add_field.text()) if w]
         if words and not self.busy():
             self.add_field.clear()
-            self._write(True, words)
+            self._write(True, words, control=self.add_button)
 
     def add_kept(self):
         words = [w for w, on in self.kept()]
@@ -309,34 +310,35 @@ class WordListsWindow(SecondaryWindow):
             self._clear_chips()
             self._write(True, words)
 
-    def _write(self, adding, words, source=None):
+    def _write(self, adding, words, source=None, control=None):
         """`word_lists.add` (`adding`) or `.remove` of `words` on a worker; then the list is read again with the
-        write's line."""
+        write's line. Round 8 row 45: `control`'s arc (*Add*), or the window's corner arc (a row's ✕, *Add N kept*,
+        whose chips go as it is pressed), painted before the worker — never greyed; one write at a time."""
         if self.busy():
             return
         kind, language = self.kind, self.language
         fn = word_lists.add if adding else word_lists.remove
         args = (kind, language, list(words)) + (() if adding else (source,))
         self._writing(True)
-        bridge.run_in_worker(fn, *args, then=lambda change: self._written(kind, language, _line(change, adding)),
-                             failed=lambda info: self._written(kind, language,
-                                                               s.WORD_LISTS_WRITE_FAILED.format(why=info[0])))
+        if qpress.run(control, "words:write", fn, *args, win=self,
+                      then=lambda change: self._written(kind, language, _line(change, adding)),
+                      failed=lambda info: self._written(kind, language,
+                                                        s.WORD_LISTS_WRITE_FAILED.format(why=info[0]))) is None:
+            self.end_write()                              # (one under way: the window was busy, nothing started)
+            self._writing(False)
 
     def _writing(self, on):
         if on:
             self.begin_write()
-        for w in (self.list, self.add_field, self.add_button, self.add_kept_button):
-            w.setEnabled(not on)
-        if not on:
-            self._kept_changed()
+        self._kept_changed()
 
     def _written(self, kind, language, line):
         if self.gone:                                     # the window closed meanwhile: the bar says what was done
             if line:
                 say_in_bar(self.shell, line)
             return
-        self._writing(False)
         self.end_write(line)
+        self._writing(False)                              # (after: no write under way)
         if (kind, language) == (self.kind, self.language):
             self.read(then_say=line)
 

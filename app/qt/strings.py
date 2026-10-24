@@ -503,6 +503,27 @@ FOOT_CONNECT_TIP = "{line}\n\n" + BAR_CONNECT_TIP
 FOOT_ANKI_WAITING = "Anki · {n:,} waiting"
 FOOT_ANKI_WAITING_TIP = "{n:,} new notes wait in Anki, in the decks the sync reads"   # backlog notes, not cards (AD-8)
 
+# --- the phase strip (Sonic 2026-10-23, build 6; `app/qt/phase_strip.py`): five circles at the bar's bottom left, each
+# one's hover its name, a line per job under way, then the last one that ended. No buttons in it.
+PHASE_STRIP_NAME = "What's running"
+PHASE_NAMES = {"arrivals": "Arrivals", "surasura": "Surasura", "miner": "Anki Miner", "junban": "Junban 順",
+               "anki": "Anki"}
+PHASE_MARKS = {"arrivals": "届", "surasura": "ス", "junban": "順"}       # Anki Miner and Anki show their logos
+PHASE_ABOUT = {
+    "arrivals": "Looking at your folders, imports and copies",
+    "surasura": "Generate, the indexer and the sentence dictionary",
+    "miner": "Surasura Connect making cards with Anki Miner",
+    "junban": "Anki's order for your new cards, and Backfill",
+    "anki": "Your known words from Anki",
+}
+PHASE_IDLE = "Nothing under way"
+PHASE_DONE = "Done {time}"
+PHASE_STOPPED = "Stopped {time}"
+PHASE_FAILED = "Failed {time}: {why}"
+PHASE_FAILED_NOW = "Failed: {why}"
+PHASE_NEEDS = "Needs you: {why}"
+PHASE_TIME = "%H:%M"
+
 # --- W3.1a drag: the window's writer (app/services/moves.py `Writer(words=MOVE_WORDS)`, its notes: moves.WORDS's keys)
 MOVE_WORDS = {
     "saving": "Saving your moves…",

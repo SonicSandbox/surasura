@@ -969,8 +969,8 @@ def test_bar_replan_a_snapshot_that_changes_nothing_they_show_repaints_none_of_t
     painted = {m: win.status_paints[m] for m in marks}
     snap = world.status.snapshot()
     win.show_status(snap._replace(taken_at=snap.taken_at + 1))
-    win.show_status(snap._replace(lines=("Generating · Counting words 1 / 2",)))
-    assert win.bar_line.full() == "Generating · Counting words 1 / 2"
+    win.show_status(snap._replace(lines=("Generating · Counting words 1 / 2",), bar_lines=("Updating",)))
+    assert win.bar_line.full() == "Updating"                    # (Q5: the line keeps what no phase circle shows)
     assert {m: win.status_paints[m] for m in marks} == painted
 
 
@@ -988,9 +988,10 @@ def test_the_footers_one_slot_is_the_failure_then_the_update_chip_then_the_statu
     """W31A-1: the update chip and the failure line (with *Open the logs folder*) take the status line's place while
     they apply — the failure first — and when they clear the status line is back as it was."""
     win, d = world.win, world.d
-    job = world.registry.record("anki-sync", "Updating known words from Anki", automatic=True)
+    # (a job no phase circle shows — the update's — keeps the status line, Q5)
+    job = world.registry.record("update", "Downloading the update", automatic=True)
     try:
-        assert wait_until(lambda: win.bar_line.full() == "Updating known words from Anki")
+        assert wait_until(lambda: win.bar_line.full() == "Downloading the update")
         assert _slot(world) == "line"
         _offer(world)                                                   # an update on offer: the chip takes the slot
         assert wait_until(lambda: _slot(world) == "update")
@@ -1002,7 +1003,7 @@ def test_the_footers_one_slot_is_the_failure_then_the_update_chip_then_the_statu
         assert not win.logs_button.isVisibleTo(win)
         world.updates.push(state=U.NONE)                                # nothing on offer: the status line, as it was
         assert wait_until(lambda: _slot(world) == "line")
-        assert win.bar_line.full() == "Updating known words from Anki"
+        assert win.bar_line.full() == "Downloading the update"
     finally:
         job.finish()
 
@@ -1039,9 +1040,9 @@ def test_the_slot_repaints_only_when_what_holds_it_changes(world):
     before = ({p: win.status_paints.get(p, 0) for p in parts}, d.paints.get(d.update_mark, 0))
     snap = world.status.snapshot()
     win.show_status(snap._replace(taken_at=snap.taken_at + 1))
-    win.show_status(snap._replace(lines=("Generating · Counting words 1 / 2",)))
+    win.show_status(snap._replace(lines=("Generating · Counting words 1 / 2",), bar_lines=("Updating",)))
     assert ({p: win.status_paints.get(p, 0) for p in parts}, d.paints.get(d.update_mark, 0)) == before
-    assert win.bar_line.full() == "Generating · Counting words 1 / 2"   # kept for when the slot is the line's again
+    assert win.bar_line.full() == "Updating"            # kept for when the slot is the line's again
 
 
 def test_the_re_order_and_connect_lines_are_small_quiet_marks_with_their_words_in_the_hover(world):
@@ -1159,7 +1160,7 @@ def test_quit_lets_an_anki_write_finish_and_runs_the_close_chores_to_the_end(qap
                             lambda j: threading.Timer(0.6, j.finish).start(), automatic=True, on_quit="wait")
     monkeypatch.setattr(w.chores, "close_store", lambda: (time.sleep(0.6), finished.append("chores.close_store")))
     monkeypatch.setattr(QApplication, "quit", staticmethod(lambda: None))
-    assert wait_until(lambda: A.JUNBAN_LABEL in w.win.bar_line.full())
+    assert wait_until(lambda: _bar_names(w.win, A.JUNBAN_LABEL))
     w.win._quit_for_update()                                    # the update hands over: the window goes at once
     assert not w.win.isVisible()
     w.services.shutdown(0.1)
@@ -1183,7 +1184,12 @@ def _quit_past_the_sheet(world):
 
 
 def _bar_shows(world, text):
-    return wait_until(lambda: text in world.win.bar_line.full())
+    """The bar names it: in its status line, or (a job a circle shows: the phase strip, Q5) in that circle's hover."""
+    return wait_until(lambda: _bar_names(world.win, text))
+
+
+def _bar_names(win, text):
+    return text in win.bar_line.full() or any(text in line for st in win.phase.states.values() for line in st.lines)
 
 
 def test_closing_while_an_anki_write_runs_keeps_the_window_with_one_line_until_it_ends(world):

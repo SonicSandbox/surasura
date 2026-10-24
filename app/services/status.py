@@ -46,10 +46,14 @@ from collections import namedtuple
 from app.services import jobs as jobs_module
 from app.services import standing
 
-Entry = namedtuple("Entry", "text at seen")
+Entry = namedtuple("Entry", "text at seen source", defaults=(None,))
+#   source: where it came from — a failure provider's name (`generate`) or `cli:<verb>` (a command line's) — so the
+#   phase strip can place it on its circle (`app/services/phase.py`); None: nowhere (it stays in Needs you)
 Snapshot = namedtuple("Snapshot", "lines failure needs_you ankiweb connect logs taken_at replan journey backlog "
-                                 "failure_key", defaults=(None, None, None, None))
+                                 "failure_key bar_lines", defaults=(None, None, None, None, None))
 #   failure_key: the bar's failure's standing key (round 8 row 54: ✕ hides it until a newer one; `dismiss_failure`)
+#   bar_lines: `lines` less the jobs the window shows elsewhere (`leave_out`: the phase strip's circles, Sonic's Q5 —
+#   no job said twice); None while nothing is left out
 NEEDS_YOU_KEPT = 50
 LINE_PROVIDERS = ("ankiweb", "connect", "replan", "journey", "backlog")   # `journey`: True / False; `backlog`: a count
 TICKS = {"connect": 3.0, "ankiweb": 1.0, "backlog": 3.0}  # seconds between a ticking provider's looks (`poll`); a
@@ -89,6 +93,8 @@ class StatusService:
         self._lock = threading.Lock()
         self._deliver = threading.RLock()
         self._lines = ()
+        self._bar_lines = None
+        self._placed = None              # `leave_out`'s: view -> whether the window shows that job elsewhere
         self._failure = None
         self._failure_from = None        # the failure provider whose line the bar's failure is (None: a command line's)
         self._failure_at = None          # ... when it came, and its count this session (its standing key: a newer one,
@@ -151,6 +157,15 @@ class StatusService:
                 return
             self._refreshing = True
         threading.Thread(target=self._refresh_while_asked, name="status-refresh", daemon=True).start()
+
+    def leave_out(self, placed):
+        """The window shows some jobs elsewhere (the phase strip: `placed(view)` True): the snapshot's `bar_lines`
+        leave them out (Sonic's Q5: the status line keeps what no circle shows); `lines` still name every one (the
+        header's hairline runs while any does)."""
+        with self._lock:
+            self._placed = placed
+            self._lines = None                  # worked out again now
+        self._jobs_changed(self.registry.snapshot())
 
     def mark_seen(self):
         """The user looked at *Needs you*: its entries stop counting, and stay listed. Nothing unseen: no new snapshot
@@ -231,7 +246,8 @@ class StatusService:
                     self._failure, self._failure_from = events.plain(newest), None
                     self._failures += 1
                     self._failure_at = f"{newest.get('time')}#{self._failures}"
-                    self._needs.insert(0, Entry(self._failure, newest.get("time"), False))
+                    self._needs.insert(0, Entry(self._failure, newest.get("time"), False,
+                                                f"cli:{newest.get('verb') or ''}"))
                 for name in FAILURE_PROVIDERS:
                     if name not in extra:
                         continue                                            # not asked this time
@@ -241,7 +257,7 @@ class StatusService:
                         self._failures += 1
                         self._failure_at = f"{time.strftime('%Y-%m-%dT%H:%M:%S')}#{self._failures}"
                         if name not in LISTED_BY_THE_WINDOW:
-                            self._needs.insert(0, Entry(line, time.strftime("%Y-%m-%dT%H:%M:%S"), False))
+                            self._needs.insert(0, Entry(line, time.strftime("%Y-%m-%dT%H:%M:%S"), False, name))
                     elif not line and self._failure_from == name:
                         self._failure, self._failure_from = None, None      # over, or looked at: off the bar
                     self._provided[name] = line
@@ -251,12 +267,17 @@ class StatusService:
             self._publish()
 
     def _jobs_changed(self, views):
-        lines = tuple(job_line(v) for v in views if v.state in (jobs_module.RUNNING, jobs_module.CANCELLING,
-                                                                 jobs_module.WAITING))
+        live = [v for v in views if v.state in (jobs_module.RUNNING, jobs_module.CANCELLING, jobs_module.WAITING)]
+        lines = tuple(job_line(v) for v in live)
         with self._lock:
-            if lines == self._lines:
+            placed = self._placed
+        bar = None
+        if placed is not None:
+            bar = tuple(job_line(v) for v in live if not _placed(placed, v))
+        with self._lock:
+            if lines == self._lines and bar == self._bar_lines:
                 return
-            self._lines = lines
+            self._lines, self._bar_lines = lines, bar
         self._publish()
 
     def _logs(self):
@@ -273,7 +294,8 @@ class StatusService:
         failure = self._failure if self._hidden.shows(key, standing.FAILURE) else None
         return Snapshot(self._lines, failure, tuple(self._needs), self._extra.get("ankiweb"),
                         self._extra.get("connect"), self._logs_path, time.time(), self._extra.get("replan"),
-                        self._extra.get("journey"), self._extra.get("backlog"), key if failure else None)
+                        self._extra.get("journey"), self._extra.get("backlog"), key if failure else None,
+                        self._bar_lines)
 
     def _publish(self):
         """A new snapshot, delivered one at a time and only while it is the newest (never an older one last), and only
@@ -294,6 +316,14 @@ class StatusService:
                     print(f"Status: a listener failed: {e}")
 
 
+def _placed(placed, view):
+    try:
+        return bool(placed(view))
+    except Exception as e:                              # a fault of the window's rule leaves the job on the line
+        print(f"Status: the left-out rule failed: {e}")
+        return False
+
+
 def _content(snap):
     """What a snapshot says, its time aside: two that say the same are one to a subscriber."""
     return snap._replace(taken_at=None)
@@ -303,7 +333,36 @@ def _content(snap):
 CONNECT_JOB_KIND = jobs_module.CONNECT_KIND   # Connect's mining as the window's registry lists it (row 40; row 35's sheet)
 CONNECT_JOB_LABEL = "Making cards"
 CONNECT_JOB_MISSED = 2                    # looks without mining before its job ends (a gap between two batches)
-_mirrored = weakref.WeakKeyDictionary()   # registry -> [its Connect job or None, its step, looks missed]
+# The phase strip (its card's item 3; Michi's meanings, `app/connect/feed.py`): Connect's episodes that wait, each
+# class one recorded *waiting* job — never the mining kind (the close names and keeps that one alone, row 35):
+# `mine-wait` its queued ones (waiting its turn, asked, on battery: Anki Miner's circle, a still arc), and the ones
+# that wait on you — no video or not timed to its video (`needs`: Anki Miner's circle, amber) and Anki closed
+# (`mine-anki`, `needs`: Anki's circle, amber). One you stopped waits for your *Mine now*: no job (your own choice).
+CONNECT_WAIT_KIND = "mine-wait"
+CONNECT_ANKI_KIND = "mine-anki"
+CONNECT_WAIT_LABEL = "Connect"
+CONNECT_WAITS = {"waiting": "waiting", "asked": "waiting", "battery": "waiting", "no_video": "needs",
+                 "not_timed": "needs", "anki": "anki"}        # a feed Item's kind -> the slot it waits in
+_SLOTS = {"mining": (CONNECT_JOB_KIND, CONNECT_JOB_LABEL), "waiting": (CONNECT_WAIT_KIND, CONNECT_WAIT_LABEL),
+          "needs": (CONNECT_WAIT_KIND, CONNECT_WAIT_LABEL), "anki": (CONNECT_ANKI_KIND, CONNECT_WAIT_LABEL)}
+_mirrored = weakref.WeakKeyDictionary()   # registry -> {slot: [its job or None, its step or wait, looks missed]}
+
+
+def _waits(items):
+    """{slot: (reason, needs)} of the feed's waiting items (the words of the one, or of each kind and its count)."""
+    from app.connect import feed as connect_feed, runner
+    kinds = {}
+    for it in items:
+        slot = CONNECT_WAITS.get(it.kind)
+        if slot is None or it.tip == runner.STOPPED_BY_YOU:
+            continue
+        kinds.setdefault(slot, {}).setdefault(it.kind, 0)
+        kinds[slot][it.kind] += 1
+    out = {}
+    for slot, counts in kinds.items():
+        words = "; ".join(connect_feed.WORDS[k] + (f" ({n})" if n > 1 else "") for k, n in counts.items())
+        out[slot] = (words, None) if slot == "waiting" else (words, words)
+    return out
 
 
 def mirror_connect(registry, got):
@@ -312,29 +371,50 @@ def mirror_connect(registry, got):
     lists it as a recorded job (`record`: never holding a job back; `detach` at quit: Connect goes on) — the line reads
     *Making cards · <its step> 40%* — told only when its step moved (S19), and ended after `CONNECT_JOB_MISSED` looks
     with none (no blink between two batches), or at once when the feed is gone (`got` None: another language's, the
-    window's provider replaced). `connect_line(registry=)` calls it each look. A worker's call (the status service's
-    refresh, one at a time)."""
+    window's provider replaced). The phase strip: the episodes that wait are recorded too, one waiting job a class
+    (`CONNECT_WAITS`: queued, waiting on you, waiting for Anki), its words moved only when they changed and ended as
+    the mining one is. `connect_line(registry=)` calls it each look. A worker's call (the status service's refresh,
+    one at a time)."""
     if registry is None:
         return
-    held = _mirrored.setdefault(registry, [None, None, 0])
-    item = next((it for it in (got.items.values() if got is not None and got.on else ())
-                 if it.kind == "mining"), None)
-    if item is None:
-        held[2] += 1
-        if held[0] is not None and (got is None or held[2] >= CONNECT_JOB_MISSED):
-            held[0].finish()
-            held[:] = [None, None, 0]
-        return
-    held[2] = 0
-    if held[0] is None or held[0].state not in jobs_module.LIVE:
-        held[:] = [registry.record(CONNECT_JOB_KIND, CONNECT_JOB_LABEL, automatic=True, on_quit="detach"), None, 0]
-    if item.progress is not None:
-        step = (f"{item.doing} {item.progress}%" if item.doing else f"{item.progress}%", None, None)
-    else:
-        step = (item.doing, item.made, item.total) if item.total else (item.doing, None, None)
-    if step != held[1] and any(x is not None for x in step):
-        held[1] = step
-        held[0].progress(*step)
+    held = _mirrored.setdefault(registry, {})
+    items = tuple(got.items.values()) if got is not None and got.on else ()
+    item = next((it for it in items if it.kind == "mining"), None)
+    wanted = _waits(items)
+    if item is not None:
+        if item.progress is not None:
+            step = (f"{item.doing} {item.progress}%" if item.doing else f"{item.progress}%", None, None)
+        else:
+            step = (item.doing, item.made, item.total) if item.total else (item.doing, None, None)
+        wanted["mining"] = step
+    for slot in _SLOTS:
+        got_slot = held.setdefault(slot, [None, None, 0])
+        if slot not in wanted:
+            got_slot[2] += 1
+            if got_slot[0] is not None and (got is None or got_slot[2] >= CONNECT_JOB_MISSED):
+                got_slot[0].finish()
+                got_slot[:] = [None, None, 0]
+            continue
+        got_slot[2] = 0
+        now = wanted[slot]
+        kind, label = _SLOTS[slot]
+        if got_slot[0] is None or got_slot[0].state not in jobs_module.LIVE:
+            if slot == "mining":
+                got_slot[:] = [registry.record(kind, label, automatic=True, on_quit="detach"), None, 0]
+            else:
+                reason, needs = now
+                got_slot[:] = [registry.record(kind, label, automatic=True, on_quit="detach", reason=reason,
+                                               needs=needs), now, 0]
+                continue
+        if now == got_slot[1]:
+            continue
+        if slot == "mining":
+            if any(x is not None for x in now):
+                got_slot[1] = now
+                got_slot[0].progress(*now)
+        else:
+            got_slot[1] = now
+            got_slot[0].hold(*now)
 
 
 def connect_line(language, settings, stamp=None, read=None, feed=None, registry=None):

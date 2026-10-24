@@ -92,6 +92,10 @@ class Presses:
     def any_live(self):
         return any(p.live() for p in self._by_key.values())
 
+    def live_ones(self):
+        """The presses live now (the phase strip lights their circles before any job exists)."""
+        return tuple(p for p in self._by_key.values() if p.live())
+
     def subscribe(self, callback):
         """`callback(press)` after any press changed."""
         self._subscribers.append(callback)

@@ -213,7 +213,7 @@ def test_a_missing_or_unreadable_file_answers_none_never_a_crash(tmp_path, monke
 # --- the credits --------------------------------------------------------------------------------------------------- #
 def test_the_credits_carry_each_owners_notice():
     lines = (
-        "Anki® is a registered trademark of Ankitects Pty Ltd. Surasura is not affiliated with or endorsed by Anki.",
+        "Anki® is a registered trademark of Ankitects Pty Ltd. Surasura is not affiliated with or endorsed by the Anki project",
         "https://apps.ankiweb.net",
         "AGPL-3.0",
         "Anki Miner icon © 0xzerolight (Zero), GPL-3.0",

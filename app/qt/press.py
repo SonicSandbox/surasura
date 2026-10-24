@@ -275,7 +275,7 @@ def _unmark(got):
 def _restore(p, win):
     got = _painted.pop(p, None)
     _busy.pop(p, None)
-    if win is not None and not sip.isdeleted(win) and hasattr(win, "unsay"):
+    if not _gone(win) and hasattr(win, "unsay"):
         win.unsay(p.key)
     if got is not None:
         _unmark(got[1])
@@ -287,6 +287,12 @@ def _restore(p, win):
             print(f"A press's mark wasn't taken off: {e!r}", file=sys.stderr)
 
 
+def _gone(win):
+    """No window, or a Qt one already destroyed (P5: a window that is no Qt object — a page's shell standing in for
+    the main window — is never gone)."""
+    return win is None or (isinstance(win, sip.simplewrapper) and sip.isdeleted(win))
+
+
 def _line(win):
     """The line a window's held words show in: the main window's bar, a secondary window's status line."""
     return getattr(win, "bar_line", None) or getattr(win, "status", None)
@@ -294,11 +300,11 @@ def _line(win):
 
 def _hold(win, key, words):
     """`words` held in `win`'s line for the press `key`, painted before this returns."""
-    if win is None or sip.isdeleted(win) or not hasattr(win, "say"):
+    if _gone(win) or not hasattr(win, "say"):
         return
     win.say(words, hold=key)
     line = _line(win)
-    if line is not None and line.isVisible():
+    if line is not None and hasattr(line, "isVisible") and line.isVisible():
         line.repaint()
 
 
@@ -446,7 +452,7 @@ def report(p, win, kind, value=None):
         return
     if words:
         _hold(win, p.key, words)
-    elif win is not None and not sip.isdeleted(win) and hasattr(win, "unsay"):
+    elif not _gone(win) and hasattr(win, "unsay"):
         win.unsay(p.key)
 
 
@@ -555,7 +561,7 @@ def open(win, target, control=None, key=None, at=None, then=None, failed=None): 
     def broke(info):
         if failed is not None:
             failed(info)
-        elif win is not None and not sip.isdeleted(win) and hasattr(win, "say"):
+        elif not _gone(win) and hasattr(win, "say"):
             name = target if isinstance(target, str) else ""
             if "://" not in name:
                 name = os.path.basename(name.rstrip("\\/")) or name

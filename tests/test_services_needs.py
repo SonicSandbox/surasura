@@ -420,7 +420,8 @@ def test_a_gone_files_line_names_its_tier_as_learners_read_it_never_the_folder()
                      f"Ep 5 · not at 6+ Months/{KUSURI}/{KUSURI} - 05.srt",
                      "Ep 1 · not at Library/雪中悍刀行/雪中悍刀行 第01集.srt"]
     assert not any(f in t for t in texts for f in ("HighPriority", "LowPriority", "GoalContent"))
-    assert needs.shown("") == "" and needs.shown("HighPriority") == "NOW" and needs.shown("Graduated/x.srt") ==         "Graduated/x.srt"
+    assert needs.shown("") == "" and needs.shown("HighPriority") == "NOW"
+    assert needs.shown("Graduated/x.srt") == "Graduated/x.srt"
 
 
 # --- failures and Connect's entries -------------------------------------------------------------------------------- #

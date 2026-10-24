@@ -14,8 +14,11 @@ rows' packages — never by the page itself.
   from it (*not reachable now* when the last look couldn't reach it) and *Stop reading* (`Store.stop_source` on the
   looks' worker: its items and their records stay — the tooltip says so, and the bar after); ***Skipped folders*** (K6)
   under them, each with ***Read again*** (`SourceLooks.read_again` on the looks' worker: its files come back at once),
-  hidden while there is none; ***Look again*** (Refresh: `ShellWindow.refresh_sources`, every folder in full) and *Add a
-  folder…* (the page's one) at its foot. Only the lines that changed are touched (S19).
+  hidden while there is none, then ***Skip a folder…*** (Q7, shown with none skipped too: the wizard's picker, the
+  store's rule asked on the looks' worker — refused, why in the window's line — then ⋯'s own write,
+  `item_menu.give_skip`, its toast with Undo; `skips_moved` reads the lines again as any skip lands or is undone);
+  ***Look again*** (Refresh: `ShellWindow.refresh_sources`, every folder in full) and *Add a folder…* (the page's one)
+  at its foot. Only the lines that changed are touched (S19).
 - **Both shown from the shell's looks** (`ShellWindow.sources`, `sources_seen`; `_heard`, one rule for both): asked once
   as each is made, repainted when a look, an add, a stop or a read-again lands. What is shown belongs to its language's
   library: another language's summary replaces it, a language left's late answer is dropped, and *Stop reading* names
@@ -31,6 +34,8 @@ or it can't be written, and while one runs. No restore button (the backup's `res
 GUI_Design_Guidelines_Qt: the page's controls and label styles, the window's base (Esc closes it), a tooltip on every
 button.
 """
+import os
+
 from PyQt6 import sip
 from PyQt6.QtCore import QObject, Qt
 from PyQt6.QtWidgets import QFileDialog, QFrame, QHBoxLayout, QLabel, QScrollArea, QVBoxLayout, QWidget
@@ -40,6 +45,7 @@ from app.qt import press as qpress
 from app.qt import style, windows
 from app.qt import settings_controls as sc
 from app.qt import settings_strings as S
+from app.qt import wizard_strings as W
 from app.qt.settings_rules import _SourceWords
 from app.services.source_looks import offline
 
@@ -150,6 +156,18 @@ def _acting(shell):
 def _press_key(key):
     """A stop's or a read-again's press key: ("stop" | "read", language, id) -> "folders:stop:ja:3"."""
     return "folders:" + ":".join(str(part) for part in key)
+
+
+def skips_moved(shell):
+    """A skip saved or undone (K6 / Q7: ⋯'s, New arrivals', *Skip a folder…*'s — the drag controller's `_skips_moved`):
+    the skipped folders and the page's count read again (`looks.listing()`, on the looks' worker) while either shows —
+    the *Library folders* window open, or the Settings page mounted. -> True when asked."""
+    looks = _looks(shell)
+    if looks is None or not hasattr(looks, "listing"):
+        return False
+    if windows.opened(shell, WINDOW) is None and getattr(shell, "settings_page", None) is None:
+        return False
+    return bool(looks.listing())
 
 
 def add_folder(shell, parent, folder=None):
@@ -331,6 +349,16 @@ class FoldersWindow(windows.SecondaryWindow):
         skips.addWidget(self.skip_title)
         self.skip_box.setVisible(False)
         column.addWidget(self.skip_box)
+        skip_line = QHBoxLayout()                         # Q7: *Skip a folder…* under them, shown with none skipped too
+        skip_line.setContentsMargins(0, 0, 0, 0)
+        self.skip = qpress.room(sc.Door(S.SOURCES_SKIP, tooltip=S.SOURCES_SKIP_TIP, parent=self.box))
+        self.skip.clicked.connect(lambda _c=False: self.skip_folder())
+        qpress.adopt(self.skip, _press_key(("skip", self.lines_of)), win=shell)   # opened again while it is checked
+        skip_line.addWidget(self.skip)
+        skip_line.addStretch(1)
+        column.addLayout(skip_line)
+        # the folder picker (the system's own dialog, as the wizard's; tests replace it)
+        self.pick_dialog = lambda title, start: QFileDialog.getExistingDirectory(self, title, start)
         column.addStretch(1)
         self.scroll.setWidget(self.box)
         self.body.addWidget(self.scroll, 1)
@@ -350,6 +378,7 @@ class FoldersWindow(windows.SecondaryWindow):
             seen.connect(self._seen)
         self.show_sources(getattr(shell, "sources", ()) or ())
         self._enable()
+        self.look.setFocus()                              # it opens on *Look again*, as before *Skip a folder…* (Q7)
         if looks is not None:
             looks.listing()                               # the counts and the skipped folders, on the looks' worker
 
@@ -362,6 +391,7 @@ class FoldersWindow(windows.SecondaryWindow):
         no_library = _looks(self.shell) is None
         _turn(self.look, not no_library, S.STORE_NO_LIBRARY_TIP if no_library else S.SOURCES_LOOK_TIP)
         _turn(self.add, why is None, why or S.SOURCES_ADD_TIP)
+        _turn(self.skip, why is None, why or S.SOURCES_SKIP_TIP)
         acting = _acting(self.shell)
         for kind, lines, button in (("stop", self.lines, "stop"), ("read", self.skipped, "read")):
             for key, line in lines.items():
@@ -377,13 +407,13 @@ class FoldersWindow(windows.SecondaryWindow):
         return look_again(self.shell, control=self.look)
 
     def _tab_order(self):
-        """Tab as the window reads: the folders' *Stop reading*, the skipped folders' *Read again*, *Look again*,
-        *Add a folder…* (lines made later would otherwise join the chain's end)."""
+        """Tab as the window reads: the folders' *Stop reading*, the skipped folders' *Read again*, *Skip a folder…*,
+        *Look again*, *Add a folder…* (lines made later would otherwise join the chain's end)."""
         def shown(layout):
             return [layout.itemAt(i).widget() for i in range(layout.count())]
         chain = [w.stop for w in shown(self.box.layout()) if isinstance(w, SourceLine)]
         chain += [w.read for w in shown(self.skip_box.layout()) if isinstance(w, SkippedLine)]
-        chain += [self.look, self.add]
+        chain += [self.skip, self.look, self.add]
         for a, b in zip(chain, chain[1:]):
             QWidget.setTabOrder(a, b)
 
@@ -517,6 +547,57 @@ class FoldersWindow(windows.SecondaryWindow):
         if not looks.read_again(folder_id, relay.call, language=self.lines_of):
             relay.deleteLater()
             self._answered(key, failed=True)
+            return False
+        return True
+
+    def skip_folder(self, path=None):
+        """Q7 *Skip a folder…*: the wizard's picker (`pick_dialog`, `SKIP_TITLE`) starting in the first folder being read
+        (`path`: tests), then a press — its arc from the press — while the store's own rule is asked on the looks'
+        worker (`SourceLooks.skip_refused`): refused, `FOLDER_REFUSED` in this window's line; else the window's writer
+        skips it (`item_menu.give_skip`, ⋯'s one rule: one change, its toast with Undo; a refusal meanwhile is the
+        writer's note), the arc off once it is handed over. Its line and the page's count follow the change's landing
+        (`skips_moved`). A press meanwhile does nothing. -> True when it was asked."""
+        looks = _looks(self.shell)
+        key = _press_key(("skip", self.lines_of))
+        moves = getattr(self.shell, "moves", None)
+        if looks is None or moves is None or why_not(self.shell) is not None or qpress.live(self.shell, key):
+            return False
+        if path is None:
+            start = next((line.source["path"] for line in self.lines.values()), "")
+            path = self.pick_dialog(W.SKIP_TITLE, start)
+            if not path:
+                return False
+        path = os.path.normpath(path)
+        language = self.lines_of
+        from app.qt import bridge, item_menu
+        relay = bridge.Relay(self.shell)                 # the answer heard even once the window closed
+        p = qpress.begin(self.skip, key, win=self.shell)  # its arc, painted before the looks' worker is asked
+        if p is None:
+            relay.deleteLater()
+            return False
+
+        def checked(why):
+            relay.deleteLater()
+            moves = getattr(self.shell, "moves", None)
+            if why or moves is None or language != getattr(self.shell, "language", language):
+                qpress.end(p, self.shell, failed=True, why=why)
+                if why:
+                    text = W.FOLDER_REFUSED.format(folder=path, why=why)
+                    if self.gone:
+                        windows.say_in_bar(self.shell, text)
+                    else:
+                        self.say(text)
+                return
+            given = moves.refused() is None and item_menu.give_skip(moves, path) is not None
+            qpress.end(p, self.shell, failed=not given)
+        relay.said.connect(checked)
+        asks = getattr(looks, "skip_refused", None)
+        if asks is None:                                  # (no pre-check: the writer's own rule answers)
+            checked(None)
+            return True
+        if not asks(path, relay.call, language=language):
+            relay.deleteLater()                           # closed, or another language's: nothing asked
+            qpress.end(p, self.shell, failed=True)
             return False
         return True
 

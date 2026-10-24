@@ -747,6 +747,19 @@ def _tell(ticket, event):
         ticket.told(event)
 
 
+def _skips_moved(win, change):
+    """K6 / Q7: a skip's change (the store's `folder` on it: ⋯'s, New arrivals', Settings' *Skip a folder…*) saved or
+    undone — *Library folders*' skipped lines and the Settings row's count read again where they show
+    (`settings_sources.skips_moved`); the rows it took are the reader's, as any Remove's."""
+    if getattr(change, "folder", None) is None:
+        return
+    try:
+        from app.qt import settings_sources
+        settings_sources.skips_moved(win)
+    except Exception as e:                           # (the lines stay as they were until the next listing)
+        print(f"Window drag: the skipped folders weren't read again: {e!r}")
+
+
 _anki_keys = itertools.count(1)                     # finish-pending: one press per command (two Finishes: two)
 
 
@@ -1749,8 +1762,10 @@ class DragController(QObject):
         self._settle_ticket(label)
         if self.reader is not None:
             self.reader.refresh()
+        _skips_moved(self.win, change)
 
     def _undone(self, change, label):
+        _skips_moved(self.win, change)
         mark = self._anki_of.pop(change, None) if change is not None else None    # (an undo that undid nothing)
         if isinstance(label, Ticket):
             _tell(label, "undone")

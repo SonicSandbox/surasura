@@ -14,6 +14,8 @@ What a wrong answer would cost a learner:
 Made-up folder names (Japanese, as his drives hold them); the looks recorded (no store), except Add, which reads a real
 folder of real Japanese subtitles into a real store in the test's own root.
 """
+import os
+
 import pytest
 
 pytest.importorskip("PyQt6")
@@ -23,11 +25,12 @@ from PyQt6.QtWidgets import QApplication, QFileDialog
 
 from app import library_store as ls
 from app.qt import press as qpress
-from app.qt import settings_sources, windows
+from app.qt import settings_sources, strings, windows
 from app.qt import settings_strings as S
+from app.qt import wizard_strings as W
 from app.services import source_looks
 from tests.qt.conftest import wait_until
-from tests.qt.test_drag import _stones_sheet  # noqa: F401  (the stones' sheet fixture)
+from tests.qt.test_drag import _stones_sheet, calls  # noqa: F401  (the stones' sheet fixture)
 from tests.qt.test_window_sources import (RecordingLooks, _folders_window, _fresh_run, _library,  # noqa: F401
                                           _read_store, _source, _sources_row, window)
 
@@ -54,6 +57,7 @@ class ActingLooks(RecordingLooks):
         self.stops, self.reads, self.held = [], [], []
         self.hold = hold
         self.language = "ja"
+        self.refusals, self.skip_asks = {}, []            # Q7: the store's rule for *Skip a folder…*, by path
 
     def publish(self):
         self.on_result({"language": self.language, "sources": [dict(s) for s in self.sources],
@@ -75,6 +79,11 @@ class ActingLooks(RecordingLooks):
             then({"stopped": True})
             self.publish()
         self.held.append(land) if self.hold else land()
+        return True
+
+    def skip_refused(self, path, then, language=None):
+        self.skip_asks.append((path, language))
+        then(self.refusals.get(path))
         return True
 
     def read_again(self, folder_id, then=None, language=None):
@@ -277,7 +286,8 @@ def test_tab_follows_the_window_folders_then_skipped_then_look_again_and_add(win
     assert wait_until(lambda: 7 in folders.skipped, 10)
     looks.sources.insert(0, _src(5, DRAMA, 30))                       # a folder arriving above the first one, alone
     looks.publish()
-    want = [folders.lines[5].stop, folders.lines[1].stop, folders.skipped[7].read, folders.look, folders.add]
+    want = [folders.lines[5].stop, folders.lines[1].stop, folders.skipped[7].read, folders.skip, folders.look,
+            folders.add]
     seen, w = [], want[0]
     for _ in range(200):
         if w in want and w not in seen:
@@ -294,7 +304,7 @@ def test_without_a_library_the_buttons_are_greyed_and_say_why(window):
     page, row = _sources_row(win)
     folders = settings_sources.open_window(win)
     try:
-        for button in (row.add, folders.add, folders.look):
+        for button in (row.add, folders.add, folders.look, folders.skip):
             assert not button.isEnabled() and button.toolTip() == S.STORE_NO_LIBRARY_TIP
     finally:
         folders.close()
@@ -307,7 +317,7 @@ def test_a_library_that_cant_be_written_greys_stop_read_again_and_add_with_the_r
     writer.writable, writer.why = False, "another Surasura is writing it"
     looks.publish()                                                      # re-checked on the next summary
     why = S.FRESH_NOT_WRITABLE.format(reason="another Surasura is writing it")
-    for button in (row.add, folders.add, folders.lines[1].stop, folders.skipped[7].read):
+    for button in (row.add, folders.add, folders.lines[1].stop, folders.skipped[7].read, folders.skip):
         assert not button.isEnabled() and button.toolTip() == why
     assert folders.look.isEnabled()                                      # looking still works
     assert settings_sources.add_folder(win, folders, DRAMA) is False
@@ -335,3 +345,106 @@ def test_stop_reading_paints_its_arc_before_the_looks_are_asked(window):
     assert seen and seen[0][0] and seen[0][1] >= 1
     looks.held.pop()()
     assert wait_until(lambda: 2 not in folders.lines and not win.presses.any_live(), 5)
+
+
+# --- Q7: *Skip a folder…* under the skipped folders ----------------------------------------------------------------- #
+def _skipping(win, looks):
+    """The window's recording writer taught `skip_folder` as the store lands it: the folder joins the looks' skipped
+    list (the store's), its change carrying the store's `folder`; Undo takes it off again. -> the writer."""
+    writer = win.services.writer
+    folders = iter(range(100, 200))
+
+    def write(change):
+        if change.op == "skip_folder":
+            change.folder = next(folders)
+            looks.skipped_folders.append(_skip(change.folder, 1, change.kw["path"]))
+    writer.apply, writer._write = True, write
+    writer.skip_folder = lambda path, label=None: writer._put("skip_folder", [], label, path=path)
+    undo = writer.undo
+
+    def undone(change=None, label=None):
+        looks.skipped_folders = [f for f in looks.skipped_folders if f["id"] != getattr(change, "folder", None)]
+        return undo(change, label)
+    writer.undo = undone
+    return writer
+
+
+def _picks(folders, path):
+    """The folder dialog stood in for: it answers `path` -> the (title, start) it was opened with."""
+    asked = []
+    folders.pick_dialog = lambda title, start: (asked.append((title, start)), path)[1]
+    return asked
+
+
+def test_skip_a_folder_shows_under_the_folders_even_with_none_skipped_and_is_tipped(window):
+    # The only way to skip a folder after setup from here: it must be there before anything is skipped.
+    looks = ActingLooks([_src(1, ANIME, 412)])
+    win, page, row, folders = _open(window, looks)
+    assert wait_until(lambda: 1 in folders.lines, 10)
+    assert folders.skip_box.isHidden() and folders.skipped == {}
+    assert folders.skip.isVisible() and folders.skip.isEnabled()
+    assert folders.skip.text() == S.SOURCES_SKIP and folders.skip.toolTip() == S.SOURCES_SKIP_TIP
+
+
+def test_skip_a_folder_starts_in_a_folder_being_read_and_a_refusal_says_why_in_the_windows_line(window):
+    # A folder Surasura reads itself is *Stop reading*'s: the store's words, in the window he is looking at; nothing
+    # is written.
+    looks = ActingLooks([_src(1, ANIME, 412), _src(2, DRAMA, 30)])
+    win, page, row, folders = _open(window, looks)
+    assert wait_until(lambda: len(folders.lines) == 2, 10)
+    writer = _skipping(win, looks)
+    looks.refusals[os.path.normpath(DRAMA)] = ls.SKIP_IS_SOURCE
+    asked = _picks(folders, DRAMA)
+    folders.skip.click()
+    assert asked == [(W.SKIP_TITLE, ANIME)]                             # the first folder being read
+    assert looks.skip_asks == [(os.path.normpath(DRAMA), "ja")]
+    assert wait_until(lambda: folders.status.text() == W.FOLDER_REFUSED.format(folder=os.path.normpath(DRAMA),
+                                                                              why=ls.SKIP_IS_SOURCE), 5)
+    assert calls(writer, "skip_folder") == [] and not win.presses.any_live()
+    assert qpress.arc(folders.skip) is None and folders.skip.isEnabled()
+    _picks(folders, "")                                                 # the dialog cancelled: nothing asked
+    folders.skip.click()
+    assert len(looks.skip_asks) == 1
+
+
+def test_skip_a_folder_paints_its_arc_before_the_looks_are_asked(window):
+    from tests.qt.press_handover import Paints, arc_turning
+    looks = ActingLooks([_src(1, ANIME, 412)])
+    win, page, row, folders = _open(window, looks)
+    assert wait_until(lambda: 1 in folders.lines and folders.skip.isVisible(), 10)
+    _skipping(win, looks)
+    _picks(folders, OLD)
+    paints, seen, ask = Paints(folders.skip), [], looks.skip_refused
+
+    def asked(path, then, language=None):
+        seen.append((arc_turning(folders.skip), paints.n))
+        return ask(path, then, language)
+    looks.skip_refused = asked
+    folders.skip.click()
+    assert seen and seen[0][0] and seen[0][1] >= 1
+    assert wait_until(lambda: not win.presses.any_live() and qpress.arc(folders.skip) is None, 5)
+
+
+@pytest.mark.parametrize("source, folder", [(ANIME, ANIME + r"\特典映像"), (r"D:\动画\2026秋", r"D:\动画\2026秋\花絮")])
+def test_a_skip_from_the_window_is_one_change_its_line_and_count_show_and_one_undo_takes_them_back(window, source,
+                                                                                                    folder):
+    # Japanese and Chinese folder names: one writer change with ⋯'s toast; the skipped line and the page's count
+    # follow its landing, and its Undo, with no Refresh.
+    looks = ActingLooks([_src(1, source, 24)])
+    win, page, row, folders = _open(window, looks)
+    assert wait_until(lambda: 1 in folders.lines, 10)
+    writer = _skipping(win, looks)
+    _picks(folders, folder)
+    folders.skip.click()
+    assert wait_until(lambda: calls(writer, "skip_folder"), 5)
+    assert calls(writer, "skip_folder") == [("skip_folder", [], {"path": os.path.normpath(folder)})]
+    name = os.path.basename(os.path.normpath(folder))
+    assert wait_until(lambda: win.toasts.card.message == strings.ITEM_SKIPPED.format(name=name), 5)
+    assert wait_until(lambda: len(folders.skipped) == 1 and not folders.skip_box.isHidden(), 5)
+    assert next(iter(folders.skipped.values())).folder["path"] == os.path.normpath(folder)
+    assert row.summary.text() == " · ".join([S.SOURCES_FOLDERS_ONE, S.SOURCES_SKIPPED_N.format(n=1)])
+    assert wait_until(lambda: not win.moves.tickets and not win.presses.any_live(), 5)
+    next(b for b in win.toasts.card.buttons if b.text() == strings.TOAST_UNDO).click()
+    assert wait_until(lambda: not folders.skipped and folders.skip_box.isHidden(), 5)
+    assert wait_until(lambda: row.summary.text() == S.SOURCES_FOLDERS_ONE, 5)
+    assert [c[0] for c in writer.calls] == ["skip_folder", "undo"]

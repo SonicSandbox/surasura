@@ -69,6 +69,7 @@ window's thread.
 import os
 from collections import namedtuple
 
+from PyQt6 import sip
 from PyQt6.QtCore import QObject, QPoint, QTimer
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import QMenu
@@ -162,6 +163,62 @@ def unnamed(row):
         return False
     shows = {e.work_id if e.work_id is not None else ("s", e.show) for e in eps}
     return row.title == view_rows.STRINGS["group_name"].format(first=eps[0].show, n=len(shows) - 1)
+
+
+# --- K6 and Q7: *Never read this folder*, one rule for a list row's ⋯, New arrivals' ⋯ and Settings' *Skip a folder…* #
+def offer_skip(owner, ids, m, add):
+    """*Never read this folder* asked of the looks' worker for the items `ids` as `owner`'s menu `m` opens
+    (`SourceLooks.skippable`: the store's origin records, [folder] deepest first); `add(folders)` once it answers, only
+    while `m` is still `owner.last_menu` and open (the newest ask's answer alone; none for items from no folder being
+    read, or no looks: no library). -> True when it was asked."""
+    looks = getattr(owner.win, "looks", None)
+    owner._skip_ask = getattr(owner, "_skip_ask", 0) + 1
+    if looks is None or not ids or not hasattr(looks, "skippable"):
+        return False
+    ask, relay = owner._skip_ask, bridge.Relay(owner)
+
+    def found(folders):
+        relay.deleteLater()
+        if folders and ask == owner._skip_ask and owner.last_menu is m and not sip.isdeleted(m) and m.isVisible():
+            add(folders)
+    relay.said.connect(found)
+    if not looks.skippable(list(ids), relay.call):
+        relay.deleteLater()
+        return False
+    return True
+
+
+def skip_menu(m, folders, reason, pick):
+    """*Never read this folder* › each of `folders` (deepest first) by its name, its whole path in its tip, put in `m`
+    before *Open its folder*; greyed with the store's `reason` (None: it can be written) while it can't be written
+    (E4); `pick(path)` when one is picked. -> the submenu."""
+    writable = reason is None
+    before = next((a for a in m.actions() if a.text() == strings.ITEM_MENU["folder"][0]), None)
+    sub = QMenu(strings.ITEM_SKIP[0], m)
+    sub.setObjectName("rowmenu")
+    sub.setToolTipsVisible(True)
+    if before is not None:
+        m.insertMenu(before, sub)
+    else:
+        m.addMenu(sub)
+    sub.menuAction().setToolTip(strings.ITEM_SKIP[1] if writable else reason)
+    sub.menuAction().setEnabled(writable)
+    for path in folders:
+        act = QAction(os.path.basename(path) or path, sub)
+        act.setToolTip(strings.ITEM_SKIP_TIP.format(path=path) if writable else reason)
+        act.setEnabled(writable)
+        act.triggered.connect(lambda _c=False, p=path: pick(p))
+        sub.addAction(act)
+    return sub
+
+
+def give_skip(moves, path, ids=(), keys=()):
+    """`Writer.skip_folder(path)` given through the window's drag controller `moves` (`_give`: on the writer's thread,
+    one change — the folder's items to the trash, the folder never read again — its toast with Undo, which reads it
+    again; a refusal comes back as the writer's note). `ids` / `keys`: the files and rows it was asked from (none from
+    Settings). -> the writer's number, or None (refused)."""
+    text = strings.ITEM_SKIPPED.format(name=os.path.basename(path) or path)
+    return moves._give(drag.Ticket(text, tuple(keys), list(ids)), lambda t: moves.writer.skip_folder(path, label=t))
 
 
 class ItemActions(QObject):
@@ -593,57 +650,21 @@ class ItemActions(QObject):
 
     # --- K6: *Never read this folder* (the item's folder or one above it, inside its source folder) --------------- #
     def _offer_skip(self, row, m):
-        """Asked on the looks' worker (`SourceLooks.skippable`: the store's origin records); the submenu goes in before
-        *Open its folder* when the answer comes while this menu is still open. A row from no folder being read (or no
-        looks: no library) gets none."""
-        looks = getattr(self.win, "looks", None)
-        ids = drag.ids_of(row)
-        self._skip_ask = getattr(self, "_skip_ask", 0) + 1
-        if looks is None or not ids or not hasattr(looks, "skippable"):
-            return False
-        ask, relay = self._skip_ask, bridge.Relay(self)
-
-        def found(folders):
-            relay.deleteLater()
-            if folders and ask == self._skip_ask and self.last_menu is m and m.isVisible():
-                self.add_skip(row, m, folders)
-        relay.said.connect(found)
-        if not looks.skippable(ids, relay.call):
-            relay.deleteLater()
-            return False
-        return True
+        """Asked on the looks' worker (`offer_skip`); the submenu goes in before *Open its folder* when the answer comes
+        while this menu is still open. A row from no folder being read (or no looks: no library) gets none."""
+        return offer_skip(self, drag.ids_of(row), m, lambda folders: self.add_skip(row, m, folders))
 
     def add_skip(self, row, m, folders):
-        """*Never read this folder* › each of `folders` (deepest first) by its name, its whole path in its tip; greyed
-        with the store's reason while it can't be written (E4). -> the submenu."""
-        reason = self._refused_tip()
-        writable = reason is None
-        before = next((a for a in m.actions() if a.text() == strings.ITEM_MENU["folder"][0]), None)
-        sub = QMenu(strings.ITEM_SKIP[0], m)
-        sub.setObjectName("rowmenu")
-        sub.setToolTipsVisible(True)
-        if before is not None:
-            m.insertMenu(before, sub)
-        else:
-            m.addMenu(sub)
-        sub.menuAction().setToolTip(strings.ITEM_SKIP[1] if writable else reason)
-        sub.menuAction().setEnabled(writable)
-        for path in folders:
-            act = QAction(os.path.basename(path) or path, sub)
-            act.setToolTip(strings.ITEM_SKIP_TIP.format(path=path) if writable else reason)
-            act.setEnabled(writable)
-            act.triggered.connect(lambda _c=False, p=path: self.skip_folder(row, p))
-            sub.addAction(act)
-        return sub
+        """*Never read this folder* › `folders` (`skip_menu`), greyed with the store's reason while it can't be written
+        (E4). -> the submenu."""
+        return skip_menu(m, folders, self._refused_tip(), lambda path: self.skip_folder(row, path))
 
     def skip_folder(self, row, path):
         """`Writer.skip_folder` (on the writer's thread): the folder's items to the trash, the folder never read
         again; its toast with Undo (which reads it again)."""
         if self.moves.refused() is not None:
             return None
-        ids = drag.ids_of(row)
-        text = strings.ITEM_SKIPPED.format(name=os.path.basename(path) or path)
-        return self.moves._give(drag.Ticket(text, (row.key,), ids), lambda t: self.writer.skip_folder(path, label=t))
+        return give_skip(self.moves, path, drag.ids_of(row), (row.key,))
 
     def ask_remove(self, row):
         """*Remove…*: the confirmation naming its files (Esc, Back, a click outside: No; Cancel the default)."""

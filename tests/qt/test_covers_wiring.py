@@ -177,9 +177,9 @@ def test_paste_a_link_and_a_picked_candidate_are_the_users_locked_with_undo(real
 
 def test_find_it_online_reacts_at_the_press_and_says_found_none_or_unreachable(real, anilist, monkeypatch):
     """Sonic (2026-10-23, through the press rule): *Find it online…* reacts at once — the bar holds *Looking … up on
-    AniList…* from the click while the lookup runs on a worker, a second press meanwhile does nothing — and ends in
-    the menu of covers, *No cover found on AniList*, or *AniList couldn't be reached* (before, a lookup that didn't
-    answer said "found no cover", and nothing showed it was working but a passing line)."""
+    AniList…* once the press is 300 ms old (IK-1) while the lookup runs on a worker, a second press meanwhile does
+    nothing — and ends in the menu of covers, *No cover found on AniList*, or *AniList couldn't be reached* (before,
+    a lookup that didn't answer said "found no cover", and nothing showed it was working but a passing line)."""
     import threading
     from app.qt import press as qpress
     store, win, writer, _switch = real("ja", anilist, on=True)
@@ -196,7 +196,7 @@ def test_find_it_online_reacts_at_the_press_and_says_found_none_or_unreachable(r
     title = qcovers._want_of(row).title
     assert qcovers.find_online(row, at=QPoint(200, 200))
     assert qpress.presses_of(win).find(key).live()                     # pressed in the click's own frame
-    assert win.bar_line.full() == strings.COVER_LOOKING.format(title=title)
+    assert wait_until(lambda: win.bar_line.full() == strings.COVER_LOOKING.format(title=title), 3)   # at 300 ms (IK-1)
     assert qcovers.find_online(row, at=QPoint(200, 200)) is False      # a second press while it looks: nothing
     go.set()                                                           # AniList answers: no such title
     assert wait_until(lambda: (settle() or True) and not qpress.presses_of(win).find(key).live(), 10)
@@ -222,7 +222,7 @@ def test_find_it_online_reacts_at_the_press_and_says_found_none_or_unreachable(r
 def test_cover_presses_answered_at_once_need_no_pending_and_a_fetch_shows_its_wait(real, anilist, monkeypatch):
     """Sonic's rule (2026-10-23): an instant answer needs no pending — Download covers off, or a TMDB link pasted
     (no key in 3.0), is said at the press with nothing turning; a picked or pasted cover's fetch holds *Fetching the
-    cover for …* from the press, and a second press meanwhile does nothing."""
+    cover for …* once the press is 300 ms old (IK-1), and a second press meanwhile does nothing."""
     import threading
     from app.qt import press as qpress
     store, win, writer, switch = real("ja", anilist, on=True)
@@ -249,7 +249,7 @@ def test_cover_presses_answered_at_once_need_no_pending_and_a_fetch_shows_its_wa
     QApplication.clipboard().setText("https://anilist.co/anime/154587/Sousou-no-Frieren/")
     assert qcovers.paste_link(row)
     assert qpress.presses_of(win).find(("cover-fetch", row.work_id)).live()
-    assert win.bar_line.full() == strings.COVER_FETCHING.format(title=title)
+    assert wait_until(lambda: win.bar_line.full() == strings.COVER_FETCHING.format(title=title), 3)  # at 300 ms (IK-1)
     assert qcovers.paste_link(row) is False                            # a second press while it fetches: nothing
     go.set()
     assert wait_until(lambda: (settle() or True) and store._work_row(row.work_id)["cover_source"] == "anilist", 10)

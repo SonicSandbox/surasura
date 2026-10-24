@@ -363,7 +363,7 @@ def test_a_gone_files_choose_file_relinks_it_with_undo(world):
     assert wait_until(lambda: any(c[0] == "relink" for c in writer.calls), 5)
     assert [c for c in writer.calls if c[0] == "relink"] == [("relink", [line.item_id], {"path": moved})]
     assert wait_until(lambda: win.toasts.card.isVisible() and writer.saved, 5)
-    assert win.toasts.card.message == strings.NEEDS_RELINKED.format(label=line.label)
+    assert win.toasts.card.base == strings.NEEDS_RELINKED.format(label=line.label)
     win.toasts.card.buttons[0].click()                         # its Undo
     assert wait_until(lambda: writer.undone and writer.undone[-1].op == "relink", 5)
 
@@ -383,7 +383,7 @@ def test_choose_a_folder_matches_each_gone_file_by_its_name_then_its_episode_num
     assert wait_until(lambda: len([x for x in writer.calls if x[0] == "relink"]) == 2, 5)
     got = {x[1][0]: os.path.basename(x[2]["path"]) for x in writer.calls if x[0] == "relink"}
     assert got == {a.item_id: os.path.basename(a.rel_path), b.item_id: f"[Group] 別名 - {b.number:02d}{ext}"}
-    assert wait_until(lambda: win.toasts.card.message == strings.NEEDS_RELINKED_N.format(k=2, n=3), 5)
+    assert wait_until(lambda: win.toasts.card.base == strings.NEEDS_RELINKED_N.format(k=2, n=3), 5)
 
 
 def test_bulk_keep_all_their_words_leaves_the_page_and_is_kept_in_the_seen_file(world):
@@ -424,7 +424,7 @@ def test_bulk_remove_all_asks_naming_the_count_esc_is_no_and_yes_removes_with_un
     assert wait_until(lambda: any(c[0] == "remove" for c in writer.calls), 5)
     assert [c for c in writer.calls if c[0] == "remove"] == [("remove", ids, {})]
     assert wait_until(lambda: win.toasts.card.isVisible() and writer.saved, 5)
-    assert win.toasts.card.message == strings.NEEDS_REMOVED.format(n=len(ids))
+    assert win.toasts.card.base == strings.NEEDS_REMOVED.format(n=len(ids))
     win.toasts.card.buttons[0].click()                         # Undo puts them back
     assert wait_until(lambda: writer.undone and writer.undone[-1].op == "remove", 5)
 
@@ -497,7 +497,7 @@ def test_connects_kinds_call_their_callables_on_a_worker_and_a_missing_one_is_hi
     assert wait_until(lambda: got[-1][0] == "dismiss", 5)
     assert got[-1][1] == (12,) and got[-1][2]
     opened = []
-    win.open_logs = lambda folder=None: opened.append(folder)
+    win.open_logs = lambda folder=None, **_how: opened.append(folder)
     button(ny, by_id[13].key, "open_logs").click()
     assert opened == [None]
     gap = next(e for e in ny.entries if e.kind == service.GAP)

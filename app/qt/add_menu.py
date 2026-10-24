@@ -24,6 +24,10 @@ header's right and its menu — and the same actions on the setup wizard's page 
   into a temporary folder (on a worker), then adds it like a file. Esc, Back and a click outside close it.
 
 No section picker (N14): where it lands is the redesign's rule above, never a question.
+
+**Every press reacts at once** (round 8 row 45): a folder's look (or its walk, copied in) marks the bar from the
+moment it is chosen until it answers; the Paste card's *Add* says *Adding…* in the bar until its toast; the toast of
+what is copied in reads *· saving…* while it copies (the drag controller's one rule for a write's toast).
 """
 import math
 import os
@@ -38,6 +42,7 @@ from PyQt6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QLabel, QLi
 
 from app import theme
 from app.qt import bridge, confirm, motion, shadow, strings, style, windows
+from app.qt import press as qpress
 
 ORDER = ("files", "folder", "extract", "youtube", "paste")
 COPIES = frozenset({"files", "folder", "paste"})         # the entries that copy files in (they need the writer)
@@ -252,9 +257,9 @@ class Adder(QObject):
                 windows.say_in_bar(self.shell, strings.ADD_NOTHING.format(name=name))
                 return
             self.add_files([p for p, _d in found], name=name, folder=folder, rel_dirs=[d for _p, d in found])
-        bridge.run_in_worker(walk_folder, folder, then=walked,
-                             failed=lambda info: windows.say_in_bar(self.shell, strings.ADD_FOLDER_FAILED.format(
-                                 name=name, why=info[0])))
+        qpress.run(None, ("add-folder", os.path.normpath(folder)), walk_folder, folder, then=walked,   # marked now
+                   failed=lambda info: windows.say_in_bar(self.shell, strings.ADD_FOLDER_FAILED.format(
+                       name=name, why=info[0])), win=self.shell)
 
     # --- SRC W1b: *Read it where it is* ------------------------------------------------------------------------- #
     def read_folder(self, folder, first=False):
@@ -271,16 +276,30 @@ class Adder(QObject):
         if moves is not None and moves.refused() is not None:
             return False                                  # S4 (E4): said in the bar, nothing written
         name = os.path.basename(os.path.normpath(folder)) or folder
+        p = qpress.begin(None, ("add-folder", os.path.normpath(folder)), win=self.shell)   # round 8 row 45: marked now,
+        if p is None:                                                                    # until its look answers
+            return True                                   # its look asked already, still running: asked once
         relay = bridge.Relay(self)
-        relay.said.connect(lambda answer: self._read(name, answer, relay, folder))
+        relay.said.connect(lambda answer: self._read(name, answer, relay, folder, p))
         busy = looks.busy() if hasattr(looks, "busy") else False
-        asked = bool(looks.add(os.path.normpath(folder), relay.call, first=first))
-        if asked and busy:                                # queued behind a look under way: said, never silent
+        try:
+            asked = bool(looks.add(os.path.normpath(folder), relay.call, first=first))
+        except Exception:
+            self._read_ended(p)
+            raise
+        if not asked:
+            self._read_ended(p)
+        elif busy:                                        # queued behind a look under way: said, never silent
             windows.say_in_bar(self.shell, strings.SOURCES_QUEUED.format(name=name))
         return asked
 
-    def _read(self, name, answer, relay, folder=None):
+    def _read_ended(self, p, failed=False):
+        if p is not None and p.live():
+            qpress.end(p, self.shell, failed=failed)
+
+    def _read(self, name, answer, relay, folder=None, p=None):
         relay.deleteLater()
+        self._read_ended(p, failed=bool(answer.get("refused")))
         refused = answer.get("refused")
         result = answer.get("result") or {}
         if refused == "no-library" and folder:
@@ -327,9 +346,9 @@ class Adder(QObject):
             if self.add_files([path], name=title, origin=False, then=lambda: bridge.run_in_worker(
                     shutil.rmtree, folder, True)) is None:  # N7: removed once it landed; refused: where it is, said
                 windows.say_in_bar(self.shell, strings.PASTE_KEPT.format(folder=folder))
-        bridge.run_in_worker(write_pasted, title, text, then=written,
-                             failed=lambda info: windows.say_in_bar(self.shell, strings.PASTE_FAILED.format(
-                                 why=info[0])))
+        qpress.run(None, ("paste", id(text)), write_pasted, title, text, busy=strings.ADDING.format(name=title),
+                   then=written, failed=lambda info: windows.say_in_bar(self.shell, strings.PASTE_FAILED.format(
+                       why=info[0])), win=self.shell)         # round 8 row 45: *Adding…* in the bar from the press
 
 
 def _alive(widget):

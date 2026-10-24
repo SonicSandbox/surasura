@@ -33,6 +33,7 @@ from PyQt6.QtWidgets import (QCheckBox, QComboBox, QHBoxLayout, QLabel, QListWid
 from app import anki_connect, anki_sync, theme
 from app import anki_window as AW
 from app.qt import applog, bridge, confirm, strings, style, windows
+from app.qt import press as qpress
 from app.services import jobs as jobs_module
 
 NAME = "anki"
@@ -71,6 +72,8 @@ class AnkiWindow(windows.SecondaryWindow):
         self._models = {}                 # note type -> its fields, in order
         self._unsaved_pick = False        # the first open's pick, shown and not saved yet (S16)
         self._probe_seq = 0               # the newest probe / scope read (an older answer is dropped)
+        self._scope_press = None          # a scope read's quiet mark on the counts (round 8 row 45), and its read
+        self._scope_asked = 0
         self._probing = False
         self._shift = False
         self._known = None
@@ -474,12 +477,26 @@ class AnkiWindow(windows.SecondaryWindow):
         if not self._connected or self.busy():
             return
         seq, snap = self._probe_seq, self._snapshot()
+        self._scope_asked = seq
+        if self._scope_press is None:     # round 8 row 45: the counts' quiet mark, painted before Anki is read
+            self._scope_press = qpress.begin(None, "anki:scope", win=self, at=qpress.widget_mark(self.deck_list))
+
+        def broke(info):
+            self._scope_read(seq, failed=True)
+            if seq == self._probe_seq:
+                self.say(strings.ANKI_SCOPE_FAILED.format(error=info[0]))
         bridge.run_in_worker(AW.read_scope, snap["url"], snap["decks"], snap["suspended"],
                              then=self.alive(lambda answer: self._scoped(answer, seq, snap["language"])),
-                             failed=self.alive(lambda info: seq == self._probe_seq and self.say(
-                                 strings.ANKI_SCOPE_FAILED.format(error=info[0]))))
+                             failed=self.alive(broke))
+
+    def _scope_read(self, seq, failed=False):
+        """The newest scope read answered (a later probe may drop its numbers): the counts' mark off."""
+        if seq == self._scope_asked and self._scope_press is not None:
+            p, self._scope_press = self._scope_press, None
+            qpress.end(p, self, failed=failed)
 
     def _scoped(self, answer, seq, language):
+        self._scope_read(seq)
         if seq != self._probe_seq or language != self.language:
             return
         self._counts, self._models = dict(answer[0]), dict(answer[1])

@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QComboBox, Q
 
 from app import anki_db_import, extract, importers_view
 from app.qt import bridge, confirm, strings, windows
+from app.qt import press as qpress
 from app.services import jobs as jobs_module, tools
 
 PREVIEW_LINES = 4
@@ -100,12 +101,14 @@ class ToolWindow(windows.SecondaryWindow):
         heard = getattr(shell, "bridge", None)
         if heard is not None:
             heard.jobs_changed.connect(self._follow)
-        self.log_button = _button(self, strings.IMPORTERS_LOG, strings.IMPORTERS_LOG_TIP, self._open_log, "chip")
+        self.log_button = qpress.room(_button(self, strings.IMPORTERS_LOG, strings.IMPORTERS_LOG_TIP, self._open_log,
+                                              "chip"))
         self.log_button.setVisible(False)
         self.layout().addWidget(self.log_button, 0, Qt.AlignmentFlag.AlignRight)
 
     def _open_log(self):
-        windows.open_url(tools.log_path(self.kind))
+        """*Open the log*: opened on a worker (`press.open`: never the window's thread), its arc turning meanwhile."""
+        qpress.open(self, tools.log_path(self.kind), control=self.log_button)
 
     def _run(self, label, argv, done, env=None, parse=None, after=None, on_quit="wait"):
         """`argv` as a child job of this window's kind. `parse(line)` -> a result or None (its RESULT line);
@@ -319,7 +322,7 @@ class MigakuWindow(ToolWindow):
         self.body.addLayout(_row(self.code, self.copy, stretch_at=0))
         self.body.addWidget(_line(self, strings.MIGAKU_STEP2))
         self.find = _button(self, strings.MIGAKU_FIND, strings.MIGAKU_FIND_TIP, self.find_it)
-        self.choose = _button(self, strings.MIGAKU_CHOOSE, strings.MIGAKU_CHOOSE_TIP, self._choose)
+        self.choose = qpress.room(_button(self, strings.MIGAKU_CHOOSE, strings.MIGAKU_CHOOSE_TIP, self._choose))
         self.body.addLayout(_row(self.find, self.choose))
         self.refresh()
 
@@ -340,15 +343,22 @@ class MigakuWindow(ToolWindow):
         self.read(path)
 
     def _choose(self):
+        if qpress.live(self, "migaku:read"):
+            return                                        # the file picked still being read: no second pick (P5-A1)
         path = _pick_file(self, strings.MIGAKU_PICK_TITLE, strings.MIGAKU_PICK_FILTER)
         if path:
-            self.read(path)
+            self.read(path, control=self.choose)
 
-    def read(self, path):
-        """Read the export's words first (a worker), then ask with both numbers."""
+    def read(self, path, control=None):
+        """Read the export's words first (a worker), then ask with both numbers. `control`: *Choose…*, pressed — its
+        arc turns from the file picked until the question (round 8 row 45); a press meanwhile reads nothing more."""
         language = self.language
-        bridge.run_in_worker(importers_view.migaku_plan, path, language,
-                             then=self.alive(lambda plan: self._ask(plan, language)), failed=self.alive(self._unread))
+        then, failed = self.alive(lambda plan: self._ask(plan, language)), self.alive(self._unread)
+        if control is not None:
+            qpress.run(control, "migaku:read", importers_view.migaku_plan, path, language, then=then, failed=failed,
+                       win=self)
+            return
+        bridge.run_in_worker(importers_view.migaku_plan, path, language, then=then, failed=failed)
 
     def _unread(self, info):
         from app import migaku_converter
@@ -416,12 +426,13 @@ class JitenWindow(ToolWindow):
         self.show_key.setToolTip(strings.JITEN_SHOW_TIP)
         self.show_key.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self.show_key.toggled.connect(self._show)
-        self.get_key = _button(self, strings.JITEN_GET_KEY, strings.JITEN_GET_KEY_TIP,
-                               lambda: windows.open_url(strings.JITEN_URL))
+        self.get_key = qpress.room(_button(self, strings.JITEN_GET_KEY, strings.JITEN_GET_KEY_TIP,
+                                           lambda: qpress.open(self, strings.JITEN_URL, control=self.get_key)))
         self.body.addLayout(_row(self.key, self.show_key, self.get_key, stretch_at=0))
         self.go = _button(self, strings.JITEN_IMPORT, strings.JITEN_IMPORT_TIP, self.fetch, "primary")
-        self.credit = _button(self, strings.JITEN_CREDIT, strings.JITEN_CREDIT_TIP,
-                              lambda: windows.open_url(strings.JITEN_CREDIT_URL), "chip")
+        self.credit = qpress.room(_button(self, strings.JITEN_CREDIT, strings.JITEN_CREDIT_TIP,
+                                          lambda: qpress.open(self, strings.JITEN_CREDIT_URL, control=self.credit),
+                                          "chip"))
         line = QHBoxLayout()
         line.addWidget(self.credit)
         line.addStretch(1)

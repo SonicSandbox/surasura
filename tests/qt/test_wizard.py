@@ -19,6 +19,7 @@ from PyQt6.QtGui import QKeyEvent, QMouseEvent
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QMainWindow, QPushButton, QVBoxLayout, QWidget
 
+from app.qt import press as qpress
 from app.qt import windows
 from app.qt import wizard as W
 from app.qt import wizard_strings as S
@@ -619,7 +620,7 @@ def test_anki_miner_missing_offers_install_and_the_star_and_no_switch(make):
     assert [d.state for d in page.dots] == ["ok", "ok", "off", "off"]
     assert page.dots[2].accessibleName() == "Anki Miner: not yet"  # status never colour alone
     QTest.mouseClick(page.btn_star, Qt.MouseButton.LeftButton)
-    assert wiz.launched == [FakeMiner.STAR_URL]
+    assert wait_until(lambda: wiz.launched == [FakeMiner.STAR_URL])            # on a worker (round 8 row 45)
     settings.calls.clear()
     wiz.next()
     assert settings.calls == [] and W.PAGES[wiz.index] == "level"  # nothing to switch on: Next writes nothing
@@ -640,9 +641,14 @@ def test_install_asks_in_the_window_first_shows_its_progress_and_looks_again_whe
     assert miner.progress == [] and card.yes.text() == S.INSTALL_ASK_YES
     card.yes.click()
     assert wait_until(lambda: not page.loading.isHidden() and page.progress.value() == 500)
-    assert not page.btn_install.isEnabled() and not page.btn_cancel.isHidden()
+    # round 8 row 45: never greyed while it installs — its arc turns, and a press meanwhile starts nothing
+    assert page.btn_install.isEnabled() and qpress.arc(page.btn_install) is not None
+    assert not page.btn_cancel.isHidden()
+    QTest.mouseClick(page.btn_install, Qt.MouseButton.LeftButton)
+    assert miner.asked == [True]
     gate.set()
     assert wait_until(lambda: wiz.installing is None and miner.looks >= looks + 1)
+    assert qpress.arc(page.btn_install) is None
     assert miner.asked == [True] and page.loading.isHidden() and page.busy_line.isHidden()
 
 
@@ -1150,9 +1156,11 @@ def test_a_second_press_on_samples_waits_for_the_first(make):
     page = wiz.page
     QTest.mouseClick(page.btn_samples, Qt.MouseButton.LeftButton)
     assert wait_until(lambda: ("samples", "ja") in api.calls)
-    assert not page.btn_samples.isEnabled()                        # one copy at a time
+    # one copy at a time: never greyed (round 8 row 45) — its arc turns, and a press meanwhile copies nothing more
+    assert page.btn_samples.isEnabled() and qpress.arc(page.btn_samples) is not None
+    QTest.mouseClick(page.btn_samples, Qt.MouseButton.LeftButton)
     held.append(True)
-    assert wait_until(lambda: page.btn_samples.isEnabled())
+    assert wait_until(lambda: qpress.arc(page.btn_samples) is None)
     assert api.calls.count(("samples", "ja")) == 1
 
 
@@ -1360,3 +1368,21 @@ def test_an_upgrader_with_anki_closed_is_offered_to_keep_what_came_over(make):
     wiz.page.entered()
     assert wait_until(lambda: not wiz._anki_looking, 2.0)
     assert wiz.page.answers() == {"how": "fresh", "decks": []}
+
+
+# --- round 8 row 45: every press reacts at once ------------------------------------------------------------------- #
+def test_check_again_paints_its_arc_before_anki_is_looked_at_until_the_answer(make, monkeypatch):
+    # *Check again* kept the last look (`self.anki`), so *Checking…* never painted: nothing showed until Anki
+    # answered. Its arc now turns from the press, painted before the look is handed over, until the look lands.
+    from tests.qt.press_handover import HandOver, arc_turning
+    api = FakeApi(anki={"open": False, "say": None, "decks": [], "preselected": []})
+    wiz, *_ = make(api=api)
+    wiz.next()
+    page = wiz.page
+    assert wait_until(lambda: wiz.anki is not None and not page.closed_part.isHidden() and wiz.settled())
+    assert wait_until(lambda: not page.btn_check.visibleRegion().isEmpty())
+    handed = HandOver(monkeypatch, page.btn_check, lambda: arc_turning(page.btn_check))
+    QTest.mouseClick(page.btn_check, Qt.MouseButton.LeftButton)
+    look = handed.at("anki_look")
+    assert look.shown and look.painted >= 1 and page.btn_check.isEnabled()
+    assert wait_until(lambda: not wiz._anki_looking and not arc_turning(page.btn_check))

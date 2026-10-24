@@ -12,7 +12,7 @@ exactly as a Finished show's does. What these prove, Connect on and off:
   - *Undo the last reorder* right after the stone's re-order puts every card's due, suspended state and tag back;
   - a word the episode shares with a file still counted keeps its card on the list, unsuspended;
   - a pinned episode's cards (*Study its cards first*) stay, stone or not: the pin is the later click;
-  - everything watched parks the same cards as everything Finished (one rule; today all of them).
+  - an empty list (every file watched, or every file Finished) puts no card away and says so (Sonic, M-W2-1).
 
 What a wrong answer would cost a learner: cards suspended for good after a stone and its Undo, or a pinned show's cards
 hidden by a watched mark.
@@ -168,28 +168,46 @@ def test_a_pinned_episode_keeps_its_cards_when_it_is_marked_watched(lib, monkeyp
     assert not [card_id for card_id in own if LATER in _tags(fake, card_id)]
 
 
-def test_everything_watched_steps_the_cards_back_exactly_as_everything_finished_does(lib, monkeypatch):
-    # An empty list (nothing counts): a stone is "done" the way Finished is, so every file watched parks the same cards
-    # as every file Finished (today: all of them, tagged and suspended; asked of Sonic 2026-10-23, M-W2-1). Whatever
-    # the rule becomes, the two must stay one rule.
+@pytest.mark.parametrize("how", ["watched", "finished"])
+def test_an_empty_list_puts_no_card_away_and_says_so(lib, monkeypatch, how):
+    # Sonic (2026-10-23, M-W2-1): an empty list puts nothing away. Every file watched, or every file Finished, leaves
+    # nothing that counts: Junban leaves Anki's cards as they are and says so — one rule for both. (One show watched
+    # or Finished still puts its words' cards away: the tests above.)
     root, store = lib
     _episode, _own, fake = _acting(root, store, monkeypatch)
-    host, _lines = _host(generate=lambda reason: None)
+    host, lines = _host(generate=lambda reason: None)
     everything = [i for tier in ("now", "soon", "goal") for i in store.ids(tier)]
     with _patched(fake):
         host._job("catch-up")
-        store.set_watched(everything)
-        assert _job(fake, host) == [], "the marks write nothing before their Generate"
-        _generate(root)
-        _job(fake, host, "generate")
-        watched = {card_id for card_id, card in fake.cards.items() if card["queue"] == -1}
-        store.set_watched(everything, False)
-        _generate(root)
-        _job(fake, host, "generate")
-        assert not [card_id for card_id, card in fake.cards.items() if card["queue"] == -1], "un-marked: all back"
-        store.finish(everything)
-        assert _job(fake, host) == [], "Finished writes nothing before its Generate (W-1b: Finished is set aside too)"
-        _generate(root)
-        _job(fake, host, "generate")
-        finished = {card_id for card_id, card in fake.cards.items() if card["queue"] == -1}
-    assert watched == finished and finished, "every file watched parks what every file Finished parks"
+        before = _state(fake)
+        if how == "watched":
+            store.set_watched(everything)
+            assert _job(fake, host) == [], "the marks write nothing before their Generate"
+            _generate(root)
+            written = _job(fake, host, "generate")
+        else:
+            store.finish(everything)
+            assert _job(fake, host) == [], "Finished writes nothing before its Generate (W-1b: set aside too)"
+            _generate(root)
+            written = _job(fake, host, "generate")
+    assert written == [], "an empty list writes nothing to Anki: no position, tag or suspend"
+    assert _state(fake) == before
+    # The empty list's line is the last word: after a Finish the re-order's "then Generate" line must not cover it.
+    assert lines and lines[-1] == reposition.EMPTY_LIST, lines[-3:]
+
+
+def test_the_junban_verbs_answer_names_an_empty_list(monkeypatch):
+    # M-W2-1 review #5: a dry run on an empty list answered `moves 0` with every card "unchanged" — Connect couldn't tell
+    # it from an order already in place; the answer now carries `empty_list` (an added key)
+    from types import SimpleNamespace
+
+    from app import anki_connect
+    from app.cli import verbs
+    monkeypatch.setattr(anki_connect, "probe", lambda url: {"ok": True})
+    fake = SimpleNamespace(_url=lambda s: "http://127.0.0.1:8765", AnkiError=RuntimeError,
+                           dry_run=lambda s, job=None, unattended=False: (
+                               [], {"empty_list": True, "total": 5, "unmatched": 0, "decks": ["日本語"]}))
+    answer, _stats = verbs._junban_dry_run("ja", {}, fake)
+    assert answer["empty_list"] is True and answer["moves"] == 0
+    fake.dry_run = lambda s, job=None, unattended=False: ([], {"total": 5, "unmatched": 0, "decks": ["日本語"]})
+    assert "empty_list" not in verbs._junban_dry_run("ja", {}, fake)[0], "an order in place says nothing more"

@@ -1850,6 +1850,7 @@ TELL_SITES = {
     "f\"Anki: tomorrow's {n} already in place · moving {total - done:,} more…\"": False,
     "f\"Anki: tomorrow's {n} cards placed · moving {total - done:,} more…\"": False,
     "line": False,
+    "report['message']": False,                     # M-W2-1: an empty list, nothing put away: done
 }
 
 

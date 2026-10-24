@@ -191,8 +191,10 @@ class Worker:
             if self.language == "ja":
                 names.use_library_tables(view.names_tables, pin=True)     # never re-read while warm
             gates = arrivals.Gates.build(view, store) if store is not None else None     # None: never "exact"
-            # The set-aside files (Finished, watched episodes): their name records are in the gates' sums already
-            evidence = frozenset(store.aside_files()) if store is not None and self.language == "ja" else frozenset()
+            # The files whose name records are in the gates' sums already — counted and set aside (Finished, watched
+            # episodes; a row finished since the plan may still be counted until the indexer runs): never added twice
+            evidence = (frozenset(store.counted_files() + store.aside_files()) if store is not None
+                        and self.language == "ja" else frozenset())
         finally:
             if store is not None:
                 store.close()                       # the arrivals are read here, never through the store

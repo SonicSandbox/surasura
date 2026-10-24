@@ -3826,7 +3826,7 @@ class Store:
             rows = self._rows([r[0] for r in moving])
             self._before(change, list(rows.values()))
             self._put(tier, [r[0] for r in moving], ("before" if ahead else "after", last[0]), cmd.version)
-            cmd.touch({r[1] for r in moving} | {tier})
+            cmd.touch({r[1] for r in moving} | {tier}, within=all(r[1] == tier for r in moving))
         # --- W3.2 (IK-L2-1): a part from Finished comes back with its cards; one from New arrivals is placed
         # (W-1: through the one "leaving Finished" place, `_back_in_order`: its cards owed to Anki, its stones cleared)
         self._back_in_order(cmd, change, [r[0] for r in moving if r[1] == "graduated" and tier != "graduated"])

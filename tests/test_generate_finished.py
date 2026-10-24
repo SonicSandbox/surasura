@@ -385,3 +385,60 @@ def test_one_show_finished_counts_none_of_its_uses_keeps_its_names_and_sentences
     assert all(store.item(ids[n])["tier"] == "now" for n in show_a)
     assert _generate(root, language) == first, "the drag undone: the list is the first run's, byte for byte"
     store.close()
+
+
+def test_what_if_i_added_it_back_on_a_row_finished_since_the_last_index_counts_its_names_once():
+    """Both episodes counted and Generated; one is then finished, and asked about before the indexer has run (the
+    journey's settle): the token store still counts it, so its name record is in the gates' sums already — the answer
+    adds it no second time (no "names" moved)."""
+    import json
+    from app import library_store as ls, token_index as ti
+    from tests.test_arrivals_worker import _Worker
+    from tests.test_generate_watched import _child
+    from tests.test_library_store_support import roots
+    from tests.test_token_store_aside import NAME_LINES, _cues, _srt
+    root = os.environ["SURASURA_TEST_ROOT"]
+    store, data_dir, _ids = _six_files("ja")
+    cues = _cues("placed_episode.srt")
+    ep1 = os.path.join(data_dir, "HighPriority", "空の庭 続", "空の庭 続 第1話.srt")
+    ep2 = os.path.join(data_dir, "HighPriority", "空の庭", "空の庭 第1話.srt")
+    for path, part, line in ((ep1, cues[:4], NAME_AHEAD), (ep2, cues[4:], NAME_LINES[0])):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8", newline=chr(10)) as f:
+            f.write(_srt(part + [line]))
+    store.insert([ep1, ep2], "now")
+    store.close()
+    _generate(root, "ja")
+    store = ls.open_store("ja", data_dir, roots("ja")[1])
+    assert store.finish([store.item_id(ls.library_rel(data_dir, ep2))]) is not None
+    store.close()
+    counted, _aside = json.loads(_child(root, (
+        "import json; from app import token_index as ti; s = ti.open_store('ja'); "
+        "print(json.dumps([s.counted_files(), s.aside_files()], ensure_ascii=False)); s.close()")))
+    assert ti._norm(ep2) in counted, "the indexer hasn't run: the finished episode is still counted"
+    worker = _Worker(root, "ja", ["--static", "--min-freq", "1"])
+    try:
+        answer = worker.ask({"id": 1, "op": "estimate", "path": ep2})
+    finally:
+        worker.ask({"id": 2, "op": "quit"})
+    assert "names" not in answer["moved"], answer["moved"]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_joining_parts_inside_finished_moves_no_order(language):
+    """Rows that only change places inside Finished change nothing a run reads: a finished show cut in three parts,
+    its first and last joined (the last moves up beside the first) leaves `order_version` alone, and so does its Undo."""
+    store = migrated(language)
+    piece = store.item(store.ids("now")[0])["piece_id"]
+    members = [i for i in store.ids("now") if store.item(i)["piece_id"] == piece]
+    assert len(members) >= 3, members
+    store.finish(members)
+    store.split(piece, members[1])
+    store.split(store.item(members[1])["piece_id"], members[2])
+    last = store.item(members[2])["piece_id"]
+    order = store.versions()["order_version"]
+    join = store.join([piece, last])
+    assert join is not None and store.versions()["order_version"] == order
+    store.undo(join)
+    assert store.versions()["order_version"] == order
+    store.close()

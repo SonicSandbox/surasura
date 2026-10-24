@@ -540,13 +540,25 @@ def _drill(a, raw, guard, cases, root, deck, sub, tag, out, state):
     steps["3_pin"]["pinned_keys"] = pin_keys
     say("step 3", steps["3_pin"]["exact"], lines[-1:])
 
-    # 4 Finish runaway_transcript: its only-words suspended and tagged, the rest match
+    # 4 Finish runaway_transcript (W-1b: Finished is set aside, generate-first like a stone): nothing moves before
+    # its Generate; after it, its only-words suspended and tagged, the rest match the CSV the Generate wrote
     guard()
     _writer_do(state, "set_finished", [finish_item])
+    held = {c["cardId"]: (c["due"], c["queue"]) for c in _cards(raw, f'deck:"{deck}"')}
+    w = _job(host, "move", guard)
+    steps["4a_finish_move_job"] = {"set_writes": w["set"], "line": lines[-1:] if lines else [],
+                                   "nothing_moved": {c["cardId"]: (c["due"], c["queue"])
+                                                     for c in _cards(raw, f'deck:"{deck}"')} == held}
+    steps["4a_finish_move_job"]["pass"] = w["set"] == 0 and steps["4a_finish_move_job"]["nothing_moved"]
+    say("step 4a", steps["4a_finish_move_job"]["pass"], lines[-1:])
+    if state["writer"] is not None:
+        state["writer"].finish(time.monotonic() + 30)
+        state["writer"] = None
+    out["generate_finish_s"] = _generate(cases, root)
     before = _dues(raw, deck)
     state.setdefault("snaps", {})[f"before job {len(state.get('snaps', {}))}"] = before
-    w = _job(host, "move", guard)
-    rows = _engine_rows()
+    w = _job(host, "generate", guard)
+    rows = _csv_rows()
     steps["4_finish"], q = _check(raw, deck, rows, before, pinned=pinned_cards, lines=lines, writes=w)
     later = {c["key"]: c["queue"] for c in _cards(raw, f'deck:"{deck}" "tag:Surasura::later"')}
     steps["4_finish"]["only_words"] = {k: later.get(k, "not tagged") for k in only}

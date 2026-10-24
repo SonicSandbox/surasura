@@ -76,6 +76,7 @@ FILLED_BY = {
     "library_folders": "app.qt.settings_sources",          # --- SRC W1b: the folders read where they are
     "fresh_library": "app.qt.settings_sources",            # --- K7: *Start a fresh library…*
     "mine_line": _STORE, "soon_line": _STORE, "set_up_again": _STORE,
+    "keep_watched": _STORE,                     # --- W-1: the library's *Keep studying watched episodes*
     "remove_downloaded_covers": _LIVE,          # --- W3.2 L3
 }
 
@@ -293,6 +294,7 @@ ROWS = (
     # Content
     _row("target_language", "content", "choice", ("target_language",), options=LANGUAGES),
     _row("soon_line", "content", "custom"),                                                 # P6: the store's line
+    _row("keep_watched", "content", "custom"),                     # W-1: the library's option, a toggle the store draws
     # SRC W1b: the store's sources, read where they are; row 32: a summary here, the folders in their own window
     _row("library_folders", "content", "custom", door=("library-folders",)),
     _row("fresh_library", "content", "custom"),                       # K7: the library set aside, the folders read again
@@ -366,6 +368,7 @@ NOT_SHOWN = {
     "onboarding_completed": "state: the first start's",
     "setup_seen": "state: the version whose setup pages were seen (the wizard, WZ-8)",
     "setup_passed": "state: the setup pages saved before setup finished (the wizard)",
+    "hints_seen": "state: the one-time hints shown, each per library (W-1's first watched mark)",
     "open_count": "state: a launch counter",
     "skipped_version": "state: its way back is App's *Offer <version> again*",
     "youtube_risk_acknowledged": "the downloader's own one-time ask",

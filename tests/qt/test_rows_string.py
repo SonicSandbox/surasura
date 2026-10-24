@@ -25,7 +25,7 @@ from app.qt import freeze, rows, stones, strings, style
 from app.services import stone_plan, view_rows
 from tests.qt.conftest import wait_until
 from tests.qt.pixels import count, rgb_array
-from tests.qt.test_current import _stones_sheet, current, part, seeded   # noqa: F401  (fixtures)
+from tests.qt.test_current import _stones_sheet, current, keep_watched_on, part, seeded   # noqa: F401  (fixtures)
 
 
 def _closed_on_screen(lst, need=2):
@@ -55,7 +55,9 @@ def _settle(n=20):
 
 def _change_shows_on_that_row_alone(seed, win, monkeypatch, pick, change, *, check):
     """B3: one stone change → that row alone rebuilt, repainted, and drawn afresh once; its string shows the change.
-    `pick(row)` -> the episode to change (or None); `change(seed, row, ep)` commits it; `check(old_plan, new_plan, ep)`."""
+    `pick(row)` -> the episode to change (or None); `change(seed, row, ep)` commits it; `check(old_plan, new_plan, ep)`.
+    The library's *Keep studying watched episodes* on (W-1): a mark moves no top line, so the row is the change alone."""
+    keep_watched_on(seed, win)
     lst = current(win)
     lst.viewport().repaint()
     assert wait_until(lambda: not lst._warm.isActive())               # the list has rested: nothing else is pending
@@ -90,6 +92,35 @@ def test_a_file_watched_repaints_its_row_alone_and_its_stone_is_cut(seeded, monk
         seed, win, monkeypatch, lambda row: next((e for e in row.episodes if not e.watched), None)
         if len(row.episodes) >= 2 else None,
         lambda seed, row, ep: seed.library.commit(items=[{"id": ep.id, "watched": 1}]), check=check)
+
+
+def test_W1_a_file_watched_above_the_top_line_moves_it_one_file_and_repaints_those_two_rows_alone(seeded,
+                                                                                                    monkeypatch):
+    """W-1, the option off: a watched file has nothing left to mine, so the top line takes the next file that counts —
+    the marked row and the row the line runs through are rebuilt and repainted, nothing else (S19)."""
+    seed, win = seeded(size=(1280, 1100))
+    lst = current(win)
+    lst.viewport().repaint()
+    assert wait_until(lambda: not lst._warm.isActive())
+    model = lst.model()
+
+    def top(entries):
+        return next((n, ln.split) for n, e in enumerate(entries) for ln in e[2] if ln.kind == "top")
+    line_at, split = top(model.entries)
+    i = next(n for n in range(1, line_at) if model.entries[n][0] == rows.ROW and
+             model.entries[n][1].key != model.open_key and any(not e.watched for e in model.entries[n][1].episodes)
+             and lst.viewport().rect().contains(lst.visualRect(model.index(n, 0))))
+    row = model.entries[i][1]
+    ep = next(e for e in row.episodes if not e.watched)
+    renders = lst.delegate.renders
+    seed.library.commit(items=[{"id": ep.id, "watched": 1}])
+    assert wait_until(lambda: model.entries[i][1] is not row, 10)
+    _settle()
+    moved = top(model.entries)
+    assert moved != (line_at, split)                                  # one file further down
+    rebuilt = sorted({i, line_at, moved[0]})
+    assert sorted(set(model.changed)) == rebuilt, model.changed
+    assert lst.delegate.renders == renders + len(rebuilt)             # drawn afresh: those rows, once each
 
 
 def test_a_file_put_in_anki_repaints_its_row_alone_and_its_stone_turns_raw(seeded, monkeypatch):

@@ -29,6 +29,7 @@ PLACED = {
     "connect_open_anki": "neither",          # Open Anki for me (P2.3): when Anki is started, never a run
     "covers_download": "neither",            # Show covers (the setup wizard, G1.2-19): a cover's fetch, never a run
     "setup_seen": "neither",                 # the setup pages seen (the setup wizard, WZ-8): never a run
+    "hints_seen": "neither",                 # W-1: the one-time hints shown, each per library: never a run
     "setup_passed": "neither",               # the setup pages saved before setup finished (IK2-2): never a run
     "connect_backlog_cap": "neither",        # P2.4: how many of Connect's cards wait in Anki, never a run
     "known_from_anki": "neither",            # P2.4: its words reach KnownWord.json (known_sig), never as a key

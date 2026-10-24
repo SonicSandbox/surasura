@@ -466,6 +466,14 @@ def paint_sheen(p, r, alpha):
     p.fillRect(r, QBrush(grad))
 
 
+def stone_tip(ep, state, leaves):
+    """A stone's tip, the string's and an opened row's alike (W-1): when a mark takes its words off the list
+    (`leaves`: `view_rows.mark_moves_list`), the line that says so."""
+    if leaves:
+        state += strings.ROWS_STONE_LEAVES
+    return strings.ROWS_STONE_TIP.format(label=ep.label, state=state, action=strings.ROWS_STONE_ACTION[ep.watched])
+
+
 def asked_files(kind, episodes):
     """The files a status's button stands for: *Mine now* the unmined ones in the top waiting on nothing but their
     turn, *Mine this* every unmined one that can be mined, *No video* the unmined ones with none (never one being mined,
@@ -1094,6 +1102,10 @@ class RowDelegate(QStyledItemDelegate):
         self._infos[row.key] = (row.episodes, (row.next_index, row.media, row.source), out)
         return out[0], out[1], stat_w
 
+    def _keep_watched(self):
+        """W-1: the library's *Keep studying watched episodes*, from the view the list's page shows (off: none)."""
+        return bool(getattr(getattr(self.view.parent(), "view_model", None), "keep_watched", False))
+
     def _worst(self):
         """The reader's answer for the one title width (`View.worst`, `view_rows.worst_needs`): read from the view the
         list's page shows (`Page.view_model`, set before its entries) when these entries are that view's rows — else
@@ -1227,7 +1239,7 @@ class RowDelegate(QStyledItemDelegate):
             state = strings.ROWS_STONE_STATE[item.state].format(n=ep.cards)
             if ep.missing:
                 state += strings.ROWS_STONE_MISSING.format(word=ep.media_word or row.media_word)   # LM11b G1
-            tip = strings.ROWS_STONE_TIP.format(label=ep.label, state=state, action=strings.ROWS_STONE_ACTION[ep.watched])
+            tip = stone_tip(ep, state, view_rows.mark_moves_list(row.tier, ep, self._keep_watched()))
             out.append(("stone", QRect(round(room.left() + x - 13), round(mid - 15), 26, 30), tip, ep))
         return out
 
@@ -1428,8 +1440,8 @@ class RowDelegate(QStyledItemDelegate):
                 out.append((name, QRect(cols["stat"].right() - size.width(), cols["stat"].center().y() -
                                         size.height() // 2, size.width(), size.height()), tip, ask))
             state = strings.ROWS_STONE_STATE["cut" if ep.watched else "raw" if ep.cards else "rock"].format(n=ep.cards)
-            out.append(("stone", cols["tick"], strings.ROWS_STONE_TIP.format(
-                label=ep.label, state=state, action=strings.ROWS_STONE_ACTION[ep.watched]), ep))
+            out.append(("stone", cols["tick"], stone_tip(
+                ep, state, view_rows.mark_moves_list(row.tier, ep, self._keep_watched())), ep))
         return out
 
     # --- W3.2 Q8: the ✂ seam between two episodes of an opened row (A3 `split`), and drop-to-join's outline (G3) --- #

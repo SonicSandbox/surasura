@@ -480,6 +480,7 @@ ROWS_STONE_TIP = "{label}{state}\n• Click to mark it {action}"
 ROWS_STONE_STATE = {"cut": " · watched", "raw": " · {n} cards in Anki", "rock": ""}
 ROWS_STONE_MISSING = " · no {word} on disk"
 ROWS_STONE_ACTION = {True: "not watched", False: "watched"}
+ROWS_STONE_LEAVES = "\nWatched: its words leave your list."    # W-1: while *Keep studying watched episodes* is off
 ROWS_DONE = "Done"
 ROWS_DONE_TIP = "Mark {ep} watched\n• Click: the one after it comes up next"
 ROWS_DONE_ALL_TIP = "Every file of it is watched\n• Click to move it to Finished"
@@ -558,6 +559,15 @@ LIBRARY_NOT_OPENED = "Your library couldn't be opened. Open the logs folder (the
 DONE_NEXT = "✓ {title} {ep} watched · next: {next}"
 DONE_ONE = "✓ {title} {ep} watched"
 DONE_UNDONE = "{title} {ep} marked not watched"
+# --- W-1 (Sonic 2026-10-22, Q4): while *Keep studying watched episodes* is off — the first mark (once per library), the
+# un-mark
+DONE_LEFT = "✓ {ep} watched — its words left your list."
+DONE_KEEP = "Keep studying them"
+DONE_KEEP_TIP = "Opens Settings at Keep studying watched episodes"
+DONE_OK = "OK"
+DONE_OK_TIP = "Leave them off your list"
+DONE_UNDONE_BACK = "{ep} not watched — its words are back."
+# --- end W-1
 DONE_ALL = "✓ All {n} watched — finished with it?"
 DONE_MOVE_FINISHED = "Move to Finished"
 DONE_MOVE_FINISHED_TIP = "Move it to Finished: a record of what you've worked through"

@@ -959,6 +959,7 @@ class ShellWindow(QMainWindow):
     first_frame = pyqtSignal()
     closing = pyqtSignal()                                # before the window hides (single instance stops listening)
     sources_seen = pyqtSignal(object)                     # SRC W1b: a look's summary (Settings' *Library folders*)
+    library_switched = pyqtSignal()                       # W-1: another language's library shown (its own bridge)
 
     def __init__(self, services, state_file=None, parent=None):
         super().__init__(parent)
@@ -1511,6 +1512,7 @@ class ShellWindow(QMainWindow):
         self._follow_covers(reader, writer)
         reader.start()
         self._follow_looks(writer)                  # --- SRC W1b: that language's source folders
+        self.library_switched.emit()                # W-1: Settings' store rows follow the new bridge (`settings_store`)
 
     def _follow_covers(self, reader, writer):
         """W3.2 L3: the covers follow the library shown — its data folder, its writer and its drag controller (never the

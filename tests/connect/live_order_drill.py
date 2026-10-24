@@ -19,8 +19,9 @@ cards Anki SERVES follow the library's order? Never run by the suites; by hand, 
   whose key is on no row after every listed one.
 - Steps, each read back as `findCards deck:"<deck>" is:new -is:suspended` + `cardsInfo` sorted by (due, cardId),
   required EXACTLY equal to the oracle: 1 catch-up; 2 NOW's first item <-> Soon's first (`moves.Writer.move`);
-  3 pin the MiscInfo item; 4 Finish runaway_transcript.txt; 5 skipped (the W-1 stone, R3); 6 Generate, then the job:
-  zero `setSpecificValueOfCard`; 7 Restore: every still-new card's due = the baseline; 8 the order re-applied, one
+  3 pin the MiscInfo item; 4 Finish eighty_six_ch2.txt; 5 the stone (drill A2's DevTest half: STONE marked
+  watched, Generate, Undo the last reorder, re-applied, un-marked, Generate); 6 Generate, then the job: zero
+  `setSpecificValueOfCard` unless a word left the list; 7 Restore: every still-new card's due = the baseline; 8 the order re-applied, one
   note's word edited, then a catch-up (audit gap 3: the edited note is placed again).
 - What Anki serves (after step 2): `guiDeckReview` -> `guiCurrentCard` = oracle[0], suspended out of the way (never
   answered), read again: 5 cards; unsuspended. Then sort "Card type, then order gathered" (0); then gather "Random
@@ -48,6 +49,7 @@ SOON_EXTRA = ["library_episode.ass", "placed_episode.srt"]
 # pick, gives the list no word of its own: none is first met there).
 FINISH = "eighty_six_ch2.txt"
 PIN = "context_test.txt"
+STONE = "gotoubun_ep03.srt"                 # the episode marked watched (drill A2): NOW's third, never moved by the drill
 _URLOPEN = urllib.request.urlopen
 WRITES = {"set": 0, "requests": 0, "what": []}
 _SET = re.compile(rb'"action"\s*:\s*"setSpecificValueOfCard"')       # a write, never the probe's apiReflect list
@@ -190,12 +192,23 @@ def _key(row):
     return key
 
 
-def _first_index(rows):
+def _first_index(rows, spellings=False):
+    """{a card's key: the row where it is first met}: the row's own key first, then its Word, then its spellings
+    (`Forms`, '|'-joined) for a key no row names otherwise — as Junban finds a card's row (Orth, Word, then Forms:
+    a stone can turn a row's commonest spelling, 言うとおり's row became 言う通り with 言うとおり in its Forms)."""
     first = {}
     for i, row in enumerate(rows):
         k = _key(row)
         if k and k not in first:
             first[k] = i
+    for column in (("Word", "Forms") if spellings else ()):
+        extra = {}
+        for i, row in enumerate(rows):
+            for k in str(row.get(column) or "").split("|"):
+                k = k.strip()
+                if k and k not in first and k not in extra:
+                    extra[k] = i
+        first.update(extra)
     return first
 
 
@@ -242,7 +255,7 @@ def _queue(raw, deck):
 
 
 def _oracle(rows, cards, old_due, pinned=()):
-    first = _first_index(rows)
+    first = _first_index(rows, spellings=True)
     pinned = set(pinned)
 
     def k(c):
@@ -359,12 +372,23 @@ def _drill(a, raw, guard, cases, root, deck, sub, tag, out, state):
         pin_item, finish_item = by_name[PIN], by_name[FINISH]
         pin_path = store.item(pin_item)["rel_path"].replace("\\", "/")
         out["order_at_start"] = {t: [store.item(i)["rel_path"] for i in store.ids(t)] for t in ("now", "soon", "goal")}
+        stone_item = by_name[STONE]
+        stone_path = os.path.join(root, "data", "ja", store.item(stone_item)["rel_path"])
     finally:
         store.close()
     gone = set(_first_index(_engine_rows(drop={finish_item}))) ^ set(first)
     only = [k for k in keys if k in gone and k not in keys[:62]][:4]
     base = keys[:60]
     pin_keys = keys[60:62]
+    # The stone's words (drill A2): those the list holds only from STONE (W_only, predicted by the engine with it left
+    # out; the Generate after the mark decides, and the drill reads which left), and one it shares with a file still
+    # counted (W_later).
+    gone_stone = set(first) - set(_first_index(_engine_rows(drop={stone_item})))
+    with open(stone_path, encoding="utf-8", errors="replace") as f:
+        stone_text = f.read()
+    stone_only = [k for k in keys if k in gone_stone and k not in only][:4]
+    stone_later = next((k for k in base if k in stone_text and k not in gone_stone), None)
+    stone_extra = [k for k in stone_only if k not in base and k not in pin_keys]
     texts = "".join(open(os.path.join(dp, f), encoding="utf-8", errors="replace").read()
                     for dp, _d, fs in os.walk(os.path.join(root, "data", "ja")) for f in fs
                     if f.endswith((".srt", ".txt", ".ass")))
@@ -374,7 +398,9 @@ def _drill(a, raw, guard, cases, root, deck, sub, tag, out, state):
     ahead = [k for k in sorted(_first_index(_engine_rows(swap=True)).items(), key=lambda kv: kv[1]) if k[0] in base]
     reversed_keys = [ahead[1][0], ahead[3][0]]       # near the front once step 2 has run: the served check meets them
     out["notes_plan"] = {"base": len(base), "reversed": reversed_keys, "pin": pin_keys, "pin_misc": misc,
-                         "only_words": only, "unlisted": unlisted, "gone_on_finish": len(gone)}
+                         "only_words": only, "unlisted": unlisted, "gone_on_finish": len(gone),
+                         "stone": STONE, "stone_only": stone_only, "stone_later": stone_later,
+                         "stone_extra_notes": stone_extra, "gone_on_stone_predicted": len(gone_stone)}
 
     # --- the deck, its own preset, the notes ---
     guard()
@@ -397,7 +423,7 @@ def _drill(a, raw, guard, cases, root, deck, sub, tag, out, state):
         wanted.append(note(model, {"Front": k, "Back": "A3 drill"}))
     for k in pin_keys:
         wanted.append(note("Lapis", {"Expression": k, "MiscInfo": misc}))
-    for k in only + unlisted:
+    for k in only + stone_extra + unlisted:
         wanted.append(note("Basic", {"Front": k, "Back": "A3 drill"}))
     wanted.reverse()                         # added last key first: the list's first word at the back (due reversed)
     from app import anki_connect
@@ -527,7 +553,91 @@ def _drill(a, raw, guard, cases, root, deck, sub, tag, out, state):
     steps["4_finish"]["only_words_pass"] = bool(only) and all(later.get(k) == -1 for k in only)
     say("step 4", steps["4_finish"]["exact"], steps["4_finish"]["only_words"], lines[-1:])
 
-    steps["5_stone"] = {"skipped": "the W-1 stone: after W-1 lands (R3 / M-W2)"}
+    # 5 the stone (drill A2's DevTest half, steps 3-5): mark STONE watched -> nothing moves before the Generate; after
+    # it W_only's cards are in the not-on-your-list block (tagged, suspended), the rest in list order; Undo the last
+    # reorder puts every due and suspended state back as before that job; re-applied, then un-marked -> after the
+    # Generate W_only's cards are unsuspended and back in list order.
+    s5 = steps["5_stone"] = {"stone": STONE, "w_only": stone_only, "w_later": stone_later}
+
+    def later_state():
+        return {c["key"]: {"queue": c["queue"], "tagged": True}
+                for c in _cards(raw, f'deck:"{deck}" "tag:Surasura::later"')}
+
+    def card_state():
+        return {c["cardId"]: (c["due"], c["queue"]) for c in _cards(raw, f'deck:"{deck}"')}
+
+    def regenerate():
+        if state["writer"] is not None:
+            state["writer"].finish(time.monotonic() + 30)
+            state["writer"] = None
+        return _generate(cases, root)
+
+    guard()
+    _writer_do(state, "set_watched", [stone_item], on=True)
+    before = _dues(raw, deck)
+    held = card_state()
+    w = _job(host, "move", guard)
+    s5["a_mark_job"] = {"set_writes": w["set"], "line": lines[-1:] if lines else [],
+                        "nothing_moved": card_state() == held}
+    s5["a_mark_job"]["pass"] = w["set"] == 0 and s5["a_mark_job"]["nothing_moved"]
+    s5["generate_after_mark_s"] = regenerate()
+    csv_rows = _csv_rows()
+    listed = set(_first_index(csv_rows))
+    s5["w_only_left_the_list"] = {k: k not in listed for k in stone_only}
+    s5["w_later_listed"] = stone_later in listed if stone_later else None
+    before = _dues(raw, deck)
+    before_stone_job = card_state()
+    later_before_stone_job = set(later_state())
+    state.setdefault("snaps", {})[f"before job {len(state.get('snaps', {}))}"] = before
+    w = _job(host, "generate", guard)
+    s5["b_stone_job"], q = _check(raw, deck, csv_rows, before, pinned=pinned_cards, lines=lines, writes=w)
+    later = later_state()
+    gone_words = [k for k in stone_only if s5["w_only_left_the_list"][k]]
+    s5["b_stone_job"]["w_only_state"] = {k: later.get(k, "not tagged") for k in stone_only}
+    s5["b_stone_job"]["w_only_pass"] = bool(gone_words) and all(
+        (later.get(k) or {}).get("queue") == -1 for k in gone_words)
+    s5["b_stone_job"]["w_later_in_queue"] = (stone_later in [c["key"] for c in q]) if stone_later else None
+    say("step 5b", s5["b_stone_job"]["exact"], s5["b_stone_job"]["w_only_state"], lines[-1:])
+    # Undo the last reorder (Sonic: it undoes the last re-order): every card's due and suspended state as before 5b
+    guard()
+    restored = reposition.restore(host._settings())
+    now_state = card_state()
+    differ = [{"card": cid, "now": now_state.get(cid), "before": was} for cid, was in before_stone_job.items()
+              if now_state.get(cid) != was]
+    s5["c_undo"] = {"ok": restored.get("ok"), "message": restored.get("message"), "problems": restored.get("problems"),
+                    "n_differ": len(differ), "differ": differ[:15],
+                    "later_tags_as_before": set(later_state()) == later_before_stone_job}
+    s5["c_undo"]["pass"] = bool(restored.get("ok")) and not differ and s5["c_undo"]["later_tags_as_before"]
+    say("step 5c", s5["c_undo"]["pass"], restored.get("message"))
+    # the stone's order re-applied (a forced job), then un-marked: nothing moves before the Generate, then W_only back
+    guard()
+    host._force = True
+    w = _job(host, "generate", guard)
+    host._force = False
+    s5["d_reapplied"] = {"set_writes": w["set"], "w_only_state": {k: later_state().get(k, "not tagged")
+                                                                 for k in stone_only}}
+    guard()
+    _writer_do(state, "set_watched", [stone_item], on=False)
+    held = card_state()
+    w = _job(host, "move", guard)
+    s5["e_unmark_job"] = {"set_writes": w["set"], "line": lines[-1:] if lines else [],
+                          "nothing_moved": card_state() == held}
+    s5["generate_after_unmark_s"] = regenerate()
+    csv_rows = _csv_rows()
+    listed = set(_first_index(csv_rows))
+    s5["w_only_listed_again"] = {k: k in listed for k in stone_only}
+    before = _dues(raw, deck)
+    state.setdefault("snaps", {})[f"before job {len(state.get('snaps', {}))}"] = before
+    state["before_last_acting"] = ("5f", card_state())
+    w = _job(host, "generate", guard)
+    s5["f_unmark_generate_job"], q = _check(raw, deck, csv_rows, before, pinned=pinned_cards, lines=lines, writes=w)
+    in_queue = {c["key"] for c in q}
+    later = later_state()
+    s5["f_unmark_generate_job"]["w_only_back"] = {k: (k in in_queue and k not in later) for k in stone_only}
+    s5["f_unmark_generate_job"]["w_only_pass"] = bool(stone_only) and all(
+        s5["f_unmark_generate_job"]["w_only_back"].values())
+    say("step 5f", s5["f_unmark_generate_job"]["exact"], s5["f_unmark_generate_job"]["w_only_back"], lines[-1:])
+    rows = csv_rows                          # the list as the un-mark's Generate wrote it: step 6's "before"
 
     # 6 Generate, then the job: zero setSpecificValueOfCard
     if state["writer"] is not None:
@@ -538,7 +648,10 @@ def _drill(a, raw, guard, cases, root, deck, sub, tag, out, state):
     queue_before = {c["cardId"]: c["key"] for c in q}
     before = _dues(raw, deck)
     state.setdefault("snaps", {})[f"before job {len(state.get('snaps', {}))}"] = before
+    before_6 = {c["cardId"]: (c["due"], c["queue"]) for c in _cards(raw, f'deck:"{deck}"')}
     w = _job(host, "generate", guard)
+    if w["set"]:
+        state["before_last_acting"] = ("6", before_6)
     csv_rows = _csv_rows()
     steps["6_generate"], q = _check(raw, deck, csv_rows, before, pinned=pinned_cards, lines=lines, writes=w)
     steps["6_generate"]["zero_writes"] = w["set"] == 0
@@ -548,6 +661,8 @@ def _drill(a, raw, guard, cases, root, deck, sub, tag, out, state):
                                            re.findall(r'"card": (\d+)', " ".join(w["what"]))]
     steps["6_generate"]["left_the_list_at_generate"] = sorted(set(_first_index(rows_before)) - set(_first_index(csv_rows)))
     steps["6_generate"]["joined_the_list_at_generate"] = sorted(set(_first_index(csv_rows)) - set(_first_index(rows_before)))
+    # the lead's ruling (2026-10-23): membership changes at a Generate by design; 0 writes when no word left the list
+    steps["6_generate"]["ruling_pass"] = w["set"] == 0 or bool(steps["6_generate"]["left_the_list_at_generate"])
     steps["6_generate"]["engine_rows_equal_csv"] = [_key(r) for r in _engine_rows()] == [_key(r) for r in csv_rows]
     say("step 6", steps["6_generate"]["exact"], w, lines[-1:])
 
@@ -560,13 +675,21 @@ def _drill(a, raw, guard, cases, root, deck, sub, tag, out, state):
     new_due = {c["cardId"]: c["due"] for c in now if c["type"] == 0}
     steps_7_matches = [name for name, snap in snaps.items()
                        if all(snap.get(cid) == due for cid, due in new_due.items())]
+    last_name, last_state = state.get("before_last_acting") or (None, {})
+    state_now = {c["cardId"]: (c["due"], c["queue"]) for c in now}
+    last_differ = [{"key": next((c["key"] for c in now if c["cardId"] == cid), cid), "now": state_now.get(cid),
+                    "before": was} for cid, was in last_state.items() if state_now.get(cid) != was]
     differ = [{"key": c["key"], "due": c["due"], "baseline": baseline.get(c["cardId"]), "queue": c["queue"]}
               for c in now if c["type"] == 0 and c["due"] != baseline.get(c["cardId"])]
     steps["7_restore"] = {"ok": restored.get("ok"), "problems": restored.get("problems"),
                           "message": restored.get("message"), "differ": differ[:15], "n_differ": len(differ),
                           "still_suspended": [c["key"] for c in now if c["queue"] == -1],
                           "pass": bool(restored.get("ok")) and not differ,
-                          "dues_equal_the_state_before": steps_7_matches}
+                          "dues_equal_the_state_before": steps_7_matches,
+                          "ruling_last_reorder": {"job": last_name, "n_differ": len(last_differ),
+                                                  "differ": last_differ[:15],
+                                                  "pass": bool(restored.get("ok")) and bool(last_state)
+                                                  and not last_differ}}
     say("step 7", steps["7_restore"]["pass"], restored.get("message"))
 
     # 8 the order re-applied (two moves), one note's word edited, then a catch-up (gap 3)

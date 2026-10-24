@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import QApplication, QWidget
 from app.qt import rows
 from app.services import stone_plan, view_rows
 from tests.qt.conftest import wait_until
-from tests.qt.test_current import _stones_sheet, current, seeded   # noqa: F401  (fixtures)
+from tests.qt.test_current import _stones_sheet, current, keep_watched_on, seeded   # noqa: F401  (fixtures)
 from tests.qt.test_rows_string import _paint_spy, _settle
 
 
@@ -67,6 +67,7 @@ def test_a_change_on_a_row_that_isnt_the_worst_keeps_the_width_and_redraws_that_
     """L6: the one title width moves only with the row that needs the most room; a file watched on another row redraws
     that row and leaves every other row's picture (each picture keys on the width)."""
     seed, win = seeded(size=(1280, 1100))
+    keep_watched_on(seed, win)                                         # W-1: the mark moves no line
     lst = current(win)
     d, model = lst.delegate, lst.model()
     width = lst.visualRect(model.index(1, 0)).width()

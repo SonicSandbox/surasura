@@ -17,7 +17,9 @@ from PyQt6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBox
 
 from app import theme
 from app.qt import bridge, rows, strings
+from app.qt import standing as standing_qt                # round 8 row 54: the read-only line's ✕
 from app.services import play
+from app.services import standing
 
 def state_line(view):
     """The page's state bar for a view, or "" (02 §2.4): getting ready, read-only with its reason, busy."""
@@ -34,6 +36,16 @@ def state_line(view):
     if view.busy:
         return strings.STATE_LINES["busy"]
     return ""
+
+
+def state_key(view):
+    """The state bar's standing key (round 8 row 54: ✕ hides it until the reason changes), or None for a line that goes
+    by itself (getting ready, updating)."""
+    if view is None:
+        return None
+    if view.state == "read-only" or (view.state == "getting-ready" and view.reason == "migration failed"):
+        return standing.read_only_key(view.reason or view.state)
+    return None
 
 
 def media_to_open(language, episode, media):
@@ -66,19 +78,15 @@ def open_with_system(path):
 
 
 # --- small parts ------------------------------------------------------------------------------------------------- #
-class StateBar(QLabel):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setObjectName("statebar")
-        self.setTextFormat(Qt.TextFormat.PlainText)
-        self.setWordWrap(False)
-        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-        self.setVisible(False)
+class StateBar(standing_qt.StandingLine):
+    """The page's thin state bar: its words across the page, a read-only line's ✕ at its right end."""
 
-    def show_line(self, text):
-        self.setText(text)
-        self.setAccessibleName(text)
-        self.setVisible(bool(text))
+    def __init__(self, parent=None):
+        super().__init__("statebartext", parent, fill=True, margins=(0, 0, 6, 0))
+        self.setObjectName("statebar")
+        self.label.setWordWrap(False)
+        self.label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
 
 
 def same_objects(a, b):
@@ -88,6 +96,8 @@ def same_objects(a, b):
 
 class Page(QWidget):
     message = pyqtSignal(str)                       # a line for the bottom bar (a file that couldn't open)
+    state_dismissed = pyqtSignal(str)               # ✕ on the state bar: its key (the window hides it on every page)
+    hidden = None                                   # the window's standing lines hidden this session (standing.Hidden)
 
     def __init__(self, name, heading, tooltips=None, language="ja", parent=None):
         super().__init__(parent)
@@ -112,6 +122,7 @@ class Page(QWidget):
         head.addStretch(1)
         box.addLayout(head)
         self.state_bar = StateBar(self)
+        self.state_bar.dismissed.connect(lambda: self.state_dismissed.emit(state_key(self.view_model) or ""))
         box.addWidget(self.state_bar)
         self.list = rows.RowsView(strings.LIST_NAMES.get(name, heading), tooltips=tooltips, parent=self)
         self.list.play_requested.connect(self._play)
@@ -126,14 +137,22 @@ class Page(QWidget):
 
     def set_view(self, view):
         old, self.view_model = self.view_model, view
-        line = state_line(view)
-        if line != self.state_bar.text() or self.state_bar.isHidden() == bool(line):   # only when it changes
-            self.state_bar.show_line(line)
+        self.paint_state()
         if old is not None and view is not None and old.loading == view.loading and self.unchanged(old, view):
             self.list.model().changed = []
             self.list.looks_changed = False
             return "same"                               # another page's change: this list's diff costs nothing
         return self.list.set_entries(self.entries(view))
+
+    def paint_state(self):
+        """The state bar for the view: a read-only line hidden by ✕ stays hidden until its reason changes (or it
+        ended and came back); repainted only when it changes."""
+        view = self.view_model
+        line, key = state_line(view), state_key(view)
+        if key is not None and self.hidden is not None and self.hidden.hid(key):    # read only (A-9): the window lets
+            line = ""                                                               # the kind go as its trouble ends
+        if line != self.state_bar.text() or self.state_bar.isHidden() == bool(line):   # only when it changes
+            self.state_bar.show_line(line, closable=key is not None)
 
     def _media_of(self, episode):
         """The media type of the row an episode is in (looked up on a click, not kept per view: a view at 20,000 files
@@ -279,9 +298,7 @@ class NeedsPage(Page):
         if self.controller is None:
             return super().set_view(view)
         self.view_model = view
-        line = state_line(view)
-        if line != self.state_bar.text() or self.state_bar.isHidden() == bool(line):
-            self.state_bar.show_line(line)
+        self.paint_state()                              # round 8 (A-1): the ✕ rule, as every page's
         self.controller.view_in(view)
         self.list.looks_changed = False
         return "same"                                   # its cards repaint on their own entries (`show_entries`)

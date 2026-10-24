@@ -65,6 +65,10 @@ class Heard(QObject):
     library_changed = pyqtSignal(object)
 
 
+class Switched(QObject):
+    library_switched = pyqtSignal()               # the shell's: another language's library shown (its own bridge)
+
+
 class Bar:
     def __init__(self):
         self.lines = []
@@ -77,7 +81,9 @@ def make(options=None, reader=True, writer=None, data=None, view=None):
     store = Recorder(dict({"target_language": "ja"}, **(data if data is not None else ALL_ON)))
     services = SimpleNamespace(settings=store, library=Reader(options, view) if reader else None,
                                writer=writer if writer is not None else (Writer() if reader else None))
-    shell = SimpleNamespace(services=services, bar_line=Bar(), library_bridge=Heard())
+    switcher = Switched()
+    shell = SimpleNamespace(services=services, bar_line=Bar(), library_bridge=Heard(), switcher=switcher,
+                            library_switched=switcher.library_switched)
     page = sp.SettingsPage(shell, "ja", found=EVERYTHING)
     rows = store_rows.attach(page)
     page.resize(1100, 700)
@@ -132,7 +138,8 @@ def test_a_refused_line_goes_back_to_the_librarys_value_and_the_bar_says_why(qap
         change(rows.fields["soon_line"], 3)
         assert writer.calls == [{"soon_line": 3}]
         assert rows.fields["soon_line"].value() == 25
-        assert shell.bar_line.lines == [S.STORE_NOT_SAVED.format(reason="damaged")]
+        # review W-9: the store's reason in the words the greyed tips use
+        assert shell.bar_line.lines == [S.STORE_NOT_SAVED.format(reason=strings.READ_ONLY_REASONS["damaged"])]
     finally:
         _close(page)
 
@@ -303,3 +310,166 @@ def test_trust_waits_for_its_settings_write_before_starting_connect(qapp, kicked
     assert order == ["flush", "kick"]
     # it gives the write time to land behind another program's lock (mutant LF9-B28: a zero wait starts Connect at once)
     assert waited == [store_rows.FLUSH_S] and store_rows.FLUSH_S >= 5
+
+
+# --- W-1 (D-W1): *Keep studying watched episodes*, the library's own option ------------------------------------------ #
+# What a wrong answer would cost: the option written into settings.json (it is the library's: the store's meta, through
+# the writer), a toggle that waits for the store before it moves (every press reacts at once), a toggle showing a value
+# the library doesn't hold, or one that looks writable with no library — or a read-only one — behind it.
+from PyQt6.QtCore import Qt  # noqa: E402
+from PyQt6.QtTest import QTest  # noqa: E402
+
+from app.qt import strings  # noqa: E402
+
+LINES = {"soon_line": 25, "mine_line": 20, "arrivals_on": 1}
+
+
+class PendingWriter(Writer):
+    """A writer whose commands wait (a busy store): `pending()` counts them until `land()`."""
+
+    def __init__(self):
+        super().__init__()
+        self.waiting = 0
+
+    def set_options(self, **kw):
+        self.waiting += 1
+        return super().set_options(**kw)
+
+    def pending(self):
+        return self.waiting
+
+
+def test_W1_the_row_shows_the_librarys_keep_watched_and_a_library_without_it_reads_off(qapp):
+    for options, on in ((dict(LINES, keep_watched=1), True), (dict(LINES), False), (dict(LINES, keep_watched=0), False)):
+        page, rows, _shell, store = make(options)
+        try:
+            assert rows.keep.value() is on and rows.keep.isEnabled()
+            assert page.custom_row("keep_watched").layout().indexOf(rows.keep) >= 0
+            assert rows.keep.toolTip() == S.ROWS["keep_watched"][2]
+            assert store.calls == []                                   # nothing written by showing it
+        finally:
+            _close(page)
+
+
+def test_W1_a_press_flips_the_toggle_at_once_and_writes_one_command_never_settings_json(qapp):
+    writer = Writer()
+    page, rows, _shell, store = make(dict(LINES), writer=writer)
+    try:
+        QTest.mouseClick(rows.keep, Qt.MouseButton.LeftButton)
+        assert rows.keep.value() is True                               # in the frame of the press
+        assert writer.calls == [{"keep_watched": True}]                # one command, the option alone
+        assert store.calls == []                                       # the library's value, not the file's
+    finally:
+        _close(page)
+
+
+def test_W1_a_press_on_its_way_to_the_store_is_never_painted_back_and_the_landed_value_stands(qapp):
+    writer = PendingWriter()
+    page, rows, shell, _store = make(dict(LINES), writer=writer)
+    try:
+        QTest.mouseClick(rows.keep, Qt.MouseButton.LeftButton)
+        shell.library_bridge.library_changed.emit(_view())             # an unrelated view, the store not written yet
+        assert rows.keep.value() is True
+        writer.waiting = 0                                             # landed: the library holds it
+        page.services.library._options["keep_watched"] = 1
+        shell.library_bridge.library_changed.emit(_view())
+        assert rows.keep.value() is True and rows._keep_asked is None
+        page.services.library._options["keep_watched"] = 0             # another window turned it off
+        shell.library_bridge.library_changed.emit(_view())
+        assert rows.keep.value() is False
+    finally:
+        _close(page)
+
+
+def test_W1_a_refused_press_flips_back_and_the_bar_says_why(qapp):
+    writer = Writer(refuse=True)
+    page, rows, shell, _store = make(dict(LINES), writer=writer)
+    try:
+        writer._reason = "damaged"                                     # the store turned read-only since it was shown
+        QTest.mouseClick(rows.keep, Qt.MouseButton.LeftButton)
+        assert writer.calls == [{"keep_watched": True}]
+        assert rows.keep.value() is False
+        assert shell.bar_line.lines == [S.STORE_NOT_SAVED.format(reason=strings.READ_ONLY_REASONS["damaged"])]
+    finally:
+        _close(page)
+
+
+def test_W1_after_a_language_switch_all_three_fields_follow_the_new_library_and_its_bridge(qapp):
+    """Review W-1: a language switch makes a new bridge (the old one goes silent) and new services. The store rows
+    follow the library shown now — the toggle and the two lines alike — and a press writes the new library from its
+    own value."""
+    writer = Writer()
+    page, rows, shell, _store = make(dict(LINES), writer=writer)
+    try:
+        zh = Reader(dict(LINES, soon_line=7, mine_line=3, keep_watched=1))
+        zh_writer = Writer()
+        old = shell.library_bridge
+        shell.library_bridge = Heard()                                 # `_show_switched`: the new language's bridge
+        page.services.library, page.services.writer = zh, zh_writer
+        shell.library_switched.emit()
+        assert rows.keep.value() is True
+        assert rows.fields["soon_line"].value() == 7 and rows.fields["mine_line"].value() == 3
+        zh._options["keep_watched"] = 0                                # the new library's next view is heard
+        shell.library_bridge.library_changed.emit(_view())
+        assert rows.keep.value() is False
+        zh._options["keep_watched"] = 1
+        old.library_changed.emit(_view())                              # the old bridge is no longer heard
+        assert rows.keep.value() is False
+        QTest.mouseClick(rows.keep, Qt.MouseButton.LeftButton)
+        assert zh_writer.calls == [{"keep_watched": True}] and writer.calls == []
+    finally:
+        _close(page)
+
+
+@pytest.mark.parametrize("case", ["no library", "not read yet", "read-only"])
+def test_W1_with_no_library_or_one_that_cant_be_saved_the_toggle_is_greyed_and_says_why(qapp, case):
+    writer = Writer(reason="damaged") if case == "read-only" else None
+    page, rows, _shell, _store = make({} if case == "not read yet" else dict(LINES, keep_watched=1),
+                                      reader=case != "no library", writer=writer)
+    try:
+        assert not rows.keep.isEnabled()
+        if case == "read-only":                                        # the store's reason, in the menus' words
+            assert rows.keep.toolTip() == strings.MENU_REFUSED_TIP.format(reason=strings.READ_ONLY_REASONS["damaged"])
+            assert rows.keep.value() is True                           # the library's value, shown greyed
+        else:
+            assert rows.keep.toolTip() == S.STORE_NO_LIBRARY_TIP
+        QTest.mouseClick(rows.keep, Qt.MouseButton.LeftButton)
+        assert (page.services.writer.calls if page.services.writer else []) == []
+    finally:
+        _close(page)
+
+
+def test_W1_a_new_view_repaints_the_toggle_only_when_its_value_moved(qapp):
+    page, rows, shell, _store = make(dict(LINES))
+    try:
+        sets = []
+        real = rows.keep.set_value
+        rows.keep.set_value = lambda v: (sets.append(v), real(v))
+        shell.library_bridge.library_changed.emit(_view())             # nothing moved (S19)
+        assert sets == []
+        page.services.library._options["keep_watched"] = 1
+        shell.library_bridge.library_changed.emit(_view())
+        assert sets == [True]
+    finally:
+        _close(page)
+
+
+def test_W1_the_toggle_through_the_real_writer_is_one_command_and_its_undo_restores_the_option(qapp, lib,
+                                                                                              make_writer):
+    """The window's writer on a real store (Japanese and Chinese): the press is one `set_options` command, logged once;
+    the store's undo of that change puts the option back as it was (absent: off)."""
+    from tests import services_helpers as h
+    changes = []
+    w, _heard = make_writer(after_commit=lambda change, op: changes.append((change, op)))
+    page, rows, _shell, _store = make(dict(LINES), writer=w)
+    try:
+        QTest.mouseClick(rows.keep, Qt.MouseButton.LeftButton)
+        assert h.until(lambda: lib.store.meta().get("keep_watched") == 1)
+        assert w.idle(5) and [op for _c, op in changes] == ["set_options"]
+        lib.store.undo(changes[0][0])
+        assert not lib.store.meta().get("keep_watched")
+    finally:
+        _close(page)
+
+
+from tests.test_services_moves import lib, make_writer  # noqa: E402,F401  (the real store's fixtures)

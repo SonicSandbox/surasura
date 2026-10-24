@@ -29,8 +29,10 @@ for Current's list — W3.2's tray and Goal sheet feed the same one through `beg
 - **Moves without a drag**: ↑ ↓ (`nudge`; across the NOW / Soon edge, a `move` beside the neighbour), Alt+↑ / ↓, ⋯
   (*Up next*, *Soon*, *Goal*, *Finished*, *See it in your journey*). **A Done** (a stone, ✓ Done): `set_watched`, its
   toast with Undo, and after the Done that leaves no file unwatched the finish toast (*All N watched — finished with
-  it?* [Move to Finished]), skipped for a split's first part and hato's mix. **Files from Explorer** dropped on the list:
-  the writer's `insert_at` beside the row under the hand.
+  it?* [Move to Finished]), skipped for a split's first part and hato's mix. W-1, while the library's *Keep studying
+  watched episodes* is off: the first plain mark of a library says its words left the list ([Keep studying them] opens
+  that setting, [OK]; once per library, `hints_seen`), and an un-mark says they are back. **Files from Explorer**
+  dropped on the list: the writer's `insert_at` beside the row under the hand.
 - **E4**: a store that can't be written refuses at the press — the bar says why, and nothing moves.
 """
 import math
@@ -42,11 +44,12 @@ from PyQt6.QtGui import QAction, QKeySequence, QPainter, QPainterPath, QPen, QPi
 from PyQt6.QtWidgets import QApplication, QMenu, QStyleOptionViewItem, QWidget
 
 from app import theme
-from app.qt import motion, rows, shadow, strings, style
+from app.qt import bridge, motion, rows, shadow, strings, style
 from app.services import view_rows
 
 D = theme.DRAG
 FINISHED = "graduated"                              # the store's name for Finished
+HINT_LEFT = "keep_watched"                          # W-1: the first mark's toast (`hints_seen`, once per library)
 
 
 # --- the order the window shows, and where a drop lands (pure) ---------------------------------------------------- #
@@ -160,18 +163,22 @@ def show_finished(row, ep):
 def lines_for(view, rows_):
     """The top-20 line and the Soon line for `rows_` (the drop's order) as the reader would draw them: the top line
     after the row holding the same number of available files as before (split through it when it falls inside one),
-    the Soon line where the reader draws it (`view_rows.soon_line_after`: one rule)."""
+    the Soon line where the reader draws it (`view_rows.soon_line_after`: one rule). W-1: a file counts toward the top
+    line by the store's one rule too (`library_store.counts`: a watched one only while the view's `keep_watched` is on).
+    """
+    from app.library_store import counts
+    keep = bool(getattr(view, "keep_watched", False))
     out = []
     top = next((ln for ln in view.lines if ln.kind == "top"), None)
     if top is not None:
         n = 0
         for i, r in enumerate(view.rows[:top.after + 1]):
             eps = r.episodes if (i < top.after or top.split is None) else r.episodes[:top.split]
-            n += sum(1 for e in eps if not e.missing)
+            n += sum(1 for e in eps if not e.missing and counts(r.tier, e.watched, keep))
         seen, at = 0, None
         for i, r in enumerate(rows_):
             for k, e in enumerate(r.episodes):
-                if not e.missing:
+                if not e.missing and counts(r.tier, e.watched, keep):
                     seen += 1
                     if seen == n:
                         at = (i, k + 1)
@@ -688,6 +695,13 @@ def _empty_menu(m):
 
 
 # --- the writer's callbacks, on the window's thread -------------------------------------------------------------- #
+WRITER_CALLBACKS = ("on_saved", "on_undone", "on_saving", "on_reread", "on_note")     # what a controller wires
+
+
+def _no_callback(*_args):
+    pass
+
+
 class _Relay(QObject):
     saved = pyqtSignal(object, object)
     undone = pyqtSignal(object, object)
@@ -698,8 +712,10 @@ class _Relay(QObject):
 
 
 class Ticket:
-    """A command the window gave (its toast's words and its Undo): `change` once the writer saved it."""
-    __slots__ = ("text", "keys", "ids", "change", "undo_asked", "toast", "follows", "then")
+    """A command the window gave (its toast's words and its Undo): `change` once the writer saved it. `told(event)`,
+    if set: "saved", "refused" (nothing written) or "undone" (its Undo asked, or the change undone) — round 8 row 45: a
+    pressed *Mine now* stops turning when its ask is refused or undone, and asks Connect's feed again once saved."""
+    __slots__ = ("text", "keys", "ids", "change", "undo_asked", "toast", "follows", "then", "told")
 
     def __init__(self, text, keys=(), ids=()):
         self.text, self.keys, self.ids = text, tuple(keys), tuple(ids)
@@ -708,6 +724,12 @@ class Ticket:
         self.toast = False
         self.follows = None                          # the ticket this one's command follows (a Finished choice)
         self.then = None                             # a command waiting for this one's change (a Finished choice)
+        self.told = None
+
+
+def _tell(ticket, event):
+    if ticket.told is not None:
+        ticket.told(event)
 
 
 class _Drag:
@@ -767,6 +789,9 @@ class DragController(QObject):
         self._filtering = False
         self.drops = 0                               # drops handed to the writer (tests)
         self.relay = _Relay(self)
+        self._gate = bridge.Gate(self.relay)         # the writer's and the reader's threads reach the relay through it
+        #   only: a write landing as the window is deleted (a close the quit's wait put off) is dropped, never an emit
+        #   on a deleted relay (round 8's crash)
         q = Qt.ConnectionType.QueuedConnection
         self.relay.saved.connect(self._saved, q)
         self.relay.undone.connect(self._undone, q)
@@ -774,14 +799,13 @@ class DragController(QObject):
         self.relay.reread.connect(self._reread, q)
         self.relay.note.connect(self._note, q)
         self.relay.gone.connect(self._gone, q)
-        writer.on_saved = self.relay.saved.emit
-        writer.on_undone = self.relay.undone.emit
-        writer.on_saving = self.relay.saving.emit
-        writer.on_reread = self.relay.reread.emit
-        writer.on_note = self.relay.note.emit
+        for name in WRITER_CALLBACKS:                # on_saved -> the relay's `saved`, …
+            setattr(writer, name, self._gate.caller(name[len("on_"):]))
+        self._gone_told = None                       # the very callback the reader holds (`unwire` lets it go)
         subscribe = getattr(reader, "subscribe_gone", None)
         if subscribe is not None:
-            subscribe(self.relay.gone.emit)
+            self._gone_told = self._gate.caller("gone")
+            subscribe(self._gone_told)
         self.page.on_done = self.done
         self.page.on_nudge = self.nudge
         self.page.on_menu = self.menu
@@ -1496,6 +1520,7 @@ class DragController(QObject):
         """Hand a command to the writer (`command(label)` -> its number, or None when refused); its toast with Undo."""
         seq = command(ticket)
         if seq is None:                              # refused (E4 meanwhile): nothing written, the store's view stands
+            _tell(ticket, "refused")
             if self.refused() is None:               # W3.2 P0 (AD0-5): never silent — a writer let go at a switch
                 self.say(strings.MOVE_NOT_SAVED)
             held = self.held
@@ -1519,6 +1544,7 @@ class DragController(QObject):
 
     def undo(self, ticket):
         """A toast's Undo: that change (once the writer saved it; asked before, it is undone as it lands)."""
+        _tell(ticket, "undone")
         if ticket.change is not None:
             self.writer.undo(ticket.change)
             self._let_go()
@@ -1542,6 +1568,7 @@ class DragController(QObject):
     def _saved(self, change, label):
         if isinstance(label, Ticket):
             label.change = change
+            _tell(label, "saved")
             then, label.then = label.then, None
             if label.undo_asked:
                 label.undo_asked = False
@@ -1557,6 +1584,8 @@ class DragController(QObject):
             self.reader.refresh()
 
     def _undone(self, change, label):
+        if isinstance(label, Ticket):
+            _tell(label, "undone")
         if self.toasted is not None and self.toasted.change is change:
             self.win.toasts.close()                  # its toast goes with it
             self.toasted = None
@@ -1645,8 +1674,12 @@ class DragController(QObject):
                 self.win.toasts.show(strings.DONE_ALL.format(n=len(row.episodes)), buttons=[
                     (strings.DONE_MOVE_FINISHED, strings.DONE_MOVE_FINISHED_TIP, lambda: self.to_finished(row))])
             return
+        # W-1: does this mark move what the list counts (the store's one rule; never a video waiting for its subtitle)
+        moves_list = view_rows.mark_moves_list(row.tier, ep, getattr(self.page.view_model, "keep_watched", False))
         if ep.watched:
-            ticket = Ticket(strings.DONE_UNDONE.format(title=title, ep=ep.label), (row.key,), (ep.id,))
+            text = strings.DONE_UNDONE_BACK.format(ep=ep.label) if moves_list else \
+                strings.DONE_UNDONE.format(title=title, ep=ep.label)
+            ticket = Ticket(text, (row.key,), (ep.id,))
             self._give(ticket, lambda t: self.writer.set_watched([ep.id], False, label=t))
             return
         left = [e for e in row.episodes if not e.watched and e.id != ep.id]
@@ -1669,11 +1702,56 @@ class DragController(QObject):
                                           strings.DONE_MOVE_SHOW_FINISHED_TIP.format(show=show, n=len(ids)),
                                           lambda: self.finish_show(row, show, ids))])
             return
+        hint = self._unseen(HINT_LEFT) if moves_list else None   # --- W-1: the first mark, once per library
+        if hint is not None:
+            ticket = Ticket(strings.DONE_LEFT.format(ep=ep.label), (row.key,), (ep.id,))
+            if self._give(ticket, lambda t: self.writer.set_watched([ep.id], True, label=t), toast=False) is None:
+                return
+            self._seen(hint)
+            self._toast(ticket, buttons=[(strings.DONE_KEEP, strings.DONE_KEEP_TIP,
+                                          lambda: self.win.open_setting("keep_watched")),
+                                         (strings.DONE_OK, strings.DONE_OK_TIP, lambda: None)])
+            return
         after = [e for e in row.episodes[row.episodes.index(ep) + 1:] if not e.watched] if ep in row.episodes else []
         nxt = after[0] if after else (left[0] if left else None)
         text = strings.DONE_NEXT.format(title=title, ep=ep.label, next=nxt.label) if nxt is not None else \
             strings.DONE_ONE.format(title=title, ep=ep.label)
         self._give(Ticket(text, (row.key,), (ep.id,)), lambda t: self.writer.set_watched([ep.id], True, label=t))
+
+    # --- W-1: a hint shown once per library (settings.json's `hints_seen`: hint ids, each with the library's id) -- #
+    def _hint_id(self, name):
+        """`name`'s hint id for the library shown (its store id), or None before a read has found it: never keyed by
+        the language, so a hint is never shown twice in one library."""
+        store_id = None
+        try:
+            store_id = self.reader.store_id() if self.reader is not None else None
+        except Exception:
+            pass
+        return f"{name}:{store_id}" if store_id else None
+
+    def _hints_seen(self):
+        """settings.json's `hints_seen` as a list of ids — a hand-edited value that isn't a list (a number, true, a text)
+        reads as none seen, its odd entries left out; the next write puts a clean list in its place."""
+        value = self.win.services.settings.get().get("hints_seen")
+        return [h for h in value if isinstance(h, str)] if isinstance(value, (list, tuple)) else []
+
+    def _unseen(self, name):
+        """`name`'s hint id for this library when it hasn't been shown here yet, else None."""
+        hint = self._hint_id(name)
+        if hint is None:
+            return None
+        try:
+            seen = self._hints_seen()
+        except Exception:
+            return None                              # no settings to keep it in: never a hint shown every time
+        return None if hint in seen else hint
+
+    def _seen(self, hint):
+        """`hint` recorded as shown: its key alone written (`save_keys`' rule, the settings service's)."""
+        seen = self._hints_seen()
+        if hint not in seen:
+            self.win.services.settings.set({"hints_seen": seen + [hint]})
+    # --- end W-1
 
     def to_finished(self, row):
         """*Move to Finished* (the finish toast, ⋯): the row leaves Current at once; the Finished toast."""
@@ -1854,6 +1932,19 @@ class DragController(QObject):
         return idx.row() if y < lst.visualRect(idx).center().y() else idx.row() + 1
 
     # --- the quit ------------------------------------------------------------------------------------------------ #
+    def unwire(self):
+        """The writer's callbacks and the reader's `subscribe_gone` let go — a language switch and the window's close,
+        before any widget of this controller's can be deleted: a write landing later (the quit's last moves, on the
+        writer's thread) tells no one, and one telling right now has ended when this returns (the gate's close waits
+        for it). A window deleted without this (a close the quit's wait put off) closes the gate as its relay goes."""
+        for name in WRITER_CALLBACKS:
+            setattr(self.writer, name, _no_callback)
+        self._gate.close()
+        unsubscribe = getattr(self.reader, "unsubscribe_gone", None)
+        if unsubscribe is not None and self._gone_told is not None:
+            unsubscribe(self._gone_told)
+        self._gone_told = None
+
     def close(self):
         """The window closes (or a language switch lets this controller go): a drag running is let go, and the settle
         stops — H-T1: nothing of this controller's is shown past it (its writer's moves left stay in its journal)."""

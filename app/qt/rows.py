@@ -421,10 +421,57 @@ STATUS_ICON = {"in_anki": "check", "mining": "mining", "waiting": "waiting", "mi
 # file's, so a press and its release match as an episode's do; `ids`: the files it asks for; `episode`: the first).
 ACTIONS = {"waiting": "mine-now", "mine": "mine-this", "no_media": "no-media"}
 ACTION_NAMES = frozenset(ACTIONS.values())
+ASKS = ("mine-now", "mine-this")                    # the actions that ask Connect (round 8 row 45: they turn when pressed)
 _ACTION_TIPS = {"mine-now": "ROWS_MINE_NOW_TIP", "mine-this": "ROWS_MINE_THIS_TIP", "no-media": "ROWS_NO_MEDIA_TIP"}
 
 
 Ask = namedtuple("Ask", "id ids episode")
+
+# --- round 8 row 45 (the trial): *Mine now* pressed. From the frame of the press until Connect's feed says something new
+# of the file (`mine_actions`; `RowsView.press_ids`), its pill (and a closed row's Mine now) shows a turning accent mark
+# in the hourglass's place, no words — its hover says *Asked · starting…*. Sonic chose the hourglass itself turning over
+# in place (round 8 trial, his look A: an eased half-turn each `MOTION["mining-spin"]`), and a little smaller while it
+# turns ("so the spin and slightly smaller": `TURNING_SCALE`), full size again once it stops. Reduced motion and the
+# freeze switch: the mark still, upright, still smaller — the difference shows without motion.
+TURNING_SCALE = 0.85                # an icon's size while it turns (PROVISIONAL, ~85 %: Sonic's "slightly smaller")
+
+
+def paint_pressed(p, rect, turning, radius=None):
+    """A pressed *Mine now*'s mark in `rect` (the pill's box, round; or a closed row's icon button, `radius`): its
+    ground, then the accent hourglass at `TURNING_SCALE`, turned over to `turning` (0–1; None: still, upright). The box
+    keeps its size: only the glyph inside it is smaller."""
+    r = QRectF(rect)
+    p.save()
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(c("raised"))
+    radius = r.height() / 2 if radius is None else radius
+    p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
+    p.translate(r.center())
+    p.scale(TURNING_SCALE, TURNING_SCALE)
+    if turning is not None:
+        p.rotate(180.0 * motion.ease(turning, theme.EASE_IN_OUT))
+    icon(p, "waiting", QRectF(-6.5, -6.5, 13, 13), c("accent"))
+    p.restore()
+
+
+def paint_sheen(p, r, alpha):
+    """The sheen (list-r14m :705): a band of light across `r` at 112°, at `alpha` at its brightest (an opened row's
+    head bakes it)."""
+    r = QRectF(r)
+    x = r.left()
+    grad = QLinearGradient(QPointF(x, r.top()), QPointF(x + r.width() * 0.4, r.bottom() + r.width() * 0.16))
+    for at, k in ((0.3, 0.0), (0.42, 0.5), (0.46, 1.0), (0.5, 0.5), (0.62, 0.0)):
+        grad.setColorAt(at, faded("sheen", alpha * k))
+    p.fillRect(r, QBrush(grad))
+
+
+def stone_tip(ep, state, leaves):
+    """A stone's tip, the string's and an opened row's alike (W-1): when a mark takes its words off the list
+    (`leaves`: `view_rows.mark_moves_list`), the line that says so."""
+    if leaves:
+        state += strings.ROWS_STONE_LEAVES
+    return strings.ROWS_STONE_TIP.format(label=ep.label, state=state, action=strings.ROWS_STONE_ACTION[ep.watched])
 
 
 def asked_files(kind, episodes):
@@ -1055,6 +1102,10 @@ class RowDelegate(QStyledItemDelegate):
         self._infos[row.key] = (row.episodes, (row.next_index, row.media, row.source), out)
         return out[0], out[1], stat_w
 
+    def _keep_watched(self):
+        """W-1: the library's *Keep studying watched episodes*, from the view the list's page shows (off: none)."""
+        return bool(getattr(getattr(self.view.parent(), "view_model", None), "keep_watched", False))
+
     def _worst(self):
         """The reader's answer for the one title width (`View.worst`, `view_rows.worst_needs`): read from the view the
         list's page shows (`Page.view_model`, set before its entries) when these entries are that view's rows — else
@@ -1112,6 +1163,8 @@ class RowDelegate(QStyledItemDelegate):
         st = row.status
         if st is not None and st.kind not in ("in_anki", "mining", "none"):
             name, tip, ask = action_of(st, row.episodes, self.view.connect_off, row.media_word)    # --- P4.1 L2
+            if name in ASKS and self.view.pressed(row.episodes):
+                tip = strings.ROWS_ASKED_TIP             # round 8 row 45: asked, starting
             if st.kind == "waiting":
                 out.append((name, "waiting", "ink-dim", tip, ask, iw, ih))
             elif st.kind == "no_media":
@@ -1186,7 +1239,7 @@ class RowDelegate(QStyledItemDelegate):
             state = strings.ROWS_STONE_STATE[item.state].format(n=ep.cards)
             if ep.missing:
                 state += strings.ROWS_STONE_MISSING.format(word=ep.media_word or row.media_word)   # LM11b G1
-            tip = strings.ROWS_STONE_TIP.format(label=ep.label, state=state, action=strings.ROWS_STONE_ACTION[ep.watched])
+            tip = stone_tip(ep, state, view_rows.mark_moves_list(row.tier, ep, self._keep_watched()))
             out.append(("stone", QRect(round(room.left() + x - 13), round(mid - 15), 26, 30), tip, ep))
         return out
 
@@ -1206,6 +1259,8 @@ class RowDelegate(QStyledItemDelegate):
             out.append(("more", g["more"], strings.ROWS_MORE_TIP, None))
             if payload.status is not None:                 # --- P4.1 L2: the row's status, a button as a row's (Q33)
                 name, tip, ask = action_of(payload.status, payload.episodes, self.view.connect_off, payload.media_word)
+                if name in ASKS and self.view.pressed(payload.episodes):
+                    tip = strings.ROWS_ASKED_TIP         # round 8 row 45 (A-3): asked, starting — as a row's
                 out.append((name, g["status"], tip, ask))
             if g["journey"] is not None:
                 out.append(("journey", g["journey"], strings.ROWS_JOURNEY_TIP, nxt))
@@ -1380,11 +1435,13 @@ class RowDelegate(QStyledItemDelegate):
                 size = pill_size(ep.status)
                 name, tip, ask = action_of(ep.status, (ep,), self.view.connect_off,     # --- P4.1 L2; LM11b G1:
                                            ep.media_word or row.media_word)              # its own type's word
+                if ep.id in self.view.pressed_ids:       # round 8 row 45: asked, starting — the hover says so
+                    tip = strings.ROWS_ASKED_TIP
                 out.append((name, QRect(cols["stat"].right() - size.width(), cols["stat"].center().y() -
                                         size.height() // 2, size.width(), size.height()), tip, ask))
             state = strings.ROWS_STONE_STATE["cut" if ep.watched else "raw" if ep.cards else "rock"].format(n=ep.cards)
-            out.append(("stone", cols["tick"], strings.ROWS_STONE_TIP.format(
-                label=ep.label, state=state, action=strings.ROWS_STONE_ACTION[ep.watched]), ep))
+            out.append(("stone", cols["tick"], stone_tip(
+                ep, state, view_rows.mark_moves_list(row.tier, ep, self._keep_watched())), ep))
         return out
 
     # --- W3.2 Q8: the ✂ seam between two episodes of an opened row (A3 `split`), and drop-to-join's outline (G3) --- #
@@ -1591,6 +1648,8 @@ class RowDelegate(QStyledItemDelegate):
             pix, box = self._closed(kind, payload, lines, rect, dpr, hovered or focused, p)
             if pix is not None:
                 p.drawPixmap(box.topLeft(), pix)
+            if payload.status is not None and self.view.pressed(payload.episodes):     # round 8 row 45 (A-3): over
+                self._paint_pressed(p, self._hero_geometry(payload, rect, lines)["status"])   # its cached picture
             if focused:
                 self._focus_ring(p, box, theme.RADII["r-sm"])
         elif kind == HERO:
@@ -1654,9 +1713,20 @@ class RowDelegate(QStyledItemDelegate):
         self._paint_number(p, row, slab, dpr)
         if fade > 0:
             self._paint_movers(p, row, slab, fade)
+        if self.view.pressed(row.episodes):          # round 8 row 45
+            at = next((r for name, r, *_rest in self.line_geometry(row, slab)["hover"] if name in ASKS), None)
+            if at is not None:                       # (the Mine now button's place, at rest too: it turns there)
+                self._paint_pressed(p, at, radius=theme.RADII["icon-button"])
         if focused:
             self._focus_ring(p, slab, theme.RADII["r-sm"])
         p.restore()
+
+    def _paint_pressed(self, p, rect, radius=None):
+        """Round 8 row 45: a pressed *Mine now*'s turning mark over `rect`; painted on the list, the view repaints that
+        box alone as it turns."""
+        paint_pressed(p, rect, self.view.turning(), radius=radius)
+        if p.device() is self.view.viewport():
+            self.view.turned_at(p.transform().mapRect(QRectF(rect)).toAlignedRect())
 
     @staticmethod
     def _blit_faded(p, at, fade, picture):
@@ -1736,12 +1806,7 @@ class RowDelegate(QStyledItemDelegate):
 
     def _sheen(self, p, r):
         """An opened row's one sheen (list-r14m :705, flat): a band of light across it at 112°, baked into its head."""
-        grad = QLinearGradient(QPointF(r.left(), r.top()), QPointF(r.left() + r.width() * 0.4, r.bottom() + r.width()
-                                                                    * 0.16))
-        top = rl("sheen-alpha")
-        for at, k in ((0.3, 0.0), (0.42, 0.5), (0.46, 1.0), (0.5, 0.5), (0.62, 0.0)):
-            grad.setColorAt(at, faded("sheen", top * k))
-        p.fillRect(QRectF(r), QBrush(grad))
+        paint_sheen(p, r, rl("sheen-alpha"))
 
     def _paint_string(self, p, plan, room, mid, sheet, ring=False, big=False):
         """The string of stones in `room` (its plan laid out once per width: `stone_plan.layout`), each a blit from
@@ -2218,6 +2283,8 @@ class RowDelegate(QStyledItemDelegate):
                                    to=(p, r.topLeft()), extra=extra)
                 if pix is not None:
                     p.drawPixmap(r.topLeft(), pix)
+                if ep.id in self.view.pressed_ids and ep.status is not None:      # round 8 row 45: over its picture
+                    self._paint_pressed(p, self._ep_pill(r, ep, dpr))
                 if on:
                     m, side = self._episode_cols(r)["more"], rl("anki-icon")
                     icon(p, "more", QRectF(m.center().x() - side / 2 + 0.5, m.center().y() - side / 2 + 0.5, side,
@@ -2227,6 +2294,8 @@ class RowDelegate(QStyledItemDelegate):
                 p.translate(r.topLeft())
                 draw(p)
                 p.restore()
+                if ep.id in self.view.pressed_ids and ep.status is not None:
+                    self._paint_pressed(p, self._ep_pill(r, ep, dpr))
         for r, show in shows:                         # --- LM11b: each a picture of its own, as an episode's line
             if clip is not None and not clip.intersects(QRectF(r)):
                 continue
@@ -2252,6 +2321,12 @@ class RowDelegate(QStyledItemDelegate):
         left = cols["tick"].left()
         TEXT.draw(p, left, r.center().y() + round(2 * fz()), show, "row-sub", cols["text_right"] - left,
                   c("ink-dim"), weight=600, dpr=dpr)
+
+    def _ep_pill(self, r, ep, dpr):
+        """An episode line's status pill, in the line `r`."""
+        size = pill_size(ep.status, dpr)
+        return QRect(self._episode_cols(r)["stat"].right() - size.width(), r.center().y() - size.height() // 2,
+                     size.width(), size.height())
 
     def _paint_episode(self, p, r, ep, dpr, audio=False, stone=None, sheet=None):
         """One episode line (an open row's): its stone (the tick until the stones' sheet is there), its label, its
@@ -2283,8 +2358,7 @@ class RowDelegate(QStyledItemDelegate):
         paint_diff(p, ep.pct, view_tone(ep.pct), ep.n_new, cols["diff"].right(), r.center().y(), dpr)
         right = cols["stat"].right()
         if ep.status is not None:
-            size = pill_size(ep.status, dpr)
-            sr = QRect(right - size.width(), r.center().y() - size.height() // 2, size.width(), size.height())
+            sr = self._ep_pill(r, ep, dpr)
             paint_pill(p, ep.status, sr, dpr, audio=audio)
             right = sr.left() - 4
         if ep.mark is not None:
@@ -2656,6 +2730,13 @@ class RowsView(QListView):
         self.parting = None                          # the running drag's parting (`drag.Parting`): offsets, the slot
         self.landing = None                          # the key a drop's ghost is gliding onto: its slot shows meanwhile
         self.saving = frozenset()                    # keys whose moves wait for a busy store (*saving…*)
+        self.pressed_ids = frozenset()               # round 8 row 45: file ids asked for (*Mine now*), not yet moved
+        self._pressed_at = {}                        # ... each one's status at the press (it leaves when that changes)
+        self._turn = None                            # ... their marks' phase (`motion.Turn`) while any is pressed
+        self._turn_rects = []                        # ... where they were painted last (repainted alone as they turn)
+        self._turn_idle = False                      # ... a frame found none painted (two: the clock stops, A-6)
+        self.press_moved = None                      # ... `press_moved(ids)`: their status moved — the presses' owner
+                                                     # ends them (`mine_actions`); None: this list lets them go
         self.seam = None                             # --- W3.2 Q8: (row key, episode id) of the ✂ seam under the hand
         self.ep_hover = None                         # --- W3.2 Q8: (row key, episode id) the hand was last on
         self.ep_hot = None                           # --- row 28: (row key, episode id) under the hand now
@@ -2870,6 +2951,103 @@ class RowsView(QListView):
     # --- end W3.2 Q8
 
     # entries ---------------------------------------------------------------------------------------------------- #
+    # --- round 8 row 45: *Mine now* pressed (`mine_actions._ask`) --------------------------------------------- #
+    def _where(self, ids, keys=None):
+        """{id: (row index, its episode)} of the files `ids` this list shows. `keys` ({id: the row's key it was in}):
+        looked up in those rows alone, the whole list walked only for one not found there (A-12: a view while one is
+        pressed never walks every episode)."""
+        entries, found = self.model().entries, {}
+        if keys:
+            at = {row.key: n for n, (kind, row, _lines) in enumerate(entries) if kind in (HERO, ROW)}
+            for i in ids:
+                n = at.get(keys.get(i))
+                ep = None if n is None else next((e for e in entries[n][1].episodes if e.id == i), None)
+                if ep is not None:
+                    found[i] = (n, ep)
+        left = set(ids) - set(found)
+        if left:
+            for n, (kind, row, _lines) in enumerate(entries):
+                for ep in (row.episodes if kind in (HERO, ROW) else ()):
+                    if ep.id in left:
+                        found[ep.id] = (n, ep)
+        return found
+
+    def pressed(self, episodes):
+        """Whether any of `episodes` is pressed (its row's *Mine now* turns)."""
+        return bool(self.pressed_ids) and any(e.id in self.pressed_ids for e in episodes)
+
+    def press_ids(self, ids):
+        """The files `ids` asked for: their pills turn from now — painted before this returns — until their status
+        moves (`_prune_pressed`) or their press ends (`unpress`: refused, undone, or given way to Connect's own state —
+        `mine_actions`). Files this list doesn't show are no business of its. -> the ids it marks."""
+        shown = self._where(ids)
+        if not shown:
+            return ()
+        entries = self.model().entries
+        self._pressed_at.update({i: (ep.status, entries[n][1].key) for i, (n, ep) in shown.items()})
+        self._set_pressed(self.pressed_ids | set(shown))
+        for row_i in sorted({n for n, _ep in shown.values()}):
+            self.viewport().repaint(self.visualRect(self.model().index(row_i, 0)))
+        return tuple(shown)
+
+    def unpress(self, ids):
+        gone = self.pressed_ids & set(ids)
+        if not gone:
+            return
+        shown = self._where(gone, {i: self._pressed_at[i][1] for i in gone if i in self._pressed_at})
+        for i in gone:
+            self._pressed_at.pop(i, None)
+        self._set_pressed(self.pressed_ids - gone)
+        for row_i in sorted({n for n, _ep in shown.values()}):  # the rows that stop turning: their pills as they are
+            self.update(self.model().index(row_i, 0))
+
+    def _prune_pressed(self):
+        """A new view: a pressed file whose status moved from what it was at the press (Connect read the ask: asked, a
+        wait, mining), or that this list no longer shows, stops turning — its press ended by its owner."""
+        if not self.pressed_ids:
+            return
+        shown = self._where(self.pressed_ids, {i: key for i, (_st, key) in self._pressed_at.items()})
+        moved = {i for i in self.pressed_ids if i not in shown or shown[i][1].status != self._pressed_at[i][0]}
+        if moved:
+            (self.press_moved or self.unpress)(moved)
+
+    def _set_pressed(self, ids):
+        self.pressed_ids = frozenset(ids)
+        if self.pressed_ids and self._turn is None:
+            self._turn = motion.Turn(self.viewport(), self._turned)
+            self._turn.show()
+            self._turn.set_running(True)
+        elif not self.pressed_ids and self._turn is not None:
+            self._turn.set_running(False)
+            self._turn.deleteLater()
+            self._turn, self._turn_rects = None, []
+
+    def turning(self):
+        """The pressed marks' phase (0–1), or None: still (Reduced motion, the freeze switch)."""
+        return self._turn.turning if self._turn is not None else None
+
+    def turned_at(self, rect):
+        """A mark painted in `rect` (by the delegate, on the viewport): repainted alone at the next frame; the clock on
+        again if it stopped with none on screen (A-6)."""
+        self._turn_rects.append(rect)
+        if self._turn is not None and not self._turn.running:
+            self._turn.set_running(True)
+
+    def _turned(self):
+        """A frame of the turn: only the boxes the marks were painted in are painted again. Two frames running with
+        none painted (scrolled away, a row closed, a file this list doesn't draw): the clock stops until one is
+        painted again (A-6; S19: nothing ticks for nothing on screen)."""
+        rects, self._turn_rects = self._turn_rects, []
+        if not rects:
+            if self._turn_idle and self._turn is not None:
+                self._turn.set_running(False)
+            self._turn_idle = True
+            return
+        self._turn_idle = False
+        for r in rects:
+            self.viewport().update(r)
+    # --- end round 8 row 45
+
     def set_entries(self, entries):
         """Show these entries; a reset keeps the row that was at the top where it was."""
         model = self.model()
@@ -2918,6 +3096,7 @@ class RowsView(QListView):
             self._set_ep("ep_key", None)                 # --- row 28: its episode, or its row's opening, gone
         if self.ep_hot is not None:
             self._hand_again()                           # --- row 28 (AD-3): the hand's episode where it is now
+        self._prune_pressed()                            # --- round 8 row 45
         return how
 
     def _held_keys(self, entries):

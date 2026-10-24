@@ -166,6 +166,38 @@ def test_a_trigger_while_the_indexer_runs_asks_for_no_second_one(indexing_on):
     chores.close()
 
 
+def test_a_forced_ask_while_the_indexer_runs_runs_it_once_more_when_it_ends(indexing_on):
+    """A forced ask (a watched mark that changed what counts) while the indexer runs is answered *busy* but never lost:
+    the running one may have read the library before the mark. However many come, one more run follows its end — and
+    none after that one. A forced ask during the check alone (no job made) asks the check once more too."""
+    chores, registry, popen = _make()
+    assert chores.index(force=True) is None
+    assert h.until(lambda: len(popen) == 1, seconds=5) and chores.worker.idle(5)
+    assert [chores.index(force=True) for _ in range(3)] == ["busy"] * 3
+    assert chores.index() == "busy"                         # an unforced trigger asks for nothing more
+    popen[0].end(0)
+    assert h.until(lambda: len(popen) == 2, seconds=5)
+    popen[1].end(0)
+    assert h.until(lambda: not registry.live("indexer") and not chores._indexing, seconds=5)
+    assert chores.worker.idle(5) and len(popen) == 2
+    chores.close()
+
+    checks, gate = [], threading.Event()
+
+    def needed(language, script):                           # the check is slow and finds nothing to do
+        checks.append(language)
+        gate.wait(5)
+        return False
+    chores, registry, popen = _make(needed=needed)
+    assert chores.index(force=True) is None
+    assert h.until(lambda: checks == ["ja"], seconds=5)
+    assert chores.index(force=True) == "busy"
+    gate.set()
+    assert h.until(lambda: len(checks) == 2, seconds=5) and chores.worker.idle(5)
+    assert h.until(lambda: not chores._indexing, seconds=5) and len(checks) == 2 and popen == []
+    chores.close()
+
+
 def test_the_indexer_check_is_throttled_two_seconds_unless_forced(indexing_on):
     """`if not force and (now - self._last_index_check) < 2.0: return` — counted from never."""
     clock = _Clock(0.0)
@@ -246,6 +278,40 @@ def test_a_cancel_before_it_starts_leaves_nothing_busy(indexing_on):
     assert chores._indexing is False
     generate.finish(ok=True)
     assert chores.worker.idle(5) and popen == []
+    chores.close()
+
+
+def test_a_cancelled_indexer_takes_its_follow_up_with_it(indexing_on):
+    """A forced ask while the indexer runs is remembered for one more run — but *Stop it* on that indexer stops the
+    indexing: no run starts again at its end."""
+    chores, registry, popen = _make()
+    assert chores.index(force=True) is None
+    assert h.until(lambda: len(popen) == 1 and chores._proc is not None, seconds=5)
+    assert chores.index(force=True) == "busy"                   # remembered for its end
+    job = [j for j in registry._jobs if j.kind == "indexer"][0]
+    job.cancel()
+    assert popen[0].terminated
+    assert h.until(lambda: not registry.live("indexer") and not chores._indexing, seconds=5)
+    assert not h.until(lambda: len(popen) > 1, seconds=1), "the stopped indexer never restarts"
+    chores.close()
+
+
+def test_a_cancel_before_it_starts_leaves_no_follow_up_for_a_later_run(indexing_on):
+    """Cancelled while it waits for a Generate, with a forced ask remembered meanwhile: that ask went with it. A later
+    indexer, asked on its own, runs once — never one extra run at its end."""
+    chores, registry, popen = _make()
+    generate = registry.submit("generate", "Generating", start=lambda job: None)
+    chores.index(force=True)
+    assert h.until(lambda: registry.live("indexer"), seconds=5) and chores.worker.idle(5)
+    assert chores.index(force=True) == "busy"
+    [j for j in registry._jobs if j.kind == "indexer"][0].cancel()
+    generate.finish(ok=True)
+    assert chores.worker.idle(5) and popen == []
+    assert chores.index(force=True) is None                      # a later, unrelated run
+    assert h.until(lambda: len(popen) == 1, seconds=5)
+    popen[0].end(0)
+    assert h.until(lambda: not registry.live("indexer") and not chores._indexing, seconds=5)
+    assert not h.until(lambda: len(popen) > 1, seconds=1), "no extra run left over from the cancelled one"
     chores.close()
 
 

@@ -183,10 +183,12 @@ class FakeWriter:
             lib.commit(items=[{"id": i, "watched": 1 if kw["on"] else 0} for i in change.ids])
 
 
-def open_window(qapp, seed, writer, size=(1280, 900)):
+def open_window(qapp, seed, writer, size=(1280, 900), hint_seen=True):
     reader = library_reader.LibraryReader(seed.opener, language=seed.language, numbers=seed.numbers,
                                           mining=seed.mining, poll=0.02)
     services = shell.Services(library=reader, writer=writer)
+    if hint_seen:           # W-1: the first mark's one-time hint already seen here — the Done's own toasts are tested
+        services.settings.set({"hints_seen": [hint_of(seed)]})
     win = shell.open_window(qapp, services)
     win.resize(*size)
     win.move(40, 30)
@@ -211,10 +213,10 @@ def _stones_sheet(qapp):
 def world(qapp):
     made = []
 
-    def make(files=window_seed.SMALL, apply=True, size=(1280, 900), **kw):
+    def make(files=window_seed.SMALL, apply=True, size=(1280, 900), hint_seen=True, **kw):
         seed = window_seed.build(files=files, **kw)
         writer = FakeWriter(seed.library, apply=apply)
-        win, services = open_window(qapp, seed, writer, size)
+        win, services = open_window(qapp, seed, writer, size, hint_seen)
         made.append((win, services))
         return seed, win, writer
     yield make
@@ -225,6 +227,11 @@ def world(qapp):
 
 def lst_of(win):
     return win.page_widgets["current"].list
+
+
+def hint_of(seed):
+    """W-1: the first mark's hint id for the seed's library (its store id)."""
+    return f"{drag.HINT_LEFT}:{seed.library._meta['store_id']}"
 
 
 def rows_of(win):
@@ -1992,6 +1999,173 @@ def test_split_first_is_a_part_with_a_later_part_in_current(world):
     assert drag.split_first(rs, first) and not drag.split_first(rs, second)
 
 
+# --- W-1 (D-W2): the stone while *Keep studying watched episodes* is off --------------------------------------------- #
+# What a wrong answer would cost a learner: marking an episode watched takes its words off the list with nothing saying
+# so (or saying so on every mark, or in every window of the same library again); the toast's button leading nowhere; an
+# un-mark that doesn't say the words are back; the wording shown while the option is on, when nothing leaves the list.
+def _keep_on(seed, win):
+    """The library's option turned on (another window's write): the reader's next view carries it."""
+    seed.library.commit(meta={"keep_watched": 1})
+    assert wait_until(lambda: win.page_widgets["current"].view_model.keep_watched, 3)
+
+
+def test_W1_the_first_mark_says_its_words_left_the_list_once_per_library_with_keep_studying_and_ok(world):
+    seed, win, writer = world(hint_seen=False)
+    row = rows_of(win)[4]
+    ep = row.episodes[0]
+    assert not win.services.settings.get().get("hints_seen")
+    win.moves.done(row, ep)                                            # the first mark, the option off
+    assert calls(writer, "set_watched") == [("set_watched", [ep.id], {"on": True})]
+    card = win.toasts.card
+    assert card.message == strings.DONE_LEFT.format(ep=ep.label)
+    shown = [b for b in card.buttons if not b.isHidden()]
+    assert [b.text() for b in shown] == [strings.TOAST_UNDO, strings.DONE_KEEP, strings.DONE_OK]
+    assert [b.toolTip() for b in shown[1:]] == [strings.DONE_KEEP_TIP, strings.DONE_OK_TIP]
+    assert list(win.services.settings.get()["hints_seen"]) == [hint_of(seed)]   # written once, with the library's id
+    win.moves.done(row, row.episodes[1])                               # the next mark: today's toast, nothing written
+    assert win.toasts.card.message == strings.DONE_NEXT.format(title=row.title, ep=row.episodes[1].label,
+                                                                next=row.episodes[2].label)
+    assert list(win.services.settings.get()["hints_seen"]) == [hint_of(seed)]
+
+
+def test_W1_the_hint_seen_in_one_library_is_never_shown_there_again_but_another_library_shows_it(world):
+    seed, win, _writer = world(hint_seen=False)
+    win.services.settings.set({"hints_seen": ["keep_watched:another-library", hint_of(seed)]})
+    row = rows_of(win)[4]
+    win.moves.done(row, row.episodes[0])
+    assert win.toasts.card.message == strings.DONE_NEXT.format(title=row.title, ep=row.episodes[0].label,
+                                                                next=row.episodes[1].label)
+    # *Start a fresh library* (review W-5): a new store id at a new epoch — the reader follows it, its own once
+    seed.library.commit(meta={"store_id": "a-fresh-library"}, new_epoch=True)
+    assert wait_until(lambda: win.services.library.store_id() == "a-fresh-library", 3)
+    row = rows_of(win)[4]
+    ep = next(e for e in row.episodes if not e.watched)
+    win.moves.done(row, ep)
+    assert win.toasts.card.message == strings.DONE_LEFT.format(ep=ep.label)
+    assert list(win.services.settings.get()["hints_seen"])[-1] == "keep_watched:a-fresh-library"
+
+
+@pytest.mark.parametrize("odd", [1, True, "keep_watched:standin-0001", {"x": 1}])
+def test_W1_a_hand_edited_hints_seen_never_blocks_a_mark_and_is_written_back_clean(world, odd):
+    """Review W-2: settings.json's `hints_seen` as a number, true, a text or a dict reads as none seen — the mark is
+    written, the hint shown, and the value replaced by a clean list (never a text split into characters)."""
+    seed, win, writer = world(hint_seen=False)
+    win.services.settings.set({"hints_seen": odd})
+    row = rows_of(win)[4]
+    ep = row.episodes[0]
+    win.moves.done(row, ep)
+    assert calls(writer, "set_watched") == [("set_watched", [ep.id], {"on": True})]
+    assert win.toasts.card.message == strings.DONE_LEFT.format(ep=ep.label)
+    assert list(win.services.settings.get()["hints_seen"]) == [hint_of(seed)]
+
+
+def test_W1_before_the_library_is_known_no_hint_is_shown_or_spent(world, monkeypatch):
+    """Review W-3: until a read has found the library's id (the cached first screen), the hint waits — never keyed by
+    the language, so it is never shown twice in one library."""
+    _seed, win, writer = world(hint_seen=False)
+    monkeypatch.setattr(win.services.library, "store_id", lambda: None)
+    row = rows_of(win)[4]
+    win.moves.done(row, row.episodes[0])
+    assert calls(writer, "set_watched")
+    assert win.toasts.card.message == strings.DONE_NEXT.format(title=row.title, ep=row.episodes[0].label,
+                                                                next=row.episodes[1].label)
+    assert not win.services.settings.get().get("hints_seen")
+
+
+def test_W1_a_video_waiting_for_its_subtitle_says_nothing_left_or_came_back_and_spends_no_hint(world):
+    """Review W-6: a video still waiting for its subtitle is in no list, watched or not (`Store.schedule`): its mark
+    and its un-mark say today's words and the once-per-library hint is kept for a mark that moves the list."""
+    _seed, win, writer = world(hint_seen=False)
+    row = rows_of(win)[4]
+    ep = row.episodes[0]._replace(waiting=True)
+    win.moves.done(row, ep)
+    assert calls(writer, "set_watched")[-1] == ("set_watched", [ep.id], {"on": True})
+    assert win.toasts.card.message == strings.DONE_NEXT.format(title=row.title, ep=ep.label,
+                                                                next=row.episodes[1].label)
+    assert not win.services.settings.get().get("hints_seen")
+    win.moves.done(row, ep._replace(watched=True))
+    assert win.toasts.card.message == strings.DONE_UNDONE.format(title=row.title, ep=ep.label)
+
+
+def test_W1_keep_studying_them_reaches_the_rows_place_in_settings(world):
+    """Review W-8: no stand-in — the toast's button shows Settings with *Keep studying watched episodes* found
+    (`SettingsPage.reveal` on the store's custom row) and in view."""
+    _seed, win, _writer = world(hint_seen=False)
+    row = rows_of(win)[4]
+    win.moves.done(row, row.episodes[0])
+    keep = next(b for b in win.toasts.card.buttons if b.text() == strings.DONE_KEEP)
+    keep.click()
+    assert win.current_tab() == "settings"
+    page = win.settings_page
+    assert wait_until(lambda: page.built and page.row("keep_watched") is not None, 20)
+    assert win.open_setting("keep_watched") is True
+    view = page.row("keep_watched")
+    assert wait_until(lambda: view.isVisible() and view.visibleRegion().boundingRect().height() > 0, 5)
+
+
+def test_W1_keep_studying_them_opens_the_setting_row(world, monkeypatch):
+    _seed, win, _writer = world(hint_seen=False)
+    opened = []
+    monkeypatch.setattr(win, "open_setting", lambda target: opened.append(target) or True)
+    row = rows_of(win)[4]
+    win.moves.done(row, row.episodes[0])
+    keep = next(b for b in win.toasts.card.buttons if b.text() == strings.DONE_KEEP)
+    keep.click()
+    assert opened == ["keep_watched"] and not win.toasts.alive
+
+
+def test_W1_with_the_option_on_no_hint_and_the_un_mark_keeps_todays_words(world):
+    seed, win, _writer = world(hint_seen=False)
+    _keep_on(seed, win)
+    row = rows_of(win)[4]
+    win.moves.done(row, row.episodes[0])
+    assert win.toasts.card.message == strings.DONE_NEXT.format(title=row.title, ep=row.episodes[0].label,
+                                                                next=row.episodes[1].label)
+    assert not win.services.settings.get().get("hints_seen")          # never shown: nothing written
+    hero = rows_of(win)[0]
+    ep = next(e for e in hero.episodes if e.watched)
+    win.moves.done(hero, ep)
+    assert win.toasts.card.message == strings.DONE_UNDONE.format(title=hero.title, ep=ep.label)
+
+
+def test_W1_an_un_mark_while_off_says_its_words_are_back(world):
+    _seed, win, writer = world()
+    hero = rows_of(win)[0]
+    ep = next(e for e in hero.episodes if e.watched)
+    win.moves.done(hero, ep)
+    assert calls(writer, "set_watched")[0][2] == {"on": False}
+    assert win.toasts.card.message == strings.DONE_UNDONE_BACK.format(ep=ep.label)
+
+
+def test_W1_the_stones_tip_says_a_mark_takes_the_words_off_only_while_the_option_is_off(world):
+    seed, win, _writer = world()
+    lst = lst_of(win)
+
+    def tips():
+        out = []
+        for n, e in enumerate(lst.model().entries):
+            if e[0] in (rows.HERO, rows.ROW):
+                out += [p[2] for p in lst.delegate.parts(e, lst.visualRect(lst.model().index(n, 0)))
+                        if p[0] == "stone"]
+        return out
+    line = strings.ROWS_STONE_LEAVES.strip()
+    assert tips() and all(line in t.splitlines() for t in tips())
+    assert all(t.splitlines()[-1].startswith("• Click to mark it") for t in tips())   # the click's words stay last
+    _keep_on(seed, win)
+    assert tips() and not any(line in t for t in tips())
+
+
+def test_W1_the_drops_top_line_counts_by_the_stores_rule_as_the_reader_draws_it(world):
+    """The hero's two watched episodes don't count while the option is off: the drop's own top line (`lines_for`)
+    falls where the reader's falls, never two files lower (a row repainted twice at the drop)."""
+    seed, win, _writer = world(apply=False)
+    view = win.page_widgets["current"].view_model
+    assert drag.lines_for(view, view.rows) == tuple(ln for ln in view.lines if ln.kind in ("top", "soon"))
+    _keep_on(seed, win)
+    view = win.page_widgets["current"].view_model
+    assert drag.lines_for(view, view.rows) == tuple(ln for ln in view.lines if ln.kind in ("top", "soon"))
+
+
 # --- files from Explorer and drags by item id ---------------------------------------------------------------------- #
 _MIMES = []                                                            # (a drop event doesn't own its data)
 
@@ -2677,3 +2851,85 @@ def test_LM11b_every_write_landed_asks_the_reader_for_the_stores_own_view_again(
     win.moves.nudge(rs[3], 1)
     assert calls(writer)
     assert wait_until(lambda: asked and win.moves.expect is None, 5)
+
+
+LANDING_ARGS = {"on_saved": (None, None), "on_undone": (None, None), "on_saving": (False,), "on_reread": (),
+                "on_note": ("Saved",)}                  # each writer callback as `moves.Writer` calls it
+
+
+def test_round8_a_write_landing_after_the_window_closed_and_was_deleted_tells_no_one_and_never_a_deleted_relay(qapp):
+    """Round 8's native crash (`--all` at 46e9dc1, in test_finished): the window's close never let the writer's callbacks
+    go, so a write landing after the window was deleted (the quit's last moves, on the writer's thread) emitted on a
+    relay deleted with it — an access violation when the deletion met the emit. The close now lets go of every writer
+    callback and the reader's `subscribe_gone` (`MovesController.unwire`, as a language switch does). Red first: the
+    landing called the deleted relay (RuntimeError here, deterministically; a crash under load)."""
+    from PyQt6.QtCore import QCoreApplication
+    seed = window_seed.build()
+    writer = FakeWriter(seed.library)
+    win, services = open_window(qapp, seed, writer)
+    reader = services.library
+    assert writer.on_saving is not None and reader._gone_subscribers           # wired while the window is open
+    win.close()
+    win.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
+    QApplication.processEvents()
+    told = []
+    errors = []
+
+    def land():                                                     # the writer's own thread, as `_landed` calls them
+        for name in drag.WRITER_CALLBACKS:
+            try:
+                getattr(writer, name)(*LANDING_ARGS[name])
+                told.append(name)
+            except Exception as e:
+                errors.append((name, e))
+        try:
+            reader._tell_gone(["gone-item"])
+        except Exception as e:
+            errors.append(("gone", e))
+    t = threading.Thread(target=land)
+    t.start()
+    t.join(5)
+    QApplication.processEvents()
+    assert errors == [] and len(told) == len(drag.WRITER_CALLBACKS)
+    assert all(getattr(writer, name) is drag._no_callback for name in drag.WRITER_CALLBACKS)
+    assert reader._gone_subscribers == []                            # the reader tells it no more
+    services.shutdown(0.5)
+
+
+def test_round8_a_write_landing_after_the_window_was_deleted_without_its_close_is_dropped_at_the_gate(qapp):
+    """The same crash by the other road (12 runs of test_finished under load, 2 crashed after the close fix): a close
+    the quit's wait ignored (E20: a move still pending) never reached `unwire`, then the window was deleted and the
+    writer's thread — still retrying that move — emitted on the relay deleted with it. The writer reaches the relay
+    only through its gate (`bridge.Gate`), closed as the relay goes: a landing after the window is gone tells no one.
+    Red first: the deleted relay (RuntimeError here; an access violation under load — raced in test_bridge)."""
+    from PyQt6.QtCore import QCoreApplication
+    seed = window_seed.build()
+    writer = FakeWriter(seed.library)
+    win, services = open_window(qapp, seed, writer)
+    win.hide()                                                      # no close: the controller never let go
+    gate = win.moves._gate
+    assert gate.open
+    win.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
+    QApplication.processEvents()
+    errors = []
+
+    def land():
+        for name in drag.WRITER_CALLBACKS:
+            try:
+                getattr(writer, name)(*LANDING_ARGS[name])
+            except Exception as e:
+                errors.append((name, e))
+        try:
+            for cb in list(services.library._gone_subscribers):
+                cb(["gone-item"])
+        except Exception as e:
+            errors.append(("gone", e))
+    t = threading.Thread(target=land)
+    t.start()
+    t.join(5)
+    QApplication.processEvents()
+    assert errors == []
+    assert not gate.open                                            # closed as the relay went: nothing was told
+    services.shutdown(0.5)

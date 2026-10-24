@@ -1314,7 +1314,8 @@ def test_a_second_click_while_a_sync_runs_adds_nothing(live, monkeypatch):
     auto.close()
 
 
-def test_sync_now_after_close_asks_nothing(live, monkeypatch):
+def test_sync_now_after_close_asks_nothing_and_answers_closed(live, monkeypatch):
+    # Round 8 (A-2): the bar's count waits on this answer with its arc turning — every ask is answered, closed too.
     h.seed_library("ja")
     _synced_once("ja")
     anki = _Anki(monkeypatch)
@@ -1322,7 +1323,32 @@ def test_sync_now_after_close_asks_nothing(live, monkeypatch):
     auto.close()
     answers = []
     auto.sync_now(then=answers.append)
-    assert answers == [] and anki.syncs == []
+    assert answers == ["closed"] and anki.syncs == []
+
+
+def test_sync_now_whose_sync_cant_be_asked_for_answers_failed_and_the_next_click_asks_again(live, monkeypatch):
+    """Round 8 (A-2): a sync that raised as it was asked for (the worker printed it and went on) never answered, so the
+    count's arc turned all session and later clicks asked nothing. Now the answer is "failed", and a click after it
+    asks again."""
+    h.seed_library("ja")
+    _synced_once("ja")
+    anki = _Anki(monkeypatch, added=0)
+    auto, registry, _c, _l = _make(_settings(anki_auto_generate=False))
+    real = auto.sync.maybe
+    broken = [True]
+
+    def maybe(**kw):
+        if broken[0]:
+            raise OSError("known_words.json: 共有違反 (sharing violation)")
+        return real(**kw)
+    monkeypatch.setattr(auto.sync, "maybe", maybe)
+    assert _asked(auto) == ["failed"]
+    assert anki.syncs == []
+    broken[0] = False
+    assert _asked(auto) == [None]
+    _settle(auto, registry)
+    assert len(anki.syncs) == 1
+    auto.close()
 
 
 def _stand_in_methods():

@@ -89,6 +89,14 @@ def current(win):
     return win.page_widgets["current"].list
 
 
+def keep_watched_on(seed, win):
+    """W-1: the library's *Keep studying watched episodes* on (another window's write): a watched mark then moves
+    nothing that counts, so the top line stays where it is — a test of one row's own repaint marks files with it on (a
+    mark that moves the line repaints the line's row too: `test_rows_string`'s W-1 test)."""
+    seed.library.commit(meta={"keep_watched": 1})
+    assert wait_until(lambda: win.page_widgets["current"].view_model.keep_watched, 5)
+
+
 def entry_of(lst, key):
     for i, e in enumerate(lst.model().entries):
         if getattr(e[1], "key", None) == key:
@@ -247,7 +255,9 @@ def test_the_top_20_line_is_drawn_after_the_row_holding_the_20th_available_file(
     seed, win = seeded()
     lst = current(win)
     at = [i for i, e in enumerate(lst.model().entries) if any(ln.kind == "top" for ln in e[2])]
-    assert at == [4]                                       # the seed: the 20th available file is row 5's
+    # the seed: the 20th file that counts is row 6's — the hero's two watched episodes don't count (W-1: the store's
+    # one rule, `library_store.counts`, while the library's *Keep studying watched episodes* is off)
+    assert at == [5]
     strip = part(lst, at[0], "top-line")[0]
     assert strip[2].startswith("Everything above this line mines itself")
     assert strip[1].height() >= 12                          # S10: a 2 px groove, an easy target
@@ -649,6 +659,7 @@ def test_a_repaint_reuses_the_painted_rows_and_a_refresh_repaints_only_what_chan
     """Each closed row is painted once into a pixmap; a repaint draws the pixmaps (no row drawn again), and a status
     write on one show repaints that show's row alone."""
     seed, win = seeded()
+    keep_watched_on(seed, win)
     lst = current(win)
     lst.viewport().repaint()
     renders = lst.delegate.renders

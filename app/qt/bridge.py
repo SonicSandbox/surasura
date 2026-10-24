@@ -8,11 +8,65 @@ order the service called it, one at a time. No widget ever hears a service direc
 `run_in_worker(fn, then=…, failed=…)` is the other direction: work the GUI thread must not wait for (a file, SQLite,
 a lock) runs on `QThreadPool` with a frozen input, and its answer comes back to the GUI thread the same way. The
 function never touches a widget.
+
+`Gate(obj)` is the one road from a service's thread into a Qt object (the bridge's, a `Relay`'s, the drag's and
+Finished's relays, the search's answer): a thread emitting on a QObject at the moment the GUI thread deletes it crashes
+the process — an access violation, no Python error to catch (round 8's crash: the writer's late landing on a relay the
+window's deletion took). The gate's emit and the object's deletion never overlap, and once it is closed nothing more is
+emitted.
 """
+import functools
 import sys
+import threading
 import traceback
 
-from PyQt6.QtCore import QObject, QRunnable, QThreadPool, pyqtSignal
+from PyQt6.QtCore import QObject, QRunnable, Qt, QThreadPool, pyqtSignal
+
+
+class Gate:
+    """(Any thread.) `obj`'s signals as a service's callbacks. `emit(name, *args)` emits `obj.<name>` unless the gate
+    is closed, looking the signal up afresh each time (a bound signal kept past its object's deletion calls freed
+    memory: round 8's crash); `caller(name)` is that emit as one callback (the same object each call: a service can let
+    it go by identity). `close()` — the object's deletion (its `destroyed`, on the deleting thread) or a window letting
+    go — waits for an emit under way on another thread, and from its return nothing more is emitted. On the object's
+    own thread no deletion can overlap the emit, so it takes no lock there (its direct slots never run under it). Make
+    it on the GUI thread, for an object with a parent (a parentless one would wait for the cycle collector)."""
+
+    def __init__(self, obj):
+        self._lock = threading.Lock()
+        self._home = threading.get_ident()        # the object's own thread (the GUI thread)
+        self._obj = obj
+        self._callers = {}
+        obj.destroyed.connect(self.close, Qt.ConnectionType.DirectConnection)
+
+    def close(self, *_):
+        with self._lock:                          # (a service's emit under way holds it: waited for)
+            self._obj = None
+
+    @property
+    def open(self):
+        return self._obj is not None
+
+    def emit(self, name, *args):
+        if threading.get_ident() == self._home:
+            self._emit(name, args)
+            return
+        with self._lock:
+            self._emit(name, args)
+
+    def _emit(self, name, args):
+        obj = self._obj
+        if obj is None:                           # a service calling back after the window let go: dropped, never
+            return                                # raised into the service (it would log a fault)
+        try:
+            getattr(obj, name).emit(*args)
+        except RuntimeError:                      # the C++ object went without its `destroyed` reaching the gate
+            self._obj = None
+
+    def caller(self, name):
+        if name not in self._callers:
+            self._callers[name] = functools.partial(self.emit, name)
+        return self._callers[name]
 
 
 class Bridge(QObject):
@@ -32,7 +86,7 @@ class Bridge(QObject):
 
     def __init__(self, settings=None, registry=None, status=None, library=None, parent=None):
         super().__init__(parent)
-        self._alive = True
+        self._gate = Gate(self)
         if settings is not None:
             settings.subscribe(lambda keys: self._emit("settings_written", tuple(keys)))
         if registry is not None:
@@ -41,7 +95,6 @@ class Bridge(QObject):
             status.subscribe(lambda snap: self._emit("status_changed", snap))
         if library is not None:
             library.subscribe(lambda view: self._emit("library_changed", view))
-        self.destroyed.connect(self._gone)
 
     def attach(self, updates=None, controller=None, automation=None, chores=None):
         """W3.5: the duties' callbacks as signals (each service calls back on its own workers)."""
@@ -63,20 +116,11 @@ class Bridge(QObject):
         """The window closed: no service's callback reaches a slot from here on. The quit runs on the window's thread
         after its loop ended, where a signal would reach its slot at once (a Generate dropped at quit would start a
         journey look and a token-store read as the process exits)."""
-        self._alive = False
-
-    def _gone(self, *_):
-        self._alive = False
+        self._gate.close()
 
     def _emit(self, signal, value):
-        # A service may call back after the window closed (its thread outlives the bridge): dropped, never raised
-        # into the service (a raising listener would be logged there as a fault).
-        if not self._alive:
-            return
-        try:
-            getattr(self, signal).emit(value)
-        except RuntimeError:                      # the C++ object is gone
-            self._alive = False
+        # A service may call back after the window closed (its thread outlives the bridge): dropped (`Gate`).
+        self._gate.emit(signal, value)
 
 
 class Relay(QObject):
@@ -87,19 +131,10 @@ class Relay(QObject):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._alive = True
-        self.destroyed.connect(self._gone)
+        self._gate = Gate(self)
 
     def call(self, value=None):
-        if not self._alive:
-            return
-        try:
-            self.said.emit(value)
-        except RuntimeError:                      # the C++ object is gone
-            self._alive = False
-
-    def _gone(self, *_):
-        self._alive = False
+        self._gate.emit("said", value)
 
 
 class _Relay(QObject):
@@ -108,18 +143,18 @@ class _Relay(QObject):
 
 
 class _Job(QRunnable):
-    def __init__(self, fn, args, relay):
+    def __init__(self, fn, args, gate):
         super().__init__()
-        self.fn, self.args, self.relay = fn, args, relay
+        self.fn, self.args, self.gate = fn, args, gate
         self.setAutoDelete(True)
 
     def run(self):
         try:
             value = self.fn(*self.args)
         except BaseException as e:                 # the answer is the failure; the worker thread never dies of it
-            self.relay.failed.emit((e, traceback.format_exc()))
+            self.gate.emit("failed", (e, traceback.format_exc()))
             return
-        self.relay.done.emit(value)
+        self.gate.emit("done", value)
 
 
 _pending = set()                                   # relays waiting for their answer (kept alive until it arrives)
@@ -129,9 +164,11 @@ def run_in_worker(fn, *args, then=None, failed=None, pool=None):
     """Run `fn(*args)` on the thread pool; `then(value)` or `failed((exception, traceback))` runs on the GUI thread
     afterwards. Call it on the GUI thread. A failure with no `failed` handler is printed (never raised in the pool)."""
     relay = _Relay()                               # made here, so it lives on the caller's (the GUI) thread
+    gate = Gate(relay)                             # (the pool's emit and the relay's deletion never overlap)
 
     def finish(_):
         _pending.discard(relay)
+        gate.close()
         relay.deleteLater()
 
     if then is not None:
@@ -143,7 +180,7 @@ def run_in_worker(fn, *args, then=None, failed=None, pool=None):
     relay.done.connect(finish)
     relay.failed.connect(finish)
     _pending.add(relay)
-    (pool or QThreadPool.globalInstance()).start(_Job(fn, args, relay))
+    (pool or QThreadPool.globalInstance()).start(_Job(fn, args, gate))
     return relay
 
 

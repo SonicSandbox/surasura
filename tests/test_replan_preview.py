@@ -983,6 +983,12 @@ def _positions_only(over):
                 junban_later_suspend=False)
 
 
+def _parked_read(request):
+    """Junban's look for the cards it parked (`connect.parked_query`): new, suspended, with its `::later` tag."""
+    query = (request.get("params") or {}).get("query") or ""
+    return request.get("action") == "findCards" and " is:suspended " in f" {query} "
+
+
 def _three_jobs(root, store, fake_of, **settings):
     """A catch-up (the ladder laid: every card once), then two moves (deltas) -> (each job's requests, the fake, the
     items moved)."""
@@ -1059,6 +1065,15 @@ def test_on_3_0_a_host_run_with_nothing_to_act_on_sends_todays_positions_only_re
     today, _plain, moved = _three_jobs(root, store, deck_of, **_positions_only(over))
     _start_again(store, moved)
     acting, fake, _moved = _three_jobs(root, store, deck_of, **over)
+    parked = [[r for r in log if _parked_read(r)] for log in acting]
+    if over.get("junban_auto_actions") and over.get("junban_later_suspend") and not over.get("connect_enabled"):
+        # M-W1: with Connect off, the host's job looks for the cards it parked (a returning word's card comes back,
+        # Connect on or off) once per list — one `findCards` in the catch-up after the Generate, beside the card map,
+        # never in a move; everything else request for request today's
+        assert [len(log) for log in parked] == [1, 0, 0], parked
+        acting = [[r for r in log if not _parked_read(r)] for log in acting]
+    else:
+        assert parked == [[], [], []], parked
     assert [_kinds(log) for log in acting] == [_kinds(log) for log in today]
     for job, (sent_log, today_log) in enumerate(zip(acting, today)):
         for index, (sent, positions_only) in enumerate(zip(sent_log, today_log)):

@@ -227,6 +227,9 @@ BAR_FAILURE_PREFIX = "⚠ "
 BAR_LOGS = "Open the logs folder"
 BAR_LOGS_TIP = "Open the folder where Surasura keeps its logs, to look at them or send them"
 BAR_FAILURE_TIP = "The newest problem a command-line run reported. Its details are in the logs folder"
+STANDING_HIDE = "✕"                                         # round 8 row 54: every standing line's (app/qt/standing.py)
+STANDING_HIDE_TIP = "Hide this until it changes"
+STANDING_HIDE_NAME = "Hide"
 
 # The look (G1.2-21): shown only if a live switch is ever too slow.
 RESTART_TO_APPLY = "Restart Surasura to apply"
@@ -412,7 +415,8 @@ FOOT_KNOWN_SYNCING = "Syncing with Anki now…"
 # A click's sync refused (AD-6): AutoSync's own answer, said in the bar ("no-decks" / "never-synced" open the Anki window)
 FOOT_KNOWN_REFUSED = {"update-staged": "Not synced: an update is waiting to install, and Anki waits for it",
                       "running": "A sync with Anki is running already",
-                      "off": "Not synced: Anki is switched off for this run"}
+                      "off": "Not synced: Anki is switched off for this run",
+                      "failed": "Not synced: the sync with Anki couldn't be started (the log says why)"}
 WELLS = {"soon": "Soon", "goal": "Goal", "finished": "Finished"}
 WELL_SUBS = {"soon": "next in line", "goal": "someday · in no order", "finished": "newest first"}
 WELL_TIPS = {"soon": "Soon: drop it here and it comes up next in line",
@@ -439,6 +443,9 @@ ROWS_NO_MEDIA_TIP = "{tip}\n• Click to link its video, or to mine its text in 
 ROWS_ACTION_OFF = "{tip}\n{why}"
 ROWS_ACTION_KEY = "→ then Enter: {action}"
 ROWS_ACTION_NAMES = {"mine-now": "Mine now", "mine-this": "Mine this", "no-media": "Link… or Mine text"}
+# round 8 row 45 (trial): *Mine now* pressed — its pill turns from the frame of the press until Connect says more; its
+# hover is the one place words show (Sonic: "there are sometimes when text may be useful but be intentional")
+ROWS_ASKED_TIP = "Asked · starting…"
 ROWS_LINK = "Link…"
 ROWS_LINK_TIP = "Choose its video: its cards get their pictures and audio from it"
 ROWS_MINE_TEXT = "Mine text"
@@ -473,6 +480,7 @@ ROWS_STONE_TIP = "{label}{state}\n• Click to mark it {action}"
 ROWS_STONE_STATE = {"cut": " · watched", "raw": " · {n} cards in Anki", "rock": ""}
 ROWS_STONE_MISSING = " · no {word} on disk"
 ROWS_STONE_ACTION = {True: "not watched", False: "watched"}
+ROWS_STONE_LEAVES = "\nWatched: its words leave your list."    # W-1: while *Keep studying watched episodes* is off
 ROWS_DONE = "Done"
 ROWS_DONE_TIP = "Mark {ep} watched\n• Click: the one after it comes up next"
 ROWS_DONE_ALL_TIP = "Every file of it is watched\n• Click to move it to Finished"
@@ -551,6 +559,15 @@ LIBRARY_NOT_OPENED = "Your library couldn't be opened. Open the logs folder (the
 DONE_NEXT = "✓ {title} {ep} watched · next: {next}"
 DONE_ONE = "✓ {title} {ep} watched"
 DONE_UNDONE = "{title} {ep} marked not watched"
+# --- W-1 (Sonic 2026-10-22, Q4): while *Keep studying watched episodes* is off — the first mark (once per library), the
+# un-mark
+DONE_LEFT = "✓ {ep} watched — its words left your list."
+DONE_KEEP = "Keep studying them"
+DONE_KEEP_TIP = "Opens Settings at Keep studying watched episodes"
+DONE_OK = "OK"
+DONE_OK_TIP = "Leave them off your list"
+DONE_UNDONE_BACK = "{ep} not watched — its words are back."
+# --- end W-1
 DONE_ALL = "✓ All {n} watched — finished with it?"
 DONE_MOVE_FINISHED = "Move to Finished"
 DONE_MOVE_FINISHED_TIP = "Move it to Finished: a record of what you've worked through"
@@ -1084,6 +1101,8 @@ SOURCES_OFFLINE = "{path} isn't reachable; its {n:,} episodes are kept"
 SOURCES_OFFLINE_ONE = "{path} isn't reachable; its episode is kept"
 SOURCES_OFFLINE_NONE = "{path} isn't reachable"
 SOURCES_OFFLINE_TIP = "Nothing is moved or marked while a folder is away: Surasura looks again when it's back"
+SOURCES_KEEP_WAITING = "Keep waiting"                       # round 8 row 54: the offline line's ✕, in words
+SOURCES_KEEP_WAITING_TIP = "Hide this until the folder is back"
 SOURCES_READING = "Reading {name}: {found:,} found in {shows:,} shows…"
 SOURCES_READ = "Reading {name} where it is: {added:,} new"
 SOURCES_READ_ARRIVALS = "Reading {name} where it is: {added:,} new · the shows you haven't seen wait in New " \
@@ -1198,10 +1217,13 @@ COVER_ONLINE = ("Find it online…", "Look its name up on AniList and choose one
 COVER_PASTE = ("Paste a link", "Use the cover of the AniList, TMDB or YouTube page whose link you copied")
 COVER_LOOKING = "Looking {title} up on AniList…"
 COVER_CANDIDATE_TIP = "Use this cover for {title}. It's kept, even when another picture is found"
-COVER_NONE_FOUND = "AniList found no cover for {title}"
+COVER_NONE_FOUND = "No cover found on AniList for {title}"
+COVER_LOOKUP_FAILED = "AniList couldn't be reached, so no cover was looked up for {title}. Try again later"
+COVER_FETCHING = "Fetching the cover for {title}…"
+COVER_LOOKUP_BROKE = "The cover lookup for {title} stopped with an error: {why}"
 COVER_PASTE_NOT_A_LINK = "Copy an AniList, TMDB or YouTube link first, then choose Paste a link"
 COVER_PASTE_WHY = {
-    "off": "Download covers is off in Settings → Connections, so nothing was fetched",
+    "off": "Download covers is off in Settings → Connections, so nothing was looked up or fetched",
     "no_key": "TMDB covers aren't available yet: copy an AniList or YouTube link instead",
     "failed": "That cover couldn't be fetched. Check the link, or try again later",
 }

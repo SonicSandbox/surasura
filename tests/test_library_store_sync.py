@@ -870,14 +870,14 @@ def test_a_missing_items_text_is_kept_and_counted(language):
     rel = store.item(gone)["rel_path"]
     os.remove(os.path.join(data_dir, rel))
     store.sync_disk()
-    counted, kept = store.text_lists()
+    counted, kept, _aside = store.text_lists()
     assert rel in counted and rel not in kept, "missing: still counted"
     store.remove([gone])
-    counted, kept = store.text_lists()
+    counted, kept, _aside = store.text_lists()
     assert rel not in counted and rel in kept, "removed: kept, not counted"
     done = store.ids("soon")[0]
     store.finish([done])
-    counted, kept = store.text_lists()
+    counted, kept, _aside = store.text_lists()
     assert store.item(done)["rel_path"] in kept and store.item(done)["rel_path"] not in counted
     assert set(counted) == {e["physical_path"] for rows in store.schedule().values() for e in rows}
     store.close()
@@ -982,7 +982,7 @@ def test_a_removed_file_added_again_is_counted_not_kept(language):
     store.remove([x])
     assert rel in store.text_lists()[1], "precondition: a removed file's text is kept"
     store.insert([os.path.join(data_dir, rel)], "now")
-    counted, kept = store.text_lists()
+    counted, kept, _aside = store.text_lists()
     assert rel in counted and rel not in kept, "added again: counted, and not also kept from its trash row"
     store.close()
 

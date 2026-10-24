@@ -46,7 +46,8 @@ def _snapshot(conn):
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_upgrade_to_2_keeps_every_order_tier_and_id(language):
     """A live 2.x store — moves made, a pin, watched marks — upgraded: every id, (tier, ord), pin and watched mark is
-    identical; the epoch stays (a window's undo survives); `state_version` moves by one; user_version 2."""
+    identical; the epoch stays (a window's undo survives); `state_version` moves by one, and once more with
+    `order_version` as its stones in Soon are counted (they leave the list at the first start); user_version 2."""
     _d, _u, doc = library(language, shows=3, episodes=4)
     data_dir, user_files_dir, db = schema1_store(language, doc)
     conn = _raw(db)
@@ -62,7 +63,8 @@ def test_upgrade_to_2_keeps_every_order_tier_and_id(language):
     assert store.conn.execute("PRAGMA user_version").fetchone()[0] == 2
     assert _snapshot(store.conn) == before
     after = store.meta()
-    assert str(after["epoch"]) == meta["epoch"] and after["state_version"] == int(meta["state_version"]) + 1
+    assert str(after["epoch"]) == meta["epoch"] and after["state_version"] == int(meta["state_version"]) + 2
+    assert after["order_version"] == int(meta["order_version"]) + 1 and ls.STONES_COUNTED in after
     assert pieces_ok(store) is None
     assert not after.get("upgrade_failed")
     store.close()

@@ -458,6 +458,9 @@ def test_read_only_mode_the_journey_check_signs_the_watched_episodes_as_generate
                         lambda language, found, args, order_free=False, aside=(): signed.append(aside))
     analyzer.journey_is_current(["analyzer"], language)
     assert signed == [analyzer.aside_files(language, generate)] and signed[0], signed
+    monkeypatch.setattr(ls, "maintain", lambda *a, **k: None)
+    generated = analyzer.prepare_library(language)["schedule"]       # Generate's own read, read-only mode
+    assert generated is not None and generated[ls.ASIDE] == generate[ls.ASIDE]
 
 
 @pytest.mark.parametrize("language", LANGUAGES)

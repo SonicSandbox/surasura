@@ -30,6 +30,7 @@ from PyQt6.QtWidgets import QHBoxLayout, QLabel, QMenu, QVBoxLayout, QWidget
 
 from app import settings_manager, theme
 from app.qt import applog, bridge, style
+from app.qt import press as qpress
 from app.qt import settings_catalog as catalog
 from app.qt import settings_controls as sc
 from app.qt import settings_strings as S
@@ -222,7 +223,7 @@ class RulesRow(QObject):
         column = QVBoxLayout(self.box)
         column.setContentsMargins(0, 0, 0, 0)
         column.setSpacing(round(6 * _f()))
-        self.add = sc.Door(S.RULE_ADD, tooltip=S.RULE_ADD_TIP, parent=self.box)
+        self.add = qpress.room(sc.Door(S.RULE_ADD, tooltip=S.RULE_ADD_TIP, parent=self.box))
         self.add.clicked.connect(lambda _c=False: self.ask_sources())
         foot = QHBoxLayout()
         foot.setContentsMargins(0, 0, 0, 0)
@@ -355,22 +356,23 @@ class RulesRow(QObject):
         self._sync(anchor=self.page.row(ROW_ID) if goes else control)
 
     def ask_sources(self):
-        """*+ rule*: the sources seen, read on a worker, then the menu at the button."""
+        """*+ rule*: the sources seen, read on a worker, then the menu at the button. Round 8 row 45: the button's arc
+        turns from the press until the menu opens (never greyed); a press meanwhile does nothing."""
         if not self.alive():
             return
         self.reads += 1
         n = self.reads
-        self.add.setEnabled(False)
 
         def done(seen):
             if self.alive() and n == self.reads:
-                self.add.setEnabled(True)
                 self.offer(seen)
 
         def failed(info):
             applog.log("settings", f"placing rules: the sources unread: {info[1]}")
             done(set())
-        bridge.run_in_worker(_read_seen, then=done, failed=failed)
+        if qpress.run(self.add, "settings:rule_sources", _read_seen, then=done, failed=failed,
+                      win=self.page.shell) is None:
+            self.reads -= 1                             # (live: the read under way answers)
 
     def offered(self, seen):
         """The sources + rule offers: hato (once found) and those seen, without a line, hato first."""

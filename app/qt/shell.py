@@ -28,8 +28,8 @@ import threading
 import time
 import traceback
 
-from PyQt6.QtCore import QEvent, QObject, QPointF, QRect, QSize, Qt, QTimer, QUrl, pyqtSignal
-from PyQt6.QtGui import (QDesktopServices, QFontMetrics, QFontMetricsF, QGuiApplication, QIcon, QKeySequence,
+from PyQt6.QtCore import QEvent, QObject, QPointF, QRect, QSize, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import (QFontMetrics, QFontMetricsF, QGuiApplication, QIcon, QKeySequence,
                          QLinearGradient, QPainter, QShortcut)
 from PyQt6.QtWidgets import (QApplication, QButtonGroup, QDialog, QHBoxLayout, QLabel, QMainWindow, QMenu, QPushButton,
                              QSizePolicy, QStackedWidget, QToolButton, QVBoxLayout, QWidget)
@@ -43,6 +43,8 @@ from app.services import status as status_service
 from app.qt import screens                                # W2.2: the pages a library fills
 from app.qt import press as qpress                        # round 8 row 45: a press reacts at once
 from app.qt import standing as standing_qt                # round 8 row 54: every standing line's ✕
+from app.qt import phase_strip                            # the phase strip: five circles at the bar's bottom left
+from app.services import phase as phase_service
 from app.services import standing as standing_service
 from app.qt import covers as qcovers                      # --- W3.2 Q6: the titles' own pictures
 
@@ -77,6 +79,7 @@ WRITER_JOIN_MARGIN = 1.0
 # P-text (W2.1 row 9): a theme or text-size switch with the shell's widgets alive measured well under ~300 ms, so a
 # change applies at once (G1.2-21). W3.3 measures it again with its Settings page alive; False = *Restart to apply*.
 LIVE_LOOK = True
+REFRESH_CAP_S = 120.0                  # round 8 row 45: Refresh's press at most this long (a look that failed tells nothing)
 # W3.4: at exit, how long the quit waits for the thread pool's workers (`bridge.wait_for_workers`) after the window
 # closed and the duties stopped, and for each of the ported 順 windows' own threads (`junban-*`): a worker still running
 # Python as the process ends can crash it (row 6's find).
@@ -1043,13 +1046,18 @@ class ShellWindow(QMainWindow):
         self._detached_card = None                        # row 35: the close's *Still finishing* sheet, while open
         self._detached_answered = False                   # ... answered (Quit or Stop and quit): asked once a close
         self.bridge.jobs_changed.connect(self._jobs_changed)
+        self.bridge.jobs_changed.connect(self.phase.set_jobs)
+        self.phase.set_jobs(services.registry.snapshot())
         self._library_needs = 0
         self._status_snap = None
         self._replan_waited = True                        # E20: the re-order host idle (or not waited for) at the close
         self._d29 = True                                  # D29 for the journey dot's tooltip, read on a worker
         self._d29_asked = 0                               # ... and the newest read asked (an older answer is dropped)
-        self._journey_opening = False                     # an open on its worker: a second click waits for it
+        self._refresh_press = None                        # round 8 row 45: Refresh's press, until a look's summary
         self.duties = None                                # W3.5: the duties' controls, once the duties are attached
+        leave_out = getattr(services.status, "leave_out", None)     # (a test's stand-in service may have none)
+        if leave_out is not None:
+            leave_out(phase_service.placed)
         self.show_status(services.status.snapshot())
         self._epoch_shown = None                          # LM11b AD-5: the store's epoch of the view shown last
         # --- W2.2: the library (the reader's views, queued to this thread) ---------------------------------------- #
@@ -1063,7 +1071,8 @@ class ShellWindow(QMainWindow):
                     page.not_found.connect(self._play_not_found)       # ... and its ▶ looked at again (row 55 A-7)
             current = self.page_widgets.get("current")
             if hasattr(current, "on_journey"):                         # W3.1a S5: Up Next's *N new words ↗*
-                current.on_journey = lambda _row, _episode: self._open_journey(asked=True)
+                current.on_journey = lambda _row, episode: self._open_journey(      # (its row's ↗ turns, IK-2)
+                    asked=True, at=qpress.row_mark(current.list, [episode.id], "journey") if episode else None)
             # --- P4.1 L2 (row 4.1.14): a click on the top-20 line opens its setting
             if hasattr(current, "on_line"):
                 current.on_line = lambda kind: self.open_setting("mine_line") if kind == "top" else None
@@ -1091,6 +1100,7 @@ class ShellWindow(QMainWindow):
         self.router = EscapeRouter(self, parent=self)
         app.installEventFilter(self.router)
         self.tooltips = tooltip.Tooltips(parent=self).install(app)
+        self.phase.tooltips = self.tooltips
         for page in self.page_widgets.values():           # W2.2: painted parts' tooltips go through the bubble
             if hasattr(page, "list"):
                 page.list.tooltips = self.tooltips
@@ -1147,6 +1157,8 @@ class ShellWindow(QMainWindow):
         self._arrivals_view = None
         self._sources_relay = bridge.Relay(self)
         self._sources_relay.said.connect(self._sources_looked)
+        self._ended_relay = bridge.Relay(self)            # round 8 row 45: a look ended (told or not): Refresh's press
+        self._ended_relay.said.connect(self._look_ended)
         self._progress_relay = bridge.Relay(self)
         self._progress_relay.said.connect(self._sources_progress)
         self._folders_relay = bridge.Relay(self)
@@ -1440,6 +1452,10 @@ class ShellWindow(QMainWindow):
         self._language_asked = language
         self._asks += 1
         asked = self._asks
+        # round 8 row 45 (P5): *Switching to …* held in the bar with its arc until the last switch asked has answered
+        words = strings.LANGUAGE_SWITCHING.format(name=strings.LANGUAGE_NAMES.get(language, language))
+        if qpress.begin(None, "language", busy=words, win=self) is None:
+            self.say(words, hold="language")             # a second switch while one goes: the newest named
         s = self.services
         ask = getattr(s, "ask_language", None)
         if ask is not None:
@@ -1465,6 +1481,10 @@ class ShellWindow(QMainWindow):
         if self._quit is not None:
             return
         last = asked is None or asked == self._asks
+        if last:
+            p = self.presses.find("language")
+            if p is not None and p.live():
+                qpress.end(p, self, failed=isinstance(switched, tuple) and switched[0] is None)
         reader, writer = switched if isinstance(switched, tuple) else (None, None)
         if reader is not None and reader is not self._reader_shown and not _stopped(reader) and \
                 getattr(reader, "language", None) == self._language_asked:
@@ -1503,6 +1523,7 @@ class ShellWindow(QMainWindow):
         if lst is not None and (lst.saving or lst.landing is not None):
             lst.saving, lst.landing = frozenset(), None     # AD0-6: never a mark of the language left on a row
             lst.viewport().update()
+        self.moves_saving(False)                    # PS-A4: nor 届's wait (the writer let go never says it ended)
         if getattr(self, "mine", None) is not None:  # round 8 row 45: nor a pressed Mine now (its presses end)
             self.mine.settle_all()
         self._forget_picks()
@@ -1658,6 +1679,11 @@ class ShellWindow(QMainWindow):
         row = QHBoxLayout(footer)
         row.setContentsMargins(16, 0, 16, 0)
         row.setSpacing(10)
+        # The phase strip (Sonic, 2026-10-23): five circles first at the bottom left, lit by the work each stands for;
+        # the status line beside it keeps only what no circle shows (Q5: `StatusService.leave_out`)
+        self.phase = phase_strip.PhaseStrip(footer)
+        self.phase.follow_presses(self.presses)
+        row.addWidget(self.phase)
         # W3.1a: one slot at the left (W31A-1, `_paint_slot`) — the failure line with *Open the logs folder* while it
         # applies, else the update chip while it applies (`_attach_duties` puts it here), else the status line (the
         # pulsing dot gave way to the header's hairline: light never pulses)
@@ -1675,14 +1701,17 @@ class ShellWindow(QMainWindow):
         self.logs_button.setToolTip(strings.BAR_LOGS_TIP)
         self.logs_button.setAccessibleName(strings.BAR_LOGS)
         self.logs_button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
-        self.logs_button.clicked.connect(self.open_logs)
+        qpress.room(self.logs_button)                      # round 8 row 45: its arc's room kept at rest
+        self.logs_button.clicked.connect(lambda _c=False: self.open_logs(control=self.logs_button))
         self.logs_button.setVisible(False)
         row.addWidget(self.logs_button)
         self.bar_failure_cross = standing_qt.Cross(footer)       # round 8 row 54: the failure off the bar (still listed)
         self.bar_failure_cross.clicked.connect(self._failure_dismissed)
         self.bar_failure_cross.setVisible(False)
         row.addWidget(self.bar_failure_cross)
-        row.addStretch(0)                                 # the room left of the marks while the chip holds the slot
+        self.bar_arc = qpress.BarArc(footer)              # round 8 row 45 (IK-2): a menu's press with nothing of its own
+        row.addWidget(self.bar_arc)                       # ... on screen turns here, no words (hidden at rest)
+        row.addStretch(0)                                # the room left of the marks while the chip holds the slot
         # W31A-1: the re-order host's line and Connect's as quiet marks, their words in the hover, while they have any
         self.bar_replan = frame.QuietMark(strings.FOOT_REPLAN_MARK, strings.FOOT_REPLAN_NAME, footer)
         row.addWidget(self.bar_replan)
@@ -1750,7 +1779,8 @@ class ShellWindow(QMainWindow):
         lines = (self._quit_line,) if self._quit == "waiting" else snap.lines     # E20: one line says so
         self._busy = bool(lines)
         self._paint_progress()
-        self._status_line = " · ".join(lines)
+        bar = getattr(snap, "bar_lines", None)
+        self._status_line = " · ".join(lines if self._quit == "waiting" or bar is None else bar)
         if not (self._saying() or self._holds) or self._quit == "waiting":     # (a line said keeps the slot: `say`)
             self.bar_line.set_full(self._status_line)
         failure = snap.failure or ""
@@ -1760,6 +1790,7 @@ class ShellWindow(QMainWindow):
         self.bar_failure.setToolTip(strings.BAR_FAILURE_TIP + ("\n\n" + failure if failure else ""))
         logs_before, self._logs_folder = self._logs_folder, snap.logs
         self._status_snap = snap
+        self.phase.set_status(snap)
         self._paint_slot()
         self._status_mark(self.bar_replan, snap.replan, strings.BAR_REPLAN_TIP.format(line=snap.replan or ""))
         if self.anki_mark.set_ankiweb(snap.ankiweb):           # W3.1a: the AnkiWeb mark's words, in the emerald's hover
@@ -1984,16 +2015,16 @@ class ShellWindow(QMainWindow):
                           strings.JOURNEY_DOT_TIP if self._d29 else strings.JOURNEY_DOT_TIP_PRESS)
         self._paint_level()                                    # W3.1a: the dot is a mark on the ▾ too
 
-    def open_logs(self, folder=None):
+    def open_logs(self, folder=None, control=None, key="open:logs"):
         """*Open the logs folder*: `folder`, else — while the bar's failure is an update's with a report — the report's
-        folder (written beside the install, not in the logs folder), else the logs folder."""
+        folder (written beside the install, not in the logs folder), else the logs folder. Round 8 row 45: a press
+        (`press.open`) — `control` turns its arc (none: the bar's), the folder opens on a worker (it can take a
+        moment), a second press meanwhile does nothing (`key`: a card's own, so a card rebuilt meanwhile turns it
+        again). -> the press, or None."""
         folder = folder or self._report_folder(getattr(self._status_snap, "failure", None)) or self._logs_folder
         if not folder:
-            return
-        if sys.platform == "win32":
-            bridge.run_in_worker(screens.open_with_system, folder)   # can take a moment: off the GUI thread
-        else:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
+            return None
+        return qpress.open(self, folder, control=control, key=key)
 
     def _report_folder(self, text):
         """The folder of the update report behind the update failure reading `text`, or None."""
@@ -2058,7 +2089,8 @@ class ShellWindow(QMainWindow):
         d.journey.setCursor(Qt.CursorShape.PointingHandCursor)
         d.journey.setEnabled(False)                     # until a journey is found on disk: hidden meanwhile
         d.journey.setVisible(False)
-        d.journey.clicked.connect(self._open_journey)
+        qpress.room(d.journey, end=True)                # round 8 row 45: a link — its arc's room at its right end
+        d.journey.clicked.connect(lambda _c=False: self._open_journey(control=d.journey))
         # laptop fixes (Sonic: "the journey should never automatically pop up … a button by auto … to open the
         # journey"): *Journey ↗* beside the ▾, the header's own button look (as ?); shown while one is on disk
         d.journey_button = QToolButton(self.header)
@@ -2070,7 +2102,8 @@ class ShellWindow(QMainWindow):
         d.journey_button.setCursor(Qt.CursorShape.PointingHandCursor)
         d.journey_button.setEnabled(False)
         d.journey_button.setVisible(False)
-        d.journey_button.clicked.connect(self._open_journey)
+        qpress.room(d.journey_button)
+        d.journey_button.clicked.connect(lambda _c=False: self._open_journey(control=d.journey_button))
         d.help = QToolButton(self.header)
         d.help.setText(strings.HELP)
         d.help.setToolTip(strings.HELP_TIP)
@@ -2220,29 +2253,27 @@ class ShellWindow(QMainWindow):
 
     def _generate_pressed(self):
         """A click runs Generate — or, while one the user asked for is asked for or running, cancels it (before
-        *Writing your list*). On an automatic run the click is the user's own run, which takes its place (IK-20)."""
+        *Writing your list*). On an automatic run the click is the user's own run, which takes its place (IK-20).
+        Round 8 row 45: the button's arc turns from the frame of the click — before the settings are flushed (up to
+        10 s) and the run is asked for — until the controller has it (its queued look), or its cancel was asked."""
         d = self.duties
         state = d.generate_state
         s = self.services
+        b = d.generate.button
         if state is not None and state.state in ("queued", "running", "cancelling") and not state.quiet:
             if d.module.gen.can_cancel(state):
-                bridge.run_in_worker(s.controller.cancel)
+                qpress.run(b, "generate", s.controller.cancel, win=self)
             return
-        bridge.run_in_worker(s.generate, failed=lambda info: self.say(str(info[0])))
+        qpress.run(b, "generate", s.generate, failed=lambda info: self.say(str(info[0])), win=self)
 
     def _open_generate_log(self):
         path = getattr(self.duties.generate_state, "log_path", None)
         if path:
-            self._open_path(path)
+            qpress.open(self, path, control=self.duties.generate.log_button, key="open:generate-log")
 
     def _open_guide(self, _checked=False):
-        bridge.run_in_worker(self.services.open_guide)     # the browser can take a moment: off the GUI thread
-
-    def _open_path(self, path):
-        if sys.platform == "win32":
-            bridge.run_in_worker(screens.open_with_system, path)     # can take a moment: off the GUI thread
-        else:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+        """? › *Online guide*: its menu has closed, so the bar's arc turns until the browser was asked (a worker)."""
+        qpress.run(None, "open:guide", self.services.open_guide, win=self)
 
     # Your journey
     def _check_journey(self):
@@ -2259,16 +2290,13 @@ class ShellWindow(QMainWindow):
         if self.duties.pop.isVisible():
             self.duties.pop.place()
 
-    def _open_journey(self, *_checked, asked=False):
+    def _open_journey(self, *_checked, asked=False, control=None, at=None):
         """*Journey ↗* in the header, *Open your journey ↗* in the pop — and (`asked`, W3.1a S5) Up Next's *N new
         words ↗*: with none on disk the entries go, and a click from Up Next says why in the bar. The only ways the
-        journey opens: a Generate writes it and never opens it (laptop fixes). A click while one opens is dropped."""
-        if self._journey_opening:
-            return
-        self._journey_opening = True
-
+        journey opens: a Generate writes it and never opens it (laptop fixes). Round 8 row 45: one press for all four
+        (`press.run`): `control`'s arc turns (or `at`: the row's ↗, ⋯; neither: the bar's) until the browser was
+        asked, and a click meanwhile, from any of them, does nothing. -> the press, or None."""
         def done(opened):
-            self._journey_opening = False
             if opened:
                 return
             if self.duties is not None:
@@ -2277,9 +2305,9 @@ class ShellWindow(QMainWindow):
                 self.say(strings.JOURNEY_NONE_TIP)
 
         def failed(info):
-            self._journey_opening = False
             self.say(strings.JOURNEY_FAILED.format(why=info[0]))
-        bridge.run_in_worker(self.services.open_journey, then=done, failed=failed)
+        return qpress.run(control, "journey:open", self.services.open_journey, then=done, failed=failed, win=self,
+                          at=at)
 
     # the bar's marks
     def _show_automation(self, state):
@@ -2537,24 +2565,34 @@ class ShellWindow(QMainWindow):
         d.sheet.raise_()
 
     def _update_action(self, name, key):
-        """A click on the sheet or a Needs you card, sent to the update service on a worker."""
+        """A click on the sheet or a Needs you card, sent to the update service on a worker. Round 8 row 45: a press —
+        the clicked button's arc turns (`_update_control`) from the frame of the click until the service answered."""
         u = self.services.updates
+        control = self._update_control(name, key)
         if name == "start":
-            bridge.run_in_worker(u.start)
+            qpress.run(control, "update:start", u.start, win=self)
         elif name in ("download", "notes"):
-            bridge.run_in_worker(u.open_download)
+            qpress.run(control, f"update:{name}", u.open_download, win=self)
         elif name == "skip":
             self.duties.sheet.hide()
             bridge.run_in_worker(u.skip, key)              # `skipped_version` written, nothing else
         elif name == "stop":
-            bridge.run_in_worker(u.stop, key)
+            qpress.run(control, ("update:stop", key), u.stop, key, win=self)
         elif name == "stop-all":
-            bridge.run_in_worker(u.stop)
+            qpress.run(control, "update:stop-all", u.stop, win=self)
         elif name == "cancel":
             self.duties.sheet.hide()
             self._cancel_update()
         elif name == "logs":
-            self.open_logs(key)                            # a failure's card: its report's folder, when it has one
+            self.open_logs(key, control=control)           # a failure's card: its report's folder, when it has one
+
+    def _update_control(self, name, key):
+        """The sheet's or the update card's button that sent `name` (a program's *Stop* by its `key`), or None."""
+        sender = self.sender()
+        if sender is None or not hasattr(sender, "findChildren"):
+            return None
+        return next((b for b in sender.findChildren(QPushButton) if b.property("action") == name and b.isVisible()
+                     and (name != "stop" or b.property("program") == key)), None)
 
     def _sheet_dismissed(self):
         """Esc, Back or *Later* closed the sheet: an update downloading or waiting is cancelled (IK-2, as Tk)."""
@@ -2563,9 +2601,10 @@ class ShellWindow(QMainWindow):
             self._cancel_update()
 
     def _cancel_update(self):
+        """The update cancelled (its sheet has closed: the bar's arc turns until the service answered)."""
         s = self.services
-        bridge.run_in_worker(s.updates.cancel,
-                             then=lambda cancelled: cancelled and bridge.run_in_worker(s.automation.update_cancelled))
+        qpress.run(None, "update:cancel", s.updates.cancel, win=self,
+                   then=lambda cancelled: cancelled and bridge.run_in_worker(s.automation.update_cancelled))
 
     def _quit_for_update(self, _value=None):
         """The update hands over (its `on_quit`): the window closes, and the app with it — at once: the update waited
@@ -2631,6 +2670,7 @@ class ShellWindow(QMainWindow):
             old.close()
         if looks is not None:
             looks.on_result = self._looks_said
+            looks.on_ended = lambda told, why: self._ended_relay.call((told, why))
             looks.on_progress = lambda path, found, shows: self._progress_relay.call((path, found, shows))
         return looks
 
@@ -2667,15 +2707,43 @@ class ShellWindow(QMainWindow):
             return False
         return self.looks.asked(focused=bool(focused), refreshed=bool(refreshed), shown=self.in_front())
 
-    def refresh_sources(self):
-        """Refresh (the Refresh key; Settings' *Look again*): every folder looked at in full, now."""
+    def refresh_sources(self, control=None):
+        """Refresh (the Refresh key; Settings' *Look again*): every folder looked at in full, now. Round 8 row 45: a
+        press — `control`'s arc turns (none, the Refresh key's: the bar's) until the look ends (`_look_ended`: its
+        summary, or a look that couldn't run, said in the bar; `REFRESH_CAP_S` at most, a backstop). Nothing to look
+        with: nothing marked (it answers at once). A second press while one is live does nothing (A3)."""
+        if self.looks is None or self._quit is not None:
+            return False
+        p = qpress.begin(control, "sources:refresh", win=self)
+        if p is None:
+            return False
+        self._refresh_press = p
+        QTimer.singleShot(int(REFRESH_CAP_S * 1000), lambda: self._refresh_ended(p))
         return self.look_at_sources(refreshed=True)
+
+    def _refresh_ended(self, p=None, why=None):
+        """Refresh's press ends: a look ended (`why`: it couldn't run — the press failed, said in the bar), or its
+        cap passed (`p`, that press only)."""
+        live = self._refresh_press
+        if live is None or (p is not None and live is not p):
+            return
+        self._refresh_press = None
+        if live.live():
+            qpress.end(live, self, failed=why is not None, why=why)
+            if why is not None:
+                self.say(strings.REFRESH_FAILED.format(why=why))
+
+    def _look_ended(self, answer):
+        """A look ended (its summary, if any, came first: the same worker, the same order)."""
+        told, why = answer
+        self._refresh_ended(why=None if told else (why or strings.REFRESH_NOT_LOOKED))
 
     def _sources_looked(self, summary):
         """A look's (an add's, a stop's) summary: the offline line, and Settings' row (`sources_seen`)."""
         if not isinstance(summary, dict) or summary.get("language", self.language) != self.language:
             return                                        # B2: a language left never paints over the one open
         self.sources = tuple(summary.get("sources") or ())
+        self._refresh_ended()                             # round 8 row 45: Refresh's press, ended by its look
         self.offline_hidden = (self.offline_hidden | set(summary.get("kept_lines") or ())) & \
             standing_service.not_back(self.sources)       # round 8 row 54: a folder back lets its ✕ go
         self._show_offline()
@@ -2712,8 +2780,15 @@ class ShellWindow(QMainWindow):
         return " · ".join(lines)
 
     def _show_offline(self):
-        """Repainted only when its words moved (S19); shown while there are any."""
-        self.offline_line.show_line(self.offline_text() if self.sources else "")
+        """Repainted only when its words moved (S19); shown while there are any — and 届 amber while it is (the
+        phase strip, Q1: a folder offline waits on you)."""
+        text = self.offline_text() if self.sources else ""
+        self.offline_line.show_line(text)
+        self.phase.set_extra(phase_service.ARRIVALS, "offline", "needs" if text else None, text)
+
+    def moves_saving(self, on):
+        """The drag's writer holds moves for a busy store (`moves.Writer.on_saving`): 届 waits while it does."""
+        self.phase.set_extra(phase_service.ARRIVALS, "saving", "waiting" if on else None, strings.MOVE_WORDS["saving"])
 
     def _sources_progress(self, said):
         """A folder being read for the first time (+ Add): its count so far, in the bar."""

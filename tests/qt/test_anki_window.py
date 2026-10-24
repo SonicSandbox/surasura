@@ -912,3 +912,52 @@ def test_after_a_choice_was_saved_a_switch_still_saves_its_own_key_alone(main, a
     monkeypatch.setattr(main.services.settings, "set", lambda *a, **k: (writes.append((a, sorted(k))), real(*a, **k))[1])
     w.chk_suspended.click()
     assert writes == [(({"anki_sync_include_suspended": True},), [])]
+
+
+# --- round 8 row 45: every press reacts at once ------------------------------------------------------------------- #
+def test_a_deck_removed_marks_the_counts_before_anki_is_read_again(main, anki, monkeypatch):
+    # A deck's ✕ re-read Anki's counts with nothing painted: a quiet arc now turns over the counts, painted before the
+    # read is handed over, until the newest read answers.
+    from app.qt import motion
+    from tests.qt.press_handover import HandOver
+
+    def counts_marked():
+        return any(sp.isVisible() and sp.running for sp in w.deck_list.findChildren(motion.Spinner))
+    _choose(main, **{"anki_sync_decks": {"ja": ["TheBank", "Grammar"]}})
+    w = _open(main)
+    assert wait_until(lambda: w._connected and "Grammar" in w.decks)
+    handed = HandOver(monkeypatch, w.deck_list, counts_marked)
+    w.remove_deck("Grammar")
+    read = handed.at("read_scope")
+    assert read.shown and read.painted >= 1
+    assert wait_until(lambda: not counts_marked() and w._scope_press is None)
+
+
+def test_two_scope_reads_keep_the_counts_marked_until_the_newer_answers(main, anki, monkeypatch):
+    # P5-A6 (the review's worry): two scope reads one after the other, the older answering first, must not take the
+    # counts' mark off while the newer still reads — each read is keyed on its own ask (`_scope_asked`).
+    from app import anki_window as AW
+    from app.qt import motion
+
+    def counts_marked():
+        return any(sp.isVisible() and sp.running for sp in w.deck_list.findChildren(motion.Spinner))
+    _choose(main, **{"anki_sync_decks": {"ja": ["TheBank", "Grammar"]}})
+    w = _open(main)
+    assert wait_until(lambda: w._connected and "Grammar" in w.decks)
+    gates, real = [threading.Event(), threading.Event()], AW.read_scope
+    asked = []
+
+    def held(*args):
+        gate = gates[len(asked)]
+        asked.append(args)
+        gate.wait(10)
+        return real(*args)
+    monkeypatch.setattr(AW, "read_scope", held)
+    w.remove_deck("Grammar")
+    w._suspended_changed(True)
+    assert wait_until(lambda: len(asked) == 2) and counts_marked()
+    gates[0].set()                                        # the older read answers first
+    QTest.qWait(200)
+    assert counts_marked() and w._scope_press is not None
+    gates[1].set()
+    assert wait_until(lambda: not counts_marked() and w._scope_press is None)

@@ -23,6 +23,7 @@ import ast
 import ctypes
 import os
 import sys
+import time
 
 import pytest
 
@@ -77,6 +78,7 @@ SITES = {
     "settings_page.py:SettingsPage._wash": "Settings' row wash",
     "toast.py:ToastHost.show": "a toast's rise",
     "wizard.py:Switch._slide": "the wizard's switch knob",
+    "phase_strip.py:PhaseStrip._fade": "a phase circle's done tick fading back",
 }
 # "file:Class" -> each overlay (a `motion.Overlay` no other overlay builds on) opened at least once
 OVERLAYS = {
@@ -532,6 +534,28 @@ def test_sweep_the_wizards_switch_knob_jumps(sweep):
     assert switch._pos == 1.0
     sweep.still()
     switch.close()
+
+
+@drives("phase_strip.py:PhaseStrip._fade", "motion.py:Spinner._sync")
+def test_sweep_the_phase_strip_turns_no_arc_and_its_done_tick_fades_within_fast(sweep):
+    from app.qt import phase_strip
+    from app.services import phase
+    from app.services.jobs import JobRegistry
+    strip = phase_strip.PhaseStrip()
+    strip.show()
+    registry = JobRegistry()
+    job = registry.submit("generate", "Generating", lambda j: None)
+    sweep.on()
+    strip.set_jobs(registry.snapshot())
+    assert strip.states[phase.SURASURA].running and strip._turn.turning is None      # a still arc
+    sweep.still()
+    job.finish()
+    strip.set_jobs(registry.snapshot())
+    strip.now = lambda: time.time() + strip.linger_s + 1                              # the tick's 2 s held
+    strip.refresh()
+    sweep.still()                                                                     # its fade: within FAST
+    assert phase.SURASURA not in strip._ticks
+    strip.close()
 
 
 # --- the live flip ---------------------------------------------------------------------------------------------- #

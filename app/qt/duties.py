@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import QHBoxLayout, QLabel, QProgressBar, QPushButton, QSiz
 
 from app import theme
 from app.qt import motion, shadow, strings, style, toast
+from app.qt import press as qpress
 from app.services import generate as gen
 from app.services import standing
 from app.services import updates as upd
@@ -78,13 +79,15 @@ class GenerateControl(QWidget):
         self.button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self.button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.button.clicked.connect(self.pressed)
-        row.addWidget(self.button)
+        qpress.room(self.button)                           # round 8 row 45: its arc turns from the click (the shell's
+        row.addWidget(self.button)                         # ... `_generate_pressed`), in room kept at rest
         self.log_button = QPushButton(strings.GENERATE_LOG, self)
         self.log_button.setProperty("kind", "chip")
         self.log_button.setToolTip(strings.GENERATE_LOG_TIP)
         self.log_button.setAccessibleName(strings.GENERATE_LOG)
         self.log_button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self.log_button.clicked.connect(self.log_asked)
+        qpress.room(self.log_button)
         self.log_button.setVisible(False)
         row.addWidget(self.log_button)
         row.addStretch(1)
@@ -204,6 +207,9 @@ class UpdateSheet(motion.Overlay):
             b = QPushButton(label, self)
             if kind:
                 b.setProperty("kind", kind)
+            b.setProperty("action", name)                  # round 8 row 45: the shell finds the button it turns
+            if name in ("notes", "start", "download", "stop-all"):
+                qpress.room(b)
             b.setToolTip(tip)
             b.setAccessibleName(label)
             b.setFocusPolicy(Qt.FocusPolicy.TabFocus)
@@ -298,6 +304,9 @@ class UpdateSheet(motion.Overlay):
             if program.can_stop:
                 b = QPushButton(strings.UPDATE_STOP, row)
                 b.setProperty("size", "sm")
+                b.setProperty("action", "stop")
+                b.setProperty("program", program.key)
+                qpress.room(b)
                 b.setToolTip(strings.UPDATE_STOP_TIP.format(name=program.name or ""))
                 b.setAccessibleName(strings.UPDATE_STOP_NAME.format(name=program.name or ""))
                 b.setFocusPolicy(Qt.FocusPolicy.TabFocus)
@@ -431,6 +440,8 @@ class UpdateCards(QWidget):
             b = QPushButton(label, card)
             b.setProperty("size", "sm")
             b.setProperty("action", name)
+            if name in ("start", "download", "logs"):
+                qpress.room(b)                             # round 8 row 45: its arc turns from the click
             if name == "start" and self._held is not None:
                 tip = self._held
                 b.setEnabled(False)

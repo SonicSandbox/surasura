@@ -16,7 +16,8 @@ from PyQt6.QtWidgets import QCheckBox, QFileDialog, QHBoxLayout, QLabel, QPushBu
 
 from app import sentence_corpus
 from app.qt import bridge, confirm, strings
-from app.qt.windows import SecondaryWindow, open_url, say_in_bar
+from app.qt import press as qpress
+from app.qt.windows import SecondaryWindow, say_in_bar
 from app.services import jobs as jobs_module
 from app.services import tools
 
@@ -56,8 +57,10 @@ class SentenceDictionaryWindow(SecondaryWindow):
         row = QHBoxLayout()
         self.export_button = self._button(strings.DICT_EXPORT, strings.DICT_EXPORT_TIP, self.export, row, "primary")
         row.addStretch(1)
-        self.folder_button = self._button(strings.DICT_OPEN_FOLDER, strings.DICT_OPEN_FOLDER_TIP, self.open_folder, row)
-        self.log_button = self._button(strings.DICT_OPEN_LOG, strings.DICT_OPEN_LOG_TIP, self.open_log, row)
+        self.folder_button = qpress.room(self._button(strings.DICT_OPEN_FOLDER, strings.DICT_OPEN_FOLDER_TIP,
+                                                      self.open_folder, row))
+        self.log_button = qpress.room(self._button(strings.DICT_OPEN_LOG, strings.DICT_OPEN_LOG_TIP, self.open_log,
+                                                   row))
         self.folder_button.setVisible(False)
         self.log_button.setVisible(False)
         self.body.addLayout(row)
@@ -228,8 +231,9 @@ class SentenceDictionaryWindow(SecondaryWindow):
         self.export_button.setToolTip(strings.DICT_EXPORT_BUSY_TIP if on else strings.DICT_EXPORT_TIP)
 
     def open_folder(self):
+        """*Open folder*: opened on a worker (`press.open`: never the window's thread), its arc turning meanwhile."""
         if self.saved_to:
-            open_url(os.path.dirname(self.saved_to))
+            qpress.open(self, os.path.dirname(self.saved_to), control=self.folder_button)
 
     def open_log(self):
-        open_url(tools.log_path(KIND))
+        qpress.open(self, tools.log_path(KIND), control=self.log_button)

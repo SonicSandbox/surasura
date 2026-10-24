@@ -162,6 +162,38 @@ def test_a_refresh_after_the_move_changes_nothing(language):
         store.__exit__(None, None, None)
 
 
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("picked", ["the show's folder", "the folder above it"])
+def test_a_show_moved_where_surasura_doesnt_read_joins_it_once_its_folder_is_added(language, picked):
+    """MV-1's bound and MV-2: `[Grp] Show` moved to a folder no source holds — nothing joins, nothing is added (its
+    items keep their copies); the folder picked (*Find its folder*: the show's folder itself, its files then at the
+    source's top and read by their names, or the folder above it) is added as a read folder — its files are their
+    items, its next episode joins the show."""
+    store, data_dir = _empty(language)
+    show = _SHOWS[language][1]
+    folder = f"[Grp] {show}"
+    a, c = _drive("driveA"), _drive("driveC")
+    _seed(language, a, folder)
+    with store:
+        root_a = store.add_source(a)
+        ids = _look(store, language, root_a, first=True)["ids"]
+        work = _work(store, ids[0])
+        assert all(store.item(i)["rel_path"].startswith(f"Library/{folder}/") for i in ids)
+        moved = os.path.join(c, LEVEL, folder)
+        _move(os.path.join(a, folder), moved)
+        unread = _look(store, language, root_a, full=True)
+        assert (unread["added"], unread["attached"]) == (0, 0) and _items(store) == 4
+        root_c = store.add_source(moved if picked == "the show's folder" else os.path.dirname(moved))
+        found = _look(store, language, root_c)
+        assert (found["added"], found["attached"]) == (0, 4) and _items(store) == 4
+        _write(os.path.join(moved, _name(show, 5, language)), _text(language, 5))
+        _settle(c)
+        again = _look(store, language, root_c)
+        assert again["added"] == 1 and _items(store) == 5 and _works(store) == 1
+        assert _work(store, again["ids"][0]) == work
+        assert store.item(again["ids"][0])["rel_path"].startswith(f"Library/{folder}/")
+
+
 # --- the guards: never a guess ------------------------------------------------------------------------------------- #
 
 @pytest.mark.parametrize("language", LANGUAGES)
@@ -234,7 +266,7 @@ def test_a_folder_of_a_show_already_in_is_never_re_aliased_by_a_stray_copy(langu
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_loose_files_at_a_sources_top_keep_the_show_their_names_give(language):
     """A loose file's show is its name's (S12), never its neighbours' items: a byte copy of an episode beside it at
-    the source's top never pulls it into that show."""
+    the source's top never pulls a file of another name into that show."""
     store, data_dir = _empty(language)
     x = _SHOWS[language][0]
     a, b = _drive("driveA"), _drive("driveB")

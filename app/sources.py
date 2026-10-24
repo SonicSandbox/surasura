@@ -894,8 +894,9 @@ class _Look:
             self.out["skipped"] += ghosts
             rel = os.path.relpath(folder, self.base)
             parts = [] if rel == "." else rel.replace("\\", "/").split("/")
-            show = self._folder_show(parts, texts, vids) if parts else None   # D3: a moved show's folder is its show
-            episodes = self._episodes(self.base, parts, texts, epubs, langs, vids, self.versions.get(fkey, ()), show)
+            show_of = self._shows_of(parts, texts, vids)    # D3: a moved show's files are its show's
+            episodes = self._episodes(self.base, parts, texts, epubs, langs, vids, self.versions.get(fkey, ()),
+                                      show_of)
             for name, path, st, show, kind, *item in episodes:
                 self.out["found"] += 1
                 self.shows.add(ls.search_fold(show, self.language))
@@ -916,7 +917,7 @@ class _Look:
                     new.append((where, path, st, name, show, vids, item[0]))
                 else:
                     new.append((where, path, st, name, show, vids))
-            waits = [(folder, path, st, show or _show_of(self.base, parts, os.path.basename(path)))
+            waits = [(folder, path, st, show_of(os.path.basename(path)))
                      for path, st in self._waiting(vids)] if vids and not epubs else []
             kept = any(_key(t[1]) in self.ex_paths for t in texts)   # a removed episode's text (kept out, never a
             if waits and not episodes and not kept:          # pick) still counts: its video never waits. Videos and
@@ -929,20 +930,39 @@ class _Look:
             self._say()
         return seen, new, known, books
 
-    def _folder_show(self, parts, texts, vids):
+    def _shows_of(self, parts, texts, vids):
         """D3 (PROVISIONAL; Sonic's MV-1: a moved show found where Surasura reads joins the show it is, never a
-        duplicate): the show of a folder below the source (`parts`) — `_show_of`'s, unless that show has no items yet
-        and the folder's files are already items of ONE show: their origins recorded (a later look's), else their
-        bytes or videos as the origins record them (the look after the move: a text's size then its sha256, read once —
-        `_new` takes it from `read`; a video's size then its content key) -> that show (`Library/<show>`, its items'
-        folder). A folder whose files are two shows' items, or none, keeps `_show_of`'s; a show already in never moves
-        (`Downloads/Show` -> `NAS/2024 Fall/Show` stays `Show`; a stray copy in another show's folder never pulls it
-        away). Never a book's part (a book's show is its name), never a text kept out or remembered as none (K6)."""
-        show = _show_of(self.base, parts, "")
+        duplicate) -> show_of(a file's name): the show of a folder's files. A folder below the source (`parts`) is one
+        show; at the source's top each name's show is its own (S12) — a show folder picked as the source itself (MV-2's
+        *Find its folder*) reads its files' names. Each is `_show_of`'s, unless that show has no items yet and its files
+        are already items of ONE show (`_joined`) -> that show: `Downloads/Show` -> `NAS/2024 Fall/Show` stays `Show`."""
+        if parts:
+            show = self._joined(_show_of(self.base, parts, ""), texts, list(vids.values()))
+            return lambda _name: show
+        names, groups = {}, {}
+
+        def own(name):
+            if name not in names:
+                names[name] = _show_of(self.base, parts, name)
+            return names[name]
+        for t in texts:
+            groups.setdefault(own(t[0]), ([], []))[0].append(t)
+        for v in vids.values():
+            groups.setdefault(own(os.path.basename(v[0])), ([], []))[1].append(v)
+        shows = {s: self._joined(s, ts, vs) for s, (ts, vs) in groups.items()}
+        return lambda name: shows.get(own(name)) or own(name)
+
+    def _joined(self, show, texts, vids):
+        """D3: `show`, or — when it has no items yet — the ONE show whose items these files already are: their origins
+        recorded (a later look's), else their bytes or videos as the origins record them (the look after the move: a
+        text's size then its sha256, read once — `_new` takes it from `read`; a video's size then its content key).
+        Files of two shows' items, or of none, keep `show`; a show already in never moves (a stray copy in another
+        show's folder never pulls it away). Never a book's part (a book's show is its name), never a text kept out or
+        remembered as none (K6)."""
         if self._show_origins(_show_key(show)):
             return show
         found = set()
-        for path in [t[1] for t in texts] + [v[0] for v in vids.values()]:
+        for path in [t[1] for t in texts] + [v[0] for v in vids]:
             o = self.origins.get(_key(path))
             if o is not None:
                 found.add(_library_show(o.rel_path))
@@ -958,7 +978,7 @@ class _Look:
                 except OSError:
                     continue
                 found |= shas.get(got[1], set())
-            for path, st in vids.values():
+            for path, st in vids:
                 keys = by_video.get(st.st_size)
                 if keys and not ls.is_placeholder(st) and not self._recent(st):
                     found |= keys.get(self._content_key(path), set())
@@ -1067,7 +1087,7 @@ class _Look:
                     others.append(child)
         return sorted(others), listed_with
 
-    def _episodes(self, root, parts, texts, epubs, langs=None, vids=None, versions=(), show=None):
+    def _episodes(self, root, parts, texts, epubs, langs=None, vids=None, versions=(), show_of=None):
         """One folder's files as a look takes them (S7): another language's subtitles skipped (by the file's tag, else
         its language folder's: `langs`); one per episode — an episode already in keeps its own and the rest are
         skipped, else the first in the order of one episode's subtitles listed together (Sonic, the library model 2
@@ -1078,12 +1098,12 @@ class _Look:
         group's, then the other releases of its episode (`runners_up`, LF-9: an English `.srt` named like the video
         never keeps the `.ja.srt` out) -> [(name, path, stat, show, 'new' | 'known' | 'book')]. A file of two
         languages in one mark (`.chs&jpn`, `[简日双语]`: LM1a) is ours when ours is one of them, taken only where no
-        file of one language is; names are compared in NFC (A24). `show`: the folder's (`_folder_show`, D3), else
+        file of one language is; names are compared in NFC (A24). `show_of`: a file's show (`_shows_of`, D3), else
         `_show_of`'s."""
         like = video_names(vids or ())                                  # their names, lowered
-
-        def show_of(name):
-            return show if show is not None and parts else _show_of(root, parts, name)
+        if show_of is None:
+            def show_of(name):
+                return _show_of(root, parts, name)
 
         def order(name, path):
             # PROVISIONAL (Sonic 2026-10-21: accepted for building, to be checked in use): this order (`subtitle_rank`)

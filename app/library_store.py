@@ -565,6 +565,7 @@ SCHEMA_SQL = (
     "CREATE INDEX items_order ON items (tier, ord, id)",
     "CREATE INDEX items_folder ON items (tier, parent_folder, ord, id)",   # placement by folder (§12)
     "CREATE INDEX items_key ON items (rel_key)",                            # "is this file an item?" (§12)
+    "CREATE INDEX items_missing ON items (size) WHERE availability = 'missing'",   # D2: a scoped sync's missing items
     """CREATE TABLE trash (
       id INTEGER PRIMARY KEY, item_id INTEGER NOT NULL, root_id INTEGER NOT NULL, rel_path TEXT NOT NULL,
       tier TEXT NOT NULL, prev_id INTEGER, next_id INTEGER,
@@ -624,8 +625,9 @@ ADDED_TABLES_SQL = (
 # was; a new store makes them in SCHEMA_SQL, an existing one at its first open by a writer (`_added_indexes`)
 ADDED_INDEXES_SQL = (
     "CREATE INDEX IF NOT EXISTS pairings_item ON pairings (item_id)",
+    "CREATE INDEX IF NOT EXISTS items_missing ON items (size) WHERE availability = 'missing'",   # D2 (`_lost_by_size`)
 )
-ADDED_INDEXES = ("pairings_item",)
+ADDED_INDEXES = ("pairings_item", "items_missing")
 
 # Schema 2 (L3.1, the L2.2 pack 02 §2.3–2.4): works (a title: a season, a film, a book, a channel), the feed's
 # tombstones, and the items' work, search key, feed version and *Mine it too*. A fresh store runs SCHEMA_SQL and then
@@ -4624,7 +4626,7 @@ class Store:
             raise NotInLibrary(f"not in the library: {path}")
         with self._writing():
             self._drop_ask(rel)
-        return self.sync_disk(folders=[_rel_dir(rel)] if _rel_dir(rel) else None)
+        return self.sync_disk(folders=[_rel_dir(rel)] if _rel_dir(rel) else None, as_new=[rel])
 
     def text_lists(self):
         """9b (05 §5.10): (counted, kept, aside) — the paths, relative to data/<lang>, whose text the token store
@@ -7076,9 +7078,10 @@ def walk_folders(data_dir, folders):
     return {"files": files, "bad": bad}
 
 
-def _sync_delta(store, walk, known, scope=None):
+def _sync_delta(store, walk, known, scope=None, as_new=()):
     """What a sync would change, computed outside any transaction (§6.10); with `scope`, only within those folders
-    (`known` read with the same scope): an item outside them is never looked at. An untracked file in the content
+    (`known` read with the same scope): an item outside them is never looked at (but D2's missing items of a new
+    file's size, `_lost_by_size`). `as_new`: keys the user called new (`its_new`) — never a rename. An untracked file in the content
     folder is never the sync's (SRC B2: every copy there comes in through `take_in` or K3; went / came / refresh for
     the known ones as anywhere), nor one a `duplicate` exclusion keeps out (another item's episode, K3)."""
     data_dir = store.data_dir
@@ -7099,7 +7102,7 @@ def _sync_delta(store, walk, known, scope=None):
             respell.append((item_id, rel))                         # rule 1: a case-only rename
         if (s, m) != (size, mtime_ns):
             refresh.append((size, mtime_ns, item_id))
-    went, came = [], []
+    went, came, lost = [], [], []
     for key, (item_id, rel, tier, availability, size, mtime_ns) in known.items():
         under = any(key.startswith(top) for top in walked_tops)
         if under:
@@ -7108,37 +7111,41 @@ def _sync_delta(store, walk, known, scope=None):
             present = os.path.exists(os.path.join(data_dir, _strip(rel)))
         if availability == "available" and not present:
             went.append(item_id)
+            lost.append((item_id, rel, size, mtime_ns))
         elif availability == "missing" and present:
             came.append(item_id)
+        elif availability == "missing":
+            lost.append((item_id, rel, size, mtime_ns))            # D2: gone in an earlier sync, still gone
     # rule 2: a rename = an untracked file + exactly one known item in the same folder, same size and
-    # modified time, that went missing since the last sync
-    went_set = set(went)
+    # modified time (`_same_time`), that went missing in this sync or an earlier one and is still gone
     by_dir = {}
-    for key, (item_id, rel, tier, availability, size, mtime_ns) in known.items():
-        if item_id in went_set:
-            by_dir.setdefault(path_key(_rel_dir(_strip(rel))), []).append((item_id, size, mtime_ns))
+    for item_id, rel, size, mtime_ns in lost:
+        by_dir.setdefault(path_key(_rel_dir(_strip(rel))), []).append((item_id, size, mtime_ns))
     renames, new, used = [], [], set()
     for rel, key, size, mtime_ns in fresh:
-        cands = [c for c in by_dir.get(path_key(_rel_dir(rel)), []) if c[1] == size and c[2] == mtime_ns]
+        cands = [c for c in by_dir.get(path_key(_rel_dir(rel)), []) if c[1] == size and _same_time(c[2], mtime_ns)
+                 and key not in as_new]
         if len(cands) == 1 and cands[0][0] not in used:
             used.add(cands[0][0])
             renames.append((cands[0][0], rel, size, mtime_ns))
         else:
             new.append((rel, key, size, mtime_ns))
-    # rule 2b (9a, L2.2 05 §5.9): an untracked file + exactly ONE item anywhere in the library with the same file
-    # name, size and modified time that went missing in this sync is that item, moved; two or more are asked, never
-    # guessed (the file is held out until the user answers: `relink` or `its_new`)
+    # rule 2b (9a, L2.2 05 §5.9; D2): an untracked file + exactly ONE item anywhere in the library with the same file
+    # name, size and modified time that went missing (in this sync or an earlier one) and is still gone is that item,
+    # moved; two or more are asked, never guessed (the file is held out until the user answers: `relink` or `its_new`)
     asked = {path_key(a.get("rel", "")) for a in _rename_asks(store)}
+    if scope is not None and new:
+        lost += _lost_by_size(store, [n[2] for n in new], {k[0] for k in known.values()})
     by_name = {}
-    for key, (item_id, rel, tier, availability, size, mtime_ns) in known.items():
-        if item_id in went_set and item_id not in used:
+    for item_id, rel, size, mtime_ns in lost:
+        if item_id not in used:
             by_name.setdefault(path_key(_strip(rel).rsplit("/", 1)[-1]), []).append((item_id, size, mtime_ns))
     still, asks = [], []
     for rel, key, size, mtime_ns in new:
         if key in asked:
             continue                                               # held out: its question waits for the user
         cands = [c for c in by_name.get(path_key(rel.rsplit("/", 1)[-1]), [])
-                 if c[1] == size and c[2] == mtime_ns and c[0] not in used]
+                 if c[1] == size and _same_time(c[2], mtime_ns) and c[0] not in used and key not in as_new]
         if len(cands) == 1:
             used.add(cands[0][0])
             renames.append((cands[0][0], rel, size, mtime_ns))
@@ -7149,6 +7156,36 @@ def _sync_delta(store, walk, known, scope=None):
     went = [i for i in went if i not in used]
     return {"new": still, "renames": renames, "respell": respell, "went": went, "came": came, "refresh": refresh,
             "asks": asks}
+
+
+SAME_TIME_NS = 2_000_000_000            # D2: FAT keeps even seconds, exFAT 10 ms; an SMB share rounds within them
+FAT_HOUR_NS = 3_600_000_000_000         # D2: FAT keeps local time — a summer-time change moves a file an hour
+
+
+def _same_time(a, b):
+    """Rules 2 and 2b (D2): one file's modified time as two file systems kept it — equal, within 2 s, or an hour off
+    within 2 s. A time 3 s off is another file (two episodes can be one size)."""
+    if a == b:
+        return True
+    if a is None or b is None:
+        return False
+    d = abs(a - b)
+    return d <= SAME_TIME_NS or abs(d - FAT_HOUR_NS) <= SAME_TIME_NS
+
+
+def _lost_by_size(store, sizes, seen_ids):
+    """D2, a scoped sync: the missing items outside its folders (not in `seen_ids`) of these sizes whose file is still
+    gone, as `_sync_delta`'s `lost` [(id, rel_path, size, mtime_ns)] — read through `items_missing`, never a walk or a
+    scan of the library (a store whose writer hasn't made the index yet reads them all the same, slower)."""
+    sizes = [s for s in dict.fromkeys(sizes) if isinstance(s, int)]
+    out = []
+    for chunk in _chunks(sizes, 500):
+        for item_id, rel, size, mtime_ns in store.conn.execute(
+                f"SELECT id, rel_path, size, mtime_ns FROM items WHERE availability = 'missing' AND size IN "
+                f"({','.join('?' * len(chunk))}) ORDER BY id", chunk):
+            if item_id not in seen_ids and not os.path.exists(os.path.join(store.data_dir, _strip(rel))):
+                out.append((item_id, rel, size, mtime_ns))
+    return out
 
 
 def _rename_asks(store):
@@ -7165,22 +7202,24 @@ def _store_walk(self):
     return walk_library(self.data_dir)
 
 
-def _store_sync_disk(self, walk=None, folders=None):
+def _store_sync_disk(self, walk=None, folders=None, as_new=()):
     """The disk sync (§6.10): files nothing tracks join the library by rule 3; renames keep their place;
     missing files are marked, never removed. No delta → no write lock, no commit. Returns a summary
     {"added", "renamed", "missing", "back", "bad"} or None when nothing changed. `folders`: only those folders
     (relative to data/<lang>) and what is under them — the ones the window's poll saw change (`DiskPoll.changed`,
-    L3.1: a hato drop costs its folder's walk, not the library's)."""
+    L3.1: a hato drop costs its folder's walk, not the library's). `as_new`: files the user called new (`its_new`,
+    relative to data/<lang>), never matched to a missing item."""
+    as_new = {path_key(r) for r in as_new}
     scope = list(folders) if folders else None
     walk = walk or (walk_folders(self.data_dir, scope) if scope else walk_library(self.data_dir))
     known, version = _known(self, scope)
-    delta = _sync_delta(self, walk, known, scope)
+    delta = _sync_delta(self, walk, known, scope, as_new)
     if scope and delta["went"]:
         # 9a: a file gone from a polled folder may have moved to a folder the poll can't see (one holding no item):
         # the whole library is looked at in this same check, so the move is followed (the intent review #5)
         scope, walk = None, walk_library(self.data_dir)
         known, version = _known(self, None)
-        delta = _sync_delta(self, walk, known, None)
+        delta = _sync_delta(self, walk, known, None, as_new)
     asks = _rename_asks(self)
     live = [a for a in asks if os.path.exists(os.path.join(self.data_dir, _strip(str(a.get("rel", "")))))]
     if live != asks:                                       # a held-out file gone: its question goes with it
@@ -7200,7 +7239,7 @@ def _store_sync_disk(self, walk=None, folders=None):
     with self._command("sync", "sync") as cmd:
         if cmd.meta["state_version"] != version:
             known, _v = _known(self, scope)
-            delta = _sync_delta(self, walk, known, scope)
+            delta = _sync_delta(self, walk, known, scope, as_new)
             for rel, _k, _s, _m in delta["new"]:
                 if rel not in entries:
                     entries[rel] = make_entry(rel, "Disk Sync", _detect_source_type(os.path.join(self.data_dir, rel),
@@ -7214,14 +7253,16 @@ def _store_sync_disk(self, walk=None, folders=None):
                             "copy_dirty": self._meta().get("copy_dirty", 0) + 1})
         exists = lambda rel: os.path.exists(os.path.join(self.data_dir, _strip(rel)))
         rows = self._rows([r[0] for r in delta["renames"]] + [r[0] for r in delta["respell"]] + delta["went"] + delta["came"])
-        tiers = set()
+        tiers, found = set(), []
         for item_id, rel, size, mtime_ns in delta["renames"]:
-            if not exists(rel) or exists(rows[item_id][5]) or self.conn.execute(
+            if item_id not in rows or not exists(rel) or exists(rows[item_id][5]) or self.conn.execute(
                     "SELECT 1 FROM items WHERE rel_key = ?", (path_key(rel),)).fetchone():
                 continue                                           # a stale walk: leave it to the next sync
             self._repoint(item_id, rel, size, mtime_ns)
             tiers.add(rows[item_id][1])
             summary["renamed"].append(item_id)
+            if rows[item_id][6] == "missing":
+                found.append(item_id)                              # D2: missing since an earlier sync, available again
         for item_id, rel in delta["respell"]:
             if exists(rel):
                 self._repoint(item_id, rel)
@@ -7234,8 +7275,8 @@ def _store_sync_disk(self, walk=None, folders=None):
         if back:
             self.conn.executemany("UPDATE items SET availability = 'available' WHERE id = ?", [(i,) for i in back])
         cmd.feed(gone + back)
-        if gone or back:
-            cmd.touch({rows[i][1] for i in gone + back}, availability=True)
+        if gone or back or found:
+            cmd.touch({rows[i][1] for i in gone + back + found}, availability=True)
         summary["missing"], summary["back"] = gone, back
         if delta["refresh"]:
             self.conn.executemany("UPDATE items SET size = ?, mtime_ns = ? WHERE id = ?", delta["refresh"])

@@ -93,7 +93,8 @@ def settle_seconds(settings, battery):
 class JourneyKeeper:
     """One per window and language. `controller`: the window's `GenerateController`. `settings()`: the settings now
     (the window's settings service `get`; default `settings_manager.load_settings`). `pending()`: whether the journey
-    needs a Generate (default: `analyzer.journey_is_current` is not True), asked on the timer's thread. `on_done(path)`:
+    needs a Generate (default: `analyzer.journey_is_current` is not True, or the report isn't current —
+    `analyzer.report_is_current`, JS-1), asked on the timer's thread. `on_done(path)`:
     after a Generate of this language lands with a new plan, with the plan file's path. `battery()`: `on_battery` (a
     test's stand-in). `launcher`: how the controller starts the child (`GenerateController.request`'s; default its own).
     `enabled()`: whether the background Generate is on (D29's one switch, the window's; default always)."""
@@ -173,8 +174,11 @@ class JourneyKeeper:
         if self._pending is not None:
             return self._pending()
         from app import analyzer, run_args
-        return analyzer.journey_is_current(run_args.analyzer_args(self._read_settings(), self.language),
-                                           self.language) is not True
+        args = run_args.analyzer_args(self._read_settings(), self.language)
+        # JS-1: the report half too — a stone with Keep studying on moves no run input, only what the report shows; the
+        # quiet run then re-renders and re-analyses nothing (the analyzer's own reuse path)
+        return (analyzer.journey_is_current(args, self.language) is not True
+                or not analyzer.report_is_current(args, self.language))
 
     def _fire(self, armed):
         """The moves stopped (the timer's thread): one quiet Generate if the journey is pending — once the quiet time

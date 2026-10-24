@@ -546,12 +546,7 @@ def _nothing_changed(argv, lang):
     """The window's own "reopen, don't run" question (`_report_reusable`): the analysis is current and the report
     already shows it. Asked without pandas."""
     from app import analyzer
-    if analyzer.journey_is_current(argv, lang) is not True:
-        return False
-    if not os.path.exists(os.path.join(_results_dir(), "reading_list_static.html")):
-        return False
-    rendered = analyzer._token_store_meta(lang, "last_render_sig")
-    return rendered == analyzer.compute_render_signature(analyzer.parse_analysis_args(argv[1:]))
+    return analyzer.journey_is_current(argv, lang) is True and analyzer.report_is_current(argv, lang)
 
 
 def child_command(argv):

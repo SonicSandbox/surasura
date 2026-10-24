@@ -180,7 +180,7 @@ def _ls():
 class Writer:
     def __init__(self, opener, language="ja", journal_file=None, numbers=None, on_saved=None, on_saving=None,
                  on_reread=None, on_note=None, on_undone=None, depth=UNDO_DEPTH, retry=RETRY_S,
-                 saving_after=SAVING_AFTER_S, words=None, after_commit=None, on_counted=None):
+                 saving_after=SAVING_AFTER_S, words=None, after_commit=None, on_counted=None, on_stone=None):
         missing = [k for k in WORDS if k not in (words or {})]
         if missing:                                 # the window's words (`strings.MOVE_WORDS`): never a key shown
             raise ValueError(f"the writer's words lack {missing}")
@@ -198,6 +198,9 @@ class Writer:
         #                                                 too, on this thread (P4.1 hangs `window_link.Link.after_change`)
         self.on_counted = on_counted or _nothing    # W-1 (K-W4): () after a write that moved what counts (a watched mark,
         #                                             its undo, the option), on this thread: the window asks the indexer
+        self.on_stone = on_stone or _nothing        # journey stones (JS-1): () after a watched mark, or its undo, that
+        #                                             moved nothing that counts (Keep studying on), on this thread: the
+        #                                             window's journey re-renders the report (no `order_version` moved)
         self.retry = retry
         self.saving_after = saving_after
         self._cond = threading.Condition()
@@ -924,6 +927,8 @@ class Writer:
             self._numbers_resync()                  # (a tier's end that moved between the numbers and the write too)
         elif cmd.get("counted"):                    # W-1 (K-W4): a watched mark that moved what counts, only then
             self._counted()
+        elif op == "set_watched" and change is not None:
+            self._call(self.on_stone)               # JS-1: the report shows the stone though nothing counts anew
 
     def _w32(self, store, cmd):
         """W3.2's store commands, each one store call. -> the change, or None."""
@@ -1364,6 +1369,8 @@ class Writer:
                 self._numbers_resync()
             elif _order_version(store) != order:    # W-1 (K-W4): a watched mark's undo, only when it moved what counts
                 self._counted()
+            else:                                   # JS-1: ... else the report still drops its stone
+                self._call(self.on_stone)
         self._call(self.on_reread)
 
     def _undo_one(self, store, change):

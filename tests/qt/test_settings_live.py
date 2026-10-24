@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import QApplication, QFileDialog
 
 from app import exports
 from app.qt import motion, strings, style, windows
+from app.qt import press as qpress
 from app.qt import settings_controls as sc
 from app.qt import settings_live as live
 from app.qt import settings_page as sp
@@ -150,6 +151,13 @@ class Shell:
         if text_size:
             self.set_text_size = self.sizes.append
 
+    def say(self, text, hold=None):
+        """The shell's line, held for a live press (round 8 row 45: an export's *Exporting …*) — kept as said."""
+        self.bar_line.set_full(text)
+
+    def unsay(self, key):
+        pass
+
 
 def make(fakes, data=None, language="ja", connect=None, text_size=True, skipped=None, size=(1100, 700)):
     store = Recorder(dict({"target_language": language}, **(data or {})))
@@ -179,6 +187,7 @@ def settle(predicate=lambda: False, timeout=0.3):
 def test_every_read_runs_on_a_worker_never_the_window_thread(qapp, fakes, monkeypatch):
     monkeypatch.setattr(QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: ("D:\\out.json", "")))
     monkeypatch.setattr(windows, "open_url", lambda url: True)
+    monkeypatch.setattr(qpress, "open_now", lambda target: None)     # a folder opens through the press's opener
     page, store, shell = make(fakes, dict(ALL_ON), skipped="99.0.0")
     page.live.check()
     page.live.open_credits()
@@ -373,13 +382,18 @@ def test_offer_again_shows_only_for_a_newer_skipped_version_and_calls_offer_agai
 
 
 def test_logs_and_the_data_folder_open_their_folders(qapp, fakes, monkeypatch):
-    opened = []
-    monkeypatch.setattr(windows, "open_url", opened.append)
+    opened, threads = [], []
+
+    def open_now(target):                                   # round 8 row 45: the press's one opener, on a worker
+        threads.append(threading.current_thread() is threading.main_thread())
+        opened.append(target)
+    monkeypatch.setattr(qpress, "open_now", open_now)
     page, store, shell = make(fakes)
     page.live.parts["logs"]["open"].click()
     assert wait_until(lambda: opened == ["C:\\logs"])
     page.live.parts["version"]["open"].click()
     assert wait_until(lambda: opened == ["C:\\logs", "C:\\data\\ja"])
+    assert threads == [False, False]                        # never the window's thread
     from app import __version__
     assert page.row("version").label.text() == f"Version {__version__}"
 
@@ -577,7 +591,8 @@ def test_a_format_export_asks_the_format_then_the_file_then_runs_and_says_so(qap
     assert wait_until(lambda: page.live.pop is not None and page.live.pop.isVisible())
     pop = page.live.pop
     assert pop.choice.values() == list(exports.FORMATS)
-    assert not page.row(row_id).isEnabled()                 # greyed from the click on
+    assert page.row(row_id).isEnabled() and page.live._exporting == row_id   # under way from the click on, never
+    #                                                                         greyed (round 8 row 45)
     pop.choice.set_value(fmt)
     pop.pick()
     title, name, filters = save_as[0]
@@ -633,18 +648,22 @@ def test_no_data_says_generate_first_and_asks_nothing(qapp, fakes, save_as):
     assert page.live.pop is None and save_as == [] and page.row("export_frequency_list").isEnabled()
 
 
-def test_one_export_at_a_time_and_the_rows_greyed_while_it_runs(qapp, fakes, save_as):
+def test_one_export_at_a_time_its_arc_turning_while_it_runs(qapp, fakes, save_as):
     fakes.export_gate = threading.Event()
     page, store, shell = make(fakes)
     page.live.export("export_reading_words")
     assert wait_until(lambda: page.live.pop is not None)
     page.live.pop.pick()
     assert wait_until(lambda: "run_export" in fakes.names())
-    assert all(not page.row(r).isEnabled() for r in live.EXPORTS)
+    # round 8 row 45: never greyed — the pressed row's arc turns while it writes, and no other row's
+    arcs = {r: qpress.arc(page.live.parts[r]["export"]) is not None for r in live.EXPORTS}
+    assert all(page.row(r).isEnabled() for r in live.EXPORTS) and arcs == {r: r == "export_reading_words"
+                                                                          for r in live.EXPORTS}
     page.live.export("export_frequency_list")
     assert shell.bar_line.lines[-1] == S.EXPORT_BUSY and fakes.names().count("ready_to_export") == 1
     fakes.export_gate.set()
-    assert wait_until(lambda: all(page.row(r).isEnabled() for r in live.EXPORTS))
+    assert wait_until(lambda: page.live._exporting is None and qpress.arc(page.live.parts["export_reading_words"]
+                                                                          ["export"]) is None)
 
 
 def test_closing_the_format_pop_or_the_file_dialog_writes_nothing(qapp, fakes, save_as):

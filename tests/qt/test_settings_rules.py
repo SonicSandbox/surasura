@@ -26,6 +26,7 @@ from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication
 
 from app import settings_manager
+from app.qt import press as qpress
 from app.qt import settings_rules as sr
 from app.qt import settings_strings as S
 from tests.qt.conftest import wait_until
@@ -77,8 +78,10 @@ def pick(rows, source, target):
 
 
 def open_menu(rows):
+    # round 8 row 45: + rule is never greyed while it reads — its arc turns until the new menu opens
+    old = rows.menu
     rows.add.click()
-    assert wait_until(lambda: rows.menu is not None and rows.add.isEnabled(), 5)
+    assert wait_until(lambda: rows.menu is not None and rows.menu is not old and qpress.arc(rows.add) is None, 5)
     return rows.menu
 
 

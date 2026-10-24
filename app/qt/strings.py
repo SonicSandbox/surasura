@@ -1235,3 +1235,6 @@ COVERS_REMOVE_NONE = "There's no library open, so there are no downloaded covers
 OPEN_IT = "It"
 OPEN_NOT_OPENED = "the system didn't open it"
 # --- end round 8 row 45, P3
+# --- round 8 row 45, P5: Settings and the secondary windows
+LANGUAGE_SWITCHING = "Switching to {name}…"       # held in the bar while Settings' language switch runs
+# --- end round 8 row 45, P5

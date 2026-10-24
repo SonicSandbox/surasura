@@ -19,6 +19,7 @@ from PyQt6.QtGui import QKeyEvent, QMouseEvent
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QMainWindow, QPushButton, QVBoxLayout, QWidget
 
+from app.qt import press as qpress
 from app.qt import windows
 from app.qt import wizard as W
 from app.qt import wizard_strings as S
@@ -640,9 +641,14 @@ def test_install_asks_in_the_window_first_shows_its_progress_and_looks_again_whe
     assert miner.progress == [] and card.yes.text() == S.INSTALL_ASK_YES
     card.yes.click()
     assert wait_until(lambda: not page.loading.isHidden() and page.progress.value() == 500)
-    assert not page.btn_install.isEnabled() and not page.btn_cancel.isHidden()
+    # round 8 row 45: never greyed while it installs — its arc turns, and a press meanwhile starts nothing
+    assert page.btn_install.isEnabled() and qpress.arc(page.btn_install) is not None
+    assert not page.btn_cancel.isHidden()
+    QTest.mouseClick(page.btn_install, Qt.MouseButton.LeftButton)
+    assert miner.asked == [True]
     gate.set()
     assert wait_until(lambda: wiz.installing is None and miner.looks >= looks + 1)
+    assert qpress.arc(page.btn_install) is None
     assert miner.asked == [True] and page.loading.isHidden() and page.busy_line.isHidden()
 
 
@@ -1150,9 +1156,11 @@ def test_a_second_press_on_samples_waits_for_the_first(make):
     page = wiz.page
     QTest.mouseClick(page.btn_samples, Qt.MouseButton.LeftButton)
     assert wait_until(lambda: ("samples", "ja") in api.calls)
-    assert not page.btn_samples.isEnabled()                        # one copy at a time
+    # one copy at a time: never greyed (round 8 row 45) — its arc turns, and a press meanwhile copies nothing more
+    assert page.btn_samples.isEnabled() and qpress.arc(page.btn_samples) is not None
+    QTest.mouseClick(page.btn_samples, Qt.MouseButton.LeftButton)
     held.append(True)
-    assert wait_until(lambda: page.btn_samples.isEnabled())
+    assert wait_until(lambda: qpress.arc(page.btn_samples) is None)
     assert api.calls.count(("samples", "ja")) == 1
 
 

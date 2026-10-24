@@ -22,6 +22,7 @@ from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QFileDialog
 
 from app import library_store as ls
+from app.qt import press as qpress
 from app.qt import settings_sources, windows
 from app.qt import settings_strings as S
 from app.services import source_looks
@@ -198,11 +199,14 @@ def test_a_stop_answered_after_the_window_closed_is_told_in_the_bar_and_never_pr
     win, page, row, folders = _open(window, looks)
     assert wait_until(lambda: len(folders.lines) == 2, 10)
     folders.lines[2].stop.click()
-    assert not folders.lines[2].stop.isEnabled()
+    # round 8 row 45: never greyed — its arc turns until the stop answers, and a press meanwhile stops nothing more
+    assert folders.lines[2].stop.isEnabled() and qpress.arc(folders.lines[2].stop) is not None
+    folders.lines[2].stop.click()
     folders.close()
     QApplication.processEvents()
     again = settings_sources.open_window(win)                          # opened again before the stop answered
-    assert again is not folders and not again.lines[2].stop.isEnabled() and again.lines[1].stop.isEnabled()
+    assert again is not folders and qpress.arc(again.lines[2].stop) is not None     # its arc taken by the new line
+    assert qpress.arc(again.lines[1].stop) is None and again.lines[1].stop.isEnabled()
     again.lines[2].stop.click()
     assert looks.stops == [(2, "ja")]                                  # one stop, never two
     again.close()
@@ -212,7 +216,8 @@ def test_a_stop_answered_after_the_window_closed_is_told_in_the_bar_and_never_pr
     assert row.summary.text() == "1 folder"
     third = settings_sources.open_window(win)
     try:
-        assert set(third.lines) == {1} and third.lines[1].stop.isEnabled()
+        assert set(third.lines) == {1} and third.lines[1].stop.isEnabled() and qpress.arc(third.lines[1].stop) is None
+        assert not win.presses.any_live()
     finally:
         third.close()
 
@@ -236,8 +241,16 @@ def test_look_again_in_the_window_is_a_full_look(window):
     looks = ActingLooks([_src(1, ANIME, 412)])
     win, page, row, folders = _open(window, looks)
     looks.asks.clear()
+    running = [True]
+    looks.busy = lambda: running[0]
     folders.look.click()
     assert looks.asks and looks.asks[-1][1] is True        # refreshed: every folder, in full
+    # round 8 row 45: its arc from the press until the looks' worker is idle again; a press meanwhile asks nothing
+    assert qpress.arc(folders.look) is not None and folders.look.isEnabled()
+    folders.look.click()
+    assert len(looks.asks) == 1
+    running[0] = False
+    assert wait_until(lambda: qpress.arc(folders.look) is None, 5)
 
 
 def test_the_window_grows_to_show_folders_that_arrive_then_scrolls(window):

@@ -756,3 +756,7 @@ RULE_TYPE_TIP = "Type a program's name (hato), or a program and a channel (youtu
 RULE_TYPE_PLACEHOLDER = "youtube:<channel id>"
 RULE_TYPE_NAME = "A source for a new rule"
 RULE_NEW_TIP = "A new rule for {source}: pick where its arrivals go. Nothing is saved while it says Wait here"
+
+# --- round 8 row 45 (P5): a press whose wait is worth naming — its words held in the bar while it runs ------------- #
+SWITCH_TURNING_ON = "Turning on Make cards for me…"
+SWITCH_TURNING_OFF = "Turning off Make cards for me…"

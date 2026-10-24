@@ -26,6 +26,7 @@ from app import anki_connect, anki_deck_options as ado, settings_manager
 from app.connect import anki_miner, settings_values, setup, status
 from app.connect import switch as real_switch
 from app.qt import confirm, settings_connect as scn, windows
+from app.qt import press as qpress
 from app.qt import settings_catalog as catalog
 from app.qt import settings_page as sp
 from app.qt import settings_strings as S
@@ -59,9 +60,19 @@ class Store(Recorder):
 class Bar:
     def __init__(self):
         self.lines = []
+        self.held = {}                                  # round 8 row 45: a live press's words (`say(…, hold=)`)
 
     def set_full(self, text):
         self.lines.append(text)
+
+    def say(self, text, hold=None):
+        """The shell's `say`: the line as said; held for a live press until `unsay`."""
+        if hold is not None:
+            self.held[hold] = text
+        self.lines.append(text)
+
+    def unsay(self, key):
+        self.held.pop(key, None)
 
 
 class FakeSwitch:
@@ -198,7 +209,8 @@ def make(world, data=None, monkeypatch=None):
     """The page with a shell-like owner (its services and its bottom bar), built, and the three rows attached."""
     store = Store(dict({"target_language": "ja", "junban_deck": DECK, "words_per_day": 5}, **(data or {})),
                   events=world.events)
-    shell = SimpleNamespace(services=SimpleNamespace(settings=store), bar_line=world.bar)
+    shell = SimpleNamespace(services=SimpleNamespace(settings=store), bar_line=world.bar, say=world.bar.say,
+                            unsay=world.bar.unsay)
     page = sp.SettingsPage(shell, "ja", found=EVERYTHING)
     page.resize(1100, 700)
     page.show()
@@ -258,20 +270,23 @@ def test_a_switch_on_that_fails_goes_back_off_says_why_and_does_nothing_more(wor
     assert store.calls == []
 
 
-def test_the_toggle_is_greyed_while_its_run_goes_and_a_second_change_starts_nothing(world, monkeypatch):
-    """One run at a time: greyed while turn_on is held; another change meanwhile is put back and runs nothing."""
+def test_the_toggle_says_turning_on_while_its_run_goes_and_a_second_change_starts_nothing(world, monkeypatch):
+    """One run at a time: while turn_on is held, *Turning on…* is held in the bar (round 8 row 45: the toggle never
+    greyed); another change meanwhile is put back and runs nothing."""
     page, store, rows, fake = make(world, monkeypatch=monkeypatch)
     fake.gate = threading.Event()
     rows.switch.toggle.changed.emit(True)
+    assert world.bar.held == {"settings:connect_switch": S.SWITCH_TURNING_ON}     # in the frame of the change
     assert wait_until(lambda: names(world.events) == ["turn_on"], 5)
-    assert not rows.switch.toggle.isEnabled() and rows.switch.running
-    rows.switch.toggle.changed.emit(False)                # (greyed: only a programmatic change can arrive)
+    assert rows.switch.toggle.isEnabled() and rows.switch.running and rows.switch.press.live()
+    rows.switch.toggle.changed.emit(False)                # a change meanwhile: put back, nothing runs
     QApplication.processEvents()
-    assert names(world.events) == ["turn_on"]
+    assert names(world.events) == ["turn_on"] and rows.switch.toggle.value() is True
     fake.gate.set()
     assert settled(rows)
     assert names(world.events) == ["turn_on", "backfill", "reload"]
     assert rows.switch.toggle.value() is True and rows.switch.toggle.isEnabled()
+    assert world.bar.held == {} and rows.switch.press is None
 
 
 def test_switching_off_with_nothing_on_the_shelf_turns_off_on_the_same_worker_without_asking(world, monkeypatch):
@@ -297,8 +312,10 @@ def test_a_no_to_putting_the_shelf_back_still_turns_connect_off_and_puts_nothing
     asked = world.asked[0]
     assert asked.title == "Put the 3 shelved cards back into your new cards?"
     assert asked.default_no
-    assert names(world.events) == ["shelved"] and rows.switch.running and not rows.switch.toggle.isEnabled()
+    assert names(world.events) == ["shelved"] and rows.switch.running and rows.switch.press is None
+    assert world.bar.held == {}                                 # the question is what the change shows now
     asked.answer(False)
+    assert world.bar.held == {"settings:connect_switch": S.SWITCH_TURNING_OFF}
     assert settled(rows)
     assert names(world.events) == ["shelved", "turn_off", "reload"]
     assert rows.switch.toggle.value() is False
@@ -694,9 +711,11 @@ def test_waiting_for_the_anki_lock_shows_its_line_and_the_page_going_cancels_the
     row.field.set_value(30)
     QTest.mouseClick(row.change, Qt.MouseButton.LeftButton)
     world.asked[0].answer(True)
-    assert wait_until(lambda: row.change.text() == S.NEW_CARDS_WAITING, 5)
-    assert world.bar.lines[-1] == anki_connect.waiting_line({"verb": "Backfill"})
-    assert not row.change.isEnabled() and not row.field.isEnabled()
+    # round 8 row 45: the button keeps its words and look (its arc turns); the wait's line is held in the bar
+    line = anki_connect.waiting_line({"verb": "Backfill"})
+    assert wait_until(lambda: world.bar.held == {"settings:new_cards": line}, 5)
+    assert row.press.state == "waiting" and qpress.arc(row.change) is not None
+    assert row.change.text() == S.CHANGE_IN_ANKI and row.change.isEnabled() and not row.field.isEnabled()
     page.close()
     gone(page)
     assert released.wait(5)

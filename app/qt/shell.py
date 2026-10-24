@@ -1428,6 +1428,10 @@ class ShellWindow(QMainWindow):
         self._language_asked = language
         self._asks += 1
         asked = self._asks
+        # round 8 row 45 (P5): *Switching to …* held in the bar with its arc until the last switch asked has answered
+        words = strings.LANGUAGE_SWITCHING.format(name=strings.LANGUAGE_NAMES.get(language, language))
+        if qpress.begin(None, "language", busy=words, win=self) is None:
+            self.say(words, hold="language")             # a second switch while one goes: the newest named
         s = self.services
         ask = getattr(s, "ask_language", None)
         if ask is not None:
@@ -1453,6 +1457,10 @@ class ShellWindow(QMainWindow):
         if self._quit is not None:
             return
         last = asked is None or asked == self._asks
+        if last:
+            p = self.presses.find("language")
+            if p is not None and p.live():
+                qpress.end(p, self, failed=isinstance(switched, tuple) and switched[0] is None)
         reader, writer = switched if isinstance(switched, tuple) else (None, None)
         if reader is not None and reader is not self._reader_shown and not _stopped(reader) and \
                 getattr(reader, "language", None) == self._language_asked:

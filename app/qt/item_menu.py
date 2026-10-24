@@ -710,11 +710,10 @@ class ItemActions(QObject):
 
     def _give_saved(self, ticket, command, marks=()):
         """`_give` for what the store rearranges itself (a group made, undone or renamed, a show joined): round 8 row
-        45 — its toast (and Undo) at the press, reading *· saving…* while the write waits, as every move's does, and
-        the files `marks` (a row's first: `_firsts`) marked on their lines (`press.row_mark`, painted before the writer
-        has it) until it settles — no order is painted ahead of the store's own. A refusal toasts nothing; a command
-        that lands as nothing to change (the name it had) or fails takes its toast away (`DragController._reread`
-        runs a waiting `then` for a command that landed as nothing)."""
+        45 — its toast at the press, pending (*· saving…*) until the store answers, as every write's is
+        (`DragController`'s one rule: done words once saved, the reason if refused, gone if nothing changed), and the
+        files `marks` (a row's first: `_firsts`) marked on their lines (`press.row_mark`, painted before the writer
+        has it) until it settles — no order is painted ahead of the store's own."""
         marks = list(dict.fromkeys(i for i in marks if i is not None))
         if marks:
             key = ("regroup",) + tuple(marks)
@@ -725,7 +724,6 @@ class ItemActions(QObject):
                     if t.press is p:
                         t.press = None
             ticket.press = p
-        ticket.then = lambda: self.moves.toast_gone(ticket) if ticket.change is None else None
         return self.moves._give(ticket, command)
 
     def ungroup(self, row):

@@ -46,16 +46,15 @@ def _toast_words(win):
 # --- a write's toast: *· saving…* while it waits, one rule wherever the toast shows --------------------------------- #
 def test_a_writes_toast_off_current_reads_saving_while_it_waits_and_its_words_once_saved(world):
     # a write with no Current row (as Goal's ⋯, a search hit's ⤒, Needs you's answers give them): its toast is the only
-    # mark — it says *saving…* once the write has waited 300 ms, and its own words again as it lands
+    # mark — pending (*saving…*) from the press for as long as the store keeps it waiting, its own words as it lands
     _seed, win, writer = world()
     text = strings.DRAG_UP_NEXT.format(title="星降る町の郵便屋")
     writer.stuck = True
     ticket = drag.Ticket(text, (), (101,))
     assert win.moves._give(ticket, lambda t: writer.move([101], "now", label=t)) is not None
-    assert _toast_words(win) == text                                  # at the press, its own words
-    settle(60)
-    assert _toast_words(win) == text                                  # not before 300 ms: a quick save says nothing
-    assert wait_until(lambda: _toast_words(win) == text + strings.TOAST_SAVING, 5)
+    assert _toast_words(win) == text + strings.TOAST_SAVING           # at the press: pending, never done
+    settle(400)
+    assert _toast_words(win) == text + strings.TOAST_SAVING
     assert win.page_widgets["current"].list.saving == frozenset()     # (no Current row of its: the toast alone)
     writer.free()
     assert wait_until(lambda: _toast_words(win) == text, 5) and win.toasts.card.buttons
@@ -95,15 +94,14 @@ def test_a_toast_shown_in_the_turn_writes_were_given_without_one_stands_for_them
 
 
 def test_files_added_say_saving_while_they_copy(world, tmp_path):
-    # + Add's *Files…* and Explorer's drop: the toast says *Added …* at once — and *saving…* while the copy runs
+    # + Add's *Files…* and Explorer's drop: the toast says *Added … · saving…* while the copy runs, *Added …* once in
     _seed, win, writer = world()
     src = tmp_path / "第3話.ja.srt"
     src.write_text("1\n00:00:01,000 --> 00:00:02,000\nおはよう\n", encoding="utf-8")
     writer.stuck = True                                               # (the copy still running: nothing landed)
     assert win.adder.add_files([str(src)]) is not None
     text = win.moves.toasted.text
-    assert _toast_words(win) == text
-    assert wait_until(lambda: _toast_words(win) == text + strings.TOAST_SAVING, 5)
+    assert _toast_words(win) == text + strings.TOAST_SAVING
     writer.free()
     assert wait_until(lambda: _toast_words(win) == text, 5)
 
@@ -351,3 +349,48 @@ def test_P4_A7_a_folder_pressed_again_while_its_look_runs_asks_nothing_more(worl
     assert len(asked) == 1
     asked[0]({"result": {"reachable": True, "added": 0}})
     assert wait_until(lambda: not win.presses.any_live(), 5)
+
+
+# --- the lead's ruling on A6: a toast never says done for what the store refuses -------------------------------------- #
+def _refuses(writer, reason):
+    """The store meets the write and says no (read-only met at the write, a failure): the writer's note, then its
+    reread — as `moves.Writer` does — and nothing saved."""
+    import threading
+
+    def land(change, label):
+        def told():
+            writer.on_note(reason)
+            writer.on_reread()
+        threading.Thread(target=told, daemon=True).start()
+    writer._land = land
+
+
+def test_A6_a_write_reads_pending_from_the_press_and_its_done_words_only_once_saved(world):
+    # a quick store too: pending in the frame of the press, its done words only once the writer said saved
+    _seed, win, writer = world()
+    text = strings.DRAG_UP_NEXT.format(title="星降る町の郵便屋")
+    win.moves._give(drag.Ticket(text, (), (101,)), lambda t: writer.move([101], "now", label=t))
+    assert writer.saved                                               # (the store has it, the window not told yet)
+    assert _toast_words(win) == text + strings.TOAST_SAVING
+    assert wait_until(lambda: _toast_words(win) == text, 5)           # told: its done words
+
+
+def test_A6_a_write_the_store_refuses_replaces_its_toast_with_the_reason(world):
+    _seed, win, writer = world()
+    why = strings.MOVE_WORDS["read_only"].format(reason="another program holds it")
+    _refuses(writer, why)
+    text = strings.DRAG_UP_NEXT.format(title="雨の日の図書館")
+    win.moves._give(drag.Ticket(text, (), (102,)), lambda t: writer.move([102], "now", label=t))
+    assert _toast_words(win) == text + strings.TOAST_SAVING
+    assert wait_until(lambda: _toast_words(win) == why, 5)
+    assert not any(b.isVisible() for b in win.toasts.card.buttons)    # no Undo for what never happened
+    assert not win.moves.tickets
+
+
+def test_A6_a_write_that_lands_as_nothing_takes_its_toast_away(world):
+    _seed, win, writer = world()
+    writer.nothing = {"move"}
+    text = strings.DRAG_UP_NEXT.format(title="風の通り道")
+    win.moves._give(drag.Ticket(text, (), (103,)), lambda t: writer.move([103], "now", label=t))
+    assert _toast_words(win) == text + strings.TOAST_SAVING
+    assert wait_until(lambda: not win.toasts.alive, 5)

@@ -169,7 +169,7 @@ def test_put_back_on_hover_puts_its_files_back_with_one_toast_and_its_undo(fin):
     i, row = finished_rows(win)[0]
     click(lst, part(lst, i, "put-back")[1].center())
     assert calls(writer, "put_back") == [("put_back", drag.ids_of(row), {})]
-    assert wait_until(lambda: win.toasts.card.message == strings.FIN_PUT_BACK_DONE.format(title=row.title), 3)
+    assert wait_until(lambda: win.toasts.card.base == strings.FIN_PUT_BACK_DONE.format(title=row.title), 3)
     change = writer.saved[-1]
     win.toasts.card.buttons[0].click()                                  # Undo
     assert wait_until(lambda: writer.undone == [change], 3)
@@ -472,7 +472,7 @@ def test_real_store_put_back_brings_it_and_its_cards_back_and_one_undo_takes_bot
     win.finished.put_back(_fin_row(win, ids))
     assert wait_until(lambda: store.ids("now")[:len(ids)] == ids, 5)        # at the top of Current
     assert all(store.item(i)["in_learning_order"] == 1 for i in ids)       # and its cards back in the order
-    assert wait_until(lambda: win.toasts.card.message == strings.FIN_PUT_BACK_DONE.format(title=row.title), 5)
+    assert wait_until(lambda: win.toasts.card.base == strings.FIN_PUT_BACK_DONE.format(title=row.title), 5)
     assert wait_until(lambda: not win.moves.tickets, 5)
     win.toasts.card.buttons[0].click()                                      # one Undo
     assert wait_until(lambda: all(store.item(i)["tier"] == "graduated" for i in ids), 5)
@@ -528,7 +528,7 @@ def test_real_store_the_importer_adds_a_folder_to_finished_toasts_and_its_undo_t
     assert wait_until(lambda: win.finished.import_job is None, 15)
     assert win.page_widgets["finished"].importer.text() == strings.FIN_IMPORT
     assert wait_until(lambda: len(store.ids("graduated")) == before + 3, 10)
-    assert wait_until(lambda: win.toasts.card.message == strings.FIN_IMPORTED.format(n="3"), 5)
+    assert wait_until(lambda: win.toasts.card.base == strings.FIN_IMPORTED.format(n="3"), 5)
     copies = [os.path.join(store.data_dir, *store.item(i)["rel_path"].split("/"))
               for i in store.ids("graduated")[-3:]]
     assert all(os.path.exists(p) for p in copies)
@@ -544,7 +544,7 @@ def test_real_store_the_same_folder_imported_again_says_nothing_new_never_added(
     store, win, writer = real()
     folder = _a_show_folder(tmp_path)
     win.finished.import_paths([str(folder)])
-    assert wait_until(lambda: win.toasts.card.message == strings.FIN_IMPORTED.format(n="3"), 15)
+    assert wait_until(lambda: win.toasts.card.base == strings.FIN_IMPORTED.format(n="3"), 15)
     after = len(store.ids("graduated"))
     win.toasts.close()
     assert wait_until(lambda: win.finished.import_job is None and writer.pending() == 0, 10)
@@ -672,7 +672,7 @@ def test_L1_S6_an_import_whose_change_reaches_the_toast_late_still_says_added_ne
         late(change, label)
     writer.on_saved = slow
     win.finished.import_paths([str(folder)])
-    assert wait_until(lambda: win.toasts.card.message == strings.FIN_IMPORTED.format(n="3"), 15)
+    assert wait_until(lambda: win.toasts.card.base == strings.FIN_IMPORTED.format(n="3"), 15)
     assert win.bar_line.full() != strings.FIN_IMPORT_NOTHING
 
 
@@ -715,7 +715,7 @@ def test_L1_N6_ctrl_z_while_an_import_copies_takes_back_the_import_never_the_mov
     assert wait_until(lambda: win.finished.import_job is None and win.finished._landing is None, 15)
     assert wait_until(lambda: len(store.ids("graduated")) == before and writer.pending() == 0, 10)
     assert store.ids("now")[0] == now[-1]              # the move before it stands
-    assert win.toasts.card.message != strings.FIN_IMPORTED.format(n="3")
+    assert win.toasts.card.base != strings.FIN_IMPORTED.format(n="3")
 
 
 def test_H_T2_an_import_whose_writer_stopped_says_it_lands_later_and_frees_the_importer(real, tmp_path,

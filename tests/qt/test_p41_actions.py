@@ -134,7 +134,7 @@ def test_a_click_on_mine_now_asks_once_for_the_waiting_files_with_a_toast_and_un
     want = [e.id for e in row.episodes if e.in_top and not (e.cards or e.mining or e.missing)]
     assert want and asks(writer) == [("ask_mining", want, {"on": True})]
     assert lst.model().open_key is None
-    assert win.toasts.card.isVisible() and strings.MINE_ASKED.format(title=row.title) == win.toasts.card.message
+    assert win.toasts.card.isVisible() and strings.MINE_ASKED.format(title=row.title) == win.toasts.card.base
 
 
 def test_mine_this_below_the_line_asks_for_every_file_that_can_be_mined(act):
@@ -166,11 +166,11 @@ def test_a_books_mine_this_makes_no_ask_and_opens_anki_miner_with_its_path_copie
     click(lst, action(lst, i))
     assert wait_until(lambda: opened, 5)
     assert asks(writer) == [] and opened == [r"C:\Programs\AnkiMiner\Anki Miner.exe"]
-    assert wait_until(lambda: win.toasts.card is not None and bool(win.toasts.card.message), 5)  # (once it opened)
+    assert wait_until(lambda: win.toasts.card is not None and bool(win.toasts.card.base), 5)  # (once it opened)
     ep = row.episodes[0]
     from app import path_utils
     assert QApplication.clipboard().text() == os.path.join(path_utils.get_data_path("ja"), *ep.rel_path.split("/"))
-    assert strings.MINE_TEXT_COPIED.format(name=ep.label) == win.toasts.card.message
+    assert strings.MINE_TEXT_COPIED.format(name=ep.label) == win.toasts.card.base
 
 
 def test_no_video_offers_link_and_mine_text_and_link_hands_the_chosen_video_to_the_writer(act, monkeypatch):
@@ -531,7 +531,7 @@ def test_one_file_is_said_as_one_and_mine_text_says_connect_waits_while_anki_min
     open_ = [e for a in tray.watched() for e in rows.asked_files("mine", a.episodes)]
     assert open_, "the seed's watched arrivals hold a file still to mine"
     win.mine.mine_ids([open_[0].id])
-    assert asks(writer)[-1][1] == [open_[0].id] and win.toasts.card.message == strings.MINE_ASKED_ONE
+    assert asks(writer)[-1][1] == [open_[0].id] and win.toasts.card.base == strings.MINE_ASKED_ONE
 
 
 def test_the_bulk_asks_never_name_a_file_in_anki_being_mined_or_whose_cards_were_deleted(act):
@@ -588,7 +588,7 @@ def test_mine_them_too_asks_for_an_arrivals_videos_only_and_leaves_its_epub_out_
                         for g in tray.groups)
     tray.mine_them_too()
     assert asks(writer)[-1][1] == [e.id for e in videos] and epub.id not in asks(writer)[-1][1]
-    assert win.toasts.card.message == strings.MINE_ASKED_N_VIDEOS[len(videos) == 1].format(n=len(videos))
+    assert win.toasts.card.base == strings.MINE_ASKED_N_VIDEOS[len(videos) == 1].format(n=len(videos))
     opened = []
     monkeypatch.setattr(win.mine, "mine_text", lambda label, rel_path: opened.append((label, rel_path)))
     n = len(asks(writer))
@@ -683,11 +683,11 @@ def test_LM11b_a_groups_mine_now_asks_its_videos_alone_and_says_the_rest_are_lef
     assert mine_actions.videos_of(row, ids) == (ids[:2], row.episodes[2])
     win.mine.mine_row(row, ids)
     assert [c[1] for c in asks(writer)] == [ids[:2]]
-    assert win.toasts.card.message == strings.MINE_ASKED_VIDEOS.format(title=row.title)
+    assert win.toasts.card.base == strings.MINE_ASKED_VIDEOS.format(title=row.title)
     win.mine.settle(ids)                             # (round 8 row 45: asked again only once the first press ended)
     win.mine.mine_row(row, ids[:2])
     assert [c[1] for c in asks(writer)] == [ids[:2], ids[:2]]
-    assert win.toasts.card.message == strings.MINE_ASKED.format(title=row.title)
+    assert win.toasts.card.base == strings.MINE_ASKED.format(title=row.title)
 
 
 # --- row 28 (Michi's row 24b ask): an episode's own ⋯ offers *Mine now* where its pill would be *Mine now* ----------- #

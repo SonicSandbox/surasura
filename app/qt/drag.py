@@ -24,9 +24,10 @@ for Current's list — W3.2's tray and Goal sheet feed the same one through `beg
   item changed since* (E21) comes as a toast. Round 8 row 45: the bar says *Undoing…* from the press (Ctrl+Z, a
   toast's Undo) until the undo lands — an Undo asked before its change is saved waits so, never silently.
 - **A write's toast** (round 8 row 45; every `_give`'s, wherever it shows — Current, Goal, search, Needs you, + Add):
-  while its write hasn't landed `SAVING_AFTER_S` after the press (a busy store, files still copying) or the writer
-  says it waits, it reads *"… · saving…"* (`ToastHost.set_saving`). A toast shown in the turn a write was given
-  without one stands for it (Needs you's *Link these*).
+  it never says done before the store does. From the press until its write lands it reads *"… · saving…"*
+  (`ToastHost.set_saving`); saved, its own words; refused (the writer's note: read-only met, a failure), the reason
+  in its place; landed as nothing, it goes. A toast shown in the turn a write was given without one stands for it
+  (Needs you's *Link these*).
 - **An expectation** keeps the drop's order on screen while the store catches up: a view from the reader with the
   same rows in another order is shown in the drop's order (with its fresh numbers), one still holding a row the drop
   sent to a well is shown without it; anything else waits. The expectation ends once the writer has been idle for
@@ -52,7 +53,6 @@ from app import theme
 from app.qt import bridge, motion, rows, shadow, strings, style
 from app.qt import press as qpress
 from app.services import view_rows
-from app.services.moves import SAVING_AFTER_S
 
 D = theme.DRAG
 FINISHED = "graduated"                              # the store's name for Finished
@@ -793,15 +793,11 @@ class DragController(QObject):
         self.held = None                             # the reader's newest view, not shown yet
         self.tickets = []                            # commands given, not settled yet (oldest first)
         self.saving_keys = frozenset()
-        self.saving_on = False                       # the writer says a command waits (`on_saving`)
         self.toasted = None                          # the ticket whose toast shows
         self.toast_for = ()                          # round 8 row 45: the tickets the shown toast stands for …
         self._fresh = []                             # … the ones given this turn (a toast shown in it stands for them)
         self._showing = None                         # … or the one `_toast` names
-        self._toast_late = QTimer(self)              # … and its *· saving…* once they wait `SAVING_AFTER_S`
-        self._toast_late.setSingleShot(True)
-        self._toast_late.setInterval(round(SAVING_AFTER_S * 1000))
-        self._toast_late.timeout.connect(self._paint_toast)
+        self._reason = None                          # … and the writer's last word since it showed (why one was refused)
         self._undoing = None                         # round 8 row 45: the bar's *Undoing…* (a live press), and the
         self._undos = 0                              # undos handed to the writer it waits for
         self._own = False
@@ -1578,29 +1574,42 @@ class DragController(QObject):
         self.toast_for = self._showing if self._showing is not None else tuple(self._fresh)
         self._showing = None
         self._fresh.clear()
-        self._toast_late.stop()
+        self._reason = None
         if any(t.change is None for t in self.toast_for):
-            self._toast_late.start()
-            self.win.toasts.keep_room()              # it may say *· saving…*: nothing moves when it does
+            self.win.toasts.keep_room()              # it says *· saving…* until it lands: nothing moves as that goes
         self._paint_toast()
 
     def _paint_toast(self):
         toasts = getattr(self.win, "toasts", None)
         if toasts is None:
             return
-        waiting = not self._closed and any(t.change is None and not t.undo_asked and any(t is w for w in self.tickets)
+        waiting = not self._closed and any(t.change is None and any(t is w for w in self.tickets)
                                            for t in self.toast_for)
         try:
-            toasts.set_saving(waiting and (self.saving_on or not self._toast_late.isActive()))
+            toasts.set_saving(waiting)
         except RuntimeError:                         # (the window going: its toast with it)
             pass
 
     def _ended(self, ticket, failed=False):
-        """`ticket` settled (saved, refused, landed as nothing): its press, if any, ends — and the toast's words."""
+        """`ticket` settled (saved, refused, landed as nothing): its press, if any, ends — and the toast's words: done
+        once saved; if none of the writes it stands for was saved, the store's reason in its place, or no toast."""
         p = getattr(ticket, "press", None)            # (a label the writer hands back may be no ticket)
         if p is not None:
             ticket.press = None
             qpress.end(p, self.win, failed=failed)
+        mine = self.toast_for
+        toasts = getattr(self.win, "toasts", None)
+        if not self._closed and toasts is not None and toasts.alive and any(ticket is t for t in mine) and all(
+                t.change is None and not any(t is w for w in self.tickets) for t in mine):
+            reason, self._reason = self._reason, None
+            self.toast_for = ()
+            if self.toasted is not None and any(self.toasted is t for t in mine):
+                self.toasted = None
+            if reason:
+                toasts.show(reason)                  # refused: why, where it said what it would do
+            else:
+                toasts.close()                       # nothing to change: nothing to say, nothing to undo
+            return
         self._paint_toast()
 
     # --- Undo ---------------------------------------------------------------------------------------------------- #
@@ -1643,15 +1652,6 @@ class DragController(QObject):
                 self._undo_pressed()
             self._paint_toast()
 
-    def toast_gone(self, ticket):
-        """`ticket`'s toast taken away while it still shows — its command landed as nothing (nothing to say, nothing
-        to undo: `item_menu`'s, whose toast shows at the press)."""
-        toasts = getattr(self.win, "toasts", None)
-        if toasts is not None and toasts.alive and any(ticket is t for t in self.toast_for):
-            toasts.close()
-            self.toast_for = ()
-            if self.toasted is ticket:
-                self.toasted = None
 
     def undo_last(self):
         """Ctrl+Z: the newest change, as the writer reaches it — the newest command the window gave if it isn't saved yet
@@ -1706,12 +1706,9 @@ class DragController(QObject):
         self._undo_answered(answered=False)
 
     def _saving(self, on):
-        """*saving…* on the rows whose moves wait (after 300 ms; 04 §4.5), until the store takes them — and on the
-        toast of a write that waits, wherever it shows (`_paint_toast`)."""
-        self.saving_on = bool(on)
+        """*saving…* on the rows whose moves wait (after 300 ms; 04 §4.5), until the store takes them."""
         self.saving_keys = frozenset(k for t in self.tickets for k in t.keys) if on else frozenset()
         self._paint_saving()
-        self._paint_toast()
 
     def _paint_saving(self):
         keys = self.saving_keys if self.tickets else frozenset()
@@ -1756,6 +1753,8 @@ class DragController(QObject):
         self._let_go()
 
     def _note(self, text):
+        if self.toast_for:
+            self._reason = text                      # (a write it stands for may be refused with it)
         if text == strings.MOVE_WORDS["cant_undo"]:
             self._undo_answered()
             self.win.toasts.show(text)               # E21: said where the Undo was asked

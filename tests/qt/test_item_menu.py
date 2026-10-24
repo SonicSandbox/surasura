@@ -2122,8 +2122,8 @@ GROUP_TEXT = {
 
 @pytest.mark.parametrize("name", list(GROUP_WRITES))
 def test_every_group_write_toasts_at_the_press_saving_while_it_waits_and_goes_for_nothing_landed(world, name):
-    # round 8 row 45 (scope §3.5): a busy store — the toast and its Undo at the press, reading *· saving…* once it has
-    # waited 300 ms, its own words once saved; one that lands as nothing takes its toast away (nothing to undo)
+    # round 8 row 45 (scope §3.5, the lead's A6): a busy store — the toast at the press, pending (*· saving…*) until
+    # the store answers, never done before; its own words once saved; one that lands as nothing takes it away
     _seed, win, writer = world()
     b, a = two_shows(win)
     rs = rows_of(win)
@@ -2132,8 +2132,9 @@ def test_every_group_write_toasts_at_the_press_saving_while_it_waits_and_goes_fo
     shown = lambda words=text: win.toasts.alive and win.toasts.card.message == words     # noqa: E731
     writer.stuck = True
     assert GROUP_WRITES[name](win, g, o) is not None
-    assert shown() and win.toasts.card.buttons, "its toast and Undo at the press"
-    assert wait_until(lambda: shown(text + strings.TOAST_SAVING), 5), "saving… while the store is busy"
+    assert shown(text + strings.TOAST_SAVING), "pending at the press, never done"
+    settle(400)
+    assert shown(text + strings.TOAST_SAVING), "pending while the store is busy"
     writer.free()
     assert wait_until(shown, 5) and win.toasts.card.buttons, "its own words once saved, Undo kept"
     win.toasts.close()

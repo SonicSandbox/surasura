@@ -190,4 +190,5 @@ def test_an_empty_list_puts_no_card_away_and_says_so(lib, monkeypatch, how):
             written = _job(fake, host)
     assert written == [], "an empty list writes nothing to Anki: no position, tag or suspend"
     assert _state(fake) == before
-    assert reposition.EMPTY_LIST in lines, lines[-3:]
+    # The empty list's line is the last word: after a Finish the re-order's "then Generate" line must not cover it.
+    assert lines and lines[-1] == reposition.EMPTY_LIST, lines[-3:]

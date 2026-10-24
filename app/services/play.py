@@ -32,15 +32,31 @@ WHY = {
     "moved": "its {word} isn't where it was ({folder})",           # MV-2: it left its folder, the source still there
 }
 _UNLISTED = object()                # `runner.beside`'s answer for a folder that can't be listed
+
+
+class MovedAway(str):
+    """`look`'s answer for an episode whose video left its folder (MV-2): falsy — ▶ has nothing to open — and its
+    value the folder it was in, so the row says Connect's line and offers *Find its folder…* without Connect."""
+
+    def __bool__(self):
+        return False
+
+
+class _Left(str):
+    """`_find`'s why for a video that left its folder (`WHY["moved"]`), carrying the folder."""
+
+    def __new__(cls, text, folder):
+        made = super().__new__(cls, text)
+        made.folder = folder
+        return made
 _NEVER = object()                   # `Looks`: an episode never looked at
 BATCH = 200                         # `Looks`: episodes looked at a time, their answers handed on together
 
 
-def pairing(language, item_id, moved=None):
+def pairing(language, item_id):
     """The item's pairing record (`connect.library.pairing_of`: hato's, else a source folder's origin row), {} with
-    none (no record, or no store: a 2.x library), or None when the store is there but can't be read just now.
-    `moved` (a dict): its `connect.library.Moved` put in it under its id (D5 / MV-2), read in the same open."""
-    return _pairings(language, [item_id], moved)[item_id]
+    none (no record, or no store: a 2.x library), or None when the store is there but can't be read just now."""
+    return _pairings(language, [item_id])[item_id]
 
 
 def _pairings(language, ids, moved=None):
@@ -116,8 +132,9 @@ def _on_disk(path, listings, check=None):
 
 def to_open(language, item_id, rel_path, media):
     """-> (path, None), or (None, why: plain words for the bar's *Couldn't open X: why*)."""
-    moved = {}
-    record = pairing(language, item_id, moved)
+    record, moved = pairing(language, item_id), {}
+    if isinstance(record, dict) and record.get("producer") == "source":
+        _pairings(language, [item_id], moved)       # D5 / MV-2: a source record's move, as `look` reads it
     return _find(language, rel_path, media, record, {}, _finder(language), moved.get(item_id))
 
 
@@ -138,7 +155,8 @@ def look(language, asks, listings=None, find=None):
     for item_id, (rel_path, media) in asks.items():
         try:
             path, why = _find(language, rel_path, media, records.get(item_id), listings, find, moved.get(item_id))
-            out[item_id] = True if path is not None else None if why in _UNSURE else False
+            out[item_id] = True if path is not None else None if why in _UNSURE else \
+                MovedAway(why.folder) if isinstance(why, _Left) else False
         except Exception as e:                      # one episode's fault never stops the others
             print(f"Play: an episode's file couldn't be looked for ({e!r})")
             out[item_id] = False
@@ -178,7 +196,7 @@ def _find(language, rel_path, media, record, listings, find, moved=None):
             return found, None
         left = runner.video_left(record, moved.root, lambda root: _reachable(os.path.join(root, ""), listings))
         if left:
-            return None, WHY["moved"].format(word=word, folder=left)
+            return None, _Left(WHY["moved"].format(word=word, folder=left), left)
         return None, WHY["no-media"].format(word=word) if _reachable(named, listings) else WHY["unreachable"]
     exts = AUDIO_EXTS if word == "audio" else None
     unreachable = False
@@ -193,7 +211,7 @@ def _find(language, rel_path, media, record, listings, find, moved=None):
         elif found:
             return found, None
     if word == "video":
-        found = runner.moved_video(moved.was, there) or \
+        found = (runner.moved_video(moved.was, there) if record.get("producer") == "source" else None) or \
             find([n for p in (path, origin) if p for n in videos.names_for(p)])
         if found:
             return found, None

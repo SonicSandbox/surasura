@@ -2761,7 +2761,7 @@ class ShellWindow(QMainWindow):
         except Exception as e:
             applog.log("connect", f"Connect wasn't started after a look: {e!r}")
             return
-        bridge.run_in_worker(kick.kick, settings,
+        bridge.run_in_worker(lambda: kick.kick(settings, videos=True),
                              failed=lambda info: applog.log("connect", f"Connect's start: {info[0]}"))
 
     def _play_not_found(self, item_id):

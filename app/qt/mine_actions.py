@@ -331,7 +331,7 @@ class MineActions(QObject):
         if ep.status is None:
             return []
         name, tip, ask = rows.action_of(ep.status, (ep,), self.off, ep.media_word or row.media_word)
-        moved = getattr(ep.status, "moved", None)
+        moved = getattr(ep, "moved", None) or getattr(ep.status, "moved", None)
         if moved:                                    # --- MV-2: its video left its folder
             return [item_menu.Entry("ep-find-folder", strings.ROWS_FIND_FOLDER,
                                     strings.ROWS_FIND_FOLDER_TIP.format(folder=moved), True,
@@ -373,7 +373,12 @@ class MineActions(QObject):
         folder…* with the folder picked (`settings_sources.add_folder`: the store's `add_source` and its look —
         refused there, greyed or said, as on Settings' page). -> True when a folder was asked for."""
         from app.qt import settings_sources
-        where = os.path.dirname(getattr(ep.status, "moved", None) or "")
+        why = settings_sources.why_not(self.win)
+        if why is not None:                         # the library can't take a folder now: said, never a silent picker
+            self.win.say(why)
+            return False
+        moved = getattr(ep, "moved", None) or getattr(getattr(ep, "status", None), "moved", None)
+        where = os.path.dirname(moved or "")
         folder = self.pick_folder(strings.FIND_FOLDER_TITLE.format(label=ep.label), where)
         if not folder:
             return False

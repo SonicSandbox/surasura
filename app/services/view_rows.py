@@ -81,6 +81,10 @@ Episode = namedtuple("Episode", Episode._fields + ("ask",), defaults=tuple(Episo
 Episode = namedtuple("Episode", Episode._fields + ("looking",),
                      defaults=tuple(Episode._field_defaults.values()) + (False,))
 #   looking (row 55, R55-A): asked and not answered yet — Up Next says *Looking…*, never *No video* before the check
+Episode = namedtuple("Episode", Episode._fields + ("moved",),
+                     defaults=tuple(Episode._field_defaults.values()) + (None,))
+#   moved (MV-2): the folder its video left — Connect's line (`feed.Item.moved`), else ▶'s own look's
+#   (`play.MovedAway`): its ⋯ offers *Find its folder…*, Connect on or off, any language, mined or not
 #   answered; False with no looker and in a cache from before
 Row = namedtuple("Row", "key index tier work_id piece_id media media_word verb title title_ep line source n_files n_watched "
                         "pct pct_tone n_new status mark episodes next_index studying date cover_title accessible "
@@ -584,6 +588,13 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=
     st, mark = status_of([_Shim(ep, mined)], word, line_n)
     if connect is not None:                          # --- P4.1 L2: what Connect says of it (row 4.1.10)
         st = _connected(st, said, word)
+    # MV-2: the folder its video left — Connect's line, else ▶'s own look's answer (`play.MovedAway`: a str, falsy)
+    left = getattr(said, "moved", None) if no_video else None
+    answer = playable.get(item["id"]) if playable is not None and not left else None
+    left = left or (answer if isinstance(answer, str) else None)
+    if left and st.kind == "no_media" and not getattr(st, "moved", None):
+        from app.connect.runner import MOVED
+        st = st._replace(moved=left, tip=STRINGS["tip_connect_moved"].format(tip=MOVED.format(folder=left)))
     if online:
         tip = STRINGS["play_online"]
     elif waiting:
@@ -595,11 +606,14 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=
         tip = STRINGS["play_looking"].format(word=word)                          # R55-A (A-11): nothing said yet
     elif no_video and getattr(said, "moved", None):
         tip = STRINGS["play_moved"].format(tip=said.tip, word=word)              # MV-2: Connect's line, its way on
+    elif left:
+        from app.connect.runner import MOVED
+        tip = STRINGS["play_moved"].format(tip=MOVED.format(folder=left), word=word)    # MV-2: ▶'s own look's
     elif not can_play:
         tip = STRINGS["play_not_found"].format(word=word, verb_l=verb.lower())    # row 55 (or Connect's *No video*)
     else:
         tip = STRINGS["play"].format(verb=verb, name=label, player=STRINGS["player"][word], word=word)
-    return ep._replace(status=st, mark=mark, play_tip=tip)
+    return ep._replace(status=st, mark=mark, play_tip=tip, moved=left)
 
 
 # --- P4.1 L2: Connect's feed in the statuses (row 4.1.10, W-A1) -------------------------------------------------- #

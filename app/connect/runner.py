@@ -341,11 +341,16 @@ def _kicked(steps):
 
 
 def _woken(steps, ledger, parked):
-    """`_kicked`, and a kick lets the jobs parked on their video go again this run (MV-2: *Find its folder…*'s look
-    kicks Connect, as a *Link…* and a look that recorded videos do — a Connect running for other jobs tries them at
-    its next look, never only at its next start). -> whether it was kicked."""
-    if not _kicked(steps):
+    """`_kicked`, and a kick that may have found videos (`kick.VIDEOS`: a look that recorded videos while an episode
+    waits on one — *Find its folder…*'s) lets the jobs parked on their video go again this run: a Connect running for
+    other jobs tries them at its next look, never only at its next start. Any other kick (a *Mine now*, a placement,
+    a setting) leaves them parked (S19: no stat of a dead share per episode per drag). -> whether it was kicked."""
+    from app.connect import kick
+    woke = _kicked(steps)
+    if not woke:
         return False
+    if woke != kick.VIDEOS:
+        return True
     for job_id in [j for j in parked if no_video((ledger.job_by_id(j) or {}).get("reason"))]:
         del parked[job_id]
     return True
@@ -779,8 +784,9 @@ def _pick(steps, ledger, lang, job, record=True):
               "video": video, "pairing": fit_check.version(pairing), "profile": got.get("profile"),
               "anki_miner": got.get("anki_miner")}
     before = ledger.picked(jid) or {}
-    if before.get("forced") and before.get("pairing") == picked["pairing"]:
-        picked["forced"] = True     # *Mine anyway* (row 4.1.9) holds for the pairing you said it for; a new one clears it
+    if before.get("forced") and before.get("pairing") == picked["pairing"] and before.get("video") == video:
+        picked["forced"] = True     # *Mine anyway* (row 4.1.9) holds for the pairing and video you said it for (D5: a
+        #                             marked origin's video standing in is another file); a new one clears it
     if got.get("absent"):
         _record_made(steps, ledger, lang, job, record)
         ledger.set_state(jid, "skipped", reason=MINER_ABSENT, picked=picked, skipped={"mining": MINER_ABSENT})
@@ -1267,13 +1273,13 @@ class Steps:
 
     def kicked(self):
         """Has a kick stamped the wake mark since the last look at it (`kick.wake_stamp`)? Then the mark is taken as
-        seen: one wake a kick."""
+        seen: one wake a kick. -> False, True, or `kick.VIDEOS` for a kick that may have found videos (MV-2)."""
         from app.connect import kick
         now = kick.wake_stamp()
         if now == self._woken:
             return False
         self._woken = now
-        return True
+        return kick.VIDEOS if isinstance(now, str) and now.endswith("-" + kick.VIDEOS) else True
 
     def enabled(self):
         """Connect's switch as settings.json holds it now (read again at every look and before each job): off, or
@@ -1421,10 +1427,11 @@ class Steps:
         origin = origin_of(pairing)
         if origin:
             names += videos.names_for(origin)   # a copy renamed `name (2)` in Library/: the original's name finds it
-        return beside(subtitle) or beside_origin(pairing) or moved_video(was()) or self._videos(lang).find(names)
+        moved = moved_video(was()) if pairing.get("producer") == "source" else None    # a source record's own
+        return beside(subtitle) or beside_origin(pairing) or moved or self._videos(lang).find(names)
 
     def moved_videos(self, lang, job):
-        """D5 (MV-A5): the videos the item's origins marked moved named (`library.moved_videos`), newest origin first;
+        """D5 (MV-A5): (path, size) of the videos the item's origins marked moved named (`library.moved_videos`);
         () with no store to read (nothing marked there). A busy store is a Wait."""
         from app.connect import library
         try:
@@ -2161,9 +2168,10 @@ def paired_video(pairing, find, on_disk=None, was=()):
     named = pairing.get("video_path")
     if (on_disk or _on_disk)(named):
         return named                        # the named path is trusted as it is: never read (a stat only)
-    left = moved_video(was() if callable(was) else was, on_disk)
-    if left:
-        return left
+    if pairing.get("producer") == "source":     # a marked row stands in for its own item's source record only: hato's
+        left = moved_video(was() if callable(was) else was, on_disk)    # and a link's are judged by their bytes below
+        if left:
+            return left
     size = pairing.get("video_size")
     found = find([os.path.basename(named)], size if isinstance(size, int) and size > 0 else None)
     # away from its named path, a file of that name and size is the paired video only when its bytes say so
@@ -2183,11 +2191,16 @@ def paired_video(pairing, find, on_disk=None, was=()):
 
 def moved_video(was, on_disk=None):
     """D5 (Kura's MV-A5: a `moved_to` mark is never trusted alone): the first video an origin marked moved named that
-    is still on this computer -> its path (the file the store recorded there: a stat only, as a pairing's own path
-    is); else None. `was`: `library.Moved.was`, the newest origin first."""
-    for path in was or ():
+    is still on this computer at the size the store recorded -> its path (a stat, as a pairing's own path is: a file
+    of another size there now is another file); else None. `was`: `library.Moved.was` ((path, size), the newest origin
+    first)."""
+    for path, size in was or ():
         if (on_disk or _on_disk)(path):
-            return path
+            try:
+                if size is None or os.stat(path).st_size == size:
+                    return path
+            except OSError:
+                continue
     return None
 
 

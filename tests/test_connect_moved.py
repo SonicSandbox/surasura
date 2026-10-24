@@ -134,7 +134,7 @@ def test_a_moved_video_plays_from_its_new_place_without_the_index(language, monk
 
 def _moved(language, item):
     got = {}
-    play.pairing(language, item, got)
+    play._pairings(language, [item], got)
     return got[item]
 
 

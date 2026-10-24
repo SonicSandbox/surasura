@@ -139,8 +139,8 @@ def pairing_of(store, item_id):
 
 # D5 / MV-2 (PROVISIONAL): what the store knows of an episode's move, read beside its pairing — the store's alone, no
 # disk (`runner.moved_video` / `runner.video_left` look at the disk after, outside the store's reads). `root`: the path
-# of the source folder its origin was read from (its record's `root`), None for any other record; `was`: the videos its
-# origins marked `moved_to` named, the newest origin first — a mark is never trusted alone (Kura's MV-A5: the same
+# of the source folder its origin was read from (its record's `root`), None for any other record; `was`: (path, size)
+# of each video its origins marked `moved_to` named (size None when unrecorded), the newest origin first — a mark is never trusted alone (Kura's MV-A5: the same
 # bytes found elsewhere while the original was only briefly away), so while the live record's video is gone, one
 # still on disk there is the episode's
 Moved = namedtuple("Moved", "root was")
@@ -171,11 +171,12 @@ def moved_videos(store, item_id):
               f"{library_store._MOVED_ROW} AND NOT {library_store._VERSION_ROW} ORDER BY rowid DESC")
     for (text,) in store.conn.execute(marked, (item_id,)):
         try:
-            path = json.loads(text).get("video_path")
+            record = json.loads(text)
+            path, size = record.get("video_path"), record.get("video_size")
         except (ValueError, AttributeError):        # a malformed record, or one that isn't an object: no video
             continue
-        if isinstance(path, str) and path and path not in was:
-            was.append(path)
+        if isinstance(path, str) and path and path not in [p for p, _s in was]:
+            was.append((path, size if isinstance(size, int) and size > 0 else None))
     return tuple(was)
 
 

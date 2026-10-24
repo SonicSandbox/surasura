@@ -231,3 +231,17 @@ def test_the_probe_start_runs_main_and_writes_every_phase(qapp, monkeypatch, tmp
     names = [p["phase"] for p in data["phases"]]
     assert code == 0 and data["first_frame_ms"] is not None
     assert {"qapp", "claimed", "services", "look", "window", "shown", "painted", "flushed"} <= set(names)
+
+
+def test_the_probes_bar_update_burst_moves_the_bars_words(qapp, window, monkeypatch, tmp_path):
+    # PS-A5: the bar prints `bar_lines` (the phase strip's Q5); the burst fed `lines` alone, so the bar's words never
+    # moved and row D's burst timed a no-op
+    monkeypatch.delenv("SURASURA_SHELL_PROBE_PILED", raising=False)
+    monkeypatch.delenv("SURASURA_SHELL_PROBE_BUSY", raising=False)
+    probe = hud.Probe(window, str(tmp_path / "probe.json"), idle=60)
+    said = []
+    real = window.show_status
+    monkeypatch.setattr(window, "show_status", lambda snap: (real(snap), said.append(window.bar_line.full())))
+    probe._exercise()
+    assert wait_until(lambda: len(said) >= 501, 30)                    # the 500, then the bar idle again
+    assert "0 / 500" in said and "499 / 500" in said

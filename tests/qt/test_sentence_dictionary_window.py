@@ -15,10 +15,12 @@ import pytest
 
 pytest.importorskip("PyQt6")
 from PyQt6.QtGui import QDesktopServices
+from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QFileDialog
 
 from app import sentence_corpus
 from app.qt import sentence_dictionary_window as sdw
+from app.qt import press as qpress
 from app.qt import shell, strings, windows
 from app.services import jobs as jobs_module
 from app.services import tools
@@ -199,10 +201,11 @@ def test_exit_0_and_a_fresh_file_is_ready_with_the_yomitan_note_and_open_folder(
     assert w.status.text() == "Surasura Corpus (ja) is ready. 2,345 words · 8 sentences each"
     assert w.note.text() == strings.DICT_NOTE and "older one" in w.note.text()      # the warning kept, one line
     assert w.folder_button.isVisibleTo(w) and not w.log_button.isVisibleTo(w)
+    folders = []
+    monkeypatch.setattr(qpress, "open_now", folders.append)    # round 8 row 45: opened on a worker by the press
     w.folder_button.click()
-    assert opened and opened[0].isLocalFile()
-    assert os.path.normcase(os.path.normpath(opened[0].toLocalFile())) == \
-        os.path.normcase(os.path.dirname(save_to.path))
+    assert wait_until(lambda: folders)
+    assert os.path.normcase(os.path.normpath(folders[0])) == os.path.normcase(os.path.dirname(save_to.path))
 
 
 def test_exit_1_is_a_failure_even_with_a_fresh_file_there(main, save_to, content, monkeypatch):
@@ -246,9 +249,11 @@ def test_open_the_log_opens_the_exports_log(main, save_to, content, monkeypatch)
     assert wait_until(lambda: runs.calls)
     runs.end(1)
     assert wait_until(lambda: w.log_button.isVisibleTo(w))
+    logs = []
+    monkeypatch.setattr(qpress, "open_now", logs.append)       # round 8 row 45: opened on a worker by the press
     w.log_button.click()
-    assert os.path.normcase(opened[0].toLocalFile()) == os.path.normcase(
-        tools.log_path("sentence-corpus").replace("\\", "/"))
+    assert wait_until(lambda: logs)
+    assert os.path.normcase(logs[0]) == os.path.normcase(tools.log_path("sentence-corpus"))
 
 
 # --- one at a time, and the window closing --------------------------------------------------------------------- #
@@ -488,3 +493,21 @@ def test_a_switch_while_the_library_is_looked_at_asks_nothing_and_runs_nothing(m
     assert wait_until(lambda: w.language == "zh")
     QApplication.processEvents()
     assert save_to.asked == [] and runs.calls == [] and w.export_button.isEnabled()
+
+
+# --- round 8 row 45: every press reacts at once ------------------------------------------------------------------- #
+def test_open_folder_paints_its_arc_and_opens_on_a_worker(main, monkeypatch, tmp_path):
+    # *Open folder* stalled the window (the browser's open ran on its thread) with nothing painted: its arc now turns,
+    # painted before the open is handed to a worker.
+    from tests.qt.press_handover import HandOver, arc_turning
+    opened = []
+    monkeypatch.setattr(qpress, "open_now", opened.append)
+    w = _open(main)
+    w.saved_to = str(tmp_path / "Surasura Corpus (ja).zip")
+    w.folder_button.setVisible(True)
+    assert QTest.qWaitForWindowExposed(w) and wait_until(lambda: w.folder_button.isVisible())
+    handed = HandOver(monkeypatch, w.folder_button, lambda: arc_turning(w.folder_button))
+    w.folder_button.click()
+    work = handed.at("work")
+    assert work.shown and work.painted >= 1
+    assert wait_until(lambda: opened == [str(tmp_path)] and not arc_turning(w.folder_button))

@@ -68,6 +68,8 @@ class SourceLooks:
         self._rules = rules
         self.on_result = on_result or _nothing
         self.on_progress = on_progress or _nothing
+        self.on_ended = _nothing                      # round 8 row 45: `on_ended(told, why)` after every look (any
+        #                                               thread): `told` False — no summary came (no store, a failure)
         self._clock = clock
         self._make_watch = watch
         self._kind = kind
@@ -178,7 +180,7 @@ class SourceLooks:
         the worker's store handle closes after what was queued — and nothing it still finds is told (B2: a language
         left never paints over the one open)."""
         self._closing.set()
-        self.on_result = self.on_progress = _nothing
+        self.on_result = self.on_progress = self.on_ended = _nothing
         with self._lock:
             watches, self._watches = list(self._watches.values()), {}
         self._wake.set()
@@ -214,10 +216,13 @@ class SourceLooks:
         return h
 
     def _look(self, full, roots):
-        """(The worker.) Each source being read (`roots`: those alone) looked at once, then the window told."""
+        """(The worker.) Each source being read (`roots`: those alone) looked at once, then the window told — its
+        summary, and whatever happened, that the look ended (`on_ended`: a press waiting on it ends with it)."""
+        told, why = False, None
         try:
             store = self._store()
             if store is None:
+                why = "the library isn't open"
                 return
             self.looks += 1
             rows = store.sources(counts=False)        # the roots alone: the counts are `_publish`'s (H9)
@@ -236,10 +241,16 @@ class SourceLooks:
                 self._reset_told = True
                 from app import library_store as ls
                 totals["unfinished_reset"] = ls.unfinished_reset(store.user_files_dir, told=True)
-            self._publish(store, totals)
+            told = self._publish(store, totals)
         except Exception as e:                        # a look that failed waits for the next: never the window's fault
             print(f"Sources: the look stopped: {e!r}")
+            why = str(e) or type(e).__name__
         finally:
+            if not self._closing.is_set():
+                try:
+                    self.on_ended(told, why)
+                except Exception as e:
+                    print(f"Sources: the look's end wasn't told: {e!r}")
             with self._lock:
                 self._running = False
                 again, self._again = self._again, None
@@ -407,15 +418,16 @@ class SourceLooks:
                     self._queue(False, {root})
 
     def _publish(self, store, totals):
+        """The summary to `on_result`. -> True when it was told."""
         if store is None:
             store = self._store()
             if store is None:
-                return
+                return False
         try:
             rows = store.sources()
         except Exception as e:
             print(f"Sources: the folders couldn't be read: {e!r}")
-            return
+            return False
         summary = dict(totals, language=self.language)
         summary["moved"], self._moved = self._moved, 0
         summary["sources"] = [dict(r, reachable=self._reachable.get(r["id"])) for r in rows]
@@ -424,6 +436,7 @@ class SourceLooks:
         except Exception as e:
             print(f"Sources: the skipped folders couldn't be read: {e!r}")
         self.on_result(summary)
+        return True
 
     def _folders(self, ids, then):
         out = dict.fromkeys(ids)

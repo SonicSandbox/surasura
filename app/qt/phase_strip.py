@@ -30,7 +30,9 @@ from app.qt import logos, motion, strings, style
 from app.services import phase
 from app.services import press as press_service
 
-LOGOS = {phase.MINER: "anki_miner", phase.ANKI: "anki"}     # the circles that show a logo (`logos.CLEARED`'s names)
+LOGOS = {phase.MINER: "anki_miner", phase.ANKI: "anki_outline"}   # the circles that show a logo (`logos.CLEARED`'s
+#   names): Anki's outline star, Sonic's pick (2026-10-23; the alternative licence's reach to an app is confirmed
+#   before any public release, else the classic icon, "anki", goes back in — LOGOS.md)
 RING_W = 1.5                    # px: the ring at rest, amber, red, the done tick
 ARC_W = 2.0                     # px: the accent arc over it
 WAIT_STRENGTH = 0.55            # a waiting circle's still arc: the accent at this strength

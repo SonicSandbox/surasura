@@ -52,7 +52,7 @@ def data_credits():
 # terms' own wording, word for word.
 LOGO_CREDITS = """Logos
 
-• Anki® is a registered trademark of Ankitects Pty Ltd. Surasura is not affiliated with or endorsed by the Anki project: it is SonicSandbox's own work. https://apps.ankiweb.net — Anki's icon (on Settings › Connections and the bottom bar's phase strip) is copyright Alex Fraser, AGPL-3.0, used unmodified under its limited alternative licence (app/assets/logos/LICENSE-anki.txt).
+• Anki® is a registered trademark of Ankitects Pty Ltd. Surasura is not affiliated with or endorsed by the Anki project: it is SonicSandbox's own work. https://apps.ankiweb.net — Anki's icon (Settings › Connections) and its outline star (the bottom bar's phase strip) are copyright Alex Fraser, AGPL-3.0, used unmodified under its limited alternative licence (app/assets/logos/LICENSE-anki.txt).
 • Anki Miner icon © 0xzerolight (Zero), GPL-3.0 (app/assets/logos/LICENSE-anki_miner.txt), https://github.com/0xzerolight/anki_miner; its 鉱 is an outline from Shippori Mincho B1 (SIL OFL 1.1).
 • hato and tsubasa icons — SonicSandbox, GPL-3.0-or-later.
 • This application uses TMDB and the TMDB APIs but is not endorsed, certified, or otherwise approved by TMDB."""

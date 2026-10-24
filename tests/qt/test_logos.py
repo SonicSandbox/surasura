@@ -28,6 +28,8 @@ SCALES = (1.0, 1.25, 1.5, 1.75, 2.0)
 SHIPPED = {
     "anki-icon-vector.svg": ("anki/anki-icon-vector.svg",
                              "917f1fb9c56930f1c34bed01659ffe53e924c5335ea25b6f1a71a8847f3ab490"),
+    "anki-outline-star-288.svg": ("anki/anki-outline-star-288.svg",            # Sonic's pick for the phase strip
+                                  "26a60036d4a993a570c6948e56dfd62a74d5d02565589e75db3452f3f6ce79de"),
     "LICENSE-anki.txt": ("anki/LICENSE-anki.txt", "bde7d05790a05f1d1776b77a93ac32765310c8e6e578136183c2560475c500ef"),
     "anki_miner.svg": ("anki-miner/anki_miner.svg", "1937c82371ad4daf808eb2d8b2645ad72ce9be71408b19f83916a3a73591b444"),
     "LICENSE-anki_miner.txt": ("anki-miner/LICENSE-anki_miner.txt",
@@ -109,7 +111,8 @@ def test_no_svg_could_run_or_fetch_anything():
         assert not re.search(r"\son[a-z]+\s*=", text), name
         assert "foreignobject" not in text, name
         for link in re.findall(r"href\s*=\s*[\"']([^\"']*)[\"']", text):
-            assert link.startswith("#"), (name, link)
+            # inside the file, or a picture carried in it (the outline star: Anki's own PNG in its SVG wrapper)
+            assert link.startswith("#") or link.startswith("data:image/png;base64,"), (name, link[:40])
         assert not re.search(r"url\(\s*[\"']?(?!#)", text), name
 
 

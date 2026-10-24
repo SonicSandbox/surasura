@@ -123,7 +123,8 @@ def test_ctrl_z_says_undoing_in_the_bar_painted_before_the_writer_is_asked_until
     writer.undo = lambda change=None, label=None: (seen.append((win.bar_line.full(), paints.n - before,
                                                                 win.bar_arc.isVisible())), undo(change, label))[1]
     win.moves.undo_key.activated.emit()                               # Ctrl+Z
-    assert seen and seen[0][0] == strings.UNDOING and seen[0][1] >= 1 and seen[0][2]
+    # IK-1 (Sonic, decided): the arc at once, painted before the writer is asked; the words only once live 300 ms
+    assert seen and seen[0][0] != strings.UNDOING and seen[0][1] >= 1 and seen[0][2]
     assert wait_until(lambda: not win.presses.any_live(), 5)          # the undo landed: the bar is its own again
     assert win.bar_line.full() != strings.UNDOING and not win.bar_arc.isVisible()
 
@@ -137,7 +138,8 @@ def test_an_undo_asked_before_its_change_is_saved_says_undoing_until_it_is_taken
     win.moves._give(ticket, lambda t: writer.move([106], "goal", label=t))
     win.toasts.card._press(0)                                         # its *Undo*
     assert ticket.undo_asked and writer.undone == []                  # (asked: undone as it lands, the order as was)
-    assert win.bar_line.full() == strings.UNDOING and win.bar_arc.isVisible()
+    assert win.bar_arc.isVisible() and win.bar_line.full() != strings.UNDOING     # IK-1: the arc now, no words yet
+    assert wait_until(lambda: win.bar_line.full() == strings.UNDOING, 3)          # ... still waiting at 300 ms: said
     settle(200)
     assert win.bar_line.full() == strings.UNDOING                     # still waiting, still said
     writer.free()
@@ -152,7 +154,7 @@ def test_an_undo_whose_move_lands_as_nothing_stops_saying_undoing(world):
     ticket = drag.Ticket("雪国の手紙 → Soon", (), (107,))
     win.moves._give(ticket, lambda t: writer.move([107], "soon", label=t))
     win.moves.undo_last()
-    assert win.bar_line.full() == strings.UNDOING
+    assert wait_until(lambda: win.bar_line.full() == strings.UNDOING, 3)          # (IK-1: once live 300 ms)
     writer.free()
     assert wait_until(lambda: not win.presses.any_live(), 5) and writer.undone == []
 
@@ -217,7 +219,10 @@ def test_the_paste_cards_add_says_adding_in_the_bar_before_its_file_is_written_u
     title, text = "台所の会話", "朝ごはんは何にする？\n昨日の味噌汁が残ってるよ。\n"
     win.adder._pasted(title, text)
     fn, args, words, painted, then = handed[0]
-    assert fn is add_menu.write_pasted and words == strings.ADDING.format(name=title) and painted >= 1
+    # IK-1 (Sonic, decided): the bar's arc painted before the write, its words only once live 300 ms
+    assert fn is add_menu.write_pasted and words != strings.ADDING.format(name=title) and painted >= 0
+    assert win.bar_arc.isVisible()
+    assert wait_until(lambda: win.bar_line.full() == strings.ADDING.format(name=title), 3)
     then(fn(*args))                                                   # written: added, its toast takes over
     assert win.bar_line.full() != strings.ADDING.format(name=title)
     assert win.moves.toasted.text == strings.DRAG_ADDED.format(name=title, n=1)
@@ -238,7 +243,8 @@ def test_stop_adding_turns_its_arc_and_says_stopping_before_the_job_is_asked_unt
     f._show_importing(True)
     f.pick()                                                          # *Stop adding*
     has_arc, words, painted = cancels[0]
-    assert has_arc and words == strings.FIN_IMPORT_STOPPING and painted >= 1
+    assert has_arc and painted >= 1 and words != strings.FIN_IMPORT_STOPPING      # IK-1: the arc now, words later
+    assert wait_until(lambda: win.bar_line.full() == strings.FIN_IMPORT_STOPPING, 3)
     f.pick()                                                          # again meanwhile: nothing more asked
     assert len(cancels) == 1
     f._imported(job)                                                  # the import ended
@@ -270,7 +276,7 @@ def test_P4_A1_ctrl_z_answered_with_nothing_stops_saying_undoing_once_the_writer
     _silent_undo(writer)
     writer._waiting.append((None, None))                              # something of the writer's own, queued
     win.moves.undo_last()
-    assert win.bar_line.full() == strings.UNDOING
+    assert wait_until(lambda: win.bar_line.full() == strings.UNDOING, 3)          # (IK-1: once live 300 ms)
     writer._waiting.clear()                                           # it landed (with no word for the window)
     assert wait_until(lambda: not win.presses.any_live(), 3)
     assert win.bar_line.full() != strings.UNDOING and not win.bar_arc.isVisible()

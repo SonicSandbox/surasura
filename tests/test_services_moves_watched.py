@@ -208,7 +208,7 @@ def test_W1_a_drag_holding_watched_episodes_and_a_drop_beside_one_keep_their_num
         _matches_referee(numbers, plan_file, seed)
 
         assert numbers.after_move(hero[:2], "goal", order=order, aside=_aside(seed)) == {}  # only watched: no number
-        assert resyncs == []
+        assert numbers.idle(10) and resyncs == []
         numbers.close()
 
 
@@ -220,7 +220,7 @@ def test_W1_without_the_stores_order_a_drop_beside_a_watched_episode_is_worked_o
     hero = _hero(seed)
     goal = sorted((r for r in seed.library.items() if r["tier"] == "goal"), key=lambda r: (r["ord"], r["id"]))
     assert numbers.after_move([goal[-1]["id"]], "now", before_id=hero[0]) == {}
-    assert resyncs == [1]
+    assert numbers.idle(10) and resyncs == [1]
     numbers.close()
 
 
@@ -331,17 +331,17 @@ def test_W1_a_finished_item_or_a_file_added_since_generate_dragged_into_now_stil
         seed.library.commit(items=[added], order=True)
 
         assert numbers.after_move([fin[0]["id"]], "now", after_id=now[2], order=order, aside=aside) == {}
-        assert resyncs == [1]
+        assert numbers.idle(10) and resyncs == [1]
         assert numbers.after_move([fin[1]["id"], now[0]], "now", after_id=now[3], order=order, aside=aside) == {}
-        assert resyncs == [1, 1]
+        assert numbers.idle(10) and resyncs == [1, 1]
         assert numbers.after_move([arr[0]["id"]], "now", after_id=now[2], order=order, aside=aside) == {}
-        assert resyncs == [1, 1, 1]
+        assert numbers.idle(10) and resyncs == [1, 1, 1]
         assert numbers.after_move([added["id"]], "soon", order=order, aside=aside) == {}
-        assert resyncs == [1, 1, 1, 1]
+        assert numbers.idle(10) and resyncs == [1, 1, 1, 1]
         assert numbers.after_move(hero[:2] + [added["id"]], "goal", order=order, aside=aside) == {}
-        assert resyncs == [1, 1, 1, 1, 1]               # the watched ones alone are set aside; the new file isn't
+        assert numbers.idle(10) and resyncs == [1, 1, 1, 1, 1]               # the watched ones alone are set aside; the new file isn't
         assert numbers.after_move(hero[:2], "goal", order=order, aside=aside) == {}
-        assert resyncs == [1, 1, 1, 1, 1]               # only watched: nothing counts moved, no resync
+        assert numbers.idle(10) and resyncs == [1, 1, 1, 1, 1]               # only watched: nothing counts moved, no resync
         numbers.close()
 
 

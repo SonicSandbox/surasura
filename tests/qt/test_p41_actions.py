@@ -18,7 +18,7 @@ import os
 import pytest
 
 pytest.importorskip("PyQt6")
-from PyQt6.QtCore import QEvent, Qt
+from PyQt6.QtCore import QEvent, QRectF, Qt
 from PyQt6.QtGui import QHelpEvent
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication
@@ -542,6 +542,7 @@ def test_the_bulk_asks_never_name_a_file_in_anki_being_mined_or_whose_cards_were
     some = row._replace(episodes=tuple(eps))
     win.finished.on_mine_too(some)
     assert asks(writer) == [("ask_mining", [e.id for e in eps[3:]], {"on": True})]
+    win.mine.settle([e.id for e in eps[3:]])                # (round 8: asked again only once the first press ended)
     win.finished.on_mine(some)
     assert asks(writer)[-1][1] == [e.id for e in eps[3:]]
     gone = row._replace(episodes=tuple(eps[:3]))             # in Anki, deleted, being mined: nothing to ask
@@ -677,6 +678,7 @@ def test_LM11b_a_groups_mine_now_asks_its_videos_alone_and_says_the_rest_are_lef
     win.mine.mine_row(row, ids)
     assert [c[1] for c in asks(writer)] == [ids[:2]]
     assert win.toasts.card.message == strings.MINE_ASKED_VIDEOS.format(title=row.title)
+    win.mine.settle(ids)                             # (round 8 row 45: asked again only once the first press ended)
     win.mine.mine_row(row, ids[:2])
     assert [c[1] for c in asks(writer)] == [ids[:2], ids[:2]]
     assert win.toasts.card.message == strings.MINE_ASKED.format(title=row.title)
@@ -768,3 +770,256 @@ def test_row28_while_connect_is_off_mine_now_is_offered_saying_why_and_asks_noth
                                                                     why=feed.OFF_CONNECT)]
     win.items.episode_pick(row, ep, entry[0].name, entry[0].payload)
     assert asks(writer) == [] and win.bar_line.full() == feed.OFF_CONNECT
+
+
+# --- round 8 row 45 (the trial): *Mine now* turns its pill from the frame of the press ------------------------------- #
+def _watch_asks(win, writer):
+    """`writer.ask_mining` wrapped: at each call, whether every asked file was already marked pressed in Current's list
+    and how often the list's viewport had painted since the watch began."""
+    from tests.qt.test_press import Paints
+    lst = lst_of(win)
+    paints = Paints(lst.viewport())
+    QApplication.processEvents()
+    seen = []
+    real = writer.ask_mining
+
+    def ask_mining(ids, asked=True, label=None):
+        seen.append((set(ids) <= lst.pressed_ids, paints.n))
+        return real(ids, asked=asked, label=label)
+    writer.ask_mining = ask_mining
+    return seen, paints.n
+
+
+def _status_moved(lst, ids, status):
+    """The reader's next view, as Connect's feed would make it: the asked files' statuses now `status`."""
+    entries = []
+    for kind, row, lines in lst.model().entries:
+        if kind in (rows.HERO, rows.ROW) and any(e.id in ids for e in row.episodes):
+            row = row._replace(episodes=type(row.episodes)(e._replace(status=status) if e.id in ids else e
+                                                           for e in row.episodes))
+        entries.append((kind, row, lines))
+    lst.set_entries(entries)
+
+
+def test_round8_mine_now_turns_its_pill_painted_before_the_ask_and_stops_when_the_feed_moves(act, monkeypatch):
+    """Round 8 row 45: a click on *Mine now* marks its files pressed and repaints them — the turning mark in the
+    hourglass's place, its hover *Asked · starting…* — before the ask reaches the writer; a second click asks nothing;
+    saved, Connect's feed is looked at now; the mark goes when the feed's status for the file changes from what it was
+    at the press. Red first: before the trial nothing was marked at the ask (the pill stayed the hourglass)."""
+    from app.services import view_rows
+    _seed, win, writer = act()
+    lst = lst_of(win)
+    looked = []
+    monkeypatch.setattr(win.services.status, "refresh_soon", lambda *names: looked.append(names))
+    i = row_with(lst, "waiting")
+    row = lst.model().entries[i][1]
+    seen, before = _watch_asks(win, writer)
+    click(lst, action(lst, i))
+    assert len(seen) == 1
+    marked, painted = seen[0]
+    ids = asks(writer)[0][1]
+    assert marked and painted > before                                 # pressed and painted before the ask
+    assert set(ids) <= lst.pressed_ids and lst.turning() is None           # (frozen: the mark is still, never gone)
+    assert action(lst, i)[2] == strings.ROWS_ASKED_TIP                  # the hover's intentional words
+    click(lst, action(lst, i))
+    assert len(asks(writer)) == 1                                       # pressed again: asked once
+    assert wait_until(lambda: ("connect",) in looked)                   # saved: the feed looked at now
+    lst.set_entries(list(lst.model().entries))                          # a view with nothing new of it: still pressed
+    assert set(ids) <= lst.pressed_ids
+    _status_moved(lst, ids, view_rows.Status("mining", "Mining", "Being mined now", "accent"))
+    assert not lst.pressed_ids and lst._turn is None                        # Connect took it: the pill is its own again
+    assert row.key == lst.model().entries[i][1].key
+
+
+def test_round8_a_refused_or_undone_ask_stops_the_pill_turning(act):
+    """Round 8 row 45: the store refusing the ask (nothing written) or its Undo puts the pill back at once."""
+    _seed, win, writer = act()
+    lst = lst_of(win)
+    i = row_with(lst, "waiting")
+    real = writer.ask_mining
+    writer.ask_mining = lambda ids, asked=True, label=None: None       # refused as it was handed over
+    click(lst, action(lst, i))
+    assert not lst.pressed_ids
+    writer.ask_mining = real
+    click(lst, action(lst, i))
+    assert lst.pressed_ids
+    ticket = win.moves.toasted
+    win.moves.undo(ticket)                                              # the toast's Undo
+    assert not lst.pressed_ids
+
+
+def test_round8_the_episode_menus_mine_now_turns_that_episodes_pill_before_the_ask(act):
+    """Round 8 row 45, a menu's press: the episode's ⋯ closes as *Mine now* is picked, so its pending mark is the pill of
+    the episode it acts on — pressed and repainted before the ask, its hover *Asked · starting…*; no line in the bar.
+    Red first: before the trial the pill stayed the hourglass until Connect's next tick."""
+    _seed, win, writer = act()
+    lst = lst_of(win)
+    row, ep = _waiting_episode(lst)
+    i = next(n for n, e in enumerate(lst.model().entries) if getattr(e[1], "key", None) == row.key)
+    lst.scrollTo(lst.model().index(i, 0), lst.ScrollHint.PositionAtTop)
+    lst.toggle(lst.model().index(i, 0))                                  # opened: its episodes' pills show
+    assert wait_until(lambda: lst.model().open_key == row.key)
+    settle()
+    line = win.bar_line.full()
+    seen, before = _watch_asks(win, writer)
+    entry = _mine_now(win.items.episode_entries(row, ep))[0]
+    win.items.episode_pick(row, ep, entry.name, entry.payload)
+    assert asks(writer) == [("ask_mining", [ep.id], {"on": True})]
+    assert seen[0][0] and seen[0][1] > before
+    assert lst.pressed_ids == {ep.id} and win.bar_line.full() == line
+    j = next(n for n, e in enumerate(lst.model().entries) if getattr(e[1], "key", None) == row.key)
+    pill = next(p for p in parts_of(lst, j) if p[3] is not None and getattr(p[3], "ids", None) == (ep.id,))
+    assert pill[2] == strings.ROWS_ASKED_TIP
+
+
+# --- round 8's adversary (A-3, A-4, A-6, A-7) and intent keeper (IK-3) --------------------------------------------- #
+def _hero_waiting(lst):
+    """Current's top card (closed), its status made a plain *Waiting* (its turn, nothing else) if the seed's isn't:
+    its index and the card."""
+    entries = list(lst.model().entries)
+    h = next(n for n, e in enumerate(entries) if e[0] == rows.HERO)
+    hero = entries[h][1]
+    if hero.status is None or rows.action_of(hero.status, hero.episodes, None, hero.media_word)[0] != "mine-now":
+        st = _waiting_episode(lst)[1].status
+        hero = hero._replace(status=st, episodes=type(hero.episodes)(e._replace(status=st, cards=0, mining=False,
+                                                                                deleted=False, missing=False)
+                                                                     for e in hero.episodes))
+        entries[h] = (rows.HERO, hero, entries[h][2])
+        lst.set_entries(entries)
+    lst.scrollTo(lst.model().index(h, 0), lst.ScrollHint.PositionAtTop)
+    QApplication.processEvents()
+    assert lst.model().open_key != hero.key
+    return h, hero
+
+
+def test_round8_a3_mine_now_on_the_closed_top_card_shows_its_mark_and_says_asked(act, monkeypatch):
+    """A-3: the closed top card is one cached picture; pressed, nothing painted the mark over it and its hover kept
+    the old tip, so a click showed nothing (and a second one, deduped, nothing either). Now its pill turns over the
+    picture and its hover says *Asked · starting…*, as a row's. Red first: no mark painted, the old tip."""
+    _seed, win, writer = act()
+    lst = lst_of(win)
+    monkeypatch.setattr(win.services.status, "refresh_soon", lambda *names: None)
+    h, hero = _hero_waiting(lst)
+    status = next(p for p in parts_of(lst, h) if p[0] == "mine-now")
+    assert status[2] != strings.ROWS_ASKED_TIP
+    marks = []
+    real = rows.paint_pressed
+    monkeypatch.setattr(rows, "paint_pressed", lambda p, rect, *a, **k: (marks.append(QRectF(rect)),
+                                                                          real(p, rect, *a, **k)))
+    lst.press_ids([e.id for e in hero.episodes])
+    assert marks and any(m.intersects(QRectF(status[1])) for m in marks)    # painted over its pill, in the press
+    assert next(p for p in parts_of(lst, h) if p[0] == "mine-now")[2] == strings.ROWS_ASKED_TIP
+
+
+def test_round8_a4_an_ask_saved_gives_way_to_connects_own_state_when_connect_says_nothing_new(act, monkeypatch):
+    """A-4: Connect switched on but not running, Anki closed with the file's wait unchanged, on battery: nothing new
+    of the file ever came, so the pill turned all session and *Asked · starting…* hid the wait's own reason. Now its
+    press ends `SETTLE_S` after the ask was saved: the pill is its own again, with its own hover (a wait is a state),
+    and a click asks again. Red first: still pressed, for good."""
+    monkeypatch.setattr(mine_actions, "SETTLE_S", 0.05)
+    _seed, win, writer = act()
+    lst = lst_of(win)
+    monkeypatch.setattr(win.services.status, "refresh_soon", lambda *names: None)
+    i = row_with(lst, "waiting")
+    own_tip = action(lst, i)[2]
+    click(lst, action(lst, i))
+    ids = asks(writer)[0][1]
+    assert set(ids) <= lst.pressed_ids
+    lst.set_entries(list(lst.model().entries))                          # Connect's feed: nothing new of it
+    assert wait_until(lambda: not lst.pressed_ids, 5)
+    assert not win.presses.any_live() and lst._turn is None
+    assert action(lst, i)[2] == own_tip
+    click(lst, action(lst, i))
+    assert len(asks(writer)) == 2
+
+
+def test_round8_ik3_each_asked_file_is_a_press_of_the_windows_so_the_hairline_runs_with_it(act, monkeypatch):
+    """IK-3: Mine now's pending was a mark of the lists' alone — no press, so no hairline, no failed state, nothing a
+    check of every press could see. Now each file asked for is a press of the window's (`mine:<language>:<id>`),
+    live — the hairline on — before the ask reaches the writer; Connect taking it ends it (done), a refusal fails it."""
+    from app.services import press as press_service
+    from app.services import view_rows
+    _seed, win, writer = act()
+    lst = lst_of(win)
+    monkeypatch.setattr(win.services.status, "refresh_soon", lambda *names: None)
+    seen = []
+    real = writer.ask_mining
+
+    def ask_mining(ids, asked=True, label=None):
+        seen.append((win.presses.any_live(), win.progress.busy))
+        return real(ids, asked=asked, label=label)
+    writer.ask_mining = ask_mining
+    i = row_with(lst, "waiting")
+    click(lst, action(lst, i))
+    ids = asks(writer)[0][1]
+    assert seen == [(True, True)]
+    presses = [win.presses.find(f"mine:{win.language}:{n}") for n in ids]
+    assert all(p is not None and p.live() for p in presses)
+    _status_moved(lst, ids, view_rows.Status("mining", "Mining", "Being mined now", "accent"))   # Connect took them
+    assert all(p.state == press_service.DONE for p in presses) and not lst.pressed_ids
+    writer.ask_mining = lambda ids, asked=True, label=None: None       # the store refuses the next one
+    j = row_with(lst, "waiting")
+    click(lst, action(lst, j))
+    refused = [win.presses.find(f"mine:{win.language}:{e.id}") for e in lst.model().entries[j][1].episodes]
+    assert any(p is not None and p.state == press_service.FAILED for p in refused)
+    assert not win.presses.any_live() and not lst.pressed_ids
+
+
+def test_round8_a6_a7_the_pressed_mark_turns_on_the_clock_only_while_it_is_on_screen(act, monkeypatch):
+    """A-7: the freeze switch kept every turning mark still under test, so the turning path (the clock, `turned_at`,
+    a frame repainting the mark's box alone) never ran. A-6: while a press was live the clock ticked at frame rate even
+    with nothing pressed on screen (the row scrolled away). Motion on here: the mark turns, each frame repaints only its
+    box, and the clock stops once no mark is painted, and starts again when one is. Red first: the clock never
+    stopped."""
+    from PyQt6.QtCore import QRect
+    from app.qt import freeze, motion
+    _seed, win, writer = act()
+    lst = lst_of(win)
+    monkeypatch.setattr(win.services.status, "refresh_soon", lambda *names: None)
+    if motion.clock().mode.reduced:
+        pytest.skip("Reduced motion is on for this session: the mark is still by design")
+    i = row_with(lst, "waiting")
+    freeze.set_frozen(False)                                            # (conftest puts the switch back)
+    click(lst, action(lst, i))
+    turn = lst._turn
+    assert wait_until(lambda: turn.on_clock, 5)
+    phases = set()
+    assert wait_until(lambda: phases.add(lst.turning()) or len(phases - {None}) >= 3, 5)   # it turns
+    assert wait_until(lambda: lst._turn_rects, 5)
+    row = lst.visualRect(lst.model().index(i, 0))
+    assert all(r.height() < row.height() and r.width() < 80 and row.contains(r) for r in lst._turn_rects)
+    win.resize(win.width(), 520)                                        # a short window: the row can scroll away
+    settle()
+    last = lst.model().rowCount() - 1
+    lst.scrollTo(lst.model().index(last, 0), lst.ScrollHint.PositionAtBottom)
+    QApplication.processEvents()
+    if lst.visualRect(lst.model().index(i, 0)).intersects(QRect(lst.viewport().rect())):
+        pytest.skip("the seed's list is too short to scroll its pressed row away")
+    assert wait_until(lambda: not turn.on_clock, 5)                     # nothing pressed on screen: no ticking
+    assert lst.pressed_ids and lst._turn is turn
+    lst.scrollTo(lst.model().index(i, 0), lst.ScrollHint.PositionAtTop)
+    assert wait_until(lambda: turn.on_clock, 5)                         # on screen again: it turns again
+
+
+def test_round8_the_turning_hourglass_is_a_little_smaller_than_the_still_one_in_the_same_box(qapp):
+    """Round 2 (Sonic: "the spin and slightly smaller"): a pressed pill's hourglass is drawn at `TURNING_SCALE` in the
+    same box (nothing around it moves), so the difference shows even still (Reduced motion). Red first: the trial drew
+    it at full size."""
+    from PyQt6.QtCore import QRect, QRectF
+    from PyQt6.QtGui import QImage, QPainter
+
+    def ink_height(draw):
+        img = QImage(48, 48, QImage.Format.Format_ARGB32)
+        img.fill(0)
+        q = QPainter(img)
+        draw(q)
+        q.end()
+        accent = rows.c("accent")
+        ys = [y for y in range(48) for x in range(48) if abs(img.pixelColor(x, y).blue() - accent.blue()) < 40 and
+              img.pixelColor(x, y).alpha() > 200 and img.pixelColor(x, y).green() > 100]
+        return max(ys) - min(ys) + 1
+
+    box = QRect(12, 12, 24, 24)
+    full = ink_height(lambda q: rows.icon(q, "waiting", QRectF(17.5, 17.5, 13, 13), rows.c("accent")))
+    turning = ink_height(lambda q: rows.paint_pressed(q, box, None))
+    assert rows.TURNING_SCALE < 1 and turning < full and turning >= full * 0.75, (turning, full)

@@ -500,3 +500,45 @@ def test_set_aside_files_text_is_written_a_few_at_a_time_never_all_held_at_once(
     assert set(_kept_text(held).held()) == {ti._norm(p) for p in files[1:]}
     assert sizes and max(sizes) <= 2, sizes
     held.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_set_aside_file_back_on_the_disk_through_a_wipe_keeps_its_own_text_never_the_rebuilt_one(language):
+    """A counted episode's file goes missing (an unplugged drive): its text is kept, rebuilt from its cached sentences.
+    It comes back unchanged as it is set aside (watched, or Finished) in the same pass that wipes the token store (a new
+    tokenizer identity): tokenized again in the pool, its text is kept as read from its file this time — never left as
+    the rebuilt copy, which has lost the file's line breaks, for a later wipe to read back in."""
+    a, b, *_rest = _files(language)
+    tok = ti.make_tokenizer(language)
+    store = ti.open_store(language)
+    store.reconcile([a, b], tok, build_signature="one")
+    away = b + ".away"
+    os.replace(b, away)
+    store.reconcile([a, b], tok, kept=[], build_signature="one")
+    assert _kept_text(store).held() == {ti._norm(b): True}, "its file gone: rebuilt from the cached sentences"
+    os.replace(away, b)                                     # back as it was: the same modified time and size
+    store.reconcile([a], tok, kept=[], aside=[b], build_signature="two")
+    assert ti._norm(b) in store.aside_files()
+    assert _kept_text(store).held() == {ti._norm(b): False}, "read from its file"
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_everyday_reconcile_of_set_aside_files_with_nothing_kept_writes_no_text_again(language, monkeypatch):
+    """A library with Finished content (set aside) and no New arrival or removed item (no kept list): once their text is
+    kept, a reconcile with nothing changed writes none of it again — the indexer never re-reads every Finished file at
+    each pass."""
+    a, b, c, *_rest = _files(language)
+    tok = ti.make_tokenizer(language)
+    store = ti.open_store(language)
+    store.reconcile([a], tok, kept=[], aside=[b, c])
+    assert set(_kept_text(store).held()) == {ti._norm(b), ti._norm(c)}
+    written, real_put = [], ti._KeptText.put
+
+    def put(self, rows):
+        written.extend(rows)
+        return real_put(self, rows)
+    monkeypatch.setattr(ti._KeptText, "put", put)
+    store.reconcile([a], tok, kept=[], aside=[b, c])
+    assert written == [], "nothing changed: no text written again"
+    store.close()

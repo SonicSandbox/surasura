@@ -186,6 +186,28 @@ def test_what_changes_the_finished_files_bumps_the_order_once_and_nothing_else_d
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
+def test_an_arrival_dragged_into_finished_and_back_out_moves_the_order_each_way_and_so_do_their_undos(language):
+    """New arrivals are kept (text only) and Finished is set aside (the run signature's "reference" part): neither tier
+    is counted, but a row going from one to the other changes what a run reads. A drag each way, and the Undo of each,
+    moves `order_version` once — the Finished tier among the touched tiers, never a move inside it."""
+    store = migrated(language)
+    item = store.set_tier([store.ids("now")[0]], "arrivals").items[0]["id"]
+    v = lambda: store.versions()["order_version"]          # noqa: E731
+    order = v()
+    into = store.move([item], "graduated")
+    assert v() == order + 1, "an arrival dragged into Finished joins the reference"
+    store.undo(into)
+    assert v() == order + 2, "its Undo takes it back out"
+    store.move([item], "graduated")
+    assert v() == order + 3
+    out = store.move([item], "arrivals")
+    assert v() == order + 4, "out of Finished into New arrivals: it leaves the reference"
+    store.undo(out)
+    assert v() == order + 5, "its Undo puts it back into Finished"
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 def test_the_store_and_read_only_mode_list_the_same_set_aside_files(language):
     """Finished items (one also watched), a watched NOW episode, and a Finished video still waiting for its subtitle:
     the store's set-aside list (`schedule(with_aside=True)`) and read-only mode's (the copy, `read_only_schedule`) hold

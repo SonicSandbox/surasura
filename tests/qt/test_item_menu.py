@@ -1994,7 +1994,8 @@ def test_real_store_G3_same_show_as_refused_by_anilist_says_why_in_the_bar_and_c
     assert wait_until(lambda: not win.moves.tickets, 5)
     assert _state(store) == before
     done = strings.ITEM_SAME_SHOW_DONE.format(b=row.title, a=show.title)
-    assert win.toasts.card is None or win.toasts.card.message != done          # no toast for what never happened
+    # round 8 row 45: its toast showed at the press; the store's no takes it away (nothing happened to undo)
+    assert not win.toasts.alive or win.toasts.card.message != done
 
 
 # --- LM11b fix round A ---------------------------------------------------------------------------------------------- #
@@ -2119,31 +2120,31 @@ GROUP_TEXT = {
 
 
 @pytest.mark.parametrize("name", list(GROUP_WRITES))
-def test_every_group_write_toasts_only_once_saved_and_never_for_nothing_landed(world, name):
-    # a busy store: no toast (and no Undo) until the store saved it; one that lands as nothing toasts nothing
+def test_every_group_write_toasts_at_the_press_saving_while_it_waits_and_goes_for_nothing_landed(world, name):
+    # round 8 row 45 (scope §3.5): a busy store — the toast and its Undo at the press, reading *· saving…* once it has
+    # waited 300 ms, its own words once saved; one that lands as nothing takes its toast away (nothing to undo)
     _seed, win, writer = world()
     b, a = two_shows(win)
     rs = rows_of(win)
     g, o = (as_group(win, a), rs[b]) if name in ("into_group_at", "add_to_group") else (rs[a], rs[b])
     text = GROUP_TEXT.get(name, lambda g, o: strings.ITEM_GROUPED_WITH.format(other=o.title, title=g.title))(g, o)
-    shown = lambda: win.toasts.card is not None and win.toasts.card.message == text     # noqa: E731
+    shown = lambda words=text: win.toasts.alive and win.toasts.card.message == words     # noqa: E731
     writer.stuck = True
     assert GROUP_WRITES[name](win, g, o) is not None
-    settle(200)
-    assert not shown(), "toasted before the store saved it"
+    assert shown() and win.toasts.card.buttons, "its toast and Undo at the press"
+    assert wait_until(lambda: shown(strings.TOAST_SAVING.format(text=text)), 5), "saving… while the store is busy"
     writer.free()
-    assert wait_until(shown, 5) and win.toasts.card.buttons, "its toast and Undo once saved"
+    assert wait_until(shown, 5) and win.toasts.card.buttons, "its own words once saved, Undo kept"
     win.toasts.close()
     settle()
     op = calls(writer)[-1][0]
     writer.nothing = {op}
     writer.calls.clear()
     lst_of(win).clear_picks()
-    win.moves.toasted = None
     assert GROUP_WRITES[name](win, g, o) is not None and calls(writer)
     assert wait_until(lambda: not win.moves.tickets, 5)
     settle(200)
-    assert win.moves.toasted is None, "toasted for what never happened"
+    assert not win.toasts.alive, "no toast left for what never happened"
 
 
 def test_a_target_in_finished_or_new_arrivals_is_never_a_groups(world):
@@ -2252,7 +2253,8 @@ def test_real_store_same_show_the_ids_refuse_says_why_in_the_bar_and_toasts_noth
     settle(200)
     assert {store.item(i)["work_id"] for i in mine} == {row.work_id}
     text = strings.ITEM_SAME_SHOW_DONE.format(b=row.title, a=other.title)
-    assert win.toasts.card is None or win.toasts.card.message != text
+    # round 8 row 45: its toast showed at the press; the store's no takes it away (nothing happened to undo)
+    assert not win.toasts.alive or win.toasts.card.message != text
 
 
 def test_real_store_a_group_dropped_on_an_opened_groups_episode_joins_it_whole_never_cuts_it(real):
@@ -2298,7 +2300,8 @@ def test_real_store_a_group_join_the_store_refuses_is_never_toasted_as_grouped(r
     settle(200)
     assert any("gone" in t for t in said), said
     grouped = strings.ITEM_GROUPED_WITH.format(other=dragged.title, title=target.title)
-    assert win.toasts.card is None or win.toasts.card.message != grouped
+    # round 8 row 45: its toast showed at the press; the store's no takes it away (nothing happened to undo)
+    assert not win.toasts.alive or win.toasts.card.message != grouped
 
 
 # --- LM11b mutant pass: the gaps it found ----------------------------------------------------------------------- #

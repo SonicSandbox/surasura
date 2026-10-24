@@ -711,11 +711,12 @@ class ItemActions(QObject):
         return out
 
     def _give_saved(self, ticket, command):
-        """`_give` with its toast (and Undo) once the store saved the command — a refusal, or nothing to change (the
-        name it had), toasts nothing (`DragController._reread` runs a waiting `then` for a command that landed as
-        nothing, so the change is asked for)."""
-        ticket.then = lambda: self.moves._toast(ticket) if ticket.change is not None else None
-        return self.moves._give(ticket, command, toast=False)
+        """`_give` for what the store rearranges itself (a group made, undone or renamed, a show joined): round 8 row
+        45 — its toast (and Undo) at the press, reading *· saving…* while the write waits, as every move's does. A
+        refusal toasts nothing; a command that lands as nothing to change (the name it had) or fails takes its toast
+        away (`DragController._reread` runs a waiting `then` for a command that landed as nothing)."""
+        ticket.then = lambda: self.moves.toast_gone(ticket) if ticket.change is None else None
+        return self.moves._give(ticket, command)
 
     def ungroup(self, row):
         """*Ungroup*: `Writer.ungroup` — each show back in a row of its own, in place; its toast with Undo."""

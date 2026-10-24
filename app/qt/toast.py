@@ -9,6 +9,9 @@ the buckets): no input, its time still running; after the drop it is back, unani
 
 The message is plain text (a title is never read as markup). The window never waits on a toast; what Undo does is the
 caller's (W3.1's undo stack).
+
+**Its write waiting** (round 8 row 45): a toast that stands for a write still on its way reads *"… · saving…"*
+(`set_saving`, the drag controller's one rule for every write's toast, wherever it shows — `drag.DragController`).
 """
 from PyQt6.QtCore import QEvent, QObject, Qt, QTimer
 from PyQt6.QtGui import QFontMetrics, QPainter
@@ -59,10 +62,13 @@ class ToastCard(motion.Overlay):
         if n < len(self._callbacks) and self._callbacks[n] is not None:
             self._callbacks[n]()
 
-    def set_content(self, message, actions):
-        """`actions`: [(label, tooltip, callback)], at most MAX_BUTTONS."""
+    def set_message(self, message):
         self.message = message
         self.setAccessibleName(message)
+
+    def set_content(self, message, actions):
+        """`actions`: [(label, tooltip, callback)], at most MAX_BUTTONS."""
+        self.set_message(message)
         actions = actions[:MAX_BUTTONS]
         self._callbacks = [callback for _label, _tip, callback in actions]
         for i, (label, tip, _callback) in enumerate(actions):
@@ -113,7 +119,10 @@ class ToastHost(QObject):
         self.life.timeout.connect(self.close)
         self.dragging = False
         self.alive = False
-        parent.installEventFilter(self)
+        self.text = ""                                # the message as shown, without *· saving…*
+        self.saving = False
+        self.on_show = None                           # called as each toast shows (the drag controller's: which writes
+        parent.installEventFilter(self)               # it stands for)
 
     # --- showing ---------------------------------------------------------------------------------------------- #
     def show(self, message, undo=None, buttons=(), long=False):
@@ -126,8 +135,11 @@ class ToastHost(QObject):
         if undo is not None:
             actions.append((strings.TOAST_UNDO, strings.TOAST_UNDO_TIP, self._closing(undo)))
         actions.extend((label, tip, self._closing(cb)) for label, tip, cb in buttons)
+        self.text, self.saving = message, False
         self.card.set_content(message, actions)
         self.alive = True
+        if self.on_show is not None:
+            self.on_show()
         self.life.start(theme.MOTION["toast-shown-anki" if long else "toast-shown"])
         self.place()
         self._announce(message)
@@ -138,7 +150,18 @@ class ToastHost(QObject):
             return
         motion.open_overlay(self.card, self.card.how, self.card.shadow_name)
 
+    def set_saving(self, on):
+        """The shown toast's write is still on its way (`on`): *"… · saving…"* after its words; off, its words alone."""
+        on = bool(on) and self.alive
+        if on == self.saving:
+            return
+        self.saving = on
+        self.card.set_message(strings.TOAST_SAVING.format(text=self.text) if on else self.text)
+        self.place()
+        self.card.update()
+
     def close(self):
+        self.saving = False
         self.alive = False
         self.life.stop()
         self.card.hide()

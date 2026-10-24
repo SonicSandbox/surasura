@@ -23,6 +23,7 @@ from tests.qt.test_jobs_bar import World, _offer
 from tests.qt.test_needs_you import button, world  # noqa: F401 — Needs you's own world (a fixture)
 from tests.qt.test_press import Paints, _Calls, arc_shown
 from tests.qt.test_press import window as shown_window  # noqa: F401 — a window over a seeded library (a fixture)
+from tests.qt.test_press import stage  # noqa: F401,E402 — a button row (a fixture)
 
 
 @pytest.fixture
@@ -121,7 +122,7 @@ def test_a_menu_press_with_nothing_on_screen_the_online_guide_turns_the_bars_arc
 def test_refresh_turns_the_bars_arc_until_a_looks_summary_comes_back(duties):
     """§2.1 Refresh (GAP W): the bar's arc from the key until the look's summary; with nothing to look with, at once."""
     win = duties.win
-    win.looks = type("Looks", (), {"asked": lambda self, **_kw: True})()
+    win.looks = type("Looks", (), {"asked": lambda self, **_kw: True, "close": lambda self: None})()
     win.refresh_sources()
     assert win.bar_arc.isVisible() and win.presses.find("sources:refresh").live()
     win._sources_looked({"language": win.language, "sources": []})
@@ -141,10 +142,10 @@ def test_play_marks_the_files_play_on_its_line_before_its_lookup_is_handed_over(
     real = rows.paint_marked
     monkeypatch.setattr(rows, "paint_marked", lambda p, rect, turning, **kw: (drawn.append(kw), real(p, rect, turning,
                                                                                                        **kw)))
-    handed.look = lambda: (dict(lst.marked), len(drawn))
+    handed.look = lambda: ({k: list(v) for k, v in lst.marked.items()}, len(drawn))
     page._play(ep)
     marked, painted = handed[-1].look
-    assert marked == {ep.id: "play"} and painted >= 1
+    assert marked == {ep.id: ["play"]} and painted >= 1
     assert page._play(ep) is None                                     # a second ▶ meanwhile does nothing
     handed[-1].then(None)
     assert lst.marked == {}
@@ -181,6 +182,154 @@ def test_keep_its_words_on_a_line_turns_that_lines_button_until_it_is_kept(world
     other = button(ny, gone.key, "keep_words", gone.lines[0])
     b.click()
     assert arc_shown(b) and qpress.arc(other) is None
-    p = qpress.presses_of(win).get(ny._press_key("keep_words", gone))
+    p = qpress.presses_of(win).get(ny._press_key("keep_words", gone, line.key))      # (its line's own, P3-A1)
     assert p.live()
     assert wait_until(lambda: p.state in (press_service.DONE, press_service.IDLE), 10)
+
+
+# --- the review's fixes (round8-p3-adversary.md) ------------------------------------------------------------------- #
+def test_p3_a1_each_lines_keep_its_words_is_its_own_press_two_lines_turn_together(world):  # noqa: F811
+    """P3-A1: every line's *Keep its words* shared one key, so line B pressed while line A's ran was dropped: no arc,
+    no answer. Each line is its own press now: both turn, both are asked."""
+    seed, win, writer, ny = world()
+    win.show_tab("needs")
+    _settle()
+    gone = next(e for e in ny.entries if e.kind == service.GONE and len(e.lines) == 3)
+    a, b = (button(ny, gone.key, "keep_words", ln) for ln in gone.lines[:2])
+    a.click()
+    b.click()
+    keys = [ny._press_key("keep_words", gone, ln.key) for ln in gone.lines[:2]]
+    assert keys[0] != keys[1]
+    assert arc_shown(a) and arc_shown(b)
+    assert all(qpress.presses_of(win).get(k).state != press_service.IDLE for k in keys)
+
+
+def test_p3_a2_a_look_that_couldnt_run_ends_refresh_and_says_why(qapp, duties):
+    """P3-A2: Refresh's arc ended only at a summary; a look with no store (or one that failed) sends none, so the arc
+    turned for two minutes with no word. The looks now say every look's end; a look with no store ends the press,
+    failed, with its reason in the bar."""
+    from app.services.source_looks import SourceLooks
+
+    class NoStore:
+        mode = "store"
+
+        def handle(self):
+            return None
+    looks = SourceLooks(NoStore(), "ja")
+    ended = []
+    looks.on_ended = lambda told, why: ended.append((told, why))
+    try:
+        looks._look(True, None)
+    finally:
+        looks.close()
+    assert ended == [(False, "the library isn't open")]
+    win = duties.win
+    win.looks = type("Looks", (), {"asked": lambda self, **_kw: True, "close": lambda self: None})()
+    win.refresh_sources()
+    p = win.presses.find("sources:refresh")
+    assert p.live()
+    win._look_ended(ended[0])
+    assert p.state == press_service.FAILED and not win.bar_arc.isVisible()
+    from app.qt import strings
+    assert win.bar_line.full() == strings.REFRESH_FAILED.format(why="the library isn't open")
+    win.looks = None
+
+
+def test_p3_a3_a_second_refresh_while_one_is_live_looks_at_nothing(duties):
+    """P3-A3: a second Refresh while one ran asked for one more full look of every folder; with nothing to look with
+    it flashed the arc for a frame. Neither now."""
+    win, asked = duties.win, []
+    win.looks = type("Looks", (), {"asked": lambda self, **kw: asked.append(kw) or True,
+                                   "close": lambda self: None})()
+    win.refresh_sources()
+    win.refresh_sources()
+    assert len(asked) == 1
+    win._look_ended((True, None))
+    win.looks = None
+    assert win.refresh_sources() is False and not win.presses.find("sources:refresh").live()
+
+
+def test_p3_a4_two_presses_on_one_file_keep_a_mark_each(shown_window):  # noqa: F811
+    """P3-A4: ▶ then ⋯ *Open its folder* on one file — the second mark overwrote the first, and the first press to
+    end took both off. Each press keeps its own: the newest shows, and the other stays when one ends."""
+    lst = shown_window.page_widgets["current"].list
+    ep = shown_window.page_widgets["current"].view_model.rows[0].episodes[0]
+    play, more = qpress.row_mark(lst, [ep.id], "play"), qpress.row_mark(lst, [ep.id], "more")
+    play.on()
+    more.on()
+    assert lst.marked_part([ep]) == "more"
+    more.off()
+    assert lst.marked_part([ep]) == "play"                       # ▶'s press still marked
+    more.on()
+    play.off()
+    assert lst.marked_part([ep]) == "more"
+    more.off()
+    assert lst.marked == {} and lst.marked_part([ep]) is None
+
+
+def test_p3_a5_a_window_whose_say_holds_nothing_never_holds_the_press(qapp, handed):
+    """P3-A5: `say(text)` with no `hold` (the wizard's, the drag controller's) raised after the press went live: live
+    for ever, every later press of it nothing. Now the work starts and ends it."""
+    class Plain:
+        def say(self, text):
+            pass
+    win = Plain()
+    p = qpress.run(None, "wizard:check", lambda: None, busy="Checking…", win=win)
+    assert p is not None and len(handed) == 1
+    handed[0].then(None)
+    assert p.state == press_service.DONE and qpress.run(None, "wizard:check", lambda: None, win=win) is not None
+
+
+def test_p3_a6_an_answer_that_leaves_its_card_can_be_pressed_again_at_once(world):  # noqa: F811
+    """P3-A6: *Mine anyway* answered "couldn't" left its card, but the card's press lingered DONE as "going": pressed
+    again at once, nothing. It asks again now."""
+    calls = []
+
+    def mine(*args):
+        calls.append(args)
+        return False
+    connect = {"jobs": [], "gaps": [], "needs": [{"id": 11, "kind": "not-timed", "say": "Ep 3 isn't timed to its video",
+                                                  "item": 3, "seen_at": None, "at": "2026-10-15T09:00:00Z"}]}
+    seed, win, writer, ny = world(connect=connect, connect_calls={"mine_anyway": mine, "kick": lambda *_a: None})
+    entry = next(e for e in ny.entries if (e.data or {}).get("need_id") == 11)
+    button(ny, entry.key, "mine_anyway").click()
+    assert wait_until(lambda: len(calls) == 1 and not qpress.presses_of(win).any_live(), 5)
+    button(ny, entry.key, "mine_anyway").click()
+    assert wait_until(lambda: len(calls) == 2, 5)
+
+
+def test_p3_a7_an_arc_over_an_icon_has_the_ground_a_rows_mark_has(stage):
+    """P3-A7: `widget_mark` drew the bare arc over a ⋯'s dots; a row's marked ⋯ has a raised ground. One look: the
+    widget's mark covers the icon with that ground, the arc in its middle."""
+    m = qpress.widget_mark(stage.leave)
+    m.on()
+    s = m.spinner
+    assert isinstance(s, qpress._Grounded) and s.isVisible()
+    assert s.width() == min(stage.leave.width(), stage.leave.height())
+    m.off()
+
+
+def test_p3_a8_mine_texts_path_is_on_the_clipboard_before_anki_miner_starts(shown_window, monkeypatch):  # noqa: F811
+    from app.connect import anki_miner
+    from app.qt import screens
+    win = shown_window
+    if getattr(win, "mine", None) is None:
+        pytest.skip("no mining actions in this window")
+    seen = []
+    monkeypatch.setattr(anki_miner, "find", lambda _s: r"C:\AnkiMiner.exe")
+    monkeypatch.setattr(screens, "open_with_system", lambda _p: seen.append(QApplication.clipboard().text()))
+    QApplication.clipboard().setText("before")
+    win.mine.mine_text("第3話", "HighPriority/葬送のフリーレン/葬送のフリーレン 第3話.srt")
+    assert wait_until(lambda: seen, 5)
+    assert seen[0].endswith("葬送のフリーレン 第3話.srt")
+
+
+def test_p3_a9_off_windows_the_open_itself_stays_on_the_windows_thread(shown_window, monkeypatch):  # noqa: F811
+    import threading
+    from app.qt import screens
+    monkeypatch.setattr(qpress, "OFF_THREAD", False)
+    where, done = [], []
+    monkeypatch.setattr(screens, "open_with_system", lambda _p: where.append(threading.current_thread()))
+    qpress.open(shown_window, lambda: r"C:\a.mkv", key="open:a9", then=done.append)
+    assert wait_until(lambda: done, 5)
+    assert where == [threading.main_thread()]

@@ -1255,4 +1255,6 @@ COVERS_REMOVE_NONE = "There's no library open, so there are no downloaded covers
 # --- round 8 row 45, P3: the shared press helpers and the main window's sweep (press.py)
 OPEN_IT = "It"
 OPEN_NOT_OPENED = "the system didn't open it"
+REFRESH_FAILED = "Your folders couldn't be looked at just now: {why}"
+REFRESH_NOT_LOOKED = "the look stopped"
 # --- end round 8 row 45, P3

@@ -56,6 +56,11 @@ class Press:
     def failed(self, why):
         self._move(FAILED, why)
 
+    def release(self):
+        """Done, and its control stays (a card's "couldn't" answer): idle now, so a press at once asks again."""
+        if self._state == DONE:
+            self._set(IDLE)
+
     def subscribe(self, callback):
         """`callback(press)` after every change."""
         self._subscribers.append(callback)

@@ -411,7 +411,8 @@ class NeedsYou(QObject):
                               "kick": _connect_callable("kick", "kick")}
         self.cards = page.cards
         self.cards.shown = self.available
-        self.cards.adopt = lambda b, name, entry: qpress.adopt(b, self._press_key(name, entry), win=self.win)
+        self.cards.adopt = lambda b, name, entry: qpress.adopt(b, self._press_key(name, entry, b.property("line")),
+                                                               win=self.win)
         self.cards.action.connect(self.act)
         heard = getattr(win, "bridge", None)
         if heard is not None and hasattr(heard, "settings_written"):
@@ -577,10 +578,13 @@ class NeedsYou(QObject):
         applog.log("needs", f"{name}: {error}")
         self._say(strings.NEEDS_FAILED.format(why=error))
 
-    def _press_key(self, name, entry):
+    def _press_key(self, name, entry, line_key=None):
         """A card's answers are one press (A-5: one card, one answer at a time — the other answer pressed meanwhile
-        asks nothing), of this language's card (A-11); the arc on the button pressed (`qpress.adopt`)."""
-        return f"needs:{self.language}:{'answer' if name in ANSWERS else name}:{entry.key}"
+        asks nothing), of this language's card (A-11); a line's own button its line's (`line_key`: each line its own
+        press, P3-A1); the arc on the button pressed (`qpress.adopt`). Every press of a card's button is under this
+        key, so a card rebuilt meanwhile turns it again (P3-A10)."""
+        key = f"needs:{self.language}:{'answer' if name in ANSWERS else name}:{entry.key}"
+        return key if line_key is None or name in ANSWERS else f"{key}:{line_key}"
 
     def _control(self, name, entry, line=None):
         """The card's button for `name` (a line's: that line's), or None."""
@@ -592,8 +596,15 @@ class NeedsYou(QObject):
         """Round 8 row 45: an answer whose work waits — the arc turns on its button, painted before `fn` goes to the
         worker; the card goes when it's done (`goes`; a line's answer may leave its card), and a failure says why in
         the bar (`failed`: the caller's own). -> the press, or None: one is live (nothing asked)."""
-        return qpress.run(self._control(name, entry, line), self._press_key(name, entry), fn, *args, then=then,
-                          failed=failed or self._failed, win=self.win, goes=goes)
+        return qpress.run(self._control(name, entry, line), self._press_key(name, entry, line and line.key), fn,
+                          *args, then=then, failed=failed or self._failed, win=self.win, goes=goes)
+
+    def _stays(self, name, entry):
+        """An answer that ended with its card still here (a "couldn't" line): pressed again at once, it asks again
+        (P3-A6 — `goes` holds a press only while its card is going)."""
+        p = qpress.presses_of(self.win).find(self._press_key(name, entry))
+        if p is not None:
+            p.release()
 
     def _data(self):
         return self.data_dir or path_utils.get_data_path(self.language)
@@ -795,8 +806,11 @@ class NeedsYou(QObject):
             if ok and kick is not None:
                 kick(read_settings() or {})
             return ok
-        self._press("mine_anyway", entry, run, then=lambda ok: self._connect_done(
-            strings.NEEDS_MINE_ANYWAY if ok else strings.NEEDS_MINE_ANYWAY_NOT))
+        def done(ok):
+            if not ok:
+                self._stays("mine_anyway", entry)
+            self._connect_done(strings.NEEDS_MINE_ANYWAY if ok else strings.NEEDS_MINE_ANYWAY_NOT)
+        self._press("mine_anyway", entry, run, then=done)
 
     def _do_ask_hato(self, entry, _line):
         backfill, lang, read_settings = self.connect_calls["ask_hato"], self.language, self.read_settings
@@ -862,6 +876,8 @@ class NeedsYou(QObject):
 
         def done(answer):
             ok, why = answer
+            if not ok:
+                self._stays(name, entry)                 # (the reason said, the line stays)
             told()
             made = strings.NEEDS_FIRST_CARDS_MADE_ON if was_on else strings.NEEDS_FIRST_CARDS_MADE
             self._say(made if ok else strings.NEEDS_FIRST_CARDS_NOT_ON.format(why=why))
@@ -914,7 +930,7 @@ class NeedsYou(QObject):
 
     # the failures (W3.5's)
     def _do_open_logs(self, entry, _line):
-        self.win.open_logs(control=self._control("open_logs", entry))
+        self.win.open_logs(control=self._control("open_logs", entry), key=self._press_key("open_logs", entry))
 
     def _do_save_logs(self, entry, _line):
         dest = self.pick_save(strings.NEEDS_SAVE_LOGS_TITLE, "surasura-logs.zip")

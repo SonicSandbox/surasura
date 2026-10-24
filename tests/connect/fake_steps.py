@@ -68,7 +68,7 @@ class FakeSteps:
     you) · `pick_error` (an item whose pick raises an unexpected error) · `staged_after_pick` (an update staged once a
     pick has run) · `staged_after` (an update staged once that step ran: "generate") · `generate_after` (P3.3: the
     plan marks a Generate after mining) · `generate_after_error` · `level_after` (level jobs the Generate's new run
-    queues)."""
+    queues) · `moved` (MV-2: {item: the folder its video left})."""
 
     def __init__(self, folder, plan=None, child=False):
         self.folder = folder
@@ -145,6 +145,10 @@ class FakeSteps:
     def video(self, lang, job):
         videos = self.plan.get("videos") or {}
         return videos.get(str(job["item_id"]), os.path.join(self.folder, f"episode-{job['item_id']}.mkv"))
+
+    def video_moved(self, lang, job):
+        """MV-2: `moved` {item: the folder its video left} (none: plain *No video*)."""
+        return (self.plan.get("moved") or {}).get(str(job["item_id"]))
 
     def record(self, lang, job, made, mined_at, batch):
         if self.plan.get("library_busy"):

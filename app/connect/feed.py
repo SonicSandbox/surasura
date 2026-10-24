@@ -29,8 +29,9 @@ Feed = namedtuple("Feed", "on mining items line state unseen updating")
 # `stoppable` (laptop round 8 #47): True while the item's job can still be stopped (`actions.stop`: before its cards
 # are made, and not stopped already), else None
 # `stopping` (laptop round 9 #56): True from your *Stop* until the job has stopped (*Stopping…*: no second Stop), else None
-Item = namedtuple("Item", "kind words tip job made total progress doing stoppable stopping",
-                  defaults=(None, None, None, None))
+# `moved` (MV-2): a *No video* item whose video left its folder — that folder (`runner.moved_folder`), else None
+Item = namedtuple("Item", "kind words tip job made total progress doing stoppable stopping moved",
+                  defaults=(None, None, None, None, None))
 
 MINING, WAITING, ANKI, NO_VIDEO, NOT_TIMED, BATTERY, ASKED = (
     "mining", "waiting", "anki", "no_video", "not_timed", "battery", "asked")
@@ -81,7 +82,7 @@ def build(record, language):
         reason = job.get("reason") or ""
         if job.get("state") in book.IN_FLIGHT and running:
             kind = MINING
-        elif reason == runner.NO_VIDEO:
+        elif runner.no_video(reason):           # *No video*, or MV-2's line naming the folder it left
             kind = NO_VIDEO
         elif item_id in not_timed:
             kind = NOT_TIMED
@@ -103,7 +104,8 @@ def build(record, language):
                      and reason != runner.STOPPED_BY_YOU and not stopping else None)
         items[item_id] = Item(kind=kind, words=WORDS[kind], tip=reason or WORDS[kind], job=job.get("job"),
                               made=job.get("made") or 0, total=job.get("words") or 0, progress=progress, doing=doing,
-                              stoppable=stoppable, stopping=stopping)
+                              stoppable=stoppable, stopping=stopping,
+                              moved=runner.moved_folder(reason) if kind == NO_VIDEO else None)
     return Feed(on=True, mining=frozenset(mining), items=items, line=rec.get("line"), state=rec.get("state"),
                 unseen=rec.get("unseen") or 0, updating=bool(rec.get("updating")))
 

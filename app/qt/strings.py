@@ -441,6 +441,7 @@ ROWS_MINE_NOW_TIP = {True: "{tip}\n• Click to mine it now", False: "{tip}\n•
 # Connect is off (IK S7); the window's routing (`app/qt/mine_actions.py`)
 ROWS_MINE_THIS_TIP = {True: "{tip}\n• Click to mine it now", False: "{tip}\n• Click to mine its {n} files now"}
 ROWS_NO_MEDIA_TIP = "{tip}\n• Click to link its video, or to mine its text in Anki Miner"
+ROWS_NO_MEDIA_MOVED_TIP = "{tip}\n• Click to find its folder, link its video, or mine its text in Anki Miner"   # MV-2
 ROWS_ACTION_OFF = "{tip}\n{why}"
 ROWS_ACTION_KEY = "→ then Enter: {action}"
 ROWS_ACTION_NAMES = {"mine-now": "Mine now", "mine-this": "Mine this", "no-media": "Link… or Mine text"}
@@ -463,6 +464,13 @@ ROWS_LINK = "Link…"
 ROWS_LINK_TIP = "Choose its video: its cards get their pictures and audio from it"
 ROWS_MINE_TEXT = "Mine text"
 ROWS_MINE_TEXT_TIP = "Open Anki Miner to mine its text by hand: its file's path is copied for you"
+# MV-2 (Sonic: yes, 2026-10-23): an episode whose video left the folder it was in (Connect's line names it). The
+# folder you pick is added as one Surasura reads (Settings' *Add a folder…*, the one way in); the show then finds its
+# episodes there, never as a second show (MV-1)
+ROWS_FIND_FOLDER = "Find its folder…"
+ROWS_FIND_FOLDER_TIP = ("It was in {folder}. Choose the folder it's in now: Surasura reads that folder from now on, "
+                        "and the show finds its episodes there")
+FIND_FOLDER_TITLE = "Find the folder {label} is in now"
 MINE_ASKED = "{title}: its cards come next"
 # LM11b G5 (K67): a group of videos and other files — only its videos asked
 MINE_ASKED_VIDEOS = "{title}: its videos' cards come next · Anki Miner mines video only, so its other files are left out"

@@ -29,20 +29,23 @@ WHY = {
     "no-media": "no {word} beside it on disk",
     "unreachable": "its folder can't be reached just now",        # the original's folder: a share offline (AD-2)
     "unreadable": "the library can't be read just now",           # read-only, busy or damaged: its record unread (AD-6)
+    "moved": "its {word} isn't where it was ({folder})",           # MV-2: it left its folder, the source still there
 }
 _UNLISTED = object()                # `runner.beside`'s answer for a folder that can't be listed
 _NEVER = object()                   # `Looks`: an episode never looked at
 BATCH = 200                         # `Looks`: episodes looked at a time, their answers handed on together
 
 
-def pairing(language, item_id):
+def pairing(language, item_id, moved=None):
     """The item's pairing record (`connect.library.pairing_of`: hato's, else a source folder's origin row), {} with
-    none (no record, or no store: a 2.x library), or None when the store is there but can't be read just now."""
-    return _pairings(language, [item_id])[item_id]
+    none (no record, or no store: a 2.x library), or None when the store is there but can't be read just now.
+    `moved` (a dict): its `connect.library.Moved` put in it under its id (D5 / MV-2), read in the same open."""
+    return _pairings(language, [item_id], moved)[item_id]
 
 
-def _pairings(language, ids):
-    """{item_id: its record, as `pairing` says it} for every one of `ids`, read through one store open."""
+def _pairings(language, ids, moved=None):
+    """{item_id: its record, as `pairing` says it} for every one of `ids`, read through one store open; `moved` (a
+    dict): each one's `connect.library.Moved` put in it (D5 / MV-2: a source folder's root, its marked videos)."""
     from app import library_store, path_utils
     from app.connect import library
     data_dir = path_utils.get_data_path(language)
@@ -56,6 +59,8 @@ def _pairings(language, ids):
             return dict.fromkeys(ids)       # a store, not ready since the probe: can't be read just now
         with store:
             records = {i: library.pairing_of(store, i) for i in ids}
+            if moved is not None:
+                moved.update((i, library.moved_of(store, i, r)) for i, r in records.items())
     except Exception as e:
         print(f"Play: the episode's pairing couldn't be read ({e!r})")
         return dict.fromkeys(ids)
@@ -110,7 +115,9 @@ def _on_disk(path, listings, check=None):
 
 def to_open(language, item_id, rel_path, media):
     """-> (path, None), or (None, why: plain words for the bar's *Couldn't open X: why*)."""
-    return _find(language, rel_path, media, pairing(language, item_id), {}, _finder(language))
+    moved = {}
+    record = pairing(language, item_id, moved)
+    return _find(language, rel_path, media, record, {}, _finder(language), moved.get(item_id))
 
 
 _UNSURE = (WHY["unreachable"], WHY["unreadable"])     # `look`'s None: can't tell just now (a share offline, a busy store)
@@ -120,14 +127,16 @@ def look(language, asks, listings=None, find=None):
     """{item_id: (rel_path, media)} -> {item_id: True when ▶ has a file to open, False when it hasn't, None when it
     can't tell just now (its folder unreachable, its record unread: A-2)}: `_find`, ▶'s own lookup, for each — the
     pairings read through one store open, each folder listed once (`listings`: a round's, across calls), Connect's
-    index read once (`find`). A worker's; never writes."""
-    records = _pairings(language, list(asks))
+    index read once (`find`). A video that left its folder (MV-2) is False: ▶ has nothing to open. A worker's; never
+    writes."""
+    moved = {}
+    records = _pairings(language, list(asks), moved)
     listings = {} if listings is None else listings
     find = find or _finder(language, listings)
     out = {}
     for item_id, (rel_path, media) in asks.items():
         try:
-            path, why = _find(language, rel_path, media, records.get(item_id), listings, find)
+            path, why = _find(language, rel_path, media, records.get(item_id), listings, find, moved.get(item_id))
             out[item_id] = True if path is not None else None if why in _UNSURE else False
         except Exception as e:                      # one episode's fault never stops the others
             print(f"Play: an episode's file couldn't be looked for ({e!r})")
@@ -135,11 +144,13 @@ def look(language, asks, listings=None, find=None):
     return out
 
 
-def _find(language, rel_path, media, record, listings, find):
+def _find(language, rel_path, media, record, listings, find, moved=None):
     """The one lookup, ▶'s click and whether ▶ shows: `record` the item's pairing (None: unread), `listings` the
-    folders listed this round ({folder: names}, False for one that couldn't be), `find` Connect's index (`_finder`)."""
+    folders listed this round ({folder: names}, False for one that couldn't be), `find` Connect's index (`_finder`),
+    `moved` its `connect.library.Moved` (D5 / MV-2; None: nothing known) — Connect's own two rules on it, a marked
+    origin's video still on disk (`runner.moved_video`) and a video that left its folder (`runner.video_left`)."""
     from app import path_utils
-    from app.connect import runner, videos
+    from app.connect import library, runner, videos
     from app.services.view_rows import MEDIA_WORD
     rel = rel_path or ""
     path = os.path.join(path_utils.get_data_path(language), *rel.split("/")) if rel else None   # AD-5
@@ -157,11 +168,16 @@ def _find(language, rel_path, media, record, listings, find):
         if path and os.path.exists(path):
             return path, None
         return None, WHY["unreadable" if unread else "not-on-disk"]
+    moved = moved or library.NOT_MOVED
     named = record.get("video_path")
+    there = lambda p: _on_disk(p, listings)                         # noqa: E731
     if isinstance(named, str) and os.path.isabs(named):             # AD-4: a relative one is no pairing here
-        found = runner.paired_video(record, find, on_disk=lambda p: _on_disk(p, listings))
+        found = runner.paired_video(record, find, on_disk=there, was=moved.was)
         if found:
             return found, None
+        left = runner.video_left(record, moved.root, lambda root: _reachable(os.path.join(root, ""), listings))
+        if left:
+            return None, WHY["moved"].format(word=word, folder=left)
         return None, WHY["no-media"].format(word=word) if _reachable(named, listings) else WHY["unreachable"]
     exts = AUDIO_EXTS if word == "audio" else None
     unreachable = False
@@ -176,7 +192,8 @@ def _find(language, rel_path, media, record, listings, find):
         elif found:
             return found, None
     if word == "video":
-        found = find([n for p in (path, origin) if p for n in videos.names_for(p)])
+        found = runner.moved_video(moved.was, there) or \
+            find([n for p in (path, origin) if p for n in videos.names_for(p)])
         if found:
             return found, None
     if unreachable:

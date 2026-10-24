@@ -2738,10 +2738,24 @@ class ShellWindow(QMainWindow):
         looks = getattr(self.services.library, "play", None)
         if looks is not None and summary.get("moved"):   # row 55: a video come beside an original: ▶ looked again
             looks.again()                                 # (IK-1: a look that changed nothing looks at nothing)
+        if summary.get("moved"):                          # MV-2: Connect's episodes waiting on that video go on —
+            self._kick_connect()                          # a *Find its folder…* answered (kicked on a worker)
         if summary.get("unfinished_reset"):              # LF-11: a fresh library a kill stopped, once a run
             from app.qt import settings_strings, windows
             windows.say_in_bar(self, settings_strings.FRESH_UNFINISHED.format(folder=summary["unfinished_reset"]))
         self.sources_seen.emit(summary)
+
+    def _kick_connect(self):
+        """MV-2: Connect kicked on a worker (`kick.kick`: started, or the one running woken; nothing while it's off):
+        a look recorded videos for known episodes, and a job of theirs waiting on *No video* waits only for its next
+        start (`runner._wait`'s parking) — the next start is now, as a *Link…* is (`window_link`)."""
+        from app.connect import kick
+        try:
+            settings = settings_service.thaw(self.services.settings.get())
+        except Exception:
+            return
+        bridge.run_in_worker(kick.kick, settings,
+                             failed=lambda info: applog.log("connect", f"Connect's start: {info[0]}"))
 
     def _play_not_found(self, item_id):
         """A ▶ press found nothing to open (row 55 A-7): that episode's ▶ looked at again, on the looks' worker."""

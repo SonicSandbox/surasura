@@ -7,6 +7,11 @@ IK S3, S7). What the rows, Finished, the arrivals and *Needs you* ask for, route
   (`shell.connect_after_commit`) then kicks Connect. A non-video item's *Mine this* makes no ask: it is *Mine text* (K67,
   IK S3: Anki Miner mines video only).
 - ***Link…*** (No video's): the system's file picker, videos only (`runner.VIDEO_EXTENSIONS`) → `Writer.link_video`.
+- ***Find its folder…*** (MV-2, Sonic: yes; a *No video* whose video left the folder it was in — Connect's line
+  names it, `view_rows.Status.moved`): the system's folder picker, opened near where it was, then Settings' own *Add
+  a folder…* (`settings_sources.add_folder`: `Store.add_source` and its look, on the looks' worker) — one way in;
+  the store's join (MV-1) makes the show find its episodes there, and the look that recorded their videos kicks
+  Connect (the shell's `_sources_looked`). Offered on the status's menu and on the episode's ⋯.
 - ***Mine text*** (C6), and *Needs you*'s *Mine the text only*: Anki Miner's own window (as Settings' *Open Anki Miner*
   does) with the file's path on the clipboard, and a toast saying so — mining by hand.
 - **Connect off** (`settings_manager.connect_on` false): the rows' `connect_off` holds why (`feed.OFF_*`): their buttons
@@ -95,6 +100,7 @@ class MineActions(QObject):
         self.off = None                              # why Connect may not run (None: it may), read on a worker
         self.pick_file = lambda title, folder, patterns: QFileDialog.getOpenFileName(
             self.win, title, folder, strings.LINK_FILTER.format(patterns=patterns))[0]     # (tests replace it)
+        self.pick_folder = lambda title, folder: QFileDialog.getExistingDirectory(self.win, title, folder)  # (tests)
         self.lists = [page.list for page in win.page_widgets.values() if hasattr(getattr(page, "list", None),
                                                                                   "mine_requested")]
         self.make_cards = _make_cards                # (tests replace it)
@@ -108,6 +114,7 @@ class MineActions(QObject):
             lst.stop_requested.connect(lambda row, ask: self.stop(ask))
             lst.mine_requested.connect(self.mine_row)
             lst.link_requested.connect(lambda row, ep, lst=lst: self.link(row, ep, lst))
+            lst.find_folder_requested.connect(lambda row, ep: self.find_folder(ep))         # --- MV-2
             lst.mine_text_requested.connect(lambda row, ep, lst=lst: self.mine_text(          # (round 8 row 45: its
                 ep.label, ep.rel_path, at=qpress.row_mark(lst, [ep.id], "no-media")))      # ... status turns, IK-2)
         fin = getattr(win, "finished", None)
@@ -324,6 +331,11 @@ class MineActions(QObject):
         if ep.status is None:
             return []
         name, tip, ask = rows.action_of(ep.status, (ep,), self.off, ep.media_word or row.media_word)
+        moved = getattr(ep.status, "moved", None)
+        if moved:                                    # --- MV-2: its video left its folder
+            return [item_menu.Entry("ep-find-folder", strings.ROWS_FIND_FOLDER,
+                                    strings.ROWS_FIND_FOLDER_TIP.format(folder=moved), True,
+                                    payload=lambda: self.find_folder(ep), writes=True)]
         if name == rows.STOP:                        # --- R47
             return [item_menu.Entry("ep-stop", strings.MINE_STOP_ENTRY, tip, True, payload=lambda: self.stop(ask))]
         if name != "mine-now":
@@ -353,6 +365,20 @@ class MineActions(QObject):
                         lambda t: writer.link_video(ep.id, path, label=t))
         qpress.run(None, ("link", ep.id), _video_patterns, then=pick, failed=lambda info: self.win.say(str(info[1])),
                    win=self.win, at=at)
+
+    # --- MV-2: Find its folder… ------------------------------------------------------------------------------ #
+    def find_folder(self, ep):
+        """*Find its folder…*: the folder picker, opened at the nearest folder still there above where its video was,
+        then Settings' *Add a folder…* with the folder picked (`settings_sources.add_folder`: the store's `add_source`
+        and its look — refused there, greyed or said, as on Settings' page). -> True when a folder was asked for."""
+        from app.qt import settings_sources
+        where = getattr(ep.status, "moved", None) or ""
+        while where and not os.path.isdir(where) and os.path.dirname(where) != where:
+            where = os.path.dirname(where)          # (a stat or two: the picker opens on the window's thread anyway)
+        folder = self.pick_folder(strings.FIND_FOLDER_TITLE.format(label=ep.label), where)
+        if not folder:
+            return False
+        return bool(settings_sources.add_folder(self.win, self.win, folder))
 
     # --- Mine text (C6) --------------------------------------------------------------------------------------- #
     def mine_text(self, label, rel_path, control=None, at=None, key=None):

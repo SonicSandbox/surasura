@@ -148,6 +148,16 @@ def _no_video_reason():
         return _NO_VIDEO_REASON
 
 
+def _waits_on_video(reason):
+    """A Connect job's reason that is *No video* — `runner.NO_VIDEO`, or MV-2's line naming the folder its video left
+    (`runner.no_video`)."""
+    try:
+        from app.connect.runner import no_video
+    except Exception:
+        return reason == _NO_VIDEO_REASON
+    return no_video(reason)
+
+
 def item_key(item_id):
     """The answer key of one file (*Keep its words*)."""
     return f"item:{item_id}"
@@ -181,10 +191,9 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
             if e.missing and not offline(e.rel_path) and item_key(e.id) not in answered:
                 gone.setdefault(_group(r), []).append((r, e))
     # no video: Connect's jobs waiting on their video, by show
-    reason = _no_video_reason()
     novideo, unplaced = {}, []
     for job in (connect or {}).get("jobs") or ():
-        if job.get("reason") != reason or job.get("item") is None:
+        if not _waits_on_video(job.get("reason")) or job.get("item") is None:
             continue
         hit = by_id.get(job["item"])
         if hit is None:

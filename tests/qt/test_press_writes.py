@@ -18,6 +18,7 @@ pytest.importorskip("PyQt6")
 from PyQt6.QtCore import QEvent, QObject
 from PyQt6.QtWidgets import QApplication
 
+from app import theme
 from app.qt import add_menu, drag, strings
 from app.qt import press as qpress
 from tests.qt.conftest import wait_until
@@ -54,7 +55,7 @@ def test_a_writes_toast_off_current_reads_saving_while_it_waits_and_its_words_on
     assert _toast_words(win) == text                                  # at the press, its own words
     settle(60)
     assert _toast_words(win) == text                                  # not before 300 ms: a quick save says nothing
-    assert wait_until(lambda: _toast_words(win) == strings.TOAST_SAVING.format(text=text), 5)
+    assert wait_until(lambda: _toast_words(win) == text + strings.TOAST_SAVING, 5)
     assert win.page_widgets["current"].list.saving == frozenset()     # (no Current row of its: the toast alone)
     writer.free()
     assert wait_until(lambda: _toast_words(win) == text, 5) and win.toasts.card.buttons
@@ -69,7 +70,7 @@ def test_the_writer_saying_it_waits_marks_the_toast_at_once_and_a_toast_for_no_w
     writer.stuck = True
     win.moves._give(drag.Ticket(text, (), (102,)), lambda t: writer.move([102], "soon", label=t))
     win.moves._saving(True)
-    assert _toast_words(win) == strings.TOAST_SAVING.format(text=text)
+    assert _toast_words(win) == text + strings.TOAST_SAVING
     settle(30)                                                        # a later turn: this toast is no write's
     win.toasts.show(strings.NEEDS_KEPT)
     settle(400)
@@ -88,7 +89,7 @@ def test_a_toast_shown_in_the_turn_writes_were_given_without_one_stands_for_them
         win.moves._give(drag.Ticket("", (), (i,)), lambda t, i=i: writer.move([i], "now", label=t), toast=False)
     words = strings.NEEDS_LINKING.format(n=2)
     win.toasts.show(words)
-    assert wait_until(lambda: _toast_words(win) == strings.TOAST_SAVING.format(text=words), 5)
+    assert wait_until(lambda: _toast_words(win) == words + strings.TOAST_SAVING, 5)
     writer.free()
     assert wait_until(lambda: _toast_words(win) == words, 5)
 
@@ -102,7 +103,7 @@ def test_files_added_say_saving_while_they_copy(world, tmp_path):
     assert win.adder.add_files([str(src)]) is not None
     text = win.moves.toasted.text
     assert _toast_words(win) == text
-    assert wait_until(lambda: _toast_words(win) == strings.TOAST_SAVING.format(text=text), 5)
+    assert wait_until(lambda: _toast_words(win) == text + strings.TOAST_SAVING, 5)
     writer.free()
     assert wait_until(lambda: _toast_words(win) == text, 5)
 
@@ -245,3 +246,108 @@ def test_stop_adding_turns_its_arc_and_says_stopping_before_the_job_is_asked_unt
     f._imported(job)                                                  # the import ended
     assert qpress.arc(b) is None and not win.presses.any_live()
     assert win.bar_line.full() == strings.FIN_IMPORT_STOPPED and b.text() == strings.FIN_IMPORT
+
+
+# --- the fix round: an undo answered with nothing, a switch, nothing moving ----------------------------------------- #
+def _silent_undo(writer):
+    """The real writer's answer to an undo that finds its stack empty: nothing (no undone, no note, no reread)."""
+    def undo(change=None, label=None):
+        writer.calls.append(("undo", [], {"change": change}))
+        if change is None and not writer.saved:
+            return len(writer.calls)
+        if change is None:
+            change = writer.saved.pop()
+        writer.undone.append(change)
+        import threading
+        threading.Thread(target=writer.on_undone, args=(change, label), daemon=True).start()
+        return len(writer.calls)
+    writer.undo = undo
+    writer.can_undo = lambda: bool(writer.saved)
+
+
+def test_P4_A1_ctrl_z_answered_with_nothing_stops_saying_undoing_once_the_writer_is_idle(world):
+    # a scan's command queued (no ticket of the window's), nothing to undo: Ctrl+Z goes to the writer, which answers
+    # nothing — *Undoing…* ends once the writer is idle, never left turning
+    _seed, win, writer = world()
+    _silent_undo(writer)
+    writer._waiting.append((None, None))                              # something of the writer's own, queued
+    win.moves.undo_last()
+    assert win.bar_line.full() == strings.UNDOING
+    writer._waiting.clear()                                           # it landed (with no word for the window)
+    assert wait_until(lambda: not win.presses.any_live(), 3)
+    assert win.bar_line.full() != strings.UNDOING and not win.bar_arc.isVisible()
+
+
+def test_P4_A1_ctrl_z_twice_on_one_change_stops_saying_undoing(world):
+    _seed, win, writer = world()
+    _silent_undo(writer)
+    win.moves._give(drag.Ticket("夜明けの港 → Soon", (), (105,)), lambda t: writer.move([105], "soon", label=t))
+    assert wait_until(lambda: not win.moves.tickets and writer.saved, 5)
+    settle(theme.DRAG["settle-ms"] + 200)                              # the move's own settle has run out
+    writer.can_undo = lambda: True                                    # (its stack read before the first undo ran)
+    win.moves.undo_last()
+    win.moves.undo_last()                                             # the second: its stack empty by then — no answer
+    assert wait_until(lambda: not win.presses.any_live(), 3)
+    assert win.bar_line.full() != strings.UNDOING
+
+
+def test_P4_A2_stop_adding_ends_its_own_press_across_a_language_switch(fin, monkeypatch):
+    _seed, win, _writer, _estimator = fin()
+    f = win.finished
+    cancels = []
+    job = SimpleNamespace(outcome="cancelled", ticket=drag.Ticket(""), cancel=lambda: cancels.append(1))
+    f.import_job = job
+    f._show_importing(True)
+    f.pick()
+    monkeypatch.setattr(win, "language", "zh", raising=False)           # switched while it was stopping
+    f._imported(job)
+    assert not win.presses.any_live() and qpress.arc(win.page_widgets["finished"].importer) is None
+    second = SimpleNamespace(outcome="cancelled", ticket=drag.Ticket(""), cancel=lambda: cancels.append(2))
+    f.import_job = second                                              # the next import: Stop adding asks again
+    f._show_importing(True)
+    f.pick()
+    assert cancels == [1, 2]
+    f._imported(second)
+
+
+def test_P4_A3_the_toasts_undo_never_moves_when_saving_shows_or_goes(world):
+    _seed, win, writer = world()
+    writer.stuck = True
+    text = strings.DRAG_UP_NEXT.format(title="星降る町の郵便屋")
+    win.moves._give(drag.Ticket(text, (), (101,)), lambda t: writer.move([101], "now", label=t))
+    QApplication.processEvents()
+    undo = win.toasts.card.buttons[0]
+    at = lambda: (undo.mapTo(win, undo.rect().topLeft()), win.toasts.card.geometry())    # noqa: E731
+    before = at()
+    assert wait_until(lambda: win.toasts.saving, 5)
+    QApplication.processEvents()
+    assert at() == before, "the toast moved as *saving…* showed"
+    writer.free()
+    assert wait_until(lambda: not win.toasts.saving, 5)
+    QApplication.processEvents()
+    assert at() == before, "the toast moved as *saving…* went"
+
+
+def test_P4_A5_a_long_message_keeps_its_saving_words_whole(world):
+    _seed, win, writer = world()
+    writer.stuck = True
+    text = strings.DRAG_UP_NEXT.format(title="とても長い題名の物語" * 30)
+    win.moves._give(drag.Ticket(text, (), (101,)), lambda t: writer.move([101], "now", label=t))
+    assert wait_until(lambda: win.toasts.saving, 5)
+    QApplication.processEvents()
+    assert win.toasts.card.text.text().endswith(strings.TOAST_SAVING)
+    writer.free()
+
+
+def test_P4_A7_a_folder_pressed_again_while_its_look_runs_asks_nothing_more(world, tmp_path, monkeypatch):
+    _seed, win, _writer = world()
+    folder = tmp_path / "夏祭りの夜"
+    folder.mkdir()
+    asked = []
+    monkeypatch.setattr(win, "looks", _Looks(lambda path, answer, first=False: asked.append(answer) or True),
+                        raising=False)
+    win.adder.read_folder(str(folder))
+    win.adder.read_folder(str(folder))
+    assert len(asked) == 1
+    asked[0]({"result": {"reachable": True, "added": 0}})
+    assert wait_until(lambda: not win.presses.any_live(), 5)

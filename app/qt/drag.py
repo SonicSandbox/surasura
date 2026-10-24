@@ -797,6 +797,7 @@ class DragController(QObject):
         self.toasted = None                          # the ticket whose toast shows
         self.toast_for = ()                          # round 8 row 45: the tickets the shown toast stands for …
         self._fresh = []                             # … the ones given this turn (a toast shown in it stands for them)
+        self._showing = None                         # … or the one `_toast` names
         self._toast_late = QTimer(self)              # … and its *· saving…* once they wait `SAVING_AFTER_S`
         self._toast_late.setSingleShot(True)
         self._toast_late.setInterval(round(SAVING_AFTER_S * 1000))
@@ -1567,19 +1568,20 @@ class DragController(QObject):
     def _toast(self, ticket, buttons=()):
         ticket.toast = True
         self.toasted = ticket
+        self._showing = (ticket,)                    # what this toast stands for (`_toast_shown`, as it shows)
         self.win.toasts.show(ticket.text, undo=lambda: self.undo(ticket), buttons=buttons)
-        self.toast_for = (ticket,)
-        self._paint_toast()
 
     # --- round 8 row 45: a write's toast reads *· saving…* while it waits (one rule, wherever the toast shows) --- #
     def _toast_shown(self):
         """(The toast host, as any toast shows.) It stands for the writes given this turn — none for a toast of its own
         (a note, the Anki offer); `_toast` names its ticket itself."""
-        self.toast_for = tuple(self._fresh)
+        self.toast_for = self._showing if self._showing is not None else tuple(self._fresh)
+        self._showing = None
         self._fresh.clear()
         self._toast_late.stop()
-        if self.toast_for:
+        if any(t.change is None for t in self.toast_for):
             self._toast_late.start()
+            self.win.toasts.keep_room()              # it may say *· saving…*: nothing moves when it does
         self._paint_toast()
 
     def _paint_toast(self):
@@ -1609,8 +1611,11 @@ class DragController(QObject):
             self._undoing = qpress.begin(None, "undo", busy=strings.UNDOING, win=self.win)
 
     def _undo_to_writer(self, change=None):
+        """An undo handed to the writer — watched until the writer is idle, as every command `_give` hands it is
+        (`_settled`): one that finds nothing to undo answers nothing at all, and *Undoing…* ends there."""
         self._undos += 1
         self.writer.undo(change)
+        self._settle.start()
 
     def _undo_answered(self, answered=True, idle=False):
         """An undo landed (`answered`), or the writer is idle (`idle`: one that undid nothing, or failed): *Undoing…*

@@ -1236,7 +1236,7 @@ OPEN_IT = "It"
 OPEN_NOT_OPENED = "the system didn't open it"
 # --- end round 8 row 45, P3
 # --- round 8 row 45, P4: writes and menus (a toast's write waiting, an Undo on its way, + Add, Stop adding)
-TOAST_SAVING = "{text} · saving…"                              # a toast whose write hasn't landed yet (app/qt/drag.py)
+TOAST_SAVING = " · saving…"                                    # after a toast's words while its write waits (drag.py)
 UNDOING = "Undoing…"                                           # Ctrl+Z or a toast's Undo, until the undo lands
 ADDING = "Adding {name}…"                                      # the Paste card's Add, until its toast shows
 FIN_IMPORT_STOPPING = "Stopping…"                              # *Stop adding* pressed, until the import ends

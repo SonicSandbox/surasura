@@ -2133,7 +2133,7 @@ def test_every_group_write_toasts_at_the_press_saving_while_it_waits_and_goes_fo
     writer.stuck = True
     assert GROUP_WRITES[name](win, g, o) is not None
     assert shown() and win.toasts.card.buttons, "its toast and Undo at the press"
-    assert wait_until(lambda: shown(strings.TOAST_SAVING.format(text=text)), 5), "saving… while the store is busy"
+    assert wait_until(lambda: shown(text + strings.TOAST_SAVING), 5), "saving… while the store is busy"
     writer.free()
     assert wait_until(shown, 5) and win.toasts.card.buttons, "its own words once saved, Undo kept"
     win.toasts.close()
@@ -2168,7 +2168,8 @@ def test_every_group_write_marks_its_rows_painted_before_the_writer_has_it_until
     lst = lst_of(win)
     drawn = []
     real = rows.paint_marked
-    monkeypatch.setattr(rows, "paint_marked", lambda p, rect, turning: (drawn.append(rect), real(p, rect, turning)))
+    monkeypatch.setattr(rows, "paint_marked", lambda p, rect, turning, **kw: (drawn.append(rect),
+                                                                         real(p, rect, turning, **kw)))
     seen = []
     put = writer._put
     monkeypatch.setattr(writer, "_put", lambda op, ids, label, **kw: (seen.append((set(lst.marked), len(drawn))),
@@ -2179,6 +2180,24 @@ def test_every_group_write_marks_its_rows_painted_before_the_writer_has_it_until
     assert marked == GROUP_MARKS[name](g, o) and painted >= 1, (marked, painted)
     settle(100)
     assert set(lst.marked) == GROUP_MARKS[name](g, o)                # still waiting: still turning
+    writer.free()
+    assert wait_until(lambda: not win.moves.tickets and not lst.marked, 5)
+
+
+def test_P4_A8_the_same_rows_written_twice_keep_their_mark_until_the_later_write_lands(world):
+    # Rename… twice on one group while the store is busy: one mark, held by the later write — the first landing
+    # never takes it off while the second still waits
+    _seed, win, writer = world()
+    _b, a = two_shows(win)
+    g = as_group(win, a)
+    lst = lst_of(win)
+    writer.stuck = True
+    assert win.items.rename(g, "夏の旅") is not None
+    assert win.items.rename(g, "冬の旅") is not None
+    first, second = win.moves.tickets
+    assert first.press is None and second.press is not None and set(lst.marked) == {g.episodes[0].id}
+    win.moves._settle_ticket(first)
+    assert set(lst.marked) == {g.episodes[0].id}
     writer.free()
     assert wait_until(lambda: not win.moves.tickets and not lst.marked, 5)
 

@@ -277,7 +277,9 @@ class Adder(QObject):
             return False                                  # S4 (E4): said in the bar, nothing written
         name = os.path.basename(os.path.normpath(folder)) or folder
         p = qpress.begin(None, ("add-folder", os.path.normpath(folder)), win=self.shell)   # round 8 row 45: marked now,
-        relay = bridge.Relay(self)                                                       # until its look answers
+        if p is None:                                                                    # until its look answers
+            return True                                   # its look asked already, still running: asked once
+        relay = bridge.Relay(self)
         relay.said.connect(lambda answer: self._read(name, answer, relay, folder, p))
         busy = looks.busy() if hasattr(looks, "busy") else False
         try:

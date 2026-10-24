@@ -717,8 +717,14 @@ class ItemActions(QObject):
         runs a waiting `then` for a command that landed as nothing)."""
         marks = list(dict.fromkeys(i for i in marks if i is not None))
         if marks:
-            ticket.press = qpress.begin(None, ("regroup",) + tuple(marks), win=self.win,
-                                        at=qpress.row_mark(self.lst, marks))
+            key = ("regroup",) + tuple(marks)
+            p = qpress.begin(None, key, win=self.win, at=qpress.row_mark(self.lst, marks))
+            if p is None:                            # the same rows' write still waits: this later one holds its mark
+                p = qpress.presses_of(self.win).find(key)
+                for t in self.moves.tickets:
+                    if t.press is p:
+                        t.press = None
+            ticket.press = p
         ticket.then = lambda: self.moves.toast_gone(ticket) if ticket.change is None else None
         return self.moves._give(ticket, command)
 

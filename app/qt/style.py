@@ -55,13 +55,13 @@ def point_size(role, text_size):
     return round(px * PT_PER_PX, 3)
 
 
-@lru_cache(maxsize=None)
 def press_room(text_size):
     """A button whose press turns an arc keeps this room at rest, px (`app/qt/press.py` `room`): the arc's (fixed, never
     scaled with the text: the arc isn't), never less than a button's own padding. Every sheet that pads one asks here."""
     return max(round(theme.size("press-room", text_size)), round(10 * theme.text_factor(text_size)))
 
 
+@lru_cache(maxsize=None)
 def stylesheet(theme_name=theme.DEFAULT_THEME, text_size=theme.DEFAULT_TEXT_SIZE):
     """The one stylesheet for a theme at a text size (cached; ~0.1 ms the first time)."""
     t0 = time.perf_counter()

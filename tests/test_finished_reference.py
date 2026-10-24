@@ -77,13 +77,25 @@ def _library_words(root, language):
 
 
 def _spy_tokenizing():
-    """Every file the token store tokenizes, in the pool or by hand: (patcher, the list)."""
-    seen, real_pool = [], ti._tokenized
+    """Every file the token store tokenizes — in the pool (`_tokenized`: each path), or by hand in `reconcile` (a kept
+    file, one read back from elsewhere or from its kept text, through the tokenizer's `tokenize_text`: the text's
+    start): (patcher, the list)."""
+    seen, real_pool, real_make = [], ti._tokenized, ti.make_tokenizer
 
     def pool(paths, tokenize_file, workers):
         seen.extend(paths)
         return real_pool(paths, tokenize_file, workers)
-    return patch.object(ti, "_tokenized", pool), seen
+
+    def make(*args, **kwargs):
+        made = real_make(*args, **kwargs)
+        by_text = made.tokenize_text
+
+        def tokenize_text(text, facts=None):
+            seen.append(text[:40])
+            return by_text(text, facts)
+        made.tokenize_text = tokenize_text
+        return made
+    return patch.multiple(ti, _tokenized=pool, make_tokenizer=make), seen
 
 
 # --------------------------------------------------------------------------- #
@@ -380,7 +392,7 @@ def test_a_finished_file_with_crlf_and_mixed_scripts_gives_clean_sentences(langu
 
 
 # --------------------------------------------------------------------------- #
-# Drill A1 (the lead's confidence audit, 2026-10-23): all my content, counted right — a real Generate
+# All my content, counted right — a real Generate
 # --------------------------------------------------------------------------- #
 W_ONLY, W_SHARED = "蜃気楼", "灯台"
 ONLY_LINES = ("遠くの道に蜃気楼が見えた。", "あれは本当に蜃気楼だったのかな。", "蜃気楼みたいに消えちゃった。")
@@ -447,8 +459,8 @@ def _rows(root, name):
         return list(csv.DictReader(f))
 
 
-def test_drill_a1_finishing_a_show_counts_right_and_keeps_its_names_and_sentences():
-    """Drill A1: Show A and Show B in NOW, Book C in Soon, Generated; Show A finished, Generated again. Every word's
+def test_finishing_a_show_counts_right_and_keeps_its_names_and_sentences():
+    """Show A and Show B in NOW, Book C in Soon, Generated; Show A finished, Generated again. Every word's
     Occurrences and tier counts are those of B and C alone, computed independently (each file tokenized on its own),
     W_ONLY is gone, W_SHARED counts its B-Ep02 uses alone, the progressive list follows `schedule()`'s order; the name
     is still read whole in B-Ep01 (one use, B's) and a sentence of Show A can still be picked for 例文."""

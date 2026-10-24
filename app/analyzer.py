@@ -4002,17 +4002,20 @@ def resolve_found_files(language, verbose=True, schedule=None, read_store=True, 
     return found_files
 
 
-def resolve_sentence_files(language):
+def resolve_sentence_files(language, with_lists=False):
     """The files that give sentences — 例文 (`sentence_corpus.best_for`) and the sentence dictionary (`build`): (counted,
     aside), absolute paths; the sentences come from counted + aside, in that order. Counted: Generate's list
     (`resolve_found_files`, a missing item too). Aside: the library store's set-aside files (`text_lists`: reference —
     Finished, W-1b, and watched episodes while *Keep studying watched episodes* is off, W-1) — off the list, still
     sentences. None when there is no library store (JSON mode) or its lists can't be read now — the token store's
-    `reconcile(..., aside=None)`, its set-aside rows left as they are."""
+    `reconcile(..., aside=None)`, its set-aside rows left as they are. `with_lists`: also the token store's other lists
+    as the indexer hands them (`indexer.token_store_lists`' dict: kept, aside, elsewhere, forgotten; None when they
+    can't be read now) — a reconcile with them leaves every row where the indexer would put it."""
     counted = [p for p, _label, _weight, _type in resolve_found_files(language, verbose=False, missing=True)]
     from app.indexer import token_store_lists
     _counted, more = token_store_lists(language, get_data_path(language), counted)
-    return counted, (more or {}).get("aside")
+    aside = (more or {}).get("aside")
+    return (counted, aside, more) if with_lists else (counted, aside)
 
 
 def journey_is_current(args, language):
@@ -4155,7 +4158,8 @@ def compute_run_signature(language, found_files, args, order_free=False, aside=(
 
 
 def aside_files(language, schedule):
-    """W-1: the library's set-aside files — watched episodes while *Keep studying watched episodes* is off — from a
+    """W-1: the library's set-aside files (`library_store.sets_aside`) — Finished (W-1b), and watched episodes while
+    *Keep studying watched episodes* is off — from a
     schedule read with them (`Store.schedule(with_aside=True)`, `read_only_schedule(with_aside=True)`, in the same
     transaction as the list): [(abs_path, source_type)], for the run signature's "reference" part. Never counted, their
     text is the name tables' evidence and 例文's sentences, so they are part of what a run reads. [] with none (JSON

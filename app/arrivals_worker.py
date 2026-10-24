@@ -184,13 +184,15 @@ class Worker:
             bare = plan_engine.Plan({"floor": 0, "run_signature": None, "phrase_entries": []}, [], [], [], [], [])
             view = arrivals.View.build(self.language, bare, None, self.args, tokenizer=tokenizer)
             return {"view": view, "gates": None, "order": None, "ids": frozenset(), "listed": {}, "signature": None,
-                    "parts": parts}
+                    "parts": parts, "evidence": frozenset()}
         store = token_index.open_reader(self.language)     # read only: no schema made, no damaged file rebuilt
         try:
             view = arrivals.View.build(self.language, plan, store, self.args, tokenizer=tokenizer)
             if self.language == "ja":
                 names.use_library_tables(view.names_tables, pin=True)     # never re-read while warm
             gates = arrivals.Gates.build(view, store) if store is not None else None     # None: never "exact"
+            # The set-aside files (Finished, watched episodes): their name records are in the gates' sums already
+            evidence = frozenset(store.aside_files()) if store is not None and self.language == "ja" else frozenset()
         finally:
             if store is not None:
                 store.close()                       # the arrivals are read here, never through the store
@@ -205,7 +207,7 @@ class Worker:
         # The plan's tables only from here on: its per-file lines (most of its memory) are read into `order`.
         view.plan = plan_engine.Plan(plan.header, plan.files, plan.keys, plan.rows, plan.ties, None, plan.spell)
         warm = {"view": view, "gates": gates, "order": order, "ids": frozenset(order.ids), "listed": self._listed(),
-                "signature": plan.header.get("run_signature"), "parts": parts}
+                "signature": plan.header.get("run_signature"), "parts": parts, "evidence": evidence}
         try:
             self._warm_up(warm)
         except Exception as e:                      # only a head start: the first arrival loads what this didn't
@@ -249,7 +251,7 @@ class Worker:
 
     def _read(self, path, warm):
         """(record, pick) of one arrival, kept by its key."""
-        from app import arrivals
+        from app import arrivals, token_index
         key = self._key(path, warm)
         held = self.reads.get(key)
         if held is not None:
@@ -257,6 +259,8 @@ class Worker:
             return key, held
         view = warm["view"]
         sentences, names_record = arrivals.read(view, path)
+        if token_index._norm(path) in warm.get("evidence", ()):
+            names_record = {}                       # a Finished row's *What if*: its names count once, as they do now
         rec = arrivals.record(sentences, view, path, names=names_record)
         picked = None
         if warm["order"]:

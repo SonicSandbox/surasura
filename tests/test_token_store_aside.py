@@ -136,7 +136,7 @@ def test_a_file_moves_counted_aside_kept_and_back_with_no_tokenizing(language, t
     store.reconcile([a, b, c], tok, kept=[d], aside=[])                  # ...and un-marked
     assert tok.calls == [] and _everything_counted(store, language) == all_three
     assert store.needs_reconcile([a, b, c], kept=[d], aside=[]) is False
-    # A set-aside file's text is kept like a counted one's: only once its file is gone (c's from Finished stays, K1).
+    # A set-aside file's text is kept as a kept one's, from its first read (W-1b): c's, set aside above, and d's.
     assert set(_kept_text(store).held()) == {ti._norm(c), ti._norm(d)}
     store.close()
     finished.close()
@@ -468,3 +468,35 @@ def test_generate_before_the_indexer_keeps_a_watched_files_row(language):
     quiet = (f"c, m = indexer.token_store_lists('{language}', d, indexer._content_files(d, '{language}')); "
              f"s = ti.open_store('{language}'); print(s.needs_reconcile(c, **m))")
     assert _in_generates_process(root, language, quiet) == "False", "the indexer has nothing left to do"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_set_aside_files_text_is_written_a_few_at_a_time_never_all_held_at_once(language, monkeypatch, tmp_path):
+    """A first index of many set-aside files (a big Finished library, or every watched episode after an upgrade) keeps
+    each one's text as it is read, written to the kept-text file a few at a time (`KEPT_TEXT_BATCH`), so the index never
+    holds every file's text at once: here at most two held, every text kept, the same as one write would keep. Both
+    ways in: tokenized in the pool (new to the store), and read for a row the store already holds (counted, then set
+    aside)."""
+    files = _files(language)
+    monkeypatch.setattr(ti, "KEPT_TEXT_BATCH", 2)
+    sizes, real_put = [], ti._KeptText.put
+
+    def put(self, rows):
+        sizes.append(len(rows))
+        return real_put(self, rows)
+    monkeypatch.setattr(ti._KeptText, "put", put)
+    tok = ti.make_tokenizer(language)
+    store = ti.open_store(language, path=str(tmp_path / "pool.db"))
+    store.reconcile(files[:1], tok, aside=files[1:])
+    assert set(_kept_text(store).held()) == {ti._norm(p) for p in files[1:]}, "every set-aside file's text is kept"
+    assert sizes and max(sizes) <= 2, sizes
+    _kept_text(store).drop([ti._norm(p) for p in files[1:]])         # the kept-text file is the library's: empty it
+    store.close()
+
+    sizes.clear()
+    held = ti.open_store(language, path=str(tmp_path / "held.db"))
+    held.reconcile(files, tok)                                         # every row counted, no text kept
+    held.reconcile(files[:1], tok, aside=files[1:])                    # then set aside: each text read now
+    assert set(_kept_text(held).held()) == {ti._norm(p) for p in files[1:]}
+    assert sizes and max(sizes) <= 2, sizes
+    held.close()

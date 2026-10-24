@@ -1135,10 +1135,10 @@ class Store:
                 if key in have and have[key][1:] == (row["mtime"], row["size"]) and not (
                         have[key][0] and read is not None and source and os.path.exists(source)):
                     continue
-                keep_now[key] = self._text_of(cur, key, row, source, read)
+                _keep_batched(texts, keep_now, key, self._text_of(cur, key, row, source, read))
             for key in lost:
                 if key not in have or have[key][1:] != (existing[key]["mtime"], existing[key]["size"]):
-                    keep_now[key] = self._text_of(cur, key, existing[key], others.get(key), read)
+                    _keep_batched(texts, keep_now, key, self._text_of(cur, key, existing[key], others.get(key), read))
             texts.put(keep_now)
 
             if wipe:
@@ -1231,8 +1231,8 @@ class Store:
                     # A set-aside file, tokenized in the pool as a counted one is: its text kept as a kept file's
                     # (W-1b), read from its file — unless the text kept is already this file's, read from it.
                     if flag == ASIDE and not (key in have and have[key][1:] == (mtime, size) and not have[key][0]):
-                        keep_read[key] = self._text_of(cur, key, {"mtime": mtime, "size": size}, realpath, read,
-                                                       result)
+                        _keep_batched(texts, keep_read, key, self._text_of(
+                            cur, key, {"mtime": mtime, "size": size}, realpath, read, result))
             finally:
                 tokenized.close()                 # the pool's workers end here, before the tables below
             # A kept file, or one read back from elsewhere or from its kept text: here, its text kept as it is read.
@@ -1248,7 +1248,7 @@ class Store:
                     text, facts = _rebuilt_text(result["sentences"], result.get("names"))
                 write(key, mtime, size, result, row, flag)
                 if flag != COUNTED or signatures[key] is None:
-                    keep_read[key] = (text, facts, mtime, size)
+                    _keep_batched(texts, keep_read, key, (text, facts, mtime, size))
             texts.put(keep_read)
 
             self._apply(cur, delta)
@@ -2045,6 +2045,19 @@ def _pool_start(language, reinforce, script, logic):
 
 def _pool_tokenize(path):
     return _POOL_WORKER["tokenize"](path)
+
+
+KEPT_TEXT_BATCH = 200       # texts read for the kept-text file, held before they are written: bounded at any library size
+
+
+def _keep_batched(texts, held, key, value):
+    """Hold one file's text to keep (`reconcile`); the held ones are written (`texts.put`) once there are
+    KEPT_TEXT_BATCH, so a first index of thousands of set-aside files never holds all their text at once. The caller
+    writes what is left, before its commit."""
+    held[key] = value
+    if len(held) >= KEPT_TEXT_BATCH:
+        texts.put(held)
+        held.clear()
 
 
 def _tokenized(paths, tokenize_file, workers):

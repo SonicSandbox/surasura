@@ -86,30 +86,30 @@ def _lemmas(store, path):
 # 2.2.1: the flag, counted-only sums
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_finished_and_removed_text_never_reaches_the_counts(language, tmp_path):
-    """A Finished file (kept, on the disk) and a removed one (kept, its file in the trash) are tokenized and cached, but
+def test_an_arrival_and_a_removed_file_are_cached_but_never_counted(language, tmp_path):
+    """A New arrival (kept, on the disk) and a removed file (kept, its file in the trash) are tokenized and cached, but
     the word counts, the bound table, the totals, the name tables, the phrase table, the Rarity slider's numbers and the
     cut-off are exactly those of a store that holds the counted files alone."""
-    a, b, finished, removed, _e, _f = _files(language)
+    a, b, arrival, removed, _e, _f = _files(language)
     data_dir, _u = roots(language)
     trashed = os.path.join(data_dir, ".trash", "removed_20261008120000" + os.path.splitext(removed)[1])
     os.makedirs(os.path.dirname(trashed))
     os.replace(removed, trashed)                                       # the Content Manager's Remove (§6.6)
 
     store = ti.open_store(language)
-    store.reconcile([a, b], ti.make_tokenizer(language), kept=[finished, removed], elsewhere={removed: trashed})
+    store.reconcile([a, b], ti.make_tokenizer(language), kept=[arrival, removed], elsewhere={removed: trashed})
     alone = ti.open_store(language, path=str(tmp_path / "counted_alone.db"))
     alone.reconcile([a, b], ti.make_tokenizer(language))
 
     assert _everything_counted(store, language) == _everything_counted(alone, language)
-    assert set(store.kept_files()) == {ti._norm(finished), ti._norm(removed)}
+    assert set(store.kept_files()) == {ti._norm(arrival), ti._norm(removed)}
     assert set(store.counted_files()) == {ti._norm(a), ti._norm(b)}
     # Not vacuous: the kept files hold words the counted ones don't, and those words are cached, never counted.
-    only_kept = (_lemmas(store, finished) | _lemmas(store, removed)) - _lemmas(store, a) - _lemmas(store, b)
+    only_kept = (_lemmas(store, arrival) | _lemmas(store, removed)) - _lemmas(store, a) - _lemmas(store, b)
     assert only_kept and not only_kept & {lemma for lemma, _r in store.word_counts()[0]}
-    # Their text is kept: the finished file's from the disk, the removed one's from the trash.
+    # Their text is kept: the arrival's from the disk, the removed one's from the trash.
     held = _kept_text(store).held()
-    assert held == {ti._norm(finished): False, ti._norm(removed): False}
+    assert held == {ti._norm(arrival): False, ti._norm(removed): False}
     store.close()
     alone.close()
 

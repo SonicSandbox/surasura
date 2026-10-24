@@ -55,6 +55,9 @@ VERB = {"video": "Watch", "audio": "Listen", "EPUB": "Read", "file": "Open"}
 EPISODIC = ("anime", "drama", "movie", None)
 
 Status = namedtuple("Status", "kind label tip tone")          # tone: ok · accent · dim · ink · faint · warn
+# --- R47 (laptop rows 47 + 56): `stop`, the Connect job a *Mining* status's *Stop* stops (`feed.Item.job`, while
+# `feed.Item.stoppable`), else None. Never in the first screen's cache (Connect's state isn't known from a cache)
+Status = namedtuple("Status", Status._fields + ("stop",), defaults=(None,))
 Mark = namedtuple("Mark", "count tone tip")                    # the on-disk mark (⌀ N)
 Episode = namedtuple("Episode", "id label number title watched cards mining missing removed in_top pct n_new "
                                 "status mark rel_path play_tip can_play deleted waiting", defaults=(False, False))
@@ -178,6 +181,10 @@ STRINGS = {
                    "unless you ask",
     "tip_in_anki": "Mined · {n} cards in Anki", "tip_in_anki_k": "{k} mined · {n} cards in Anki",
     "tip_mining": "Making its cards now",
+    # R47 (laptop rows 47 + 56, PROVISIONAL words): Stop's states, and an ask Connect has read (its own status)
+    "stopping": "Stopping…", "tip_stopping": "Stopping: the cards made so far are kept",
+    "tip_finishing": "\nFinishing its cards: too far along to stop", "asked": "Asked",
+    "tip_asked": "Its cards come next",
     "tip_waiting": "In your top {line}: it mines by itself, in turn",
     "tip_mine_rest": "{k}/{n} mined · the rest isn't in your top {line} yet",
     "tip_mine": "Not in your top {line}: it isn't mined yet",
@@ -591,16 +598,29 @@ def _connected(st, item, word):
     """A status as Connect's feed tells it (`feed.Item`, or None: as it was). An item with its cards in Anki, or with
     no file on disk (the disk's *No video*), keeps its own; *Mining* gives way only to *Mining*. Connect's *Mining*
     counts its cards made of the words picked (*Mining · 3/12*); its *No video* (the subtitle's video not found) is
-    the amber warning; *Not timed* waits on *Mine anyway* in Needs you; a job waiting (on Anki, on battery, its turn,
-    or asked for) is *Waiting* with the job's own reason as its tip (C7)."""
+    the amber warning; *Not timed* waits on *Mine anyway* in Needs you; a job asked for that Connect has read is
+    *Asked* (R47: its own status, its reason as its tip); a job waiting (on Anki, on battery, its turn) is *Waiting*
+    with the job's own reason as its tip (C7). R47: a *Mining* job that can be stopped carries its job (`stop`: the
+    pill's *Stop*), one stopping says *Stopping…*."""
     if item is None or st.kind in ("in_anki", "no_media") or (st.kind == "mining" and item.kind != connect_feed.MINING):
         return st
     if item.kind == connect_feed.MINING:
+        # R47 (laptop rows 47 + 56): *Stop* pressed, the job not stopped yet -> *Stopping…*; while it can be stopped
+        # its *Stop* (`stop`: the job); past the stop point (naming its clips) its hover says it is finishing
+        if item.stopping:
+            return Status("mining", STRINGS["stopping"], STRINGS["tip_stopping"], "accent")
+        stop = item.job if item.stoppable else None
         if item.progress is not None:       # Anki Miner's run, as it goes (laptop round 5 #23, PROVISIONAL text: lean A)
+            tip = STRINGS["tip_mining_doing"].format(doing=item.doing)
             return Status("mining", STRINGS["mining_pct"].format(pct=item.progress),
-                          STRINGS["tip_mining_doing"].format(doing=item.doing), "accent")
+                          tip if stop is not None or item.job is None else tip + STRINGS["tip_finishing"], "accent",
+                          stop)
         label = STRINGS["mining_kn"].format(k=item.made, n=item.total) if item.total else STRINGS["mining"]
-        return Status("mining", label, STRINGS["tip_mining"], "accent")
+        tip = STRINGS["tip_mining"]
+        return Status("mining", label, tip if stop is not None or item.job is None else tip + STRINGS["tip_finishing"],
+                      "accent", stop)
+    if item.kind == connect_feed.ASKED:     # R47: asked, and Connect has read the ask — its own status, its reason
+        return Status("asked", STRINGS["asked"], STRINGS["tip_asked"] if item.tip == item.words else item.tip, "accent")
     if item.kind == connect_feed.NO_VIDEO:
         return Status("no_media", STRINGS["no_media"].format(word=word),
                       STRINGS["tip_connect_no_media"].format(tip=item.tip), "warn")
@@ -1530,9 +1550,10 @@ def to_cache(view, rows=CACHE_ROWS):
 
 def _row_from(data):
     r = Row(*data)
-    st = Status(*r.status) if r.status else None
+    st = Status(*r.status[:4]) if r.status else None             # R47: never a cached Stop
     mk = Mark(*r.mark) if r.mark else None
-    eps = tuple(ep._replace(status=Status(*ep.status) if ep.status else None, mark=Mark(*ep.mark) if ep.mark else None,
+    eps = tuple(ep._replace(status=Status(*ep.status[:4]) if ep.status else None,
+                            mark=Mark(*ep.mark) if ep.mark else None,
                             show_key=tuple(ep.show_key) if ep.show_key else None,     # (JSON wrote it as a list)
                             ask=tuple(ep.ask) if ep.ask else None)                    # row 55 (the same)
                 for ep in (Episode(*e) for e in r.episodes))

@@ -414,18 +414,20 @@ def icon(p, kind, rect, colour, width=1.6):
 
 
 STATUS_ICON = {"in_anki": "check", "mining": "mining", "waiting": "waiting", "mine_rest": "check", "mine": "mine",
-               "no_media": "no_media", "no_subs": "waiting"}           # SRC W1b: a video waiting for its subtitle
+               "no_media": "no_media", "no_subs": "waiting",           # SRC W1b: a video waiting for its subtitle
+               "asked": "waiting"}                                     # R47: an ask Connect has read
 
 # --- P4.1 L2: the stones' actions (4.1.11; RUNBOOK C2, C3, C6, IK S7). A status that is a button: Waiting's icon is
 # *Mine now*, Mine is *Mine this*, No video offers *Link…* · *Mine text*. Its part's payload is an `Ask` (`id`: its first
 # file's, so a press and its release match as an episode's do; `ids`: the files it asks for; `episode`: the first).
 ACTIONS = {"waiting": "mine-now", "mine": "mine-this", "no_media": "no-media"}
-ACTION_NAMES = frozenset(ACTIONS.values())
+STOP = "stop"                                       # R47: a *Mining* status's Stop (`Status.stop`: its job)
+ACTION_NAMES = frozenset(ACTIONS.values()) | {STOP}
 ASKS = ("mine-now", "mine-this")                    # the actions that ask Connect (round 8 row 45: they turn when pressed)
 _ACTION_TIPS = {"mine-now": "ROWS_MINE_NOW_TIP", "mine-this": "ROWS_MINE_THIS_TIP", "no-media": "ROWS_NO_MEDIA_TIP"}
 
 
-Ask = namedtuple("Ask", "id ids episode")
+Ask = namedtuple("Ask", "id ids episode job", defaults=(None,))     # R47: `job`, the Connect job a Stop stops
 
 # --- round 8 row 45 (the trial): *Mine now* pressed. From the frame of the press until Connect's feed says something new
 # of the file (`mine_actions`; `RowsView.press_ids`), its pill (and a closed row's Mine now) shows a turning accent mark
@@ -501,6 +503,8 @@ def action_of(status, episodes, off=None, word="video"):
     Not a button: ("status", its tip, None) — *Not timed* too (its way on is *Mine anyway* in Needs you), so its tip
     names the wait, never a click. A wait on Anki or on the battery is *Mine now* as every *Waiting* is (P4.1's C3
     as amended by Sonic 2026-10-22, M-3 A): its tip, worded by `view_rows`, already says what the click does."""
+    if status.kind == "mining":
+        return _stop_of(status, episodes, off)
     name = ACTIONS.get(status.kind)
     if status.kind == "waiting" and status.label == view_rows.STRINGS["not_timed"]:
         name = None
@@ -523,10 +527,62 @@ def action_of(status, episodes, off=None, word="video"):
 # --- end P4.1 L2
 
 
+# --- R47 (laptop rows 47 + 56): *Stop* on a *Mining* pill. A button only while Connect's job can be stopped
+# (`Status.stop`, the feed's `stoppable`) and Connect may run; its file the episode being mined (a row's status is its
+# first such episode's). On hover the pill reads *■ Stop*; pressed, *Stopping…* from that frame until the job has
+# stopped (`RowsView.press_stop`, `mine_actions.stop`). Past the stop point, a plain status: its hover says so.
+def _stop_of(status, episodes, off):
+    said = status_tip(status)
+    if status.stop is None or off or not episodes:
+        return "status", said, None
+    ep = next((e for e in episodes if e.status is not None and e.status.stop == status.stop), episodes[0])
+    return STOP, strings.ROWS_STOP_TIP.format(tip=said), Ask(ep.id, (ep.id,), ep, status.stop)
+
+
+def paint_stop(p, rect, stopping, turning=None, radius=None, dpr=1.0, ground="surface"):
+    """R47: a *Mining* pill's Stop over `rect` (its box, kept: nothing moves) — on hover *■ Stop*, pressed *Stopping…*
+    with the mining glyph turning (`turning` 0–1; None: still). Too narrow for words (a closed row's icon at rest): the
+    glyph alone (■, or the turning one). `ground`: the colour under the pill (the mining pill's own is see-through)."""
+    f = fz()
+    r = QRectF(rect)
+    col = style.colours()
+    colour = style.qcolor(col["accent"])
+    p.save()
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    p.setPen(Qt.PenStyle.NoPen)
+    radius = r.height() / 2 if radius is None else radius
+    p.setBrush(c(ground))
+    p.drawRoundedRect(r, radius, radius)
+    p.setBrush(style.qcolor(col["status-mining"]))
+    p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
+    text = strings.ROWS_STOPPING if stopping else strings.ROWS_STOP
+    pad = 9 * f
+    wide = r.width() > r.height() * 1.6             # a pill with words (a closed row's icon is about square)
+    ic = QRectF(r.x() + pad, r.center().y() - 6.5, 13, 13) if wide else         QRectF(r.center().x() - 6.5, r.center().y() - 6.5, 13, 13)
+    if stopping:
+        p.save()
+        p.translate(ic.center())
+        if turning is not None:
+            p.rotate(360.0 * turning)
+        icon(p, "mining", QRectF(-6.5, -6.5, 13, 13), colour)
+        p.restore()
+    else:
+        p.setBrush(colour)
+        side = 8 * f
+        p.drawRoundedRect(QRectF(ic.center().x() - side / 2, ic.center().y() - side / 2, side, side), 1.5, 1.5)
+    if wide:
+        TEXT.draw(p, ic.right() + 6 * f, r.center().y(), text, "status-pill", r.right() - ic.right() - 6 * f - pad / 2,
+                  colour, dpr=dpr)
+    p.restore()
+# --- end R47
+
+
 def pill_text(status):
     """The words a pill shows. Laptop row 36's sibling, row 38 ("i don't need the words 'waiting' only the icon. It
     should tell you what it means when hover"): every *Waiting* is its icon alone — a k/n count stays, being no word —
     and says itself in its hover (`status_tip`). *Not timed* keeps its words: it asks for the learner, it doesn't wait."""
+    if status.kind == "asked":                     # R47: the pressed mark, still — its hover names it
+        return ""
     if status.kind != "waiting" or status.label == view_rows.STRINGS["not_timed"]:
         return status.label
     return status.label.replace(view_rows.STRINGS["waiting"], "").strip(" ·")
@@ -552,7 +608,10 @@ def pill_size(status, dpr=1.0):
 
 def paint_pill(p, status, rect, dpr=1.0, audio=False):
     """The one status pill (mock `stHTML`): its glyph (No audio's a struck speaker, the others' a struck camera, as
-    the mock's `noIco`), its label, its look by tone."""
+    the mock's `noIco`), its label, its look by tone. R47: an *Asked* one is the pressed mark, still."""
+    if status.kind == "asked":
+        paint_pressed(p, rect, None)
+        return
     f = fz()
     col = style.colours()
     r = QRectF(rect).adjusted(0.5, 0.5, -0.5, -0.5)
@@ -1258,10 +1317,7 @@ class RowDelegate(QStyledItemDelegate):
                         strings.ROWS_DONE_TIP.format(ep=nxt.label), nxt))
             out.append(("more", g["more"], strings.ROWS_MORE_TIP, None))
             if payload.status is not None:                 # --- P4.1 L2: the row's status, a button as a row's (Q33)
-                name, tip, ask = action_of(payload.status, payload.episodes, self.view.connect_off, payload.media_word)
-                if name in ASKS and self.view.pressed(payload.episodes):
-                    tip = strings.ROWS_ASKED_TIP         # round 8 row 45 (A-3): asked, starting — as a row's
-                out.append((name, g["status"], tip, ask))
+                out.append(self._status_part(payload, payload.episodes, g["status"], payload.media_word))
             if g["journey"] is not None:
                 out.append(("journey", g["journey"], strings.ROWS_JOURNEY_TIP, nxt))
             is_open = self.view.model().open_key == payload.key
@@ -1285,8 +1341,8 @@ class RowDelegate(QStyledItemDelegate):
             out.append(("down", g["down"], strings.ROWS_MOVE_TIP["down"], None))
             if not is_open and self._sheet_there():    # L4: a stone is hit only where it is drawn
                 out += self._stone_parts(payload, self._info(payload)[0], g["gstr"], slab.top() + slab.height() / 2)
-            if g["stat"].width():
-                out.append(("status", g["stat"], status_tip(payload.status), None))
+            if g["stat"].width():                    # R47: mining's icon is its Stop while the job can be stopped
+                out.append(self._status_part(payload, payload.episodes, g["stat"], payload.media_word))
             out.append(("title", QRect(slab.left(), slab.top(), g["main"].right() - slab.left() + 1, slab.height()),
                         payload.title + ("\n" + payload.line if payload.line else ""), None))
             if is_open:
@@ -1425,6 +1481,16 @@ class RowDelegate(QStyledItemDelegate):
         """An opened group's (or Up Next's) show lines where `rect` lays them: [(QRect, show)] (LM11b)."""
         return self._show_lines(entry[1], self.episode_lines(entry, rect))
 
+    def _status_part(self, item, episodes, rect, word):
+        """A status as a part (P4.1 L2): its button (`action_of`) at `rect`, or itself. Pressed, its hover says so: a
+        *Mine now* *Asked · starting…* (round 8 row 45), a *Stop* *Stopping…* (R47: no second Stop)."""
+        name, tip, ask = action_of(item.status, episodes, self.view.connect_off, word)
+        if name in ASKS and self.view.pressed(episodes):
+            tip = strings.ROWS_ASKED_TIP
+        elif name == STOP and self.view.stopping(episodes):
+            name, tip, ask = "status", view_rows.STRINGS["tip_stopping"], None
+        return name, rect, tip, ask
+
     def _episode_parts(self, row, area, hero=False):
         out = []
         hot = self.view.hot_eps(row.key)
@@ -1436,12 +1502,10 @@ class RowDelegate(QStyledItemDelegate):
                 out.append(("play", cols["play"], ep.play_tip, ep))
             if ep.status is not None:
                 size = pill_size(ep.status)
-                name, tip, ask = action_of(ep.status, (ep,), self.view.connect_off,     # --- P4.1 L2; LM11b G1:
-                                           ep.media_word or row.media_word)              # its own type's word
-                if ep.id in self.view.pressed_ids:       # round 8 row 45: asked, starting — the hover says so
-                    tip = strings.ROWS_ASKED_TIP
-                out.append((name, QRect(cols["stat"].right() - size.width(), cols["stat"].center().y() -
-                                        size.height() // 2, size.width(), size.height()), tip, ask))
+                out.append(self._status_part(ep, (ep,), QRect(cols["stat"].right() - size.width(),   # --- P4.1 L2;
+                                                              cols["stat"].center().y() - size.height() // 2,
+                                                              size.width(), size.height()),
+                                             ep.media_word or row.media_word))       # LM11b G1: its own type's word
             state = strings.ROWS_STONE_STATE["cut" if ep.watched else "raw" if ep.cards else "rock"].format(n=ep.cards)
             out.append(("stone", cols["tick"], stone_tip(
                 ep, state, view_rows.mark_moves_list(row.tier, ep, self._keep_watched())), ep))
@@ -1656,6 +1720,9 @@ class RowDelegate(QStyledItemDelegate):
                 p.drawPixmap(box.topLeft(), pix)
             if payload.status is not None and self.view.pressed(payload.episodes):     # round 8 row 45 (A-3): over
                 self._paint_pressed(p, self._hero_geometry(payload, rect, lines)["status"])   # its cached picture
+            if self.view.stop_marks() and payload.status is not None and payload.status.kind == "mining":   # R47
+                self._paint_stop_over(p, self._hero_geometry(payload, rect, lines)["status"], payload.status,
+                                      payload.episodes, dpr)
             if focused:
                 self._focus_ring(p, box, theme.RADII["r-sm"])
         elif kind == HERO:
@@ -1723,9 +1790,26 @@ class RowDelegate(QStyledItemDelegate):
             at = next((r for name, r, *_rest in self.line_geometry(row, slab)["hover"] if name in ASKS), None)
             if at is not None:                       # (the Mine now button's place, at rest too: it turns there)
                 self._paint_pressed(p, at, radius=theme.RADII["icon-button"])
+        if self.view.stop_marks() and row.status is not None and row.status.kind == "mining":     # --- R47
+            self._paint_stop_over(p, self.line_geometry(row, slab)["stat"], row.status, row.episodes, dpr,
+                                  "row-hover" if fade > 0 else "surface")
         if focused:
             self._focus_ring(p, slab, theme.RADII["r-sm"])
         p.restore()
+
+    def _paint_stop_over(self, p, rect, status, episodes, dpr, ground="surface"):
+        """R47: a Mining pill's Stop over `rect` (its cached picture under it): *Stopping…* turning while its Stop is
+        pressed (the view repaints that box alone as it turns), *■ Stop* while the hand is on it. `ground`: under it."""
+        view = self.view
+        if rect.height() > rect.width():             # a row's column (its icon at rest): the icon's own square
+            side = rect.width()
+            rect = QRectF(rect.center().x() - side / 2, rect.center().y() - side / 2, side, side)
+        if view.stopping(episodes):
+            paint_stop(p, rect, True, view.turning(), dpr=dpr, ground=ground)
+            if p.device() is view.viewport():
+                view.turned_at(p.transform().mapRect(QRectF(rect)).toAlignedRect())
+        elif view.stop_hot is not None and status.stop is not None and not view.connect_off and                 QRectF(rect).contains(QPointF(view.stop_hot.center())):
+            paint_stop(p, rect, False, dpr=dpr, ground=ground)
 
     def _paint_pressed(self, p, rect, radius=None):
         """Round 8 row 45: a pressed *Mine now*'s turning mark over `rect`; painted on the list, the view repaints that
@@ -1941,6 +2025,9 @@ class RowDelegate(QStyledItemDelegate):
                                 ident=(row.key, "open"), ground="open-row", to=(p, at))
         self._blit_faded(p, at, fade, head)
         self._paint_number(p, row, slab, dpr)
+        if self.view.stop_marks() and row.status is not None and row.status.kind == "mining":     # --- R47
+            self._paint_stop_over(p, self.line_geometry(row, slab, opened=True)["stat"], row.status, row.episodes, dpr,
+                                  "open-row")
         if fade > 0:
             self._paint_movers(p, row, slab, fade)
         if focused:
@@ -2287,6 +2374,9 @@ class RowDelegate(QStyledItemDelegate):
                     p.drawPixmap(r.topLeft(), pix)
                 if ep.id in self.view.pressed_ids and ep.status is not None:      # round 8 row 45: over its picture
                     self._paint_pressed(p, self._ep_pill(r, ep, dpr))
+                if self.view.stop_marks() and ep.status is not None and ep.status.kind == "mining":      # R47
+                    self._paint_stop_over(p, self._ep_pill(r, ep, dpr), ep.status, (ep,), dpr,
+                                          "row-hover" if on else "surface" if hero else "open-row")
                 if on:
                     m, side = self._episode_cols(r)["more"], rl("anki-icon")
                     icon(p, "more", QRectF(m.center().x() - side / 2 + 0.5, m.center().y() - side / 2 + 0.5, side,
@@ -2298,6 +2388,9 @@ class RowDelegate(QStyledItemDelegate):
                 p.restore()
                 if ep.id in self.view.pressed_ids and ep.status is not None:
                     self._paint_pressed(p, self._ep_pill(r, ep, dpr))
+                if self.view.stop_marks() and ep.status is not None and ep.status.kind == "mining":      # R47
+                    self._paint_stop_over(p, self._ep_pill(r, ep, dpr), ep.status, (ep,), dpr,
+                                          "surface" if hero else "open-row")
         for r, show in shows:                         # --- LM11b: each a picture of its own, as an episode's line
             if clip is not None and not clip.intersects(QRectF(r)):
                 continue
@@ -2380,6 +2473,8 @@ class RowDelegate(QStyledItemDelegate):
                            ident=(row.key, "open"), ground="surface", to=(p, QPoint(rect.left(), head.top())))
         if pix is not None:
             p.drawPixmap(QPoint(rect.left(), head.top()), pix)
+        if self.view.stop_marks() and row.status is not None and row.status.kind == "mining":     # --- R47
+            self._paint_stop_over(p, g["status"], row.status, row.episodes, dpr)
         if focused:
             self._focus_ring(p, g["box"], theme.RADII["r-sm"])
         self._paint_episodes(p, row, g["eps"], dpr, hero=True, lines=lines)
@@ -2670,6 +2765,7 @@ class RowsView(QListView):
     link_requested = pyqtSignal(object, object)
     mine_text_requested = pyqtSignal(object, object)
     # --- end P4.1 L2
+    stop_requested = pyqtSignal(object, object)    # --- R47: (the Row, the Ask: its file, its job) a Mining pill's Stop
 
     def __init__(self, name, tooltips=None, parent=None):
         super().__init__(parent)
@@ -2744,6 +2840,10 @@ class RowsView(QListView):
         self._turn_idle = False                      # ... a frame found none painted (two: the clock stops, A-6)
         self.press_moved = None                      # ... `press_moved(ids)`: their status moved — the presses' owner
                                                      # ends them (`mine_actions`); None: this list lets them go
+        self.stopping_ids = frozenset()              # --- R47: file ids whose Stop was pressed, not yet stopped
+        self._stopping_at = {}                       # ... each one's row key at the press
+        self.stop_moved = None                       # ... `stop_moved(ids)`: they left Mining — the presses' owner
+        self.stop_hot = None                         # ... the Stop pill under the hand (its QRect): it reads ■ Stop
         self.seam = None                             # --- W3.2 Q8: (row key, episode id) of the ✂ seam under the hand
         self.ep_hover = None                         # --- W3.2 Q8: (row key, episode id) the hand was last on
         self.ep_hot = None                           # --- row 28: (row key, episode id) under the hand now
@@ -3020,14 +3120,78 @@ class RowsView(QListView):
 
     def _set_pressed(self, ids):
         self.pressed_ids = frozenset(ids)
-        if self.pressed_ids and self._turn is None:
+        self._turn_clock()
+
+    def _turn_clock(self):
+        """The marks' clock: on while a *Mine now* or a *Stop* is pressed (R47), gone when none is."""
+        on = bool(self.pressed_ids or self.stopping_ids)
+        if on and self._turn is None:
             self._turn = motion.Turn(self.viewport(), self._turned)
             self._turn.show()
             self._turn.set_running(True)
-        elif not self.pressed_ids and self._turn is not None:
+        elif not on and self._turn is not None:
             self._turn.set_running(False)
             self._turn.deleteLater()
             self._turn, self._turn_rects = None, []
+
+    # --- R47: a Mining pill's *Stop* pressed (`mine_actions.stop`) --------------------------------------------- #
+    def stop_marks(self):
+        """Whether any Stop is pressed or under the hand (a paint looks no further while none is)."""
+        return bool(self.stopping_ids) or self.stop_hot is not None
+
+    def stopping(self, episodes):
+        """Whether any of `episodes` has its Stop pressed (its pill reads *Stopping…*)."""
+        return bool(self.stopping_ids) and any(e.id in self.stopping_ids for e in episodes)
+
+    def press_stop(self, ids):
+        """The files `ids` stopped: their pills read *Stopping…* from now — painted before this returns — until they
+        leave Mining (`_prune_pressed`: stopped, or Connect no longer mining them) or the stop is refused (`unstop`).
+        -> the ids it marks."""
+        shown = self._where(ids)
+        if not shown:
+            return ()
+        entries = self.model().entries
+        self._stopping_at.update({i: entries[n][1].key for i, (n, _ep) in shown.items()})
+        self.stopping_ids = frozenset(self.stopping_ids | set(shown))
+        self.stop_hot = None
+        self._turn_clock()
+        for row_i in sorted({n for n, _ep in shown.values()}):
+            self.viewport().repaint(self.visualRect(self.model().index(row_i, 0)))
+        return tuple(shown)
+
+    def unstop(self, ids):
+        gone = self.stopping_ids & set(ids)
+        if not gone:
+            return
+        shown = self._where(gone, {i: self._stopping_at[i] for i in gone if i in self._stopping_at})
+        for i in gone:
+            self._stopping_at.pop(i, None)
+        self.stopping_ids = frozenset(self.stopping_ids - gone)
+        self._turn_clock()
+        for row_i in sorted({n for n, _ep in shown.values()}):
+            self.update(self.model().index(row_i, 0))
+
+    def _prune_stopping(self):
+        """A new view: a stopped file no longer Mining (stopped: waiting for your *Mine now*; or Connect not mining it
+        now), or no longer shown, lets its *Stopping…* go — its press ended by its owner. Connect's own *Stopping…*
+        (the feed's `stopping`) is still Mining: held."""
+        if not self.stopping_ids:
+            return
+        shown = self._where(self.stopping_ids, dict(self._stopping_at))
+        moved = {i for i in self.stopping_ids if i not in shown or shown[i][1].status is None
+                 or shown[i][1].status.kind != "mining"}
+        if moved:
+            (self.stop_moved or self.unstop)(moved)
+
+    def _set_stop_hot(self, rect):
+        """The Stop pill under the hand (`rect`, or None): it reads ■ Stop; the rows it leaves and enters repainted."""
+        if rect == self.stop_hot:
+            return
+        for r in (self.stop_hot, rect):
+            if r is not None:
+                self.viewport().update(r.adjusted(-2, -2, 2, 2))
+        self.stop_hot = rect
+    # --- end R47
 
     def turning(self):
         """The pressed marks' phase (0–1), or None: still (Reduced motion, the freeze switch)."""
@@ -3104,6 +3268,7 @@ class RowsView(QListView):
         if self.ep_hot is not None:
             self._hand_again()                           # --- row 28 (AD-3): the hand's episode where it is now
         self._prune_pressed()                            # --- round 8 row 45
+        self._prune_stopping()                           # --- R47
         return how
 
     def _held_keys(self, entries):
@@ -3599,6 +3764,7 @@ class RowsView(QListView):
         self._set_ep("ep_hot", self._ep_under(event.pos()))      # --- row 28 (before the parts: its ⋯ is one)
         at, part = self.part_at(event.pos())
         self._set_line_hover((at.row(), part[0][:-5]) if part is not None and part[0].endswith("-line") else None)
+        self._set_stop_hot(QRect(part[1]) if part is not None and part[0] == STOP else None)     # --- R47
         self._q8_hover(at, part)                     # --- W3.2 Q8: the ✂ seam, the episode the hand is on
         if self.tooltips is not None:
             self.tooltips.hide_part_unless(self.viewport(), event.pos())
@@ -3622,6 +3788,7 @@ class RowsView(QListView):
         self._set_line_hover(None)
         self.set_seam(None)                          # --- W3.2 Q8
         self._set_ep("ep_hot", None)                 # --- row 28
+        self._set_stop_hot(None)                     # --- R47
         super().leaveEvent(event)
 
     def _show_focus(self, on):
@@ -3750,7 +3917,11 @@ class RowsView(QListView):
     # --- P4.1 L2: the statuses' buttons (4.1.11) ------------------------------------------------------------------ #
     def _press_action(self, name, rect, row, ask, tip):
         """*Mine now* / *Mine this* ask for the files; *No video* offers *Link…* · *Mine text* in a small menu. Connect
-        off: an ask does nothing, its tip (saying why) is shown (IK S7); *Link…* · *Mine text* still work."""
+        off: an ask does nothing, its tip (saying why) is shown (IK S7); *Link…* · *Mine text* still work. R47: a
+        Mining pill's *Stop* asks the window to stop its job (offered only while Connect may run: `action_of`)."""
+        if name == STOP:
+            self.stop_requested.emit(row, ask)
+            return
         if self.connect_off and asks_connect(name, getattr(row, "media_word", "video")):    # P4.1 WF: asks only
             if self.tooltips is not None:
                 self.tooltips.request(self.viewport(), rect, tip)

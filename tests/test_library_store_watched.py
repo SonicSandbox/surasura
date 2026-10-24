@@ -464,6 +464,23 @@ def test_read_only_mode_the_journey_check_signs_the_watched_episodes_as_generate
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
+def test_the_status_check_that_writes_nothing_signs_the_watched_episodes_too(language, monkeypatch):
+    """surasura-cli `status` (`journey_check`, the store opened read-only) asks the same question as the window's check:
+    its signature carries the set-aside files Generate signs, or it would answer "not current" for every library with a
+    watched episode."""
+    from app import analyzer
+    store = migrated(language)
+    store.set_watched([store.ids("now")[1]])
+    want = analyzer.aside_files(language, store.schedule(with_aside=True))
+    store.close()
+    signed = []
+    monkeypatch.setattr(analyzer, "compute_run_signature",
+                        lambda language, found, args, order_free=False, aside=(): signed.append(aside))
+    analyzer.journey_check(["analyzer"], language)
+    assert signed == [want] and len(want) == 1, signed
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 @pytest.mark.parametrize("keep", [None, True])
 def test_the_option_and_the_stones_come_back_through_a_rebuild(language, keep):
     """The copy carries `keep_watched` when the store holds it (`COPY_META_KEYS`) and every stone in its records: a

@@ -1204,3 +1204,620 @@ def test_the_held_check_never_moves_the_learners_copy(language, tmp_path, monkey
         assert ls._free_to_move(copy) is False
     assert ls._free_to_move(copy) is True
     assert moved == [] and os.listdir(str(tmp_path)) == ["第01話.txt"]
+
+
+# --- an edition's Undo: carried on when pressed again, refused whole, never re-reading its EPUBs ------------------ #
+
+def _new_edition(store, data_dir, language, times=1):
+    """(Inside the store.) A book in, then its new edition switched whole -> (root, before, olds, work, the EPUB)."""
+    src = _drive("Shelf")
+    _book(language, src)
+    root = store.add_source(src)
+    _look(store, language, root, first=True)
+    before = _items(store)
+    olds = [_copy(data_dir, rel) for _i, rel in before]
+    work = store.item(before[0][0])["work_id"]
+    new = _epub(os.path.join(src, "Books", f"{_EDITION[language]}.epub"), _chapters(language, "改", times), language)
+    _look(store, language, root)
+    assert _items(store)[:len(before)] == before and len(_items(store)) == len(_parts(new, language))
+    return root, before, olds, work, new
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_editions_undo_pressed_again_once_let_go_carries_the_same_undo_on(language, monkeypatch):
+    """An edition's Undo waiting (a part held open), pressed again once the part is let go: the same Undo is carried
+    on — the whole old edition back, no note left, no last switch — never refused as another switch of the book."""
+    store, data_dir = _empty(language)
+    with store:
+        root, before, olds, work, _new = _new_edition(store, data_dir, language)
+        real = _holding(monkeypatch, before[-1][1])
+        assert getattr(store.undo_switch(work), "waiting", False)
+        monkeypatch.setattr(ls, "trash_file", real)
+        out = store.undo_switch(work)
+        assert not getattr(out, "waiting", False) and out.switched == [i for i, _r in before]
+        assert [_copy(data_dir, rel) for _i, rel in before] == olds
+        assert store.last_switch(work) is None
+        assert not [k for k in store.meta() if k.startswith(ls.EDITION_PENDING)]
+
+
+@pytest.mark.parametrize("why", ["changed", "purged", "switching"])
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_editions_undo_that_cant_go_whole_is_refused_and_changes_nothing(language, why, monkeypatch):
+    """An edition's Undo refused whole (`UndoRefused`), nothing changed — every part keeps the new edition and the
+    title keeps its last switch — when a part changed since (its copy gone, marked missing), when an old part's copy
+    is no longer in the trash (purged), or while another edition of the book is under way (one change of a book at a
+    time)."""
+    store, data_dir = _empty(language)
+    with store:
+        root, before, _olds, work, new = _new_edition(store, data_dir, language)
+        news = [_copy(data_dir, rel) for _i, rel in before]
+        kept = before
+        if why == "changed":
+            os.remove(os.path.join(data_dir, *before[0][1].split("/")))
+            store.sync_disk()                            # the window's disk sync marks the copy missing
+            assert store.item(before[0][0])["availability"] != "available"
+            kept, news = before[1:], news[1:]
+        elif why == "purged":
+            record = ls._json_dict(store.meta()[ls.LAST_SWITCH + str(work)])
+            os.remove(os.path.join(data_dir, ls._strip(record["swaps"][1]["trash"])))
+        else:
+            _holding(monkeypatch, before[-1][1])
+            third = {"ja": "星の歌 (第3版)", "zh": "灯下书简（增订版）"}[language]
+            _epub(os.path.join(os.path.dirname(new), f"{third}.epub"), _chapters(language, "三"), language, age=20)
+            assert _look(store, language, root)["switched"] == 0
+            assert [k for k in store.meta() if k.startswith(ls.EDITION_PENDING)], "the third edition waits"
+        with pytest.raises(ls.UndoRefused):
+            store.undo_switch(work)
+        assert [_copy(data_dir, rel) for _i, rel in kept] == news, "nothing undone"
+        assert (store.last_switch(work) or {}).get("kind") == "edition", "the Undo is still there"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_editions_undo_takes_its_added_parts_out_when_every_old_part_was_removed(language):
+    """A longer edition whose old parts the learner has all removed since: its Undo still takes out the parts the
+    edition added (the removed ones stay removed) — the book is as the learner left the old edition."""
+    store, data_dir = _empty(language)
+    with store:
+        root, before, _olds, work, _new = _new_edition(store, data_dir, language, times=2)
+        grown = _items(store)
+        assert len(grown) > len(before)
+        store.remove([i for i, _r in before])
+        assert _items(store) == grown[len(before):]
+        store.undo_switch(work)
+        assert _items(store) == []
+        assert store.last_switch(work) is None
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_waiting_editions_undo_keeps_its_epub_from_being_read_again_even_changed(language, monkeypatch):
+    """An edition's Undo waiting (a part held open), the new edition's EPUB rewritten meanwhile: no look hashes or
+    splits it while the Undo's note stands (the next look carries the Undo on first)."""
+    store, data_dir = _empty(language)
+    with store:
+        root, before, _olds, work, new = _new_edition(store, data_dir, language)
+        _holding(monkeypatch, before[-1][1])
+        assert getattr(store.undo_switch(work), "waiting", False)
+        new = os.path.abspath(_epub(new, _chapters(language, "再"), language, age=30))
+        split, hashed = [], []
+        real_parts, real_sha = sources.book_parts, ls.sha256_of
+        with monkeypatch.context() as patched:
+            patched.setattr(sources, "book_parts", lambda p, lang: split.append(p) or real_parts(p, lang))
+            patched.setattr(ls, "sha256_of", lambda p: (hashed.append(p) if os.path.abspath(p) == new else None)
+                            or real_sha(p))
+            _look(store, language, root, full=True)
+        assert (split, hashed) == ([], [])
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_second_undo_of_a_changed_declined_edition_is_not_read_again(language, monkeypatch):
+    """Undo, the declined edition's EPUB rewritten, the look switches to it, Undo again: the second Undo's declined
+    records hold the EPUB's bytes and stats as they are now — the next look neither hashes nor splits it (S19)."""
+    store, data_dir = _empty(language)
+    with store:
+        root, before, olds, work, new = _new_edition(store, data_dir, language)
+        store.undo_switch(work)
+        new = os.path.abspath(_epub(new, _chapters(language, "再"), language, age=30))
+        assert _look(store, language, root, full=True)["switched"] == len(before)
+        store.undo_switch(work)
+        assert [_copy(data_dir, rel) for _i, rel in before] == olds
+        split, hashed = [], []
+        real_parts, real_sha = sources.book_parts, ls.sha256_of
+        with monkeypatch.context() as patched:
+            patched.setattr(sources, "book_parts", lambda p, lang: split.append(p) or real_parts(p, lang))
+            patched.setattr(ls, "sha256_of", lambda p: (hashed.append(p) if os.path.abspath(p) == new else None)
+                            or real_sha(p))
+            assert _look(store, language, root, full=True)["switched"] == 0
+        assert (split, hashed) == ([], [])
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_same_path_editions_undo_is_not_read_again_by_the_next_look(language, monkeypatch):
+    """A3: the Undo of a same-path new edition keeps the old text's records with the EPUB's stats as they are now —
+    the next look neither hashes nor splits the EPUB (S19), and switches nothing."""
+    store, data_dir = _empty(language)
+    src = _drive("Shelf")
+    book = os.path.abspath(_book(language, src))
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        before = _items(store)
+        olds = [_copy(data_dir, rel) for _i, rel in before]
+        _epub(book, _chapters(language, "改"), language, age=30)
+        assert _look(store, language, root)["switched"] == len(before)
+        store.undo_switch(store.item(before[0][0])["work_id"])
+        assert [_copy(data_dir, rel) for _i, rel in before] == olds
+        split, hashed = [], []
+        real_parts, real_sha = sources.book_parts, ls.sha256_of
+        with monkeypatch.context() as patched:
+            patched.setattr(sources, "book_parts", lambda p, lang: split.append(p) or real_parts(p, lang))
+            patched.setattr(ls, "sha256_of", lambda p: (hashed.append(p) if os.path.abspath(p) == book else None)
+                            or real_sha(p))
+            assert _look(store, language, root, full=True)["switched"] == 0
+        assert (split, hashed) == ([], [])
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_part_renamed_while_its_new_edition_waits_is_switched_at_its_new_name(language, monkeypatch):
+    """A new edition waiting (a part held open), meanwhile another part's copy renamed in the library and linked
+    again by the learner (*Link a file*): the waiting change is judged again, never carried on at the old name — the
+    next looks end on the whole new edition, the renamed part at its new name, nothing at the old one."""
+    store, data_dir = _empty(language)
+    src = _drive("Shelf")
+    _book(language, src)
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        before = _items(store)
+        new = _epub(os.path.join(src, "Books", f"{_EDITION[language]}.epub"), _chapters(language, "改"), language)
+        real = _holding(monkeypatch, before[-1][1])
+        assert _look(store, language, root)["switched"] == 0
+        assert [k for k in store.meta() if k.startswith(ls.EDITION_PENDING)], "the edition waits"
+        folder, name = before[0][1].rsplit("/", 1)
+        moved = f"{folder}/renamed {name}"
+        os.rename(os.path.join(data_dir, *before[0][1].split("/")), os.path.join(data_dir, *moved.split("/")))
+        store.relink(before[0][0], os.path.join(data_dir, *moved.split("/")))   # the window's *Link a file*
+        assert store.item(before[0][0])["rel_path"] == moved
+        monkeypatch.setattr(ls, "trash_file", real)
+        _look(store, language, root, full=True)
+        _look(store, language, root, full=True)
+        now = _items(store)
+        assert now == [(before[0][0], moved)] + before[1:]
+        assert _whole(data_dir, now, _parts(new, language))
+        assert not os.path.exists(os.path.join(data_dir, *before[0][1].split("/")))
+        assert not [k for k in store.meta() if k.startswith(ls.SWITCH_PENDING)]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_waiting_editions_staged_part_lost_meanwhile_is_judged_again_never_waits_for_ever(language, monkeypatch):
+    """A new edition waiting (a part held open), meanwhile one of its staged new parts gone from the trash: once let
+    go, the waiting change is dropped (its bytes no longer there to take), the book judged again — the next looks end
+    on the whole new edition, no note left."""
+    store, data_dir = _empty(language)
+    src = _drive("Shelf")
+    _book(language, src)
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        before = _items(store)
+        new = _epub(os.path.join(src, "Books", f"{_EDITION[language]}.epub"), _chapters(language, "改"), language)
+        real = _holding(monkeypatch, before[-1][1])
+        assert _look(store, language, root)["switched"] == 0
+        (value,) = [v for k, v in store.meta().items() if k.startswith(ls.EDITION_PENDING)]
+        os.remove(os.path.join(data_dir, ls._strip(ls._json_dict(value)["parts"][0]["part"])))
+        monkeypatch.setattr(ls, "trash_file", real)
+        _look(store, language, root, full=True)
+        _look(store, language, root, full=True)
+        assert _items(store) == before and _whole(data_dir, before, _parts(new, language))
+        assert not [k for k in store.meta() if k.startswith(ls.SWITCH_PENDING)]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_crashed_edition_whose_part_changed_keeps_its_note_until_every_part_is_back(language, monkeypatch):
+    """A crash mid-switch (the first part's swap committed), then another part linked to a new name by the learner:
+    the next look takes the change back — and while the first part's copy is held open it can't go back, so the note
+    stays (never dropped with the book half old, half new); let go, the book ends whole on one edition."""
+    store, data_dir = _empty(language)
+    src = _drive("Shelf")
+    _book(language, src)
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        before = _items(store)
+        uf = store.user_files_dir
+    new = _epub(os.path.join(src, "Books", f"{_EDITION[language]}.epub"), _chapters(language, "改"), language)
+    child = subprocess.run([sys.executable, "-c", EDITION_CRASH, language, data_dir, uf, str(root)],
+                           cwd=os.getcwd(), capture_output=True, text=True)
+    assert child.returncode == 3, child.stderr[-600:]
+    monkeypatch.setattr(ls, "SWITCH_STALE_S", 0)
+    store = ls.open_store(language, data_dir, uf)
+    with store:
+        folder, name = before[-1][1].rsplit("/", 1)
+        moved = f"{folder}/renamed {name}"
+        os.rename(os.path.join(data_dir, *before[-1][1].split("/")), os.path.join(data_dir, *moved.split("/")))
+        store.relink(before[-1][0], os.path.join(data_dir, *moved.split("/")))   # the window's *Link a file*
+        real = _holding(monkeypatch, before[0][1])
+        _look(store, language, root, full=True)
+        assert [k for k in store.meta() if k.startswith(ls.EDITION_PENDING)], "a part not back yet: the note stays"
+        monkeypatch.setattr(ls, "trash_file", real)
+        _look(store, language, root, full=True)
+        _look(store, language, root, full=True)
+        now = _items(store)
+        assert [i for i, _r in now] == [i for i, _r in before]
+        assert _whole(data_dir, now, _parts(new, language))
+        assert not [k for k in store.meta() if k.startswith(ls.SWITCH_PENDING)]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows refuses to move a file held open")
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_waiting_edition_whose_part_is_still_held_swaps_nothing_at_the_next_look(language, monkeypatch):
+    """A new edition waiting on a part held open: while it stays held, the next look probes that part first and
+    swaps nothing (no part switched and switched back); let go, it switches whole."""
+    store, data_dir = _empty(language)
+    src = _drive("Shelf")
+    _book(language, src)
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        before = _items(store)
+        new = _epub(os.path.join(src, "Books", f"{_EDITION[language]}.epub"), _chapters(language, "改"), language)
+        copy = os.path.abspath(os.path.join(data_dir, *before[-1][1].split("/")))
+        real = _holding(monkeypatch, before[-1][1])
+        assert _look(store, language, root)["switched"] == 0
+        steps, real_step = [], ls.Store._switch_step
+        with monkeypatch.context() as patched, open(copy, "rb"):     # still open in a reader
+            patched.setattr(ls.Store, "_switch_step", lambda self, *a, **k: steps.append(1) or real_step(self, *a, **k))
+            assert _look(store, language, root, full=True)["switched"] == 0
+        assert steps == []
+        monkeypatch.setattr(ls, "trash_file", real)
+        assert _look(store, language, root, full=True)["switched"] == len(before)
+        assert _whole(data_dir, before, _parts(new, language))
+
+
+# --- a book's new edition: a busy library never gives a part up; a failing step leaves the whole old book --------- #
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_busy_library_never_leaves_an_editions_extra_parts_out(language, monkeypatch):
+    """A longer edition's extra parts meeting a busy library (another window writing) look after look, more looks
+    than a failing part may wait: the edition waits each time (busy is never a reason to give a part up) and, once
+    the library is free, every part goes in."""
+    store, data_dir = _empty(language)
+    src = _drive("Shelf")
+    _book(language, src)
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        before = _items(store)
+        work = store.item(before[0][0])["work_id"]
+        longer = _epub(os.path.join(src, "Books", f"{_EDITION[language]}.epub"), _chapters(language, "改", 2),
+                       language)
+        parts = _parts(longer, language)
+        real = store.take_in
+
+        def busy(root_id, found, **k):
+            if any(str(f.get("origin", "")).startswith(os.path.abspath(longer)) for f in found):
+                raise ls.StoreBusy("database is locked")
+            return real(root_id, found, **k)
+        with monkeypatch.context() as patched:
+            patched.setattr(store, "take_in", busy)
+            _look(store, language, root)
+            for _n in range(ls.EDITION_TRIES + 1):
+                assert _notes(store), "a busy library: the edition waits"
+                _look(store, language, root, full=True)
+        assert _notes(store) and len(_items(store)) == len(before)
+        _look(store, language, root, full=True)
+        now = _items(store)
+        assert now[:len(before)] == before and [_copy(data_dir, r) for _i, r in now] == parts
+        assert not _notes(store) and (store.last_switch(work) or {}).get("kind") == "edition"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_part_step_failing_mid_edition_keeps_the_whole_old_book_until_the_next_look(language, monkeypatch):
+    """A longer new edition whose second part step fails (the store failing, not a file held): every part goes back,
+    so until the next look the book is the whole old edition (no part new, no extra part in), and the next look
+    switches it whole."""
+    store, data_dir = _empty(language)
+    src = _drive("Shelf")
+    _book(language, src)
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        before = _items(store)
+        olds = [_copy(data_dir, rel) for _i, rel in before]
+        longer = _epub(os.path.join(src, "Books", f"{_EDITION[language]}.epub"), _chapters(language, "改", 2),
+                       language)
+        parts = _parts(longer, language)
+        monkeypatch.setattr(ls, "SWITCH_BATCH", 1)
+        real, calls = ls.Store._switch_step, []
+
+        def step(self, kind, *a, **k):
+            calls.append(kind)
+            if len(calls) == 2:
+                raise ls.StoreError("disk I/O error")
+            return real(self, kind, *a, **k)
+        with monkeypatch.context() as patched:
+            patched.setattr(ls.Store, "_switch_step", step)
+            _look(store, language, root)
+        assert len(calls) > 2, "the first part went back"
+        assert _items(store) == before and [_copy(data_dir, rel) for _i, rel in before] == olds
+        assert _notes(store)
+        _look(store, language, root, full=True)
+        now = _items(store)
+        assert now[:len(before)] == before and [_copy(data_dir, r) for _i, r in now] == parts
+        assert not _notes(store)
+
+
+def _shorter(store, data_dir, language, src):
+    """A two-chapter book in, then a one-chapter new edition switched -> (root, before, olds, now, work)."""
+    _epub(os.path.join(src, "Books", f"{_BOOKS[language]}.epub"), _chapters(language, "", 2), language)
+    root = store.add_source(src)
+    _look(store, language, root, first=True)
+    before = _items(store)
+    olds = [_copy(data_dir, rel) for _i, rel in before]
+    work = store.item(before[0][0])["work_id"]
+    _epub(os.path.join(src, "Books", f"{_EDITION[language]}.epub"), _chapters(language, "改", 1), language)
+    _look(store, language, root)
+    now = _items(store)
+    assert len(before) - len(now) >= 2, "two parts past the new edition's end"
+    return root, before, olds, now, work
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_undos_parts_past_the_end_go_back_when_one_was_put_back_by_hand_meanwhile(language, monkeypatch):
+    """A shorter edition's Undo waiting (a part held open), meanwhile the learner puts one of the parts past its end
+    back from the trash by hand: once let go, the Undo puts the others back too: the whole old book, nothing left in
+    the trash, no Undo left."""
+    store, data_dir = _empty(language)
+    src = _drive("Shelf")
+    with store:
+        root, before, olds, now, work = _shorter(store, data_dir, language, src)
+        real = _holding(monkeypatch, now[-1][1])
+        assert getattr(store.undo_switch(work), "waiting", False)
+        tail = [r for r in store.trash_rows() if r["item_id"] in {i for i, _r in before[len(now):]}
+                and not r["restored_at"]]
+        assert len(tail) >= 2
+        rel, _why = ls.put_back(data_dir, tail[0]["trashed_path"], tail[0]["rel_path"])
+        store.restore([tail[0]["id"]], {tail[0]["id"]: rel} if rel != tail[0]["rel_path"] else None)
+        monkeypatch.setattr(ls, "trash_file", real)
+        _look(store, language, root, full=True)
+        assert sorted(_items(store)) == sorted(before)
+        assert [_copy(data_dir, rel) for _i, rel in before] == olds
+        assert not [r for r in store.trash_rows() if r["id"] in {t["id"] for t in tail} and not r["restored_at"]]
+        assert store.last_switch(work) is None and not _notes(store)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_undo_meeting_a_busy_library_as_it_puts_the_tail_back_waits_and_ends_whole(language, monkeypatch):
+    """A shorter edition's Undo whose putting back of the parts past its end meets a busy library (another window
+    writing): the Undo waits (said so) instead of ending without them; the next look puts them back: the whole old
+    book, no Undo left."""
+    store, data_dir = _empty(language)
+    src = _drive("Shelf")
+    with store:
+        root, before, olds, _now, work = _shorter(store, data_dir, language, src)
+        real, calls = store.restore, []
+
+        def busy(*a, **k):
+            if k.get("kind") == "undo" and not calls:
+                calls.append(1)
+                raise ls.StoreBusy("database is locked")
+            return real(*a, **k)
+        with monkeypatch.context() as patched:
+            patched.setattr(store, "restore", busy)
+            out = store.undo_switch(work)
+        assert calls and getattr(out, "waiting", False)
+        assert _notes(store) and (store.last_switch(work) or {}).get("kind") == "edition"
+        _look(store, language, root, full=True)
+        assert _items(store) == before and [_copy(data_dir, rel) for _i, rel in before] == olds
+        assert store.last_switch(work) is None and not _notes(store)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_extra_part_left_out_counts_its_thirty_days_in_the_trash_from_then(language, monkeypatch):
+    """A longer edition's extra part whose move in fails look after look, its staged file a month old by then: left
+    out, the file sits in the trash with its 30 days counted from the leaving out, never purged at the next clean-up
+    (as after any removal)."""
+    store, data_dir = _empty(language)
+    src = _drive("Shelf")
+    _book(language, src)
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        before = _items(store)
+        _epub(os.path.join(src, "Books", f"{_EDITION[language]}.epub"), _chapters(language, "改", 2), language)
+        rows = len(store.trash_rows())
+        real = ls.rename_no_overwrite
+
+        def refused(a, b):
+            if ".trash" in a.replace("\\", "/").split("/"):
+                raise PermissionError(a)          # the staged extra part can't be moved in
+            return real(a, b)
+        with monkeypatch.context() as patched:
+            patched.setattr(ls, "rename_no_overwrite", refused)
+            _look(store, language, root)
+            (value,) = [v for k, v in store.meta().items() if k.startswith(ls.EDITION_PENDING)]
+            old = time.time() - 40 * 86400
+            staged = [os.path.join(data_dir, ls._strip(x["part"])) for x in ls._json_dict(value)["extras"]]
+            assert staged
+            for path in staged:
+                os.utime(path, (old, old))
+            for _n in range(ls.EDITION_TRIES):
+                if _notes(store):
+                    _look(store, language, root, full=True)
+        assert not _notes(store) and len(_items(store)) == len(before)
+        extra = store.trash_rows()[rows:]
+        assert extra
+        for row in extra:
+            path = os.path.join(data_dir, *row["trashed_path"].split("/"))
+            assert time.time() - os.path.getmtime(path) < 86400, "its 30 days count from the leaving out"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_two_runners_of_one_new_edition_still_end_whole_at_the_next_look(language, monkeypatch):
+    """Under the claim: should a second runner ever carry a new edition while the first works (the second meeting a
+    part held open, so it puts the switched parts back and waits), the first, ending, drops the note and writes the
+    last switch only once every part reads the new edition; else the note waits and the next look ends the book
+    whole (never a mixed book with nothing left to finish it)."""
+    store, data_dir = _empty(language)
+    src = _drive("Shelf")
+    _book(language, src)
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        before = _items(store)
+        olds = [_copy(data_dir, rel) for _i, rel in before]
+        work = store.item(before[0][0])["work_id"]
+        new = _epub(os.path.join(src, "Books", f"{_EDITION[language]}.epub"), _chapters(language, "改"), language)
+        news = _parts(new, language)
+        at = next(i for i, (o, n) in enumerate(zip(olds, news)) if o != n) + 2     # once a part that differs went in
+        assert at <= len(before)
+        monkeypatch.setattr(ls, "SWITCH_BATCH", 1)
+        real, real_trash = ls.Store._switch_step, ls.trash_file
+        calls, inner = [], [False]
+
+        def step(self, kind, by, work_id, ready, *a, **k):
+            if kind == "switch_version" and not inner[0] and ready:
+                calls.append(1)
+                if len(calls) == at:
+                    (key,) = _notes(store)
+                    inner[0] = True
+                    try:
+                        with monkeypatch.context() as patched:   # the second runner: this part's copy held open
+                            patched.setattr(ls, "trash_file", lambda d, r, to=None: (_ for _ in ()).throw(
+                                PermissionError(r)) if r == before[at - 1][1] else real_trash(d, r, to=to))
+                            store._edition_go(key)
+                    finally:
+                        inner[0] = False
+            return real(self, kind, by, work_id, ready, *a, **k)
+        with monkeypatch.context() as patched:
+            patched.setattr(ls.Store, "_switch_step", step)
+            _look(store, language, root)
+        assert len(calls) >= at
+        now = [_copy(data_dir, rel) for _i, rel in before]
+        assert now == news or _notes(store), "a mixed book with nothing left to finish it"
+        _look(store, language, root, full=True)
+        assert _items(store) == before and _whole(data_dir, before, news)
+        assert not _notes(store) and not _pending(store)
+        assert (store.last_switch(work) or {}).get("kind") == "edition"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_undo_pressed_again_once_its_note_counts_as_crashed_but_its_step_not_yet_waits(language, monkeypatch):
+    """Killed inside the Undo's second part step, its note's time renewed up to a quarter minute before that step
+    began: pressed again once the note counts as crashed but the step not yet, the press is told the Undo is under
+    way and changes nothing (the crashed step is put back first, by a later look); the look then finishes the Undo:
+    the whole old edition."""
+    store, data_dir = _empty(language)
+    src = _drive("Shelf")
+    _book(language, src)
+    with store:
+        root = store.add_source(src)
+        before, olds, news, work = _switched(store, data_dir, language, src, root)
+        uf = store.user_files_dir
+    _crash(language, data_dir, uf, root, "undo-before", 2, work)
+    store = ls.open_store(language, data_dir, uf)
+    with store:
+        (key,) = _notes(store)
+        assert _pending(store) != [key]
+        note = ls._json_dict(store.meta()[key])
+        store.bookkeeping({key: ls._dumps(dict(note, at=time.time() - ls.SWITCH_STALE_S - 1))})
+        held = [_copy(data_dir, rel) for _i, rel in before]
+        again = store.undo_switch(work)
+        assert again.waiting and again.notes
+        assert [_copy(data_dir, rel) for _i, rel in before] == held and _notes(store)
+        monkeypatch.setattr(ls, "SWITCH_STALE_S", 0)                # a minute later
+        _look(store, language, root, full=True)
+        assert [_copy(data_dir, rel) for _i, rel in before] == olds
+        assert store.last_switch(work) is None and not _notes(store) and not _pending(store)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_shorter_edition_whose_part_past_its_end_goes_missing_as_it_switches_waits(language, monkeypatch):
+    """A7 for the parts past the end, at the store: a shorter new edition whose part past its end has its copy
+    deleted outside the app just as the switch begins (the window's disk sync marking it missing): nothing switched,
+    nothing taken out; the part back, the next look switches it whole."""
+    store, data_dir = _empty(language)
+    src = _drive("Shelf")
+    _epub(os.path.join(src, "Books", f"{_BOOKS[language]}.epub"), _chapters(language, "", 2), language)
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        before = _items(store)
+        olds = [_copy(data_dir, rel) for _i, rel in before]
+        gone = os.path.join(data_dir, *before[-1][1].split("/"))
+        new = _epub(os.path.join(src, "Books", f"{_EDITION[language]}.epub"), _chapters(language, "改", 1), language)
+        news = _parts(new, language)
+        assert len(news) < len(before)
+        real = store.switch_parts
+
+        def meanwhile(*a, **k):
+            os.remove(gone)
+            store.sync_disk()                            # the window's disk sync marks the copy missing
+            return real(*a, **k)
+        with monkeypatch.context() as patched:
+            patched.setattr(store, "switch_parts", meanwhile)
+            assert _look(store, language, root)["switched"] == 0
+        assert store.item(before[-1][0])["availability"] != "available"
+        assert _items(store) == before and not _notes(store)
+        assert [_copy(data_dir, rel) for _i, rel in before[:-1]] == olds[:-1]
+        with open(gone, "wb") as f:
+            f.write(olds[-1])
+        store.sync_disk()                                # back: the part available again
+        assert _look(store, language, root, full=True)["switched"] == len(news)
+        assert _items(store) == before[:len(news)] and _whole(data_dir, before[:len(news)], news)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_new_edition_that_must_wait_for_another_leaves_no_staged_file_behind(language, monkeypatch):
+    """A third edition of a book while the second still waits (a part held open): the third waits its turn (one
+    change of a book at a time) and its parts, staged for it, are cleared away; nothing new is left in the trash."""
+    store, data_dir = _empty(language)
+    src = _drive("Shelf")
+    _book(language, src)
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        before = _items(store)
+        new = _epub(os.path.join(src, "Books", f"{_EDITION[language]}.epub"), _chapters(language, "改"), language)
+        _holding(monkeypatch, before[-1][1])
+        assert _look(store, language, root)["switched"] == 0
+        assert _notes(store), "the second edition waits"
+        trash = os.path.join(data_dir, ".trash")
+        kept = sorted(os.listdir(trash))
+        third = {"ja": "星の歌 (第3版)", "zh": "灯下书简（增订版）"}[language]
+        _epub(os.path.join(os.path.dirname(new), f"{third}.epub"), _chapters(language, "三"), language, age=20)
+        split = []
+        real_parts = sources.book_parts
+        with monkeypatch.context() as patched:
+            patched.setattr(sources, "book_parts", lambda p, lang: split.append(p) or real_parts(p, lang))
+            assert _look(store, language, root, full=True)["switched"] == 0
+        assert split, "the third edition was read"
+        assert sorted(os.listdir(trash)) == kept
+
+
+@pytest.mark.parametrize("mode", ["trash-after", "remove"])
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_part_past_the_end_moved_before_a_crash_comes_back_with_its_text_on_undo(language, mode, monkeypatch):
+    """The process killed once a shorter edition's part past its end had its copy moved to the trash (before its row
+    went): the next look ends the edition with that part's trash row naming its file, so the Undo brings the whole
+    old book back with every part's own text (never a part back with no file)."""
+    store, data_dir = _empty(language)
+    src = _drive("Shelf")
+    _epub(os.path.join(src, "Books", f"{_BOOKS[language]}.epub"), _chapters(language, "", 2), language)
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        before = _items(store)
+        olds = [_copy(data_dir, rel) for _i, rel in before]
+        uf = store.user_files_dir
+    new = _epub(os.path.join(src, "Books", f"{_EDITION[language]}.epub"), _chapters(language, "改"), language)
+    short = _parts(new, language)
+    _crash(language, data_dir, uf, root, mode, len(short) + 1)
+    monkeypatch.setattr(ls, "SWITCH_STALE_S", 0)
+    store = ls.open_store(language, data_dir, uf)
+    with store:
+        _look(store, language, root, full=True)
+        rows = [r for r in store.trash_rows() if r["item_id"] in {i for i, _r in before[len(short):]}]
+        assert rows and all(r["trashed_path"] for r in rows)
+        store.undo_switch(store.item(before[0][0])["work_id"])
+        assert _items(store) == before
+        assert [_copy(data_dir, rel) for _i, rel in before] == olds

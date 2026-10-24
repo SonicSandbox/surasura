@@ -212,13 +212,17 @@ def skip_menu(m, folders, reason, pick):
     return sub
 
 
-def give_skip(moves, path, ids=(), keys=()):
+def give_skip(moves, path, ids=(), keys=(), told=None):
     """`Writer.skip_folder(path)` given through the window's drag controller `moves` (`_give`: on the writer's thread,
     one change — the folder's items to the trash, the folder never read again — its toast with Undo, which reads it
     again; a refusal comes back as the writer's note). `ids` / `keys`: the files and rows it was asked from (none from
-    Settings). -> the writer's number, or None (refused)."""
+    Settings). `told(ticket, event)`: the ticket's "saved" / "refused" / "undone" (Settings' *Skip a folder…*: its
+    arc until saved, its own line's Undo). -> the writer's number, or None (refused)."""
     text = strings.ITEM_SKIPPED.format(name=os.path.basename(path) or path)
-    return moves._give(drag.Ticket(text, tuple(keys), list(ids)), lambda t: moves.writer.skip_folder(path, label=t))
+    ticket = drag.Ticket(text, tuple(keys), list(ids))
+    if told is not None:
+        ticket.told = lambda event: told(ticket, event)
+    return moves._give(ticket, lambda t: moves.writer.skip_folder(path, label=t))
 
 
 class ItemActions(QObject):

@@ -126,11 +126,13 @@ def _norm(rel):
 
 
 def shown(rel):
-    """A library path as a learner reads it: a tier folder by its name (HighPriority/Hato/1.srt → NOW/Hato/1.srt;
-    CLAUDE.md §6: NOW / Soon / 6+ Months, never the folder names). Words only; the path itself is never changed."""
+    """A library path as a learner reads it: the tier folder left out (HighPriority/Hato/1.srt → Hato/1.srt). A 2.x
+    tier folder is never a place in 3.0 (an item dragged to Goal still lives in HighPriority/…), so naming it, or its
+    tier, could name the wrong place (Sonic's lean, 2026-10-24, PROVISIONAL; CLAUDE.md §6: never the folder names). A
+    bare tier folder reads as its tier's name. Words only; the path itself is never changed."""
     head, sep, rest = _norm(rel).partition("/")
     tier = library_store.TIER_OF_FOLDER.get(head)
-    return library_store.TIER_LABELS[tier] + sep + rest if tier else _norm(rel)
+    return (rest or library_store.TIER_LABELS[tier]) if tier else _norm(rel)
 
 
 def _under(rel, prefix):

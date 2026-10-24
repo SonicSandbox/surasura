@@ -42,7 +42,7 @@ from PyQt6.QtWidgets import QFileDialog, QFrame, QHBoxLayout, QLabel, QScrollAre
 
 from app import theme
 from app.qt import press as qpress
-from app.qt import style, windows
+from app.qt import strings, style, windows
 from app.qt import settings_controls as sc
 from app.qt import settings_strings as S
 from app.qt import wizard_strings as W
@@ -158,10 +158,15 @@ def _press_key(key):
     return "folders:" + ":".join(str(part) for part in key)
 
 
-def skips_moved(shell):
+def skips_moved(shell, undone=None):
     """A skip saved or undone (K6 / Q7: ⋯'s, New arrivals', *Skip a folder…*'s — the drag controller's `_skips_moved`):
     the skipped folders and the page's count read again (`looks.listing()`, on the looks' worker) while either shows —
-    the *Library folders* window open, or the Settings page mounted. -> True when asked."""
+    the *Library folders* window open, or the Settings page mounted. `undone`: the change an undo took back (its toast's
+    Undo, this window's or Ctrl+Z): the window's own line for it goes (`FoldersWindow.skip_undone`). -> True when
+    asked."""
+    win = windows.opened(shell, WINDOW) if undone is not None else None
+    if win is not None:
+        win.skip_undone(undone)
     looks = _looks(shell)
     if looks is None or not hasattr(looks, "listing"):
         return False
@@ -355,6 +360,17 @@ class FoldersWindow(windows.SecondaryWindow):
         self.skip.clicked.connect(lambda _c=False: self.skip_folder())
         qpress.adopt(self.skip, _press_key(("skip", self.lines_of)), win=shell)   # opened again while it is checked
         skip_line.addWidget(self.skip)
+        # lean B (2026-10-24, PROVISIONAL): a skip saved from here says so beside it, with the toast's one Undo
+        self.skip_said = QLabel(self.box)
+        self.skip_said.setObjectName("windowline")
+        self.skip_said.setTextFormat(Qt.TextFormat.PlainText)
+        self.skip_said.setVisible(False)
+        skip_line.addWidget(self.skip_said)
+        self.skip_undo = sc.Door(strings.TOAST_UNDO, tooltip=S.SOURCES_SKIP_UNDO_TIP, parent=self.box)
+        self.skip_undo.clicked.connect(lambda _c=False: self.undo_skip())
+        self.skip_undo.setVisible(False)
+        skip_line.addWidget(self.skip_undo)
+        self.skip_ticket = None                           # the skip whose line shows (its Undo's)
         skip_line.addStretch(1)
         column.addLayout(skip_line)
         # the folder picker (the system's own dialog, as the wizard's; tests replace it)
@@ -407,13 +423,13 @@ class FoldersWindow(windows.SecondaryWindow):
         return look_again(self.shell, control=self.look)
 
     def _tab_order(self):
-        """Tab as the window reads: the folders' *Stop reading*, the skipped folders' *Read again*, *Skip a folder…*,
-        *Look again*, *Add a folder…* (lines made later would otherwise join the chain's end)."""
+        """Tab as the window reads: the folders' *Stop reading*, the skipped folders' *Read again*, *Skip a folder…*, its
+        line's *Undo* (while it shows), *Look again*, *Add a folder…* (lines made later would otherwise join the chain's end)."""
         def shown(layout):
             return [layout.itemAt(i).widget() for i in range(layout.count())]
         chain = [w.stop for w in shown(self.box.layout()) if isinstance(w, SourceLine)]
         chain += [w.read for w in shown(self.skip_box.layout()) if isinstance(w, SkippedLine)]
-        chain += [self.skip, self.look, self.add]
+        chain += [self.skip, self.skip_undo, self.look, self.add]
         for a, b in zip(chain, chain[1:]):
             QWidget.setTabOrder(a, b)
 
@@ -553,10 +569,12 @@ class FoldersWindow(windows.SecondaryWindow):
     def skip_folder(self, path=None):
         """Q7 *Skip a folder…*: the wizard's picker (`pick_dialog`, `SKIP_TITLE`) starting in the first folder being read
         (`path`: tests), then a press — its arc from the press — while the store's own rule is asked on the looks'
-        worker (`SourceLooks.skip_refused`): refused, `FOLDER_REFUSED` in this window's line; else the window's writer
-        skips it (`item_menu.give_skip`, ⋯'s one rule: one change, its toast with Undo; a refusal meanwhile is the
-        writer's note), the arc off once it is handed over. Its line and the page's count follow the change's landing
-        (`skips_moved`). A press meanwhile does nothing. -> True when it was asked."""
+        worker (`SourceLooks.skip_refused`; behind a look under way, this window's line says it waits): refused,
+        `FOLDER_REFUSED` in this window's line; else the window's writer skips it (`item_menu.give_skip`, ⋯'s one rule:
+        one change, its toast with Undo; a refusal meanwhile is the writer's note). Lean B (2026-10-24, PROVISIONAL):
+        the arc turns until the skip is saved, then this window's own line says so with the toast's one Undo
+        (`show_skip`). Its skipped line and the page's count follow the change's landing (`skips_moved`). A press
+        meanwhile does nothing. -> True when it was asked."""
         looks = _looks(self.shell)
         key = _press_key(("skip", self.lines_of))
         moves = getattr(self.shell, "moves", None)
@@ -571,35 +589,97 @@ class FoldersWindow(windows.SecondaryWindow):
         language = self.lines_of
         from app.qt import bridge, item_menu
         relay = bridge.Relay(self.shell)                 # the answer heard even once the window closed
+        busy = looks.busy() if hasattr(looks, "busy") else False
         p = qpress.begin(self.skip, key, win=self.shell)  # its arc, painted before the looks' worker is asked
         if p is None:
             relay.deleteLater()
             return False
+        waiting = S.SOURCES_SKIP_QUEUED.format(name=os.path.basename(path) or path) if busy else None
+
+        def ended(failed=False, words=None):
+            if p.live():
+                qpress.end(p, self.shell, failed=failed)
+            if self.gone:
+                if words:
+                    windows.say_in_bar(self.shell, words)
+            elif words is not None:
+                self.say(words)
+            elif waiting is not None and self.status.text() == waiting:
+                self.say("")
+
+        def told(ticket, event):
+            if event == "saved":
+                ended()
+                if not ticket.undo_asked:
+                    self.show_skip(ticket)
+            elif event == "undone":                       # its toast's Undo (before it was saved: nothing shown)
+                ended()
+                if not self.gone and self.skip_ticket is ticket:
+                    self._skip_said(None)
+            else:                                         # refused, or ended unsaved: the bar / toast said why
+                ended(failed=True)
 
         def checked(why):
             relay.deleteLater()
             moves = getattr(self.shell, "moves", None)
             if why or moves is None or language != getattr(self.shell, "language", language):
-                qpress.end(p, self.shell, failed=True, why=why)
                 if why:
-                    text = W.FOLDER_REFUSED.format(folder=path, why=why)
-                    if self.gone:
-                        windows.say_in_bar(self.shell, text)
-                    else:
-                        self.say(text)
+                    words = W.FOLDER_REFUSED.format(folder=path, why=why)
+                else:                                     # (H2: never a press that ends with no word)
+                    words = S.SOURCES_SKIP_SWITCHED if moves is not None else None
+                qpress.end(p, self.shell, failed=True, why=why)
+                ended(words=words)
                 return
-            given = moves.refused() is None and item_menu.give_skip(moves, path) is not None
-            qpress.end(p, self.shell, failed=not given)
+            given = refused = None
+            try:
+                refused = moves.refused()                 # (the bar says why; this window's line too, H5)
+                if refused is None:
+                    given = item_menu.give_skip(moves, path, told=told)
+            finally:
+                if given is None:                         # refused, or broke (H8): never a press left turning
+                    ended(failed=True, words=None if self.gone else refused)
         relay.said.connect(checked)
+        if waiting is not None:
+            self.say(waiting)                             # behind a look under way: said, never silent
         asks = getattr(looks, "skip_refused", None)
         if asks is None:                                  # (no pre-check: the writer's own rule answers)
             checked(None)
             return True
         if not asks(path, relay.call, language=language):
             relay.deleteLater()                           # closed, or another language's: nothing asked
-            qpress.end(p, self.shell, failed=True)
+            ended(failed=True)
             return False
         return True
+
+    def show_skip(self, ticket):
+        """Lean B: a skip saved from this window — its toast's words in the window's own line beside *Skip a folder…*,
+        with *Undo*, the toast's one Undo (`undo_skip`). The newest skip's line only."""
+        if not self.gone:
+            self._skip_said(ticket)
+
+    def undo_skip(self):
+        """The line's *Undo*: the same Undo as the skip's toast (`moves.undo(ticket)`: *Undoing…* in the bar until it
+        lands); the line goes at once. -> True when asked."""
+        ticket, moves = self.skip_ticket, getattr(self.shell, "moves", None)
+        if ticket is None or moves is None:
+            return False
+        self._skip_said(None)
+        moves.undo(ticket)
+        return True
+
+    def skip_undone(self, change):
+        """The skip `change` undone (this line's Undo, its toast's, Ctrl+Z): its line goes. Another change: nothing."""
+        ticket = self.skip_ticket
+        if not self.gone and ticket is not None and change is not None and ticket.change is change:
+            self._skip_said(None)
+
+    def _skip_said(self, ticket):
+        """The line beside *Skip a folder…*: `ticket`'s words and *Undo*, or none (hidden)."""
+        self.skip_ticket = ticket
+        if ticket is not None:
+            self.skip_said.setText(ticket.text)
+        self.skip_said.setVisible(ticket is not None)
+        self.skip_undo.setVisible(ticket is not None)
 
     def stop(self, root_id):
         """*Stop reading*: on the looks' worker; the bar says its episodes stay; the line goes once the stop landed."""

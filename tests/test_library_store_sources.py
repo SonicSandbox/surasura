@@ -1492,7 +1492,8 @@ def _counts(store):
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_a_moved_original_marks_its_old_record_and_the_old_folder_no_longer_counts_it(language):
     """The show's folder cut from A and pasted into B: A's records say where each original went, A counts 0 and B 4;
-    the records stay (nothing deleted) and Connect's record never carries the mark — its pairing version unmoved."""
+    the records stay (nothing deleted) and Connect's record never carries the mark. Connect reads the live origin's
+    record (M4c, D5: `pairing_of` live first), so its pairing version moves once: the fit is checked once at B."""
     from tests.test_sources_scan import _look, _settle
     store, data_dir = _empty(language)
     show = names(language)[71]
@@ -1514,7 +1515,8 @@ def test_a_moved_original_marks_its_old_record_and_the_old_folder_no_longer_coun
         assert len(store.origins()) == 8
         for i in ids:
             record = connect_library.pairing_of(store, i)
-            assert "moved_to" not in record and fit_check.version(record) == versions[i]
+            assert "moved_to" not in record and fit_check.version(record) != versions[i]
+            assert os.path.normcase(record["origin"]).startswith(os.path.normcase(os.path.join(b, show))), "B's"
 
 
 @pytest.mark.parametrize("language", LANGUAGES)

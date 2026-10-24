@@ -193,6 +193,7 @@ def world(monkeypatch, tmp_path):
         return w.outcome or ado.Outcome(True, f"New cards a day for “{deck}” is {value} in Anki now.", value, False)
     monkeypatch.setattr(ado, "write_new_per_day", write)
     monkeypatch.setattr(windows, "open_url", lambda url: w.opened.append(url) or True)
+    monkeypatch.setattr(qpress, "open_now", w.opened.append)   # round 8 row 45: a press opens it, on a worker
     monkeypatch.setattr(scn, "ask_miner_file", lambda parent: w.file)
 
     def ask(window, title, body, yes, yes_tip, *, no=None, no_tip=None, default_no=False, danger=False,
@@ -469,7 +470,7 @@ def test_install_opens_anki_miners_releases_page_and_the_star_line_its_github_pa
     QTest.mouseClick(rows.miner.install, Qt.MouseButton.LeftButton)
     assert world.opened == [setup.RELEASES]
     QTest.mouseClick(rows.miner.star_line, Qt.MouseButton.LeftButton)
-    assert world.opened[-1] == settings_values.STAR_URL
+    assert wait_until(lambda: world.opened[-1] == settings_values.STAR_URL, 5)
     assert wait_until(settings_values.star_answered, 5), "a star click is kept as answered"
     assert store.calls == []
 
@@ -510,7 +511,7 @@ def test_ready_offers_the_star_until_not_now_which_is_kept_in_local_data_never_s
     assert wait_until(lambda: not card.checking and len(world.checked) == 2, 5)
     assert not card.star_box.isVisibleTo(page) and card.star_link.isVisibleTo(page)
     QTest.mouseClick(card.open_miner, Qt.MouseButton.LeftButton)
-    assert world.opened[-1] == MINER
+    assert wait_until(lambda: world.opened[-1] == MINER, 5)
 
 
 def test_browse_writes_only_the_programs_path_through_the_service_and_checks_again(world):
@@ -558,7 +559,7 @@ def test_the_anki_miner_is_out_notice_shows_while_the_status_names_one(world):
     note = rows.miner.update_note
     assert note.isVisibleTo(page) and note.text() == "Anki Miner 3.8.0 is out"
     QTest.mouseClick(note, Qt.MouseButton.LeftButton)
-    assert world.opened == [world.update["url"]]
+    assert wait_until(lambda: world.opened == [world.update["url"]], 5)
     world.update = None
     rows.miner.check()
     assert wait_until(lambda: not rows.miner.checking, 5)

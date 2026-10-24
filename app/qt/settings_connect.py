@@ -433,7 +433,8 @@ class MinerCard(QWidget):
         star.setContentsMargins(0, 0, 0, 0)
         star.addWidget(_label(S.STAR_ASK, "settingshelp", self.star_box))
         star_row = FlowLayout(None, round(8 * _f()))      # buttons wrap to a second line, never cut (wizard text fix)
-        self.star_button = _button(S.STAR_BUTTON, S.STAR_BUTTON_TIP, self._starred, self.star_box)
+        self.star_button = qpress.room(_button(S.STAR_BUTTON, S.STAR_BUTTON_TIP,
+                                               lambda: self._starred(self.star_button), self.star_box))
         self.not_now = _button(S.NOT_NOW, S.NOT_NOW_TIP, self._not_now, self.star_box)
         star_row.addWidget(self.star_button)
         star_row.addWidget(self.not_now)
@@ -448,14 +449,16 @@ class MinerCard(QWidget):
         box.addWidget(self.steps)
         buttons = FlowLayout(None, round(8 * _f()))      # four buttons are wider than the card: they wrap, never cut
         self.install = _button(S.INSTALL_MINER, S.INSTALL_MINER_TIP, self._install, self)
-        self.star_line = _button(S.STAR_LINE, S.STAR_LINE_TIP, self._starred, self, kind="settingsmore")   # AM★
+        self.star_line = _button(S.STAR_LINE, S.STAR_LINE_TIP, lambda: self._starred(self.star_line), self,   # AM★
+                                 kind="settingsmore")
         self.browse = _button(S.BROWSE_MINER, S.BROWSE_MINER_TIP, self._browse, self)
-        self.open_miner = _button(S.OPEN_MINER, S.OPEN_MINER_TIP, self._open, self)
+        self.open_miner = qpress.room(_button(S.OPEN_MINER, S.OPEN_MINER_TIP, self._open, self))
         self.check_again = _button(S.CHECK_AGAIN, S.CHECK_AGAIN_TIP, self.check, self)
         for b in (self.install, self.star_line, self.browse, self.open_miner, self.check_again):
             buttons.addWidget(b)
         box.addLayout(buttons)
-        self.star_link = _button(S.STAR_LINK, S.STAR_LINK_TIP, self._open_star, self, kind="settingsmore")
+        self.star_link = _button(S.STAR_LINK, S.STAR_LINK_TIP, lambda: self._open_star(self.star_link), self,
+                                 kind="settingsmore")
         box.addWidget(self.star_link, 0, Qt.AlignmentFlag.AlignLeft)
         self._buttons(None, answered=True)
         slot.layout().addWidget(self)
@@ -575,15 +578,16 @@ class MinerCard(QWidget):
 
     def _open_update(self):
         if self.update_url:
-            windows.open_url(self.update_url)
+            qpress.open(self.page.shell, self.update_url, control=self.update_note)    # off the window's thread
         else:
             install_anki_miner(self.page.shell)
 
-    def _open_star(self):
-        windows.open_url(settings_values.STAR_URL)
+    def _open_star(self, control=None):
+        """The ⭐ page in the browser, opened on a worker (`press.open`), `control`'s arc turning meanwhile."""
+        qpress.open(self.page.shell, settings_values.STAR_URL, control=control)
 
-    def _starred(self):
-        self._open_star()
+    def _starred(self, control=None):
+        self._open_star(control)
         self._answer("starred")
 
     def _not_now(self):
@@ -613,9 +617,11 @@ class MinerCard(QWidget):
         self.check()
 
     def _open(self):
+        """*Open Anki Miner*: the program started on a worker (`press.open`), the button's arc turning meanwhile."""
         path = (self.state or {}).get("path")
-        if path and not windows.open_url(path):
-            self.rows.say(S.MINER_NOT_OPENED.format(path))
+        if path:
+            qpress.open(self.page.shell, path, control=self.open_miner,
+                        failed=lambda _info: self.rows.say(S.MINER_NOT_OPENED.format(path)))
 
 
 # --- New cards a day ------------------------------------------------------------------------------------------------ #

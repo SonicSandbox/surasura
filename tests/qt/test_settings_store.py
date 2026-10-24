@@ -76,6 +76,9 @@ class Bar:
     def set_full(self, text):
         self.lines.append(text)
 
+    def isVisible(self):                                # a stand-in line is never on screen: nothing to repaint
+        return False
+
 
 def make(options=None, reader=True, writer=None, data=None, view=None):
     store = Recorder(dict({"target_language": "ja"}, **(data if data is not None else ALL_ON)))

@@ -51,6 +51,7 @@ from PyQt6.QtWidgets import (QApplication, QBoxLayout, QFileDialog, QHBoxLayout,
 
 from app import theme
 from app.qt import applog, bridge, logos, motion, style, windows
+from app.qt import press as qpress
 from app.qt import settings_catalog as catalog
 from app.qt import settings_controls as sc
 from app.qt import settings_live
@@ -811,8 +812,8 @@ class SettingsPage(QWidget):
         if kind == "door" or (kind != "link" and not row.keys and row.id != "known_road"):
             return
         if kind == "link":
-            link = sc.Door(S.LINK_OPEN, tooltip=tip, name=name, parent=view.slot)
-            link.clicked.connect(lambda _c=False: windows.open_url(S.HOW_PARSING_URL))
+            link = qpress.room(sc.Door(S.LINK_OPEN, tooltip=tip, name=name, parent=view.slot))
+            link.clicked.connect(lambda _c=False, b=link: qpress.open(self.shell, S.HOW_PARSING_URL, control=b))
             view.slot.layout().addWidget(link)
             return
         value = None
@@ -990,12 +991,14 @@ class SettingsPage(QWidget):
             self._overlay[key] = [changes[key], self._landings]          # shown until the merge lands (S1)
             self.store.set({}, update=update)
             from app.qt import settings_store
-            settings_store.kick_on_release(settings, changes, self.store)   # the cap changed: Connect looks again
+            settings_store.kick_on_release(settings, changes, self.store, win=self.shell)   # the cap changed:
+            #                                                                     Connect looks again
         elif changes:
             self.store.set(changes)
             from app.qt import settings_store
             settings_store.resume_connect(settings, changes)             # the automation row on: Connect's marks
-            settings_store.kick_on_release(settings, changes, self.store)  # trust turned on: the waiting ones mine
+            settings_store.kick_on_release(settings, changes, self.store, win=self.shell)  # trust turned on: the
+            #                                                                    waiting ones mine
         else:
             return
         self._refresh_visibility(anchor=control)

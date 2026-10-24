@@ -47,7 +47,9 @@ from PyQt6.QtWidgets import (QAbstractButton, QApplication, QComboBox, QFileDial
 
 from app import path_utils, settings_manager, theme
 from app.qt import applog, bridge, confirm, motion, strings, style, windows
+from app.qt import press as qpress
 from app.qt import wizard_strings as S
+from app.services import press as press_service
 from app.services import tools_found
 
 PAGES = ("language", "known", "shows", "order", "cards", "level")      # the contract's ids, in order
@@ -141,6 +143,7 @@ def sheet(text_size):
         size, drawn = theme.font(role, text_size)
         return f"font-size: {round(size * scale * style.PT_PER_PX, 3)}pt; font-weight: {weight or drawn};"
     hint = QFontMetricsF(_font("key-hint")).horizontalAdvance(S.KEY_ENTER)
+    room = style.press_room(text_size)                    # round 8 row 45: a pressed link's arc
     return f"""
 QWidget#wizard {{ background: {c['bg']}; }}
 QWidget#wizhead, QWidget#wizfoot {{ background: {c['frame']}; }}
@@ -174,6 +177,9 @@ QPushButton#wiznext {{ min-width: {round(92 * f)}px; min-height: {round(36 * f)}
   padding: 0 {round(13 * f + hint + 8)}px 0 {round(13 * f + hint * 0.4)}px; {font('button', 700)} }}
 QPushButton#wizstar {{ background: transparent; border: 0; color: {c['ink']}; padding: 0; {font('body', 600)} }}
 QPushButton#wizstar:focus {{ border: 2px solid {c['accent']}; border-radius: 6px; }}
+QPushButton#wizlink[presses="end"], QPushButton#wizstar[presses="end"] {{ padding: 0 {2 * room}px 0 0; }}
+QPushButton#wizlink[presses="end"]:focus, QPushButton#wizstar[presses="end"]:focus {{
+  padding: 0 {2 * room - 2}px 0 0; }}
 """
 
 
@@ -1286,7 +1292,8 @@ class KnownPage(_Page):
         closed.setSpacing(_px(14))
         self.closed_line = _label("wizclosed", S.ANKI_CLOSED, self.closed_part)
         closed.addWidget(self.closed_line)
-        self.btn_check = _button(S.CHECK_AGAIN, S.CHECK_AGAIN_TIP, self.wiz.look_anki, self.closed_part)
+        self.btn_check = qpress.room(_button(S.CHECK_AGAIN, S.CHECK_AGAIN_TIP,
+                                             lambda: self.wiz.look_anki(self.btn_check), self.closed_part))
         closed.addWidget(self.btn_check)
         closed.addStretch(1)
         self.box.addWidget(self.closed_part)
@@ -1425,11 +1432,12 @@ class ShowsPage(_Page):
         fbox.addLayout(self.folder_list)
         pick = QHBoxLayout()
         pick.setSpacing(_px(14))
-        self.btn_pick = _button(S.PICK_FOLDER, S.PICK_FOLDER_TIP, self.wiz.pick_folder, self.folders_part)
+        self.btn_pick = qpress.room(_button(S.PICK_FOLDER, S.PICK_FOLDER_TIP, self.wiz.pick_folder,
+                                            self.folders_part))
         pick.addWidget(self.btn_pick)
         self.skips = []                     # K6: folders inside the picked ones never read (skipped on *Next*)
-        self.btn_skip = _button(S.SKIP_FOLDER, S.SKIP_FOLDER_TIP, self.wiz.skip_folder, self.folders_part,
-                                name="wizlink")
+        self.btn_skip = qpress.room(_button(S.SKIP_FOLDER, S.SKIP_FOLDER_TIP, self.wiz.skip_folder,
+                                            self.folders_part, name="wizlink"), end=True)
         self.btn_skip.setVisible(False)
         pick.addWidget(self.btn_skip)
         self.reading_line = _label("wizsub", "", self.folders_part)
@@ -1474,7 +1482,8 @@ class ShowsPage(_Page):
                                 picture=CoversPicture())
         self.box.addWidget(self.covers)
         samples = QHBoxLayout()
-        self.btn_samples = _button(S.SAMPLES, S.SAMPLES_TIP, self.wiz.add_samples, self, name="wizlink")  # W3.2 Q3
+        self.btn_samples = qpress.room(_button(S.SAMPLES, S.SAMPLES_TIP, self.wiz.add_samples, self,   # W3.2 Q3
+                                               name="wizlink"), end=True)
         samples.addWidget(self.btn_samples)
         samples.addStretch(1)
         self.box.addLayout(samples)
@@ -1715,7 +1724,8 @@ class OrderPage(_Page):
         closed.setContentsMargins(0, 0, 0, 0)
         closed.setSpacing(_px(14))
         closed.addWidget(_label("wizclosed", S.ANKI_CLOSED, self.closed_part))
-        self.btn_check = _button(S.CHECK_AGAIN, S.CHECK_AGAIN_TIP, self.wiz.look_anki, self.closed_part)
+        self.btn_check = qpress.room(_button(S.CHECK_AGAIN, S.CHECK_AGAIN_TIP,
+                                             lambda: self.wiz.look_anki(self.btn_check), self.closed_part))
         closed.addWidget(self.btn_check)
         closed.addStretch(1)
         self.box.addWidget(self.closed_part)
@@ -1863,12 +1873,14 @@ class CardsPage(_Page):
         acts_box.setContentsMargins(0, _px(6), 0, 0)
         acts = FlowLayout(None, _px(12))
         acts_box.addLayout(acts)
-        self.btn_install = _button(S.INSTALL, S.INSTALL_TIP, self.wiz.install_miner, self.acts)
+        self.btn_install = qpress.room(_button(S.INSTALL, S.INSTALL_TIP, self.wiz.install_miner, self.acts))
         acts.addWidget(self.btn_install)
-        self.btn_check = _button(S.CHECK_AGAIN, S.MINER_CHECK_TIP, self.wiz.look_miner, self.acts)
+        self.btn_check = qpress.room(_button(S.CHECK_AGAIN, S.MINER_CHECK_TIP,
+                                             lambda: self.wiz.look_miner(self.btn_check), self.acts))
         acts.addWidget(self.btn_check)
-        self.btn_star = _button(f"{S.STAR}  {S.STAR_ASK} {S.STAR_LINK}", S.STAR_TIP, self.wiz.open_star, self.acts,
-                                name="wizstar")
+        self.btn_star = qpress.room(_button(f"{S.STAR}  {S.STAR_ASK} {S.STAR_LINK}", S.STAR_TIP,
+                                            lambda: self.wiz.open_star(self.btn_star), self.acts, name="wizstar"),
+                                    end=True)
         acts.addWidget(self.btn_star)
         words.addWidget(self.acts)
         self.steps = _label("wizsub", "", self, wrap=True)
@@ -1914,7 +1926,8 @@ class CardsPage(_Page):
         loading.addWidget(self.progress, 1)
         self.progress_line = _label("wizsub", "", self)
         loading.addWidget(self.progress_line)
-        self.btn_cancel = _button(S.CANCEL_DOWNLOAD, S.CANCEL_DOWNLOAD_TIP, self.wiz.cancel_install, self)
+        self.btn_cancel = qpress.room(_button(S.CANCEL_DOWNLOAD, S.CANCEL_DOWNLOAD_TIP, self.wiz.cancel_install,
+                                              self))
         loading.addWidget(self.btn_cancel)
         self.loading = QWidget(self)
         self.loading.setLayout(loading)
@@ -1924,8 +1937,9 @@ class CardsPage(_Page):
         self.busy_line.setVisible(False)
         self.box.addWidget(self.busy_line)
         star = QHBoxLayout()
-        self.star_quiet = _button(f"{S.STAR}  {S.STAR_ASK} {S.STAR_LINK}", S.STAR_TIP, self.wiz.open_star, self,
-                                  name="wizlink")
+        self.star_quiet = qpress.room(_button(f"{S.STAR}  {S.STAR_ASK} {S.STAR_LINK}", S.STAR_TIP,
+                                              lambda: self.wiz.open_star(self.star_quiet), self, name="wizlink"),
+                                      end=True)
         star.addWidget(self.star_quiet)
         star.addStretch(1)
         self.box.addLayout(star)
@@ -1958,8 +1972,7 @@ class CardsPage(_Page):
         """The download's progress with *Cancel* (None, None: it ended; *Cancel* leaves once every byte is in: his
         installer opens then, and the route no longer looks at it). Repainted only when a tenth of a percent moved."""
         running = done is not None
-        _show(self.loading, running)
-        _enable(self.btn_install, not running and self.wiz.installing is None)
+        _show(self.loading, running)                      # (*Install* never greyed: its arc turns, round 8 row 45)
         if not running:
             return
         _show(self.btn_cancel, not total or done < total)
@@ -2195,6 +2208,8 @@ class SetupWizard(QWidget):
         settings = self._settings()
         self.language = settings.get("target_language") if settings.get("target_language") in ("ja", "zh") else "ja"
         self.anki = None                    # the newest `anki_look` answer for the language (pages 2 and 4)
+        self.presses = press_service.Presses()      # round 8 row 45: the wizard's presses (`app/qt/press.py`)
+        self._anki_press = self._miner_press = self._cancel_press = None   # a *Check again* / *Cancel* turning
         self._anki_seq = 0
         self._anki_looking = False
         self._miner_seq = 0
@@ -2555,6 +2570,8 @@ class SetupWizard(QWidget):
         self.anki = None
         self._anki_seq += 1
         self._anki_looking = False
+        self._unpress("_anki_press")
+        self._unpress("_miner_press")
         answers = self._preselect(language)
         for page in self.pages[1:]:
             again = page.id in ("known", "order")
@@ -2565,9 +2582,25 @@ class SetupWizard(QWidget):
                 self.passed.discard(self.pages.index(page))
 
     # --- Anki (pages 2 and 4) ------------------------------------------------------------------------------------- #
-    def look_anki(self):
-        """`anki_look` on a worker; pages 2 and 4 repaint from its answer."""
-        if self._anki_looking or self._gone:
+    def _pressed(self, control, name):
+        """Round 8 row 45: `control` pressed — its arc turns at once (painted before the worker), kept as `name` until
+        its answer lands (`_unpress`). A press meanwhile keeps the one turning."""
+        if control is not None and getattr(self, name) is None:
+            setattr(self, name, qpress.begin(control, f"wizard:{name}", win=self))
+
+    def _unpress(self, name, failed=False):
+        p = getattr(self, name)
+        setattr(self, name, None)
+        if p is not None:
+            qpress.end(p, self, failed=failed)
+
+    def look_anki(self, control=None):
+        """`anki_look` on a worker; pages 2 and 4 repaint from its answer. `control`: *Check again*, pressed (its arc
+        turns until the answer lands, round 8 row 45; the look already under way answers it)."""
+        if self._gone:
+            return
+        self._pressed(control, "_anki_press")
+        if self._anki_looking:
             return
         self._anki_looking = True
         self._anki_seq += 1
@@ -2582,6 +2615,7 @@ class SetupWizard(QWidget):
         if seq != self._anki_seq or language != self.language:
             return
         self._anki_looking = False
+        self._unpress("_anki_press")
         self.anki = dict(look or {})
         if self.page.id in ("known", "order"):
             self._rearm()                                 # its controls change now: never a press aimed before (R2-1)
@@ -2696,16 +2730,14 @@ class SetupWizard(QWidget):
         """*Try it with samples first*: the bundled samples copied into the empty tier folders (`seed_samples`, the
         Content Manager's own), on a worker; the disk sync takes them in and the rows follow."""
         language = self.language
-        _enable(self.pages[2].btn_samples, False)
 
         def done(n):
-            _enable(self.pages[2].btn_samples, True)
             self.samples_said = S.SAMPLES_ADDED_LINE.format(n=n) if n else S.SAMPLES_NONE
             self.say(self.samples_said)
             self.read_rows()
-        bridge.run_in_worker(self.api.add_samples, language, then=self.alive(done),
-                             failed=self.alive(lambda info: (_enable(self.pages[2].btn_samples, True),
-                                                             self.say(str(info[0])))))
+        # round 8 row 45: its arc from the press (never greyed); one copy at a time — a press meanwhile does nothing
+        qpress.run(self.pages[2].btn_samples, "wizard:samples", self.api.add_samples, language,
+                   then=self.alive(done), failed=self.alive(lambda info: self.say(str(info[0]))), win=self)
     # --- end W3.2 Q3
 
     # --- SRC W1a: the folders your shows and books are in (page 3) ---------------------------------------------- #
@@ -2716,8 +2748,8 @@ class SetupWizard(QWidget):
     def pick_folder(self):
         """*Choose a folder…*: the system's folder dialog; the folder picked is checked by the store's own rule on a
         worker (`folder_refused`) — refused, its reason in plain words; else listed."""
-        if self.reading is not None or self._gone:
-            return
+        if self.reading is not None or self._gone or qpress.live(self, "wizard:pick"):
+            return                                        # (one under way: a second press opens nothing, P5-A1)
         page = self.pages[2]
         start = page.folders[-1] if page.folders else os.path.expanduser("~")
         path = self.pick_dialog(S.PICK_TITLE, start)
@@ -2739,16 +2771,16 @@ class SetupWizard(QWidget):
                 page.refuse(S.FOLDER_REFUSED.format(folder=path, why=why))
             else:
                 page.add_folder(path)
-        bridge.run_in_worker(refused, language, path, then=self.alive(checked),
-                             failed=self.alive(lambda info: page.refuse(S.FOLDER_REFUSED.format(folder=path,
-                                                                                                why=info[1]))))
+        qpress.run(page.btn_pick, "wizard:pick", refused, language, path, then=self.alive(checked),   # round 8 row 45:
+                   failed=self.alive(lambda info: page.refuse(S.FOLDER_REFUSED.format(folder=path, why=info[1]))),
+                   win=self)                                      # its arc while the folder is checked
 
     def skip_folder(self):
         """K6 *Skip a folder…*: the system's folder dialog, starting in the last folder picked; the folder is checked by
         the store's own rule on a worker (`skip_refused`: inside a folder picked or read, never one itself) — refused,
         its reason in the page's refusal line; else listed, skipped on *Next* before the first look."""
         page = self.pages[2]
-        if self.reading is not None or self._gone or not page.folders:
+        if self.reading is not None or self._gone or not page.folders or qpress.live(self, "wizard:skip"):
             return
         path = self.pick_dialog(S.SKIP_TITLE, page.folders[-1])
         if not path:
@@ -2766,9 +2798,9 @@ class SetupWizard(QWidget):
                 page.refuse(S.FOLDER_REFUSED.format(folder=path, why=why))
             else:
                 page.add_skip(path)
-        bridge.run_in_worker(refused, language, path, chosen, then=self.alive(checked),
-                             failed=self.alive(lambda info: page.refuse(S.FOLDER_REFUSED.format(folder=path,
-                                                                                                why=info[1]))))
+        qpress.run(page.btn_skip, "wizard:skip", refused, language, path, chosen, then=self.alive(checked),
+                   failed=self.alive(lambda info: page.refuse(S.FOLDER_REFUSED.format(folder=path, why=info[1]))),
+                   win=self)                                      # round 8 row 45: its arc while it is checked
 
     def _read_folders(self, paths):
         """*Next* with folders picked: each added and given setup's first look (`read_folders`) on a worker — never the
@@ -2833,13 +2865,24 @@ class SetupWizard(QWidget):
                              failed=lambda info: applog.log("wizard", f"library rows: {info[0]}"))
 
     # --- Anki Miner (page 5) -------------------------------------------------------------------------------------------- #
-    def look_miner(self):
+    def look_miner(self, control=None):
+        """Anki Miner's look on a worker; page 5 repaints from it. `control`: *Check again*, pressed (its arc turns
+        until the newest look answers, round 8 row 45)."""
+        self._pressed(control, "_miner_press")
         self._miner_seq += 1
         seq, language = self._miner_seq, self.language
-        bridge.run_in_worker(self.miner.look, thaw(self._settings()), language,
-                             then=self.alive(lambda look: seq == self._miner_seq and language == self.language
-                                             and self.pages[4].show_look(look)),
-                             failed=lambda info: applog.log("wizard", f"Anki Miner's look: {info[0]}"))
+
+        def looked(look):
+            if seq == self._miner_seq and language == self.language:
+                self._unpress("_miner_press")
+                self.pages[4].show_look(look)
+
+        def broke(info):
+            applog.log("wizard", f"Anki Miner's look: {info[0]}")
+            if seq == self._miner_seq:
+                self._unpress("_miner_press", failed=True)
+        bridge.run_in_worker(self.miner.look, thaw(self._settings()), language, then=self.alive(looked),
+                             failed=self.alive(broke))
 
     def install_miner(self):
         """*Install Anki Miner…*: its route on a worker (Sonic's yes, 2026-10-15: the installer from Anki Miner's GitHub
@@ -2851,6 +2894,7 @@ class SetupWizard(QWidget):
         page = self.pages[4]
         cancel = threading.Event()
         self.installing = cancel
+        p = qpress.begin(page.btn_install, "wizard:install", win=self)    # round 8 row 45: its arc, never greyed
         progress = bridge.Relay(self)
         progress.said.connect(lambda done_total: self.alive(page.show_progress)(*done_total))
         ask = _AskFromWorker(self)
@@ -2858,6 +2902,9 @@ class SetupWizard(QWidget):
 
         def done(answer):
             self.installing = None
+            if p is not None:
+                qpress.end(p, self)
+            self._unpress("_cancel_press")
             progress.deleteLater()
             ask.deleteLater()
             page.show_progress(None, None)
@@ -2871,6 +2918,9 @@ class SetupWizard(QWidget):
 
         def failed(info):
             self.installing = None
+            if p is not None:
+                qpress.end(p, self, failed=True)
+            self._unpress("_cancel_press")
             page.show_progress(None, None)
             self.say(str(info[0]))
         registry = getattr(self.services, "registry", None)
@@ -2882,11 +2932,16 @@ class SetupWizard(QWidget):
         bridge.run_in_worker(run, then=self.alive(done), failed=self.alive(failed))
 
     def cancel_install(self):
+        """*Cancel*: the download stops between its pieces; the button's arc turns until the route has ended (round 8
+        row 45)."""
         if self.installing is not None:
+            self._pressed(self.pages[4].btn_cancel, "_cancel_press")
             self.installing.set()
 
-    def open_star(self):
-        windows.open_url(self.miner.STAR_URL)
+    def open_star(self, control=None):
+        """The ⭐ page in the browser, opened on a worker (`press.open`: never the window's thread), `control`'s arc
+        turning meanwhile."""
+        qpress.open(self, self.miner.STAR_URL, control=control)
 
     # --- the level and Generate (page 6) ----------------------------------------------------------------------------- #
     def read_numbers(self, fresh=False):

@@ -37,7 +37,8 @@ def make_heard(world, monkeypatch, data=None):
     store = Store(dict({"target_language": "ja", "junban_deck": DECK, "words_per_day": 5}, **(data or {})),
                   events=world.events)
     heard = bridge.Bridge()
-    shell = SimpleNamespace(services=SimpleNamespace(settings=store), bar_line=world.bar, bridge=heard)
+    shell = SimpleNamespace(services=SimpleNamespace(settings=store), bar_line=world.bar, bridge=heard,
+                            say=world.bar.say, unsay=world.bar.unsay)
     page = sp.SettingsPage(shell, "ja", found=EVERYTHING)
     page.resize(1100, 700)
     page.show()

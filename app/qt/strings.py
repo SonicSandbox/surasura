@@ -1276,3 +1276,6 @@ UNDOING = "Undoing…"                                           # Ctrl+Z or a t
 ADDING = "Adding {name}…"                                      # the Paste card's Add, until its toast shows
 FIN_IMPORT_STOPPING = "Stopping…"                              # *Stop adding* pressed, until the import ends
 # --- end round 8 row 45, P4
+# --- round 8 row 45, P5: Settings and the secondary windows
+LANGUAGE_SWITCHING = "Switching to {name}…"       # held in the bar while Settings' language switch runs
+# --- end round 8 row 45, P5

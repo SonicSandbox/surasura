@@ -851,3 +851,45 @@ def test_migakus_replace_runs_in_the_language_it_was_asked_in(main, runs):
     assert wait_until(lambda: m.language == "zh")
     m.start(MIGAKU, "ja", "2,3,0,0")
     assert runs.calls[-1].argv[2:4] == ["--language", "ja"]
+
+
+# --- round 8 row 45: every press reacts at once ------------------------------------------------------------------- #
+def test_choose_paints_its_arc_before_the_export_is_read_and_a_press_meanwhile_reads_nothing(main, runs,
+                                                                                            monkeypatch):
+    # The file picked, *Choose…* said nothing until the export's words were read (a worker): its arc now turns from
+    # the pick, painted before the read is handed over, and goes when the question opens.
+    from tests.qt.press_handover import HandOver, arc_turning
+    _known(CURRENT)
+    monkeypatch.setattr(importers, "_pick_file", lambda *a: MIGAKU)
+    w = importers.open_migaku(main)
+    assert QTest.qWaitForWindowExposed(w)
+    handed = HandOver(monkeypatch, w.choose, lambda: arc_turning(w.choose))
+    w.choose.click()
+    read = handed.at("migaku_plan")
+    assert read.shown and read.painted >= 1 and w.choose.isEnabled()      # never greyed
+    w.choose.click()
+    assert [h.name for h in handed].count("migaku_plan") == 1
+    assert wait_until(lambda: _card(w) is not None) and not arc_turning(w.choose)
+
+
+def test_a_second_choose_while_the_first_file_is_read_opens_no_dialog(main, runs, monkeypatch):
+    # P5-A1: *Choose…* stays enabled while the file picked is read, so a second press opened the file dialog again —
+    # its file was dropped, and the question that came was the FIRST file's. A press while one is live: no dialog.
+    import threading
+    from app import importers_view
+    _known(CURRENT)
+    gate, real = threading.Event(), importers_view.migaku_plan
+
+    def held(path, language):
+        gate.wait(5)
+        return real(path, language)
+    monkeypatch.setattr(importers_view, "migaku_plan", held)
+    picks = []
+    monkeypatch.setattr(importers, "_pick_file", lambda *a: picks.append(1) or MIGAKU)
+    w = importers.open_migaku(main)
+    assert QTest.qWaitForWindowExposed(w)
+    w.choose.click()
+    w.choose.click()                                      # the first file still being read
+    assert len(picks) == 1
+    gate.set()
+    assert wait_until(lambda: _card(w) is not None)

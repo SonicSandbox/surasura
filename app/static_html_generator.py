@@ -844,23 +844,24 @@ def _confirmed_keys(backlog, answers, listed=None, names=None):
             if word in words and pair.get("answer") == "yes" and pair.get("target")}
 
 
-def _journey_stones(data, file_order, stats_map, language):
-    """The journey's stones (Sonic 2026-10-23): the library store's watched marks (`library_store.read_watched_marks`,
-    one read) on the per-file report, matched by basename as the rest of it is. A counted file that is watched
-    (*Keep studying watched episodes* on) keeps its entry, plus `"watched": True` — every counted file of that name
-    watched. A watched file set aside (the option off) gets an entry of its own IN ITS PLACE in the library's order,
-    no counts: `{"filename", "watched": True, "aside": True, "words": [], "total_words": 0, "is_goal_content",
+def _journey_stones(data, file_order, stats_map, language, marks=None):
+    """The journey's stones (Sonic 2026-10-23): the library store's watched marks (`marks`, the run's; None: read now,
+    `analyzer.journey_marks`, one read) on the per-file report, matched by basename as the rest of it is. A counted
+    file that is watched (*Keep studying watched episodes* on) keeps its entry, plus `"watched": True` — every counted
+    file of that name watched. A watched file set aside (the option off) gets an entry of its own IN ITS PLACE in the
+    library's order, no counts: `{"filename", "watched": True, "aside": True, "words": [], "total_words": 0, "is_goal_content",
     "unlisted": []}`, and its name in `file_order` at the same place (the inline Target Met order) — never one whose
-    name the report already shows (a counted file's, an earlier one's). No store, or no stone: nothing changes."""
-    try:
+    name the report already shows (a counted file's, an earlier one's). No store, or no stone: nothing changes.
+    Returns the marks it drew from (`library_store.UNREAD` when they couldn't be read now): the run signs the report
+    with them (`analyzer.signed_render`)."""
+    if marks is None:
         from app import analyzer
-        ls = analyzer._library_store()
-        marks = ls.read_watched_marks(language, analyzer.get_data_path(language)) if ls else None
-    except Exception as e:
-        print(f"Warning: could not read the watched marks for the report: {e}")
-        return
+        marks = analyzer.journey_marks(language)
+    if isinstance(marks, str):                  # library_store.UNREAD
+        print("Warning: the watched marks couldn't be read now; the journey is drawn without its stones")
+        return marks
     if not marks:
-        return
+        return marks
     place, watched_name = {}, {}
     for n, (rel, _tier, watched, counted) in enumerate(marks):
         if counted:
@@ -878,7 +879,7 @@ def _journey_stones(data, file_order, stats_map, language):
             shown.add(name)
             aside.append((n, name, tier == "goal"))
     if not aside:
-        return
+        return marks
 
     def in_place(items, name_of, make):
         # each set-aside file before the first item the library orders after it, the rest at the end
@@ -897,9 +898,14 @@ def _journey_stones(data, file_order, stats_map, language):
         "unlisted": []})
     if file_order:
         file_order[:] = in_place(file_order, lambda name: name, lambda name, _goal: name)
+    return marks
 
 
-def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_browser=True):
+def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_browser=True, language=None, marks=None):
+    """Write the report. `language`: the run's (the analyzer's `--language`), whose journey's stones it draws (None:
+    settings.json's); `marks`: those stones as the run read them (None: read here). Returns the marks the journey was
+    drawn from — None for Zen or without a library store, `library_store.UNREAD` when they couldn't be read — for the
+    run's render signature (`analyzer.signed_render`)."""
     print(f"Generating static HTML (Theme: {theme})...")
     
     # Pre-load settings
@@ -1018,9 +1024,10 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_brow
                 "stats": fstat
             })
 
-    # The journey's stones (Zen shows no journey: its report is what it was)
+    # The journey's stones (Zen shows no journey: its report is what it was), the run's language's
+    drawn = None
     if theme not in ("Zen Mode", "zen-focus"):
-        _journey_stones(data, all_files_order, stats_map, target_lang)
+        drawn = _journey_stones(data, all_files_order, stats_map, language or target_lang, marks)
 
     # Load Priority
     if os.path.exists(PRIORITY_CSV):
@@ -1186,12 +1193,13 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_brow
 
     print(f"Static HTML generated at: {OUTPUT_FILE}")
     if not open_browser:
-        return                      # the dashboard's automatic Generate: written, not opened
+        return drawn                # the dashboard's automatic Generate: written, not opened
     if app_mode:
         open_as_app(OUTPUT_FILE)
     else:
         url = f"file://{os.path.abspath(OUTPUT_FILE)}"
         webbrowser.open(url)
+    return drawn
 
 def main():
     import argparse

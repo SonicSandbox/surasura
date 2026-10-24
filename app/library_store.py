@@ -89,14 +89,19 @@ ANALYSED = tuple(t for t, v in TIERS.items() if v[2])                    # now, 
 # episode by this rule. Written once in Python (`counts`) and once in SQL (`counts_sql`), from the same constants; a
 # test holds the two equal. Who reads it today: here, `Store.schedule` (Generate's list, and its set-aside items for
 # the run signature's "reference" part), `_mine_ids`, `text_lists`, `_moves_counted`, `_watched_aside`,
-# `_store_has_content` and `read_only_schedule` (the copy); outside, `moves._set_aside` (the window's numbers) and
-# Connect's `library.counting` / `library.counts` (`level._walk` beyond the line, a gap's `inbox._gone`; M-W1 —
-# `level.watched_out` stays stricter, LF4-1). Not yet: the window's drawn lines (`view_rows._mine_ids`,
-# `drag.lines_for`).
+# `_store_has_content`, `read_only_schedule` (the copy) and `watched_marks` (the journey's stones: the report's
+# `static_html_generator._journey_stones`, the render signature's `analyzer._stones_fingerprint`); outside,
+# `moves._set_aside` (the window's numbers) and Connect's `library.counting` / `library.counts` (`level._walk` beyond
+# the line, a gap's `inbox._gone`; M-W1 — `level.watched_out` stays stricter, LF4-1). Not yet: the window's drawn
+# lines (`view_rows._mine_ids`, `drag.lines_for`).
 def _tiers_sql(tiers):
     return ", ".join(f"'{t}'" for t in tiers)
 
 
+# Is any item Generate's list reads or sets aside watched? Through the partial index `items_watched` (its WHERE is
+# this query's own term): ~0.05 ms at 200k items, against ~60 ms scanning every analysed row (the stones review, S-2)
+STONES_EXIST_SQL = (f"SELECT EXISTS (SELECT 1 FROM items WHERE tier IN ({_tiers_sql(ANALYSED)}) AND watched != 0 "
+                    "AND availability != 'waiting')")
 STONES_COUNTED = "stones_counted"   # meta: this library's old watched marks were counted once (`count_old_stones`)
 # `schedule(with_aside=True)`'s key: the SET-ASIDE items' entries, read in the same transaction as the list — the run
 # signature's "reference" part (`analyzer.aside_files`): their text is the name tables' evidence and 例文's sentences, so
@@ -586,6 +591,7 @@ SCHEMA_SQL = (
     "CREATE INDEX items_order ON items (tier, ord, id)",
     "CREATE INDEX items_folder ON items (tier, parent_folder, ord, id)",   # placement by folder (§12)
     "CREATE INDEX items_key ON items (rel_key)",                            # "is this file an item?" (§12)
+    "CREATE INDEX items_watched ON items (tier) WHERE watched != 0",        # the journey's stones (`STONES_EXIST_SQL`)
     """CREATE TABLE trash (
       id INTEGER PRIMARY KEY, item_id INTEGER NOT NULL, root_id INTEGER NOT NULL, rel_path TEXT NOT NULL,
       tier TEXT NOT NULL, prev_id INTEGER, next_id INTEGER,
@@ -645,8 +651,9 @@ ADDED_TABLES_SQL = (
 # was; a new store makes them in SCHEMA_SQL, an existing one at its first open by a writer (`_added_indexes`)
 ADDED_INDEXES_SQL = (
     "CREATE INDEX IF NOT EXISTS pairings_item ON pairings (item_id)",
+    "CREATE INDEX IF NOT EXISTS items_watched ON items (tier) WHERE watched != 0",
 )
-ADDED_INDEXES = ("pairings_item",)
+ADDED_INDEXES = ("pairings_item", "items_watched")
 
 # Schema 2 (L3.1, the L2.2 pack 02 §2.3–2.4): works (a title: a season, a film, a book, a channel), the feed's
 # tombstones, and the items' work, search key, feed version and *Mine it too*. A fresh store runs SCHEMA_SQL and then
@@ -3979,12 +3986,12 @@ class Store:
     def watched_marks(self):
         """The journey's stones (Sonic 2026-10-23): [(rel_path, tier, watched, counts)] for every item of the analysed
         tiers that Generate's list reads or sets aside (`schedule`'s rows: no video waiting for its subtitle), in its
-        order — once one of them is watched; [] while none is (the report then is what it was). `counts` is the one
-        rule's (`counts`): a watched item counts only with `keep_watched` on. Finished stays out (its own view). One
-        read transaction."""
+        order — once one of them is watched; [] while none is (the report then is what it was), asked through the
+        partial index `items_watched` (`STONES_EXIST_SQL`: a library with no stone pays one look, S19). `counts` is the
+        one rule's (`counts`): a watched item counts only with `keep_watched` on. Finished stays out (its own view).
+        One read transaction."""
         with self._reading():
-            if not self.conn.execute(f"SELECT EXISTS (SELECT 1 FROM items WHERE tier IN ({_tiers_sql(ANALYSED)}) "
-                                     "AND watched != 0 AND availability != 'waiting')").fetchone()[0]:
+            if not self.conn.execute(STONES_EXIST_SQL).fetchone()[0]:
                 return []
             keep = self._keep_watched()
             return [(rel, tier, 1 if watched else 0, counts(tier, watched, keep)) for tier in ANALYSED
@@ -7811,11 +7818,15 @@ def read_auto_band(language, data_dir):
     return value.get("band") if isinstance(value, dict) and isinstance(value.get("band"), str) else None
 
 
+UNREAD = "unread"       # `read_watched_marks`: a store there, its marks not readable at this moment
+
+
 def read_watched_marks(language, data_dir):
     """The journey's stones for the report and its render signature: `Store.watched_marks` through a `mode=ro` look
     (never built, synced or waited on, as `read_auto_band`), in one read transaction. None with no ready store (JSON
-    mode, the switch off, a damaged store, one made by a newer Surasura or read-only on a newer one's copy) or when it
-    can't be read now: the report is then what it was."""
+    mode, the switch off, a damaged store, one made by a newer Surasura or read-only on a newer one's copy): the
+    report is then what it was. `UNREAD` when the store is there but can't be read now (busy, an sqlite error): a
+    report drawn so is never recorded as current (`analyzer.signed_render`)."""
     if not STORE_LIVE:
         return None
     db_path = library_db_path(language, data_dir)
@@ -7825,8 +7836,10 @@ def read_watched_marks(language, data_dir):
     try:
         conn = sqlite3.connect(pathlib.Path(db_path).as_uri() + "?mode=ro", uri=True, timeout=1.0,
                                isolation_level=None)
-    except sqlite3.Error:
+    except (ValueError, TypeError):
         return None
+    except sqlite3.Error:
+        return UNREAD
     try:
         conn.execute("PRAGMA query_only=1")
         if (conn.execute("PRAGMA user_version").fetchone()[0] != STORE_SCHEMA
@@ -7838,7 +7851,7 @@ def read_watched_marks(language, data_dir):
         store.role, store.conn, store._depth, store._cmd, store._repairing = "reader", conn, 0, None, False
         return store.watched_marks()
     except sqlite3.Error:
-        return None
+        return UNREAD
     finally:
         conn.close()
 

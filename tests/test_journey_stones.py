@@ -167,11 +167,14 @@ def test_with_keep_studying_on_a_stone_marks_the_counted_entry_and_moves_only_th
     found = analyzer.resolve_found_files(language, verbose=False, missing=True)
     run, render = analyzer.compute_run_signature(language, found, analyzer.parse_analysis_args([])), \
         analyzer.compute_render_signature(args)
+    zen = argparse.Namespace(theme="Zen Mode", zen_limit=0, language=language)
+    zen_render = analyzer.compute_render_signature(zen)
     store.set_watched([store.ids("now")[0], store.ids("now")[-1]])     # the last NOW file: Target Met
     found_after = analyzer.resolve_found_files(language, verbose=False, missing=True)
     assert found_after == found, "the option on: a stone counts on"
     assert analyzer.compute_run_signature(language, found_after, analyzer.parse_analysis_args([])) == run
     assert analyzer.compute_render_signature(args) != render, "the report must re-render"
+    assert analyzer.compute_render_signature(zen) == zen_render, "Zen shows no journey: it never re-renders for one"
     data = _payload(_render(tmp_path, language, names))
     assert data["progressive"][0]["watched"] is True and data["progressive"][0]["words"], "counted AND watched"
     assert not any(e.get("aside") for e in data["progressive"])
@@ -324,3 +327,130 @@ def test_drill_a2_step_6_every_episode_watched_then_finished_then_put_back_and_o
     undone, _said = _generate(root, language)
     assert _files(undone) == _files(finished) and _stones(undone) == {}, "as it was when finished"
     store.close()
+
+
+# --- the review round (S-1 / IK-4, S-3 / IK-3, S-2) ----------------------------------------------------------------- #
+
+# A Generate whose report is drawn after something happened to the store mid-run (the window stays live while a
+# Generate runs): `mark` — the learner marks an episode just before the report is drawn; `locked` — the store can't be
+# read at that moment. The analyzer runs as `python app/analyzer.py` does, its generator's stones step wrapped.
+DRIVER = r'''
+import os, runpy, sqlite3, sys
+from app import library_store as ls, static_html_generator as gen
+language, data_dir, user_files_dir, mode, item = sys.argv[1:6]
+drawn = gen._journey_stones
+
+def hooked(*a, **k):
+    if mode == "mark":
+        store = ls.open_store(language, data_dir, user_files_dir)
+        try:
+            store.set_watched([int(item)])
+        finally:
+            store.close()
+        return drawn(*a, **k)
+    def locked(self):
+        raise sqlite3.OperationalError("database is locked")
+    real, ls.Store.watched_marks = ls.Store.watched_marks, locked
+    try:
+        return drawn(*a, **k)
+    finally:
+        ls.Store.watched_marks = real
+
+gen._journey_stones = hooked
+sys.argv = ["analyzer.py", f"--language={language}", "--static", "--no-open", "--min-freq", "1"]
+runpy.run_path(os.path.join(os.path.dirname(ls.__file__), "analyzer.py"), run_name="__main__")
+'''
+
+
+def _generate_during(root, language, mode, item, tmp_path):
+    """A first, full Generate in its own process with DRIVER's `mode` happening as its report is drawn -> (report
+    data, what it printed)."""
+    driver = tmp_path / "stones_driver.py"
+    driver.write_text(DRIVER, encoding="utf-8")
+    data_dir, user_files_dir = roots(language)
+    p = subprocess.run([sys.executable, str(driver), language, data_dir, user_files_dir, mode, str(item)], cwd=REPO,
+                       env=child_env(root), capture_output=True, text=True, encoding="utf-8", errors="replace")
+    assert p.returncode == 0, (p.stdout + p.stderr)[-3000:]
+    subprocess.run([sys.executable, os.path.join(REPO, "app", "library_store.py"), "maintain", "--language", language],
+                   cwd=REPO, env=child_env(root), capture_output=True)
+    return _report(root), p.stdout
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_mark_landing_mid_generate_is_signed_as_drawn_so_its_undo_re_renders(language, tmp_path):
+    # why (S-1): with *Keep studying* on, a mark made while a Generate runs shows in that report; signed with the
+    # marks read at the run's start (none), its Undo made the next press reopen that report, the stone still on an
+    # episode the learner un-marked. Signed as drawn, the Undo re-renders — and a press after that reopens (S19).
+    root = os.environ["SURASURA_TEST_ROOT"]
+    _settings(language)
+    store, ids, names = _library(language)
+    store.set_library_options(keep_watched=True)
+    during, _said = _generate_during(root, language, "mark", ids["A2"], tmp_path)
+    assert _stones(during) == {names["A2"]: False}, "the mark made mid-run is drawn: counted AND watched"
+
+    store.set_watched([ids["A2"]], False)          # its Undo (the mark was the driver's process's change)
+    after, said = _generate(root, language)
+    assert REUSED in said and "Re-rendering report" in said, "its Undo re-renders the report"
+    assert _stones(after) == {}, "no stone left on an episode he un-marked"
+    _again, said = _generate(root, language)
+    assert "Report already up to date" in said, "nothing changed since: the report is reopened, never redrawn"
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_failed_marks_read_records_no_render_signature_so_the_next_press_re_renders(language, tmp_path):
+    # why (IK-4): a report drawn while the store couldn't be read has no stones; recorded as current, the next press
+    # reopened it — the learner's watched episode with no stone — until something else changed
+    root = os.environ["SURASURA_TEST_ROOT"]
+    _settings(language)
+    store, ids, names = _library(language)
+    store.set_library_options(keep_watched=True)
+    store.set_watched([ids["A2"]])
+    during, said = _generate_during(root, language, "locked", ids["A2"], tmp_path)
+    assert _stones(during) == {}, "the marks couldn't be read: the report is drawn without them"
+    after, said = _generate(root, language)
+    assert REUSED in said and "Re-rendering report" in said, "never recorded as current: the next press re-renders"
+    assert _stones(after) == {names["A2"]: False}
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_report_draws_the_runs_language_marks_never_settings(language):
+    # why (S-3): a Generate in one language while settings.json names the other (surasura-cli generate --lang) drew
+    # the other language's marks: its own stones missing, and the other's set-aside episodes added to this journey
+    root = os.environ["SURASURA_TEST_ROOT"]
+    _settings("zh" if language == "ja" else "ja")
+    store, ids, names = _library(language)
+    store.set_watched([ids["A2"]])
+    data, _said = _generate(root, language)
+    assert _stones(data) == {names["A2"]: True}, "the run's own stone, in its place"
+    assert _files(data)[1] == names["A2"]
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_library_with_no_stone_asks_one_indexed_question(language):
+    # why (S-2, S19): with no stone, every Generate press asked "is there one?" by scanning every analysed row (about
+    # 60-70 ms at 200k items, two or three times a press); a partial index on the watched rows answers at once. A store
+    # made before the index gets it at its first open by a writer — and nothing else in it changes
+    import sqlite3
+    store = migrated(language)
+    plan = " | ".join(r[-1] for r in store.conn.execute("EXPLAIN QUERY PLAN " + ls.STONES_EXIST_SQL).fetchall())
+    assert "items_watched" in plan, plan
+    data_dir, user_files_dir = roots(language)
+    store.close()
+    db = ls.library_db_path(language, data_dir)
+    raw = sqlite3.connect(db)
+    raw.execute("DROP INDEX items_watched")                                   # the store as an older build made it
+    raw.commit()
+    rows = raw.execute("SELECT * FROM items ORDER BY id").fetchall()
+    version = raw.execute("PRAGMA user_version").fetchone()[0]
+    raw.close()
+    assert ls.read_watched_marks(language, data_dir) == [], "an older store reads as before, only slower"
+    store = ls.open_store(language, data_dir, user_files_dir)
+    try:
+        assert store.conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'items_watched'").fetchone()
+        assert store.conn.execute("SELECT * FROM items ORDER BY id").fetchall() == rows
+        assert store.conn.execute("PRAGMA user_version").fetchone()[0] == version == ls.STORE_SCHEMA
+    finally:
+        store.close()

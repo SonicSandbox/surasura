@@ -4350,7 +4350,7 @@ def _without_comments(value):
     return value
 
 
-def compute_render_signature(args):
+def compute_render_signature(args, marks=None):
     """Fingerprint of everything that changes the RENDERED report but NOT the analysis, so those
     changes re-render instead of re-analyzing. SHARED with the dashboard's fast path so the two can
     never disagree about whether the existing report is still correct.
@@ -4360,7 +4360,10 @@ def compute_render_signature(args):
     "At N words a day..." estimate until something else forced a re-render.
 
     `--app-mode` is deliberately excluded: it changes only HOW the browser opens the report, not a
-    byte of its contents, so toggling it reopens the existing file instead of re-rendering."""
+    byte of its contents, so toggling it reopens the existing file instead of re-rendering.
+
+    `marks`: the journey's stones as the report was drawn from them (`generate_static_html`'s return, through
+    `signed_render`); None reads them now (`journey_marks`: the check before a run, the fast paths)."""
     try:
         _s = settings_manager.load_settings()
     except Exception:
@@ -4412,22 +4415,48 @@ def compute_render_signature(args):
     ]
     # The journey's stones (static_html_generator._journey_stones): a stone with *Keep studying watched episodes* on,
     # or a set-aside episode moved between counted ones, changes no run input but the report shows it. A part only
-    # while a stone is on the list, so a library with none keeps the signature it had.
-    _stones = _stones_fingerprint(getattr(args, "language", "ja"))
-    if _stones:
-        _parts.append(_stones)
+    # while a stone is on the list, so a library with none keeps the signature it had. Zen (the generator's choice of
+    # template) shows no journey: no part, never read.
+    if args.theme not in ZEN_THEMES:
+        _stones = _stones_fingerprint(getattr(args, "language", "ja"), marks)
+        if _stones:
+            _parts.append(_stones)
     return json.dumps(_parts)
 
 
-def _stones_fingerprint(language):
-    """Short hash of the analysed tiers' watched items — each one's place in the library's order, path, tier and
-    whether it counts — read from the library store in one read (`library_store.read_watched_marks`); None with no
-    stone or no store (never raises)."""
+ZEN_THEMES = ("Zen Mode", "zen-focus")      # static_html_generator's choice of the Zen template (no journey)
+
+
+def journey_marks(language):
+    """The journey's stones, read once from the library store (`library_store.read_watched_marks`): a list, None with
+    no store, or `library_store.UNREAD` when it can't be read now (never raises)."""
     ls = _library_store()
-    try:
-        marks = ls.read_watched_marks(language, get_data_path(language)) if ls else None
-    except Exception:
+    if ls is None:
         return None
+    try:
+        return ls.read_watched_marks(language, get_data_path(language))
+    except Exception:
+        return ls.UNREAD
+
+
+def signed_render(args, drawn, written):
+    """The render signature a run records after drawing its report (`last_render_sig`): signed with the marks the
+    report was drawn from (`drawn`, `generate_static_html`'s return), never read again — a mark landing mid-Generate is
+    then the next press's re-render, never a report recorded as current that shows the wrong stones (S-1). "" (it
+    matches no signature: the next press re-renders) when the report wasn't written or its marks couldn't be read."""
+    if not written or isinstance(drawn, str):            # library_store.UNREAD
+        return ""
+    return compute_render_signature(args, marks=drawn)
+
+
+def _stones_fingerprint(language, marks=None):
+    """Short hash of the analysed tiers' watched items — each one's place in the library's order, path, tier and
+    whether it counts — `marks` (`journey_marks`'; None: read now, in one read); None with no stone or no store, a
+    part that matches nothing when they can't be read now (never raises)."""
+    if marks is None:
+        marks = journey_marks(language)
+    if isinstance(marks, str):                           # library_store.UNREAD: never signed as current
+        return "stones unread"
     if not marks:
         return None
     return hashlib.sha1(json.dumps([[n, rel, tier, counted] for n, (rel, tier, watched, counted) in enumerate(marks)
@@ -4854,9 +4883,6 @@ def main():
     # The ANALYSIS outputs the report renders from (not the HTML itself — that's re-rendered below).
     _analysis_outputs_present = (os.path.exists(OUTPUT_CSV) and os.path.exists(OUTPUT_PROGRESSIVE)
                                  and os.path.exists(os.path.join(RESULTS_DIR, "word_stats.json")))
-    # Presentation fingerprint that decides whether the HTML must be RE-RENDERED (see
-    # compute_render_signature — shared with the dashboard so the two can't drift).
-    _render_sig = compute_render_signature(args)
     if (_store is not None and _run_sig and _analysis_outputs_present
             and not os.environ.get("SURASURA_FORCE_RUN")         # surasura-cli generate --force
             and _store.get_meta("last_run_signature") == _run_sig
@@ -4875,6 +4901,11 @@ def main():
                 except ImportError:
                     import static_html_generator
                 _html = os.path.join(RESULTS_DIR, "reading_list_static.html")
+                # Presentation fingerprint that decides whether the HTML must be RE-RENDERED (see
+                # compute_render_signature — shared with the dashboard so the two can't drift). The
+                # journey's stones are read once: the check and the re-render use the same marks.
+                _marks = None if args.theme in ZEN_THEMES else journey_marks(language)
+                _render_sig = compute_render_signature(args, marks=_marks)
                 # Fast "same setting" path: if the presentation is ALSO unchanged, the existing
                 # report is already correct — just open it (no re-render, and pandas is never
                 # imported). Otherwise re-render with the new theme/Zen (still no re-analysis).
@@ -4885,12 +4916,12 @@ def main():
                 else:
                     print("Re-rendering report from existing results (presentation changed)...")
                     _rendering = time.time()
-                    static_html_generator.generate_static_html(
+                    _drawn = static_html_generator.generate_static_html(
                         theme=args.theme, app_mode=args.app_mode, zen_limit=args.zen_limit,
-                        open_browser=not args.no_open)
+                        open_browser=not args.no_open, language=language, marks=_marks)
                     _report_failed = not _report_written(_html, _rendering)
                     try:
-                        _store.set_meta("last_render_sig", _render_sig)
+                        _store.set_meta("last_render_sig", signed_render(args, _drawn, not _report_failed))
                     except Exception:
                         pass
             except Exception as e:
@@ -6469,6 +6500,7 @@ def main():
             
     # --- STATIC GENERATION ---
     _progress("Writing the journey")
+    _drawn = None               # the journey's stones the report was drawn from (`signed_render`)
     if args.static:
         try:
             try:
@@ -6479,9 +6511,9 @@ def main():
             print("\n---------------------------------------------------")
             print("Generating Static HTML...")
             _rendering = time.time()
-            static_html_generator.generate_static_html(
+            _drawn = static_html_generator.generate_static_html(
                 theme=args.theme, app_mode=args.app_mode, zen_limit=args.zen_limit,
-                open_browser=not args.no_open)
+                open_browser=not args.no_open, language=language)
             _report_failed = not _report_written(os.path.join(RESULTS_DIR, "reading_list_static.html"), _rendering)
         except Exception as e:
             print(f"Error: Could not generate static HTML: {e}")
@@ -6528,8 +6560,9 @@ def main():
             print(f"Warning: could not write the plan file ({e}); the last one is left as it was.")
 
     # All outputs are now written — record the run-signature so an identical re-run can skip
-    # entirely next time (and the presentation fingerprint so a same-setting re-run can open the
-    # report without re-rendering), then close the store.
+    # entirely next time (and the presentation fingerprint, signed with the stones the report was
+    # drawn from, so a same-setting re-run can open the report without re-rendering), then close
+    # the store.
     _set_run_stamp(RESULTS_DIR, _run_sig)
     record_analysed(language, _library, data_dir, user_files_dir)
     if _store is not None:
@@ -6537,7 +6570,7 @@ def main():
             if _run_sig:
                 _store.set_meta("last_run_signature", _run_sig)
             if args.static:
-                _store.set_meta("last_render_sig", _render_sig)
+                _store.set_meta("last_render_sig", signed_render(args, _drawn, not _report_failed))
         except Exception:
             pass
         _store.close()

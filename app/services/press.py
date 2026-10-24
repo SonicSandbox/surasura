@@ -94,6 +94,13 @@ class Presses:
         """The press for `key`, or None when none was ever asked for (nothing made)."""
         return self._by_key.get(key)
 
+    def forget(self, key):
+        """`key`'s press, ended, out of the table (finish-pending FP-A7: a key made once per command, never asked
+        again). A live one stays."""
+        p = self._by_key.get(key)
+        if p is not None and not p.live():
+            del self._by_key[key]
+
     def any_live(self):
         return any(p.live() for p in self._by_key.values())
 

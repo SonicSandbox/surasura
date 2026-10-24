@@ -632,3 +632,24 @@ def test_every_child_the_dashboard_starts_is_recorded_while_it_runs(monkeypatch)
     MasterDashboardApp.run_command_async(app, ["indexer.py", "--language", "ja"], "Indexer")
     views = app.job_registry.snapshot()
     assert [(v.kind, v.label, v.state, v.gated) for v in views] == [("indexer", "Indexer", J.DONE, False)]
+
+
+def test_a_run_its_asker_withdrew_is_told_apart_from_one_the_user_stopped():
+    """finish-pending FP-A3: the window's press waiting for Anki ends when the learner stops the Generate it waits
+    for, never when the journey keeper withdraws its run to ask again after the moves settle — both end cancelled, so
+    the controller says which (`withdrawn(job_id)`)."""
+    registry = JobRegistry()
+    controller = GenerateController(registry, settle=0)
+    holder, launcher = _scripted(controller)
+    keepers = controller.request("ja", argv=["analyzer.py", "--no-open"], quiet=True, launcher=launcher)
+    assert h.until(lambda: "run" in holder, seconds=10)
+    controller.withdraw(keepers)
+    holder.pop("run").ended(1)
+    taken_back = registry.snapshot()[-1]
+    assert taken_back.cancelled and controller.withdrawn(taken_back.id)
+    controller.request("ja", argv=["analyzer.py"], launcher=launcher)
+    assert h.until(lambda: "run" in holder, seconds=10)
+    controller.cancel()
+    holder.pop("run").ended(1)
+    stopped = registry.snapshot()[-1]
+    assert stopped.id != taken_back.id and stopped.cancelled and not controller.withdrawn(stopped.id)

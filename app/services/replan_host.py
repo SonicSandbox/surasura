@@ -73,9 +73,7 @@ def _aside_line(settings, language):
     try:
         from app import replan_preview
         why = replan_preview.stands_aside(settings, language)
-        if why in (replan_preview.AUTOMATION_OFF, replan_preview.JUNBAN_OFF, replan_preview.JUNBAN_ABSENT):
-            return None
-        return why
+        return None if why is None else (replan_preview.ends_with(why) or None)   # (a line that gives up: the bar's)
     except Exception as e:
         print(f"Re-order: why it stands aside couldn't be read: {e}")
         return None
@@ -89,6 +87,11 @@ def sync_sent(settings):
         return True
     from app import replan_preview
     return any(_automation_on(settings, language) for language in replan_preview.LANGUAGE_NAMES)
+
+
+def replan_preview_off():
+    from app import replan_preview
+    return replan_preview.OFF
 
 
 def _drop_pending():
@@ -122,6 +125,7 @@ class ReplanHost:
         self._job = None                    # the `replan` job of the write in hand
         self._line = None
         self._aside = None                  # the stand-aside line `line()` gives while no host is open
+        self._off = False                   # finish-pending: `OFF` told since the gate last said yes (told once)
         self._held = bool(held)
         self._closing = False               # the quit: the host's close is sent (once)
         self._quitting = False              # the quit was asked (`close()`, at the call): nothing opens from here
@@ -211,8 +215,9 @@ class ReplanHost:
                 return                      # the quit was asked: no helper is spawned now
         settings = self._settings()
         if not _automation_on(settings, self.language):
-            # switched off (D29, Junban, the deck): the helper goes; the bar says why where the user can fix it
-            self._let_go(_aside_line(settings, self.language))
+            # switched off (D29, Junban, the deck): the helper goes; the bar says why where the user can fix it —
+            # the user's own choices with no line, told once as `OFF` (finish-pending: a press waiting ends quietly)
+            self._let_go(_aside_line(settings, self.language), off=True)
             if not sync_sent(settings):
                 _drop_pending()             # nothing will send a pending AnkiWeb sync (the Tk `_replan_start`)
             return
@@ -264,13 +269,17 @@ class ReplanHost:
         if host is not None:
             host.close()
 
-    def _let_go(self, aside=None):
-        """The host goes (if open); `line()` is `aside` from here (None: no line), told only when it changed (S19)."""
+    def _let_go(self, aside=None, off=False):
+        """The host goes (if open); `line()` is `aside` from here (None: no line), told only when it changed (S19).
+        `off` (the gate said no): with no line, `replan_preview.OFF` is told instead, once until the gate says yes."""
         with self._lock:
             host, self._host = self._host, None
             job, self._job = self._job, None
             self._gen += 1
-            said = self._line != aside
+            told = aside if self._line != aside else False
+            if off and aside is None and not self._off:
+                told = replan_preview_off()
+            self._off = off and aside is None
             self._line = self._aside = aside
         if host is not None:
             try:
@@ -279,12 +288,13 @@ class ReplanHost:
                 print(f"Re-order: its host couldn't be stopped: {e}")
         if job is not None and job is not True:
             job.finish(ok=True)             # the helper's own row stands for a write it still finishes (the update)
-        if said:
-            self._tell(aside)
+        if told is not False:
+            self._tell(told)
 
     def _unsay_aside(self):
         """The host may run again: the stand-aside line goes (its own lines follow)."""
         with self._lock:
+            self._off = False
             aside, self._aside = self._aside, None
             said = aside is not None and self._line == aside
             if said:

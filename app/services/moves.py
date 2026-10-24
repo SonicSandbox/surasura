@@ -742,6 +742,7 @@ class Writer:
                     if cmd is not None:
                         cmd.setdefault("failed", f"{e}")
                         self._landed(cmd)
+                        self._empty(cmd)
                         self._call(self.on_note, self.words["failed"].format(error=e))
                         self._call(self.on_reread)
         finally:
@@ -796,6 +797,7 @@ class Writer:
             reason = getattr(self.opener, "reason", None) or self.opener.mode
             cmd["refused"] = f"{reason}"
             self._landed(cmd)
+            self._empty(cmd)
             self._call(self.on_note, self.words["read_only"].format(reason=reason))
             self._call(self.on_reread)
             self._numbers_resync()
@@ -826,6 +828,7 @@ class Writer:
         except lib.StoreReadOnly as e:
             cmd["refused"] = f"{e}"
             self._landed(cmd)
+            self._empty(cmd)
             self._call(self.on_note, self.words["read_only"].format(reason=e))
             self._call(self.on_reread)
             self._numbers_resync()
@@ -915,10 +918,8 @@ class Writer:
         if cmd.get("renamed"):                      # a Put back that couldn't take its own name
             self._call(self.on_note, self.words["put_back_as"].format(names=", ".join(cmd["renamed"])))
         if change is None or note is not None or cmd.get("auto"):
-            if change is None and cmd.get("label") is not None:     # W3.2 (S5): its ticket settles, others pending
-                with self._cond:
-                    self._let_go.append(cmd["label"])
-                    del self._let_go[:-64]
+            if change is None:                  # W3.2 (S5): its ticket settles, others pending
+                self._empty(cmd)
             self._call(self.on_reread)
         if op not in UNORDERED and (op != "move" or change is None or note is not None or
                                     cmd.get("numbered") not in (None, (cmd["before_id"], cmd["after_id"]))):
@@ -1355,6 +1356,7 @@ class Writer:
             first.follow_up = None                  # undone on its own (Ctrl+Z): the drop's Undo is the drop's alone
         self._landed(cmd)
         if refused:
+            self._empty(cmd)
             self._call(self.on_note, self.words["cant_undo"])
         else:
             change.landed = _stamp(store)           # finish-pending: now the undo's own (its re-order is owed in turn)
@@ -1398,6 +1400,15 @@ class Writer:
             if not self._saving and any(c is cmd for c in self._pending):
                 self._saving = True
                 self._call(self.on_saving, True)
+
+    def _empty(self, cmd):
+        """`cmd` landed as nothing — nothing to change, refused, failed, an Undo refused: its label, if any, told
+        through `landed_empty` (W3.2 S5: its ticket settles while others wait; finish-pending FP-A1: only such a
+        command's press ends at a reread). Before the `on_reread` that follows it."""
+        if cmd.get("label") is not None:
+            with self._cond:
+                self._let_go.append(cmd["label"])
+                del self._let_go[:-64]
 
     def _landed(self, cmd):
         """The head is done with (saved, let go or refused): out of the queue and out of the journal."""

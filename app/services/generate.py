@@ -46,7 +46,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections import namedtuple
+from collections import deque, namedtuple
 
 from app import locks
 from app.services import jobs as jobs_module
@@ -233,6 +233,7 @@ class GenerateController:
         self._failure = None            # the last failure (message, log path, language) until a run finishes cleanly
         self._run = None                # the run in flight (waiting, or its child running)
         self._pending = None            # the request that runs next
+        self._withdrawn = deque(maxlen=8)   # finish-pending: the runs their asker took back (`withdrawn`)
         self._timer = None
         self._subscribers = []
         self._text_listeners = []
@@ -390,9 +391,17 @@ class GenerateController:
                 if self._run is None:
                     snap = self._assign_settled()
             in_flight = self._run is run
+            if in_flight:
+                self._withdrawn.append(run)
         self._send(snap)
         if in_flight:
             self._cancel(run)
+
+    def withdrawn(self, job_id):
+        """finish-pending (FP-A3): was the Generate job `job_id` taken back by its asker (`withdraw`: the journey
+        keeper's run, asked again once the moves settle), not stopped by the user? Any thread."""
+        with self._lock:
+            return any(run.job is not None and run.job.id == job_id for run in self._withdrawn)
 
     # --- inside: starting --------------------------------------------------------------------------------------- #
     def _cancel(self, run):

@@ -1813,3 +1813,92 @@ def test_the_done_line_says_tomorrows_cards_were_placed_whenever_any_of_them_mov
     assert lines[-1] == "Anki: tomorrow's 20 cards placed · 120 more moved"
     host._said_done({"written": list(range(100, 205))}, job)
     assert lines[-1] == "Anki: 105 cards moved · tomorrow's 20 already in place"
+
+
+
+# --------------------------------------------------------------------------------------------------------------- #
+# finish-pending's fix round (FP-A2 / A5): a line that leaves the re-order to the user is said as that kind
+# --------------------------------------------------------------------------------------------------------------- #
+# Every `self._tell(...)` the host says, by its first argument as written, and whether it gives up (True), never does
+# (False), or says which itself (a `gives_up=` of its own). A new site fails here until it is placed: the window's press
+# waiting for a re-order ends only on a line that gives up, so a site left out would leave it turning, or end it while
+# the host still retries.
+TELL_SITES = {
+    "f'Re-ordering as you move stopped: {e}'": True,
+    "UP_TO_DATE": False,
+    "why": True,
+    "BUSY": False,
+    "UPDATE": False,
+    "NOT_ANSWERING": False,
+    "CLOSED": True,
+    "REVIEWING": False,
+    "PRESS_GENERATE": True,
+    "STAND_ASIDE.get(verdict[1], STAND_ASIDE_ELSE)": False,
+    "GENERATE_FIRST if self._generate is not None else GENERATE_FIRST_CM": False,
+    "NEW_CONTENT if verdict[1] == 'files' else PRESS_GENERATE": True,
+    "(GENERATE_FIRST if self._generate is not None else GENERATE_FIRST_CM) if asked is not False else PRESS_GENERATE":
+        "asked is False",
+    "REPLAN_THEN_GENERATE if self._generate is not None else REPLAN_THEN_GENERATE_CM": False,
+    "anki_connect.waiting_line(holder)": False,
+    "(report.get('problems') or [''])[0]": True,
+    "REVIEWING if problem == anki_connect.REVIEWING else BUSY": False,
+    "RESTORE_FIRST": True,
+    "f'Anki re-ordered {written:,} cards, then stopped: {problems[0]} — the rest at the next re-order' if written else "
+    "f'Anki not re-ordered: {problems[0]}'": "not again",
+    "f'Anki: spacing your new cards out once so later moves are quick — {done:,} of {total:,}…'": False,
+    "f\"Anki: placing tomorrow's {n} cards…\"": False,
+    "f\"Anki: tomorrow's {n} already in place · moving {total - done:,} more…\"": False,
+    "f\"Anki: tomorrow's {n} cards placed · moving {total - done:,} more…\"": False,
+    "line": False,
+}
+
+
+def test_every_line_the_host_says_is_placed_as_giving_up_or_not():
+    import ast
+    import inspect
+    tree = ast.parse(inspect.getsource(replan_preview.Host))
+    found = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "_tell" \
+                and node.args:
+            kind = next((k.value for k in node.keywords if k.arg == "gives_up"), None)
+            said = False if kind is None else (kind.value if isinstance(kind, ast.Constant) else ast.unparse(kind))
+            arg = ast.unparse(node.args[0])
+            assert found.setdefault(arg, said) == said, arg
+    assert found == TELL_SITES
+
+
+def test_anki_not_reordered_says_whether_the_host_tries_again():
+    """FP-A2: "Anki not re-ordered: …" is retried in RETRY_S when Anki went away mid-write (or cards failed) — a plain
+    line, the window's press keeps turning — and never retried after a refusal only the user can clear: a line that
+    gives up."""
+    from types import SimpleNamespace
+    from modules.junban import auto
+    host, lines = _host()
+    for report, again in (({"ok": False, "anki_error": "offline", "problems": ["Anki went offline"]}, True),
+                          ({"ok": False, "failures": [1], "problems": ["2 cards failed"]}, True),
+                          ({"ok": False, "problems": ["the deck TheBank isn't in Anki"]}, False)):
+        host._retry_at = None
+        original = reposition.run, auto.decide_actions
+        reposition.run = lambda *a, **k: dict(report)
+        auto.decide_actions = lambda settings: None
+        try:
+            host._write({}, SimpleNamespace(front_size=0, kind=None, front_ids=frozenset()), "move")
+        finally:
+            reposition.run, auto.decide_actions = original
+        assert lines[-1] == f"Anki not re-ordered: {report['problems'][0]}"
+        assert isinstance(lines[-1], replan_preview.GivesUp) is not again
+        assert (host._retry_at is not None) is again
+
+
+def test_the_helpers_pipe_keeps_a_line_that_gives_up_as_that_kind():
+    """The host runs in a helper process: its lines reach the window over a pipe as JSON. The kind travels with them."""
+    remote = object.__new__(replan_preview.Remote)
+    heard = []
+    remote._say, remote._working, remote._generate = heard.append, (lambda on: None), None
+    remote._lock = threading.Lock()
+    remote._seen, remote._busy, remote._unseen = 0, False, []
+    remote._receive({"say": replan_preview.CLOSED, "gives_up": True, "seen": 0})
+    remote._receive({"say": replan_preview.REVIEWING, "gives_up": False, "seen": 0})
+    assert heard == [replan_preview.CLOSED, replan_preview.REVIEWING]
+    assert isinstance(heard[0], replan_preview.GivesUp) and not isinstance(heard[1], replan_preview.GivesUp)

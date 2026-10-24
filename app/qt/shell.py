@@ -40,6 +40,7 @@ from app.services import jobs as jobs_module
 from app.services import press as press_service
 from app.services import settings as settings_service
 from app.services import status as status_service
+from app.services import view_rows                         # the journey's episode for a row (JO-3)
 from app.qt import screens                                # W2.2: the pages a library fills
 from app.qt import press as qpress                        # round 8 row 45: a press reacts at once
 from app.qt import standing as standing_qt                # round 8 row 54: every standing line's ✕
@@ -56,6 +57,7 @@ POLL_MS = 500
 LOOK_TICK_MS = 5 * 60 * 1000    # SRC W1b: the source folders' tick (`sources.due` says when it's an hour: FOCUS_S apart)
 CHIP_MAX = 24                   # SRC W1b: an arrival's folder name on its chip, at most this long
 JOURNEY_FILE = "reading_list_static.html"   # the report's file in `results` (`static_html_generator.OUTPUT_FILE`)
+JOURNEY_LACKS = "lacks"     # `Services.open_journey`: opened, but the asked episode isn't in the journey yet (JO-1)
 # E20 (IK-22): at quit, what can't stop part-way — an Anki write the window started (finishing its batch: Anki
 # finishes a request it received), Generate writing your list — is waited for up to this long ("≤ a few seconds"), with
 # the window up and its bar saying so (`ShellWindow._finish_first`), then whatever is left of it at `shutdown`. Under
@@ -390,9 +392,13 @@ class Services:
 
     def open_journey(self, file=None):
         """(A worker.) *Your journey ↗*: the report as it is, never re-rendered (`open_report`); `file` (the report's
-        name for an episode's file): opened on it. -> False with none."""
-        from app import static_html_generator
-        return static_html_generator.open_report(app_mode=bool(self.settings.get().get("open_app_mode")), file=file)
+        name for an episode's file): opened on it — or, when the journey doesn't list it yet (added since the last
+        Generate), where it opens by itself, -> `JOURNEY_LACKS` (JO-1: the window says so). -> False with none."""
+        from app import static_html_generator as generator
+        held = file is None or generator.report_holds(file)
+        opened = generator.open_report(app_mode=bool(self.settings.get().get("open_app_mode")),
+                                       file=file if held else None)
+        return JOURNEY_LACKS if opened and not held else opened
 
     def level(self):
         """(A worker.) The level chip's (band, automatic) (`automation.level`)."""
@@ -1088,9 +1094,9 @@ class ShellWindow(QMainWindow):
                     page.not_found.connect(self._play_not_found)       # ... and its ▶ looked at again (row 55 A-7)
             current = self.page_widgets.get("current")
             if hasattr(current, "on_journey"):                         # W3.1a S5: Up Next's *N new words ↗*
-                current.on_journey = lambda _row, episode: self._open_journey(      # (its row's ↗ turns, IK-2)
+                current.on_journey = lambda row, episode: self._open_journey(       # (its row's ↗ turns, IK-2)
                     asked=True, at=qpress.row_mark(current.list, [episode.id], "journey") if episode else None,
-                    episode=episode)
+                    episode=view_rows.journey_episode(row) if episode else None)
             # --- P4.1 L2 (row 4.1.14): a click on the top-20 line opens its setting
             if hasattr(current, "on_line"):
                 current.on_line = lambda kind: self.open_setting("mine_line") if kind == "top" else None
@@ -2317,6 +2323,9 @@ class ShellWindow(QMainWindow):
         journey*; Sonic 2026-10-24): the report opens ON it, its panel shown (`journey_file`); every other way in opens
         where the report opens by itself. -> the press, or None."""
         def done(opened):
+            if opened == JOURNEY_LACKS:             # JO-1: opened where it opens by itself; the bar says why
+                self.say(strings.JOURNEY_NOT_YET.format(ep=episode.label))
+                return
             if opened:
                 return
             if self.duties is not None:

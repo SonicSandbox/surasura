@@ -613,9 +613,16 @@ def test_up_nexts_new_words_link_opens_the_journey_on_a_worker_and_says_why_when
         page.list.journey_requested.emit(row, row.episodes[0])
         assert wait_until(lambda: opened == [False])                    # opened, off the window's thread
         # Sonic 2026-10-24: ON that episode — the report's name for its file (its basename), never where it opens itself
-        assert asked == [(os.path.basename(row.episodes[0].rel_path.replace("\\", "/")),)] and asked[0][0]
+        ep = shell.view_rows.journey_episode(row)                        # its next (all watched: its first, JO-3)
+        assert asked == [(os.path.basename(ep.rel_path.replace("\\", "/")),)] and asked[0][0]
         assert win.bar_line.full() != strings.JOURNEY_NONE_TIP
         assert wait_until(lambda: not win.presses.find("journey:open").live())   # (a click meanwhile does nothing)
+        # JO-1 (Sonic 2026-10-24): an episode the journey doesn't list yet: opened where it opens by itself, and the
+        # bar says why
+        answer[0] = shell.JOURNEY_LACKS
+        page.list.journey_requested.emit(row, row.episodes[0])
+        assert wait_until(lambda: win.bar_line.full() == strings.JOURNEY_NOT_YET.format(ep=ep.label))
+        assert wait_until(lambda: not win.presses.find("journey:open").live())
         answer[0] = False
         page.list.journey_requested.emit(row, None)
         assert wait_until(lambda: win.bar_line.full() == strings.JOURNEY_NONE_TIP)

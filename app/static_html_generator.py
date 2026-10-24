@@ -49,6 +49,17 @@ def open_as_app(file_path):
 OPEN_ON_NAME = "journey_open.html"     # the small page that opens the report on one file (`open_report(file=)`)
 
 
+def report_holds(file):
+    """Whether the report on disk lists `file` (a name as the report names it, `path_utils.report_name`) — a counted,
+    set-aside or Target-met file alike: each is an entry with that `"filename"` in its data, written as
+    `generate_static_html` writes it (`json.dumps`). False with no report."""
+    try:
+        text = read_text(os.path.join(get_user_file("results"), REPORT_NAME))
+    except OSError:
+        return False
+    return f'"filename": {json.dumps(file)}' in text      # (a name holds no "/", so no "</" for the dump to escape)
+
+
 def open_report(app_mode=False, file=None):
     """Open the ALREADY-generated report without re-rendering it — the fast path when neither the
     analysis nor the presentation (theme / Zen limit / window) changed. Returns False if there is

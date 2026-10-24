@@ -239,3 +239,36 @@ def test_with_keep_studying_on_the_watched_sentence_shows_nowhere(language, tmp_
     branch = _function(_template(), "createSidebarTab")
     assert len(panel_calls) == 2 and "renderWatchedFile(fileData)" in branch[branch.index("if (fileData.aside)"):], \
         "the panel is drawn only from the aside branch (and defined once)"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_episode_the_journey_doesnt_list_yet_opens_it_where_it_opens_by_itself_and_says_so(language, tmp_path,
+                                                                                            monkeypatch):
+    # why (Sonic 2026-10-24, JO-1): an episode added since the last Generate isn't in the journey: the window says so
+    # ("Ep 13 isn't in your journey yet…") and the journey opens where it opens by itself — no page, no #file=; one the
+    # journey lists, of any kind (counted, set aside, Target met), opens on itself
+    from types import SimpleNamespace
+    from app import static_html_generator as gen
+    from app.qt import shell
+    _settings(language)
+    store = migrated(language)
+    names = _now_names(store)
+    store.set_watched([store.ids("now")[1]])
+    html = _render(tmp_path, language, [n for n in names if n != names[1]])
+    store.close()
+    results = tmp_path / "results"
+    opened = []
+    monkeypatch.setattr(gen, "get_user_file", lambda name: str(results))
+    monkeypatch.setattr(gen.webbrowser, "open", opened.append)
+    met = _payload(html)["completed_files"][0]["filename"]
+    assert all(gen.report_holds(n) for n in (names[0], names[1], met)), "counted, set aside, Target met"
+    assert not gen.report_holds("新しい_第13話.srt") and not gen.report_holds(names[0] + "x")
+    services = SimpleNamespace(settings=SimpleNamespace(get=lambda: {}))
+    assert shell.Services.open_journey(services, names[1]) is True and opened[-1].endswith(gen.OPEN_ON_NAME)
+    assert shell.Services.open_journey(services, "新しい_第13話.srt") == shell.JOURNEY_LACKS
+    assert opened[-1] == f"file://{results / gen.REPORT_NAME}", "where it opens by itself"
+    assert shell.Services.open_journey(services) is True and opened[-1].endswith(gen.REPORT_NAME)
+    (results / gen.REPORT_NAME).unlink()
+    assert shell.Services.open_journey(services, names[0]) is False and not gen.report_holds(names[0])
+    assert strings.JOURNEY_NOT_YET.format(ep="Ep 13") == \
+        "Ep 13 isn't in your journey yet: it comes in at the next Generate"

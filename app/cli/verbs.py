@@ -722,7 +722,8 @@ def _junban_dry_run(lang, junban_settings, reposition, job=None, unattended=Fals
     if stats.get("problems"):
         raise CliError("needs-you", stats["problems"][0], ask=stats["problems"][0])
     return ({"language": lang, "moves": len(writes), "unchanged": max(0, stats.get("total", 0) - len(writes)),
-             "not_on_list": stats.get("unmatched", 0), "undo": None, "decks": stats.get("decks") or []}, stats)
+             "not_on_list": stats.get("unmatched", 0), "undo": None, "decks": stats.get("decks") or [],
+             **({"empty_list": True} if stats.get("empty_list") else {})}, stats)      # M-W2-1: never "all in place"
 
 
 def _reviewing(report):
@@ -821,7 +822,8 @@ def _junban_auto(args, lang, junban_settings, auto, job=None, current=None, posi
     else:
         undo_id = os.path.basename(snapshot) if snapshot and written else None
     return ({"language": lang, "moves": len(written), "unchanged": max(0, stats.get("total", 0) - len(written)),
-             "not_on_list": stats.get("unmatched", 0), "undo": undo_id}, stats)
+             "not_on_list": stats.get("unmatched", 0), "undo": undo_id,
+             **({"empty_list": True} if stats.get("empty_list") else {})}, stats)      # M-W2-1: never "all in place"
 
 
 def _plan_moved(current, versions):

@@ -46,11 +46,12 @@ def token_store_lists(language, data_dir, files):
     """The token store's lists (L2.2 05 §5.10, 9b) for `files`, the run's list (`_content_files`, Generate's
     found files): (counted, {"kept", "aside", "elsewhere", "forgotten", "moved"}) — `Store.reconcile(counted, ...,
     **more)`, and `needs_reconcile`. With a ready library store: counted = `files` as given, then the store's counted
-    items they lack (a missing item keeps counting until the user decides); kept = `text_lists()`' kept list (Finished, New arrivals,
-    removed items whose text wasn't forgotten); aside = its set-aside list (W-1: watched episodes while *Keep studying
-    watched episodes* is off — never summed, still the name tables' evidence), less what `files` names; elsewhere = {a
-    removed item's path: where its file is in the trash}; forgotten = the removed items whose sentences the user forgot;
-    moved = the library store's move notes (`text_moved`, D7a), (old, old size, old mtime_ns, new, size, mtime_ns).
+    items they lack (a missing item keeps counting until the user decides); kept = `text_lists()`' kept list (New
+    arrivals, removed items whose text wasn't forgotten); aside = its set-aside list (reference: Finished, W-1b, and
+    watched episodes while *Keep studying watched episodes* is off, W-1 — never summed, still the name tables' evidence
+    and a sentence source), less what `files` names; elsewhere = {a removed item's path: where its file is in the
+    trash}; forgotten = the removed items whose sentences the user forgot; moved = the library store's move notes
+    (`text_moved`, D7a), (old, old size, old mtime_ns, new, size, mtime_ns).
     Absolute paths under `data_dir`. Without one (JSON mode, no library store): (`files`, {}) — the kept and set-aside
     rows and their text left as they are. (None, None) when a library store is there but its lists can't be read now
     (busy, read-only, an error): don't reconcile — `files` lacks its missing items, which would leave the token store

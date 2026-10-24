@@ -996,12 +996,19 @@ def test_which_version_moves_on_what(language):
     store.sync_disk()                                         # an analysed item going missing
     v3 = store.versions()
     assert v3["order_version"] > v2["order_version"] and v3["availability_version"] > v2["availability_version"]
-    gid = store.set_tier([ids[3]], "graduated").items[0]["id"]
+    gid = store.set_tier([ids[3]], "arrivals").items[0]["id"]
     v4 = store.versions()
     os.remove(os.path.join(data_dir, store.item(gid)["rel_path"]))
     store.sync_disk()                                         # any availability change, any tier
     v5 = store.versions()
     assert v5["availability_version"] > v4["availability_version"] and v5["order_version"] == v4["order_version"]
+    fid = store.set_tier([ids[4]], "graduated").items[0]["id"]
+    v6 = store.versions()
+    os.remove(os.path.join(data_dir, store.item(fid)["rel_path"]))
+    store.sync_disk()                                         # a Finished file is a run's reference (W-1b)
+    v7 = store.versions()
+    assert v7["availability_version"] > v6["availability_version"] and v7["order_version"] > v6["order_version"]
+    v5 = v7
     assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
     from tests.test_library_store_support import read_doc
     doc = read_doc(user_files_dir)

@@ -6,17 +6,22 @@ counted file's entry (*Keep studying watched episodes* on), or an entry of its o
 counts (the option off). The sidebar draws:
   - a stone before the name of every watched file's tab — a small cut stone, sapphire, muted (the window's watched
     stone drawn flat): never a check and never green, so it never reads as the ✓ (green text, after the name);
-  - on an aside file, *watched* where its count would be, and on a click a short panel: "Watched: its words aren't
-    counted" (never "No new words in this file", never a 0% bar);
+  - on an aside file, *watched* where its count would be, and on a click a short panel in the window's own sentence,
+    "Watched: its words leave your list." (never "No new words in this file", never a 0% bar); never opened by itself
+    (the report opens on the first file still to study, and a ✓ advances past it);
   - nothing at all where no file is watched, or in an old report whose data has no `watched` key.
 
 No test may open a browser (the harness refuses one), so the drawing is read from the template the report embeds; the
 report itself is the generator's, from a real library store with real stones, Japanese and Chinese.
 """
+import json
 import os
 import re
 
 import pytest
+
+from app import theme
+from app.qt import strings
 
 from tests.test_journey_stones import _now_names, _payload, _render, _settings
 from tests.test_library_store_support import LANGUAGES, migrated
@@ -62,8 +67,13 @@ def test_a_report_with_an_aside_stone_carries_the_template_that_draws_it(languag
     assert "fileData.words.length" not in branch, "no count on a file whose words aren't counted"
     assert "renderWatchedFile(fileData)" in branch
     panel = _function(html, "renderWatchedFile")
-    assert "Watched: its words aren't counted" in panel and "No new words" not in panel
+    assert "globalWatchedLeaves" in panel and "No new words" not in panel
     assert "updateMarkCompleteButton()" in panel, "the ✓ still marks it in the browser"
+    # IK Decision 2 (⭐, PROVISIONAL): one sentence for one rule, the window's own — injected by the generator from the
+    # one place it is written (`view_rows.STRINGS`, which the window's tooltip reads too)
+    said = re.search(r"let globalWatchedLeaves = (\"[^\"]*\");", html)
+    assert said and json.loads(said.group(1)) == strings.ROWS_STONE_LEAVES.strip() == \
+        "Watched: its words leave your list."
 
 
 def test_every_watched_tab_draws_the_stone_and_none_without_the_key():
@@ -101,4 +111,33 @@ def test_a_set_aside_file_never_gets_the_target_days_box_from_the_check():
     # the swap leaves its panel alone instead of adding "0 words Completed"
     source = _template()
     swap = _function(source, "updateTargetDaysForCurrent")
-    assert "querySelector('.watched-panel')" in swap.split("\n", 3)[2]
+    assert "querySelector('.watched-panel')" in swap
+
+
+def test_the_report_opens_on_the_first_episode_still_to_study_and_the_check_skips_set_aside_ones():
+    # why (JSW-A1 = IK Decision 1, ⭐ PROVISIONAL): a learner watches in order, so with Keep studying off the first
+    # entries are usually set aside — opening on one shows "Watched" instead of the words of the episode he is on, and a
+    # ✓ that advanced onto one would stop there. One rule picks the tab for both: words that still count, not ✓.
+    # (The pick run in a browser is the recorded Edge check, `work/journey-stones/shots/a1_open_check.py`.)
+    source = _template()
+    tab = _function(source, "createSidebarTab")
+    branch = tab[tab.index("if (fileData.aside)"):tab.index("return tab;")]
+    assert "tab.dataset.aside" in branch, "the set-aside tab says so"
+    rule = _function(source, "stillToStudy")
+    assert "dataset.aside" in rule and "completedFiles.has" in rule and "#completed-section" in rule
+    first = source[source.index("// Initial Load"):]
+    first = first[:first.index("}, 50);")]
+    assert "tabs.find(stillToStudy)" in first, "the first open skips set-aside and ✓ tabs"
+    assert first.index("tabs.find(stillToStudy)") < first.index("tabs[0]"), "...and falls back to the first tab"
+    advance = _function(source, "goToNextIncompleteFile")
+    assert "stillToStudy(tabs[i])" in advance and "completedFiles.has" not in advance, "the ✓'s advance: the same rule"
+
+
+def test_the_stone_sits_on_the_names_first_line_with_the_windows_light_edge():
+    # why (IK Decision 3 ⭐ and IK 5): in the narrow sidebar a long name wrapped as a block below the stone, leaving the
+    # stone alone on a line; and its dark base read at ~2:1 on the dark sidebar — the window's own light edge carries it
+    source = _template()
+    after = _css(source, ".file-tab .journey-stone ~ .hidden-content")
+    assert "display: inline" in after, "the name flows on the stone's line"
+    svg = re.search(r"const JOURNEY_STONE_SVG = '([^']*)'", source).group(1)
+    assert theme.GEM["sapphire"][2] in svg and 'fill="none"' in svg, "the window's light edge (theme.GEM sapphire)"

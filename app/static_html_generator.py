@@ -1159,13 +1159,16 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_brow
     except Exception:
         koe_config = None
     koe_json_str = json.dumps(koe_config, ensure_ascii=False).replace("</", "<\\/")
+    # A set-aside watched file's panel: the window's own sentence for the rule (one place: `view_rows.STRINGS`)
+    from app.services.view_rows import STRINGS as rows_strings
+    watched_leaves_str = json.dumps(rows_strings["watched_leaves"], ensure_ascii=False).replace("</", "<\\/")
     anki_json_str = json.dumps(anki_backlog_keys(target_lang, settings if 'settings' in locals() else {},
                                                  PRIORITY_CSV),
                                ensure_ascii=False).replace("</", "<\\/")
 
     injected = [
         "let globalData = ", json_str,
-        f";\n        let globalTheme = '{applied_theme}';\n        let globalLogic = {logic_json_str};\n        let globalLanguage = '{target_lang}';\n        let globalWordsPerDay = {words_per_day};\n        let globalShowWordsPerDay = {'true' if show_words_per_day else 'false'};\n        let globalSources = {sources_json_str};\n        let globalSourceDisplay = '{source_display}';\n        let globalWordSearch = {word_search_json_str};\n        let globalKoe = {koe_json_str};\n        let globalAnkiBacklog = {anki_json_str};"]
+        f";\n        let globalTheme = '{applied_theme}';\n        let globalLogic = {logic_json_str};\n        let globalLanguage = '{target_lang}';\n        let globalWordsPerDay = {words_per_day};\n        let globalShowWordsPerDay = {'true' if show_words_per_day else 'false'};\n        let globalSources = {sources_json_str};\n        let globalSourceDisplay = '{source_display}';\n        let globalWordSearch = {word_search_json_str};\n        let globalKoe = {koe_json_str};\n        let globalAnkiBacklog = {anki_json_str};\n        let globalWatchedLeaves = {watched_leaves_str};"]
     replacements = []
 
     # Embed Icon as Favicon and Header Logo

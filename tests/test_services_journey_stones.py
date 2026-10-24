@@ -11,13 +11,17 @@ or, if the report half were asked wrongly, a quiet Generate after every move tha
 Real Generates (the command line's), Japanese and Chinese, under the per-test SURASURA_TEST_ROOT.
 """
 import os
+import time
 
 import pytest
 
 from app import analyzer, run_args
 from app.services import journey as J
+from app.services import replan_host as R
 from tests import cli_helpers as h
+from tests import services_helpers as sh
 from tests.cli_helpers import same_token_store_as_the_children  # noqa: F401  (autouse)
+from tests.test_services_replan_host import _replan, fired, gate  # noqa: F401  (fixtures)
 
 
 class _Controller:
@@ -77,3 +81,71 @@ def test_after_a_generate_a_render_only_change_makes_the_keeper_pending_and_the_
     assert keeper._is_pending() is False, "re-rendered: current again"
     os.remove(os.path.join(h.root(), "results", "reading_list_static.html"))
     assert analyzer.report_is_current(args, language) is False and keeper._is_pending() is True, "no report: pending"
+
+
+# --- the trigger beside a run in flight (IK finding 2, S19) and the start / focus look (JSW-A2) -------------------- #
+def test_a_stone_during_the_keepers_run_leaves_the_run_alone_and_looks_once_after_it_ends(gate, fired):
+    # why: a stone moves no count, so the Generate in flight (a Finish's, or the keeper's own) is never thrown away
+    # and started again for it — that put a Finish's Anki step off by a whole Generate. The run may have drawn the marks
+    # before the stone (it signs the ones it drew), so the keeper looks once more after it ends; that look asks a run
+    # only if the report still isn't current (here the check always says pending: the look is a second run).
+    replan, _registry, _controller, launches, _opener = _replan(journey=lambda: True)
+    keeper = replan.keeper
+    keeper.changed("move")
+    assert sh.until(lambda: launches.count() == 1, seconds=5)
+    run = launches.runs[0]
+    replan.stone_marked("ja")
+    assert not run.cancel_event.is_set(), "the run in flight is never withdrawn for a stone"
+    assert keeper.asked == 1 and launches.count() == 1
+    run.ended(0)
+    assert sh.until(lambda: launches.count() == 2, seconds=5), "one look after the run ended"
+    assert fired.done(keeper) and keeper.asked == 2
+    launches.runs[1].ended(0)
+    assert fired.done(keeper) and keeper.asked == 2 and launches.count() == 2, "once: nothing more after the next run"
+    replan.finish(time.monotonic() + 1)
+
+
+def test_a_stone_with_no_run_in_flight_looks_at_once(gate, fired):
+    # why: the deferral is only for a run going; with none, the stone's look is the one it always was
+    replan, _registry, _controller, launches, _opener = _replan(journey=lambda: True)
+    replan.stone_marked("ja")
+    assert sh.until(lambda: launches.count() == 1, seconds=5) and fired.done(replan.keeper)
+    assert replan.keeper.asked == 1
+    replan.finish(time.monotonic() + 1)
+
+
+class _Store:
+    """The library store as the start's look reads it: the order hasn't moved since the last Generate."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def journey_pending(self):
+        return False
+
+
+def test_the_start_and_focus_look_asks_the_report_half_so_a_stone_marked_before_quit_shows(monkeypatch, gate):
+    # why (JSW-A2): a stone with Keep studying on never moves `order_version`, so a stone marked in the last seconds
+    # before quit (its keeper closed before the settle), or dropped before the window's services were made, left the
+    # store saying "nothing pending" at the next start: the journey opened without it until some later move
+    from app import library_store
+    report = {"current": True}
+    monkeypatch.setattr(library_store, "open_store", lambda *a, **k: _Store())
+    monkeypatch.setattr(analyzer, "report_is_current", lambda args, language: report["current"])
+    assert R.journey_pending("ja") is False, "nothing moved, the report current: no look"
+    report["current"] = False
+    assert R.journey_pending("ja") is True, "the report isn't current (the stone): the keeper looks"
+    replan, _registry, _controller, _launches, _opener = _replan(pending=None, journey=lambda: False)
+    heard = []
+    real = replan.keeper.changed
+    replan.keeper.changed = lambda reason="move": heard.append(reason) or real(reason)
+    replan.start()
+    assert replan.host.worker.idle(5)
+    assert heard == ["start"], "the start's look (the default one) asks the report half"
+    replan.activated()
+    assert replan.host.worker.idle(5)
+    assert heard == ["start", "start"], "...and so does a focus"
+    replan.finish(time.monotonic() + 1)

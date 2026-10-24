@@ -1172,6 +1172,11 @@
             opacity: 0.8;
         }
 
+        /* The name flows on the stone's line (a long name wraps under it, not as a block below a lone stone). */
+        .file-tab .journey-stone ~ .hidden-content {
+            display: inline;
+        }
+
         .file-tab .aside-watched {
             font-size: 0.9em;
             opacity: 0.5;
@@ -2011,7 +2016,7 @@
                 // section at that). Falls back to the very first tab when everything is completed.
                 setTimeout(() => {
                     const tabs = Array.from(tabsContainer.querySelectorAll('.file-tab'));
-                    const firstTab = tabs.find(t => !t.closest('#completed-section')) || tabs[0];
+                    const firstTab = tabs.find(stillToStudy) || tabs.find(t => !t.closest('#completed-section')) || tabs[0];
                     if (firstTab) {
                         firstTab.classList.add('active');
                         firstTab.click(); // Trigger load
@@ -2109,6 +2114,7 @@
                     // Watched and set aside (Keep studying watched episodes off): in its place, *watched* where its
                     // count would be; its words aren't counted, so a click says so instead of listing none.
                     tab.innerHTML = `${journeyStone(fileData)}${goalIndicator}<span class="hidden-content" data-content="${safeFilename}" migaku_ignore data-yomichan-ignore></span> <span class="hidden-content aside-watched" data-content="watched" migaku_ignore data-yomichan-ignore></span>`;
+                    tab.dataset.aside = "1";    // never opened by itself (stillToStudy); a click still opens its panel
                     applyCompletedStyle(tab, completedFiles.has(fileData.filename));
                     tab.onclick = () => {
                         document.querySelectorAll('.file-tab').forEach(t => t.classList.remove('active'));
@@ -2142,8 +2148,9 @@
         }
 
         // The journey's stone (3.0): the file is marked watched in your library (`watched` in the report's data; an
-        // old report has no such key and draws none). A cut stone, never a check: the ✓ is the browser's own mark.
-        const JOURNEY_STONE_SVG = '<svg viewBox="0 0 10 13" aria-hidden="true"><polygon points="5,0 9.6,3.6 8.2,10.4 5,13 1.8,10.4 0.4,3.6" fill="#1d4fae"/><polygon points="5,0 9.6,3.6 5,5.6 0.4,3.6" fill="#4b8ff0"/><polygon points="5,5.6 9.6,3.6 8.2,10.4 5,13" fill="#2a63c4"/></svg>';
+        // old report has no such key and draws none). A cut stone, never a check: the ✓ is the browser's own mark. Its
+        // edge is the window's light edge (theme.GEM sapphire), so it reads on the dark sidebar.
+        const JOURNEY_STONE_SVG = '<svg viewBox="0 0 10 13" overflow="visible" aria-hidden="true"><polygon points="5,0 9.6,3.6 8.2,10.4 5,13 1.8,10.4 0.4,3.6" fill="#1d4fae"/><polygon points="5,0 9.6,3.6 5,5.6 0.4,3.6" fill="#4b8ff0"/><polygon points="5,5.6 9.6,3.6 8.2,10.4 5,13" fill="#2a63c4"/><polygon points="5,0 9.6,3.6 8.2,10.4 5,13 1.8,10.4 0.4,3.6" fill="none" stroke="#d6e7ff" stroke-width="0.7" stroke-linejoin="round"/></svg>';
 
         function journeyStone(fileData) {
             if (!fileData || fileData.watched !== true) return "";
@@ -2160,7 +2167,9 @@
             updateMarkCompleteButton();
             const panel = document.createElement('div');
             panel.className = 'watched-panel';
-            panel.innerHTML = `<span class="journey-stone">${JOURNEY_STONE_SVG}</span><span class="hidden-content" data-content="Watched: its words aren't counted" migaku_ignore data-yomichan-ignore></span>`;
+            // the window's own sentence for the rule (the generator injects it: one place, `view_rows.STRINGS`)
+            const said = (typeof globalWatchedLeaves !== 'undefined' && globalWatchedLeaves) || "Watched";
+            panel.innerHTML = `<span class="journey-stone">${JOURNEY_STONE_SVG}</span><span class="hidden-content" data-content="${escapeHtml(said)}" migaku_ignore data-yomichan-ignore></span>`;
             listContainer.appendChild(panel);
         }
 
@@ -2475,13 +2484,20 @@
             }
         }
 
-        // Advance to the next sidebar file that isn't completed yet (rendered tabs only).
+        // A file still to study: its words still count (never one set aside as watched) and it isn't ✓ in the browser.
+        // The one rule for where the report opens and where a ✓ advances to (3.0).
+        function stillToStudy(tab) {
+            return !!tab.dataset.filename && !tab.dataset.aside && !completedFiles.has(tab.dataset.filename)
+                && !tab.closest('#completed-section');
+        }
+
+        // Advance to the next sidebar file still to study (rendered tabs only).
         function goToNextIncompleteFile() {
             const tabs = Array.from(document.querySelectorAll('#file-tabs .file-tab[data-filename]'));
             if (!tabs.length) return;
             const activeIdx = tabs.findIndex(t => t.classList.contains('active'));
             for (let i = activeIdx + 1; i < tabs.length; i++) {
-                if (!completedFiles.has(tabs[i].dataset.filename)) {
+                if (stillToStudy(tabs[i])) {
                     tabs[i].click();
                     return;
                 }

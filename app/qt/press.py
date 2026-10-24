@@ -39,7 +39,7 @@ import os
 import sys
 
 from PyQt6 import sip
-from PyQt6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF
+from PyQt6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, Qt
 from PyQt6.QtGui import QPainter, QTransform
 
 from app import theme
@@ -120,7 +120,10 @@ def begin(control, key, busy=None, win=None, goes=False, at=None):
         at = bar_mark(win)
     if busy and win is not None:
         _busy[p] = busy
-        _hold(win, key, busy)
+        try:
+            _hold(win, key, busy)
+        except Exception as e:              # (A-10's rule: a window whose `say` holds nothing never holds the press)
+            print(f"A press's words weren't held: {e!r}", file=sys.stderr)
     if at is not None:
         _at[p] = at
         try:
@@ -406,7 +409,7 @@ class _RowMark:
 
     def off(self):
         if not sip.isdeleted(self.view):
-            self.view.unmark(self.ids)
+            self.view.unmark(self.ids, self.part)
         if self.bar is not None:
             self.bar.off()
 
@@ -421,6 +424,29 @@ def row_mark(view, ids, part="more"):
     return _RowMark(view, ids, part)
 
 
+class _Grounded(motion.Spinner):
+    """The spin's arc over an icon (`widget_mark`): the raised ground a row's marked ⋯ gets (`rows.paint_marked`,
+    "button": one look for a mark over a control), the arc in its middle."""
+
+    def __init__(self, parent):
+        super().__init__("spin", parent, size=max(ARC, min(parent.width(), parent.height())))
+
+    def paintEvent(self, _event):
+        if not self.running:
+            return
+        c = style.colours()
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        r = QRectF(self.rect())
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(style.qcolor(c["raised"]))
+        radius = theme.RADII["icon-button"]
+        p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
+        box = QRectF(r.center().x() - ARC / 2, r.center().y() - ARC / 2, ARC, ARC)
+        motion.spin_arc(p, box, self.phase if self.on_clock else None, style.qcolor(c["accent"]))
+        p.end()
+
+
 class _WidgetMark:
     def __init__(self, widget):
         self.widget, self.spinner = widget, None
@@ -429,10 +455,10 @@ class _WidgetMark:
         w = self.widget
         if sip.isdeleted(w):
             return
-        s = self.spinner = motion.Spinner("spin", w, size=ARC)
+        s = self.spinner = _Grounded(w)
 
         def place():
-            s.move((w.width() - ARC) // 2, (w.height() - ARC) // 2)
+            s.move((w.width() - s.width()) // 2, (w.height() - s.height()) // 2)
         place()
         _Follow(w, s, place)
         s.raise_()
@@ -449,8 +475,8 @@ class _WidgetMark:
 
 
 def widget_mark(widget):
-    """The accent arc over the middle of `widget` (a cover, a tile) while the press is live, taking no room of its
-    layout's; painted before `on` returns."""
+    """The accent arc over the middle of `widget` (an icon: a tray row's or a Goal tile's ⋯) on its raised ground — as
+    a row's marked ⋯ — while the press is live, taking no room of its layout's; painted before `on` returns."""
     return _WidgetMark(widget)
 
 
@@ -472,10 +498,13 @@ def report(p, win, kind, value=None):
         words = _busy.get(p)
     else:
         return
-    if words:
-        _hold(win, p.key, words)
-    elif not _gone(win) and hasattr(win, "unsay"):
-        win.unsay(p.key)
+    try:
+        if words:
+            _hold(win, p.key, words)
+        elif not _gone(win) and hasattr(win, "unsay"):
+            win.unsay(p.key)
+    except Exception as e:
+        print(f"A press's words weren't held: {e!r}", file=sys.stderr)
 
 
 def relay(p, win=None):
@@ -551,6 +580,10 @@ def follow(p, registry, job_id, win=None):
 
 
 # --- another program, a folder, a link (the O and X classes) ------------------------------------------------------ #
+OFF_THREAD = sys.platform == "win32"   # the open itself on the worker: Windows' ShellExecute (COM set up there); off
+#                                      Windows Qt's own opener stays on the window's thread (only the lookup moves)
+
+
 def open_now(target):
     """(A worker.) `target` opened in the user's own program: a link through `windows.open_url` (IK-17:
     `QDesktopServices`, COM set up around it), a path — a file, a folder, a program — through
@@ -580,7 +613,8 @@ def open(win, target, control=None, key=None, at=None, then=None, failed=None): 
         if not t:
             return None
         resolved.append(t)
-        open_now(t)
+        if OFF_THREAD:
+            open_now(t)
         return t
 
     def broke(info):
@@ -591,4 +625,14 @@ def open(win, target, control=None, key=None, at=None, then=None, failed=None): 
             if "://" not in name:
                 name = os.path.basename(name.rstrip("\\/")) or name
             win.say(strings.OPEN_FAILED.format(name=name or strings.OPEN_IT, why=info[0] if info else ""))
-    return run(control, key, work, then=then, failed=broke, win=win, at=at)
+
+    def opened(t):
+        if t and not OFF_THREAD:                    # (off Windows: here, on the window's thread)
+            try:
+                open_now(t)
+            except Exception as e:
+                broke((e, ""))
+                return
+        if then is not None:
+            then(t)
+    return run(control, key, work, then=opened, failed=broke, win=win, at=at)

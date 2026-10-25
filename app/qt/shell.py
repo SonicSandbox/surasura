@@ -1149,7 +1149,7 @@ class ShellWindow(QMainWindow):
         # round 8 row 54: its ✕ and *Keep waiting* hide it until the folder is back and goes again (`_keep_waiting`)
         self.offline_line = standing_qt.StandingLine("sourcesline", central, margins=(16, 2, 16, 2))
         self.offline_line.label.setToolTip(strings.SOURCES_OFFLINE_TIP)
-        # P8's *They're gone — remove them* is the line's other answer (`add_answer("gone", …)`, `_offline_answered`)
+        # (a folder that is GONE, not away, is *Needs you*'s card instead — T6, `_show_offline` — never this line)
         self.offline_line.add_answer("keep", strings.SOURCES_KEEP_WAITING, strings.SOURCES_KEEP_WAITING_TIP)
         self.offline_line.dismissed.connect(self._keep_waiting)
         self.offline_line.answered.connect(self._offline_answered)
@@ -2056,15 +2056,33 @@ class ShellWindow(QMainWindow):
                              failed=lambda info: applog.log("shell", f"the offline line's ✕: {info[0]!r}"))
 
     def _offline_answered(self, name):
-        """The offline line's answers: *Keep waiting* (the ✕ in words). P8 adds *They're gone — remove them* here
-        (`Writer.forget_source` through `drag._give`, once Kura's `Store.forget_source` lands)."""
+        """The offline line's answers: *Keep waiting* (the ✕ in words) — its folders are only away (an unplugged
+        drive, a NAS down). A folder that is GONE has *Needs you*'s card instead (T6: *Find its new folder…* · *Stop
+        reading it* · *Keep waiting*; its episodes always stay, SRC-8), so this line offers no "they're gone"."""
         if name == "keep":
             self._keep_waiting()
+
+    def keep_waiting_for(self, paths):
+        """T6: *Keep waiting* on a gone folder's *Needs you* card — the offline line's own dismissal (its key in the
+        seen file, on a worker): the card and 届's amber go now, until the folder is back; gone again later, it asks
+        again."""
+        keys = tuple(standing_service.offline_key(p) for p in paths or () if p)
+        if not keys:
+            return
+        self.offline_hidden.update(keys)
+        self._show_offline()
+        bridge.run_in_worker(standing_service.keep, self.language, keys,
+                             failed=lambda info: applog.log("shell", f"a gone folder's Keep waiting: {info[0]!r}"))
 
     def _circle_pressed(self, circle):
         """A phase circle pressed (alpha 3): its settings — or, for 順 while its line's fix is in 順's window (the
         unfinished reorder's Undo, a deck to pick), that window (IKA3-1). Both show at once (the press rule's one-frame
         case: no pending mark)."""
+        if circle == phase_service.ARRIVALS and self.phase.asks_in_window(circle):
+            self.show_tab("needs")                        # T6: a gone folder's card stands — its answers are there
+            if getattr(self, "needs_you", None) is not None:
+                self.needs_you.reveal_gone()              # (finding 4: at its card, not only the page)
+            return
         if self.phase.asks_in_window(circle):
             from app.qt import windows
             opener = next((op for op in windows.OPENERS if op.name == "junban"), None)
@@ -2932,10 +2950,20 @@ class ShellWindow(QMainWindow):
             looks.recheck([item_id])
 
     def _offline_shown(self):
-        """[(key, path, items)] of the folders the offline line names: away, and not hidden by its ✕."""
+        """[(key, path, items)] of the folders the offline line names: away, and not hidden by its ✕ — a GONE one is
+        *Needs you*'s card (T6), on the line only in a window with no *Needs you* (no library)."""
         from app.services.source_looks import offline
-        shown = ((standing_service.offline_key(path), path, n) for path, n in offline(self.sources))
+        shown = ((standing_service.offline_key(path), path, n)
+                 for path, n in offline(self.sources, gone=getattr(self, "needs_you", None) is None))
         return [s for s in shown if s[0] not in self.offline_hidden]
+
+    def _gone_shown(self):
+        """T6: the looks' rows of the folders that are GONE whose *Needs you* card stands (not hidden by *Keep
+        waiting*); none in a window with no *Needs you*."""
+        if getattr(self, "needs_you", None) is None:
+            return []
+        from app.services.source_looks import gone
+        return [r for r in gone(self.sources) if standing_service.offline_key(r["path"]) not in self.offline_hidden]
 
     def offline_text(self):
         """The offline line's words for `sources` (empty: every folder reachable, not looked at yet, or hidden)."""
@@ -2955,6 +2983,16 @@ class ShellWindow(QMainWindow):
         text = self.offline_text() if self.sources else ""
         self.offline_line.show_line(text)
         self.phase.set_extra(phase_service.ARRIVALS, "offline", "needs" if text else None, text)
+        # T6: a folder that is GONE is a *Needs you* card — 届 amber while it stands, and its press opens that page
+        gone = self._gone_shown()
+        words = (strings.PHASE_FOLDER_GONE.format(name=os.path.basename(os.path.normpath(gone[0]["path"])))
+                 if len(gone) == 1 else strings.PHASE_FOLDERS_GONE.format(n=len(gone)))
+        self.phase.set_extra(phase_service.ARRIVALS, "gone", "needs" if gone else None, words)
+        self.phase.set_needs_asks(bool(gone))
+        if getattr(self, "needs_you", None) is not None:      # (judged: every folder being read was looked at)
+            judged = bool(self.sources) and all(r.get("reachable") is not None for r in self.sources
+                                                if r.get("on", True))
+            self.needs_you.gone_in(gone, self.language, judged=judged)
 
     def moves_saving(self, on):
         """The drag's writer holds moves for a busy store (`moves.Writer.on_saving`): 届 waits while it does."""

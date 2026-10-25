@@ -748,6 +748,20 @@ def _tell(ticket, event):
         ticket.told(event)
 
 
+def _sources_stopped(win, change):
+    """T6: a *Stop reading it* (`Writer.stop_reading`, a gone folder's card) saved or undone — the folders listed again
+    by the looks (`SourceLooks.listing`, its worker), so the card goes, or comes back with its Undo, and Settings'
+    *Library folders* follows."""
+    if getattr(change, "kind", None) != "stop_source":
+        return
+    looks = getattr(win, "looks", None)
+    if looks is not None:
+        try:
+            looks.listing()
+        except Exception as e:                       # (the looks closing: the next look lists them)
+            print(f"Sources: the folders weren't listed after a stop: {e!r}")
+
+
 def _skips_moved(win, change, undone=False):
     """K6 / Q7: a skip's change (the store's `folder` on it: ⋯'s, New arrivals', Settings' *Skip a folder…*) saved or
     undone — *Library folders*' skipped lines and the Settings row's count read again where they show, and an undone
@@ -1765,9 +1779,11 @@ class DragController(QObject):
         if self.reader is not None:
             self.reader.refresh()
         _skips_moved(self.win, change)
+        _sources_stopped(self.win, change)
 
     def _undone(self, change, label):
         _skips_moved(self.win, change, undone=True)
+        _sources_stopped(self.win, change)
         mark = self._anki_of.pop(change, None) if change is not None else None    # (an undo that undid nothing)
         if isinstance(label, Ticket):
             _tell(label, "undone")

@@ -36,7 +36,7 @@ from app.services import updates as U
 from app.services.jobs import JobRegistry
 from app.services.status import StatusService
 from tests import services_helpers as h
-from tests.qt.conftest import wait_until
+from tests.qt.conftest import logos_in, wait_until
 
 
 # --- stand-ins ------------------------------------------------------------------------------------------------------- #
@@ -166,6 +166,7 @@ class World:
         self.win = shell.open_window(qapp, self.services)
         self.win.show()
         QApplication.processEvents()
+        assert logos_in(self.win.phase)                 # the strip finished opening before any test reads its paint
         self.d = self.win.duties
 
     def start(self):

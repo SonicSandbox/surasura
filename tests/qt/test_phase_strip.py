@@ -24,7 +24,7 @@ from app.services import jobs as J
 from app.services import phase as P
 from app.services.jobs import JobRegistry
 from app.services.press import Presses
-from tests.qt.conftest import wait_until
+from tests.qt.conftest import logos_in, wait_until
 from tests.qt.test_jobs_bar import world  # noqa: F401  (`world`: the fixture)
 
 
@@ -44,6 +44,7 @@ def strip(qapp):
     s.move(10, (39 - s.height()) // 2)
     host.show()
     QApplication.processEvents()
+    assert logos_in(s)                                  # what the strip paints is read only once it has finished opening
     yield s
     host.close()
 
@@ -100,7 +101,7 @@ C = style.colours
 
 # --- painted states ----------------------------------------------------------------------------------------------- #
 def test_at_rest_every_ring_is_dim_and_the_characters_and_logos_are_drawn(strip):
-    assert wait_until(lambda: len(strip._pix) == 2)                     # Anki Miner's and Anki's logos, decoded
+    assert len(strip._pix) == 2                                         # Anki Miner's and Anki's logos, decoded
     strip.repaint()
     img = _image(strip)
     for c in P.CIRCLES:

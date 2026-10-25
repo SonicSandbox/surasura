@@ -637,3 +637,53 @@ def test_the_summary_names_a_gone_folder_its_shows_and_where_its_episodes_are_re
     assert [r["id"] for r in source_looks.gone(said[-1]["sources"])] == [root_a]
     assert [p for p, _n in source_looks.offline(said[-1]["sources"])] == [old, away]
     assert [p for p, _n in source_looks.offline(said[-1]["sources"], gone=False)] == [away]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_gone_folders_card_says_finished_only_when_every_episode_is(language):
+    """*Stop reading it* goes first only for a show that is all Finished: one episode still in Current says not
+    finished; the titles come most episodes first."""
+    store, data_dir = _empty(language)
+    folder = _elsewhere("Downloads", "Shows")
+    first, second = names(language)[71], names(language)[72]
+    _show(language, os.path.join(folder, first))
+    from tests.test_sources_scan import _text, _write
+    _write(os.path.join(folder, second, f"{second} - 01.{language}.srt"), _text(language, 9, " other"))
+    _settle(folder)
+    with store:
+        root = store.add_source(folder)
+        _look(store, language, root, first=True)
+        ids = [i for t in ("now", "soon") for i, _e, _a in store.ordered(t)]
+        store.set_tier(ids[:-1], "graduated")
+        detail = store.source_detail([root])[root]
+        assert detail["finished"] is False and len(detail["shows"]) == 2
+        assert detail["found_in"] == []
+        store.set_tier(ids[-1:], "graduated")
+        assert store.source_detail([root])[root]["finished"] is True
+        assert store.source_detail([root + 99]) == {}
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_join_reads_only_the_folder_picked_never_a_folder_whose_name_starts_like_it(language):
+    """`…/Show` never holds `…/Show S2`: the old folder's episodes join the copies in the folder picked, even when a
+    folder beside it, named like it, holds the same files too."""
+    store, data_dir = _empty(language)
+    title = names(language)[71]
+    old = os.path.join(_elsewhere("Downloads"), title)
+    anime = _elsewhere("Anime")
+    new, twin = os.path.join(anime, title), os.path.join(anime, title + " S2")
+    files = _show(language, old)
+    with store:
+        root_a = store.add_source(old)
+        _look(store, language, root_a, first=True)
+        for to in (twin, new):
+            shutil.copytree(old, to, copy_function=shutil.copy2)
+        _settle(anime)
+        _look(store, language, store.add_source(twin))
+        _look(store, language, store.add_source(new))
+        shutil.rmtree(old)
+        assert store.join_moved(root_a, new) == 3
+        origins = store.origins()
+        for f in files:
+            assert origins[ls.path_key(os.path.abspath(f))].moved_to.startswith(ls.path_key(new).rstrip("/") + "/")
+        assert store.join_moved(root_a, new) == 0                       # marked already: nothing twice

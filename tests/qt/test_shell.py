@@ -143,11 +143,12 @@ def test_a_command_line_failure_shows_in_the_bar_within_a_poll_and_never_as_a_di
 
 
 def test_the_ankiweb_mark_and_connects_line_show_only_when_they_exist(window):
+    from app.services import phase as P
     window.show_status(_snap())
-    assert window.anki_mark.isHidden() and window.bar_connect.isHidden()
+    assert window.anki_mark.isHidden() and "Connect: 3 waiting" not in window.phase.hover_text(P.MINER)
     window.show_status(_snap(ankiweb="AnkiWeb synced", connect="Connect: 3 waiting"))
-    # W3.1a: the AnkiWeb mark's words live in the emerald's hover
-    assert "AnkiWeb synced" in window.anki_mark.toolTip() and not window.bar_connect.isHidden()
+    # W3.1a: the AnkiWeb mark's words live in the emerald's hover; alpha 3: Connect's line in Anki Miner's
+    assert "AnkiWeb synced" in window.anki_mark.toolTip() and "Connect: 3 waiting" in window.phase.hover_text(P.MINER)
 
 
 def test_open_the_logs_folder_goes_to_a_worker(window, monkeypatch):

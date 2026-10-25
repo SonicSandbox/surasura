@@ -656,6 +656,12 @@ class Services:
                                     f"(the store stays the truth; its copy is written at the next trigger)")
 
 
+def _junban_here():
+    """Whether the Junban module is installed (a file look: a worker's call) — 順's circle has settings only then."""
+    from app.qt import settings_catalog
+    return "modules.junban" in settings_catalog.installed_modules()
+
+
 def journey_file(episode):
     """The journey's name for an episode's file (`path_utils.report_name`, as the report names it), or None (no
     episode, or one with no file)."""
@@ -1707,6 +1713,10 @@ class ShellWindow(QMainWindow):
         # the status line beside it keeps only what no circle shows (Q5: `StatusService.leave_out`)
         self.phase = phase_strip.PhaseStrip(footer)
         self.phase.follow_presses(self.presses)
+        # Alpha 3 (Sonic 2026-10-24, PROVISIONAL): a circle's press opens its settings — 順's only while Junban is here
+        self.phase.opened.connect(lambda circle: self.open_setting(phase_strip.SETTINGS[circle]))
+        self.phase.set_opens(set(phase_strip.SETTINGS) - {phase_service.JUNBAN})
+        bridge.run_in_worker(_junban_here, then=self._junban_found)
         row.addWidget(self.phase)
         # W3.1a: one slot at the left (W31A-1, `_paint_slot`) — the failure line with *Open the logs folder* while it
         # applies, else the update chip while it applies (`_attach_duties` puts it here), else the status line (the
@@ -1736,11 +1746,7 @@ class ShellWindow(QMainWindow):
         self.bar_arc = qpress.BarArc(footer)              # round 8 row 45 (IK-2): a menu's press with nothing of its own
         row.addWidget(self.bar_arc)                       # ... on screen turns here, no words (hidden at rest)
         row.addStretch(0)                                # the room left of the marks while the chip holds the slot
-        # W31A-1: the re-order host's line and Connect's as quiet marks, their words in the hover, while they have any
-        self.bar_replan = frame.QuietMark(strings.FOOT_REPLAN_MARK, strings.FOOT_REPLAN_NAME, footer)
-        row.addWidget(self.bar_replan)
-        self.bar_connect = frame.QuietMark(strings.FOOT_CONNECT_MARK, strings.FOOT_CONNECT_NAME, footer)
-        row.addWidget(self.bar_connect)
+        # (W31A-1's quiet marks ⇅ ⇄ went in alpha 3: the re-order's and Connect's lines are 順's and Anki Miner's hovers)
         # W3.1a: the corner — the emerald and *Anki · N waiting* (the AnkiWeb mark's words in its hover), then known
         self.anki_mark = frame.AnkiMark(footer)
         row.addWidget(self.anki_mark)
@@ -1816,12 +1822,10 @@ class ShellWindow(QMainWindow):
         self._status_snap = snap
         self.phase.set_status(snap)
         self._paint_slot()
-        self._status_mark(self.bar_replan, snap.replan, strings.BAR_REPLAN_TIP.format(line=snap.replan or ""))
         if self.anki_mark.set_ankiweb(snap.ankiweb):           # W3.1a: the AnkiWeb mark's words, in the emerald's hover
             self.status_paints[self.anki_mark] = self.status_paints.get(self.anki_mark, 0) + 1
         if self.anki_mark.set_waiting(getattr(snap, "backlog", None)):     # W31A-2: *Anki · N waiting*
             self.status_paints[self.anki_mark] = self.status_paints.get(self.anki_mark, 0) + 1
-        self._status_mark(self.bar_connect, snap.connect, strings.FOOT_CONNECT_TIP.format(line=snap.connect or ""))
         if self.duties is not None:
             self._paint_journey_dot()
         needs_page = self.page_widgets.get("needs")
@@ -1956,22 +1960,20 @@ class ShellWindow(QMainWindow):
         if name == "keep":
             self._keep_waiting()
 
+    def _junban_found(self, here):
+        """Alpha 3: 順's circle opens Junban's settings once Junban is found (`_junban_here`, a worker's file look)."""
+        from PyQt6 import sip
+        if here and not sip.isdeleted(self.phase):
+            self.phase.set_opens(self.phase.opens | {phase_service.JUNBAN})
+
     def _status_mark(self, label, text, tip):
-        """One of row 7's statuses (the re-order's line, Connect's — quiet marks, their words in the hover — the
-        journey dot): shown while it has a value, repainted only when its own value (or its tooltip) changed (S19) —
+        """One of row 7's statuses (the journey dot; the re-order's and Connect's lines are the phase strip's hovers
+        since alpha 3): shown while it has a value, repainted only when its own value (or its tooltip) changed (S19) —
         another field's change leaves it as it is."""
         text = text or ""
-        quiet = hasattr(label, "full")
-        if quiet and Qt.mightBeRichText(tip):       # AD-14: a provider's line in a hover is never markup (as AnkiMark)
-            import html
-            tip = "<p>" + html.escape(tip).replace("\n", "<br>") + "</p>"
-        if ((label.full() if quiet else label.text()) == text and label.isHidden() != bool(text)
-                and label.toolTip() == (tip if text else "")):
+        if label.text() == text and label.isHidden() != bool(text) and label.toolTip() == (tip if text else ""):
             return
-        if quiet:
-            label.set_full(text)
-        else:
-            label.setText(text)
+        label.setText(text)
         label.setToolTip(tip if text else "")
         label.setVisible(bool(text))
         self.status_paints[label] = self.status_paints.get(label, 0) + 1

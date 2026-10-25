@@ -220,11 +220,13 @@ def test_the_hover_names_the_circle_each_job_under_way_and_the_last_that_ended(s
     text = strip.hover_text(P.SURASURA)
     at = time.strftime(strings.PHASE_TIME, time.localtime(old.view().ended_at))
     assert "<b>Surasura</b>" in text and strings.PHASE_ABOUT[P.SURASURA] in text
-    assert "Generating · Reading your files 3 / 12" in text and strings.PHASE_DONE.format(time=at) in text
+    assert ("Generating · Reading your files 3 / 12" in text
+            and strings.PHASE_DONE.format(what="Generating", time=at) in text)
     assert "<button" not in text and "<a " not in text                    # no buttons in it
     gen.finish(ok=False, message="the analyzer stopped <exit 1>")
     strip.set_jobs(registry.snapshot())
-    assert "Failed " + at[:0] in strip.hover_text(P.SURASURA) and "&lt;exit 1&gt;" in strip.hover_text(P.SURASURA)
+    assert "Last: Generating — failed " in strip.hover_text(P.SURASURA)
+    assert "&lt;exit 1&gt;" in strip.hover_text(P.SURASURA)
     assert strings.PHASE_IDLE in strip.hover_text(P.ARRIVALS)
 
 
@@ -303,7 +305,7 @@ def test_at_the_narrowest_window_the_strip_fits_the_footer_beside_every_mark(wor
     assert footer.height() == theme.size("footer")
     r = win.phase.geometry()
     assert r.top() >= 0 and r.bottom() < footer.height() and r.left() >= 0
-    marks = [w for w in (win.bar_line, win.bar_replan, win.bar_connect, win.anki_mark, win.known) if w.isVisible()]
+    marks = [w for w in (win.bar_line, win.anki_mark, win.known) if w.isVisible()]     # (⇅ ⇄ went in alpha 3)
     for w in marks:
         g = w.geometry()
         assert g.right() < footer.width() and not g.intersects(r), w.objectName()
@@ -442,3 +444,206 @@ def test_connects_waiting_episodes_leave_the_headers_hairline_off(world):
     assert wait_until(lambda: win._busy)                                # a job under way: it runs
     run.finish()
     wait.finish()
+
+
+# --- alpha 3 (Sonic 2026-10-24): ⇅ ⇄ gone into 順's and Anki Miner's hovers; a circle's press opens its settings ---- #
+# What a wrong answer would cost him: a press on a circle that does nothing (or opens the wrong page); a hand over a
+# circle that can't be pressed; a hover that says the same thing twice, or nothing about what 順 / Anki Miner wait on.
+def _click(widget, pos, button=None):
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtTest import QTest
+    QTest.mouseClick(widget, button or Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, pos)
+
+
+def _centre(strip, circle):
+    return strip.rect_of(circle).center().toPoint()
+
+
+def test_a3_the_hover_is_name_and_what_it_does_then_now_then_the_last_run_named_then_the_click(strip):
+    registry = JobRegistry()
+    old = registry.submit("generate", "Generating", lambda j: None)
+    old.finish()
+    strip.set_jobs(registry.snapshot())
+    strip.set_opens({P.SURASURA})
+    text = strip.hover_text(P.SURASURA)
+    at = time.strftime(strings.PHASE_TIME, time.localtime(old.view().ended_at))
+    parts = text.split("<br>")
+    assert "<b>Surasura</b>" in parts[0] and strings.PHASE_ABOUT[P.SURASURA] in parts[0]   # one line: name · what
+    assert strings.PHASE_IDLE in parts[1]                               # nothing now, said once
+    assert strings.PHASE_DONE.format(what="Generating", time=at) in parts[2]               # the last run, named
+    assert strings.PHASE_CLICK in parts[3] and len(parts) == 4
+    assert strings.PHASE_CLICK not in strip.hover_text(P.ANKI)           # not pressable: no promise of a click
+    gen = registry.submit("generate", "Generating", lambda j: None)
+    gen.progress("Reading your files", 3, 12)
+    strip.set_jobs(registry.snapshot())
+    text = strip.hover_text(P.SURASURA)
+    assert "Generating · Reading your files 3 / 12" in text and strings.PHASE_IDLE not in text
+    gen.finish(ok=False, message="the analyzer stopped")
+    strip.set_jobs(registry.snapshot())
+    at = time.strftime(strings.PHASE_TIME, time.localtime(gen.view().ended_at))
+    assert strings.PHASE_FAILED.format(what="Generating", time=at, why="the analyzer stopped") in \
+        strip.hover_text(P.SURASURA)
+
+
+def test_a3_junban_and_anki_miner_say_their_standing_line_only_while_no_job_of_theirs_runs(strip):
+    """⇅'s line (the re-order host's) is 順's now-line and ⇄'s (Connect's) Anki Miner's — only with no job of theirs
+    live, so a mining job's own line (Michi's T3: it names the episode) is never said twice."""
+    from app.services.status import Snapshot
+    snap = Snapshot(lines=(), failure=None, needs_you=(), ankiweb=None, connect="Up to date · 12 cards made today",
+                    logs=None, taken_at=0, replan="Anki is in a review — re-ordering after it")
+    strip.set_status(snap)
+    assert "Anki is in a review — re-ordering after it" in strip.hover_text(P.JUNBAN)
+    assert "Up to date · 12 cards made today" in strip.hover_text(P.MINER)
+    assert strings.PHASE_IDLE not in strip.hover_text(P.MINER)
+    for c in (P.ARRIVALS, P.SURASURA, P.ANKI):
+        assert "re-ordering" not in strip.hover_text(c) and "cards made" not in strip.hover_text(c)
+    registry = JobRegistry()
+    mine = registry.record("mine", "Making cards", automatic=False)
+    mine.progress("Re:Zero 52 · Filling fields 94%")
+    strip.set_jobs(registry.snapshot())
+    text = strip.hover_text(P.MINER)
+    assert "Making cards · Re:Zero 52 · Filling fields 94%" in text and "cards made today" not in text
+    mine.finish()
+    strip.set_jobs(registry.snapshot())
+    assert "Up to date · 12 cards made today" in strip.hover_text(P.MINER)       # back once the job ended
+    strip.set_status(snap._replace(connect=None, replan=None))
+    assert strings.PHASE_IDLE in strip.hover_text(P.JUNBAN)
+
+
+def test_a3_a_standing_line_moving_repaints_no_circle_and_its_words_are_never_markup(strip):
+    # S19: the words move in the hover alone; AD-14 (moved from the ⇄ mark): a provider's line is text, never markup
+    from app.services.status import Snapshot
+    strip.set_status(Snapshot(lines=(), failure=None, needs_you=(), ankiweb=None, connect="Up to date", logs=None,
+                              taken_at=0, replan=None))
+    painted = dict(strip.paints)
+    strip.set_status(Snapshot(lines=(), failure=None, needs_you=(), ankiweb=None, connect="Connect: <b>error</b> page",
+                              logs=None, taken_at=1, replan="順 is busy"))
+    QApplication.processEvents()
+    assert strip.paints == painted
+    assert "<b>error</b>" not in strip.hover_text(P.MINER) and "&lt;b&gt;error" in strip.hover_text(P.MINER)
+
+
+def test_a3_a_press_on_a_circle_that_opens_says_which_and_one_that_doesnt_does_nothing(strip):
+    from PyQt6.QtCore import Qt
+    got = []
+    strip.opened.connect(got.append)
+    strip.set_opens({P.ARRIVALS, P.MINER})
+    _click(strip, _centre(strip, P.MINER))
+    assert got == [P.MINER]
+    _click(strip, _centre(strip, P.ANKI))                               # no settings given it: nothing
+    _click(strip, _centre(strip, P.MINER), Qt.MouseButton.RightButton)  # only the left button presses
+    assert got == [P.MINER]
+    from PyQt6.QtTest import QTest
+    QTest.mousePress(strip, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, _centre(strip, P.ARRIVALS))
+    QTest.mouseRelease(strip, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, _centre(strip, P.MINER))
+    assert got == [P.MINER]                                             # let go on another circle: no press
+
+
+def test_a3_the_hand_shows_only_over_a_circle_that_opens(strip):
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtTest import QTest
+    strip.set_opens({P.SURASURA})
+    QTest.mouseMove(strip, _centre(strip, P.SURASURA))
+    assert wait_until(lambda: strip.cursor().shape() == Qt.CursorShape.PointingHandCursor)
+    QTest.mouseMove(strip, _centre(strip, P.ANKI))
+    assert wait_until(lambda: strip.cursor().shape() == Qt.CursorShape.ArrowCursor)
+    gap = strip.rect_of(P.SURASURA).right() + 1.5
+    QTest.mouseMove(strip, QPoint(round(gap), strip.height() // 2))
+    assert strip.cursor().shape() == Qt.CursorShape.ArrowCursor          # between two circles: nothing to press
+    strip.set_opens(set())
+    assert strip.focusPolicy() == Qt.FocusPolicy.NoFocus                 # nothing to press: no Tab stop either
+
+
+def test_a3_the_keyboard_tabs_in_moves_with_the_arrows_and_opens_with_enter_or_space(strip):
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtTest import QTest
+    got = []
+    strip.opened.connect(got.append)
+    strip.set_opens({P.ARRIVALS, P.SURASURA, P.ANKI})
+    assert strip.focusPolicy() == Qt.FocusPolicy.TabFocus              # one Tab stop for the strip
+    strip.window().activateWindow()
+    strip.setFocus(Qt.FocusReason.TabFocusReason)
+    assert wait_until(lambda: strip.hasFocus())
+    assert strip._focus == P.ARRIVALS
+    QTest.keyClick(strip, Qt.Key.Key_Return)
+    QTest.keyClick(strip, Qt.Key.Key_Right)
+    QTest.keyClick(strip, Qt.Key.Key_Right)                             # past 鉱 and 順 (no settings given them)
+    assert strip._focus == P.ANKI
+    QTest.keyClick(strip, Qt.Key.Key_Right)                             # the end: stays
+    QTest.keyClick(strip, Qt.Key.Key_Space)
+    QTest.keyClick(strip, Qt.Key.Key_Left)
+    QTest.keyClick(strip, Qt.Key.Key_Enter)
+    assert got == [P.ARRIVALS, P.ANKI, P.SURASURA]
+    assert strings.PHASE_NAMES[P.SURASURA] in strip.accessibleDescription()
+
+
+def test_a3_the_keyboards_circle_is_washed_in_the_accent_and_its_hover_shows(strip):
+    from PyQt6.QtCore import Qt
+    asked = []
+
+    class Tips:
+        def request(self, widget, rect, text):
+            asked.append(text)
+
+        def retext(self, widget, rect, text):
+            pass
+
+        def hide(self):
+            pass
+
+        def hide_part_unless(self, widget, pos):
+            pass
+    strip.tooltips = Tips()
+    strip.set_opens({P.SURASURA})
+    before = _image(strip).pixelColor(_centre(strip, P.SURASURA) + QPoint(-4, -4))
+    strip.window().activateWindow()
+    strip.setFocus(Qt.FocusReason.TabFocusReason)
+    assert wait_until(lambda: strip.hasFocus())
+    QApplication.processEvents()
+    after = _image(strip).pixelColor(_centre(strip, P.SURASURA) + QPoint(-4, -4))
+    assert after != before                                              # washed (inside its ring, off the mark)
+    assert asked and "<b>Surasura</b>" in asked[-1]
+
+
+def test_a3_in_the_window_the_reorder_and_connect_marks_are_gone_and_each_circle_opens_its_settings(world):
+    from PyQt6.QtWidgets import QLabel
+    win = world.win
+    assert not hasattr(win, "bar_replan") and not hasattr(win, "bar_connect")
+    assert not [w for w in win.footer.findChildren(QLabel) if w.text() in ("⇅", "⇄")]
+    assert wait_until(lambda: P.JUNBAN in win.phase.opens)            # Junban found (a worker's look)
+    assert win.phase.opens == set(P.CIRCLES)
+    opened = []
+    win.open_setting = lambda target: opened.append(target) or True
+    for c in P.CIRCLES:
+        _click(win.phase, _centre(win.phase, c))
+    assert opened == ["library_folders", "level", "connect_enabled", "junban", "known"]
+
+
+def test_a3_each_circles_settings_target_is_a_place_the_settings_page_knows():
+    from app.qt import settings_catalog
+    for circle, target in phase_strip.SETTINGS.items():
+        assert settings_catalog.locate(target) is not None, (circle, target)
+    assert settings_catalog.locate(phase_strip.SETTINGS[P.JUNBAN]) == ("junban", None)
+    assert settings_catalog.locate(phase_strip.SETTINGS[P.ANKI]) == ("known", None)
+
+
+def test_a3_a_press_really_opens_the_settings_tab_on_that_circles_section(world):
+    win = world.win
+    _click(win.phase, _centre(win.phase, P.ANKI))
+    assert win.current_tab() == "settings"
+    page = win.settings_page
+    assert wait_until(lambda: "known" in page.slabs and page.slabs["known"].isVisible())
+
+
+def test_a3_without_junban_its_circle_has_no_settings_to_open(qapp, tmp_path, monkeypatch):
+    from app.qt import shell
+    from tests.qt.test_jobs_bar import World
+    monkeypatch.setattr(shell, "_junban_here", lambda: False)
+    w = World(qapp, logs_folder=str(tmp_path / "logs"))
+    try:
+        for _ in range(20):
+            QApplication.processEvents()
+        assert P.JUNBAN not in w.win.phase.opens and P.ANKI in w.win.phase.opens
+        assert strings.PHASE_CLICK not in w.win.phase.hover_text(P.JUNBAN)
+    finally:
+        w.close()

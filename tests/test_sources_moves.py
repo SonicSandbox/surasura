@@ -652,17 +652,18 @@ def test_another_version_left_behind_is_never_marked_moved(language):
 def test_an_unplugged_old_folder_is_asked_once_before_any_of_its_files(language, monkeypatch):
     """G5: a show copied to B while A's share is unplugged — every new link would stat its old original on the
     dead share first (a network timeout each). The source folder's reach is asked first, once a look, and none of its
-    files is touched."""
+    files is touched. (T6: the share itself goes — A's folder and the folder above it — so A is AWAY, not GONE.)"""
     store, data_dir = _empty(language)
     show = _SHOWS[language][1]
-    a, b = _drive("driveA"), _drive("driveB")
+    drive_a, b = _drive("driveA"), _drive("driveB")
+    a = os.path.join(drive_a, "Shows")
     _seed(language, a, show)
     with store:
         _look(store, language, store.add_source(a), first=True)
         shutil.copytree(os.path.join(a, show), os.path.join(b, show), copy_function=shutil.copy2)
         _settle(b)
         root_b = store.add_source(b)
-        os.rename(a, a + " (unplugged)")
+        os.rename(drive_a, drive_a + " (unplugged)")
         try:
             top = ls.path_key(os.path.abspath(a)).rstrip("/") + "/"
             asked, touched = [], []
@@ -686,7 +687,7 @@ def test_an_unplugged_old_folder_is_asked_once_before_any_of_its_files(language,
             assert asked.count(ls.path_key(os.path.abspath(a))) == 1, asked
             assert touched == [], "no file on the unplugged share was asked about"
         finally:
-            os.rename(a + " (unplugged)", a)
+            os.rename(drive_a + " (unplugged)", drive_a)
 
 
 # --- FIX1 (S19): a look where nothing changed writes nothing -------------------------------------------------------- #

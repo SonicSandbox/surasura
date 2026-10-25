@@ -122,8 +122,8 @@ def test_a_source_is_one_row_and_adding_it_again_turns_it_back_on(language):
         assert store.add_source(src + os.sep) == first                     # the same folder, written otherwise
         assert store.add_source(src.upper() if sys.platform == "win32" else src) == first
         assert store.sources() == [{"id": first, "path": os.path.normpath(src), "on": True, "items": 0}]
-        assert store.stop_source(first) is True
-        assert store.stop_source(first) is False                           # already off: nothing written
+        assert store.stop_source(first) is not None                        # T6: a Change (its Undo reads it again)
+        assert store.stop_source(first) is None                            # already off: nothing written
         assert store.sources() == []
         assert store.sources(all=True) == [{"id": first, "path": os.path.normpath(src), "on": False, "items": 0}]
         assert store.add_source(src) == first                              # back on, never a second row
@@ -1522,22 +1522,25 @@ def test_a_moved_original_marks_its_old_record_and_the_old_folder_no_longer_coun
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_an_old_folder_offline_marks_nothing(language):
     """A's drive unplugged while B holds the same files: nothing says A's originals moved (they may be on the drive) —
-    A keeps counting its episodes (*its 4 episodes are kept*)."""
+    A keeps counting its episodes (*its 4 episodes are kept*). T6: the drive itself goes (A's folder AND the folder
+    above it): AWAY — a folder gone while its drive is there is GONE, and its moved originals are marked
+    (`tests/test_sources_gone.py`)."""
     from tests.test_sources_scan import _look, _settle
     store, data_dir = _empty(language)
     show = names(language)[71]
-    a, b = _source_root("driveA"), _source_root("driveB")
+    drive_a, b = _source_root("driveA"), _source_root("driveB")
+    a = os.path.join(drive_a, "Shows")
     old = _scanned_show(language, a, show)
     with store:
         _look(store, language, store.add_source(a), first=True)
         shutil.copytree(os.path.join(a, show), os.path.join(b, show), copy_function=shutil.copy2)
         _settle(b)
-        os.rename(a, a + " (unplugged)")
+        os.rename(drive_a, drive_a + " (unplugged)")
         try:
             assert _look(store, language, store.add_source(b))["attached"] == 4
             assert _counts(store) == [4, 4] and all(_moved_to(store, p) is None for p in old)
         finally:
-            os.rename(a + " (unplugged)", a)
+            os.rename(drive_a + " (unplugged)", drive_a)
 
 
 @pytest.mark.parametrize("language", LANGUAGES)

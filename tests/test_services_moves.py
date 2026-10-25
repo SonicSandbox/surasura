@@ -1273,7 +1273,10 @@ def test_a_move_given_while_stuck_is_journalled_before_the_next_retry(stub_write
     store.always.add("move")
     path = tmp_path / "window_pending_ja.json"
     w.move([1], "goal")
-    assert h.until(lambda: path.exists())
+    # Stuck already as the writer knows it: the journal written AND recorded as holding the first command
+    # (`_sync_journal` writes the file, then records it). The file alone left a gap a loaded run's second command
+    # landed in: not journalled until the next ask, a minute away
+    assert h.until(lambda: path.exists() and w._journalled)
     w.move([2], "goal")
     assert h.until(lambda: len(read_journal(path)["pending"]) == 2)
     assert w.attempts == 1                              # before the next ask, not at it

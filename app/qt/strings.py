@@ -1217,6 +1217,8 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
     "mine_text_only": ("Mine the text only", "Make its cards from the subtitles alone, with no picture or audio"),
     "open_logs": ("Open the logs folder", "Open the folder where Surasura keeps its logs, to look at them or send them"),
     "save_logs": ("Save logs to a file…", "Save the last week's logs into one zip file you can send"),
+    # A3W-6: the Anki line's one button (where Surasura can start Anki)
+    "open_anki": ("Open Anki", "Start Anki on your cards' profile: the waiting episodes' cards are made once it's open"),
 }
 NEEDS_LOOKING = "Looking…"
 NEEDS_MORE_LINES = "and {n} more"
@@ -1249,6 +1251,9 @@ NEEDS_ASKED_HATO = "Asked hato for its videos"
 NEEDS_MINE_ANYWAY = "It mines without timing, in turn"
 NEEDS_MINE_ANYWAY_NOT = "Nothing to mine there any more"
 NEEDS_DISMISSED = "Taken off the list"
+NEEDS_OPENING_ANKI = "Opening Anki · the line goes once it's open"
+NEEDS_ANKI_RUNNING = "Anki is already starting or open"
+NEEDS_ANKI_NOT_STARTED = "Anki couldn't be started from here: open it yourself"
 NEEDS_SAVED_LOGS = "Logs saved to {path}"
 NEEDS_SAVE_LOGS_TITLE = "Save logs to a file"
 NEEDS_CHOOSE_FILE_TITLE = "Choose {label}'s file"

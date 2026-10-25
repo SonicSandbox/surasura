@@ -673,14 +673,24 @@ def _connected(st, item, word):
         return Status("waiting", STRINGS["not_timed"], STRINGS["tip_skipped"], "faint")
     # a wait on Anki or on the battery takes *Mine now* as every *Waiting* does (P4.1's C3, "an ask never overrides a
     # wait", as amended by Sonic 2026-10-22, M-3 A): on battery the press is the yes for that one episode; waiting for
-    # Anki it goes first once Anki answers — its hover says which. Warn while it waits on you (Anki closed, a prompt,
-    # another profile: `ANKI`) or on the plug; a wait on Anki that clears by itself (`ANKI_WAIT`: you reviewing, Anki
-    # busy) is a plain one (alpha 2's try, T1: the strip's rule, `runner.anki_needs_you`)
-    tone = "warn" if item.kind in (connect_feed.ANKI, connect_feed.HELD, connect_feed.BATTERY) else "dim"
+    # Anki it goes first once Anki answers — its hover says which. Warn only while it waits on you (Anki closed, a
+    # prompt, another profile: `ANKI`; another Needs you entry: `HELD`); a wait on Anki that clears by itself
+    # (`ANKI_WAIT`: you reviewing, Anki busy) and on battery are plain ones, as on the strip (alpha 2's try, T1;
+    # A3W-5, Sonic 2026-10-24 night; `runner.anki_needs_you`)
+    tone = "warn" if item.kind in (connect_feed.ANKI, connect_feed.HELD) else "dim"
     tip = item.tip
     if item.kind in (connect_feed.ANKI, connect_feed.ANKI_WAIT, connect_feed.BATTERY):
         tip = STRINGS["tip_ask_battery" if item.kind == connect_feed.BATTERY else "tip_ask_anki"].format(tip=item.tip)
     return Status("waiting", st.label if st.kind == "waiting" else STRINGS["waiting"], tip, tone)
+
+
+def names_click(status):
+    """Does a *Waiting*'s hover already say what its click does (a wait on Anki or on the battery: `tip_ask_anki` /
+    `tip_ask_battery`)? The rows' button adds no second click line then — told by its words, never its colour (alpha 3:
+    a battery or reviewing wait is no longer amber)."""
+    if status.kind != "waiting" or not status.tip:
+        return False
+    return any(status.tip.endswith(STRINGS[k].split("{tip}", 1)[1]) for k in ("tip_ask_anki", "tip_ask_battery"))
 
 
 def _row_connected(st, eps, connect, word):

@@ -18,8 +18,9 @@ its one state file per user — so a session never syncs twice, whichever Surasu
   (`sync_failures`, Connect's own: the rule's state stays E3.1's) — a failed sync adds one, any other answer starts
   again; three in a row, and the setup checks' AnkiWeb line is *Needs you* (`setup._ankiweb`). Fewer are a status line,
   retried at the next sync point.
-- ***Open Anki for me*** (`connect_open_anki`, off by default): `at_window` is the one caller of `open_anki.start`,
-  at the window's start only, never after mining and never from Connect, hato or a command-line verb.
+- ***Open Anki for me*** (`connect_open_anki`, off by default): `at_window` is its one caller of `open_anki.start`,
+  at the window's start only, never after mining and never from Connect, hato or a command-line verb. The other
+  caller is your own press: *Open Anki* on *Needs you*'s Anki line (`open_anki.for_you`, A3W-6).
 
 Everything here runs only while Connect is on (`settings_manager.connect_on`: `connect_enabled` and D29's automation,
 P4.1 row 4.1.1), and never under `SURASURA_NO_ANKI_SYNC` (the test suites, a developer's run). Standard library only;
@@ -139,7 +140,8 @@ def begin(url, settings, wait=BEGIN_WAIT_S, cancel=None):
 
 def waiting(url, settings):
     """None when Connect may read and write Anki now; else the one reason, in plain words — the status line's, never
-    *Needs you* (06-edges E1–E3): Anki closed, busy, open on another profile than Connect's (none recorded yet: the
+    a *Needs you* entry of Connect's (06-edges E1–E3; the window derives ONE line from the episodes waiting on you,
+    A3W-6: `services.needs._anki_entry`): Anki closed, busy, open on another profile than Connect's (none recorded yet: the
     first one Anki names is recorded as Connect's, `setup.keep_profile`; it names none, recorded or not:
     NO_PROFILE_YET), or you reviewing. None too with Connect's preview off (nothing of Connect's waits) or Anki
     switched off for the run."""

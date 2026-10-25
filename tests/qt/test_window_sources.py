@@ -723,6 +723,25 @@ def test_S3_a_library_with_no_store_copies_the_folder_in(window, monkeypatch):
     assert wait_until(lambda: copied == [folder], 5)
 
 
+@pytest.mark.parametrize("refused", ["busy", "damaged"])
+def test_P1_a_busy_or_read_only_store_is_said_in_the_bar_and_never_copies_the_folder_in(window, monkeypatch,
+                                                                                        refused):
+    # why (P-1, MV-1: never a duplicate): only a library with no store copies a folder in; a store busy past its wait,
+    # or read-only, says so in the store's own words and writes nothing
+    class Closed(RecordingLooks):
+        def add(self, path, then, first=False):
+            then({"path": path, "refused": refused})
+            return True
+    seed, win = window(Closed())
+    copied = []
+    monkeypatch.setattr(win.adder, "add_folder", copied.append)
+    folder = os.path.join(os.environ["SURASURA_TEST_ROOT"], "elsewhere", "Anime")
+    win.adder.read_folder(folder)
+    want = strings.SOURCES_REFUSED.format(name="Anime", reason=strings.READ_ONLY_REASONS[refused])
+    assert wait_until(lambda: win.bar_line.full() == want, 5), win.bar_line.full()
+    assert copied == []
+
+
 def test_S4_a_video_waiting_for_its_subtitle_never_takes_a_place_on_the_mine_line():
     items, works = _waiting_items()
     from tests.test_view_rows import items_of

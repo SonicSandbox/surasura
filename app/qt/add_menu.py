@@ -308,7 +308,8 @@ class Adder(QObject):
         if answer.get("later"):
             text = strings.SOURCES_READ_LATER.format(name=name)
         elif refused:
-            reason = strings.SOURCES_NO_LIBRARY if refused == "no-library" else refused
+            reason = strings.SOURCES_NO_LIBRARY if refused == "no-library" else \
+                strings.READ_ONLY_REASONS.get(refused, refused)          # P-1: busy / damaged in the store's words
             text = strings.SOURCES_REFUSED.format(name=name, reason=reason)
         elif not result.get("reachable", True):
             text = strings.SOURCES_UNREACHABLE.format(name=name)

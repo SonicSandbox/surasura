@@ -1288,6 +1288,37 @@ def test_a_move_given_while_stuck_is_journalled_before_the_next_retry(stub_write
     assert h.until(lambda: len(heard.saved) == 2 and not path.exists())
 
 
+def test_P2_a_move_given_while_the_first_journal_is_being_written_joins_it_at_once(stub_writer, tmp_path,
+                                                                                    monkeypatch):
+    """(M13, P-2) The writer writes its first journal, then records what the file holds; a command given in between
+    (the file there, the writer not yet stuck as it knows it) joins the journal at once — never at the next ask, here a
+    minute away. The command is given on its own thread inside the first write: that moment, every time."""
+    real = M._write_json
+    given = []
+
+    def write(path, data):
+        real(path, data)
+        if not given:
+            given.append(1)
+            t = threading.Thread(target=w.move, args=([2], "goal"))
+            t.start()
+            t.join()
+    monkeypatch.setattr(M, "_write_json", write)
+    w, heard, store, opener = stub_writer(retry=60.0, saving_after=120.0)
+    store.fail["move"] = ls.StoreBusy("busy")
+    store.always.add("move")
+    path = tmp_path / "window_pending_ja.json"
+    w.move([1], "goal")
+    assert h.until(lambda: path.exists() and len((read_journal(path) or {}).get("pending", ())) == 2, seconds=10)
+    assert given and w.attempts == 1                    # before the next ask, not at it
+    store.always.discard("move")
+    store.fail.pop("move")
+    with w._cond:                                       # the next ask now: both land
+        w._retry_at = 0.0
+        w._cond.notify_all()
+    assert h.until(lambda: len(heard.saved) == 2 and not path.exists())
+
+
 def test_a_drag_starting_over_queued_commands_journals_them(stub_writer, tmp_path):
     """(M14) Commands queued behind a slow write when a drag starts wait for the drop: journalled meanwhile."""
     w, heard, store, opener = stub_writer(saving_after=5.0)

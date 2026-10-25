@@ -147,7 +147,7 @@ def test_the_window_action_records_a_press_only_on_a_job_it_can_stop(tmp_path, l
 
 
 # --- the Anki Miner call: the cancel file -------------------------------------------------------------------------- #
-def test_a_stop_during_the_call_writes_the_cancel_file_once_and_keeps_what_was_made(batch, fake_miner, words,  # noqa: F811
+def test_a_stop_during_the_call_holds_the_cancel_file_and_keeps_what_was_made(batch, fake_miner, words,  # noqa: F811
                                                                                      monkeypatch):
     monkeypatch.setattr(anki_miner, "POLL_S", 0.05)
     fake_miner.plan(cancel_at=2)
@@ -162,7 +162,32 @@ def test_a_stop_during_the_call_writes_the_cancel_file_once_and_keeps_what_was_m
     assert outcomes[:2] == ["made", "made"]
     assert all(o in runner.UNSETTLED for o in outcomes[2:]), "the rest are never counted as turned down"
     run_dir = os.path.dirname(done["run_file"])
-    assert os.path.exists(os.path.join(run_dir, "job-1-1", "cancel"))
+    assert not os.path.exists(os.path.join(run_dir, "job-1-1", "cancel")), "the call over: no cancel file left behind"
+
+
+@pytest.mark.parametrize("cancel_at", [0, 2], ids=["before-anything-reached-anki", "mid-call"])
+def test_a_stop_in_the_first_second_of_the_call_still_stops_it_when_anki_miner_clears_leftovers(
+        batch, fake_miner, words, monkeypatch, cancel_at):  # noqa: F811
+    # why (Anki Miner 3.10.1): a call clears an unconsumed cancel file once, before its setup, a
+    # second or two after it starts — a Stop pressed just as the call began wrote its cancel file before that, and
+    # Anki Miner deleted it as a leftover: the episode mined to its end. The file stands while the Stop does, and goes
+    # once the call is over (no stray file for the next call)
+    monkeypatch.setattr(anki_miner, "POLL_S", 0.05)
+    fake_miner.plan(cancel_at=cancel_at, clear_leftovers=0.3)
+    if cancel_at == 0:
+        with pytest.raises(anki_miner.AnkiMinerError) as raised:
+            batch(should_stop=lambda: True)
+        assert raised.value.kind == "cancelled" and raised.value.stopped is True
+        run_dir = None
+    else:
+        done = batch(should_stop=lambda: True)
+        assert done["stopped"] is True
+        outcomes = [o["outcome"] for o in done["outcomes"]]
+        assert outcomes[:2] == ["made", "made"] and all(o in runner.UNSETTLED for o in outcomes[2:])
+        run_dir = os.path.dirname(done["run_file"])
+    assert fake_miner.calls() and any("cleared" in c for c in fake_miner.calls()), "3.10's clearing ran"
+    if run_dir:
+        assert not os.path.exists(os.path.join(run_dir, "job-1-1", "cancel"))
 
 
 def test_a_stop_before_anything_reached_anki_is_a_cancelled_refusal_marked_stopped(batch, fake_miner, monkeypatch):  # noqa: F811

@@ -109,7 +109,8 @@ KEPT += ("how", "item_ids", "title")
 JOURNALLED += ("merge_works",)
 GUARDED += ("merge_works",)
 # --- end LM11
-# --- T6: *Stop reading it* (a gone folder's card; Settings' *Stop reading* too): the root off, nothing on disk moves
+# --- T6: *Stop reading it* (a gone folder's card): the root off, nothing on disk moves. (Settings' *Stop reading*
+# still goes through `SourceLooks.stop` — no journal, no Undo — a follow-up: one path for both, `_work/leans-after-build7`)
 JOURNALLED += ("stop_source",)
 KEPT += ("root",)
 # --- end W3.2 B

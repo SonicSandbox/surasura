@@ -143,7 +143,8 @@ def _label(text, name, parent, wrap=True):
 # it (a line's own answer, asking hato again, a folder, a program, the logs)
 ANSWERS = ("mark_known", "leave_known", "keep_all", "leave_them", "mine_anyway", "dismiss", "make_cards",
            "first_cards", "first_cards_on", "not_now", "not_now_on")
-PRESSED = ANSWERS + ("keep_words", "ask_hato", "choose_folder", "mine_text_only", "open_logs", "save_logs")
+PRESSED = ANSWERS + ("keep_words", "ask_hato", "choose_folder", "mine_text_only", "open_logs", "save_logs",
+                     "open_anki")
 
 
 class NeedsCards(QWidget):
@@ -408,7 +409,8 @@ class NeedsYou(QObject):
                               "ask_hato": _connect_callable("hato", "backfill"),
                               "dismiss": _connect_callable("status", "dismiss"),
                               "save_logs": _connect_callable("status", "save_logs"),
-                              "kick": _connect_callable("kick", "kick")}
+                              "kick": _connect_callable("kick", "kick"),
+                              "open_anki": _connect_callable("open_anki", "for_you")}     # A3W-6
         self.cards = page.cards
         self.cards.shown = self.available
         self.cards.adopt = lambda b, name, entry: qpress.adopt(b, self._press_key(name, entry, b.property("line")),
@@ -556,7 +558,7 @@ class NeedsYou(QObject):
             return name in self.hooks
         if name in self.WRITES:
             return getattr(self.win, "moves", None) is not None
-        if name in ("mine_anyway", "ask_hato", "dismiss", "save_logs"):
+        if name in ("mine_anyway", "ask_hato", "dismiss", "save_logs", "open_anki"):
             return self.connect_calls.get(name) is not None
         return True
 
@@ -816,6 +818,14 @@ class NeedsYou(QObject):
         backfill, lang, read_settings = self.connect_calls["ask_hato"], self.language, self.read_settings
         self._press("ask_hato", entry, lambda: backfill(lang, read_settings() or {}),
                     then=lambda _s: self._connect_done(strings.NEEDS_ASKED_HATO), goes=False)
+
+    def _do_open_anki(self, entry, _line):
+        """A3W-6: *Open Anki* on the Anki line — Anki started on Connect's profile, on a worker; the line stays until
+        Connect's next look finds it open (it goes by itself)."""
+        def done(started):
+            self._say(strings.NEEDS_ANKI_RUNNING if started == "running" else
+                      strings.NEEDS_OPENING_ANKI if started else strings.NEEDS_ANKI_NOT_STARTED)
+        self._press("open_anki", entry, self.connect_calls["open_anki"], then=done, goes=False)
 
     def _do_dismiss(self, entry, _line):
         dismiss = self.connect_calls["dismiss"]

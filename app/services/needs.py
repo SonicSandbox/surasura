@@ -72,7 +72,10 @@ BULK, GONE, NO_VIDEO, ASK, OFFLINE, FAILURE, GAP = ("bulk", "file-gone", "no-vid
                                                     "gap")
 FIRST_CARDS = "first-cards"         # D1: setup's first scan took shows in; their cards are made only if you say so
 KNOWN_OFFER = "known-offer"         # #43: Known from Anki's first read, asked once (B3-1 A)
-KINDS = (BULK, GONE, NO_VIDEO, ASK, OFFLINE, FAILURE, GAP, FIRST_CARDS, KNOWN_OFFER)
+# A3W-6 (Sonic, 2026-10-24 night): Connect's episodes wait on Anki for you (closed, a permission prompt, another
+# profile or none: `runner.anki_needs_you`) — one line, read from Connect's record, gone by itself once Anki opens
+ANKI_WAIT = "anki-wait"
+KINDS = (BULK, GONE, NO_VIDEO, ASK, OFFLINE, FAILURE, GAP, FIRST_CARDS, KNOWN_OFFER, ANKI_WAIT)
 # action names the window hides until P4.1 sets their callable (RUNBOOK §2; IK-2: *Mine the text only*)
 WIRED_LATER = frozenset(("mine_text_only", "make_cards"))
 # Connect's kinds and their one action beside *Dismiss* (`connect_window.HOW`'s, as the Qt window offers them now)
@@ -82,6 +85,9 @@ SEEN_VERSION = 1
 _NO_VIDEO_REASON = "No video: its video isn't on this computer (or isn't downloaded yet)."   # runner.NO_VIDEO's words
 
 STRINGS = {
+    "anki_closed_title": "Anki isn't open: {n} wait for it",
+    "anki_needs_title": "Anki needs you: {n} wait for it",
+    "anki_one": "1 episode", "anki_n": "{n} episodes",
     "bulk_title_files": "{n} files are gone in {m} shows",
     "bulk_title_videos": "{n} episodes in {m} shows have no video",
     "bulk_title_both": "{m} shows are missing files or videos",
@@ -222,6 +228,9 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
     offer = (connect or {}).get("known_offer")
     if offer:
         out.append(_known_entry(offer, seen))
+    anki = _anki_entry(connect, seen)
+    if anki is not None:
+        out.append(anki)
     bulk = _bulk(shows)
     if bulk is not None:
         out.append(bulk)
@@ -249,6 +258,42 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
         if entry.key not in answered:
             out.append(entry)
     return out
+
+
+def _anki_waits(connect):
+    """{reason: episodes} of Connect's jobs waiting on Anki for you (`runner.anki_needs_you`), in the record's order."""
+    try:
+        from app.connect.runner import anki_needs_you
+    except Exception:
+        return {}
+    out = {}
+    for job in (connect or {}).get("jobs") or ():
+        reason = job.get("reason")
+        if job.get("item") is not None and anki_needs_you(reason):
+            out.setdefault(reason, set()).add(job["item"])
+    return {reason: len(items) for reason, items in out.items()}
+
+
+def _anki_entry(connect, seen):
+    """A3W-6: ONE line while Connect's episodes wait on Anki for you — *Anki isn't open: 19 episodes wait for it* (with
+    *Open Anki* where Surasura can start it: `anki_openable`, `read_connect`'s), or *Anki needs you* with Anki's own
+    reason (a permission prompt, another profile). No *Dismiss*: it goes by itself once Anki opens (Connect's next look
+    gives its episodes another reason). Its key holds the reason: closed again later after it went, it counts again
+    (`prune`)."""
+    waits = _anki_waits(connect)
+    if not waits:
+        return None
+    n = sum(waits.values())
+    episodes = STRINGS["anki_one"] if n == 1 else STRINGS["anki_n"].format(n=n)
+    closed = _anki_closed() in waits
+    reason = _anki_closed() if closed else max(waits, key=waits.get)
+    title = STRINGS["anki_closed_title" if closed else "anki_needs_title"].format(n=episodes)
+    if n == 1:
+        title = title.replace(" wait for it", " waits for it")
+    key = f"anki:{_digest([reason])}"
+    actions = ("open_anki",) if closed and (connect or {}).get("anki_openable") else ()
+    return Entry(key=key, kind=ANKI_WAIT, title=title, lines=(), actions=actions, unseen=key not in seen,
+                 say="" if closed else reason, data={"episodes": n, "reason": reason})
 
 
 def _gone_entry(group, hits, seen):
@@ -531,7 +576,7 @@ def prune(language, view, offline_roots=None, connect=None, asks=None, lines=Non
     if not store and lines is None:
         return 0
     judged = ({"item", "gone"} | ({"offline"} if offline_roots is not None else set()) |
-              ({"video", "gap", KNOWN_OFFER} if connect is not None else set()) |
+              ({"video", "gap", KNOWN_OFFER, "anki"} if connect is not None else set()) |
               ({"ask"} if asks is not None else set())) if store else set()
     if lines is not None:
         judged.add("line")
@@ -578,9 +623,26 @@ def read_connect(language, path=None):
         rec = status.language_record(status.read([language], path=path), language)
         rec["gaps"] = _gaps(language, path or ledger.path())
         rec["known_offer"] = known_offer(language)
+        if _anki_closed() in _anki_waits(rec):          # A3W-6's *Open Anki*: Anki looked for only then
+            rec["anki_openable"] = _anki_openable()
         return rec
     except Exception:
         return None
+
+
+def _anki_closed():
+    """Connect's *Anki isn't open* reason (`runner.ANKI_CLOSED`)."""
+    from app.connect.runner import ANKI_CLOSED
+    return ANKI_CLOSED
+
+
+def _anki_openable():
+    """Can Surasura start Anki here (`open_anki.find`: where its installers put it)? A worker's look (disk, registry)."""
+    try:
+        from app.connect import open_anki
+        return open_anki.find() is not None
+    except Exception:
+        return False
 
 
 def known_offer(language):

@@ -119,6 +119,20 @@ def environment():
             if not key.upper().startswith(_NOT_FOR_ANKI) and key.upper() not in _NOT_FOR_ANKI_NAMES}
 
 
+def for_you():
+    """*Open Anki* on *Needs you*'s Anki line (A3W-6, Sonic 2026-10-24 night: your press, never Connect's): start Anki on
+    Connect's profile (`setup.anki_profile`, else Anki's own choice) unless one is running -> True when it started,
+    "running" when one already runs (nothing started), False when it couldn't start. A worker's call."""
+    if running():
+        return "running"
+    from app.connect import setup
+    try:
+        profile = setup.anki_profile()
+    except Exception:
+        profile = None
+    return start(profile) is not None
+
+
 def start(profile=None):
     """Start Anki, detached, on `profile` when given -> the process, or None (not found, or it couldn't start)."""
     command = find()

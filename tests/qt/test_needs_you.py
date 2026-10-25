@@ -858,3 +858,23 @@ def test_row45_mark_them_known_turns_its_arc_before_the_worker_and_the_card_goes
     assert wait_until(lambda: all(e.kind != service.KNOWN_OFFER for e in ny.entries) and ny.cards.card(entry.key)
                       is None, 5)
     assert asked == ["ja"]
+
+
+def test_a3w6_anki_closed_is_one_line_whose_open_anki_starts_it_on_a_worker_and_goes_by_itself(world):
+    # A3W-6 (Sonic, 2026-10-24 night): the star amber while Anki is closed, and Needs you now says why — one line,
+    # *Open Anki* started off the window's thread; once Connect finds Anki open the line is gone (no Dismiss)
+    from app.connect import runner
+    main = threading.main_thread()
+    jobs = [{"item": 9000 + n, "job": n, "state": "waiting", "reason": runner.ANKI_CLOSED} for n in range(3)]
+    connect = {"jobs": jobs, "gaps": [], "needs": [], "anki_openable": True}
+    opened = []
+    seed, win, writer, ny = world(connect=connect, connect_calls={
+        "open_anki": lambda: opened.append(threading.current_thread() is not main) or True})
+    entry = entry_of(ny, service.ANKI_WAIT)
+    assert entry.title == "Anki isn't open: 3 episodes wait for it"
+    assert {b.property("action") for b in ny.cards.buttons(entry.key)} == {"open_anki"}
+    button(ny, entry.key, "open_anki").click()
+    assert wait_until(lambda: opened, 5) and opened == [True]
+    connect["jobs"] = [dict(j, reason=None) for j in jobs]              # Connect's next look: Anki is open
+    ny.refresh()
+    assert wait_until(lambda: not any(e.kind == service.ANKI_WAIT for e in ny.entries), 5)

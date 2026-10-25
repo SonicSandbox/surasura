@@ -164,3 +164,17 @@ def test_a6_kicks_connect_once_anki_answers_and_never_when_it_doesnt():
     clock["t"] = 0.0
     assert open_anki.kick_when_open({}, sleep=sleep, clock=lambda: clock["t"], look=lambda url: "closed",
                                     kick=kicked.append) is False and kicked == [{}]
+
+
+@pytest.mark.parametrize("kind, reason", [(feed.BATTERY, runner.ON_BATTERY), (feed.ANKI_WAIT, runner.REVIEWING),
+                                          (feed.ANKI, runner.ANKI_CLOSED)])
+def test_a_waits_hover_names_its_click_once_whatever_its_colour(kind, reason):
+    """Intent keeper (A3W-5): a battery or reviewing wait is plain now; its row's button still says its click once."""
+    from app.qt import rows
+    item = feed.Item(kind, feed.WORDS[kind], reason, 7, 0, 0)
+    st = vr._connected(vr.Status("waiting", vr.STRINGS["waiting"], "", "dim"), item, "video")
+    ep = vr.Episode(id=7, label="Ep 1", number=1, title="Ep 1", watched=False, cards=0, mining=False, missing=False,
+                    removed=False, in_top=True, pct=None, n_new=None, status=st, mark=None,
+                    rel_path="HighPriority/x.srt", play_tip="", can_play=True)
+    name, tip, ask = rows.action_of(st, (ep,))
+    assert name == "mine-now" and tip.count("Click") == 1, tip

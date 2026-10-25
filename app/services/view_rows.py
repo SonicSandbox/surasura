@@ -684,6 +684,15 @@ def _connected(st, item, word):
     return Status("waiting", st.label if st.kind == "waiting" else STRINGS["waiting"], tip, tone)
 
 
+def names_click(status):
+    """Does a *Waiting*'s hover already say what its click does (a wait on Anki or on the battery: `tip_ask_anki` /
+    `tip_ask_battery`)? The rows' button adds no second click line then — told by its words, never its colour (alpha 3:
+    a battery or reviewing wait is no longer amber)."""
+    if status.kind != "waiting" or not status.tip:
+        return False
+    return any(status.tip.endswith(STRINGS[k].split("{tip}", 1)[1]) for k in ("tip_ask_anki", "tip_ask_battery"))
+
+
 def _row_connected(st, eps, connect, word):
     """A row's status as Connect tells it: its first episode (in order) whose status Connect's feed changes — never
     one with its cards in Anki or whose cards were deleted (P4.1 WF, adversary S1: a level job on an episode already

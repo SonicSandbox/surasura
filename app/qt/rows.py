@@ -541,7 +541,7 @@ def action_of(status, episodes, off=None, word="video"):
         return "status", said, None
     if off and asks_connect(name, word):
         tip = strings.ROWS_ACTION_OFF.format(tip=said, why=off)
-    elif status.kind == "waiting" and status.tone == "warn":
+    elif view_rows.names_click(status):
         tip = said                      # a wait on Anki or on the battery: `view_rows` names the click (M-3)
     elif word != "video" and name != "no-media":
         tip = strings.ROWS_MINE_TEXT_THIS_TIP.format(tip=said)

@@ -1105,6 +1105,11 @@ class StoreOpener:
         if store is not None:
             store.close()
 
+    def settling(self):
+        """A busy look is being retried on the worker (`check()`): the mode cached is the last one, not its answer."""
+        worker = self._worker
+        return worker is not None and worker.is_alive()
+
     def wait(self, timeout=5.0):
         """For tests and headless callers: let a running worker settle."""
         worker = self._worker

@@ -723,11 +723,15 @@ def test_S3_a_library_with_no_store_copies_the_folder_in(window, monkeypatch):
     assert wait_until(lambda: copied == [folder], 5)
 
 
-@pytest.mark.parametrize("refused", ["busy", "damaged"])
+@pytest.mark.parametrize("refused, want", [
+    ("busy", strings.SOURCES_BUSY.format(name="Anime")),
+    ("damaged", strings.SOURCES_REFUSED.format(name="Anime", reason=strings.READ_ONLY_REASONS["damaged"])),
+    ("io: disk I/O error", strings.SOURCES_REFUSED.format(name="Anime", reason=strings.READ_ONLY_IO)),
+], ids=["busy", "damaged", "disk-error"])
 def test_P1_a_busy_or_read_only_store_is_said_in_the_bar_and_never_copies_the_folder_in(window, monkeypatch,
-                                                                                        refused):
-    # why (P-1, MV-1: never a duplicate): only a library with no store copies a folder in; a store busy past its wait,
-    # or read-only, says so in the store's own words and writes nothing
+                                                                                        refused, want):
+    # why (P-1, MV-1: never a duplicate): only a library with no store copies a folder in; a store busy past its wait
+    # says to try again (nothing was added), a read-only one says why in the store's own words — and nothing is written
     class Closed(RecordingLooks):
         def add(self, path, then, first=False):
             then({"path": path, "refused": refused})
@@ -737,7 +741,6 @@ def test_P1_a_busy_or_read_only_store_is_said_in_the_bar_and_never_copies_the_fo
     monkeypatch.setattr(win.adder, "add_folder", copied.append)
     folder = os.path.join(os.environ["SURASURA_TEST_ROOT"], "elsewhere", "Anime")
     win.adder.read_folder(folder)
-    want = strings.SOURCES_REFUSED.format(name="Anime", reason=strings.READ_ONLY_REASONS[refused])
     assert wait_until(lambda: win.bar_line.full() == want, 5), win.bar_line.full()
     assert copied == []
 

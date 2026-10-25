@@ -851,9 +851,9 @@ class FreshRow(QObject):
                 reason = answer.get("refused")
                 if reason == "no-library":
                     reason = S.STORE_NO_LIBRARY_TIP
-                elif reason in strings.READ_ONLY_REASONS:            # P-1: busy / damaged, the store's own sentence
-                    why = strings.READ_ONLY_REASONS[reason]
-                    reason = why[:1].upper() + why[1:] + "."
+                elif reason == "busy" or reason in strings.READ_ONLY_REASONS or str(reason).startswith("io"):
+                    why = strings.STORE_BUSY_NOW if reason == "busy" else strings.store_reason(reason)
+                    reason = why[:1].upper() + why[1:] + "."         # P-1: the store's own words, as a sentence
                 text = S.FRESH_REFUSED.format(reason=reason)
             if self.shell is not None:
                 windows.say_in_bar(self.shell, text)

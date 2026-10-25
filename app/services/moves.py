@@ -1481,8 +1481,7 @@ class Writer:
                 return
             with self._cond:
                 self._journalled = {c["seq"] for c in keep}
-                if everything and keep and any(_journals(c) and c["seq"] not in self._journalled
-                                               for c in self._pending):
+                if everything and any(_journals(c) and c["seq"] not in self._journalled for c in self._pending):
                     self._journal_dirty = True      # P-2 (M13): given while this write was under way (`_put` saw no
                     self._cond.notify_all()         # journal yet): journalled at once, never at the next ask
 

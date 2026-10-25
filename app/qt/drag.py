@@ -1052,7 +1052,7 @@ class DragController(QObject):
         if self.writer.can_write():
             return None
         reason = self.writer.reason() or ""
-        plain = strings.READ_ONLY_REASONS.get(reason) or (strings.READ_ONLY_IO if reason.startswith("io") else reason)
+        plain = strings.store_reason(reason)
         text = strings.DRAG_REFUSED.format(reason=plain)
         self.say(text)
         return text

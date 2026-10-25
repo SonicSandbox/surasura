@@ -454,10 +454,23 @@ class NeedsYou(QObject):
         self.refresh()
 
     def connect_in(self, line):
-        if line == self.connect_line:
+        """Connect's line moved — or its episodes waiting on Anki for you did (A3W-6's line: the first job's reason, the
+        line's words, can stay put while Anki closes or opens; review A-2): read from the feed's last look, in memory."""
+        key = (line, self._anki_waiting())
+        if key == self.connect_line:
             return
-        self.connect_line = line
+        self.connect_line = key
         self.refresh()
+
+    def _anki_waiting(self):
+        """The feed's episodes waiting on Anki for you, as (item, reason)s — no read (`Provider.latest`)."""
+        try:
+            from app.connect import feed
+            from app.qt.shell import connect_feed
+            latest = connect_feed(self.language, self.win.services.settings).latest()
+            return frozenset((i, it.tip) for i, it in latest.items.items() if it.kind == feed.ANKI)
+        except Exception:
+            return frozenset()
 
     def counts(self):
         """(listed, unseen) for the tab: the entries but the bulk answer, and the unseen ones (P1.2-1)."""
@@ -825,7 +838,8 @@ class NeedsYou(QObject):
         def done(started):
             self._say(strings.NEEDS_ANKI_RUNNING if started == "running" else
                       strings.NEEDS_OPENING_ANKI if started else strings.NEEDS_ANKI_NOT_STARTED)
-        self._press("open_anki", entry, self.connect_calls["open_anki"], then=done, goes=False)
+        self._press("open_anki", entry, self.connect_calls["open_anki"], self.read_settings() or {}, then=done,
+                    goes=False)
 
     def _do_dismiss(self, entry, _line):
         dismiss = self.connect_calls["dismiss"]

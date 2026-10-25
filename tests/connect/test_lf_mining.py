@@ -88,7 +88,8 @@ def test_an_episodes_own_wait_still_lets_the_next_one_go(tmp_path, ledger):
 
 
 def test_every_amber_wait_is_one_that_ends_the_pass():
-    # why: one rule decides both what the row shows amber (on Anki, on battery) and what holds every episode
+    # why: the waits that hold every episode (on Anki, on battery …) are each one of the feed's waiting kinds; which of
+    # them is amber is `runner.anki_needs_you`'s (alpha 3: T1, A3W-5)
     for reason in (runner.ON_BATTERY, runner.ANKI_CLOSED, runner.REVIEWING, runner.WRITER_BUSY, anki_session.BUSY,
                    anki_session.UNUSABLE, anki_session.NO_PROFILE_YET, anki_session.OTHER_PROFILE.format("a", "b")):
         assert runner.holds_every(reason), reason

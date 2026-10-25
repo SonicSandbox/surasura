@@ -26,8 +26,8 @@ def _record(*reasons, openable=None):
     return rec
 
 
-def _anki_entries(rec):
-    return [e for e in service.entries(None, connect=rec) if e.kind == service.ANKI_WAIT]
+def _anki_entries(rec, cards_on=True):
+    return [e for e in service.entries(None, connect=rec, cards_on=cards_on) if e.kind == service.ANKI_WAIT]
 
 
 @pytest.mark.parametrize("openable, actions", [(True, ("open_anki",)), (False, ())])
@@ -71,7 +71,7 @@ def test_the_line_goes_by_itself_once_anki_opens_and_its_seen_key_is_pruned(monk
     entry, = _anki_entries(closed)
     service.mark_seen("ja", [entry.key])
     assert entry.key in service.read_seen("ja")
-    entry_again, = [e for e in service.entries(None, connect=closed, seen=service.read_seen("ja"))
+    entry_again, = [e for e in service.entries(None, connect=closed, seen=service.read_seen("ja"), cards_on=True)
                     if e.kind == service.ANKI_WAIT]
     assert not entry_again.unseen and entry_again.key == entry.key, "seen: stays listed, stops counting"
     opened = _record(runner.TURN, None, None, openable=True)
@@ -98,15 +98,21 @@ def test_read_connect_asks_whether_anki_can_be_opened_only_while_a_line_needs_it
 def test_open_anki_starts_it_on_connects_profile_and_never_a_second_one(monkeypatch):
     from app.connect import open_anki, setup
     started = []
+    kicked = []
     monkeypatch.setattr(open_anki, "start", lambda profile=None: started.append(profile) or object())
     monkeypatch.setattr(setup, "anki_profile", lambda: "日本語")
     monkeypatch.setattr(open_anki, "running", lambda: False)
-    assert open_anki.for_you() is True and started == ["日本語"]
+    assert open_anki.for_you({}, after=kicked.append) is True and started == ["日本語"]
+    import time
+    deadline = time.time() + 5
+    while not kicked and time.time() < deadline:
+        time.sleep(0.01)
+    assert kicked == [{}], "started: a thread waits for it, then kicks Connect"
     monkeypatch.setattr(open_anki, "running", lambda: True)
-    assert open_anki.for_you() == "running" and started == ["日本語"], "already running: nothing started"
+    assert open_anki.for_you({}, after=kicked.append) == "running" and started == ["日本語"], "already running"
     monkeypatch.setattr(open_anki, "running", lambda: False)
     monkeypatch.setattr(open_anki, "start", lambda profile=None: None)
-    assert open_anki.for_you() is False, "couldn't start: said so"
+    assert open_anki.for_you({}, after=kicked.append) is False and kicked == [{}], "couldn't start: said so, no kick"
 
 
 # --- A3W-5: on battery is a still arc on the rows too ------------------------------------------------------------- #
@@ -122,3 +128,39 @@ def test_anki_miners_window_open_stays_plain_on_its_row():
     item = feed.Item(feed.WAITING, feed.WORDS[feed.WAITING], runner.ANKI_MINER_OPEN, 7, 0, 0)
     st = vr._connected(vr.Status("waiting", vr.STRINGS["waiting"], "", "dim"), item, "video")
     assert (st.tone, st.tip) == ("dim", runner.ANKI_MINER_OPEN)
+
+
+# --- the review's fixes (reviews/alpha3-needs-adversary.md) ------------------------------------------------------- #
+def test_a3_the_line_counts_what_the_strip_counts_never_a_refusal_a_blanket_wait_reached():
+    rec = _record(runner.ANKI_CLOSED, runner.ANKI_CLOSED, runner.ANKI_CLOSED, openable=True)
+    rec["needs"] = [{"id": 1, "kind": "not-timed", "say": "x", "item": 101}]
+    rec["skipped"] = [102]
+    entry, = _anki_entries(rec)
+    assert entry.title == "Anki isn't open: 1 episode waits for it"
+
+
+def test_a4_seen_in_one_run_counts_again_in_the_next(monkeypatch):
+    first, = _anki_entries(_record(runner.ANKI_CLOSED, openable=True))
+    monkeypatch.setattr(service, "_SESSION", "another-run")
+    again, = [e for e in service.entries(None, connect=_record(runner.ANKI_CLOSED, openable=True),
+                                         seen=frozenset({first.key}), cards_on=True) if e.kind == service.ANKI_WAIT]
+    assert again.key != first.key and again.unseen
+
+
+def test_a5_no_line_while_connect_may_not_run():
+    assert _anki_entries(_record(runner.ANKI_CLOSED, openable=True), cards_on=False) == []
+
+
+def test_a6_kicks_connect_once_anki_answers_and_never_when_it_doesnt():
+    clock = {"t": 0.0}
+    answers = iter(["closed", "closed", "open"])
+    kicked = []
+
+    def sleep(s):
+        clock["t"] += s
+    from app.connect import open_anki
+    assert open_anki.kick_when_open({}, sleep=sleep, clock=lambda: clock["t"], look=lambda url: next(answers),
+                                    kick=kicked.append) is True and kicked == [{}]
+    clock["t"] = 0.0
+    assert open_anki.kick_when_open({}, sleep=sleep, clock=lambda: clock["t"], look=lambda url: "closed",
+                                    kick=kicked.append) is False and kicked == [{}]

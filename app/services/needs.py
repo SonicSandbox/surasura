@@ -54,6 +54,7 @@ import json
 import os
 import re
 import threading
+import time
 from collections import namedtuple
 
 from app import library_store, path_utils
@@ -228,7 +229,7 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
     offer = (connect or {}).get("known_offer")
     if offer:
         out.append(_known_entry(offer, seen))
-    anki = _anki_entry(connect, seen)
+    anki = _anki_entry(connect, seen) if cards_on else None    # Connect may run (it clears the line by itself: A-5)
     if anki is not None:
         out.append(anki)
     bulk = _bulk(shows)
@@ -261,17 +262,21 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
 
 
 def _anki_waits(connect):
-    """{reason: episodes} of Connect's jobs waiting on Anki for you (`runner.anki_needs_you`), in the record's order."""
+    """{reason: episodes} of Connect's episodes waiting on Anki for you, told as the strip tells them (`feed.build`'s
+    ANKI items: one an episode, never a not-timed one or a refusal you dismissed that a blanket wait reached —
+    review A-3), in the record's order."""
+    if not (connect or {}).get("jobs"):
+        return {}
     try:
-        from app.connect.runner import anki_needs_you
+        from app.connect import feed
+        items = feed.build({"running": True, "languages": {"_": connect}}, "_").items
     except Exception:
         return {}
     out = {}
-    for job in (connect or {}).get("jobs") or ():
-        reason = job.get("reason")
-        if job.get("item") is not None and anki_needs_you(reason):
-            out.setdefault(reason, set()).add(job["item"])
-    return {reason: len(items) for reason, items in out.items()}
+    for it in items.values():
+        if it.kind == feed.ANKI:
+            out[it.tip] = out.get(it.tip, 0) + 1
+    return out
 
 
 def _anki_entry(connect, seen):
@@ -290,7 +295,8 @@ def _anki_entry(connect, seen):
     title = STRINGS["anki_closed_title" if closed else "anki_needs_title"].format(n=episodes)
     if n == 1:
         title = title.replace(" wait for it", " waits for it")
-    key = f"anki:{_digest([reason])}"
+    key = f"anki:{_digest([reason])}:{_SESSION}"     # this window's run: closed again after a restart, it counts again
+                                                      # (A-4); `prune` takes an earlier run's key out
     actions = ("open_anki",) if closed and (connect or {}).get("anki_openable") else ()
     return Entry(key=key, kind=ANKI_WAIT, title=title, lines=(), actions=actions, unseen=key not in seen,
                  say="" if closed else reason, data={"episodes": n, "reason": reason})
@@ -628,6 +634,9 @@ def read_connect(language, path=None):
         return rec
     except Exception:
         return None
+
+
+_SESSION = f"{os.getpid()}-{int(time.time())}"     # the Anki line's seen key holds this window's run (A-4)
 
 
 def _anki_closed():

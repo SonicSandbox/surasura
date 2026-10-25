@@ -480,7 +480,8 @@ def test_not_timed_is_no_mine_now_button_and_a_wait_on_anki_or_battery_is():
     for kind, reason, says in ((feed.ANKI, runner.ANKI_CLOSED, "goes first once Anki answers"),
                                (feed.BATTERY, runner.ON_BATTERY, "mine this one now, on battery")):
         st = view_rows._connected(plain, feed.Item(kind, feed.WORDS[kind], reason, 1, 0, 0), "video")
-        assert (st.kind, st.tone) == ("waiting", "warn"), kind
+        # A3W-5 (Sonic, 2026-10-24 night): on battery is a plain wait (a still arc), amber only a wait on you
+        assert (st.kind, st.tone) == ("waiting", "dim" if kind == feed.BATTERY else "warn"), kind
         name, tip, ask = rows.action_of(st, (_ep(st),))
         assert name == "mine-now" and ask is not None, kind
         assert tip.startswith(st.label + "\n" + reason) and says in tip, kind     # row 38: the icon's name first

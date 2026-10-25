@@ -2080,6 +2080,8 @@ class ShellWindow(QMainWindow):
         case: no pending mark)."""
         if circle == phase_service.ARRIVALS and self.phase.asks_in_window(circle):
             self.show_tab("needs")                        # T6: a gone folder's card stands — its answers are there
+            if getattr(self, "needs_you", None) is not None:
+                self.needs_you.reveal_gone()              # (finding 4: at its card, not only the page)
             return
         if self.phase.asks_in_window(circle):
             from app.qt import windows
@@ -2987,8 +2989,10 @@ class ShellWindow(QMainWindow):
                  if len(gone) == 1 else strings.PHASE_FOLDERS_GONE.format(n=len(gone)))
         self.phase.set_extra(phase_service.ARRIVALS, "gone", "needs" if gone else None, words)
         self.phase.set_needs_asks(bool(gone))
-        if getattr(self, "needs_you", None) is not None:
-            self.needs_you.gone_in(gone, self.language)
+        if getattr(self, "needs_you", None) is not None:      # (judged: every folder being read was looked at)
+            judged = bool(self.sources) and all(r.get("reachable") is not None for r in self.sources
+                                                if r.get("on", True))
+            self.needs_you.gone_in(gone, self.language, judged=judged)
 
     def moves_saving(self, on):
         """The drag's writer holds moves for a busy store (`moves.Writer.on_saving`): 届 waits while it does."""

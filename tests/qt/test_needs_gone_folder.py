@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import QApplication
 
 from app import library_store as ls
 from app import settings_manager
+from app.qt import press as qpress
 from app.qt import stones, strings
 from app.services import needs as service
 from app.services import phase as phase_service
@@ -258,11 +259,19 @@ def test_find_its_new_folder_starts_where_its_episodes_are_read_and_stops_the_ol
     assert wait_until(lambda: win.toasts.card.isVisible() and new in win.toasts.card.base, 5)
 
 
+ELSEWHERE = "D:\\Elsewhere"
+NAME = names("ja")[71]
+
+
 @pytest.mark.parametrize("answer, said", [
-    ({"joined": 0, "stop": False}, "NEEDS_FIND_NONE"),
-    ({"refused": "That folder can't be read", "root": None}, "NEEDS_FIND_REFUSED"),
-    ({"failed": "disk I/O error", "stop": False}, "NEEDS_FIND_FAILED"),
-    ({"later": True, "stop": False}, "NEEDS_FIND_LATER"),
+    # Sonic 2026-10-25 (decision B, option 1): every answer that joined nothing says the folder picked is read now
+    ({"joined": 0, "stop": False}, strings.NEEDS_FIND_NONE.format(folder=ELSEWHERE, show=NAME)),
+    ({"state": "reached"}, strings.NEEDS_FIND_BACK.format(folder=ELSEWHERE, name=NAME)),
+    ({"state": "away"}, strings.NEEDS_FIND_AWAY.format(folder=ELSEWHERE, name=NAME)),
+    ({"refused": "That folder can't be read", "root": None},
+     strings.NEEDS_FIND_REFUSED.format(folder=ELSEWHERE, why="That folder can't be read")),
+    ({"failed": "disk I/O error", "stop": False}, strings.NEEDS_FIND_FAILED.format(folder=ELSEWHERE, why="disk I/O error")),
+    ({"later": True, "stop": False}, strings.NEEDS_FIND_LATER.format(folder=ELSEWHERE)),
 ])
 def test_find_its_new_folder_that_joins_nothing_stops_nothing_and_says_why(world, answer, said, monkeypatch):
     looks = Looks(answer)
@@ -274,8 +283,7 @@ def test_find_its_new_folder_that_joins_nothing_stops_nothing_and_says_why(world
     ny.pick_folder = lambda title, start: "D:\\Elsewhere"
     _button(ny, card.key, "find_folder").click()
     assert wait_until(lambda: heard, 5)
-    first = getattr(strings, said).split("{")[0]
-    assert heard[-1].startswith(first), heard
+    assert heard[-1] == said, heard
     assert not [c for c in writer.calls if c[0] == "stop_source"]         # the old folder is still read
 
 
@@ -352,3 +360,175 @@ def test_sonics_case_find_its_new_folder_joins_the_show_read_already_with_no_sec
         assert {s["path"]: s["on"] for s in store.sources(all=True)}[old] is True
     finally:
         store.close()
+
+
+# --- the adversary's findings (reviews/T6-card-adversary.md), each held ----------------------------------------- #
+class LateLooks(Looks):
+    """`find_new_folder` held until `answer_now()` (a long look at the folder picked)."""
+
+    def __init__(self, answer=None):
+        super().__init__(answer)
+        self.pending = []
+
+    def find_new_folder(self, root_id, path, then=None, language=None):
+        self.finds.append((root_id, path, language))
+        out = {"old": root_id, "path": path, "root": 19, "refused": None, "failed": None, "result": {}, "state": "gone",
+               "joined": 0, "stop": False, "language": language}
+        out.update(self.answer)
+        self.pending.append((then, out))
+        return True
+
+    def answer_now(self):
+        for then, out in self.pending:
+            threading.Thread(target=then, args=(out,), daemon=True).start()
+        self.pending = []
+
+
+def _stops(writer):
+    return [c for c in writer.calls if c[0] == "stop_source"]
+
+
+def _pump(n=10):
+    for _ in range(n):
+        QApplication.processEvents()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_review1_a_stop_undone_before_the_card_went_can_be_given_again(world, language):
+    """Stop → Undo, both landing before a listing without the row came (the looks' worker busy with a look): the card
+    still stands, so Stop must still write — never a press that silently does nothing for the rest of the run."""
+    seed, win, writer, ny = world(language, looks=Looks())
+    row = _gone_row(language)
+    _told(win, language, row)
+    card = _card_in(win, ny)
+    _button(ny, card.key, "stop_reading").click()
+    assert wait_until(lambda: writer.saved, 5)
+    win.toasts.card.buttons[0].click()                                    # Undo
+    assert wait_until(lambda: writer.undone, 5)
+    _pump()
+    _told(win, language, row)                                             # the listings: read after the Undo
+    assert wait_until(lambda: _button(ny, card.key, "stop_reading") is not None, 5)
+    _button(ny, card.key, "stop_reading").click()
+    assert wait_until(lambda: len(_stops(writer)) == 2, 5)
+
+
+def test_review1_a_stop_the_writer_took_then_let_go_unsaved_or_refused_can_be_given_again(world):
+    """The writer took the command, then it landed as nothing (its ticket ends unsaved: no save, no listing); or the
+    writer refused it at once — either way the card stands, and the next press writes again."""
+    seed, win, writer, ny = world("ja", looks=Looks())
+    row = _gone_row("ja")
+    _told(win, "ja", row)
+    card = _card_in(win, ny)
+    writer.nothing.add("stop_source")                                     # taken, then let go unsaved
+    _button(ny, card.key, "stop_reading").click()
+    assert wait_until(lambda: len(_stops(writer)) == 1 and not ny._stopping, 5)
+    writer.nothing.clear()
+    writer.writable = False                                               # refused at once: nothing held
+    heard = []
+    win.say = lambda text, *a, **k: heard.append(text)
+    _button(ny, card.key, "stop_reading").click()
+    _pump()
+    assert len(_stops(writer)) == 1 and not ny._stopping
+    assert heard and heard[-1] == strings.DRAG_REFUSED.format(reason=strings.store_reason(writer.why))   # never silent
+    writer.writable = True
+    _button(ny, card.key, "stop_reading").click()
+    assert wait_until(lambda: len(_stops(writer)) == 2 and writer.saved, 5)
+
+
+def test_review2_find_pressed_again_while_its_find_runs_opens_no_second_picker(world):
+    looks = LateLooks()
+    seed, win, writer, ny = world("ja", looks=looks)
+    _told(win, "ja", _gone_row("ja"))
+    card = _card_in(win, ny)
+    picked = []
+    ny.pick_folder = lambda title, start: picked.append(start) or "D:\\Elsewhere"
+    _button(ny, card.key, "find_folder").click()
+    _pump()
+    _button(ny, card.key, "find_folder").click()                          # its arc still turns
+    _pump()
+    assert len(picked) == 1 and len(looks.finds) == 1
+    looks.answer_now()                                                    # answered: its press ends, Find asks again
+    assert wait_until(lambda: not qpress.live(win, ny._press_key("find_folder", card)), 5)
+    _button(ny, card.key, "find_folder").click()
+    assert len(picked) == 2
+
+
+def test_review3_stop_and_keep_waiting_do_nothing_while_its_find_runs_and_find_still_says_what_it_joined(world,
+                                                                                                    monkeypatch):
+    looks = LateLooks({"joined": 12, "stop": True})
+    seed, win, writer, ny = world("ja", looks=looks)
+    _told(win, "ja", _gone_row("ja"))
+    card = _card_in(win, ny)
+    ny.pick_folder = lambda title, start: "S:\\Video\\Anime\\X"
+    _button(ny, card.key, "find_folder").click()
+    _pump()
+    _button(ny, card.key, "stop_reading").click()                         # A-5: the other answer meanwhile
+    _button(ny, card.key, "keep_waiting").click()
+    _pump()
+    assert not _stops(writer) and not win.offline_hidden
+    looks.answer_now()
+    assert wait_until(lambda: len(_stops(writer)) == 1, 5)
+    assert wait_until(lambda: win.toasts.card.isVisible() and "12 episodes joined" in win.toasts.card.base, 5)
+
+
+def test_review4_a_summary_with_a_folder_not_looked_at_yet_never_prunes_a_gone_cards_seen_key(world):
+    seed, win, writer, ny = world("ja", looks=Looks())
+    row = _gone_row("ja")
+    _told(win, "ja", row)
+    card = _card_in(win, ny)                                              # shown: marked seen
+    assert wait_until(lambda: card.key in service.read_seen("ja"), 5)
+    win.show_tab("current")
+    _told(win, "ja", dict(row, reachable=None, gone=False))               # a listing before any look
+    assert wait_until(lambda: ny.gone_folders == () and not ny._running, 5)
+    from tests.qt.test_needs_you import settle
+    settle(ny)
+    assert card.key in service.read_seen("ja")
+    _told(win, "ja", dict(row, reachable=True, gone=False))               # looked at, and back: its key goes
+    settle(ny)
+    assert card.key not in service.read_seen("ja")
+
+
+def test_review5_a_find_answer_for_the_library_left_stops_nothing_and_says_where_to_finish(world, monkeypatch):
+    looks = Looks({"joined": 12, "stop": True, "language": "zh"})        # answered after a switch away from zh
+    seed, win, writer, ny = world("ja", looks=looks)
+    _told(win, "ja", _gone_row("ja"))
+    card = _card_in(win, ny)
+    heard = []
+    monkeypatch.setattr(win, "say", lambda text, *a, **k: heard.append(text))
+    ny.pick_folder = lambda title, start: "S:\\Video\\Anime\\X"
+    _button(ny, card.key, "find_folder").click()
+    assert wait_until(lambda: heard, 5)
+    assert heard[-1] == strings.NEEDS_FIND_JOINED_LEFT.format(name=names("ja")[71], folder="S:\\Video\\Anime\\X")
+    assert not _stops(writer)
+
+
+# --- the intent keeper's findings (reviews/T6-card-intent-keeper.md 2, 4) ----------------------------------------- #
+def test_S19_the_same_look_said_twice_works_nothing_out_builds_no_card_and_repaints_no_circle(world):
+    """A look every few minutes says the same gone folder again: nothing is gathered, no card rebuilt, 届 untouched."""
+    seed, win, writer, ny = world("ja", looks=Looks())
+    row, away = _gone_row("ja"), _away_row()
+    _told(win, "ja", row, away)
+    _card_in(win, ny)
+    from tests.qt.test_needs_you import settle
+    settle(ny)
+    gathers, builds = ny.gathers, ny.cards.builds
+    paints, text = dict(win.phase.paints), win.offline_line.text()
+    asked = ny._asked
+    _told(win, "ja", row, away)                                           # the same summary again
+    _pump(20)
+    assert (ny._asked, ny.gathers, ny.cards.builds) == (asked, gathers, builds)
+    assert dict(win.phase.paints) == paints and win.offline_line.text() == text
+
+
+def test_todokes_press_opens_needs_you_at_the_gone_card(world):
+    """Finding 4: the gone card is listed after the shows' cards — 届's press shows it, not only the page's top."""
+    from PyQt6.QtCore import QRect
+    seed, win, writer, ny = world("ja", looks=Looks())
+    _told(win, "ja", _gone_row("ja"))
+    assert wait_until(lambda: _cards(ny), 10)
+    win._circle_pressed(ARRIVALS)
+    _pump(20)
+    card = ny.cards.card(_cards(ny)[0].key)
+    area = ny.cards.parentWidget().parentWidget()
+    top = card.mapTo(area.viewport(), card.rect().topLeft())
+    assert area.viewport().rect().intersects(QRect(top, card.size()))

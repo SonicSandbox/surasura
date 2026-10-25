@@ -65,6 +65,16 @@ def test_its_episodes_found_in_a_folder_read_already_say_find_joins_them_there(l
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
+def test_sonics_own_case_finished_and_read_elsewhere_says_either_answer_keeps_them(language):
+    """His Yomi no Tsugai: every episode Finished, and already read on S:. *Stop reading it* leads, and the words say
+    both answers keep the episodes (finding 3: never "Find…" advice under a Stop-first card alone)."""
+    new = os.path.join("S:\\Video\\Anime", names(language)[71])
+    [card] = _cards([_row(language, finished=True, found_in=[new])])
+    assert card.actions[0] == "stop_reading"
+    assert "Finished" in card.say and new in card.say and "stop reading the old folder" in card.say
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 def test_many_shows_are_named_three_then_how_many_more(language):
     shows = names(language)[80:85]
     [card] = _cards([_row(language, shows=shows, where=("Downloads", "Season"))])

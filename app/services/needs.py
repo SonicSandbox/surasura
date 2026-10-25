@@ -116,6 +116,8 @@ STRINGS = {
     "folder_finished": "It held {shows} · {episodes}, all Finished: nothing is left to mine from it.",
     "folder_read_now": "Its episodes are read from {found} now: stop reading the old folder.",
     "folder_found": "They're in {found} too: Find its new folder… joins them there, never as a second copy.",
+    "folder_found_finished": "They're read from {found} too: stop reading the old folder, or Find its new folder… "
+                             "joins them there.",
     "folder_moved": "Moved it? Find its new folder…: its episodes join their show there, never as a second copy.",
     "folder_stay": "Whatever you choose, its episodes stay in your library.",
     "shows_more": "{shows} and {n} more", "shows_and": "{a} and {b}",
@@ -476,7 +478,7 @@ def _folder_entry(row, seen):
     if found and not n:
         said.append(STRINGS["folder_read_now"].format(found=found[0]))
     elif found:
-        said.append(STRINGS["folder_found"].format(found=found[0]))
+        said.append(STRINGS["folder_found_finished" if finished else "folder_found"].format(found=found[0]))
     elif not finished:
         said.append(STRINGS["folder_moved"])
     said.append(STRINGS["folder_stay"])

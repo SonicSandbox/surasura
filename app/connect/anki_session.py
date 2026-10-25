@@ -19,8 +19,9 @@ its one state file per user — so a session never syncs twice, whichever Surasu
   again; three in a row, and the setup checks' AnkiWeb line is *Needs you* (`setup._ankiweb`). Fewer are a status line,
   retried at the next sync point.
 - ***Open Anki for me*** (`connect_open_anki`, off by default): `at_window` is its one caller of `open_anki.start`,
-  at the window's start only, never after mining and never from Connect, hato or a command-line verb. The other
-  caller is your own press: *Open Anki* on *Needs you*'s Anki line (`open_anki.for_you`, A3W-6).
+  at the window's start only (the 2.x dashboard's `_connect_session(opening=True)`, 3.0's `Services._open_session`),
+  never after mining and never from Connect, hato or a command-line verb. The other caller is your own press: *Open
+  Anki* on *Needs you*'s Anki line (`open_anki.for_you`, A3W-6). `told` is the bar's line for what the look found.
 
 Everything here runs only while Connect is on (`settings_manager.connect_on`: `connect_enabled` and D29's automation,
 P4.1 row 4.1.1), and never under `SURASURA_NO_ANKI_SYNC` (the test suites, a developer's run). Standard library only;
@@ -284,3 +285,22 @@ def at_window(settings, opening=False, say=None, sleep=time.sleep, clock=time.ti
                 state = look(url)
     answer = begin(url, settings, wait=0.0) if state == "open" else None     # the window never waits for a writer
     return {"anki": state, "opened": opened, "sync": answer}
+
+
+def told(done):
+    """The window's bar line for `at_window`'s answer — the 2.x dashboard's and 3.0's, one wording — or None (nothing
+    worth a line: Anki open and synced without Surasura starting it, closed with nothing started, Connect off)."""
+    if not done:
+        return None
+    sync = done.get("sync")
+    if sync == "synced":
+        return "Anki is open and synced: your phone's reviews are in." if done.get("opened") else None
+    if sync == "not-signed-in":
+        return "Anki isn't signed in to AnkiWeb, so your phone won't get Surasura's cards and order until it is."
+    if sync == "full-sync":
+        return "AnkiWeb wants a full sync, which only you can choose: open Anki and click Sync."
+    if sync and sync.startswith("failed"):
+        return "Anki couldn't sync with AnkiWeb just now. Surasura asks again later."
+    if done.get("opened") and done.get("anki") != "open":
+        return "Anki didn't open within two minutes. Open it yourself when you're ready."
+    return None

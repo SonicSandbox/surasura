@@ -179,6 +179,7 @@ def run(loaded, languages, steps=None, ledger=None, sleep=None, cancel=None, loo
     summary = {"languages": {lang: _empty() for lang in languages}, "looks": 0}
     for lang in languages:                  # F9: a crash's *updating your list* mark is cleared by the next run
         _updating(ledger, lang, False)
+        _working(ledger, lang, False)       # alpha 3 A2: and its *working through the episodes* mark
     prepared = set()            # the languages whose sync, known-sync and Generate ran this run (02 §4: once)
     begun = set()               # the languages this run has worked on (the status line's *i of n* counts from then)
     undos_looked = set()        # the languages whose half-done undos this run has finished (once a run)
@@ -207,7 +208,10 @@ def run(loaded, languages, steps=None, ledger=None, sleep=None, cancel=None, loo
                     begun.add(lang)
                 out = summary["languages"][lang]
                 earlier, out["waiting"] = out["waiting"], {}    # this pass's waits alone, then added to the run's
-                outside |= _language(steps, ledger, lang, prepared, parked, out)
+                try:
+                    outside |= _language(steps, ledger, lang, prepared, parked, out)
+                finally:
+                    _working(ledger, lang, False)   # the pass ended: what is left waits for the next look (A2)
                 battery |= ON_BATTERY in out["waiting"].values()
                 out["waiting"] = {**earlier, **out["waiting"]}
                 _said(steps, lang, out)
@@ -439,6 +443,7 @@ def _language(steps, ledger, lang, prepared, parked, out):
             return _waiting_all(ledger, lang, parked, out, ON_BATTERY, True, tried) or outside
         tried.add(job["id"])
         look = True
+        _working(ledger, lang, True)        # alpha 3 A2: the ones behind wait their turn, between two episodes too
         try:
             _job(steps, ledger, lang, job, store_now, set(line), out)
             ended = ledger.job_by_id(job["id"]) or {}
@@ -632,6 +637,25 @@ def _updating(ledger, lang, on):
                 ledger.updated(lang)
     except Exception:
         log.exception("Connect couldn't %s its *updating your list* mark (%s)", "set" if on else "clear", lang)
+
+
+def _working(ledger, lang, on):
+    """Alpha 3 A2 (the waits' adversary): this look working through the language's episodes, marked (`on`) from its
+    first episode until its pass ends, or cleared, in the ledger's meta (`working:<lang>`), each in its own short
+    transaction; nothing written when the mark already reads so (S19). Between two episodes nothing is in flight for
+    a moment: the mark keeps the ones behind on *its turn* (`status._turns`), never a flip to *Connect's next look* at
+    every episode's end. A ledger fault is logged, never a reason not to mine (R15)."""
+    try:
+        if (ledger.working(lang) is not None) == bool(on):
+            return
+        with ledger.transaction():
+            if on:
+                ledger.mark_working(lang)
+            else:
+                ledger.worked(lang)
+    except Exception:
+        log.exception("Connect couldn't %s its *working through the episodes* mark (%s)", "set" if on else "clear",
+                      lang)
 
 
 def _job(steps, ledger, lang, job, store_now, line, out):

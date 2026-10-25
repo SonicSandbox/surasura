@@ -588,6 +588,13 @@ class Automation:
             return
         self.sync.ended(result, language or self.language)
 
+    def session_began(self, fresh):
+        """The window's session look found Anki open (Q4-16: `Services._session`, after *Open Anki for me*): the
+        known-words sync asked again — forced when the session's sync brought your phone's reviews in (`fresh`), else
+        at its own pace (the Tk `_maybe_anki_sync(force=fresh)`). Any thread; returns at once. Nothing once closed."""
+        if not self.closed:
+            self.worker.put(self.sync.maybe, bool(fresh))
+
     def sync_now(self, then=None):
         """A sync the user asked for (a click on the bar's known-words count, Q30): the automatic sync's own job,
         forced, run with `anki_sync_auto` off too (the user asked), ending as every sync does (`AutoSync.ended`: the

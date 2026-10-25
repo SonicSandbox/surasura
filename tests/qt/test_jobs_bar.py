@@ -109,6 +109,7 @@ class FakeAutomation(_Duty):
     def language_changed(self, language): self._record("automation.language_changed", language)
     def recheck(self): self._record("automation.recheck")
     def sync_now(self, then=None): self._record("automation.sync_now", then)
+    def session_began(self, fresh): self._record("automation.session_began", fresh)
     def before_generate(self): self._record("automation.before_generate")
     def update_cancelled(self): self._record("automation.update_cancelled")
     def close(self): self._record("automation.close")

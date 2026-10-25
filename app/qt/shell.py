@@ -128,6 +128,10 @@ class Services:
         self.language = self.settings.get().get("target_language") or "ja"
         self.closing = threading.Event()  # set at quit: a Generate still waiting for `results` starts nothing
         self.quit_hook = None             # the window's: the update hands over (called on a worker)
+        self.say = None                   # the window's: a line for its bottom bar (any thread; Q4-16's session look)
+        self.anki_look = None             # Q4-16: the session's look at the window's start (default
+        #                                   `anki_session.at_window`; a test's stand-in)
+        self.anki_session_thread = None   # that look's own thread, once started (`_open_session`)
         self.started = False
         self._quit_lock = threading.Lock()
         self._quit_began = None           # when the quit began (`_stop_starting`): E20's wait counts from it
@@ -289,7 +293,61 @@ class Services:
             self.chores.started()
             if self.replan is not None:
                 self.replan.start()       # the catch-up once; the journey when the store says it is pending
+            self.anki_session_thread = self._open_session()
         return True
+
+    # --- Q4-16 (K102): *Open Anki for me*, at the window's start only ------------------------------------------- #
+    def _open_session(self):
+        """(Under `start`'s lock: once a window.) The window's start is a session's start (✅ Q4-16, P2.3-1 a: "opens
+        Anki only when the window opens"). With *Open Anki for me* on (`connect_open_anki`, off by default) the
+        session's look runs on its own thread — it may wait up to two minutes for the Anki it started:
+        `anki_session.at_window(opening=True)`, the one path that opens Anki, which does so only while Connect is on
+        and Anki is closed and not starting. Never at a focus, a language switch or after mining (BRIEF: "Anki is never
+        opened for you after mining"). Off: nothing looked at, nothing opened. -> the thread, or None."""
+        try:
+            settings = settings_service.thaw(self.settings.get())
+        except Exception as e:
+            applog.log("shell", f"the session's look at start: {e!r}")
+            return None
+        if not settings.get("connect_open_anki"):
+            return None
+        thread = threading.Thread(target=self._session, args=(settings,), name="anki-session", daemon=True)
+        thread.start()
+        return thread
+
+    def _session(self, settings):
+        """(Its own thread.) The look (`at_window`), its line to the bar (`anki_session.told`, the 2.x dashboard's
+        words), then — Anki open — the known-words sync asked again, forced once the session's sync brought your
+        phone's reviews in, and Connect kicked to see what waits (the Tk `_connect_session`'s order). Nothing after a
+        quit began."""
+        if self.closing.is_set():
+            return
+        from app.connect import anki_session
+        look = self.anki_look or anki_session.at_window
+        try:
+            done = look(settings, opening=True, say=self._say)
+        except Exception as e:
+            applog.log("shell", f"Connect's session at start: {e!r}")
+            return
+        if not done or self.closing.is_set():
+            return
+        self._say(anki_session.told(done))
+        if done.get("anki") == "open":
+            self.automation.session_began(done.get("sync") == "synced")
+        if done.get("sync") == "synced":
+            try:
+                from app.connect import kick
+                kick.kick(settings)
+            except Exception as e:
+                applog.log("connect", f"Connect wasn't started after the session's sync: {e!r}")
+
+    def _say(self, line):
+        say = self.say
+        if line and say is not None:
+            try:
+                say(line)
+            except Exception as e:
+                applog.log("shell", f"a line for the bar: {e!r}")
 
     def _hold_while_setup(self):
         """The automatic Generate and the journey keeper hold while the setup wizard is up (`setup_open`)."""
@@ -1234,6 +1292,9 @@ class ShellWindow(QMainWindow):
         self._duties_asked = False
         self.bridge.quit_asked.connect(self._quit_for_update)
         services.quit_hook = self.bridge.ask_quit
+        self._session_lines = bridge.Relay(self)          # Q4-16: the session's look's lines (*Opening Anki…*), the bar
+        self._session_lines.said.connect(self._session_said)
+        services.say = self._session_lines.call
         if services.has_duties():
             self._attach_duties()
 
@@ -2214,6 +2275,10 @@ class ShellWindow(QMainWindow):
             self.services.setup_open.set()
         elif self.services.setup_open.is_set():
             bridge.run_in_worker(self.services.setup_ended)
+
+    def _session_said(self, line):
+        from app.qt import windows
+        windows.say_in_bar(self, line)
 
     def _duties_started(self):
         """Started: what the bar and the header read from disk, read on workers."""

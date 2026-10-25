@@ -184,7 +184,29 @@ def test_a_focus_storm_syncs_once(live, monkeypatch):
     auto.close()
 
 
-def test_a_sync_asked_for_while_one_runs_never_starts_a_second(live, monkeypatch):
+def test_the_sessions_look_forces_the_sync_once_your_phones_reviews_are_in(live, monkeypatch):
+    """Q4-16 (*Open Anki for me*): the window's start synced once and found Anki closed; the Anki it opened for you has
+    synced your phone's reviews — the known-words sync goes again at once (forced, inside the 5 minutes). A look that
+    synced nothing waits for the 5 minutes; once closed, nothing."""
+    h.seed_library("ja")
+    _synced_once("ja")
+    anki = _Anki(monkeypatch)
+    clock = _Clock(1000.0)
+    auto, registry, _c, _l = _make(_settings(anki_auto_generate=False), clock=clock)
+    auto.activated()
+    _settle(auto, registry)
+    assert len(anki.syncs) == 1
+    clock.now = 1000.0 + 30
+    auto.session_began(False)
+    _settle(auto, registry)
+    assert len(anki.syncs) == 1, "no fresh reviews: the 5-minute wait holds"
+    auto.session_began(True)
+    _settle(auto, registry)
+    assert len(anki.syncs) == 2, "your phone's reviews are in: read now"
+    auto.close()
+    auto.session_began(True)
+    assert len(anki.syncs) == 2
+
     """The Tk `_anki_sync_lock.acquire(blocking=False)`: a forced trigger (a language switch) during a sync starts
     nothing; once it ends, the next forced trigger syncs again."""
     h.seed_library("ja")

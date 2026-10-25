@@ -611,9 +611,20 @@ def test_a3_the_keyboards_circle_is_washed_in_the_accent_and_its_hover_shows(str
     assert asked and "<b>Surasura</b>" in asked[-1]
 
 
-def test_a3_in_the_window_the_reorder_and_connect_marks_are_gone_and_each_circle_opens_its_settings(world):
+@pytest.fixture
+def junban_world(qapp, tmp_path, monkeypatch):
+    """The window with Junban found (`modules/` isn't in the public repo's checkout: its look answers no there)."""
+    from app.qt import shell
+    from tests.qt.test_jobs_bar import World
+    monkeypatch.setattr(shell, "_junban_here", lambda: True)
+    w = World(qapp, logs_folder=str(tmp_path / "logs"))
+    yield w
+    w.close()
+
+
+def test_a3_in_the_window_the_reorder_and_connect_marks_are_gone_and_each_circle_opens_its_settings(junban_world):
     from PyQt6.QtWidgets import QLabel
-    win = world.win
+    win = junban_world.win
     assert not hasattr(win, "bar_replan") and not hasattr(win, "bar_connect")
     assert not [w for w in win.footer.findChildren(QLabel) if w.text() in ("⇅", "⇄")]
     assert wait_until(lambda: P.JUNBAN in win.phase.opens)            # Junban found (a worker's look)
@@ -684,10 +695,10 @@ def test_a3_junban_goes_amber_only_while_its_line_asks_for_you_and_its_press_the
     assert html.escape(rp.UP_TO_DATE) in strip.hover_text(P.JUNBAN) and strings.PHASE_PRESS in strip.hover_text(P.JUNBAN)
 
 
-def test_a3_in_the_window_junbans_press_on_an_unfinished_reorder_opens_junbans_window(world, monkeypatch):
+def test_a3_in_the_window_junbans_press_on_an_unfinished_reorder_opens_junbans_window(junban_world, monkeypatch):
     from app import replan_preview as rp
     from app.qt import windows
-    win = world.win
+    win = junban_world.win
     launched, opened = [], []
     monkeypatch.setattr(windows, "launch", lambda shell, op: launched.append(op.name))
     win.open_setting = lambda target: opened.append(target) or True

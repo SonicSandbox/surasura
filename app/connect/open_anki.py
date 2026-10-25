@@ -3,8 +3,8 @@ default, read only while Connect's preview is on. With it on, Surasura starts An
 phone's reviews come in through Anki's own sync on open, and Surasura reads your progress and orders your cards —
 **never after mining**: Sonic, "I mentioned not opening Anki for me specifically after mining with Anki Miner. That's
 the reason: so that we can choose when to open it or not." Connect, hato and every command-line verb never call
-`start`; only a window's session start does (`anki_session.at_window`). Anki's own window appears (it has no hidden
-start), and Surasura never closes it.
+`start`; only a window's session start does (`anki_session.at_window`) — and your own press of *Open Anki* on *Needs
+you*'s Anki line (`for_you`, A3W-6). Anki's own window appears (it has no hidden start), and Surasura never closes it.
 
 - `find()` — Anki's program where its installers put it, never a search (as Anki Miner 3.7 finds it,
   `gui/utils/ankiconnect_help.py`): Windows `%LOCALAPPDATA%\\Programs\\Anki\\anki.exe` (Anki's per-user installer),
@@ -24,6 +24,8 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
+import time
 
 DETACHED_PROCESS = 0x00000008
 CREATE_NEW_PROCESS_GROUP = 0x00000200
@@ -117,6 +119,50 @@ def environment():
     """This program's environment, less what would steer Anki's own Python or Qt."""
     return {key: value for key, value in os.environ.items()
             if not key.upper().startswith(_NOT_FOR_ANKI) and key.upper() not in _NOT_FOR_ANKI_NAMES}
+
+
+def for_you(settings=None, after=None):
+    """*Open Anki* on *Needs you*'s Anki line (A3W-6, Sonic 2026-10-24 night: your press, never Connect's): start Anki on
+    Connect's profile (`setup.anki_profile`, else Anki's own choice) unless one is running -> True when it started,
+    "running" when one already runs (nothing started), False when it couldn't start. Started, a daemon thread waits
+    for it to answer and then kicks Connect (`after`: `kick_when_open`), so the waiting episodes go at once, not at
+    Connect's next 2-minute look. A worker's call; the press never waits for Anki."""
+    if running():
+        return "running"
+    from app.connect import setup
+    try:
+        profile = setup.anki_profile()
+    except Exception:
+        profile = None
+    if start(profile) is None:
+        return False
+    if settings is None:
+        try:
+            from app import settings_manager
+            settings = settings_manager.load_settings()
+        except Exception:
+            settings = {}
+    threading.Thread(target=after or kick_when_open, args=(settings,), name="open-anki-kick", daemon=True).start()
+    return True
+
+
+def kick_when_open(settings, sleep=time.sleep, clock=time.time, look=None, kick=None):
+    """Look for Anki every `anki_session.OPENING_EVERY_S` for up to `OPENING_WAIT_S`; once it answers, kick Connect
+    (`kick.kick`: wakes a running one, starts one that isn't) -> True when it kicked."""
+    from app import anki_connect
+    from app.connect import anki_session
+    if look is None:
+        look = anki_session.look
+    if kick is None:
+        from app.connect.kick import kick
+    url = anki_connect.address(settings)
+    deadline = clock() + anki_session.OPENING_WAIT_S
+    while clock() < deadline:
+        sleep(anki_session.OPENING_EVERY_S)
+        if look(url) == "open":
+            kick(settings)
+            return True
+    return False
 
 
 def start(profile=None):

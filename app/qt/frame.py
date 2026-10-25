@@ -16,8 +16,8 @@ of the window around the pages, in the redesign's flat look.
 - **The footer's corner**: the emerald and *Anki · N waiting* (`AnkiMark`: lit while Anki answers, dark when it is
   closed, failed or off; N the new cards waiting in Anki, once the sync saved a backlog; the AnkiWeb mark's words in its
   hover) and the known number (`KnownCorner`: large and dim, a hairline under it toward the next 2,500, its progress in
-  the hover; a click syncs now, Q30). The re-order's and Connect's lines are quiet marks beside it (`QuietMark`: a
-  dim glyph, the words in the hover).
+  the hover; a click syncs now, Q30). (The re-order's and Connect's quiet marks went in alpha 3: their lines are the
+  phase strip's 順 and Anki Miner hovers.)
 - **The Goal dock** (`GoalDock`): Goal's bar (its lift kept: the edge and a short cached shadow, L14) with the loose hand
   of covers, greyed once into its picture; while a drag runs, three wells — Soon · Goal · Finished — that package F
   drives through `begin_drag` / `well_at` / `hover` / `end_drag` / `set_unlit`.
@@ -1054,27 +1054,6 @@ class KnownCorner(QToolButton):
             p.drawRoundedRect(QRectF(self.rect()).adjusted(1, 1, -1, -1), theme.RADII["icon-button"],
                               theme.RADII["icon-button"])
         p.end()
-
-
-class QuietMark(QLabel):
-    """W31A-1: a status the redesign doesn't draw, kept quietly — the re-order's line, Connect's: a small dim glyph in
-    the footer, its words in the hover and the accessible description (`full()`), shown only while it has something
-    to say. A status, no click."""
-
-    def __init__(self, glyph, name, parent=None):
-        super().__init__(glyph, parent)
-        self.setObjectName("barmark")
-        self.setTextFormat(Qt.TextFormat.PlainText)
-        self.setAccessibleName(name)
-        self._full = ""
-        self.setVisible(False)
-
-    def set_full(self, text):
-        self._full = text or ""
-        self.setAccessibleDescription(self._full)
-
-    def full(self):
-        return self._full
 
 
 # --- the Goal dock -------------------------------------------------------------------------------------------------- #

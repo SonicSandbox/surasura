@@ -858,3 +858,48 @@ def test_row45_mark_them_known_turns_its_arc_before_the_worker_and_the_card_goes
     assert wait_until(lambda: all(e.kind != service.KNOWN_OFFER for e in ny.entries) and ny.cards.card(entry.key)
                       is None, 5)
     assert asked == ["ja"]
+
+
+def test_a3w6_anki_closed_is_one_line_whose_open_anki_starts_it_on_a_worker_and_goes_by_itself(world):
+    # A3W-6 (Sonic, 2026-10-24 night): the star amber while Anki is closed, and Needs you now says why — one line,
+    # *Open Anki* started off the window's thread; once Connect finds Anki open the line is gone (no Dismiss)
+    from app.connect import runner
+    main = threading.main_thread()
+    jobs = [{"item": 9000 + n, "job": n, "state": "waiting", "reason": runner.ANKI_CLOSED} for n in range(3)]
+    connect = {"jobs": jobs, "gaps": [], "needs": [], "anki_openable": True}
+    opened = []
+    seed, win, writer, ny = world(connect=connect, connect_calls={
+        "open_anki": lambda settings: opened.append(threading.current_thread() is not main) or True})
+    entry = entry_of(ny, service.ANKI_WAIT)
+    assert entry.title == "Anki isn't open: 3 episodes wait for it"
+    assert {b.property("action") for b in ny.cards.buttons(entry.key)} == {"open_anki"}
+    button(ny, entry.key, "open_anki").click()
+    assert wait_until(lambda: opened, 5) and opened == [True]
+    connect["jobs"] = [dict(j, reason=None) for j in jobs]              # Connect's next look: Anki is open
+    ny.refresh()
+    assert wait_until(lambda: not any(e.kind == service.ANKI_WAIT for e in ny.entries), 5)
+
+
+def test_a3w6_the_line_comes_and_goes_with_connects_anki_wait_even_when_connects_line_stays_the_same(world, monkeypatch):
+    # review A-2: Connect's line is its first job's reason — a show with no video first keeps it the same while Anki
+    # closes and opens; the Anki line still comes and goes, read from the feed's last look (no read of its own)
+    from app.connect import feed, runner
+    from app.qt import shell as shell_module
+    first = {"item": 9000, "job": 1, "state": "waiting", "reason": runner.NO_VIDEO}
+    connect = {"jobs": [first], "gaps": [], "needs": [], "anki_openable": False}
+    seed, win, writer, ny = world(connect=connect)
+    latest = {"feed": feed.build({"running": True, "languages": {"ja": connect}}, "ja")}
+    monkeypatch.setattr(shell_module, "connect_feed",
+                        lambda lang, settings: SimpleNamespace(latest=lambda: latest["feed"]))
+    ny.connect_in(runner.NO_VIDEO)
+    settle(ny)
+    assert not any(e.kind == service.ANKI_WAIT for e in ny.entries)
+    connect["jobs"] = [first] + [{"item": 9001 + n, "job": 2 + n, "state": "waiting", "reason": runner.ANKI_CLOSED}
+                                 for n in range(2)]
+    latest["feed"] = feed.build({"running": True, "languages": {"ja": connect}}, "ja")
+    ny.connect_in(runner.NO_VIDEO)                                       # the same line
+    assert wait_until(lambda: any(e.kind == service.ANKI_WAIT for e in ny.entries), 5)
+    connect["jobs"] = [first]
+    latest["feed"] = feed.build({"running": True, "languages": {"ja": connect}}, "ja")
+    ny.connect_in(runner.NO_VIDEO)
+    assert wait_until(lambda: not any(e.kind == service.ANKI_WAIT for e in ny.entries), 5)

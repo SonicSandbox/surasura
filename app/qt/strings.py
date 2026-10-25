@@ -309,10 +309,7 @@ BAR_LEVEL_AUTO_NONE = "Auto"
 BAR_LEVEL_TIP = "Your level: your list holds the words at least as common as {band}"
 BAR_LEVEL_AUTO_TIP = ("Your level, chosen for you: the commonest band whose list holds enough words, {band} now")
 BAR_LEVEL_AUTO_NONE_TIP = "Your level is chosen for you after your first Generate"
-# W3.5 row 7: the re-order's line (the host's own words, said whole in its tooltip), Connect's, AnkiWeb's, the dot.
-# The re-order's tip promises nothing: the line beside it may say it stands aside.
-BAR_REPLAN_TIP = "{line}\n\nAnki's new cards in your list's order: what Surasura is doing about it, or why it waits"
-BAR_CONNECT_TIP = "What Surasura Connect is doing with your cards in this language"
+# W3.5 row 7: the journey dot (the re-order's and Connect's lines are 順's and Anki Miner's hovers since alpha 3).
 JOURNEY_DOT = "●"
 JOURNEY_DOT_NAME = "Your journey's sentences are catching up"
 # The dot's tip: "by itself" only while the automation is on (D29: the journey's Generate runs), else press Generate.
@@ -525,36 +522,43 @@ ROWS_TOP_LINE_WHERE = "{tip}\n• Click to change it: Settings → Anki & mining
 ROWS_SOON_LINE_WHERE = "{tip}\nWhere Soon starts is a setting: Settings → Content"
 ROWS_ACCESSIBLE_STRING = "{line} · {string}"
 
-# --- W3.1a footer (W31A-1 / W31A-2): the re-order's and Connect's lines as quiet marks (their words in the hover), and
-# the cards waiting in Anki beside the emerald.
-FOOT_REPLAN_MARK = "⇅"
-FOOT_REPLAN_NAME = "Anki's re-order"
-FOOT_CONNECT_MARK = "⇄"
-FOOT_CONNECT_NAME = "Surasura Connect"
-FOOT_CONNECT_TIP = "{line}\n\n" + BAR_CONNECT_TIP
+# --- W3.1a footer (W31A-2): the cards waiting in Anki beside the emerald. (The re-order's and Connect's lines left
+# their quiet marks ⇅ ⇄ for 順's and Anki Miner's hovers: alpha 3, Sonic 2026-10-24.)
 FOOT_ANKI_WAITING = "Anki · {n:,} waiting"
 FOOT_ANKI_WAITING_TIP = "{n:,} new notes wait in Anki, in the decks the sync reads"   # backlog notes, not cards (AD-8)
 
 # --- the phase strip (Sonic 2026-10-23, build 6; `app/qt/phase_strip.py`): five circles at the bar's bottom left, each
-# one's hover its name, a line per job under way, then the last one that ended. No buttons in it.
+# one's hover its name and what it does, what it is doing now, then the last thing that ended. Alpha 3 (Sonic
+# 2026-10-24: "I'd actually prefer if pressing it opened up their settings"): a press opens the circle's settings.
 PHASE_STRIP_NAME = "What's running"
 PHASE_NAMES = {"arrivals": "Arrivals", "surasura": "Surasura", "miner": "Anki Miner", "junban": "Junban 順",
                "anki": "Anki"}
 PHASE_MARKS = {"arrivals": "届", "surasura": "ス", "junban": "順"}       # Anki Miner and Anki show their logos
-PHASE_ABOUT = {
-    "arrivals": "Looking at your folders, imports and copies",
-    "surasura": "Generate, the indexer and the sentence dictionary",
-    "miner": "Surasura Connect making cards with Anki Miner",
-    "junban": "Anki's order for your new cards, and Backfill",
-    "anki": "Your known words from Anki",
+PHASE_ABOUT = {                                    # beside the name: what it does, short and plain
+    "arrivals": "finds new episodes and books in your folders",
+    "surasura": "makes your word list",
+    "miner": "makes cards from your episodes",
+    "junban": "puts Anki's new cards in your list's order",
+    "anki": "reads the words you know, and shows when cards wait for Anki",
 }
-PHASE_IDLE = "Nothing under way"
-PHASE_DONE = "Done {time}"
-PHASE_STOPPED = "Stopped {time}"
-PHASE_FAILED = "Failed {time}: {why}"
+PHASE_IDLE = "Nothing running now"
+PHASE_DONE = "Last: {what} — done {time}"
+PHASE_STOPPED = "Last: {what} — stopped {time}"
+PHASE_FAILED = "Last: {what} — failed {time}: {why}"
 PHASE_FAILED_NOW = "Failed: {why}"
 PHASE_NEEDS = "Needs you: {why}"
 PHASE_TIME = "%H:%M"
+PHASE_PRESS = "Press to open its settings"         # the hover's last line, on a circle that has some (mouse or keys)
+PHASE_PRESS_WINDOW = "Press to open 順's window and fix it"   # 順 while its line's fix is in its window (InJunban)
+PHASE_STARTING = "Starting…"                       # lit by a press whose job hasn't begun, with no words of its own
+# A job's plain name in the hover, by its kind (else by its label) where the job's own label is a word for us
+PHASE_JOB_NAMES = {
+    "indexer": "Reading your files",
+    "sentence-corpus": "Making the sentence dictionary",
+    "mine-wait": "Making cards",
+    "mine-anki": "Making cards",
+    "Journey: updating sentences…": "Updating your journey's sentences",
+}
 
 # --- W3.1a drag: the window's writer (app/services/moves.py `Writer(words=MOVE_WORDS)`, its notes: moves.WORDS's keys)
 MOVE_WORDS = {
@@ -1217,6 +1221,8 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
     "mine_text_only": ("Mine the text only", "Make its cards from the subtitles alone, with no picture or audio"),
     "open_logs": ("Open the logs folder", "Open the folder where Surasura keeps its logs, to look at them or send them"),
     "save_logs": ("Save logs to a file…", "Save the last week's logs into one zip file you can send"),
+    # A3W-6: the Anki line's one button (where Surasura can start Anki)
+    "open_anki": ("Open Anki", "Start Anki on your cards' profile: the waiting episodes' cards are made once it's open"),
 }
 NEEDS_LOOKING = "Looking…"
 NEEDS_MORE_LINES = "and {n} more"
@@ -1249,6 +1255,9 @@ NEEDS_ASKED_HATO = "Asked hato for its videos"
 NEEDS_MINE_ANYWAY = "It mines without timing, in turn"
 NEEDS_MINE_ANYWAY_NOT = "Nothing to mine there any more"
 NEEDS_DISMISSED = "Taken off the list"
+NEEDS_OPENING_ANKI = "Opening Anki · the line goes once it's open"
+NEEDS_ANKI_RUNNING = "Anki is already starting or open"
+NEEDS_ANKI_NOT_STARTED = "Anki couldn't be started from here: open it yourself"
 NEEDS_SAVED_LOGS = "Logs saved to {path}"
 NEEDS_SAVE_LOGS_TITLE = "Save logs to a file"
 NEEDS_CHOOSE_FILE_TITLE = "Choose {label}'s file"

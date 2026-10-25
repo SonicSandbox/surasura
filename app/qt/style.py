@@ -93,7 +93,6 @@ QToolButton#tab:focus {{ color: {c['ink']}; border: 2px solid {c['accent']}; bor
 QWidget#footer {{ background: {c['frame']}; }}
 QLabel#barline {{ color: {c['ink-dim']}; {font('footer')} font-weight: 400; }}
 QLabel#barfailure {{ color: {c['warn']}; {font('footer')} font-weight: 400; }}
-QLabel#barmark {{ color: {c['ink-dim']}; {font('footer')} font-weight: 400; }}
 QLabel#sourcesline {{ color: {c['ink-dim']}; {font('footer')} font-weight: 400; }}
 QToolButton#standingclose {{ color: {c['ink-dim']}; padding: 0; border-radius: {px(5)}; min-width: {px(16)};
   max-width: {px(16)}; min-height: {px(16)}; max-height: {px(16)}; {font('key-hint')} font-weight: 400; }}

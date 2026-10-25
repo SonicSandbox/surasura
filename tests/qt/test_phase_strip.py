@@ -499,10 +499,10 @@ def test_a3_junban_and_anki_miner_say_their_standing_line_only_while_no_job_of_t
         assert "re-ordering" not in strip.hover_text(c) and "cards made" not in strip.hover_text(c)
     registry = JobRegistry()
     mine = registry.record("mine", "Making cards", automatic=False)
-    mine.progress("Re:Zero 52 · Filling fields 94%")
+    mine.progress("Hyouka 3 · Filling fields 94%")
     strip.set_jobs(registry.snapshot())
     text = strip.hover_text(P.MINER)
-    assert "Making cards · Re:Zero 52 · Filling fields 94%" in text and "cards made today" not in text
+    assert "Making cards · Hyouka 3 · Filling fields 94%" in text and "cards made today" not in text
     mine.finish()
     strip.set_jobs(registry.snapshot())
     assert "Up to date · 12 cards made today" in strip.hover_text(P.MINER)       # back once the job ended

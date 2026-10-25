@@ -428,6 +428,8 @@ class SourceLooks:
                                    {"id": root, "path": path})
                         answer["result"] = self._scan(store, row, full=True, progress=lambda found, shows:
                                                       self.on_progress(row["path"], found, shows))
+                        if answer["result"] is None or answer["result"].get("busy"):
+                            answer["later"] = True    # read from now on: the next look joins what it attaches (D5)
                         answer["state"] = sources.reach(old["path"], sources.volume_of(store, self.language, root_id,
                                                                                          old["path"]))
                         if answer["state"] == sources.GONE and root != root_id:

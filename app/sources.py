@@ -501,7 +501,8 @@ _SEPARATORS = os.sep + (os.altsep or "")
 
 
 def reach(path, dev=None):
-    """T6 (Sonic 2026-10-24: the lean, exactly): a source folder's reach -> REACHED (a folder there), GONE (moved or
+    """T6 (Sonic 2026-10-24: the lean, exactly): a source folder's reach -> REACHED (a folder there: what it holds is
+    the look's — this rule judges only a folder that ISN'T there), GONE (moved or
     deleted: the folder above it lists, and holds nothing of its name) or AWAY (anything else: an unplugged drive, a
     share or NAS that's down, a parent that can't be read — it may come back). Never GONE for an away drive: only a
     folder above it that READS says gone — on the volume the folder was last read on (`dev`, the look's record:
@@ -526,12 +527,31 @@ def reach(path, dev=None):
         parent = os.path.dirname(folder)
         if dev is not None and os.stat(parent).st_dev != dev:
             return AWAY
+        if dev is None and _drive_kind(parent) != "fixed":
+            return AWAY                              # no volume to check it by: never on a stick or a share
         with os.scandir(parent) as listing:
             if st is None and any(ls.path_key(e.name) == name for e in listing):
                 return AWAY                          # listed, yet not found: a link to a drive that's away
     except OSError:
         return AWAY
     return GONE
+
+
+def _drive_kind(path):
+    """"fixed", "removable", "network" or "other" — what Windows says `path`'s drive is (`GetDriveTypeW`; a share's
+    `\\\\server\\share` is network); "fixed" off Windows (no letters to be taken over). `reach`'s guard where no volume
+    was recorded."""
+    if sys.platform != "win32":
+        return "fixed"
+    drive = os.path.splitdrive(os.path.abspath(path))[0]
+    if not drive:
+        return "other"
+    try:
+        import ctypes
+        kind = ctypes.windll.kernel32.GetDriveTypeW(drive.rstrip(_SEPARATORS) + "\\")
+    except Exception:
+        return "other"
+    return {3: "fixed", 2: "removable", 4: "network"}.get(kind, "other")
 
 
 def _volume(held, path):

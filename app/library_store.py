@@ -8516,13 +8516,15 @@ def _store_join_moved(self, root_id, folder):
         return 0
     sql = ("SELECT p.content_key, p.item_id, json_extract(p.pairing, '$.origin'), json_extract(p.pairing, "
            "'$.sha256'), json_extract(p.pairing, '$.video_key') FROM pairings p WHERE p.content_key >= ? AND "
-           f"p.content_key < ? AND json_valid(p.pairing) AND {_LIVE_ORIGIN}")
+           f"p.content_key < ? AND json_valid(p.pairing) AND {_LIVE_ORIGIN} ORDER BY p.content_key")
+    # (in key order: of two copies with the same bytes in the folder picked, the mark names the first, every time)
     with self._reading():
         olds = self.conn.execute(sql, (old_lo, old_hi)).fetchall()
         news = self.conn.execute(sql, (new_lo, new_hi)).fetchall()
     found = {}
     for key, item_id, _origin, sha, vkey in news:
-        found.setdefault(item_id, []).append((key, sha, vkey))
+        if not old_lo <= key < old_hi:                # (a folder picked above the old one holds its old origins too)
+            found.setdefault(item_id, []).append((key, sha, vkey))
     joins = []
     for key, item_id, origin, sha, vkey in olds:
         match = next((k for k, s, v in found.get(item_id, ())
@@ -8547,8 +8549,8 @@ def _store_source_detail(self, root_ids):
     out = {}
     with self._reading():
         paths = dict(self.conn.execute("SELECT id, path FROM roots WHERE kind IN ('source', 'source-off')").fetchall())
-        reading = [(i, p) for i, p in self.conn.execute("SELECT id, path FROM roots WHERE kind = 'source' ORDER BY id")
-                   if p]
+        reading = [(i, p, _folder_prefix(p)[0]) for i, p in self.conn.execute(
+            "SELECT id, path FROM roots WHERE kind = 'source' ORDER BY id") if p]
         for root_id in root_ids:
             if not paths.get(root_id):
                 continue
@@ -8567,8 +8569,7 @@ def _store_source_detail(self, root_ids):
             for (key,) in self.conn.execute(
                     f"SELECT p.content_key FROM pairings p WHERE p.item_id IN (SELECT value FROM json_each(?)) AND "
                     f"{_LIVE_ORIGIN} AND NOT (p.content_key >= ? AND p.content_key < ?)", (items, lo, hi)):
-                held = [(len(p), n, i) for n, (i, p) in enumerate(reading)
-                        if i != root_id and key.startswith(_folder_prefix(p)[0])]
+                held = [(len(k), n) for n, (i, _p, k) in enumerate(reading) if i != root_id and key.startswith(k)]
                 if held:
                     elsewhere.add(max(held)[1])            # the innermost folder being read that holds it
             out[root_id] = {"shows": sorted(titles, key=lambda t: (-titles[t], t)),

@@ -152,8 +152,10 @@ class SourceLooks:
         same folder again is its row) and looked at in full, then, the old folder still GONE, its episodes found there
         joined (`Store.join_moved`: `joined` how many; never a second copy) and `stop` True: the window gives its
         writer `stop_reading(root_id)` (the toast's Undo). The old folder back, or only away (`state`), joins and stops
-        nothing. A refused folder answers its reason, nothing written. `language`: as `stop`'s. -> False once
-        closed."""
+        nothing; so does a look that couldn't run now (`later`: the folder is read from now on, and the next look
+        joins what it attaches — D5 — while the card stays). A refused folder answers its reason (`refused`), nothing
+        written; a failure after the folder was added answers `failed` (the folder is read; nothing joined or
+        stopped). `language`: as `stop`'s. -> False once closed."""
         if self._closing.is_set() or (language is not None and language != self.language):
             return False
         return self._worker.put(self._find, root_id, path, then or _nothing)
@@ -405,8 +407,8 @@ class SourceLooks:
             self._publish(store, {})
 
     def _find(self, root_id, path, then):
-        answer = {"old": root_id, "path": path, "root": None, "refused": None, "result": None, "state": None,
-                  "joined": 0, "stop": False, "language": self.language}
+        answer = {"old": root_id, "path": path, "root": None, "refused": None, "failed": None, "result": None,
+                  "state": None, "joined": 0, "stop": False, "language": self.language}
         store = None
         try:
             store = self._store()
@@ -432,12 +434,16 @@ class SourceLooks:
                             answer["later"] = True    # read from now on: the next look joins what it attaches (D5)
                         answer["state"] = sources.reach(old["path"], sources.volume_of(store, self.language, root_id,
                                                                                          old["path"]))
-                        if answer["state"] == sources.GONE and root != root_id:
+                        if answer["state"] == sources.GONE and root != root_id and not answer.get("later"):
                             answer["joined"] = store.join_moved(root_id, row["path"])
                             answer["stop"] = old["on"]
                         self._follow_watches(store.sources(counts=False))
         except Exception as e:
-            answer["refused"] = str(e) or repr(e)
+            if answer["root"] is None:
+                answer["refused"] = str(e) or repr(e)
+            else:                                     # the folder is read already: said as it stands, never refused
+                answer["failed"] = str(e) or repr(e)
+                answer["stop"] = False
         then(answer)
         if store is not None:
             self._publish(store, {})
@@ -552,7 +558,10 @@ class SourceLooks:
                                    gone=self._reachable.get(r["id"]) is False and self._gone.get(r["id"], False))
                               for r in rows]
         lost = [r["id"] for r in summary["sources"] if r["gone"]]
-        if lost:                                                  # T6: a gone folder's card (rare: read only then)
+        for r in summary["sources"]:
+            if r["gone"]:                                         # T6: the card's keys, whatever the read below says
+                r.update(shows=[], finished=False, found_in=[])
+        if lost:                                                  # T6: a gone folder's card (read only while one is)
             try:
                 detail = store.source_detail(lost)
                 for r in summary["sources"]:

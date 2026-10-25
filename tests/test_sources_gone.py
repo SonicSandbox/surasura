@@ -159,6 +159,23 @@ def test_a_folder_last_seen_on_another_volume_is_never_gone():
     assert sources.reach(folder, dev=dev + 1) == sources.AWAY
 
 
+def test_with_no_volume_recorded_only_a_fixed_drive_says_gone(monkeypatch):
+    """A folder last read before this rule (no volume recorded yet — Sonic's Downloads folder) is gone on a fixed
+    drive; on a stick or a share another one may answer at its letter meanwhile, so with nothing to check it by it is
+    away. With a volume recorded the drive's kind doesn't matter: the volume decides."""
+    parent = _elsewhere("Media")
+    folder = os.path.join(parent, "Show")
+    os.makedirs(folder)
+    dev = os.stat(folder).st_dev
+    os.rmdir(folder)
+    assert sources._drive_kind(parent) == "fixed"
+    assert sources.reach(folder) == sources.GONE
+    for kind in ("removable", "network", "other"):
+        monkeypatch.setattr(sources, "_drive_kind", lambda _p, kind=kind: kind)
+        assert sources.reach(folder) == sources.AWAY, kind
+        assert sources.reach(folder, dev=dev) == sources.GONE, kind
+
+
 def test_a_folder_still_listed_by_its_parent_but_unreadable_is_away():
     """A folder link (junction) to a drive that's away is listed by the folder above it, yet can't be read: away,
     never gone (its files may all be on that drive)."""
@@ -458,6 +475,50 @@ def test_find_its_new_folder_when_the_old_one_is_back_or_only_away_joins_and_sto
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
+def test_find_its_new_folder_when_its_look_cant_run_or_the_join_fails_never_stops_the_old_folder(language,
+                                                                                                  monkeypatch):
+    """Another look holding the library (busy): the new folder is read from now on (`later`), but nothing is joined yet
+    and the old folder is not offered to stop — its card stays until a look joins its episodes. A join that fails
+    after the folder was added says `failed` (never `refused`: the folder IS read now) and stops nothing."""
+    store, data_dir = _empty(language)
+    title = names(language)[71]
+    old = os.path.join(_elsewhere("Downloads"), title)
+    _show(language, old)
+    with store:
+        root_a = store.add_source(old)
+        _look(store, language, root_a, first=True)
+        key = sources._store_key(store)
+    new = os.path.join(_elsewhere("Archive"), title)
+    shutil.move(old, new)
+    _settle(new)
+    sources._RUNNING.add(key)                                       # another look holds the library
+    try:
+        looks, heard = _looks(language), []
+        try:
+            assert looks.find_new_folder(root_a, new, heard.append)
+            assert looks.idle(60)
+        finally:
+            looks.close()
+            looks.idle(10)
+    finally:
+        sources._RUNNING.discard(key)
+    assert heard[0]["later"] is True and (heard[0]["joined"], heard[0]["stop"], heard[0]["refused"]) == (0, False, None)
+
+    def broken(self, root_id, folder):
+        raise ls.StoreBusy("the library is busy")
+    monkeypatch.setattr(ls.Store, "join_moved", broken)
+    looks, heard = _looks(language), []
+    try:
+        assert looks.find_new_folder(root_a, new, heard.append)
+        assert looks.idle(60)
+    finally:
+        looks.close()
+        looks.idle(10)
+    assert heard[0]["root"] is not None and heard[0]["refused"] is None and heard[0]["failed"]
+    assert heard[0]["stop"] is False
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 def test_find_its_new_folder_refused_says_why_and_changes_nothing(language):
     """A folder Surasura can't read (its own data folder, a path that isn't a folder): the store's own reason, no root
     added, nothing joined, nothing to stop."""
@@ -687,3 +748,29 @@ def test_the_join_reads_only_the_folder_picked_never_a_folder_whose_name_starts_
         for f in files:
             assert origins[ls.path_key(os.path.abspath(f))].moved_to.startswith(ls.path_key(new).rstrip("/") + "/")
         assert store.join_moved(root_a, new) == 0                       # marked already: nothing twice
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_join_marks_only_an_original_that_is_gone_and_whose_bytes_are_there(language):
+    """MV-A5 and D5: an original still on disk is a copy, never a move (the old folder back: nothing marked); a file in
+    the new folder whose bytes differ (edited there since) is not that original — only the others join."""
+    store, data_dir = _empty(language)
+    title = names(language)[71]
+    old = os.path.join(_elsewhere("Downloads"), title)
+    new = os.path.join(_elsewhere("Anime"), title)
+    files = _show(language, old)
+    with store:
+        root_a = store.add_source(old)
+        _look(store, language, root_a, first=True)
+        shutil.copytree(old, new, copy_function=shutil.copy2)
+        _settle(new)
+        _look(store, language, store.add_source(new))
+        assert store.join_moved(root_a, new) == 0 and _marked(store, files) == [False] * 3
+        shutil.rmtree(old)
+        edited = os.path.join(new, os.path.basename(files[0]))
+        st = os.stat(edited)
+        assert store.update_origin(edited, st.st_size, st.st_mtime_ns, "0" * 64)
+        assert store.join_moved(root_a, new) == 2
+        assert _marked(store, files) == [False, True, True]
+        for folder in (old, os.path.dirname(old)):                      # itself, or a folder above it: nothing
+            assert store.join_moved(root_a, folder) == 0

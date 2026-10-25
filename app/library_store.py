@@ -1397,6 +1397,7 @@ class Change:
                               #                   "fields": [(work_id, column, old, new)], "created": [ids]}
         self.piece_fields = []  # LM11: (piece, "kind" | "title", old, new) written, put back by the value check
         self.dropped = []     # LM11: the pieces' rows the command emptied and deleted (an undo brings them back)
+        self.roots = []       # T6: [(root_id, old kind, new kind)] a *Stop reading* wrote (the value check puts it back)
 
     def __repr__(self):
         return f"<Change {self.kind} v{self.version} e{self.epoch} items={len(self.items)}>"
@@ -4061,6 +4062,21 @@ class Store:
             change.options = options
             return change
 
+    def _undo_roots(self, cmd, change):
+        """T6, *Stop reading*'s Undo by the value check (§6.11): each folder read again only where its row still holds
+        what the stop wrote (turned back on meanwhile: left as it is, a note)."""
+        out = self._change(cmd, "undo")
+        back, skipped = [], []
+        for root_id, old, new in change.roots:
+            if self.conn.execute("UPDATE roots SET kind = ? WHERE id = ? AND kind = ?", (old, root_id, new)).rowcount:
+                back.append((root_id, new, old))
+            else:
+                skipped.append(root_id)
+        if back:
+            self._copy_dirty()
+            out.roots = back
+        return out, skipped
+
     def _undo_options(self, cmd, change):
         """The value check (§6.11): each option goes back only where it still holds what the change set."""
         out = self._change(cmd, "undo")
@@ -5059,6 +5075,8 @@ class Store:
                 out, skipped = self._undo_import(cmd, change, trashed_paths)
             elif getattr(change, "options", None):
                 out, skipped = self._undo_options(cmd, change)
+            elif kind == "stop_source":
+                out, skipped = self._undo_roots(cmd, change)
             elif kind == "set_tier" and change.status:              # W3.2: an arrival finished, its watched
                 out, skipped = self._undo_finish(cmd, change)
             elif kind == "move" and change.status:      # P4.1 L2 (TF fix 8): out of Finished, back in the order
@@ -8458,14 +8476,107 @@ def _store_sources(self, all=False, counts=True):
 
 
 def _store_stop_source(self, root_id):
-    """*Stop reading* a folder: its row kept as 'source-off' (adding it again turns it back on); its items and their
-    records stay. -> True when it was being read."""
-    with self._writing():
+    """*Stop reading* a folder: its row kept as 'source-off' (adding it again turns it back on); its items, their copies
+    and their records stay, and nothing on disk moves (T6: a gone folder's *Stop reading it*). -> the Change (T6: Undo
+    reads it again, by the value check — `_undo_roots`), or None when it wasn't being read."""
+    with self._command("stop_source") as cmd:
         if not self.conn.execute("UPDATE roots SET kind = 'source-off' WHERE id = ? AND kind = 'source'",
                                  (root_id,)).rowcount:
-            return False
+            return None
         self._copy_dirty()
-    return True
+        change = self._change(cmd, "stop_source")
+        change.roots = [(root_id, "source", "source-off")]
+        return change
+
+
+def _folder_prefix(path):
+    """A folder's origin-key range: its prefix (`/`-ended: `...Show` never holds `...Show S2`) and the key just past
+    every key under it (`0` follows `/`) — a key-range read of `pairings`."""
+    prefix = path_key(os.path.abspath(path)).rstrip("/") + "/"
+    return SOURCE_KEY + prefix, SOURCE_KEY + prefix[:-1] + "0"
+
+
+_LIVE_ORIGIN = f"{_ORIGIN_ROW} AND NOT {_VERSION_ROW} AND NOT {_MOVED_ROW}"
+
+
+def _store_join_moved(self, root_id, folder):
+    """T6, *Find its new folder...*: the GONE source `root_id`'s originals found again under `folder` (a look attached
+    them there: the same items) — each live origin under its folder (no version, no mark) whose item has a live origin
+    under `folder` holding the same bytes (sha256; a video's own origin: the same `video_key`) is marked `moved_to`
+    that one (D5's mark, `mark_moved`'s rule; MV-A5: never by its name alone), in ONE write, bookkeeping the copy
+    carries. An original still on disk is left (a copy, not a move; stat'ed outside the write lock). Nothing else
+    moves: an episode not found there keeps its copy, its place and its record. -> how many originals were marked."""
+    with self._reading():
+        row = self.conn.execute("SELECT path FROM roots WHERE id = ?", (root_id,)).fetchone()
+    if row is None or not row[0] or not isinstance(folder, str) or not folder.strip():
+        return 0
+    old_lo, old_hi = _folder_prefix(row[0])
+    new_lo, new_hi = _folder_prefix(folder)
+    if old_lo == new_lo:
+        return 0
+    sql = ("SELECT p.content_key, p.item_id, json_extract(p.pairing, '$.origin'), json_extract(p.pairing, "
+           "'$.sha256'), json_extract(p.pairing, '$.video_key') FROM pairings p WHERE p.content_key >= ? AND "
+           f"p.content_key < ? AND json_valid(p.pairing) AND {_LIVE_ORIGIN} ORDER BY p.content_key")
+    # (in key order: of two copies with the same bytes in the folder picked, the mark names the first, every time)
+    with self._reading():
+        olds = self.conn.execute(sql, (old_lo, old_hi)).fetchall()
+        news = self.conn.execute(sql, (new_lo, new_hi)).fetchall()
+    found = {}
+    for key, item_id, _origin, sha, vkey in news:
+        if not old_lo <= key < old_hi:                # (a folder picked above the old one holds its old origins too)
+            found.setdefault(item_id, []).append((key, sha, vkey))
+    joins = []
+    for key, item_id, origin, sha, vkey in olds:
+        match = next((k for k, s, v in found.get(item_id, ())
+                      if (sha and s == sha) or (not sha and vkey and v == vkey)), None)
+        if match is None or not isinstance(origin, str) or os.path.lexists(origin):
+            continue
+        joins.append((item_id, match, key[len(SOURCE_KEY):]))
+    if not joins:
+        return 0
+    with self._writing():
+        for item_id, match, old in joins:
+            self._mark_moved(item_id, match, [old])
+        self._copy_dirty()
+    return len(joins)
+
+
+def _store_source_detail(self, root_ids):
+    """T6, a gone folder's *Needs you* card: {root_id: {"shows": [the titles it holds, most episodes first],
+    "finished": every one of its episodes Finished (*Stop reading it* first), "found_in": [the folders being read that
+    hold its episodes now, in the order added — a look attached them there: *Find its new folder...* on one joins
+    them]}}, of the episodes it held: its origins, live or marked moved (a look that joined them by itself leaves the
+    card its show and their new place). Read-only."""
+    out = {}
+    with self._reading():
+        paths = dict(self.conn.execute("SELECT id, path FROM roots WHERE kind IN ('source', 'source-off')").fetchall())
+        reading = [(i, p, _folder_prefix(p)[0]) for i, p in self.conn.execute(
+            "SELECT id, path FROM roots WHERE kind = 'source' ORDER BY id") if p]
+        for root_id in root_ids:
+            if not paths.get(root_id):
+                continue
+            lo, hi = _folder_prefix(paths[root_id])
+            items = _dumps(sorted({i for (i,) in self.conn.execute(      # its moved ones too: a look that joined
+                f"SELECT p.item_id FROM pairings p WHERE p.content_key >= ? AND p.content_key < ? AND {_ORIGIN_ROW} "
+                f"AND NOT {_VERSION_ROW}", (lo, hi))}))              # them by itself leaves the card its show
+            titles, tiers = {}, set()
+            for tier, title in self.conn.execute(
+                    "SELECT i.tier, COALESCE(w.title, i.title, '') FROM items i LEFT JOIN works w ON w.id = i.work_id "
+                    "WHERE i.id IN (SELECT value FROM json_each(?))", (items,)):
+                tiers.add(tier)
+                if title:
+                    titles[title] = titles.get(title, 0) + 1
+            elsewhere = set()
+            for (key,) in self.conn.execute(
+                    f"SELECT p.content_key FROM pairings p WHERE p.item_id IN (SELECT value FROM json_each(?)) AND "
+                    f"{_LIVE_ORIGIN} AND NOT (p.content_key >= ? AND p.content_key < ?)", (items, lo, hi)):
+                held = [(len(k), n) for n, (i, _p, k) in enumerate(reading) if i != root_id and key.startswith(k)]
+                if held:
+                    elsewhere.add(max(held)[1])            # the innermost folder being read that holds it
+            out[root_id] = {"shows": sorted(titles, key=lambda t: (-titles[t], t)),
+                            "finished": bool(tiers) and tiers == {"graduated"},
+                            "found_in": [reading[n][1] for n in sorted(elsewhere)]}
+    return out
 
 
 def _store_origins(self, items=None):
@@ -10911,6 +11022,8 @@ Store._not_a_source = _store_not_a_source
 Store.add_source = _store_add_source
 Store.sources = _store_sources
 Store.stop_source = _store_stop_source
+Store.join_moved = _store_join_moved
+Store.source_detail = _store_source_detail
 Store.origins = _store_origins
 Store.excluded = _store_excluded
 Store.items_of_size = _store_items_of_size

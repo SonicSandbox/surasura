@@ -13,7 +13,8 @@
   `pin`, `keep_cards` (a Finished item's cards out of / back in the order), `ask_mining`, `split` / `join`,
   `set_media_type`, `set_cover`, `forget_covers` (*Remove downloaded covers*, W3.2 Q7); W3.3 P6's `set_options`
   (Settings' *Soon starts after N files* and *Mine automatically: the top N files*: journalled, never on the Undo
-  stack; the row is where it is changed back). Each
+  stack; the row is where it is changed back); T6's `stop_reading` (a gone folder's *Stop reading it*: the folder no
+  longer read, nothing on disk moved, one Undo). Each
   returns at once (the window has already painted its
   own copy of the order); what happened comes back through callbacks, called on the writer's thread (the window's bridge
   queues them):
@@ -108,6 +109,10 @@ KEPT += ("how", "item_ids", "title")
 JOURNALLED += ("merge_works",)
 GUARDED += ("merge_works",)
 # --- end LM11
+# --- T6: *Stop reading it* (a gone folder's card): the root off, nothing on disk moves. (Settings' *Stop reading*
+# still goes through `SourceLooks.stop` — no journal, no Undo — a follow-up: one path for both, `_work/leans-after-build7`)
+JOURNALLED += ("stop_source",)
+KEPT += ("root",)
 # --- end W3.2 B
 PART = ".part"                  # a dropped file is copied under its name + this (no content name: no sync takes it up),
 #                                 then renamed whole
@@ -402,6 +407,17 @@ class Writer:
         that landed before the crash is let go quietly (`_changed_since`)."""
         return self._put({"op": "skip_folder", "ids": [], "path": os.fspath(path), "label": label,
                           "at": _queued_at()})
+
+    def stop_reading(self, root_id, label=None, language=None):
+        """T6, *Stop reading it* (a gone folder's *Needs you* card): `Store.stop_source` — the folder no longer read,
+        its row kept; every episode, its copy, its place and its records stay, nothing on disk moves (so nothing goes to
+        the trash). One change: Undo (Ctrl+Z, the toast's) reads it again, by the value check. A folder not being read
+        (stopped meanwhile) is no change. Journalled: a busy store keeps it in order, a crash replays it once.
+        `language`: the library the folder was listed in — another's (root ids repeat across stores, B2) is refused
+        before anything is queued (None)."""
+        if language is not None and language != self.language:
+            return None
+        return self._put({"op": "stop_source", "ids": [], "root": int(root_id), "label": label})
 
     def restore(self, trash_ids, label=None):
         """Put back from the trash (`Store.restore` by trash ids, the files first, as Undo of a remove does). Undo sends
@@ -949,6 +965,8 @@ class Writer:
         if op == "its_new":
             store.its_new(cmd["path"])              # a sync's summary, no change: nothing to undo
             return None
+        if op == "stop_source":                     # T6: None when it wasn't being read (a replay that landed)
+            return store.stop_source(cmd["root"])
         if op == "link_video":
             from app.connect import link
             return link.link(store, ids[0], cmd["path"])
@@ -1633,7 +1651,7 @@ class Writer:
 
 
 UNORDERED = ("set_watched", "pin", "keep_cards", "ask_mining", "set_cover", "set_media_type", "split",
-             "forget_covers", "ungroup", "rename_piece", "merge_works")
+             "forget_covers", "ungroup", "rename_piece", "merge_works", "stop_source")
 #   commands that never change the order: the numbers aren't asked again after them — W-1 (K-W4): but a watched mark
 #   that moved `order_version` (it changed what counts) is (`_counted`)
 COUNTING = ("set_watched",)
@@ -1669,6 +1687,8 @@ def _refused(change, out):
         return not out.restored and not getattr(out, "folder_dropped", False)
     if change.kind == "restore":
         return not out.trash_ids                    # every row it put back changed since
+    if change.kind == "stop_source":
+        return not getattr(out, "roots", None)      # T6 (A4): read again meanwhile — the value check wrote nothing
     if change.kind == "import_finished":
         return _skips(out) >= len(change.items) + len(change.added)
     if change.kind in ("split", "join", "ungroup"):

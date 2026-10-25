@@ -54,7 +54,10 @@ folder, `Library/<show>/<file>` (SRC-4). One look (`scan`):
   (`runner.mac_copy`: the one dot rule — a `.hack` title is a name, LF-21), and a video is what `runner.video_file`
   says (never a `.ts` under its TS_MIN: B7, S9).
 - **An unreachable folder** (SRC-3): `{"reachable": False}`, nothing written or marked — one that goes while it is
-  listed too (its folder times kept as they were).
+  listed too (its folder times kept as they were). T6: with `"gone": True` when it is GONE (moved or deleted: the
+  folder above it reads and holds nothing of its name, on the volume it was last read on — `reach`), else it is AWAY
+  (an unplugged drive, a share down, a parent that can't be read). A gone folder's originals found in a new place moved
+  (D5), as a folder's still there do; an away one's never (whether they left is unknown, G5).
 
 `due` is the cadence the shell asks (SRC-9); `local_or_network` tells it which folders a watch can follow (D5).
 Nothing is ever written under a source folder. Standard library only.
@@ -66,6 +69,7 @@ import os
 import re
 import shutil
 import sqlite3
+import stat
 import sys
 import threading
 import time
@@ -189,9 +193,9 @@ def _store_key(store):
 
 
 def _result(**values):
-    out = {"reachable": True, "found": 0, "shows": 0, "added": 0, "attached": 0, "skipped": 0, "short": 0,
-           "waiting": 0, "recopied": 0, "restored": 0, "paired": 0, "switched": 0, "stopped": False, "busy": False,
-           "ids": [], "switched_works": []}
+    out = {"reachable": True, "gone": False, "found": 0, "shows": 0, "added": 0, "attached": 0, "skipped": 0,
+           "short": 0, "waiting": 0, "recopied": 0, "restored": 0, "paired": 0, "switched": 0, "stopped": False,
+           "busy": False, "ids": [], "switched_works": []}
     out.update(values)
     return out
 
@@ -492,6 +496,89 @@ def _lost(root):
     return not os.path.isdir(root)
 
 
+REACHED, AWAY, GONE = "reached", "away", "gone"
+_SEPARATORS = os.sep + (os.altsep or "")
+
+
+def _not_found(e):
+    """A plain *not found* (Windows' 2 / 3): the folder isn't there. A share's own answer (53 *the network path was not
+    found*, 67, 1231…) is Python's FileNotFoundError too, but it says nothing about the folder: away."""
+    return isinstance(e, FileNotFoundError) and getattr(e, "winerror", None) in (None, 2, 3)
+
+
+def _volume_at(path):
+    """The volume `path` is on (its `st_dev`: Windows' volume serial)."""
+    return os.stat(path).st_dev
+
+
+def _system_volume(dev):
+    """Is `dev` Windows' own volume (`%SystemDrive%`) — the one volume no stick or share can take the place of?"""
+    if sys.platform != "win32":
+        return False
+    try:
+        return os.stat(os.environ.get("SystemDrive", "C:") + os.sep).st_dev == dev
+    except OSError:
+        return False
+
+
+def reach(path, dev=None, error=None):
+    """T6 (Sonic 2026-10-24: the lean, exactly): a source folder's reach -> REACHED (a folder there: what it holds is
+    the look's — this rule judges only a folder that ISN'T there), GONE (moved or deleted while its drive is there) or
+    AWAY (anything else: an unplugged drive, a share or NAS down, a parent that can't be read — it may come back).
+    When unsure, AWAY (a wrong *gone* offers *Stop reading it* and lets D5 mark; a wrong *away* only
+    waits). GONE only when the first folder above it that still exists (the folder above, or higher when that moved
+    too) LISTS, holds nothing of its name, and is on the volume the folder was last read on (`dev`, the look's record:
+    another stick or USB disk at the same letter, a folder that was a mounted volume, is away) — with no volume
+    recorded yet (a folder last read before this rule), only on Windows' own volume (`_system_volume`: no stick or
+    share takes its place; off Windows, away). Never for a drive's or a share's root (nothing above it), never for a
+    name still listed but unreadable (a folder link to a drive that's away). Any answer but a plain *not found*
+    (`_not_found`: a share down, access denied) is away at once — one wait (G5); `error`: the look's own failed stat
+    of the folder, never asked again. A file where the folder was is no folder: gone."""
+    drive, rest = os.path.splitdrive(os.path.abspath(path))
+    if not rest.strip(_SEPARATORS):
+        return AWAY                                  # a drive's or a share's root: nothing above it to read
+    folder = drive + rest.rstrip(_SEPARATORS)
+    st = None
+    if error is None:
+        try:
+            st = os.stat(folder)
+        except OSError as e:
+            error = e
+    if error is not None and not _not_found(error):
+        return AWAY
+    if st is not None and stat.S_ISDIR(st.st_mode):
+        return REACHED
+    child, parent = folder, os.path.dirname(folder)
+    while True:                                      # the first folder above that is there
+        try:
+            with os.scandir(parent) as listing:
+                listed = any(ls.path_key(e.name) == ls.path_key(os.path.basename(child)) for e in listing)
+            here = _volume_at(parent)
+            break
+        except OSError as e:
+            up = os.path.dirname(parent)
+            if not _not_found(e) or ls.path_key(up) == ls.path_key(parent):
+                return AWAY                          # unreadable, or the drive's root not there: away
+            child, parent = parent, up
+    if listed and (child != folder or st is None):
+        return AWAY                                  # listed, yet not found: a link to a drive that's away
+    return GONE if (here == dev if dev is not None else _system_volume(here)) else AWAY
+
+
+def _volume(held, path):
+    """The volume a cache entry says its folder was last read on (`reach`'s `dev`), when it is `path`'s, else None."""
+    if isinstance(held, dict) and path and held.get("path") == ls.path_key(path) and isinstance(held.get("dev"), int):
+        return held["dev"]
+    return None
+
+
+def volume_of(store, language, root_id, path):
+    """T6: the volume the source `root_id` (at `path`) was last read on — the folder-time cache's record — or None."""
+    meta = store.meta()
+    cache = _load_cache(language, (meta.get("store_id"), meta.get("epoch")))
+    return _volume(cache["roots"].get(str(root_id)), path)
+
+
 def _read_text(path, st):
     """(the new text's bytes when it is small enough to keep in memory, else None; its sha256; the bytes `_refusal`
     judges — all of them, or a text over IN_MEMORY's first HEAD, B4): read once, a big one hashed block by block.
@@ -708,8 +795,10 @@ class _Look:
         self.evidence = None         # D3: ({size: {sha256: shows}}, {video size: {video key: shows}}) of the origins
         self.content_keys = {}       # D3: {a video's path: its content key}, read once a look (`_content_key`)
         self.waiting_named = None    # FIX1 (MV-A4): the waiting items' videos by name and size (`_waiting_named`)
-        self.roots = {}              # D5: {a source's id: its folder} (`run`), and {its id: gone?} asked once a look
-        self.gone_roots = {}
+        self.roots = {}              # D5: {a source's id: its folder} (`run`), and {its id: away?} asked once a look
+        self.away_roots = {}
+        self.cache_roots = {}        # T6: the folder-time cache's entries (each source's volume as last read)
+        self.root_error = None       # T6: the look's failed stat of its own folder (`reach`'s `error`)
         self.back = []               # D5: known originals whose record says they moved, listed in their place again
 
     # --- the look ------------------------------------------------------------------------------------------------- #
@@ -740,6 +829,7 @@ class _Look:
         stamp = (meta.get("store_id"), meta.get("epoch"))
         looked = (_store_key(self.store), self.root_id)
         cache = _load_cache(self.language, stamp)
+        self.cache_roots = cache["roots"]            # T6: each source's volume as last read (`_root_away`)
         held = cache["roots"].get(str(self.root_id)) or {}
         mine = held.get("path") == ls.path_key(path)
         dirs = held.get("dirs") if mine and isinstance(held.get("dirs"), dict) else {}
@@ -769,8 +859,8 @@ class _Look:
                     ls.path_key(os.path.abspath(path)).startswith(k + "/"):
                 self.base = s["path"]
         walked = self._walk(path, dirs)
-        if walked is None:
-            return _result(reachable=False)
+        if walked is None:                                   # T6: gone (moved, deleted) or away (`reach`)
+            return _result(reachable=False, gone=reach(path, _volume(held, path), self.root_error) == GONE)
         seen, new, known, books = walked
         if not self.stopped():
             for item in known:                               # a listed folder's: its listing brought their stats (H2)
@@ -802,6 +892,11 @@ class _Look:
             entry["skip_stamp"] = self.skip_stamp
         if self.shown_kept:
             entry["shown"] = self.shown_kept
+        try:                                                 # T6: the volume it was read on (`reach`'s `dev`)
+            entry["dev"] = os.stat(path).st_dev
+        except OSError:                                      # A10: a stat that failed keeps the one recorded
+            if _volume(held, path) is not None:
+                entry["dev"] = held["dev"]
         if cache["roots"].get(str(self.root_id)) != entry:   # H15: written only when the look changed it
             cache["roots"][str(self.root_id)] = entry
             _save_cache(self.language, cache)
@@ -864,7 +959,9 @@ class _Look:
                 continue
             try:
                 st = os.stat(folder)
-            except OSError:
+            except OSError as e:
+                if folder == root:
+                    self.root_error = e                      # T6: `reach` reads it (the share asked once, G5)
                 if folder == root or _lost(root):            # the source went mid-look: unreachable, as at its
                     return None                              # start; the cache kept as it was
                 continue
@@ -1978,8 +2075,8 @@ class _Look:
             hits = [h for h in hits if not h[1]]             # a settled video's key, recorded, didn't match: another
         gone = []
         for item_id, _vkey, old, root in hits:
-            if self._root_gone(root):
-                continue                                     # its source unreachable: whether it left is unknown (G5)
+            if self._root_away(root):
+                continue                                     # its source away: whether it left is unknown (G5)
             try:
                 os.stat(old)
             except FileNotFoundError:
@@ -2016,7 +2113,7 @@ class _Look:
                 continue
             if video_key is not None and sha256 is None and o.video_key and o.video_key != video_key:
                 continue
-            if self._root_gone(o.root):
+            if self._root_away(o.root):
                 continue
             try:
                 os.stat(o.origin)
@@ -2028,12 +2125,16 @@ class _Look:
             out.append(ls.path_key(os.path.abspath(o.origin)))
         return out
 
-    def _root_gone(self, root_id):
-        """D5: is this source's folder unreachable (or no source any more)? Asked once a look per source."""
-        if root_id not in self.gone_roots:
+    def _root_away(self, root_id):
+        """D5: is this source's folder AWAY — whether its files left is unknown (or it is no source any more)? Asked
+        once a look per source. T6: a folder GONE (moved or deleted while the folder above it reads, `reach`) is not
+        away: its originals are known not to be there, so one found in a new place moved (MV-1's rule, as for a
+        folder still there)."""
+        if root_id not in self.away_roots:
             path = self.roots.get(root_id)
-            self.gone_roots[root_id] = path is None or _lost(path)
-        return self.gone_roots[root_id]
+            dev = _volume(self.cache_roots.get(str(root_id)), path)
+            self.away_roots[root_id] = path is None or reach(path, dev) == AWAY
+        return self.away_roots[root_id]
 
     def _back(self):
         """D5: the known originals listed in their old place again — their `moved_to` mark taken off (one write)."""

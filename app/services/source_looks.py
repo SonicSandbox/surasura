@@ -19,6 +19,17 @@ on which thread, and what the window is told. Qt-free; the shell (`app/qt/shell.
   run; `moved`: the known files whose video or original the looks since the last summary recorded (`paired`,
   `attached`) — ▶'s looks are asked again only then (row 55 IK-1).
   `offline(sources)` is the offline line's list (SRC-3: nothing moved or marked, one quiet line).
+- **Gone or away** (T6, Sonic 2026-10-24): a row the last look couldn't reach says `gone` — True when the folder is
+  GONE (moved or deleted while the folder above it reads, `sources.reach`), False when it is AWAY (an unplugged drive,
+  a share down, a parent unreadable) — and a gone one carries its card's data (`Store.source_detail`): `shows` (the
+  titles it holds), `finished` (every episode Finished: *Stop reading it* first) and `found_in` (the folders being read
+  that hold its episodes now). `gone(sources)` lists the *Needs you* card's folders; `offline(sources, gone=False)` the
+  offline line's once the card is drawn (today's line, `gone=True`, still names both). The card's answers: *Find its
+  new folder...* (`find_new_folder`: `Store.add_source` and its look — MV-1 / MV-2's one rule — then `Store.join_moved`:
+  the old folder's episodes joined to the new place, never a second copy, also when it was read already; the answer
+  says `stop`: give the window's writer `stop_reading` for the old folder, the toast's Undo), *Stop reading it* (the
+  writer's `stop_reading`: `Store.stop_source`, one Undo, nothing on disk moves) and *Keep waiting* (the offline
+  line's own dismissal). Each answer is followed by `listing()` (the card goes, or comes back after an Undo).
 - **+ Add → A folder…** (`add`): `Store.add_source` then its first look — a later look's landing (D6: a show never
   shown waits in New arrivals; `first=True` is setup's own first scan only). A refused folder answers its reason
   (`NotASource.reason`). **Stop reading** (`stop`): `Store.stop_source` (its items stay), its watch closed.
@@ -46,9 +57,17 @@ def _nothing(*_args):
     pass
 
 
-def offline(rows):
-    """[(path, items)] of the sources being read that the last look couldn't reach (the offline line), in order."""
-    return [(r["path"], r.get("items") or 0) for r in rows or () if r.get("on", True) and r.get("reachable") is False]
+def offline(rows, gone=True):
+    """[(path, items)] of the sources being read that the last look couldn't reach (the offline line), in order.
+    `gone=False` (T6): the AWAY ones only — a gone folder is *Needs you*'s card (`gone`)."""
+    return [(r["path"], r.get("items") or 0) for r in rows or () if r.get("on", True) and r.get("reachable") is False
+            and (gone or not r.get("gone"))]
+
+
+def gone(rows):
+    """T6: the summary's rows of the sources being read that are GONE (moved or deleted, `sources.reach`) — one
+    *Needs you* card each: {id, path, items, shows, finished, found_in}."""
+    return [r for r in rows or () if r.get("on", True) and r.get("reachable") is False and r.get("gone")]
 
 
 def _make_watch(path, wake):
@@ -90,6 +109,7 @@ class SourceLooks:
         self._wake = threading.Event()                # every watch's reports wake the one watch thread
         self._watcher = None
         self._reachable = {}                          # root id -> the last look's answer (this run)
+        self._gone = {}                               # T6: root id -> the last look found it GONE (not away)
         self._moved = 0                               # row 55 IK-1: files a look moved, since the last summary
         self._reset_told = False                      # a fresh library a kill left unfinished: said once a run (LF-11)
         self.looks = 0                                # looks run (tests)
@@ -125,6 +145,21 @@ class SourceLooks:
     def add(self, path, then=None, first=False):
         """*Read it where it is*: `then({"path", "root", "refused", "result"})` on the worker. -> False once closed."""
         return self._worker.put(self._add, path, then or _nothing, first) if not self._closing.is_set() else False
+
+    def find_new_folder(self, root_id, path, then=None, language=None):
+        """T6, a gone folder's *Find its new folder...*: `then({"old", "path", "root", "refused", "result", "state",
+        "joined", "stop", "language"})` on the worker — `path` read (`Store.add_source`, as + Add's *A folder...*; the
+        same folder again is its row) and looked at in full, then, the old folder still GONE, its episodes found there
+        joined (`Store.join_moved`; never a second copy) — `joined`: how many it held before and holds no more (its
+        own look's joins too) — and, when one joined, `stop` True: the window gives its writer
+        `stop_reading(root_id)` (the toast's Undo); none joined (the wrong folder picked) stops nothing. The old folder back, or only away (`state`), joins and stops
+        nothing; so does a look that couldn't run now (`later`: the folder is read from now on, and the next look
+        joins what it attaches — D5 — while the card stays). A refused folder answers its reason (`refused`), nothing
+        written; a failure after the folder was added answers `failed` (the folder is read; nothing joined or
+        stopped). `language`: as `stop`'s. -> False once closed."""
+        if self._closing.is_set() or (language is not None and language != self.language):
+            return False
+        return self._worker.put(self._find, root_id, path, then or _nothing)
 
     def stop(self, root_id, then=None, language=None):
         """*Stop reading*: `then({"root", "stopped"})` on the worker. `language`: the language the root was listed in
@@ -303,6 +338,7 @@ class SourceLooks:
             return None
         if not result.get("busy"):
             self._reachable[row["id"]] = bool(result.get("reachable"))
+            self._gone[row["id"]] = not result.get("reachable") and bool(result.get("gone"))
             self._moved += sum(result.get(k) or 0 for k in ("paired", "attached"))     # row 55 IK-1
         return result
 
@@ -362,10 +398,58 @@ class SourceLooks:
                 if w is not None:
                     _close(w)
                 self._reachable.pop(root_id, None)
+                self._gone.pop(root_id, None)
         except Exception as e:
             answer["refused"] = str(e) or repr(e)
         with self._lock:
             self._stopping.discard(root_id)
+        then(answer)
+        if store is not None:
+            self._publish(store, {})
+
+    def _find(self, root_id, path, then):
+        answer = {"old": root_id, "path": path, "root": None, "refused": None, "failed": None, "result": None,
+                  "state": None, "joined": 0, "stop": False, "language": self.language}
+        store = None
+        try:
+            store = self._store()
+            if store is None:
+                answer["refused"] = self._why_closed()
+            else:
+                from app import library_store as ls
+                old = next((r for r in store.sources(all=True, counts=False) if r["id"] == root_id), None)
+                if old is None:
+                    answer["refused"] = "That folder isn't being read any more."
+                else:
+                    held = lambda: next((r["items"] for r in store.sources(all=True) if r["id"] == root_id), 0)  # noqa
+                    before = held()                   # the episodes it holds: what Find joins is what leaves it
+                    try:
+                        root = store.add_source(path)
+                    except ls.NotASource as e:
+                        answer["refused"] = e.reason
+                    else:
+                        answer["root"] = root
+                        row = next((r for r in store.sources(counts=False) if r["id"] == root),
+                                   {"id": root, "path": path})
+                        answer["result"] = self._scan(store, row, full=True, progress=lambda found, shows:
+                                                      self.on_progress(row["path"], found, shows))
+                        if answer["result"] is None or answer["result"].get("busy"):
+                            answer["later"] = True    # read from now on: the next look joins what it attaches (D5)
+                        answer["state"] = sources.reach(old["path"], sources.volume_of(store, self.language, root_id,
+                                                                                         old["path"]))
+                        self._reachable[root_id] = answer["state"] == sources.REACHED     # A3: the card goes
+                        self._gone[root_id] = answer["state"] == sources.GONE             # with what was found
+                        if answer["state"] == sources.GONE and root != root_id and not answer.get("later"):
+                            store.join_moved(root_id, row["path"])
+                            answer["joined"] = max(0, before - held())   # its own look's joins (D5) counted too
+                            answer["stop"] = old["on"] and answer["joined"] > 0     # A7: none there, nothing stops
+                        self._follow_watches(store.sources(counts=False))
+        except Exception as e:
+            if answer["root"] is None:
+                answer["refused"] = str(e) or repr(e)
+            else:                                     # the folder is read already: said as it stands, never refused
+                answer["failed"] = str(e) or repr(e)
+                answer["stop"] = False
         then(answer)
         if store is not None:
             self._publish(store, {})
@@ -476,7 +560,20 @@ class SourceLooks:
             return False
         summary = dict(totals, language=self.language)
         summary["moved"], self._moved = self._moved, 0
-        summary["sources"] = [dict(r, reachable=self._reachable.get(r["id"])) for r in rows]
+        summary["sources"] = [dict(r, reachable=self._reachable.get(r["id"]),
+                                   gone=self._reachable.get(r["id"]) is False and self._gone.get(r["id"], False))
+                              for r in rows]
+        lost = [r["id"] for r in summary["sources"] if r["gone"]]
+        for r in summary["sources"]:
+            if r["gone"]:                                         # T6: the card's keys, whatever the read below says
+                r.update(shows=[], finished=False, found_in=[])
+        if lost:                                                  # T6: a gone folder's card (read only while one is)
+            try:
+                detail = store.source_detail(lost)
+                for r in summary["sources"]:
+                    r.update(detail.get(r["id"]) or {})
+            except Exception as e:
+                print(f"Sources: a gone folder's shows couldn't be read: {e!r}")
         try:
             summary["skipped"] = store.skipped_folders()          # K6: Settings' *Skipped folders*
         except Exception as e:

@@ -250,6 +250,7 @@ def test_a_folder_still_listed_by_its_parent_but_unreadable_is_away():
         assert sources.reach(link) == sources.REACHED
         shutil.rmtree(os.path.dirname(target))                     # the drive the link points at goes
         assert sources.reach(link) == sources.AWAY
+        assert sources.reach(os.path.join(link, "Season 2")) == sources.AWAY  # a show inside it, walked up to it
     finally:
         os.rmdir(link)
 

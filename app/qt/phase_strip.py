@@ -8,15 +8,22 @@
   one clock) · failed red until hovered or the next run · needs-you amber. Several can be lit at once.
 - **The hover** (the bubble, `tooltip.py`, rich text; alpha 3, Sonic 2026-10-24: short and plain): the circle's name
   and what it does on one line; what it is doing now — one line per job under way (`status.job_line`), else its own
-  standing line (Anki Miner: Connect's, 順: the re-order host's — the old ⇄ and ⇅ marks), else *Nothing running now*;
-  then the last that ended, named (*Last: Generating — done 14:02* / why it failed); then *Click to open its settings*.
-  A failure or an ended wait on you counts as looked at once the hover leaves it. Its words move in place while it
-  shows.
+  standing line (Anki Miner: Connect's, 順: the re-order host's — the old ⇄ and ⇅ marks), else, lit by a press with no
+  job yet, the press's words or *Starting…*, else *Nothing running now*; then the last that ended, named (*Last:
+  Generating — done 14:02* / why it failed); then what a press does. Jobs are named in plain words (`strings.
+  PHASE_JOB_NAMES`, by kind or label: *Indexing* is *Reading your files*). A failure or an ended wait on you counts as
+  looked at once its bubble has really shown and the hover leaves it (`Tooltips.shown`: never on a pass by the keyboard
+  or the pointer quicker than the bubble). Its words move in place while it shows.
+- **順 amber while its line asks for Sonic** (alpha 3, the lead's ruling on IKA3-1 — Sonic's T1 rule): the re-order
+  host's line said as giving up (`replan_preview.GivesUp`: Anki closed, a Generate to press, a deck to pick, an
+  unfinished run to undo) is 順's *needs* for as long as it stands; one whose fix is in 順's window
+  (`replan_preview.InJunban`) makes a 順 press open that window (`asks_in_window`) instead of the settings.
 - **A press opens the circle's settings** (alpha 3, Sonic: "I'd actually prefer if pressing it opened up their
   settings"; PROVISIONAL, he feels it in alpha 3 — it replaces build 6's "no buttons"): `opened(circle)`, the shell
   reveals `SETTINGS[circle]` (the Settings tab is there at once: no pending mark, the press rule's one-frame case). Only
-  the circles in `opens` take a press and show the hand; one with no settings does nothing. The keyboard: one Tab stop,
-  ← → between the circles that open, Enter or Space opens, an accent wash inside the one in focus, its hover shown.
+  the circles in `opens` take a press and show the hand; one with no settings does nothing. A double-click or a held
+  key opens once. The keyboard: one Tab stop, ← → between the circles that open, Enter or Space opens, an accent wash
+  inside the one in focus (PROVISIONAL, the lead 2026-10-24), its hover shown when Tab brought it there.
 - **S19:** the strip repaints only the circle whose look changed (`paints` counts them); the arc's clock (`motion.Turn`)
   runs only while one turns and stops the moment none does; one single-shot timer wakes it for the next automatic
   job to show (Q6's 1 s) or a tick's end — never a frame's pace.
@@ -35,6 +42,7 @@ from PyQt6.QtWidgets import QWidget
 
 from app import theme
 from app.qt import logos, motion, strings, style
+from app import replan_preview
 from app.services import phase
 from app.services import press as press_service
 
@@ -50,6 +58,12 @@ FOCUS_WASH = 0.30               # the circle in the keyboard's focus: an accent 
 SETTINGS = {phase.ARRIVALS: "library_folders", phase.SURASURA: "level", phase.MINER: "connect_enabled",
             phase.JUNBAN: "junban", phase.ANKI: "known"}
 STANDING = {phase.JUNBAN: "replan", phase.MINER: "connect"}   # a circle -> its standing line's snapshot field
+
+
+def _named(view):
+    """`view` with its plain name for the hover (`strings.PHASE_JOB_NAMES`, by kind, else by label), or as it is."""
+    name = strings.PHASE_JOB_NAMES.get(view.kind) or strings.PHASE_JOB_NAMES.get(view.label)
+    return view._replace(label=name) if name and name != view.label else view
 
 
 def _mix(a, b, t):
@@ -91,6 +105,7 @@ class PhaseStrip(QWidget):
         self._pressed = None                   # the circle a mouse press went down on
         self._focus = None                     # the circle the keyboard is on
         self._hand = False                     # the pointer shows the hand (over a circle that opens)
+        self._asks = None                      # 順's line when it asks for the user (`replan_preview.GivesUp`), or None
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self.refresh)
@@ -107,7 +122,21 @@ class PhaseStrip(QWidget):
 
     def set_status(self, snap):
         standing = {c: getattr(snap, field, None) or "" for c, field in STANDING.items()}
-        standing = {c: line for c, line in standing.items() if line}
+        asks = standing.get(phase.JUNBAN)
+        asks = asks if isinstance(asks, replan_preview.GivesUp) and asks else None
+        standing = {c: line for c, line in standing.items() if line and not (c == phase.JUNBAN and asks)}
+        parts = self._extra.get(phase.JUNBAN, {})
+        if (parts.get("asks") or (None, None))[1] != asks or type(self._asks) is not type(asks):
+            self._asks = asks
+            parts = self._extra.setdefault(phase.JUNBAN, {})
+            if asks:
+                parts["asks"] = ("needs", str(asks))
+            else:
+                parts.pop("asks", None)
+            self._entries = tuple(getattr(snap, "needs_you", None) or ())
+            self._standing = standing
+            self.refresh()                     # 順's look moves: amber on, or off
+            return
         entries = tuple(getattr(snap, "needs_you", None) or ())
         if entries != self._entries:
             self._entries = entries
@@ -116,15 +145,24 @@ class PhaseStrip(QWidget):
         elif standing != self._standing:       # words only: no circle's look moves (S19), the hover says them
             self._standing = standing
             self._retext()
+            self.setAccessibleDescription(self.summary())
+
+    def asks_in_window(self, circle):
+        """Whether `circle`'s press opens its own window rather than its settings: 順 while its line's fix is in 順's
+        window (the unfinished reorder's Undo, a deck to pick: `replan_preview.InJunban`)."""
+        return circle == phase.JUNBAN and isinstance(self._asks, replan_preview.InJunban)
 
     def set_opens(self, circles):
         """The circles whose press opens their settings (the shell's: those with settings to show)."""
         self.opens = frozenset(c for c in circles if c in SETTINGS)
         self.setFocusPolicy(Qt.FocusPolicy.TabFocus if self.opens else Qt.FocusPolicy.NoFocus)
-        if self._focus not in self.opens:
-            self._focus = None
-        self._set_hand(self._hand and self._pressable(self._under_mouse()))
-        self.update()
+        if self._pressed not in self.opens:
+            self._pressed = None
+        if self._focus is not None and self._focus not in self.opens:
+            dropped, self._focus = self._focus, None
+            self.update(self.rect_of(dropped).toAlignedRect().adjusted(-1, -1, 1, 1))     # its wash goes; nothing else
+        self._set_hand(self._pressable(self._under_mouse()))
+        self._retext()
 
     def follow_presses(self, presses):
         """The window's presses (`services.press.Presses`): a live one lights its circle before any job exists."""
@@ -150,6 +188,7 @@ class PhaseStrip(QWidget):
         if sip.isdeleted(self):
             return
         now = self.now()
+        self._views = tuple(_named(v) for v in self._views)
         self._last = phase.fold(self._last, self._views)
         presses = self._shown = self._presses.showing() if self._presses is not None else ()
         for p in presses:
@@ -344,7 +383,12 @@ class PhaseStrip(QWidget):
         dim = style.colours()["ink-dim"]
         out = [f'<b>{esc(strings.PHASE_NAMES[circle])}</b> '
                f'<span style="color:{dim}">· {esc(strings.PHASE_ABOUT[circle])}</span>']
-        now = list(st.lines) or ([self._standing[circle]] if circle in self._standing else [])
+        now = list(st.lines)
+        if not now and (st.running or st.waiting):      # lit by a press with no job yet (A3A-1): its words
+            said = [p.words for p in self._shown if p.live() and phase.press_circle(p.key) == circle and p.words]
+            now = said[:1] or [strings.PHASE_STARTING]
+        elif not now and circle in self._standing:
+            now = [self._standing[circle]]
         out += [esc(line) for line in now]
         last = st.last
         if st.failed and (last is None or last.state != "failed" or last.id in self._seen):
@@ -363,7 +407,8 @@ class PhaseStrip(QWidget):
             else:
                 out.append(esc(strings.PHASE_DONE.format(what=what, time=at)))
         if circle in self.opens:
-            out.append(f'<span style="color:{dim}">{esc(strings.PHASE_CLICK)}</span>')
+            press = strings.PHASE_PRESS_WINDOW if self.asks_in_window(circle) else strings.PHASE_PRESS
+            out.append(f'<span style="color:{dim}">{esc(press)}</span>')
         return '<p style="margin:0">' + "<br>".join(out) + "</p>"
 
     def summary(self):
@@ -371,12 +416,15 @@ class PhaseStrip(QWidget):
         then each lit circle's name and first line."""
         said = []
         if self._focus is not None and self.hasFocus():
-            said.append(f"{strings.PHASE_NAMES[self._focus]}: {strings.PHASE_CLICK}")
+            press = strings.PHASE_PRESS_WINDOW if self.asks_in_window(self._focus) else strings.PHASE_PRESS
+            said.append(f"{strings.PHASE_NAMES[self._focus]}: {press}")
         for c in phase.CIRCLES:
             st = self.states[c]
             if st.running or st.waiting or st.needs or st.failed:
                 first = st.needs or st.failed or (st.lines[0] if st.lines else "")
                 said.append(f"{strings.PHASE_NAMES[c]}: {first}" if first else strings.PHASE_NAMES[c])
+            elif c in self._standing:                    # (IKA3-9: 順's and Anki Miner's words with no job too)
+                said.append(f"{strings.PHASE_NAMES[c]}: {self._standing[c]}")
         return "; ".join(said) or strings.PHASE_IDLE
 
     # --- the press: a circle's settings (alpha 3) --------------------------------------------------------------- #
@@ -418,6 +466,12 @@ class PhaseStrip(QWidget):
             return
         super().mouseReleaseEvent(e)
 
+    def mouseDoubleClickEvent(self, e):
+        if self._pressable(self.circle_at(e.position().toPoint())):
+            e.accept()                         # the first click opened it: a double-click opens once (A3A-4)
+            return
+        super().mouseDoubleClickEvent(e)
+
     def _open(self, circle):
         if self.tooltips is not None:
             self.tooltips.hide()
@@ -430,7 +484,9 @@ class PhaseStrip(QWidget):
             super().keyPressEvent(e)
             return
         if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
-            self._open(self._focus)
+            if not e.isAutoRepeat():           # a held key opens once (A3A-5)
+                self._open(self._focus)
+            e.accept()
             return
         step = {Qt.Key.Key_Left: -1, Qt.Key.Key_Right: 1}.get(key)
         if step is None:
@@ -443,7 +499,9 @@ class PhaseStrip(QWidget):
         order = [c for c in phase.CIRCLES if c in self.opens]
         if order:
             backwards = e.reason() == Qt.FocusReason.BacktabFocusReason
-            self._focus_on(self._focus if self._focus in order else order[-1 if backwards else 0])
+            asked = e.reason() in (Qt.FocusReason.TabFocusReason, Qt.FocusReason.BacktabFocusReason,
+                                   Qt.FocusReason.ShortcutFocusReason)
+            self._focus_on(self._focus if self._focus in order else order[-1 if backwards else 0], hover=asked)
 
     def focusOutEvent(self, e):
         super().focusOutEvent(e)
@@ -452,12 +510,14 @@ class PhaseStrip(QWidget):
             self._leave_hover(None)
         self.setAccessibleDescription(self.summary())
 
-    def _focus_on(self, circle):
-        """The keyboard on `circle`: its ring, its hover (as a pointer's), its name read out."""
+    def _focus_on(self, circle, hover=True):
+        """The keyboard on `circle`: its wash, its hover (as a pointer's; not when the window's activation brought the
+        focus back), its name read out."""
         was, self._focus = self._focus, circle
         for c in {was, circle} - {None}:
             self.update(self.rect_of(c).toAlignedRect().adjusted(-1, -1, 1, 1))
-        self._hover(circle)
+        if hover:
+            self._hover(circle)
         self.setAccessibleDescription(self.summary())
 
     def event(self, e):
@@ -493,6 +553,9 @@ class PhaseStrip(QWidget):
         if was is None or was == circle:
             return
         self._looking = (None, ())
+        tips = self.tooltips
+        if tips is None or getattr(tips, "shown", None) != (self, self.rect_of(was).toAlignedRect()):
+            return                             # its bubble never showed: nothing was looked at (IKA3-5)
         if marks and not set(marks) <= self._seen:
             self._seen.update(marks)
             self.refresh()

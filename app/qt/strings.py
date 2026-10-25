@@ -539,7 +539,7 @@ PHASE_ABOUT = {                                    # beside the name: what it do
     "surasura": "makes your word list",
     "miner": "makes cards from your episodes",
     "junban": "puts Anki's new cards in your list's order",
-    "anki": "reads the words you know from Anki",
+    "anki": "reads the words you know, and shows when cards wait for Anki",
 }
 PHASE_IDLE = "Nothing running now"
 PHASE_DONE = "Last: {what} — done {time}"
@@ -548,7 +548,17 @@ PHASE_FAILED = "Last: {what} — failed {time}: {why}"
 PHASE_FAILED_NOW = "Failed: {why}"
 PHASE_NEEDS = "Needs you: {why}"
 PHASE_TIME = "%H:%M"
-PHASE_CLICK = "Click to open its settings"         # the hover's last line, on a circle that has some
+PHASE_PRESS = "Press to open its settings"         # the hover's last line, on a circle that has some (mouse or keys)
+PHASE_PRESS_WINDOW = "Press to open 順's window and fix it"   # 順 while its line's fix is in its window (InJunban)
+PHASE_STARTING = "Starting…"                       # lit by a press whose job hasn't begun, with no words of its own
+# A job's plain name in the hover, by its kind (else by its label) where the job's own label is a word for us
+PHASE_JOB_NAMES = {
+    "indexer": "Reading your files",
+    "sentence-corpus": "Making the sentence dictionary",
+    "mine-wait": "Making cards",
+    "mine-anki": "Making cards",
+    "Journey: updating sentences…": "Updating your journey's sentences",
+}
 
 # --- W3.1a drag: the window's writer (app/services/moves.py `Writer(words=MOVE_WORDS)`, its notes: moves.WORDS's keys)
 MOVE_WORDS = {

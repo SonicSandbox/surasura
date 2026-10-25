@@ -106,6 +106,8 @@ class Tooltips(QObject):
         self._target = None
         self._part = (None, None)                  # a painted part's (rect, text), or (None, None) for the widget's own
         self._last_hidden = 0.0
+        self.shown = None                          # (widget, part rect or None) whose bubble last really showed — kept
+        #   after it hides, until another is asked for (the phase strip counts a failure looked at only then: IKA3-5)
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self._show_now)
@@ -154,6 +156,8 @@ class Tooltips(QObject):
             return
         if self._target is not None and (self._target is not widget or self._part != (rect, text)):
             self.hide()
+        if self.shown != (widget, rect):
+            self.shown = None
         self._target = widget
         self._part = (rect, text)
         wait = self.delay()
@@ -175,6 +179,7 @@ class Tooltips(QObject):
         screen = (w.screen() or QGuiApplication.primaryScreen()).availableGeometry()
         self.bubble.move(place(self.bubble.size(), target, screen))
         self.bubble.show()
+        self.shown = (w, rect)
 
     def hide(self):
         self._timer.stop()

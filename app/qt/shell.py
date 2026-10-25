@@ -1714,7 +1714,7 @@ class ShellWindow(QMainWindow):
         self.phase = phase_strip.PhaseStrip(footer)
         self.phase.follow_presses(self.presses)
         # Alpha 3 (Sonic 2026-10-24, PROVISIONAL): a circle's press opens its settings — 順's only while Junban is here
-        self.phase.opened.connect(lambda circle: self.open_setting(phase_strip.SETTINGS[circle]))
+        self.phase.opened.connect(self._circle_pressed)
         self.phase.set_opens(set(phase_strip.SETTINGS) - {phase_service.JUNBAN})
         bridge.run_in_worker(_junban_here, then=self._junban_found)
         row.addWidget(self.phase)
@@ -1959,6 +1959,18 @@ class ShellWindow(QMainWindow):
         (`Writer.forget_source` through `drag._give`, once Kura's `Store.forget_source` lands)."""
         if name == "keep":
             self._keep_waiting()
+
+    def _circle_pressed(self, circle):
+        """A phase circle pressed (alpha 3): its settings — or, for 順 while its line's fix is in 順's window (the
+        unfinished reorder's Undo, a deck to pick), that window (IKA3-1). Both show at once (the press rule's one-frame
+        case: no pending mark)."""
+        if self.phase.asks_in_window(circle):
+            from app.qt import windows
+            opener = next((op for op in windows.OPENERS if op.name == "junban"), None)
+            if opener is not None:
+                windows.launch(self, opener)
+                return
+        self.open_setting(phase_strip.SETTINGS[circle])
 
     def _junban_found(self, here):
         """Alpha 3: 順's circle opens Junban's settings once Junban is found (`_junban_here`, a worker's file look)."""

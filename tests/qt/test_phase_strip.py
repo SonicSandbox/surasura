@@ -8,6 +8,7 @@ What a wrong answer would cost a learner:
   * a strip that pushes the bar's other marks out at the narrowest window;
   * the same job said twice, on its circle and in the status line.
 """
+import html
 import time
 
 import pytest
@@ -130,7 +131,8 @@ def test_running_turns_the_accent_arc_around_the_mark_waiting_is_still_needs_amb
     strip.set_jobs(registry.snapshot())
     strip.repaint()
     img = _image(strip)
-    assert strip.states[P.SURASURA].running and strip.states[P.SURASURA].lines == ("Indexing",)   # the indexer's turn
+    assert strip.states[P.SURASURA].running and strip.states[P.SURASURA].lines == ("Reading your files",)  # indexer's
+    assert strings.PHASE_JOB_NAMES["indexer"] == "Reading your files"   # (alpha 3: its plain name, IKA3-3)
     assert P.SURASURA not in strip._ticks                               # still lit: no tick between the two
     assert _near(_ring(strip, P.ANKI, img), C()["ok"])                   # done: the tick
     assert "Not timed to its video" in strip.summary() and "Anki stopped answering" in strip.summary()
@@ -237,6 +239,7 @@ def test_a_failure_stays_until_the_hover_leaves_it_and_the_hover_shows_the_bubbl
 
         def request(self, widget, rect, text):
             self.asked.append((rect, text))
+            self.shown = (widget, rect)                                 # (shown at once: no delay in this stand-in)
 
         def retext(self, widget, rect, text):
             self.asked.append((rect, text))
@@ -383,6 +386,9 @@ def test_a_press_that_failed_is_its_circles_failure_until_hovered_or_the_next_ru
     p.failed("Anki is closed")
     assert strip.states[P.ANKI].failed == "Anki is closed"
     assert "Anki is closed" in strip.hover_text(P.ANKI)
+    from types import SimpleNamespace
+    strip.tooltips = SimpleNamespace(shown=(strip, strip.rect_of(P.ANKI).toAlignedRect()), hide=lambda: None,
+                                     retext=lambda *a: None, request=lambda *a: None)   # its bubble showed ...
     strip._looking = (P.ANKI, tuple(strip._marks(P.ANKI, strip.states[P.ANKI])))     # hovered ...
     strip._leave_hover(None)                                                         # ... and left
     assert strip.states[P.ANKI].failed is None
@@ -471,8 +477,8 @@ def test_a3_the_hover_is_name_and_what_it_does_then_now_then_the_last_run_named_
     assert "<b>Surasura</b>" in parts[0] and strings.PHASE_ABOUT[P.SURASURA] in parts[0]   # one line: name · what
     assert strings.PHASE_IDLE in parts[1]                               # nothing now, said once
     assert strings.PHASE_DONE.format(what="Generating", time=at) in parts[2]               # the last run, named
-    assert strings.PHASE_CLICK in parts[3] and len(parts) == 4
-    assert strings.PHASE_CLICK not in strip.hover_text(P.ANKI)           # not pressable: no promise of a click
+    assert strings.PHASE_PRESS in parts[3] and len(parts) == 4
+    assert strings.PHASE_PRESS not in strip.hover_text(P.ANKI)           # not pressable: no promise of a click
     gen = registry.submit("generate", "Generating", lambda j: None)
     gen.progress("Reading your files", 3, 12)
     strip.set_jobs(registry.snapshot())
@@ -638,12 +644,213 @@ def test_a3_a_press_really_opens_the_settings_tab_on_that_circles_section(world)
 def test_a3_without_junban_its_circle_has_no_settings_to_open(qapp, tmp_path, monkeypatch):
     from app.qt import shell
     from tests.qt.test_jobs_bar import World
-    monkeypatch.setattr(shell, "_junban_here", lambda: False)
+    answered = []
+    monkeypatch.setattr(shell, "_junban_here", lambda: answered.append(1) or False)
+    found = shell.ShellWindow._junban_found
+    monkeypatch.setattr(shell.ShellWindow, "_junban_found", lambda self, here: (found(self, here), answered.append(2)))
     w = World(qapp, logs_folder=str(tmp_path / "logs"))
     try:
-        for _ in range(20):
-            QApplication.processEvents()
+        assert wait_until(lambda: answered == [1, 2])                   # the worker asked and its answer landed
         assert P.JUNBAN not in w.win.phase.opens and P.ANKI in w.win.phase.opens
-        assert strings.PHASE_CLICK not in w.win.phase.hover_text(P.JUNBAN)
+        assert strings.PHASE_PRESS not in w.win.phase.hover_text(P.JUNBAN)
     finally:
         w.close()
+
+
+# --- alpha 3's review round (intent keeper IKA3-*, adversary A3A-*) ------------------------------------------------- #
+def _snap(**kw):
+    from app.services.status import Snapshot
+    base = dict(lines=(), failure=None, needs_you=(), ankiweb=None, connect=None, logs=None, taken_at=0, replan=None)
+    base.update(kw)
+    return Snapshot(**base)
+
+
+def test_a3_junban_goes_amber_only_while_its_line_asks_for_you_and_its_press_then_opens_its_window(strip):
+    """IKA3-1 (the lead's ruling, Sonic's T1 rule): 順 is amber while the host's line is one only he can clear (said
+    as giving up), never for a wait that clears by itself; one whose fix is in 順's window sends the press there."""
+    from app import replan_preview as rp
+    strip.set_opens({P.JUNBAN})
+    strip.set_status(_snap(replan=rp.REVIEWING))                         # a wait that clears by itself
+    assert strip.states[P.JUNBAN].needs is None and not strip.asks_in_window(P.JUNBAN)
+    strip.set_status(_snap(replan=rp.GivesUp(rp.CLOSED)))                # he must act (open Anki), not in 順
+    assert strip.states[P.JUNBAN].needs == rp.CLOSED and not strip.asks_in_window(P.JUNBAN)
+    assert strings.PHASE_PRESS in strip.hover_text(P.JUNBAN)
+    assert strip.hover_text(P.JUNBAN).count("Anki is closed") == 1       # said once, as its now-line
+    strip.set_status(_snap(replan=rp.InJunban(rp.RESTORE_FIRST)))
+    assert strip.states[P.JUNBAN].needs == rp.RESTORE_FIRST and strip.asks_in_window(P.JUNBAN)
+    assert html.escape(strings.PHASE_PRESS_WINDOW) in strip.hover_text(P.JUNBAN)
+    strip.set_status(_snap(replan=rp.UP_TO_DATE))                        # cleared: amber off, the settings again
+    assert strip.states[P.JUNBAN].needs is None and not strip.asks_in_window(P.JUNBAN)
+    assert html.escape(rp.UP_TO_DATE) in strip.hover_text(P.JUNBAN) and strings.PHASE_PRESS in strip.hover_text(P.JUNBAN)
+
+
+def test_a3_in_the_window_junbans_press_on_an_unfinished_reorder_opens_junbans_window(world, monkeypatch):
+    from app import replan_preview as rp
+    from app.qt import windows
+    win = world.win
+    launched, opened = [], []
+    monkeypatch.setattr(windows, "launch", lambda shell, op: launched.append(op.name))
+    win.open_setting = lambda target: opened.append(target) or True
+    assert wait_until(lambda: P.JUNBAN in win.phase.opens)
+    win.show_status(win.services.status.snapshot()._replace(replan=rp.InJunban(rp.RESTORE_FIRST)))
+    _click(win.phase, _centre(win.phase, P.JUNBAN))
+    assert launched == ["junban"] and opened == []
+    win.show_status(win.services.status.snapshot()._replace(replan=rp.UP_TO_DATE))
+    _click(win.phase, _centre(win.phase, P.JUNBAN))
+    assert launched == ["junban"] and opened == ["junban"]               # (Junban's settings section)
+
+
+def test_a3_a_circle_lit_by_a_press_with_no_job_yet_says_the_press_not_nothing_running(strip):
+    # A3A-1: the arc turns from the press; the hover never says *Nothing running now* or a stale standing line
+    strip.set_status(_snap(connect="Up to date · 3 cards made today"))
+    presses = Presses()
+    strip.follow_presses(presses)
+    presses.get("mine:ja:12").press()
+    assert strip.states[P.MINER].running or strip.states[P.MINER].waiting
+    text = strip.hover_text(P.MINER)
+    assert strings.PHASE_IDLE not in text and "cards made today" not in text and strings.PHASE_STARTING in text
+
+
+def test_a3_jobs_are_named_in_plain_words_in_the_hover_now_and_last(strip):
+    # IKA3-3: *Indexing* is a word for us; the hover says what it does
+    registry = JobRegistry()
+    job = registry.submit("indexer", "Indexing", lambda j: None)
+    strip.set_jobs(registry.snapshot())
+    assert "Reading your files" in strip.hover_text(P.SURASURA) and "Indexing" not in strip.hover_text(P.SURASURA)
+    job.finish()
+    strip.set_jobs(registry.snapshot())
+    assert "Last: Reading your files — done" in strip.hover_text(P.SURASURA)
+    wait = registry.record("mine-anki", "Connect", automatic=True, reason="Waiting while you review in Anki · 19 episodes")
+    strip.now = lambda: wait.started_at + 2
+    strip.set_jobs(registry.snapshot())
+    assert "Making cards · Waiting while you review in Anki · 19 episodes" in strip.hover_text(P.ANKI)
+
+
+class _SlowTips:
+    """A bubble that has been asked for but hasn't shown yet (its delay still running)."""
+    def __init__(self):
+        self.asked, self.shown = [], None
+
+    def request(self, widget, rect, text):
+        self.asked.append(text)
+
+    def retext(self, widget, rect, text):
+        pass
+
+    def hide(self):
+        pass
+
+    def hide_part_unless(self, widget, pos):
+        pass
+
+
+def test_a3_passing_a_failed_circle_by_keyboard_before_its_bubble_shows_leaves_it_red(strip):
+    # IKA3-5 / A3A-2: tabbing past 届 cleared its failure unseen; looked at only once its bubble really showed
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtTest import QTest
+    strip.tooltips = tips = _SlowTips()
+    registry = JobRegistry()
+    bad = registry.submit("library-look", "Looking at your folders", lambda j: None)
+    bad.finish(ok=False, message="D:\\Anime can't be read")
+    strip.set_jobs(registry.snapshot())
+    strip.set_opens({P.ARRIVALS, P.SURASURA})
+    strip.window().activateWindow()
+    strip.setFocus(Qt.FocusReason.TabFocusReason)
+    assert wait_until(lambda: strip.hasFocus()) and strip._focus == P.ARRIVALS
+    QTest.keyClick(strip, Qt.Key.Key_Right)                             # on, before the bubble came
+    assert strip.states[P.ARRIVALS].failed                              # still red: nobody saw it
+    QTest.keyClick(strip, Qt.Key.Key_Left)
+    tips.shown = (strip, strip.rect_of(P.ARRIVALS).toAlignedRect())     # now its bubble shows ...
+    QTest.keyClick(strip, Qt.Key.Key_Right)                             # ... and the keyboard moves on: seen
+    assert strip.states[P.ARRIVALS].failed is None
+
+
+def test_a3_the_window_coming_back_never_pops_the_bubble_by_itself(strip):
+    # A3A-3: only Tab / Backtab / a shortcut shows the hover on focus, as the window's own tooltips do
+    from PyQt6.QtCore import Qt
+    strip.tooltips = tips = _SlowTips()
+    strip.set_opens({P.SURASURA})
+    strip.window().activateWindow()
+    strip.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
+    assert wait_until(lambda: strip.hasFocus())
+    assert tips.asked == [] and strip._focus == P.SURASURA              # washed, but no bubble
+    strip.clearFocus()
+    strip.setFocus(Qt.FocusReason.TabFocusReason)
+    assert wait_until(lambda: tips.asked)
+
+
+def test_a3_a_double_click_or_a_held_key_opens_once(strip):
+    # A3A-4 / A3A-5: each open restarts the page's glide and wash
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtGui import QKeyEvent
+    from PyQt6.QtTest import QTest
+    got = []
+    strip.opened.connect(got.append)
+    strip.set_opens({P.SURASURA})
+    _click(strip, _centre(strip, P.SURASURA))                           # the OS: a click, then the double-click
+    QTest.mouseDClick(strip, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, _centre(strip, P.SURASURA))
+    assert got == [P.SURASURA]
+    strip.window().activateWindow()
+    strip.setFocus(Qt.FocusReason.TabFocusReason)
+    assert wait_until(lambda: strip.hasFocus())
+    for repeat in (False, True, True):
+        QApplication.sendEvent(strip, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Space,
+                                                Qt.KeyboardModifier.NoModifier, " ", repeat))
+    assert got == [P.SURASURA, P.SURASURA]
+
+
+def test_a3_set_opens_repaints_no_circle_and_turns_the_hand_on_under_a_resting_pointer(strip, monkeypatch):
+    # A3A-8 / IKA3-8: Junban found at start-up changes no circle's look; a pointer already on 順 gets the hand
+    from PyQt6.QtCore import Qt
+    asked = []
+    monkeypatch.setattr(strip, "update", lambda *a: asked.append(a))
+    monkeypatch.setattr(strip, "_under_mouse", lambda: P.JUNBAN)
+    strip.set_opens({P.SURASURA})
+    strip.set_opens({P.SURASURA, P.JUNBAN})
+    assert asked == []
+    assert strip.cursor().shape() == Qt.CursorShape.PointingHandCursor
+
+
+def test_a3_the_read_out_says_junbans_and_anki_miners_words_with_no_job_too(strip):
+    # IKA3-9: a screen reader hears what the hover says, not only for a lit circle
+    strip.set_status(_snap(connect="Up to date · 12 cards made today", replan="Anki's order is up to date"))
+    said = strip.accessibleDescription()
+    assert "Anki Miner: Up to date · 12 cards made today" in said and "Junban 順: Anki's order is up to date" in said
+
+
+def test_a3_the_tooltips_know_which_part_really_showed(qapp):
+    # IKA3-5's other half: `Tooltips.shown` is set only once the bubble shows, kept after it hides
+    from PyQt6.QtCore import QRect
+    from app.qt import tooltip
+    host = QWidget()
+    host.resize(100, 30)
+    host.show()
+    tips = tooltip.Tooltips()
+    try:
+        part = QRect(0, 0, 20, 20)
+        freeze.set_frozen(False)
+        tips.request(host, part, "words")
+        assert tips.shown is None                                       # asked, its delay running
+        tips._show_now()
+        assert tips.shown == (host, part)
+        tips.hide()
+        assert tips.shown == (host, part)                               # kept once it hid (the strip asks on Leave)
+        tips.request(host, QRect(30, 0, 20, 20), "other")
+        assert tips.shown is None
+    finally:
+        freeze.set_frozen(None)
+        tips.hide()
+        tips.bubble.deleteLater()
+        host.close()
+
+
+def test_a3_a_press_on_arrivals_brings_the_library_folders_row_into_view(world):
+    # A3A-9: a target far down the page (the Anki one is on screen at the top whatever `reveal` does)
+    win = world.win
+    win.resize(1100, 700)
+    _click(win.phase, _centre(win.phase, P.ARRIVALS))
+    assert win.current_tab() == "settings"
+    page = win.settings_page
+    assert wait_until(lambda: "library_folders" in page.rows and page.rows["library_folders"].isVisible()
+                      and page.scroll.viewport().rect().contains(
+                          page.rows["library_folders"].mapTo(page.scroll.viewport(), QPoint(0, 0))), timeout=8)

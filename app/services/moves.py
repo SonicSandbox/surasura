@@ -408,11 +408,15 @@ class Writer:
         return self._put({"op": "skip_folder", "ids": [], "path": os.fspath(path), "label": label,
                           "at": _queued_at()})
 
-    def stop_reading(self, root_id, label=None):
+    def stop_reading(self, root_id, label=None, language=None):
         """T6, *Stop reading it* (a gone folder's *Needs you* card): `Store.stop_source` — the folder no longer read,
         its row kept; every episode, its copy, its place and its records stay, nothing on disk moves (so nothing goes to
         the trash). One change: Undo (Ctrl+Z, the toast's) reads it again, by the value check. A folder not being read
-        (stopped meanwhile) is no change. Journalled: a busy store keeps it in order, a crash replays it once."""
+        (stopped meanwhile) is no change. Journalled: a busy store keeps it in order, a crash replays it once.
+        `language`: the library the folder was listed in — another's (root ids repeat across stores, B2) is refused
+        before anything is queued (None)."""
+        if language is not None and language != self.language:
+            return None
         return self._put({"op": "stop_source", "ids": [], "root": int(root_id), "label": label})
 
     def restore(self, trash_ids, label=None):
@@ -1683,6 +1687,8 @@ def _refused(change, out):
         return not out.restored and not getattr(out, "folder_dropped", False)
     if change.kind == "restore":
         return not out.trash_ids                    # every row it put back changed since
+    if change.kind == "stop_source":
+        return not getattr(out, "roots", None)      # T6 (A4): read again meanwhile — the value check wrote nothing
     if change.kind == "import_finished":
         return _skips(out) >= len(change.items) + len(change.added)
     if change.kind in ("split", "join", "ungroup"):

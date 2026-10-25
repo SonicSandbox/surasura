@@ -100,6 +100,19 @@ def _unsubst(letter):
     subprocess.run(["subst", letter + ":", "/d"], capture_output=True, timeout=30)
 
 
+def unplug(monkeypatch, drive):
+    """A drive unplugged, in temp folders: `drive` goes, and whatever still answers above it is another volume (as above
+    a drive letter whose root isn't there). -> put it back (the folder, the volumes)."""
+    os.rename(drive, drive + " (unplugged)")
+    real = sources._volume_at
+    monkeypatch.setattr(sources, "_volume_at", lambda path: real(path) + 7)
+
+    def back():
+        monkeypatch.setattr(sources, "_volume_at", real)
+        os.rename(drive + " (unplugged)", drive)
+    return back
+
+
 def _looks(language):
     data_dir, user_files_dir = roots(language)
     return source_looks.SourceLooks(ls.StoreOpener(language, data_dir, user_files_dir), language,
@@ -124,18 +137,20 @@ def _until(condition, seconds=30.0):
 
 # --- the rule: gone or away (`sources.reach`) -------------------------------------------------------------------- #
 
-def test_a_folder_removed_from_a_folder_still_there_is_gone_and_one_whose_parent_is_gone_too_is_away():
-    """The one rule, on plain folders: there → reached; removed while the folder above it lists → gone; the folder
-    above it gone too (a parent that can't be read) → away — never gone."""
+def test_a_folder_removed_from_a_folder_still_there_is_gone_and_one_whose_drive_went_is_away(monkeypatch):
+    """The one rule, on plain folders: there → reached; removed while the folder above it lists, on its volume → gone;
+    its drive unplugged (only another volume answers above it) → away — never gone."""
     parent = _elsewhere("Downloads")
     folder = os.path.join(parent, "Show")
     os.makedirs(folder)
-    assert sources.reach(folder) == sources.REACHED
+    dev = os.stat(folder).st_dev
+    assert sources.reach(folder, dev=dev) == sources.REACHED
     os.rename(folder, folder + " (moved)")
-    assert sources.reach(folder) == sources.GONE
-    assert sources.reach(folder.upper()) == sources.GONE            # one folder however written (A2)
-    os.rename(parent, parent + " (away)")
-    assert sources.reach(folder) == sources.AWAY
+    assert sources.reach(folder, dev=dev) == sources.GONE
+    assert sources.reach(folder.upper(), dev=dev) == sources.GONE   # one folder however written (A2)
+    back = unplug(monkeypatch, parent)
+    assert sources.reach(folder, dev=dev) == sources.AWAY
+    back()
 
 
 def test_a_drive_letter_that_is_not_there_and_a_drive_root_are_away():
@@ -159,21 +174,65 @@ def test_a_folder_last_seen_on_another_volume_is_never_gone():
     assert sources.reach(folder, dev=dev + 1) == sources.AWAY
 
 
-def test_with_no_volume_recorded_only_a_fixed_drive_says_gone(monkeypatch):
-    """A folder last read before this rule (no volume recorded yet — Sonic's Downloads folder) is gone on a fixed
-    drive; on a stick or a share another one may answer at its letter meanwhile, so with nothing to check it by it is
-    away. With a volume recorded the drive's kind doesn't matter: the volume decides."""
+def test_with_no_volume_recorded_only_the_system_volume_says_gone(monkeypatch):
+    """When unsure, AWAY: a folder last read before this rule (no volume recorded yet — Sonic's
+    Downloads folder) is gone only where the folder above it is on Windows' own volume, which no stick or share can
+    take over; anywhere else (a stick or USB disk whose letter another may answer at, a share, a Mac's /Volumes) it is
+    away. With a volume recorded, the volume decides."""
     parent = _elsewhere("Media")
     folder = os.path.join(parent, "Show")
     os.makedirs(folder)
     dev = os.stat(folder).st_dev
     os.rmdir(folder)
-    assert sources._drive_kind(parent) == "fixed"
+    monkeypatch.setattr(sources, "_system_volume", lambda d: d == dev)
     assert sources.reach(folder) == sources.GONE
-    for kind in ("removable", "network", "other"):
-        monkeypatch.setattr(sources, "_drive_kind", lambda _p, kind=kind: kind)
-        assert sources.reach(folder) == sources.AWAY, kind
-        assert sources.reach(folder, dev=dev) == sources.GONE, kind
+    monkeypatch.setattr(sources, "_system_volume", lambda d: False)
+    assert sources.reach(folder) == sources.AWAY
+    assert sources.reach(folder, dev=dev) == sources.GONE
+    assert sources.reach(folder, dev=dev + 1) == sources.AWAY
+
+
+def test_a_share_that_is_down_costs_one_wait_never_four(monkeypatch):
+    """A8 (G5: one wait): a NAS or share down answers *the network path was not found* (Windows' 53) — away at once,
+    with one call that reaches the share; the look's own failed stat of the folder is reused (no second ask)."""
+    parent = _elsewhere("NAS")
+    folder = os.path.join(parent, "Show")
+    calls = []
+    real_stat, real_scandir = os.stat, os.scandir
+
+    def under(path):
+        hit = os.path.normcase(os.fspath(path)).startswith(os.path.normcase(parent))
+        if hit:
+            calls.append(path)
+        return hit
+
+    def stat(path, *a, **kw):
+        if under(path):
+            raise OSError(None, "The network path was not found", None, 53)
+        return real_stat(path, *a, **kw)
+
+    def scandir(path="."):
+        if under(path):
+            raise OSError(None, "The network path was not found", None, 53)
+        return real_scandir(path)
+    monkeypatch.setattr(os, "stat", stat)
+    monkeypatch.setattr(os, "scandir", scandir)
+    assert sources.reach(folder, dev=1) == sources.AWAY and len(calls) == 1
+    del calls[:]
+    down = OSError(None, "The network path was not found", None, 53)
+    assert sources.reach(folder, dev=1, error=down) == sources.AWAY and calls == []
+
+
+def test_a_folder_whose_parent_moved_too_is_gone_on_the_same_volume():
+    """The shows' folder itself moved (`Downloads/Anime/<show>`, each show its own source):
+    the first folder above that still lists, on the volume the show was read on, says gone — not only the parent."""
+    downloads = _elsewhere("Downloads")
+    folder = os.path.join(downloads, "Anime", "Show")
+    os.makedirs(folder)
+    dev = os.stat(folder).st_dev
+    os.rename(os.path.join(downloads, "Anime"), os.path.join(_elsewhere("D-drive"), "Anime"))
+    assert sources.reach(folder, dev=dev) == sources.GONE
+    assert sources.reach(folder, dev=dev + 1) == sources.AWAY
 
 
 def test_a_folder_still_listed_by_its_parent_but_unreadable_is_away():
@@ -235,7 +294,7 @@ def test_a_share_that_answers_with_an_error_is_away_and_never_gone(monkeypatch):
 # --- the look says it (`sources.scan`), ja + zh ------------------------------------------------------------------- #
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_the_look_says_gone_for_a_show_folder_moved_away_and_away_for_a_drive_unplugged(language):
+def test_the_look_says_gone_for_a_show_folder_moved_away_and_away_for_a_drive_unplugged(language, monkeypatch):
     """Sonic's case on plain folders: each show folder in Downloads is its own source. Moved out of Downloads: the look
     says unreachable and gone; Downloads itself unreadable: unreachable, not gone. Nothing is marked or moved, and the
     folder keeps counting its episodes either way."""
@@ -251,12 +310,12 @@ def test_the_look_says_gone_for_a_show_folder_moved_away_and_away_for_a_drive_un
         assert (result["reachable"], result["gone"]) == (False, True)
         downloads = os.path.dirname(show)
         os.rename(show + " (moved)", show)
-        os.rename(downloads, downloads + " (away)")
+        back = unplug(monkeypatch, downloads)
         try:
             result = _look(store, language, root, full=True)
             assert (result["reachable"], result["gone"]) == (False, False)
         finally:
-            os.rename(downloads + " (away)", downloads)
+            back()
         assert _rows(store) == before and _counts(store)[store.sources()[0]["path"]] == 3
 
 
@@ -335,6 +394,8 @@ def test_a_show_folder_moved_into_a_folder_read_already_joins_its_episodes_and_t
         assert _rows(store) == before
         assert _marked(store, files) == [True] * 3
         assert _counts(store) == {old: 0, anime: 3}
+        detail = store.source_detail([root_a])[root_a]                 # its card still names the show, and where
+        assert detail["shows"] and [os.path.normcase(p) for p in detail["found_in"]] == [os.path.normcase(anime)]
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
@@ -430,6 +491,7 @@ def test_find_its_new_folder_not_read_yet_reads_it_and_joins_the_episodes(langua
         looks.idle(10)
     answer = heard[0]
     assert answer["refused"] is None and answer["stop"] is True and answer["result"]["added"] == 0
+    assert answer["joined"] == 3                                      # joined by its own look (D5): counted
     store = ls.open_store(language, *roots(language))
     try:
         assert _rows(store) == before and _marked(store, files) == [True] * 3
@@ -439,7 +501,7 @@ def test_find_its_new_folder_not_read_yet_reads_it_and_joins_the_episodes(langua
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_find_its_new_folder_when_the_old_one_is_back_or_only_away_joins_and_stops_nothing(language):
+def test_find_its_new_folder_when_the_old_one_is_back_or_only_away_joins_and_stops_nothing(language, monkeypatch):
     """The old folder came back meanwhile, or only its drive went (away): the new folder is read, but nothing says the
     old folder's episodes moved and it is not offered to stop (it isn't gone)."""
     store, data_dir = _empty(language)
@@ -455,8 +517,9 @@ def test_find_its_new_folder_when_the_old_one_is_back_or_only_away_joins_and_sto
         _look(store, language, root_a, first=True)
     for state in ("back", "away"):
         if state == "away":
-            os.rename(downloads, downloads + " (away)")
-        looks, heard = _looks(language), []
+            back = unplug(monkeypatch, downloads)
+        looks, heard, said = _looks(language), [], []
+        looks.on_result = said.append
         try:
             assert looks.find_new_folder(root_a, new, heard.append)
             assert looks.idle(60)
@@ -465,7 +528,9 @@ def test_find_its_new_folder_when_the_old_one_is_back_or_only_away_joins_and_sto
             looks.idle(10)
         assert (heard[0]["refused"], heard[0]["joined"], heard[0]["stop"], heard[0]["state"]) == \
             (None, 0, False, sources.REACHED if state == "back" else sources.AWAY)
-    os.rename(downloads + " (away)", downloads)
+        row = next(r for r in said[-1]["sources"] if r["id"] == root_a)      # A3: the card goes with what Find found
+        assert (row["reachable"], row["gone"]) == (state == "back", False)
+    back()
     store = ls.open_store(language, *roots(language))
     try:
         assert _marked(store, files) == [False] * 3
@@ -516,6 +581,33 @@ def test_find_its_new_folder_when_its_look_cant_run_or_the_join_fails_never_stop
         looks.idle(10)
     assert heard[0]["root"] is not None and heard[0]["refused"] is None and heard[0]["failed"]
     assert heard[0]["stop"] is False
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_find_its_new_folder_holding_none_of_its_episodes_stops_nothing(language):
+    """The wrong folder picked (none of the show's episodes there): it is read now,
+    but nothing joined, so the old folder isn't stopped — its card stays, and the answer says none were found."""
+    store, data_dir = _empty(language)
+    title = names(language)[71]
+    old = os.path.join(_elsewhere("Downloads"), title)
+    _show(language, old)
+    with store:
+        root_a = store.add_source(old)
+        _look(store, language, root_a, first=True)
+    shutil.rmtree(old)
+    other = os.path.join(_elsewhere("Elsewhere"), names(language)[72])
+    from tests.test_sources_scan import _text, _write
+    _write(os.path.join(other, f"{names(language)[72]} - 01.{language}.srt"), _text(language, 7, " another show"))
+    _settle(other)
+    looks, heard = _looks(language), []
+    try:
+        assert looks.find_new_folder(root_a, other, heard.append)
+        assert looks.idle(60)
+    finally:
+        looks.close()
+        looks.idle(10)
+    assert (heard[0]["refused"], heard[0]["joined"], heard[0]["stop"], heard[0]["state"]) == \
+        (None, 0, False, sources.GONE)
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
@@ -599,6 +691,32 @@ def test_the_undo_of_a_stop_leaves_a_folder_turned_back_on_since_as_it_is(langua
         assert [s["on"] for s in store.sources(all=True)] == [True]
 
 
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_writers_undo_of_a_stop_turned_back_on_meanwhile_says_it_couldnt_and_another_language_is_refused(language):
+    """A4: the folder read again meanwhile (+ Add), the toast's Undo writes nothing and says *Can't undo* — never a
+    quiet "undone". A5 (B2): a stop given for another language's library (root ids repeat across stores) is refused
+    before anything is queued."""
+    from app.qt.strings import MOVE_WORDS
+    store, data_dir = _empty(language)
+    folder = os.path.join(_elsewhere("Media"), names(language)[71])
+    _show(language, folder)
+    root = store.add_source(folder)
+    w, heard = _writer(language)
+    try:
+        other = "zh" if language == "ja" else "ja"
+        assert not w.stop_reading(root, label="stopped", language=other)
+        assert w.stop_reading(root, label="stopped", language=language)
+        assert _until(lambda: heard.saved)
+        assert store.add_source(folder) == root                                 # read again meanwhile
+        assert w.undo(label="undo")
+        assert _until(lambda: heard.notes)
+        assert heard.notes == [MOVE_WORDS["cant_undo"]] and heard.undone == []
+        assert [s["on"] for s in store.sources(all=True)] == [True]
+    finally:
+        w.finish(time.monotonic() + 5)
+        store.close()
+
+
 def test_a_stop_on_a_busy_store_is_journalled_and_a_crash_replays_it_once(monkeypatch):
     """*Stop reading it* on a busy store waits in the writer's journal; after a crash the next start applies it once.
     One that landed before the crash is let go quietly."""
@@ -654,7 +772,7 @@ def test_a_stop_on_a_busy_store_is_journalled_and_a_crash_replays_it_once(monkey
 # --- the data the card needs: the summary ------------------------------------------------------------------------- #
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_the_summary_names_a_gone_folder_its_shows_and_where_its_episodes_are_read_now(language):
+def test_the_summary_names_a_gone_folder_its_shows_and_where_its_episodes_are_read_now(language, monkeypatch):
     """After a look, a gone folder's row says `gone`, the titles it holds, whether every one of its episodes is
     Finished (*Stop reading it* first) and the folders being read that hold them now (root 19). `gone(rows)` lists
     it for the card; `offline(rows)` lists it as today, `offline(rows, gone=False)` (the line once the card is drawn)
@@ -680,7 +798,10 @@ def test_the_summary_names_a_gone_folder_its_shows_and_where_its_episodes_are_re
         store.set_tier([i for i, e, _a in store.ordered("now") if title in e["physical_path"]] +
                        [i for i, e, _a in store.ordered("soon") if title in e["physical_path"]], "graduated")
     shutil.rmtree(old)
-    os.rename(away_parent, away_parent + " (unplugged)")
+    real = sources._volume_at
+    os.rename(away_parent, away_parent + " (unplugged)")             # the stick goes: what answers above it at its
+    monkeypatch.setattr(sources, "_volume_at", lambda path: real(path) + (            # letter is another volume
+        7 if os.path.normcase(os.fspath(path)) == os.path.normcase(os.path.dirname(away_parent)) else 0))
     looks, said = _looks(language), []
     looks.on_result = said.append
     try:
@@ -689,6 +810,7 @@ def test_the_summary_names_a_gone_folder_its_shows_and_where_its_episodes_are_re
     finally:
         looks.close()
         looks.idle(10)
+        monkeypatch.setattr(sources, "_volume_at", real)
         os.rename(away_parent + " (unplugged)", away_parent)
     rows = {r["id"]: r for r in said[-1]["sources"]}
     assert (rows[root_a]["reachable"], rows[root_a]["gone"]) == (False, True)

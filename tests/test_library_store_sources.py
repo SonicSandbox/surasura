@@ -1520,7 +1520,7 @@ def test_a_moved_original_marks_its_old_record_and_the_old_folder_no_longer_coun
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_an_old_folder_offline_marks_nothing(language):
+def test_an_old_folder_offline_marks_nothing(language, monkeypatch):
     """A's drive unplugged while B holds the same files: nothing says A's originals moved (they may be on the drive) —
     A keeps counting its episodes (*its 4 episodes are kept*). T6: the drive itself goes (A's folder AND the folder
     above it): AWAY — a folder gone while its drive is there is GONE, and its moved originals are marked
@@ -1535,12 +1535,13 @@ def test_an_old_folder_offline_marks_nothing(language):
         _look(store, language, store.add_source(a), first=True)
         shutil.copytree(os.path.join(a, show), os.path.join(b, show), copy_function=shutil.copy2)
         _settle(b)
-        os.rename(drive_a, drive_a + " (unplugged)")
+        from tests.test_sources_gone import unplug
+        back = unplug(monkeypatch, drive_a)
         try:
             assert _look(store, language, store.add_source(b))["attached"] == 4
             assert _counts(store) == [4, 4] and all(_moved_to(store, p) is None for p in old)
         finally:
-            os.rename(drive_a + " (unplugged)", drive_a)
+            back()
 
 
 @pytest.mark.parametrize("language", LANGUAGES)

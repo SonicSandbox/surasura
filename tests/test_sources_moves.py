@@ -663,21 +663,22 @@ def test_an_unplugged_old_folder_is_asked_once_before_any_of_its_files(language,
         shutil.copytree(os.path.join(a, show), os.path.join(b, show), copy_function=shutil.copy2)
         _settle(b)
         root_b = store.add_source(b)
-        os.rename(drive_a, drive_a + " (unplugged)")
+        from tests.test_sources_gone import unplug
+        back = unplug(monkeypatch, drive_a)
         try:
             top = ls.path_key(os.path.abspath(a)).rstrip("/") + "/"
             asked, touched = [], []
-            real_lost, real_stat = sources._lost, os.stat
+            real_reach, real_stat = sources.reach, os.stat
 
-            def lost(root):
+            def lost(root, *args, **kw):                         # T6: the reach of a source, asked once a look
                 asked.append(ls.path_key(os.path.abspath(root)))
-                return real_lost(root)
+                return real_reach(root, *args, **kw)
 
             def stat(path, *args, **kw):
                 if isinstance(path, str) and ls.path_key(os.path.abspath(path)).startswith(top):
                     touched.append(path)
                 return real_stat(path, *args, **kw)
-            monkeypatch.setattr(sources, "_lost", lost)
+            monkeypatch.setattr(sources, "reach", lost)
             monkeypatch.setattr(os, "stat", stat)
             try:
                 result = sources.scan(store, language, root_b)
@@ -687,7 +688,7 @@ def test_an_unplugged_old_folder_is_asked_once_before_any_of_its_files(language,
             assert asked.count(ls.path_key(os.path.abspath(a))) == 1, asked
             assert touched == [], "no file on the unplugged share was asked about"
         finally:
-            os.rename(drive_a + " (unplugged)", drive_a)
+            back()
 
 
 # --- FIX1 (S19): a look where nothing changed writes nothing -------------------------------------------------------- #

@@ -500,58 +500,69 @@ REACHED, AWAY, GONE = "reached", "away", "gone"
 _SEPARATORS = os.sep + (os.altsep or "")
 
 
-def reach(path, dev=None):
+def _not_found(e):
+    """A plain *not found* (Windows' 2 / 3): the folder isn't there. A share's own answer (53 *the network path was not
+    found*, 67, 1231…) is Python's FileNotFoundError too, but it says nothing about the folder: away."""
+    return isinstance(e, FileNotFoundError) and getattr(e, "winerror", None) in (None, 2, 3)
+
+
+def _volume_at(path):
+    """The volume `path` is on (its `st_dev`: Windows' volume serial)."""
+    return os.stat(path).st_dev
+
+
+def _system_volume(dev):
+    """Is `dev` Windows' own volume (`%SystemDrive%`) — the one volume no stick or share can take the place of?"""
+    if sys.platform != "win32":
+        return False
+    try:
+        return os.stat(os.environ.get("SystemDrive", "C:") + os.sep).st_dev == dev
+    except OSError:
+        return False
+
+
+def reach(path, dev=None, error=None):
     """T6 (Sonic 2026-10-24: the lean, exactly): a source folder's reach -> REACHED (a folder there: what it holds is
-    the look's — this rule judges only a folder that ISN'T there), GONE (moved or
-    deleted: the folder above it lists, and holds nothing of its name) or AWAY (anything else: an unplugged drive, a
-    share or NAS that's down, a parent that can't be read — it may come back). Never GONE for an away drive: only a
-    folder above it that READS says gone — on the volume the folder was last read on (`dev`, the look's record:
-    another stick at the same letter, or a folder that was a mounted volume, is away) — never for a drive's or a
-    share's root (nothing above it to read), and never for a name still listed there that can't be read (a folder link
-    to a drive that's away). An error other than *not found* is away at once (the network path not found, access
-    denied). A file where the folder was is no folder: gone."""
+    the look's — this rule judges only a folder that ISN'T there), GONE (moved or deleted while its drive is there) or
+    AWAY (anything else: an unplugged drive, a share or NAS down, a parent that can't be read — it may come back).
+    When unsure, AWAY (a wrong *gone* offers *Stop reading it* and lets D5 mark; a wrong *away* only
+    waits). GONE only when the first folder above it that still exists (the folder above, or higher when that moved
+    too) LISTS, holds nothing of its name, and is on the volume the folder was last read on (`dev`, the look's record:
+    another stick or USB disk at the same letter, a folder that was a mounted volume, is away) — with no volume
+    recorded yet (a folder last read before this rule), only on Windows' own volume (`_system_volume`: no stick or
+    share takes its place; off Windows, away). Never for a drive's or a share's root (nothing above it), never for a
+    name still listed but unreadable (a folder link to a drive that's away). Any answer but a plain *not found*
+    (`_not_found`: a share down, access denied) is away at once — one wait (G5); `error`: the look's own failed stat
+    of the folder, never asked again. A file where the folder was is no folder: gone."""
     drive, rest = os.path.splitdrive(os.path.abspath(path))
     if not rest.strip(_SEPARATORS):
         return AWAY                                  # a drive's or a share's root: nothing above it to read
     folder = drive + rest.rstrip(_SEPARATORS)
-    try:
-        st = os.stat(folder)
-    except FileNotFoundError:
-        st = None
-    except OSError:
+    st = None
+    if error is None:
+        try:
+            st = os.stat(folder)
+        except OSError as e:
+            error = e
+    if error is not None and not _not_found(error):
         return AWAY
     if st is not None and stat.S_ISDIR(st.st_mode):
         return REACHED
-    name = ls.path_key(os.path.basename(folder))
-    try:
-        parent = os.path.dirname(folder)
-        if dev is not None and os.stat(parent).st_dev != dev:
-            return AWAY
-        if dev is None and _drive_kind(parent) != "fixed":
-            return AWAY                              # no volume to check it by: never on a stick or a share
-        with os.scandir(parent) as listing:
-            if st is None and any(ls.path_key(e.name) == name for e in listing):
-                return AWAY                          # listed, yet not found: a link to a drive that's away
-    except OSError:
-        return AWAY
-    return GONE
-
-
-def _drive_kind(path):
-    """"fixed", "removable", "network" or "other" — what Windows says `path`'s drive is (`GetDriveTypeW`; a share's
-    `\\\\server\\share` is network); "fixed" off Windows (no letters to be taken over). `reach`'s guard where no volume
-    was recorded."""
-    if sys.platform != "win32":
-        return "fixed"
-    drive = os.path.splitdrive(os.path.abspath(path))[0]
-    if not drive:
-        return "other"
-    try:
-        import ctypes
-        kind = ctypes.windll.kernel32.GetDriveTypeW(drive.rstrip(_SEPARATORS) + "\\")
-    except Exception:
-        return "other"
-    return {3: "fixed", 2: "removable", 4: "network"}.get(kind, "other")
+    child, parent = folder, os.path.dirname(folder)
+    while True:                                      # the first folder above that is there
+        try:
+            with os.scandir(parent) as listing:
+                listed = any(ls.path_key(e.name) == ls.path_key(os.path.basename(child)) for e in listing)
+            here = _volume_at(parent)
+            break
+        except OSError as e:
+            up = os.path.dirname(parent)
+            if not _not_found(e) or ls.path_key(up) == ls.path_key(parent):
+                return AWAY                          # unreadable, or the drive's root not there: away
+            child, parent = parent, up
+    if listed and (child != folder or st is None):
+        return AWAY                                  # listed, yet not found: a link to a drive that's away
+    return GONE if (here == dev if dev is not None else _system_volume(here)) else AWAY
 
 
 def _volume(held, path):
@@ -787,6 +798,7 @@ class _Look:
         self.roots = {}              # D5: {a source's id: its folder} (`run`), and {its id: away?} asked once a look
         self.away_roots = {}
         self.cache_roots = {}        # T6: the folder-time cache's entries (each source's volume as last read)
+        self.root_error = None       # T6: the look's failed stat of its own folder (`reach`'s `error`)
         self.back = []               # D5: known originals whose record says they moved, listed in their place again
 
     # --- the look ------------------------------------------------------------------------------------------------- #
@@ -848,7 +860,7 @@ class _Look:
                 self.base = s["path"]
         walked = self._walk(path, dirs)
         if walked is None:                                   # T6: gone (moved, deleted) or away (`reach`)
-            return _result(reachable=False, gone=reach(path, _volume(held, path)) == GONE)
+            return _result(reachable=False, gone=reach(path, _volume(held, path), self.root_error) == GONE)
         seen, new, known, books = walked
         if not self.stopped():
             for item in known:                               # a listed folder's: its listing brought their stats (H2)
@@ -882,8 +894,9 @@ class _Look:
             entry["shown"] = self.shown_kept
         try:                                                 # T6: the volume it was read on (`reach`'s `dev`)
             entry["dev"] = os.stat(path).st_dev
-        except OSError:
-            pass
+        except OSError:                                      # A10: a stat that failed keeps the one recorded
+            if _volume(held, path) is not None:
+                entry["dev"] = held["dev"]
         if cache["roots"].get(str(self.root_id)) != entry:   # H15: written only when the look changed it
             cache["roots"][str(self.root_id)] = entry
             _save_cache(self.language, cache)
@@ -946,7 +959,9 @@ class _Look:
                 continue
             try:
                 st = os.stat(folder)
-            except OSError:
+            except OSError as e:
+                if folder == root:
+                    self.root_error = e                      # T6: `reach` reads it (the share asked once, G5)
                 if folder == root or _lost(root):            # the source went mid-look: unreachable, as at its
                     return None                              # start; the cache kept as it was
                 continue
@@ -2118,7 +2133,7 @@ class _Look:
         if root_id not in self.away_roots:
             path = self.roots.get(root_id)
             dev = _volume(self.cache_roots.get(str(root_id)), path)
-            self.away_roots[root_id] = path is None or (_lost(path) and reach(path, dev) != GONE)
+            self.away_roots[root_id] = path is None or reach(path, dev) == AWAY
         return self.away_roots[root_id]
 
     def _back(self):

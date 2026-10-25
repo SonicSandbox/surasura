@@ -150,8 +150,9 @@ class SourceLooks:
         """T6, a gone folder's *Find its new folder...*: `then({"old", "path", "root", "refused", "result", "state",
         "joined", "stop", "language"})` on the worker — `path` read (`Store.add_source`, as + Add's *A folder...*; the
         same folder again is its row) and looked at in full, then, the old folder still GONE, its episodes found there
-        joined (`Store.join_moved`: `joined` how many; never a second copy) and `stop` True: the window gives its
-        writer `stop_reading(root_id)` (the toast's Undo). The old folder back, or only away (`state`), joins and stops
+        joined (`Store.join_moved`; never a second copy) — `joined`: how many it held before and holds no more (its
+        own look's joins too) — and, when one joined, `stop` True: the window gives its writer
+        `stop_reading(root_id)` (the toast's Undo); none joined (the wrong folder picked) stops nothing. The old folder back, or only away (`state`), joins and stops
         nothing; so does a look that couldn't run now (`later`: the folder is read from now on, and the next look
         joins what it attaches — D5 — while the card stays). A refused folder answers its reason (`refused`), nothing
         written; a failure after the folder was added answers `failed` (the folder is read; nothing joined or
@@ -420,6 +421,8 @@ class SourceLooks:
                 if old is None:
                     answer["refused"] = "That folder isn't being read any more."
                 else:
+                    held = lambda: next((r["items"] for r in store.sources(all=True) if r["id"] == root_id), 0)  # noqa
+                    before = held()                   # the episodes it holds: what Find joins is what leaves it
                     try:
                         root = store.add_source(path)
                     except ls.NotASource as e:
@@ -434,9 +437,12 @@ class SourceLooks:
                             answer["later"] = True    # read from now on: the next look joins what it attaches (D5)
                         answer["state"] = sources.reach(old["path"], sources.volume_of(store, self.language, root_id,
                                                                                          old["path"]))
+                        self._reachable[root_id] = answer["state"] == sources.REACHED     # A3: the card goes
+                        self._gone[root_id] = answer["state"] == sources.GONE             # with what was found
                         if answer["state"] == sources.GONE and root != root_id and not answer.get("later"):
-                            answer["joined"] = store.join_moved(root_id, row["path"])
-                            answer["stop"] = old["on"]
+                            store.join_moved(root_id, row["path"])
+                            answer["joined"] = max(0, before - held())   # its own look's joins (D5) counted too
+                            answer["stop"] = old["on"] and answer["joined"] > 0     # A7: none there, nothing stops
                         self._follow_watches(store.sources(counts=False))
         except Exception as e:
             if answer["root"] is None:

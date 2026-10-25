@@ -8545,7 +8545,8 @@ def _store_source_detail(self, root_ids):
     """T6, a gone folder's *Needs you* card: {root_id: {"shows": [the titles it holds, most episodes first],
     "finished": every one of its episodes Finished (*Stop reading it* first), "found_in": [the folders being read that
     hold its episodes now, in the order added — a look attached them there: *Find its new folder...* on one joins
-    them]}}, its episodes counted as `sources()` counts them (the live origins under its folder). Read-only."""
+    them]}}, of the episodes it held: its origins, live or marked moved (a look that joined them by itself leaves the
+    card its show and their new place). Read-only."""
     out = {}
     with self._reading():
         paths = dict(self.conn.execute("SELECT id, path FROM roots WHERE kind IN ('source', 'source-off')").fetchall())
@@ -8555,9 +8556,9 @@ def _store_source_detail(self, root_ids):
             if not paths.get(root_id):
                 continue
             lo, hi = _folder_prefix(paths[root_id])
-            items = _dumps(sorted({i for (i,) in self.conn.execute(
-                f"SELECT p.item_id FROM pairings p WHERE p.content_key >= ? AND p.content_key < ? AND {_LIVE_ORIGIN}",
-                (lo, hi))}))
+            items = _dumps(sorted({i for (i,) in self.conn.execute(      # its moved ones too: a look that joined
+                f"SELECT p.item_id FROM pairings p WHERE p.content_key >= ? AND p.content_key < ? AND {_ORIGIN_ROW} "
+                f"AND NOT {_VERSION_ROW}", (lo, hi))}))              # them by itself leaves the card its show
             titles, tiers = {}, set()
             for tier, title in self.conn.execute(
                     "SELECT i.tier, COALESCE(w.title, i.title, '') FROM items i LEFT JOIN works w ON w.id = i.work_id "

@@ -68,7 +68,7 @@ TIERS = ("now", "soon", "goal")
 KINDS = ("warm", "generate", "move", "catch-up")
 
 # The bar's lines (04 §2.4, §4).
-CLOSED = "Anki is closed — your new order goes to Anki the next time Surasura sees it open"
+CLOSED = "Anki is closed: your new order goes to Anki when it opens"     # alpha 3: one short line (IKA3-4)
 REVIEWING = "Anki is in a review — re-ordering after it"
 NOT_ANSWERING = "Anki isn't answering just now — trying again shortly"
 BUSY = "順 is busy — re-ordering when it's done"
@@ -80,8 +80,8 @@ CARDS_PUT_BACK = "{n:,} card{s} put back in your order"
 # --- end P4.1 L2 ---
 # A reorder you started (or one of Connect's) didn't finish: only its Restore goes on from there (I3) — in 順 until
 # the new window has its own.
-RESTORE_FIRST = "Anki not re-ordered: the last reorder didn't finish. Open 順 and press Undo the last reorder"
-NEW_CONTENT = "New content: Generate puts its words in Anki's order (press it when you've placed it)"
+RESTORE_FIRST = "Anki not re-ordered: the last reorder didn't finish — undo it in 順"
+NEW_CONTENT = "New content: press Generate once you've placed it"
 GENERATE_FIRST = "New content or settings: Generate runs first, then Anki is re-ordered"
 GENERATE_FIRST_CM = "New content or settings: Generate runs first (when you close the Content Manager), then Anki is re-ordered"
 PRESS_GENERATE = "New content or settings: press Generate, then Anki is re-ordered"
@@ -106,6 +106,13 @@ class GivesUp(str):
     pipe, never read back from its words: the window's press waiting for that re-order ends failed, with these words.
     Its retries ("Anki not re-ordered: …" when it tries again in RETRY_S), a stand-aside or Generate-first line (the
     Generate re-orders by itself), an update's hold and its progress are plain lines: the press keeps turning."""
+    __slots__ = ()
+
+
+class InJunban(GivesUp):
+    """Alpha 3 (the lead's ruling on the intent keeper's IKA3-1): a line that gives up whose fix is in 順's own window —
+    the unfinished reorder's Undo, a deck to pick. The phase strip's 順 press opens that window for it (else Junban's
+    settings). Said as that kind (`Host._tell(line, in_junban=True)`) and carried over the pipe the same way."""
     __slots__ = ()
 
 
@@ -424,9 +431,10 @@ class Host:
 
     # --- pieces ---------------------------------------------------------------------------------------------- #
 
-    def _tell(self, line, gives_up=False):
-        """The bar's line; `gives_up`: one that leaves the re-order it owes to the user (`GivesUp`)."""
-        line = GivesUp(line) if gives_up else line
+    def _tell(self, line, gives_up=False, in_junban=False):
+        """The bar's line; `gives_up`: one that leaves the re-order it owes to the user (`GivesUp`); `in_junban`: one
+        of those whose fix is in 順's window (`InJunban`)."""
+        line = InJunban(line) if in_junban else GivesUp(line) if gives_up else line
         self.last = line
         try:
             self._say(line)
@@ -520,7 +528,7 @@ class Host:
         if why is not None:
             if deck and why != self._aside:
                 self._aside = why
-                self._tell(why, gives_up=True)       # the deck's reason, once per reason: the user can fix it in 順
+                self._tell(why, in_junban=True)      # the deck's reason, once per reason: the user can fix it in 順
             return
         self._aside = None
         self._sync_at = self._due_sync(settings)      # a write elsewhere (順's own run, a closed window) armed one
@@ -764,7 +772,7 @@ class Host:
             self._retry(kind)
             return report
         if report.get("restore_first"):
-            self._tell(RESTORE_FIRST, gives_up=True)   # only you can clear it: said, not retried
+            self._tell(RESTORE_FIRST, in_junban=True)   # only you can clear it, in 順: said, not retried
             return report
         if not report.get("ok"):
             written = len(report.get("written") or [])
@@ -1195,7 +1203,8 @@ class Remote:
 
     def _receive(self, message):
         if "say" in message:
-            self._last = (GivesUp if message.get("gives_up") else str)(message["say"])
+            kind = InJunban if message.get("in_junban") else GivesUp if message.get("gives_up") else str
+            self._last = kind(message["say"])
             try:
                 self._say(self._last)
             except Exception:
@@ -1348,7 +1357,8 @@ def helper_main(argv=None):
         with lock:
             send(dict(message, seen=state["seen"]))
 
-    host = Host(args.language, say=lambda line: tell(say=line, gives_up=isinstance(line, GivesUp)), working=lambda on: tell(working=bool(on)),
+    host = Host(args.language, say=lambda line: tell(say=line, gives_up=isinstance(line, GivesUp),
+                                                     in_junban=isinstance(line, InJunban)), working=lambda on: tell(working=bool(on)),
                 generate=(lambda reason: tell(generate=reason)) if args.generate else None)
 
     def report(force=False):                      # with `lock` held

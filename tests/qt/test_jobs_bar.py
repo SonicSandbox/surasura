@@ -12,6 +12,7 @@ What a wrong answer would cost:
 Behaviour only (the looks are Sonic's to re-skin): what a click asks the services, what each state shows, what repaints.
 The services are stand-ins that record what the window asks; their own rules are their suites' (tests/test_services_*).
 """
+import html
 import os
 import pathlib
 import subprocess
@@ -724,26 +725,26 @@ def _ask(world, *names):
 
 
 def test_bar_replan_line_shows_the_hosts_lines_in_order_then_up_to_date_then_goes(world):
-    """R7b: the host's passing line is the bar's while the host gives it — *placing tomorrow's 20 cards…*, then *up to
-    date* — and gone once it gives none (the host let go: D29 off, a language switch). Each new line one repaint."""
+    """R7b: the host's passing line is said while the host gives it — *placing tomorrow's 20 cards…*, then *up to
+    date* — and gone once it gives none (the host let go: D29 off, a language switch). Alpha 3: it is 順's hover's
+    now-line (⇅ went), and a new line repaints no circle (S19)."""
     from app import replan_preview as rp
-    label = world.win.bar_replan
-    assert label.isHidden()                                             # no provider yet: nothing in the bar
+    from app.services import phase as P
+    strip = world.win.phase
+    hover = lambda: strip.hover_text(P.JUNBAN)                          # noqa: E731
+    assert strings.PHASE_IDLE in hover()                                # no provider yet: nothing said
     values = _provide(world, replan=None)
-    shown = []
+    painted = None
     for line in ("Anki: placing tomorrow's 20 cards…", rp.UP_TO_DATE):
         values["replan"] = line
         _ask(world, "replan")
-        assert wait_until(lambda: label.full() == line and not label.isHidden())
-        shown.append(label.full())
-        assert line in label.toolTip() and strings.BAR_REPLAN_TIP.splitlines()[-1] in label.toolTip()
-    assert shown == ["Anki: placing tomorrow's 20 cards…", rp.UP_TO_DATE]
-    assert label.text() == strings.FOOT_REPLAN_MARK                     # W31A-1: a quiet mark, the line in its hover
-    assert world.win.status_paints[label] == 2
+        assert wait_until(lambda: html.escape(line) in hover())
+        QApplication.processEvents()
+        painted = painted or dict(strip.paints)          # (from the first line on: the next moves words alone)
+    assert strip.paints == painted
     values["replan"] = None
     _ask(world, "replan")
-    assert wait_until(lambda: label.isHidden())
-    assert label.full() == "" and world.win.status_paints[label] == 3
+    assert wait_until(lambda: rp.UP_TO_DATE not in hover() and strings.PHASE_IDLE in hover())
 
 
 @pytest.mark.parametrize("line", ["New content or settings: Generate runs first, then Anki is re-ordered",
@@ -753,11 +754,10 @@ def test_bar_replan_generate_first_and_stand_aside_lines_are_shown_as_the_host_s
     in its tooltip and accessible description however narrow the bar is."""
     from app import replan_preview as rp
     assert line in (rp.GENERATE_FIRST, rp.JUNBAN_OFF)
+    from app.services import phase as P
     _provide(world, replan=line)
     _ask(world, "replan")
-    label = world.win.bar_replan
-    assert wait_until(lambda: label.full() == line and not label.isHidden())
-    assert line in label.toolTip() and label.accessibleDescription() == line
+    assert wait_until(lambda: html.escape(line) in world.win.phase.hover_text(P.JUNBAN))      # 順's hover, whole
 
 
 def test_bar_replan_connects_line_repaints_only_on_a_new_stamp(world):
@@ -775,27 +775,27 @@ def test_bar_replan_connects_line_repaints_only_on_a_new_stamp(world):
     world.status.providers["connect"] = status_service.connect_line(
         "ja", lambda: {"connect_enabled": True}, stamp=lambda languages: stamp[0], read=read)
     values = _provide(world, ankiweb="AnkiWeb: synced 18:42")
-    label, paints = world.win.bar_connect, world.win.status_paints
+    from app.services import phase as P
+    strip = world.win.phase
+    said = lambda: strip._standing.get(P.MINER)                         # noqa: E731  (alpha 3: Anki Miner's hover)
     _ask(world)
-    assert wait_until(lambda: label.full() == "Up to date · 12 cards made today" and not label.isHidden())
-    # W31A-1: a quiet mark — its glyph in the footer, the line and what it is in the hover
-    assert label.text() == strings.FOOT_CONNECT_MARK
-    assert label.toolTip() == strings.FOOT_CONNECT_TIP.format(line="Up to date · 12 cards made today")
-    assert strings.BAR_CONNECT_TIP in label.toolTip()
-    assert paints[label] == 1 and reads == ["s1"]
+    assert wait_until(lambda: said() == "Up to date · 12 cards made today")
+    assert "Up to date · 12 cards made today" in strip.hover_text(P.MINER)
+    painted = dict(strip.paints)
+    assert reads == ["s1"]
     values["ankiweb"] = "AnkiWeb: syncing in 45 s"                    # another mark moves; Connect's stamp doesn't
     _ask(world, "connect", "ankiweb")
     assert wait_until(lambda: world.win.anki_mark.ankiweb == "AnkiWeb: syncing in 45 s")
-    assert paints[label] == 1 and reads == ["s1"]
+    assert reads == ["s1"]
     stamp[0] = "s2"
     _ask(world, "connect")
-    assert wait_until(lambda: label.full() == making)
-    assert paints[label] == 2 and reads == ["s1", "s2"]
+    assert wait_until(lambda: said() == making)
+    assert reads == ["s1", "s2"]
     stamp[0] = "s3"                                                     # a new stamp, the same words: read, not repainted
     values["ankiweb"] = "AnkiWeb: syncing in 44 s"
     _ask(world, "connect", "ankiweb")
     assert wait_until(lambda: world.win.anki_mark.ankiweb == "AnkiWeb: syncing in 44 s")
-    assert reads == ["s1", "s2", "s3"] and paints[label] == 2
+    assert reads == ["s1", "s2", "s3"] and strip.paints == painted      # words in the hover only: no circle repainted
 
 
 def test_bar_replan_ankiweb_countdown_counts_down_and_says_when_it_synced(world, monkeypatch):
@@ -949,12 +949,12 @@ def test_bar_replan_connect_switched_on_asks_the_bar_for_its_line_at_once(world)
 def test_bar_replan_a_stand_aside_line_has_no_tip_saying_surasura_keeps_ankis_order(world, line):
     """Beside a line saying the re-order stands aside, the tooltip never claims "Surasura keeps Anki's new
     cards in your list's order" — it says what the line is about, neutrally, with the line whole."""
+    from app.services import phase as P
     _provide(world, replan=line)
     _ask(world, "replan")
-    label = world.win.bar_replan
-    assert wait_until(lambda: label.full() == line and not label.isHidden())
-    assert line in label.toolTip()
-    assert "keeps Anki" not in label.toolTip(), label.toolTip()
+    hover = lambda: world.win.phase.hover_text(P.JUNBAN)                # noqa: E731  (alpha 3: 順's hover)
+    assert wait_until(lambda: html.escape(line) in hover())
+    assert "keeps Anki" not in hover(), hover()
 
 
 def test_bar_replan_a_snapshot_that_changes_nothing_they_show_repaints_none_of_them(world):
@@ -964,14 +964,16 @@ def test_bar_replan_a_snapshot_that_changes_nothing_they_show_repaints_none_of_t
     _provide(world, replan="Anki: placing tomorrow's 20 cards…", connect="Up to date", ankiweb="AnkiWeb: synced 18:42",
              journey=True)
     _ask(world)
-    marks = (win.bar_replan, win.bar_connect, win.anki_mark, world.d.journey_dot)
+    marks = (win.anki_mark, world.d.journey_dot)                        # (⇅ ⇄ went in alpha 3: the strip's own below)
     assert wait_until(lambda: all(not m.isHidden() for m in marks))
     painted = {m: win.status_paints[m] for m in marks}
+    strip_painted = dict(win.phase.paints)
     snap = world.status.snapshot()
     win.show_status(snap._replace(taken_at=snap.taken_at + 1))
     win.show_status(snap._replace(lines=("Generating · Counting words 1 / 2",), bar_lines=("Updating",)))
     assert win.bar_line.full() == "Updating"                    # (Q5: the line keeps what no phase circle shows)
     assert {m: win.status_paints[m] for m in marks} == painted
+    assert win.phase.paints == strip_painted
 
 
 # --- W31A-1: the footer keeps every built function, quietly: one slot, quiet marks ---------------------------------- #
@@ -1045,25 +1047,21 @@ def test_the_slot_repaints_only_when_what_holds_it_changes(world):
     assert win.bar_line.full() == "Updating"            # kept for when the slot is the line's again
 
 
-def test_the_re_order_and_connect_lines_are_small_quiet_marks_with_their_words_in_the_hover(world):
-    """W31A-1: no full-width text — a glyph each, as wide as the glyph, dim, the words in the tooltip and the accessible
-    description; hidden while they have nothing to say."""
+def test_the_re_order_and_connect_lines_are_junban_and_anki_miners_hovers_and_go_with_nothing_to_say(world):
+    """Alpha 3 (Sonic 2026-10-24: ⇅ ⇄ "doesn't make any sense to me"): no mark of their own — the re-order's line is
+    順's hover's now-line, Connect's Anki Miner's, each only in its own circle; gone when they have nothing to say."""
+    from app.services import phase as P
     win = world.win
-    replan = "Anki: placing tomorrow's 20 cards…"
+    replan = html.escape("Anki: placing tomorrow's 20 cards…")        # (as the hover says it: text, never markup)
     connect = "Making cards 2 of 5 — ぼっち・ざ・ろっく！ 第3話 (audio)"
-    values = _provide(world, replan=replan, connect=connect)
+    values = _provide(world, replan=html.unescape(replan), connect=connect)
     _ask(world)
-    for mark, glyph, line in ((win.bar_replan, strings.FOOT_REPLAN_MARK, replan),
-                              (win.bar_connect, strings.FOOT_CONNECT_MARK, connect)):
-        assert wait_until(lambda: not mark.isHidden())
-        assert mark.text() == glyph and line in mark.toolTip() and mark.accessibleDescription() == line
-        assert mark.accessibleName()
-        assert mark.width() < 4 * mark.fontMetrics().horizontalAdvance(glyph) + 8      # never stretched over the bar
-        assert mark.objectName() == "barmark"                                         # the footer's dim mark style
+    assert wait_until(lambda: replan in win.phase.hover_text(P.JUNBAN) and connect in win.phase.hover_text(P.MINER))
+    assert replan not in win.phase.hover_text(P.MINER) and connect not in win.phase.hover_text(P.JUNBAN)
     values.update(replan=None, connect=None)
     _ask(world)
-    assert wait_until(lambda: win.bar_replan.isHidden() and win.bar_connect.isHidden())
-    assert not win.bar_replan.toolTip() and not win.bar_connect.toolTip()
+    assert wait_until(lambda: replan not in win.phase.hover_text(P.JUNBAN)
+                      and connect not in win.phase.hover_text(P.MINER))
 
 
 # --- W31A-2: *Anki · N waiting* — the new cards waiting in Anki (the sync's saved backlog) ------------------------- #

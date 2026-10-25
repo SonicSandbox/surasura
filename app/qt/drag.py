@@ -1839,7 +1839,7 @@ class DragController(QObject):
     # (never one the journey keeper withdrew, nor one their own Generate joined), ends it failed with Generate's words.
     # No host, or nothing written: done as it lands. A language switch and the window's close let it go (`close`).
     # Words: none in the bar while it waits (FP-1 lean b, PROVISIONAL): a hover on the bar's arc says what it waits
-    # for (`strings.ANKI_WAIT_TIP`); the host's line is in ⇅'s hover and Generate's steps in its own, and the toast
+    # for (`strings.ANKI_WAIT_TIP`); the host's line is in 順's hover and Generate's steps in its own, and the toast
     # keeps its own words.
     def _anki_begin(self, ticket):
         try:

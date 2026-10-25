@@ -193,7 +193,10 @@ def _language(conn, lang, is_running, words):
             entry["not_made_words"] = _rows(conn, "SELECT word, reading, outcome FROM outcomes WHERE job_id = ? AND "
                                                   "outcome != 'made' ORDER BY rowid", (job["id"],))
         rec["jobs"].append(entry)
-    _turns(rec["jobs"], is_running)
+    marks = {k for (k,) in conn.execute("SELECT key FROM meta WHERE key IN (?, ?)", (f"working:{lang}",
+                                                                                        f"generating:{lang}"))}
+    # A2: between two of one look's episodes — never while Connect's own Generate runs (*updating your list* says so)
+    _turns(rec["jobs"], is_running, f"working:{lang}" in marks and f"generating:{lang}" not in marks)
 
     rec["needs"] = [{"id": n["id"], "kind": n["kind"], "say": n["say"], "item": n["item_id"],
                      "title": items.get(n["item_id"], {}).get("title") if n["item_id"] is not None else None,
@@ -216,16 +219,18 @@ def _language(conn, lang, is_running, words):
     return rec
 
 
-def _turns(entries, is_running):
+def _turns(entries, is_running, between=False):
     """Laptop round 9 #56: while Connect works on one job, every other open job with no reason of its own waits its
-    turn — `reason` runner.TURN and `behind` the item in flight, in the record only (never the ledger's)."""
+    turn — `reason` runner.TURN and `behind` the item in flight, in the record only (never the ledger's). Alpha 3 A2:
+    also `between` two of one look's episodes (the runner's `working:<lang>` mark: nothing in flight for a moment), so
+    the words stay until the wait truly changes — the look's pass over (*Connect's next look*) or Connect stopped."""
     working = next((e for e in entries if e["state"] in book.IN_FLIGHT), None)
-    if not is_running or working is None:
+    if not is_running or (working is None and not between):
         return
     from app.connect import runner
     for entry in entries:
         if entry is not working and entry["state"] not in book.IN_FLIGHT and not entry["reason"]:
-            entry.update(reason=runner.TURN, behind=working["item"])
+            entry.update(reason=runner.TURN, behind=working["item"] if working is not None else None)
 
 
 # An episode's way through Connect as one percent (laptop round 5 #23, Sonic 2026-10-22 M-2 A: "one number that moves
@@ -368,8 +373,12 @@ def _line(conn, lang, rec, open_jobs, items, is_running, need_says=()):
         n = len(open_jobs)
         noun = "episode waits" if n == 1 else "episodes wait"
         # Connect running: it comes to them at its next look (`runner.LOOK_EVERY_S`; the strip's `feed.NEXT_LOOK`),
-        # else at its next start (alpha 3 intent keeper #8: the two lines never disagree)
-        when = "Connect comes to them within 2 minutes." if is_running else "Connect makes them at its next start."
+        # else at its next start (alpha 3 intent keeper #8: the two lines never disagree) — and between two of one
+        # look's episodes they wait their turn (`_turns`' `between`, A2), as the strip says
+        from app.connect import runner
+        when = ("Connect is making them one after another." if is_running and any(
+                    e.get("reason") == runner.TURN for e in rec["jobs"])
+                else "Connect comes to them within 2 minutes." if is_running else "Connect makes them at its next start.")
         return f"{n} {noun} for their cards: {when}", "waiting"
     if rec["made_today"]:
         return f"Up to date · {rec['made_today']} cards made today", "idle"

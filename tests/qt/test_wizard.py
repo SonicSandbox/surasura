@@ -74,8 +74,8 @@ class FakeApi:
             return self.pre
         return {"language": {"language": settings.get("target_language") or "ja"},
                 "known": {"how": "anki", "decks": []}, "shows": {"covers": True},
-                "order": {"keep_in_order": True, "deck": None, "later": "leave", "open_anki": False},
-                "cards": {"make_cards": True}, "level": {"automatic": True, "band": None}}
+                "order": {"keep_in_order": True, "deck": None, "later": "leave"},
+                "cards": {"make_cards": True, "open_anki": False}, "level": {"automatic": True, "band": None}}
 
     def writes(self, page, answers, settings, language):
         if page == "language":
@@ -87,10 +87,14 @@ class FakeApi:
         if page == "order":
             tag, flag, suspend = self.LATER[answers["later"]]
             return {"junban_auto_actions": answers["keep_in_order"], "junban_deck": answers["deck"],
-                    "junban_later_tag": tag, "junban_later_flag": flag, "junban_later_suspend": suspend,
-                    "connect_open_anki": answers["open_anki"]}
+                    "junban_later_tag": tag, "junban_later_flag": flag, "junban_later_suspend": suspend}
         if page == "cards":
-            return {} if answers["make_cards"] is None else {"connect_enabled": bool(answers["make_cards"])}
+            if answers["make_cards"] is None:
+                return {}
+            out = {"connect_enabled": bool(answers["make_cards"])}
+            if answers["make_cards"] and answers.get("open_anki") is not None:
+                out["connect_open_anki"] = bool(answers["open_anki"])
+            return out
         if page == "level":
             if answers["automatic"]:
                 return {"logic.selection.auto": True}
@@ -578,12 +582,12 @@ def test_card_order_preselects_keep_in_order_page_twos_deck_and_leave_and_saves_
     assert wait_until(lambda: not page.controls.isHidden())
     assert page.keep.switch.isChecked() and not page.keep.rec.isHidden()
     assert page.deck_box.currentText() == "日本語::Mining"          # from page 2's decks
-    assert page.later.value() == "leave" and not page.open_anki.switch.isChecked()
+    assert page.later.value() == "leave" and not hasattr(page, "open_anki"), "Open Anki is the Cards page's (IK-4)"
     QTest.mouseClick(page.later.choice("aside"), Qt.MouseButton.LeftButton)
     settings.calls.clear()
     wiz.next()
     assert settings.calls == [{"junban_auto_actions": True, "junban_deck": "日本語::Mining", "junban_later_tag": True,
-                               "junban_later_flag": False, "junban_later_suspend": True, "connect_open_anki": False}]
+                               "junban_later_flag": False, "junban_later_suspend": True}]
 
 
 def test_card_order_with_anki_closed_shows_check_again_and_enter_is_skip(make):
@@ -624,7 +628,7 @@ def test_anki_miner_missing_offers_install_and_the_star_and_no_switch(make):
     settings.calls.clear()
     wiz.next()
     assert settings.calls == [] and W.PAGES[wiz.index] == "level"  # nothing to switch on: Next writes nothing
-    assert ("save", "cards", {"make_cards": None}, "ja") in api.calls       # None, never False (Set up again)
+    assert ("save", "cards", {"make_cards": None, "open_anki": None}, "ja") in api.calls     # None, never False
 
 
 def test_install_asks_in_the_window_first_shows_its_progress_and_looks_again_when_the_installer_closes(make):
@@ -705,9 +709,26 @@ def test_anki_miner_ready_shows_the_switch_on_and_next_saves_connect_enabled(mak
     assert not page.make.isHidden() and page.make.isChecked() and not page.rec.isHidden()
     assert page.sub.text() == "Anki Miner 3.7 · ready for Surasura"
     assert page.btn_install.isHidden() and page.btn_star.isHidden() and not page.star_quiet.isHidden()
+    assert not page.open_anki.isHidden() and not page.open_anki.switch.isChecked(), "off by default (Q4-16)"
     settings.calls.clear()
     wiz.next()
-    assert settings.calls == [{"connect_enabled": True}]
+    assert settings.calls == [{"connect_enabled": True, "connect_open_anki": False}]
+
+
+def test_open_anki_when_surasura_opens_is_shown_and_saved_only_with_make_cards_on(make):
+    """IK-4 (P4.1 row 4.1.1): *Open Anki for me* is Connect's — Settings shows it only with Connect on, and the setup
+    shows it under *Make cards for me*, only while that is on: turned off, the row goes and nothing of it is saved."""
+    wiz, _shell, api, settings, _m = make(miner=FakeMiner(miner_look("ready", "3.7")))
+    go_to(wiz, "cards")
+    page = wiz.page
+    assert wait_until(lambda: page.look is not None)
+    page.open_anki.switch.click()
+    assert page.answers() == {"make_cards": True, "open_anki": True}
+    page.make.click()
+    assert page.open_anki.isHidden() and page.answers() == {"make_cards": False, "open_anki": None}
+    settings.calls.clear()
+    wiz.next()
+    assert settings.calls == [{"connect_enabled": False}], "Make cards off: Open Anki for me is never written"
 
 
 def test_anki_miner_needing_a_fix_shows_its_amber_dot_its_sentence_and_check_again(make):
@@ -722,7 +743,8 @@ def test_anki_miner_needing_a_fix_shows_its_amber_dot_its_sentence_and_check_aga
     assert page.btn_install.isHidden()
     # WZ-4 (Sonic's answer): installed but not ready, *Make cards for me* stays hidden and nothing turns Connect on —
     # the shared rule's *ready* answer (`services.tools_found`), never the *installed* one Settings asks
-    assert page.make.isHidden() and not page.offered() and page.answers() == {"make_cards": None}
+    assert page.make.isHidden() and not page.offered() and page.answers() == {"make_cards": None, "open_anki": None}
+    assert page.open_anki.isHidden()
 
 
 # --- 6 · your list ----------------------------------------------------------------------------------------------------------- #
@@ -823,14 +845,15 @@ def test_a_late_answer_after_the_wizard_closed_paints_nothing(make):
 
 def test_set_up_again_preselects_what_the_settings_say(make):
     pre = {"language": {"language": "zh"}, "known": {"how": "fresh", "decks": []}, "shows": {"covers": False},
-           "order": {"keep_in_order": False, "deck": "中文::Mining", "later": "mark", "open_anki": True},
-           "cards": {"make_cards": False}, "level": {"automatic": False, "band": "rare"}}
+           "order": {"keep_in_order": False, "deck": "中文::Mining", "later": "mark"},
+           "cards": {"make_cards": False, "open_anki": True}, "level": {"automatic": False, "band": "rare"}}
     anki = {"open": True, "say": None, "decks": [("中文::Mining", 820), ("HSK 3", 600)], "preselected": []}
     wiz, *_ = make(api=FakeApi(preselect=pre, anki=anki), data={"target_language": "zh"})
     assert wiz.pages[0].channel.value() == "zh"
     assert wiz.pages[2].covers.switch.isChecked() is False
     order = wiz.pages[3]
-    assert order.later.value() == "mark" and order.open_anki.switch.isChecked() and not order.keep.switch.isChecked()
+    assert order.later.value() == "mark" and not order.keep.switch.isChecked()
+    assert wiz.pages[4].open_anki.switch.isChecked()
     go_to(wiz, "order")
     assert wait_until(lambda: not order.controls.isHidden())
     assert order.deck_box.currentText() == "中文::Mining"
@@ -852,9 +875,9 @@ def test_the_real_rules_take_every_pages_answers_as_the_contract_says(make):
     assert keys[1] == {"anki_sync_decks", "anki_sync_auto"} and settings.calls[1]["anki_sync_auto"] is True
     assert settings.calls[1]["anki_sync_decks"]["ja"] == ["日本語::Mining", "Core 2k"]
     assert keys[2] == {"covers_download"}
-    assert {"junban_auto_actions", "junban_deck", "junban_later_tag", "junban_later_flag", "junban_later_suspend",
-            "connect_open_anki"} <= keys[3] and "logic.automation" not in keys[3]
-    assert keys[4] == {"connect_enabled"}
+    assert {"junban_auto_actions", "junban_deck", "junban_later_tag", "junban_later_flag",
+            "junban_later_suspend"} <= keys[3] and "logic.automation" not in keys[3] and "connect_open_anki" not in keys[3]
+    assert keys[4] == {"connect_enabled", "connect_open_anki"}, "Open Anki saved with Make cards on (IK-4)"
     wiz.next()
     assert set(settings.calls[5]) == {"logic.selection.auto"} and settings.calls[6] == {"onboarding_completed": True}
 
@@ -1349,8 +1372,8 @@ def test_saved_decks_the_open_anki_lacks_are_kept_by_next(make):
     # Why: another Anki profile open (or a deck renamed) must not rewrite the saved decks or 順's deck (R2-3)
     pre = {"language": {"language": "ja"}, "known": {"how": "anki", "decks": ["日本語::Mining", "旧デッキ::文"]},
            "shows": {"covers": True},
-           "order": {"keep_in_order": False, "deck": "旧デッキ::文", "later": "leave", "open_anki": False},
-           "cards": {"make_cards": True}, "level": {"automatic": True, "band": None}}
+           "order": {"keep_in_order": False, "deck": "旧デッキ::文", "later": "leave"},
+           "cards": {"make_cards": True, "open_anki": False}, "level": {"automatic": True, "band": None}}
     wiz, *_ = make(api=FakeApi(anki=dict(OPEN_LOOK), preselect=pre))
     go_to(wiz, "known")
     wiz.page.entered()

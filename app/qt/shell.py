@@ -128,6 +128,13 @@ class Services:
         self.language = self.settings.get().get("target_language") or "ja"
         self.closing = threading.Event()  # set at quit: a Generate still waiting for `results` starts nothing
         self.quit_hook = None             # the window's: the update hands over (called on a worker)
+        self.say = None                   # the window's: a line for its bottom bar (any thread; Q4-16's session look)
+        self.anki_look = None             # Q4-4 / Q4-16: the window's session look (default `anki_session.at_window`;
+        #                                   a test's stand-in)
+        self.anki_session_thread = None   # the look's thread at the window's start (`_look_at_anki`), once started
+        self._session_lock = threading.Lock()
+        self._session_running = False     # a session look under way (one at a time)
+        self._session_looked = float("-inf")    # when the last one began (`time.monotonic`; the focus's throttle)
         self.started = False
         self._quit_lock = threading.Lock()
         self._quit_began = None           # when the quit began (`_stop_starting`): E20's wait counts from it
@@ -139,6 +146,8 @@ class Services:
             self._provide()
 
     # --- W3.5: the dashboard's duties --------------------------------------------------------------------------- #
+    SESSION_LOOK_EVERY = 60.0     # seconds between two of the session's looks at a focus (the Tk CONNECT_LOOK_EVERY)
+
     def has_duties(self):
         return None not in (self.controller, self.updates, self.automation, self.chores)
 
@@ -285,11 +294,96 @@ class Services:
             except Exception as e:
                 applog.log("shell", f"the journey check at start: {e}")
             self.updates.begin()
-            self.automation.started()
+            session = self._session_settings()        # Connect on: the session look first (Q4-4), then known words
+            if session is not None:
+                self.automation.started(session=True)
+            else:
+                self.automation.started()
             self.chores.started()
             if self.replan is not None:
                 self.replan.start()       # the catch-up once; the journey when the store says it is pending
+            if session is not None:
+                self.anki_session_thread = self._look_at_anki(session, opening=True)
         return True
+
+    # --- Q4-4, Q4-16 (K102): a session's start, and *Open Anki for me* at the window's start only ------------------ #
+    def _session_settings(self):
+        """The settings when the window's session look may run — Connect on (`anki_session.on`: its switch, D29's
+        automation, Anki not switched off for the run) — else None."""
+        try:
+            from app.connect import anki_session
+            settings = settings_service.thaw(self.settings.get())
+            return settings if anki_session.on(settings) else None
+        except Exception as e:
+            applog.log("shell", f"the session's look: {e!r}")
+            return None
+
+    def _look_at_anki(self, settings, opening):
+        """The window's session look (P2.3 row 2.3.6; ✅ Q4-4: "sync once when a session starts (when Anki opens, or
+        when Surasura starts with Anki open)") on its own thread — it may wait up to two minutes for an Anki it started:
+        `anki_session.at_window`, at the window's start (`opening`, from `start`: once a window) and at a focus at most
+        once every SESSION_LOOK_EVERY (`_focus_look`), one at a time. Anki closed is recorded (the next look starts a
+        session); Anki open and a session starting: its one sync. Only at the window's start, with *Open Anki for me* on
+        (`connect_open_anki`, off by default, ✅ Q4-16, P2.3-1 a), may a closed Anki be started for you — never at a
+        focus, a language switch or after mining (BRIEF). -> the thread, or None (one already looking, or too soon)."""
+        now = time.monotonic()
+        with self._session_lock:
+            if self._session_running or (not opening and now - self._session_looked < self.SESSION_LOOK_EVERY):
+                return None
+            self._session_running, self._session_looked = True, now
+        thread = threading.Thread(target=self._session, args=(settings, opening), name="anki-session", daemon=True)
+        thread.start()
+        return thread
+
+    def _focus_look(self):
+        """(A worker.) A focus: the session look again, at most once every SESSION_LOOK_EVERY; it never opens Anki."""
+        settings = self._session_settings()
+        if settings is not None:
+            self._look_at_anki(settings, opening=False)
+
+    def _session(self, settings, opening):
+        """(Its own thread.) The look (`at_window`), its line to the bar (`anki_session.told`, the 2.x dashboard's
+        words), then the known-words sync — at the window's start the one start sync, forced, after the session's sync
+        whatever it found (`Automation.started(session=True)` armed none, IK-2); at a focus with Anki open, forced only
+        when the session's sync brought your phone's reviews in — and, synced, Connect kicked to see what waits, on the
+        settings as they are now (IK-5; the Tk `_connect_session`'s order). A quit ends the wait for the Anki it
+        started at its next look, never starts Anki or a sync after it (`cancel`), and nothing follows it."""
+        try:
+            if self.closing.is_set():
+                return
+            from app.connect import anki_session
+            look, done = self.anki_look or anki_session.at_window, None
+            try:
+                done = look(settings, opening=opening, say=self._say, sleep=self.closing.wait,     # a quit ends its wait
+                            clock=lambda: float("inf") if self.closing.is_set() else time.time(), cancel=self.closing)
+            except Exception as e:
+                applog.log("shell", f"Connect's session look: {e!r}")
+            if self.closing.is_set():
+                return
+            self._say(anki_session.told(done))
+            sync = (done or {}).get("sync")
+            if opening:
+                self.automation.session_began(True)
+            elif (done or {}).get("anki") == "open":
+                self.automation.session_began(sync == "synced")
+            if sync == "synced":
+                now = self._session_settings()
+                if now is not None:
+                    from app.connect import kick
+                    kick.kick(now)
+        except Exception as e:
+            applog.log("connect", f"after the session's look: {e!r}")
+        finally:
+            with self._session_lock:
+                self._session_running = False
+
+    def _say(self, line):
+        say = self.say
+        if line and say is not None:
+            try:
+                say(line)
+            except Exception as e:
+                applog.log("shell", f"a line for the bar: {e!r}")
 
     def _hold_while_setup(self):
         """The automatic Generate and the journey keeper hold while the setup wizard is up (`setup_open`)."""
@@ -309,6 +403,7 @@ class Services:
         nothing once the quit began (E20: the window may still be up while an Anki write ends)."""
         if self.started and not self.closing.is_set():
             self.automation.activated()
+            self._focus_look()                        # Q4-4: a session's start seen at a focus too (never opens Anki)
             self.chores.activated()
             if self.replan is not None:
                 self.replan.activated()               # the catch-up and the start's journey look (an outside placement)
@@ -1240,6 +1335,9 @@ class ShellWindow(QMainWindow):
         self._duties_asked = False
         self.bridge.quit_asked.connect(self._quit_for_update)
         services.quit_hook = self.bridge.ask_quit
+        self._session_lines = bridge.Relay(self)          # Q4-16: the session's look's lines (*Opening Anki…*), the bar
+        self._session_lines.said.connect(self._session_said)
+        services.say = self._session_lines.call
         if services.has_duties():
             self._attach_duties()
 
@@ -2228,6 +2326,10 @@ class ShellWindow(QMainWindow):
             self.services.setup_open.set()
         elif self.services.setup_open.is_set():
             bridge.run_in_worker(self.services.setup_ended)
+
+    def _session_said(self, line):
+        from app.qt import windows
+        windows.say_in_bar(self, line)
 
     def _duties_started(self):
         """Started: what the bar and the header read from disk, read on workers."""

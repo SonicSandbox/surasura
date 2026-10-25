@@ -811,6 +811,22 @@ class Ledger:
         """Connect's Generate ended (or a run found a mark a crash left): the mark cleared."""
         self.conn.execute("DELETE FROM meta WHERE key = ?", (f"generating:{language}",))
 
+    # --- alpha 3 A2: a look working through a language's episodes, for the status record ------------------------ #
+
+    def mark_working(self, language):
+        """This look began making the language's episodes' cards (`working:<lang>` in meta): until its pass ends, an
+        episode with no reason of its own waits its turn (`status._turns`), also between two episodes."""
+        self.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (f"working:{language}", _now()))
+
+    def working(self, language):
+        """When this look began working through the language's episodes, or None."""
+        row = self.conn.execute("SELECT value FROM meta WHERE key = ?", (f"working:{language}",)).fetchone()
+        return row[0] if row else None
+
+    def worked(self, language):
+        """The look's pass over the language ended (or a run found a mark a crash left): the mark cleared."""
+        self.conn.execute("DELETE FROM meta WHERE key = ?", (f"working:{language}",))
+
     def start_undo(self, job_id, language, planned, kept):
         """*Undo this batch* about to write Anki (its own transaction): the notes it will delete (`planned`) and those
         it keeps ([[note id, word, why], ...]) -> its id. Written first, so a kill after Anki's delete is finished

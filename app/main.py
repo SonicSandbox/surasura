@@ -1443,8 +1443,6 @@ class MasterDashboardApp:
             finally:
                 self._connect_looking = False
             sync = (done or {}).get("sync")
-            if sync == "synced" and done.get("opened"):
-                say("Anki is open and synced: your phone's reviews are in.")
             if (done or {}).get("anki") == "open":
                 # The session's sync has answered — the known-words sync waited for this look (Q4-1): right away once
                 # your phone's reviews are in, else at its own five-minute pace
@@ -1457,14 +1455,11 @@ class MasterDashboardApp:
                     kick.kick(s)
                 except Exception as e:
                     print(f"Connect wasn't started: {e}")
-            elif sync == "not-signed-in":
-                say("Anki isn't signed in to AnkiWeb, so your phone won't get Surasura's cards and order until it is.")
-            elif sync == "full-sync":
-                say("AnkiWeb wants a full sync, which only you can choose: open Anki and click Sync.")
-            elif sync and sync.startswith("failed"):
-                say("Anki couldn't sync with AnkiWeb just now. Surasura asks again later.")
-            elif done and done.get("opened") and done.get("anki") != "open":
-                say("Anki didn't open within two minutes. Open it yourself when you're ready.")
+            if done:
+                from app.connect import anki_session
+                line = anki_session.told(done)      # the bar's words, 3.0's too (one wording)
+                if line:
+                    say(line)
         threading.Thread(target=work, daemon=True).start()
 
     def _library_handle(self, lang):

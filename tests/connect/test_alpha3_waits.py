@@ -435,3 +435,123 @@ def test_connects_own_line_agrees_with_the_strip_on_when_it_comes_to_them(runnin
         _job(ledger, lang, ids[1], "queued")
     line = status.read(languages=[lang])["languages"][lang]["line"]
     assert line.startswith("2 episodes wait for their cards") and words in line
+
+
+# --- A2 (alpha 3's adversary, the lead 2026-10-25): one reason per wait until the wait truly changes --------------- #
+def _waiting_lines(got):
+    return [ln for ln in _strip(got)[P.MINER].lines if ln.startswith(S.CONNECT_WAIT_LABEL)]
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_between_two_episodes_of_one_look_the_waiting_ones_keep_their_turn(running, lang):
+    """Between two episodes Connect makes in one look, nothing is in flight for a moment (one job ended, the next not
+    yet choosing its words). The episodes behind still wait their turn: the 鉱 hover and their rows keep saying so,
+    never "within 2 minutes" for a few seconds at every episode's end."""
+    ids = _items(lang)
+    with Ledger() as ledger:
+        first = _job(ledger, lang, ids[0], "mining")
+        ledger.set_state(first, "mining", picked={"words": WORDS})
+        _job(ledger, lang, ids[1], "queued")
+        _job(ledger, lang, ids[2], "queued")
+        with ledger.transaction():
+            ledger.mark_working(lang)           # the runner's mark: this look is working through the episodes
+    while_mining = _waiting_lines(feed.Provider(lang, lambda: ON).feed())
+    with Ledger() as ledger:
+        ledger.set_state(first, "done")
+    got = feed.Provider(lang, lambda: ON).feed()
+    assert got.items[ids[1]].tip == got.items[ids[2]].tip == runner.TURN, "the rows' hover keeps the same words"
+    assert _waiting_lines(got) == while_mining == [f"{S.CONNECT_WAIT_LABEL} · {runner.TURN.rstrip('.')} · 2 episodes"]
+    line = status.read(languages=[lang])["languages"][lang]["line"]
+    assert "within 2 minutes" not in line, "Connect's own line never says its next look while it works through them"
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_once_the_look_is_over_the_ones_left_wait_for_the_next_look(running, lang):
+    """The look's work ended (the mark cleared before Connect's pause): an episode queued since waits for Connect's
+    next look — that wait truly changed."""
+    ids = _items(lang)
+    with Ledger() as ledger:
+        _job(ledger, lang, ids[0], "queued")
+        with ledger.transaction():
+            ledger.mark_working(lang)
+        with ledger.transaction():
+            ledger.worked(lang)
+    assert feed.Provider(lang, lambda: ON).feed().items[ids[0]].tip == feed.NEXT_LOOK
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_while_connect_updates_your_list_after_mining_the_ones_queued_say_so_not_their_turn(running, lang):
+    """The look's episodes made, Connect's own Generate runs (F11, its *updating your list* mark) and an episode you
+    queued meanwhile waits for it: it says so, never "its turn" (no episode's cards are being made)."""
+    ids = _items(lang)
+    with Ledger() as ledger:
+        _job(ledger, lang, ids[0], "queued")
+        with ledger.transaction():
+            ledger.mark_working(lang)
+            ledger.mark_updating(lang)
+    assert feed.Provider(lang, lambda: ON).feed().items[ids[0]].tip == feed.NEXT_UPDATING
+
+
+def test_a_mark_a_crash_left_says_nothing_once_connect_has_stopped(running):
+    """Connect killed mid-look leaves its mark: with Connect not running the episode waits for its next start."""
+    ids = _items("ja")
+    with Ledger() as ledger:
+        _job(ledger, "ja", ids[0], "queued")
+        with ledger.transaction():
+            ledger.mark_working("ja")
+    running["on"] = False
+    assert feed.Provider("ja", lambda: ON).feed().items[ids[0]].tip == feed.NEXT_START
+
+
+def test_a_run_marks_its_work_between_episodes_and_clears_it_before_its_pause(tmp_path, running):
+    """The runner's own run: three episodes in one look, the third waiting on Anki Miner's open window (a wait that
+    may end while Connect runs: a pause, then a second look). At each step between two episodes (the next one's line
+    read) the episodes still queued wait their turn; at the pause between looks, and once the run ends, no mark is
+    left."""
+    from tests.connect.fake_steps import FakeSteps
+    path = str(tmp_path / "ledger.sqlite")
+    seen, paused = [], []
+
+    class Steps(FakeSteps):
+        def mine_line(self, lang):
+            if self.records:                    # an episode made in this look: the next one's line read now
+                rec = status.read(languages=[lang], path=path)["languages"][lang]
+                got = feed.build({"running": True, "languages": {lang: rec}}, lang)
+                seen.append({j["item"]: got.items[j["item"]].tip for j in rec["jobs"] if j["state"] == "queued"})
+            return super().mine_line(lang)
+
+        def mine(self, lang, job, picked, words, attempt):
+            if job["item_id"] == 3:
+                raise runner.Wait(runner.ANKI_MINER_OPEN)
+            return super().mine(lang, job, picked, words, attempt)
+
+    steps = Steps(str(tmp_path), {"line": {"ja": [1, 2, 3]}, "queue": {"ja": [1, 2, 3]}, "absent": ["junban"]})
+    with Ledger(path) as ledger:
+        def pause(_seconds):
+            paused.append(ledger.working("ja"))
+        runner.run({}, ["ja"], steps=steps, ledger=ledger, sleep=pause, looks=2)
+        left = ledger.working("ja")
+    between = [tips for tips in seen if tips]               # the ones still queued after an episode
+    assert between and all(tip == runner.TURN for tips in between for tip in tips.values())
+    assert paused == [None], "the look's mark is cleared before Connect's pause"
+    assert left is None, "and none is left once the run ends"
+
+
+def test_a_mark_a_crash_left_is_cleared_when_connect_starts_again(tmp_path, running):
+    """B-5: Connect killed mid-look left its mark; the next run clears it before its first pass's preparing (the sync,
+    known words, Generate), so the queued episodes never say "its turn" while nothing is being made."""
+    from tests.connect.fake_steps import FakeSteps
+    path = str(tmp_path / "ledger.sqlite")
+    seen = []
+
+    class Steps(FakeSteps):
+        def prepare(self, lang, ledger):
+            seen.append(ledger.working(lang))
+            return super().prepare(lang, ledger)
+
+    with Ledger(path) as ledger:
+        with ledger.transaction():
+            ledger.mark_working("ja")
+        steps = Steps(str(tmp_path), {"line": {"ja": [1]}, "queue": {"ja": [1]}, "absent": ["junban"]})
+        runner.run({}, ["ja"], steps=steps, ledger=ledger, sleep=lambda s: None, looks=1)
+    assert seen == [None]

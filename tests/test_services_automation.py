@@ -184,6 +184,48 @@ def test_a_focus_storm_syncs_once(live, monkeypatch):
     auto.close()
 
 
+def test_the_sessions_look_forces_the_sync_once_your_phones_reviews_are_in(live, monkeypatch):
+    """Q4-16 (*Open Anki for me*): the window's start synced once and found Anki closed; the Anki it opened for you has
+    synced your phone's reviews — the known-words sync goes again at once (forced, inside the 5 minutes). A look that
+    synced nothing waits for the 5 minutes; once closed, nothing."""
+    h.seed_library("ja")
+    _synced_once("ja")
+    anki = _Anki(monkeypatch)
+    clock = _Clock(1000.0)
+    auto, registry, _c, _l = _make(_settings(anki_auto_generate=False), clock=clock)
+    auto.activated()
+    _settle(auto, registry)
+    assert len(anki.syncs) == 1
+    clock.now = 1000.0 + 30
+    auto.session_began(False)
+    _settle(auto, registry)
+    assert len(anki.syncs) == 1, "no fresh reviews: the 5-minute wait holds"
+    auto.session_began(True)
+    _settle(auto, registry)
+    assert len(anki.syncs) == 2, "your phone's reviews are in: read now"
+    auto.close()
+    auto.session_began(True)
+    assert len(anki.syncs) == 2
+
+
+def test_a_start_with_a_session_look_syncs_known_words_once_after_the_sessions_sync(live, monkeypatch):
+    """IK-2 (Q4-1, fresh state): with Connect on the window's start looks at Anki first (the session's sync, your
+    phone's reviews); its start sync then waits for that look — no 2 s timer — and the look's end forces exactly one
+    known-words sync, after it."""
+    h.seed_library("ja")
+    _synced_once("ja")
+    anki = _Anki(monkeypatch)
+    timers = _Timers()
+    auto, registry, _c, _l = _make(_settings(anki_auto_generate=False), timers=timers)
+    auto.started(session=True)
+    assert auto.worker.idle(5)
+    assert timers == [] and anki.syncs == [], "nothing read before the session's sync"
+    auto.session_began(True)
+    _settle(auto, registry)
+    assert len(anki.syncs) == 1
+    auto.close()
+
+
 def test_a_sync_asked_for_while_one_runs_never_starts_a_second(live, monkeypatch):
     """The Tk `_anki_sync_lock.acquire(blocking=False)`: a forced trigger (a language switch) during a sync starts
     nothing; once it ends, the next forced trigger syncs again."""

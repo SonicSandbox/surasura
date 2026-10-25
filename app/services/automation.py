@@ -545,11 +545,13 @@ class Automation:
             self._subscribers.append(callback)
 
     # --- the window's triggers (each returns at once) ------------------------------------------------------------ #
-    def started(self):
+    def started(self, session=False):
         """The window opened: the known-words count read, and the sync forced 2 s on (skipped under test, as the Tk
-        start timers are)."""
+        start timers are). `session` (alpha 3 IK-2, Q4-1): the window's session look runs first (Connect on: it may
+        ask Anki for the session's sync, your phone's reviews) — then no timer: the look's end forces the one sync
+        (`session_began(True)`), so the known words are read after the session's sync, once."""
         self.worker.put(self._read_known)
-        if os.environ.get("SURASURA_NO_UI_TIMERS"):
+        if session or os.environ.get("SURASURA_NO_UI_TIMERS"):
             return
         with self.lock:
             if self.closed or self._start_timer is not None:
@@ -587,6 +589,14 @@ class Automation:
         if self.closed:
             return
         self.sync.ended(result, language or self.language)
+
+    def session_began(self, force):
+        """The window's session look ended (Q4-1, Q4-16: `Services._session`): the known-words sync asked — `force`d
+        at the window's start (the one start sync, `started(session=True)`, read after the session's sync whatever it
+        found) and after a focus's look whose session sync brought your phone's reviews in; else at its own pace (the
+        Tk `_maybe_anki_sync(force=fresh)`). Any thread; returns at once. Nothing once closed."""
+        if not self.closed:
+            self.worker.put(self.sync.maybe, bool(force))
 
     def sync_now(self, then=None):
         """A sync the user asked for (a click on the bar's known-words count, Q30): the automatic sync's own job,

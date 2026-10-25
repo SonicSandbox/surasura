@@ -107,8 +107,8 @@ def preselect(settings, language):
         draft = {"language": {"language": language},
                  "known": {"how": "anki", "decks": decks},
                  "shows": {"covers": True},
-                 "order": {"keep_in_order": True, "deck": deck, "later": "leave", "open_anki": False},
-                 "cards": {"make_cards": True},
+                 "order": {"keep_in_order": True, "deck": deck, "later": "leave"},
+                 "cards": {"make_cards": True, "open_anki": False},
                  "level": {"automatic": True, "band": band}}
         passed = [p for p in PAGES if p in (settings.get(PASSED) or [])]
         if passed:                  # *Finish later*, then back: a page already saved shows what it saved (IK2-2)
@@ -142,9 +142,9 @@ def _current(settings, language, decks, deck, band):
     return {"language": {"language": language},
             "known": {"how": "anki" if decks else "fresh", "decks": decks},
             "shows": {"covers": settings.get("covers_download") is True},
-            "order": {"keep_in_order": kept, "deck": deck, "later": _later_of(settings),
+            "order": {"keep_in_order": kept, "deck": deck, "later": _later_of(settings)},
+            "cards": {"make_cards": settings.get("connect_enabled") is True,
                       "open_anki": settings.get("connect_open_anki") is True},
-            "cards": {"make_cards": settings.get("connect_enabled") is True},
             "level": {"automatic": auto, "band": band}}
 
 
@@ -187,7 +187,6 @@ def writes(page, answers, settings, language):
         deck = str(answers.get("deck") or "").strip()
         keep = bool(answers.get("keep_in_order"))
         kept = keep and bool(deck)
-        open_anki = bool(answers.get("open_anki"))
         # *Set up again* writes only what the user changed on the page (AD-1…3): a choice shown as it was — a mix of
         # later actions shown as its nearest, a consent given for the other language — is never written over.
         was = None if _new(settings) else _was_order(settings, language)
@@ -202,13 +201,17 @@ def writes(page, answers, settings, language):
                     out["junban_deck"] = deck
         if was is None or later != was["later"]:
             out.update({"junban_later_tag": tag, "junban_later_flag": flag, "junban_later_suspend": suspend})
-        if was is None or open_anki != was["open_anki"]:
-            out["connect_open_anki"] = open_anki
         return out
     if page == "cards":
         if answers.get("make_cards") is None:
             return {}
-        return {"connect_enabled": bool(answers.get("make_cards"))}
+        out = {"connect_enabled": bool(answers.get("make_cards"))}
+        open_anki = answers.get("open_anki")
+        # Connect's: only with *Make cards* on (alpha 3 IK-4); *Set up again* writes it only when it changed (AD-1…3)
+        if answers.get("make_cards") and open_anki is not None and (
+                _new(settings) or bool(open_anki) != (settings.get("connect_open_anki") is True)):
+            out["connect_open_anki"] = bool(open_anki)
+        return out
     if page == "level":
         if answers.get("automatic"):
             return {"logic.selection.auto": True}

@@ -15,6 +15,7 @@ import os
 import shutil
 import string
 import subprocess
+import sys
 import time
 
 import pytest
@@ -221,6 +222,56 @@ def test_a_share_that_is_down_costs_one_wait_never_four(monkeypatch):
     del calls[:]
     down = OSError(None, "The network path was not found", None, 53)
     assert sources.reach(folder, dev=1, error=down) == sources.AWAY and calls == []
+
+
+def test_the_system_volume_is_windows_own_and_no_other():
+    """`_system_volume` names %SystemDrive%'s volume alone (off Windows, none): another volume is never taken for it."""
+    if sys.platform != "win32":
+        assert sources._system_volume(os.stat(os.sep).st_dev) is False
+        return
+    own = os.stat(os.environ.get("SystemDrive", "C:") + os.sep).st_dev
+    assert sources._system_volume(own) is True
+    assert sources._system_volume(own + 1) is False
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_look_at_a_share_that_is_down_asks_it_once(language, monkeypatch):
+    """G5 at the look: the look's own failed check of the folder is what decides gone or away — the share isn't asked
+    a second time (each ask of a share that's down is a network wait)."""
+    store, data_dir = _empty(language)
+    nas = _elsewhere("NAS")
+    show = os.path.join(nas, names(language)[71])
+    _show(language, show)
+    with store:
+        root = store.add_source(show)
+        _look(store, language, root, first=True)
+        calls = []
+        real_stat, real_scandir = os.stat, os.scandir
+
+        def under(path):
+            hit = os.path.normcase(os.path.abspath(os.fspath(path))).startswith(os.path.normcase(nas))
+            if hit:
+                calls.append(path)
+            return hit
+
+        def stat(path, *a, **kw):
+            if under(path):
+                raise OSError(None, "The network path was not found", None, 53)
+            return real_stat(path, *a, **kw)
+
+        def scandir(path="."):
+            if under(path):
+                raise OSError(None, "The network path was not found", None, 53)
+            return real_scandir(path)
+        monkeypatch.setattr(os, "stat", stat)
+        monkeypatch.setattr(os, "scandir", scandir)
+        try:
+            result = sources.scan(store, language, root, full=True)
+        finally:
+            monkeypatch.setattr(os, "stat", real_stat)
+            monkeypatch.setattr(os, "scandir", real_scandir)
+        assert (result["reachable"], result["gone"]) == (False, False)
+        assert len(calls) == 1, calls
 
 
 def test_a_folder_whose_parent_moved_too_is_gone_on_the_same_volume():
@@ -517,10 +568,14 @@ def test_find_its_new_folder_when_the_old_one_is_back_or_only_away_joins_and_sto
         root_a = store.add_source(old)
         _look(store, language, root_a, first=True)
     for state in ("back", "away"):
-        if state == "away":
-            back = unplug(monkeypatch, downloads)
         looks, heard, said = _looks(language), [], []
         looks.on_result = said.append
+        os.rename(old, old + " (moved)")                               # a look sees it gone first: its card drawn
+        assert looks.asked(refreshed=True) and looks.idle(60)
+        assert next(r for r in said[-1]["sources"] if r["id"] == root_a)["gone"] is True
+        os.rename(old + " (moved)", old)
+        if state == "away":
+            back = unplug(monkeypatch, downloads)
         try:
             assert looks.find_new_folder(root_a, new, heard.append)
             assert looks.idle(60)

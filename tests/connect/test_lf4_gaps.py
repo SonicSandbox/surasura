@@ -328,8 +328,9 @@ def test_a_stopped_run_that_crashed_after_writing_its_result_is_still_stopped(ba
     assert [o["outcome"] for o in done["outcomes"]][:2] == ["made", "made"]
 
 
-def test_the_cancel_is_written_once_and_the_ledger_asked_no_more_after_it(batch, fake_miner, monkeypatch):  # noqa: F811
-    # one press, one cancel file: after it the poll never asks the ledger again (a read every 0.2 s for nothing)
+def test_the_cancel_is_held_and_the_ledger_asked_no_more_after_it(batch, fake_miner, monkeypatch):  # noqa: F811
+    # one press: after it the poll never asks the ledger again (a read every 0.2 s for nothing); the cancel file is
+    # held at each poll (Anki Miner 3.10 clears an unconsumed one as a call starts) — a file touch, never a ledger read
     monkeypatch.setattr(anki_miner, "POLL_S", 0.05)
     fake_miner.plan(cancel_at=2, progress=[[1, 5, 0, 0], [3, 5, 2, 6], [3, 5, 4, 6]], progress_every=0.2)
     real_cancel, cancels, asked = anki_miner.cancel, [], []
@@ -340,4 +341,4 @@ def test_the_cancel_is_written_once_and_the_ledger_asked_no_more_after_it(batch,
         return True
     done = batch(should_stop=should_stop)
     assert done["stopped"] is True
-    assert cancels == [1] and asked == [1]
+    assert len(cancels) >= 1 and asked == [1]

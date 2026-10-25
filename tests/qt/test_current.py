@@ -1635,6 +1635,13 @@ def test_a_setting_no_screen_reads_paints_no_widget_and_no_row(seeded, qapp):
     seed, win = seeded()
     lists = [p.list for p in win.page_widgets.values() if hasattr(p, "list")]
     assert lists, "the window has at least one list to watch"
+    # The window's own first paint finished before we watch: the phase strip's logos are drawn on a worker and land
+    # when they're ready (`PhaseStrip._load_logos`) — on a busy machine after the window opened, and their one paint
+    # is the window still opening, not the setting (the cut's flake: the strip and its parents painted, 2 runs in 3)
+    strip = win.phase
+    assert wait_until(lambda: set(strip._pix) >= set(strip.logos), 10)
+    for _ in range(20):
+        QApplication.processEvents()
     heard = []
     win.bridge.settings_written.connect(lambda keys: heard.append(tuple(keys)))
     before_paints = [lst.delegate.paints for lst in lists]

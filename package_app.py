@@ -526,14 +526,53 @@ def build_installer(final_dist, version, data_name, real_name, out_dir="dist"):
 BUILD_INFO = os.path.join("app", "build_info.py")
 
 
+def source_commit(folder="."):
+    """The trees a freeze is built from: "<public short head>", then "/<private short head>" when the private
+    repository sits beside it (`<folder>.priv.git`, the copies' layout); "+" after a tree with changes ("?" when git
+    couldn't say whether it has any). None when git
+    can't say (the build goes on without it)."""
+    def git(args, timeout):
+        """(code, its output) of one git call, or None. Its own Popen: a build's PyInstaller calls go through
+        `subprocess.run`, which the tests stand in for, and git is never one of them."""
+        try:
+            p = subprocess.Popen(["git", *args], cwd=folder, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                 text=True)
+            try:
+                out, _err = p.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                p.kill()
+                p.communicate()
+                return None
+            return p.returncode, out or ""
+        except Exception:
+            return None
+
+    def head(*where):
+        got = git([*where, "rev-parse", "--short=12", "HEAD"], 30)
+        if got is None or got[0] != 0 or not got[1].strip():
+            return None
+        dirty = git([*where, "status", "--porcelain", "--untracked-files=no"], 120)    # "+" changes, "?" unknown
+        mark = "?" if dirty is None or dirty[0] != 0 else ("+" if dirty[1].strip() else "")
+        return got[1].strip() + mark
+    public = head()
+    if not public:
+        return None
+    here = os.path.abspath(folder)
+    priv = here.rstrip("\\/") + ".priv.git"
+    private = head(f"--git-dir={priv}", f"--work-tree={here}") if os.path.isdir(priv) else None
+    return public + (f"/{private}" if private else "")
+
+
 class _release_flag:
     """For a release's freeze: app/build_info.py says RELEASE_BUILD = True (so the exe ignores the update check's
     local-folder override), and is put back exactly as it was afterwards, whatever happens. With `build_id` (every
     build, S3.1 D18) it also carries BUILD_ID = "<id>" for the freeze, the id _internal/build_stamp.json records, so a
-    program can tell its own build from the folder's."""
-    def __init__(self, on, build_id=None):
+    program can tell its own build from the folder's; with `commit`, BUILD_COMMIT = "<public>[/<private>]"
+    (`source_commit`), which Report a problem's zip names."""
+    def __init__(self, on, build_id=None, commit=None):
         self.on = on
         self.build_id = build_id
+        self.commit = commit
         self.saved = None
 
     def __enter__(self):
@@ -547,6 +586,8 @@ class _release_flag:
                     raise RuntimeError("app/build_info.py has no RELEASE_BUILD = False to set")
             if self.build_id:
                 text = text.rstrip("\r\n") + f'\nBUILD_ID = "{self.build_id}"\n'
+            if self.commit:                               # Report a problem's about.txt names the trees built from
+                text = text.rstrip("\r\n") + f'\nBUILD_COMMIT = "{self.commit}"\n'
             with open(BUILD_INFO, "wb") as f:
                 f.write(text.encode("utf-8"))
         return self
@@ -881,7 +922,7 @@ def build(zip_output=False, skip_tests=False, release=False, full_update=False, 
     import datetime
     import secrets
     build_id = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + secrets.token_hex(4)
-    with open(os.path.join("debug", "build_log.txt"), "w") as log_file, _release_flag(release, build_id):
+    with open(os.path.join("debug", "build_log.txt"), "w") as log_file, _release_flag(release, build_id, source_commit()):
         result = subprocess.run(cmd, stdout=log_file, stderr=subprocess.STDOUT)
 
     if result.returncode != 0:

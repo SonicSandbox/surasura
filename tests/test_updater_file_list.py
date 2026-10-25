@@ -418,6 +418,7 @@ def test_the_freeze_runs_inside_the_release_flag(tmp_path, monkeypatch, release)
     monkeypatch.setattr(package_app, "get_version", lambda: "2.5.0")
     monkeypatch.setattr(package_app, "_python_version", lambda: (3, 11, 4))   # a release refuses an older Python
     monkeypatch.setattr(package_app, "tsubasa_installed", package_app.tsubasa_pin)   # the pinned tsubasa (T1 B)
+    monkeypatch.setattr(package_app, "source_commit", lambda: "1e72f8108fe1/8bbb85e136c4")   # git isn't stubbed
     frozen = []
 
     def pyinstaller(cmd, **kwargs):
@@ -428,6 +429,7 @@ def test_the_freeze_runs_inside_the_release_flag(tmp_path, monkeypatch, release)
     package_app.build(release=release, skip_tests=True)
     assert len(frozen) == 1
     assert (b"RELEASE_BUILD = True" in frozen[0]) is release
+    assert b'BUILD_COMMIT = "1e72f8108fe1/8bbb85e136c4"' in frozen[0]     # Report a problem's about.txt names it
     assert (tmp_path / "app" / "build_info.py").read_bytes() == original
 
 

@@ -1279,6 +1279,9 @@ class ShellWindow(QMainWindow):
         self.add_stone.setVisible(bool(self.adder.entries()))
         row.addWidget(self.add_stone)
         # --- end W3.2 Q3
+        from app.qt import report as report_ui                 # Report a problem: the bug, the header's rightmost control
+        self.report_button = report_ui.BugButton(self, header)
+        row.addWidget(self.report_button)
         self.progress = frame.Progress(header)             # W3.1a: the jobs' hairline along its foot (no pulsing dot)
         self._busy, self._share = False, None              # ... the bar's lines running, Generate's share
         self.presses = press_service.Presses()             # round 8 row 45: a live press runs the hairline too,
@@ -2154,7 +2157,7 @@ class ShellWindow(QMainWindow):
         header_row = self.header.layout()
         header_row.insertWidget(header_row.indexOf(self.add_stone), d.level)
         header_row.insertWidget(header_row.indexOf(self.add_stone), d.journey_button)    # right of the ▾ (laptop fixes)
-        header_row.addWidget(d.help)
+        header_row.insertWidget(header_row.indexOf(self.report_button), d.help)          # ? before the bug
         # --- end W3.2 Q3
         self._paint_level()
         # the bar (W3.1a): the known corner and the emerald are the footer's (statuses: W3.3 makes them open

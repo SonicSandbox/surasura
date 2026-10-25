@@ -446,40 +446,63 @@ def logs_folder():
     return contract.log_folder()
 
 
-def save_logs(dest, now=None):
-    """One zip at `dest`: Surasura's logs folder (the command line's, Generate's) and Anki Miner's result files of
-    the last 7 days from Connect's run folders — never a run's `settings-export.json` -> the names written."""
+def log_files(now=None, skip=None, left_out=None):
+    """The logs a saved zip takes — one rule for *Save logs to a file…* and Report a problem's zip (`app/report.py`):
+    Surasura's logs folder (the command line's, Generate's) and Anki Miner's result files from Connect's run folders,
+    each written in the last 7 days; never a run's `settings-export.json`, a file named like a key or a secret, a link
+    (a linked folder is never walked) or a cloud placeholder (the evidence collector's rules, `app/report.py`).
+    `skip`: a path never taken (the zip being written); `left_out`, a list, is told each file refused and why.
+    -> [(path, name in the zip)]."""
     import time
-    import zipfile
+    from app import report
     now = now or time.time()
+    target = os.path.normcase(os.path.abspath(skip)) if skip else None
+    out = []
+    folder = logs_folder()
+    for root, dirs, files in os.walk(folder):
+        dirs[:] = [d for d in dirs if not report.is_link(os.path.join(root, d)) and not report.is_secret(d)]
+        for name in sorted(files):
+            full = os.path.join(root, name)
+            arc = os.path.join("logs", os.path.relpath(full, folder))
+            why = report.why_not(full)
+            if why:
+                if left_out is not None:
+                    left_out.append(f"{arc}: {why}")
+                continue
+            try:
+                if os.path.normcase(os.path.abspath(full)) == target or \
+                        now - os.path.getmtime(full) > LOG_DAYS * 86400:
+                    continue        # the zip itself, or older than 7 days
+            except OSError:
+                continue
+            out.append((full, arc))
+    runs = os.path.join(os.path.dirname(book.path()), "runs")
+    for root, dirs, files in os.walk(runs):
+        dirs[:] = [d for d in dirs if not report.is_link(os.path.join(root, d)) and not report.is_secret(d)]
+        for name in sorted(files):
+            if name in NEVER_SAVED or not (name.startswith("result") and name.endswith(".json")):
+                continue
+            full = os.path.join(root, name)
+            why = report.why_not(full)
+            if why:
+                if left_out is not None:
+                    left_out.append(f"{os.path.join('anki-miner', os.path.relpath(full, runs))}: {why}")
+                continue
+            try:
+                if now - os.path.getmtime(full) > LOG_DAYS * 86400:
+                    continue
+            except OSError:
+                continue
+            out.append((full, os.path.join("anki-miner", os.path.relpath(full, runs))))
+    return out
+
+
+def save_logs(dest, now=None):
+    """One zip at `dest` of `log_files` -> the names written."""
+    import zipfile
     names = []
     with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as z:
-        folder = logs_folder()
-        target = os.path.normcase(os.path.abspath(dest))
-        for root, _dirs, files in os.walk(folder):
-            for name in sorted(files):
-                full = os.path.join(root, name)
-                try:
-                    if os.path.normcase(os.path.abspath(full)) == target or \
-                            now - os.path.getmtime(full) > LOG_DAYS * 86400:
-                        continue        # the zip itself, or older than 7 days
-                except OSError:
-                    continue
-                arc = os.path.join("logs", os.path.relpath(full, folder))
-                z.write(full, arc)
-                names.append(arc)
-        runs = os.path.join(os.path.dirname(book.path()), "runs")
-        for root, _dirs, files in os.walk(runs):
-            for name in sorted(files):
-                if name in NEVER_SAVED or not (name.startswith("result") and name.endswith(".json")):
-                    continue
-                full = os.path.join(root, name)
-                try:
-                    if now - os.path.getmtime(full) > LOG_DAYS * 86400:
-                        continue
-                except OSError:
-                    continue
-                arc = os.path.join("anki-miner", os.path.relpath(full, runs))
-                z.write(full, arc)
-                names.append(arc)
+        for full, arc in log_files(now, skip=dest):
+            z.write(full, arc)
+            names.append(arc)
     return names

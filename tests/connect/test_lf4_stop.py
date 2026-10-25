@@ -178,7 +178,7 @@ def test_a_stop_in_the_first_second_of_the_call_still_stops_it_when_anki_miner_c
         with pytest.raises(anki_miner.AnkiMinerError) as raised:
             batch(should_stop=lambda: True)
         assert raised.value.kind == "cancelled" and raised.value.stopped is True
-        run_dir = None
+        run_dir = fake_miner.run_files()[0]["run_dir"]
     else:
         done = batch(should_stop=lambda: True)
         assert done["stopped"] is True
@@ -186,8 +186,8 @@ def test_a_stop_in_the_first_second_of_the_call_still_stops_it_when_anki_miner_c
         assert outcomes[:2] == ["made", "made"] and all(o in runner.UNSETTLED for o in outcomes[2:])
         run_dir = os.path.dirname(done["run_file"])
     assert fake_miner.calls() and any("cleared" in c for c in fake_miner.calls()), "3.10's clearing ran"
-    if run_dir:
-        assert not os.path.exists(os.path.join(run_dir, "job-1-1", "cancel"))
+    assert os.path.isdir(os.path.join(run_dir, "job-1-1")), "the run's own folder (the file was written there)"
+    assert not os.path.exists(os.path.join(run_dir, "job-1-1", "cancel")), "the call over: no cancel file left"
 
 
 def test_a_stop_before_anything_reached_anki_is_a_cancelled_refusal_marked_stopped(batch, fake_miner, monkeypatch):  # noqa: F811

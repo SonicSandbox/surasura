@@ -549,7 +549,8 @@ def mine_batch(path, language, job, video, subtitle, words, mapping, profile_nam
     picked for (P1.3-AM37 #5, the runner's half): another one active now -> AnkiMinerError `profile-changed`, before
     anything is mined (the runner picks again). `on_progress(progress)`: while the mine call runs, each `read_progress`
     of its run that answered (laptop round 5 #23: the row moves while Anki Miner works). `known`: `preflight`'s.
-    `should_stop()` (laptop round 8 #47, *Stop*): asked at every poll; True -> the run's cancel file (`cancel`), once:
+    `should_stop()` (laptop round 8 #47, *Stop*): asked at every poll; True -> the run's cancel file (`cancel`), held at every
+    poll from then on and removed once the call is over (Anki Miner 3.10 clears an unconsumed one as it starts):
     Anki Miner ends at its own next check (0.2 s), every note it wrote whole. The answer then carries `stopped`
     (an AnkiMinerError `cancelled` too, its `stopped` set). `show` (laptop round 8 #50, LF4-3): the title of the show
     the episode belongs to: every card it makes also carries `runfile.from_tag(show)`."""
@@ -601,12 +602,14 @@ def _mine_held(path, language, job, video, subtitle, words, mapping, profile_nam
     done = {"run_file": run_path, "run": None, "result": None, "app": info.get("app"), "features": sorted(asks),
             "error": None, "_before": before}
 
-    cancelled = []                  # #47: the cancel file written (once)
+    cancelled = []                  # #47: a Stop asked during the call (asked until it is, then held)
 
     def poll():
-        if should_stop is not None and not cancelled and should_stop():
+        # the cancel file stands while the Stop does: Anki Miner 3.10 deletes an unconsumed one once, before its
+        # setup (a second or two in) — written once, a Stop pressed as the call began was lost
+        if should_stop is not None and (cancelled or should_stop()):
             cancel(run_dir, run_id)
-            cancelled.append(True)
+            cancelled[:] = [True]
         if on_progress is not None:
             progress = read_progress(run_dir, run_id)
             if progress is not None:
@@ -617,6 +620,12 @@ def _mine_held(path, language, job, video, subtitle, words, mapping, profile_nam
     except AnkiMinerError as e:
         e.stopped = bool(cancelled)
         raise
+    finally:
+        if cancelled:               # the call over: the file it was held by goes too (none left for the next call)
+            try:
+                os.remove(os.path.join(run_dir, run_id, "cancel"))
+            except OSError:
+                pass
 
 
 def _mine_call(path, run_dir, run_id, run_path, data, done, words, named, timeout, poll, cancelled):

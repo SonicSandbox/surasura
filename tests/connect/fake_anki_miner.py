@@ -25,6 +25,8 @@ What it does is read from the plan file named by FAKE_ANKI_MINER_PLAN (JSON; eve
                                                            # 0 -> CANCELLED, no result; n -> rows from n not_attempted
     {"slow": {"<command>": 30}}                            # row 56: sleeps this long before it answers that command
     {"export_cut": true}                                   # row 56: half its export written, then it hangs
+    {"clear_leftovers": 0.3}                               # 3.10: this long after it starts, before its setup, an
+                                                           # unconsumed cancel file is deleted once (runfolder.py)
 
 Every call is appended to FAKE_ANKI_MINER_LOG (one JSON line: argv, and the run file's bytes' facts for `mine`), so a
 test can see what was asked and in what order; so is each progress step it couldn't write (`progress_skipped`, as
@@ -144,6 +146,14 @@ def _mine(argv, plan):
     except (OSError, ValueError, UnicodeDecodeError) as e:
         return _failed("mine", "BAD_RUN_FILE", str(e))
     _log({"run_file": data})
+    if plan.get("clear_leftovers") is not None:            # Anki Miner 3.10's `clear_leftovers`, once per call
+        time.sleep(plan["clear_leftovers"])
+        for episode in data["episodes"]:
+            try:
+                os.remove(os.path.join(data["run_dir"], episode["run_id"], "cancel"))
+                _log({"cleared": episode["run_id"]})
+            except OSError:
+                pass
     if how == "crash":
         sys.exit(3)
     if how == "hang":

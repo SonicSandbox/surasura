@@ -50,6 +50,7 @@ def test_a_saved_report_keeps_its_words_picture_and_build_and_survives_a_fresh_r
     assert open(os.path.join(got.path, "picture-1.png"), "rb").read() == PNG
     assert got.build["version"] and "data_name" in got.build
     assert got.title() == "「進撃の巨人」の第3話を終わったに入れたら、Ankiの並びが変わらなかった。"
+    assert os.listdir(core.folder()) == [r.id]                         # the .part folder renamed, nothing beside it
 
 
 def test_the_list_is_oldest_first_and_counts_both_languages_reports(root):

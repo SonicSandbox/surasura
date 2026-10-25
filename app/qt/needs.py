@@ -25,6 +25,14 @@ the window's spec A2 #69–70, G4–G7, 06 E8, E10, E11, P1.2-1).
   again), as a known-words import ends; *Leave them* → `decline_offer`. Either is the answer: the card goes. Pressed, the
   button's arc turns at once, before the worker starts (round 8 row 45: `app/qt/press.py`). A sync's end refreshes the
   page (`synced`), so the question shows as soon as the first read made it.
+- **A source folder that is gone** (T6, Sonic 2026-10-24): the shell hands in the looks' gone rows (`gone_in`, those
+  *Keep waiting* hid left out). *Find its new folder…*: the system's folder picker, opened where its episodes are read
+  now if a look found them, then `SourceLooks.find_new_folder` on the looks' worker (MV-1's one rule: the folder read,
+  the old folder's episodes joined there, never a second copy) — its arc turns until the answer; when an episode joined
+  (`stop`), the old folder stops being read through the writer (`stop_reading`: the toast's Undo, Ctrl+Z), else the bar
+  says why and the card stays. *Stop reading it*: the writer's `stop_reading` (one Undo; nothing on disk moves, every
+  episode stays). Either's save, and its Undo, lists the folders again (`drag._sources_stopped`): the card goes, or comes
+  back. *Keep waiting*: the shell's `keep_waiting_for` (the offline line's dismissal, kept in the seen file).
 - **Opening the page** marks its entries seen (`needs.mark_all_seen`, on a worker): they stay listed and stop
   counting (P1.2-1).
 """
@@ -142,7 +150,7 @@ def _label(text, name, parent, wrap=True):
 # take it away, one press per card (A-5: the other answer pressed meanwhile asks nothing), then its presses that leave
 # it (a line's own answer, asking hato again, a folder, a program, the logs)
 ANSWERS = ("mark_known", "leave_known", "keep_all", "leave_them", "mine_anyway", "dismiss", "make_cards",
-           "first_cards", "first_cards_on", "not_now", "not_now_on")
+           "first_cards", "first_cards_on", "not_now", "not_now_on", "find_folder")
 PRESSED = ANSWERS + ("keep_words", "ask_hato", "choose_folder", "mine_text_only", "open_logs", "save_logs",
                      "open_anki")
 
@@ -384,6 +392,8 @@ class NeedsYou(QObject):
         self.data_dir = None                     # None: the language's data folder (looked up on the worker)
         self.connect_line = None
         self.gathers = 0                         # entries worked out (tests: N9)
+        self.gone_folders = None                 # T6: the looks' gone rows (None: no look has said yet — nothing judged)
+        self._stopping = set()                   # T6: the gone folders whose *Stop reading it* was given (one each)
         self._asked = 0
         self._running = False
         self._again = False
@@ -472,6 +482,16 @@ class NeedsYou(QObject):
         except Exception:
             return frozenset()
 
+    def gone_in(self, rows, language=None):
+        """T6: the source folders that are gone, as the looks' last summary says (the shell's: *Keep waiting*'s left
+        out) — worked out again only when they moved (S19)."""
+        rows = tuple(dict(r, language=language or self.language) for r in rows or ())
+        if rows == self.gone_folders:
+            return
+        self.gone_folders = rows
+        self._stopping &= {r["id"] for r in rows}
+        self.refresh()
+
     def counts(self):
         """(listed, unseen) for the tab: the entries but the bulk answer, and the unseen ones (P1.2-1)."""
         return sum(1 for e in self.entries if e.kind != service.BULK), service.badge(self.entries)
@@ -500,6 +520,7 @@ class NeedsYou(QObject):
         read_connect, read_asks, find_offline, read_settings = (self.read_connect, self.read_asks,
                                                                  self.find_offline, self.read_settings)
         find_miner = self.find_miner
+        gone_folders = self.gone_folders
 
         def gather():
             settings = read_settings() or {}
@@ -509,13 +530,14 @@ class NeedsYou(QObject):
             asks = read_asks()
             try:                                    # W3.2 H (W5): the keys whose trouble is gone leave the seen file,
                 service.prune(lang, view, offline_roots=roots, connect=connect,   # judged by what was read (no ask
-                              asks=asks or None)                                 # read: a failed read looks the same)
+                              asks=asks or None, gone_folders=gone_folders)      # read: a failed read looks the same)
             except Exception as e:                  # (a file that can't be read is left as it is: the gather goes on)
                 print(f"Needs you: the seen file wasn't pruned: {e!r}")
             out = service.entries(view, failures, connect, service.read_seen(lang), roots, asks,
                                   service.read_answered(lang), offers=service.read_offers(lang),
                                   cards_on=settings_manager.connect_on(settings),    # B2-8: the one rule
-                                  miner_found=bool(find_miner(settings)))     # row 13: D1's line waits for it
+                                  miner_found=bool(find_miner(settings)),     # row 13: D1's line waits for it
+                                  gone_folders=gone_folders or ())
             return asked, tuple(out)
         bridge.run_in_worker(gather, then=self._got, failed=self._gather_failed)
 
@@ -573,6 +595,10 @@ class NeedsYou(QObject):
             return getattr(self.win, "moves", None) is not None
         if name in ("mine_anyway", "ask_hato", "dismiss", "save_logs", "open_anki"):
             return self.connect_calls.get(name) is not None
+        if name == "stop_reading":                   # T6: through the window's writer (its Undo)
+            return getattr(self.win, "moves", None) is not None
+        if name == "find_folder":                    # ... and the looks read the folder picked
+            return getattr(self.win, "moves", None) is not None and getattr(self.win, "looks", None) is not None
         return True
 
     def act(self, name, entry, line=None):
@@ -809,6 +835,94 @@ class NeedsYou(QObject):
         writer = self.win.services.writer
         if self._give(entry.data["rel"], (), lambda t: writer.its_new(path, label=t), toast_it=False) is not None:
             self._say(strings.NEEDS_ITS_NEW.format(name=entry.data["rel"].rsplit("/", 1)[-1]))
+
+    # T6: a source folder that is gone
+    def _do_find_folder(self, entry, _line):
+        """*Find its new folder…*: the picker (where its episodes are read now, else the folder above where it was),
+        then the looks read the folder picked and join the old folder's episodes there (MV-1's one rule) — its arc
+        turns until they answer. An episode joined: the old folder stops being read, through the writer (the toast's
+        Undo). Nothing joined, refused, failed or put off: the bar says why, nothing stops, the card stays."""
+        data = entry.data
+        looks = getattr(self.win, "looks", None)
+        found = data.get("found_in") or ()
+        start = found[0] if found else os.path.dirname(os.path.normpath(data["path"]))
+        folder = self.pick_folder(strings.NEEDS_FIND_TITLE.format(name=data["name"]), start)
+        if not folder:
+            return
+        folder = os.path.normpath(folder)
+        if looks is None:
+            self._say(strings.NEEDS_FIND_CLOSED)
+            return
+        key = self._press_key("find_folder", entry)
+        p = qpress.begin(self._control("find_folder", entry), key, win=self.win, goes=True)
+        if p is None:
+            return
+        relay = bridge.Relay(self.win)
+
+        def answered(answer):
+            relay.deleteLater()
+            stops = self._found(entry, folder, answer or {})
+            if p.live():
+                qpress.end(p, self.win, failed=bool((answer or {}).get("refused")))
+            if not stops:
+                self._stays("find_folder", entry)    # the card stays: pressed again, it asks again
+        relay.said.connect(answered)
+        if not looks.find_new_folder(data["root"], folder, relay.call, language=data.get("language")):
+            relay.deleteLater()
+            qpress.end(p, self.win, failed=True)
+            self._stays("find_folder", entry)
+            self._say(strings.NEEDS_FIND_CLOSED)
+
+    def _found(self, entry, folder, answer):
+        """The looks' answer to *Find its new folder…* (the window's thread) -> True when the old folder is stopped."""
+        from app import sources
+        name = entry.data["name"]
+        if answer.get("refused"):
+            self._say(strings.NEEDS_FIND_REFUSED.format(folder=folder, why=answer["refused"]))
+        elif answer.get("failed"):
+            self._say(strings.NEEDS_FIND_FAILED.format(folder=folder, why=answer["failed"]))
+        elif answer.get("later"):
+            self._say(strings.NEEDS_FIND_LATER.format(folder=folder))
+        elif answer.get("state") == sources.REACHED:
+            self._say(strings.NEEDS_FIND_BACK.format(name=name))
+        elif answer.get("state") == sources.AWAY:
+            self._say(strings.NEEDS_FIND_AWAY.format(name=name))
+        elif answer.get("stop"):
+            n = int(answer.get("joined") or 0)
+            text = strings.NEEDS_FIND_JOINED_ONE.format(name=name, folder=folder) if n == 1 else \
+                strings.NEEDS_FIND_JOINED.format(name=name, folder=folder, n=n)
+            return self._stop(entry, text)
+        else:
+            self._say(strings.NEEDS_FIND_NONE.format(folder=folder))
+        return False
+
+    def _do_stop_reading(self, entry, _line):
+        """*Stop reading it*: the writer's `stop_reading` — its toast (*· saving…* until it lands) with Undo; the card
+        goes with the folders' next listing (`drag._sources_stopped`)."""
+        n, name = entry.data["items"], entry.data["name"]
+        text = strings.NEEDS_STOPPED_READING_ONE.format(name=name) if n == 1 else \
+            strings.NEEDS_STOPPED_READING.format(name=name, n=n) if n else \
+            strings.NEEDS_STOPPED_READING_NONE.format(name=name)
+        self._stop(entry, text)
+
+    def _stop(self, entry, text):
+        """The gone folder `entry` no longer read, through the window's writer (one Undo), once per card -> True when
+        it was given."""
+        root, language = entry.data["root"], entry.data.get("language") or self.language
+        if root in self._stopping:
+            return True                              # given already: the card goes with its listing
+        writer = self.win.services.writer
+        if self._give(text, (), lambda t: writer.stop_reading(root, t, language=language)) is None:
+            return False
+        self._stopping.add(root)
+        return True
+
+    def _do_keep_waiting(self, entry, _line):
+        """*Keep waiting*: hidden until the folder is back (the offline line's dismissal, the shell's)."""
+        keep = getattr(self.win, "keep_waiting_for", None)
+        if keep is not None:
+            keep([entry.data["path"]])
+            self._say(strings.NEEDS_KEEP_WAITING.format(name=entry.data["name"]))
 
     # Connect's entries (each on a worker; the window never makes Connect's ledger)
     def _do_mine_anyway(self, entry, _line):

@@ -14,6 +14,12 @@ Tk-free, pandas-free (the import guard); nothing here reads or writes the store.
   it). Shows in Current's order; a show with both gets both cards, its gone files first.
 - **9a's questions** (IK-3, `Store.rename_asks()` read on the reader's worker by `asks_of`): *Is this the one from …?*
   with the missing files it may be; *This one* → `relink`, *It's new* → `its_new`.
+- **a source folder that is GONE** (T6, Sonic 2026-10-24: "Yes your lean is exactly what i'd do"): one card per
+  folder the looks found moved or deleted while its drive is there (`source_looks.gone`: the summary's rows, handed in
+  by the window as `gone_folders`) — never one only away (an unplugged drive, a NAS down: the offline line's). It names
+  the folder, where it was and the shows it held: *Find its new folder…* (`SourceLooks.find_new_folder`, MV-1's join),
+  *Stop reading it* (the writer's `stop_reading`, one Undo) and *Keep waiting* (the offline line's own dismissal). A
+  Finished show's folder, or one whose episodes a look already reads elsewhere, leads with *Stop reading it*.
 - **an offline root as ONE entry** (E8, IK-8): *Drive E: is offline — 312 files* (`find_offline` finds the roots on a
   worker: the library folder not there, or a folder in it that links to a drive or share that isn't); it offers *Keep
   their words* and never *Remove*.
@@ -76,7 +82,9 @@ KNOWN_OFFER = "known-offer"         # #43: Known from Anki's first read, asked o
 # A3W-6 (Sonic, 2026-10-24 night): Connect's episodes wait on Anki for you (closed, a permission prompt, another
 # profile or none: `runner.anki_needs_you`) — one line, read from Connect's record, gone by itself once Anki opens
 ANKI_WAIT = "anki-wait"
-KINDS = (BULK, GONE, NO_VIDEO, ASK, OFFLINE, FAILURE, GAP, FIRST_CARDS, KNOWN_OFFER, ANKI_WAIT)
+# T6 (Sonic 2026-10-24): a source folder moved or deleted while its drive is there — never one only away
+FOLDER_GONE = "folder-gone"
+KINDS = (BULK, GONE, NO_VIDEO, ASK, OFFLINE, FAILURE, GAP, FIRST_CARDS, KNOWN_OFFER, ANKI_WAIT, FOLDER_GONE)
 # action names the window hides until P4.1 sets their callable (RUNBOOK §2; IK-2: *Mine the text only*)
 WIRED_LATER = frozenset(("mine_text_only", "make_cards"))
 # Connect's kinds and their one action beside *Dismiss* (`connect_window.HOW`'s, as the Qt window offers them now)
@@ -103,6 +111,15 @@ STRINGS = {
     "ask_say": "It turned up at {rel} with the name, size and date of a missing file. Surasura never guesses: choose "
                "the one it is, or say it's new.",
     "ask_line": "{title} · was {rel}",
+    "folder_title": "{name} isn't in {parent} any more",
+    "folder_held": "It held {shows} · {episodes}.", "folder_held_none": "It held {shows}.",
+    "folder_finished": "It held {shows} · {episodes}, all Finished: nothing is left to mine from it.",
+    "folder_read_now": "Its episodes are read from {found} now: stop reading the old folder.",
+    "folder_found": "They're in {found} too: Find its new folder… joins them there, never as a second copy.",
+    "folder_moved": "Moved it? Find its new folder…: its episodes join their show there, never as a second copy.",
+    "folder_stay": "Whatever you choose, its episodes stay in your library.",
+    "shows_more": "{shows} and {n} more", "shows_and": "{a} and {b}",
+    "episode_one": "1 episode", "episode_n": "{n:,} episodes",
     "offline_title": "{label} is offline — {n} files", "offline_title_one": "{label} is offline — 1 file",
     "offline_say": "Its files keep their places and their words. They come back by themselves once it's connected.",
     "drive": "Drive {d}", "folder": "The folder {p}",
@@ -182,14 +199,15 @@ def item_key(item_id):
 
 # --- the entries ----------------------------------------------------------------------------------------------------- #
 def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(), asks=(), answered=frozenset(),
-            mine_line=20, offers=frozenset(), cards_on=False, miner_found=True):
+            mine_line=20, offers=frozenset(), cards_on=False, miner_found=True, gone_folders=()):
     """The page's entries in order (see the module's doc). `view`: the reader's `View` (None: no library); `failures`:
     `status` Entries (text, at, seen); `connect`: one language's Connect record (`read_connect`; None: Connect off);
     `seen` / `answered`: `read_seen` / `read_answered`; `offline_roots`: `find_offline`'s Roots; `asks`: `asks_of`'s
     (or `Store.rename_asks()` as it is: candidates by id); `offers`: `read_offers` (D1's line); `cards_on`: Connect's
     switch (`connect_enabled`, setup's page 5) — on, D1's line asks only about these episodes (its `_on` actions);
     `miner_found`: Anki Miner is installed (`anki_miner.find`) — without it D1's line waits, kept offered (row 13: its
-    cards could never be made)."""
+    cards could never be made); `gone_folders` (T6): the looks' rows of the source folders that are GONE
+    (`source_looks.gone`, those *Keep waiting* hid left out by the window), one card each."""
     seen, answered = frozenset(seen or ()), frozenset(answered or ())
     rows = tuple(view.rows) if view is not None and view.mode == "store" else ()
     by_id = {e.id: (r, e) for r in rows for e in r.episodes}
@@ -240,6 +258,8 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
         entry = _ask_entry(ask, by_id, seen)
         if entry is not None:
             out.append(entry)
+    for row in gone_folders or ():
+        out.append(_folder_entry(row, seen))
     for root in roots:
         entry = _offline_entry(root, by_id, seen)
         if entry.key not in answered:
@@ -421,6 +441,54 @@ def _offline_entry(root, by_id, seen):
                  say=STRINGS["offline_say"], data={"path": root.path, "rel": root.rel, "files": n, "item_ids": ids})
 
 
+def folder_key(path):
+    """A gone folder's card key: the folder, as the store compares paths (a case or slash apart is one)."""
+    return f"folder:{library_store.path_key(os.path.abspath(path))}"
+
+
+def _shows(titles):
+    """The shows a folder held, in plain words: *A*, *A and B*, *A, B and C*, *A, B, C and 2 more*."""
+    titles = [t for t in titles or () if t]
+    if len(titles) <= 2:
+        return STRINGS["shows_and"].format(a=titles[0], b=titles[1]) if len(titles) == 2 else "".join(titles)
+    if len(titles) == 3:
+        return STRINGS["shows_and"].format(a=", ".join(titles[:2]), b=titles[2])
+    return STRINGS["shows_more"].format(shows=", ".join(titles[:3]), n=len(titles) - 3)
+
+
+def _folder_entry(row, seen):
+    """T6: a gone source folder's card — the folder and where it was (its title), the shows it held and what each
+    answer does (its line). *Stop reading it* leads where nothing is left for it to find: every episode Finished, or
+    a look reads them elsewhere already (the folder holds none now)."""
+    path = os.path.normpath(row["path"])
+    name, parent = os.path.basename(path) or path, os.path.dirname(path) or path
+    n = int(row.get("items") or 0)
+    found = list(row.get("found_in") or ())
+    shows = _shows(row.get("shows")) or name
+    episodes = STRINGS["episode_one"] if n == 1 else STRINGS["episode_n"].format(n=n)
+    finished = bool(row.get("finished"))
+    if n and finished:
+        said = [STRINGS["folder_finished"].format(shows=shows, episodes=episodes)]
+    elif n:
+        said = [STRINGS["folder_held"].format(shows=shows, episodes=episodes)]
+    else:
+        said = [STRINGS["folder_held_none"].format(shows=shows)]
+    if found and not n:
+        said.append(STRINGS["folder_read_now"].format(found=found[0]))
+    elif found:
+        said.append(STRINGS["folder_found"].format(found=found[0]))
+    elif not finished:
+        said.append(STRINGS["folder_moved"])
+    said.append(STRINGS["folder_stay"])
+    stop_first = finished or bool(found and not n)
+    actions = (("stop_reading", "find_folder") if stop_first else ("find_folder", "stop_reading")) + ("keep_waiting",)
+    key = folder_key(path)
+    return Entry(key=key, kind=FOLDER_GONE, title=STRINGS["folder_title"].format(name=name, parent=parent), lines=(),
+                 actions=actions, unseen=key not in seen, say=" ".join(said),
+                 data={"root": row["id"], "path": row["path"], "name": name, "items": n, "found_in": tuple(found),
+                       "finished": finished, "shows": tuple(row.get("shows") or ()), "language": row.get("language")})
+
+
 def _gap_entry(gap, seen):
     items = list(dict.fromkeys(gap.get("items") or ()))
     since, until = gap.get("since"), gap.get("until") or ""
@@ -569,21 +637,23 @@ def offer(language, key=FIRST_CARDS):
     return _add(language, "offered", [key])
 
 
-def prune(language, view, offline_roots=None, connect=None, asks=None, lines=None):
+def prune(language, view, offline_roots=None, connect=None, asks=None, lines=None, gone_folders=None):
     """(S3, N10; a worker's call, after the reads `entries` is given.) The keys whose trouble is gone leave the seen
     file — never by age or by count. Judged only by what the caller read (a key of a kind it didn't read stays): a
     file's answer (`item:`) while Current holds it missing, a show's card while it is listed; with `offline_roots`, an
     offline root's while it is still offline — back, its *Keep their words* goes, so offline again later it is asked
     again; with `connect`, the video cards' and the gaps'; with `asks`, the rename asks'. A view that isn't the
     store's prunes none of those. With `lines` (round 8 row 54: the standing lines still standing,
-    `standing.not_back`), a hidden offline line's (`line:`) while its folder is still away. Nothing gone → nothing
-    written. -> how many keys went."""
+    `standing.not_back`), a hidden offline line's (`line:`) while its folder is still away; with `gone_folders` (T6:
+    the looks' gone rows, as the window holds them), a gone folder's card while it is still gone — back, it counts
+    again the next time it goes. Nothing gone → nothing written. -> how many keys went."""
     store = view is not None and view.mode == "store"
     if not store and lines is None:
         return 0
     judged = ({"item", "gone"} | ({"offline"} if offline_roots is not None else set()) |
               ({"video", "gap", KNOWN_OFFER, "anki"} if connect is not None else set()) |
-              ({"ask"} if asks is not None else set())) if store else set()
+              ({"ask"} if asks is not None else set()) |
+              ({"folder"} if gone_folders is not None else set())) if store else set()
     if lines is not None:
         judged.add("line")
     roots = [r if isinstance(r, Root) else Root(*r) for r in offline_roots or ()]
@@ -596,6 +666,7 @@ def prune(language, view, offline_roots=None, connect=None, asks=None, lines=Non
                                               answered=frozenset(data["answered"]))}
             present |= {_offline_entry(r, {}, frozenset()).key for r in roots}          # answered ones too
             present |= {f"gap:{g.get('id')}" for g in (connect or {}).get("gaps") or ()}
+            present |= {folder_key(r["path"]) for r in gone_folders or () if r.get("path")}
         kept = {f: [k for k in data[f] if k.split(":", 1)[0] not in judged or k in present]
                 for f in ("seen", "answered")}
         gone = sum(len(data[f]) - len(kept[f]) for f in kept)

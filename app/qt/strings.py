@@ -550,6 +550,10 @@ PHASE_NEEDS = "Needs you: {why}"
 PHASE_TIME = "%H:%M"
 PHASE_PRESS = "Press to open its settings"         # the hover's last line, on a circle that has some (mouse or keys)
 PHASE_PRESS_WINDOW = "Press to open 順's window and fix it"   # 順 while its line's fix is in its window (InJunban)
+PHASE_PRESS_NEEDS = "Press to open Needs you and answer it"   # 届 while a gone folder's card stands (T6)
+# T6: 届's words while a source folder is gone (its *Needs you* card stands)
+PHASE_FOLDER_GONE = "{name} was moved or deleted: Needs you asks what to do"
+PHASE_FOLDERS_GONE = "{n} folders were moved or deleted: Needs you asks what to do"
 PHASE_STARTING = "Starting…"                       # lit by a press whose job hasn't begun, with no words of its own
 # A job's plain name in the hover, by its kind (else by its label) where the job's own label is a word for us
 PHASE_JOB_NAMES = {
@@ -1221,6 +1225,14 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
     "mine_text_only": ("Mine the text only", "Make its cards from the subtitles alone, with no picture or audio"),
     "open_logs": ("Open the logs folder", "Open the folder where Surasura keeps its logs, to look at them or send them"),
     "save_logs": ("Save logs to a file…", "Save the last week's logs into one zip file you can send"),
+    # T6: a gone source folder's card (Sonic 2026-10-24)
+    "find_folder": ("Find its new folder…", "Choose where the folder is now. Surasura reads it there and joins its "
+                                            "episodes to the shows you have, never as a second copy, then stops "
+                                            "reading the old place. Undo reads the old place again"),
+    "stop_reading": ("Stop reading it", "Stop looking for this folder. Its episodes stay in your library with their "
+                                        "words, places and cards; nothing on disk is moved or removed. Undo reads it "
+                                        "again"),
+    "keep_waiting": ("Keep waiting", "Hide this until the folder is back. If it goes again later, it asks again"),
     # A3W-6: the Anki line's one button (where Surasura can start Anki)
     "open_anki": ("Open Anki", "Start Anki on your cards' profile: the waiting episodes' cards are made once it's open"),
 }
@@ -1241,6 +1253,21 @@ NEEDS_RELINKED_NONE = "Nothing in that folder has these files' names or episode 
 NEEDS_LINKING = "Linking {n} videos to their episodes"
 NEEDS_LINKING_ONE = "Linking {label}'s video"
 NEEDS_KEPT = "Kept: their words still count"
+# T6: a gone source folder's answers (said in the bar, or the toast with Undo)
+NEEDS_FIND_TITLE = "Where is {name} now?"
+NEEDS_FIND_JOINED = "{name} is read from {folder} now · {n:,} episodes joined their show"
+NEEDS_FIND_JOINED_ONE = "{name} is read from {folder} now · 1 episode joined its show"
+NEEDS_FIND_NONE = "None of its episodes are in {folder}: the old folder is still read"
+NEEDS_FIND_REFUSED = "{folder} can't be read: {why}"
+NEEDS_FIND_FAILED = "{folder} is read now, but its episodes weren't joined: {why}"
+NEEDS_FIND_LATER = "{folder} is read from now on: its episodes join at the next look"
+NEEDS_FIND_BACK = "{name} is back where it was: nothing to join"
+NEEDS_FIND_AWAY = "{name}'s drive isn't there now: nothing was joined"
+NEEDS_FIND_CLOSED = "Surasura can't read folders now: try again in a moment"
+NEEDS_STOPPED_READING = "Stopped reading {name}: its {n:,} episodes stay in your library"
+NEEDS_STOPPED_READING_ONE = "Stopped reading {name}: its episode stays in your library"
+NEEDS_STOPPED_READING_NONE = "Stopped reading {name}"
+NEEDS_KEEP_WAITING = "Waiting for {name}: Needs you asks again if it comes back and goes again"
 NEEDS_FIRST_CARDS_MADE = "Cards are made by themselves from now on · change it in Settings › Anki"
 NEEDS_FIRST_CARDS_LATER = "Turn it on any time in Settings › Anki"
 NEEDS_FIRST_CARDS_MADE_ON = "Cards are being made for them"

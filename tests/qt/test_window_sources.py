@@ -505,14 +505,14 @@ def test_a_folder_offline_shows_one_quiet_line_that_goes_when_it_is_back(window,
     _added(looks, folder)
     assert wait_until(lambda: win.sources, 10)
     assert win.offline_line.isHidden()
-    away = folder + " (away)"
-    os.rename(folder, away)                                   # the drive went
+    from tests.test_sources_gone import unplug
+    back = unplug(monkeypatch, folder)                        # the drive went (T6: away, never gone — the line)
     try:
         win.refresh_sources()
         want = strings.SOURCES_OFFLINE.format(path=ls.folder_path(folder), n=2)
         assert wait_until(lambda: not win.offline_line.isHidden() and win.offline_line.text() == want, 10)
     finally:
-        os.rename(away, folder)
+        back()
     store = _read_store(data_dir, user_files_dir)
     try:                                                      # nothing moved or marked (SRC-3)
         assert {r[0] for r in store.conn.execute("SELECT availability FROM items")} == {"available"}

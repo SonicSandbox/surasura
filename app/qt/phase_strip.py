@@ -18,6 +18,9 @@
   host's line said as giving up (`replan_preview.GivesUp`: Anki closed, a Generate to press, a deck to pick, an
   unfinished run to undo) is 順's *needs* for as long as it stands; one whose fix is in 順's window
   (`replan_preview.InJunban`) makes a 順 press open that window (`asks_in_window`) instead of the settings.
+- **届 amber while a source folder is gone** (T6, Sonic 2026-10-24): the shell's own part (`set_extra`), for as long as
+  its *Needs you* card stands (*Keep waiting* takes both away); a 届 press opens *Needs you* then (`set_needs_asks`,
+  `asks_in_window`), else Sources — the 順 rule above, one rule for both.
 - **A press opens the circle's settings** (alpha 3, Sonic: "I'd actually prefer if pressing it opened up their
   settings"; PROVISIONAL, he feels it in alpha 3 — it replaces build 6's "no buttons"): `opened(circle)`, the shell
   reveals `SETTINGS[circle]` (the Settings tab is there at once: no pending mark, the press rule's one-frame case). Only
@@ -106,6 +109,7 @@ class PhaseStrip(QWidget):
         self._focus = None                     # the circle the keyboard is on
         self._hand = False                     # the pointer shows the hand (over a circle that opens)
         self._asks = None                      # 順's line when it asks for the user (`replan_preview.GivesUp`), or None
+        self._needs_asks = False               # T6: a gone folder's *Needs you* card stands: a 届 press opens that page
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self.refresh)
@@ -148,9 +152,28 @@ class PhaseStrip(QWidget):
             self.setAccessibleDescription(self.summary())
 
     def asks_in_window(self, circle):
-        """Whether `circle`'s press opens its own window rather than its settings: 順 while its line's fix is in 順's
-        window (the unfinished reorder's Undo, a deck to pick: `replan_preview.InJunban`)."""
+        """Whether `circle`'s press opens where its fix is rather than its settings: 順 while its line's fix is in 順's
+        window (the unfinished reorder's Undo, a deck to pick: `replan_preview.InJunban`); 届 while a gone folder's
+        *Needs you* card stands (T6, `set_needs_asks`)."""
+        if circle == phase.ARRIVALS:
+            return self._needs_asks
         return circle == phase.JUNBAN and isinstance(self._asks, replan_preview.InJunban)
+
+    def set_needs_asks(self, on):
+        """T6: a gone folder's *Needs you* card stands (or no longer does): 届's press opens that page — its hover's
+        last line says so (words only: no circle repaints for it, S19)."""
+        on = bool(on)
+        if on == self._needs_asks:
+            return
+        self._needs_asks = on
+        self._retext()
+        self.setAccessibleDescription(self.summary())
+
+    def press_words(self, circle):
+        """What a press on `circle` does, as its hover's last line says it."""
+        if not self.asks_in_window(circle):
+            return strings.PHASE_PRESS
+        return strings.PHASE_PRESS_NEEDS if circle == phase.ARRIVALS else strings.PHASE_PRESS_WINDOW
 
     def set_opens(self, circles):
         """The circles whose press opens their settings (the shell's: those with settings to show)."""
@@ -407,7 +430,7 @@ class PhaseStrip(QWidget):
             else:
                 out.append(esc(strings.PHASE_DONE.format(what=what, time=at)))
         if circle in self.opens:
-            press = strings.PHASE_PRESS_WINDOW if self.asks_in_window(circle) else strings.PHASE_PRESS
+            press = self.press_words(circle)
             out.append(f'<span style="color:{dim}">{esc(press)}</span>')
         return '<p style="margin:0">' + "<br>".join(out) + "</p>"
 
@@ -416,7 +439,7 @@ class PhaseStrip(QWidget):
         then each lit circle's name and first line."""
         said = []
         if self._focus is not None and self.hasFocus():
-            press = strings.PHASE_PRESS_WINDOW if self.asks_in_window(self._focus) else strings.PHASE_PRESS
+            press = self.press_words(self._focus)
             said.append(f"{strings.PHASE_NAMES[self._focus]}: {press}")
         for c in phase.CIRCLES:
             st = self.states[c]

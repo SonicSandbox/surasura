@@ -2260,12 +2260,14 @@ def test_AD7_a_line_said_takes_the_slot_over_the_failure_line_then_gives_it_back
     assert win.bar_line.isHidden() and not win.bar_failure.isHidden()
 
 
-def test_AD14_a_quiet_marks_hover_never_reads_a_providers_line_as_markup(world):
+def test_AD14_a_circles_hover_never_reads_a_providers_line_as_markup(world):
+    # (alpha 3: Connect's line moved from its quiet mark ⇄ into Anki Miner's hover)
+    from app.services import phase as P
     seed, win, writer = world()
     line = "Connect: <b>error</b> page"
-    win._status_mark(win.bar_connect, line, strings.FOOT_CONNECT_TIP.format(line=line))
-    tip = win.bar_connect.toolTip()
-    assert "<b>" not in tip and "&lt;b&gt;" in tip
+    win.show_status(win.services.status.snapshot()._replace(connect=line))
+    tip = win.phase.hover_text(P.MINER)
+    assert "<b>error" not in tip and "&lt;b&gt;error" in tip
 
 
 # --- L4: no stone hit before the sheet ---------------------------------------------------------------------------- #

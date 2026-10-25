@@ -1243,7 +1243,8 @@ def test_a_cut_manual_juns_run_still_refuses_every_automatic_job_and_the_bar_say
         connects = auto.reorder(dict(_junban_settings(), connect_enabled=True), list_current=True, positions_only=True,
                                 run_id=undo.new_run_id("reorder"), job=spaced.Job(automatic=True))
     assert lines[-1] == replan_preview.RESTORE_FIRST, lines
-    assert "Open 順 and press Undo the last reorder" in replan_preview.RESTORE_FIRST
+    assert isinstance(lines[-1], replan_preview.InJunban) and isinstance(lines[-1], replan_preview.GivesUp)
+    assert "undo it in 順" in replan_preview.RESTORE_FIRST
     assert host._retry_at is None, "only you can clear it: said once, not retried"
     for done in (autojunban, connects):
         assert done["outcome"] == "refused" and "did not finish" in done["report"]["problems"][0], done
@@ -1843,7 +1844,7 @@ def test_the_done_line_says_tomorrows_cards_were_placed_whenever_any_of_them_mov
 TELL_SITES = {
     "f'Re-ordering as you move stopped: {e}'": True,
     "UP_TO_DATE": False,
-    "why": True,
+    "why": "in_junban",                           # alpha 3: gives up, its fix in 順's window (InJunban)
     "BUSY": False,
     "UPDATE": False,
     "NOT_ANSWERING": False,
@@ -1859,7 +1860,7 @@ TELL_SITES = {
     "anki_connect.waiting_line(holder)": False,
     "(report.get('problems') or [''])[0]": True,
     "REVIEWING if problem == anki_connect.REVIEWING else BUSY": False,
-    "RESTORE_FIRST": True,
+    "RESTORE_FIRST": "in_junban",
     "f'Anki re-ordered {written:,} cards, then stopped: {problems[0]} — the rest at the next re-order' if written else "
     "f'Anki not re-ordered: {problems[0]}'": "not again",
     "f'Anki: spacing your new cards out once so later moves are quick — {done:,} of {total:,}…'": False,
@@ -1881,6 +1882,8 @@ def test_every_line_the_host_says_is_placed_as_giving_up_or_not():
                 and node.args:
             kind = next((k.value for k in node.keywords if k.arg == "gives_up"), None)
             said = False if kind is None else (kind.value if isinstance(kind, ast.Constant) else ast.unparse(kind))
+            if any(k.arg == "in_junban" and isinstance(k.value, ast.Constant) and k.value.value for k in node.keywords):
+                said = "in_junban"                  # alpha 3: an InJunban (a GivesUp whose fix is in 順's window)
             arg = ast.unparse(node.args[0])
             assert found.setdefault(arg, said) == said, arg
     assert found == TELL_SITES
@@ -1920,3 +1923,6 @@ def test_the_helpers_pipe_keeps_a_line_that_gives_up_as_that_kind():
     remote._receive({"say": replan_preview.REVIEWING, "gives_up": False, "seen": 0})
     assert heard == [replan_preview.CLOSED, replan_preview.REVIEWING]
     assert isinstance(heard[0], replan_preview.GivesUp) and not isinstance(heard[1], replan_preview.GivesUp)
+    # alpha 3: a line whose fix is in 順's window keeps that kind too (the strip's 順 press opens that window for it)
+    remote._receive({"say": replan_preview.RESTORE_FIRST, "gives_up": True, "in_junban": True, "seen": 0})
+    assert isinstance(heard[2], replan_preview.InJunban) and not isinstance(heard[0], replan_preview.InJunban)

@@ -5,18 +5,21 @@ carries them, with what Sonic needs to see beside them. Qt-free: the window (`ap
 User Files, never the library), so it survives a restart, an update and a crash. Each report is one folder,
 `<id>/` holding `report.json` (its words, its notes, when, which build) and its pictures (`picture-<n>.png`). A save is
 made in `<id>.part/` and renamed into place last, so a crash leaves either the whole report or a `.part` folder the list
-never shows (cleared at the next zip). A note rewrites `report.json` atomically. *Remove* moves the folder to
-`removed/` (Undo puts it back); the list empties — the reports in the zip and `removed/` deleted — only after a zip
-was written whole and read back.
+never shows (cleared by a zip once it is an hour old: a save under way keeps its own). A note rewrites `report.json`
+atomically. *Remove* moves the folder to `removed/` (Undo puts it back). The list empties — the reports in the zip and
+the ones removed before it was planned deleted — only after a zip was written whole and read back; a report given a
+note while the zip was written stays on the list, and one removed meanwhile keeps its Undo.
 
 **The zip** (`plan` lists every file first, `make_zip` writes it): each saved report's words and pictures; `about.txt`
-(version, build, commit, system); the last few days of the program's logs; Connect's status and job ledger as rows of
-states and counts; Anki's last answers (the sync's state); settings.json with every key, token and password blanked;
-the library's counts and folder list; `results\\` (the last Generate's lists — they quote short lines from the
-tester's subtitles and books, so the window lets the tester leave them out). **Never** a subtitle or book file, an Anki
-card's fields, a key or a token, a link followed, a cloud placeholder downloaded. The rules are the evidence
-collector's (`Collect laptop evidence.ps1`: `SECRET_NAMES`, links, placeholders, files opened read-only and shared),
-kept here once; the collector stays for when the app won't open, and a test holds its list to this one.
+(version, build, commit, system, the window's scale); the logs of the last 7 days (`status.log_files`, the rule
+Connect's *Save logs* uses), Anki Miner's run results among them scrubbed to states and counts; Connect's status
+(`scrub`: no title, line or word) and its job ledger as rows of states and counts; the Anki sync's state (its note ids
+counted); settings.json with every key, token and password blanked; the library's counts and folder list;
+`results` (the last Generate's lists — they quote short lines from the tester's subtitles and books, so the window
+lets the tester leave them out). **Never** a subtitle or book file, an Anki card's fields, a key or a token, a link
+followed, a cloud placeholder downloaded. The rules are the evidence collector's (`Collect laptop evidence.ps1`:
+`SECRET_NAMES`, links, placeholders), kept here once (`why_not`, which both zips ask); the collector stays for when the
+app won't open, and a test holds its list to this one.
 
 Nothing here sends anything anywhere: the zip is written to a folder on this PC (Downloads, or one the tester picks)
 and the tester sends it.
@@ -84,6 +87,40 @@ def is_placeholder(path):
         return bool(getattr(os.lstat(path), "st_file_attributes", 0) & _PLACEHOLDER)
     except OSError:
         return False
+
+
+def why_not(path):
+    """Why a zip may not read this file — a link, a key or secret by its name, a cloud placeholder — or None."""
+    if is_link(path):
+        return "a link (not followed)"
+    if is_secret(os.path.basename(path)):
+        return "a key or secret by its name (never taken)"
+    if is_placeholder(path):
+        return "a cloud placeholder (not downloaded)"
+    return None
+
+
+# What a person wrote or watched, in a record that is otherwise states and counts (Connect's status, Anki Miner's run
+# results): each such value is replaced by how many there were, so no title, card word or sentence goes in the zip
+CONTENT_KEYS = frozenset(("title", "titles", "name", "line", "say", "word", "words", "orth", "reading", "readings",
+                          "sentence", "sentences", "sent", "expression", "kept", "deleted", "statuses", "file",
+                          "filename", "episode", "definition", "glossary", "meaning", "translation", "hint", "fields"))
+
+
+def scrub(obj):
+    """`obj` with every value under a CONTENT_KEYS key replaced by a count (a list or dict) or "(left out)", and the
+    secrets blanked (`strip_secrets`), at any depth."""
+    if isinstance(obj, dict):
+        out = {}
+        for k, v in obj.items():
+            if isinstance(k, str) and k.lower() in CONTENT_KEYS and v not in (None, "", [], {}):
+                out[k] = f"{len(v)} left out" if isinstance(v, (list, dict)) else BLANKED
+            else:
+                out[k] = scrub(v)
+        return strip_secrets(out)
+    if isinstance(obj, list):
+        return [scrub(v) for v in obj]
+    return obj
 
 
 def _now():
@@ -193,8 +230,10 @@ class Report:
 
 
 def _new_id(now):
-    """When it was saved, to the microsecond, and a few random letters: ids sort in the order they were saved."""
-    return f"{now.strftime('%Y%m%d-%H%M%S-%f')}-{uuid.uuid4().hex[:4]}"
+    """When it was saved (UTC, to the microsecond: a clock put back an hour in autumn never reorders them) and a few
+    random letters: ids sort in the order they were saved."""
+    utc = now.astimezone(datetime.timezone.utc)
+    return f"{utc.strftime('%Y%m%d-%H%M%S-%f')}-{uuid.uuid4().hex[:4]}"
 
 
 def save(what, expected="", pictures=(), where="", root=None, now=None):
@@ -240,14 +279,15 @@ def _read(path):
     return Report(path, data)
 
 
-def listed(root=None):
+def listed(root=None, unreadable=None):
     """The saved reports, oldest first (a `.part` folder, `removed/` and a folder without a readable report.json are
-    never listed)."""
+    never listed; `unreadable`, a list, is given the names of the last). A folder that can't be listed raises: an empty
+    list is never said for reports that are there."""
     root = root or folder()
     out = []
     try:
         names = os.listdir(root)
-    except OSError:
+    except FileNotFoundError:
         return out
     for name in names:
         path = os.path.join(root, name)
@@ -256,6 +296,8 @@ def listed(root=None):
         r = _read(path)
         if r is not None:
             out.append(r)
+        elif unreadable is not None:
+            unreadable.append(name)
     out.sort(key=lambda r: r.id)
     return out
 
@@ -380,8 +422,18 @@ def _ledger_bytes():
 
 
 def _connect_status_bytes():
+    """Connect's status record as the window reads it, its titles, lines and words left out (`scrub`)."""
     from app.connect import status
-    return _json_bytes(status.read())
+    return _json_bytes(scrub(status.read()))
+
+
+def _scrubbed_json(path):
+    """A JSON file (Anki Miner's run result) read and scrubbed: its states and counts, never a word or a sentence."""
+    try:
+        data = json.loads(_read_shared(path).decode("utf-8-sig"))
+    except (OSError, ValueError) as e:
+        return _json_bytes({"unreadable": type(e).__name__})
+    return _json_bytes(scrub(data))
 
 
 def _anki_bytes(language):
@@ -426,7 +478,7 @@ class Plan:
     ids: the ones the list loses once the zip is written)."""
 
     def __init__(self):
-        self.entries, self.left_out, self.reports = [], [], []
+        self.entries, self.left_out, self.reports, self.removed = [], [], [], []
 
     def add(self, name, source=None, data=None):
         self.entries.append(Entry(name, source, data))
@@ -436,16 +488,11 @@ class Plan:
 
 
 def _file_ok(path, label, plan):
-    """A file the zip may read: not a link, a placeholder or a secret by its name (said in `left_out` when not)."""
-    if is_link(path):
-        plan.left_out.append(f"{label}: a link (not followed)")
-    elif is_secret(os.path.basename(path)):
-        plan.left_out.append(f"{label}: a key or secret by its name (never taken)")
-    elif is_placeholder(path):
-        plan.left_out.append(f"{label}: a cloud placeholder (not downloaded)")
-    else:
-        return True
-    return False
+    """A file the zip may read (`why_not`), else said in `left_out`."""
+    why = why_not(path)
+    if why:
+        plan.left_out.append(f"{label}: {why}")
+    return why is None
 
 
 def report_text(r):
@@ -467,9 +514,10 @@ def _report_entries(plan, reports):
     for r in reports:
         base = f"reports/{r.id}"
         plan.add(f"{base}/report.txt", data=report_text(r).encode("utf-8"))
-        plan.add(f"{base}/{REPORT_FILE}", source=os.path.join(r.path, REPORT_FILE))
-        for name in r.pictures:
-            plan.add(f"{base}/{name}", source=os.path.join(r.path, name))
+        for name in [REPORT_FILE] + r.pictures:
+            full = os.path.join(r.path, name)
+            if _file_ok(full, f"{base}/{name}", plan):
+                plan.add(f"{base}/{name}", source=full)
         plan.reports.append(r.id)
 
 
@@ -493,31 +541,41 @@ def _results_entries(plan):
             rel = os.path.relpath(full, root)
             if _file_ok(full, f"results\\{rel}", plan):
                 found.append((full, "results/" + rel))
-    total = 0
-    for full, _name in found:
-        try:
-            total += os.path.getsize(full)
-        except OSError:
-            pass
+    entries = [Entry(name, source=full) for full, name in found]
+    total = sum(e.size for e in entries)
     if total > RESULTS_CAP:
         plan.left_out.append(f"results\\: {total // (1024 * 1024)} MB, more than {RESULTS_CAP // (1024 * 1024)} MB "
                              "(left out whole)")
         return
-    for full, name in found:
-        plan.add(name, source=full)
+    plan.entries += entries
 
 
 def plan(language, include_results=True, library=None, root=None, extra=None):
-    """Every file the zip will hold, worked out without writing anything. `library`: the window's counts and folder
-    list (`{counts, sources, state}`) as it shows them. -> a Plan."""
+    """Every file the zip will hold, worked out without writing anything (but the reports folder, made when missing).
+    `library`: the window's counts and folder list (`{counts, sources, state}`) as it shows them. -> a Plan."""
     p = Plan()
-    _report_entries(p, listed(root))
+    root = root or folder()
+    unreadable = []
+    _report_entries(p, listed(root, unreadable))
+    for name in unreadable:                                        # kept on disk, never cleared: said in the zip
+        p.left_out.append(f"reports/{name}: its report.json couldn't be read (kept on this PC)")
+    try:
+        p.removed = sorted(os.listdir(os.path.join(root, REMOVED_DIR)))
+    except OSError:
+        p.removed = []
     p.add("about.txt", data=_about_bytes(language, extra))
     try:
         from app.connect import status
-        for full, name in status.log_files():
-            if _file_ok(full, name, p):
+        refused = []
+        for full, name in status.log_files(left_out=refused):
+            if name.replace('\\', "/").startswith("anki-miner/"):        # a run's results: states and counts only
+                try:
+                    p.add(name, data=_scrubbed_json(full))
+                except Exception as e:
+                    p.left_out.append(f"{name}: couldn't be read ({type(e).__name__})")
+            else:
                 p.add(name, source=full)
+        p.left_out += refused
     except Exception as e:                                         # the logs are help, never a reason to fail
         p.left_out.append(f"logs: couldn't be listed ({e})")
     for name, make in (("connect/status.json", _connect_status_bytes), ("connect/ledger.json", _ledger_bytes),
@@ -538,7 +596,7 @@ def plan(language, include_results=True, library=None, root=None, extra=None):
     else:
         p.left_out.append("results\\: left out (Include my last lists was unticked)")
     p.left_out.append("never taken: your subtitle and book files, Anki's cards, keys and tokens, the library's "
-                      "database")
+                      "database; Connect's titles and words and Anki Miner's sentences are counted, never copied")
     return p
 
 
@@ -623,16 +681,39 @@ def make_zip(dest, language, include_results=True, library=None, root=None, extr
         except OSError:
             pass
         raise
-    _clear(root, p.reports)
+    zipped = {rid: hashes.get(f"reports/{rid}/{REPORT_FILE}") for rid in p.reports}
+    _clear(root, zipped, p.removed)
     return final
 
 
-def _clear(root, ids):
-    """After a good zip: its reports, `removed/` and the `.part` folders a crash left (an hour old: a save under way
-    meanwhile keeps its own) go; a report saved meanwhile stays."""
-    for rid in ids:
-        shutil.rmtree(_own(root, rid), ignore_errors=True)
-    shutil.rmtree(os.path.join(root, REMOVED_DIR), ignore_errors=True)
+def _unchanged(path, digest):
+    import hashlib
+    try:
+        with open(os.path.join(path, REPORT_FILE), "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest() == digest
+    except OSError:
+        return False
+
+
+def _clear(root, zipped, removed=()):
+    """After a good zip: each report in it — unless its report.json changed since it was zipped (a note added
+    meanwhile: it stays on the list) —, the reports removed before it (`removed`; one removed meanwhile keeps its
+    Undo) and the `.part` folders a crash left (an hour old: a save under way keeps its own). A report saved meanwhile
+    stays."""
+    for rid, digest in zipped.items():
+        path = _own(root, rid)
+        if _unchanged(path, digest):
+            shutil.rmtree(path, ignore_errors=True)
+    for rid in removed:
+        try:
+            _own(root, rid)                                        # a plain report id, never a path
+        except ValueError:
+            continue
+        shutil.rmtree(os.path.join(root, REMOVED_DIR, rid), ignore_errors=True)
+    try:
+        os.rmdir(os.path.join(root, REMOVED_DIR))                  # only when nothing is left in it
+    except OSError:
+        pass
     try:
         for name in os.listdir(root):
             full = os.path.join(root, name)

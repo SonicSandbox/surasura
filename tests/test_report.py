@@ -404,3 +404,115 @@ def test_a_frozen_build_names_its_commit_and_the_report_says_it(monkeypatch):
          namespace)
     assert namespace["BUILD_COMMIT"] == "abc/def"
     assert package_app.source_commit(os.path.join(os.environ["SURASURA_TEST_ROOT"], "not-a-repo")) is None
+
+
+# --- the review round's finds (`research/haiku-review/REPORT/REGISTER.md`) ------------------------------------------ #
+def test_a_note_added_while_the_zip_is_written_keeps_the_report_on_the_list(root, tmp_path, monkeypatch):
+    # A1/S2: the zip read report.json, then a note landed before the list was cleared: the report stays, note and all.
+    r = core.save(JA_WHAT)
+    real = core._manifest
+
+    def meanwhile(p, hashes):
+        core.add_note(r.id, "zipの間に書いたメモ")
+        return real(p, hashes)
+    monkeypatch.setattr(core, "_manifest", meanwhile)
+    _path, files = _zip(tmp_path, root=root)
+    assert "zipの間に書いたメモ" not in files[f"reports/{r.id}/report.txt"].decode("utf-8")
+    kept = core.listed()
+    assert [x.id for x in kept] == [r.id] and kept[0].notes[0]["text"] == "zipの間に書いたメモ"
+
+
+def test_a_report_removed_while_the_zip_is_written_keeps_its_undo(root, tmp_path, monkeypatch):
+    # H7/T1: only the reports removed before the zip was planned are cleared by it.
+    before, during = core.save(JA_WHAT), core.save(ZH_WHAT)
+    core.remove(before.id)
+    real = core._manifest
+
+    def meanwhile(p, hashes):
+        core.remove(during.id)
+        return real(p, hashes)
+    monkeypatch.setattr(core, "_manifest", meanwhile)
+    _zip(tmp_path, root=root)
+    assert core.restore(before.id) is False                            # cleared by the zip
+    assert core.restore(during.id) is True                             # Undo still works
+
+
+def test_an_unreadable_report_is_kept_and_said_in_the_zip(root, tmp_path):
+    good = core.save(ZH_WHAT)
+    torn = os.path.join(root, "20261024-120000-000000-dead")
+    os.makedirs(torn)
+    with open(os.path.join(torn, core.REPORT_FILE), "w", encoding="utf-8") as f:
+        f.write("{\"what\": \"壊れ")
+    _p, files = _zip(tmp_path, root=root)
+    assert f"reports/{good.id}/report.txt" in files
+    assert "20261024-120000-000000-dead: its report.json couldn't be read" in files["MANIFEST.txt"].decode("utf-8")
+    assert os.path.isdir(torn)                                          # never cleared
+
+
+def test_connect_status_goes_in_as_states_and_counts_never_titles_or_card_words(root, tmp_path, monkeypatch):
+    from app.connect import status
+    record = {"schema": 1, "running": False, "languages": {"ja": {
+        "line": "Mining 葬送のフリーレン ep 3", "state": "mining", "unseen": 1,
+        "jobs": [{"id": 4, "state": "mining", "title": "葬送のフリーレン", "words": [["魔法", "まほう"]]}],
+        "needs": [{"kind": "no-video", "say": "「葬送のフリーレン」の動画が見つかりません"}],
+        "shelf": {"on_shelf": 2, "runs": [{"words": ["勇者", "魔王"]}]}}}}
+    monkeypatch.setattr(status, "read", lambda *a, **k: record)
+    core.save(JA_WHAT)
+    _p, files = _zip(tmp_path, root=root)
+    got = files["connect/status.json"].decode("utf-8")
+    for private in ("葬送のフリーレン", "魔法", "勇者", "見つかりません"):
+        assert private not in got
+    data = json.loads(got)["languages"]["ja"]
+    assert data["state"] == "mining" and data["jobs"][0]["state"] == "mining" and data["shelf"]["on_shelf"] == 2
+
+
+def test_anki_miner_results_go_in_scrubbed_never_their_sentences(root, tmp_path):
+    from app.connect import ledger as book
+    run = os.path.join(os.path.dirname(book.path()), "runs", "job-7")
+    os.makedirs(run)
+    with open(os.path.join(run, "result-1.json"), "w", encoding="utf-8") as f:
+        json.dump({"status": "done", "words": [{"word": "仕事", "status": "made",
+                                                "sentence": "仕事をすることができる。"}], "made": 1}, f, ensure_ascii=False)
+    with open(os.path.join(run, "settings-export.json"), "w", encoding="utf-8") as f:
+        json.dump({"apiKey": "sk-anki-miner"}, f)
+    core.save(JA_WHAT)
+    _p, files = _zip(tmp_path, root=root)
+    name = "anki-miner/job-7/result-1.json"
+    assert json.loads(files[name]) == {"status": "done", "words": "1 left out", "made": 1}
+    everything = b"".join(files.values()).decode("utf-8", "replace")
+    assert "仕事をすることができる" not in everything and "sk-anki-miner" not in everything
+
+
+@pytest.mark.skipif(os.name != "nt", reason="links on Windows: a junction")
+def test_a_linked_folder_in_the_logs_is_never_walked_by_either_zip(root, tmp_path):
+    import subprocess
+    from app.connect import status
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "diary.log").write_text("秘密の日記", encoding="utf-8")
+    logs = os.path.join(path_utils.get_local_data_path(), "logs")
+    os.makedirs(logs, exist_ok=True)
+    link = os.path.join(logs, "linked")
+    subprocess.run(["cmd", "/c", "mklink", "/J", link, str(elsewhere)], check=True, capture_output=True)
+    try:
+        assert not any("diary.log" in name for _full, name in status.log_files())
+        saved = str(tmp_path / "save-logs.zip")
+        assert not any("diary.log" in n for n in status.save_logs(saved))
+    finally:
+        os.rmdir(link)
+    assert (elsewhere / "diary.log").exists()
+
+
+def test_report_ids_keep_save_order_across_the_autumn_clock_change():
+    import datetime
+    summer = datetime.datetime(2026, 10, 25, 2, 50, tzinfo=datetime.timezone(datetime.timedelta(hours=2)))
+    winter = datetime.datetime(2026, 10, 25, 2, 10, tzinfo=datetime.timezone(datetime.timedelta(hours=1)))
+    assert winter > summer                                              # saved later, with an earlier wall clock
+    assert core._new_id(summer) < core._new_id(winter)
+
+
+def test_scrub_counts_every_content_key_and_blanks_secrets_at_any_depth():
+    got = core.scrub({"jobs": [{"state": "done", "sentence": "壁の向こう", "words": ["巨人"]}],
+                      "nested": {"api_key": "sk-x", "title": "進撃の巨人", "made_today": 3}})
+    assert got == {"jobs": [{"state": "done", "sentence": core.BLANKED, "words": "1 left out"}],
+                   "nested": {"api_key": core.BLANKED, "title": core.BLANKED, "made_today": 3}}

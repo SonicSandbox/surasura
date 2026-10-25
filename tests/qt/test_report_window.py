@@ -244,3 +244,99 @@ def test_the_library_summary_holds_counts_and_folders_never_titles(main):
     got = report_ui.library_summary(main)
     assert got["language"] in ("ja", "zh")
     assert set(got) <= {"language", "counts", "state", "mode", "library", "sources"}
+
+
+# --- the review round's finds ------------------------------------------------------------------------------------ #
+def test_a_shown_key_is_never_drawn_in_the_picture(main, monkeypatch):
+    # The adversary's A2: Jiten's window with its key shown (*Show*): the picture is taken with the field as dots, and
+    # the field is shown again afterwards.
+    from PyQt6.QtWidgets import QLineEdit
+    other = windows.SecondaryWindow(main, "Jiten")
+    key = QLineEdit(other)
+    key.setAccessibleName(strings.JITEN_KEY_NAME)
+    key.setText("jiten-sk-1234567890")
+    key.setEchoMode(QLineEdit.EchoMode.Normal)
+    other.body.addWidget(key)
+    other.show()
+    seen = []
+    real = QWidget.grab
+
+    def watch(self, *a):
+        if self is other:
+            seen.append(key.echoMode())
+        return real(self, *a)
+    monkeypatch.setattr(QWidget, "grab", watch)
+    try:
+        report_ui.take_pictures(main)
+        assert seen == [QLineEdit.EchoMode.Password]
+        assert key.echoMode() == QLineEdit.EchoMode.Normal and key.text() == "jiten-sk-1234567890"
+    finally:
+        other.close()
+
+
+def test_esc_keeps_what_was_typed_for_the_next_press(main):
+    w = _press(main)
+    w.what.setPlainText(JA_WHAT)
+    w.expected.setPlainText("戻らないと思った")
+    QTest.keyClick(w, Qt.Key.Key_Escape)
+    assert wait_until(lambda: windows.opened(main, report_ui.NAME) is None)
+    w = _press(main)
+    assert w.what.toPlainText() == JA_WHAT and w.expected.toPlainText() == "戻らないと思った"
+    _save(w, w.what.toPlainText())
+    w.close()
+    w = _press(main)
+    assert w.what.toPlainText() == ""                                  # saved: the draft is gone
+
+
+def test_the_tick_hides_the_pictures_without_rebuilding_them(main):
+    w = _press(main)
+    thumbs = list(w._thumbs)
+    w.leave_out.setChecked(True)
+    assert all(t.isHidden() for t in thumbs) and w.picture_note.text() == strings.REPORT_NO_PICTURE
+    w.leave_out.setChecked(False)
+    assert w._thumbs == thumbs and not any(t.isHidden() for t in thumbs) and w.picture_note.isHidden()
+
+
+def test_a_note_that_fails_keeps_what_was_typed(main, monkeypatch):
+    w = _press(main)
+    _save(w, ZH_WHAT)
+    w.open(w.reports[0].id)
+
+    def full(*a, **k):
+        raise OSError("disk full")
+    monkeypatch.setattr(core, "add_note", full)
+    w.note.setPlainText("这条备注不能丢")
+    w.note_button.click()
+    assert wait_until(lambda: "disk full" in w.status.text())
+    assert w.note.toPlainText() == "这条备注不能丢"
+
+
+def test_undo_says_so_when_the_report_couldnt_come_back(main, monkeypatch):
+    w = _press(main)
+    _save(w, JA_WHAT)
+    w.remove(w.reports[0].id)
+    assert wait_until(lambda: w.reports == [])
+    monkeypatch.setattr(core, "restore", lambda rid: False)
+    w.undo_button.click()
+    assert wait_until(lambda: w.status.text() == strings.REPORT_NOT_RESTORED)
+
+
+def test_a_zip_finished_after_the_window_closed_is_said_in_the_main_bar(main, opened, tmp_path, monkeypatch):
+    import threading
+    w = _press(main)
+    _save(w, JA_WHAT)
+    w.dest = str(tmp_path)
+    gate = threading.Event()
+    real = core.make_zip
+
+    def slow(*a, **k):
+        gate.wait(5)
+        return real(*a, **k)
+    monkeypatch.setattr(core, "make_zip", slow)
+    w.zip_button.click()
+    assert not w.list.isEnabled()                                      # the list waits while the zip is made
+    w.close()
+    gate.set()
+    assert wait_until(lambda: main.bar_line.full().startswith("Made Surasura-problems-"))
+    assert wait_until(lambda: opened == [str(tmp_path)]) and core.listed() == []
+    assert wait_until(lambda: main.report_button.count == 0)

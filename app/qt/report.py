@@ -12,13 +12,16 @@
   expect?*, the picture(s) with *Leave the picture out*, *Save to my list*; the list (each report: *Open*, *Remove*,
   Undo on the status line; an opened one shows its words, pictures and notes, and takes a note); *Show me what's in
   it*, *Make the zip* into Downloads or a folder picked, *Include my last lists*, and the hint to send it to Sonic.
-  Every read and write runs on a worker; the zip's folder opens once it is written.
+  Every read and write of the list, its pictures and the zip runs on a worker; the zip's folder opens once it is
+  written. What the tester typed and didn't save is kept while Surasura runs (`DRAFT`): Esc never loses it.
 """
 import os
+import re
 
 from PyQt6.QtCore import QBuffer, QByteArray, QIODevice, QPointF, QRectF, QSize, QStandardPaths, Qt
 from PyQt6.QtGui import QFontMetrics, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QShortcut
-from PyQt6.QtWidgets import (QApplication, QCheckBox, QFileDialog, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
+from PyQt6.QtWidgets import (QApplication, QCheckBox, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QListWidget,
+                             QListWidgetItem,
                              QPlainTextEdit, QPushButton, QSizePolicy, QStackedWidget, QToolButton, QVBoxLayout,
                              QWidget)
 
@@ -30,6 +33,7 @@ from app.qt import windows
 from app.qt.windows import SecondaryWindow
 
 NAME = "report"                 # `windows.show`'s kind: one report window per main window
+DRAFT = "_report_draft"         # the main window's attribute holding an unsaved report (words, expected, tick)
 THUMB = 168                     # a picture's width in the form (logical px)
 
 
@@ -168,13 +172,35 @@ def surasura_windows(shell):
     return out[:core.MAX_PICTURES]
 
 
+_KEY_FIELD = re.compile(r"(key|token|secret|password|credential)", re.IGNORECASE)
+
+
+def key_fields(window):
+    """The text fields in `window` that hold a key or a token: a password field (shown or not — Jiten's *Show*), or
+    one named for a key. Their letters are never drawn in a picture."""
+    out = []
+    for f in window.findChildren(QLineEdit):
+        named = " ".join((f.accessibleName(), f.objectName(), f.placeholderText(), f.toolTip()))
+        if f.echoMode() != QLineEdit.EchoMode.Normal or getattr(f, "_shown_secret", False) or _KEY_FIELD.search(named):
+            out.append(f)
+    return out
+
+
 def take_pictures(shell):
-    """Each Surasura window's own picture (`QWidget.grab()`: the window draws itself; nothing of the screen). -> [QImage]
-    (the main window's first). Thread-safe images: encoded on the worker at Save."""
+    """Each Surasura window's own picture (`QWidget.grab()`: the window draws itself; nothing of the screen), every key
+    field drawn as dots while it is taken (`key_fields`: a shown Jiten key never in a picture). -> [QImage] (the main
+    window's first). Thread-safe images: encoded on the worker at Save."""
     out = []
     for w in surasura_windows(shell):
         try:
-            img = w.grab().toImage()
+            fields = [(f, f.echoMode()) for f in key_fields(w)]
+            for f, _mode in fields:
+                f.setEchoMode(QLineEdit.EchoMode.Password)
+            try:
+                img = w.grab().toImage()
+            finally:
+                for f, mode in fields:
+                    f.setEchoMode(mode)
         except RuntimeError:                                       # a window deleted meanwhile
             continue
         if not img.isNull():
@@ -236,6 +262,7 @@ class ReportWindow(SecondaryWindow):
         self.list_paints = 0
         self.dest = downloads()
         self.last_removed = None
+        self._thumbs = None                                       # the form's thumbnails, made once per set of pictures
         f = theme.text_factor(style.current()[1])
         self.pages = QStackedWidget(self)
         self.body.addWidget(self.pages, 1)
@@ -256,6 +283,7 @@ class ReportWindow(SecondaryWindow):
         self.body.addWidget(self.hint)
         self.setMinimumWidth(round(560 * f))
         self._show_pictures()
+        self._restore_draft()
         self.read()
 
     # --- parts ------------------------------------------------------------------------------------------------- #
@@ -393,10 +421,37 @@ class ReportWindow(SecondaryWindow):
         self.dest_line.setText(strings.REPORT_SAVE_TO.format(folder=self.dest))
         self.dest_line.setToolTip(self.dest)
 
+    # --- the draft: what was typed and not saved, kept on the main window while Surasura runs ----------------------- #
+    def _restore_draft(self):
+        draft = getattr(self.shell, DRAFT, None)
+        if not draft:
+            return
+        self.what.setPlainText(draft.get("what", ""))
+        self.expected.setPlainText(draft.get("expected", ""))
+        self.leave_out.setChecked(bool(draft.get("leave_out")))
+        if not self.pictures and draft.get("pictures"):            # opened without a new picture: the draft's
+            self.set_pictures(draft["pictures"])
+
+    def _keep_draft(self):
+        what, expected = self.what.toPlainText(), self.expected.toPlainText()
+        if what.strip() or expected.strip():
+            setattr(self.shell, DRAFT, {"what": what, "expected": expected, "leave_out": self.leave_out.isChecked(),
+                                        "pictures": list(self.pictures)})
+        else:
+            setattr(self.shell, DRAFT, None)
+
+    def closeEvent(self, event):
+        try:
+            self._keep_draft()                                     # Esc or ✕: the words wait for the next press
+        except RuntimeError:
+            pass
+        super().closeEvent(event)
+
     # --- the pictures ------------------------------------------------------------------------------------------ #
     def set_pictures(self, pictures):
         """The bug pressed again with the window open: the new pictures for the next report."""
         self.pictures = list(pictures)
+        self._thumbs = None
         self._show_pictures()
 
     def _clear(self, layout):
@@ -414,18 +469,33 @@ class ReportWindow(SecondaryWindow):
         return label
 
     def _show_pictures(self, *_):
-        self._clear(self.picture_row)
-        if self.leave_out.isChecked() or not self.pictures:
-            self.picture_row.addWidget(self._line(strings.REPORT_NO_PICTURE if self.pictures else
-                                                  strings.REPORT_NO_PICTURE_TAKEN))
-        else:
+        """The form's pictures: their thumbnails made once per set of pictures (`_thumbs`); the tick only hides them
+        and says so."""
+        if getattr(self, "_thumbs", None) is None:
+            self._clear(self.picture_row)
+            self._thumbs = []
             dpr = self.devicePixelRatioF()
             for img in self.pictures:
                 pm = QPixmap.fromImage(img).scaledToWidth(round(THUMB * dpr),
                                                           Qt.TransformationMode.SmoothTransformation)
                 pm.setDevicePixelRatio(dpr)
-                self.picture_row.addWidget(self._thumb(pm, strings.REPORT_PICTURE_TIP))
-        self.picture_row.addStretch(1)
+                thumb = self._thumb(pm, strings.REPORT_PICTURE_TIP)
+                self._thumbs.append(thumb)
+                self.picture_row.addWidget(thumb)
+            self.picture_note = self._line("")
+            self.picture_row.addWidget(self.picture_note)
+            self.picture_row.addStretch(1)
+        out = self.leave_out.isChecked()
+        for thumb in self._thumbs:
+            thumb.setVisible(not out)
+        if not self.pictures:
+            note = strings.REPORT_NO_PICTURE_TAKEN
+        elif out:
+            note = strings.REPORT_NO_PICTURE
+        else:
+            note = ""
+        self.picture_note.setText(note)
+        self.picture_note.setVisible(bool(note))
 
     # --- the list ---------------------------------------------------------------------------------------------- #
     def read(self, then_say=None):
@@ -471,7 +541,7 @@ class ReportWindow(SecondaryWindow):
         box.addWidget(label, 1)
         for text, tip, slot in ((strings.REPORT_OPEN, strings.REPORT_OPEN_TIP, lambda _c=False, i=r.id: self.open(i)),
                                 (strings.REPORT_REMOVE, strings.REPORT_REMOVE_TIP,
-                                 lambda _c=False, i=r.id: self.remove(i))):
+                                 lambda _c=False, i=r.id: self.remove(i, self.sender()))):
             b = QPushButton(text, w)
             b.setToolTip(tip)
             b.setAccessibleName(f"{text}: {title}")
@@ -490,19 +560,30 @@ class ReportWindow(SecondaryWindow):
             return
         expected = self.expected.toPlainText()
         images = [] if self.leave_out.isChecked() else list(self.pictures)
+        sent = (self.what.toPlainText(), expected, self.pictures)
         where = _where(self.shell)
 
         def work():
             return core.save(what, expected, [png_bytes(i) for i in images], where=where)
-        qpress.run(self.save_button, "report:save", work, win=self, then=self.alive(self._saved),
+        qpress.run(self.save_button, "report:save", work, win=self, then=self.alive(lambda r: self._saved(r, sent)),
                    failed=self.alive(lambda info: self.say(strings.REPORT_SAVE_FAILED.format(why=info[0]))))
 
-    def _saved(self, _report):
+    def _saved(self, _report, sent=None):
+        """Saved: the form clears — only what was saved (words typed or a picture taken meanwhile stay)."""
+        if sent is not None and (self.what.toPlainText(), self.expected.toPlainText()) != sent[:2]:
+            setattr(self.shell, DRAFT, None)
+            self._contents_stale()
+            self.read(then_say=strings.REPORT_SAVED)
+            return
+        setattr(self.shell, DRAFT, None)
         self.what.clear()
         self.expected.clear()
         self.leave_out.setChecked(False)
-        self.pictures = []                                         # the next report's picture: the next press of the bug
-        self._show_pictures()
+        if sent is not None and self.pictures is not sent[2]:      # the bug pressed again meanwhile: its picture stays
+            self._contents_stale()
+            self.read(then_say=strings.REPORT_SAVED)
+            return
+        self.set_pictures([])                                      # the next report's picture: the next press
         self._contents_stale()
         self.read(then_say=strings.REPORT_SAVED)
 
@@ -519,13 +600,23 @@ class ReportWindow(SecondaryWindow):
             parts += ["", strings.REPORT_NOTE_LINE.format(when=_when(note.get("at", "")), text=note.get("text", ""))]
         self.opened_text.setPlainText("\n".join(parts))
         self._clear(self.opened_pictures)
-        for name in r.pictures:
-            path = os.path.join(r.path, name)
+        paths = [os.path.join(r.path, name) for name in r.pictures]
+        dpr = self.devicePixelRatioF()
+        bridge.run_in_worker(_thumbnails, paths, round(THUMB * dpr),
+                             then=self.alive(lambda got, i=rid: self._opened_pictures(i, got, dpr)),
+                             failed=lambda _info: None)
+        self.note.clear()
+        self.pages.setCurrentIndex(self.OPENED)
+        self.note.setFocus()
+
+    def _opened_pictures(self, rid, got, dpr):
+        """The opened report's pictures (read on a worker), each a button that opens it in the picture viewer."""
+        if rid != self.opened_id:
+            return                                                 # another report opened meanwhile
+        for path, img in got:
             b = QPushButton(self)
-            pm = QPixmap(path)
-            if not pm.isNull():
-                dpr = self.devicePixelRatioF()
-                pm = pm.scaledToWidth(round(THUMB * dpr), Qt.TransformationMode.SmoothTransformation)
+            if not img.isNull():
+                pm = QPixmap.fromImage(img)
                 pm.setDevicePixelRatio(dpr)
                 b.setIcon(QIcon_from(pm))
                 b.setIconSize(QSize(THUMB, round(pm.height() / dpr)))
@@ -535,37 +626,41 @@ class ReportWindow(SecondaryWindow):
             b.clicked.connect(lambda _c=False, p=path, c=b: qpress.open(self, p, control=c))
             self.opened_pictures.addWidget(b)
         self.opened_pictures.addStretch(1)
-        self.note.clear()
-        self.pages.setCurrentIndex(self.OPENED)
-        self.note.setFocus()
 
     def add_note(self):
         text = self.note.toPlainText().strip()
         rid = self.opened_id
         if not text or rid is None:
             return
-        qpress.run(self.note_button, f"report:note:{rid}", core.add_note, rid, text, win=self,
-                   then=self.alive(lambda _r: self.read(then_say=strings.REPORT_NOTED)),
+        def noted(r):
+            if self.opened_id == rid and self.note.toPlainText().strip() == text:
+                self.note.clear()                                  # only once it is written: a failure keeps it
+            self._contents_stale()
+            self.read(then_say=strings.REPORT_NOTED)
+            if self.opened_id == rid and r is not None:            # the opened page shows the note too
+                self.opened_text.appendPlainText("\n" + strings.REPORT_NOTE_LINE.format(
+                    when=_when(r.notes[-1].get("at", "")), text=r.notes[-1].get("text", "")))
+        qpress.run(self.note_button, f"report:note:{rid}", core.add_note, rid, text, win=self, then=self.alive(noted),
                    failed=self.alive(lambda info: self.say(strings.REPORT_NOTE_FAILED.format(why=info[0]))))
-        self.note.clear()
-        self._contents_stale()
 
     def back(self):
         self.opened_id = None
         self.pages.setCurrentIndex(self.FORM)
         self.what.setFocus()
 
-    def remove(self, rid):
+    def remove(self, rid, control=None):
         def done(gone):
-            if gone:
-                self.last_removed = rid
-                if self.opened_id == rid:
-                    self.back()
-                self._contents_stale()
-                self.read(then_say=strings.REPORT_REMOVED)
-                self.say_undo(True)
-        bridge.run_in_worker(core.remove, rid, then=self.alive(done),
-                             failed=self.alive(lambda info: self.say(strings.REPORT_REMOVE_FAILED.format(why=info[0]))))
+            if not gone:                                           # already gone (a zip took it): the list read again
+                self.read(then_say=strings.REPORT_GONE)
+                return
+            self.last_removed = rid
+            if self.opened_id == rid:
+                self.back()
+            self._contents_stale()
+            self.read(then_say=strings.REPORT_REMOVED)
+            self.say_undo(True)
+        qpress.run(control, f"report:remove:{rid}", core.remove, rid, win=self, then=self.alive(done),
+                   failed=self.alive(lambda info: self.say(strings.REPORT_REMOVE_FAILED.format(why=info[0]))))
 
     def say_undo(self, on):
         if not hasattr(self, "undo_button"):
@@ -584,8 +679,10 @@ class ReportWindow(SecondaryWindow):
             return
         self.last_removed = None
         self.say_undo(False)
-        bridge.run_in_worker(core.restore, rid, then=self.alive(lambda _ok: self.read(then_say=strings.REPORT_RESTORED)),
-                             failed=self.alive(lambda info: self.say(strings.REPORT_REMOVE_FAILED.format(why=info[0]))))
+        def restored(ok):                                          # (the button hides: the press marks the status line)
+            self.read(then_say=strings.REPORT_RESTORED if ok else strings.REPORT_NOT_RESTORED)
+        qpress.run(None, f"report:undo:{rid}", core.restore, rid, win=self, then=self.alive(restored),
+                   failed=self.alive(lambda info: self.say(strings.REPORT_REMOVE_FAILED.format(why=info[0]))))
 
     def pick_folder(self):
         got = QFileDialog.getExistingDirectory(self, strings.REPORT_PICK, self.dest)
@@ -605,7 +702,8 @@ class ReportWindow(SecondaryWindow):
             self.contents.setPlainText(core.describe(plan))
             self.pages.setCurrentIndex(self.CONTENTS)
         library = library_summary(self.shell)
-        qpress.run(self.show_button, "report:plan", core.plan, language, include, library, win=self,
+        qpress.run(self.show_button, "report:plan", core.plan, language, include, library, None, about_extra(self),
+                   win=self,
                    then=self.alive(shown),
                    failed=self.alive(lambda info: self.say(strings.REPORT_ZIP_FAILED.format(why=info[0]))))
 
@@ -615,15 +713,65 @@ class ReportWindow(SecondaryWindow):
         language, include, dest = self.language, self.include_results.isChecked(), self.dest
         library = library_summary(self.shell)
 
+        shell = self.shell
+        extra = about_extra(self)
+
         def made(path):
+            words = strings.REPORT_ZIPPED.format(name=os.path.basename(path), folder=dest)
+            if self.gone:                                          # closed while it was made: the main window says it
+                windows.say_in_bar(shell, words)
+                _count_again(shell)
+                try:
+                    qpress.open(shell, os.path.dirname(path), key="report:open-folder")
+                except RuntimeError:
+                    pass
+                return
+            self._hold(False)
             self.last_removed = None
             self.say_undo(False)
             self.back()
-            self.read(then_say=strings.REPORT_ZIPPED.format(name=os.path.basename(path), folder=dest))
+            self.read(then_say=words)
             qpress.open(self, os.path.dirname(path), key="report:open-folder")
-        qpress.run(self.zip_button, "report:zip", core.make_zip, dest, language, include, library, win=self,
-                   then=self.alive(made),
-                   failed=self.alive(lambda info: self.say(strings.REPORT_ZIP_FAILED.format(why=info[0]))))
+
+        def broke(info):
+            words = strings.REPORT_ZIP_FAILED.format(why=info[0])
+            if self.gone:
+                windows.say_in_bar(shell, words)
+                return
+            self._hold(False)
+            self.say(words)
+        self._hold(True)
+        p = qpress.run(self.zip_button, "report:zip", core.make_zip, dest, language, include, library, None, extra,
+                       win=self, then=made, failed=broke)
+        if p is None:
+            self._hold(False)
+
+    def _hold(self, on):
+        """While the zip is made: the list, a note and Undo wait (a report changed meanwhile would be kept anyway)."""
+        self.list.setEnabled(not on)
+        self.note_button.setEnabled(not on)
+        if hasattr(self, "undo_button"):
+            self.undo_button.setEnabled(not on)
+
+
+def about_extra(win):
+    """What about.txt says of the window: its scale, text size, theme and Qt's version."""
+    from PyQt6.QtCore import QT_VERSION_STR
+    try:
+        theme_name, size = style.current()
+    except Exception:
+        theme_name, size = "?", "?"
+    return {"screen scale": f"{round(win.devicePixelRatioF() * 100)} %", "theme": theme_name, "text size": size,
+            "qt": QT_VERSION_STR}
+
+
+def _count_again(shell):
+    button = getattr(shell, "report_button", None)
+    if button is not None:
+        try:
+            button.refresh()
+        except RuntimeError:
+            pass
 
 
 def _where(shell):
@@ -636,23 +784,37 @@ def _where(shell):
 
 def library_summary(shell):
     """(The window's thread; nothing read from disk.) The library's counts and its source folders as the window shows
-    them — no title, no file name."""
+    them (each folder's path, on or off, its item count, reachable) — no title, no file name."""
     out = {"language": windows.language_of(shell)}
     library = getattr(getattr(shell, "services", None), "library", None)
     view = None
     try:
         view = library.view() if library is not None else None
-    except Exception:
+    except Exception as e:                                         # said as it is, never as "none open"
+        out["library"] = f"couldn't be read: {e}"
         view = None
     if view is not None:
         counts = getattr(view, "counts", None)
         out["counts"] = counts._asdict() if hasattr(counts, "_asdict") else counts
         out["state"] = getattr(view, "state", None)
         out["mode"] = getattr(view, "mode", None)
-    else:
+    elif "library" not in out:
         out["library"] = "none open"
     out["sources"] = [{k: s.get(k) for k in ("id", "path", "on", "items", "reachable")}
                       for s in (getattr(shell, "sources", None) or ()) if isinstance(s, dict)]
+    return out
+
+
+def _thumbnails(paths, width):
+    """(A worker.) Each saved picture read and scaled to `width` device pixels: [(path, QImage)] (a null image for one
+    that can't be read)."""
+    from PyQt6.QtGui import QImage
+    out = []
+    for path in paths:
+        img = QImage(path)
+        if not img.isNull():
+            img = img.scaledToWidth(width, Qt.TransformationMode.SmoothTransformation)
+        out.append((path, img))
     return out
 
 

@@ -528,7 +528,8 @@ BUILD_INFO = os.path.join("app", "build_info.py")
 
 def source_commit(folder="."):
     """The trees a freeze is built from: "<public short head>", then "/<private short head>" when the private
-    repository sits beside it (`<folder>.priv.git`, the copies' layout); "+" after a tree with changes. None when git
+    repository sits beside it (`<folder>.priv.git`, the copies' layout); "+" after a tree with changes ("?" when git
+    couldn't say whether it has any). None when git
     can't say (the build goes on without it)."""
     def head(*git):
         try:
@@ -536,11 +537,15 @@ def source_commit(folder="."):
                                  text=True, timeout=30)
             if out.returncode != 0:
                 return None
-            dirty = subprocess.run(["git", *git, "status", "--porcelain", "--untracked-files=no"], cwd=folder,
-                                   capture_output=True, text=True, timeout=120)
-            return out.stdout.strip() + ("+" if dirty.returncode == 0 and dirty.stdout.strip() else "")
         except (OSError, subprocess.SubprocessError):
             return None
+        try:                                              # changes in the tree: "+" (unknown: "?")
+            dirty = subprocess.run(["git", *git, "status", "--porcelain", "--untracked-files=no"], cwd=folder,
+                                   capture_output=True, text=True, timeout=120)
+            mark = ("+" if dirty.stdout.strip() else "") if dirty.returncode == 0 else "?"
+        except (OSError, subprocess.SubprocessError):
+            mark = "?"
+        return out.stdout.strip() + mark
     public = head()
     if not public:
         return None

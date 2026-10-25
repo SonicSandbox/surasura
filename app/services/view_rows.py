@@ -208,6 +208,9 @@ STRINGS = {
     "play_moved": "{tip}\n• Find its folder: in its ⋯ menu, or on its No {word}",
     "not_timed": "Not timed", "tip_not_timed": "{words}: its cards wait for you\n• Check it plays in time, then "
                                                 "Mine anyway: in Needs you",
+    # T2 (alpha 2's try, Sonic's correction): a refusal whose Needs you entry you dismissed — skipped, no waiting
+    "tip_skipped": "Not timed to its video: skipped, as you dismissed it\n• Checked again when its subtitle or video "
+                   "changes",
     # --- end P4.1 L2
     # a tooltip's action on a line of its own, as a bullet (G2.3 T1); never a "( … )" a line break can cut
     "mark_missing": "{eps}: {gone}",                  # R55-C (Sonic): Up Next's own words, which episodes first
@@ -512,7 +515,9 @@ def status_of(eps, word, line_n):
     Word = word[:1].upper() + word[1:]
     n -= len(deleted)                                              # k/n counts what can still be in Anki
     if any(e.mining for e in eps):                                 # an asked-for mining outranks a deletion
-        label = STRINGS["mining"] if n <= 1 else STRINGS["mining_kn"].format(k=k, n=n)
+        # every episode already in Anki (a level raise mines one again): *Mining…*, no episode count beside its
+        # episode's card count (alpha 3 intent keeper #5)
+        label = STRINGS["mining"] if n <= 1 or k == n else STRINGS["mining_kn"].format(k=k, n=n)
         st = Status("mining", label, STRINGS["tip_mining"], "accent")
     elif not unmined and deleted and not k:                        # mined, its cards gone: plain, no Anki mark
         st = Status("deleted", STRINGS["deleted"] if len(deleted) == 1 else
@@ -587,8 +592,10 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=
     ask = None if missing or waiting or online or no_video else (item.get("rel_path"), media)
     looking = ask is not None and playable is not None and item["id"] not in playable
     can_play = ask is not None and (playable is None or bool(playable.get(item["id"])))
+    # mining: Connect is making its cards now — an episode already in Anki that a level raise mines again too (alpha 2's
+    # try, T3: its row showed only ✓, so no row said where the strip's arc was); a level job that waits keeps ✓
     ep = Episode(id=item["id"], label=label, number=number, title=stem(name), watched=bool(item.get("watched")),
-                 cards=c, mining=item["id"] in mining and not mined, missing=missing, removed=missing and mined,
+                 cards=c, mining=item["id"] in mining, missing=missing, removed=missing and mined,
                  in_top=in_top, pct=pct_of(known, counted), n_new=n_new, status=None, mark=None,
                  rel_path=item.get("rel_path"), play_tip="", can_play=can_play, waiting=waiting,
                  media_word=MEDIA_WORD.get(media, "video"), work_id=item.get("work_id"), show=show, show_key=show_key,
@@ -662,12 +669,16 @@ def _connected(st, item, word):
                       moved=moved)
     if item.kind == connect_feed.NOT_TIMED:
         return Status("waiting", STRINGS["not_timed"], STRINGS["tip_not_timed"].format(words=item.words), "warn")
-    # a wait on Anki or on the battery is a warn *Waiting*, and takes *Mine now* as every *Waiting* does (P4.1's C3,
-    # "an ask never overrides a wait", as amended by Sonic 2026-10-22, M-3 A): on battery the press is the yes for
-    # that one episode; waiting for Anki it goes first once Anki answers — its hover says which
-    tone = "warn" if item.kind in (connect_feed.ANKI, connect_feed.BATTERY) else "dim"
+    if item.kind == connect_feed.SKIPPED:   # T2: refused, its entry dismissed — quiet, never a *Waiting* to mine
+        return Status("waiting", STRINGS["not_timed"], STRINGS["tip_skipped"], "faint")
+    # a wait on Anki or on the battery takes *Mine now* as every *Waiting* does (P4.1's C3, "an ask never overrides a
+    # wait", as amended by Sonic 2026-10-22, M-3 A): on battery the press is the yes for that one episode; waiting for
+    # Anki it goes first once Anki answers — its hover says which. Warn while it waits on you (Anki closed, a prompt,
+    # another profile: `ANKI`) or on the plug; a wait on Anki that clears by itself (`ANKI_WAIT`: you reviewing, Anki
+    # busy) is a plain one (alpha 2's try, T1: the strip's rule, `runner.anki_needs_you`)
+    tone = "warn" if item.kind in (connect_feed.ANKI, connect_feed.HELD, connect_feed.BATTERY) else "dim"
     tip = item.tip
-    if item.kind in (connect_feed.ANKI, connect_feed.BATTERY):
+    if item.kind in (connect_feed.ANKI, connect_feed.ANKI_WAIT, connect_feed.BATTERY):
         tip = STRINGS["tip_ask_battery" if item.kind == connect_feed.BATTERY else "tip_ask_anki"].format(tip=item.tip)
     return Status("waiting", st.label if st.kind == "waiting" else STRINGS["waiting"], tip, tone)
 

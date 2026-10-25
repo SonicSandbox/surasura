@@ -238,18 +238,20 @@ def test_connects_waiting_episodes_are_recorded_by_class_and_the_mining_kind_sta
                                              updating=False))
         return {(v.kind, v.reason, v.needs) for v in registry.live()}
 
-    assert look(feed.WAITING, feed.ASKED, feed.NOT_TIMED, feed.NO_VIDEO, feed.NO_VIDEO, feed.ANKI) == {
-        (S.CONNECT_WAIT_KIND, f"{feed.WORDS[feed.WAITING]}; {feed.WORDS[feed.ASKED]}", None),
-        (S.CONNECT_WAIT_KIND, f"{feed.WORDS[feed.NOT_TIMED]}; {feed.WORDS[feed.NO_VIDEO]} (2)",
-         f"{feed.WORDS[feed.NOT_TIMED]}; {feed.WORDS[feed.NO_VIDEO]} (2)"),
-        (S.CONNECT_ANKI_KIND, feed.WORDS[feed.ANKI], feed.WORDS[feed.ANKI])}
+    # alpha 2's try (T1, T2): each reason with its count of episodes; a wait on Anki that clears by itself is plain
+    queued = f"{feed.WORDS[feed.WAITING]} · 1 episode; {feed.WORDS[feed.ASKED]} · 1 episode"
+    on_you = f"{feed.WORDS[feed.NOT_TIMED]} · 1 episode; {feed.WORDS[feed.NO_VIDEO]} · 2 episodes"
+    anki = f"{feed.WORDS[feed.ANKI]} · 1 episode"
+    plain_anki = f"{feed.WORDS[feed.ANKI_WAIT]} · 2 episodes"
+    assert look(feed.WAITING, feed.ASKED, feed.NOT_TIMED, feed.NO_VIDEO, feed.NO_VIDEO, feed.ANKI, feed.ANKI_WAIT,
+                feed.ANKI_WAIT) == {(S.CONNECT_WAIT_KIND, queued, None), (S.CONNECT_WAIT_KIND, on_you, on_you),
+                                    (S.CONNECT_ANKI_KIND, anki, anki), (S.CONNECT_ANKI_KIND, plain_anki, None)}
     assert registry.live(S.CONNECT_JOB_KIND) == ()                    # the close names mining alone (row 35)
     got = P.read(registry.snapshot())
-    assert got[P.MINER].needs and got[P.ANKI].needs == feed.WORDS[feed.ANKI]
-    assert look("stopped") == {(S.CONNECT_WAIT_KIND, f"{feed.WORDS[feed.WAITING]}; {feed.WORDS[feed.ASKED]}", None),
-                               (S.CONNECT_WAIT_KIND, f"{feed.WORDS[feed.NOT_TIMED]}; {feed.WORDS[feed.NO_VIDEO]} (2)",
-                                f"{feed.WORDS[feed.NOT_TIMED]}; {feed.WORDS[feed.NO_VIDEO]} (2)"),
-                               (S.CONNECT_ANKI_KIND, feed.WORDS[feed.ANKI], feed.WORDS[feed.ANKI])}  # one look: kept
+    assert got[P.MINER].needs and got[P.ANKI].needs == anki
+    assert look("stopped") == {(S.CONNECT_WAIT_KIND, queued, None), (S.CONNECT_WAIT_KIND, on_you, on_you),
+                               (S.CONNECT_ANKI_KIND, anki, anki),
+                               (S.CONNECT_ANKI_KIND, plain_anki, None)}  # one look: kept
     assert look("stopped") == set()                   # two: gone — one you stopped waits for your Mine now (no job)
     assert P.MINER not in P.fold({}, registry.snapshot())               # ended waiting: no run, no tick
     look(feed.NOT_TIMED)

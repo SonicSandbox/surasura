@@ -1201,7 +1201,7 @@ def test_each_of_connects_kinds_is_a_stone_with_its_own_words():
     assert st[4].tip.endswith("Click: it goes first once Anki answers")
     assert (st[5].kind, st[5].tip) == ("waiting", vr.STRINGS["tip_ask_battery"].format(tip=runner.ON_BATTERY))
     assert st[5].tip.endswith("Click to mine this one now, on battery")
-    assert (st[6].kind, st[6].tip) == ("waiting", feed.WORDS[feed.WAITING])
+    assert (st[6].kind, st[6].tip) == ("waiting", feed.NEXT_LOOK), "no reason yet: when Connect comes to it (T2)"
     assert (st[7].kind, st[7].label) == ("mine", "Mine"), "no job: as without Connect"
     # R47: an ask Connect has read is its own status (*Asked*, the press's mark still), its tip the reason or its words
     assert (st[8].kind, st[8].tip) == ("asked", vr.STRINGS["tip_asked"]), "an ask below the line waits, first"

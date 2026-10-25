@@ -199,6 +199,7 @@ def _language(conn, lang, is_running, words):
                      "title": items.get(n["item_id"], {}).get("title") if n["item_id"] is not None else None,
                      "at": n["at"], "seen_at": n.get("seen_at")} for n in reversed(needs)]
     rec["unseen"] = sum(1 for n in needs if not n.get("seen_at"))
+    rec["skipped"] = _skipped(conn, lang)       # T2 (alpha 2's try): refusals you dismissed — no waiting episode
     rec["undo"] = [{"job": u["id"], "item": u["item_id"], "title": items.get(u["item_id"], {}).get("title"),
                     "kind": u["kind"] or "mine", "made": u["made"], "at": u["updated_at"],
                     "not_made": _not_made(conn, u["id"])} for u in undoable]
@@ -294,6 +295,18 @@ def _needs(conn, lang):
                                                        "ORDER BY id", (lang,))]
 
 
+def _skipped(conn, lang):
+    """The items refused as not timed to their video whose *Needs you* entry you dismissed (open, not fixed: refused
+    again at each start until their timing, subtitle or video changes, or *Mine anyway*) — sorted ids. The window
+    counts them as no waiting episode (alpha 2's try, T2: "Waiting to make its cards (2)" sat on the strip after Sonic
+    dismissed both). [] for a ledger with no `dismissed_at` yet."""
+    if not _has(conn, "needs", "dismissed_at"):
+        return []
+    return [r[0] for r in conn.execute("SELECT DISTINCT item_id FROM needs WHERE language = ? AND kind = 'not-timed' "
+                                       "AND fixed_at IS NULL AND dismissed_at IS NOT NULL AND item_id IS NOT NULL "
+                                       "ORDER BY item_id", (lang,))]
+
+
 def _made_today(conn, lang):
     """Cards Connect made today (local time): its made outcomes whose batch ended today."""
     rows = conn.execute("SELECT b.ended_at, COUNT(*) FROM outcomes o JOIN jobs j ON j.id = o.job_id JOIN batches b ON "
@@ -354,7 +367,10 @@ def _line(conn, lang, rec, open_jobs, items, is_running, need_says=()):
             return (NEEDS_YOU_LINE if first["reason"] in need_says else first["reason"]), "waiting"
         n = len(open_jobs)
         noun = "episode waits" if n == 1 else "episodes wait"
-        return f"{n} {noun} for their cards: Connect makes them at its next start.", "waiting"
+        # Connect running: it comes to them at its next look (`runner.LOOK_EVERY_S`; the strip's `feed.NEXT_LOOK`),
+        # else at its next start (alpha 3 intent keeper #8: the two lines never disagree)
+        when = "Connect comes to them within 2 minutes." if is_running else "Connect makes them at its next start."
+        return f"{n} {noun} for their cards: {when}", "waiting"
     if rec["made_today"]:
         return f"Up to date · {rec['made_today']} cards made today", "idle"
     return "Up to date", "idle"

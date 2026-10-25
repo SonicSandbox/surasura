@@ -93,14 +93,16 @@ def test_every_amber_wait_is_one_that_ends_the_pass():
                    anki_session.UNUSABLE, anki_session.NO_PROFILE_YET, anki_session.OTHER_PROFILE.format("a", "b")):
         assert runner.holds_every(reason), reason
         rec = {"languages": {"ja": {"jobs": [{"item": 1, "job": 1, "state": "waiting", "reason": reason}]}}}
-        assert feed.build(rec, "ja").items[1].kind in (feed.ANKI, feed.BATTERY), reason
+        # alpha 2's try (T1): amber only for a wait on you (ANKI); you reviewing, Anki busy, a writer: plain (ANKI_WAIT)
+        assert feed.build(rec, "ja").items[1].kind in (feed.ANKI, feed.ANKI_WAIT, feed.BATTERY), reason
     # review A2: Anki Miner's window open, or the list in another language, hold every episode too
     for reason in (runner.ANKI_MINER_OPEN, runner.OTHER_LIST.format("Chinese")):
         assert runner.holds_every(reason), reason
-    # review A1: one request failing while Anki answers is that episode's own wait (amber), never everyone's
+    # review A1: one request failing while Anki answers is that episode's own wait, never everyone's — a wait on Anki
+    # that clears by itself (alpha 2's try, T1: plain, no longer amber)
     assert not runner.holds_every(runner.ANKI_SLOW)
     rec = {"languages": {"ja": {"jobs": [{"item": 1, "job": 1, "state": "waiting", "reason": runner.ANKI_SLOW}]}}}
-    assert feed.build(rec, "ja").items[1].kind == feed.ANKI
+    assert feed.build(rec, "ja").items[1].kind == feed.ANKI_WAIT
     for reason in (runner.NO_VIDEO, runner.LIBRARY_BUSY, "", None):
         assert not runner.holds_every(reason), reason
 
@@ -196,7 +198,12 @@ def test_anki_not_saying_its_profile_is_a_wait_and_nothing_is_recorded(monkeypat
     monkeypatch.setattr(setup, "record_path", lambda: str(tmp_path / "setup.json"))
     _anki(monkeypatch, None)
     steps = runner.Steps({"connect_enabled": True})
-    assert steps.blocked("ja") == anki_session.NO_PROFILE_YET
+    # no answer in time: Anki busy (alpha 3 review A5: a wait that clears by itself, never amber) — still a wait on
+    # Anki that holds every episode, so nothing is written
+    assert steps.blocked("ja") == anki_session.BUSY and runner.holds_every(anki_session.BUSY)
+    assert setup.anki_profile() is None
+    _anki(monkeypatch, "")                              # it answers, naming none: waits on you to open one
+    assert runner.Steps({"connect_enabled": True}).blocked("ja") == anki_session.NO_PROFILE_YET
     assert setup.anki_profile() is None
 
 
@@ -300,8 +307,10 @@ def test_a_recorded_profile_waits_while_anki_names_none(monkeypatch, tmp_path, a
     monkeypatch.setattr(setup, "record_path", lambda: str(tmp_path / "setup.json"))
     setup.keep_profile("日本語")
     _anki(monkeypatch, answer)
-    assert runner.Steps({"connect_enabled": True}).blocked("ja") == anki_session.NO_PROFILE_YET
-    assert runner.holds_every(anki_session.NO_PROFILE_YET)
+    # no answer in 5 s is Anki busy (alpha 3 review A5); an answer naming none is no profile yet — both wait
+    want = anki_session.BUSY if answer is None else anki_session.NO_PROFILE_YET
+    assert runner.Steps({"connect_enabled": True}).blocked("ja") == want
+    assert runner.holds_every(want)
     _anki(monkeypatch, "日本語")
     assert runner.Steps({"connect_enabled": True}).blocked("ja") is None
 

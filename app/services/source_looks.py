@@ -227,8 +227,9 @@ class SourceLooks:
         deadline = time.monotonic() + ls.BUSY_AT_OPEN
         h = self.opener.handle()
         while h is None and not self._closing.is_set():
-            self.opener.check()
-            wait = getattr(self.opener, "wait", None)
+            check, wait = getattr(self.opener, "check", None), getattr(self.opener, "wait", None)
+            if check is not None:
+                check()
             if wait is not None:
                 wait(max(0.0, deadline - time.monotonic()))
             h = self.opener.handle()

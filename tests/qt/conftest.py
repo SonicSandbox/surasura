@@ -137,6 +137,19 @@ def qt_errors(request):
     return _errors
 
 
+def logos_in(strip, timeout=60.0):
+    """The phase strip's logos decoded and painted (`PhaseStrip._load_logos` draws them on a worker): every test that
+    reads what the strip paints — its rings' pixels, its `paints` counts, a window's paint events — waits here first.
+    On a busy machine (the full run, GitHub's runners) they land late, and their one paint is the strip still opening,
+    not the change under test (alpha 3's cut: a setting-paint test and an at-rest ring test both read it). The ceiling
+    is generous: it is only ever reached when they never come. -> True once they are in."""
+    from PyQt6.QtWidgets import QApplication
+    ok = wait_until(lambda: set(strip._pix) >= set(strip.logos), timeout)
+    for _ in range(20):                                  # their repaint, done before the caller watches
+        QApplication.processEvents()
+    return ok
+
+
 def wait_until(predicate, timeout=5.0):
     """Run the event loop until `predicate()` is true (or the time is up). -> its last answer."""
     import time

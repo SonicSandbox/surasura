@@ -26,7 +26,7 @@ from app import theme
 from app.qt import motion, rows, screens, shell, stones, strings, style
 from app.services import library_reader, stone_plan
 from tests.fixtures import window_seed
-from tests.qt.conftest import wait_until
+from tests.qt.conftest import logos_in, wait_until
 from tests.qt.pixels import count, rgb_array
 from tests.qt.test_wiring import problems
 
@@ -1635,13 +1635,9 @@ def test_a_setting_no_screen_reads_paints_no_widget_and_no_row(seeded, qapp):
     seed, win = seeded()
     lists = [p.list for p in win.page_widgets.values() if hasattr(p, "list")]
     assert lists, "the window has at least one list to watch"
-    # The window's own first paint finished before we watch: the phase strip's logos are drawn on a worker and land
-    # when they're ready (`PhaseStrip._load_logos`) — on a busy machine after the window opened, and their one paint
-    # is the window still opening, not the setting (the cut's flake: the strip and its parents painted, 2 runs in 3)
-    strip = win.phase
-    assert wait_until(lambda: set(strip._pix) >= set(strip.logos), 10)
-    for _ in range(20):
-        QApplication.processEvents()
+    # The window's own first paint finished before we watch (`logos_in`: the strip's logos land from a worker — on a
+    # busy machine after the window opened, and their one paint is the window still opening, not the setting)
+    assert logos_in(win.phase)
     heard = []
     win.bridge.settings_written.connect(lambda keys: heard.append(tuple(keys)))
     before_paints = [lst.delegate.paints for lst in lists]

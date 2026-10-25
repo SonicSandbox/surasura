@@ -30,7 +30,7 @@ from app.services import phase as phase_service
 from app.services import source_looks
 from app.services import standing as standing_service
 from tests.fixtures import window_seed
-from tests.qt.conftest import wait_until
+from tests.qt.conftest import logos_in, wait_until
 from tests.qt.test_drag import FakeWriter, open_window
 from tests.test_library_store_support import LANGUAGES, names, roots
 
@@ -506,6 +506,7 @@ def test_review5_a_find_answer_for_the_library_left_stops_nothing_and_says_where
 def test_S19_the_same_look_said_twice_works_nothing_out_builds_no_card_and_repaints_no_circle(world):
     """A look every few minutes says the same gone folder again: nothing is gathered, no card rebuilt, 届 untouched."""
     seed, win, writer, ny = world("ja", looks=Looks())
+    assert logos_in(win.phase)                                            # the strip finished opening
     row, away = _gone_row("ja"), _away_row()
     _told(win, "ja", row, away)
     _card_in(win, ny)

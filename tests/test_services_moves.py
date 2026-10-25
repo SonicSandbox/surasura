@@ -2502,6 +2502,74 @@ def test_S2_remove_sends_the_file_to_the_trash_with_its_clock_restarted_and_undo
     assert not os.path.exists(trashed) and heard.notes == []
 
 
+def test_H7_a_remove_replayed_after_a_crash_between_its_trash_move_and_its_commit_keeps_its_file_reachable(
+        lib, make_writer, short_lock_wait):
+    # why: Remove moves each file to the trash, then the store commits. Killed between the two, the journal replays
+    # the command and finds no file: its trash row must still name the copy, or no Put back reaches it and it waits
+    # there unreferenced for the 30-day purge (Skip: `test_sources_skip.py`'s H7 test)
+    w, heard = make_writer()
+    x = lib.ids("soon")[2]
+    rel, path = lib.store.item(x)["rel_path"], _file(lib, x)
+    with open(path, "rb") as f:
+        body = f.read()
+    holder = LockHolder(lib.db)
+    w.remove([x], label="removed")
+    assert h.until(lambda: len(journalled(lib.language)) == 1)
+    w._abandon()                                        # the crash: after the file's move, before the commit
+    holder.release()
+    own = ls.trash_file(lib.data_dir, rel)
+    old = time.time() - 40 * 86400                      # killed before its clock was restarted: purged at once
+    os.utime(os.path.join(lib.data_dir, *own.split("/")), (old, old))
+    base, ext = os.path.splitext(os.path.basename(rel))
+    older = os.path.join(lib.data_dir, ".trash", f"{base}_20000101000000{ext}")
+    with open(older, "wb") as f:                        # trashed before this Remove (an Undo-Add's): its name and
+        f.write(bytes(b ^ 1 for b in body))             # size, other bytes, no row; no record to tell them apart
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: journal(lib.language) is None and not w2.pending())
+    assert lib.store.item(x) is None
+    row = [r for r in lib.store.trash_rows() if r["item_id"] == x][-1]
+    assert row["trashed_path"] == own, "its trash row names its own copy, never an older file of its name"
+    assert os.path.getmtime(os.path.join(lib.data_dir, *own.split("/"))) > time.time() - 600, "its clock restarted"
+    w2.restore([row["id"]])
+    assert h.until(lambda: os.path.exists(path)), "Put back brings the file back"
+    with open(path, "rb") as f:
+        assert f.read() == body
+
+
+def test_H7_the_copy_a_replay_takes_has_the_items_size_and_no_row_of_its_own(lib):
+    # why: the trash may hold files of the item's name that are not its copy — another size, or another row's copy
+    # (held): the replay's pick passes both over and takes the item's own
+    x, y = lib.ids("soon")[2], lib.ids("soon")[3]
+    row = lib.store.item(x)
+    with open(_file(lib, x), "rb") as f:
+        body = f.read()
+    own = ls.trash_file(lib.data_dir, row["rel_path"])
+    base, ext = os.path.splitext(os.path.basename(row["rel_path"]))
+    trash = os.path.join(lib.data_dir, ".trash")
+    with open(os.path.join(trash, f"{base}_20000101000000{ext}"), "wb") as f:
+        f.write(body + body)                            # first in line: another size
+    held = f".trash/{base}_20000101000001{ext}"         # second: its size and bytes, another row's copy
+    with open(os.path.join(trash, held.split("/")[1]), "wb") as f:
+        f.write(body)
+    lib.store.remove([y], {y: held})
+    assert M._trashed_before(lib.store, row, set()) == own
+
+
+def test_H7_a_live_remove_of_a_file_deleted_by_hand_never_takes_a_trashed_file_of_its_name(lib, make_writer):
+    # why: only a replay can have moved its files already; a file the learner deleted outside Surasura is no file of
+    # the trash's, so a trashed one of the same name and size (left by an earlier Remove's Undo-Add) stays unclaimed
+    w, heard = make_writer()
+    x = lib.ids("soon")[2]
+    rel, path = lib.store.item(x)["rel_path"], _file(lib, x)
+    orphan = ls.trash_file(lib.data_dir, rel)            # the same bytes in the trash, no row naming them
+    assert orphan and not os.path.exists(path)          # and the file gone from its place, as if deleted by hand
+    w.remove([x], label="removed")
+    assert h.until(lambda: heard.saved)
+    row = lib.store.trash_rows(heard.saved[0][0].trash_ids)[0]
+    assert row["trashed_path"] is None, "a live Remove claims no trashed file"
+
+
 def test_S2_undoing_a_remove_whose_name_was_taken_meanwhile_puts_it_back_under_a_new_name_and_says_so(
         lib, make_writer):
     w, heard = make_writer()

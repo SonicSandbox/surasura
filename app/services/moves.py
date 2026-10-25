@@ -51,6 +51,7 @@ Qt-free (the import guard): no Qt, Tk or pandas; the store, the plan engine and 
 import itertools
 import json
 import os
+import re
 import threading
 import time
 from collections import deque
@@ -95,6 +96,7 @@ JOURNALLED += ("register",)
 KEPT += ("records", "rules")
 KEPT += ("soon_line", "mine_line")              # W3.3 P6: `set_options`'s values
 KEPT += ("keep_watched",)                       # W-1 (K-W4): the library's *Keep studying watched episodes*
+KEPT += ("at",)                                 # H7: when a Remove / Skip was queued (its replay takes no older copy)
 KEPT += ("titles",)                             # P-LF-4: a join of two titles (a replay merges them too)
 # --- LM11: user-made groups (Sonic's G1–G4) — the one piece rule's commands; a join's `how` ("titles": P-LF-4's
 # `titles`, which a journal the window's first build wrote still replays as)
@@ -389,7 +391,7 @@ class Writer:
         trash (`library_store.trash_file`: its 30-day clock restarted), then `Store.remove` in the same transaction —
         the files back if anything fails. Undo puts the files back (never over a
         file: a taken name comes back as `name_1.ext`, named in a note) and the rows where they stood."""
-        return self._put({"op": "remove", "ids": list(ids), "label": label})
+        return self._put({"op": "remove", "ids": list(ids), "label": label, "at": _queued_at()})
 
     def skip_folder(self, path, label=None):
         """*Never read this folder* (K6): `Store.skip_folder` — the folder's row, and the items whose every origin lies
@@ -398,7 +400,8 @@ class Writer:
         again. Refused (`NotASource`: outside every source, a source itself) → `failed`'s note, nothing written.
         Journalled as Remove is (its copies' trash moves): a crash before it lands replays it at the next start, one
         that landed before the crash is let go quietly (`_changed_since`)."""
-        return self._put({"op": "skip_folder", "ids": [], "path": os.fspath(path), "label": label})
+        return self._put({"op": "skip_folder", "ids": [], "path": os.fspath(path), "label": label,
+                          "at": _queued_at()})
 
     def restore(self, trash_ids, label=None):
         """Put back from the trash (`Store.restore` by trash ids, the files first, as Undo of a remove does). Undo sends
@@ -997,7 +1000,8 @@ class Writer:
                     row = store.item(item_id)
                     if row is None:
                         continue
-                    to = _trash(lib, store, row["rel_path"])
+                    to = _trash(lib, store, row["rel_path"], row if cmd.get("replay") else None,
+                                taken=trashed.values(), since=cmd.get("at"))
                     if to:
                         trashed[item_id] = to
                         moved.append((_full(store, to), _full(store, row["rel_path"])))
@@ -1020,7 +1024,8 @@ class Writer:
                 trashed = {}
                 for item_id in store.items_under(cmd["path"]):
                     row = store.item(item_id)
-                    to = _trash(lib, store, row["rel_path"]) if row is not None else None
+                    to = (_trash(lib, store, row["rel_path"], row if cmd.get("replay") else None,
+                                 taken=trashed.values(), since=cmd.get("at")) if row is not None else None)
                     if to:
                         trashed[item_id] = to
                         moved.append((_full(store, to), _full(store, row["rel_path"])))
@@ -1961,14 +1966,66 @@ def _full(store, rel):
     return os.path.join(store.data_dir, *rel.split("/"))
 
 
-def _trash(lib, store, rel):
+def _trash(lib, store, rel, row=None, taken=(), since=None):
     """A row's file to the trash before its row goes (`trash_file`), or StoreConflict when the file is there but isn't
     Surasura's to move (SRC K1a.6: a copy a folder link leads out of the data folder) — never a row dropped with its
-    file left for the next sync to add again."""
+    file left for the next sync to add again. `row` (a REPLAYED Remove's or Skip's, never a live one: a file deleted
+    by hand is no file of the trash's): no file where the store has it available is a crash between the renames and
+    the commit — its copy is in the trash already (H7; `taken`: the copies this command holds already; `since`: when
+    the command was queued, `_queued_at()`)."""
     to = lib.trash_file(store.data_dir, rel)
     if to is None and lib.trash_refused(store.data_dir, rel):
         raise lib.StoreConflict(f"that file isn't Surasura's to move: {rel}")
+    if to is None and row is not None and row.get("availability") != "missing":
+        to = _trashed_before(store, row, set(taken), since)
     return to
+
+
+def _queued_at():
+    """The time as `trash_file` stamps a trashed file's name (local, to the second): a Remove's or a Skip's, when it is
+    queued (H7: its replay takes no older copy)."""
+    return time.strftime("%Y%m%d%H%M%S")
+
+
+def _trashed_before(store, row, taken, since=None):
+    """H7: a Remove or a Skip moves each file to the trash, then the store commits. Killed between the two, the
+    journal replays the command and finds no file: its copy is in `.trash/` with no row naming it, so no Undo could
+    reach it. -> that copy (".trash/<name>"): the oldest named as `trash_file` names this file
+    (`<base>_<stamp>[_n]<ext>`) with the row's size — and the bytes its record holds, when it has one — that no trash
+    row and no other file of this command holds, and never stamped before the command was queued (`since`: a file of
+    its name that another path left in the trash is older); None when there is none. ⭐ PROVISIONAL: its name, its
+    time, its size, its bytes and no row of its own make it this file (the trash keeps no time of the file's own).
+    Oldest first, in the order `trash_file` made them (`_1` before `_10`): a command's items replay in the order they
+    were renamed, so two of one name and size each get their own. Its purge clock restarted (a kill may have come
+    between the rename and the stamp)."""
+    trash = os.path.join(store.data_dir, ".trash")
+    base, ext = os.path.splitext(os.path.basename(row["rel_path"]))
+    named = re.compile(re.escape(base) + r"_\d{14}(?:_\d{1,4})?" + re.escape(ext) + r"\Z", re.IGNORECASE)
+    try:
+        names = [n for n in os.listdir(trash) if named.match(n)]
+    except OSError:
+        return None
+    if not names:
+        return None
+    held = {r["trashed_path"] for r in store.trash_rows() if r.get("trashed_path")} | taken
+    shas = {o.sha256 for o in store.origins(items=[row["id"]]).values() if o.sha256 and not o.version}
+    def made(n):                                         # (stamp, its _n): the order trash_file made them
+        tail = n[len(base) + 1:len(n) - len(ext)]
+        return tail[:14], int(tail[15:] or 0)
+    for name in sorted(names, key=made):
+        rel, full = f".trash/{name}", os.path.join(trash, name)
+        if rel in held or (since and made(name)[0] < since):
+            continue
+        try:
+            if row.get("size") is not None and os.path.getsize(full) != row["size"]:
+                continue
+            if shas and _ls().sha256_of(full) not in shas:
+                continue
+        except OSError:
+            continue
+        _ls().restart_trash_clock(full)
+        return rel
+    return None
 
 
 def _move_back(moved):

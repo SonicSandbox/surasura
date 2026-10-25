@@ -65,6 +65,64 @@ def _folder_rows(store):
 # --- 1 · the store: skip a folder, Undo, read it again ------------------------------------------------------------ #
 
 @pytest.mark.parametrize("language", LANGUAGES)
+def test_a_skip_replayed_after_a_crash_between_its_trash_moves_and_its_commit_keeps_each_file_reachable(language):
+    """H7: Skip moves each item's copy to the trash, then the store commits. Killed between the two, the replay finds
+    no files: each trash row still names its own copy (never NULL), so Put back brings every one back."""
+    from app.services import moves as M
+    store, data_dir = _empty(language)
+    src = _drive("Media")
+    _card_and_show(language, src)
+    with store:
+        _look(store, language, store.add_source(src), first=True)
+        folder = os.path.join(src, CARD)
+        ids = store.items_under(folder)
+        bodies = {}
+        for i in ids:
+            rel = store.item(i)["rel_path"]
+            with open(os.path.join(data_dir, *rel.split("/")), "rb") as f:
+                bodies[rel] = f.read()
+            ls.trash_file(data_dir, rel)                # the crash: the files moved, the store never committed
+        change = M.Writer._skip_folder(None, store, {"op": "skip_folder", "path": folder, "replay": True})
+        rows = store.trash_rows(change.trash_ids)
+        assert len(rows) == len(ids) == 2
+        assert len({r["trashed_path"] for r in rows}) == 2 and all(r["trashed_path"] for r in rows), \
+            "each row names its own copy"
+        for r in rows:
+            with open(os.path.join(data_dir, *r["trashed_path"].split("/")), "rb") as f:
+                assert f.read() == bodies[r["rel_path"]], "its own bytes"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_replayed_skip_never_takes_a_newer_trashed_file_of_the_same_name_and_size_but_other_bytes(language):
+    """H7: the replay's copy is the item's own — its record's bytes — never the newest file of its name and size in
+    the trash (another file once removed under that name): that one stays unreferenced, as it was."""
+    from app.services import moves as M
+    store, data_dir = _empty(language)
+    src = _drive("Media")
+    _card_and_show(language, src)
+    with store:
+        _look(store, language, store.add_source(src), first=True)
+        folder = os.path.join(src, CARD)
+        ids = store.items_under(folder)
+        own = {}
+        for i in ids:
+            rel = store.item(i)["rel_path"]
+            own[i] = ls.trash_file(data_dir, rel)       # the crash: the files moved, the store never committed
+        trash = os.path.join(data_dir, ".trash")
+        first = os.path.join(data_dir, *own[ids[0]].split("/"))
+        with open(first, "rb") as f:
+            body = f.read()
+        base, ext = os.path.splitext(os.path.basename(store.item(ids[0])["rel_path"]))
+        decoy = os.path.join(trash, f"{base}_20000101000000{ext}")   # older, first in line: same name, same size
+        with open(decoy, "wb") as f:
+            f.write(bytes(b ^ 1 for b in body))
+        change = M.Writer._skip_folder(None, store, {"op": "skip_folder", "path": folder, "replay": True})
+        rows = {r["item_id"]: r["trashed_path"] for r in store.trash_rows(change.trash_ids)}
+        assert rows == own, "each row names its own copy, never the decoy"
+        assert os.path.exists(decoy)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 def test_skipping_a_folder_removes_its_items_in_one_command_and_no_look_lists_it_again(language, monkeypatch):
     """*Never read this folder* on "Console Card": its two items leave (to the store's trash: Put back works), the
     show beside it stays; the next looks — a quick one and a Refresh — never list the folder or anything under it, and

@@ -73,6 +73,10 @@ def test_find_its_folder_adds_the_folder_picked_through_settings_add_a_folder(wi
     ep = _moved(row.episodes[0], old)
     assert win.mine.find_folder(ep) is True
     assert asked == [(strings.FIND_FOLDER_TITLE.format(label=ep.label), os.path.dirname(old))]
+    # The add's look answered (its press ends with it) before this test opens the store: the looks' worker opens its
+    # own handle at the add (no look ran before it here) with no wait, and the test's reads opening and closing the
+    # store meanwhile could make that open busy -> "no-library" -> the copy-in fallback into test_drag's FakeWriter
+    assert wait_until(lambda: not qpress.presses_of(win).any_live(), 30), "the add's press ends with its look"
 
     def read():
         store = _read_store(data_dir, user_files_dir)
@@ -82,7 +86,6 @@ def test_find_its_folder_adds_the_folder_picked_through_settings_add_a_folder(wi
             store.close()
     assert wait_until(lambda: read() == [folder] or [os.path.normcase(p) for p in read()] ==
                       [os.path.normcase(folder)], 30)
-    assert wait_until(lambda: not qpress.presses_of(win).any_live(), 30), "the add's press ends with its look"
     win.mine.pick_folder = lambda title, where: ""
     assert win.mine.find_folder(ep) is False, "a cancelled picker adds nothing"
 

@@ -68,6 +68,11 @@ class _Window:
         data_dir, user_files_dir = roots(language)
         self.writer = M.Writer(ls.StoreOpener(language, data_dir, user_files_dir, role="window"), language,
                                journal_file=M.journal_path(language), words=WORDS, retry=0.05, **self.heard.kw())
+        # (saves, undos) told each time the writer's thread is back at its queue: a command's own calls after its
+        # on_saved / on_undone (on_counted, on_stone) have all run by then — a slow runner read them early (#165)
+        self.back = []
+        real_next = self.writer._next
+        self.writer._next = lambda: self.back.append((len(self.heard.saved), len(self.heard.undone))) or real_next()
         self.writer.start()
         self.services = shell.Services(writer=self.writer, replan=self.replan)
         self.counted = []
@@ -76,10 +81,12 @@ class _Window:
 
     def saved(self, n):
         assert h.until(lambda: len(self.heard.saved) == n) and self.writer.idle(5), self.heard.notes
+        assert h.until(lambda: any(saves >= n for saves, _undos in self.back)), "the save's own calls ran"
         return self.heard.saved[-1][0]
 
     def undone(self, n):
         assert h.until(lambda: len(self.heard.undone) == n) and self.writer.idle(5), self.heard.notes
+        assert h.until(lambda: any(undos >= n for _saves, undos in self.back)), "the undo's own calls ran"
 
     def host_calls(self):
         """What the re-order host was asked (Anki's order): [] while none was opened."""

@@ -69,7 +69,8 @@ SHELF_NO_JUNBAN = "The shelf is off: it needs Junban (順), which isn't installe
 REVIEWING = "Waiting while you review in Anki."
 ANKI_CLOSED = "Waiting for Anki: it isn't open."
 # A call to Anki that failed while Anki answers (one slow or refused request: laptop round 5 review A1) — that
-# episode's own wait, amber as a wait on Anki, but never one that holds every episode
+# episode's own wait on Anki — one that clears by itself (a plain wait, never amber: `anki_needs_you`) — and never
+# one that holds every episode
 ANKI_SLOW = "Waiting for Anki: it didn't answer in time."
 NO_VIDEO = "No video: its video isn't on this computer (or isn't downloaded yet)."
 # MV-2 (Sonic: yes, 2026-10-23): a source folder's episode whose video left the folder it was in, the source folder
@@ -599,6 +600,8 @@ def _wait(ledger, job, wait, out, parked=None):
     now = ledger.job_by_id(job["id"]) or {}
     if (now.get("state"), now.get("reason"), now.get("resume")) != ("waiting", wait.reason, resume):
         ledger.set_state(job["id"], "waiting", reason=wait.reason, resume=resume)   # the same wait: nothing written (S19)
+    if now.get("reason") != wait.reason:    # one line a change, never a look's (alpha 2's try: the log never said why)
+        log.info("Connect: job %s (item %s) waits: %s", job["id"], job["item_id"], wait.reason)
     out["waiting"][job["item_id"]] = wait.reason
     if parked is not None and not wait.look:
         parked[job["id"]] = now.get("asked_at")

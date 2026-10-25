@@ -851,7 +851,8 @@ def test_connect_is_hung_on_the_library_one_feed_a_language_for_the_line_and_the
     def tip():
         view = _page(win).view_model
         return next((e.status.tip for r in view.rows for e in r.episodes if e.id == now[-1]), None)
-    assert wait_until(lambda: tip() == connect_feed_module.WORDS[connect_feed_module.WAITING], 10)
+    # alpha 2's try (T2): no reason yet says when Connect comes to it (its next look, or its next start)
+    assert wait_until(lambda: tip() in (connect_feed_module.NEXT_LOOK, connect_feed_module.NEXT_START), 10)
     _ask(services, win, "zh")
     assert _switched_to(win, services, "zh")
     assert services.library.connect == shell.connect_feed("zh", services.settings).latest

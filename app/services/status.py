@@ -349,8 +349,9 @@ CONNECT_JOB_MISSED = 2                    # looks without mining before its job 
 CONNECT_WAIT_KIND = "mine-wait"
 CONNECT_ANKI_KIND = "mine-anki"
 CONNECT_WAIT_LABEL = "Connect"
+# A refusal you dismissed (`skipped`) waits in no slot: it is no waiting episode (T2, Sonic's correction)
 CONNECT_WAITS = {"waiting": "waiting", "asked": "waiting", "battery": "waiting", "no_video": "needs",
-                 "not_timed": "needs", "anki": "anki", "anki_wait": "anki_wait"}   # a feed Item's kind -> its slot
+                 "not_timed": "needs", "held": "needs", "anki": "anki", "anki_wait": "anki_wait"}  # kind -> its slot
 _SLOTS = {"mining": (CONNECT_JOB_KIND, CONNECT_JOB_LABEL), "waiting": (CONNECT_WAIT_KIND, CONNECT_WAIT_LABEL),
           "needs": (CONNECT_WAIT_KIND, CONNECT_WAIT_LABEL), "anki": (CONNECT_ANKI_KIND, CONNECT_WAIT_LABEL),
           "anki_wait": (CONNECT_ANKI_KIND, CONNECT_WAIT_LABEL)}
@@ -365,14 +366,17 @@ def _episodes(n):
 def _waits(items):
     """{slot: (reason, needs)} of the feed's waiting items: each reason the slot's episodes wait for, in Connect's own
     words (the item's `tip`, the record's reason — T2: never the kind's words alone), with how many episodes wait for
-    it — "Waiting while you review in Anki · 19 episodes" (T1: the count is episodes, never cards or things to do)."""
-    from app.connect import runner
+    it — "Waiting while you review in Anki · 19 episodes" (T1: the count is episodes, never cards or things to do).
+    What waits on you (`needs`: no video, not timed, another *Needs you* entry) says its kind's words: each such
+    reason names its own episode or folder, which *Needs you* and the rows already say (adversary A1: one clause an
+    episode)."""
+    from app.connect import feed as connect_feed, runner
     reasons = {}
     for it in items:
         slot = CONNECT_WAITS.get(it.kind)
         if slot is None or it.tip == runner.STOPPED_BY_YOU:
             continue
-        why = (it.tip or "").strip().rstrip(".") or it.words
+        why = connect_feed.WORDS[it.kind] if slot == "needs" else ((it.tip or "").strip().rstrip(".") or it.words)
         reasons.setdefault(slot, {}).setdefault(why, 0)
         reasons[slot][why] += 1
     out = {}
@@ -400,7 +404,8 @@ def mirror_connect(registry, got):
     item = next((it for it in items if it.kind == "mining"), None)
     wanted = _waits(items)
     if item is not None:
-        title = getattr(item, "title", None)            # T3: the line names the episode being mined
+        from app.services.view_rows import stem
+        title = stem(getattr(item, "title", None)) or None   # T3: the line names the episode being mined (no ".srt")
         if item.progress is not None:
             doing = f"{item.doing} {item.progress}%" if item.doing else f"{item.progress}%"
             step = (f"{title} · {doing}" if title else doing, None, None)
@@ -412,7 +417,10 @@ def mirror_connect(registry, got):
         got_slot = held.setdefault(slot, [None, None, 0])
         if slot not in wanted:
             got_slot[2] += 1
-            if got_slot[0] is not None and (got is None or got_slot[2] >= CONNECT_JOB_MISSED):
+            # its circle's other slot wanted now (Anki closed → you reviewing): ended at once, no stale amber beside
+            # it (adversary A4); else after CONNECT_JOB_MISSED looks (no blink between two batches)
+            sibling = any(s != slot and s in wanted and _SLOTS[s][0] == _SLOTS[slot][0] for s in _SLOTS)
+            if got_slot[0] is not None and (got is None or sibling or got_slot[2] >= CONNECT_JOB_MISSED):
                 got_slot[0].finish()
                 got_slot[:] = [None, None, 0]
             continue

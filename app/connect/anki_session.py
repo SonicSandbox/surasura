@@ -156,7 +156,11 @@ def waiting(url, settings):
     from app.connect import setup
     try:
         open_now = anki_connect.invoke("getActiveProfile", url, timeout=5)
-    except anki_connect.AnkiError:
+    except anki_connect.AnkiError as e:
+        # no answer in time to the profile question (it answered the look just before): Anki busy, a wait that clears
+        # by itself — never NO_PROFILE_YET, which waits on you (amber) for the runner's whole pause (alpha 3, A5)
+        if e.kind == "offline":
+            return BUSY
         open_now = None
     open_now = open_now if isinstance(open_now, str) and open_now else None
     # Connect's profile is the first open one that holds the decks you chose (laptop round 5 #22: setup's page

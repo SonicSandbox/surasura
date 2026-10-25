@@ -6,7 +6,8 @@
   hook), `items` (`{item_id: Item}`: each item with an open job), `line` / `state` (U1's line: the quiet mark),
   `unseen` (*Needs you*'s badge) and `updating` (*Connect is updating your list*, F9: row 4.1.7's record flag).
 - `Item(kind, words, tip, job, made, total)`: `kind` one of KINDS; `words` the status read out (hover, keyboard
-  focus, a screen reader: `WORDS`); `tip` the job's own reason in plain words (a waiting stone's hover, C7); `job`
+  focus, a screen reader: `WORDS`); `tip` the job's own reason in plain words (a waiting stone's hover, C7; one with
+  none says when Connect comes to it: NEXT_LOOK / NEXT_START, T2); `title` the episode's name (T3); `job`
   its id (*Mine anyway*'s); `made` / `total` its cards so far of the words picked (*Mining 3 of 12*); `progress` /
   `doing` a mining item's percent through the whole episode and its step in words (`status._progress`; laptop round
   5 #23), else None; `stoppable` True while *Stop* can be pressed (#47); `stopping` True from that press until the
@@ -30,20 +31,30 @@ Feed = namedtuple("Feed", "on mining items line state unseen updating")
 # are made, and not stopped already), else None
 # `stopping` (laptop round 9 #56): True from your *Stop* until the job has stopped (*Stopping…*: no second Stop), else None
 # `moved` (MV-2): a *No video* item whose video left its folder — that folder (`runner.moved_folder`), else None
-Item = namedtuple("Item", "kind words tip job made total progress doing stoppable stopping moved",
-                  defaults=(None, None, None, None, None))
+# `title` (alpha 2's try, T3): the episode as Connect's record names it (the store's title, else its file's name) — the
+# phase strip's 鉱 line names the episode being mined; else None
+Item = namedtuple("Item", "kind words tip job made total progress doing stoppable stopping moved title",
+                  defaults=(None, None, None, None, None, None))
 
-MINING, WAITING, ANKI, NO_VIDEO, NOT_TIMED, BATTERY, ASKED = (
-    "mining", "waiting", "anki", "no_video", "not_timed", "battery", "asked")
-KINDS = (MINING, WAITING, ANKI, NO_VIDEO, NOT_TIMED, BATTERY, ASKED)
+# ANKI waits on Anki for you to act (closed, a prompt, another profile or none: `runner.anki_needs_you`, amber);
+# ANKI_WAIT waits on Anki for something that clears by itself (you reviewing, Anki busy, another writer, one slow
+# answer: a plain wait — alpha 2's try, T1). HELD waits on another of Connect's *Needs you* entries (its reason is the
+# entry's words: amber, never a plain wait). SKIPPED: refused as not timed to its video and that entry dismissed —
+# skipped until its timing, subtitle or video changes (or *Mine anyway*): no waiting episode (T2, Sonic's correction)
+MINING, WAITING, ANKI, ANKI_WAIT, NO_VIDEO, NOT_TIMED, HELD, SKIPPED, BATTERY, ASKED = (
+    "mining", "waiting", "anki", "anki_wait", "no_video", "not_timed", "held", "skipped", "battery", "asked")
+KINDS = (MINING, WAITING, ANKI, ANKI_WAIT, NO_VIDEO, NOT_TIMED, HELD, SKIPPED, BATTERY, ASKED)
 
 # The status read out — the stone's words on hover and keyboard focus, and what a screen reader says (RS-6)
 WORDS = {
     MINING: "Making its cards",
     WAITING: "Waiting to make its cards",
     ANKI: "Waiting for Anki",
+    ANKI_WAIT: "Waiting for Anki",
     NO_VIDEO: "No video",
     NOT_TIMED: "Not timed to its video",
+    HELD: "Waiting for you: see Needs you",
+    SKIPPED: "Skipped: not timed to its video",
     BATTERY: "Waiting: on battery",
     ASKED: "Asked: its cards come next",
 }
@@ -56,6 +67,12 @@ WORDS["untimed"] = UNTIMED_WARNING
 OFF_CONNECT = "Make cards for me is off: Connect makes no cards."
 OFF_AUTOMATION = "Automation is off: Connect makes no cards until you turn it back on."
 UNREADABLE = "Connect's status can't be read just now."
+# A waiting episode with no reason of its own, nothing in flight (alpha 2's try, T2: its words were the kind's alone):
+# queued since Connect's last look — read at its next look while it runs (`runner.LOOK_EVERY_S`, or at once after a
+# kick), else at its next start (a press such as *Mine now* starts it); while Connect updates your list, that
+NEXT_LOOK = "Waiting for Connect to come to it: within 2 minutes."   # runner.LOOK_EVERY_S (a test holds them equal)
+NEXT_START = "Waiting for Connect's next start: Mine now starts it."
+NEXT_UPDATING = "Waiting while Connect updates your list."
 # Before the window's first look (laptop fixes B2-8, Michi's call): Connect not known to be on — `on` False, so the rows
 # show no top line and no *Waiting* until a look finds it on (no flash of them with Connect off). Its `line` None: the
 # status line never shows it (that line is the look's own)
@@ -74,6 +91,8 @@ def build(record, language):
     rec = ((record or {}).get("languages") or {}).get(language) or {}
     running = bool((record or {}).get("running"))
     not_timed = {n.get("item") for n in rec.get("needs") or () if n.get("kind") == "not-timed"}
+    need_says = {n.get("say") for n in rec.get("needs") or () if n.get("say")}
+    skipped = set(rec.get("skipped") or ())
     items, mining = {}, set()
     for job in rec.get("jobs") or ():
         item_id = job.get("item")
@@ -86,10 +105,14 @@ def build(record, language):
             kind = NO_VIDEO
         elif item_id in not_timed:
             kind = NOT_TIMED
+        elif item_id in skipped:                # T2: a refusal you dismissed, whatever blanket wait it was given since
+            kind = SKIPPED
+        elif reason in need_says:               # held by another *Needs you* entry: it waits on you (adversary A3)
+            kind = HELD
         elif reason == runner.ON_BATTERY:
             kind = BATTERY
-        elif runner.anki_wait(reason):                  # the runner's one rule (laptop round 5 #24)
-            kind = ANKI
+        elif runner.anki_wait(reason):                  # the runner's one rule (laptop round 5 #24) …
+            kind = ANKI if runner.anki_needs_you(reason) else ANKI_WAIT     # … and its one rule for amber (T1)
         elif job.get("kind") == "asked":
             kind = ASKED
         else:
@@ -102,12 +125,21 @@ def build(record, language):
         stoppable = (True if job.get("job") is not None
                      and actions.stoppable(job.get("state"), job.get("resume"), job.get("progress"))
                      and reason != runner.STOPPED_BY_YOU and not stopping else None)
-        items[item_id] = Item(kind=kind, words=WORDS[kind], tip=reason or WORDS[kind], job=job.get("job"),
+        tip = reason or (_next(running, rec) if kind == WAITING else WORDS[kind])
+        items[item_id] = Item(kind=kind, words=WORDS[kind], tip=tip, job=job.get("job"),
                               made=job.get("made") or 0, total=job.get("words") or 0, progress=progress, doing=doing,
                               stoppable=stoppable, stopping=stopping,
-                              moved=runner.moved_folder(reason) if kind == NO_VIDEO else None)
+                              moved=runner.moved_folder(reason) if kind == NO_VIDEO else None,
+                              title=job.get("title") or None)
     return Feed(on=True, mining=frozenset(mining), items=items, line=rec.get("line"), state=rec.get("state"),
                 unseen=rec.get("unseen") or 0, updating=bool(rec.get("updating")))
+
+
+def _next(running, rec):
+    """A waiting episode's words when its job has no reason (T2): when Connect comes to it."""
+    if not running:
+        return NEXT_START
+    return NEXT_UPDATING if rec.get("updating") else NEXT_LOOK
 
 
 def with_asks(feed, asked):

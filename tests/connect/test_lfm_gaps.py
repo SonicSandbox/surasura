@@ -63,7 +63,9 @@ def test_no_profile_recorded_and_anki_naming_none_waits_without_asking_decks_or_
     calls = []
     _anki(monkeypatch, open_now, calls=calls, decks=["Default"])
     settings = {"connect_enabled": True, "anki_sync_decks": {"ja": ["日本語::アニメ"]}}
-    assert runner.Steps(settings).blocked("ja") == anki_session.NO_PROFILE_YET
+    # a call that times out is Anki busy (alpha 3 review A5: plain, not amber); one answering empty names no profile
+    want = anki_session.BUSY if open_now is None else anki_session.NO_PROFILE_YET
+    assert runner.Steps(settings).blocked("ja") == want
     assert "deckNames" not in calls
     assert setup.anki_profile() is None
     assert "anki_profile_at" not in setup.read_record()

@@ -11,6 +11,7 @@ import sys
 
 RELEASE_BUILD = False
 BUILD_ID = None
+BUILD_COMMIT = None    # every freeze also appends BUILD_COMMIT = "<public>[/<private>]": the trees it was built from
 
 RUNNING_SUFFIX = ".Running"      # <data name>.Running: Inno Setup's AppMutex (packaging/surasura.iss)
 _running = None                  # the mutex's handle, held for the process's life

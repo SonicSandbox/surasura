@@ -61,8 +61,9 @@ def test_the_window_opens_with_its_title_edge_to_edge(window):
 def test_the_header_holds_the_mark_the_wordmark_and_the_language_and_no_dead_buttons(window):
     from PyQt6.QtWidgets import QAbstractButton
     header = window.findChild(QWidget, "header")
-    # its controls arrive with their features (G-2): + Add (W3.2 Q3: Extract's door is always there) is the only one
-    assert [b.objectName() for b in header.findChildren(QAbstractButton)] == ["addstone"]
+    # its controls arrive with their features (G-2): + Add (W3.2 Q3: Extract's door is always there) and Report a
+    # problem's bug (alpha 3 on: every version) are the only ones
+    assert [b.objectName() for b in header.findChildren(QAbstractButton)] == ["addstone", "reportbug"]
     assert window.subline.text() == "日本語"
     assert window.wordmark.sizeHint().width() > 0
 
@@ -83,6 +84,8 @@ def test_the_keyboard_reaches_every_tab_and_space_opens_its_page(window):
     QTest.keyClick(window._rest, Qt.Key.Key_Tab)
     assert QApplication.focusWidget() is window.add_stone                # the header's + Add first (W3.2 Q3)
     QTest.keyClick(window.add_stone, Qt.Key.Key_Tab)
+    assert QApplication.focusWidget() is window.report_button            # then Report a problem's bug (top right)
+    QTest.keyClick(window.report_button, Qt.Key.Key_Tab)
     assert QApplication.focusWidget() is window.tab_buttons["current"]
     reached = [QApplication.focusWidget()]
     for _ in range(2):

@@ -40,9 +40,10 @@ def _folder(language):
     return src
 
 
-def _busy_on_the_worker(monkeypatch, times=None, settle=False):
+def _busy_on_the_worker(monkeypatch, times=None, settle=False, settle_s=0.0):
     """The looks' worker's no-wait opens meet a busy store (`times` of them; None: every one); anyone else's open, and
-    a wait, read the store as it is — or, with `settle`, the opener's own retry too (a store busy past its wait).
+    a wait, read the store as it is — or, with `settle`, the opener's own retry too (a store busy past its wait;
+    `settle_s`: each of its looks that long, so it outlasts the looks' wait).
     -> the busy answers given."""
     real = ls._probe
     given = []
@@ -52,6 +53,8 @@ def _busy_on_the_worker(monkeypatch, times=None, settle=False):
         settling = settle and threading.current_thread() is not threading.main_thread()
         if ((busy_wait == 0.0 and worker) or settling) and (times is None or len(given) < times):
             given.append(1)
+            if settling and not worker and settle_s:
+                time.sleep(settle_s)
             return "read-only", "busy"
         return real(db_path, busy_wait)
     monkeypatch.setattr(ls, "_probe", probe)
@@ -131,6 +134,49 @@ def test_an_opener_that_last_saw_no_store_waits_for_its_busy_look_and_reads_the_
     assert busy == [1]
     assert answer["refused"] is None and answer["result"]["added"] == 2, answer
     assert [os.path.normcase(p) for p in _sources(language, data_dir, user_files_dir)] == [os.path.normcase(src)]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_opener_that_last_saw_no_store_and_a_store_busy_past_the_wait_answers_busy_never_no_library(language,
+                                                                                                       monkeypatch):
+    # why: the same window, the store busy for longer than the wait: the opener's retry is still running when the
+    # wait ends, so the mode it holds is the one cached before ("no store") — no answer. Said as busy; never the
+    # copy-in, never a source written
+    data_dir, user_files_dir, doc = library(language, shows=0, loose=0)
+    write_manifest(user_files_dir, doc)
+    opener = ls.StoreOpener(language, data_dir, user_files_dir)
+    assert opener.check() == "json" and opener.reason == "no store"
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    looks = source_looks.SourceLooks(opener, language, kind=lambda _p: "network")
+    with monkeypatch.context() as patched:
+        _busy_on_the_worker(patched, settle=True, settle_s=2.0)       # every look but the test's own: busy
+        try:
+            answer = _added(looks, _folder(language))
+        finally:
+            looks.close()
+        opener.wait(5)                                                # the opener's retry ends (busy) before undo
+    assert answer["refused"] == "busy" and answer["root"] is None, answer
+    assert _sources(language, data_dir, user_files_dir) == []
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_closing_the_looks_ends_a_busy_wait_at_once(language, monkeypatch):
+    # why: the window closing (or another language opening) never waits out a busy store's wait on the looks' worker:
+    # the add answers, nothing written. The wait is made 30 s here, so only the close can end it
+    opener, data_dir, user_files_dir = _library(language)
+    monkeypatch.setattr(ls, "BUSY_AT_OPEN", 30.0)
+    looks = source_looks.SourceLooks(opener, language, kind=lambda _p: "network")
+    with monkeypatch.context() as patched:
+        busy = _busy_on_the_worker(patched)                           # the worker's own opens: busy, every one
+        answers = []
+        assert looks.add(_folder(language), answers.append)
+        assert h.until(lambda: len(busy) >= 3, seconds=10), "the worker is asking again"
+        closed = time.monotonic()
+        looks.close()
+        assert h.until(lambda: answers, seconds=10), "the close ended the wait"
+        took = time.monotonic() - closed
+    assert took < 10 and answers[0]["refused"] == "busy" and answers[0]["root"] is None, (took, answers)
+    assert _sources(language, data_dir, user_files_dir) == []
 
 
 @pytest.mark.parametrize("language", LANGUAGES)

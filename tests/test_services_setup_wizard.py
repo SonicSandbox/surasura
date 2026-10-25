@@ -117,17 +117,29 @@ def test_from_anki_turns_the_automatic_sync_on_so_the_page_stays_in_sync(languag
                                           ("aside", (True, False, True))])
 def test_card_order_writes_the_consent_the_recorded_pair_the_deck_and_the_three_way_choice(language, later, flags):
     deck = "日本語::Mining" if language == "ja" else "中文::新词"
-    answers = {"keep_in_order": True, "deck": deck, "later": later, "open_anki": True}
+    answers = {"keep_in_order": True, "deck": deck, "later": later}
     _returned, before, after = _saved_through_service("order", answers, language)
     assert _changed(before, after) == {"junban_auto_actions", replan_preview.DECK, replan_preview.LANGUAGE,
-                                       "junban_deck", "junban_later_tag", "junban_later_flag", "junban_later_suspend",
-                                       "connect_open_anki"}
-    assert after["junban_auto_actions"] is True and after["connect_open_anki"] is True
+                                       "junban_deck", "junban_later_tag", "junban_later_flag", "junban_later_suspend"}
+    assert after["junban_auto_actions"] is True
     assert (after[replan_preview.DECK], after[replan_preview.LANGUAGE], after["junban_deck"]) == (deck, language, deck)
     assert (after["junban_later_tag"], after["junban_later_flag"], after["junban_later_suspend"]) == flags
     assert after["junban_tag"] == "Surasura", "順's own moved-card tag is the user's, untouched"
     assert replan_preview.recorded_deck(after, language) == deck
     assert replan_preview.recorded_deck(after, "zh" if language == "ja" else "ja") is None, "never the other language's"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("make, open_anki, written", [(True, True, {"connect_enabled": True, "connect_open_anki": True}),
+                                                      (True, None, {"connect_enabled": True}),
+                                                      (False, True, {"connect_enabled": False})])
+def test_open_anki_for_me_is_written_by_the_cards_page_only_with_make_cards_on(language, make, open_anki, written):
+    """Alpha 3 IK-4 (P4.1 row 4.1.1): *Open Anki for me* is Connect's — the *Cards* page writes it only while *Make
+    cards for me* is on and the switch was shown (None: not shown); *Card order* never writes it."""
+    returned, before, after = _saved_through_service("cards", {"make_cards": make, "open_anki": open_anki}, language)
+    assert _changed(before, after) - {"first_cards"} <= set(written) and         {k: after.get(k) for k in written} == written
+    assert "connect_open_anki" not in SW.writes("order", {"keep_in_order": True, "deck": None, "later": "leave",
+                                                          "open_anki": True}, {}, language)
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
@@ -137,11 +149,11 @@ def test_card_order_without_the_consent_clears_the_recorded_pair(language):
     before = dict(BEFORE, **{replan_preview.DECK: deck, replan_preview.LANGUAGE: language, "junban_deck": deck,
                              "junban_auto_actions": True})
     _returned, _b, after = _saved_through_service(
-        "order", {"keep_in_order": False, "deck": deck, "later": "leave", "open_anki": False}, language, before)
+        "order", {"keep_in_order": False, "deck": deck, "later": "leave"}, language, before)
     assert after["junban_auto_actions"] is False and after[replan_preview.DECK] == after[replan_preview.LANGUAGE] == ""
     assert replan_preview.recorded_deck(after, language) is None and after["junban_deck"] == deck
     # No deck chosen (Anki not found, and Next anyway): the consent is kept as said, nothing is recorded, 順's deck stays.
-    writes = SW.writes("order", {"keep_in_order": True, "deck": None, "later": "leave", "open_anki": False}, {}, language)
+    writes = SW.writes("order", {"keep_in_order": True, "deck": None, "later": "leave"}, {}, language)
     assert writes[replan_preview.DECK] == "" and "junban_deck" not in writes
 
 
@@ -198,8 +210,8 @@ def test_a_fresh_profile_starts_on_the_drafts_recommended_choices(language):
     pre = SW.preselect(settings_manager.load_settings(), language)
     assert pre == {"language": {"language": language}, "known": {"how": "anki", "decks": []},
                    "shows": {"covers": True},
-                   "order": {"keep_in_order": True, "deck": None, "later": "leave", "open_anki": False},
-                   "cards": {"make_cards": True},
+                   "order": {"keep_in_order": True, "deck": None, "later": "leave"},
+                   "cards": {"make_cards": True, "open_anki": False},
                    "level": {"automatic": True, "band": settings_manager.DEFAULT_SETTINGS["logic"]["selection"]["band"]}}
 
 
@@ -210,8 +222,8 @@ def test_set_up_again_reads_back_what_every_page_saved(language):
     deck = "日本語::Mining" if language == "ja" else "中文::新词"
     answers = {"language": {"language": language}, "known": {"how": "anki", "decks": [deck]},
                "shows": {"covers": False},
-               "order": {"keep_in_order": False, "deck": deck, "later": "aside", "open_anki": True},
-               "cards": {"make_cards": False}, "level": {"automatic": False, "band": "rare"}}
+               "order": {"keep_in_order": False, "deck": deck, "later": "aside"},
+               "cards": {"make_cards": True, "open_anki": True}, "level": {"automatic": False, "band": "rare"}}
     h.write_settings(BEFORE)
     service = SettingsService()
     for page in SW.PAGES:
@@ -252,7 +264,7 @@ def test_the_consent_reaches_juns_automatic_run_and_its_absence_moves_positions_
     auto = pytest.importorskip("modules.junban.auto")     # a build without modules/ (the public CI) skips
     h.write_settings(BEFORE)
     service = SettingsService()
-    SW.save(service, "order", {"keep_in_order": True, "later": "aside", "deck": "日本語::Mining", "open_anki": False},
+    SW.save(service, "order", {"keep_in_order": True, "later": "aside", "deck": "日本語::Mining"},
             "ja")
     assert service.flush(10)
     settings = settings_manager.load_settings()
@@ -260,7 +272,7 @@ def test_the_consent_reaches_juns_automatic_run_and_its_absence_moves_positions_
     decided = auto.decide_actions(dict(settings))
     assert decided["junban_later_suspend"] is True and decided["junban_later_tag"] is True, "suspend + tag kept"
 
-    SW.save(service, "order", {"keep_in_order": False, "later": "aside", "deck": "日本語::Mining", "open_anki": False},
+    SW.save(service, "order", {"keep_in_order": False, "later": "aside", "deck": "日本語::Mining"},
             "ja")
     assert service.flush(10)
     settings = settings_manager.load_settings()
@@ -483,7 +495,7 @@ JA_KEPT = {"onboarding_completed": True, "setup_seen": "3.0", "junban_auto_actio
            replan_preview.DECK: "日本語::Mining", replan_preview.LANGUAGE: "ja",
            "junban_later_tag": True, "junban_later_flag": False, "junban_later_suspend": True}
 ORDER_KEYS = ("junban_auto_actions", replan_preview.DECK, replan_preview.LANGUAGE, "junban_deck", "junban_later_tag",
-              "junban_later_flag", "junban_later_suspend", "connect_open_anki")
+              "junban_later_flag", "junban_later_suspend")
 
 
 def test_set_up_again_in_chinese_keeps_japanese_card_order_and_its_consent():
@@ -646,8 +658,8 @@ def test_a_2x_profile_starts_on_its_own_choices_and_the_recommended_ones_where_2
     pre = SW.preselect(before, language)
     assert pre == {"language": {"language": language}, "known": {"how": "anki", "decks": [deck]},
                    "shows": {"covers": True},                                 # 2.x never had covers: recommended
-                   "order": {"keep_in_order": True, "deck": deck, "later": "aside", "open_anki": False},
-                   "cards": {"make_cards": True},                             # Connect is 3.0's: recommended
+                   "order": {"keep_in_order": True, "deck": deck, "later": "aside"},
+                   "cards": {"make_cards": True, "open_anki": False},         # Connect is 3.0's: recommended
                    "level": {"automatic": False, "band": "rare"}}             # 2.x's own level
     # No decks saved in 2.x: *What you know* keeps what came over (the import already brought the known words)
     bare = dict(before, anki_sync_decks={})
@@ -714,7 +726,7 @@ def test_finish_later_then_back_shows_what_was_saved_not_the_recommended_choice(
     assert settings["setup_passed"] == ["language", "shows"] and SW.should_open(settings)
     pre = SW.preselect(settings, language)
     assert pre["shows"] == {"covers": False}
-    assert pre["cards"] == {"make_cards": True} and pre["order"]["keep_in_order"] is True
+    assert pre["cards"] == {"make_cards": True, "open_anki": False} and pre["order"]["keep_in_order"] is True
     SW.finish(service)
     SW.save(service, "shows", {"covers": True}, language)          # Set up again: no more marks
     assert service.flush(10)

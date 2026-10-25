@@ -193,8 +193,10 @@ def _language(conn, lang, is_running, words):
             entry["not_made_words"] = _rows(conn, "SELECT word, reading, outcome FROM outcomes WHERE job_id = ? AND "
                                                   "outcome != 'made' ORDER BY rowid", (job["id"],))
         rec["jobs"].append(entry)
-    _turns(rec["jobs"], is_running, conn.execute("SELECT 1 FROM meta WHERE key = ?", (f"working:{lang}",)).fetchone()
-           is not None)
+    marks = {k for (k,) in conn.execute("SELECT key FROM meta WHERE key IN (?, ?)", (f"working:{lang}",
+                                                                                        f"generating:{lang}"))}
+    # A2: between two of one look's episodes — never while Connect's own Generate runs (*updating your list* says so)
+    _turns(rec["jobs"], is_running, f"working:{lang}" in marks and f"generating:{lang}" not in marks)
 
     rec["needs"] = [{"id": n["id"], "kind": n["kind"], "say": n["say"], "item": n["item_id"],
                      "title": items.get(n["item_id"], {}).get("title") if n["item_id"] is not None else None,

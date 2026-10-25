@@ -1766,9 +1766,6 @@ class OrderPage(_Page):
         self.later.setMaximumWidth(_px(430))              # (narrower only in a window narrower than it)
         later.addWidget(self.later, 0, Qt.AlignmentFlag.AlignLeft)
         rows.addLayout(later)
-        rows.addWidget(style.separator(self.controls))
-        self.open_anki = SwitchRow(S.OPEN_ANKI, S.OPEN_ANKI_LINE, S.OPEN_ANKI_TIP, self.controls)
-        rows.addWidget(self.open_anki)
         self.box.addWidget(self.controls)
         self.box.addStretch(1)
         self._deck = None
@@ -1778,7 +1775,6 @@ class OrderPage(_Page):
         a = answers or {}
         self.keep.switch.set_quiet(bool(a.get("keep_in_order", True)))
         self.later.choose(a.get("later") if a.get("later") in S.LATER_CHOICES else "leave")
-        self.open_anki.switch.set_quiet(bool(a.get("open_anki", False)))
         self._deck = a.get("deck") or None
         self._deck_key = None
         self._show()
@@ -1821,7 +1817,7 @@ class OrderPage(_Page):
 
     def answers(self):
         return {"keep_in_order": self.keep.switch.isChecked(), "deck": self.deck_box.currentText() or None,
-                "later": self.later.value() or "leave", "open_anki": self.open_anki.switch.isChecked()}
+                "later": self.later.value() or "leave"}
 
     def next_offered(self):
         look = self.wiz.anki
@@ -1910,6 +1906,11 @@ class CardsPage(_Page):
         self.make = Switch(S.MINER_READY, S.MINER_READY_TIP, self)
         state.addWidget(self.make, 0, Qt.AlignmentFlag.AlignVCenter)
         self.box.addLayout(state)
+        # *Open Anki when Surasura opens* is Connect's (P4.1 row 4.1.1, alpha 3 IK-4): shown and saved only while
+        # *Make cards for me* is shown and on — as Settings shows it only with Connect on
+        self.open_anki = SwitchRow(S.OPEN_ANKI, S.OPEN_ANKI_LINE, S.OPEN_ANKI_TIP, self)
+        self.box.addWidget(self.open_anki)
+        self.make.toggled.connect(lambda _on: self._show_open_anki())
         dots = QHBoxLayout()
         dots.setSpacing(_px(20))
         self.dots = [Dot(name, self) for name in S.DOTS]
@@ -1951,6 +1952,8 @@ class CardsPage(_Page):
     def load(self, answers):
         self._wanted = bool((answers or {}).get("make_cards", True))
         self.make.set_quiet(self._wanted)
+        self.open_anki.switch.set_quiet(bool((answers or {}).get("open_anki", False)))
+        self._show_open_anki()
 
     def ready(self):
         return bool(self.look) and self.look.get("state") == "ready"
@@ -1963,10 +1966,18 @@ class CardsPage(_Page):
 
     def answers(self):
         """The switch's answer; None while it isn't shown (a False would turn Connect off on *Set up again*)."""
-        return {"make_cards": self.make.isChecked() if self.offered() else None}
+        return {"make_cards": self.make.isChecked() if self.offered() else None,
+                "open_anki": self.open_anki.switch.isChecked() if self._open_anki_shown() else None}
 
     def kept(self):
-        return {"make_cards": self.make.isChecked()}      # the switch as left, shown or not (a language switch)
+        return {"make_cards": self.make.isChecked(),      # the switches as left, shown or not (a language switch)
+                "open_anki": self.open_anki.switch.isChecked()}
+
+    def _open_anki_shown(self):
+        return self.offered() and self.make.isChecked()
+
+    def _show_open_anki(self):
+        _show(self.open_anki, self._open_anki_shown())
 
     def show_progress(self, done, total):
         """The download's progress with *Cancel* (None, None: it ended; *Cancel* leaves once every byte is in: his
@@ -2027,6 +2038,7 @@ class CardsPage(_Page):
         self.dot.set_state(dot, S.MINER_FIX_TIP if dot == "warn" else "")
         _show(self.rec, ready)
         _show(self.make, self.offered())                  # absent unless Anki Miner is ready (WZ-4)
+        self._show_open_anki()
         _show(self.btn_star, look is not None and not ready)
         _show(self.star_quiet, ready)                     # the star line stays, quieter, once it's ready
         _show(self.btn_install, state in ("missing", "too-old") or update)

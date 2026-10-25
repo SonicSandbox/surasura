@@ -19,7 +19,7 @@ its one state file per user — so a session never syncs twice, whichever Surasu
   again; three in a row, and the setup checks' AnkiWeb line is *Needs you* (`setup._ankiweb`). Fewer are a status line,
   retried at the next sync point.
 - ***Open Anki for me*** (`connect_open_anki`, off by default): `at_window` is its one caller of `open_anki.start`,
-  at the window's start only (the 2.x dashboard's `_connect_session(opening=True)`, 3.0's `Services._open_session`),
+  at the window's start only (the 2.x dashboard's `_connect_session(opening=True)`, 3.0's `Services._look_at_anki`),
   never after mining and never from Connect, hato or a command-line verb. The other caller is your own press: *Open
   Anki* on *Needs you*'s Anki line (`open_anki.for_you`, A3W-6). `told` is the bar's line for what the look found.
 
@@ -257,7 +257,7 @@ def settle(url, settings, cancel=None, sleep=time.sleep, clock=time.time):
         sleep(max(0.2, min(next_look - clock(), 5.0, limit - clock())))
 
 
-def at_window(settings, opening=False, say=None, sleep=time.sleep, clock=time.time):
+def at_window(settings, opening=False, say=None, sleep=time.sleep, clock=time.time, cancel=None):
     """The window's look at a session's start (the 2.x dashboard's; 3.0's window calls the same), on a worker: at the
     window's start (`opening`) and when it comes back into focus. With Connect's preview on:
 
@@ -266,6 +266,8 @@ def at_window(settings, opening=False, say=None, sleep=time.sleep, clock=time.ti
       OPENING_EVERY_S for up to OPENING_WAIT_S (`say` tells the window's bar);
     - Anki open: `begin`, the session's sync when this starts one.
 
+    `cancel` (an Event: the window's quit): once set, no Anki is started and no sync asked.
+
     -> {"anki": open · closed · busy · unusable, "opened": bool, "sync": its answer or None}, or None when Connect is
     off."""
     if not on(settings):
@@ -273,7 +275,7 @@ def at_window(settings, opening=False, say=None, sleep=time.sleep, clock=time.ti
     from app import anki_connect
     url = anki_connect.address(settings)
     state, opened = look(url), False
-    if state == "closed" and opening and settings.get("connect_open_anki"):
+    if state == "closed" and opening and settings.get("connect_open_anki") and not (cancel and cancel.is_set()):
         from app.connect import open_anki, setup
         if open_anki.running() is not True and open_anki.start(setup.anki_profile()) is not None:
             opened = True
@@ -283,7 +285,8 @@ def at_window(settings, opening=False, say=None, sleep=time.sleep, clock=time.ti
             while state != "open" and clock() < deadline:
                 sleep(OPENING_EVERY_S)
                 state = look(url)
-    answer = begin(url, settings, wait=0.0) if state == "open" else None     # the window never waits for a writer
+    # the window never waits for a writer
+    answer = begin(url, settings, wait=0.0) if state == "open" and not (cancel and cancel.is_set()) else None
     return {"anki": state, "opened": opened, "sync": answer}
 
 

@@ -104,12 +104,12 @@ class FakeAutomation(_Duty):
     def __init__(self, log):
         super().__init__(A.State(A.IDLE, "ja", 0, None, None, None, 0), log)
 
-    def started(self): self._record("automation.started")
+    def started(self, session=False): self._record("automation.started", *((True,) if session else ()))
     def activated(self): self._record("automation.activated")
     def language_changed(self, language): self._record("automation.language_changed", language)
     def recheck(self): self._record("automation.recheck")
     def sync_now(self, then=None): self._record("automation.sync_now", then)
-    def session_began(self, fresh): self._record("automation.session_began", fresh)
+    def session_began(self, force): self._record("automation.session_began", force)
     def before_generate(self): self._record("automation.before_generate")
     def update_cancelled(self): self._record("automation.update_cancelled")
     def close(self): self._record("automation.close")

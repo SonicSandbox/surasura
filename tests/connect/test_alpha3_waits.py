@@ -479,6 +479,19 @@ def test_once_the_look_is_over_the_ones_left_wait_for_the_next_look(running, lan
     assert feed.Provider(lang, lambda: ON).feed().items[ids[0]].tip == feed.NEXT_LOOK
 
 
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_while_connect_updates_your_list_after_mining_the_ones_queued_say_so_not_their_turn(running, lang):
+    """The look's episodes made, Connect's own Generate runs (F11, its *updating your list* mark) and an episode you
+    queued meanwhile waits for it: it says so, never "its turn" (no episode's cards are being made)."""
+    ids = _items(lang)
+    with Ledger() as ledger:
+        _job(ledger, lang, ids[0], "queued")
+        with ledger.transaction():
+            ledger.mark_working(lang)
+            ledger.mark_updating(lang)
+    assert feed.Provider(lang, lambda: ON).feed().items[ids[0]].tip == feed.NEXT_UPDATING
+
+
 def test_a_mark_a_crash_left_says_nothing_once_connect_has_stopped(running):
     """Connect killed mid-look leaves its mark: with Connect not running the episode waits for its next start."""
     ids = _items("ja")
@@ -522,3 +535,23 @@ def test_a_run_marks_its_work_between_episodes_and_clears_it_before_its_pause(tm
     assert between and all(tip == runner.TURN for tips in between for tip in tips.values())
     assert paused == [None], "the look's mark is cleared before Connect's pause"
     assert left is None, "and none is left once the run ends"
+
+
+def test_a_mark_a_crash_left_is_cleared_when_connect_starts_again(tmp_path, running):
+    """B-5: Connect killed mid-look left its mark; the next run clears it before its first pass's preparing (the sync,
+    known words, Generate), so the queued episodes never say "its turn" while nothing is being made."""
+    from tests.connect.fake_steps import FakeSteps
+    path = str(tmp_path / "ledger.sqlite")
+    seen = []
+
+    class Steps(FakeSteps):
+        def prepare(self, lang, ledger):
+            seen.append(ledger.working(lang))
+            return super().prepare(lang, ledger)
+
+    with Ledger(path) as ledger:
+        with ledger.transaction():
+            ledger.mark_working("ja")
+        steps = Steps(str(tmp_path), {"line": {"ja": [1]}, "queue": {"ja": [1]}, "absent": ["junban"]})
+        runner.run({}, ["ja"], steps=steps, ledger=ledger, sleep=lambda s: None, looks=1)
+    assert seen == [None]

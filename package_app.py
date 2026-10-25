@@ -531,21 +531,29 @@ def source_commit(folder="."):
     repository sits beside it (`<folder>.priv.git`, the copies' layout); "+" after a tree with changes ("?" when git
     couldn't say whether it has any). None when git
     can't say (the build goes on without it)."""
-    def head(*git):
+    def git(args, timeout):
+        """(code, its output) of one git call, or None. Its own Popen: a build's PyInstaller calls go through
+        `subprocess.run`, which the tests stand in for, and git is never one of them."""
         try:
-            out = subprocess.run(["git", *git, "rev-parse", "--short=12", "HEAD"], cwd=folder, capture_output=True,
-                                 text=True, timeout=30)
-            if out.returncode != 0:
+            p = subprocess.Popen(["git", *args], cwd=folder, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                 text=True)
+            try:
+                out, _err = p.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                p.kill()
+                p.communicate()
                 return None
-        except (OSError, subprocess.SubprocessError):
+            return p.returncode, out or ""
+        except Exception:
             return None
-        try:                                              # changes in the tree: "+" (unknown: "?")
-            dirty = subprocess.run(["git", *git, "status", "--porcelain", "--untracked-files=no"], cwd=folder,
-                                   capture_output=True, text=True, timeout=120)
-            mark = ("+" if dirty.stdout.strip() else "") if dirty.returncode == 0 else "?"
-        except (OSError, subprocess.SubprocessError):
-            mark = "?"
-        return out.stdout.strip() + mark
+
+    def head(*where):
+        got = git([*where, "rev-parse", "--short=12", "HEAD"], 30)
+        if got is None or got[0] != 0 or not got[1].strip():
+            return None
+        dirty = git([*where, "status", "--porcelain", "--untracked-files=no"], 120)    # "+" changes, "?" unknown
+        mark = "?" if dirty is None or dirty[0] != 0 else ("+" if dirty[1].strip() else "")
+        return got[1].strip() + mark
     public = head()
     if not public:
         return None

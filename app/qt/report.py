@@ -17,6 +17,7 @@
 """
 import os
 import re
+import threading
 
 from PyQt6.QtCore import QBuffer, QByteArray, QIODevice, QPointF, QRectF, QSize, QStandardPaths, Qt
 from PyQt6.QtGui import QFontMetrics, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QShortcut
@@ -80,15 +81,26 @@ class BugButton(QToolButton):
         self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.clicked.connect(lambda _c=False: open_report(self.shell))
+        self.counted = bridge.Relay(self)                         # the count, read on its own thread: never one of
+        self.counted.said.connect(self.set_count)                 # ... the window's worker jobs, never a wait
         first = getattr(shell, "first_frame", None)
-        if first is not None:                                     # the count read after the first frame, on a worker
+        if first is not None:                                     # the count read after the first frame
             first.connect(self.refresh)
 
     def refresh(self):
-        bridge.run_in_worker(core.count, then=self.set_count, failed=lambda _info: None)
+        relay = self.counted
+
+        def read():
+            try:
+                relay.call(core.count())
+            except Exception:                                     # a folder that can't be read: the count stays
+                pass
+        threading.Thread(target=read, name="report-count", daemon=True).start()
 
     def set_count(self, n):
         """-> True when the count changed (repainted only then)."""
+        if n is None:
+            return False
         n = max(0, int(n or 0))
         if n == self.count:
             return False
@@ -544,7 +556,7 @@ class ReportWindow(SecondaryWindow):
                                  lambda _c=False, i=r.id: self.remove(i, self.sender()))):
             b = QPushButton(text, w)
             b.setToolTip(tip)
-            b.setAccessibleName(f"{text}: {title}")
+            b.setAccessibleName(strings.REPORT_ROW_BUTTON_NAME.format(action=text, what=title))
             b.setFocusPolicy(Qt.FocusPolicy.TabFocus)
             b.clicked.connect(slot)
             box.addWidget(b)

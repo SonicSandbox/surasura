@@ -1328,6 +1328,7 @@ REPORT_LIST_TIP = "The problems you've noted, oldest first. They stay here until
 REPORT_LIST_NAME = "Your saved reports"
 REPORT_ROW = "{when}   {what}{notes}"
 REPORT_ROW_NOTES = "   · {n} note(s)"
+REPORT_ROW_BUTTON_NAME = "{action}: {what}"                      # a row's Open / Remove, named with its report
 REPORT_EMPTY = "Nothing saved yet"
 REPORT_READ_FAILED = "Your saved reports couldn't be read: {why}"
 REPORT_OPEN = "Open"

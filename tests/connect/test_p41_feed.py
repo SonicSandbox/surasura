@@ -76,8 +76,8 @@ def _every_state(lang="ja"):
     return at
 
 
-EXPECTED = {"mining": feed.MINING, "picking": feed.MINING, "closed": feed.ANKI, "reviewing": feed.ANKI,
-            "busy": feed.ANKI, "profile": feed.ANKI, "no_video": feed.NO_VIDEO, "battery": feed.BATTERY,
+EXPECTED = {"mining": feed.MINING, "picking": feed.MINING, "closed": feed.ANKI, "reviewing": feed.ANKI_WAIT,
+            "busy": feed.ANKI_WAIT, "profile": feed.ANKI, "no_video": feed.NO_VIDEO, "battery": feed.BATTERY,
             "not_timed": feed.NOT_TIMED, "asked": feed.ASKED, "queued": feed.WAITING, "miner_open": feed.WAITING}
 
 

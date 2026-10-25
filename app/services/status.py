@@ -341,32 +341,44 @@ CONNECT_JOB_MISSED = 2                    # looks without mining before its job 
 # The phase strip (its card's item 3; Michi's meanings, `app/connect/feed.py`): Connect's episodes that wait, each
 # class one recorded *waiting* job — never the mining kind (the close names and keeps that one alone, row 35):
 # `mine-wait` its queued ones (waiting its turn, asked, on battery: Anki Miner's circle, a still arc), and the ones
-# that wait on you — no video or not timed to its video (`needs`: Anki Miner's circle, amber) and Anki closed
-# (`mine-anki`, `needs`: Anki's circle, amber). One you stopped waits for your *Mine now*: no job (your own choice).
+# that wait on you — no video or not timed to its video (`needs`: Anki Miner's circle, amber) and Anki closed, a
+# prompt, another profile or none (`mine-anki`, `needs`: Anki's circle, amber) — and the ones waiting on Anki for
+# something that clears by itself, you reviewing, Anki busy (`mine-anki`, `anki_wait`: Anki's circle, a still arc;
+# alpha 2's try, T1: `runner.anki_needs_you` is the one rule). One you stopped waits for your *Mine now*: no job
+# (your own choice).
 CONNECT_WAIT_KIND = "mine-wait"
 CONNECT_ANKI_KIND = "mine-anki"
 CONNECT_WAIT_LABEL = "Connect"
 CONNECT_WAITS = {"waiting": "waiting", "asked": "waiting", "battery": "waiting", "no_video": "needs",
-                 "not_timed": "needs", "anki": "anki"}        # a feed Item's kind -> the slot it waits in
+                 "not_timed": "needs", "anki": "anki", "anki_wait": "anki_wait"}   # a feed Item's kind -> its slot
 _SLOTS = {"mining": (CONNECT_JOB_KIND, CONNECT_JOB_LABEL), "waiting": (CONNECT_WAIT_KIND, CONNECT_WAIT_LABEL),
-          "needs": (CONNECT_WAIT_KIND, CONNECT_WAIT_LABEL), "anki": (CONNECT_ANKI_KIND, CONNECT_WAIT_LABEL)}
+          "needs": (CONNECT_WAIT_KIND, CONNECT_WAIT_LABEL), "anki": (CONNECT_ANKI_KIND, CONNECT_WAIT_LABEL),
+          "anki_wait": (CONNECT_ANKI_KIND, CONNECT_WAIT_LABEL)}
+NEEDS_SLOTS = ("needs", "anki")           # the slots that wait on you (amber); the others are plain waits
 _mirrored = weakref.WeakKeyDictionary()   # registry -> {slot: [its job or None, its step or wait, looks missed]}
 
 
+def _episodes(n):
+    return f"{n} episode" if n == 1 else f"{n} episodes"
+
+
 def _waits(items):
-    """{slot: (reason, needs)} of the feed's waiting items (the words of the one, or of each kind and its count)."""
-    from app.connect import feed as connect_feed, runner
-    kinds = {}
+    """{slot: (reason, needs)} of the feed's waiting items: each reason the slot's episodes wait for, in Connect's own
+    words (the item's `tip`, the record's reason — T2: never the kind's words alone), with how many episodes wait for
+    it — "Waiting while you review in Anki · 19 episodes" (T1: the count is episodes, never cards or things to do)."""
+    from app.connect import runner
+    reasons = {}
     for it in items:
         slot = CONNECT_WAITS.get(it.kind)
         if slot is None or it.tip == runner.STOPPED_BY_YOU:
             continue
-        kinds.setdefault(slot, {}).setdefault(it.kind, 0)
-        kinds[slot][it.kind] += 1
+        why = (it.tip or "").strip().rstrip(".") or it.words
+        reasons.setdefault(slot, {}).setdefault(why, 0)
+        reasons[slot][why] += 1
     out = {}
-    for slot, counts in kinds.items():
-        words = "; ".join(connect_feed.WORDS[k] + (f" ({n})" if n > 1 else "") for k, n in counts.items())
-        out[slot] = (words, None) if slot == "waiting" else (words, words)
+    for slot, counts in reasons.items():
+        words = "; ".join(f"{why} · {_episodes(n)}" for why, n in counts.items())
+        out[slot] = (words, words) if slot in NEEDS_SLOTS else (words, None)
     return out
 
 
@@ -377,8 +389,9 @@ def mirror_connect(registry, got):
     *Making cards · <its step> 40%* — told only when its step moved (S19), and ended after `CONNECT_JOB_MISSED` looks
     with none (no blink between two batches), or at once when the feed is gone (`got` None: another language's, the
     window's provider replaced). The phase strip: the episodes that wait are recorded too, one waiting job a class
-    (`CONNECT_WAITS`: queued, waiting on you, waiting for Anki), its words moved only when they changed and ended as
-    the mining one is. `connect_line(registry=)` calls it each look. A worker's call (the status service's refresh,
+    (`CONNECT_WAITS`: queued, waiting on you, waiting on Anki for you, waiting on Anki for itself), its words — each
+    reason and its episodes, `_waits` — moved only when they changed and ended as the mining one is. The mining line
+    names its episode (*Making cards · <title> · Filling fields 94%*, T3). `connect_line(registry=)` calls it each look. A worker's call (the status service's refresh,
     one at a time)."""
     if registry is None:
         return
@@ -387,10 +400,13 @@ def mirror_connect(registry, got):
     item = next((it for it in items if it.kind == "mining"), None)
     wanted = _waits(items)
     if item is not None:
+        title = getattr(item, "title", None)            # T3: the line names the episode being mined
         if item.progress is not None:
-            step = (f"{item.doing} {item.progress}%" if item.doing else f"{item.progress}%", None, None)
+            doing = f"{item.doing} {item.progress}%" if item.doing else f"{item.progress}%"
+            step = (f"{title} · {doing}" if title else doing, None, None)
         else:
-            step = (item.doing, item.made, item.total) if item.total else (item.doing, None, None)
+            doing = " · ".join(x for x in (title, item.doing) if x) or None
+            step = (doing, item.made, item.total) if item.total else (doing, None, None)
         wanted["mining"] = step
     for slot in _SLOTS:
         got_slot = held.setdefault(slot, [None, None, 0])

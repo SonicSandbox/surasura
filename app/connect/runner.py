@@ -2079,6 +2079,18 @@ def anki_wait(reason):
         or reason.startswith(anki_session.OTHER_PROFILE.split("{")[0]))
 
 
+def anki_needs_you(reason):
+    """Is `reason` a wait on Anki that only you can end — Anki closed, a permission prompt (it doesn't answer as
+    AnkiConnect should), another profile open, or none named yet / none holding your decks? (Alpha 2's try, T1: the
+    window's one rule for amber, *needs you*.) A wait that clears by itself — you reviewing, Anki busy, another program
+    writing to it, one slow answer — is not: the window shows it as a plain wait."""
+    from app.connect import anki_session
+    return isinstance(reason, str) and (
+        reason in (ANKI_CLOSED, anki_session.CLOSED, anki_session.UNUSABLE, anki_session.NO_PROFILE_YET,
+                   anki_session.NO_PROFILE_DECKS)
+        or reason.startswith(anki_session.OTHER_PROFILE.split("{")[0]))
+
+
 def holds_every(reason):
     """Does a wait with `reason` hold every episode, not only the one it stopped (laptop round 5 #24)? On battery, a
     wait on Anki (never ANKI_SLOW: Anki answers, one request of that episode's failed), Anki Miner's window open, or

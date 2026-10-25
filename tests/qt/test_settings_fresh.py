@@ -115,6 +115,21 @@ def test_a_refused_reset_says_why_and_that_nothing_changed(window):
     assert row.button.isEnabled() and not row.running
 
 
+@pytest.mark.parametrize("refused, why", [
+    ("busy", "Your library is busy for a moment — try again."),
+    ("io: disk I/O error", "Surasura can't read the library's file — check its drive is there, then restart Surasura."),
+], ids=["busy", "disk-error"])
+def test_P1_a_reset_refused_by_a_busy_store_says_so_in_the_stores_words(window, refused, why):
+    # why (P-1): a store busy past its wait answers "busy", never "no-library" (your library isn't open); said as a
+    # sentence, as a disk error is (the bar's words for one, never "io: …"), nothing changed
+    looks = FreshLooks({"done": False, "refused": refused})
+    seed, win = window(looks)
+    page, row = _fresh_row(win)
+    row.ask().yes.click()
+    assert wait_until(lambda: win.bar_line.full() == S.FRESH_REFUSED.format(reason=why), 10), win.bar_line.full()
+    assert row.button.isEnabled() and not row.running
+
+
 def test_a_failed_reset_says_nothing_changed(window):
     looks = FreshLooks({"done": False, "failed": "disk full"})
     seed, win = window(looks)

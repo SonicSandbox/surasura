@@ -193,6 +193,16 @@ READ_ONLY_REASONS = {
     "busy": "another program is saving your library — it opens as soon as that's done",
 }
 READ_ONLY_IO = "Surasura can't read the library's file — check its drive is there, then restart Surasura"
+STORE_BUSY_NOW = "your library is busy for a moment — try again"          # P-1: a store busy past its wait
+
+
+def store_reason(reason):
+    """A read-only or refused store's reason in plain words (`READ_ONLY_REASONS`; a disk error as `READ_ONLY_IO`; a
+    reason it doesn't know, as it is)."""
+    reason = reason or ""
+    return READ_ONLY_REASONS.get(reason) or (READ_ONLY_IO if reason.startswith("io") else reason)
+
+
 PLAY_FAILED = "Couldn't open {name}: {why}"
 GOAL_ACCESSIBLE = "{name}: {line}"
 ROWS_PCT = "{pct}%"
@@ -1160,6 +1170,7 @@ SOURCES_READ_NOTHING = "Reading {name} where it is: nothing new in it yet"
 SOURCES_UNREACHABLE = "Reading {name} where it is: it can't be reached now · Surasura looks again later"
 SOURCES_REFUSED = "{name} can't be read where it is: {reason}"
 SOURCES_NO_LIBRARY = "your library isn't open"
+SOURCES_BUSY = "{name} wasn't added yet: " + STORE_BUSY_NOW          # P-1: nothing written, nothing copied in
 SOURCES_FROM = "from {name}"
 # --- end SRC W1b
 # --- W3.2 Q5: Needs you's cards, their buttons and what they say (app/qt/needs.py; the entries' own words are

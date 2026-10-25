@@ -32,7 +32,7 @@ def state_line(view):
         return strings.STATE_LINES["getting-ready"]
     if view.state == "read-only":
         reason = view.reason or ""
-        plain = strings.READ_ONLY_REASONS.get(reason) or (strings.READ_ONLY_IO if reason.startswith("io") else reason)
+        plain = strings.store_reason(reason)
         return strings.STATE_LINES["read-only"].format(reason=plain)
     if view.busy:
         return strings.STATE_LINES["busy"]

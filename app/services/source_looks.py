@@ -218,11 +218,38 @@ class SourceLooks:
         return True
 
     def _store(self):
+        """(The worker.) This worker's store handle, or None (`_why_closed` says why). P-1: a store only busy this
+        moment — another connection opening, closing or committing — is asked again until `BUSY_AT_OPEN` has passed,
+        here on the looks' worker (never the window's thread): the opener's own retry of a busy look (`check()` hands
+        it to its worker) is waited for and its answer read, never the mode it cached before — so a busy moment is
+        never read as no library."""
+        from app import library_store as ls
+        deadline = time.monotonic() + ls.BUSY_AT_OPEN
         h = self.opener.handle()
-        if h is None and getattr(self.opener, "mode", None) != "store":
-            self.opener.check()
+        while h is None and not self._closing.is_set():
+            check, wait = getattr(self.opener, "check", None), getattr(self.opener, "wait", None)
+            if check is not None:
+                check()
+            if wait is not None:
+                wait(max(0.0, deadline - time.monotonic()))
             h = self.opener.handle()
+            if h is not None or self._why_closed() != "busy" or time.monotonic() >= deadline:
+                break
+            time.sleep(0.02)                          # "store", but busy at this thread's own open: again
         return h
+
+    def _why_closed(self):
+        """Why `_store()` gave no handle: "no-library" only for a library with no 3.0 store (+ Add copies the folder in,
+        as 2.x did: S3); a read-only store's own reason (damaged, newer); else "busy" — said, never the copy-in."""
+        settling = getattr(self.opener, "settling", None)
+        if settling is not None and settling():
+            return "busy"                             # its mode is the one cached before a busy look: no answer
+        mode, reason = getattr(self.opener, "mode", None), getattr(self.opener, "reason", None)
+        if mode == "json" and reason not in (None, "not checked"):
+            return "no-library"
+        if mode == "read-only" and reason:
+            return reason
+        return "busy"
 
     def _look(self, full, roots):
         """(The worker.) Each source being read (`roots`: those alone) looked at once, then the window told — its
@@ -297,7 +324,7 @@ class SourceLooks:
         try:
             store = self._store()
             if store is None:
-                answer["refused"] = "no-library"
+                answer["refused"] = self._why_closed()   # P-1: "no-library" (copied in) only with no 3.0 store
             else:
                 from app import library_store as ls
                 try:
@@ -350,7 +377,7 @@ class SourceLooks:
         try:
             store = self._store()
             if store is None:
-                answer["refused"] = "no-library"
+                answer["refused"] = self._why_closed()   # P-1: "no-library" (copied in) only with no 3.0 store
             else:
                 from app import library_store as ls
                 try:
